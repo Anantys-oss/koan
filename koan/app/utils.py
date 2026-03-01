@@ -407,6 +407,10 @@ def resolve_project_path(repo_name: str, owner: Optional[str] = None) -> Optiona
     4. Auto-discover from ALL git remotes (if owner provided): subprocess
        fallback for projects not yet populated by ensure_github_urls()
     5. Fallback to single project if only one configured
+    6. Cross-owner repo-name match (if owner provided): match the repo name
+       against the repo component of configured github_url/github_urls.
+       E.g. "sukria/koan" matches a project with github_url "atoomic/koan".
+       Only used when exactly one project matches (avoids ambiguity).
     """
     projects = get_known_projects()
     target = f"{owner}/{repo_name}".lower() if owner else None
@@ -487,6 +491,35 @@ def resolve_project_path(repo_name: str, owner: Optional[str] = None) -> Optiona
     # 5. Fallback to single project (skip when owner-specific lookup found nothing)
     if not owner and len(projects) == 1:
         return projects[0][1]
+
+    # 6. Cross-owner repo-name match: e.g. "sukria/koan" matches a project
+    #    whose github_url is "atoomic/koan" — same repo, different owner.
+    #    Only used when exactly one project matches to avoid ambiguity.
+    if target:
+        repo_lower = repo_name.lower()
+        try:
+            from app.projects_config import load_projects_config
+            config = load_projects_config(str(KOAN_ROOT))
+            if config:
+                candidates = []
+                for pname, project in config.get("projects", {}).items():
+                    if not isinstance(project, dict):
+                        continue
+                    all_urls = []
+                    gh_url = project.get("github_url")
+                    if gh_url:
+                        all_urls.append(gh_url)
+                    all_urls.extend(project.get("github_urls", []))
+                    for u in all_urls:
+                        if "/" in u and u.rsplit("/", 1)[1].lower() == repo_lower:
+                            path = project.get("path")
+                            if path and path not in candidates:
+                                candidates.append(path)
+                            break
+                if len(candidates) == 1:
+                    return candidates[0]
+        except Exception as e:
+            print(f"[utils] Cross-owner repo-name match failed: {e}", file=sys.stderr)
 
     return None
 

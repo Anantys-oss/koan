@@ -717,7 +717,11 @@ class TestResolveProjectPathWithOwner:
         assert path == str(project_dir)
 
     def test_cross_owner_no_upstream_remote(self, tmp_path, monkeypatch):
-        """When project only has origin (no upstream), cross-owner doesn't match."""
+        """When project only has origin (no upstream), cross-owner matches via step 6.
+
+        Step 6 (repo-name match): github_url "atoomic/koan" has repo "koan",
+        which matches the requested repo "koan" — different owner, same repo.
+        """
         from app import utils
         monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
 
@@ -733,13 +737,14 @@ class TestResolveProjectPathWithOwner:
         }
         (tmp_path / "projects.yaml").write_text(yaml.dump(config))
 
-        # Only origin remote, no upstream
+        # Only origin remote, no upstream — steps 1-4 fail,
+        # but step 6 matches on repo name "koan" from github_url
         with patch("app.utils.get_all_github_remotes",
                    return_value=["atoomic/koan"]):
             from app.utils import resolve_project_path
             path = resolve_project_path("koan", owner="sukria")
 
-        assert path is None
+        assert path == str(project_dir)
 
 
 # ─────────────────────────────────────────────────────
@@ -1017,8 +1022,13 @@ class TestResolveViaGithubUrlsList:
         from app.utils import resolve_project_path
         assert resolve_project_path("koan", owner="sukria") == "/home/myapp"
 
-    def test_github_urls_not_present_falls_through(self, tmp_path, monkeypatch):
-        """When github_urls is absent, step 1 only checks github_url."""
+    def test_github_urls_not_present_uses_step6(self, tmp_path, monkeypatch):
+        """When github_urls is absent, step 6 matches on repo name from github_url.
+
+        Previously returned None — now step 6 (cross-owner repo-name match)
+        finds the project because "atoomic/koan" has repo part "koan" matching
+        the requested repo "koan".
+        """
         from app import utils
         monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
 
@@ -1035,10 +1045,9 @@ class TestResolveViaGithubUrlsList:
 
         with patch("app.utils.get_all_github_remotes", return_value=[]):
             from app.utils import resolve_project_path
-            # No name/dir match for "koan" vs "my-fork", no github_urls
             path = resolve_project_path("koan", owner="sukria")
 
-        assert path is None
+        assert path == "/home/my-fork"
 
     def test_step4_persists_github_urls(self, tmp_path, monkeypatch):
         """Step 4 auto-discovery also persists github_urls list."""
@@ -1089,6 +1098,231 @@ class TestResolveViaGithubUrlsList:
         from app.utils import resolve_project_path
         # Matches on primary github_url — fastest path
         assert resolve_project_path("koan", owner="sukria") == "/home/myapp"
+
+
+class TestCrossOwnerRepoNameMatch:
+    """Tests for Step 6: cross-owner repo-name match.
+
+    When steps 1-5 all fail, step 6 matches the requested repo name
+    against the repo component of configured github_url/github_urls.
+    This handles the case where a user provides a PR URL from a
+    different owner (upstream vs fork) and the project is named
+    differently from the repo.
+    """
+
+    def test_matches_on_repo_name_only(self, tmp_path, monkeypatch):
+        """Step 6 matches repo name from github_url when owner differs."""
+        from app import utils
+        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+
+        config = {
+            "projects": {
+                "my-fork": {
+                    "path": "/home/my-fork",
+                    "github_url": "atoomic/koan",
+                }
+            }
+        }
+        (tmp_path / "projects.yaml").write_text(yaml.dump(config))
+
+        with patch("app.utils.get_all_github_remotes", return_value=["atoomic/koan"]):
+            from app.utils import resolve_project_path
+            # "sukria/koan" doesn't match github_url "atoomic/koan" exactly
+            # But repo "koan" matches the repo part of "atoomic/koan"
+            assert resolve_project_path("koan", owner="sukria") == "/home/my-fork"
+
+    def test_matches_via_github_urls_list(self, tmp_path, monkeypatch):
+        """Step 6 also checks github_urls entries, not just github_url."""
+        from app import utils
+        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+
+        config = {
+            "projects": {
+                "my-project": {
+                    "path": "/home/my-project",
+                    "github_urls": ["alice/myrepo"],
+                }
+            }
+        }
+        (tmp_path / "projects.yaml").write_text(yaml.dump(config))
+
+        with patch("app.utils.get_all_github_remotes", return_value=[]):
+            from app.utils import resolve_project_path
+            assert resolve_project_path("myrepo", owner="bob") == "/home/my-project"
+
+    def test_case_insensitive(self, tmp_path, monkeypatch):
+        """Step 6 repo-name matching is case-insensitive."""
+        from app import utils
+        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+
+        config = {
+            "projects": {
+                "my-fork": {
+                    "path": "/home/my-fork",
+                    "github_url": "Atoomic/KOAN",
+                }
+            }
+        }
+        (tmp_path / "projects.yaml").write_text(yaml.dump(config))
+
+        with patch("app.utils.get_all_github_remotes", return_value=[]):
+            from app.utils import resolve_project_path
+            assert resolve_project_path("koan", owner="Sukria") == "/home/my-fork"
+
+    def test_ambiguous_multiple_matches(self, tmp_path, monkeypatch):
+        """Step 6 returns None when multiple projects match same repo name."""
+        from app import utils
+        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+
+        config = {
+            "projects": {
+                "fork-a": {
+                    "path": "/home/fork-a",
+                    "github_url": "alice/myrepo",
+                },
+                "fork-b": {
+                    "path": "/home/fork-b",
+                    "github_url": "bob/myrepo",
+                },
+            }
+        }
+        (tmp_path / "projects.yaml").write_text(yaml.dump(config))
+
+        with patch("app.utils.get_all_github_remotes", return_value=[]):
+            from app.utils import resolve_project_path
+            # Two projects have repo "myrepo" — ambiguous
+            assert resolve_project_path("myrepo", owner="charlie") is None
+
+    def test_no_match_when_repo_differs(self, tmp_path, monkeypatch):
+        """Step 6 doesn't match when repo names differ."""
+        from app import utils
+        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+
+        config = {
+            "projects": {
+                "my-fork": {
+                    "path": "/home/my-fork",
+                    "github_url": "atoomic/other-repo",
+                }
+            }
+        }
+        (tmp_path / "projects.yaml").write_text(yaml.dump(config))
+
+        with patch("app.utils.get_all_github_remotes", return_value=[]):
+            from app.utils import resolve_project_path
+            assert resolve_project_path("koan", owner="sukria") is None
+
+    def test_skipped_without_owner(self, tmp_path, monkeypatch):
+        """Step 6 is only used when owner is provided."""
+        from app import utils
+        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+
+        config = {
+            "projects": {
+                "my-fork": {
+                    "path": "/home/my-fork",
+                    "github_url": "atoomic/koan",
+                },
+                "my-other": {
+                    "path": "/home/my-other",
+                    "github_url": "bob/something",
+                },
+            }
+        }
+        (tmp_path / "projects.yaml").write_text(yaml.dump(config))
+
+        from app.utils import resolve_project_path
+        # Without owner, step 6 doesn't run (falls through to None for multiple projects)
+        assert resolve_project_path("koan") is None
+
+    def test_handles_projects_yaml_error(self, tmp_path, monkeypatch):
+        """Step 6 handles errors gracefully."""
+        from app import utils
+        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+        monkeypatch.setenv("KOAN_PROJECTS", "a:/a;b:/b")
+
+        with patch("app.utils.get_all_github_remotes", return_value=[]), \
+             patch("app.projects_config.load_projects_config", side_effect=OSError("disk")):
+            from app.utils import resolve_project_path
+            assert resolve_project_path("koan", owner="sukria") is None
+
+
+class TestErrorMessageSuggestions:
+    """Tests for improved error messages with closest match suggestions."""
+
+    def test_suggests_matching_repo(self, tmp_path, monkeypatch):
+        """Error message suggests projects with matching repo name."""
+        from app import utils
+        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+        monkeypatch.setenv("KOAN_PROJECTS", "my-fork:/home/my-fork")
+
+        config = {
+            "projects": {
+                "my-fork": {
+                    "path": "/home/my-fork",
+                    "github_url": "atoomic/koan",
+                }
+            }
+        }
+        (tmp_path / "projects.yaml").write_text(yaml.dump(config))
+
+        from app.github_skill_helpers import format_project_not_found_error
+        msg = format_project_not_found_error("koan", owner="unknown-user")
+        assert "atoomic/koan" in msg
+        assert "Possible match" in msg
+
+    def test_no_suggestion_without_owner(self):
+        """No suggestion when no owner is provided."""
+        from app.github_skill_helpers import format_project_not_found_error
+
+        with patch("app.utils.get_known_projects", return_value=[("test", "/test")]):
+            msg = format_project_not_found_error("koan")
+        assert "Possible match" not in msg
+
+    def test_no_suggestion_when_no_match(self, tmp_path, monkeypatch):
+        """No suggestion when repo name doesn't match any project."""
+        from app import utils
+        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+        monkeypatch.setenv("KOAN_PROJECTS", "myapp:/home/myapp")
+
+        config = {
+            "projects": {
+                "myapp": {
+                    "path": "/home/myapp",
+                    "github_url": "alice/myapp",
+                }
+            }
+        }
+        (tmp_path / "projects.yaml").write_text(yaml.dump(config))
+
+        from app.github_skill_helpers import format_project_not_found_error
+        msg = format_project_not_found_error("koan", owner="sukria")
+        assert "Possible match" not in msg
+
+    def test_suggestion_with_multiple_matches(self, tmp_path, monkeypatch):
+        """Shows all matching repos when multiple projects have same repo name."""
+        from app import utils
+        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+        monkeypatch.setenv("KOAN_PROJECTS", "fork-a:/a;fork-b:/b")
+
+        config = {
+            "projects": {
+                "fork-a": {
+                    "path": "/a",
+                    "github_url": "alice/koan",
+                },
+                "fork-b": {
+                    "path": "/b",
+                    "github_url": "bob/koan",
+                },
+            }
+        }
+        (tmp_path / "projects.yaml").write_text(yaml.dump(config))
+
+        from app.github_skill_helpers import format_project_not_found_error
+        msg = format_project_not_found_error("koan", owner="charlie")
+        assert "alice/koan" in msg
+        assert "bob/koan" in msg
 
 
 class TestGithubUrlEdgeCases:
