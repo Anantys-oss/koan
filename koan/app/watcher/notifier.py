@@ -5,6 +5,7 @@ Supports threading, grouping, rate limiting, and retry queue.
 """
 
 import logging
+import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,11 +27,16 @@ _URL_CACHE_TTL = 300  # 5 minutes
 # ── Sending ──────────────────────────────────────────────────────────
 
 def _get_webhook_url() -> str | None:
-    """Load the Google Chat webhook URL from GSM (cached 5 min)."""
+    """Load the Google Chat webhook URL from env var or GSM (cached 5 min)."""
     global _webhook_url_cache
     cached_value, cached_at = _webhook_url_cache
     if cached_value and (time.time() - cached_at) < _URL_CACHE_TTL:
         return cached_value
+
+    env_url = os.environ.get("GCHAT_WEBHOOK_URL")
+    if env_url:
+        _webhook_url_cache = (env_url, time.time())
+        return env_url
 
     try:
         from app.credential_vault.helpers import get_gsm

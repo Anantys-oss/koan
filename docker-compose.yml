@@ -60,6 +60,7 @@ services:
   litellm-proxy:
     image: docker.litellm.ai/berriai/litellm:main-stable
     container_name: litellm-proxy
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
     ports:
       - "4000:4000"
     volumes:
