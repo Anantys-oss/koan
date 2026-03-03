@@ -58,6 +58,13 @@ CHAT_TIMEOUT = int(os.environ.get("KOAN_CHAT_TIMEOUT", "180"))
 
 app = Flask(__name__, template_folder=str(KOAN_ROOT / "koan" / "templates"))
 
+# Register budget controller webhook route
+try:
+    from app.budget_controller.webhook_handler import register_webhook
+    register_webhook(app, INSTANCE_DIR)
+except ImportError:
+    pass  # budget_controller not installed
+
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -37,8 +37,57 @@ services:
       - ./instance/missions.docker.md:/app/instance/missions.md
       # Logs
       - ./logs:/app/logs
+      # GCP ADC credentials for Credential Vault (Google Secret Manager)
+      # Mount the host's ADC token so the container can authenticate to GCP
+      - ${HOME}/.config/gcloud/application_default_credentials.json:/home/koan/.config/gcloud/application_default_credentials.json:ro
     restart: unless-stopped
+    depends_on:
+      - litellm-proxy
     # No ports exposed by default — Telegram/Slack only
     # Uncomment to expose dashboard:
     # ports:
     #   - "5001:5001"
+
+  # =========================================================================
+  # LiteLLM Proxy — Budget Controller
+  # =========================================================================
+  # Centralizes all LLM API calls with virtual keys, budgets, and spend tracking.
+  # Admin UI available at http://localhost:4000/ui (master key required).
+  litellm-proxy:
+    image: docker.litellm.ai/berriai/litellm:main-stable
+    container_name: litellm-proxy
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./litellm-config.yaml:/app/config.yaml
+    environment:
+      - DATABASE_URL=postgresql://litellm:${LITELLM_DB_PASSWORD}@postgres:5432/litellm
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
+      - LITELLM_SALT_KEY=${LITELLM_SALT_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - VOYAGE_API_KEY=${VOYAGE_API_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: koan-postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=litellm
+      - POSTGRES_PASSWORD=${LITELLM_DB_PASSWORD}
+      - POSTGRES_DB=litellm
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U litellm"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  pgdata:

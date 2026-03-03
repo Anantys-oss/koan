@@ -4,3 +4,8 @@ pyyaml>=6.0
 
 # Optional: Slack provider (install with: pip install slack-sdk)
 # slack-sdk>=3.27
+
+# Credential Vault (004-credential-vault)
+google-cloud-secret-manager>=2.20.0
+google-cloud-logging>=3.10.0
+detect-secrets>=1.5.0
