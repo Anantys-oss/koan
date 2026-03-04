@@ -241,7 +241,7 @@ class TestUtilsLoadConfig:
     def test_load_config_missing_file(self):
         """Missing config.yaml returns empty dict."""
         from app.utils import load_config
-        with patch("app.utils.KOAN_ROOT", Path("/nonexistent")):
+        with patch("app.utils.INSTANCE_DIR", Path("/nonexistent")):
             result = load_config()
         assert result == {}
 
@@ -251,7 +251,7 @@ class TestUtilsLoadConfig:
         config_dir = tmp_path / "instance"
         config_dir.mkdir()
         (config_dir / "config.yaml").write_text("tools:\n  allowed: [Read, Write]\n")
-        with patch("app.utils.KOAN_ROOT", tmp_path):
+        with patch("app.utils.INSTANCE_DIR", config_dir):
             result = load_config()
         assert result["tools"]["allowed"] == ["Read", "Write"]
 
@@ -261,7 +261,7 @@ class TestUtilsLoadConfig:
         config_dir = tmp_path / "instance"
         config_dir.mkdir()
         (config_dir / "config.yaml").write_text("{{invalid yaml")
-        with patch("app.utils.KOAN_ROOT", tmp_path):
+        with patch("app.utils.INSTANCE_DIR", config_dir):
             result = load_config()
         assert result == {}
 

@@ -1,0 +1,359 @@
+{% extends "base.html" %}
+{% block title %}Koan — Command Help{% endblock %}
+{% block content %}
+<style>
+    .help-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 1.5rem;
+    }
+    .help-header .version {
+        font-family: var(--mono);
+        font-size: 0.85rem;
+        color: var(--text-muted);
+    }
+    .help-toc {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 0.5rem;
+        margin-bottom: 2rem;
+    }
+    .help-toc a {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.5rem 0.75rem;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        color: var(--text);
+        text-decoration: none;
+        font-size: 0.85rem;
+        transition: border-color 0.15s;
+    }
+    .help-toc a:hover {
+        border-color: var(--accent);
+        color: var(--accent);
+    }
+    .help-toc a .cmd-name {
+        font-family: var(--mono);
+        font-weight: 600;
+    }
+    .help-toc a .cmd-desc {
+        color: var(--text-muted);
+        font-size: 0.78rem;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .help-section {
+        margin-bottom: 2.5rem;
+        scroll-margin-top: 1rem;
+    }
+    .help-section-header {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        margin-bottom: 1rem;
+        padding-bottom: 0.5rem;
+        border-bottom: 1px solid var(--border);
+    }
+    .help-section-header h2 {
+        margin: 0;
+        font-size: 1.2rem;
+        color: var(--accent);
+        font-family: var(--mono);
+    }
+    .help-section-header .desc {
+        color: var(--text-muted);
+        font-size: 0.9rem;
+    }
+    .help-section-header a.back-top {
+        margin-left: auto;
+        font-size: 0.75rem;
+        color: var(--text-muted);
+        text-decoration: none;
+    }
+    .help-section-header a.back-top:hover { color: var(--accent); }
+    .help-usage {
+        font-family: var(--mono);
+        font-size: 0.85rem;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 0.5rem 0.75rem;
+        margin-bottom: 1rem;
+        color: var(--green);
+    }
+    .help-actions-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-bottom: 1rem;
+    }
+    .help-actions-table th {
+        text-align: left;
+        padding: 0.4rem 0.75rem;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        font-size: 0.75rem;
+        color: var(--text-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+    .help-actions-table td {
+        padding: 0.5rem 0.75rem;
+        border: 1px solid var(--border);
+        font-size: 0.85rem;
+        vertical-align: top;
+    }
+    .help-actions-table td:first-child {
+        font-family: var(--mono);
+        white-space: nowrap;
+        color: var(--accent);
+        width: 35%;
+    }
+    .help-actions-table tr:hover td {
+        background: rgba(88, 166, 255, 0.03);
+    }
+    .help-flags {
+        margin: 0.75rem 0;
+    }
+    .help-flags summary {
+        cursor: pointer;
+        font-size: 0.82rem;
+        color: var(--text-muted);
+        font-weight: 600;
+        padding: 0.25rem 0;
+    }
+    .help-flags summary:hover { color: var(--text); }
+    .help-flags-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 0.5rem;
+    }
+    .help-flags-table td {
+        padding: 0.3rem 0.75rem;
+        border-bottom: 1px solid var(--border);
+        font-size: 0.82rem;
+    }
+    .help-flags-table td:first-child {
+        font-family: var(--mono);
+        color: var(--orange);
+        white-space: nowrap;
+        width: 30%;
+    }
+    .help-flags-table td:last-child {
+        color: var(--text-muted);
+    }
+    .help-examples {
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 0.75rem 1rem;
+        margin-top: 0.75rem;
+    }
+    .help-examples .label {
+        font-size: 0.72rem;
+        color: var(--text-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        margin-bottom: 0.5rem;
+    }
+    .help-examples code {
+        display: block;
+        font-family: var(--mono);
+        font-size: 0.82rem;
+        color: var(--text);
+        padding: 0.15rem 0;
+        line-height: 1.7;
+    }
+    .help-examples code::before {
+        content: "$ ";
+        color: var(--text-muted);
+    }
+    .help-examples code:hover {
+        color: var(--green);
+    }
+    .help-category {
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--text-muted);
+        margin-top: 1.5rem;
+        margin-bottom: 0.5rem;
+        padding-left: 0.25rem;
+    }
+    .help-global-flags {
+        margin-bottom: 2rem;
+    }
+    .help-global-flags table {
+        width: 100%;
+        border-collapse: collapse;
+    }
+    .help-global-flags td {
+        padding: 0.4rem 0.75rem;
+        border-bottom: 1px solid var(--border);
+        font-size: 0.85rem;
+    }
+    .help-global-flags td:first-child {
+        font-family: var(--mono);
+        color: var(--orange);
+        white-space: nowrap;
+        width: 20%;
+    }
+    .search-box {
+        width: 100%;
+        padding: 0.6rem 1rem;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        color: var(--text);
+        font-size: 0.9rem;
+        margin-bottom: 1.5rem;
+    }
+    .search-box:focus {
+        outline: none;
+        border-color: var(--accent);
+    }
+    .search-box::placeholder { color: var(--text-muted); }
+    .hidden { display: none !important; }
+</style>
+
+<div class="help-header">
+    <h1>Command Help</h1>
+    <span class="version">governor v{{ version }}</span>
+</div>
+
+<input type="text" class="search-box" id="search" placeholder="Rechercher une commande, action ou mot-cle..." autofocus>
+
+<!-- Table of contents -->
+<div id="toc">
+<div class="help-category">Surveillance & Analyse</div>
+<div class="help-toc">
+    <a href="#watcher"><span class="cmd-name">watcher</span><span class="cmd-desc">Repos GitHub/GitLab</span></a>
+    <a href="#advisor"><span class="cmd-name">advisor</span><span class="cmd-desc">Duplications cross-plateforme</span></a>
+    <a href="#scan"><span class="cmd-name">scan</span><span class="cmd-desc">Fuites credentials</span></a>
+</div>
+<div class="help-category">Rapports & Monitoring</div>
+<div class="help-toc">
+    <a href="#status"><span class="cmd-name">status</span><span class="cmd-desc">Health check unifie</span></a>
+    <a href="#report"><span class="cmd-name">report</span><span class="cmd-desc">Rapports journaliers/hebdo</span></a>
+</div>
+<div class="help-category">Budget & Cles API</div>
+<div class="help-toc">
+    <a href="#budget"><span class="cmd-name">budget</span><span class="cmd-desc">Budgets LLM citizens</span></a>
+    <a href="#keys"><span class="cmd-name">keys</span><span class="cmd-desc">Cles virtuelles LiteLLM</span></a>
+</div>
+<div class="help-category">Credentials & Secrets</div>
+<div class="help-toc">
+    <a href="#vault"><span class="cmd-name">vault</span><span class="cmd-desc">Google Secret Manager</span></a>
+    <a href="#env"><span class="cmd-name">env</span><span class="cmd-desc">Injection .env temporaire</span></a>
+</div>
+<div class="help-category">Administration</div>
+<div class="help-toc">
+    <a href="#autonomy"><span class="cmd-name">autonomy</span><span class="cmd-desc">Niveaux d'autonomie</span></a>
+    <a href="#rollout"><span class="cmd-name">rollout</span><span class="cmd-desc">Deploiement progressif</span></a>
+    <a href="#offboard"><span class="cmd-name">offboard</span><span class="cmd-desc">Offboarding citizen</span></a>
+</div>
+<div class="help-category">Tests & Debug</div>
+<div class="help-toc">
+    <a href="#simulate"><span class="cmd-name">simulate</span><span class="cmd-desc">Simulation evenements</span></a>
+    <a href="#tunnel"><span class="cmd-name">tunnel</span><span class="cmd-desc">Tunnel Cloudflare</span></a>
+</div>
+</div>
+
+<!-- Global flags -->
+<div class="help-global-flags card" id="global-flags">
+    <h2 style="margin-bottom:0.75rem;">Flags globaux</h2>
+    <p style="font-size:0.85rem;color:var(--text-muted);margin-bottom:0.75rem;">
+        Ces flags s'appliquent a toutes les commandes governor.
+    </p>
+    <table>
+        <tr><td>--json</td><td>Sortie en JSON brut (desactive les couleurs)</td></tr>
+        <tr><td>--notify</td><td>Envoie aussi le resultat sur Google Chat</td></tr>
+        <tr><td>--dry-run</td><td>Execute sans envoyer de notifications</td></tr>
+        <tr><td>--verbose</td><td>Affiche les logs de debug (duree, skill, args)</td></tr>
+        <tr><td>--version</td><td>Affiche la version</td></tr>
+    </table>
+</div>
+
+<!-- Command sections -->
+{% for cmd in commands %}
+<div class="help-section" id="{{ cmd.name }}" data-search="{{ cmd.search_text }}">
+    <div class="help-section-header">
+        <h2>governor {{ cmd.name }}</h2>
+        <span class="desc">{{ cmd.desc }}</span>
+        <a href="#" class="back-top" title="Haut de page">&uarr; haut</a>
+    </div>
+
+    <div class="help-usage">{{ cmd.usage }}</div>
+
+    <table class="help-actions-table">
+        <thead>
+            <tr><th>Action</th><th>Description</th></tr>
+        </thead>
+        <tbody>
+        {% for action_name, action_desc in cmd.actions %}
+            <tr>
+                <td>{{ action_name }}</td>
+                <td>
+                    {{ action_desc }}
+                    {% if action_name.split()|first in cmd.flags %}
+                    <details class="help-flags" open>
+                        <summary>Options</summary>
+                        <table class="help-flags-table">
+                        {% for flag, flag_desc in cmd.flags[action_name.split()|first] %}
+                            <tr><td>{{ flag }}</td><td>{{ flag_desc }}</td></tr>
+                        {% endfor %}
+                        </table>
+                    </details>
+                    {% endif %}
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+
+    <div class="help-examples">
+        <div class="label">Exemples</div>
+        {% for ex in cmd.examples %}
+        <code>{{ ex }}</code>
+        {% endfor %}
+    </div>
+</div>
+{% endfor %}
+
+<script>
+const search = document.getElementById('search');
+const sections = document.querySelectorAll('.help-section');
+const toc = document.getElementById('toc');
+
+search.addEventListener('input', function() {
+    const q = this.value.toLowerCase().trim();
+    if (!q) {
+        sections.forEach(s => s.classList.remove('hidden'));
+        toc.classList.remove('hidden');
+        return;
+    }
+    toc.classList.add('hidden');
+    sections.forEach(s => {
+        const text = s.getAttribute('data-search') || s.textContent.toLowerCase();
+        s.classList.toggle('hidden', !text.includes(q));
+    });
+});
+
+// Keyboard shortcut: / to focus search
+document.addEventListener('keydown', function(e) {
+    if (e.key === '/' && document.activeElement !== search) {
+        e.preventDefault();
+        search.focus();
+    }
+    if (e.key === 'Escape') {
+        search.value = '';
+        search.dispatchEvent(new Event('input'));
+        search.blur();
+    }
+});
+</script>
+{% endblock %}

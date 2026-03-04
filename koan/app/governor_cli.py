@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Optional
 
 from app.skills import SkillContext, build_registry, execute_skill
-from app.utils import KOAN_ROOT, load_config
+from app.utils import KOAN_ROOT, INSTANCE_DIR, load_config
 
 
 class CLIContext(SkillContext):
@@ -33,7 +33,6 @@ class CLIContext(SkillContext):
         return getattr(self, key, default)
 
 VERSION = "1.0.0"
-INSTANCE_DIR = KOAN_ROOT / "instance"
 OUTBOX_FILE = INSTANCE_DIR / "outbox.md"
 
 # Exit codes per cli-interface.yaml contract
@@ -84,11 +83,12 @@ SKILL_MAP = {
     "autonomy": ("governor.autonomy", False),
     "rollout":  ("governor.rollout", False),
     "offboard": ("governor.offboard", False),
-    "budget":   ("governor/budget", True),
-    "keys":     ("governor/keys", True),
+    "budget":   ("governor/budget", False),
+    "keys":     ("governor/keys", False),
     "vault":    ("governor.vault", False),
     "env":      ("governor.env", False),
     "scan":     ("governor.scan", False),
+    "report":   ("governor.report", False),
 }
 
 
@@ -188,14 +188,434 @@ def _write_outbox(content: str):
 
 
 def _suggest_command(command: str) -> str:
-    all_commands = list(SKILL_MAP.keys()) + ["simulate", "tunnel"]
+    all_commands = list(SKILL_MAP.keys()) + ["simulate", "tunnel", "help"]
     matches = difflib.get_close_matches(command, all_commands, n=3, cutoff=0.5)
     msg = f"Commande inconnue : '{command}'"
     if matches:
         suggestions = ", ".join(matches)
         msg += f"\nCommandes similaires : {suggestions}"
-    msg += f"\nTapez 'governor --help' pour la liste complète."
+    msg += f"\nTapez 'governor help' pour la liste complète."
     return msg
+
+
+# ── Help system ────────────────────────────────────────────────────
+
+HELP_COMMANDS = {
+    "status": {
+        "desc": "Health check unifié de tous les modules",
+        "usage": "governor status [action]",
+        "actions": {
+            "(défaut)": "Affiche rapport santé unifié (uptime, latence, modules, circuit breakers)",
+            "report [période]": "Génère rapport périodique (format: YYYY-MM-DD:YYYY-MM-DD, défaut: 7 derniers jours)",
+        },
+        "examples": [
+            "governor status",
+            "governor status report",
+            "governor status report 2026-02-25:2026-03-04",
+        ],
+    },
+    "watcher": {
+        "desc": "Surveillance des repos GitHub et GitLab",
+        "usage": "governor watcher [action] [options]",
+        "actions": {
+            "status": "État watcher : webhooks GitHub, scans GitLab, repos actifs, événements du jour (défaut)",
+            "log [flags]": "Query le journal d'audit unifié avec filtres",
+            "repos [flags]": "Liste des repos surveillés avec filtres",
+            "scan": "Force un scan GitLab immédiat (polling des projets du groupe)",
+            "catch-up": "Rattrape les deliveries webhook GitHub manquées (redelivery API)",
+            "alerts": "Liste les alertes non acquittées (auteurs inconnus, force-push, etc.)",
+            "register <login> <platform> <type>": "Ajoute un utilisateur au registre watcher",
+        },
+        "flags": {
+            "log": [
+                ("--author <login>", "Filtrer par auteur (login GitHub/GitLab)"),
+                ("--repo <name>", "Filtrer par nom de dépôt"),
+                ("--type <type>", "Filtrer par type d'événement (push, pr, mr, issue, etc.)"),
+                ("--platform <github|gitlab>", "Filtrer par plateforme"),
+                ("--days <N>", "Nombre de jours à remonter (défaut: 30)"),
+                ("--limit <N>", "Nombre max d'événements retournés (défaut: 20)"),
+            ],
+            "repos": [
+                ("--platform <github|gitlab>", "Filtrer par plateforme"),
+                ("--status <active|inactive>", "Filtrer par statut"),
+            ],
+            "register": [
+                ("--name <prénom>", "Prénom/nom associé au login"),
+                ("<platform>", "github ou gitlab"),
+                ("<type>", "citizen, tech ou governor"),
+            ],
+        },
+        "examples": [
+            "governor watcher status",
+            "governor watcher log --author vbLBB --days 7",
+            "governor watcher log --platform gitlab --type push",
+            "governor watcher repos --platform github",
+            "governor watcher scan",
+            "governor watcher catch-up",
+            "governor watcher alerts",
+            "governor watcher register dany-yourart github citizen --name Dany",
+        ],
+    },
+    "advisor": {
+        "desc": "Détection de duplications cross-plateforme et recommandations",
+        "usage": "governor advisor [action] [options]",
+        "actions": {
+            "status": "État advisor : repos indexés, fichiers, catalogue MCP, détections 7j (défaut)",
+            "scan [--full]": "Scan repos pour indexation sémantique (incrémental par défaut)",
+            "analyze [--days N]": "Analyse commits citizens récents pour détecter duplications",
+            "report [--days N]": "Génère rapport duplications détaillé pour gouverneurs",
+            "catalog [search <query>]": "Affiche ou recherche dans le catalogue MCP ArtMajeur (19 ressources)",
+            "repos": "Cartographie des repos indexés (GitHub + GitLab) avec stats",
+            "feedback <id> <verdict>": "Marque une détection avec un verdict",
+        },
+        "flags": {
+            "scan": [
+                ("--full", "Scan complet (re-indexe tout). Sans ce flag: incrémental"),
+            ],
+            "analyze": [
+                ("--days <N>", "Période d'analyse en jours (défaut: 7)"),
+            ],
+            "report": [
+                ("--days <N>", "Période du rapport en jours (défaut: 30)"),
+            ],
+            "feedback": [
+                ("<id>", "Identifiant de la détection (ex: DET-042)"),
+                ("<verdict>", "relevant | false-positive | ignore | acknowledged"),
+                ("--notes <texte>", "Notes/commentaire libre sur la détection"),
+            ],
+        },
+        "examples": [
+            "governor advisor status",
+            "governor advisor scan",
+            "governor advisor scan --full",
+            "governor advisor analyze --days 14",
+            "governor advisor report",
+            "governor advisor catalog",
+            "governor advisor catalog search email",
+            "governor advisor repos",
+            "governor advisor feedback DET-042 relevant --notes \"Duplication confirmée\"",
+            "governor advisor feedback DET-043 false-positive",
+        ],
+    },
+    "report": {
+        "desc": "Rapports journaliers et hebdomadaires agrégés",
+        "usage": "governor report [action] [options]",
+        "actions": {
+            "daily [flags]": "Rapport journalier agrégé watcher + advisor + budget (défaut: aujourd'hui)",
+            "weekly [flags]": "Résumé hebdomadaire agrégé sur 7 jours",
+            "status": "Informations sur le dernier rapport généré",
+        },
+        "flags": {
+            "daily": [
+                ("--date <YYYY-MM-DD>", "Date du rapport (défaut: aujourd'hui)"),
+                ("--notify", "Envoie le rapport sur Google Chat"),
+            ],
+            "weekly": [
+                ("--notify", "Envoie le résumé sur Google Chat"),
+            ],
+        },
+        "examples": [
+            "governor report daily",
+            "governor report daily --date 2026-03-03",
+            "governor report daily --notify",
+            "governor report weekly --notify",
+            "governor report status",
+        ],
+    },
+    "budget": {
+        "desc": "Gestion des budgets API LLM par citizen",
+        "usage": "governor budget [action] [options]",
+        "actions": {
+            "status [user_id]": "Affiche budget global ou détail d'un citizen (défaut)",
+            "set <user_id> <montant>": "Définit le budget mensuel d'un citizen (en EUR)",
+            "request <montant> <justification>": "Citizen : demande une extension de budget (crée REQ-XXX)",
+            "approve <REQ-ID> [message]": "Governor : approuve une demande d'extension",
+            "reject <REQ-ID> [message]": "Governor : rejette une demande d'extension",
+        },
+        "examples": [
+            "governor budget status",
+            "governor budget status vbLBB",
+            "governor budget set vbLBB 50",
+            "governor budget request 30 \"Tests embeddings lourds ce mois\"",
+            "governor budget approve REQ-001",
+            "governor budget approve REQ-001 \"OK pour ce mois uniquement\"",
+            "governor budget reject REQ-002 \"Budget déjà dépassé\"",
+        ],
+    },
+    "keys": {
+        "desc": "Gestion des clés virtuelles LiteLLM",
+        "usage": "governor keys [action] [options]",
+        "actions": {
+            "list [user_id]": "Liste les clés virtuelles actives (filtrée par user optionnel) (défaut)",
+            "create <user_id> [alias]": "Crée une nouvelle clé virtuelle (alias défaut: {user}-key)",
+            "revoke <alias>": "Révoque une clé par son alias",
+        },
+        "examples": [
+            "governor keys list",
+            "governor keys list vbLBB",
+            "governor keys create vbLBB laurence-key",
+            "governor keys revoke laurence-key",
+        ],
+    },
+    "vault": {
+        "desc": "Gestion des credentials via Google Secret Manager",
+        "usage": "governor vault [action] [options]",
+        "actions": {
+            "list": "Liste tous les secrets gérés dans GSM (défaut)",
+            "store <secret_id>": "Initie la création d'un nouveau secret (collecte metadata + valeur)",
+            "store-confirm <data>": "Finalise la création (utilisé en interne après store)",
+            "rotate <secret_id> [new_value]": "Rotation : nouvelle version, désactive l'ancienne",
+            "revoke <secret_id>": "Révoque un secret : désactive toutes les versions",
+            "grant <citizen> <project>": "Accorde l'accès d'un citizen aux credentials d'un projet",
+            "ungrant <citizen> <project>": "Révoque l'accès d'un citizen aux credentials d'un projet",
+            "audit [citizen]": "Affiche l'audit GSM (Cloud Logging, optionnel: filtré par citizen)",
+        },
+        "examples": [
+            "governor vault list",
+            "governor vault store my-api-key",
+            "governor vault rotate my-api-key",
+            "governor vault revoke old-secret",
+            "governor vault grant vbLBB emailfactory",
+            "governor vault ungrant vbLBB emailfactory",
+            "governor vault audit",
+            "governor vault audit vbLBB",
+        ],
+    },
+    "env": {
+        "desc": "Injection temporaire de variables d'environnement depuis le vault",
+        "usage": "governor env [action] [options]",
+        "actions": {
+            "inject <project>": "Génère un .env temporaire pour un projet (TTL 24h par défaut)",
+            "status": "Liste les injections actives du caller (défaut)",
+            "revoke <citizen> <project>": "Governor : révoque une injection active",
+        },
+        "examples": [
+            "governor env status",
+            "governor env inject emailfactory",
+            "governor env revoke vbLBB emailfactory",
+        ],
+    },
+    "scan": {
+        "desc": "Détection de fuites de credentials dans les repos",
+        "usage": "governor scan [action] [options]",
+        "actions": {
+            "repo <repo_name>": "Scan un repo spécifique (detect-secrets, compare baseline)",
+            "all": "Scan tous les repos YourArtOfficial, résumé par sévérité",
+            "baseline update": "Met à jour la baseline (findings actuels marqués comme connus)",
+        },
+        "examples": [
+            "governor scan repo koan-fork",
+            "governor scan repo emailfactory",
+            "governor scan all",
+            "governor scan baseline update",
+        ],
+    },
+    "autonomy": {
+        "desc": "Gestion des niveaux d'autonomie des modules",
+        "usage": "governor autonomy [action] [options]",
+        "actions": {
+            "get [module]": "Affiche les niveaux d'autonomie actuels (défaut)",
+            "set <module> <level>": "Change le niveau d'autonomie d'un module",
+        },
+        "flags": {
+            "set": [
+                ("<module>", "budget_controller | credential_vault | watcher | advisor"),
+                ("<level>", "watch (surveillance seule) | notify (notifications actives) | supervise (validation humaine requise)"),
+            ],
+        },
+        "examples": [
+            "governor autonomy get",
+            "governor autonomy get watcher",
+            "governor autonomy set watcher notify",
+            "governor autonomy set advisor supervise",
+            "governor autonomy set budget_controller watch",
+        ],
+    },
+    "rollout": {
+        "desc": "Gestion du déploiement progressif par groupes",
+        "usage": "governor rollout [action] [options]",
+        "actions": {
+            "list": "Affiche les groupes de rollout et leurs membres (défaut)",
+            "activate <group>": "Active un groupe de rollout (commence à recevoir les notifications)",
+            "add <group> <login>": "Ajoute un membre à un groupe",
+            "remove <group> <login>": "Retire un membre d'un groupe",
+        },
+        "examples": [
+            "governor rollout list",
+            "governor rollout activate beta",
+            "governor rollout add beta vbLBB",
+            "governor rollout remove beta vbLBB",
+        ],
+    },
+    "offboard": {
+        "desc": "Offboarding complet d'un citizen",
+        "usage": "governor offboard remove <login>",
+        "actions": {
+            "remove <login>": "Offboarde un citizen : révoque credentials, bloque clés LiteLLM, marque inactif dans le registre, retire des groupes rollout",
+        },
+        "examples": [
+            "governor offboard remove ancien-citizen",
+        ],
+    },
+    "simulate": {
+        "desc": "Simulation d'événements pour tester le pipeline end-to-end",
+        "usage": "governor simulate <action> [options]",
+        "actions": {
+            "commit": "Simule un commit citizen → injecte dans pipeline watcher → advisor",
+            "credential": "Simule une détection de fuite de credential",
+            "replay": "Rejoue les événements du journal d'une date spécifique",
+            "demo": "Démo E2E complète : 6 scénarios enchaînés + rapport journalier",
+        },
+        "flags": {
+            "commit": [
+                ("--author <login>", "Login du citizen auteur (requis)"),
+                ("--repo <repo>", "Nom du dépôt (requis)"),
+                ("--message <msg>", "Message de commit (requis)"),
+                ("--files <f1,f2,...>", "Liste de fichiers modifiés (optionnel)"),
+                ("--dry-run", "Exécute sans envoyer de notifications"),
+            ],
+            "credential": [
+                ("--repo <repo>", "Nom du dépôt (requis)"),
+                ("--file <path>", "Chemin du fichier contenant la fuite (requis)"),
+                ("--dry-run", "Exécute sans envoyer de notifications"),
+            ],
+            "replay": [
+                ("--date <YYYY-MM-DD>", "Date à rejouer (requis)"),
+                ("--dry-run", "Exécute sans envoyer de notifications"),
+            ],
+            "demo": [
+                ("--dry-run", "Exécute sans envoyer de notifications"),
+                ("--notify", "Envoie les notifications Google Chat"),
+            ],
+        },
+        "examples": [
+            "governor simulate commit --author vbLBB --repo emailfactory --message \"ajout template\"",
+            "governor simulate commit --author dany-yourart --repo koan --message \"test\" --files main.py,utils.py",
+            "governor simulate credential --repo fetching --file .env",
+            "governor simulate replay --date 2026-03-03",
+            "governor simulate demo",
+            "governor simulate demo --notify",
+            "governor simulate demo --dry-run",
+        ],
+    },
+    "tunnel": {
+        "desc": "Gestion du tunnel Cloudflare pour les webhooks GitHub",
+        "usage": "governor tunnel [action]",
+        "actions": {
+            "status": "Vérifie si le tunnel cloudflared est actif (PID)",
+            "start": "Lance le tunnel (cloudflared tunnel → http://localhost:5001)",
+            "stop": "Arrête le tunnel (pkill cloudflared)",
+        },
+        "examples": [
+            "governor tunnel status",
+            "governor tunnel start",
+            "governor tunnel stop",
+        ],
+    },
+}
+
+
+def _print_help_global():
+    """Print full help with all commands."""
+    lines = [
+        _bold("AI Governor CLI v" + VERSION),
+        "",
+        "  Agent IA de gouvernance pour l'organisation GitHub YourArtOfficial.",
+        "  Surveille les repos, détecte les duplications, gère les budgets API",
+        "  et assiste les gouverneurs humains dans l'administration du code.",
+        "",
+        _bold("USAGE"),
+        f"  governor <commande> [action] [options] [flags]",
+        f"  governor help <commande>          Aide détaillée sur une commande",
+        "",
+        _bold("FLAGS GLOBAUX"),
+        f"  {'--json':<20} Sortie en JSON brut (désactive les couleurs)",
+        f"  {'--notify':<20} Envoie aussi le résultat sur Google Chat",
+        f"  {'--dry-run':<20} Exécute sans envoyer de notifications",
+        f"  {'--verbose':<20} Affiche les logs de debug (durée, skill, args)",
+        f"  {'--version':<20} Affiche la version",
+        "",
+        _bold("COMMANDES"),
+        "",
+        _bold("  Surveillance & Analyse"),
+        f"    {'watcher':<14} {HELP_COMMANDS['watcher']['desc']}",
+        f"    {'advisor':<14} {HELP_COMMANDS['advisor']['desc']}",
+        f"    {'scan':<14} {HELP_COMMANDS['scan']['desc']}",
+        "",
+        _bold("  Rapports & Monitoring"),
+        f"    {'status':<14} {HELP_COMMANDS['status']['desc']}",
+        f"    {'report':<14} {HELP_COMMANDS['report']['desc']}",
+        "",
+        _bold("  Budget & Clés API"),
+        f"    {'budget':<14} {HELP_COMMANDS['budget']['desc']}",
+        f"    {'keys':<14} {HELP_COMMANDS['keys']['desc']}",
+        "",
+        _bold("  Credentials & Secrets"),
+        f"    {'vault':<14} {HELP_COMMANDS['vault']['desc']}",
+        f"    {'env':<14} {HELP_COMMANDS['env']['desc']}",
+        "",
+        _bold("  Administration"),
+        f"    {'autonomy':<14} {HELP_COMMANDS['autonomy']['desc']}",
+        f"    {'rollout':<14} {HELP_COMMANDS['rollout']['desc']}",
+        f"    {'offboard':<14} {HELP_COMMANDS['offboard']['desc']}",
+        "",
+        _bold("  Tests & Debug"),
+        f"    {'simulate':<14} {HELP_COMMANDS['simulate']['desc']}",
+        f"    {'tunnel':<14} {HELP_COMMANDS['tunnel']['desc']}",
+        "",
+        _bold("EXEMPLES RAPIDES"),
+        f"  governor status                          Health check global",
+        f"  governor watcher log --author vbLBB      Journal d'un citizen",
+        f"  governor advisor scan --full             Indexation complète",
+        f"  governor report daily --notify           Rapport du jour → Google Chat",
+        f"  governor budget status                   Vue budgets",
+        f"  governor --json advisor status           Sortie JSON",
+        f"  governor simulate demo                   Démo E2E (6 scénarios)",
+        "",
+        _dim("Tapez 'governor help <commande>' pour l'aide détaillée d'une commande."),
+    ]
+    print("\n".join(lines))
+
+
+def _print_help_command(command: str):
+    """Print detailed help for a specific command."""
+    info = HELP_COMMANDS.get(command)
+    if not info:
+        # Try fuzzy match
+        all_cmds = list(HELP_COMMANDS.keys())
+        matches = difflib.get_close_matches(command, all_cmds, n=3, cutoff=0.4)
+        print(_red(f"Commande inconnue : '{command}'"))
+        if matches:
+            print(f"Commandes similaires : {', '.join(matches)}")
+        print(f"\nTapez 'governor help' pour la liste complète.")
+        return
+
+    lines = [
+        _bold(f"governor {command}") + f" — {info['desc']}",
+        "",
+        _bold("USAGE"),
+        f"  {info['usage']}",
+        "",
+        _bold("ACTIONS"),
+    ]
+
+    for action_name, action_desc in info["actions"].items():
+        lines.append(f"  {_green(action_name)}")
+        lines.append(f"      {action_desc}")
+
+        # Show flags for this action if any
+        if "flags" in info:
+            base_action = action_name.split()[0].rstrip("[]")
+            if base_action in info["flags"]:
+                for flag, flag_desc in info["flags"][base_action]:
+                    lines.append(f"      {_yellow(flag):<30} {flag_desc}")
+        lines.append("")
+
+    lines.append(_bold("EXEMPLES"))
+    for ex in info["examples"]:
+        lines.append(f"  {_dim('$')} {ex}")
+
+    print("\n".join(lines))
 
 
 # ── Google Chat notify ──────────────────────────────────────────────
@@ -290,6 +710,7 @@ Commandes disponibles:
   vault               Gestion des credentials
   env                 Injection de variables d'environnement
   scan                Scan des credentials dans le code
+  report              Rapport journalier/hebdomadaire AI Governor
   simulate            Simuler des événements pour tester le pipeline
   tunnel              Gestion du tunnel pour les webhooks GitHub
 
@@ -329,7 +750,7 @@ def main() -> int:
         _USE_COLOR = False
 
     if not args.command:
-        parser.print_help()
+        _print_help_global()
         return EXIT_OK
 
     command = args.command.lower()
@@ -338,6 +759,14 @@ def main() -> int:
     # Extract action (first positional after command) and remaining args
     action = rest[0] if rest else ""
     extra_args = " ".join(rest[1:]) if len(rest) > 1 else ""
+
+    # Handle help command
+    if command == "help":
+        if action:
+            _print_help_command(action)
+        else:
+            _print_help_global()
+        return EXIT_OK
 
     # Handle simulate and tunnel separately (not standard skills)
     if command == "simulate":

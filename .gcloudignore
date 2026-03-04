@@ -1,0 +1,55 @@
+# Cloud Build ignore — used by gcloud run deploy --source
+# Based on .gitignore but includes instance/skills/ for Docker image
+
+# Runtime state
+.koan*
+.last-review-sha
+.coverage
+logs/
+.aider*
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Environment & secrets
+.env
+.env.*
+.envrc
+
+# OS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Git
+.git/
+
+# Test cache
+.pytest_cache/
+
+# Docker artifacts
+docker-compose.override.yml
+.env.docker
+claude-auth/
+
+# Instance data EXCEPT skills (needed for command dispatch)
+instance/secrets/
+instance/config.yaml
+instance/watcher/
+instance/advisor/
+instance/reports/
+instance/simulate/
+# instance/skills/ is NOT excluded — it's needed in the Docker image
+
+# Misc
+workspace/
+projects.yaml
+projects.docker.yaml
+.github/
+specs/

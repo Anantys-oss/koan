@@ -82,10 +82,13 @@ def _write_config(tmp_path, config=None, registry=None):
 
 @pytest.fixture
 def router_env(tmp_path, monkeypatch):
-    """Set up isolated KOAN_ROOT and write default config files."""
+    """Set up isolated KOAN_ROOT/INSTANCE_DIR and write default config files."""
     _write_config(tmp_path)
+    instance_dir = tmp_path / "instance"
     monkeypatch.setattr(utils_mod, "KOAN_ROOT", tmp_path)
+    monkeypatch.setattr(utils_mod, "INSTANCE_DIR", instance_dir)
     monkeypatch.setattr(router_mod, "KOAN_ROOT", tmp_path)
+    monkeypatch.setattr(router_mod, "INSTANCE_DIR", instance_dir)
     reset_router()
     yield tmp_path
     reset_router()

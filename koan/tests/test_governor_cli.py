@@ -79,10 +79,10 @@ class TestSkillMap:
         for cmd in expected:
             assert cmd in SKILL_MAP, f"Missing command: {cmd}"
 
-    def test_budget_prepends_command(self):
+    def test_budget_no_prepend(self):
         from app.governor_cli import SKILL_MAP
         _, prepend = SKILL_MAP["budget"]
-        assert prepend is True
+        assert prepend is False
 
     def test_watcher_no_prepend(self):
         from app.governor_cli import SKILL_MAP

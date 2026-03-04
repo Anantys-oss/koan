@@ -9,11 +9,10 @@ from pathlib import Path
 
 import yaml
 
-from app.utils import load_config, KOAN_ROOT, atomic_write
+from app.utils import load_config, KOAN_ROOT, INSTANCE_DIR, atomic_write
 
 logger = logging.getLogger("advisor.helpers")
 
-INSTANCE_DIR = KOAN_ROOT / "instance"
 ADVISOR_DIR = INSTANCE_DIR / "advisor"
 
 # ── Constants ────────────────────────────────────────────────────────

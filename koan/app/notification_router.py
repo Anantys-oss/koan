@@ -18,7 +18,7 @@ from typing import Dict, List, Optional
 
 import yaml
 
-from app.utils import KOAN_ROOT, load_config, atomic_write
+from app.utils import KOAN_ROOT, INSTANCE_DIR, load_config, atomic_write
 
 logger = logging.getLogger("governor.notification_router")
 
@@ -47,7 +47,7 @@ class NotificationRouter:
             self._groups = rollout.get("groups", {})
             self._autonomy = governor.get("autonomy", {})
 
-            registry_path = KOAN_ROOT / "instance" / "watcher" / "user_registry.yaml"
+            registry_path = INSTANCE_DIR / "watcher" / "user_registry.yaml"
             if registry_path.exists():
                 with open(registry_path) as f:
                     data = yaml.safe_load(f) or {}
@@ -170,7 +170,7 @@ class NotificationRouter:
         autonomy[module] = level
 
         import yaml
-        config_path = KOAN_ROOT / "instance" / "config.yaml"
+        config_path = INSTANCE_DIR / "config.yaml"
         content = yaml.dump(config, default_flow_style=False, allow_unicode=True, sort_keys=False)
         atomic_write(config_path, content)
 
@@ -218,7 +218,7 @@ class NotificationRouter:
     def _save_config(self, config: dict):
         """Save the full config.yaml."""
         import yaml
-        config_path = KOAN_ROOT / "instance" / "config.yaml"
+        config_path = INSTANCE_DIR / "config.yaml"
         content = yaml.dump(config, default_flow_style=False, allow_unicode=True, sort_keys=False)
         atomic_write(config_path, content)
 

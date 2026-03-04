@@ -1,0 +1,52 @@
+# AI Governor — Cloud Run Worker Pool Image
+#
+# Optimized for Cloud Run: Python runtime only (no Node.js, Claude CLI, GitHub CLI).
+# Runs chat_receiver (Pub/Sub subscriber) + Flask health endpoint via supervisord.
+#
+# Build:  gcloud builds submit --tag REGION-docker.pkg.dev/PROJECT/REPO/ai-governor
+# Or:     docker build -f deploy/Dockerfile.cloud -t ai-governor-cloud .
+
+FROM python:3.12-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+# curl is kept for local testing: docker run -p 8080:8080 ... && curl localhost:8080/health
+
+WORKDIR /app
+
+# Python dependencies
+COPY koan/requirements.txt /app/koan/requirements.txt
+RUN pip install --no-cache-dir -r /app/koan/requirements.txt \
+    && pip install --no-cache-dir \
+       supervisor \
+       google-cloud-pubsub>=2.21.0 \
+       google-auth>=2.29.0 \
+       google-api-python-client>=2.130.0 \
+       google-apps-chat>=0.1.0 \
+       numpy>=1.26.0
+
+# Application code
+COPY koan/ /app/koan/
+
+# Skills handlers (from instance/skills/ — needed for command dispatch)
+COPY instance/skills/ /app/instance/skills/
+
+# Supervisord config for Cloud Run
+COPY deploy/supervisord-cloud.conf /etc/supervisord.conf
+
+# Data directory (GCS FUSE mount point in Cloud Run)
+RUN mkdir -p /data /app/logs
+
+ENV KOAN_ROOT=/app
+ENV PYTHONPATH=/app/koan
+ENV INSTANCE_DATA_DIR=/data
+ENV PORT=8080
+
+EXPOSE 8080
+
+# Note: Cloud Run ignores Docker HEALTHCHECK — it uses its own probes.
+# This is only useful for local docker run testing.
+
+# Supervisord launches both chat_receiver and Flask health server
+CMD ["supervisord", "-c", "/etc/supervisord.conf"]

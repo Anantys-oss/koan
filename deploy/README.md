@@ -1,4 +1,73 @@
-# Déploiement AI Governor — Mac Mini
+# Déploiement AI Governor
+
+## Cloud Run (Production)
+
+### Prérequis
+
+- `gcloud` CLI installé et authentifié (`gcloud auth login`)
+- Projet GCP `yourart-governor` avec droits admin
+- Secrets API (Anthropic, Voyage, LiteLLM, etc.) dans un fichier `.env`
+
+### Premier déploiement
+
+```bash
+# 1. Migrer les secrets vers Secret Manager
+./deploy/cloud-deploy.sh secrets
+
+# 2. Créer l'infrastructure (Cloud SQL, bucket GCS, IAM)
+./deploy/cloud-deploy.sh infra
+
+# 3. Déployer tous les services
+./deploy/cloud-deploy.sh all
+
+# 4. Vérifier
+./deploy/cloud-deploy.sh status
+```
+
+### Mise à jour
+
+```bash
+# Après modification du code — redéploie le Worker Pool
+./deploy/cloud-deploy.sh receiver
+
+# Ou redéployer tout
+./deploy/cloud-deploy.sh all
+```
+
+### Dry-run (prévisualisation)
+
+```bash
+./deploy/cloud-deploy.sh receiver --dry-run
+```
+
+### Logs et monitoring
+
+```bash
+# Logs en temps réel
+gcloud run worker-pools logs read ai-governor-receiver --region=europe-west1 --tail=50
+
+# Statut des services
+./deploy/cloud-deploy.sh status
+```
+
+### Rollback
+
+```bash
+# Lister les révisions
+gcloud run worker-pools revisions list --worker-pool=ai-governor-receiver --region=europe-west1
+
+# Revenir à une révision précédente
+gcloud run worker-pools update-traffic ai-governor-receiver \
+  --to-revisions=REVISION_NAME=100 --region=europe-west1
+```
+
+### Coûts
+
+~48-53$/mois (≈45-50€) : Worker Pool always-on (~$35-40), LiteLLM scale-to-zero (~$1), Cloud SQL micro (~$12), GCS (~$0.05).
+
+---
+
+## Mac Mini (Legacy/Dev)
 
 ## Prérequis
 

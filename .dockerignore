@@ -1,5 +1,7 @@
 # Runtime state (user-specific, mounted at runtime)
 instance/
+# Exception: skills handlers are needed in the Docker image for command dispatch
+!instance/skills/
 .koan*
 .last-review-sha
 .coverage

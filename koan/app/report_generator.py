@@ -11,11 +11,9 @@ from pathlib import Path
 
 import yaml
 
-from app.utils import KOAN_ROOT, load_config
+from app.utils import KOAN_ROOT, INSTANCE_DIR, load_config
 
 logger = logging.getLogger("governor.report")
-
-INSTANCE_DIR = KOAN_ROOT / "instance"
 
 
 def generate_report(period_start: date, period_end: date) -> dict:

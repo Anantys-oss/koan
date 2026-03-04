@@ -19,10 +19,8 @@ from typing import Optional
 
 import yaml
 
-from app.utils import KOAN_ROOT, load_config
+from app.utils import KOAN_ROOT, INSTANCE_DIR, load_config
 from app.watcher.normalizer import WatcherEvent, generate_event_id
-
-INSTANCE_DIR = KOAN_ROOT / "instance"
 SCENARIOS_FILE = INSTANCE_DIR / "simulate" / "scenarios.yaml"
 
 
@@ -214,6 +212,120 @@ def simulate_replay(date_str: str, dry_run: bool = False) -> str:
     return "\n".join(lines)
 
 
+# ── Demo scenarios (spec 009) ──────────────────────────────────────
+
+DEMO_SCENARIOS = [
+    {
+        "name": "Citizen newsletter template",
+        "event_template": {
+            "type": "push", "platform": "github",
+            "repo": "emailfactory",
+            "author": "dany-yourart", "author_type": "citizen",
+            "author_name": "Dany",
+            "summary": "feat: template newsletter avec personnalisation dynamique des variables",
+            "branch": "main", "commits_count": 1,
+        },
+    },
+    {
+        "name": "Citizen ticket classification",
+        "event_template": {
+            "type": "push", "platform": "github",
+            "repo": "Tickets",
+            "author": "benoitboutoille", "author_type": "citizen",
+            "author_name": "Benoit",
+            "summary": "feat: classification automatique des tickets avec embeddings voyage-3",
+            "branch": "main", "commits_count": 1,
+        },
+    },
+    {
+        "name": "Credential leak detection",
+        "event_template": {
+            "type": "push", "platform": "github",
+            "repo": "fetching",
+            "author": "art236", "author_type": "citizen",
+            "author_name": "Art236",
+            "summary": "fix: ajout config Railway — sk-proj-abc123def456 dans .env",
+            "branch": "main", "commits_count": 1,
+        },
+    },
+    {
+        "name": "Tech PR merged",
+        "event_template": {
+            "type": "push", "platform": "github",
+            "repo": "emailfactory",
+            "author": "JBocage", "author_type": "tech",
+            "author_name": "Jean-Baptiste",
+            "summary": "PR merged: fix retry SMTP avec backoff exponentiel",
+            "branch": "main", "commits_count": 3,
+        },
+    },
+    {
+        "name": "Citizen taste vectors B2B",
+        "event_template": {
+            "type": "push", "platform": "github",
+            "repo": "artmajeur-personalization",
+            "author": "DPGYA", "author_type": "citizen",
+            "author_name": "DPGYA",
+            "summary": "feat: taste vectors B2B avec BigQuery pipeline batch quotidien",
+            "branch": "main", "commits_count": 1,
+        },
+    },
+    {
+        "name": "New repo created",
+        "event_template": {
+            "type": "repo", "platform": "github",
+            "repo": "artmajeur-chatbot",
+            "author": "paolalevy", "author_type": "citizen",
+            "author_name": "Paola",
+            "summary": "created repository artmajeur-chatbot",
+            "branch": "main", "commits_count": 0,
+        },
+    },
+]
+
+
+def simulate_demo(dry_run: bool = False, notify: bool = False) -> str:
+    """Run the full demo: 6 scenarios + daily report.
+
+    Injects each scenario into the pipeline sequentially, then generates
+    the daily report.
+    """
+    lines = [
+        f"{'[DRY RUN] ' if dry_run else ''}Démo E2E — 6 scénarios + rapport journalier",
+        "",
+    ]
+
+    for i, scenario in enumerate(DEMO_SCENARIOS, 1):
+        template = dict(scenario["event_template"])
+        event = build_event("__demo__", template)
+
+        lines.append(f"── Scénario {i}/6 : {scenario['name']} ──")
+        result = inject_event(event, dry_run=dry_run)
+        lines.append(result)
+        lines.append("")
+
+    lines.append("── Rapport journalier ──")
+    try:
+        from app.governor_daily_report import send_daily_report, generate_daily_report
+        if dry_run:
+            narrative = generate_daily_report()
+            lines.append(narrative)
+        else:
+            narrative = send_daily_report(notify=notify)
+            lines.append(narrative)
+            if notify:
+                lines.append("→ Rapport envoyé sur Google Chat")
+    except ImportError:
+        lines.append("Module governor_daily_report non disponible.")
+    except Exception as e:
+        lines.append(f"Erreur rapport : {e}")
+
+    lines.append("")
+    lines.append(f"Démo terminée — {len(DEMO_SCENARIOS)} scénarios traités.")
+
+    return "\n".join(lines)
+
+
 # ── CLI entry point ─────────────────────────────────────────────────
 
 def handle_simulate(action: str, extra_args: str, flags) -> int:
@@ -228,7 +340,8 @@ def handle_simulate(action: str, extra_args: str, flags) -> int:
             "Actions:\n"
             "  commit       Simuler un commit citizen\n"
             "  credential   Simuler une détection de credential\n"
-            "  replay       Rejouer les événements d'une date\n\n"
+            "  replay       Rejouer les événements d'une date\n"
+            "  demo         Démo E2E : 6 scénarios + rapport journalier\n\n"
             "Options commit:\n"
             "  --author <login>    Login GitHub de l'auteur simulé (requis)\n"
             "  --repo <repo>       Nom du repo (requis)\n"
@@ -292,8 +405,11 @@ def handle_simulate(action: str, extra_args: str, flags) -> int:
             return 1
         result = simulate_replay(date, dry_run=dry_run)
 
+    elif action == "demo":
+        result = simulate_demo(dry_run=dry_run, notify=flags.notify)
+
     else:
-        print(f"Action inconnue : '{action}'. Actions : commit, credential, replay")
+        print(f"Action inconnue : '{action}'. Actions : commit, credential, replay, demo")
         return 1
 
     # Output

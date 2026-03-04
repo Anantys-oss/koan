@@ -476,6 +476,123 @@ def api_status():
 
 
 # ---------------------------------------------------------------------------
+# Governor Dashboard (spec 009)
+# ---------------------------------------------------------------------------
+
+@app.route("/governor/help")
+def governor_help_page():
+    """Governor command help — full reference for all CLI commands."""
+    from app.governor_cli import HELP_COMMANDS, VERSION
+
+    # Build template-friendly data from HELP_COMMANDS
+    commands = []
+    # Ordered by category
+    order = [
+        "watcher", "advisor", "scan",
+        "status", "report",
+        "budget", "keys",
+        "vault", "env",
+        "autonomy", "rollout", "offboard",
+        "simulate", "tunnel",
+    ]
+    for name in order:
+        info = HELP_COMMANDS.get(name)
+        if not info:
+            continue
+        search_parts = [name, info["desc"], info["usage"]]
+        for a_name, a_desc in info["actions"].items():
+            search_parts.extend([a_name, a_desc])
+        for ex in info.get("examples", []):
+            search_parts.append(ex)
+        commands.append({
+            "name": name,
+            "desc": info["desc"],
+            "usage": info["usage"],
+            "actions": list(info["actions"].items()),
+            "flags": info.get("flags", {}),
+            "examples": info.get("examples", []),
+            "search_text": " ".join(search_parts).lower(),
+        })
+
+    return render_template("help_commands.html", commands=commands, version=VERSION)
+
+
+@app.route("/governor")
+def governor_page():
+    """Governor dashboard — CEO overview with feed, actions, health."""
+    # Health check
+    health = {}
+    try:
+        from app.health import get_health_report
+        health = get_health_report()
+    except (ImportError, Exception):
+        health = {"status": "unknown"}
+
+    # Recent events from watcher journal
+    events = []
+    try:
+        from app.watcher.journal import read_events
+        events = read_events(INSTANCE_DIR, days=7, limit=20)
+    except (ImportError, Exception):
+        pass
+
+    return render_template("governor.html", health=health, events=events)
+
+
+@app.route("/api/governor/events")
+def api_governor_events():
+    """JSON feed of recent governor events."""
+    limit = request.args.get("limit", 20, type=int)
+    try:
+        from app.watcher.journal import read_events
+        events = read_events(INSTANCE_DIR, days=7, limit=limit)
+        return jsonify({"ok": True, "events": events, "count": len(events)})
+    except (ImportError, Exception) as e:
+        return jsonify({"ok": False, "error": str(e), "events": []})
+
+
+@app.route("/api/governor/action", methods=["POST"])
+def api_governor_action():
+    """Execute a governor action and return the result."""
+    data = request.get_json(silent=True) or {}
+    action = data.get("action", "")
+
+    action_map = {
+        "report_daily": ("report", "daily --notify"),
+        "simulate_demo": None,  # handled separately
+        "status": ("status", ""),
+        "advisor_scan": ("advisor", "scan"),
+    }
+
+    if action == "simulate_demo":
+        try:
+            from app.simulator import simulate_demo
+            result = simulate_demo(dry_run=False, notify=True)
+            return jsonify({"ok": True, "action": action, "result": result})
+        except Exception as e:
+            return jsonify({"ok": False, "action": action, "error": str(e)})
+
+    if action not in action_map or action_map[action] is None:
+        return jsonify({"ok": False, "error": f"Action inconnue: {action}"})
+
+    command, args = action_map[action]
+
+    try:
+        from app.governor_cli import dispatch_skill
+        import argparse
+        flags = argparse.Namespace(
+            output_json=False, notify=True, dry_run=False, verbose=False
+        )
+        parts = args.split(None, 1) if args else ["", ""]
+        skill_action = parts[0] if parts else ""
+        extra = parts[1] if len(parts) > 1 else ""
+        exit_code, result = dispatch_skill(command, skill_action, extra, flags)
+        return jsonify({"ok": exit_code == 0, "action": action, "result": result})
+    except Exception as e:
+        return jsonify({"ok": False, "action": action, "error": str(e)})
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 

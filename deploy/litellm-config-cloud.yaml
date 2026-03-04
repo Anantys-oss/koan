@@ -1,0 +1,66 @@
+# LiteLLM Proxy Configuration — AI Governor (Cloud Run)
+#
+# Adapté pour Cloud Run : les alertes budget vont directement
+# au webhook Google Chat (pas d'intermédiaire Koan).
+# Les clés API sont injectées via Secret Manager → env vars.
+#
+# Monté depuis GCS : gs://ai-governor-data/config/litellm-config.yaml
+
+model_list:
+  # --- Anthropic ---
+  - model_name: claude-opus
+    litellm_params:
+      model: anthropic/claude-sonnet-4-20250514
+      api_key: os.environ/ANTHROPIC_API_KEY
+  - model_name: claude-sonnet
+    litellm_params:
+      model: anthropic/claude-sonnet-4-20250514
+      api_key: os.environ/ANTHROPIC_API_KEY
+  - model_name: claude-haiku
+    litellm_params:
+      model: anthropic/claude-haiku-4-5-20251001
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  # --- OpenAI (requiert openai-api-key dans Secret Manager) ---
+  - model_name: gpt-4o
+    litellm_params:
+      model: openai/gpt-4o
+      api_key: os.environ/OPENAI_API_KEY
+  - model_name: gpt-4o-mini
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+
+  # --- Google Gemini (requiert google-api-key dans Secret Manager) ---
+  - model_name: gemini-flash
+    litellm_params:
+      model: gemini/gemini-2.0-flash
+      api_key: os.environ/GOOGLE_API_KEY
+  - model_name: gemini-pro
+    litellm_params:
+      model: gemini/gemini-2.5-pro-preview-06-05
+      api_key: os.environ/GOOGLE_API_KEY
+
+  # --- Voyage AI (embeddings) ---
+  - model_name: voyage-3
+    litellm_params:
+      model: voyage/voyage-3
+      api_key: os.environ/VOYAGE_API_KEY
+  - model_name: voyage-3-lite
+    litellm_params:
+      model: voyage/voyage-3-lite
+      api_key: os.environ/VOYAGE_API_KEY
+
+litellm_settings:
+  drop_params: true
+  set_verbose: false
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
+
+  # Alertes budget directement vers Google Chat (webhook compatible {"text": "..."})
+  alerting: ["webhook"]
+  alerting_args:
+    webhook_url: os.environ/GCHAT_WEBHOOK_URL
+    alert_types: ["budget_alerts"]

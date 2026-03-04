@@ -27,6 +27,7 @@ _instance_lock = threading.Lock()
 _PROVIDER_MODULES = [
     "app.messaging.telegram",
     "app.messaging.slack",
+    "app.messaging.googlechat",
 ]
 
 

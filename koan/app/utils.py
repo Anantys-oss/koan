@@ -33,6 +33,11 @@ if "KOAN_ROOT" not in os.environ:
     raise SystemExit("KOAN_ROOT environment variable is not set. Run via 'make run' or 'make awake'.")
 KOAN_ROOT = Path(os.environ["KOAN_ROOT"])
 
+# Instance data directory — configurable for Cloud Run (GCS FUSE mount at /data)
+# Local dev: defaults to KOAN_ROOT/instance
+# Cloud Run: set INSTANCE_DATA_DIR=/data
+INSTANCE_DIR = Path(os.environ["INSTANCE_DATA_DIR"]) if os.environ.get("INSTANCE_DATA_DIR") else KOAN_ROOT / "instance"
+
 # Pre-compiled regex for project tag extraction (accepts both [project:X] and [projet:X])
 _PROJECT_TAG_RE = re.compile(r'\[projec?t:([a-zA-Z0-9_-]+)\]')
 _PROJECT_TAG_STRIP_RE = re.compile(r'\[projec?t:[a-zA-Z0-9_-]+\]\s*')
@@ -66,7 +71,7 @@ def load_config() -> dict:
 
     Returns the full config dict, or empty dict if file doesn't exist.
     """
-    config_path = KOAN_ROOT / "instance" / "config.yaml"
+    config_path = INSTANCE_DIR / "config.yaml"
     if not config_path.exists():
         return {}
     try:

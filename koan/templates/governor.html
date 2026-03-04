@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+{% block title %}Kōan — AI Governor{% endblock %}
+{% block content %}
+<h1>AI Governor</h1>
+
+<!-- Health status -->
+<h2>État des lieux</h2>
+<div class="grid">
+    <div class="card">
+        <div class="stat-label">Status global</div>
+        <div class="stat-value" style="font-size:1.3rem;">
+            {% if health.get('status') == 'healthy' %}
+                <span class="badge badge-green">Healthy</span>
+            {% elif health.get('status') == 'degraded' %}
+                <span class="badge badge-orange">Degraded</span>
+            {% else %}
+                <span class="badge badge-muted">{{ health.get('status', 'unknown') }}</span>
+            {% endif %}
+        </div>
+    </div>
+    <div class="card">
+        <div class="stat-label">Événements (7j)</div>
+        <div class="stat-value">{{ events|length }}</div>
+    </div>
+</div>
+
+<!-- Quick actions -->
+<h2>Actions rapides</h2>
+<div class="card" style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+    <button onclick="runAction('report_daily')">Rapport du jour</button>
+    <button onclick="runAction('simulate_demo')" class="btn-secondary">Lancer démo</button>
+    <button onclick="runAction('status')" class="btn-secondary">État des lieux</button>
+    <button onclick="runAction('advisor_scan')" class="btn-secondary">Scan repos</button>
+</div>
+
+<!-- Action result -->
+<div id="action-result" class="card" style="display:none;margin-top:1rem;">
+    <div class="stat-label">Résultat</div>
+    <pre id="action-output"></pre>
+</div>
+
+<!-- Event feed -->
+<h2>Feed événements</h2>
+<div id="events-feed">
+{% if events %}
+    {% for evt in events %}
+    <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+            <div>
+                {% if evt.get('author_type') == 'citizen' %}
+                    <span class="badge badge-blue">citizen</span>
+                {% elif evt.get('author_type') == 'tech' %}
+                    <span class="badge badge-green">tech</span>
+                {% else %}
+                    <span class="badge badge-muted">{{ evt.get('author_type', '?') }}</span>
+                {% endif %}
+                <strong>{{ evt.get('author', '?') }}</strong>
+                sur <strong>{{ evt.get('repo', '?') }}</strong>
+            </div>
+            <span style="color:var(--text-muted);font-size:0.8rem;">
+                {{ evt.get('timestamp', '')[:16] }}
+            </span>
+        </div>
+        <div style="margin-top:0.5rem;font-family:var(--mono);font-size:0.82rem;color:var(--text-muted);">
+            {{ evt.get('summary', '')[:200] }}
+        </div>
+    </div>
+    {% endfor %}
+{% else %}
+    <div class="card">
+        <div style="color:var(--text-muted);">Aucun événement récent.</div>
+    </div>
+{% endif %}
+</div>
+
+<script>
+function runAction(action) {
+    const resultDiv = document.getElementById('action-result');
+    const output = document.getElementById('action-output');
+    resultDiv.style.display = 'block';
+    output.textContent = 'Exécution en cours...';
+    output.classList.add('loading');
+
+    fetch('/api/governor/action', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({action: action})
+    })
+    .then(r => r.json())
+    .then(data => {
+        output.classList.remove('loading');
+        if (data.ok) {
+            output.textContent = data.result || 'OK';
+        } else {
+            output.textContent = 'Erreur: ' + (data.error || 'inconnue');
+        }
+    })
+    .catch(err => {
+        output.classList.remove('loading');
+        output.textContent = 'Erreur réseau: ' + err.message;
+    });
+}
+
+// Auto-refresh events every 30s (paused when tab is hidden)
+setInterval(() => {
+    if (document.hidden) return;
+    fetch('/api/governor/events')
+        .then(r => r.json())
+        .then(data => {
+            if (!data.ok || !data.events) return;
+            const feed = document.getElementById('events-feed');
+            if (data.events.length === 0) {
+                feed.innerHTML = '<div class="card"><div style="color:var(--text-muted);">Aucun événement récent.</div></div>';
+                return;
+            }
+            let html = '';
+            data.events.forEach(evt => {
+                const typeClass = evt.author_type === 'citizen' ? 'badge-blue' :
+                                  evt.author_type === 'tech' ? 'badge-green' : 'badge-muted';
+                html += `<div class="card">
+                    <div style="display:flex;justify-content:space-between;align-items:center;">
+                        <div>
+                            <span class="badge ${typeClass}">${evt.author_type || '?'}</span>
+                            <strong>${evt.author || '?'}</strong>
+                            sur <strong>${evt.repo || '?'}</strong>
+                        </div>
+                        <span style="color:var(--text-muted);font-size:0.8rem;">
+                            ${(evt.timestamp || '').substring(0, 16)}
+                        </span>
+                    </div>
+                    <div style="margin-top:0.5rem;font-family:var(--mono);font-size:0.82rem;color:var(--text-muted);">
+                        ${(evt.summary || '').substring(0, 200)}
+                    </div>
+                </div>`;
+            });
+            feed.innerHTML = html;
+        })
+        .catch(() => {});
+}, 30000);
+</script>
+{% endblock %}

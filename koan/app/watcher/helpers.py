@@ -6,11 +6,9 @@ from pathlib import Path
 
 import yaml
 
-from app.utils import load_config, KOAN_ROOT, append_to_outbox, atomic_write
+from app.utils import load_config, KOAN_ROOT, INSTANCE_DIR, append_to_outbox, atomic_write
 
 logger = logging.getLogger("watcher.helpers")
-
-INSTANCE_DIR = KOAN_ROOT / "instance"
 
 
 def save_yaml(path: Path, data: dict) -> None:
@@ -245,11 +243,16 @@ def check_and_notify(instance_dir: Path, event) -> None:
         except ImportError:
             pass
 
+    # Load config once for both hooks
+    try:
+        config = load_config()
+    except Exception:
+        config = {}
+
     # Advisor hook: analyze citizen commits for duplications
     if event.author_type == "citizen" and event.type == "push":
         try:
-            from app.utils import load_config
-            advisor_config = load_config().get("advisor", {})
+            advisor_config = config.get("advisor", {})
             if advisor_config.get("enabled") and advisor_config.get("scan_on_event"):
                 from app.advisor.analyzer import analyze_commit
                 event_dict = {
@@ -269,7 +272,6 @@ def check_and_notify(instance_dir: Path, event) -> None:
         except ImportError:
             pass
         except Exception as e:
-            # Handle circuit breaker errors gracefully
             _cb_error = False
             try:
                 from pybreaker import CircuitBreakerError
@@ -280,6 +282,17 @@ def check_and_notify(instance_dir: Path, event) -> None:
                 logger.warning("Advisor analysis skipped (circuit breaker open): %s", e)
             else:
                 logger.warning("Advisor analysis failed for event: %s", e)
+
+    # Smart notification hook (spec 009)
+    try:
+        smart_config = config.get("smart_notifications", {})
+        if smart_config.get("enabled"):
+            from app.commit_analyzer import analyze_and_notify
+            analyze_and_notify(event, smart_config)
+    except ImportError:
+        pass
+    except Exception as e:
+        logger.warning("Smart notification error: %s", e)
 
 
 _CREDENTIAL_PATTERNS = [p.lower() for p in [
