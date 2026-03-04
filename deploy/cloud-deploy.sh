@@ -9,6 +9,7 @@
 #   receiver  Deploy the AI Governor Worker Pool
 #   litellm   Deploy the LiteLLM proxy service
 #   all       Deploy everything (infra + receiver + litellm)
+#   scheduler Create Cloud Scheduler job for daily report
 #   status    Show status of all services
 #
 # Options:
@@ -323,6 +324,7 @@ cmd_receiver() {
         --update-secrets="GITHUB_WEBHOOK_SECRET=github-webhook-secret:latest" \
         --update-secrets="VOYAGE_API_KEY=voyage-api-key:latest" \
         --update-secrets="LITELLM_MASTER_KEY=litellm-master-key:latest" \
+        --update-secrets="GITLAB_TOKEN=gitlab-token:latest" \
         --update-secrets="/etc/secrets/chat-sa-key.json=chat-sa-key:latest" \
         --set-env-vars="KOAN_ROOT=/app,PYTHONPATH=/app/koan,GOOGLE_APPLICATION_CREDENTIALS=/etc/secrets/chat-sa-key.json,INSTANCE_DATA_DIR=/data,GCP_PROJECT_ID=${PROJECT}" \
         --no-allow-unauthenticated \
@@ -366,6 +368,62 @@ cmd_litellm() {
         --no-allow-unauthenticated
 
     ok "LiteLLM proxy ${LITELLM_SERVICE} deployed"
+}
+
+# ── Cloud Scheduler ──────────────────────────────────────────────────
+cmd_scheduler() {
+    check_prerequisites
+    info "Creating Cloud Scheduler job for daily report..."
+
+    local receiver_url
+    if [ "$DRY_RUN" = true ]; then
+        receiver_url="https://${WORKER_POOL}-467408632724.${REGION}.run.app"
+    else
+        receiver_url=$(gcloud run services describe "$WORKER_POOL" \
+            --region="$REGION" --project="$PROJECT" \
+            --format='value(status.url)' 2>/dev/null)
+        if [ -z "$receiver_url" ]; then
+            error "Cannot find receiver URL. Deploy receiver first."
+            exit 1
+        fi
+    fi
+
+    # Grant run.invoker to the service account on the receiver
+    info "Granting run.invoker to ${SERVICE_ACCOUNT}..."
+    run_cmd gcloud run services add-iam-policy-binding "$WORKER_POOL" \
+        --region="$REGION" \
+        --project="$PROJECT" \
+        --member="serviceAccount:${SERVICE_ACCOUNT}" \
+        --role="roles/run.invoker" \
+        --quiet
+
+    # Create or update the scheduler job
+    local job_name="daily-report-trigger"
+    if gcloud scheduler jobs describe "$job_name" --location="$REGION" --project="$PROJECT" &>/dev/null; then
+        info "Job ${job_name} exists, updating..."
+        run_cmd gcloud scheduler jobs update http "$job_name" \
+            --location="$REGION" \
+            --project="$PROJECT" \
+            --schedule="0 8 * * *" \
+            --time-zone="Europe/Paris" \
+            --uri="${receiver_url}/api/trigger-report" \
+            --http-method=POST \
+            --oidc-service-account-email="$SERVICE_ACCOUNT" \
+            --oidc-token-audience="$receiver_url"
+    else
+        info "Creating job ${job_name}..."
+        run_cmd gcloud scheduler jobs create http "$job_name" \
+            --location="$REGION" \
+            --project="$PROJECT" \
+            --schedule="0 8 * * *" \
+            --time-zone="Europe/Paris" \
+            --uri="${receiver_url}/api/trigger-report" \
+            --http-method=POST \
+            --oidc-service-account-email="$SERVICE_ACCOUNT" \
+            --oidc-token-audience="$receiver_url"
+    fi
+
+    ok "Cloud Scheduler job '${job_name}' configured (daily at 8:00 CET)"
 }
 
 # ── Deploy All ───────────────────────────────────────────────────────
@@ -448,7 +506,7 @@ COMMAND=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        infra|secrets|receiver|litellm|all|status)
+        infra|secrets|receiver|litellm|all|scheduler|status)
             COMMAND="$1"
             shift
             ;;
@@ -483,7 +541,7 @@ done
 
 if [ -z "$COMMAND" ]; then
     error "No command specified"
-    echo "Usage: $0 <infra|secrets|receiver|litellm|all|status> [options]"
+    echo "Usage: $0 <infra|secrets|receiver|litellm|all|scheduler|status> [options]"
     echo ""
     echo "Commands:"
     echo "  infra     Create GCP infrastructure (Cloud SQL, GCS bucket, IAM)"
@@ -491,6 +549,7 @@ if [ -z "$COMMAND" ]; then
     echo "  receiver  Deploy the AI Governor Worker Pool"
     echo "  litellm   Deploy the LiteLLM proxy service"
     echo "  all       Deploy everything (infra + receiver + litellm)"
+    echo "  scheduler Create Cloud Scheduler job for daily report"
     echo "  status    Show status of all services"
     echo ""
     echo "Options:"
@@ -507,6 +566,7 @@ case "$COMMAND" in
     secrets) cmd_secrets ;;
     receiver) cmd_receiver ;;
     litellm) cmd_litellm ;;
-    all)     cmd_all ;;
-    status)  cmd_status ;;
+    all)       cmd_all ;;
+    scheduler) cmd_scheduler ;;
+    status)    cmd_status ;;
 esac
