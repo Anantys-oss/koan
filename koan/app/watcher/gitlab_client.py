@@ -44,6 +44,7 @@ class GitLabClient:
         default_branch, web_url.
         """
         try:
+            logger.info("Listing projects for group '%s'...", self._group)
             group = self._gl.groups.get(self._group)
             projects = group.projects.list(
                 order_by="last_activity_at",
@@ -51,6 +52,7 @@ class GitLabClient:
                 per_page=100,
                 get_all=True,
             )
+            logger.info("Found %d projects in group '%s'", len(projects), self._group)
             return [
                 {
                     "id": p.id,
@@ -63,7 +65,10 @@ class GitLabClient:
                 for p in projects
             ]
         except gitlab.exceptions.GitlabError as e:
-            logger.error("Failed to list group projects: %s", e)
+            logger.error("Failed to list group projects for '%s': %s (type: %s)", self._group, e, type(e).__name__)
+            return []
+        except Exception as e:
+            logger.error("Unexpected error listing group projects: %s (type: %s)", e, type(e).__name__)
             return []
 
     def get_recent_commits(self, project_id: int, since: str | None = None,

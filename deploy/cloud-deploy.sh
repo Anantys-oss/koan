@@ -327,7 +327,7 @@ cmd_receiver() {
         --update-secrets="GITLAB_TOKEN=gitlab-token:latest" \
         --update-secrets="/etc/secrets/chat-sa-key.json=chat-sa-key:latest" \
         --set-env-vars="KOAN_ROOT=/app,PYTHONPATH=/app/koan,GOOGLE_APPLICATION_CREDENTIALS=/etc/secrets/chat-sa-key.json,INSTANCE_DATA_DIR=/data,GCP_PROJECT_ID=${PROJECT}" \
-        --no-allow-unauthenticated \
+        --no-cpu-throttling \
         --tag="$TAG"
 
     ok "Service ${WORKER_POOL} deployed"

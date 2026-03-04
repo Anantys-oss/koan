@@ -384,6 +384,50 @@ def index_repo_files(repo_id: str, files: list[dict], config: dict) -> int:
     return count
 
 
+# ── Progress tracking ────────────────────────────────────────────────
+
+_scan_progress: dict = {}
+_scan_notify_fn = None
+
+
+def set_scan_notify_fn(fn):
+    """Set a callback function for scan progress notifications."""
+    global _scan_notify_fn
+    _scan_notify_fn = fn
+
+
+def get_scan_progress() -> dict:
+    """Return current scan progress (thread-safe read)."""
+    return dict(_scan_progress)
+
+
+def _progress_bar(percent: int, width: int = 20) -> str:
+    filled = int(width * percent / 100)
+    return "[" + "█" * filled + "░" * (width - filled) + "]"
+
+
+def _update_progress(total: int, scanned: int, current_repo: str,
+                     files_indexed: int, status: str = "running") -> None:
+    """Update scan progress (called during scan loop)."""
+    pct = round(scanned / total * 100) if total else 0
+    _scan_progress.update({
+        "status": status,
+        "total_repos": total,
+        "repos_scanned": scanned,
+        "current_repo": current_repo,
+        "files_indexed": files_indexed,
+        "percent": pct,
+    })
+    # Send Google Chat progress notification every 10 repos
+    if _scan_notify_fn and scanned > 0 and scanned % 10 == 0 and status == "running":
+        bar = _progress_bar(pct)
+        msg = f"{bar} {pct}% — {scanned}/{total} repos (en cours: {current_repo})"
+        try:
+            _scan_notify_fn(msg)
+        except Exception:
+            pass
+
+
 def run_full_scan(config: dict) -> dict:
     """Full scan of all repos (GitHub + GitLab).
 
@@ -397,7 +441,12 @@ def run_full_scan(config: dict) -> dict:
     index_entries = load_repo_index()
     index_by_id = {e["id"]: e for e in index_entries}
 
+    _update_progress(len(repos), 0, "", 0, "running")
+
     for repo_info in repos:
+        repo_name = repo_info.get("name", "?")
+        _update_progress(len(repos), stats["repos_scanned"], repo_name,
+                         stats["files_indexed"])
         try:
             prefetched, code_files = _prefetch_repo(repo_info, config)
             entry = index_repo(repo_info, config, prefetched=prefetched)
@@ -410,10 +459,16 @@ def run_full_scan(config: dict) -> dict:
 
             stats["repos_scanned"] += 1
         except Exception as e:
-            logger.error("Error scanning repo %s: %s", repo_info.get("name"), e)
+            logger.error("Error scanning repo %s: %s", repo_name, e)
+            stats["repos_scanned"] += 1
+
+        # Save index periodically (every 10 repos) to avoid losing work
+        if stats["repos_scanned"] % 10 == 0:
+            save_repo_index(list(index_by_id.values()))
 
     save_repo_index(list(index_by_id.values()))
     stats["duration_s"] = round(time.time() - start, 1)
+    _update_progress(len(repos), stats["repos_scanned"], "", stats["files_indexed"], "done")
     logger.info("Full scan: %d repos, %d files in %.1fs",
                 stats["repos_scanned"], stats["files_indexed"], stats["duration_s"])
     return stats
@@ -432,6 +487,7 @@ def run_incremental_scan(config: dict) -> dict:
     index_entries = load_repo_index()
     index_by_id = {e["id"]: e for e in index_entries}
 
+    to_scan = []
     for repo_info in repos:
         platform = repo_info.get("platform", PLATFORM_GITHUB)
         repo_name = repo_info.get("name", "")
@@ -443,7 +499,14 @@ def run_incremental_scan(config: dict) -> dict:
             indexed_at = existing.get("indexed_at", "")
             if last_activity and indexed_at and last_activity <= indexed_at:
                 continue
+        to_scan.append(repo_info)
 
+    _update_progress(len(to_scan), 0, "", 0, "running")
+
+    for repo_info in to_scan:
+        repo_name = repo_info.get("name", "?")
+        _update_progress(len(to_scan), stats["repos_scanned"], repo_name,
+                         stats["files_indexed"])
         try:
             prefetched, code_files = _prefetch_repo(repo_info, config)
             entry = index_repo(repo_info, config, prefetched=prefetched)
@@ -457,9 +520,11 @@ def run_incremental_scan(config: dict) -> dict:
             stats["repos_scanned"] += 1
         except Exception as e:
             logger.error("Error scanning repo %s: %s", repo_name, e)
+            stats["repos_scanned"] += 1
 
     save_repo_index(list(index_by_id.values()))
     stats["duration_s"] = round(time.time() - start, 1)
+    _update_progress(len(to_scan), stats["repos_scanned"], "", stats["files_indexed"], "done")
     logger.info("Incremental scan: %d repos, %d files in %.1fs",
                 stats["repos_scanned"], stats["files_indexed"], stats["duration_s"])
     return stats
@@ -480,13 +545,55 @@ def _get_watcher_config_cached() -> dict:
 
 
 def _get_all_repos() -> list[dict]:
-    """Load all known repos from watcher repos.yaml."""
+    """Load all known repos from watcher repos.yaml + discover GitLab repos.
+
+    Merges repos.yaml with live GitLab project list to ensure
+    cross-platform coverage (repos.yaml only tracks repos with commits).
+    """
     try:
-        from app.watcher.helpers import load_repos
-        return load_repos()
+        from app.watcher.helpers import load_repos, save_repos
+        repos = load_repos()
     except ImportError:
         logger.warning("Watcher module not available, no repos to scan")
         return []
+
+    # Discover GitLab repos not yet in repos.yaml
+    try:
+        watcher_cfg = _get_watcher_config_cached()
+        gitlab_cfg = watcher_cfg.get("gitlab", {})
+        if gitlab_cfg.get("group"):
+            from app.watcher.gitlab_client import GitLabClient
+            gl_client = GitLabClient.from_config(watcher_cfg)
+            projects = gl_client.list_group_projects()
+
+            existing_gitlab = {
+                r["name"] for r in repos if r.get("platform") == PLATFORM_GITLAB
+            }
+            added = 0
+            for project in projects:
+                if project["name"] not in existing_gitlab:
+                    repos.append({
+                        "name": project["name"],
+                        "platform": PLATFORM_GITLAB,
+                        "url": project["web_url"],
+                        "status": "active",
+                        "language": None,
+                        "last_activity": project.get("last_activity_at", ""),
+                        "contributors": [],
+                        "webhook_active": False,
+                        "id": project["id"],
+                    })
+                    added += 1
+
+            if added:
+                logger.info("Discovered %d new GitLab repos (total: %d)", added, len(repos))
+                save_repos(repos)
+    except (ImportError, ValueError) as e:
+        logger.warning("GitLab discovery skipped: %s", e)
+    except Exception as e:
+        logger.error("GitLab discovery error: %s", e)
+
+    return repos
 
 
 def _prefetch_repo(repo_info: dict, config: dict

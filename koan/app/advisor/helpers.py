@@ -134,6 +134,13 @@ def upsert_vec_embedding(conn: sqlite3.Connection, table: str,
 
 # ── LLM functions ───────────────────────────────────────────────────
 
+# Model name mapping: short names → Anthropic API model IDs
+_ANTHROPIC_MODEL_MAP = {
+    "claude-haiku": "claude-haiku-4-5-20251001",
+    "claude-sonnet": "claude-sonnet-4-6",
+}
+
+
 def _get_litellm_breaker():
     """Get the LiteLLM circuit breaker (or None if unavailable)."""
     try:
@@ -143,12 +150,75 @@ def _get_litellm_breaker():
         return None
 
 
-def summarize_with_llm(prompt: str, config: dict) -> str:
-    """Call the LLM (via LiteLLM proxy) to summarize content.
+def _call_anthropic_direct(prompt: str, model: str, max_tokens: int = 500,
+                           temperature: float = 0.2) -> str | None:
+    """Fallback: call Anthropic Messages API directly (bypasses LiteLLM).
 
-    Args:
-        prompt: complete prompt to send
-        config: advisor config section
+    Returns response text, or None if ANTHROPIC_API_KEY is not set or call fails.
+    """
+    import requests as req
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return None
+
+    resolved_model = _ANTHROPIC_MODEL_MAP.get(model, model)
+
+    try:
+        resp = req.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": resolved_model,
+                "max_tokens": max_tokens,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": temperature,
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data["content"][0]["text"].strip()
+    except Exception as e:
+        logger.error("Anthropic direct call failed: %s", e)
+        return None
+
+
+def _embed_voyage_direct(text: str, model: str) -> list[float] | None:
+    """Fallback: call Voyage API directly for embeddings (bypasses LiteLLM)."""
+    import requests as req
+
+    api_key = os.environ.get("VOYAGE_API_KEY", "")
+    if not api_key:
+        return None
+
+    try:
+        resp = req.post(
+            "https://api.voyageai.com/v1/embeddings",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": model,
+                "input": text[:8000],
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data["data"][0]["embedding"]
+    except Exception as e:
+        logger.error("Voyage direct embedding failed: %s", e)
+        return None
+
+
+def summarize_with_llm(prompt: str, config: dict) -> str:
+    """Call the LLM to summarize content. Tries LiteLLM, falls back to Anthropic direct.
 
     Returns:
         LLM response text, or empty string on failure
@@ -183,20 +253,20 @@ def summarize_with_llm(prompt: str, config: dict) -> str:
         try:
             from pybreaker import CircuitBreakerError
             if isinstance(e, CircuitBreakerError):
-                logger.warning("LiteLLM circuit breaker open, skipping summarization")
-                return ""
+                logger.warning("LiteLLM circuit breaker open, trying Anthropic direct")
+            else:
+                logger.warning("LiteLLM summarization failed (%s), trying Anthropic direct", e)
         except ImportError:
-            pass
-        logger.error("LLM summarization failed: %s", e)
+            logger.warning("LiteLLM summarization failed (%s), trying Anthropic direct", e)
+
+        result = _call_anthropic_direct(prompt, model)
+        if result:
+            return result
         return ""
 
 
 def call_llm_judge(prompt: str, config: dict) -> tuple[float, str]:
-    """Call the LLM judge (via LiteLLM proxy) and parse JSON response.
-
-    Args:
-        prompt: complete judge prompt
-        config: advisor config section
+    """Call the LLM judge. Tries LiteLLM, falls back to Anthropic direct.
 
     Returns:
         (confidence_score 0-1, explanation) or (0.0, "") on failure
@@ -207,6 +277,7 @@ def call_llm_judge(prompt: str, config: dict) -> tuple[float, str]:
     model = config.get("judge_model", "claude-sonnet-4-6")
     base_url, api_key = get_litellm_credentials()
 
+    content = None
     breaker = _get_litellm_breaker()
     try:
         call_fn = breaker.call if breaker else lambda fn, *a, **kw: fn(*a, **kw)
@@ -227,33 +298,36 @@ def call_llm_judge(prompt: str, config: dict) -> tuple[float, str]:
         )
         resp.raise_for_status()
         content = resp.json()["choices"][0]["message"]["content"].strip()
-
-        content = content.strip("`").strip()
-        if content.startswith("json"):
-            content = content[4:].strip()
-
-        result = json.loads(content)
-        score = float(result.get("confidence", 0.0))
-        explanation = result.get("explanation", "")
-        return score, explanation
     except Exception as e:
         try:
             from pybreaker import CircuitBreakerError
             if isinstance(e, CircuitBreakerError):
-                logger.warning("LiteLLM circuit breaker open, skipping judge")
-                return 0.0, ""
+                logger.warning("LiteLLM circuit breaker open, trying Anthropic direct for judge")
+            else:
+                logger.warning("LiteLLM judge failed (%s), trying Anthropic direct", e)
         except ImportError:
-            pass
-        logger.error("LLM judge failed: %s", e)
+            logger.warning("LiteLLM judge failed (%s), trying Anthropic direct", e)
+
+        content = _call_anthropic_direct(prompt, model, max_tokens=300, temperature=0.1)
+
+    if not content:
+        return 0.0, ""
+
+    try:
+        content = content.strip("`").strip()
+        if content.startswith("json"):
+            content = content[4:].strip()
+        result = json.loads(content)
+        score = float(result.get("confidence", 0.0))
+        explanation = result.get("explanation", "")
+        return score, explanation
+    except (json.JSONDecodeError, ValueError, KeyError) as e:
+        logger.error("LLM judge parse error: %s", e)
         return 0.0, ""
 
 
 def embed_text(text: str, config: dict) -> list[float]:
-    """Generate an embedding via LiteLLM proxy.
-
-    Args:
-        text: text to embed
-        config: advisor config section
+    """Generate an embedding. Tries LiteLLM, falls back to Voyage direct.
 
     Returns:
         embedding vector (list of floats), or empty list on failure
@@ -286,11 +360,15 @@ def embed_text(text: str, config: dict) -> list[float]:
         try:
             from pybreaker import CircuitBreakerError
             if isinstance(e, CircuitBreakerError):
-                logger.warning("LiteLLM circuit breaker open, skipping embedding")
-                return []
+                logger.warning("LiteLLM circuit breaker open, trying Voyage direct")
+            else:
+                logger.warning("LiteLLM embedding failed (%s), trying Voyage direct", e)
         except ImportError:
-            pass
-        logger.error("Embedding generation failed: %s", e)
+            logger.warning("LiteLLM embedding failed (%s), trying Voyage direct", e)
+
+        result = _embed_voyage_direct(text, model)
+        if result:
+            return result
         return []
 
 

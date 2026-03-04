@@ -57,6 +57,47 @@ def trigger_report():
         return jsonify({"status": "error", "error": str(e)}), 500
 
 
+@app.route("/api/advisor-scan", methods=["POST"])
+def advisor_scan():
+    """POST /api/advisor-scan — launch advisor scan in background thread.
+
+    Query params:
+        full: if present, run full scan (default: incremental)
+
+    Returns JSON: {"status": "started", "mode": "full"|"incremental"}
+    Check progress via GET /api/advisor-scan/status
+    """
+    import threading
+    from app.advisor.indexer import run_full_scan, run_incremental_scan
+    from app.advisor.helpers import get_advisor_config
+
+    config = get_advisor_config()
+    full = request.args.get("full") is not None
+
+    def _run_scan():
+        try:
+            if full:
+                run_full_scan(config)
+            else:
+                run_incremental_scan(config)
+        except Exception as e:
+            logger.exception("Advisor scan failed: %s", e)
+
+    thread = threading.Thread(target=_run_scan, daemon=True)
+    thread.start()
+    return jsonify({"status": "started", "mode": "full" if full else "incremental"})
+
+
+@app.route("/api/advisor-scan/status", methods=["GET"])
+def advisor_scan_status():
+    """GET /api/advisor-scan/status — return scan progress."""
+    from app.advisor.indexer import get_scan_progress
+    progress = get_scan_progress()
+    if not progress:
+        return jsonify({"status": "idle"})
+    return jsonify(progress)
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port, threaded=True)
