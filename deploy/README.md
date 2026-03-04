@@ -11,7 +11,7 @@
 ### Premier déploiement
 
 ```bash
-# 1. Migrer les secrets vers Secret Manager
+# 1. Migrer les secrets vers Secret Manager (avant infra — Cloud SQL a besoin de litellm-db-password)
 ./deploy/cloud-deploy.sh secrets
 
 # 2. Créer l'infrastructure (Cloud SQL, bucket GCS, IAM)
@@ -44,7 +44,7 @@
 
 ```bash
 # Logs en temps réel
-gcloud run worker-pools logs read ai-governor-receiver --region=europe-west1 --tail=50
+gcloud run services logs read ai-governor-receiver --region=europe-west1 --limit=50
 
 # Statut des services
 ./deploy/cloud-deploy.sh status
@@ -54,10 +54,10 @@ gcloud run worker-pools logs read ai-governor-receiver --region=europe-west1 --t
 
 ```bash
 # Lister les révisions
-gcloud run worker-pools revisions list --worker-pool=ai-governor-receiver --region=europe-west1
+gcloud run revisions list --service=ai-governor-receiver --region=europe-west1
 
 # Revenir à une révision précédente
-gcloud run worker-pools update-traffic ai-governor-receiver \
+gcloud run services update-traffic ai-governor-receiver \
   --to-revisions=REVISION_NAME=100 --region=europe-west1
 ```
 
