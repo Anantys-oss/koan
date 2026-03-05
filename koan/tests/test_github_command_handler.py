@@ -1133,14 +1133,55 @@ class TestFetchAndFilterComment:
         mock_read.assert_called_once_with("7777")
 
     @patch("app.github_command_handler.mark_notification_read")
+    @patch("app.github_command_handler.find_mention_in_thread", return_value=None)
     @patch("app.github_command_handler.is_notification_stale", return_value=False)
     @patch("app.github_command_handler.get_comment_from_notification", return_value=None)
-    def test_no_comment_returns_none_and_marks_read(self, mock_comment, mock_stale, mock_read, notification):
-        """When comment can't be fetched, mark notification as read to prevent
-        it from persisting and absorbing future @mentions on the same thread."""
+    def test_no_comment_falls_back_to_thread_search(self, mock_comment, mock_stale, mock_find, mock_read, notification):
+        """When latest_comment_url fails, search thread before giving up."""
         result = _fetch_and_filter_comment(notification, "bot", max_age_hours=24)
         assert result is None
+        mock_find.assert_called_once_with(notification, "bot")
         mock_read.assert_called_once_with("7777")
+
+    @patch("app.github_command_handler.find_mention_in_thread")
+    @patch("app.github_command_handler.is_notification_stale", return_value=False)
+    @patch("app.github_command_handler.get_comment_from_notification", return_value=None)
+    def test_no_comment_thread_search_finds_mention(self, mock_comment, mock_stale, mock_find, notification):
+        """When latest_comment_url fails but thread has an unprocessed @mention."""
+        real_mention = {"id": 999, "body": "@bot rebase", "user": {"login": "alice"}}
+        mock_find.return_value = real_mention
+        result = _fetch_and_filter_comment(notification, "bot", max_age_hours=24)
+        assert result == real_mention
+        mock_find.assert_called_once_with(notification, "bot")
+
+    @patch("app.github_command_handler.mark_notification_read")
+    @patch("app.github_command_handler.find_mention_in_thread", return_value=None)
+    @patch("app.github_command_handler.is_self_mention", return_value=False)
+    @patch("app.github_command_handler.is_notification_stale", return_value=False)
+    @patch("app.github_command_handler.get_comment_from_notification")
+    def test_no_mention_in_body_searches_thread(self, mock_comment, mock_stale, mock_self, mock_find, mock_read, notification):
+        """When latest comment doesn't mention bot (URL shifted), search thread."""
+        mock_comment.return_value = {
+            "id": 555, "body": "CI passed", "user": {"login": "ci-bot"},
+        }
+        result = _fetch_and_filter_comment(notification, "bot", max_age_hours=24)
+        assert result is None
+        mock_find.assert_called_once_with(notification, "bot")
+        mock_read.assert_called_once_with("7777")
+
+    @patch("app.github_command_handler.find_mention_in_thread")
+    @patch("app.github_command_handler.is_self_mention", return_value=False)
+    @patch("app.github_command_handler.is_notification_stale", return_value=False)
+    @patch("app.github_command_handler.get_comment_from_notification")
+    def test_no_mention_in_body_thread_search_finds_mention(self, mock_comment, mock_stale, mock_self, mock_find, notification):
+        """When latest comment doesn't mention bot, but thread has the real @mention."""
+        mock_comment.return_value = {
+            "id": 555, "body": "CI passed", "user": {"login": "ci-bot"},
+        }
+        real_mention = {"id": 888, "body": "@bot rebase", "user": {"login": "alice"}}
+        mock_find.return_value = real_mention
+        result = _fetch_and_filter_comment(notification, "bot", max_age_hours=24)
+        assert result == real_mention
 
     @patch("app.github_command_handler.mark_notification_read")
     @patch("app.github_command_handler.find_mention_in_thread", return_value=None)

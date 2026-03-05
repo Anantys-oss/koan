@@ -319,6 +319,10 @@ def resolve_project_from_notification(notification: dict) -> Optional[Tuple[str,
 def _fetch_and_filter_comment(notification: dict, bot_username: str, max_age_hours: int) -> Optional[dict]:
     """Fetch the triggering comment and check if notification should be skipped.
 
+    Uses latest_comment_url as the fast path, but falls back to searching the
+    full thread when the fast path fails (API error, self-mention, or stale URL
+    pointing to a comment that doesn't mention the bot).
+
     Args:
         notification: Notification dict
         bot_username: Bot's GitHub username
@@ -336,30 +340,40 @@ def _fetch_and_filter_comment(notification: dict, bot_username: str, max_age_hou
         mark_notification_read(str(notification.get("id", "")))
         return None
 
-    # Get comment
+    # Fast path: fetch comment from latest_comment_url
     comment = get_comment_from_notification(notification)
+    need_thread_search = False
+
     if not comment:
-        log.debug("GitHub: skipping notification %s from %s — no comment body found", thread_id, repo_name)
-        # Mark as read to prevent this notification from persisting forever
-        # and absorbing future @mentions on the same thread.
-        mark_notification_read(str(notification.get("id", "")))
-        return None
-
-    comment_author = comment.get("user", {}).get("login", "?")
-    log.debug("GitHub: notification %s from %s — comment by @%s", thread_id, repo_name, comment_author)
-
-    # Self-mention: latest_comment_url may point to a bot comment posted AFTER
-    # the actual @mention (race condition). Search the thread for the real trigger.
-    if is_self_mention(comment, bot_username):
+        # API failure or missing URL — don't give up yet, search the thread
+        log.debug("GitHub: notification %s from %s — latest_comment_url failed, will search thread", thread_id, repo_name)
+        need_thread_search = True
+    elif is_self_mention(comment, bot_username):
+        # latest_comment_url points to bot's own comment (race condition)
         log.debug(
             "GitHub: latest comment on %s is self-authored — searching thread for @mention",
             repo_name,
         )
+        need_thread_search = True
+    elif f"@{bot_username}".lower() not in comment.get("body", "").lower():
+        # latest_comment_url shifted to a comment that doesn't mention the bot
+        # (e.g., CI bot commented after the @mention, or PR body was returned)
+        comment_author = comment.get("user", {}).get("login", "?")
+        log.debug(
+            "GitHub: latest comment on %s by @%s doesn't mention @%s — searching thread",
+            repo_name, comment_author, bot_username,
+        )
+        need_thread_search = True
+    else:
+        comment_author = comment.get("user", {}).get("login", "?")
+        log.debug("GitHub: notification %s from %s — comment by @%s", thread_id, repo_name, comment_author)
+
+    if need_thread_search:
         mention_comment = find_mention_in_thread(notification, bot_username)
         if mention_comment:
             mention_author = mention_comment.get("user", {}).get("login", "?")
             log.debug(
-                "GitHub: found @mention by @%s in thread (latest_comment_url was stale)",
+                "GitHub: found unprocessed @mention by @%s in thread (latest_comment_url was stale)",
                 mention_author,
             )
             return mention_comment
