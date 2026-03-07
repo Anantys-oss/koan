@@ -51,7 +51,7 @@ from app.command_handlers import (
 from app.format_outbox import format_message, load_soul, load_human_prefs, load_memory_context, fallback_format
 from app.health_check import write_heartbeat
 from app.language_preference import get_language_instruction
-from app.notify import reset_flood_state, send_telegram
+from app.notify import TypingIndicator, reset_flood_state, send_telegram
 from app.outbox_scanner import scan_and_log
 from app.shutdown_manager import is_shutdown_requested, clear_shutdown
 from app.config import (
@@ -312,67 +312,68 @@ def handle_chat(text: str):
         max_turns=1,
     )
 
-    try:
-        result = run_cli(
-            cmd,
-            capture_output=True, text=True, timeout=CHAT_TIMEOUT,
-            cwd=PROJECT_PATH or str(KOAN_ROOT),
-        )
-        response = _clean_chat_response(result.stdout.strip())
-        if response:
-            send_telegram(response)
-            # Save assistant response to history
-            save_conversation_message(CONVERSATION_HISTORY_FILE, "assistant", response)
-            log("chat", f"Chat reply: {response[:80]}...")
-        elif result.returncode != 0:
-            log("error", f"Claude error: {result.stderr[:200]}")
-            error_msg = "⚠️ Hmm, I couldn't formulate a response. Try again?"
-            send_telegram(error_msg)
-            save_conversation_message(CONVERSATION_HISTORY_FILE, "assistant", error_msg)
-        else:
-            log("chat", "Empty response from Claude.")
-    except subprocess.TimeoutExpired:
-        log("error", f"Claude timed out ({CHAT_TIMEOUT}s). Retrying with lite context...")
-        # Retry with reduced context
-        lite_prompt = _build_chat_prompt(text, lite=True)
-        lite_cmd = build_full_command(
-            prompt=lite_prompt,
-            allowed_tools=chat_tools_list,
-            model=models["chat"],
-            fallback=models["fallback"],
-            max_turns=1,
-        )
+    with TypingIndicator():
         try:
             result = run_cli(
-                lite_cmd,
+                cmd,
                 capture_output=True, text=True, timeout=CHAT_TIMEOUT,
                 cwd=PROJECT_PATH or str(KOAN_ROOT),
             )
             response = _clean_chat_response(result.stdout.strip())
             if response:
                 send_telegram(response)
+                # Save assistant response to history
                 save_conversation_message(CONVERSATION_HISTORY_FILE, "assistant", response)
-                log("chat", f"Chat reply (lite retry): {response[:80]}...")
+                log("chat", f"Chat reply: {response[:80]}...")
+            elif result.returncode != 0:
+                log("error", f"Claude error: {result.stderr[:200]}")
+                error_msg = "⚠️ Hmm, I couldn't formulate a response. Try again?"
+                send_telegram(error_msg)
+                save_conversation_message(CONVERSATION_HISTORY_FILE, "assistant", error_msg)
             else:
-                if result.stderr:
-                    log("error", f"Lite retry stderr: {result.stderr[:500]}")
-                timeout_msg = f"⏱ Timeout after {CHAT_TIMEOUT}s — try a shorter question, or send 'mission: ...' for complex tasks."
+                log("chat", "Empty response from Claude.")
+        except subprocess.TimeoutExpired:
+            log("error", f"Claude timed out ({CHAT_TIMEOUT}s). Retrying with lite context...")
+            # Retry with reduced context
+            lite_prompt = _build_chat_prompt(text, lite=True)
+            lite_cmd = build_full_command(
+                prompt=lite_prompt,
+                allowed_tools=chat_tools_list,
+                model=models["chat"],
+                fallback=models["fallback"],
+                max_turns=1,
+            )
+            try:
+                result = run_cli(
+                    lite_cmd,
+                    capture_output=True, text=True, timeout=CHAT_TIMEOUT,
+                    cwd=PROJECT_PATH or str(KOAN_ROOT),
+                )
+                response = _clean_chat_response(result.stdout.strip())
+                if response:
+                    send_telegram(response)
+                    save_conversation_message(CONVERSATION_HISTORY_FILE, "assistant", response)
+                    log("chat", f"Chat reply (lite retry): {response[:80]}...")
+                else:
+                    if result.stderr:
+                        log("error", f"Lite retry stderr: {result.stderr[:500]}")
+                    timeout_msg = f"⏱ Timeout after {CHAT_TIMEOUT}s — try a shorter question, or send 'mission: ...' for complex tasks."
+                    send_telegram(timeout_msg)
+                    save_conversation_message(CONVERSATION_HISTORY_FILE, "assistant", timeout_msg)
+            except subprocess.TimeoutExpired:
+                timeout_msg = f"Timeout after {CHAT_TIMEOUT}s — try a shorter question, or send 'mission: ...' for complex tasks."
                 send_telegram(timeout_msg)
                 save_conversation_message(CONVERSATION_HISTORY_FILE, "assistant", timeout_msg)
-        except subprocess.TimeoutExpired:
-            timeout_msg = f"Timeout after {CHAT_TIMEOUT}s — try a shorter question, or send 'mission: ...' for complex tasks."
-            send_telegram(timeout_msg)
-            save_conversation_message(CONVERSATION_HISTORY_FILE, "assistant", timeout_msg)
+            except Exception as e:
+                log("error", f"Lite retry error: {e}")
+                error_msg = "⚠️ Something went wrong — try again?"
+                send_telegram(error_msg)
+                save_conversation_message(CONVERSATION_HISTORY_FILE, "assistant", error_msg)
         except Exception as e:
-            log("error", f"Lite retry error: {e}")
+            log("error", f"Claude error: {e}")
             error_msg = "⚠️ Something went wrong — try again?"
             send_telegram(error_msg)
             save_conversation_message(CONVERSATION_HISTORY_FILE, "assistant", error_msg)
-    except Exception as e:
-        log("error", f"Claude error: {e}")
-        error_msg = "⚠️ Something went wrong — try again?"
-        send_telegram(error_msg)
-        save_conversation_message(CONVERSATION_HISTORY_FILE, "assistant", error_msg)
 
 
 # ---------------------------------------------------------------------------

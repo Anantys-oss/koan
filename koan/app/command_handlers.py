@@ -18,7 +18,7 @@ from app.bridge_state import (
     _get_registry,
     _reset_registry,
 )
-from app.notify import send_telegram
+from app.notify import TypingIndicator, send_telegram
 from app.skills import Skill, SkillContext, execute_skill
 from app.utils import (
     parse_project as _parse_project,
@@ -154,7 +154,8 @@ def _dispatch_skill(skill: Skill, command_name: str, command_args: str):
             send_telegram(f"Cannot run /{command_name} — worker thread not available.")
             return
         def _run_skill():
-            result = execute_skill(skill, ctx)
+            with TypingIndicator():
+                result = execute_skill(skill, ctx)
             if result is not None:
                 send_telegram(result)
         _run_in_worker_cb(_run_skill)

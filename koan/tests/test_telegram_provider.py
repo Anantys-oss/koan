@@ -271,3 +271,28 @@ class TestPollUpdates:
         assert len(updates) == 1
         assert updates[0].update_id == 10
         assert updates[0].message is None
+
+
+class TestSendTyping:
+    @patch("app.messaging.telegram.requests.post")
+    def test_sends_chat_action(self, mock_post, provider):
+        mock_post.return_value = MagicMock(json=lambda: {"ok": True})
+        assert provider.send_typing() is True
+        mock_post.assert_called_once()
+        call_json = mock_post.call_args[1]["json"]
+        assert call_json["action"] == "typing"
+        assert call_json["chat_id"] == "12345"
+
+    @patch("app.messaging.telegram.requests.post")
+    def test_returns_false_on_api_error(self, mock_post, provider):
+        mock_post.return_value = MagicMock(json=lambda: {"ok": False})
+        assert provider.send_typing() is False
+
+    @patch("app.messaging.telegram.requests.post")
+    def test_returns_false_on_network_error(self, mock_post, provider):
+        mock_post.side_effect = requests.RequestException("timeout")
+        assert provider.send_typing() is False
+
+    def test_returns_false_when_not_configured(self):
+        p = TelegramProvider()
+        assert p.send_typing() is False

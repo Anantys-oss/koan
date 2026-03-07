@@ -1,12 +1,14 @@
 """Tests for notify.py — facade delegation, format_and_send, CLI entry point."""
 
 import subprocess
+import time
 from unittest.mock import patch, MagicMock
 
 import pytest
 
 from app.notify import (
     send_telegram, format_and_send, reset_flood_state,
+    send_typing, TypingIndicator,
     _send_raw_bypass_flood, _direct_send,
 )
 
@@ -316,6 +318,63 @@ class TestNotifyCLI:
              pytest.raises(SystemExit) as exc_info:
             run_module("app.notify", run_name="__main__")
         assert exc_info.value.code == 1
+
+
+class TestSendTyping:
+    """Tests for send_typing() facade."""
+
+    @patch("app.messaging.get_messaging_provider")
+    def test_delegates_to_provider(self, mock_get_provider):
+        mock_provider = MagicMock()
+        mock_provider.send_typing.return_value = True
+        mock_get_provider.return_value = mock_provider
+        assert send_typing() is True
+        mock_provider.send_typing.assert_called_once()
+
+    @patch("app.messaging.get_messaging_provider", side_effect=SystemExit(1))
+    def test_returns_false_on_system_exit(self, mock_get_provider):
+        assert send_typing() is False
+
+
+class TestTypingIndicator:
+    """Tests for TypingIndicator context manager."""
+
+    def test_sends_typing_on_enter(self):
+        mock_provider = MagicMock()
+        mock_provider.send_typing.return_value = True
+        with patch("app.messaging.get_messaging_provider", return_value=mock_provider):
+            with TypingIndicator():
+                time.sleep(0.02)
+            mock_provider.send_typing.assert_called()
+
+    def test_stops_sending_on_exit(self):
+        mock_provider = MagicMock()
+        mock_provider.send_typing.return_value = True
+        with patch("app.messaging.get_messaging_provider", return_value=mock_provider):
+            with TypingIndicator(interval=0.05):
+                time.sleep(0.02)
+            initial_count = mock_provider.send_typing.call_count
+            time.sleep(0.1)
+            # No more calls after exit
+            assert mock_provider.send_typing.call_count == initial_count
+
+    def test_sends_periodically(self):
+        mock_provider = MagicMock()
+        mock_provider.send_typing.return_value = True
+        with patch("app.messaging.get_messaging_provider", return_value=mock_provider):
+            with TypingIndicator(interval=0.05):
+                time.sleep(0.15)
+        # At least 2 calls: immediate + periodic
+        assert mock_provider.send_typing.call_count >= 2
+
+    def test_context_manager_propagates_exceptions(self):
+        """Exceptions propagate through the context manager."""
+        mock_provider = MagicMock()
+        mock_provider.send_typing.return_value = True
+        with patch("app.messaging.get_messaging_provider", return_value=mock_provider):
+            with pytest.raises(ValueError):
+                with TypingIndicator():
+                    raise ValueError("test error")
 
 
 # Flood protection tests moved to test_telegram_provider.py

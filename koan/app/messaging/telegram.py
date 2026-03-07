@@ -176,6 +176,20 @@ class TelegramProvider(MessagingProvider):
                 ok = False
         return ok
 
+    def send_typing(self) -> bool:
+        """Send 'typing...' indicator to the Telegram chat."""
+        if not self._bot_token or not self._chat_id:
+            return False
+        try:
+            resp = requests.post(
+                f"{self._api_base}/sendChatAction",
+                json={"chat_id": self._chat_id, "action": "typing"},
+                timeout=5,
+            )
+            return resp.json().get("ok", False)
+        except (requests.RequestException, ValueError):
+            return False
+
     def reset_flood_state(self):
         """Reset flood protection state.
         

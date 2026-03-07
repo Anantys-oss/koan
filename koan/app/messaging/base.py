@@ -77,6 +77,18 @@ class MessagingProvider(ABC):
         Should print clear error messages to stderr if credentials are missing.
         """
 
+    def send_typing(self) -> bool:
+        """Send a typing indicator to the channel.
+
+        Shows the user that the bot is "thinking". The indicator typically
+        expires after a few seconds (5s on Telegram). Callers that need
+        a persistent indicator should use TypingIndicator context manager.
+
+        Returns:
+            True if the action was sent (or is unsupported — no-op is success).
+        """
+        return True  # No-op by default; providers override if supported
+
     def chunk_message(self, text: str, max_size: int = DEFAULT_MAX_MESSAGE_SIZE) -> List[str]:
         """Split a message into chunks respecting the provider's size limit.
 

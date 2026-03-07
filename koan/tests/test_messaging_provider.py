@@ -312,3 +312,14 @@ class TestDefaultMaxMessageSize:
         chunks = provider.chunk_message(text_plus_one)
         assert len(chunks) == 2
         assert len(chunks[0]) == DEFAULT_MAX_MESSAGE_SIZE
+
+
+# ---------------------------------------------------------------------------
+# send_typing (base class default)
+# ---------------------------------------------------------------------------
+
+class TestSendTypingBase:
+    def test_default_send_typing_returns_true(self):
+        """Base class send_typing is a no-op that returns True."""
+        provider = MockProvider()
+        assert provider.send_typing() is True

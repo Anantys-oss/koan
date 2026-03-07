@@ -16,9 +16,55 @@ Usage from Python:
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
+from typing import Optional
 
 from app.utils import load_dotenv
+
+
+class TypingIndicator:
+    """Context manager that sends typing indicators at regular intervals.
+
+    Telegram's typing indicator expires after ~5 seconds. This keeps
+    re-sending it every `interval` seconds in a background thread until
+    the context exits.
+
+    Usage:
+        with TypingIndicator():
+            # ... long-running operation ...
+    """
+
+    def __init__(self, interval: float = 4.0):
+        self._interval = interval
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def __enter__(self):
+        send_typing()  # Send immediately
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self._stop_event.set()
+        if self._thread:
+            self._thread.join(timeout=2)
+        return False
+
+    def _loop(self):
+        while not self._stop_event.wait(self._interval):
+            send_typing()
+
+
+def send_typing() -> bool:
+    """Send a typing indicator via the active messaging provider."""
+    try:
+        from app.messaging import get_messaging_provider
+        provider = get_messaging_provider()
+        return provider.send_typing()
+    except SystemExit:
+        return False
 
 
 def reset_flood_state():
