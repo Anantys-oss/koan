@@ -1151,6 +1151,88 @@ class TestLoadGithubConfigLogging:
         assert len(lines) == 1, f"Expected 1 log line, got {len(lines)}: {lines}"
 
 
+# --- Test _load_github_config mtime caching ---
+
+
+class TestLoadGithubConfigCaching:
+    """Test that _load_github_config caches results with mtime invalidation."""
+
+    def setup_method(self):
+        from app.loop_manager import reset_github_backoff
+        reset_github_backoff()
+
+    def test_returns_cached_result_on_same_mtime(self):
+        """Second call with unchanged config.yaml returns cached result."""
+        from app.loop_manager import _load_github_config
+
+        config = {"github": {"commands_enabled": True, "nickname": "koan-bot"}}
+        # /tmp has no instance/config.yaml so mtime=0 both times
+        result1 = _load_github_config(config, "/tmp", "/tmp/instance")
+        result2 = _load_github_config(config, "/tmp", "/tmp/instance")
+        assert result1 == result2
+        assert result1 is result2  # same object = cache hit
+
+    def test_caches_none_when_disabled(self):
+        """Disabled config is cached as None (not re-evaluated)."""
+        from app.loop_manager import _load_github_config, _GITHUB_CONFIG_UNSET
+        import app.loop_manager as lm
+
+        result = _load_github_config({}, "/tmp", "/tmp/instance")
+        assert result is None
+        assert lm._github_config_cache is None  # None cached, not sentinel
+        assert lm._github_config_cache is not _GITHUB_CONFIG_UNSET
+
+    def test_invalidates_cache_on_mtime_change(self, tmp_path):
+        """Cache is invalidated when config.yaml mtime changes."""
+        from app.loop_manager import _load_github_config
+        import app.loop_manager as lm
+
+        # Create config.yaml so we get a real mtime
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        config_file = instance_dir / "config.yaml"
+        config_file.write_text("github:\n  commands_enabled: true\n  nickname: bot-v1\n")
+
+        config1 = {"github": {"commands_enabled": True, "nickname": "bot-v1"}}
+        result1 = _load_github_config(config1, str(tmp_path), str(instance_dir))
+        assert result1["nickname"] == "bot-v1"
+        old_mtime = lm._github_config_cache_mtime
+
+        # Touch the file to change mtime
+        import time
+        time.sleep(0.05)
+        config_file.write_text("github:\n  commands_enabled: true\n  nickname: bot-v2\n")
+
+        config2 = {"github": {"commands_enabled": True, "nickname": "bot-v2"}}
+        result2 = _load_github_config(config2, str(tmp_path), str(instance_dir))
+        assert result2["nickname"] == "bot-v2"
+        assert result2 is not result1  # new object = cache miss
+        assert lm._github_config_cache_mtime != old_mtime
+
+    def test_reset_clears_cache(self):
+        """reset_github_backoff() clears the config cache."""
+        from app.loop_manager import _load_github_config, reset_github_backoff, _GITHUB_CONFIG_UNSET
+        import app.loop_manager as lm
+
+        config = {"github": {"commands_enabled": True, "nickname": "koan-bot"}}
+        _load_github_config(config, "/tmp", "/tmp/instance")
+        assert lm._github_config_cache is not _GITHUB_CONFIG_UNSET
+
+        reset_github_backoff()
+        assert lm._github_config_cache is _GITHUB_CONFIG_UNSET
+        assert lm._github_config_cache_mtime == 0
+
+    def test_cache_survives_across_calls_without_file(self):
+        """When config.yaml doesn't exist (mtime=0), cache still works."""
+        from app.loop_manager import _load_github_config
+        import app.loop_manager as lm
+
+        config = {"github": {"commands_enabled": True, "nickname": "koan-bot"}}
+        result1 = _load_github_config(config, "/nonexistent", "/nonexistent/instance")
+        result2 = _load_github_config(config, "/nonexistent", "/nonexistent/instance")
+        assert result1 is result2
+
+
 # --- Test process_github_notifications with console output ---
 
 
