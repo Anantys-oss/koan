@@ -291,23 +291,25 @@ def _select_random_exploration_project(
     if len(projects) == 1:
         return projects[0]
 
-    # Get freshness weights from session outcome history
+    # Load session outcomes once for both freshness and drift lookups
+    # (avoids 2N file reads — one per project per function)
     weights = None
-    if instance_dir:
-        try:
-            from app.session_tracker import get_project_freshness
-            weights = get_project_freshness(instance_dir, projects)
-        except (ImportError, OSError, ValueError) as e:
-            _log_iteration("error", f"Freshness lookup failed: {e}")
-
-    # Get drift scores (commits since last session)
     drift = None
     if instance_dir:
         try:
-            from app.session_tracker import get_project_drift
-            drift = get_project_drift(instance_dir, projects)
+            from app.session_tracker import (
+                _load_outcomes, get_project_freshness, get_project_drift,
+            )
+            from pathlib import Path as _Path
+            outcomes_path = _Path(instance_dir) / "session_outcomes.json"
+            all_outcomes = _load_outcomes(outcomes_path)
+
+            weights = get_project_freshness(instance_dir, projects,
+                                             _all_outcomes=all_outcomes)
+            drift = get_project_drift(instance_dir, projects,
+                                       _all_outcomes=all_outcomes)
         except (ImportError, OSError, ValueError) as e:
-            _log_iteration("error", f"Drift detection failed: {e}")
+            _log_iteration("error", f"Freshness/drift lookup failed: {e}")
 
     # Filter out last project when possible
     candidates = projects

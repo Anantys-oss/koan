@@ -237,6 +237,7 @@ def get_recent_outcomes(
     instance_dir: str,
     project: str,
     limit: int = 10,
+    _all_outcomes: Optional[list] = None,
 ) -> List[dict]:
     """Get the last N outcomes for a project.
 
@@ -244,18 +245,24 @@ def get_recent_outcomes(
         instance_dir: Path to instance directory.
         project: Project name to filter by.
         limit: Maximum number of outcomes to return.
+        _all_outcomes: Pre-loaded outcomes list (avoids re-reading the file).
 
     Returns:
         List of outcome dicts, most recent last.
     """
-    outcomes_path = Path(instance_dir) / "session_outcomes.json"
-    all_outcomes = _load_outcomes(outcomes_path)
+    if _all_outcomes is None:
+        outcomes_path = Path(instance_dir) / "session_outcomes.json"
+        _all_outcomes = _load_outcomes(outcomes_path)
 
-    project_outcomes = [o for o in all_outcomes if o.get("project") == project]
+    project_outcomes = [o for o in _all_outcomes if o.get("project") == project]
     return project_outcomes[-limit:]
 
 
-def get_staleness_score(instance_dir: str, project: str) -> int:
+def get_staleness_score(
+    instance_dir: str,
+    project: str,
+    _all_outcomes: Optional[list] = None,
+) -> int:
     """Count consecutive empty/blocked sessions for a project.
 
     Counts backwards from the most recent session. Stops at the first
@@ -264,11 +271,13 @@ def get_staleness_score(instance_dir: str, project: str) -> int:
     Args:
         instance_dir: Path to instance directory.
         project: Project name.
+        _all_outcomes: Pre-loaded outcomes list (avoids re-reading the file).
 
     Returns:
         Number of consecutive non-productive sessions. 0 = fresh.
     """
-    recent = get_recent_outcomes(instance_dir, project, limit=20)
+    recent = get_recent_outcomes(instance_dir, project, limit=20,
+                                 _all_outcomes=_all_outcomes)
     if not recent:
         return 0
 
@@ -291,11 +300,17 @@ def get_staleness_warning(instance_dir: str, project: str) -> str:
     Returns:
         Warning string, or empty string if project is fresh.
     """
-    score = get_staleness_score(instance_dir, project)
+    # Load outcomes once for both staleness score and recent outcomes lookup
+    outcomes_path = Path(instance_dir) / "session_outcomes.json"
+    all_outcomes = _load_outcomes(outcomes_path)
+
+    score = get_staleness_score(instance_dir, project,
+                                 _all_outcomes=all_outcomes)
     if score < 3:
         return ""
 
-    recent = get_recent_outcomes(instance_dir, project, limit=score + 1)
+    recent = get_recent_outcomes(instance_dir, project, limit=score + 1,
+                                  _all_outcomes=all_outcomes)
     empty_summaries = [
         o.get("summary", "")
         for o in recent[-score:]
@@ -342,6 +357,7 @@ def get_staleness_warning(instance_dir: str, project: str) -> str:
 def get_project_freshness(
     instance_dir: str,
     projects: List[Tuple[str, str]],
+    _all_outcomes: Optional[list] = None,
 ) -> Dict[str, int]:
     """Get freshness scores for all projects (for weighted selection).
 
@@ -352,13 +368,19 @@ def get_project_freshness(
     Args:
         instance_dir: Path to instance directory.
         projects: List of (name, path) tuples.
+        _all_outcomes: Pre-loaded outcomes list (avoids re-reading the file).
 
     Returns:
         Dict mapping project name to weight (1-10).
     """
+    if _all_outcomes is None:
+        outcomes_path = Path(instance_dir) / "session_outcomes.json"
+        _all_outcomes = _load_outcomes(outcomes_path)
+
     weights = {}
     for name, _ in projects:
-        score = get_staleness_score(instance_dir, name)
+        score = get_staleness_score(instance_dir, name,
+                                     _all_outcomes=_all_outcomes)
         if score == 0:
             weights[name] = 10
         elif score == 1:
@@ -373,17 +395,23 @@ def get_project_freshness(
     return weights
 
 
-def get_last_session_timestamp(instance_dir: str, project: str) -> Optional[str]:
+def get_last_session_timestamp(
+    instance_dir: str,
+    project: str,
+    _all_outcomes: Optional[list] = None,
+) -> Optional[str]:
     """Get the ISO timestamp of the most recent session for a project.
 
     Args:
         instance_dir: Path to instance directory.
         project: Project name.
+        _all_outcomes: Pre-loaded outcomes list (avoids re-reading the file).
 
     Returns:
         ISO timestamp string, or None if no sessions found.
     """
-    recent = get_recent_outcomes(instance_dir, project, limit=1)
+    recent = get_recent_outcomes(instance_dir, project, limit=1,
+                                 _all_outcomes=_all_outcomes)
     if not recent:
         return None
     return recent[-1].get("timestamp")
@@ -421,6 +449,7 @@ def _count_commits_since(project_path: str, since_iso: str) -> int:
 def get_project_drift(
     instance_dir: str,
     projects: List[Tuple[str, str]],
+    _all_outcomes: Optional[list] = None,
 ) -> Dict[str, int]:
     """Measure how much each project has drifted since the agent's last session.
 
@@ -431,14 +460,20 @@ def get_project_drift(
     Args:
         instance_dir: Path to instance directory.
         projects: List of (name, path) tuples.
+        _all_outcomes: Pre-loaded outcomes list (avoids re-reading the file).
 
     Returns:
         Dict mapping project name to commit count since last session.
         Values are >= 0 (errors mapped to 0).
     """
+    if _all_outcomes is None:
+        outcomes_path = Path(instance_dir) / "session_outcomes.json"
+        _all_outcomes = _load_outcomes(outcomes_path)
+
     drift = {}
     for name, path in projects:
-        ts = get_last_session_timestamp(instance_dir, name)
+        ts = get_last_session_timestamp(instance_dir, name,
+                                         _all_outcomes=_all_outcomes)
         if not ts or not path:
             drift[name] = 0
             continue
