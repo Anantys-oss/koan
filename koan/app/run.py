@@ -1691,11 +1691,6 @@ def _run_skill_mission(
                 pass
         if stderr_fh is not None:
             stderr_fh.close()
-        if proc is not None and proc.stdout is not None and hasattr(proc.stdout, "close"):
-            try:
-                proc.stdout.close()
-            except OSError:
-                pass
         _sig.claude_proc = None
         _reset_terminal()
         # Restore koan repo branch if it was changed by the skill.
