@@ -175,6 +175,10 @@ _consecutive_empty_checks: int = 0
 _github_config_logged: bool = False
 # Track whether we've loaded the configured interval from config.yaml
 _github_interval_loaded: bool = False
+# Cached _load_github_config() result with mtime invalidation
+_GITHUB_CONFIG_UNSET = object()  # sentinel: "no cached value yet"
+_github_config_cache = _GITHUB_CONFIG_UNSET
+_github_config_cache_mtime: float = 0
 
 log = logging.getLogger(__name__)
 
@@ -194,19 +198,39 @@ def _github_log(message: str, level: str = "info") -> None:
         log.info(message)
 
 
+def _get_config_mtime(koan_root: str) -> float:
+    """Get the mtime of config.yaml, or 0 if it doesn't exist."""
+    config_path = Path(koan_root) / "instance" / "config.yaml"
+    try:
+        return config_path.stat().st_mtime
+    except OSError:
+        return 0
+
+
 def _load_github_config(config: dict, koan_root: str, instance_dir: str) -> Optional[dict]:
     """Load and validate GitHub configuration.
+
+    Caches the result and invalidates when config.yaml's mtime changes,
+    avoiding repeated parsing on every notification cycle.
 
     Returns:
         Dict with config data or None if feature is disabled/invalid
     """
-    global _github_config_logged
+    global _github_config_logged, _github_config_cache, _github_config_cache_mtime
+
+    # Check mtime-based cache: return cached result if config file hasn't changed
+    current_mtime = _get_config_mtime(koan_root)
+    if _github_config_cache is not _GITHUB_CONFIG_UNSET and current_mtime == _github_config_cache_mtime:
+        return _github_config_cache
+
     from app.github_config import get_github_commands_enabled, get_github_max_age_hours, get_github_nickname
 
     if not get_github_commands_enabled(config):
         if not _github_config_logged:
             _github_log("Commands disabled (github.commands_enabled not set in config.yaml)", "debug")
             _github_config_logged = True
+        _github_config_cache_mtime = current_mtime
+        _github_config_cache = None
         return None
 
     nickname = get_github_nickname(config)
@@ -214,6 +238,8 @@ def _load_github_config(config: dict, koan_root: str, instance_dir: str) -> Opti
         if not _github_config_logged:
             _github_log("Commands enabled but github.nickname is not set — skipping", "warning")
             _github_config_logged = True
+        _github_config_cache_mtime = current_mtime
+        _github_config_cache = None
         return None
 
     bot_username = os.environ.get("GITHUB_USER", nickname)
@@ -223,11 +249,14 @@ def _load_github_config(config: dict, koan_root: str, instance_dir: str) -> Opti
         _github_log(f"Monitoring @{nickname} mentions (bot_user={bot_username}, max_age={max_age}h)")
         _github_config_logged = True
 
-    return {
+    result = {
         "nickname": nickname,
         "bot_username": bot_username,
         "max_age": max_age,
     }
+    _github_config_cache = result
+    _github_config_cache_mtime = current_mtime
+    return result
 
 
 def _build_skill_registry(instance_dir: str):
@@ -316,10 +345,13 @@ def _get_effective_check_interval() -> int:
 def reset_github_backoff() -> None:
     """Reset backoff state. Useful for tests and when external events suggest activity."""
     global _last_github_check, _consecutive_empty_checks, _github_config_logged, _github_interval_loaded
+    global _github_config_cache, _github_config_cache_mtime
     _last_github_check = 0
     _consecutive_empty_checks = 0
     _github_config_logged = False
     _github_interval_loaded = False
+    _github_config_cache = _GITHUB_CONFIG_UNSET
+    _github_config_cache_mtime = 0
 
 
 def process_github_notifications(
