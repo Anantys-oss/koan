@@ -72,6 +72,14 @@ def discover_workspace(koan_root: str, projects: list) -> list:
     return projects
 
 
+def validate_config(koan_root: str):
+    """Validate config.yaml keys and types, warn on typos or bad values."""
+    from app.utils import load_config
+    from app.config_validator import validate_and_warn
+    config = load_config()
+    validate_and_warn(config)
+
+
 def run_sanity_checks(instance: str):
     """Run all sanity checks from koan/sanity/."""
     log("health", "Running sanity checks...")
@@ -237,6 +245,7 @@ def run_startup(koan_root: str, instance: str, projects: list):
     from app.run import protected_phase
 
     with protected_phase("Startup checks"):
+        _safe_run("Config validation", validate_config, koan_root)
         _safe_run("Crash recovery", recover_crashed_missions, instance)
         _safe_run("Projects migration", run_migrations, koan_root)
         _safe_run("GitHub URL population", populate_github_urls, koan_root)

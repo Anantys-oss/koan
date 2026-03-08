@@ -134,6 +134,27 @@ class TestDiscoverWorkspace:
 
 
 # ---------------------------------------------------------------------------
+# Test: validate_config
+# ---------------------------------------------------------------------------
+
+class TestValidateConfig:
+    @patch("app.utils.load_config", return_value={"max_runs_per_day": 20})
+    def test_valid_config_no_warnings(self, mock_config, capsys):
+        from app.startup_manager import validate_config
+        validate_config("/tmp/koan")
+        out = capsys.readouterr().out
+        assert "[config]" not in out
+
+    @patch("app.utils.load_config", return_value={"unknwon_key": 1, "debug": "yes"})
+    def test_warns_on_bad_config(self, mock_config, capsys):
+        from app.startup_manager import validate_config
+        validate_config("/tmp/koan")
+        out = capsys.readouterr().out
+        assert "unrecognized key" in out
+        assert "should be bool" in out
+
+
+# ---------------------------------------------------------------------------
 # Test: run_sanity_checks
 # ---------------------------------------------------------------------------
 
