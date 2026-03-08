@@ -727,35 +727,39 @@ class TestUrlRegex:
             )
             assert success
 
-    def test_pr_regex_extracts_correct_groups(self):
-        from app.check_runner import _PR_URL_RE
+    def test_pr_url_extracts_correct_groups(self):
+        from app.github_url_parser import search_pr_url
 
-        m = _PR_URL_RE.search("https://github.com/my-org/my-repo/pull/999")
-        assert m is not None
-        assert m.group("owner") == "my-org"
-        assert m.group("repo") == "my-repo"
-        assert m.group("number") == "999"
+        owner, repo, number = search_pr_url(
+            "https://github.com/my-org/my-repo/pull/999"
+        )
+        assert owner == "my-org"
+        assert repo == "my-repo"
+        assert number == "999"
 
-    def test_issue_regex_extracts_correct_groups(self):
-        from app.check_runner import _ISSUE_URL_RE
+    def test_issue_url_extracts_correct_groups(self):
+        from app.github_url_parser import search_issue_url
 
-        m = _ISSUE_URL_RE.search("https://github.com/acme/widget/issues/42")
-        assert m is not None
-        assert m.group("owner") == "acme"
-        assert m.group("repo") == "widget"
-        assert m.group("number") == "42"
+        owner, repo, number = search_issue_url(
+            "https://github.com/acme/widget/issues/42"
+        )
+        assert owner == "acme"
+        assert repo == "widget"
+        assert number == "42"
 
     def test_pr_url_not_matching_issue(self):
-        """PR regex should not match issue URLs."""
-        from app.check_runner import _PR_URL_RE
+        """PR parser should not match issue URLs."""
+        from app.github_url_parser import search_pr_url
 
-        assert _PR_URL_RE.search("https://github.com/o/r/issues/1") is None
+        with pytest.raises(ValueError):
+            search_pr_url("https://github.com/o/r/issues/1")
 
     def test_issue_url_not_matching_pr(self):
-        """Issue regex should not match PR URLs."""
-        from app.check_runner import _ISSUE_URL_RE
+        """Issue parser should not match PR URLs."""
+        from app.github_url_parser import search_issue_url
 
-        assert _ISSUE_URL_RE.search("https://github.com/o/r/pull/1") is None
+        with pytest.raises(ValueError):
+            search_issue_url("https://github.com/o/r/pull/1")
 
 
 # ---------------------------------------------------------------------------

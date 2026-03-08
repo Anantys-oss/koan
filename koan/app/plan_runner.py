@@ -22,13 +22,8 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 from app.github import run_gh, issue_create, api, fetch_issue_with_comments
+from app.github_url_parser import parse_issue_url
 from app.prompts import load_prompt_or_skill
-
-
-# GitHub issue URL pattern
-_ISSUE_URL_RE = re.compile(
-    r"https?://github\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+)/issues/(?P<number>\d+)"
-)
 
 # Label used to tag plan issues for searchability
 _PLAN_LABEL = "plan"
@@ -143,13 +138,10 @@ def _run_issue_plan(
     context: Optional[str] = None,
 ) -> Tuple[bool, str]:
     """Read an existing issue + comments, generate updated plan, post comment."""
-    match = _ISSUE_URL_RE.search(issue_url)
-    if not match:
+    try:
+        owner, repo, issue_number = parse_issue_url(issue_url)
+    except ValueError:
         return False, f"Invalid issue URL: {issue_url}"
-
-    owner = match.group("owner")
-    repo = match.group("repo")
-    issue_number = match.group("number")
 
     notify_fn(f"\U0001f4d6 Reading issue #{issue_number} ({owner}/{repo})...")
 
