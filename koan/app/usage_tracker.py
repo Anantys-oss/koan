@@ -8,11 +8,11 @@ and decides which autonomous mode to use (review/implement/deep/wait).
 Keeps 10% safety margin to avoid quota exhaustion.
 
 Usage:
-    usage_tracker.py <usage.md> <run_count> <projects>
+    usage_tracker.py <usage.md> <run_count>
 
 Output:
-    mode:available%:reason:project_idx
-    Example: implement:45:Normal budget:1
+    mode:available%:reason
+    Example: implement:45:Normal budget
 """
 
 import os
@@ -193,38 +193,6 @@ class UsageTracker:
         else:
             return "deep"
 
-    def select_project(self, projects_str: str, mode: str, run_num: int) -> int:
-        """Select project index based on mode and project characteristics.
-
-        Args:
-            projects_str: Semicolon-separated "name:path" pairs (e.g., "koan:/path;anantys:/path2")
-            mode: Current autonomous mode (review/implement/deep)
-            run_num: Current run number (1-based, for round-robin fallback)
-
-        Returns:
-            Project index (0-based)
-        """
-        if not projects_str:
-            return 0
-
-        # Parse project list
-        projects = [p.strip() for p in projects_str.split(';') if p.strip()]
-        if not projects:
-            return 0
-
-        num_projects = len(projects)
-
-        # Mode-based heuristics
-        if mode == "review":
-            # Prefer first project (often simplest/primary)
-            return 0
-        elif mode == "deep":
-            # Prefer first project (primary/most important)
-            return 0
-        else:  # implement or wait
-            # Round-robin for balanced coverage
-            return (run_num - 1) % num_projects
-
     def get_decision_reason(self, mode: str) -> str:
         """Generate human-readable reason for mode decision.
 
@@ -246,21 +214,20 @@ class UsageTracker:
         else:  # deep
             return f"Ample budget ({available:.0f}% remaining) - full capability"
 
-    def format_output(self, mode: str, project_idx: int) -> str:
+    def format_output(self, mode: str) -> str:
         """Format decision output for bash consumption.
 
         Args:
             mode: Decided autonomous mode
-            project_idx: Selected project index
 
         Returns:
-            Colon-separated string: "mode:available%:reason:project_idx"
+            Colon-separated string: "mode:available%:reason"
         """
         session_rem, weekly_rem = self.remaining_budget()
         available = min(session_rem, weekly_rem)
         reason = self.get_decision_reason(mode)
 
-        return f"{mode}:{available:.0f}:{reason}:{project_idx}"
+        return f"{mode}:{available:.0f}:{reason}"
 
 
 def _get_budget_thresholds() -> tuple:
@@ -302,12 +269,11 @@ def _get_budget_mode() -> str:
 def main():
     """CLI entry point for usage_tracker.py"""
     if len(sys.argv) < 3:
-        print("Usage: usage_tracker.py <usage.md> <run_count> [projects]", file=sys.stderr)
+        print("Usage: usage_tracker.py <usage.md> <run_count>", file=sys.stderr)
         sys.exit(1)
 
     usage_file = Path(sys.argv[1])
     run_count = int(sys.argv[2])
-    projects = sys.argv[3] if len(sys.argv) > 3 else ""
 
     budget_mode = _get_budget_mode()
     warn_pct, stop_pct = _get_budget_thresholds()
@@ -316,13 +282,12 @@ def main():
         tracker = UsageTracker(usage_file, run_count, budget_mode=budget_mode,
                                warn_pct=warn_pct, stop_pct=stop_pct)
         mode = tracker.decide_mode()
-        project_idx = tracker.select_project(projects, mode, run_count + 1)  # +1 because next run
-        output = tracker.format_output(mode, project_idx)
+        output = tracker.format_output(mode)
         print(output)
     except Exception as e:
         # Fallback to safe defaults on error
         print(f"[usage_tracker] Error: {e}", file=sys.stderr)
-        print("review:50:Fallback mode:0")
+        print("review:50:Fallback mode")
         sys.exit(0)  # Don't break run loop on tracker errors
 
 

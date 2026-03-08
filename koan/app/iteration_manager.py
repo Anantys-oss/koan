@@ -56,7 +56,7 @@ def _get_usage_decision(usage_md: Path, count: int, projects_str: str):
     """Parse usage.md and decide autonomous mode.
 
     Returns:
-        dict with keys: mode, available_pct, reason, project_idx
+        dict with keys: mode, available_pct, reason, display_lines
     """
     try:
         from app.usage_tracker import UsageTracker, _get_budget_mode, _get_budget_thresholds
@@ -65,7 +65,6 @@ def _get_usage_decision(usage_md: Path, count: int, projects_str: str):
         tracker = UsageTracker(usage_md, count, budget_mode=budget_mode,
                                warn_pct=warn_pct, stop_pct=stop_pct)
         mode = tracker.decide_mode()
-        project_idx = tracker.select_project(projects_str, mode, count + 1)
         session_rem, weekly_rem = tracker.remaining_budget()
         available_pct = int(min(session_rem, weekly_rem))
         reason = tracker.get_decision_reason(mode)
@@ -85,7 +84,6 @@ def _get_usage_decision(usage_md: Path, count: int, projects_str: str):
             "mode": mode,
             "available_pct": available_pct,
             "reason": reason,
-            "project_idx": project_idx,
             "display_lines": display_lines,
         }
     except (ImportError, OSError, ValueError) as e:
@@ -94,7 +92,6 @@ def _get_usage_decision(usage_md: Path, count: int, projects_str: str):
             "mode": "review",
             "available_pct": 0,
             "reason": "Tracker error — safe fallback (review only)",
-            "project_idx": 0,
             "display_lines": [],
         }
 
@@ -188,7 +185,7 @@ def _projects_to_str(projects: List[Tuple[str, str]]) -> str:
     """Convert a list of (name, path) tuples to semicolon-separated string.
 
     This is used for downstream functions that still expect the string format
-    (pick_mission, UsageTracker.select_project).
+    (pick_mission).
     """
     return ";".join(f"{name}:{path}" for name, path in projects)
 
@@ -544,7 +541,6 @@ def plan_iteration(
     autonomous_mode = decision["mode"]
     available_pct = decision["available_pct"]
     decision_reason = decision["reason"]
-    recommended_idx = decision["project_idx"]
     display_lines = decision["display_lines"]
     _log_iteration("koan", f"Usage decision: mode={autonomous_mode}, available={available_pct}%")
 

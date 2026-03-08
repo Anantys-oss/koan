@@ -214,66 +214,21 @@ Weekly (7 day) : 70% (Resets in 1d)
         assert mode == "wait"
 
 
-class TestProjectSelection:
-    """Test smart project selection based on mode."""
-
-    def test_select_project_review_mode(self, usage_file_standard):
-        """Review mode prefers first (simplest) project."""
-        tracker = UsageTracker(usage_file_standard)
-        projects = "koan:/path/koan;anantys:/path/anantys;complex:/path/complex"
-
-        idx = tracker.select_project(projects, "review", run_num=1)
-        assert idx == 0  # First project
-
-        idx = tracker.select_project(projects, "review", run_num=5)
-        assert idx == 0  # Always first in review mode
-
-    def test_select_project_deep_mode(self, usage_file_low):
-        """Deep mode prefers primary (first) project."""
-        tracker = UsageTracker(usage_file_low)
-        projects = "koan:/path/koan;anantys:/path/anantys"
-
-        idx = tracker.select_project(projects, "deep", run_num=1)
-        assert idx == 0  # Primary project
-
-    def test_select_project_implement_mode_round_robin(self, usage_file_standard):
-        """Implement mode uses round-robin."""
-        tracker = UsageTracker(usage_file_standard)
-        projects = "p1:/path1;p2:/path2;p3:/path3"
-
-        # Run 1: (1-1) % 3 = 0
-        assert tracker.select_project(projects, "implement", run_num=1) == 0
-        # Run 2: (2-1) % 3 = 1
-        assert tracker.select_project(projects, "implement", run_num=2) == 1
-        # Run 3: (3-1) % 3 = 2
-        assert tracker.select_project(projects, "implement", run_num=3) == 2
-        # Run 4: (4-1) % 3 = 0 (cycles back)
-        assert tracker.select_project(projects, "implement", run_num=4) == 0
-
-    def test_select_project_empty_string(self, usage_file_standard):
-        """Handle empty projects string."""
-        tracker = UsageTracker(usage_file_standard)
-        idx = tracker.select_project("", "implement", run_num=1)
-        assert idx == 0  # Fallback to first
-
-
 class TestOutputFormatting:
     """Test CLI output formatting."""
 
     def test_format_output_structure(self, usage_file_standard):
-        """Output format: mode:available%:reason:project_idx."""
+        """Output format: mode:available%:reason."""
         tracker = UsageTracker(usage_file_standard)
         mode = "implement"
-        project_idx = 1
 
-        output = tracker.format_output(mode, project_idx)
+        output = tracker.format_output(mode)
         parts = output.split(':')
 
-        assert len(parts) == 4
+        assert len(parts) == 3
         assert parts[0] == "implement"
         assert parts[1] == "30"  # min(65 session, 30 weekly)
         assert "30%" in parts[2] or "budget" in parts[2].lower()
-        assert parts[3] == "1"
 
     def test_get_decision_reason(self, usage_file_low):
         """Reason strings are descriptive."""
@@ -418,11 +373,11 @@ class TestBudgetMode:
 
         # Full mode: available = 0
         full = UsageTracker(usage, budget_mode="full")
-        assert "0" in full.format_output(full.decide_mode(), 0)
+        assert "0" in full.format_output(full.decide_mode())
 
         # Session-only: available = 70
         session = UsageTracker(usage, budget_mode="session_only")
-        output = session.format_output(session.decide_mode(), 0)
+        output = session.format_output(session.decide_mode())
         assert "70" in output
 
     def test_session_only_can_afford_run(self, tmp_path):
