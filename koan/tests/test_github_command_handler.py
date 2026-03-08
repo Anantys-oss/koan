@@ -230,6 +230,26 @@ class TestFormatHelpMessage:
         assert "`badcmd`" in msg
         assert "Usage:" in msg
 
+    def test_suggests_closest_command(self):
+        skill = Skill(
+            name="rebase", scope="core", github_enabled=True,
+            commands=[SkillCommand(name="rebase", description="Rebase a PR")],
+        )
+        reg = SkillRegistry()
+        reg._register(skill)
+        msg = format_help_message("rebas", reg, "koanbot")
+        assert "Did you mean `rebase`?" in msg
+
+    def test_no_suggestion_for_unrelated_command(self):
+        skill = Skill(
+            name="rebase", scope="core", github_enabled=True,
+            commands=[SkillCommand(name="rebase", description="Rebase a PR")],
+        )
+        reg = SkillRegistry()
+        reg._register(skill)
+        msg = format_help_message("xyzzy", reg, "koanbot")
+        assert "Did you mean" not in msg
+
 
 class TestBuildMissionFromCommand:
     def test_simple_command(self, mock_skill, sample_notification):

@@ -116,7 +116,9 @@ def format_help_message(
     """
     commands = get_github_enabled_commands_with_descriptions(registry)
 
-    lines = [f"Unknown command `{invalid_command}`. Here are the commands I support:\n"]
+    suggestion = registry.suggest_command(invalid_command)
+    hint = f" Did you mean `{suggestion}`?" if suggestion else ""
+    lines = [f"Unknown command `{invalid_command}`.{hint} Here are the commands I support:\n"]
     for name, description in commands:
         lines.append(f"- `@{bot_username} {name}` — {description}")
 

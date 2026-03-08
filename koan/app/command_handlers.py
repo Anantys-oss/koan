@@ -128,7 +128,9 @@ def handle_command(text: str):
         return
 
     # Unknown command — reject immediately instead of wasting LLM credits
-    send_telegram(f"❌ Unknown command: /{command_name}\nUse /help to see available commands.")
+    suggestion = registry.suggest_command(command_name, extra_commands=list(CORE_COMMANDS))
+    hint = f"\nDid you mean /{suggestion}?" if suggestion else ""
+    send_telegram(f"❌ Unknown command: /{command_name}{hint}\nUse /help to see available commands.")
 
 
 def _dispatch_skill(skill: Skill, command_name: str, command_args: str):
@@ -382,7 +384,9 @@ def _handle_help_command(command_name: str):
     skill = registry.find_by_command(command_name)
 
     if skill is None:
-        send_telegram(f"Unknown command: /{command_name}\nUse /help to see all commands.")
+        suggestion = registry.suggest_command(command_name, extra_commands=list(CORE_COMMANDS))
+        hint = f"\nDid you mean /{suggestion}?" if suggestion else ""
+        send_telegram(f"Unknown command: /{command_name}{hint}\nUse /help to see all commands.")
         return
 
     # find_by_command maps both names and aliases, so the match should exist
@@ -392,7 +396,9 @@ def _handle_help_command(command_name: str):
         None,
     )
     if cmd is None:
-        send_telegram(f"Unknown command: /{command_name}\nUse /help to see all commands.")
+        suggestion = registry.suggest_command(command_name, extra_commands=list(CORE_COMMANDS))
+        hint = f"\nDid you mean /{suggestion}?" if suggestion else ""
+        send_telegram(f"Unknown command: /{command_name}{hint}\nUse /help to see all commands.")
         return
 
     parts = [f"/{cmd.name}"]

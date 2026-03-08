@@ -296,6 +296,25 @@ class SkillRegistry:
         """Find a skill that handles the given command name."""
         return self._command_map.get(command_name)
 
+    def suggest_command(self, command_name: str, extra_commands: Optional[List[str]] = None) -> Optional[str]:
+        """Suggest the closest matching command name for a typo.
+
+        Args:
+            command_name: The mistyped command name (without /).
+            extra_commands: Additional command names to consider (e.g. hardcoded core commands).
+
+        Returns:
+            The closest command name, or None if no close match found.
+        """
+        import difflib
+
+        candidates = list(self._command_map.keys())
+        if extra_commands:
+            candidates.extend(extra_commands)
+
+        matches = difflib.get_close_matches(command_name, candidates, n=1, cutoff=0.6)
+        return matches[0] if matches else None
+
     def list_all(self) -> List[Skill]:
         return list(self._skills.values())
 

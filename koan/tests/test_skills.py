@@ -415,6 +415,31 @@ class TestSkillRegistry:
         registry = SkillRegistry(self._make_skill_tree(tmp_path))
         assert registry.find_by_command("unknown") is None
 
+    def test_suggest_command_close_match(self, tmp_path):
+        registry = SkillRegistry(self._make_skill_tree(tmp_path))
+        # "statu" is close to "status"
+        assert registry.suggest_command("statu") == "status"
+
+    def test_suggest_command_no_match(self, tmp_path):
+        registry = SkillRegistry(self._make_skill_tree(tmp_path))
+        assert registry.suggest_command("xyzzy") is None
+
+    def test_suggest_command_with_extra_commands(self, tmp_path):
+        registry = SkillRegistry(self._make_skill_tree(tmp_path))
+        # "hel" is close to "help" (not in registry, but in extra_commands)
+        assert registry.suggest_command("hel", extra_commands=["help", "stop"]) == "help"
+
+    def test_suggest_command_prefers_registry_over_extra(self, tmp_path):
+        registry = SkillRegistry(self._make_skill_tree(tmp_path))
+        # "statu" matches "status" from registry
+        result = registry.suggest_command("statu", extra_commands=["stop"])
+        assert result == "status"
+
+    def test_suggest_command_matches_alias(self, tmp_path):
+        registry = SkillRegistry(self._make_skill_tree(tmp_path))
+        # "s" is too short for cutoff, but "deplo" should match "deploy"
+        assert registry.suggest_command("deplo") == "deploy"
+
     def test_list_all(self, tmp_path):
         registry = SkillRegistry(self._make_skill_tree(tmp_path))
         skills = registry.list_all()

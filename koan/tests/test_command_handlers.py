@@ -49,6 +49,7 @@ def mock_registry():
     registry = MagicMock()
     registry.find_by_command.return_value = None
     registry.resolve_scoped_command.return_value = None
+    registry.suggest_command.return_value = None
     registry.list_all.return_value = []
     registry.list_by_scope.return_value = []
     with patch("app.command_handlers._get_registry", return_value=registry):
@@ -122,6 +123,26 @@ class TestHandleCommandRouting:
         mock_send.assert_called_once()
         assert "Unknown command" in mock_send.call_args[0][0]
         assert "/nonexistent" in mock_send.call_args[0][0]
+
+    def test_unknown_command_suggests_closest_match(
+        self, patch_bridge_state, mock_send, mock_registry
+    ):
+        from app.command_handlers import handle_command
+        mock_registry.suggest_command.return_value = "status"
+        handle_command("/statu")
+        mock_send.assert_called_once()
+        msg = mock_send.call_args[0][0]
+        assert "Did you mean /status?" in msg
+
+    def test_unknown_command_no_suggestion_when_no_match(
+        self, patch_bridge_state, mock_send, mock_registry
+    ):
+        from app.command_handlers import handle_command
+        mock_registry.suggest_command.return_value = None
+        handle_command("/xyzzy")
+        mock_send.assert_called_once()
+        msg = mock_send.call_args[0][0]
+        assert "Did you mean" not in msg
 
     def test_help_command(self, patch_bridge_state, mock_send, mock_registry):
         from app.command_handlers import handle_command
