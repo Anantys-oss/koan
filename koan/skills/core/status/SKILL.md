@@ -14,5 +14,8 @@ commands:
   - name: usage
     description: Detailed quota and progress
     aliases: []
+  - name: metrics
+    description: Mission success rates and reliability stats
+    aliases: []
 handler: handler.py
 ---

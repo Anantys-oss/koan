@@ -292,6 +292,7 @@ def _select_random_exploration_project(
     # (avoids 2N file reads — one per project per function)
     weights = None
     drift = None
+    success_rates = None
     if instance_dir:
         try:
             from app.session_tracker import (
@@ -308,6 +309,15 @@ def _select_random_exploration_project(
         except (ImportError, OSError, ValueError) as e:
             _log_iteration("error", f"Freshness/drift lookup failed: {e}")
 
+        try:
+            from app.mission_metrics import get_project_success_rates
+            project_names = [n for n, _ in projects]
+            success_rates = get_project_success_rates(
+                instance_dir, project_names, days=30,
+            )
+        except (ImportError, OSError, ValueError) as e:
+            _log_iteration("error", f"Success rate lookup failed: {e}")
+
     # Filter out last project when possible
     candidates = projects
     if last_project and len(projects) > 1:
@@ -315,8 +325,8 @@ def _select_random_exploration_project(
         if filtered:
             candidates = filtered
 
-    # Weighted random selection combining freshness and drift
-    if (weights or drift) and len(candidates) > 1:
+    # Weighted random selection combining freshness, drift, and success rate
+    if (weights or drift or success_rates) and len(candidates) > 1:
         candidate_weights = []
         for name, _ in candidates:
             base = weights.get(name, 10) if weights else 10
@@ -329,6 +339,14 @@ def _select_random_exploration_project(
                     base += 3  # Moderate drift
                 elif d >= 3:
                     base += 1  # Minor drift
+            # Success rate adjustment: deprioritize projects with low success
+            # Only applies when we have enough data (rate != 0.5 neutral)
+            if success_rates:
+                rate = success_rates.get(name, 0.5)
+                if rate < 0.3:
+                    base = max(1, base - 3)  # Low success — reduce weight
+                elif rate >= 0.7:
+                    base += 2  # High success — boost
             candidate_weights.append(base)
 
         total = sum(candidate_weights)
@@ -343,6 +361,10 @@ def _select_random_exploration_project(
                 d = drift.get(selected[0], 0)
                 if d > 0:
                     extra_info.append(f"drift={d} commits")
+            if success_rates:
+                rate = success_rates.get(selected[0], 0.5)
+                if rate != 0.5:
+                    extra_info.append(f"success={rate:.0%}")
             suffix = f" ({', '.join(extra_info)})" if extra_info else ""
             _log_iteration("koan",
                 f"Weighted selection: '{selected[0]}'{suffix} "

@@ -53,6 +53,8 @@ def handle(ctx):
         return _handle_ping(ctx)
     elif cmd == "usage":
         return _handle_usage(ctx)
+    elif cmd == "metrics":
+        return _handle_metrics(ctx)
     else:
         return _handle_status(ctx)
 
@@ -225,3 +227,11 @@ def _handle_usage(ctx) -> str:
                 pending_text = content
 
     return f"Quota:\n{usage_text}\n\nMissions:\n{missions_text}\n\nCurrent:\n{pending_text}"
+
+
+def _handle_metrics(ctx) -> str:
+    """Build mission metrics summary."""
+    from app.mission_metrics import format_metrics_summary
+
+    instance_dir = str(ctx.instance_dir)
+    return format_metrics_summary(instance_dir, days=30)

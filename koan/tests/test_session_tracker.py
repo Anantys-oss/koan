@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from app.session_tracker import (
     classify_session,
+    classify_mission_type,
     record_outcome,
     get_recent_outcomes,
     get_staleness_score,
@@ -20,6 +21,8 @@ from app.session_tracker import (
     _count_commits_since,
     _commits_cache,
     _COMMITS_CACHE_TTL,
+    _detect_pr_created,
+    _detect_branch_pushed,
     _extract_summary,
     _load_outcomes,
     MAX_OUTCOMES,
@@ -829,3 +832,111 @@ class TestGetDriftSummary:
     def test_empty_path_returns_empty(self, tracker_env):
         record_outcome(tracker_env, "koan", "deep", 10, "branch pushed")
         assert get_drift_summary(tracker_env, "koan", "") == ""
+
+
+# --- classify_mission_type ---
+
+class TestClassifyMissionType:
+    """Tests for mission type classification."""
+
+    def test_empty_title_is_autonomous(self):
+        assert classify_mission_type("") == "autonomous"
+
+    def test_none_like_empty(self):
+        assert classify_mission_type("  ") == "autonomous"
+
+    def test_skill_command(self):
+        assert classify_mission_type("/rebase https://github.com/o/r/pull/1") == "skill"
+
+    def test_implement_skill(self):
+        assert classify_mission_type("/implement https://github.com/o/r/issues/10") == "skill"
+
+    def test_review_skill(self):
+        assert classify_mission_type("/review https://github.com/o/r/pull/3") == "skill"
+
+    def test_autonomous_label(self):
+        assert classify_mission_type("Autonomous deep on koan") == "autonomous"
+
+    def test_freetext_mission(self):
+        assert classify_mission_type("Fix the auth module") == "mission"
+
+    def test_mission_with_project_tag(self):
+        assert classify_mission_type("Fix auth [project:koan]") == "mission"
+
+
+# --- _detect_pr_created ---
+
+class TestDetectPrCreated:
+
+    def test_empty(self):
+        assert _detect_pr_created("") is False
+
+    def test_pr_number(self):
+        assert _detect_pr_created("Opened PR #42") is True
+
+    def test_pr_created(self):
+        assert _detect_pr_created("PR created for the fix") is True
+
+    def test_draft_pr(self):
+        assert _detect_pr_created("Draft PR submitted") is True
+
+    def test_pull_request(self):
+        assert _detect_pr_created("Created a pull request") is True
+
+    def test_no_pr(self):
+        assert _detect_pr_created("Fixed the bug, pushed branch") is False
+
+
+# --- _detect_branch_pushed ---
+
+class TestDetectBranchPushed:
+
+    def test_empty(self):
+        assert _detect_branch_pushed("") is False
+
+    def test_branch_pushed(self):
+        assert _detect_branch_pushed("Branch pushed to origin") is True
+
+    def test_branch_koan_backtick(self):
+        assert _detect_branch_pushed("Branch `koan/fix-auth` created") is True
+
+    def test_branch_koan_plain(self):
+        assert _detect_branch_pushed("Branch koan/feature pushed") is True
+
+    def test_no_branch(self):
+        assert _detect_branch_pushed("Analyzed the codebase") is False
+
+
+# --- record_outcome enriched fields ---
+
+class TestRecordOutcomeEnrichedFields:
+    """Verify new fields (mission_type, has_pr, has_branch) are recorded."""
+
+    def test_skill_mission_type(self, tracker_env):
+        entry = record_outcome(
+            tracker_env, "koan", "implement", 5,
+            "Branch pushed. PR #42 created.",
+            mission_title="/rebase https://github.com/o/r/pull/1",
+        )
+        assert entry["mission_type"] == "skill"
+        assert entry["has_pr"] is True
+        assert entry["has_branch"] is True
+
+    def test_autonomous_type(self, tracker_env):
+        entry = record_outcome(
+            tracker_env, "koan", "deep", 10, "",
+            mission_title="",
+        )
+        assert entry["mission_type"] == "autonomous"
+        assert entry["has_pr"] is False
+        assert entry["has_branch"] is False
+
+    def test_freetext_mission_type(self, tracker_env):
+        entry = record_outcome(
+            tracker_env, "koan", "implement", 15,
+            "Fixed the auth module. Branch pushed.",
+            mission_title="Fix the auth module",
+        )
+        assert entry["mission_type"] == "mission"
+        assert entry["has_branch"] is True
+        assert entry["has_pr"] is False

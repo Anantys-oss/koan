@@ -167,6 +167,50 @@ def _extract_summary(journal_content: str, max_chars: int = 120) -> str:
     return ""
 
 
+def classify_mission_type(mission_title: str) -> str:
+    """Classify a mission into a type category for metrics tracking.
+
+    Categories:
+        "skill" — Skill command (/rebase, /implement, /review, etc.)
+        "autonomous" — Autonomous exploration (no mission title or "Autonomous ...")
+        "mission" — Free-text human-submitted mission
+
+    Args:
+        mission_title: The mission title string.
+
+    Returns:
+        One of "skill", "autonomous", or "mission".
+    """
+    if not mission_title or not mission_title.strip():
+        return "autonomous"
+    title = mission_title.strip()
+    if _PRODUCTIVE_SKILLS.search(title):
+        return "skill"
+    if title.lower().startswith("autonomous "):
+        return "autonomous"
+    return "mission"
+
+
+def _detect_pr_created(content: str) -> bool:
+    """Detect whether a PR was created from journal/summary content."""
+    if not content:
+        return False
+    lower = content.lower()
+    return any(signal in lower for signal in (
+        "pr #", "pr created", "draft pr", "pull request",
+    ))
+
+
+def _detect_branch_pushed(content: str) -> bool:
+    """Detect whether a branch was pushed from journal/summary content."""
+    if not content:
+        return False
+    lower = content.lower()
+    return any(signal in lower for signal in (
+        "branch pushed", "branch `koan/", "branch koan",
+    ))
+
+
 def record_outcome(
     instance_dir: str,
     project: str,
@@ -198,6 +242,9 @@ def record_outcome(
         "duration_minutes": duration_minutes,
         "outcome": outcome_type,
         "summary": summary,
+        "mission_type": classify_mission_type(mission_title),
+        "has_pr": _detect_pr_created(journal_content),
+        "has_branch": _detect_branch_pushed(journal_content),
     }
 
     outcomes_path = Path(instance_dir) / "session_outcomes.json"
