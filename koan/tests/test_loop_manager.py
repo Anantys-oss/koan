@@ -683,9 +683,11 @@ class TestGitHubNotificationBackoff:
         import app.loop_manager as lm
         lm._consecutive_empty_checks = 5
         lm._last_github_check = 999.0
+        lm._last_github_check_iso = "2026-01-01T00:00:00Z"
         lm.reset_github_backoff()
         assert lm._consecutive_empty_checks == 0
         assert lm._last_github_check == 0
+        assert lm._last_github_check_iso == ""
 
     @patch("app.loop_manager._load_github_config")
     @patch("app.loop_manager._build_skill_registry")
@@ -850,6 +852,47 @@ class TestGitHubNotificationBackoff:
 
         assert result == 0
         assert lm._consecutive_empty_checks == 3
+
+    @patch("app.loop_manager._load_github_config")
+    @patch("app.loop_manager._build_skill_registry")
+    @patch("app.loop_manager._get_known_repos_from_projects")
+    @patch("app.utils.load_config")
+    def test_since_timestamp_passed_to_fetch(
+        self, mock_config, mock_repos, mock_registry, mock_gh_config, tmp_path
+    ):
+        """process_github_notifications passes _last_github_check_iso as since."""
+        import app.loop_manager as lm
+        from app.github_notifications import FetchResult
+        from app.loop_manager import process_github_notifications
+
+        mock_config.return_value = {}
+        mock_gh_config.return_value = {"bot_username": "bot", "max_age": 300}
+        mock_registry.return_value = MagicMock()
+        mock_repos.return_value = set()
+
+        # First call: since should be None (empty string = falsy)
+        with patch("app.projects_config.load_projects_config", return_value={}), \
+             patch("app.github_notifications.fetch_unread_notifications", return_value=FetchResult([], [])) as mock_fetch:
+            process_github_notifications(str(tmp_path), str(tmp_path))
+
+        # First call passes since=None (empty string is falsy)
+        mock_fetch.assert_called_once()
+        _, kwargs = mock_fetch.call_args
+        assert kwargs.get("since") is None
+
+        # After first call, _last_github_check_iso should be set
+        assert lm._last_github_check_iso != ""
+
+        # Second call: should pass the timestamp
+        saved_iso = lm._last_github_check_iso
+        lm._last_github_check = 0  # force past throttle
+        with patch("app.projects_config.load_projects_config", return_value={}), \
+             patch("app.github_notifications.fetch_unread_notifications", return_value=FetchResult([], [])) as mock_fetch:
+            process_github_notifications(str(tmp_path), str(tmp_path))
+
+        mock_fetch.assert_called_once()
+        _, kwargs = mock_fetch.call_args
+        assert kwargs.get("since") == saved_iso
 
 
 # --- Test _drain_notifications ---

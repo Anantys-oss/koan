@@ -64,22 +64,34 @@ class FetchResult:
         self.drain = drain
 
 
-def fetch_unread_notifications(known_repos: Optional[Set[str]] = None) -> FetchResult:
-    """Fetch unread GitHub notifications, categorized for processing.
+def fetch_unread_notifications(known_repos: Optional[Set[str]] = None,
+                               since: Optional[str] = None) -> FetchResult:
+    """Fetch GitHub notifications, categorized for processing.
 
     Returns actionable notifications (may contain @mention commands) and
     drain-only notifications (noise that should be marked as read to
     prevent accumulation that blocks future @mention detection).
 
+    When ``since`` is provided, fetches ALL notifications (read + unread)
+    updated after that timestamp.  This catches @mentions that were
+    auto-read by the GitHub web UI before the bot could poll them —
+    a common race condition when the user posts an @mention while
+    viewing the PR page.
+
     Args:
         known_repos: Optional set of "owner/repo" strings to filter against.
             If None, all notifications from any repo are included.
+        since: Optional ISO 8601 timestamp.  When set, uses ``all=true``
+            to include already-read notifications updated after this time.
 
     Returns:
         FetchResult with actionable and drain lists.
     """
     try:
-        raw = api("notifications", extra_args=["--paginate"])
+        extra = ["--paginate"]
+        if since:
+            extra.extend(["-f", f"since={since}", "-f", "all=true"])
+        raw = api("notifications", extra_args=extra)
     except (RuntimeError, subprocess.TimeoutExpired, OSError) as e:
         log.debug("GitHub API: failed to fetch notifications: %s", e)
         return FetchResult([], [])
@@ -98,7 +110,11 @@ def fetch_unread_notifications(known_repos: Optional[Set[str]] = None) -> FetchR
         log.debug("GitHub API: unexpected response type: %s", type(notifications).__name__)
         return FetchResult([], [])
 
-    log.debug("GitHub API: %d total unread notifications", len(notifications))
+    log.debug(
+        "GitHub API: %d total notifications%s",
+        len(notifications),
+        " (including read)" if since else "",
+    )
 
     skipped_reasons: Dict[str, int] = {}
     skipped_repos: List[str] = []
