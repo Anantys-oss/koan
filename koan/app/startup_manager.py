@@ -190,6 +190,15 @@ def run_daily_report():
     send_daily_report()
 
 
+def check_auto_update(koan_root: str, instance: str) -> bool:
+    """Check for upstream updates and trigger pull + restart if available.
+
+    Returns True if an update was triggered (process will restart).
+    """
+    from app.auto_update import perform_auto_update
+    return perform_auto_update(koan_root, instance)
+
+
 def run_morning_ritual(instance: str):
     """Execute the morning ritual."""
     log("init", "Running morning ritual...")
@@ -288,6 +297,14 @@ def run_startup(koan_root: str, instance: str, projects: list):
 
     with protected_phase("Git sync"):
         run_git_sync(instance, projects)
+
+    # Auto-update check (before daily report / morning ritual)
+    updated = _safe_run("Auto-update check", check_auto_update, koan_root, instance)
+    if updated:
+        # Restart signal has been set — exit to let wrapper restart us
+        import sys
+        from app.restart_manager import RESTART_EXIT_CODE
+        sys.exit(RESTART_EXIT_CODE)
 
     # Daily report
     _safe_run("Daily report", run_daily_report)

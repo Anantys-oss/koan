@@ -46,6 +46,7 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "usage": _NESTED,
     "email": _NESTED,
     "messaging": _NESTED,
+    "auto_update": _NESTED,
 }
 
 # Sub-schemas for nested sections
@@ -114,6 +115,11 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
     },
     "messaging": {
         "provider": "str",
+    },
+    "auto_update": {
+        "enabled": "bool",
+        "check_interval": "int",
+        "notify": "bool",
     },
 }
 

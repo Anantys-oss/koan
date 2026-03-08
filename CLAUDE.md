@@ -100,6 +100,7 @@ Communication between processes happens through shared files in `instance/` with
 - **`skill_manager.py`** — External skill package manager: install from Git repos, update, remove, track via `instance/skills.yaml`
 - **`claudemd_refresh.py`** — CLAUDE.md refresh pipeline: gathers git context, invokes Claude to update/create CLAUDE.md
 - **`update_manager.py`** — Kōan self-update: stash, checkout main, fetch/pull from upstream, report changes
+- **`auto_update.py`** — Automatic update checker: periodically fetches upstream, triggers pull + restart when new commits are available. Configurable via `auto_update` section in `config.yaml` (`enabled`, `check_interval`, `notify`)
 
 ### Skills system (`koan/skills/`)
 

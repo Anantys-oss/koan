@@ -1316,6 +1316,18 @@ def _run_iteration(
                 except Exception as e:
                     log("error", f"Periodic git sync failed for {name}: {e}")
 
+    # Periodic auto-update check
+    try:
+        from app.auto_update import is_auto_update_enabled, get_check_interval
+        if is_auto_update_enabled() and (count + 1) % get_check_interval() == 0:
+            from app.auto_update import perform_auto_update
+            updated = perform_auto_update(koan_root, instance)
+            if updated:
+                log("update", "Auto-update triggered restart.")
+                sys.exit(RESTART_EXIT_CODE)
+    except Exception as e:
+        log("error", f"Periodic auto-update check failed: {e}")
+
     # Max runs check
     if count + 1 >= max_runs:
         log("koan", f"Max runs ({max_runs}) reached. Running evening ritual before pause.")
