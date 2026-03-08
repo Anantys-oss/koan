@@ -43,12 +43,34 @@ This isn't a chatbot wrapper. It's a collaborator with memory, personality, and 
 git clone https://github.com/sukria/koan.git
 cd koan
 make install    # Interactive web wizard — sets up everything
-make start      # Launches the agent loop + messaging bridge
+make start      # Launches the full stack
+make logs       # Watch it work
+```
+
+On macOS, keep your machine awake while Koan runs:
+
+```bash
+caffeinate -s &
 ```
 
 That's it. Send it a mission via Telegram: *"audit the auth module for security issues"* — and go live your life.
 
 For manual setup or advanced configuration, see [INSTALL.md](INSTALL.md).
+
+## What Makes Koan Special
+
+Koan isn't a chatbot wrapper or a code generator. It's the best AI *collaborator* for GitHub projects.
+
+The difference is philosophical. [Vibe coding](https://alexissukrieh.com/blog/du-vibe-coding-a-l-agentic-coding/en/) is reactive — you talk, it responds. Agentic coding is something else entirely: the machine acts autonomously, within defined boundaries, with memory, personality, and objectives. It doesn't wait for your prompts. It works while you sleep.
+
+What this means in practice:
+
+- **It handles any number of GitHub projects, on its own, without ever overstepping its scope.** Bug fixes, code reviews, rebasing, feature planning — across all your repos, with per-project memory and configuration. ([See this comparison](https://www.linkedin.com/feed/update/urn:li:activity:7436096761732956160/))
+- **It grows with you.** Koan maintains persistent memory across sessions, accumulates learnings per project, and improves its own codebase. It has opinions. It disagrees when it thinks you're wrong. It spots bugs and proposes features you didn't ask for.
+- **Safety is built in, not bolted on.** It never commits to `main`. It never deploys. It always creates draft PRs and waits for your review. This is a highly productive collaborator, not an unsupervised automation.
+- **It turns idle quota into output.** You pay for Claude Max 24 hours a day but use it for 8. Koan uses the other 16 — continuously, autonomously, at high velocity.
+
+*The agent proposes. The human decides.*
 
 ## How It Works
 
@@ -238,16 +260,12 @@ instance/                 # Your private data (gitignored)
 |--------|-------------|
 | `make install` | Interactive web-based setup wizard |
 | `make start` | Start full stack (agent + bridge) |
+| `make logs` | Tail live output from all processes |
 | `make stop` | Stop all processes |
 | `make status` | Show running process status |
-| `make logs` | Tail live output |
-| `make run` | Agent loop (foreground) |
-| `make awake` | Messaging bridge (foreground) |
 | `make dashboard` | Web UI (port 5001) |
 | `make test` | Run test suite |
 | `make say m="..."` | Send a test message |
-| `make install-systemctl-service` | Install systemd service (Linux only) |
-| `make uninstall-systemctl-service` | Remove systemd service |
 | `make clean` | Remove virtualenv |
 
 ## Philosophy
