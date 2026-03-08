@@ -170,6 +170,10 @@ _GITHUB_CHECK_INTERVAL = 60
 # Overridden at runtime by github.max_check_interval_seconds from config.yaml.
 _GITHUB_MAX_CHECK_INTERVAL = 180
 _last_github_check: float = 0
+# ISO 8601 timestamp of the last successful notification fetch.
+# Passed as ``since`` to fetch_unread_notifications so that already-read
+# notifications (auto-read by GitHub web UI) are still returned.
+_last_github_check_iso: str = ""
 _consecutive_empty_checks: int = 0
 # Track whether we've logged the first config status (avoids repeating every check)
 _github_config_logged: bool = False
@@ -353,9 +357,10 @@ def _get_effective_check_interval() -> int:
 
 def reset_github_backoff() -> None:
     """Reset backoff state. Useful for tests and when external events suggest activity."""
-    global _last_github_check, _consecutive_empty_checks, _github_config_logged, _github_interval_loaded
+    global _last_github_check, _last_github_check_iso, _consecutive_empty_checks, _github_config_logged, _github_interval_loaded
     global _github_config_cache, _github_config_cache_mtime
     _last_github_check = 0
+    _last_github_check_iso = ""
     _consecutive_empty_checks = 0
     _github_config_logged = False
     _github_interval_loaded = False
@@ -380,7 +385,7 @@ def process_github_notifications(
     Returns:
         Number of missions created.
     """
-    global _last_github_check, _consecutive_empty_checks, _GITHUB_CHECK_INTERVAL, _GITHUB_MAX_CHECK_INTERVAL, _github_interval_loaded
+    global _last_github_check, _last_github_check_iso, _consecutive_empty_checks, _GITHUB_CHECK_INTERVAL, _GITHUB_MAX_CHECK_INTERVAL, _github_interval_loaded
 
     # Load configured intervals on first call (lazy, avoids import-time config reads)
     if not _github_interval_loaded:
@@ -431,8 +436,15 @@ def process_github_notifications(
             extract_issue_number_from_notification,
         )
 
-        result = fetch_unread_notifications(known_repos)
+        # Pass ``since`` so we also get notifications that were auto-read
+        # by the GitHub web UI before we could poll them (race condition
+        # when user posts @mention while viewing the PR page).
+        result = fetch_unread_notifications(known_repos, since=_last_github_check_iso or None)
         notifications = result.actionable
+
+        # Record the check timestamp for the next ``since`` window.
+        from datetime import datetime, timezone
+        _last_github_check_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         if notifications:
             _github_log(f"Fetched {len(notifications)} actionable notification(s)")

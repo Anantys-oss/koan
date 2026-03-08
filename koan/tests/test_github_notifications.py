@@ -261,6 +261,46 @@ class TestFetchUnreadNotifications:
         assert result.actionable == []
         assert result.drain == []
 
+    @patch("app.github_notifications.api")
+    def test_since_parameter_passes_all_true(self, mock_api):
+        """When since is provided, all=true is passed to include read notifications."""
+        notifications = [
+            {"reason": "mention", "repository": {"full_name": "owner/repo"}},
+        ]
+        mock_api.return_value = json.dumps(notifications)
+
+        result = fetch_unread_notifications(since="2026-03-08T17:00:00Z")
+        assert len(result.actionable) == 1
+
+        # Verify the API was called with since and all=true
+        call_args = mock_api.call_args
+        extra_args = call_args[1].get("extra_args", call_args[0][1] if len(call_args[0]) > 1 else [])
+        assert "-f" in extra_args
+        assert "since=2026-03-08T17:00:00Z" in extra_args
+        assert "all=true" in extra_args
+
+    @patch("app.github_notifications.api")
+    def test_no_since_parameter_omits_all_true(self, mock_api):
+        """Without since, all=true is NOT passed (only unread notifications)."""
+        mock_api.return_value = json.dumps([])
+
+        fetch_unread_notifications()
+
+        call_args = mock_api.call_args
+        extra_args = call_args[1].get("extra_args", call_args[0][1] if len(call_args[0]) > 1 else [])
+        assert "all=true" not in extra_args
+
+    @patch("app.github_notifications.api")
+    def test_since_none_same_as_no_since(self, mock_api):
+        """since=None should behave like no since parameter."""
+        mock_api.return_value = json.dumps([])
+
+        fetch_unread_notifications(since=None)
+
+        call_args = mock_api.call_args
+        extra_args = call_args[1].get("extra_args", call_args[0][1] if len(call_args[0]) > 1 else [])
+        assert "all=true" not in extra_args
+
 
 class TestCheckAlreadyProcessed:
     def setup_method(self):
