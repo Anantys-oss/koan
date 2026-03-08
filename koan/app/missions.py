@@ -375,6 +375,11 @@ def extract_next_pending(content: str, project_name: str = "") -> str:
             i += 1
             continue
 
+        # Skip strikethrough (completed) items still lingering in Pending
+        if re.match(r"^- ~~.+~~", stripped):
+            i += 1
+            continue
+
         if project_name:
             # 1. Check inline tag first (takes priority)
             tag_match = re.search(r"\[projec?t:([a-zA-Z0-9_-]+)\]", line)
@@ -666,9 +671,15 @@ def promote_all_ideas(content: str) -> Tuple[str, List[str]]:
 
 
 def list_pending(content: str) -> List[str]:
-    """Return all pending mission lines."""
+    """Return all pending mission lines.
+
+    Filters out strikethrough (completed) items that may linger in Pending.
+    """
     sections = parse_sections(content)
-    return sections["pending"]
+    return [
+        item for item in sections["pending"]
+        if not re.match(r"^- ~~.+~~", item.strip())
+    ]
 
 
 def _find_item_extent(lines: List[str], item_start: int, section_end: int) -> int:

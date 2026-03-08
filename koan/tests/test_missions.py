@@ -2292,6 +2292,60 @@ class TestListPending:
         content = "# Missions\n\n## Done\n- Task\n"
         assert list_pending(content) == []
 
+    def test_skips_strikethrough_items(self):
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- ~~[project:foo] Old task~~ ✅ (2026-03-07, PR #1)\n"
+            "- ~~Another done task~~ ✅ (2026-03-07)\n"
+            "- [project:foo] Real pending task\n\n"
+            "## Done\n"
+        )
+        result = list_pending(content)
+        assert len(result) == 1
+        assert "Real pending task" in result[0]
+
+
+# --- extract_next_pending with strikethrough ---
+
+
+class TestExtractNextPendingStrikethrough:
+    def test_skips_strikethrough_returns_real_pending(self):
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- ~~[project:foo] Completed task~~ ✅ (2026-03-07)\n"
+            "- [project:foo] Actual pending task\n\n"
+            "## In Progress\n\n"
+            "## Done\n"
+        )
+        result = extract_next_pending(content, "foo")
+        assert "Actual pending task" in result
+        assert "Completed task" not in result
+
+    def test_skips_all_strikethrough_returns_empty(self):
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- ~~[project:foo] Done 1~~ ✅ (2026-03-07)\n"
+            "- ~~[project:foo] Done 2~~ ✅ (2026-03-07)\n\n"
+            "## In Progress\n\n"
+            "## Done\n"
+        )
+        result = extract_next_pending(content, "foo")
+        assert result == ""
+
+    def test_count_pending_skips_strikethrough(self):
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- ~~Old task~~ ✅ (2026-03-07)\n"
+            "- Real task\n\n"
+            "## Done\n"
+        )
+        assert count_pending(content) == 2  # count_pending uses parse_sections (raw)
+        assert len(list_pending(content)) == 1  # list_pending filters
+
 
 # --- cancel_pending_mission ---
 
