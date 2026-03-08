@@ -902,8 +902,12 @@ class TestArchiveAtomicWrite:
 
     def test_archive_append_preserves_existing_content(self, tmp_path):
         """When appending to an existing archive, existing content is preserved."""
-        old_date1 = (date.today() - timedelta(days=35)).strftime("%Y-%m-%d")
-        old_date2 = (date.today() - timedelta(days=36)).strftime("%Y-%m-%d")
+        # Use mid-month dates to guarantee both land in the same month
+        ref = date.today() - timedelta(days=45)
+        d1 = ref.replace(day=15)
+        d2 = ref.replace(day=14)
+        old_date1 = d1.strftime("%Y-%m-%d")
+        old_date2 = d2.strftime("%Y-%m-%d")
         old_month = old_date1[:7]
 
         # Create first journal day
