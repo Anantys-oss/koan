@@ -13,7 +13,6 @@ The check is lightweight (git fetch + rev-list count) and only
 triggers a full pull when new commits are actually available.
 """
 
-import os
 import time
 from pathlib import Path
 from typing import Optional
@@ -21,13 +20,12 @@ from typing import Optional
 from app.run_log import log
 from app.update_manager import (
     _find_upstream_remote,
-    _get_short_sha,
     _run_git,
 )
 
 
 # Module-level cache to avoid fetching too often
-_last_check_time: float = 0.0
+_last_check_time: Optional[float] = None
 _MIN_CHECK_INTERVAL_SECONDS = 120  # never check more than once per 2 min
 
 
@@ -67,7 +65,7 @@ def check_for_updates(koan_root: str) -> Optional[int]:
     """
     global _last_check_time
     now = time.monotonic()
-    if now - _last_check_time < _MIN_CHECK_INTERVAL_SECONDS:
+    if _last_check_time is not None and now - _last_check_time < _MIN_CHECK_INTERVAL_SECONDS:
         return 0
     _last_check_time = now
 
@@ -170,4 +168,4 @@ def perform_auto_update(koan_root: str, instance: str) -> bool:
 def reset_check_cache():
     """Reset the check cache (for testing)."""
     global _last_check_time
-    _last_check_time = 0.0
+    _last_check_time = None
