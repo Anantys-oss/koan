@@ -57,8 +57,9 @@ class TestFetchNotificationsLogging:
         import json
         from app.github_notifications import fetch_unread_notifications
 
+        # Use non-mention reason — mentions bypass the repo filter
         notifications = [
-            {"reason": "mention", "repository": {"full_name": "o/unknown"}},
+            {"reason": "comment", "repository": {"full_name": "o/unknown"}},
         ]
         mock_api.return_value = json.dumps(notifications)
 
@@ -222,7 +223,7 @@ class TestProcessSingleNotificationLogging:
     @patch("app.github_command_handler.get_comment_from_notification")
     @patch("app.github_command_handler.is_notification_stale", return_value=False)
     @patch("app.github_command_handler.resolve_project_from_notification", return_value=None)
-    def test_logs_unknown_repo(self, mock_project, mock_stale, mock_comment, mock_read, caplog):
+    def test_logs_unknown_repo_fallback(self, mock_project, mock_stale, mock_comment, mock_read, caplog):
         from app.github_command_handler import process_single_notification
 
         mock_comment.return_value = {"id": "c1", "user": {"login": "alice"}, "body": "@bot rebase"}
@@ -237,8 +238,9 @@ class TestProcessSingleNotificationLogging:
                 notif, MagicMock(), {}, None, "bot", 24,
             )
 
-        assert not success
-        assert "not found in projects.yaml" in caplog.text
+        # Now falls back to repo name as project instead of failing
+        assert "not in projects.yaml" in caplog.text
+        assert "using 'repo' as project name" in caplog.text
 
     @patch("app.github_command_handler.mark_notification_read")
     @patch("app.github_command_handler.check_user_permission", return_value=False)

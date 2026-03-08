@@ -135,15 +135,29 @@ class TestFetchUnreadNotifications:
 
     @patch("app.github_notifications.api")
     def test_filters_by_known_repos(self, mock_api):
+        """Non-mention reasons are filtered by known_repos; mentions bypass."""
         notifications = [
-            {"reason": "mention", "repository": {"full_name": "owner/repo"}},
-            {"reason": "mention", "repository": {"full_name": "other/repo"}},
+            {"reason": "comment", "repository": {"full_name": "owner/repo"}},
+            {"reason": "comment", "repository": {"full_name": "other/repo"}},
         ]
         mock_api.return_value = json.dumps(notifications)
 
         result = fetch_unread_notifications(known_repos={"owner/repo"})
         assert len(result.actionable) == 1
         assert result.actionable[0]["repository"]["full_name"] == "owner/repo"
+
+    @patch("app.github_notifications.api")
+    def test_mention_bypasses_known_repos_filter(self, mock_api):
+        """Direct @mentions pass through even when repo is not in known_repos."""
+        notifications = [
+            {"reason": "mention", "repository": {"full_name": "unknown/repo"}},
+            {"reason": "comment", "repository": {"full_name": "unknown/repo"}},
+        ]
+        mock_api.return_value = json.dumps(notifications)
+
+        result = fetch_unread_notifications(known_repos={"owner/repo"})
+        assert len(result.actionable) == 1
+        assert result.actionable[0]["reason"] == "mention"
 
     @patch("app.github_notifications.api")
     def test_handles_api_error(self, mock_api):
@@ -272,8 +286,21 @@ class TestFetchUnreadNotifications:
         }
 
     @patch("app.github_notifications.api")
-    def test_unknown_repo_skipped_entirely(self, mock_api):
-        """Notifications from unknown repos appear in neither actionable nor drain."""
+    def test_unknown_repo_non_mention_skipped(self, mock_api):
+        """Non-mention notifications from unknown repos are skipped entirely."""
+        notifications = [
+            {"reason": "ci_activity", "repository": {"full_name": "unknown/repo"}},
+            {"reason": "author", "repository": {"full_name": "unknown/repo"}},
+        ]
+        mock_api.return_value = json.dumps(notifications)
+
+        result = fetch_unread_notifications(known_repos={"owner/repo"})
+        assert result.actionable == []
+        assert result.drain == []
+
+    @patch("app.github_notifications.api")
+    def test_unknown_repo_mention_passes(self, mock_api):
+        """Mention notifications from unknown repos still pass through."""
         notifications = [
             {"reason": "mention", "repository": {"full_name": "unknown/repo"}},
             {"reason": "ci_activity", "repository": {"full_name": "unknown/repo"}},
@@ -281,8 +308,8 @@ class TestFetchUnreadNotifications:
         mock_api.return_value = json.dumps(notifications)
 
         result = fetch_unread_notifications(known_repos={"owner/repo"})
-        assert result.actionable == []
-        assert result.drain == []
+        assert len(result.actionable) == 1
+        assert result.actionable[0]["reason"] == "mention"
 
     @patch("app.github_notifications.api")
     def test_since_parameter_passes_all_true(self, mock_api):

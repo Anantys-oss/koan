@@ -443,21 +443,57 @@ class TestProcessSingleNotification:
     @patch("app.github_command_handler.is_notification_stale", return_value=False)
     @patch("app.github_command_handler.get_comment_from_notification")
     @patch("app.github_command_handler.resolve_project_from_notification", return_value=None)
-    def test_unknown_repo_error(
+    def test_unknown_repo_falls_back_to_repo_name(
         self, mock_resolve, mock_comment, mock_stale, mock_self,
         mock_processed, mock_read, registry, sample_notification,
     ):
+        """When repo is not in projects.yaml, use repo name as project fallback."""
+        mock_comment.return_value = {
+            "id": 99999, "body": "@bot rebase", "user": {"login": "alice"},
+        }
+        config = {"github": {"nickname": "bot", "authorized_users": ["alice"]}}
+
+        with patch("app.utils.insert_pending_mission") as mock_insert:
+            with patch("app.github_command_handler.add_reaction"):
+                success, error = process_single_notification(
+                    sample_notification, registry, config, None, "bot",
+                )
+        assert success is True
+        # Mission was queued using repo name as project
+        mock_insert.assert_called_once()
+        mission_text = mock_insert.call_args[0][1]
+        assert "[project:koan]" in mission_text
+
+    @patch("app.github_command_handler.mark_notification_read")
+    @patch("app.github_command_handler.check_already_processed", return_value=False)
+    @patch("app.github_command_handler.is_self_mention", return_value=False)
+    @patch("app.github_command_handler.is_notification_stale", return_value=False)
+    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler.resolve_project_from_notification", return_value=None)
+    def test_unknown_repo_bad_fullname_skips(
+        self, mock_resolve, mock_comment, mock_stale, mock_self,
+        mock_processed, mock_read, registry,
+    ):
+        """Notification with no valid full_name is silently skipped."""
+        notif = {
+            "id": "12345", "reason": "mention",
+            "updated_at": "2026-02-11T20:00:00Z",
+            "repository": {"full_name": ""},
+            "subject": {
+                "url": "https://api.github.com/repos/x/y/pulls/1",
+                "latest_comment_url": "https://api.github.com/repos/x/y/issues/comments/1",
+            },
+        }
         mock_comment.return_value = {
             "id": 99999, "body": "@bot rebase", "user": {"login": "alice"},
         }
         config = {"github": {"nickname": "bot"}}
 
         success, error = process_single_notification(
-            sample_notification, registry, config, None, "bot",
+            notif, registry, config, None, "bot",
         )
         assert success is False
-        assert "Unknown repository" in error
-        # Notification must be marked as read to prevent re-processing loop
+        assert error is None
         mock_read.assert_called_once_with("12345")
 
     @patch("app.github_command_handler.mark_notification_read")

@@ -230,12 +230,16 @@ def fetch_unread_notifications(known_repos: Optional[Set[str]] = None,
     skipped_repos: List[str] = []
     actionable = []
     drain = []
+    # Direct @mention reasons always pass the repo filter — the bot was
+    # explicitly called, so we must process regardless of projects.yaml.
+    _DIRECT_MENTION_REASONS = {"mention", "team_mention"}
     for notif in notifications:
         reason = notif.get("reason", "?")
         repo_name = notif.get("repository", {}).get("full_name", "?")
 
-        # Filter by known repos if provided — normalize for comparison
-        if known_repos:
+        # Filter by known repos if provided — normalize for comparison.
+        # Direct @mentions bypass this filter: the bot was explicitly invoked.
+        if known_repos and reason not in _DIRECT_MENTION_REASONS:
             repo_lower = repo_name.lower()
             if repo_lower not in known_repos:
                 skipped_repos.append(repo_name)
