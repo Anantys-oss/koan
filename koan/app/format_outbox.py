@@ -14,6 +14,7 @@ Usage: python format_outbox.py <instance_dir> [project_name] < raw_message
 Reads raw content from stdin, formats it via Claude, outputs to stdout.
 """
 
+import hashlib
 import re
 import subprocess
 import sys
@@ -23,6 +24,7 @@ from pathlib import Path
 from app.cli_provider import build_full_command
 from app.language_preference import get_language_instruction
 from app.config import get_model_config
+from app.response_cache import get_format_cache
 
 
 def load_soul(instance_dir: Path) -> str:
@@ -140,6 +142,20 @@ def format_message(raw_content: str, soul: str, prefs: str,
     prefs_block = f"Human preferences: {prefs}" if prefs else ""
     memory_block = f"Recent memory context:\n{memory_context}" if memory_context else ""
     time_hint = _get_time_hint()
+
+    # Inject language preference override
+    lang_instruction = get_language_instruction()
+
+    # Check cache before invoking Claude CLI
+    cache = get_format_cache()
+    key_material = "\n".join([raw_content, soul, prefs, memory_context,
+                              time_hint, lang_instruction or ""])
+    cache_key = hashlib.sha256(key_material.encode()).hexdigest()
+
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     prompt = load_prompt(
         "format-message",
         SOUL=soul,
@@ -149,8 +165,6 @@ def format_message(raw_content: str, soul: str, prefs: str,
         RAW_CONTENT=raw_content,
     )
 
-    # Inject language preference override
-    lang_instruction = get_language_instruction()
     if lang_instruction:
         prompt += f"\n\n{lang_instruction}"
 
@@ -182,9 +196,13 @@ def format_message(raw_content: str, soul: str, prefs: str,
             # Safety check: remove any remaining markdown artifacts
             formatted = strip_markdown(formatted)
 
+            # Cache successful result (15 min TTL)
+            cache.put(cache_key, formatted, ttl=900)
+
             return formatted
         else:
             # Fallback: if Claude fails, return truncated raw content
+            # Don't cache fallback results
             print(f"[format_outbox] Claude formatting failed: {result.stderr[:200]}", file=sys.stderr)
             return fallback_format(raw_content)
 
