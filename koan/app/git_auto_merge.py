@@ -256,11 +256,26 @@ class GitAutoMerger:
 
         success, error = self.perform_merge(branch, base_branch, strategy)
 
+        from app.security_audit import GIT_OPERATION, log_event
+
         if not success:
             print(f"[git_auto_merge] Merge failed: {error}")
+            log_event(GIT_OPERATION, details={
+                "action": "auto_merge",
+                "branch": branch,
+                "target": base_branch,
+                "strategy": strategy,
+                "error": error,
+            }, result="failure")
             self.write_merge_failure_to_journal(branch, error)
             return 1
 
+        log_event(GIT_OPERATION, details={
+            "action": "auto_merge",
+            "branch": branch,
+            "target": base_branch,
+            "strategy": strategy,
+        })
         print(f"[git_auto_merge] Successfully merged {branch} into {base_branch} ({strategy})")
 
         # Always delete local branch after successful merge (stay on base_branch)

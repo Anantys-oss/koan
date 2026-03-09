@@ -46,12 +46,25 @@ def run_gh(*args, cwd=None, timeout=30, stdin_data=None):
             )
         return result.stdout.strip()
 
-    return retry_with_backoff(
-        _invoke,
-        retryable=(RuntimeError, OSError, subprocess.TimeoutExpired),
-        is_transient=is_gh_transient,
-        label=f"gh {' '.join(args[:2])}",
-    )
+    from app.security_audit import GIT_OPERATION, _redact_list, log_event
+
+    try:
+        result = retry_with_backoff(
+            _invoke,
+            retryable=(RuntimeError, OSError, subprocess.TimeoutExpired),
+            is_transient=is_gh_transient,
+            label=f"gh {' '.join(args[:2])}",
+        )
+        log_event(GIT_OPERATION, details={
+            "cmd": _redact_list(cmd),
+            "result": result[:500] if result else "",
+        })
+        return result
+    except Exception:
+        log_event(GIT_OPERATION, details={
+            "cmd": _redact_list(cmd),
+        }, result="failure")
+        raise
 
 
 def pr_create(title, body, draft=True, base=None, repo=None, head=None, cwd=None):

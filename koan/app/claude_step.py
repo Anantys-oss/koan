@@ -82,6 +82,8 @@ def run_claude(cmd: list, cwd: str, timeout: int = 600) -> dict:
     """
     from app.cli_exec import run_cli_with_retry
 
+    from app.security_audit import SUBPROCESS_EXEC, _redact_list, log_event
+
     try:
         result = run_cli_with_retry(
             cmd,
@@ -90,17 +92,31 @@ def run_claude(cmd: list, cwd: str, timeout: int = 600) -> dict:
         )
         if result.returncode != 0:
             stderr_snippet = result.stderr[-500:] if result.stderr else "no stderr"
+            log_event(SUBPROCESS_EXEC, details={
+                "cmd": _redact_list(cmd),
+                "cwd": cwd,
+                "exit_code": result.returncode,
+            }, result="failure")
             return {
                 "success": False,
                 "output": result.stdout.strip(),
                 "error": f"Exit code {result.returncode}: {stderr_snippet}",
             }
+        log_event(SUBPROCESS_EXEC, details={
+            "cmd": _redact_list(cmd),
+            "cwd": cwd,
+            "exit_code": 0,
+        })
         return {
             "success": True,
             "output": result.stdout.strip(),
             "error": "",
         }
     except subprocess.TimeoutExpired:
+        log_event(SUBPROCESS_EXEC, details={
+            "cmd": _redact_list(cmd),
+            "cwd": cwd,
+        }, result="timeout")
         return {
             "success": False,
             "output": "",
