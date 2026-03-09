@@ -941,6 +941,99 @@ def _handle_skill_dispatch(
 
 
 # ---------------------------------------------------------------------------
+# Mission retry helpers
+# ---------------------------------------------------------------------------
+
+# Maximum retry attempts for mission-level CLI failures.
+# Capped at 1 retry (2 total) since missions are expensive.
+_MISSION_MAX_RETRIES = 1
+_MISSION_RETRY_DELAY = 10  # seconds
+
+
+def _get_git_head(project_path: str) -> str:
+    """Get current git HEAD SHA for retry safety check."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=project_path,
+            capture_output=True, text=True, timeout=5,
+        )
+        return result.stdout.strip() if result.returncode == 0 else ""
+    except (subprocess.SubprocessError, OSError):
+        return ""
+
+
+def _maybe_retry_mission(
+    claude_exit: int,
+    stdout_file: str,
+    stderr_file: str,
+    cmd: list,
+    project_path: str,
+    pre_head: str,
+    instance: str,
+    project_name: str,
+    run_num: int,
+    has_mission: bool,
+) -> tuple:
+    """Attempt a single retry if the CLI error is transient.
+
+    Returns ``(exit_code, stdout_file, stderr_file)`` — the files may
+    be replaced if a retry was performed (old files are truncated to
+    avoid double-counting output).
+
+    Only retries if:
+    - The error is classified as RETRYABLE
+    - No commits were produced (HEAD didn't move)
+    - This is a mission (not autonomous), since missions are higher-value
+    """
+    from app.cli_errors import ErrorCategory, classify_cli_error
+
+    # Read output for classification
+    try:
+        stdout_text = Path(stdout_file).read_text()
+    except OSError:
+        stdout_text = ""
+    try:
+        stderr_text = Path(stderr_file).read_text()
+    except OSError:
+        stderr_text = ""
+
+    category = classify_cli_error(claude_exit, stdout_text, stderr_text)
+    log("error", f"CLI error classified as {category.value} (exit={claude_exit})")
+
+    if category != ErrorCategory.RETRYABLE:
+        return claude_exit, stdout_file, stderr_file
+
+    if not has_mission:
+        log("koan", "Skipping retry for autonomous run (lower priority)")
+        return claude_exit, stdout_file, stderr_file
+
+    # Safety: don't retry if Claude already produced commits
+    post_head = _get_git_head(project_path)
+    if pre_head and post_head and pre_head != post_head:
+        log("koan", "Skipping retry — commits were produced before the error")
+        return claude_exit, stdout_file, stderr_file
+
+    log("koan", f"Transient CLI error — retrying mission in {_MISSION_RETRY_DELAY}s")
+    with protected_phase("Mission retry backoff"):
+        time.sleep(_MISSION_RETRY_DELAY)
+
+    # Clear output files before retry to avoid double-counting
+    try:
+        open(stdout_file, "w").close()
+        open(stderr_file, "w").close()
+    except OSError:
+        pass
+
+    retry_exit = run_claude_task(
+        cmd, stdout_file, stderr_file, cwd=project_path,
+        instance_dir=instance, project_name=project_name, run_num=run_num,
+    )
+    log("koan", f"Mission retry exit_code={retry_exit}")
+    return retry_exit, stdout_file, stderr_file
+
+
+# ---------------------------------------------------------------------------
 # Iteration body (extracted for exception isolation)
 # ---------------------------------------------------------------------------
 
@@ -1235,11 +1328,32 @@ def _run_iteration(
 
         cmd_display = [c[:100] + '...' if len(c) > 100 else c for c in cmd[:6]]
         _debug_log(f"[run] cli: cmd={' '.join(cmd_display)}... cwd={project_path}")
+
+        # Capture git HEAD before execution for retry safety check
+        pre_head = _get_git_head(project_path)
+
         claude_exit = run_claude_task(
             cmd, stdout_file, stderr_file, cwd=project_path,
             instance_dir=instance, project_name=project_name, run_num=run_num,
         )
         _debug_log(f"[run] cli: exit_code={claude_exit}")
+
+        # --- Mission retry on transient CLI errors ---
+        # One retry for missions, zero for autonomous (they're lower-priority).
+        # Only retry if HEAD didn't move (no commits produced).
+        if claude_exit != 0:
+            claude_exit, stdout_file, stderr_file = _maybe_retry_mission(
+                claude_exit=claude_exit,
+                stdout_file=stdout_file,
+                stderr_file=stderr_file,
+                cmd=cmd,
+                project_path=project_path,
+                pre_head=pre_head,
+                instance=instance,
+                project_name=project_name,
+                run_num=run_num,
+                has_mission=bool(mission_title),
+            )
 
         # Parse and display output
         try:
