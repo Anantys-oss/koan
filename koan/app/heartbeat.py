@@ -28,14 +28,14 @@ _alerted_stale_missions: set = set()
 
 # Throttle: minimum seconds between stale mission checks
 STALE_CHECK_INTERVAL = 1800  # 30 minutes
-_last_stale_check: float = 0
+_last_stale_check: float = None
 
 
 def reset_stale_state() -> None:
     """Reset module-level state. Used by tests."""
     global _alerted_stale_missions, _last_stale_check
     _alerted_stale_missions = set()
-    _last_stale_check = 0
+    _last_stale_check = None
 
 
 def check_stale_missions(
@@ -155,7 +155,7 @@ def run_stale_mission_check(instance_dir: str) -> List[str]:
     global _last_stale_check
 
     now = time.monotonic()
-    if now - _last_stale_check < STALE_CHECK_INTERVAL:
+    if _last_stale_check is not None and now - _last_stale_check < STALE_CHECK_INTERVAL:
         return []
     _last_stale_check = now
 
