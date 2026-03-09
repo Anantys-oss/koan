@@ -10,6 +10,7 @@
 </p>
 
 <p align="center">
+  <a href="docs/user-manual.md">User Manual</a> &bull;
   <a href="#quick-start">Quick Start</a> &bull;
   <a href="#how-it-works">How It Works</a> &bull;
   <a href="#features">Features</a> &bull;
@@ -192,7 +193,9 @@ Skills are pluggable commands — some are instant, others spawn Claude work ses
 | `/journal` | Read today's journal entries |
 | `/verbose` / `/silent` | Toggle real-time updates |
 
-**[Full skills reference →](docs/skills.md)** — all 37 commands with aliases, descriptions, and usage details.
+**[User Manual →](docs/user-manual.md)** — From beginner to power user, everything Kōan can do.
+
+**[Full skills reference →](docs/skills.md)** — all commands with aliases, descriptions, and usage details.
 
 Skills are extensible — drop a `SKILL.md` in `instance/skills/` or install from a Git repo with `/skill install <url>`. See [koan/skills/README.md](koan/skills/README.md) for the authoring guide.
 

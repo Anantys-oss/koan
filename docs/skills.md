@@ -1,5 +1,7 @@
 # Skills Reference
 
+> **For a guided introduction**, see the [User Manual](user-manual.md) — organized by skill level with use cases and workflow examples.
+
 Complete reference for all Koan slash commands. Use these via Telegram, Slack, or GitHub @mentions.
 
 > **Extensible:** Drop a `SKILL.md` in `instance/skills/` or install from a Git repo with `/skill install <url>`.
