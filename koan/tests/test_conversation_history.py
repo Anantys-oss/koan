@@ -366,6 +366,65 @@ class TestCompactHistoryAtomicWrite:
         assert history.read_text() == ""
 
 
+# --- prune_topics ---
+
+
+class TestPruneTopics:
+    def test_prunes_to_max_entries(self):
+        from app.conversation_history import prune_topics
+        entries = [
+            {"compacted_at": f"2026-01-{i+1:02d}T00:00:00", "message_count": 10}
+            for i in range(25)
+        ]
+        result = prune_topics(entries, max_entries=20)
+        assert len(result) == 20
+        # Should keep the most recent 20 (days 6-25)
+        assert result[0]["compacted_at"] == "2026-01-06T00:00:00"
+        assert result[-1]["compacted_at"] == "2026-01-25T00:00:00"
+
+    def test_no_pruning_when_under_limit(self):
+        from app.conversation_history import prune_topics
+        entries = [{"compacted_at": "2026-01-01T00:00:00"}] * 5
+        result = prune_topics(entries, max_entries=20)
+        assert len(result) == 5
+
+    def test_no_pruning_at_exact_limit(self):
+        from app.conversation_history import prune_topics
+        entries = [{"compacted_at": f"2026-01-{i+1:02d}T00:00:00"} for i in range(20)]
+        result = prune_topics(entries, max_entries=20)
+        assert len(result) == 20
+
+    def test_empty_list(self):
+        from app.conversation_history import prune_topics
+        assert prune_topics([], max_entries=20) == []
+
+    def test_non_list_input(self):
+        from app.conversation_history import prune_topics
+        assert prune_topics("not a list", max_entries=20) == "not a list"
+
+    def test_compact_history_prunes_topics(self, history_file, topics_file):
+        """compact_history should prune topics file after appending."""
+        from app.conversation_history import save_conversation_message, compact_history
+        import json
+
+        # Pre-populate with 22 existing entries
+        existing = [
+            {"compacted_at": f"2026-01-{i+1:02d}T00:00:00", "message_count": 10}
+            for i in range(22)
+        ]
+        topics_file.write_text(json.dumps(existing))
+
+        # Trigger a compaction that appends one more entry (total 23)
+        for i in range(25):
+            save_conversation_message(history_file, "user", f"Discussion topic number {i}")
+        compact_history(history_file, topics_file, min_messages=20)
+
+        topics = json.loads(topics_file.read_text())
+        assert len(topics) == 20
+        # The newest entry (just appended) should be the last one
+        assert "topics_by_date" in topics[-1]
+
+
 # --- backward compatibility ---
 
 

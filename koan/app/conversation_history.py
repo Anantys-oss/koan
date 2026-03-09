@@ -137,6 +137,31 @@ def format_conversation_history(
     return "\n".join(lines)
 
 
+def prune_topics(entries: list, max_entries: int = 20) -> list:
+    """Keep only the most recent N compaction entries.
+
+    Sorts by ``compacted_at`` timestamp (falling back to list order) and
+    returns the last ``max_entries`` items.
+
+    Args:
+        entries: List of compaction entry dicts.
+        max_entries: Maximum entries to retain.
+
+    Returns:
+        Pruned list (may be the same list if already within limit).
+    """
+    if not isinstance(entries, list) or len(entries) <= max_entries:
+        return entries
+
+    # Sort by compacted_at to ensure we keep the most recent
+    try:
+        entries.sort(key=lambda e: e.get("compacted_at", ""))
+    except (TypeError, AttributeError):
+        pass
+
+    return entries[-max_entries:]
+
+
 def compact_history(history_file: Path, topics_file: Path, min_messages: int = 20) -> int:
     """Compact conversation history at startup to avoid context bleed.
 
@@ -216,6 +241,9 @@ def compact_history(history_file: Path, topics_file: Path, min_messages: int = 2
             existing = []
 
     existing.append(entry)
+
+    # Prune to keep only the most recent entries
+    existing = prune_topics(existing)
 
     # Write topics file atomically
     try:
