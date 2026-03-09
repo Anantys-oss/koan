@@ -216,9 +216,9 @@ def run_command(
         max_turns=max_turns,
     )
 
-    from app.cli_exec import run_cli
+    from app.cli_exec import run_cli_with_retry
 
-    result = run_cli(
+    result = run_cli_with_retry(
         cmd,
         capture_output=True, text=True, timeout=timeout,
         cwd=project_path,

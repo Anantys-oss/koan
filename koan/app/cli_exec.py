@@ -14,7 +14,8 @@ import os
 import subprocess
 import sys
 import tempfile
-from typing import Callable, List, Optional, Tuple
+import time
+from typing import Callable, List, Optional, Sequence, Tuple
 
 STDIN_PLACEHOLDER = "@stdin"
 
@@ -133,3 +134,73 @@ def popen_cli(
     else:
         kwargs.setdefault("stdin", subprocess.DEVNULL)
         return subprocess.Popen(cmd, **kwargs), lambda: None
+
+
+# Default backoff durations for CLI retries (seconds).
+# Higher than retry.py's (1/2/4s) because CLI calls are heavier.
+CLI_RETRY_BACKOFF = (2, 5, 10)
+CLI_RETRY_MAX_ATTEMPTS = 3
+
+
+def run_cli_with_retry(
+    cmd,
+    *,
+    max_attempts: int = CLI_RETRY_MAX_ATTEMPTS,
+    backoff: Sequence[float] = CLI_RETRY_BACKOFF,
+    **kwargs,
+) -> subprocess.CompletedProcess:
+    """Run a CLI command with automatic retry on transient errors.
+
+    Wraps :func:`run_cli` with error classification: retries on
+    ``RETRYABLE`` errors, returns immediately on ``TERMINAL``,
+    ``QUOTA``, or ``UNKNOWN`` errors.
+
+    Only suitable for **short-lived** CLI calls (quota probes, format
+    commands, reflection invocations).  Do **not** use for long-running
+    mission executions managed by the main loop — those use
+    :func:`popen_cli` and have their own recovery.
+
+    Args:
+        cmd: Command list for subprocess.
+        max_attempts: Maximum number of attempts (default 3).
+        backoff: Sleep durations between retries.
+        **kwargs: Passed through to :func:`run_cli`.
+
+    Returns:
+        The :class:`~subprocess.CompletedProcess` from the last attempt.
+    """
+    from app.cli_errors import ErrorCategory, classify_cli_error
+
+    # Ensure capture_output so we can classify errors
+    kwargs.setdefault("capture_output", True)
+    kwargs.setdefault("text", True)
+
+    last_result = None
+    for attempt in range(max_attempts):
+        result = run_cli(cmd, **kwargs)
+        last_result = result
+
+        if result.returncode == 0:
+            return result
+
+        category = classify_cli_error(
+            result.returncode,
+            stdout=result.stdout or "",
+            stderr=result.stderr or "",
+        )
+
+        if category != ErrorCategory.RETRYABLE:
+            return result
+
+        if attempt < max_attempts - 1:
+            delay = backoff[min(attempt, len(backoff) - 1)]
+            print(
+                f"[cli_exec] Retryable CLI error "
+                f"(attempt {attempt + 1}/{max_attempts}): "
+                f"{(result.stderr or '')[:200]} "
+                f"— retrying in {delay}s",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
+
+    return last_result

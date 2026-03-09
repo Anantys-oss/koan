@@ -80,10 +80,10 @@ def run_claude(cmd: list, cwd: str, timeout: int = 600) -> dict:
     Returns:
         Dict with keys: success (bool), output (str), error (str).
     """
-    from app.cli_exec import run_cli
+    from app.cli_exec import run_cli_with_retry
 
     try:
-        result = run_cli(
+        result = run_cli_with_retry(
             cmd,
             capture_output=True, text=True,
             timeout=timeout, cwd=cwd,
