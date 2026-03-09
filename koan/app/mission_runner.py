@@ -603,6 +603,23 @@ def run_post_mission(
         mission_title=mission_title,
     )
 
+    # 7. Fire post-mission hooks
+    _report("running hooks")
+    try:
+        from app.hooks import fire_hook
+        fire_hook(
+            "post_mission",
+            instance_dir=instance_dir,
+            project_name=project_name,
+            project_path=project_path,
+            exit_code=exit_code,
+            mission_title=mission_title,
+            duration_minutes=duration_minutes,
+            result=dict(result),
+        )
+    except Exception as e:
+        print(f"[hooks] post_mission hook error: {e}", file=sys.stderr)
+
     return result
 
 

@@ -289,3 +289,97 @@ class TestInitHooks:
         init_hooks(str(instance))
         r2 = get_registry()
         assert r1 is not r2
+
+
+# ---------------------------------------------------------------------------
+# Integration: post-mission hook fires from run_post_mission
+# ---------------------------------------------------------------------------
+
+
+class TestPostMissionHookIntegration:
+    """Verify fire_hook('post_mission', ...) is called from run_post_mission."""
+
+    @patch("app.mission_runner.update_usage", return_value=False)
+    @patch("app.quota_handler.handle_quota_exhaustion", return_value=None)
+    @patch("app.mission_runner.archive_pending", return_value=False)
+    @patch("app.mission_runner.trigger_reflection", return_value=False)
+    @patch("app.mission_runner.check_auto_merge", return_value=None)
+    @patch("app.mission_runner._record_session_outcome")
+    @patch("app.mission_runner._read_pending_content", return_value="")
+    @patch("app.mission_runner._read_stdout_summary", return_value="")
+    def test_post_mission_hook_called(
+        self, mock_summary, mock_pending, mock_outcome,
+        mock_merge, mock_reflect, mock_archive,
+        mock_quota, mock_usage, tmp_path,
+    ):
+        from app.hooks import init_hooks, get_registry
+        hooks_dir = tmp_path / "hooks"
+        hooks_dir.mkdir()
+        _write_hook(hooks_dir, "tracker", (
+            "calls = []\n"
+            "def handler(ctx): calls.append(ctx)\n"
+            "HOOKS = {'post_mission': handler}\n"
+        ))
+
+        # Patch fire_hook to use our custom registry
+        init_hooks(str(tmp_path))
+
+        from app.mission_runner import run_post_mission
+        result = run_post_mission(
+            instance_dir=str(tmp_path),
+            project_name="testproj",
+            project_path=str(tmp_path),
+            run_num=1,
+            exit_code=0,
+            stdout_file="/dev/null",
+            stderr_file="/dev/null",
+            mission_title="Test mission",
+            start_time=0,
+        )
+
+        mod = sys.modules.get("koan_hook_tracker")
+        assert mod is not None
+        assert len(mod.calls) == 1
+        ctx = mod.calls[0]
+        assert ctx["project_name"] == "testproj"
+        assert ctx["mission_title"] == "Test mission"
+        assert ctx["exit_code"] == 0
+        assert "result" in ctx
+        assert "duration_minutes" in ctx
+
+    @patch("app.mission_runner.update_usage", return_value=False)
+    @patch("app.quota_handler.handle_quota_exhaustion", return_value=None)
+    @patch("app.mission_runner.archive_pending", return_value=False)
+    @patch("app.mission_runner._record_session_outcome")
+    @patch("app.mission_runner._read_pending_content", return_value="")
+    @patch("app.mission_runner._read_stdout_summary", return_value="")
+    def test_post_mission_hook_fires_on_failure(
+        self, mock_summary, mock_pending, mock_outcome,
+        mock_archive, mock_quota, mock_usage, tmp_path,
+    ):
+        from app.hooks import init_hooks
+        hooks_dir = tmp_path / "hooks"
+        hooks_dir.mkdir()
+        _write_hook(hooks_dir, "fail_tracker", (
+            "calls = []\n"
+            "def handler(ctx): calls.append(ctx)\n"
+            "HOOKS = {'post_mission': handler}\n"
+        ))
+        init_hooks(str(tmp_path))
+
+        from app.mission_runner import run_post_mission
+        run_post_mission(
+            instance_dir=str(tmp_path),
+            project_name="testproj",
+            project_path=str(tmp_path),
+            run_num=1,
+            exit_code=1,
+            stdout_file="/dev/null",
+            stderr_file="/dev/null",
+            start_time=0,
+        )
+
+        mod = sys.modules.get("koan_hook_fail_tracker")
+        assert mod is not None
+        assert len(mod.calls) == 1
+        assert mod.calls[0]["exit_code"] == 1
