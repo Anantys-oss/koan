@@ -90,12 +90,57 @@ def run_sanity_checks(instance: str):
                 log("health", f"  [{name}] {change}")
 
 
+def _cleanup_marker_path() -> Path:
+    """Return the path to the cleanup throttle marker file."""
+    koan_root = os.environ.get("KOAN_ROOT", "")
+    return Path(koan_root) / ".koan-last-cleanup" if koan_root else Path("/tmp/.koan-last-cleanup")
+
+
+def _should_run_cleanup(max_age_hours: int = 24) -> bool:
+    """Check if enough time has passed since the last cleanup.
+
+    Returns True if cleanup should run (marker missing, corrupt, or older
+    than max_age_hours).
+    """
+    marker = _cleanup_marker_path()
+    if not marker.exists():
+        return True
+    try:
+        timestamp = float(marker.read_text().strip())
+    except (ValueError, OSError):
+        return True
+    import time
+    elapsed_hours = (time.time() - timestamp) / 3600
+    return elapsed_hours >= max_age_hours
+
+
+def _write_cleanup_marker():
+    """Write the current timestamp to the cleanup marker file."""
+    import time
+    marker = _cleanup_marker_path()
+    try:
+        marker.write_text(str(time.time()))
+    except OSError:
+        pass
+
+
 def cleanup_memory(instance: str):
     """Run memory compaction and cleanup.
 
-    On cold boot (summary.md missing but SNAPSHOT.md exists), hydrates
-    memory from snapshot before running cleanup.
+    Throttled to once per 24 hours to avoid redundant work on fast restart
+    cycles. On cold boot (summary.md missing but SNAPSHOT.md exists),
+    hydrates memory from snapshot before running cleanup.
     """
+    if not _should_run_cleanup():
+        import time
+        marker = _cleanup_marker_path()
+        try:
+            elapsed = (time.time() - float(marker.read_text().strip())) / 3600
+            log("health", f"Memory cleanup skipped (last run {elapsed:.0f}h ago)")
+        except (ValueError, OSError):
+            log("health", "Memory cleanup skipped (recent run)")
+        return
+
     log("health", "Running memory cleanup...")
     from app.memory_manager import MemoryManager
     mgr = MemoryManager(instance)
@@ -113,6 +158,7 @@ def cleanup_memory(instance: str):
             log("health", f"Hydrated {len(restored)} file(s) from snapshot")
 
     mgr.run_cleanup()
+    _write_cleanup_marker()
 
 
 def cleanup_mission_history(instance: str):

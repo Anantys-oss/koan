@@ -183,19 +183,24 @@ class TestRunSanityChecks:
 # ---------------------------------------------------------------------------
 
 class TestCleanupMemory:
+    @patch("app.startup_manager._should_run_cleanup", return_value=True)
+    @patch("app.startup_manager._write_cleanup_marker")
     @patch("app.memory_manager.MemoryManager")
-    def test_calls_run_cleanup(self, mock_mgr_cls, capsys):
+    def test_calls_run_cleanup(self, mock_mgr_cls, mock_write, mock_should, capsys):
         from app.startup_manager import cleanup_memory
         mock_mgr = mock_mgr_cls.return_value
         mock_mgr.summary_path.exists.return_value = True
         cleanup_memory("/tmp/instance")
         mock_mgr_cls.assert_called_once_with("/tmp/instance")
         mock_mgr.run_cleanup.assert_called_once()
+        mock_write.assert_called_once()
         out = capsys.readouterr().out
         assert "Running memory cleanup" in out
 
+    @patch("app.startup_manager._should_run_cleanup", return_value=True)
+    @patch("app.startup_manager._write_cleanup_marker")
     @patch("app.memory_manager.MemoryManager")
-    def test_hydrates_on_cold_boot(self, mock_mgr_cls, capsys):
+    def test_hydrates_on_cold_boot(self, mock_mgr_cls, mock_write, mock_should, capsys):
         """When summary.md is missing but SNAPSHOT.md exists, hydrate first."""
         from app.startup_manager import cleanup_memory
         mock_mgr = mock_mgr_cls.return_value
@@ -209,6 +214,63 @@ class TestCleanupMemory:
         mock_mgr.run_cleanup.assert_called_once()
         out = capsys.readouterr().out
         assert "Cold boot detected" in out
+
+    @patch("app.startup_manager._should_run_cleanup", return_value=False)
+    @patch("app.startup_manager._cleanup_marker_path")
+    @patch("app.memory_manager.MemoryManager")
+    def test_skips_when_recent(self, mock_mgr_cls, mock_marker_path, mock_should, tmp_path, capsys):
+        """Cleanup should be skipped if it ran recently."""
+        import time
+        from app.startup_manager import cleanup_memory
+        marker = tmp_path / ".koan-last-cleanup"
+        marker.write_text(str(time.time() - 3600))  # 1 hour ago
+        mock_marker_path.return_value = marker
+        cleanup_memory("/tmp/instance")
+        mock_mgr_cls.return_value.run_cleanup.assert_not_called()
+        out = capsys.readouterr().out
+        assert "cleanup skipped" in out
+
+
+class TestCleanupThrottle:
+    """Test _should_run_cleanup and _write_cleanup_marker."""
+
+    def test_runs_when_no_marker(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        from app.startup_manager import _should_run_cleanup
+        assert _should_run_cleanup() is True
+
+    def test_skips_when_recent(self, tmp_path, monkeypatch):
+        import time
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        marker = tmp_path / ".koan-last-cleanup"
+        marker.write_text(str(time.time()))  # just now
+        from app.startup_manager import _should_run_cleanup
+        assert _should_run_cleanup() is False
+
+    def test_runs_when_old(self, tmp_path, monkeypatch):
+        import time
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        marker = tmp_path / ".koan-last-cleanup"
+        marker.write_text(str(time.time() - 25 * 3600))  # 25 hours ago
+        from app.startup_manager import _should_run_cleanup
+        assert _should_run_cleanup() is True
+
+    def test_runs_on_corrupt_marker(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        marker = tmp_path / ".koan-last-cleanup"
+        marker.write_text("not a number")
+        from app.startup_manager import _should_run_cleanup
+        assert _should_run_cleanup() is True
+
+    def test_write_marker(self, tmp_path, monkeypatch):
+        import time
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        from app.startup_manager import _write_cleanup_marker
+        _write_cleanup_marker()
+        marker = tmp_path / ".koan-last-cleanup"
+        assert marker.exists()
+        ts = float(marker.read_text().strip())
+        assert abs(ts - time.time()) < 5
 
 
 # ---------------------------------------------------------------------------
