@@ -649,8 +649,8 @@ def main_loop():
         try:
             from app.hooks import fire_hook
             fire_hook("session_end", instance_dir=instance, total_runs=count)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[hooks] session_end hook error: {e}", file=sys.stderr)
         # Cleanup
         Path(koan_root, ".koan-status").unlink(missing_ok=True)
         release_pidfile(pidfile_lock, Path(koan_root), "run")
@@ -1277,8 +1277,8 @@ def _run_iteration(
             autonomous_mode=autonomous_mode,
             run_num=run_num,
         )
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[hooks] pre_mission hook error: {e}", file=sys.stderr)
 
     # --- Generate mission spec for complex missions ---
     spec_content = ""
