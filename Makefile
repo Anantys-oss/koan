@@ -1,7 +1,7 @@
 -include .env
 export
 
-.PHONY: install setup start stop status restart
+.PHONY: install onboard setup start stop status restart
 .PHONY: clean say migrate test sync-instance
 .PHONY: awake run errand-run errand-awake dashboard
 .PHONY: ollama logs ssh-forward
@@ -115,6 +115,9 @@ install:
 	@$(PYTHON) -m venv $(VENV) 2>/dev/null || true
 	@$(VENV)/bin/pip install -q flask 2>/dev/null || pip3 install -q flask 2>/dev/null
 	@cd koan && KOAN_ROOT=$(PWD) PYTHONPATH=. $(PYTHON) app/setup_wizard.py
+
+onboard: setup
+	@cd koan && KOAN_ROOT=$(PWD) PYTHONPATH=. ../$(PYTHON) -m app.onboarding $(ARGS)
 
 clean:
 	rm -rf $(VENV)
