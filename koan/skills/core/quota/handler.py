@@ -36,6 +36,11 @@ def handle(ctx):
     if cli_stats:
         parts.append(_format_cli_stats(cli_stats))
 
+    # --- Section 2b: Per-project/model breakdown (last 7 days) ---
+    cost_section = _format_cost_breakdown(instance_dir)
+    if cost_section:
+        parts.append(cost_section)
+
     # --- Section 3: Agent state ---
     parts.append(_format_agent_state(koan_root))
 
@@ -159,6 +164,50 @@ def _format_koan_usage(state, session_limit, weekly_limit):
         f"  {_format_tokens(weekly_tokens)} / {_format_tokens(weekly_limit)} tokens",
         f"  Resets in {days_to_monday}d",
     ]
+
+    return "\n".join(lines)
+
+
+def _format_cost_breakdown(instance_dir):
+    """Format per-project and per-model breakdown from JSONL cost data."""
+    try:
+        from app.cost_tracker import summarize_by_project, summarize_by_model
+    except ImportError:
+        return None
+
+    by_project = summarize_by_project(instance_dir, days=7)
+    by_model = summarize_by_model(instance_dir, days=7)
+
+    if not by_project and not by_model:
+        return None
+
+    lines = ["Usage (7 days)"]
+
+    if by_project:
+        # Top 3 projects by total tokens
+        sorted_projects = sorted(
+            by_project.items(),
+            key=lambda x: x[1]["input_tokens"] + x[1]["output_tokens"],
+            reverse=True,
+        )[:3]
+        lines.append("  By project:")
+        for name, data in sorted_projects:
+            total = data["input_tokens"] + data["output_tokens"]
+            lines.append(f"    {name}: {_format_tokens(total)} ({data['count']} runs)")
+
+    if by_model:
+        # Top 2 models by total tokens
+        sorted_models = sorted(
+            by_model.items(),
+            key=lambda x: x[1]["input_tokens"] + x[1]["output_tokens"],
+            reverse=True,
+        )[:2]
+        lines.append("  By model:")
+        for name, data in sorted_models:
+            short = _short_model_name(name)
+            inp = data["input_tokens"]
+            out = data["output_tokens"]
+            lines.append(f"    {short}: {_format_tokens(inp)} in / {_format_tokens(out)} out")
 
     return "\n".join(lines)
 
