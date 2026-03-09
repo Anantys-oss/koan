@@ -146,7 +146,51 @@ def _handle_status(ctx) -> str:
                         for m in pending[:3]:
                             parts.append(f"    {_format_mission_display(m)}")
 
+    # Health section
+    parts.extend(_build_health_section(koan_root, instance_dir))
+
     return "\n".join(parts)
+
+
+def _build_health_section(koan_root, instance_dir) -> list:
+    """Build health status lines for /status output."""
+    lines = []
+    try:
+        from app.health_check import get_run_heartbeat_age
+        from app.heartbeat import check_stale_missions, get_disk_free_gb
+
+        health_items = []
+
+        # Run heartbeat age
+        age = get_run_heartbeat_age(str(koan_root))
+        if age >= 0:
+            if age < 120:
+                health_items.append(f"Heartbeat: {age:.0f}s ago")
+            else:
+                health_items.append(f"⚠️ Heartbeat: {age / 60:.0f}m ago")
+        else:
+            health_items.append("Heartbeat: n/a")
+
+        # Stale missions (read-only check, no alerting)
+        stale = check_stale_missions(str(instance_dir))
+        if stale:
+            health_items.append(f"⚠️ {len(stale)} stale mission(s)")
+
+        # Disk space
+        free_gb = get_disk_free_gb(str(koan_root))
+        if free_gb >= 0:
+            if free_gb < 1.0:
+                health_items.append(f"⚠️ Disk: {free_gb:.1f} GB free")
+            else:
+                health_items.append(f"Disk: {free_gb:.0f} GB free")
+
+        if health_items:
+            lines.append("\nHealth")
+            for item in health_items:
+                lines.append(f"  {item}")
+    except Exception:
+        pass
+    return lines
 
 
 def _handle_ping(ctx) -> str:

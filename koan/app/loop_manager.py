@@ -644,6 +644,15 @@ def interruptible_sleep(
         if _check_signal_file(koan_root, ".koan-shutdown"):
             return "shutdown"
 
+        # Write run-loop heartbeat during sleep to signal liveness
+        from app.health_check import write_run_heartbeat
+        write_run_heartbeat(koan_root)
+
+        # Run periodic heartbeat checks (throttled to once per 30 min)
+        from app.heartbeat import run_stale_mission_check, run_disk_space_check
+        run_stale_mission_check(instance_dir)
+        run_disk_space_check(koan_root)
+
         # Check GitHub notifications (throttled to once per 60s).
         # Track wall time: API calls can be slow and should count toward elapsed.
         t0 = time.monotonic()

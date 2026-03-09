@@ -1067,6 +1067,11 @@ def _run_iteration(
     """
     run_num = count + 1
     set_status(koan_root, f"Run {run_num}/{max_runs} — preparing")
+
+    # Write run-loop heartbeat so external monitors can detect a hung agent
+    from app.health_check import write_run_heartbeat
+    write_run_heartbeat(koan_root)
+
     print()
     print(bold_cyan(f"=== Run {run_num}/{max_runs} — {time.strftime('%Y-%m-%d %H:%M:%S')} ==="))
 
