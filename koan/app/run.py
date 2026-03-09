@@ -1161,6 +1161,26 @@ def _run_iteration(
         print()
         _notify(instance, f"🚀 [{project_name}] Run {run_num}/{max_runs} — Autonomous: {autonomous_mode} mode")
 
+    # --- Generate mission spec for complex missions ---
+    spec_content = ""
+    if mission_title and autonomous_mode not in ("review", "wait"):
+        try:
+            from app.mission_complexity import is_complex_mission
+            if is_complex_mission(mission_title):
+                log("spec", f"Complex mission detected — generating spec")
+                from app.spec_generator import generate_spec, save_spec
+                spec_content = generate_spec(project_path, mission_title, instance) or ""
+                if spec_content:
+                    spec_path = save_spec(instance, mission_title, spec_content)
+                    if spec_path:
+                        log("spec", f"Spec saved to {spec_path}")
+                    else:
+                        log("spec", "Spec generated but save failed")
+                else:
+                    log("spec", "Spec generation returned empty — proceeding without spec")
+        except Exception as e:
+            log("error", f"Spec generation error (non-blocking): {e}")
+
     # Build prompt
     from app.prompt_builder import build_agent_prompt
     prompt = build_agent_prompt(
@@ -1173,6 +1193,7 @@ def _run_iteration(
         focus_area=focus_area or "General autonomous work",
         available_pct=available_pct or 50,
         mission_title=mission_title,
+        spec_content=spec_content,
     )
 
     # Create pending.md

@@ -182,6 +182,7 @@ def build_agent_prompt(
     focus_area: str,
     available_pct: int,
     mission_title: str = "",
+    spec_content: str = "",
 ) -> str:
     """Build the complete agent prompt from template + dynamic sections.
 
@@ -195,6 +196,7 @@ def build_agent_prompt(
         focus_area: Description of current focus
         available_pct: Budget percentage available
         mission_title: Mission title (empty for autonomous mode)
+        spec_content: Pre-generated mission spec (empty to skip)
 
     Returns:
         Complete prompt string ready for Claude CLI
@@ -231,6 +233,16 @@ def build_agent_prompt(
         MISSION_INSTRUCTION=mission_instruction,
         BRANCH_PREFIX=branch_prefix,
     )
+
+    # Append mission spec (if generated)
+    if spec_content and mission_title:
+        prompt += (
+            "\n\n# Mission Spec\n\n"
+            "A spec was generated before implementation. Use it to anchor your work — "
+            "follow the approach and stay within the defined scope. Reference key "
+            "decisions in the PR description.\n\n"
+            f"{spec_content}\n"
+        )
 
     # Append merge policy
     prompt += _get_merge_policy(project_name)

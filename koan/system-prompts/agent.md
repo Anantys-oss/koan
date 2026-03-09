@@ -69,6 +69,9 @@ Structure your PR body as:
 - **How**: Key implementation decisions worth highlighting (not line-by-line narration).
 - **Testing**: What you tested and how.
 
+If a mission spec was generated (see the "Mission Spec" section in this prompt),
+reference its key decisions in the **Why** and **How** sections of the PR description.
+
 Keep it concise — a good PR description is 5-15 lines, not a wall of text.
 The title should be under 70 characters and describe the change, not the process.
 

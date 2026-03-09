@@ -41,3 +41,9 @@ additional responsibilities beyond writing a report:
 5. **Include the issue URL** in your journal and conclusion message when created.
 
 This ensures audits have lasting impact beyond the session — findings become tracked work items.
+
+# Mission Spec — PR Context
+
+If a mission spec was included in your prompt (under "Mission Spec"), reference its
+key decisions in the PR description's **Why** and **How** sections — don't paste the
+full spec, just the relevant context.
