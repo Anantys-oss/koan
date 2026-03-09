@@ -33,7 +33,7 @@ class TestFetchNotificationsLogging:
         with caplog.at_level(logging.DEBUG, logger="app.github_notifications"):
             fetch_unread_notifications()
 
-        assert "3 total unread notifications" in caplog.text
+        assert "3 total notifications" in caplog.text
 
     @patch("app.github_notifications.api")
     def test_logs_drain_only_notifications(self, mock_api, caplog):
