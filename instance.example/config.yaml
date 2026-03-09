@@ -167,6 +167,16 @@ usage:
 #   enabled: true          # Master switch (default: true)
 #   block_mode: false      # false = warn + quarantine, true = reject mission entirely
 
+# Auto-update — automatically keep Kōan up to date
+# When enabled, Kōan periodically checks if upstream has new commits
+# and pulls + restarts automatically. Checks run at startup and every
+# N iterations. A 2-minute cache prevents excessive git fetches.
+# See docs/auto-update.md for full details.
+# auto_update:
+#   enabled: true           # Master switch (default: false)
+#   check_interval: 10      # Check every N iterations (default: 10)
+#   notify: true            # Notify on Telegram before/after update (default: true)
+
 # GitHub notification-driven commands
 # Enable Kōan to respond to @mentions in GitHub PR/issue comments.
 # When a user posts "@nickname rebase" in a PR comment, Kōan reacts with 👍,
