@@ -27,6 +27,7 @@ class WatcherEvent:
     timestamp: str = ""
     delivery_id: str | None = None
     raw_event_type: str = ""
+    commits: list | None = None  # [{sha, message, timestamp, author_name, author_email}]
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -95,7 +96,21 @@ def normalize_github_push(payload: dict, delivery_id: str | None = None,
     head_commit = payload.get("head_commit", {})
     message = (head_commit.get("message", "") or "")[:80]
 
-    return _build_github_event(
+    commits_detail = [
+        {
+            "sha": c.get("id", ""),
+            "message": (c.get("message", "") or "")[:200],
+            "timestamp": c.get("timestamp", ""),
+            "author_name": c.get("author", {}).get("name", ""),
+            "author_email": c.get("author", {}).get("email", ""),
+            "added": len(c.get("added", [])),
+            "modified": len(c.get("modified", [])),
+            "removed": len(c.get("removed", [])),
+        }
+        for c in commits
+    ] or None
+
+    event = _build_github_event(
         payload, delivery_id, classify_fn,
         type="push",
         branch=_extract_branch(payload.get("ref", "")),
@@ -104,6 +119,8 @@ def normalize_github_push(payload: dict, delivery_id: str | None = None,
         forced=payload.get("forced", False),
         raw_event_type="push",
     )
+    event.commits = commits_detail
+    return event
 
 
 def normalize_github_pr(payload: dict, delivery_id: str | None = None,
@@ -221,6 +238,14 @@ def normalize_gitlab_commit(commit: dict, repo_name: str, branch: str | None = N
         from app.watcher.helpers import resolve_author_login
         resolved_author = resolve_author_login(author_email, "gitlab") or author_email
 
+    commits_detail = [{
+        "sha": commit.get("id", commit.get("short_id", "")),
+        "message": title,
+        "timestamp": timestamp,
+        "author_name": author_name_raw,
+        "author_email": author_email,
+    }]
+
     return WatcherEvent(
         id=generate_event_id(),
         platform="gitlab",
@@ -236,6 +261,7 @@ def normalize_gitlab_commit(commit: dict, repo_name: str, branch: str | None = N
         timestamp=timestamp,
         delivery_id=None,
         raw_event_type="push",
+        commits=commits_detail,
     )
 
 
