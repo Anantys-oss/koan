@@ -49,7 +49,7 @@ SLASH_COMMAND_MAP = {
 }
 
 # Commands that take >5s → send ack before executing
-LONG_COMMANDS = {"advisor scan", "advisor analyze", "report daily", "watcher status"}
+LONG_COMMANDS = {"advisor scan", "advisor analyze", "report daily", "watcher status", "watcher report"}
 
 # Permissions by user type
 PERMISSIONS: dict[str, set[str]] = {
@@ -393,6 +393,20 @@ def dispatch(command: ChatCommand, send_fn=None) -> ChatResponse:
     elapsed = int((time.monotonic() - start) * 1000)
     log_chat_audit(command, status, elapsed)
 
+    # For long results, split into multiple messages via send_fn
+    MAX_TEXT = 3800
+    if len(result_text) > MAX_TEXT and send_fn:
+        chunks = _split_text(result_text, MAX_TEXT)
+        # Send all chunks except last via send_fn
+        for chunk in chunks[:-1]:
+            chunk_resp = ChatResponse(
+                space_name=command.space_name,
+                thread_name=command.thread_name,
+                text=chunk,
+            )
+            send_fn(chunk_resp)
+        result_text = chunks[-1]
+
     cards = custom_cards or build_command_response_card(command.skill_name, result_text, status)
 
     if ack_message_name:
@@ -411,6 +425,28 @@ def dispatch(command: ChatCommand, send_fn=None) -> ChatResponse:
         text=result_text,
         cards=cards,
     )
+
+
+def _split_text(text: str, max_chars: int) -> list[str]:
+    """Split long text into chunks, breaking at blank lines when possible."""
+    if len(text) <= max_chars:
+        return [text]
+
+    chunks = []
+    remaining = text
+    while len(remaining) > max_chars:
+        # Try to break at a blank line near the limit
+        cut = remaining[:max_chars].rfind("\n\n")
+        if cut < max_chars // 2:
+            # No good blank line break, try single newline
+            cut = remaining[:max_chars].rfind("\n")
+        if cut < max_chars // 3:
+            cut = max_chars
+        chunks.append(remaining[:cut].rstrip())
+        remaining = remaining[cut:].lstrip("\n")
+    if remaining.strip():
+        chunks.append(remaining)
+    return chunks
 
 
 # ── Card click handler ───────────────────────────────────────────────
