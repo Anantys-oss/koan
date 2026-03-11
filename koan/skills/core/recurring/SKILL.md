@@ -1,8 +1,8 @@
 ---
 name: recurring
 scope: core
-description: Manage recurring missions (hourly, daily, weekly)
-version: 1.0.0
+description: Manage recurring missions (hourly, daily, weekly, custom interval)
+version: 1.1.0
 audience: bridge
 commands:
   - name: daily
@@ -14,6 +14,9 @@ commands:
   - name: weekly
     description: Add a weekly recurring mission
     usage: /weekly [HH:MM] <text> [project:<name>]
+  - name: every
+    description: Add a custom-interval recurring mission
+    usage: /every <interval> <text> [project:<name>]
   - name: recurring
     description: List all recurring missions
     usage: /recurring

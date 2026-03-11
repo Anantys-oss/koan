@@ -40,11 +40,13 @@ from app.utils import atomic_write, insert_pending_mission
 T = TypeVar("T")
 
 
-FREQUENCIES = ("hourly", "daily", "weekly")
+FREQUENCIES = ("hourly", "daily", "weekly", "every")
 
 # Regex for parsing "HH:MM" at the start of mission text
 import re
 _AT_TIME_RE = re.compile(r"^(\d{1,2}):(\d{2})\s+")
+# Regex for parsing interval strings like "5m", "2h", "1h30m", "90s"
+_INTERVAL_RE = re.compile(r"^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$")
 
 
 def load_recurring(recurring_path: Path) -> List[Dict]:
@@ -105,6 +107,86 @@ def parse_at_time(text: str) -> tuple:
     at_str = f"{hour:02d}:{minute:02d}"
     remaining = text.strip()[match.end():]
     return at_str, remaining.strip()
+
+
+def parse_interval(text: str) -> int:
+    """Parse an interval string like "5m", "2h", "1h30m" into seconds.
+
+    Supported units: h (hours), m (minutes), s (seconds).
+    Minimum interval: 1 minute (60 seconds).
+
+    Returns:
+        Interval in seconds.
+
+    Raises:
+        ValueError: If format is invalid or interval is too short.
+    """
+    text = text.strip().lower()
+    match = _INTERVAL_RE.match(text)
+    if not match or text == "":
+        raise ValueError(f"Invalid interval: '{text}'. Use format like 5m, 2h, 1h30m.")
+    hours = int(match.group(1) or 0)
+    minutes = int(match.group(2) or 0)
+    seconds = int(match.group(3) or 0)
+    total = hours * 3600 + minutes * 60 + seconds
+    if total < 60:
+        raise ValueError("Minimum interval is 1 minute (1m).")
+    return total
+
+
+def format_interval(seconds: int) -> str:
+    """Format seconds back to a human-readable interval string."""
+    if seconds < 60:
+        return f"{seconds}s"
+    hours, remainder = divmod(seconds, 3600)
+    minutes = remainder // 60
+    if hours and minutes:
+        return f"{hours}h{minutes}m"
+    if hours:
+        return f"{hours}h"
+    return f"{minutes}m"
+
+
+def add_recurring_interval(
+    recurring_path: Path,
+    interval_seconds: int,
+    interval_display: str,
+    text: str,
+    project: Optional[str] = None,
+) -> Dict:
+    """Add a recurring mission with a custom interval.
+
+    Args:
+        recurring_path: Path to recurring.json
+        interval_seconds: Interval in seconds (minimum 60)
+        interval_display: Human-readable interval (e.g. "5m")
+        text: Mission description
+        project: Optional project name
+
+    Returns:
+        The created mission dict
+    """
+    created_mission = {}
+
+    def _add(missions: List[Dict]) -> Dict:
+        mission = {
+            "id": f"rec_{int(time.time())}_{os.getpid()}_{len(missions)}",
+            "frequency": "every",
+            "interval_seconds": interval_seconds,
+            "interval_display": interval_display,
+            "text": text.strip(),
+            "project": project,
+            "created": datetime.now().isoformat(timespec="seconds"),
+            "last_run": None,
+            "enabled": True,
+            "at": None,
+        }
+        missions.append(mission)
+        created_mission.update(mission)
+        return mission
+
+    _locked_modify(recurring_path, _add)
+    return created_mission
 
 
 def add_recurring(
@@ -210,7 +292,7 @@ def list_recurring(recurring_path: Path) -> List[Dict]:
     """
     missions = load_recurring(recurring_path)
     enabled = [m for m in missions if m.get("enabled", True)]
-    freq_order = {"hourly": 0, "daily": 1, "weekly": 2}
+    freq_order = {"every": 0, "hourly": 1, "daily": 2, "weekly": 3}
     return sorted(enabled, key=lambda m: freq_order.get(m["frequency"], 99))
 
 
@@ -230,7 +312,10 @@ def format_recurring_list(missions: List[Dict]) -> str:
         last_run = m.get("last_run")
 
         at = m.get("at")
-        if at:
+        if freq == "every":
+            interval_display = m.get("interval_display") or format_interval(m.get("interval_seconds", 0))
+            entry = f"  {i}. [every {interval_display}] {text}"
+        elif at:
             entry = f"  {i}. [{freq} at {at}] {text}"
         else:
             entry = f"  {i}. [{freq}] {text}"
@@ -305,7 +390,12 @@ def is_due(mission: Dict, now: Optional[datetime] = None) -> bool:
 
     frequency = mission["frequency"]
 
-    if frequency == "hourly":
+    if frequency == "every":
+        interval_seconds = mission.get("interval_seconds", 0)
+        if interval_seconds <= 0:
+            return True  # Misconfigured — run immediately
+        return (now - last_dt) >= timedelta(seconds=interval_seconds)
+    elif frequency == "hourly":
         return (now - last_dt) >= timedelta(hours=1)
     elif frequency == "daily":
         if last_dt.date() >= now.date():
@@ -353,7 +443,11 @@ def check_and_inject(
             freq = mission["frequency"]
 
             # Build mission entry for missions.md
-            tag = f"[{freq}] "
+            if freq == "every":
+                interval_display = mission.get("interval_display") or format_interval(mission.get("interval_seconds", 0))
+                tag = f"[every {interval_display}] "
+            else:
+                tag = f"[{freq}] "
             if project:
                 entry = f"- [project:{project}] {tag}{text}"
             else:

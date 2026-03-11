@@ -1,12 +1,13 @@
-"""Kōan recurring skill -- manage recurring missions (hourly, daily, weekly)."""
+"""Kōan recurring skill -- manage recurring missions (hourly, daily, weekly, every)."""
 
 
 def handle(ctx):
-    """Handle /daily, /hourly, /weekly, /recurring, /cancel_recurring commands.
+    """Handle /daily, /hourly, /weekly, /every, /recurring, /cancel_recurring commands.
 
     /daily <text>           — add a daily recurring mission
     /hourly <text>          — add an hourly recurring mission
     /weekly <text>          — add a weekly recurring mission
+    /every <interval> <text> — add a custom-interval recurring mission
     /recurring              — list all recurring missions
     /cancel_recurring [n]   — cancel a recurring mission by number or keyword
     """
@@ -14,6 +15,8 @@ def handle(ctx):
 
     if command in ("daily", "hourly", "weekly"):
         return _handle_add(ctx, command)
+    elif command == "every":
+        return _handle_every(ctx)
     elif command == "recurring":
         return _handle_list(ctx)
     elif command == "cancel_recurring":
@@ -56,6 +59,50 @@ def _handle_add(ctx, frequency):
         return ack
     except ValueError as e:
         return str(e)
+
+
+def _handle_every(ctx):
+    """Add a recurring mission with a custom interval."""
+    body = ctx.args.strip()
+    if not body:
+        return (
+            "Usage: /every <interval> <description>\n"
+            "Ex: /every 5m check design issues [project:nocrm]\n"
+            "Ex: /every 2h run health check\n"
+            "Intervals: 5m, 30m, 2h, 1h30m"
+        )
+
+    # First word is the interval
+    parts = body.split(None, 1)
+    if len(parts) < 2:
+        return (
+            "Usage: /every <interval> <description>\n"
+            "Ex: /every 5m check design issues"
+        )
+
+    interval_str, rest = parts[0], parts[1]
+
+    from app.utils import parse_project
+    from app.recurring import parse_interval, format_interval, add_recurring_interval
+
+    try:
+        interval_seconds = parse_interval(interval_str)
+    except ValueError as e:
+        return str(e)
+
+    project, text = parse_project(rest)
+    if not text.strip():
+        return "Missing mission description after interval."
+
+    recurring_path = ctx.instance_dir / "recurring.json"
+    display = format_interval(interval_seconds)
+
+    add_recurring_interval(recurring_path, interval_seconds, display, text, project)
+    ack = f"Recurring mission added (every {display})"
+    if project:
+        ack += f" [project:{project}]"
+    ack += f":\n\n{text}"
+    return ack
 
 
 def _handle_list(ctx):

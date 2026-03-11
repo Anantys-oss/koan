@@ -9,12 +9,15 @@ from app.recurring import (
     load_recurring,
     save_recurring,
     add_recurring,
+    add_recurring_interval,
     remove_recurring,
     list_recurring,
     format_recurring_list,
     is_due,
     check_and_inject,
     parse_at_time,
+    parse_interval,
+    format_interval,
     FREQUENCIES,
 )
 
@@ -352,6 +355,170 @@ class TestCheckAndInject:
 
 
 # --- parse_at_time ---
+
+
+# --- parse_interval / format_interval ---
+
+
+class TestParseInterval:
+    def test_minutes(self):
+        assert parse_interval("5m") == 300
+
+    def test_hours(self):
+        assert parse_interval("2h") == 7200
+
+    def test_combined(self):
+        assert parse_interval("1h30m") == 5400
+
+    def test_seconds(self):
+        assert parse_interval("90s") == 90
+
+    def test_minutes_and_seconds(self):
+        assert parse_interval("1m30s") == 90
+
+    def test_minimum_enforced(self):
+        with pytest.raises(ValueError, match="Minimum interval"):
+            parse_interval("30s")
+
+    def test_invalid_format(self):
+        with pytest.raises(ValueError, match="Invalid interval"):
+            parse_interval("abc")
+
+    def test_empty_string(self):
+        with pytest.raises(ValueError, match="Invalid interval"):
+            parse_interval("")
+
+    def test_just_number(self):
+        with pytest.raises(ValueError, match="Invalid interval"):
+            parse_interval("5")
+
+    def test_case_insensitive(self):
+        assert parse_interval("5M") == 300
+
+
+class TestFormatInterval:
+    def test_minutes(self):
+        assert format_interval(300) == "5m"
+
+    def test_hours(self):
+        assert format_interval(7200) == "2h"
+
+    def test_combined(self):
+        assert format_interval(5400) == "1h30m"
+
+    def test_seconds(self):
+        assert format_interval(30) == "30s"
+
+
+# --- add_recurring_interval ---
+
+
+class TestAddRecurringInterval:
+    def test_add_interval(self, tmp_path):
+        f = tmp_path / "recurring.json"
+        m = add_recurring_interval(f, 300, "5m", "check design", project="nocrm")
+        assert m["frequency"] == "every"
+        assert m["interval_seconds"] == 300
+        assert m["interval_display"] == "5m"
+        assert m["text"] == "check design"
+        assert m["project"] == "nocrm"
+
+    def test_add_without_project(self, tmp_path):
+        f = tmp_path / "recurring.json"
+        m = add_recurring_interval(f, 300, "5m", "check health")
+        assert m["project"] is None
+
+
+# --- is_due with every ---
+
+
+class TestIsDueEvery:
+    def test_never_run_is_due(self):
+        m = {"frequency": "every", "interval_seconds": 300, "last_run": None, "enabled": True}
+        assert is_due(m) is True
+
+    def test_within_interval_not_due(self):
+        now = datetime(2026, 2, 3, 14, 0)
+        m = {
+            "frequency": "every", "interval_seconds": 300,
+            "last_run": (now - timedelta(minutes=3)).isoformat(), "enabled": True,
+        }
+        assert is_due(m, now) is False
+
+    def test_past_interval_due(self):
+        now = datetime(2026, 2, 3, 14, 0)
+        m = {
+            "frequency": "every", "interval_seconds": 300,
+            "last_run": (now - timedelta(minutes=6)).isoformat(), "enabled": True,
+        }
+        assert is_due(m, now) is True
+
+    def test_exact_interval_due(self):
+        now = datetime(2026, 2, 3, 14, 0)
+        m = {
+            "frequency": "every", "interval_seconds": 300,
+            "last_run": (now - timedelta(seconds=300)).isoformat(), "enabled": True,
+        }
+        assert is_due(m, now) is True
+
+    def test_disabled_not_due(self):
+        m = {"frequency": "every", "interval_seconds": 300, "last_run": None, "enabled": False}
+        assert is_due(m) is False
+
+
+# --- format_recurring_list with every ---
+
+
+class TestFormatWithEvery:
+    def test_shows_interval(self):
+        missions = [
+            {"frequency": "every", "interval_seconds": 300, "interval_display": "5m",
+             "text": "check design", "project": None, "last_run": None},
+        ]
+        result = format_recurring_list(missions)
+        assert "[every 5m]" in result
+        assert "check design" in result
+
+
+# --- check_and_inject with every ---
+
+
+class TestCheckAndInjectEvery:
+    def _setup_missions(self, tmp_path):
+        missions_path = tmp_path / "missions.md"
+        missions_path.write_text(
+            "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n\n"
+        )
+        return missions_path
+
+    def test_injects_due_every_mission(self, tmp_path):
+        missions_path = self._setup_missions(tmp_path)
+        recurring_path = tmp_path / "recurring.json"
+        add_recurring_interval(recurring_path, 300, "5m", "check design", project="nocrm")
+
+        now = datetime(2026, 2, 3, 8, 0)
+        result = check_and_inject(recurring_path, missions_path, now)
+        assert len(result) == 1
+        content = missions_path.read_text()
+        assert "[every 5m]" in content
+        assert "check design" in content
+
+    def test_skips_within_interval(self, tmp_path):
+        missions_path = self._setup_missions(tmp_path)
+        recurring_path = tmp_path / "recurring.json"
+
+        now = datetime(2026, 2, 3, 14, 0)
+        missions_data = [{
+            "id": "rec_1", "frequency": "every", "interval_seconds": 300,
+            "interval_display": "5m", "text": "check design", "project": None,
+            "created": "2026-02-03T08:00:00",
+            "last_run": (now - timedelta(minutes=3)).isoformat(),
+            "enabled": True, "at": None,
+        }]
+        save_recurring(recurring_path, missions_data)
+
+        result = check_and_inject(recurring_path, missions_path, now)
+        assert result == []
 
 
 class TestParseAtTime:
