@@ -1,6 +1,7 @@
 ---
 name: rebase
 scope: core
+group: pr
 description: "Queue a PR rebase mission (ex: /rebase https://github.com/owner/repo/pull/42)"
 version: 2.0.0
 audience: hybrid

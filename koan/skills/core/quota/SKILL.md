@@ -1,6 +1,7 @@
 ---
 name: quota
 scope: core
+group: status
 description: Check LLM quota live (no cache)
 version: 1.0.0
 audience: bridge

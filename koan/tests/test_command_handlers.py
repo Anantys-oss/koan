@@ -151,8 +151,8 @@ class TestHandleCommandRouting:
         handle_command("/help")
         mock_send.assert_called_once()
         msg = mock_send.call_args[0][0]
-        assert "Commands" in msg
-        assert "CORE" in msg
+        assert "Help" in msg
+        assert "/help <group>" in msg
 
     def test_help_specific_command(self, patch_bridge_state, mock_send, mock_registry):
         """Test /help <command> shows detailed help for a skill."""
@@ -160,20 +160,31 @@ class TestHandleCommandRouting:
         from app.skills import Skill, SkillCommand
         skill = MagicMock(spec=Skill)
         cmd = SkillCommand(
-            name="status",
-            description="Show agent status",
-            aliases=["st"],
-            usage="/status [project]",
+            name="quota",
+            description="Show quota usage",
+            aliases=["qu"],
+            usage="/quota [project]",
         )
         skill.commands = [cmd]
-        skill.description = "Show agent status"
+        skill.description = "Show quota usage"
         mock_registry.find_by_command.return_value = skill
+
+        # "quota" is not a group name, so it falls through to L3 command help
+        handle_command("/help quota")
+        mock_send.assert_called_once()
+        msg = mock_send.call_args[0][0]
+        assert "/quota" in msg
+        assert "Show quota usage" in msg
+
+    def test_help_group_name_shows_group(self, patch_bridge_state, mock_send, mock_registry):
+        """When arg matches a group name, L2 group view takes priority."""
+        from app.command_handlers import handle_command
+        mock_registry.list_by_group.return_value = []
 
         handle_command("/help status")
         mock_send.assert_called_once()
         msg = mock_send.call_args[0][0]
-        assert "/status" in msg
-        assert "Show agent status" in msg
+        assert "Status" in msg
 
     def test_help_command_with_inconsistent_registry(
         self, patch_bridge_state, mock_send, mock_registry
@@ -183,15 +194,14 @@ class TestHandleCommandRouting:
         from app.command_handlers import handle_command
         from app.skills import Skill, SkillCommand
 
-        # Registry returns a skill for "status", but the skill's commands
-        # contain "different" — simulating an inconsistent registry.
+        # Use "foobar" which is not a group name, so it falls through to L3
         skill = MagicMock(spec=Skill)
         cmd = SkillCommand(name="different", description="Mismatch")
         skill.commands = [cmd]
         mock_registry.find_by_command.return_value = skill
 
         # Should not raise StopIteration
-        handle_command("/help status")
+        handle_command("/help foobar")
         mock_send.assert_called_once()
         msg = mock_send.call_args[0][0]
         assert "Unknown command" in msg
@@ -726,41 +736,51 @@ class TestCliSkillDispatch:
 # ---------------------------------------------------------------------------
 
 class TestHandleHelp:
-    """Tests for /help output."""
+    """Tests for /help L1 grouped output."""
 
-    def test_help_lists_core_section(self, patch_bridge_state, mock_send, mock_registry):
+    def test_help_shows_groups(self, patch_bridge_state, mock_send, mock_registry):
         from app.command_handlers import _handle_help
+        mock_registry.groups.return_value = []
+        mock_registry.list_all.return_value = []
         _handle_help()
         msg = mock_send.call_args[0][0]
-        assert "CORE" in msg
-        assert "/pause" in msg
-        assert "/resume" in msg
-        assert "/stop" in msg
-        assert "/help" in msg
+        assert "Help" in msg
+        assert "/missions" in msg
+        assert "/code" in msg
+        assert "/status" in msg
+        assert "/config" in msg
+        assert "/ideas" in msg
+        assert "/system" in msg
 
-    def test_help_lists_tips(self, patch_bridge_state, mock_send, mock_registry):
+    def test_help_shows_navigation_hints(self, patch_bridge_state, mock_send, mock_registry):
         from app.command_handlers import _handle_help
+        mock_registry.groups.return_value = []
+        mock_registry.list_all.return_value = []
         _handle_help()
         msg = mock_send.call_args[0][0]
-        assert "TIPS" in msg
+        assert "/help <group>" in msg
+        assert "/help <command>" in msg
 
-    def test_help_lists_non_core_skills(self, patch_bridge_state, mock_send, mock_registry):
+    def test_help_shows_non_core_skills_count(self, patch_bridge_state, mock_send, mock_registry):
         from app.command_handlers import _handle_help
         from app.skills import Skill, SkillCommand
 
         non_core_skill = MagicMock(spec=Skill)
         non_core_skill.scope = "anantys"
         non_core_skill.description = "Custom review"
+        non_core_skill.group = ""
         cmd = MagicMock(spec=SkillCommand)
         cmd.name = "review"
         cmd.description = "Custom review"
         cmd.aliases = []
         non_core_skill.commands = [cmd]
         mock_registry.list_all.return_value = [non_core_skill]
+        mock_registry.groups.return_value = []
 
         _handle_help()
         msg = mock_send.call_args[0][0]
-        assert "SKILLS" in msg
+        assert "/skill" in msg
+        assert "1 extra skill" in msg
 
 
 # ---------------------------------------------------------------------------
@@ -1186,6 +1206,8 @@ class TestHandleCommandEdgeCases:
     def test_help_with_slash_prefix(self, patch_bridge_state, mock_send, mock_registry):
         """/help /mission should look up 'mission', stripping the extra /."""
         from app.command_handlers import handle_command
+        # _handle_help_detail strips / and checks groups first, then commands
+        mock_registry.find_by_command.return_value = None
         handle_command("/help /mission")
         mock_registry.find_by_command.assert_called_with("mission")
 
@@ -1412,6 +1434,88 @@ class TestHandleHelpCommandDetail:
         msg = mock_send.call_args[0][0]
         assert "/cancel" in msg
         assert "Cancel a mission" in msg
+
+
+# ---------------------------------------------------------------------------
+# Test: _handle_help_detail — L2 group expansion
+# ---------------------------------------------------------------------------
+
+class TestHandleHelpGroup:
+    """Tests for /help <group> — L2 group expansion."""
+
+    def test_help_group_shows_commands(self, patch_bridge_state, mock_send, mock_registry):
+        """L2: /help missions should list commands in the missions group."""
+        from app.command_handlers import _handle_help_detail
+        from app.skills import Skill, SkillCommand
+
+        skill = MagicMock(spec=Skill)
+        skill.scope = "core"
+        skill.group = "missions"
+        cmd = SkillCommand(name="mission", description="Create a mission", aliases=[])
+        skill.commands = [cmd]
+        skill.description = "Create a mission"
+        mock_registry.list_by_group.return_value = [skill]
+
+        _handle_help_detail("missions")
+        msg = mock_send.call_args[0][0]
+        assert "Missions" in msg
+        assert "/mission" in msg
+        assert "Create a mission" in msg
+
+    def test_help_group_shows_aliases(self, patch_bridge_state, mock_send, mock_registry):
+        """L2: commands with aliases should display them."""
+        from app.command_handlers import _handle_help_detail
+        from app.skills import Skill, SkillCommand
+
+        skill = MagicMock(spec=Skill)
+        skill.scope = "core"
+        skill.group = "missions"
+        cmd = SkillCommand(name="list", description="View the queue", aliases=["queue", "ls"])
+        skill.commands = [cmd]
+        skill.description = "View the queue"
+        mock_registry.list_by_group.return_value = [skill]
+
+        _handle_help_detail("missions")
+        msg = mock_send.call_args[0][0]
+        assert "/list" in msg
+        assert "queue" in msg
+        assert "ls" in msg
+
+    def test_help_group_falls_through_to_command(self, patch_bridge_state, mock_send, mock_registry):
+        """If arg is not a group, try as a command (L3)."""
+        from app.command_handlers import _handle_help_detail
+        from app.skills import Skill, SkillCommand
+
+        skill = MagicMock(spec=Skill)
+        cmd = SkillCommand(name="status", description="Show status")
+        skill.commands = [cmd]
+        skill.description = "Show status"
+        mock_registry.find_by_command.return_value = skill
+
+        _handle_help_detail("status")
+        msg = mock_send.call_args[0][0]
+        # "status" IS a group name, so it shows the group view, not L3
+        assert "Status" in msg
+
+    def test_help_unknown_suggests(self, patch_bridge_state, mock_send, mock_registry):
+        """Unknown arg that matches no group or command suggests closest."""
+        from app.command_handlers import _handle_help_detail
+        mock_registry.find_by_command.return_value = None
+        mock_registry.suggest_command.return_value = "missions"
+
+        _handle_help_detail("missons")  # typo
+        msg = mock_send.call_args[0][0]
+        assert "Unknown command" in msg
+        assert "missions" in msg
+
+    def test_help_via_handle_command(self, patch_bridge_state, mock_send, mock_registry):
+        """/help code should expand the code group."""
+        from app.command_handlers import handle_command
+        mock_registry.list_by_group.return_value = []
+
+        handle_command("/help code")
+        msg = mock_send.call_args[0][0]
+        assert "Code" in msg
 
 
 # ---------------------------------------------------------------------------

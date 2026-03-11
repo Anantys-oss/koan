@@ -83,7 +83,7 @@ def handle_command(text: str):
     if cmd == "/help" or cmd.startswith("/help "):
         help_args = text.strip()[5:].strip()  # everything after "/help"
         if help_args:
-            _handle_help_command(help_args)
+            _handle_help_detail(help_args)
         else:
             _handle_help()
         return
@@ -376,30 +376,81 @@ def _handle_skill_sources():
     send_telegram(list_sources(INSTANCE_DIR))
 
 
-def _handle_help_command(command_name: str):
-    """Show help for a specific command: /help <command>."""
-    # Strip leading / if user wrote /help /mission
-    command_name = command_name.lstrip("/").lower()
+# Group display metadata: emoji + short description for /help L1
+_GROUP_META = {
+    "missions": ("📋", "Create, list, cancel missions"),
+    "code":     ("🔧", "Review, refactor, PR, fix, implement"),
+    "pr":       ("🔀", "Pull request management"),
+    "status":   ("📊", "System state, quota, logs"),
+    "config":   ("⚙️", "Projects, language, focus, verbose"),
+    "schedule":  ("📅", "Recurring missions, planning"),
+    "ideas":    ("💡", "Ideas, reflection, sparring"),
+    "system":   ("🔄", "Pause, stop, update, restart"),
+}
+
+# Ordered group list (controls display order in /help)
+_GROUP_ORDER = [
+    "missions", "code", "pr", "status",
+    "config", "schedule", "ideas", "system",
+]
+
+
+def _handle_help_detail(arg: str):
+    """Handle /help <arg> — L2 group expansion or L3 command help."""
+    arg = arg.lstrip("/").lower()
 
     registry = _get_registry()
-    skill = registry.find_by_command(command_name)
 
-    if skill is None:
-        suggestion = registry.suggest_command(command_name, extra_commands=list(CORE_COMMANDS))
-        hint = f"\nDid you mean /{suggestion}?" if suggestion else ""
-        send_telegram(f"Unknown command: /{command_name}{hint}\nUse /help to see all commands.")
+    # L2: check if arg is a group name
+    if arg in _GROUP_META:
+        _handle_help_group(arg, registry)
         return
 
-    # find_by_command maps both names and aliases, so the match should exist
+    # L3: check if arg is a command name
+    skill = registry.find_by_command(arg)
+    if skill is not None:
+        _handle_help_command(arg, skill)
+        return
+
+    # Unknown — suggest closest match from commands AND groups
+    suggestion = registry.suggest_command(arg, extra_commands=list(CORE_COMMANDS) + list(_GROUP_META.keys()))
+    hint = f"\nDid you mean /{suggestion}?" if suggestion else ""
+    send_telegram(f"Unknown command: /{arg}{hint}\nUse /help to see all groups.")
+
+
+def _handle_help_group(group: str, registry):
+    """L2: Show all commands in a group."""
+    emoji, description = _GROUP_META[group]
+    parts = [f"{emoji} {group.title()} — {description}\n"]
+
+    skills = registry.list_by_group(group)
+    for skill in skills:
+        for cmd in skill.commands:
+            desc = cmd.description or skill.description
+            aliases = f" (alias: /{', /'.join(cmd.aliases)})" if cmd.aliases else ""
+            parts.append(f"/{cmd.name} — {desc}{aliases}")
+
+    parts.append(f"\n/help <command> — detailed usage")
+    send_telegram("\n".join(parts))
+
+
+def _handle_help_command(command_name: str, skill=None):
+    """L3: Show help for a specific command."""
+    if skill is None:
+        registry = _get_registry()
+        skill = registry.find_by_command(command_name)
+
+    if skill is None:
+        send_telegram(f"Unknown command: /{command_name}\nUse /help to see all groups.")
+        return
+
     cmd = next(
         (c for c in skill.commands
          if c.name == command_name or command_name in c.aliases),
         None,
     )
     if cmd is None:
-        suggestion = registry.suggest_command(command_name, extra_commands=list(CORE_COMMANDS))
-        hint = f"\nDid you mean /{suggestion}?" if suggestion else ""
-        send_telegram(f"Unknown command: /{command_name}{hint}\nUse /help to see all commands.")
+        send_telegram(f"Unknown command: /{command_name}\nUse /help to see all groups.")
         return
 
     parts = [f"/{cmd.name}"]
@@ -417,49 +468,35 @@ def _handle_help_command(command_name: str):
 
 
 def _handle_help():
-    """Send the list of available commands — core + dynamic skills."""
+    """L1: Send grouped overview — max ~12 lines."""
     registry = _get_registry()
 
-    parts = [
-        "Kōan -- Commands\n",
-        "CORE",
-        "⏸️ /pause -- pause (alias: /sleep)",
-        "▶️ /resume -- resume after pause (alias: /run, /work, /awake)",
-        "🚀 /start -- start agent loop (or resume if paused)",
-        "⏹️ /stop -- stop Kōan after current mission",
-        "/help -- this help (use /help <command> for details)",
-        "/skill -- list skills (install|update|remove|sources)",
-    ]
+    parts = ["Kōan — Help\n"]
 
-    def _fmt(cmd, skill):
-        desc = cmd.description or skill.description
-        aliases = f" (alias: /{', /'.join(cmd.aliases)})" if cmd.aliases else ""
-        return f"/{cmd.name} -- {desc}{aliases}"
+    # Show groups with command count
+    for group in _GROUP_ORDER:
+        if group not in _GROUP_META:
+            continue
+        emoji, description = _GROUP_META[group]
+        parts.append(f"{emoji} /{group} — {description}")
 
-    # Add core skill commands inline (core scope = built-in features)
-    for skill in registry.list_by_scope("core"):
-        for cmd in skill.commands:
-            parts.append(_fmt(cmd, skill))
-    parts.append("")
+    # Dynamic groups from custom skills not in _GROUP_ORDER
+    for group in registry.groups():
+        if group not in _GROUP_META:
+            count = len(registry.list_by_group(group))
+            parts.append(f"📦 /{group} — {count} command{'s' if count != 1 else ''}")
 
-    # Add non-core skill commands under SKILLS section
-    non_core_skills = [s for s in registry.list_all() if s.scope != "core"]
-    if non_core_skills:
-        parts.append("SKILLS")
-        for skill in non_core_skills:
-            for cmd in skill.commands:
-                parts.append(_fmt(cmd, skill))
-        parts.append("")
+    # Non-core skills section (if any installed)
+    non_core = [s for s in registry.list_all() if s.scope != "core"]
+    if non_core:
+        parts.append(f"\n/skill — {len(non_core)} extra skill{'s' if len(non_core) != 1 else ''}")
 
     parts.extend([
-        "TIPS",
-        "/help <command> -- show usage for a specific command",
-        'Prefix with "mission:" or use an action verb to create a mission:',
-        "  fix the login bug",
-        "  mission: refactor the auth module",
-        "  [project:koan] fix the login bug",
         "",
-        "Any other message = free conversation.",
+        "/help <group> — expand a group",
+        "/help <command> — command details",
+        "",
+        'Send a message to chat, or "mission: <text>" to queue work.',
     ])
     send_telegram("\n".join(parts))
 

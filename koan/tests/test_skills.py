@@ -177,6 +177,30 @@ class TestParseSkillMd:
         assert skill.prompt_body == "This is the prompt body."
         assert skill.qualified_name == "koan.status"
 
+    def test_group_field_parsed(self, tmp_path):
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text(textwrap.dedent("""\
+            ---
+            name: mission
+            scope: core
+            group: missions
+            description: Create a mission
+            commands:
+              - name: mission
+                description: Create a mission
+            ---
+        """))
+        skill = parse_skill_md(skill_md)
+        assert skill is not None
+        assert skill.group == "missions"
+
+    def test_group_field_defaults_empty(self, tmp_path):
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text("---\nname: test\nscope: core\n---\nbody")
+        skill = parse_skill_md(skill_md)
+        assert skill is not None
+        assert skill.group == ""
+
     def test_no_frontmatter(self, tmp_path):
         skill_md = tmp_path / "SKILL.md"
         skill_md.write_text("Just some text without frontmatter")
@@ -469,6 +493,93 @@ class TestSkillRegistry:
         skill = registry.get_by_qualified_name("koan.verbose")
         assert skill is not None
         assert skill.name == "verbose"
+
+    def test_list_by_group(self, tmp_path):
+        """Skills with group field are found by list_by_group."""
+        # Create core-scoped skills with groups
+        missions_dir = tmp_path / "core" / "mission"
+        missions_dir.mkdir(parents=True)
+        (missions_dir / "SKILL.md").write_text(textwrap.dedent("""\
+            ---
+            name: mission
+            scope: core
+            group: missions
+            description: Create a mission
+            commands:
+              - name: mission
+                description: Create a mission
+            ---
+        """))
+        cancel_dir = tmp_path / "core" / "cancel"
+        cancel_dir.mkdir(parents=True)
+        (cancel_dir / "SKILL.md").write_text(textwrap.dedent("""\
+            ---
+            name: cancel
+            scope: core
+            group: missions
+            description: Cancel a mission
+            commands:
+              - name: cancel
+                description: Cancel a mission
+            ---
+        """))
+        review_dir = tmp_path / "core" / "review"
+        review_dir.mkdir(parents=True)
+        (review_dir / "SKILL.md").write_text(textwrap.dedent("""\
+            ---
+            name: review
+            scope: core
+            group: code
+            description: Review code
+            commands:
+              - name: review
+                description: Review code
+            ---
+        """))
+        registry = SkillRegistry(tmp_path)
+        missions = registry.list_by_group("missions")
+        assert len(missions) == 2
+        names = {s.name for s in missions}
+        assert names == {"mission", "cancel"}
+
+        code = registry.list_by_group("code")
+        assert len(code) == 1
+        assert code[0].name == "review"
+
+    def test_groups(self, tmp_path):
+        """groups() returns sorted distinct group names from core skills."""
+        for name, group in [("a", "code"), ("b", "missions"), ("c", "code")]:
+            d = tmp_path / "core" / name
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(textwrap.dedent(f"""\
+                ---
+                name: {name}
+                scope: core
+                group: {group}
+                commands:
+                  - name: {name}
+                    description: test
+                ---
+            """))
+        registry = SkillRegistry(tmp_path)
+        assert registry.groups() == ["code", "missions"]
+
+    def test_list_by_group_excludes_non_core(self, tmp_path):
+        """list_by_group only returns core-scoped skills."""
+        d = tmp_path / "custom" / "deploy"
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(textwrap.dedent("""\
+            ---
+            name: deploy
+            scope: custom
+            group: missions
+            commands:
+              - name: deploy
+                description: Deploy
+            ---
+        """))
+        registry = SkillRegistry(tmp_path)
+        assert registry.list_by_group("missions") == []
 
 
 # ---------------------------------------------------------------------------

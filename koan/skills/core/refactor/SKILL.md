@@ -1,6 +1,7 @@
 ---
 name: refactor
 scope: core
+group: code
 description: "Queue a refactoring mission (ex: /refactor https://github.com/owner/repo/pull/42)"
 version: 1.0.0
 audience: hybrid

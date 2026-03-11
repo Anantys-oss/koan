@@ -1,6 +1,7 @@
 ---
 name: changelog
 scope: core
+group: status
 description: Generate a changelog from conventional commits and journal entries
 version: 1.0.0
 audience: bridge

@@ -62,25 +62,24 @@ class TestHelpText:
 
     @patch("app.command_handlers.send_telegram")
     def test_help_does_not_list_restart_as_resume_alias(self, mock_send):
-        from app.command_handlers import _handle_help
-        _handle_help()
+        from app.command_handlers import _handle_help_detail
+        _handle_help_detail("system")
         help_text = mock_send.call_args[0][0]
-        # /restart should NOT appear in the resume aliases
+        # /restart should NOT appear on the same line as /resume
         for line in help_text.split("\n"):
             if "/resume" in line and "alias" in line:
                 assert "/restart" not in line
-        # But /work, /awake, /start should still be aliases
-        assert "/work" in help_text
-        assert "/awake" in help_text
-        assert "/start" in help_text
+        # /restart should appear as an alias of /update, not /resume
+        assert "/update" in help_text
+        assert "/restart" in help_text
 
     @patch("app.command_handlers.send_telegram")
     def test_help_lists_restart_as_update_alias(self, mock_send):
         """Help should show /restart as an alias of the /update skill."""
-        from app.command_handlers import _handle_help
-        _handle_help()
+        from app.command_handlers import _handle_help_detail
+        _handle_help_detail("system")
         help_text = mock_send.call_args[0][0]
-        # /update should appear in the help text (dynamic core skill listing)
+        # /update should appear in the system group help
         assert "/update" in help_text
 
 

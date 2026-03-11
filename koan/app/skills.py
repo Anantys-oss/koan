@@ -71,6 +71,7 @@ class Skill:
     github_enabled: bool = False
     github_context_aware: bool = False
     cli_skill: Optional[str] = None
+    group: str = ""
 
     @property
     def qualified_name(self) -> str:
@@ -233,6 +234,9 @@ def parse_skill_md(path: Path) -> Optional[Skill]:
     # Parse cli_skill (optional provider slash command name)
     cli_skill = meta.get("cli_skill") or None
 
+    # Parse group (for /help grouping)
+    group = meta.get("group", "")
+
     return Skill(
         name=meta["name"],
         scope=meta.get("scope", skill_dir.parent.name),
@@ -247,6 +251,7 @@ def parse_skill_md(path: Path) -> Optional[Skill]:
         github_enabled=github_enabled,
         github_context_aware=github_context_aware,
         cli_skill=cli_skill,
+        group=group,
     )
 
 
@@ -324,6 +329,18 @@ class SkillRegistry:
     def list_by_audience(self, *audiences: str) -> List[Skill]:
         """Return skills matching any of the given audience types."""
         return [s for s in self._skills.values() if s.audience in audiences]
+
+    def list_by_group(self, group: str) -> List[Skill]:
+        """Return core skills belonging to the given help group."""
+        return [s for s in self._skills.values()
+                if s.scope == "core" and s.group == group]
+
+    def groups(self) -> List[str]:
+        """Return sorted list of distinct help groups from core skills."""
+        return sorted(set(
+            s.group for s in self._skills.values()
+            if s.scope == "core" and s.group
+        ))
 
     def scopes(self) -> List[str]:
         return sorted(set(s.scope for s in self._skills.values()))

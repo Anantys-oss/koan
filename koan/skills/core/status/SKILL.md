@@ -1,6 +1,7 @@
 ---
 name: status
 scope: core
+group: status
 description: Show Kōan status, missions, and run loop health
 version: 1.0.0
 audience: bridge

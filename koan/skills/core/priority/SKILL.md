@@ -1,6 +1,7 @@
 ---
 name: priority
 scope: core
+group: missions
 description: Reorder pending missions in the queue
 version: 1.0.0
 audience: bridge

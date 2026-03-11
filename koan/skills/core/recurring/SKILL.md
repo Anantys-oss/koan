@@ -1,6 +1,7 @@
 ---
 name: recurring
 scope: core
+group: schedule
 description: Manage recurring missions (hourly, daily, weekly)
 version: 1.0.0
 audience: bridge

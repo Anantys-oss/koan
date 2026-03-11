@@ -1,6 +1,7 @@
 ---
 name: doctor
 scope: core
+group: status
 description: Run diagnostic self-checks on Kōan configuration and health
 version: 1.0.0
 audience: bridge

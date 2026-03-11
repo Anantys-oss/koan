@@ -1,6 +1,7 @@
 ---
 name: stats
 scope: core
+group: status
 description: Show session outcome statistics per project
 version: 1.0.0
 audience: bridge

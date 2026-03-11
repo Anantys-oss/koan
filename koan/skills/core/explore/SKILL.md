@@ -1,6 +1,7 @@
 ---
 name: explore
 scope: core
+group: config
 description: Toggle per-project exploration mode in projects.yaml
 version: 1.0.0
 audience: bridge

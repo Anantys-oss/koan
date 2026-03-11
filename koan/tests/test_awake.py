@@ -40,6 +40,7 @@ from app.command_handlers import (
     _dispatch_skill,
     _handle_help,
     _handle_help_command,
+    _handle_help_detail,
     _handle_skill_command,
     _handle_skill_install,
     _handle_skill_remove,
@@ -654,17 +655,16 @@ class TestHandleStart:
         assert "No pause" in mock_send.call_args[0][0]
 
     @patch("app.command_handlers.send_telegram")
-    def test_help_shows_start_separately(self, mock_send, tmp_path):
-        """/help should list /start with its own description."""
+    def test_help_shows_system_group(self, mock_send, tmp_path):
+        """/help should list the system group (which contains start-like operations)."""
         registry_mock = MagicMock()
-        registry_mock.list_by_scope.return_value = []
+        registry_mock.groups.return_value = []
         registry_mock.list_all.return_value = []
         with patch("app.command_handlers.KOAN_ROOT", tmp_path), \
              patch("app.command_handlers._get_registry", return_value=registry_mock):
             _handle_help()
         help_text = mock_send.call_args[0][0]
-        assert "/start" in help_text
-        assert "start agent loop" in help_text
+        assert "/system" in help_text
 
 
 # ---------------------------------------------------------------------------
@@ -1815,16 +1815,14 @@ class TestCleanChatResponse:
 
 class TestHandleHelp:
     @patch("app.command_handlers.send_telegram")
-    def test_help_sends_command_list(self, mock_send):
+    def test_help_sends_grouped_overview(self, mock_send):
         _handle_help()
         mock_send.assert_called_once()
         msg = mock_send.call_args[0][0]
         assert "/help" in msg
+        assert "/missions" in msg
+        assert "/code" in msg
         assert "/status" in msg
-        assert "/usage" in msg
-        assert "/stop" in msg
-        assert "/pause" in msg
-        assert "/resume" in msg
 
     @patch("app.command_handlers.send_telegram")
     def test_help_mentions_mission_syntax(self, mock_send):
@@ -1833,10 +1831,10 @@ class TestHandleHelp:
         assert "mission" in msg.lower()
 
     @patch("app.command_handlers.send_telegram")
-    def test_help_mentions_chat_command(self, mock_send):
+    def test_help_mentions_group_navigation(self, mock_send):
         _handle_help()
         msg = mock_send.call_args[0][0]
-        assert "/chat" in msg
+        assert "/help <group>" in msg
 
     @patch("app.command_handlers._handle_help")
     def test_handle_command_routes_help(self, mock_help):
@@ -2168,11 +2166,11 @@ class TestHandleLog:
         assert "koan" in msg
 
     @patch("app.command_handlers.send_telegram")
-    def test_help_mentions_log(self, mock_send):
-        """/help output includes /log."""
-        _handle_help()
+    def test_help_status_group_includes_journal(self, mock_send):
+        """/help status group should include /journal (successor of /log)."""
+        _handle_help_detail("status")
         msg = mock_send.call_args[0][0]
-        assert "/log" in msg
+        assert "/journal" in msg
 
 
 # ---------------------------------------------------------------------------
@@ -2270,9 +2268,9 @@ class TestHandleLanguage:
         assert "reset" in mock_send.call_args[0][0].lower()
 
     @patch("app.command_handlers.send_telegram")
-    def test_help_mentions_language(self, mock_send):
-        """/help output includes /language."""
-        _handle_help()
+    def test_help_config_group_includes_language(self, mock_send):
+        """/help config group should include /language."""
+        _handle_help_detail("config")
         msg = mock_send.call_args[0][0]
         assert "/language" in msg
 
@@ -2508,11 +2506,11 @@ class TestHandleHelpCommand:
 
     @patch("app.command_handlers.send_telegram")
     def test_help_command_with_slash_prefix(self, mock_send):
-        """/help /mission should work (strip leading /)."""
-        _handle_help_command("/mission")
+        """/help /mission should work (strip leading /) — routed via _handle_help_detail."""
+        _handle_help_detail("/mission")
         msg = mock_send.call_args[0][0]
-        assert "/mission" in msg
-        assert "Usage:" in msg
+        # "missions" group matches after stripping /, so we get the group view
+        assert "Missions" in msg or "/mission" in msg
 
     @patch("app.command_handlers.send_telegram")
     def test_help_command_alias(self, mock_send):
@@ -2538,17 +2536,17 @@ class TestHandleHelpCommand:
 
     @patch("app.command_handlers.send_telegram")
     def test_help_command_case_insensitive(self, mock_send):
-        """/help MISSION should work case-insensitively."""
-        _handle_help_command("MISSION")
+        """/help MISSION should work case-insensitively via _handle_help_detail."""
+        _handle_help_detail("MISSION")
         msg = mock_send.call_args[0][0]
-        assert "/mission" in msg
-        assert "Usage:" in msg
+        # "missions" group matches after lowercasing, so we get group or command view
+        assert "mission" in msg.lower()
 
     def test_handle_command_routes_help_with_args(self):
-        """handle_command('/help mission') should call _handle_help_command."""
-        with patch("app.command_handlers._handle_help_command") as mock_help_cmd:
+        """handle_command('/help mission') should call _handle_help_detail."""
+        with patch("app.command_handlers._handle_help_detail") as mock_help_detail:
             handle_command("/help mission")
-            mock_help_cmd.assert_called_once_with("mission")
+            mock_help_detail.assert_called_once_with("mission")
 
     def test_handle_command_routes_help_without_args(self):
         """handle_command('/help') should call _handle_help, not _handle_help_command."""

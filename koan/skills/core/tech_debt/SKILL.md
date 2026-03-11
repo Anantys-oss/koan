@@ -1,6 +1,7 @@
 ---
 name: tech-debt
 scope: core
+group: code
 description: Scan a project for tech debt and queue improvement missions
 version: 1.0.0
 audience: hybrid

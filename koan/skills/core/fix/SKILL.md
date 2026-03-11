@@ -1,6 +1,7 @@
 ---
 name: fix
 scope: core
+group: code
 description: "Fix a GitHub issue end-to-end (ex: /fix https://github.com/owner/repo/issues/42)"
 version: 1.0.0
 audience: hybrid

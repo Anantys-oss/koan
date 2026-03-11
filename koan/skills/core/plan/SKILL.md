@@ -1,6 +1,7 @@
 ---
 name: plan
 scope: core
+group: code
 description: Deep-think an idea and create a GitHub issue with a structured plan
 version: 2.0.0
 audience: hybrid

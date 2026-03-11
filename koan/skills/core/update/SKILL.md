@@ -1,6 +1,7 @@
 ---
 name: update
 scope: core
+group: system
 description: Update Kōan to latest upstream code and restart
 version: 1.0.0
 audience: bridge

@@ -1,6 +1,7 @@
 ---
 name: shutdown
 scope: core
+group: system
 description: Shutdown both the agent loop and the messaging bridge
 version: 1.0.0
 audience: bridge

@@ -1,6 +1,7 @@
 ---
 name: gha-audit
 scope: core
+group: system
 description: Scan GitHub Actions workflows for security vulnerabilities
 version: 1.0.0
 audience: bridge
