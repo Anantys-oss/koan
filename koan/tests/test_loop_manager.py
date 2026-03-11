@@ -872,15 +872,15 @@ class TestGitHubNotificationBackoff:
         mock_registry.return_value = MagicMock()
         mock_repos.return_value = set()
 
-        # First call: since should be None (empty string = falsy)
+        # First call: since should be seeded from max_age (cold start lookback)
         with patch("app.projects_config.load_projects_config", return_value={}), \
              patch("app.github_notifications.fetch_unread_notifications", return_value=FetchResult([], [])) as mock_fetch:
             process_github_notifications(str(tmp_path), str(tmp_path))
 
-        # First call passes since=None (empty string is falsy)
+        # Cold start: since is auto-seeded from max_age_hours, not None
         mock_fetch.assert_called_once()
         _, kwargs = mock_fetch.call_args
-        assert kwargs.get("since") is None
+        assert kwargs.get("since") is not None, "Cold start should seed since from max_age"
 
         # After first call, _last_github_check_iso should be set
         assert lm._last_github_check_iso != ""
@@ -895,6 +895,40 @@ class TestGitHubNotificationBackoff:
         mock_fetch.assert_called_once()
         _, kwargs = mock_fetch.call_args
         assert kwargs.get("since") == saved_iso
+
+    @patch("app.loop_manager._load_github_config")
+    @patch("app.loop_manager._build_skill_registry")
+    @patch("app.loop_manager._get_known_repos_from_projects")
+    @patch("app.utils.load_config")
+    def test_cold_start_seeds_since_from_max_age(
+        self, mock_config, mock_repos, mock_registry, mock_gh_config, tmp_path
+    ):
+        """Cold start uses max_age_hours to seed the since parameter."""
+        import app.loop_manager as lm
+        from app.github_notifications import FetchResult
+        from app.loop_manager import process_github_notifications, reset_github_backoff
+        from datetime import datetime, timedelta, timezone
+
+        reset_github_backoff()
+        mock_config.return_value = {}
+        mock_gh_config.return_value = {"bot_username": "bot", "max_age": 2}
+        mock_registry.return_value = MagicMock()
+        mock_repos.return_value = set()
+
+        with patch("app.projects_config.load_projects_config", return_value={}), \
+             patch("app.github_notifications.fetch_unread_notifications", return_value=FetchResult([], [])) as mock_fetch:
+            process_github_notifications(str(tmp_path), str(tmp_path))
+
+        mock_fetch.assert_called_once()
+        _, kwargs = mock_fetch.call_args
+        since_str = kwargs.get("since")
+        assert since_str is not None
+
+        # Verify the since timestamp is approximately max_age hours ago
+        since_dt = datetime.fromisoformat(since_str.replace("Z", "+00:00"))
+        expected = datetime.now(timezone.utc) - timedelta(hours=2)
+        # Allow 10 seconds of drift
+        assert abs((since_dt - expected).total_seconds()) < 10
 
 
 # --- Test _drain_notifications ---

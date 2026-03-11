@@ -439,11 +439,29 @@ def process_github_notifications(
         # Pass ``since`` so we also get notifications that were auto-read
         # by the GitHub web UI before we could poll them (race condition
         # when user posts @mention while viewing the PR page).
-        result = fetch_unread_notifications(known_repos, since=_last_github_check_iso or None)
+        #
+        # On the first check of a new session, _last_github_check_iso is
+        # empty.  Without a ``since``, only unread notifications are fetched,
+        # missing any @mention that GitHub auto-read (user was viewing the
+        # page when they posted).  Seed from max_age_hours so the first poll
+        # covers the same window as subsequent ones.
+        from datetime import datetime, timedelta, timezone
+
+        since_value = _last_github_check_iso or None
+        if since_value is None:
+            max_age = github_config.get("max_age", 24)
+            since_value = (
+                datetime.now(timezone.utc) - timedelta(hours=max_age)
+            ).strftime("%Y-%m-%dT%H:%M:%SZ")
+            _github_log(
+                f"Cold start: fetching notifications since {since_value} "
+                f"(max_age={max_age}h lookback)"
+            )
+
+        result = fetch_unread_notifications(known_repos, since=since_value)
         notifications = result.actionable
 
         # Record the check timestamp for the next ``since`` window.
-        from datetime import datetime, timezone
         _last_github_check_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         if notifications:
