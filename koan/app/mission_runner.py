@@ -543,7 +543,13 @@ def run_post_mission(
         autonomous_mode, mission_title,
     )
 
-    # 2. Check for quota exhaustion
+    # 2. Compute duration (needed for quota early-return, reflection, and outcome tracking)
+    if start_time > 0:
+        duration_minutes = (int(datetime.now().timestamp()) - start_time) // 60
+    else:
+        duration_minutes = 0
+
+    # 3. Check for quota exhaustion
     _report("checking quota")
     from app.quota_handler import handle_quota_exhaustion
 
@@ -562,10 +568,6 @@ def run_post_mission(
         # Record session outcome BEFORE early return so the session tracker
         # doesn't lose visibility on quota-limited sessions (which biases
         # staleness calculations toward "stale" for productive projects).
-        if start_time > 0:
-            duration_minutes = (int(datetime.now().timestamp()) - start_time) // 60
-        else:
-            duration_minutes = 0
         pending_content = _read_pending_content(instance_dir)
         if not pending_content.strip():
             pending_content = _read_stdout_summary(stdout_file)
@@ -576,7 +578,7 @@ def run_post_mission(
         )
         return result  # Early return — no further processing on quota exhaustion
 
-    # 3. Archive pending.md if agent didn't clean up
+    # 4. Archive pending.md if agent didn't clean up
     _report("archiving journal")
     # Read pending content before archival for session outcome tracking.
     # When the agent follows Mission Completion Checklist, it deletes
@@ -585,12 +587,6 @@ def run_post_mission(
     if not pending_content.strip():
         pending_content = _read_stdout_summary(stdout_file)
     result["pending_archived"] = archive_pending(instance_dir, project_name, run_num)
-
-    # 4. Compute duration (needed for reflection and outcome tracking)
-    if start_time > 0:
-        duration_minutes = (int(datetime.now().timestamp()) - start_time) // 60
-    else:
-        duration_minutes = 0
 
     # 5. Post-mission processing (only on success)
     if exit_code == 0:
@@ -638,7 +634,7 @@ def run_post_mission(
             lint_blocked=lint_blocking or verify_blocking,
         )
 
-    # 6. Record session outcome for staleness tracking
+    # 7. Record session outcome for staleness tracking
     _report("recording session outcome")
     _record_session_outcome(
         instance_dir, project_name, autonomous_mode,
@@ -646,7 +642,7 @@ def run_post_mission(
         mission_title=mission_title,
     )
 
-    # 7. Fire post-mission hooks
+    # 8. Fire post-mission hooks
     _report("running hooks")
     try:
         from app.hooks import fire_hook
