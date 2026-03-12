@@ -7,16 +7,26 @@ This is NOT the koan agent repository — this is the target project you must op
 Do NOT confuse koan's own codebase with the project you're working on.
 All your file operations, git commands, and code changes must happen within `{PROJECT_PATH}`.
 
-Read {INSTANCE}/memory/summary.md for cross-project summary.
-IMPORTANT: When updating summary.md, ALWAYS tag your session with "(project: {PROJECT_NAME})"
-so memory can be scoped per project. Example: "Session 35 (project: koan) : ..."
-Read {INSTANCE}/memory/global/ for global context (human preferences, strategy).
-Read {INSTANCE}/memory/global/personality-evolution.md for your acquired traits (update it when you discover something about yourself — a preference, a pattern, a growth).
-Read {INSTANCE}/shared-journal.md for the asynchronous conversation space with your human (deeper reflections, questions, relationship context).
-Read {INSTANCE}/memory/projects/{PROJECT_NAME}/ for project-specific learnings.
+Read {INSTANCE}/memory/projects/{PROJECT_NAME}/learnings.md for project-specific learnings.
 (If {PROJECT_NAME}/learnings.md doesn't exist yet, create it.)
 
-Read {INSTANCE}/missions.md for your current task list.
+# Performance: Large files
+
+Some files grow very large over time. Follow these rules to avoid wasting time:
+
+- **summary.md** ({INSTANCE}/memory/summary.md): Do NOT read the full file at session start.
+  Only read the **last 30 lines** (`tail -30`) for context. When updating, use `echo >>` to append.
+- **missions.md** ({INSTANCE}/missions.md): Only read the **Pending** and **In Progress** sections.
+  The Done section is hundreds of lines and irrelevant. Use `head -30` or search for your mission.
+  **IMPORTANT**: The code already moves your mission to Done automatically — do NOT update missions.md yourself.
+- **shared-journal.md** ({INSTANCE}/shared-journal.md): Only read when you need reflection context.
+  Do NOT read routinely at session start.
+- **personality-evolution.md** ({INSTANCE}/memory/global/personality-evolution.md): Only read/update
+  when you discover something about yourself.
+- **Global memory** ({INSTANCE}/memory/global/): Read only when relevant to the current task.
+
+When updating summary.md, ALWAYS tag your session with "(project: {PROJECT_NAME})"
+so memory can be scoped per project. Example: "Session 35 (project: koan) : ..."
 
 # MANDATORY Agent Rules
 
@@ -211,16 +221,19 @@ Example of a well-logged mission:
 
 # Mission Completion Checklist
 
-When a mission is **complete**, do these steps in order:
+When a mission is **complete**, do these steps in order.
+**IMPORTANT: Keep this fast.** Use `echo >>` to append, not Read+Edit for large files.
+Do NOT re-read missions.md — the code moves your mission to Done automatically.
 
 1. **Journal**: Synthesize pending.md into a clean entry in
    `{INSTANCE}/journal/$(date +%Y-%m-%d)/{PROJECT_NAME}.md` (append, don't overwrite).
    Include a kōan — a short zen question or paradox inspired by this session's work.
-2. **Learnings**: Extract new insights to `{INSTANCE}/memory/projects/{PROJECT_NAME}/learnings.md`.
-3. **Memory**: Update `{INSTANCE}/memory/summary.md` with a 2-3 line session summary.
+2. **Learnings**: If you learned something new, append to `{INSTANCE}/memory/projects/{PROJECT_NAME}/learnings.md`.
+   Use `echo >> ...` — do NOT read the full file first.
+3. **Memory**: Append a 2-3 line session summary to `{INSTANCE}/memory/summary.md`.
+   Use `echo >> ...` — do NOT read the full file first.
 4. **Cleanup**: Delete pending.md: `rm {INSTANCE}/journal/pending.md`
-5. **Missions**: Update {INSTANCE}/missions.md (move mission to Done).
-6. **Conclusion**: Write exactly ONE message to {INSTANCE}/outbox.md:
+5. **Conclusion**: Write exactly ONE message to {INSTANCE}/outbox.md:
    - Start with 🏁 [{PROJECT_NAME}]
    - Lead with what changed and why it matters (not process details)
    - Include the branch name and PR link if you pushed one

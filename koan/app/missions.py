@@ -1147,3 +1147,68 @@ def reorder_mission(content: str, position: int, target: int = 1) -> Tuple[str, 
 
     display = clean_mission_display(moved_text)
     return normalize_content("\n".join(result_lines)), display
+
+
+def prune_done_section(content: str, keep: int = 50) -> Tuple[str, int]:
+    """Prune the Done section to keep only the most recent items.
+
+    Old done items are removed entirely — they serve no operational purpose
+    and inflate file size (missions.md can grow to 200KB+ without pruning).
+
+    Args:
+        content: Full missions.md content.
+        keep: Number of most recent Done items to keep.
+
+    Returns:
+        (new_content, pruned_count) tuple.
+    """
+    lines = content.splitlines()
+    boundaries = find_section_boundaries(lines)
+
+    if "done" not in boundaries:
+        return content, 0
+
+    start, end = boundaries["done"]
+
+    # Collect done items as line ranges
+    items = []  # list of (item_start, item_end) tuples
+    i = start + 1  # skip ## header
+    while i < end:
+        stripped = lines[i].strip()
+        if stripped.startswith("- "):
+            item_start = i
+            i += 1
+            while i < end:
+                next_stripped = lines[i].strip()
+                if (next_stripped.startswith("- ") or
+                        next_stripped.startswith("## ") or
+                        next_stripped.startswith("### ") or
+                        next_stripped == ""):
+                    break
+                i += 1
+            items.append((item_start, i))
+        else:
+            i += 1
+
+    if len(items) <= keep:
+        return content, 0
+
+    pruned_count = len(items) - keep
+    # Keep the last `keep` items (most recent are at the top of Done)
+    keep_items = items[:keep]
+
+    # Build the set of lines to keep from the Done section
+    keep_lines = set()
+    for item_start, item_end in keep_items:
+        for j in range(item_start, item_end):
+            keep_lines.add(j)
+
+    # Rebuild: header + kept items + everything after Done section
+    new_lines = lines[:start + 1]  # everything before and including ## Done
+    for j in range(start + 1, end):
+        if j in keep_lines or lines[j].strip() == "":
+            new_lines.append(lines[j])
+            # Only keep the first blank line after a removed block
+    new_lines.extend(lines[end:])  # everything after Done section
+
+    return normalize_content("\n".join(new_lines)), pruned_count

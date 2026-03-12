@@ -32,6 +32,7 @@ from app.missions import (
     stamp_started,
     start_mission,
     strip_timestamps,
+    prune_done_section,
     _flush_in_progress_to_done,
     DEFAULT_SKELETON,
 )
@@ -2466,3 +2467,86 @@ class TestCancelPendingMission:
         )
         updated, cancelled = cancel_pending_mission(content, "  1  ")
         assert "Fix auth" in cancelled
+
+
+# ---------------------------------------------------------------------------
+# prune_done_section
+# ---------------------------------------------------------------------------
+
+class TestPruneDoneSection:
+    """Tests for prune_done_section() — keeps Done section bounded."""
+
+    def test_no_pruning_when_under_limit(self):
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "## In Progress\n\n"
+            "## Done\n"
+            "- Task 1 ✅\n"
+            "- Task 2 ✅\n"
+            "- Task 3 ✅\n"
+        )
+        result, pruned = prune_done_section(content, keep=5)
+        assert pruned == 0
+        assert result == content
+
+    def test_prunes_excess_done_items(self):
+        done_items = "\n".join(f"- Task {i} ✅" for i in range(10))
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- Pending task\n\n"
+            "## In Progress\n\n"
+            "## Done\n"
+            f"{done_items}\n"
+        )
+        result, pruned = prune_done_section(content, keep=3)
+        assert pruned == 7
+        sections = parse_sections(result)
+        assert len(sections["done"]) == 3
+        # Keeps the first 3 (most recent, at top of Done)
+        assert "Task 0" in sections["done"][0]
+        assert "Task 2" in sections["done"][2]
+        # Pending is preserved
+        assert len(sections["pending"]) == 1
+
+    def test_no_done_section(self):
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- Task\n"
+        )
+        result, pruned = prune_done_section(content, keep=5)
+        assert pruned == 0
+
+    def test_preserves_other_sections(self):
+        done_items = "\n".join(f"- Done {i}" for i in range(20))
+        content = (
+            "# Missions\n\n"
+            "## Ideas\n\n"
+            "- An idea\n\n"
+            "## Pending\n\n"
+            "- Pending task\n\n"
+            "## In Progress\n\n"
+            "- Active task\n\n"
+            "## Done\n"
+            f"{done_items}\n"
+        )
+        result, pruned = prune_done_section(content, keep=5)
+        assert pruned == 15
+        sections = parse_sections(result)
+        assert len(sections["done"]) == 5
+        assert len(sections["pending"]) == 1
+        assert len(sections["in_progress"]) == 1
+        assert "An idea" in result
+
+    def test_exactly_at_limit(self):
+        done_items = "\n".join(f"- Task {i}" for i in range(5))
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "## Done\n"
+            f"{done_items}\n"
+        )
+        result, pruned = prune_done_section(content, keep=5)
+        assert pruned == 0

@@ -245,10 +245,14 @@ def run_claude_task(
     project_name: str = "",
     run_num: int = 0,
 ) -> int:
-    """Run Claude CLI as a subprocess with SIGINT isolation.
+    """Run Claude CLI as a subprocess with SIGINT isolation and timeout.
 
     The child process ignores SIGINT (via preexec_fn) so the double-tap
     pattern works: first CTRL-C only warns the user, second kills the child.
+
+    A watchdog timer kills the process if it exceeds the configured mission
+    timeout (default 3600s). This prevents runaway sessions that block the
+    entire agent loop.
 
     When *instance_dir* and *project_name* are provided and
     ``cli_output_journal`` is enabled, stdout is streamed to the project's
@@ -268,6 +272,10 @@ def run_claude_task(
         )
 
     from app.cli_exec import popen_cli
+    from app.config import get_mission_timeout
+
+    mission_timeout = get_mission_timeout()
+    timed_out = False
 
     exit_code = 1  # default if subprocess never completes
     try:
@@ -280,6 +288,21 @@ def run_claude_task(
                 start_new_session=True,
             )
             _sig.claude_proc = proc
+
+            # Watchdog timer: kills the process group if mission exceeds timeout.
+            # Same pattern as skill dispatch (line ~1828). Without this,
+            # proc.wait() blocks indefinitely on runaway sessions.
+            timer = None
+            if mission_timeout > 0:
+                def _mission_watchdog():
+                    nonlocal timed_out
+                    timed_out = True
+                    log("error", f"Mission timed out ({mission_timeout}s) — killing process")
+                    _kill_process_group(proc)
+
+                timer = threading.Timer(mission_timeout, _mission_watchdog)
+                timer.daemon = True
+                timer.start()
 
             try:
                 # Wait for child, handling SIGINT interruptions gracefully
@@ -299,9 +322,13 @@ def run_claude_task(
                         # Single CTRL-C — keep waiting
                         continue
             finally:
+                if timer is not None:
+                    timer.cancel()
                 cleanup()
 
         exit_code = proc.returncode
+        if timed_out:
+            exit_code = 1
     finally:
         # Always stop journal streaming, even on exception
         if journal_stream:

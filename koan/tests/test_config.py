@@ -349,6 +349,29 @@ class TestGetSkillTimeout:
             assert get_skill_timeout() == 3600
 
 
+# --- get_mission_timeout ---
+
+
+class TestGetMissionTimeout:
+    def test_default(self):
+        from app.config import get_mission_timeout
+
+        with _mock_config({}):
+            assert get_mission_timeout() == 3600
+
+    def test_custom(self):
+        from app.config import get_mission_timeout
+
+        with _mock_config({"mission_timeout": 1800}):
+            assert get_mission_timeout() == 1800
+
+    def test_zero_disables(self):
+        from app.config import get_mission_timeout
+
+        with _mock_config({"mission_timeout": 0}):
+            assert get_mission_timeout() == 0
+
+
 # --- build_claude_flags ---
 
 

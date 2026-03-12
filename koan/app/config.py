@@ -295,6 +295,22 @@ def get_skill_timeout() -> int:
     return _safe_int(config.get("skill_timeout", 3600), 3600)
 
 
+def get_mission_timeout() -> int:
+    """Get timeout in seconds for regular mission execution.
+
+    Controls the watchdog timer for Claude CLI missions dispatched from
+    the main agent loop. Prevents runaway sessions that block the queue.
+
+    Config key: mission_timeout (default: 3600 — 60 minutes).
+    Set to 0 to disable the timeout (not recommended).
+
+    Returns:
+        Timeout in seconds.
+    """
+    config = _load_config()
+    return _safe_int(config.get("mission_timeout", 3600), 3600)
+
+
 def get_contemplative_chance() -> int:
     """Get probability (0-100) of triggering contemplative mode on autonomous runs.
 

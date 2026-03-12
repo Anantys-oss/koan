@@ -161,6 +161,26 @@ def cleanup_memory(instance: str):
     _write_cleanup_marker()
 
 
+def prune_missions_done(instance: str):
+    """Prune old Done items from missions.md to keep file size bounded.
+
+    missions.md grows unbounded as completed missions accumulate. At 190KB+,
+    the agent wastes context tokens reading it. Keep only the last 50 Done items.
+    """
+    missions_path = Path(instance) / "missions.md"
+    if not missions_path.exists():
+        return
+
+    from app.missions import prune_done_section
+    from app.utils import atomic_write
+
+    content = missions_path.read_text()
+    new_content, pruned = prune_done_section(content, keep=50)
+    if pruned > 0:
+        atomic_write(missions_path, new_content)
+        log("health", f"Pruned {pruned} old Done items from missions.md")
+
+
 def cleanup_mission_history(instance: str):
     """Prune old entries from mission history."""
     from app.mission_history import cleanup_old_entries
@@ -329,6 +349,7 @@ def run_startup(koan_root: str, instance: str, projects: list):
 
         _safe_run("Sanity checks", run_sanity_checks, instance)
         _safe_run("Memory cleanup", cleanup_memory, instance)
+        _safe_run("Missions pruning", prune_missions_done, instance)
         _safe_run("Mission history cleanup", cleanup_mission_history, instance)
         _safe_run("Health check", check_health, koan_root)
 
