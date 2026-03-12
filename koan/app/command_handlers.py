@@ -388,7 +388,6 @@ _GROUP_META = {
     "pr":       ("🔀", "Pull request management"),
     "status":   ("📊", "System state, quota, logs"),
     "config":   ("⚙️", "Projects, language, focus, verbose"),
-    "schedule":  ("📅", "Recurring missions, planning"),
     "ideas":    ("💡", "Ideas, reflection, sparring"),
     "system":   ("🔄", "Pause, stop, update, restart"),
 }
@@ -396,7 +395,7 @@ _GROUP_META = {
 # Ordered group list (controls display order in /help)
 _GROUP_ORDER = [
     "missions", "code", "pr", "status",
-    "config", "schedule", "ideas", "system",
+    "config", "ideas", "system",
 ]
 
 

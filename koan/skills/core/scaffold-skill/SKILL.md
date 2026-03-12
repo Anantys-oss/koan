@@ -4,7 +4,7 @@ scope: core
 description: Generate a new skill from a description
 version: 1.0.0
 audience: bridge
-group: code
+group: system
 worker: true
 commands:
   - name: scaffold-skill
