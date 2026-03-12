@@ -702,6 +702,16 @@ def handle(ctx):
 
 For prompt-only skills (no handler), put the prompt text after the YAML frontmatter — it's sent directly to Claude.
 
+**Scaffold a skill from a description:**
+
+Instead of writing SKILL.md and handler.py by hand, use `/scaffold-skill` to generate them:
+
+```
+/scaffold-skill myteam deploy Deploy to production with rollback support
+```
+
+This invokes Claude to produce a valid SKILL.md + handler.py stub in `instance/skills/myteam/deploy/`, validated against the parser before writing. Restart the bridge to load the new skill.
+
 See [koan/skills/README.md](../koan/skills/README.md) for the full authoring guide.
 
 ### GitHub @mention Integration
@@ -945,9 +955,10 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/profile <project>` | `/perf`, `/benchmark` | P | Performance profiling mission |
 | `/tech-debt [project]` | `/td`, `/debt` | P | Scan project for tech debt |
 | `/incident <error>` | — | P | Triage a production error |
+| `/scaffold-skill <scope> <name> <desc>` | `/scaffold`, `/new-skill` | P | Generate SKILL.md + handler.py for a new custom skill |
 
 Skills marked with GitHub @mention support: `/plan`, `/implement`, `/fix`, `/review`, `/rebase`, `/recreate`, `/refactor`, `/profile`. See [GitHub Commands](github-commands.md) for details.
 
 ---
 
-*This manual covers all 40 core skills. For the full command reference with tabular format, see [docs/skills.md](skills.md). For skill authoring, see [koan/skills/README.md](../koan/skills/README.md).*
+*This manual covers all 41 core skills. For the full command reference with tabular format, see [docs/skills.md](skills.md). For skill authoring, see [koan/skills/README.md](../koan/skills/README.md).*
