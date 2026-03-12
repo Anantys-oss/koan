@@ -405,6 +405,19 @@ These features turn Kōan from a task runner into a full development workflow pa
 - `/changelog --format=md` — Get markdown output for release notes
 </details>
 
+**`/done`** — List PRs merged in the last 24 hours across all projects.
+
+- **Usage:** `/done [project] [--hours=N]`
+- **Aliases:** `/merged`
+
+<details>
+<summary>Use cases</summary>
+
+- `/done` — What got merged today?
+- `/done webapp` — Merged PRs for a specific project
+- `/done --hours=48` — Merged PRs in the last 2 days
+</details>
+
 ### Scheduling Work
 
 Kōan supports recurring missions that automatically re-queue at set intervals.
@@ -955,6 +968,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/journal` | `/log` | I | View journal entries |
 | `/email` | — | I | Email digest status or test |
 | `/stats [project]` | — | I | Session outcome statistics |
+| `/done [project]` | `/merged` | I | List PRs merged in the last 24 hours |
 | `/explore [project]` | `/exploration` | I | Enable/show exploration mode |
 | `/noexplore [project]` | — | I | Disable exploration mode |
 | `/ai [project]` | `/ia` | P | Queue an AI exploration mission |
