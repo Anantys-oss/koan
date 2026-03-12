@@ -235,7 +235,10 @@ class TestBuildAgentPromptBranchPrefix:
             mission_title="Do stuff",
         )
 
-        call_kwargs = mock_load.call_args[1]
+        # Find the "agent" template call (not "verification-gate")
+        agent_call = [c for c in mock_load.call_args_list if c[0][0] == "agent"]
+        assert agent_call, "load_prompt('agent', ...) should have been called"
+        call_kwargs = agent_call[0][1]
         assert call_kwargs["BRANCH_PREFIX"] == "mybot/"
 
 
