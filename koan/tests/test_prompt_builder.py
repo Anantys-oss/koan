@@ -16,6 +16,7 @@ from app.prompt_builder import (
     _get_staleness_section,
     _get_mission_type_section,
     _get_tdd_section,
+    _get_verification_gate_section,
     _get_verbose_section,
 )
 
@@ -244,8 +245,8 @@ class TestBuildAgentPrompt:
             mission_title="Fix the bug",
         )
 
-        # Verify load_prompt was called with correct args
-        mock_load.assert_called_once_with(
+        # Verify load_prompt was called for agent template
+        mock_load.assert_any_call(
             "agent",
             INSTANCE=prompt_env["instance"],
             PROJECT_PATH=prompt_env["project_path"],
@@ -262,6 +263,8 @@ class TestBuildAgentPrompt:
             ),
             BRANCH_PREFIX="koan/",
         )
+        # Verification gate also loaded for mission-driven runs
+        mock_load.assert_any_call("verification-gate")
 
         # Merge policy appended
         assert "Git Merge" in result
@@ -1138,6 +1141,89 @@ class TestGetTddSection:
         )
 
         assert "TDD Mode" not in result
+
+
+# --- Tests for _get_verification_gate_section ---
+
+
+class TestGetVerificationGateSection:
+    """Tests for verification-before-completion gate."""
+
+    def test_mission_injects_verification_gate(self):
+        """Mission-driven runs should include verification gate."""
+        result = _get_verification_gate_section("Fix user signup bug")
+        assert "Verification Gate" in result
+        assert "fresh verification evidence" in result.lower()
+
+    def test_empty_mission_returns_empty(self):
+        """No mission (autonomous mode) should skip verification gate."""
+        assert _get_verification_gate_section("") == ""
+
+    def test_contains_red_flags(self):
+        """Verification gate should list red-flag phrases."""
+        result = _get_verification_gate_section("Add feature")
+        assert "should work" in result.lower() or "should be fine" in result.lower()
+
+    def test_contains_work_type_guidance(self):
+        """Verification gate should have work-type-specific evidence requirements."""
+        result = _get_verification_gate_section("Refactor auth module")
+        assert "Bug fix" in result
+        assert "Feature" in result
+        assert "Refactor" in result
+
+    @patch("app.prompt_builder._get_verbose_section", return_value="")
+    @patch("app.prompt_builder._get_submit_pr_section", return_value="")
+    @patch("app.prompt_builder._get_merge_policy", return_value="\nMerge\n")
+    @patch("app.prompt_builder._get_branch_prefix", return_value="koan/")
+    @patch("app.prompts.load_prompt")
+    def test_build_agent_prompt_includes_gate_with_mission(
+        self, mock_load, mock_prefix, mock_merge, mock_submit_pr, mock_verbose,
+        prompt_env,
+    ):
+        """build_agent_prompt should include verification gate for missions."""
+        mock_load.side_effect = lambda name, **kw: (
+            "Base prompt" if name == "agent" else
+            "Verification Gate — Evidence Before Completion" if name == "verification-gate" else
+            ""
+        )
+
+        result = build_agent_prompt(
+            instance=prompt_env["instance"],
+            project_name="testproj",
+            project_path=prompt_env["project_path"],
+            run_num=1,
+            max_runs=20,
+            autonomous_mode="implement",
+            focus_area="Test area",
+            available_pct=50,
+            mission_title="Fix login bug",
+        )
+
+        assert "Verification Gate" in result
+
+    @patch("app.prompt_builder._get_verbose_section", return_value="")
+    @patch("app.prompt_builder._get_submit_pr_section", return_value="")
+    @patch("app.prompt_builder._get_merge_policy", return_value="\nMerge\n")
+    @patch("app.prompt_builder._get_branch_prefix", return_value="koan/")
+    @patch("app.prompts.load_prompt", return_value="Base prompt")
+    def test_build_agent_prompt_skips_gate_without_mission(
+        self, mock_load, mock_prefix, mock_merge, mock_submit_pr, mock_verbose,
+        prompt_env,
+    ):
+        """build_agent_prompt should NOT include verification gate for autonomous mode."""
+        result = build_agent_prompt(
+            instance=prompt_env["instance"],
+            project_name="testproj",
+            project_path=prompt_env["project_path"],
+            run_num=1,
+            max_runs=20,
+            autonomous_mode="implement",
+            focus_area="Test area",
+            available_pct=50,
+            mission_title="",
+        )
+
+        assert "Verification Gate" not in result
 
 
 # --- Tests for _get_mission_type_section ---

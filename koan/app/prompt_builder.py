@@ -199,6 +199,20 @@ def _get_mission_type_section(mission_title: str) -> str:
     return ""
 
 
+def _get_verification_gate_section(mission_title: str) -> str:
+    """Return the verification gate section for mission-driven runs.
+
+    Injects verification-before-completion rules that require fresh evidence
+    before any success claim. Only included when executing a mission.
+    """
+    if not mission_title:
+        return ""
+
+    from app.prompts import load_prompt
+
+    return load_prompt("verification-gate")
+
+
 def _get_tdd_section(mission_title: str) -> str:
     """Return the TDD mode section if mission is tagged [tdd]."""
     from app.missions import extract_tdd_tag
@@ -321,6 +335,9 @@ def build_agent_prompt(
 
     # Append TDD mode section if mission is tagged [tdd]
     prompt += _get_tdd_section(mission_title)
+
+    # Append verification gate for mission-driven runs
+    prompt += _get_verification_gate_section(mission_title)
 
     # Append focus mode section if active
     prompt += _get_focus_section(instance)
