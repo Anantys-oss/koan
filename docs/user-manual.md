@@ -316,6 +316,19 @@ These features turn Kōan from a task runner into a full development workflow pa
 - `/rf https://github.com/org/repo/issues/70` — Refactor based on an issue description
 </details>
 
+**`/commit`** — Analyze staged/unstaged changes and create a conventional commit with a well-structured message.
+
+- **Usage:** `/commit [message hint]`
+- **Aliases:** `/ci`
+
+<details>
+<summary>Use cases</summary>
+
+- `/commit` — Auto-generate a commit message from the current diff
+- `/commit fix the login validation bug` — Guide the commit message with a hint
+- `/commit webapp fix auth timeout` — Commit in a specific project with a hint
+</details>
+
 ### PR Management
 
 **`/rebase`** — Rebase a PR onto its base branch.
@@ -909,6 +922,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/fix <issue>` | — | I | Full bug-fix pipeline (understand → plan → test → fix → PR) |
 | `/review <PR>` | `/rv` | I | Review a pull request |
 | `/refactor <desc>` | `/rf` | I | Targeted refactoring mission |
+| `/commit [hint]` | `/ci` | I | Conventional commit from diff analysis |
 | `/rebase <PR>` | `/rb` | I | Rebase a PR onto its base branch |
 | `/recreate <PR>` | `/rc` | I | Re-implement a PR from scratch |
 | `/pr <PR>` | — | I | Review and update a GitHub PR |

@@ -54,6 +54,7 @@ _SKILL_RUNNERS = {
     "claude.md": "app.claudemd_refresh",
     "claude_md": "app.claudemd_refresh",
     "incident": "skills.core.incident.incident_runner",
+    "commit": "skills.core.commit.commit_runner",
 }
 
 _PROJECT_TAG_RE = re.compile(r"^\[projec?t:([a-zA-Z0-9_-]+)\]\s*")
@@ -210,6 +211,7 @@ def build_skill_command(
         "claude.md": lambda: _build_claudemd_cmd(base_cmd, project_name, project_path),
         "claude_md": lambda: _build_claudemd_cmd(base_cmd, project_name, project_path),
         "incident": lambda: _build_incident_cmd(base_cmd, args, project_path, instance_dir),
+        "commit": lambda: _build_commit_cmd(base_cmd, args, project_path),
     }
 
     builder = _COMMAND_BUILDERS.get(command)
@@ -383,6 +385,16 @@ def _build_incident_cmd(
             f.write(args)
         cmd.extend(["--error-file", path])
 
+    return cmd
+
+
+def _build_commit_cmd(
+    base_cmd: List[str], args: str, project_path: str,
+) -> List[str]:
+    """Build commit_runner command."""
+    cmd = base_cmd + ["--project-path", project_path]
+    if args.strip():
+        cmd.extend(["--hint", args.strip()])
     return cmd
 
 
