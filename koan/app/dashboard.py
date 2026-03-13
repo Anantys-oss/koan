@@ -38,7 +38,9 @@ from app.conversation_history import (
 )
 from app.signals import (
     DAILY_REPORT_FILE,
+    FOCUS_FILE,
     PAUSE_FILE,
+    PROJECT_FILE,
     QUOTA_RESET_FILE,
     STATUS_FILE,
     STOP_FILE,
@@ -109,6 +111,155 @@ def get_signal_status() -> dict:
     if report_file.exists():
         status["last_report"] = report_file.read_text().strip()
     return status
+
+
+# Staleness threshold — if .koan-status mtime is older than this, treat as idle
+_STALE_THRESHOLD_SECONDS = 300  # 5 minutes
+
+# Patterns to classify .koan-status text into agent states.
+# Order matters: first match wins.
+_STATUS_PATTERNS = [
+    # Error recovery
+    (re.compile(r"Error recovery"), "error_recovery"),
+    # Paused (written by run.py when quota-paused)
+    (re.compile(r"Paused"), "paused"),
+    # Idle / sleeping
+    (re.compile(r"Idle"), "sleeping"),
+    # Executing / working states
+    (re.compile(r"Run \d+/\d+ — executing"), "working"),
+    (re.compile(r"Run \d+/\d+ — skill dispatch"), "working"),
+    (re.compile(r"Run \d+/\d+ — (REVIEW|IMPLEMENT|DEEP)"), "working"),
+    (re.compile(r"Run \d+/\d+ — preparing"), "working"),
+    (re.compile(r"Run \d+/\d+ — finalizing"), "working"),
+    (re.compile(r"Run \d+/\d+ — done"), "working"),
+    # Contemplative
+    (re.compile(r"post-contemplation"), "contemplating"),
+]
+
+# Badge color per state
+_BADGE_COLORS = {
+    "working": "green",
+    "sleeping": "blue",
+    "contemplating": "blue",
+    "paused": "orange",
+    "stopped": "red",
+    "error_recovery": "red",
+    "idle": "muted",
+}
+
+# Extract "Run X/Y" from status text
+_RUN_INFO_RE = re.compile(r"Run (\d+/\d+)")
+
+# Extract autonomous mode from status text (e.g. "REVIEW on koan")
+_MODE_RE = re.compile(r"— (REVIEW|IMPLEMENT|DEEP)\b")
+
+# Extract project name from "on <project>" in status text
+_STATUS_PROJECT_RE = re.compile(r"on (\S+)\s*$")
+
+
+def get_agent_state() -> dict:
+    """Derive a structured agent state from signal files.
+
+    Returns a dict with keys: state, label, project, run_info, pause_reason,
+    reset_time, focus, elapsed, badge_color.
+    """
+    signals = get_signal_status()
+    status_text = signals.get("loop_status", "")
+
+    # Read project from .koan-project
+    project_file = KOAN_ROOT / PROJECT_FILE
+    project = ""
+    if project_file.exists():
+        try:
+            project = project_file.read_text().strip()
+        except OSError:
+            pass
+
+    # Read focus state
+    focus = None
+    focus_file = KOAN_ROOT / FOCUS_FILE
+    if focus_file.exists():
+        try:
+            from app.focus_manager import get_focus_state
+            fs = get_focus_state(str(KOAN_ROOT))
+            if fs and not fs.is_expired():
+                focus = {
+                    "remaining": fs.remaining_display(),
+                    "reason": fs.reason,
+                }
+        except (OSError, ImportError):
+            pass
+
+    # Calculate elapsed time since status file was last written
+    elapsed = 0
+    status_file = KOAN_ROOT / STATUS_FILE
+    is_stale = False
+    if status_file.exists():
+        try:
+            elapsed = int(time.time() - status_file.stat().st_mtime)
+            is_stale = elapsed > _STALE_THRESHOLD_SECONDS
+        except OSError:
+            pass
+
+    # Determine state with priority: stopped > paused > status text > idle
+    if signals["stop_requested"]:
+        state = "stopped"
+        label = "Stopped"
+    elif signals["paused"] or signals["quota_paused"]:
+        state = "paused"
+        reason = signals.get("pause_reason", "")
+        reset = signals.get("reset_time", "")
+        # quota_paused flag (.koan-quota-reset) may exist without .koan-pause
+        if signals["quota_paused"] and not reason:
+            reason = "quota"
+        if reason == "quota":
+            label = f"Paused — quota{f' ({reset})' if reset else ''}"
+        elif reason:
+            label = f"Paused — {reason}"
+        else:
+            label = "Paused"
+    elif status_text and not is_stale:
+        # Classify from status text patterns
+        state = "idle"
+        for pattern, matched_state in _STATUS_PATTERNS:
+            if pattern.search(status_text):
+                state = matched_state
+                break
+        label = status_text
+    else:
+        state = "idle"
+        label = "Idle" if not is_stale else "Idle (stale)"
+
+    # Extract run_info from status text
+    run_info = ""
+    m = _RUN_INFO_RE.search(status_text)
+    if m:
+        run_info = m.group(1)
+
+    # Extract autonomous mode
+    autonomous_mode = ""
+    m = _MODE_RE.search(status_text)
+    if m:
+        autonomous_mode = m.group(1)
+
+    # Extract project from status text if not set from .koan-project
+    if not project:
+        m = _STATUS_PROJECT_RE.search(status_text)
+        if m:
+            project = m.group(1)
+
+    return {
+        "state": state,
+        "label": label,
+        "project": project,
+        "run_info": run_info,
+        "autonomous_mode": autonomous_mode,
+        "pause_reason": signals.get("pause_reason", ""),
+        "reset_time": signals.get("reset_time", ""),
+        "focus": focus,
+        "elapsed": elapsed,
+        "badge_color": _BADGE_COLORS.get(state, "muted"),
+    }
 
 
 def parse_missions() -> dict:
@@ -207,27 +358,21 @@ def _build_dashboard_prompt(text: str, *, lite: bool = False) -> str:
 @app.route("/")
 def index():
     """Main dashboard page."""
-    signals = get_signal_status()
+    agent_state = get_agent_state()
     missions = parse_missions()
 
-    # Determine overall state
-    if signals["stop_requested"]:
-        state = "stopped"
-        state_label = "Stopped"
-    elif signals["quota_paused"]:
-        state = "paused"
-        state_label = "Quota Exhausted"
-    elif signals["loop_status"]:
-        state = "running"
-        state_label = f"Run {signals['loop_status']}"
-    else:
-        state = "idle"
-        state_label = "Idle"
+    # Map structured state to the template's existing state vocabulary
+    tpl_state = agent_state["state"]
+    if tpl_state in ("working", "contemplating", "error_recovery"):
+        tpl_state = "running"
+    elif tpl_state == "sleeping":
+        tpl_state = "running"
 
     return render_template("dashboard.html",
-        state=state,
-        state_label=state_label,
-        signals=signals,
+        state=tpl_state,
+        state_label=agent_state["label"],
+        agent_state=agent_state,
+        signals=get_signal_status(),
         missions=missions,
         pending_count=len(missions["pending"]),
         in_progress_count=len(missions["in_progress"]),
@@ -490,6 +635,7 @@ def api_status():
             "in_progress": len(missions["in_progress"]),
             "done": len(missions["done"]),
         },
+        "agent_state": get_agent_state(),
     })
 
 

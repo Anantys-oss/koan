@@ -656,7 +656,7 @@ class TestIndexState:
         (tmp_path / ".koan-quota-reset").write_text("1")
         resp = app_client.get("/")
         assert resp.status_code == 200
-        assert b"Quota" in resp.data
+        assert b"quota" in resp.data
 
     def test_running_state_with_loop(self, app_client, tmp_path):
         (tmp_path / ".koan-status").write_text("5/20")
