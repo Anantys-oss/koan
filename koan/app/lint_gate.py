@@ -138,8 +138,7 @@ def run_lint_gate(
     # Run lint command
     try:
         result = subprocess.run(
-            command,
-            shell=True,
+            shlex.split(command),
             capture_output=True, text=True,
             timeout=timeout,
             cwd=project_path,
