@@ -1,5 +1,6 @@
 """Tests for review_runner.py — code review pipeline for PRs."""
 
+import json
 import os
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -10,6 +11,9 @@ from app.review_runner import (
     build_review_prompt,
     run_review,
     _extract_review_body,
+    _parse_review_json,
+    _format_review_as_markdown,
+    _strip_json_fences,
     _post_review_comment,
 )
 
@@ -154,6 +158,187 @@ class TestExtractReviewBody:
 
 
 # ---------------------------------------------------------------------------
+# _strip_json_fences
+# ---------------------------------------------------------------------------
+
+class TestStripJsonFences:
+    def test_strips_json_fence(self):
+        assert _strip_json_fences('```json\n{"a": 1}\n```') == '{"a": 1}'
+
+    def test_strips_plain_fence(self):
+        assert _strip_json_fences('```\n{"a": 1}\n```') == '{"a": 1}'
+
+    def test_no_fence(self):
+        assert _strip_json_fences('{"a": 1}') == '{"a": 1}'
+
+    def test_strips_whitespace(self):
+        assert _strip_json_fences('  \n{"a": 1}\n  ') == '{"a": 1}'
+
+
+# ---------------------------------------------------------------------------
+# _parse_review_json
+# ---------------------------------------------------------------------------
+
+VALID_REVIEW_JSON = {
+    "file_comments": [
+        {
+            "file": "auth.py",
+            "line_start": 42,
+            "line_end": 42,
+            "severity": "critical",
+            "title": "Missing validation",
+            "comment": "No input validation.",
+            "code_snippet": "",
+        },
+    ],
+    "review_summary": {
+        "lgtm": False,
+        "summary": "Needs validation before merge.",
+        "checklist": [
+            {"item": "No hardcoded secrets", "passed": True, "finding_ref": ""},
+        ],
+    },
+}
+
+LGTM_REVIEW_JSON = {
+    "file_comments": [],
+    "review_summary": {
+        "lgtm": True,
+        "summary": "Clean code. Merge-ready.",
+        "checklist": [],
+    },
+}
+
+
+class TestParseReviewJson:
+    def test_valid_json(self):
+        raw = json.dumps(VALID_REVIEW_JSON)
+        result = _parse_review_json(raw)
+        assert result is not None
+        assert result["review_summary"]["lgtm"] is False
+        assert len(result["file_comments"]) == 1
+
+    def test_valid_json_in_fences(self):
+        raw = f"```json\n{json.dumps(VALID_REVIEW_JSON)}\n```"
+        result = _parse_review_json(raw)
+        assert result is not None
+
+    def test_lgtm_review(self):
+        raw = json.dumps(LGTM_REVIEW_JSON)
+        result = _parse_review_json(raw)
+        assert result is not None
+        assert result["review_summary"]["lgtm"] is True
+        assert result["file_comments"] == []
+
+    def test_invalid_json(self):
+        result = _parse_review_json("not json at all")
+        assert result is None
+
+    def test_truncated_json(self):
+        raw = '{"file_comments": [{"file": "a.py"'
+        result = _parse_review_json(raw)
+        assert result is None
+
+    def test_valid_json_but_wrong_schema(self):
+        raw = json.dumps({"unrelated": "data"})
+        result = _parse_review_json(raw)
+        assert result is None
+
+    def test_missing_severity(self):
+        data = {
+            "file_comments": [{
+                "file": "a.py", "line_start": 1, "line_end": 1,
+                "severity": "invalid_severity",
+                "title": "t", "comment": "c", "code_snippet": "",
+            }],
+            "review_summary": {"lgtm": False, "summary": "s", "checklist": []},
+        }
+        result = _parse_review_json(json.dumps(data))
+        assert result is None
+
+    def test_markdown_text_returns_none(self):
+        raw = "## PR Review — Title\n\nGood code.\n\n### Summary\n\nLGTM."
+        result = _parse_review_json(raw)
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# _format_review_as_markdown
+# ---------------------------------------------------------------------------
+
+class TestFormatReviewAsMarkdown:
+    def test_formats_with_findings(self):
+        md = _format_review_as_markdown(VALID_REVIEW_JSON, title="Fix auth")
+        assert "## PR Review — Fix auth" in md
+        assert "### 🔴 Blocking" in md
+        assert "Missing validation" in md
+        assert "`auth.py`" in md
+        assert "L42" in md
+        assert "### Summary" in md
+
+    def test_lgtm_review(self):
+        md = _format_review_as_markdown(LGTM_REVIEW_JSON)
+        assert "## PR Review" in md
+        assert "### 🔴" not in md
+        assert "### 🟡" not in md
+        assert "### 🟢" not in md
+        assert "Merge-ready" in md
+
+    def test_all_severity_levels(self):
+        data = {
+            "file_comments": [
+                {"file": "a.py", "line_start": 1, "line_end": 1,
+                 "severity": "critical", "title": "Bug", "comment": "Fix it",
+                 "code_snippet": ""},
+                {"file": "b.py", "line_start": 10, "line_end": 15,
+                 "severity": "warning", "title": "Perf", "comment": "Slow",
+                 "code_snippet": "for x in y"},
+                {"file": "c.py", "line_start": 0, "line_end": 0,
+                 "severity": "suggestion", "title": "Style", "comment": "Rename",
+                 "code_snippet": ""},
+            ],
+            "review_summary": {"lgtm": False, "summary": "Needs work.",
+                               "checklist": []},
+        }
+        md = _format_review_as_markdown(data)
+        assert "### 🔴 Blocking" in md
+        assert "### 🟡 Important" in md
+        assert "### 🟢 Suggestions" in md
+        assert "L10-15" in md  # multi-line range
+
+    def test_checklist_rendering(self):
+        data = {
+            "file_comments": [],
+            "review_summary": {
+                "lgtm": True,
+                "summary": "Good.",
+                "checklist": [
+                    {"item": "No secrets", "passed": True, "finding_ref": ""},
+                    {"item": "Input validated", "passed": False, "finding_ref": "critical #1"},
+                ],
+            },
+        }
+        md = _format_review_as_markdown(data)
+        assert "- [x] No secrets" in md
+        assert "- [ ] Input validated — critical #1" in md
+
+    def test_code_snippet_in_output(self):
+        data = {
+            "file_comments": [{
+                "file": "x.py", "line_start": 5, "line_end": 5,
+                "severity": "warning", "title": "Issue",
+                "comment": "Problem here",
+                "code_snippet": "x = eval(input())",
+            }],
+            "review_summary": {"lgtm": False, "summary": "Fix eval.",
+                               "checklist": []},
+        }
+        md = _format_review_as_markdown(data)
+        assert "x = eval(input())" in md
+        assert "```" in md
+
+
+# ---------------------------------------------------------------------------
 # _post_review_comment
 # ---------------------------------------------------------------------------
 
@@ -217,19 +402,15 @@ class TestRunReview:
     @patch("app.review_runner.run_gh")
     @patch("app.review_runner._run_claude_review")
     @patch("app.review_runner.fetch_pr_context")
-    def test_full_pipeline_success(
+    def test_full_pipeline_with_json(
         self, mock_fetch, mock_claude, mock_gh, pr_context, review_skill_dir,
     ):
-        """Full review pipeline: fetch -> claude -> post comment."""
+        """Full review pipeline with JSON output: fetch -> claude -> parse -> post."""
         mock_fetch.return_value = pr_context
-        mock_claude.return_value = (
-            "## PR Review — Fix auth bypass\n\n"
-            "Solid fix. No issues found.\n\n---\n\n"
-            "### Summary\n\nMerge-ready."
-        )
+        mock_claude.return_value = json.dumps(LGTM_REVIEW_JSON)
         mock_notify = MagicMock()
 
-        success, summary = run_review(
+        success, summary, review_data = run_review(
             "owner", "repo", "42", "/tmp/project",
             notify_fn=mock_notify,
             skill_dir=review_skill_dir,
@@ -237,10 +418,66 @@ class TestRunReview:
 
         assert success is True
         assert "42" in summary
+        assert review_data is not None
+        assert review_data["review_summary"]["lgtm"] is True
         mock_fetch.assert_called_once_with("owner", "repo", "42")
         mock_claude.assert_called_once()
         mock_gh.assert_called_once()  # post comment
-        assert mock_notify.call_count >= 2  # at least "Reviewing" + "Posting"
+        assert mock_notify.call_count >= 2
+
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_fallback_to_markdown_on_invalid_json(
+        self, mock_fetch, mock_claude, mock_gh, pr_context, review_skill_dir,
+    ):
+        """Falls back to regex extraction when JSON parsing fails twice."""
+        mock_fetch.return_value = pr_context
+        # Both attempts return markdown instead of JSON
+        mock_claude.return_value = (
+            "## PR Review — Fix auth bypass\n\n"
+            "Solid fix. No issues found.\n\n---\n\n"
+            "### Summary\n\nMerge-ready."
+        )
+        mock_notify = MagicMock()
+
+        success, summary, review_data = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=mock_notify,
+            skill_dir=review_skill_dir,
+        )
+
+        assert success is True
+        assert review_data is None  # fallback was used
+        # Claude called twice (initial + retry)
+        assert mock_claude.call_count == 2
+        mock_gh.assert_called_once()
+
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_retry_succeeds_on_second_attempt(
+        self, mock_fetch, mock_claude, mock_gh, pr_context, review_skill_dir,
+    ):
+        """Retry produces valid JSON on second attempt."""
+        mock_fetch.return_value = pr_context
+        # First call returns markdown, second returns JSON
+        mock_claude.side_effect = [
+            "Not JSON at all",
+            json.dumps(VALID_REVIEW_JSON),
+        ]
+        mock_notify = MagicMock()
+
+        success, summary, review_data = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=mock_notify,
+            skill_dir=review_skill_dir,
+        )
+
+        assert success is True
+        assert review_data is not None
+        assert review_data["review_summary"]["lgtm"] is False
+        assert mock_claude.call_count == 2
 
     @patch("app.review_runner.fetch_pr_context")
     def test_fetch_failure(self, mock_fetch, pr_context):
@@ -248,7 +485,7 @@ class TestRunReview:
         mock_fetch.side_effect = RuntimeError("API down")
         mock_notify = MagicMock()
 
-        success, summary = run_review(
+        success, summary, _rd = run_review(
             "owner", "repo", "42", "/tmp/project",
             notify_fn=mock_notify,
         )
@@ -263,7 +500,7 @@ class TestRunReview:
         mock_fetch.return_value = pr_context
         mock_notify = MagicMock()
 
-        success, summary = run_review(
+        success, summary, _rd = run_review(
             "owner", "repo", "42", "/tmp/project",
             notify_fn=mock_notify,
         )
@@ -281,7 +518,7 @@ class TestRunReview:
         mock_claude.return_value = ""
         mock_notify = MagicMock()
 
-        success, summary = run_review(
+        success, summary, _rd = run_review(
             "owner", "repo", "42", "/tmp/project",
             notify_fn=mock_notify,
             skill_dir=review_skill_dir,
@@ -301,7 +538,7 @@ class TestRunReview:
         mock_claude.return_value = "## PR Review — Fix auth bypass\n\nGood code"
         mock_notify = MagicMock()
 
-        success, summary = run_review(
+        success, summary, _rd = run_review(
             "owner", "repo", "42", "/tmp/project",
             notify_fn=mock_notify,
             skill_dir=review_skill_dir,
@@ -321,7 +558,7 @@ class TestMainCli:
         """CLI parses PR URL and calls run_review."""
         from app.review_runner import main
 
-        mock_run.return_value = (True, "Review posted.")
+        mock_run.return_value = (True, "Review posted.", None)
         exit_code = main([
             "https://github.com/owner/repo/pull/42",
             "--project-path", "/tmp/project",
@@ -339,7 +576,7 @@ class TestMainCli:
         """CLI returns exit code 1 on review failure."""
         from app.review_runner import main
 
-        mock_run.return_value = (False, "Claude failed.")
+        mock_run.return_value = (False, "Claude failed.", None)
         exit_code = main([
             "https://github.com/owner/repo/pull/42",
             "--project-path", "/tmp/project",
@@ -370,7 +607,7 @@ class TestArchitectureFlag:
         from app.review_runner import main
 
         with patch("app.review_runner.run_review") as mock_run:
-            mock_run.return_value = (True, "Review posted.")
+            mock_run.return_value = (True, "Review posted.", None)
             main([
                 "https://github.com/owner/repo/pull/42",
                 "--project-path", "/tmp/project",
@@ -387,7 +624,7 @@ class TestArchitectureFlag:
         from app.review_runner import main
 
         with patch("app.review_runner.run_review") as mock_run:
-            mock_run.return_value = (True, "Review posted.")
+            mock_run.return_value = (True, "Review posted.", None)
             main([
                 "https://github.com/owner/repo/pull/42",
                 "--project-path", "/tmp/project",

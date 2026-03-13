@@ -16,6 +16,7 @@ CLI:
     python3 -m app.review_runner <github-pr-url> --project-path <path>
 """
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -24,6 +25,7 @@ from typing import Optional, Tuple
 from app.github import run_gh
 from app.prompts import load_prompt_or_skill
 from app.rebase_pr import fetch_pr_context
+from app.review_schema import validate_review
 
 
 def build_review_prompt(
@@ -97,6 +99,126 @@ def _extract_review_body(raw_output: str) -> str:
     return raw_output.strip()
 
 
+def _strip_json_fences(text: str) -> str:
+    """Strip markdown code fences wrapping JSON content."""
+    stripped = text.strip()
+    if stripped.startswith("```json"):
+        stripped = stripped[len("```json"):]
+    elif stripped.startswith("```"):
+        stripped = stripped[len("```"):]
+    if stripped.endswith("```"):
+        stripped = stripped[:-3]
+    return stripped.strip()
+
+
+def _parse_review_json(raw_output: str) -> Optional[dict]:
+    """Attempt to parse and validate JSON review output.
+
+    Handles JSON wrapped in markdown code fences. Returns the validated
+    review dict, or None if parsing/validation fails.
+    """
+    text = _strip_json_fences(raw_output)
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+    is_valid, errors = validate_review(data)
+    if not is_valid:
+        print(
+            f"[review_runner] JSON validation errors: {errors}",
+            file=sys.stderr,
+        )
+        return None
+    return data
+
+
+_SEVERITY_EMOJI = {
+    "critical": "🔴",
+    "warning": "🟡",
+    "suggestion": "🟢",
+}
+
+_SEVERITY_HEADING = {
+    "critical": "Blocking",
+    "warning": "Important",
+    "suggestion": "Suggestions",
+}
+
+
+def _format_review_as_markdown(review_data: dict, title: str = "") -> str:
+    """Convert validated review JSON into the markdown format for GitHub.
+
+    Produces the standard ## PR Review format with severity sections,
+    checklist, and summary.
+    """
+    comments = review_data["file_comments"]
+    summary_data = review_data["review_summary"]
+
+    lines: list = []
+
+    # Header
+    header = f"## PR Review — {title}" if title else "## PR Review"
+    lines.append(header)
+    lines.append("")
+    lines.append(summary_data["summary"])
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+
+    # Group comments by severity
+    by_severity: dict = {"critical": [], "warning": [], "suggestion": []}
+    for c in comments:
+        sev = c.get("severity", "suggestion")
+        by_severity.setdefault(sev, []).append(c)
+
+    # Emit severity sections (skip empty ones)
+    for sev in ("critical", "warning", "suggestion"):
+        items = by_severity.get(sev, [])
+        if not items:
+            continue
+        emoji = _SEVERITY_EMOJI[sev]
+        heading = _SEVERITY_HEADING[sev]
+        lines.append(f"### {emoji} {heading}")
+        lines.append("")
+        for i, item in enumerate(items, 1):
+            loc = f"`{item['file']}`"
+            if item.get("line_start") and item["line_start"] > 0:
+                loc += f", L{item['line_start']}"
+                if item.get("line_end") and item["line_end"] != item["line_start"]:
+                    loc += f"-{item['line_end']}"
+            lines.append(f"**{i}. {item['title']}** ({loc})")
+            lines.append(item["comment"])
+            if item.get("code_snippet"):
+                lines.append("")
+                lines.append("```")
+                lines.append(item["code_snippet"])
+                lines.append("```")
+            lines.append("")
+
+    # Checklist
+    checklist = summary_data.get("checklist", [])
+    if checklist:
+        lines.append("---")
+        lines.append("")
+        lines.append("### Checklist")
+        lines.append("")
+        for ci in checklist:
+            mark = "x" if ci["passed"] else " "
+            ref = f" — {ci['finding_ref']}" if ci.get("finding_ref") else ""
+            lines.append(f"- [{mark}] {ci['item']}{ref}")
+        lines.append("")
+
+    # Summary (always present)
+    lines.append("---")
+    lines.append("")
+    lines.append("### Summary")
+    lines.append("")
+    lines.append(summary_data["summary"])
+
+    return "\n".join(lines)
+
+
 def _post_review_comment(
     owner: str, repo: str, pr_number: str, review_text: str,
 ) -> bool:
@@ -135,7 +257,7 @@ def run_review(
     notify_fn=None,
     skill_dir: Optional[Path] = None,
     architecture: bool = False,
-) -> Tuple[bool, str]:
+) -> Tuple[bool, str, Optional[dict]]:
     """Execute a read-only code review on a PR.
 
     Args:
@@ -148,7 +270,8 @@ def run_review(
         architecture: If True, use architecture-focused review prompt.
 
     Returns:
-        (success, summary) tuple.
+        (success, summary, review_data) tuple. review_data is the validated
+        JSON review dict, or None if JSON parsing failed (fallback was used).
     """
     if notify_fn is None:
         from app.notify import send_telegram
@@ -161,10 +284,10 @@ def run_review(
     try:
         context = fetch_pr_context(owner, repo, pr_number)
     except Exception as e:
-        return False, f"Failed to fetch PR context: {e}"
+        return False, f"Failed to fetch PR context: {e}", None
 
     if not context.get("diff"):
-        return False, f"PR #{pr_number} has no diff — nothing to review."
+        return False, f"PR #{pr_number} has no diff — nothing to review.", None
 
     # Step 2: Build review prompt
     prompt = build_review_prompt(context, skill_dir=skill_dir, architecture=architecture)
@@ -173,20 +296,44 @@ def run_review(
     notify_fn(f"Analyzing code changes on `{context['branch']}`...")
     raw_output = _run_claude_review(prompt, project_path)
     if not raw_output:
-        return False, f"Claude review produced no output for PR #{pr_number}."
+        return False, f"Claude review produced no output for PR #{pr_number}.", None
 
-    # Step 4: Extract structured review
-    review_body = _extract_review_body(raw_output)
+    # Step 4: Parse structured JSON review (with retry)
+    review_data = _parse_review_json(raw_output)
+    if review_data is None:
+        # Retry once with explicit JSON instruction
+        retry_prompt = (
+            prompt
+            + "\n\nIMPORTANT: Your previous response was not valid JSON. "
+            "You MUST respond with ONLY a valid JSON object matching the "
+            "schema described above. No markdown, no text, just JSON."
+        )
+        retry_output = _run_claude_review(retry_prompt, project_path)
+        if retry_output:
+            review_data = _parse_review_json(retry_output)
 
-    # Step 5: Post review comment
+    # Step 5: Convert to markdown for posting
+    if review_data is not None:
+        review_body = _format_review_as_markdown(
+            review_data, title=context.get("title", ""),
+        )
+    else:
+        # Fallback: use regex extraction for non-JSON responses
+        print(
+            "[review_runner] JSON parsing failed, falling back to regex extraction",
+            file=sys.stderr,
+        )
+        review_body = _extract_review_body(raw_output)
+
+    # Step 6: Post review comment
     notify_fn(f"Posting review on PR #{pr_number}...")
     posted = _post_review_comment(owner, repo, pr_number, review_body)
 
     if posted:
         summary = f"Review posted on PR #{pr_number} ({full_repo})."
-        return True, summary
+        return True, summary, review_data
     else:
-        return False, f"Review generated but failed to post comment on PR #{pr_number}."
+        return False, f"Review generated but failed to post comment on PR #{pr_number}.", review_data
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +371,7 @@ def main(argv=None):
 
     skill_dir = Path(__file__).resolve().parent.parent / "skills" / "core" / "review"
 
-    success, summary = run_review(
+    success, summary, _review_data = run_review(
         owner, repo, pr_number, cli_args.project_path,
         skill_dir=skill_dir,
         architecture=cli_args.architecture,
