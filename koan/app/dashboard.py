@@ -123,6 +123,8 @@ _STATUS_PATTERNS = [
     (re.compile(r"Error recovery"), "error_recovery"),
     # Paused (written by run.py when quota-paused)
     (re.compile(r"Paused"), "paused"),
+    # Contemplative (must be before Idle — text starts with "Idle —")
+    (re.compile(r"post-contemplation"), "contemplating"),
     # Idle / sleeping
     (re.compile(r"Idle"), "sleeping"),
     # Executing / working states
@@ -132,8 +134,6 @@ _STATUS_PATTERNS = [
     (re.compile(r"Run \d+/\d+ — preparing"), "working"),
     (re.compile(r"Run \d+/\d+ — finalizing"), "working"),
     (re.compile(r"Run \d+/\d+ — done"), "working"),
-    # Contemplative
-    (re.compile(r"post-contemplation"), "contemplating"),
 ]
 
 # Badge color per state
