@@ -82,8 +82,9 @@ def _run_claude_review(prompt: str, project_path: str, timeout: int = 600) -> st
 def _extract_review_body(raw_output: str) -> str:
     """Extract structured review from Claude's raw output.
 
-    Tries to find markdown-structured review content. Falls back to the
-    full output if no structure is detected.
+    Tries to find markdown-structured review content. If the output
+    looks like JSON, attempts to parse and format it as markdown.
+    Falls back to the full output if no structure is detected.
     """
     # Look for the new format: ## PR Review — ...
     match = re.search(r'(## PR Review\b.*)', raw_output, re.DOTALL)
@@ -95,31 +96,112 @@ def _extract_review_body(raw_output: str) -> str:
     if match:
         return match.group(1).strip()
 
+    # Safety net: if the output contains JSON, try to parse and format it
+    # rather than posting raw JSON to GitHub.
+    json_text = _extract_json_text(raw_output)
+    if json_text is not None:
+        try:
+            data = json.loads(json_text)
+            is_valid, _ = validate_review(data)
+            if is_valid:
+                return _format_review_as_markdown(data)
+        except (json.JSONDecodeError, ValueError):
+            pass
+
     # Fall back to full output (Claude may format differently)
     return raw_output.strip()
 
 
-def _strip_json_fences(text: str) -> str:
-    """Strip markdown code fences wrapping JSON content."""
+def _extract_json_text(text: str) -> Optional[str]:
+    """Extract a JSON object string from text that may contain surrounding prose.
+
+    Tries multiple strategies:
+    1. Direct parse of the full text (pure JSON)
+    2. Strip markdown code fences (```json ... ```)
+    3. Extract JSON from code fences anywhere in the text
+    4. Find the outermost { ... } in the text
+    """
     stripped = text.strip()
-    if stripped.startswith("```json"):
-        stripped = stripped[len("```json"):]
-    elif stripped.startswith("```"):
-        stripped = stripped[len("```"):]
-    if stripped.endswith("```"):
-        stripped = stripped[:-3]
-    return stripped.strip()
+
+    # Strategy 1: pure JSON
+    try:
+        json.loads(stripped)
+        return stripped
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # Strategy 2: text wrapped entirely in code fences
+    fence_stripped = stripped
+    if fence_stripped.startswith("```json"):
+        fence_stripped = fence_stripped[len("```json"):]
+    elif fence_stripped.startswith("```"):
+        fence_stripped = fence_stripped[len("```"):]
+    if fence_stripped.endswith("```"):
+        fence_stripped = fence_stripped[:-3]
+    fence_stripped = fence_stripped.strip()
+    if fence_stripped != stripped:
+        try:
+            json.loads(fence_stripped)
+            return fence_stripped
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    # Strategy 3: code fences embedded in surrounding text
+    fence_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', stripped, re.DOTALL)
+    if fence_match:
+        candidate = fence_match.group(1).strip()
+        try:
+            json.loads(candidate)
+            return candidate
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    # Strategy 4: find outermost { ... } with brace matching
+    start = stripped.find("{")
+    if start != -1:
+        depth = 0
+        in_string = False
+        escape = False
+        for i in range(start, len(stripped)):
+            c = stripped[i]
+            if escape:
+                escape = False
+                continue
+            if c == "\\":
+                escape = True
+                continue
+            if c == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    candidate = stripped[start:i + 1]
+                    try:
+                        json.loads(candidate)
+                        return candidate
+                    except (json.JSONDecodeError, ValueError):
+                        break
+    return None
 
 
 def _parse_review_json(raw_output: str) -> Optional[dict]:
     """Attempt to parse and validate JSON review output.
 
-    Handles JSON wrapped in markdown code fences. Returns the validated
-    review dict, or None if parsing/validation fails.
+    Handles JSON wrapped in markdown code fences or surrounded by
+    preamble/postamble text. Returns the validated review dict, or
+    None if parsing/validation fails.
     """
-    text = _strip_json_fences(raw_output)
+    json_text = _extract_json_text(raw_output)
+    if json_text is None:
+        return None
+
     try:
-        data = json.loads(text)
+        data = json.loads(json_text)
     except (json.JSONDecodeError, ValueError):
         return None
 

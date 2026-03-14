@@ -13,7 +13,7 @@ from app.review_runner import (
     _extract_review_body,
     _parse_review_json,
     _format_review_as_markdown,
-    _strip_json_fences,
+    _extract_json_text,
     _post_review_comment,
 )
 
@@ -130,6 +130,22 @@ class TestExtractReviewBody:
         assert result.startswith("## PR Review")
         assert not result.endswith(" ")
 
+    def test_raw_json_gets_formatted(self):
+        """When output is raw JSON, converts to markdown instead of posting JSON."""
+        raw = json.dumps(VALID_REVIEW_JSON)
+        result = _extract_review_body(raw)
+        assert "## PR Review" in result
+        assert "### 🔴 Blocking" in result
+        assert "Missing validation" in result
+        assert '"file_comments"' not in result  # No raw JSON keys
+
+    def test_json_with_preamble_gets_formatted(self):
+        """When output has JSON with preamble, extracts and formats it."""
+        raw = "Here is my review:\n\n" + json.dumps(VALID_REVIEW_JSON)
+        result = _extract_review_body(raw)
+        assert "## PR Review" in result
+        assert '"file_comments"' not in result
+
     def test_captures_checklist_section(self):
         """Extracts review body including ### Checklist section."""
         raw = (
@@ -158,21 +174,67 @@ class TestExtractReviewBody:
 
 
 # ---------------------------------------------------------------------------
-# _strip_json_fences
+# _extract_json_text
 # ---------------------------------------------------------------------------
 
-class TestStripJsonFences:
-    def test_strips_json_fence(self):
-        assert _strip_json_fences('```json\n{"a": 1}\n```') == '{"a": 1}'
+class TestExtractJsonText:
+    def test_pure_json(self):
+        result = _extract_json_text('{"a": 1}')
+        assert result is not None
+        assert json.loads(result) == {"a": 1}
 
-    def test_strips_plain_fence(self):
-        assert _strip_json_fences('```\n{"a": 1}\n```') == '{"a": 1}'
+    def test_json_in_fences(self):
+        result = _extract_json_text('```json\n{"a": 1}\n```')
+        assert result is not None
+        assert json.loads(result) == {"a": 1}
 
-    def test_no_fence(self):
-        assert _strip_json_fences('{"a": 1}') == '{"a": 1}'
+    def test_json_in_plain_fences(self):
+        result = _extract_json_text('```\n{"a": 1}\n```')
+        assert result is not None
+        assert json.loads(result) == {"a": 1}
 
-    def test_strips_whitespace(self):
-        assert _strip_json_fences('  \n{"a": 1}\n  ') == '{"a": 1}'
+    def test_json_with_preamble(self):
+        text = 'Here is my review:\n\n{"file_comments": [], "review_summary": {"lgtm": true, "summary": "ok", "checklist": []}}'
+        result = _extract_json_text(text)
+        assert result is not None
+        data = json.loads(result)
+        assert data["review_summary"]["lgtm"] is True
+
+    def test_json_with_preamble_and_postamble(self):
+        text = 'I analyzed the code:\n\n{"a": 1}\n\nHope this helps!'
+        result = _extract_json_text(text)
+        assert result is not None
+        assert json.loads(result) == {"a": 1}
+
+    def test_json_fences_with_surrounding_text(self):
+        text = 'Here is the review:\n\n```json\n{"a": 1}\n```\n\nLet me know if you need more.'
+        result = _extract_json_text(text)
+        assert result is not None
+        assert json.loads(result) == {"a": 1}
+
+    def test_no_json(self):
+        result = _extract_json_text("This is plain text with no JSON.")
+        assert result is None
+
+    def test_whitespace_only(self):
+        result = _extract_json_text("   \n  ")
+        assert result is None
+
+    def test_nested_braces(self):
+        obj = {"outer": {"inner": {"deep": 42}}}
+        text = f"Preamble\n{json.dumps(obj)}\nPostamble"
+        result = _extract_json_text(text)
+        assert result is not None
+        assert json.loads(result) == obj
+
+    def test_review_json_with_preamble(self):
+        """The exact bug scenario: valid review JSON with Claude preamble."""
+        text = "I'll provide my review as JSON:\n\n" + json.dumps(VALID_REVIEW_JSON)
+        result = _extract_json_text(text)
+        assert result is not None
+        data = json.loads(result)
+        assert "file_comments" in data
+        assert "review_summary" in data
 
 
 # ---------------------------------------------------------------------------
@@ -260,6 +322,34 @@ class TestParseReviewJson:
         raw = "## PR Review — Title\n\nGood code.\n\n### Summary\n\nLGTM."
         result = _parse_review_json(raw)
         assert result is None
+
+    def test_json_with_preamble_text(self):
+        """Parses valid JSON even when surrounded by preamble text."""
+        raw = "Here is my analysis:\n\n" + json.dumps(VALID_REVIEW_JSON)
+        result = _parse_review_json(raw)
+        assert result is not None
+        assert result["review_summary"]["lgtm"] is False
+
+    def test_json_with_preamble_and_postamble(self):
+        """Parses valid JSON with both preamble and postamble."""
+        raw = (
+            "I've analyzed the code changes.\n\n"
+            + json.dumps(LGTM_REVIEW_JSON)
+            + "\n\nLet me know if you need more details."
+        )
+        result = _parse_review_json(raw)
+        assert result is not None
+        assert result["review_summary"]["lgtm"] is True
+
+    def test_json_in_fences_with_surrounding_text(self):
+        """Parses JSON from code fences embedded in surrounding text."""
+        raw = (
+            "Here is the review:\n\n"
+            f"```json\n{json.dumps(VALID_REVIEW_JSON)}\n```\n\n"
+            "Hope this helps."
+        )
+        result = _parse_review_json(raw)
+        assert result is not None
 
 
 # ---------------------------------------------------------------------------
