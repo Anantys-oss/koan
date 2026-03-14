@@ -8,6 +8,7 @@ with a 5-minute TTL in-memory cache.  Each project's PRs are fetched via
 import json
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional
@@ -32,15 +33,17 @@ _PR_FIELDS = (
 # ---------------------------------------------------------------------------
 
 _pr_cache: Dict[str, tuple] = {}  # project_name -> (data, timestamp)
+_pr_cache_lock = threading.Lock()
 _PR_CACHE_TTL = 300  # 5 minutes
 
 
 def _invalidate_cache(project: Optional[str] = None) -> None:
     """Clear cached PR data.  If *project* is given, clear only that entry."""
-    if project:
-        _pr_cache.pop(project, None)
-    else:
-        _pr_cache.clear()
+    with _pr_cache_lock:
+        if project:
+            _pr_cache.pop(project, None)
+        else:
+            _pr_cache.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -122,11 +125,11 @@ def fetch_all_prs(
     had_errors = False
 
     def _fetch_one(name: str, path: str) -> List[dict]:
-        # Check cache first
         now = time.monotonic()
-        cached = _pr_cache.get(name)
-        if cached and (now - cached[1]) < _PR_CACHE_TTL:
-            return cached[0]
+        with _pr_cache_lock:
+            cached = _pr_cache.get(name)
+            if cached and (now - cached[1]) < _PR_CACHE_TTL:
+                return cached[0]
 
         proj_cfg = get_project_config(config, name)
         github_url = proj_cfg.get("github_url", "")
@@ -134,7 +137,8 @@ def fetch_all_prs(
             return []
 
         prs = fetch_project_prs(name, path, github_url, author_filter=author)
-        _pr_cache[name] = (prs, now)
+        with _pr_cache_lock:
+            _pr_cache[name] = (prs, now)
         return prs
 
     with ThreadPoolExecutor(max_workers=5) as pool:
@@ -211,31 +215,34 @@ def merge_pr(
     Returns dict with keys: ``ok`` (bool), ``error`` (str or None),
     ``url`` (str — the merge result URL).
     """
+    _VALID_STRATEGIES = {"squash", "merge", "rebase"}
+
     config = load_projects_config(koan_root)
     if config is None:
-        return {"ok": False, "error": "No projects config"}
+        return {"ok": False, "error": "No projects config", "url": ""}
 
     am_cfg = get_project_auto_merge(config, project_name)
     if not am_cfg.get("enabled"):
-        return {"ok": False, "error": "Auto-merge is disabled for this project"}
+        return {"ok": False, "error": "Auto-merge is disabled for this project", "url": ""}
 
     strategy = am_cfg.get("strategy", "squash")
-    strategy_flag = f"--{strategy}"
+    if strategy not in _VALID_STRATEGIES:
+        return {"ok": False, "error": f"Invalid merge strategy: {strategy}", "url": ""}
 
     proj_cfg = get_project_config(config, project_name)
     project_path = (config.get("projects", {}).get(project_name) or {}).get("path", "")
     github_url = proj_cfg.get("github_url", "")
     if not project_path or not github_url:
-        return {"ok": False, "error": "Project path or GitHub URL not configured"}
+        return {"ok": False, "error": "Project path or GitHub URL not configured", "url": ""}
 
     try:
         output = run_gh(
             "pr", "merge", str(pr_number),
-            strategy_flag,
+            f"--{strategy}",
             "--repo", github_url,
             cwd=project_path, timeout=30,
         )
         _invalidate_cache(project_name)
         return {"ok": True, "error": None, "url": output}
     except (RuntimeError, subprocess.TimeoutExpired, OSError) as e:
-        return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": str(e), "url": ""}
