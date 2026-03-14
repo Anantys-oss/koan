@@ -9,12 +9,15 @@ import pytest
 
 from app.review_runner import (
     build_review_prompt,
+    fetch_repliable_comments,
     run_review,
     _extract_review_body,
+    _format_repliable_comments,
     _parse_review_json,
     _format_review_as_markdown,
     _extract_json_text,
     _post_review_comment,
+    _post_comment_replies,
 )
 
 
@@ -50,6 +53,7 @@ def review_skill_dir(tmp_path):
         "Body: {BODY}\nDiff: {DIFF}\n"
         "Reviews: {REVIEWS}\nComments: {REVIEW_COMMENTS}\n"
         "Issue: {ISSUE_COMMENTS}\n"
+        "Repliable: {REPLIABLE_COMMENTS}\n"
     )
     return tmp_path
 
@@ -489,11 +493,13 @@ class TestPostReviewComment:
 # ---------------------------------------------------------------------------
 
 class TestRunReview:
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
     @patch("app.review_runner.run_gh")
     @patch("app.review_runner._run_claude_review")
     @patch("app.review_runner.fetch_pr_context")
     def test_full_pipeline_with_json(
-        self, mock_fetch, mock_claude, mock_gh, pr_context, review_skill_dir,
+        self, mock_fetch, mock_claude, mock_gh, mock_repliable,
+        pr_context, review_skill_dir,
     ):
         """Full review pipeline with JSON output: fetch -> claude -> parse -> post."""
         mock_fetch.return_value = pr_context
@@ -515,11 +521,13 @@ class TestRunReview:
         mock_gh.assert_called_once()  # post comment
         assert mock_notify.call_count >= 2
 
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
     @patch("app.review_runner.run_gh")
     @patch("app.review_runner._run_claude_review")
     @patch("app.review_runner.fetch_pr_context")
     def test_fallback_to_markdown_on_invalid_json(
-        self, mock_fetch, mock_claude, mock_gh, pr_context, review_skill_dir,
+        self, mock_fetch, mock_claude, mock_gh, mock_repliable,
+        pr_context, review_skill_dir,
     ):
         """Falls back to regex extraction when JSON parsing fails twice."""
         mock_fetch.return_value = pr_context
@@ -543,11 +551,13 @@ class TestRunReview:
         assert mock_claude.call_count == 2
         mock_gh.assert_called_once()
 
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
     @patch("app.review_runner.run_gh")
     @patch("app.review_runner._run_claude_review")
     @patch("app.review_runner.fetch_pr_context")
     def test_retry_succeeds_on_second_attempt(
-        self, mock_fetch, mock_claude, mock_gh, pr_context, review_skill_dir,
+        self, mock_fetch, mock_claude, mock_gh, mock_repliable,
+        pr_context, review_skill_dir,
     ):
         """Retry produces valid JSON on second attempt."""
         mock_fetch.return_value = pr_context
@@ -598,10 +608,12 @@ class TestRunReview:
         assert success is False
         assert "no diff" in summary
 
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
     @patch("app.review_runner._run_claude_review")
     @patch("app.review_runner.fetch_pr_context")
     def test_claude_empty_output(
-        self, mock_fetch, mock_claude, pr_context, review_skill_dir,
+        self, mock_fetch, mock_claude, mock_repliable,
+        pr_context, review_skill_dir,
     ):
         """Returns failure when Claude produces no output."""
         mock_fetch.return_value = pr_context
@@ -617,11 +629,13 @@ class TestRunReview:
         assert success is False
         assert "no output" in summary
 
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
     @patch("app.review_runner.run_gh", side_effect=RuntimeError("post fail"))
     @patch("app.review_runner._run_claude_review")
     @patch("app.review_runner.fetch_pr_context")
     def test_comment_post_failure(
-        self, mock_fetch, mock_claude, mock_gh, pr_context, review_skill_dir,
+        self, mock_fetch, mock_claude, mock_gh, mock_repliable,
+        pr_context, review_skill_dir,
     ):
         """Handles comment posting failure."""
         mock_fetch.return_value = pr_context
@@ -752,11 +766,13 @@ class TestArchitectureFlag:
         assert "Review PR:" in prompt
         assert "{TITLE}" not in prompt
 
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
     @patch("app.review_runner.run_gh")
     @patch("app.review_runner._run_claude_review")
     @patch("app.review_runner.fetch_pr_context")
     def test_run_review_passes_architecture_to_prompt(
-        self, mock_fetch, mock_claude, mock_gh, pr_context, tmp_path,
+        self, mock_fetch, mock_claude, mock_gh, mock_repliable,
+        pr_context, tmp_path,
     ):
         """run_review with architecture=True uses architecture prompt."""
         # Set up skill dir with both prompts
@@ -764,11 +780,11 @@ class TestArchitectureFlag:
         prompts_dir.mkdir()
         (prompts_dir / "review.md").write_text(
             "STANDARD: {TITLE} {AUTHOR} {BRANCH} {BASE} {BODY} {DIFF} "
-            "{REVIEWS} {REVIEW_COMMENTS} {ISSUE_COMMENTS}"
+            "{REVIEWS} {REVIEW_COMMENTS} {ISSUE_COMMENTS} {REPLIABLE_COMMENTS}"
         )
         (prompts_dir / "review-architecture.md").write_text(
             "ARCHITECTURE: {TITLE} {AUTHOR} {BRANCH} {BASE} {BODY} {DIFF} "
-            "{REVIEWS} {REVIEW_COMMENTS} {ISSUE_COMMENTS}"
+            "{REVIEWS} {REVIEW_COMMENTS} {ISSUE_COMMENTS} {REPLIABLE_COMMENTS}"
         )
 
         mock_fetch.return_value = pr_context
@@ -884,3 +900,233 @@ class TestSkillDispatchIntegration:
         assert result is not None
         assert "--architecture" in result
         assert any("pull/1" in str(p) for p in result)
+
+
+# ---------------------------------------------------------------------------
+# fetch_repliable_comments
+# ---------------------------------------------------------------------------
+
+class TestFetchRepliableComments:
+    @patch("app.review_runner.run_gh")
+    def test_fetches_review_and_issue_comments(self, mock_gh):
+        """Fetches both review comments and issue comments with IDs."""
+        review_json = json.dumps({
+            "id": 100, "user": "alice", "body": "Why this approach?",
+            "path": "auth.py", "line": 42, "user_type": "User",
+        })
+        issue_json = json.dumps({
+            "id": 200, "user": "bob", "body": "Looks good overall",
+            "user_type": "User",
+        })
+        mock_gh.side_effect = [review_json, issue_json]
+
+        comments = fetch_repliable_comments("owner", "repo", "42")
+
+        assert len(comments) == 2
+        assert comments[0]["id"] == 100
+        assert comments[0]["type"] == "review_comment"
+        assert comments[0]["user"] == "alice"
+        assert comments[0]["path"] == "auth.py"
+        assert comments[1]["id"] == 200
+        assert comments[1]["type"] == "issue_comment"
+
+    @patch("app.review_runner.run_gh")
+    def test_skips_bot_comments(self, mock_gh):
+        """Bot comments are excluded from repliable list."""
+        review_json = json.dumps({
+            "id": 100, "user": "github-actions", "body": "CI passed",
+            "path": "x.py", "line": 1, "user_type": "Bot",
+        })
+        mock_gh.side_effect = [review_json, ""]
+
+        comments = fetch_repliable_comments("owner", "repo", "42")
+
+        assert len(comments) == 0
+
+    @patch("app.review_runner.run_gh", side_effect=RuntimeError("API error"))
+    def test_handles_api_errors(self, mock_gh):
+        """Returns empty list on API errors."""
+        comments = fetch_repliable_comments("owner", "repo", "42")
+        assert comments == []
+
+    @patch("app.review_runner.run_gh")
+    def test_empty_response(self, mock_gh):
+        """Handles empty responses gracefully."""
+        mock_gh.return_value = ""
+        comments = fetch_repliable_comments("owner", "repo", "42")
+        assert comments == []
+
+
+# ---------------------------------------------------------------------------
+# _format_repliable_comments
+# ---------------------------------------------------------------------------
+
+class TestFormatRepliableComments:
+    def test_no_comments(self):
+        result = _format_repliable_comments([])
+        assert "No comments" in result
+
+    def test_formats_review_comment(self):
+        comments = [{
+            "id": 100, "type": "review_comment", "user": "alice",
+            "body": "Why this approach?", "path": "auth.py", "line": 42,
+        }]
+        result = _format_repliable_comments(comments)
+        assert "[id=100]" in result
+        assert "@alice" in result
+        assert "auth.py:42" in result
+        assert "Why this approach?" in result
+
+    def test_formats_issue_comment(self):
+        comments = [{
+            "id": 200, "type": "issue_comment", "user": "bob",
+            "body": "Overall this looks good",
+        }]
+        result = _format_repliable_comments(comments)
+        assert "[id=200]" in result
+        assert "@bob" in result
+        assert "Overall this looks good" in result
+
+    def test_truncates_long_bodies(self):
+        comments = [{
+            "id": 300, "type": "issue_comment", "user": "carol",
+            "body": "x" * 600,
+        }]
+        result = _format_repliable_comments(comments)
+        assert "..." in result
+        assert len(result) < 700
+
+
+# ---------------------------------------------------------------------------
+# _post_comment_replies
+# ---------------------------------------------------------------------------
+
+class TestPostCommentReplies:
+    @patch("app.review_runner.run_gh")
+    def test_posts_review_comment_reply(self, mock_gh):
+        """Replies to review comments via the pull request comment API."""
+        replies = [{"comment_id": 100, "reply": "Good question — see L42."}]
+        repliable = [{"id": 100, "type": "review_comment", "user": "alice", "body": "Why?"}]
+
+        count = _post_comment_replies("owner", "repo", "42", replies, repliable)
+
+        assert count == 1
+        call_args = mock_gh.call_args[0]
+        assert "repos/owner/repo/pulls/42/comments" in call_args[1]
+        assert "-X" in call_args
+        assert "POST" in call_args
+
+    @patch("app.review_runner.run_gh")
+    def test_posts_issue_comment_reply(self, mock_gh):
+        """Replies to issue comments via gh pr comment with quote."""
+        replies = [{"comment_id": 200, "reply": "Thanks for the feedback."}]
+        repliable = [{"id": 200, "type": "issue_comment", "user": "bob", "body": "Nice work"}]
+
+        count = _post_comment_replies("owner", "repo", "42", replies, repliable)
+
+        assert count == 1
+        call_args = mock_gh.call_args[0]
+        assert "pr" in call_args
+        assert "comment" in call_args
+        # Body should contain quote of original
+        body = [a for a in call_args if isinstance(a, str) and "@bob" in a][0]
+        assert "> @bob:" in body
+
+    def test_empty_replies(self):
+        """No-op when replies list is empty."""
+        count = _post_comment_replies("owner", "repo", "42", [], [])
+        assert count == 0
+
+    @patch("app.review_runner.run_gh")
+    def test_skips_unknown_comment_id(self, mock_gh):
+        """Skips replies targeting non-existent comment IDs."""
+        replies = [{"comment_id": 999, "reply": "Reply to nothing"}]
+        repliable = [{"id": 100, "type": "issue_comment", "user": "alice", "body": "Hello"}]
+
+        count = _post_comment_replies("owner", "repo", "42", replies, repliable)
+
+        assert count == 0
+        mock_gh.assert_not_called()
+
+    @patch("app.review_runner.run_gh", side_effect=RuntimeError("API error"))
+    def test_handles_post_failure(self, mock_gh):
+        """Continues posting other replies when one fails."""
+        replies = [{"comment_id": 100, "reply": "Reply"}]
+        repliable = [{"id": 100, "type": "issue_comment", "user": "a", "body": "b"}]
+
+        count = _post_comment_replies("owner", "repo", "42", replies, repliable)
+
+        assert count == 0
+
+    @patch("app.review_runner.run_gh")
+    def test_skips_empty_reply(self, mock_gh):
+        """Skips replies with empty text."""
+        replies = [{"comment_id": 100, "reply": ""}]
+        repliable = [{"id": 100, "type": "issue_comment", "user": "a", "body": "b"}]
+
+        count = _post_comment_replies("owner", "repo", "42", replies, repliable)
+
+        assert count == 0
+        mock_gh.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# run_review with comment replies
+# ---------------------------------------------------------------------------
+
+class TestRunReviewWithReplies:
+    @patch("app.review_runner.fetch_repliable_comments")
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_posts_replies_when_present(
+        self, mock_fetch, mock_claude, mock_gh, mock_repliable,
+        pr_context, review_skill_dir,
+    ):
+        """Posts replies to user comments when review includes comment_replies."""
+        mock_fetch.return_value = pr_context
+        review_with_replies = {
+            **LGTM_REVIEW_JSON,
+            "comment_replies": [
+                {"comment_id": 100, "reply": "Good question — the reason is X."},
+            ],
+        }
+        mock_claude.return_value = json.dumps(review_with_replies)
+        mock_repliable.return_value = [
+            {"id": 100, "type": "review_comment", "user": "alice", "body": "Why?"},
+        ]
+        mock_notify = MagicMock()
+
+        success, summary, review_data = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=mock_notify,
+            skill_dir=review_skill_dir,
+        )
+
+        assert success is True
+        assert "Replied to 1 comment" in summary
+        # run_gh called: 1 for post_review_comment + 1 for reply
+        assert mock_gh.call_count == 2
+
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_no_replies_when_no_repliable_comments(
+        self, mock_fetch, mock_claude, mock_gh, mock_repliable,
+        pr_context, review_skill_dir,
+    ):
+        """No reply posting when there are no repliable comments."""
+        mock_fetch.return_value = pr_context
+        mock_claude.return_value = json.dumps(LGTM_REVIEW_JSON)
+        mock_notify = MagicMock()
+
+        success, summary, _ = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=mock_notify,
+            skill_dir=review_skill_dir,
+        )
+
+        assert success is True
+        assert "Replied" not in summary
+        mock_gh.assert_called_once()  # Only the review comment post
