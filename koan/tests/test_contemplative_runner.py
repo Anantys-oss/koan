@@ -69,10 +69,12 @@ class TestShouldRunContemplative:
 class TestBuildContemplativeCommand:
     """Tests for CLI command construction."""
 
+    @patch("app.config.get_contemplative_tools")
     @patch("app.prompt_builder.build_contemplative_prompt")
-    def test_basic_command(self, mock_prompt):
+    def test_basic_command(self, mock_prompt, mock_tools):
         """Produces correct base command structure."""
         mock_prompt.return_value = "test prompt"
+        mock_tools.return_value = "Read,Write,Glob,Grep"
         cmd = build_contemplative_command(
             instance="/path/instance",
             project_name="koan",
@@ -86,8 +88,23 @@ class TestBuildContemplativeCommand:
         assert "--max-turns" in cmd
         assert "10" in cmd
 
+    @patch("app.config.get_contemplative_tools")
     @patch("app.prompt_builder.build_contemplative_prompt")
-    def test_max_turns_is_10(self, mock_prompt):
+    def test_custom_tools_from_config(self, mock_prompt, mock_tools):
+        """Tools are read from config, not hardcoded."""
+        mock_prompt.return_value = "test prompt"
+        mock_tools.return_value = "Read,Glob,Grep,Bash"
+        cmd = build_contemplative_command(
+            instance="/path/instance",
+            project_name="koan",
+            session_info="test session",
+        )
+        assert "--allowedTools" in cmd
+        assert "Read,Glob,Grep,Bash" in cmd
+
+    @patch("app.config.get_contemplative_tools")
+    @patch("app.prompt_builder.build_contemplative_prompt")
+    def test_max_turns_is_10(self, mock_prompt, mock_tools):
         """Regression: max_turns=5 was too low for contemplative prompts.
 
         The contemplative prompt requires reading 5 files (soul.md, summary.md,
@@ -96,6 +113,7 @@ class TestBuildContemplativeCommand:
         sessions to hit the limit before producing any output.
         """
         mock_prompt.return_value = "test prompt"
+        mock_tools.return_value = "Read,Write,Glob,Grep"
         cmd = build_contemplative_command(
             instance="/path/instance",
             project_name="koan",
@@ -104,10 +122,12 @@ class TestBuildContemplativeCommand:
         idx = cmd.index("--max-turns")
         assert cmd[idx + 1] == "10"
 
+    @patch("app.config.get_contemplative_tools")
     @patch("app.prompt_builder.build_contemplative_prompt")
-    def test_passes_args_to_prompt_builder(self, mock_prompt):
+    def test_passes_args_to_prompt_builder(self, mock_prompt, mock_tools):
         """Forwards instance, project_name, session_info to prompt builder."""
         mock_prompt.return_value = "prompt"
+        mock_tools.return_value = "Read,Write,Glob,Grep"
         build_contemplative_command(
             instance="/my/instance",
             project_name="myproject",
@@ -119,10 +139,12 @@ class TestBuildContemplativeCommand:
             session_info="my info",
         )
 
+    @patch("app.config.get_contemplative_tools")
     @patch("app.prompt_builder.build_contemplative_prompt")
-    def test_extra_flags_appended(self, mock_prompt):
+    def test_extra_flags_appended(self, mock_prompt, mock_tools):
         """Extra flags are appended to the command."""
         mock_prompt.return_value = "prompt"
+        mock_tools.return_value = "Read,Write,Glob,Grep"
         cmd = build_contemplative_command(
             instance="/path",
             project_name="koan",
@@ -132,10 +154,12 @@ class TestBuildContemplativeCommand:
         assert "--model" in cmd
         assert "claude-sonnet-4-5-20250929" in cmd
 
+    @patch("app.config.get_contemplative_tools")
     @patch("app.prompt_builder.build_contemplative_prompt")
-    def test_no_extra_flags(self, mock_prompt):
+    def test_no_extra_flags(self, mock_prompt, mock_tools):
         """Without extra flags, command is base only."""
         mock_prompt.return_value = "prompt"
+        mock_tools.return_value = "Read,Write,Glob,Grep"
         cmd = build_contemplative_command(
             instance="/path",
             project_name="koan",
@@ -144,10 +168,12 @@ class TestBuildContemplativeCommand:
         assert "--model" not in cmd
         assert "--fallback-model" not in cmd
 
+    @patch("app.config.get_contemplative_tools")
     @patch("app.prompt_builder.build_contemplative_prompt")
-    def test_none_extra_flags(self, mock_prompt):
+    def test_none_extra_flags(self, mock_prompt, mock_tools):
         """None extra_flags treated same as no flags."""
         mock_prompt.return_value = "prompt"
+        mock_tools.return_value = "Read,Write,Glob,Grep"
         cmd = build_contemplative_command(
             instance="/path",
             project_name="koan",

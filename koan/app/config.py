@@ -110,6 +110,24 @@ def get_mission_tools(project_name: str = "") -> str:
     return _get_tools_for_role("mission", ["Read", "Glob", "Grep", "Edit", "Write", "Bash"], project_name)
 
 
+def get_contemplative_tools(project_name: str = "") -> str:
+    """Get comma-separated list of tools for contemplative sessions.
+
+    Contemplative sessions use a restricted set (read + write, no Bash)
+    for reflection and memory updates.
+
+    Config key: tools.contemplative (default: Read, Write, Glob, Grep)
+    Per-project override: projects.yaml tools.contemplative
+
+    Args:
+        project_name: Optional project name for per-project overrides.
+
+    Returns:
+        Comma-separated tool names.
+    """
+    return _get_tools_for_role("contemplative", ["Read", "Write", "Glob", "Grep"], project_name)
+
+
 # Backward compatibility alias
 def get_allowed_tools() -> str:
     """Deprecated: Use get_chat_tools() or get_mission_tools() instead."""

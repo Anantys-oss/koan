@@ -60,6 +60,29 @@ class TestGetMissionTools:
             assert get_mission_tools() == "Read,Bash"
 
 
+# --- get_contemplative_tools ---
+
+
+class TestGetContemplativeTools:
+    def test_default(self):
+        from app.config import get_contemplative_tools
+
+        with _mock_config({}):
+            assert get_contemplative_tools() == "Read,Write,Glob,Grep"
+
+    def test_custom(self):
+        from app.config import get_contemplative_tools
+
+        with _mock_config({"tools": {"contemplative": ["Read", "Glob", "Grep", "Bash"]}}):
+            assert get_contemplative_tools() == "Read,Glob,Grep,Bash"
+
+    def test_string_value_passed_through(self):
+        from app.config import get_contemplative_tools
+
+        with _mock_config({"tools": {"contemplative": "Read,Write"}}):
+            assert get_contemplative_tools() == "Read,Write"
+
+
 # --- get_allowed_tools (backward compat) ---
 
 
