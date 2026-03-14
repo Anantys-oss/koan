@@ -7,6 +7,7 @@ with a 5-minute TTL in-memory cache.  Each project's PRs are fetched via
 
 import json
 import subprocess
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional
@@ -113,7 +114,8 @@ def fetch_all_prs(
     if author_only:
         try:
             author = get_gh_username()
-        except Exception:
+        except Exception as e:
+            print(f"[pr_tracker] failed to get gh username: {e}", file=sys.stderr)
             author = ""
 
     all_prs: List[dict] = []
@@ -144,7 +146,8 @@ def fetch_all_prs(
             try:
                 prs = future.result()
                 all_prs.extend(prs)
-            except Exception:
+            except Exception as e:
+                print(f"[pr_tracker] error fetching PRs: {e}", file=sys.stderr)
                 had_errors = True
 
     # Sort by creation date descending (newest first)
