@@ -45,8 +45,15 @@ from app.signals import (
     STATUS_FILE,
     STOP_FILE,
 )
-from app.missions import extract_project_tag, group_by_project
+from app.missions import (
+    cancel_pending_mission,
+    edit_pending_mission,
+    extract_project_tag,
+    group_by_project,
+    reorder_mission,
+)
 from app.utils import (
+    modify_missions_file,
     parse_project,
     insert_pending_mission,
     get_known_projects,
@@ -746,6 +753,116 @@ def journal_page():
 def api_projects():
     """Return list of known project names."""
     return jsonify({"projects": _get_all_project_names()})
+
+
+@app.route("/api/missions")
+def api_missions():
+    """Return full mission lists as JSON."""
+    missions = parse_missions()
+    return jsonify({
+        "pending": missions["pending"],
+        "in_progress": missions["in_progress"],
+        "done": missions["done"],
+    })
+
+
+@app.route("/api/missions/reorder", methods=["POST"])
+def api_missions_reorder():
+    """Reorder a pending mission."""
+    data = request.get_json(silent=True) or {}
+    position = data.get("position")
+    target = data.get("target")
+
+    if position is None or target is None:
+        return jsonify({"ok": False, "error": "Missing position or target"}), 400
+
+    try:
+        position = int(position)
+        target = int(target)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "position and target must be integers"}), 400
+
+    try:
+        result = {}
+
+        def transform(content):
+            new_content, display = reorder_mission(content, position, target)
+            result["display"] = display
+            return new_content
+
+        modify_missions_file(MISSIONS_FILE, transform)
+        missions = parse_missions()
+        return jsonify({
+            "ok": True,
+            "display": result.get("display", ""),
+            "pending": missions["pending"],
+        })
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+
+
+@app.route("/api/missions/cancel", methods=["POST"])
+def api_missions_cancel():
+    """Cancel a pending mission by position."""
+    data = request.get_json(silent=True) or {}
+    position = data.get("position")
+
+    if position is None:
+        return jsonify({"ok": False, "error": "Missing position"}), 400
+
+    try:
+        result = {}
+
+        def transform(content):
+            new_content, cancelled = cancel_pending_mission(content, str(int(position)))
+            result["cancelled"] = cancelled
+            return new_content
+
+        modify_missions_file(MISSIONS_FILE, transform)
+        missions = parse_missions()
+        return jsonify({
+            "ok": True,
+            "cancelled": result.get("cancelled", ""),
+            "pending": missions["pending"],
+        })
+    except (ValueError, TypeError) as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+
+
+@app.route("/api/missions/edit", methods=["POST"])
+def api_missions_edit():
+    """Edit a pending mission's text."""
+    data = request.get_json(silent=True) or {}
+    position = data.get("position")
+    text = data.get("text", "").strip()
+
+    if position is None:
+        return jsonify({"ok": False, "error": "Missing position"}), 400
+    if not text:
+        return jsonify({"ok": False, "error": "Mission text cannot be empty"}), 400
+
+    try:
+        position = int(position)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "position must be an integer"}), 400
+
+    try:
+        result = {}
+
+        def transform(content):
+            new_content, display = edit_pending_mission(content, position, text)
+            result["display"] = display
+            return new_content
+
+        modify_missions_file(MISSIONS_FILE, transform)
+        missions = parse_missions()
+        return jsonify({
+            "ok": True,
+            "display": result.get("display", ""),
+            "pending": missions["pending"],
+        })
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
 
 
 @app.route("/api/status")

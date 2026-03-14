@@ -850,3 +850,106 @@ class TestProjectFiltering:
     def test_strip_project_tag_filter(self):
         assert dashboard.strip_project_tag_filter("- [project:koan] Fix bug") == "- Fix bug"
         assert dashboard.strip_project_tag_filter("- Fix bug") == "- Fix bug"
+
+
+# ---------------------------------------------------------------------------
+# Mission queue API endpoints
+# ---------------------------------------------------------------------------
+
+class TestApiMissions:
+    """Test GET /api/missions."""
+
+    def test_returns_sections(self, app_client):
+        resp = app_client.get("/api/missions")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "pending" in data
+        assert "in_progress" in data
+        assert "done" in data
+        assert len(data["pending"]) == 2
+
+
+class TestApiMissionsReorder:
+    """Test POST /api/missions/reorder."""
+
+    def test_valid_reorder(self, app_client, instance_dir):
+        with patch.object(dashboard, "MISSIONS_FILE", instance_dir / "missions.md"):
+            resp = app_client.post("/api/missions/reorder",
+                json={"position": 2, "target": 1})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["ok"] is True
+        assert "pending" in data
+
+    def test_invalid_position(self, app_client, instance_dir):
+        with patch.object(dashboard, "MISSIONS_FILE", instance_dir / "missions.md"):
+            resp = app_client.post("/api/missions/reorder",
+                json={"position": 99, "target": 1})
+        assert resp.status_code == 400
+        data = resp.get_json()
+        assert data["ok"] is False
+
+    def test_missing_params(self, app_client):
+        resp = app_client.post("/api/missions/reorder", json={"position": 1})
+        assert resp.status_code == 400
+
+    def test_same_position(self, app_client, instance_dir):
+        with patch.object(dashboard, "MISSIONS_FILE", instance_dir / "missions.md"):
+            resp = app_client.post("/api/missions/reorder",
+                json={"position": 1, "target": 1})
+        assert resp.status_code == 400
+
+
+class TestApiMissionsCancel:
+    """Test POST /api/missions/cancel."""
+
+    def test_valid_cancel(self, app_client, instance_dir):
+        with patch.object(dashboard, "MISSIONS_FILE", instance_dir / "missions.md"):
+            resp = app_client.post("/api/missions/cancel",
+                json={"position": 1})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["ok"] is True
+        assert "cancelled" in data
+        assert "pending" in data
+
+    def test_invalid_position(self, app_client, instance_dir):
+        with patch.object(dashboard, "MISSIONS_FILE", instance_dir / "missions.md"):
+            resp = app_client.post("/api/missions/cancel",
+                json={"position": 99})
+        assert resp.status_code == 400
+
+    def test_missing_position(self, app_client):
+        resp = app_client.post("/api/missions/cancel", json={})
+        assert resp.status_code == 400
+
+
+class TestApiMissionsEdit:
+    """Test POST /api/missions/edit."""
+
+    def test_valid_edit(self, app_client, instance_dir):
+        with patch.object(dashboard, "MISSIONS_FILE", instance_dir / "missions.md"):
+            resp = app_client.post("/api/missions/edit",
+                json={"position": 1, "text": "Updated mission"})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["ok"] is True
+        content = (instance_dir / "missions.md").read_text()
+        assert "Updated mission" in content
+
+    def test_empty_text(self, app_client, instance_dir):
+        with patch.object(dashboard, "MISSIONS_FILE", instance_dir / "missions.md"):
+            resp = app_client.post("/api/missions/edit",
+                json={"position": 1, "text": ""})
+        assert resp.status_code == 400
+
+    def test_invalid_position(self, app_client, instance_dir):
+        with patch.object(dashboard, "MISSIONS_FILE", instance_dir / "missions.md"):
+            resp = app_client.post("/api/missions/edit",
+                json={"position": 99, "text": "New text"})
+        assert resp.status_code == 400
+
+    def test_missing_position(self, app_client):
+        resp = app_client.post("/api/missions/edit",
+            json={"text": "Some text"})
+        assert resp.status_code == 400

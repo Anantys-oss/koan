@@ -1165,6 +1165,83 @@ def reorder_mission(content: str, position: int, target: int = 1) -> Tuple[str, 
     return normalize_content("\n".join(result_lines)), display
 
 
+def edit_pending_mission(content: str, position: int, new_text: str) -> Tuple[str, str]:
+    """Replace the text of a pending mission at the given 1-indexed position.
+
+    Args:
+        content: Full missions.md content.
+        position: 1-indexed position in the pending list.
+        new_text: New mission text (without leading "- ").
+
+    Returns:
+        (updated_content, new_display_text) tuple.
+
+    Raises:
+        ValueError: If position is invalid or new_text is empty.
+    """
+    new_text = new_text.strip()
+    # Strip leading "- " if the user accidentally includes it
+    if new_text.startswith("- "):
+        new_text = new_text[2:].strip()
+    if not new_text:
+        raise ValueError("Mission text cannot be empty.")
+
+    lines = content.splitlines()
+    boundaries = find_section_boundaries(lines)
+
+    if "pending" not in boundaries:
+        raise ValueError("No pending section found.")
+
+    start, end = boundaries["pending"]
+
+    # Collect pending items as (start_line_idx, end_line_idx) tuples
+    items = []
+    i = start + 1
+    while i < end:
+        stripped = lines[i].strip()
+        if stripped.startswith("- "):
+            item_start = i
+            i += 1
+            while i < end:
+                next_stripped = lines[i].strip()
+                if (next_stripped.startswith("- ") or
+                        next_stripped.startswith("## ") or
+                        next_stripped.startswith("### ") or
+                        next_stripped == ""):
+                    break
+                i += 1
+            items.append((item_start, i))
+        else:
+            i += 1
+
+    if not items:
+        raise ValueError("No pending missions to edit.")
+
+    if position < 1 or position > len(items):
+        raise ValueError(
+            f"Invalid position: {position}. Queue has {len(items)} pending mission(s)."
+        )
+
+    item_start, item_end = items[position - 1]
+    old_line = lines[item_start].strip()
+
+    # Preserve existing timestamps from the old line
+    old_timestamps = ""
+    for pattern in [_QUEUED_PATTERN, _STARTED_PATTERN]:
+        match = pattern.search(old_line)
+        if match:
+            old_timestamps += " " + match.group(0).strip()
+
+    # Build the new line
+    new_line = f"- {new_text}{old_timestamps}"
+
+    # Replace the item (first line only; drop continuation lines)
+    new_lines = lines[:item_start] + [new_line] + lines[item_end:]
+
+    display = clean_mission_display(new_line)
+    return normalize_content("\n".join(new_lines)), display
+
+
 def prune_done_section(content: str, keep: int = 50) -> Tuple[str, int]:
     """Prune the Done section to keep only the most recent items.
 

@@ -889,6 +889,87 @@ class TestReorderMission:
 
 
 # ---------------------------------------------------------------------------
+# edit_pending_mission
+# ---------------------------------------------------------------------------
+
+class TestEditPendingMission:
+    SAMPLE = (
+        "## Pending\n\n"
+        "- first task ⏳(2026-03-13T10:00)\n"
+        "- [project:koan] second task\n"
+        "- third task\n\n"
+        "## In Progress\n\n"
+        "## Done\n"
+    )
+
+    def test_edit_simple(self):
+        from app.missions import edit_pending_mission
+        new_content, display = edit_pending_mission(self.SAMPLE, 3, "updated task")
+        assert "- updated task" in new_content
+        assert "third task" not in new_content
+
+    def test_edit_preserves_timestamp(self):
+        from app.missions import edit_pending_mission
+        new_content, _ = edit_pending_mission(self.SAMPLE, 1, "renamed first")
+        assert "⏳(2026-03-13T10:00)" in new_content
+        assert "- renamed first" in new_content
+
+    def test_edit_strips_leading_dash(self):
+        from app.missions import edit_pending_mission
+        new_content, _ = edit_pending_mission(self.SAMPLE, 3, "- new text")
+        assert "- new text" in new_content
+        # Should not have double "- - "
+        assert "- - " not in new_content
+
+    def test_edit_invalid_position(self):
+        from app.missions import edit_pending_mission
+        with pytest.raises(ValueError, match="Invalid position"):
+            edit_pending_mission(self.SAMPLE, 5, "text")
+
+    def test_edit_zero_position(self):
+        from app.missions import edit_pending_mission
+        with pytest.raises(ValueError, match="Invalid position"):
+            edit_pending_mission(self.SAMPLE, 0, "text")
+
+    def test_edit_empty_text(self):
+        from app.missions import edit_pending_mission
+        with pytest.raises(ValueError, match="empty"):
+            edit_pending_mission(self.SAMPLE, 1, "")
+
+    def test_edit_whitespace_only_text(self):
+        from app.missions import edit_pending_mission
+        with pytest.raises(ValueError, match="empty"):
+            edit_pending_mission(self.SAMPLE, 1, "   ")
+
+    def test_edit_no_pending_section(self):
+        from app.missions import edit_pending_mission
+        content = "## In Progress\n\n- working\n\n## Done\n"
+        with pytest.raises(ValueError, match="No pending section"):
+            edit_pending_mission(content, 1, "text")
+
+    def test_edit_empty_pending(self):
+        from app.missions import edit_pending_mission
+        content = "## Pending\n\n## In Progress\n\n## Done\n"
+        with pytest.raises(ValueError, match="No pending missions"):
+            edit_pending_mission(content, 1, "text")
+
+    def test_edit_multiline_replaces_all(self):
+        """Editing a multi-line mission replaces all lines with the new single line."""
+        from app.missions import edit_pending_mission
+        content = (
+            "## Pending\n\n"
+            "- multi task\n"
+            "  continuation line\n"
+            "- other task\n\n"
+            "## Done\n"
+        )
+        new_content, _ = edit_pending_mission(content, 1, "simple replacement")
+        assert "continuation line" not in new_content
+        assert "- simple replacement" in new_content
+        assert "- other task" in new_content
+
+
+# ---------------------------------------------------------------------------
 # extract_now_flag
 # ---------------------------------------------------------------------------
 
