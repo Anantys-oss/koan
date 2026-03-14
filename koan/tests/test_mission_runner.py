@@ -2377,4 +2377,41 @@ class TestPipelineStepsInResult:
         # Other steps still ran
         assert result["pipeline_steps"]["session_outcome"]["status"] == "success"
 
+    @patch("app.mission_runner._write_pipeline_summary")
+    @patch("app.mission_runner._record_session_outcome")
+    @patch("app.mission_runner.check_auto_merge", return_value=None)
+    @patch("app.mission_runner.trigger_reflection", return_value=False)
+    @patch("app.mission_runner.archive_pending", return_value=False)
+    @patch("app.quota_handler.handle_quota_exhaustion", return_value=None)
+    @patch("app.mission_runner.update_usage", return_value=True)
+    def test_verification_failed_recorded_as_fail(
+        self, mock_usage, mock_quota, mock_archive,
+        mock_reflect, mock_merge, mock_record, mock_summary, tmp_path
+    ):
+        """Verification that returns passed=False must be recorded as 'fail', not 'success'."""
+        from app.mission_runner import run_post_mission
+        from app.mission_verifier import VerifyResult
+
+        failed_verify = VerifyResult(passed=False, summary="no commits on branch")
+
+        instance_dir = str(tmp_path / "instance")
+        os.makedirs(instance_dir, exist_ok=True)
+
+        with patch("app.mission_runner._run_mission_verification", return_value=failed_verify):
+            result = run_post_mission(
+                instance_dir=instance_dir,
+                project_name="koan",
+                project_path=str(tmp_path),
+                run_num=1,
+                exit_code=0,
+                stdout_file="/tmp/out.json",
+                stderr_file="/tmp/err.txt",
+            )
+
+        # The tracker must record verification as "fail", not "success"
+        assert result["pipeline_steps"]["verification"]["status"] == "fail"
+        assert "no commits on branch" in result["pipeline_steps"]["verification"]["detail"]
+        # The result dict should also reflect the failure
+        assert result["verification"]["passed"] is False
+
 

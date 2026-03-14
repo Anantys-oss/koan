@@ -755,6 +755,9 @@ def run_post_mission(
                 pipeline_expired=_pipeline_expired,
             )
             if verify_result is not None:
+                if not verify_result.passed:
+                    tracker.record("verification", "fail",
+                                   verify_result.summary or "verification failed")
                 result["verification"] = {
                     "passed": verify_result.passed,
                     "summary": verify_result.summary,
