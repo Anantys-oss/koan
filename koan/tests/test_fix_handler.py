@@ -54,6 +54,18 @@ class TestParseRepoUrl:
         result = _parse_repo_url("https://github.com/owner/pull")
         assert result is None
 
+    def test_hyphenated_repo_name(self):
+        result = _parse_repo_url("https://github.com/cpan-authors/YAML-Syck")
+        assert result == ("https://github.com/cpan-authors/YAML-Syck", "cpan-authors", "YAML-Syck")
+
+    def test_hyphenated_repo_with_trailing_issues_path(self):
+        result = _parse_repo_url("https://github.com/cpan-authors/YAML-Syck/issues")
+        assert result == ("https://github.com/cpan-authors/YAML-Syck", "cpan-authors", "YAML-Syck")
+
+    def test_repo_with_trailing_issues_path(self):
+        result = _parse_repo_url("https://github.com/owner/repo/issues")
+        assert result == ("https://github.com/owner/repo", "owner", "repo")
+
 
 # ---------------------------------------------------------------------------
 # _parse_limit
