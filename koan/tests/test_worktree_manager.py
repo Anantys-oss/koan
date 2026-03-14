@@ -218,17 +218,42 @@ class TestGitRetry:
         with pytest.raises(subprocess.CalledProcessError):
             git_retry(["git", "checkout", "nonexistent-branch"], cwd=git_repo)
 
-    def test_lock_error_retries(self, git_repo, tmp_path):
-        """Simulates a lock error by creating index.lock."""
-        # Create an index.lock file to simulate contention
-        lock_file = Path(git_repo) / ".git" / "index.lock"
-        lock_file.write_text("locked")
-        try:
-            # git add should fail because of index.lock, but won't contain "lock" in stderr
-            # on all platforms, so we just verify the retry mechanism works with mock
-            pass
-        finally:
-            lock_file.unlink(missing_ok=True)
+    def test_lock_error_retries_then_succeeds(self, git_repo, tmp_path):
+        """Verify git_retry retries on lock contention and succeeds when lock clears."""
+        call_count = 0
+        original_run = subprocess.run
+
+        def mock_run(cmd, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # Simulate lock error on first call
+                raise subprocess.CalledProcessError(
+                    128, cmd, stderr="fatal: Unable to create index.lock"
+                )
+            return original_run(cmd, **kwargs)
+
+        with patch("app.worktree_manager.subprocess.run", side_effect=mock_run):
+            result = git_retry(
+                ["git", "status"], cwd=git_repo,
+                min_delay=0.01, max_delay=0.02,
+            )
+            assert result.returncode == 0
+            assert call_count == 2  # First failed, second succeeded
+
+    def test_lock_error_exhausts_retries(self, git_repo):
+        """Verify git_retry raises after exhausting retries on persistent lock errors."""
+        def mock_run(cmd, **kwargs):
+            raise subprocess.CalledProcessError(
+                128, cmd, stderr="fatal: Unable to create index.lock"
+            )
+
+        with patch("app.worktree_manager.subprocess.run", side_effect=mock_run):
+            with pytest.raises(subprocess.CalledProcessError):
+                git_retry(
+                    ["git", "status"], cwd=git_repo,
+                    max_retries=2, min_delay=0.01, max_delay=0.02,
+                )
 
 
 class TestInjectWorktreeClaudeMd:

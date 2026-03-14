@@ -77,70 +77,87 @@ class SessionRegistry:
         self._path = Path(instance_dir) / SESSIONS_FILE
         self._lock = threading.Lock()
 
-    def _read(self) -> Dict[str, dict]:
-        """Read sessions.json under file lock."""
+    def _lock_path(self) -> Path:
+        return self._path.with_suffix(".lock")
+
+    def _read_unlocked(self) -> Dict[str, dict]:
+        """Read sessions.json without acquiring a lock (caller holds it)."""
         if not self._path.exists():
             return {}
         try:
-            lock_path = self._path.with_suffix(".lock")
-            with open(lock_path, "w") as lock_f:
-                fcntl.flock(lock_f, fcntl.LOCK_SH)
-                try:
-                    data = json.loads(self._path.read_text())
-                    return data if isinstance(data, dict) else {}
-                finally:
-                    fcntl.flock(lock_f, fcntl.LOCK_UN)
+            data = json.loads(self._path.read_text())
+            return data if isinstance(data, dict) else {}
         except (json.JSONDecodeError, OSError):
             return {}
 
-    def _write(self, data: Dict[str, dict]):
-        """Write sessions.json atomically under file lock."""
-        lock_path = self._path.with_suffix(".lock")
-        with open(lock_path, "w") as lock_f:
-            fcntl.flock(lock_f, fcntl.LOCK_EX)
+    def _write_unlocked(self, data: Dict[str, dict]):
+        """Write sessions.json atomically (caller holds the file lock)."""
+        fd, tmp = tempfile.mkstemp(
+            dir=self.instance_dir, prefix=".koan-sessions-",
+        )
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(data, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, str(self._path))
+        except BaseException:
             try:
-                fd, tmp = tempfile.mkstemp(
-                    dir=self.instance_dir, prefix=".koan-sessions-",
-                )
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+
+    def _read_locked(self) -> Dict[str, dict]:
+        """Read sessions.json under a shared file lock."""
+        if not self._path.exists():
+            return {}
+        try:
+            with open(self._lock_path(), "w") as lock_f:
+                fcntl.flock(lock_f, fcntl.LOCK_SH)
                 try:
-                    with os.fdopen(fd, "w") as f:
-                        json.dump(data, f, indent=2)
-                        f.flush()
-                        os.fsync(f.fileno())
-                    os.replace(tmp, str(self._path))
-                except BaseException:
-                    try:
-                        os.unlink(tmp)
-                    except OSError:
-                        pass
-                    raise
-            finally:
-                fcntl.flock(lock_f, fcntl.LOCK_UN)
+                    return self._read_unlocked()
+                finally:
+                    fcntl.flock(lock_f, fcntl.LOCK_UN)
+        except OSError:
+            return {}
+
+    def _mutate(self, fn):
+        """Run fn(data) → data under exclusive file lock (atomic read-modify-write)."""
+        with self._lock:
+            with open(self._lock_path(), "w") as lock_f:
+                fcntl.flock(lock_f, fcntl.LOCK_EX)
+                try:
+                    data = self._read_unlocked()
+                    data = fn(data)
+                    self._write_unlocked(data)
+                finally:
+                    fcntl.flock(lock_f, fcntl.LOCK_UN)
 
     def register(self, session: Session):
         """Register a new session."""
-        with self._lock:
-            data = self._read()
+        def _add(data):
             data[session.id] = asdict(session)
-            self._write(data)
+            return data
+        self._mutate(_add)
 
     def update(self, session: Session):
         """Update an existing session."""
-        with self._lock:
-            data = self._read()
+        def _upd(data):
             data[session.id] = asdict(session)
-            self._write(data)
+            return data
+        self._mutate(_upd)
 
     def remove(self, session_id: str):
         """Remove a session from the registry."""
-        with self._lock:
-            data = self._read()
+        def _rm(data):
             data.pop(session_id, None)
-            self._write(data)
+            return data
+        self._mutate(_rm)
 
     def get(self, session_id: str) -> Optional[Session]:
         """Get a session by ID."""
-        data = self._read()
+        data = self._read_locked()
         entry = data.get(session_id)
         if entry:
             return _dict_to_session(entry)
@@ -148,7 +165,7 @@ class SessionRegistry:
 
     def get_all(self) -> List[Session]:
         """Get all registered sessions."""
-        data = self._read()
+        data = self._read_locked()
         return [_dict_to_session(v) for v in data.values()]
 
     def get_active(self) -> List[Session]:
@@ -164,13 +181,12 @@ class SessionRegistry:
 
     def clear_completed(self):
         """Remove all done/failed sessions from the registry."""
-        with self._lock:
-            data = self._read()
-            data = {
+        def _clear(data):
+            return {
                 k: v for k, v in data.items()
                 if v.get("status") in ("pending", "running")
             }
-            self._write(data)
+        self._mutate(_clear)
 
 
 def _dict_to_session(d: dict) -> Session:
@@ -256,22 +272,34 @@ def spawn_session(
         stderr_file=stderr_file,
     )
 
-    # Start subprocess
+    # Start subprocess — file handles must outlive the process
     from app.cli_exec import popen_cli
 
-    with open(stdout_file, "w") as out_f, open(stderr_file, "w") as err_f:
-        proc, cleanup = popen_cli(
+    out_f = open(stdout_file, "w")  # noqa: SIM115
+    err_f = open(stderr_file, "w")  # noqa: SIM115
+    try:
+        proc, cli_cleanup = popen_cli(
             cmd,
             stdout=out_f,
             stderr=err_f,
             cwd=wt.path,
             start_new_session=True,
         )
-        session.pid = proc.pid
+    except Exception:
+        out_f.close()
+        err_f.close()
+        raise
+    session.pid = proc.pid
+
+    # Wrap cleanup to also close file handles after process exits
+    def _session_cleanup():
+        cli_cleanup()
+        out_f.close()
+        err_f.close()
 
     # Store cleanup and proc as transient state (not persisted)
     session._proc = proc  # type: ignore[attr-defined]
-    session._cleanup = cleanup  # type: ignore[attr-defined]
+    session._cleanup = _session_cleanup  # type: ignore[attr-defined]
 
     # Register in persistent store
     registry.register(session)
