@@ -104,7 +104,7 @@ class TestRecoverMissions:
         assert "Another done" not in between
 
     def test_skip_complex_mission(self, instance_dir):
-        """### header missions with sub-items are NOT recovered."""
+        """### header missions with sub-items are NOT recovered, even after blank lines."""
         missions = instance_dir / "missions.md"
         missions.write_text(
             _missions(
@@ -113,15 +113,12 @@ class TestRecoverMissions:
                     "- ~~Step 1~~ done\n"
                     "- Step 2 in progress\n"
                     "- Step 3 todo\n"
-                    "\n"
-                    "- Simple orphan task"
                 )
             )
         )
 
         count = recover_missions(str(instance_dir))
-        # Only the simple orphan should be recovered, not the complex sub-items
-        assert count == 1
+        assert count == 0
 
         content = missions.read_text()
         lines = content.splitlines()
@@ -131,6 +128,58 @@ class TestRecoverMissions:
         # Complex mission should still be in-progress
         assert "Complex Project" in in_progress_section
         assert "Step 2" in in_progress_section
+
+    def test_complex_mission_blank_lines_preserved(self, instance_dir):
+        """Sub-items after internal blank lines in a complex mission stay in-progress."""
+        missions = instance_dir / "missions.md"
+        missions.write_text(
+            _missions(
+                in_progress=(
+                    "### Complex Project\n"
+                    "- ~~Step 1~~ done\n"
+                    "- Step 2 in progress\n"
+                    "\n"
+                    "- Step 3 todo\n"
+                )
+            )
+        )
+
+        count = recover_missions(str(instance_dir))
+        # Step 3 is part of the complex mission — should NOT be recovered
+        assert count == 0
+
+        content = missions.read_text()
+        lines = content.splitlines()
+        in_prog_idx = next(i for i, l in enumerate(lines) if "in progress" in l.lower())
+        done_idx = next(i for i, l in enumerate(lines) if "done" == l.strip().lstrip("#").strip().lower())
+        in_progress_section = "\n".join(lines[in_prog_idx + 1 : done_idx])
+        assert "Complex Project" in in_progress_section
+        assert "Step 3" in in_progress_section
+
+    def test_complex_then_simple_mission(self, instance_dir):
+        """A simple mission listed after a complex mission via next ### boundary."""
+        missions = instance_dir / "missions.md"
+        missions.write_text(
+            _missions(
+                in_progress=(
+                    "### Complex Project\n"
+                    "- ~~Step 1~~ done\n"
+                    "- Step 2 in progress\n"
+                    "\n"
+                    "- Step 3 todo\n"
+                    "### Another Complex\n"
+                    "- Sub A\n"
+                )
+            )
+        )
+
+        count = recover_missions(str(instance_dir))
+        # Both complex missions should stay, nothing recovered
+        assert count == 0
+
+        content = missions.read_text()
+        assert "Complex Project" in content
+        assert "Another Complex" in content
 
     def test_removes_aucune_placeholder(self, instance_dir):
         """The (none) placeholder is removed from pending when missions are added."""

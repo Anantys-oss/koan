@@ -195,7 +195,7 @@ class TestRecoverComplexMissionFallback:
     """Cover L74 — complex mission ending with non-sub-item line."""
 
     def test_complex_mission_ends_with_non_subitem(self, instance_dir):
-        """Complex mission (### header) followed by a simple mission line ends complex block."""
+        """Everything from ### header to next ### header (or section end) stays in-progress."""
         from app.recover import recover_missions
         missions = instance_dir / "missions.md"
         missions.write_text(
@@ -205,13 +205,13 @@ class TestRecoverComplexMissionFallback:
             "### Complex project\n"
             "- ~~done step~~ done\n"
             "- Still working\n"
-            "Simple stale mission\n"  # This triggers L74 (in_complex_mission = False, then falls through)
+            "Simple stale mission\n"
             "- Another stale\n\n"
             "## Done\n\n"
         )
         count = recover_missions(str(instance_dir))
-        # "- Another stale" should be recovered; "Simple stale mission" is not a "- " item
-        assert count == 1
+        # All lines after ### are part of the complex mission — none recovered
+        assert count == 0
 
 
 # ---------------------------------------------------------------------------
