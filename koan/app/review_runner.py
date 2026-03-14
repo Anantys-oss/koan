@@ -20,7 +20,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 from app.github import run_gh
 from app.prompts import load_prompt_or_skill
@@ -28,13 +28,102 @@ from app.rebase_pr import fetch_pr_context
 from app.review_schema import validate_review
 
 
+def fetch_repliable_comments(
+    owner: str, repo: str, pr_number: str,
+) -> List[dict]:
+    """Fetch PR comments with their IDs for reply targeting.
+
+    Returns a list of dicts with keys: id, type, user, body, path (for
+    inline comments only). Excludes bot comments and the PR author's own
+    inline comments to reduce noise.
+    """
+    full_repo = f"{owner}/{repo}"
+    comments: List[dict] = []
+
+    # Inline review comments (code-level)
+    try:
+        raw = run_gh(
+            "api", f"repos/{full_repo}/pulls/{pr_number}/comments",
+            "--paginate", "--jq",
+            r'.[] | {id: .id, user: .user.login, body: .body, path: .path, line: (.line // .original_line), user_type: .user.type}',
+        )
+        if raw.strip():
+            for line in raw.strip().split("\n"):
+                try:
+                    item = json.loads(line)
+                    if item.get("user_type") == "Bot":
+                        continue
+                    comments.append({
+                        "id": item["id"],
+                        "type": "review_comment",
+                        "user": item["user"],
+                        "body": item["body"],
+                        "path": item.get("path", ""),
+                        "line": item.get("line"),
+                    })
+                except (json.JSONDecodeError, KeyError):
+                    continue
+    except RuntimeError:
+        pass
+
+    # Issue-level comments (conversation thread)
+    try:
+        raw = run_gh(
+            "api", f"repos/{full_repo}/issues/{pr_number}/comments",
+            "--paginate", "--jq",
+            r'.[] | {id: .id, user: .user.login, body: .body, user_type: .user.type}',
+        )
+        if raw.strip():
+            for line in raw.strip().split("\n"):
+                try:
+                    item = json.loads(line)
+                    if item.get("user_type") == "Bot":
+                        continue
+                    comments.append({
+                        "id": item["id"],
+                        "type": "issue_comment",
+                        "user": item["user"],
+                        "body": item["body"],
+                    })
+                except (json.JSONDecodeError, KeyError):
+                    continue
+    except RuntimeError:
+        pass
+
+    return comments
+
+
+def _format_repliable_comments(comments: List[dict]) -> str:
+    """Format repliable comments for inclusion in the review prompt."""
+    if not comments:
+        return "(No comments to reply to.)"
+
+    lines = []
+    for c in comments:
+        header = f"[id={c['id']}] @{c['user']}"
+        if c["type"] == "review_comment" and c.get("path"):
+            loc = c["path"]
+            if c.get("line"):
+                loc += f":{c['line']}"
+            header += f" ({loc})"
+        header += f" [{c['type']}]"
+        # Truncate very long comment bodies in the prompt
+        body = c["body"]
+        if len(body) > 500:
+            body = body[:500] + "..."
+        lines.append(f"{header}:\n{body}")
+    return "\n\n".join(lines)
+
+
 def build_review_prompt(
     context: dict,
     skill_dir: Optional[Path] = None,
     architecture: bool = False,
+    repliable_comments: Optional[List[dict]] = None,
 ) -> str:
     """Build a prompt for Claude to review a PR."""
     prompt_name = "review-architecture" if architecture else "review"
+    repliable_text = _format_repliable_comments(repliable_comments or [])
     return load_prompt_or_skill(
         skill_dir, prompt_name,
         TITLE=context["title"],
@@ -46,6 +135,7 @@ def build_review_prompt(
         REVIEW_COMMENTS=context["review_comments"],
         REVIEWS=context["reviews"],
         ISSUE_COMMENTS=context["issue_comments"],
+        REPLIABLE_COMMENTS=repliable_text,
     )
 
 
@@ -331,6 +421,73 @@ def _post_review_comment(
         return False
 
 
+def _post_comment_replies(
+    owner: str,
+    repo: str,
+    pr_number: str,
+    replies: list,
+    repliable_comments: list,
+) -> int:
+    """Post individual replies to PR comments.
+
+    For review_comment types, uses the pull request review comment reply API.
+    For issue_comment types, posts a new issue comment quoting the original.
+
+    Returns the number of replies successfully posted.
+    """
+    if not replies:
+        return 0
+
+    full_repo = f"{owner}/{repo}"
+    # Build lookup of comment IDs to their metadata
+    comment_map = {c["id"]: c for c in repliable_comments}
+    posted = 0
+
+    for reply_item in replies:
+        comment_id = reply_item.get("comment_id")
+        reply_text = reply_item.get("reply", "")
+        if not comment_id or not reply_text:
+            continue
+
+        original = comment_map.get(comment_id)
+        if not original:
+            print(
+                f"[review_runner] reply target id={comment_id} not found, skipping",
+                file=sys.stderr,
+            )
+            continue
+
+        try:
+            if original["type"] == "review_comment":
+                # Reply to an inline review comment via the API
+                run_gh(
+                    "api", f"repos/{full_repo}/pulls/{pr_number}/comments",
+                    "-X", "POST",
+                    "-f", f"body={reply_text}",
+                    "-F", f"in_reply_to={comment_id}",
+                )
+            else:
+                # For issue comments, post a new comment quoting the original
+                user = original.get("user", "someone")
+                quote_line = original["body"].split("\n")[0]
+                if len(quote_line) > 100:
+                    quote_line = quote_line[:100] + "..."
+                body = f"> @{user}: {quote_line}\n\n{reply_text}"
+                run_gh(
+                    "pr", "comment", pr_number,
+                    "--repo", full_repo,
+                    "--body", body,
+                )
+            posted += 1
+        except Exception as e:
+            print(
+                f"[review_runner] failed to post reply to comment {comment_id}: {e}",
+                file=sys.stderr,
+            )
+
+    return posted
+
+
 def run_review(
     owner: str,
     repo: str,
@@ -371,8 +528,14 @@ def run_review(
     if not context.get("diff"):
         return False, f"PR #{pr_number} has no diff — nothing to review.", None
 
+    # Step 1b: Fetch repliable comments (with IDs for reply targeting)
+    repliable_comments = fetch_repliable_comments(owner, repo, pr_number)
+
     # Step 2: Build review prompt
-    prompt = build_review_prompt(context, skill_dir=skill_dir, architecture=architecture)
+    prompt = build_review_prompt(
+        context, skill_dir=skill_dir, architecture=architecture,
+        repliable_comments=repliable_comments,
+    )
 
     # Step 3: Run Claude review (read-only)
     notify_fn(f"Analyzing code changes on `{context['branch']}`...")
@@ -411,8 +574,24 @@ def run_review(
     notify_fn(f"Posting review on PR #{pr_number}...")
     posted = _post_review_comment(owner, repo, pr_number, review_body)
 
+    # Step 7: Post replies to user comments
+    reply_count = 0
+    if review_data and review_data.get("comment_replies") and repliable_comments:
+        reply_count = _post_comment_replies(
+            owner, repo, pr_number,
+            review_data["comment_replies"],
+            repliable_comments,
+        )
+        if reply_count:
+            print(
+                f"[review_runner] posted {reply_count} reply(ies) to user comments",
+                file=sys.stderr,
+            )
+
     if posted:
         summary = f"Review posted on PR #{pr_number} ({full_repo})."
+        if reply_count:
+            summary += f" Replied to {reply_count} comment(s)."
         return True, summary, review_data
     else:
         return False, f"Review generated but failed to post comment on PR #{pr_number}.", review_data

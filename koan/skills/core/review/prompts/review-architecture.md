@@ -33,6 +33,10 @@ respect boundaries, manage dependencies, and uphold design principles.
 
 {ISSUE_COMMENTS}
 
+## Repliable Comments (with IDs)
+
+{REPLIABLE_COMMENTS}
+
 ---
 
 ## Your Task

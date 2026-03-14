@@ -215,3 +215,92 @@ class TestValidateReviewInvalid:
         }
         valid, errors = validate_review(data)
         assert valid is True
+
+
+# ---------------------------------------------------------------------------
+# comment_replies validation
+# ---------------------------------------------------------------------------
+
+class TestValidateCommentReplies:
+    def test_valid_replies(self):
+        """Review with comment_replies is valid."""
+        data = {
+            "file_comments": [],
+            "review_summary": {"lgtm": True, "summary": "s", "checklist": []},
+            "comment_replies": [
+                {"comment_id": 123, "reply": "Good question — here's why."},
+            ],
+        }
+        valid, errors = validate_review(data)
+        assert valid is True
+        assert errors == []
+
+    def test_empty_replies(self):
+        """Empty comment_replies array is valid."""
+        data = {
+            "file_comments": [],
+            "review_summary": {"lgtm": True, "summary": "s", "checklist": []},
+            "comment_replies": [],
+        }
+        valid, errors = validate_review(data)
+        assert valid is True
+
+    def test_no_replies_field(self):
+        """Omitting comment_replies entirely is valid (field is optional)."""
+        data = {
+            "file_comments": [],
+            "review_summary": {"lgtm": True, "summary": "s", "checklist": []},
+        }
+        valid, errors = validate_review(data)
+        assert valid is True
+
+    def test_replies_not_array(self):
+        """comment_replies must be an array."""
+        data = {
+            "file_comments": [],
+            "review_summary": {"lgtm": True, "summary": "s", "checklist": []},
+            "comment_replies": "not an array",
+        }
+        valid, errors = validate_review(data)
+        assert valid is False
+        assert any("array" in e for e in errors)
+
+    def test_reply_missing_comment_id(self):
+        data = {
+            "file_comments": [],
+            "review_summary": {"lgtm": True, "summary": "s", "checklist": []},
+            "comment_replies": [{"reply": "text"}],
+        }
+        valid, errors = validate_review(data)
+        assert valid is False
+        assert any("comment_id" in e for e in errors)
+
+    def test_reply_missing_reply_text(self):
+        data = {
+            "file_comments": [],
+            "review_summary": {"lgtm": True, "summary": "s", "checklist": []},
+            "comment_replies": [{"comment_id": 100}],
+        }
+        valid, errors = validate_review(data)
+        assert valid is False
+        assert any("reply" in e for e in errors)
+
+    def test_reply_wrong_type_comment_id(self):
+        data = {
+            "file_comments": [],
+            "review_summary": {"lgtm": True, "summary": "s", "checklist": []},
+            "comment_replies": [{"comment_id": "not_int", "reply": "text"}],
+        }
+        valid, errors = validate_review(data)
+        assert valid is False
+        assert any("int" in e for e in errors)
+
+    def test_reply_float_comment_id_accepted(self):
+        """Float comment IDs like 123.0 are accepted (JSON has no int type)."""
+        data = {
+            "file_comments": [],
+            "review_summary": {"lgtm": True, "summary": "s", "checklist": []},
+            "comment_replies": [{"comment_id": 123.0, "reply": "text"}],
+        }
+        valid, errors = validate_review(data)
+        assert valid is True

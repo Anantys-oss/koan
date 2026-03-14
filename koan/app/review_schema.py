@@ -124,6 +124,41 @@ REVIEW_SUMMARY_SCHEMA = {
 }
 
 # ---------------------------------------------------------------------------
+# Schema: comment_replies (optional)
+# ---------------------------------------------------------------------------
+
+COMMENT_REPLY_SCHEMA = {
+    "type": "object",
+    "required": ["comment_id", "reply"],
+    "properties": {
+        "comment_id": {
+            "type": "integer",
+            "description": (
+                "The GitHub comment ID to reply to, as provided in the "
+                "repliable comments list."
+            ),
+        },
+        "reply": {
+            "type": "string",
+            "description": (
+                "The reply text. Be complete and detailed — explain the why "
+                "and how, not just the what. Keep the tone constructive."
+            ),
+        },
+    },
+}
+
+COMMENT_REPLIES_SCHEMA = {
+    "type": "array",
+    "description": (
+        "Replies to user comments and questions on the PR. "
+        "Only include replies that add value — skip acknowledgements "
+        "and trivial responses."
+    ),
+    "items": COMMENT_REPLY_SCHEMA,
+}
+
+# ---------------------------------------------------------------------------
 # Combined review schema (top-level object)
 # ---------------------------------------------------------------------------
 
@@ -134,6 +169,7 @@ REVIEW_SCHEMA = {
     "properties": {
         "file_comments": FILE_COMMENTS_SCHEMA,
         "review_summary": REVIEW_SUMMARY_SCHEMA,
+        "comment_replies": COMMENT_REPLIES_SCHEMA,
     },
 }
 
@@ -173,6 +209,15 @@ def validate_review(data: object) -> tuple:
             errors.append("'review_summary' must be an object")
         else:
             errors.extend(_validate_review_summary(rs))
+
+    # -- comment_replies (optional) --
+    if "comment_replies" in data:
+        cr = data["comment_replies"]
+        if not isinstance(cr, list):
+            errors.append("'comment_replies' must be an array")
+        else:
+            for i, item in enumerate(cr):
+                errors.extend(_validate_comment_reply(item, i))
 
     return (len(errors) == 0, errors)
 
@@ -234,6 +279,26 @@ def _validate_review_summary(rs: dict) -> list:
     else:
         for i, item in enumerate(rs["checklist"]):
             errors.extend(_validate_checklist_item(item, i))
+
+    return errors
+
+
+def _validate_comment_reply(item: object, index: int) -> list:
+    """Validate a single comment_replies entry."""
+    errors: list = []
+    prefix = f"comment_replies[{index}]"
+
+    if not isinstance(item, dict):
+        return [f"{prefix}: must be an object"]
+
+    required = {"comment_id": int, "reply": str}
+    for field, expected_type in required.items():
+        if field not in item:
+            errors.append(f"{prefix}: missing required field '{field}'")
+        elif not isinstance(item[field], expected_type):
+            if expected_type is int and isinstance(item[field], float) and item[field] == int(item[field]):
+                continue
+            errors.append(f"{prefix}.{field}: expected {expected_type.__name__}, got {type(item[field]).__name__}")
 
     return errors
 

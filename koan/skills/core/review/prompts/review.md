@@ -32,6 +32,10 @@ actionable, constructive feedback that helps the author improve the code.
 
 {ISSUE_COMMENTS}
 
+## Repliable Comments (with IDs)
+
+{REPLIABLE_COMMENTS}
+
 ---
 
 ## Your Task
@@ -78,6 +82,25 @@ files in the diff — skip items that don't apply to the changes under review.
 - Check for unsafe `eval()`/`exec()` usage
 - Check for missing `with` statement for resource management
 
+### Replying to Comments
+
+If there are repliable comments listed above, review each one and decide whether a reply
+would add value. Reply when:
+
+- A user asks a question (about design decisions, implementation choices, trade-offs)
+- A user raises a concern that you can address with technical detail
+- A comment contains a misconception you can clarify
+- A reviewer requests changes and you can explain the rationale or suggest a path forward
+
+Do NOT reply when:
+- The comment is purely informational with nothing to add
+- A simple acknowledgement ("thanks", "will fix") would suffice
+- The comment is from the PR author to themselves
+- Replying would just repeat what your review already covers
+
+When you do reply, be **complete and detailed** — explain the **why** and **how**, not just
+the what. Reference specific code, line numbers, or documentation to support your argument.
+
 ### Rules
 
 - Be specific: reference file names and line ranges from the diff.
@@ -118,7 +141,13 @@ Your ENTIRE response must be a single valid JSON object (no markdown, no code fe
         "finding_ref": "critical #1"
       }
     ]
-  }
+  },
+  "comment_replies": [
+    {
+      "comment_id": 12345,
+      "reply": "Detailed reply explaining why and how."
+    }
+  ]
 }
 ```
 
@@ -134,9 +163,10 @@ Field rules:
 - **summary**: Final assessment — what's good, what needs fixing, merge readiness.
 - **checklist**: Review checklist results. Empty array `[]` for trivial changes. Each item has `passed` (bool) and `finding_ref` (cross-reference like `"critical #1"`, or empty string `""` if passed).
 
-All fields are required. Use empty strings `""`, empty arrays `[]`, or `false` as sentinel values — never omit a field.
+All fields in `file_comments` and `review_summary` are required. Use empty strings `""`, empty arrays `[]`, or `false` as sentinel values — never omit a field.
+- **comment_replies**: Optional. Array of replies to user comments. Omit or use `[]` if no replies are warranted. Each item needs `comment_id` (integer, from the repliable comments list) and `reply` (string, the reply text).
 
-Example of an LGTM review (no issues):
+Example of an LGTM review (no issues, no replies):
 
 ```json
 {
@@ -145,7 +175,8 @@ Example of an LGTM review (no issues):
     "lgtm": true,
     "summary": "Clean implementation. No issues found. Merge-ready.",
     "checklist": []
-  }
+  },
+  "comment_replies": []
 }
 ```
 
