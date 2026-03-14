@@ -140,11 +140,79 @@ def severity_at_or_above(min_severity: str) -> List[str]:
     return list(SEVERITY_LEVELS[: idx + 1])
 
 
+def _fetch_last_push_timestamp(owner: str, repo: str, pr_number: str) -> str:
+    """Find the timestamp of the most recent force-push on a PR.
+
+    Uses the GitHub timeline API to find ``head_ref_force_pushed`` events.
+    Returns the ISO-8601 timestamp of the latest such event, or empty string
+    if no force-push was found (meaning all comments are relevant).
+    """
+    full_repo = f"{owner}/{repo}"
+    try:
+        timeline_json = run_gh(
+            "api", f"repos/{full_repo}/issues/{pr_number}/timeline",
+            "--paginate", "--jq",
+            r'[.[] | select(.event == "head_ref_force_pushed") | .created_at] | last // ""',
+        )
+        return timeline_json.strip().strip('"')
+    except RuntimeError:
+        return ""
+
+
+def _fetch_ci_failures(owner: str, repo: str, pr_number: str) -> str:
+    """Fetch failed CI check runs and commit statuses for a PR.
+
+    Uses ``gh pr checks`` to get the current check status. Returns a
+    formatted string describing failures, or empty string if all pass.
+    """
+    full_repo = f"{owner}/{repo}"
+    try:
+        checks_output = run_gh(
+            "pr", "checks", pr_number, "--repo", full_repo,
+            "--required",
+        )
+    except RuntimeError:
+        # --required may not be supported or no checks exist; try without
+        try:
+            checks_output = run_gh(
+                "pr", "checks", pr_number, "--repo", full_repo,
+            )
+        except RuntimeError:
+            return ""
+
+    if not checks_output.strip():
+        return ""
+
+    # Parse tab-separated output: NAME\tSTATUS\tELAPSED\tURL
+    failures = []
+    for line in checks_output.strip().splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 2:
+            name = parts[0].strip()
+            status = parts[1].strip().lower()
+            url = parts[3].strip() if len(parts) >= 4 else ""
+            if status in ("fail", "failure", "error", "cancelled",
+                          "timed_out", "action_required"):
+                entry = f"- **{name}**: {status}"
+                if url:
+                    entry += f" ({url})"
+                failures.append(entry)
+
+    if not failures:
+        return ""
+
+    return "\n".join(failures)
+
+
 def fetch_pr_context(owner: str, repo: str, pr_number: str) -> dict:
     """Fetch PR details, diff, and all comments via gh CLI.
 
     Returns a dict with keys: title, body, branch, base, state, author, url,
-    diff, review_comments, reviews, issue_comments.
+    diff, review_comments, reviews, issue_comments, ci_failures.
+
+    Comments are filtered to only include those posted after the most recent
+    force-push, so the rebase addresses current feedback rather than stale
+    comments that were already handled in previous iterations.
     """
     full_repo = f"{owner}/{repo}"
 
@@ -182,12 +250,44 @@ def fetch_pr_context(owner: str, repo: str, pr_number: str) -> dict:
     except RuntimeError:
         diff = ""
 
+    # Find the last force-push timestamp to filter stale comments
+    last_push_ts = _fetch_last_push_timestamp(owner, repo, pr_number)
+
+    # Validate timestamp format to prevent jq injection
+    if last_push_ts and not re.match(r'^\d{4}-\d{2}-\d{2}T[\d:.]+Z$', last_push_ts):
+        last_push_ts = ""
+
+    if last_push_ts:
+        # Only include comments created after the last force-push
+        comments_jq = (
+            r'.[] | select(.created_at > "' + last_push_ts + r'") '
+            r'| "[\(.path):\(.line // .original_line)] @\(.user.login): \(.body)"'
+        )
+        reviews_jq = (
+            r'.[] | select(.body != "" and .submitted_at > "' + last_push_ts + r'") '
+            r'| "@\(.user.login) (\(.state)): \(.body)"'
+        )
+        issue_comments_jq = (
+            r'.[] | select(.created_at > "' + last_push_ts + r'") '
+            r'| "@\(.user.login): \(.body)"'
+        )
+    else:
+        # No force-push found — include all comments
+        comments_jq = (
+            r'.[] | "[\(.path):\(.line // .original_line)] @\(.user.login): \(.body)"'
+        )
+        reviews_jq = (
+            r'.[] | select(.body != "") | "@\(.user.login) (\(.state)): \(.body)"'
+        )
+        issue_comments_jq = (
+            r'.[] | "@\(.user.login): \(.body)"'
+        )
+
     # Fetch review comments (inline code comments)
     try:
         comments_json = run_gh(
             "api", f"repos/{full_repo}/pulls/{pr_number}/comments",
-            "--paginate", "--jq",
-            r'.[] | "[\(.path):\(.line // .original_line)] @\(.user.login): \(.body)"',
+            "--paginate", "--jq", comments_jq,
         )
     except RuntimeError:
         comments_json = ""
@@ -196,8 +296,7 @@ def fetch_pr_context(owner: str, repo: str, pr_number: str) -> dict:
     try:
         reviews_json = run_gh(
             "api", f"repos/{full_repo}/pulls/{pr_number}/reviews",
-            "--paginate", "--jq",
-            r'.[] | select(.body != "") | "@\(.user.login) (\(.state)): \(.body)"',
+            "--paginate", "--jq", reviews_jq,
         )
     except RuntimeError:
         reviews_json = ""
@@ -206,8 +305,7 @@ def fetch_pr_context(owner: str, repo: str, pr_number: str) -> dict:
     try:
         issue_comments = run_gh(
             "api", f"repos/{full_repo}/issues/{pr_number}/comments",
-            "--paginate", "--jq",
-            r'.[] | "@\(.user.login): \(.body)"',
+            "--paginate", "--jq", issue_comments_jq,
         )
     except RuntimeError:
         issue_comments = ""
@@ -216,6 +314,9 @@ def fetch_pr_context(owner: str, repo: str, pr_number: str) -> dict:
     # Bot replies (rebase summaries, review results) are verbose and push
     # human comments out of the truncation window.
     issue_comments = _filter_bot_issue_comments(issue_comments)
+
+    # Fetch CI failures
+    ci_failures = _fetch_ci_failures(owner, repo, pr_number)
 
     try:
         metadata = json.loads(pr_json)
@@ -243,6 +344,7 @@ def fetch_pr_context(owner: str, repo: str, pr_number: str) -> dict:
         "reviews": truncate_text(reviews_json, 3000),
         "issue_comments": _truncate_recent(issue_comments, 4000),
         "has_pending_reviews": has_pending_reviews,
+        "ci_failures": truncate_text(ci_failures, 3000),
     }
 
 
@@ -292,9 +394,12 @@ def build_comment_summary(context: dict) -> str:
     """Build a human-readable summary of all PR feedback.
 
     Useful for understanding what reviewers asked for before rebasing.
+    Includes CI failures when present.
     """
     parts = []
 
+    if context.get("ci_failures"):
+        parts.append("### CI Failures\n" + context["ci_failures"])
     if context.get("reviews"):
         parts.append("### Reviews\n" + context["reviews"])
     if context.get("review_comments"):
@@ -461,15 +566,20 @@ def run_rebase(
         _safe_checkout(original_branch, project_path)
         return False, f"Rebase failed on `{base}` (tried origin and upstream). Could not resolve conflicts."
 
-    # ── Step 4: Analyze review comments and apply changes ──────────────
+    # ── Step 4: Analyze review comments and CI failures ─────────────
     change_summary = ""
-    if _has_review_feedback(context):
-        severity_hint = ""
-        if min_severity and min_severity != "suggestion":
-            included = severity_at_or_above(min_severity)
-            severity_hint = f" (severity filter: {', '.join(included)})"
-        print(f"[rebase] Applying review feedback (Claude){severity_hint}", flush=True)
-        notify_fn(f"Analyzing review comments on `{branch}`{severity_hint}...")
+    has_ci_failures = bool(context.get("ci_failures", "").strip())
+
+    if _has_review_feedback(context) or has_ci_failures:
+        if has_ci_failures and not _has_review_feedback(context):
+            notify_fn(f"Fixing CI failures on `{branch}`...")
+        else:
+            severity_hint = ""
+            if min_severity and min_severity != "suggestion":
+                included = severity_at_or_above(min_severity)
+                severity_hint = f" (severity filter: {', '.join(included)})"
+            print(f"[rebase] Applying review feedback (Claude){severity_hint}", flush=True)
+            notify_fn(f"Analyzing review comments on `{branch}`{severity_hint}...")
         change_summary = _apply_review_feedback(
             context, pr_number, project_path, actions_log,
             skill_dir=skill_dir,
