@@ -41,6 +41,9 @@ projects.docker.yaml
 .github/agents/wp.*
 .github/prompts/wp.*
 
+# pytest-split durations (generated locally)
+.test_durations
+
 # Process log files
 logs/
 .aider*
