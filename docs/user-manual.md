@@ -31,6 +31,7 @@ This manual is organized in three progressive tiers. Start with the basics, then
   - [Exploration Mode](#exploration-mode)
   - [Workflow Example: Feature from Idea to PR](#workflow-example-feature-from-idea-to-pr)
 - [Power User — Advanced Configuration](#power-user--advanced-configuration)
+  - [Parallel Sessions](#parallel-sessions)
   - [Deep Exploration](#deep-exploration)
   - [Configuration Deep-Dive](#configuration-deep-dive)
   - [Per-Project Overrides](#per-project-overrides)
@@ -96,7 +97,7 @@ Pending  →  In Progress  →  Done ✓
 3. **Done** — Completed successfully. Code is in a `koan/*` branch, often with a draft PR.
 4. **Failed** — Something went wrong. Kōan logs the reason and moves on.
 
-Kōan processes one mission at a time. When idle, it picks the next pending mission automatically.
+By default, Kōan processes one mission at a time. When idle, it picks the next pending mission automatically. For concurrent execution, see [Parallel Sessions](#parallel-sessions).
 
 ### Chatting with Kōan
 
@@ -586,6 +587,69 @@ Here's a typical multi-step workflow combining several commands:
 ## Power User — Advanced Configuration
 
 Unlock Kōan's full potential with advanced configuration and extensibility features.
+
+### Parallel Sessions
+
+Kōan can work on multiple missions simultaneously using **git worktrees** for isolation. Each parallel session runs in its own worktree with a dedicated branch, so sessions never interfere with each other.
+
+#### How It Works
+
+When parallel sessions are enabled, Kōan can pick up additional pending missions while one is already running. Each session gets:
+
+- **Isolated worktree** — a separate checkout of the repository under `.worktrees/`
+- **Dedicated branch** — `koan/session-<id>` branches created automatically
+- **Independent subprocess** — a Claude Code process running in the worktree
+
+Sessions are coordinated through a persistent registry (`instance/sessions.json`) with file-level locking for process safety.
+
+#### Configuration
+
+Add `max_parallel_sessions` to your `instance/config.yaml`:
+
+```yaml
+# Parallel session configuration
+max_parallel_sessions: 2    # Number of concurrent sessions (1-5, default: 2)
+```
+
+Set to `1` to disable parallel execution and use the classic sequential mode.
+
+#### Shared Dependencies
+
+To avoid duplicating heavy dependency directories across worktrees, configure `shared_deps` in your project's `projects.yaml`:
+
+```yaml
+projects:
+  webapp:
+    path: ~/Code/webapp
+    shared_deps:
+      - node_modules
+      - .venv
+```
+
+These directories are symlinked from the main project into each worktree, saving disk space and setup time.
+
+> **Note:** Shared deps are best used for read-only caches. If a mission's build step modifies dependencies (e.g., `npm install`), it may affect other sessions sharing the same directory.
+
+#### Monitoring
+
+Parallel sessions appear in the standard status commands:
+
+- **`/status`** — Shows count of active parallel sessions
+- **`/live`** — Shows progress of all running sessions
+
+Session output is captured to temporary files and collected when each session completes.
+
+#### Cleanup
+
+Worktrees and session branches are automatically cleaned up when a session finishes (success or failure). On startup, Kōan also recovers stale sessions from previous crashes — marking them as failed and removing their worktrees.
+
+To manually clean up orphaned worktrees:
+
+```bash
+# From the project directory
+git worktree list    # See all worktrees
+git worktree prune   # Remove stale references
+```
 
 ### Deep Exploration
 
