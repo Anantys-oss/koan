@@ -19,15 +19,15 @@
     </div>
     <div class="card">
         <div class="stat-label">Pending</div>
-        <div class="stat-value">{{ pending_count }}</div>
+        <div class="stat-value" id="count-pending">{{ pending_count }}</div>
     </div>
     <div class="card">
         <div class="stat-label">In Progress</div>
-        <div class="stat-value">{{ in_progress_count }}</div>
+        <div class="stat-value" id="count-in-progress">{{ in_progress_count }}</div>
     </div>
     <div class="card">
         <div class="stat-label">Done</div>
-        <div class="stat-value">{{ done_count }}</div>
+        <div class="stat-value" id="count-done">{{ done_count }}</div>
     </div>
 </div>
 
@@ -198,6 +198,17 @@
                 const focusVal = document.getElementById('detail-focus-val');
                 if (focusVal && data.focus) {
                     focusVal.textContent = data.focus.remaining + ' remaining';
+                }
+            }
+        }
+
+        // Update mission counts
+        if (data.missions) {
+            const ids = {pending: 'count-pending', in_progress: 'count-in-progress', done: 'count-done'};
+            for (const [key, id] of Object.entries(ids)) {
+                const el = document.getElementById(id);
+                if (el && data.missions[key] !== undefined) {
+                    el.textContent = data.missions[key];
                 }
             }
         }
