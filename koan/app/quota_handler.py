@@ -57,6 +57,8 @@ _RETRY_AFTER_RE = re.compile(
 
 # Bounds for Retry-After values to prevent indefinite pauses from malformed API responses.
 _MAX_RETRY_SECONDS = 86400  # 24 hours
+_MAX_RETRY_MINUTES = 1440   # 24 hours in minutes
+_MAX_RETRY_HOURS = 24       # 24 hours
 _DEFAULT_RETRY_SECONDS = 3600  # 1 hour fallback for zero/negative values
 
 
@@ -115,8 +117,10 @@ def extract_reset_info(text: str) -> str:
             value = int(retry_match.group(2))
             unit = retry_match.group(3).lower()
             if unit.startswith("minute"):
+                value = min(value, _MAX_RETRY_MINUTES)
                 seconds = _clamp_retry_seconds(value * 60)
             elif unit.startswith("hour"):
+                value = min(value, _MAX_RETRY_HOURS)
                 seconds = _clamp_retry_seconds(value * 3600)
             else:
                 seconds = _clamp_retry_seconds(value)

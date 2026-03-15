@@ -290,6 +290,27 @@ class TestExtractResetInfoBoundsChecking:
         result = extract_reset_info(text)
         assert result == "resets in 24h"
 
+    def test_huge_minutes_clamped_before_multiply(self):
+        """Regression: raw value must be clamped before multiplying by 60.
+
+        A malformed header like 'try again in 99999 minutes' should not
+        produce a multi-million-second intermediate value. The raw minutes
+        value should be capped to 1440 (24h) before conversion.
+        """
+        from app.quota_handler import extract_reset_info
+
+        text = "try again in 99999 minutes"
+        result = extract_reset_info(text)
+        assert result == "resets in 24h"
+
+    def test_huge_hours_clamped_before_multiply(self):
+        """Regression: raw value must be clamped before multiplying by 3600."""
+        from app.quota_handler import extract_reset_info
+
+        text = "try again in 500 hours"
+        result = extract_reset_info(text)
+        assert result == "resets in 24h"
+
 
 class TestClampRetrySeconds:
     """Test _clamp_retry_seconds helper directly."""
