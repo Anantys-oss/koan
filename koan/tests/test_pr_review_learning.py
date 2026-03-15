@@ -154,6 +154,12 @@ class TestCache:
     def test_stale_when_no_cache(self, tmp_path):
         assert _is_cache_fresh(str(tmp_path), "abc123") is False
 
+    def test_write_cache_creates_parent_dirs(self, tmp_path):
+        """_write_cache should create missing parent directories."""
+        nested = tmp_path / "deep" / "nested" / "dir"
+        _write_cache(str(nested), "hash42")
+        assert _is_cache_fresh(str(nested), "hash42") is True
+
 
 # ─── _append_lessons_to_learnings ────────────────────────────────────────
 

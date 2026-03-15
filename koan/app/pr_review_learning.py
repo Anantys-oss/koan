@@ -297,6 +297,7 @@ def _write_cache(instance_dir: str, review_hash: str) -> None:
     """Write the review hash to the cache file."""
     try:
         cache_path = _get_cache_path(instance_dir)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_text(review_hash + "\n")
     except OSError as e:
         print(f"[pr_review_learning] Cache write failed: {e}", file=sys.stderr)
