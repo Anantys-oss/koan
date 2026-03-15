@@ -141,6 +141,19 @@ class TestBuildContemplativeCommand:
 
     @patch("app.config.get_contemplative_tools")
     @patch("app.prompt_builder.build_contemplative_prompt")
+    def test_forwards_project_name_to_get_tools(self, mock_prompt, mock_tools):
+        """project_name is forwarded to get_contemplative_tools for per-project overrides."""
+        mock_prompt.return_value = "prompt"
+        mock_tools.return_value = "Read,Write"
+        build_contemplative_command(
+            instance="/path",
+            project_name="myproject",
+            session_info="info",
+        )
+        mock_tools.assert_called_once_with(project_name="myproject")
+
+    @patch("app.config.get_contemplative_tools")
+    @patch("app.prompt_builder.build_contemplative_prompt")
     def test_extra_flags_appended(self, mock_prompt, mock_tools):
         """Extra flags are appended to the command."""
         mock_prompt.return_value = "prompt"

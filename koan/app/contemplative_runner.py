@@ -57,7 +57,7 @@ def build_contemplative_command(
     from app.cli_provider import build_full_command
     from app.config import get_contemplative_tools
 
-    tools_str = get_contemplative_tools()
+    tools_str = get_contemplative_tools(project_name=project_name)
     allowed_tools = [t.strip() for t in tools_str.split(",") if t.strip()]
 
     cmd = build_full_command(
