@@ -181,11 +181,10 @@ _github_config_logged: bool = False
 # Track whether we've loaded the configured interval from config.yaml
 _github_interval_loaded: bool = False
 # Cached _load_github_config() result with mtime invalidation.
-# Thread-safe via _github_config_lock.
+# Thread-safe via _github_state_lock.
 _GITHUB_CONFIG_UNSET = object()  # sentinel: "no cached value yet"
 _github_config_cache = _GITHUB_CONFIG_UNSET
 _github_config_cache_mtime: float = 0
-_github_config_lock = threading.Lock()
 
 # --- Notification processing cache ---
 # Avoid re-processing the same notification repeatedly across loop iterations.
@@ -196,6 +195,10 @@ _NOTIF_CACHE_TTL = 86400  # 24 hours
 _NOTIF_CACHE_MAX = 2000
 _notif_cache: dict = {}
 _notif_cache_lock = threading.Lock()
+
+# Lock protecting all module-level mutable GitHub state above.
+# Acquired for short state reads/writes only — never held during API calls.
+_github_state_lock = threading.Lock()
 
 log = logging.getLogger(__name__)
 
@@ -270,29 +273,30 @@ def _load_github_config(config: dict, koan_root: str, instance_dir: str) -> Opti
     """
     global _github_config_logged, _github_config_cache, _github_config_cache_mtime
 
-    # Check mtime-based cache: return cached result if config file hasn't changed
     current_mtime = _get_config_mtime(koan_root)
-    with _github_config_lock:
+
+    with _github_state_lock:
+        # Check mtime-based cache: return cached result if config file hasn't changed
         if _github_config_cache is not _GITHUB_CONFIG_UNSET and current_mtime == _github_config_cache_mtime:
             return _github_config_cache
 
     from app.github_config import get_github_commands_enabled, get_github_max_age_hours, get_github_nickname
 
     if not get_github_commands_enabled(config):
-        if not _github_config_logged:
-            _github_log("Commands disabled (github.commands_enabled not set in config.yaml)", "debug")
-            _github_config_logged = True
-        with _github_config_lock:
+        with _github_state_lock:
+            if not _github_config_logged:
+                _github_log("Commands disabled (github.commands_enabled not set in config.yaml)", "debug")
+                _github_config_logged = True
             _github_config_cache_mtime = current_mtime
             _github_config_cache = None
         return None
 
     nickname = get_github_nickname(config)
     if not nickname:
-        if not _github_config_logged:
-            _github_log("Commands enabled but github.nickname is not set — skipping", "warning")
-            _github_config_logged = True
-        with _github_config_lock:
+        with _github_state_lock:
+            if not _github_config_logged:
+                _github_log("Commands enabled but github.nickname is not set — skipping", "warning")
+                _github_config_logged = True
             _github_config_cache_mtime = current_mtime
             _github_config_cache = None
         return None
@@ -300,16 +304,15 @@ def _load_github_config(config: dict, koan_root: str, instance_dir: str) -> Opti
     bot_username = os.environ.get("GITHUB_USER", nickname)
     max_age = get_github_max_age_hours(config)
 
-    if not _github_config_logged:
-        _github_log(f"Monitoring @{nickname} mentions (bot_user={bot_username}, max_age={max_age}h)")
-        _github_config_logged = True
-
     result = {
         "nickname": nickname,
         "bot_username": bot_username,
         "max_age": max_age,
     }
-    with _github_config_lock:
+    with _github_state_lock:
+        if not _github_config_logged:
+            _github_log(f"Monitoring @{nickname} mentions (bot_user={bot_username}, max_age={max_age}h)")
+            _github_config_logged = True
         _github_config_cache = result
         _github_config_cache_mtime = current_mtime
     return result
@@ -337,11 +340,17 @@ def _build_skill_registry(instance_dir: str):
     instance_skills = Path(instance_dir) / "skills"
     extra = tuple(p for p in [instance_skills] if p.is_dir())
 
-    if _gh_cached_registry is None or extra != _gh_cached_extra_dirs:
-        _gh_cached_registry = build_registry(list(extra))
+    with _github_state_lock:
+        if _gh_cached_registry is not None and extra == _gh_cached_extra_dirs:
+            return _gh_cached_registry
+
+    registry = build_registry(list(extra))
+
+    with _github_state_lock:
+        _gh_cached_registry = registry
         _gh_cached_extra_dirs = extra
 
-    return _gh_cached_registry
+    return registry
 
 
 def _normalize_github_url(url: str) -> str:
@@ -417,8 +426,8 @@ def _get_known_repos_from_projects(koan_root: str) -> Optional[set]:
     return known_repos or None
 
 
-def _get_effective_check_interval() -> int:
-    """Compute check interval with exponential backoff on consecutive empty results."""
+def _get_effective_check_interval_locked() -> int:
+    """Compute check interval with backoff. Caller must hold _github_state_lock."""
     if _consecutive_empty_checks <= 0:
         return _GITHUB_CHECK_INTERVAL
     return min(
@@ -427,16 +436,22 @@ def _get_effective_check_interval() -> int:
     )
 
 
+def _get_effective_check_interval() -> int:
+    """Compute check interval with exponential backoff on consecutive empty results."""
+    with _github_state_lock:
+        return _get_effective_check_interval_locked()
+
+
 def reset_github_backoff() -> None:
     """Reset backoff state. Useful for tests and when external events suggest activity."""
     global _last_github_check, _last_github_check_iso, _consecutive_empty_checks, _github_config_logged, _github_interval_loaded
     global _github_config_cache, _github_config_cache_mtime
-    _last_github_check = 0
-    _last_github_check_iso = ""
-    _consecutive_empty_checks = 0
-    _github_config_logged = False
-    _github_interval_loaded = False
-    with _github_config_lock:
+    with _github_state_lock:
+        _last_github_check = 0
+        _last_github_check_iso = ""
+        _consecutive_empty_checks = 0
+        _github_config_logged = False
+        _github_interval_loaded = False
         _github_config_cache = _GITHUB_CONFIG_UNSET
         _github_config_cache_mtime = 0
     with _notif_cache_lock:
@@ -463,23 +478,28 @@ def process_github_notifications(
     global _last_github_check, _last_github_check_iso, _consecutive_empty_checks, _GITHUB_CHECK_INTERVAL, _GITHUB_MAX_CHECK_INTERVAL, _github_interval_loaded
 
     # Load configured intervals on first call (lazy, avoids import-time config reads)
-    if not _github_interval_loaded:
+    with _github_state_lock:
+        need_interval_load = not _github_interval_loaded
+
+    if need_interval_load:
         try:
             from app.utils import load_config
             from app.github_config import get_github_check_interval, get_github_max_check_interval
             cfg = load_config()
-            _GITHUB_CHECK_INTERVAL = get_github_check_interval(cfg)
-            _GITHUB_MAX_CHECK_INTERVAL = get_github_max_check_interval(cfg)
-            _github_interval_loaded = True
+            with _github_state_lock:
+                _GITHUB_CHECK_INTERVAL = get_github_check_interval(cfg)
+                _GITHUB_MAX_CHECK_INTERVAL = get_github_max_check_interval(cfg)
+                _github_interval_loaded = True
         except (ImportError, OSError, ValueError) as e:
             log.debug("Could not load github check interval from config: %s", e)
 
     now = time.time()
-    effective_interval = _get_effective_check_interval()
-    if now - _last_github_check < effective_interval:
-        return 0
-
-    _last_github_check = now
+    # Atomic check-then-act: verify throttle and claim the timeslot under lock.
+    with _github_state_lock:
+        effective_interval = _get_effective_check_interval_locked()
+        if now - _last_github_check < effective_interval:
+            return 0
+        _last_github_check = now
 
     try:
         from app.utils import load_config
@@ -522,7 +542,8 @@ def process_github_notifications(
         # covers the same window as subsequent ones.
         from datetime import datetime, timedelta, timezone
 
-        since_value = _last_github_check_iso or None
+        with _github_state_lock:
+            since_value = _last_github_check_iso or None
         if since_value is None:
             max_age = github_config.get("max_age", 24)
             since_value = (
@@ -537,7 +558,9 @@ def process_github_notifications(
         notifications = result.actionable
 
         # Record the check timestamp for the next ``since`` window.
-        _last_github_check_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        new_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        with _github_state_lock:
+            _last_github_check_iso = new_iso
 
         if notifications:
             _github_log(f"Fetched {len(notifications)} actionable notification(s)")
@@ -589,16 +612,17 @@ def process_github_notifications(
             log.debug("GitHub: drained %d non-actionable notification(s)", drained)
 
         # Update backoff state
-        if missions_created > 0 or notifications:
-            _consecutive_empty_checks = 0
-        else:
-            _consecutive_empty_checks += 1
-            if _consecutive_empty_checks > 1:
-                log.debug(
-                    "GitHub: no notifications (%d consecutive), next check in %ds",
-                    _consecutive_empty_checks,
-                    _get_effective_check_interval(),
-                )
+        with _github_state_lock:
+            if missions_created > 0 or notifications:
+                _consecutive_empty_checks = 0
+            else:
+                _consecutive_empty_checks += 1
+                if _consecutive_empty_checks > 1:
+                    log.debug(
+                        "GitHub: no notifications (%d consecutive), next check in %ds",
+                        _consecutive_empty_checks,
+                        _get_effective_check_interval_locked(),
+                    )
 
         return missions_created
 

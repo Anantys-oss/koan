@@ -2026,3 +2026,74 @@ class TestNotificationCache:
         # Only notif2 should have been processed
         assert mock_process.call_count == 1
         assert mock_process.call_args[0][0]["id"] == "2"
+
+
+# --- Thread-safety tests ---
+
+
+class TestThreadSafety:
+    """Verify that module-level mutable state is protected by _github_state_lock."""
+
+    def test_concurrent_reset_and_check_interval(self):
+        """reset_github_backoff and _get_effective_check_interval don't race."""
+        import threading
+        from app.loop_manager import (
+            _get_effective_check_interval,
+            reset_github_backoff,
+        )
+
+        errors = []
+
+        def reset_loop():
+            try:
+                for _ in range(200):
+                    reset_github_backoff()
+            except Exception as exc:
+                errors.append(exc)
+
+        def read_loop():
+            try:
+                for _ in range(200):
+                    val = _get_effective_check_interval()
+                    assert isinstance(val, int)
+                    assert val > 0
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=reset_loop) for _ in range(3)]
+        threads += [threading.Thread(target=read_loop) for _ in range(3)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        assert not errors, f"Thread-safety errors: {errors}"
+
+    @patch("app.skills.build_registry")
+    def test_concurrent_build_skill_registry(self, mock_build, tmp_path):
+        """_build_skill_registry handles concurrent calls without corruption."""
+        import threading
+        from app.loop_manager import _build_skill_registry, _gh_cached_registry
+
+        import app.loop_manager as lm
+        lm._gh_cached_registry = None
+        lm._gh_cached_extra_dirs = None
+
+        mock_build.return_value = MagicMock()
+        errors = []
+
+        def build_loop():
+            try:
+                for _ in range(50):
+                    result = _build_skill_registry(str(tmp_path))
+                    assert result is not None
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=build_loop) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        assert not errors, f"Thread-safety errors: {errors}"
