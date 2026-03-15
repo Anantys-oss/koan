@@ -177,6 +177,14 @@ If Kōan misclassifies your message, use `/chat` to force chat mode:
 - `/live` — Check what Kōan is doing right now during a long mission
 </details>
 
+**`/logs`** — Show the last 10 lines from run.log and awake.log, formatted in code blocks.
+
+<details>
+<summary>Use cases</summary>
+
+- `/logs` — Quick check of recent agent and bridge output without SSH access
+</details>
+
 **`/quota`** — Check remaining API quota (live, no cache).
 
 - **Aliases:** `/q`
@@ -1038,6 +1046,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/usage` | — | B | Detailed quota and progress |
 | `/metrics` | — | B | Mission success rates and reliability stats |
 | `/live` | `/progress` | B | Show live progress of current mission |
+| `/logs` | — | B | Show last 10 lines from run and awake logs |
 | `/quota` | `/q` | B | Check LLM quota (live) |
 | `/chat <msg>` | — | B | Force chat mode (bypass mission detection) |
 | `/verbose` | — | B | Enable real-time progress updates |
