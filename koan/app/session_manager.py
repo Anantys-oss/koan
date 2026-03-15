@@ -275,9 +275,11 @@ def spawn_session(
     # Start subprocess — file handles must outlive the process
     from app.cli_exec import popen_cli
 
-    out_f = open(stdout_file, "w")  # noqa: SIM115
-    err_f = open(stderr_file, "w")  # noqa: SIM115
+    out_f = None
+    err_f = None
     try:
+        out_f = open(stdout_file, "w")  # noqa: SIM115
+        err_f = open(stderr_file, "w")  # noqa: SIM115
         proc, cli_cleanup = popen_cli(
             cmd,
             stdout=out_f,
@@ -286,8 +288,10 @@ def spawn_session(
             start_new_session=True,
         )
     except Exception:
-        out_f.close()
-        err_f.close()
+        if err_f:
+            err_f.close()
+        if out_f:
+            out_f.close()
         raise
     session.pid = proc.pid
 

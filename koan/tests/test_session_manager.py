@@ -19,6 +19,7 @@ from app.session_manager import (
     kill_session,
     poll_sessions,
     recover_stale_sessions,
+    spawn_session,
     _dict_to_session,
     SESSIONS_FILE,
 )
@@ -286,6 +287,82 @@ class TestKillSession:
             kill_session(sample_session, registry)
 
         assert sample_session.status == "failed"
+
+
+class TestSpawnSessionFileHandleLeak:
+    """Verify file handles are closed when spawn_session fails."""
+
+    @patch("app.session_manager.inject_worktree_claude_md")
+    @patch("app.session_manager.create_worktree")
+    def test_out_f_closed_when_popen_raises(self, mock_create_wt, mock_inject, registry, tmp_path):
+        """out_f and err_f are both closed when popen_cli() raises."""
+        wt = MagicMock()
+        wt.session_id = "test-leak"
+        wt.path = str(tmp_path / "worktree")
+        wt.branch = "koan/session-test-leak"
+        mock_create_wt.return_value = wt
+
+        opened_files = []
+        real_open = open
+
+        def tracking_open(path, mode="r", **kwargs):
+            f = real_open(path, mode, **kwargs)
+            opened_files.append(f)
+            return f
+
+        with patch("app.mission_runner.build_mission_command", return_value=["echo"]), \
+             patch("builtins.open", side_effect=tracking_open), \
+             patch("app.cli_exec.popen_cli", side_effect=RuntimeError("boom")):
+            with pytest.raises(RuntimeError, match="boom"):
+                spawn_session(
+                    mission_text="test",
+                    project_name="p",
+                    project_path=str(tmp_path),
+                    instance_dir=registry.instance_dir,
+                    registry=registry,
+                )
+
+        # Both file handles that were opened should be closed
+        assert len(opened_files) == 2
+        assert all(f.closed for f in opened_files), "leaked file handle(s)"
+
+    @patch("app.session_manager.inject_worktree_claude_md")
+    @patch("app.session_manager.create_worktree")
+    def test_out_f_closed_when_stderr_open_raises(self, mock_create_wt, mock_inject, registry, tmp_path):
+        """out_f is closed when the second open() (stderr) raises."""
+        wt = MagicMock()
+        wt.session_id = "test-leak2"
+        wt.path = str(tmp_path / "worktree")
+        wt.branch = "koan/session-test-leak2"
+        mock_create_wt.return_value = wt
+
+        opened_files = []
+        real_open = open
+        call_count = 0
+
+        def open_fail_second(path, mode="r", **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:
+                raise OSError("disk full")
+            f = real_open(path, mode, **kwargs)
+            opened_files.append(f)
+            return f
+
+        with patch("app.mission_runner.build_mission_command", return_value=["echo"]), \
+             patch("builtins.open", side_effect=open_fail_second):
+            with pytest.raises(OSError, match="disk full"):
+                spawn_session(
+                    mission_text="test",
+                    project_name="p",
+                    project_path=str(tmp_path),
+                    instance_dir=registry.instance_dir,
+                    registry=registry,
+                )
+
+        # The first file handle (out_f) must be closed despite second open failing
+        assert len(opened_files) == 1
+        assert opened_files[0].closed, "out_f leaked when stderr open() raised"
 
 
 class TestRecoverStaleSessions:
