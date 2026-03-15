@@ -1270,8 +1270,8 @@ class TestResolveScopedCommand:
     def test_resolve_by_command_name_when_skill_name_differs(self, tmp_path):
         """Scoped lookup should work by command name, not just skill name.
 
-        When a custom skill has name 'refactor' but a command named 'wp-refactor',
-        /wp.wp-refactor should still resolve via command name fallback.
+        When a custom skill has name 'refactor' but a command named 'wp_refactor',
+        /wp.wp_refactor should still resolve via command name fallback.
         """
         # Create a custom skill where command name ≠ skill name
         custom_dir = tmp_path / "wp" / "refactor"
@@ -1282,18 +1282,18 @@ class TestResolveScopedCommand:
             scope: wp
             description: WP refactoring
             commands:
-              - name: wp-refactor
+              - name: wp_refactor
                 description: Refactor WP code
             ---
         """))
         registry = SkillRegistry(tmp_path)
-        # /wp.wp-refactor should find the skill via command name
-        result = registry.resolve_scoped_command("wp.wp-refactor")
+        # /wp.wp_refactor should find the skill via command name
+        result = registry.resolve_scoped_command("wp.wp_refactor")
         assert result is not None
         skill, cmd, args = result
         assert skill.name == "refactor"
         assert skill.scope == "wp"
-        assert cmd == "wp-refactor"
+        assert cmd == "wp_refactor"
 
     def test_resolve_by_command_alias_in_scope(self, tmp_path):
         """Scoped lookup should also match command aliases within a scope."""
@@ -1328,16 +1328,16 @@ class TestResolveScopedCommand:
             scope: wp
             description: WP refactoring
             commands:
-              - name: wp-refactor
+              - name: wp_refactor
                 description: Refactor WP code
             ---
         """))
         registry = SkillRegistry(tmp_path)
-        result = registry.resolve_scoped_command("wp.wp-refactor some args here")
+        result = registry.resolve_scoped_command("wp.wp_refactor some args here")
         assert result is not None
         skill, cmd, args = result
         assert skill.name == "refactor"
-        assert cmd == "wp-refactor"
+        assert cmd == "wp_refactor"
         assert args == "some args here"
 
     def test_skill_name_lookup_still_preferred(self, tmp_path):
@@ -1573,3 +1573,74 @@ class TestCoreSkillGroupEnforcement:
 
         assert registry.get("core", "orphan") is not None
         assert "no 'group:'" in caplog.text
+
+
+class TestHyphenValidation:
+    """Ensure skills with hyphens in command names or aliases are rejected."""
+
+    def test_command_name_with_hyphen_skipped(self, caplog):
+        """A skill whose command name contains a hyphen is not registered."""
+        skill = Skill(
+            name="bad_skill", scope="custom",
+            commands=[SkillCommand(name="bad-cmd", description="nope")],
+        )
+        registry = SkillRegistry()
+
+        with caplog.at_level("WARNING", logger="app.skills"):
+            registry._register(skill)
+
+        assert registry.get("custom", "bad_skill") is None
+        assert registry.find_by_command("bad-cmd") is None
+        assert "contains a hyphen" in caplog.text
+        assert "bad-cmd" in caplog.text
+
+    def test_alias_with_hyphen_skipped(self, caplog):
+        """A skill whose alias contains a hyphen is not registered."""
+        skill = Skill(
+            name="bad_skill2", scope="custom",
+            commands=[SkillCommand(name="good_cmd", aliases=["bad-alias"])],
+        )
+        registry = SkillRegistry()
+
+        with caplog.at_level("WARNING", logger="app.skills"):
+            registry._register(skill)
+
+        assert registry.get("custom", "bad_skill2") is None
+        assert registry.find_by_command("good_cmd") is None
+        assert "contains a hyphen" in caplog.text
+        assert "bad-alias" in caplog.text
+
+    def test_underscore_names_accepted(self):
+        """Skills with underscores in names register normally."""
+        skill = Skill(
+            name="good_skill", scope="custom", group="test",
+            commands=[SkillCommand(name="good_cmd", aliases=["gc"])],
+        )
+        registry = SkillRegistry()
+        registry._register(skill)
+
+        assert registry.get("custom", "good_skill") is not None
+        assert registry.find_by_command("good_cmd") is not None
+        assert registry.find_by_command("gc") is not None
+
+    def test_no_existing_core_skills_have_hyphens(self):
+        """Verify no shipped core skills use hyphens (enforces convention)."""
+        skills_dir = get_default_skills_dir()
+        core_dir = skills_dir / "core"
+        assert core_dir.is_dir()
+
+        violations = []
+        for skill_md in sorted(core_dir.rglob("SKILL.md")):
+            skill = parse_skill_md(skill_md)
+            if skill is None:
+                continue
+            for cmd in skill.commands:
+                if "-" in cmd.name:
+                    violations.append(f"{skill.name}: command '{cmd.name}'")
+                for alias in cmd.aliases:
+                    if "-" in alias:
+                        violations.append(f"{skill.name}: alias '{alias}'")
+
+        assert not violations, (
+            f"Core skills with hyphens in commands/aliases: {', '.join(violations)}"
+        )

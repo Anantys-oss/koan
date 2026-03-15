@@ -288,6 +288,27 @@ class SkillRegistry:
     def _register(self, skill: Skill) -> None:
         """Register a skill and build command lookup."""
         key = skill.qualified_name
+
+        # Reject skills whose command names or aliases contain hyphens.
+        # Hyphens break Telegram command parsing (treated as word boundary).
+        # See CLAUDE.md "No hyphens in skill names or aliases".
+        for cmd in skill.commands:
+            if "-" in cmd.name:
+                _log.warning(
+                    "Skill %s: command '%s' contains a hyphen — "
+                    "skipping registration. Use underscores instead.",
+                    key, cmd.name,
+                )
+                return
+            for alias in cmd.aliases:
+                if "-" in alias:
+                    _log.warning(
+                        "Skill %s: alias '%s' contains a hyphen — "
+                        "skipping registration. Use underscores instead.",
+                        key, alias,
+                    )
+                    return
+
         self._skills[key] = skill
 
         # Warn if a core skill has no help group — every command must be
