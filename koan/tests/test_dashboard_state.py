@@ -270,6 +270,30 @@ class TestApiStateStream:
         assert payload["state"] == "working"
         assert payload["run_info"] == "1/5"
 
+    def test_stream_includes_mission_counts(self, tmp_path):
+        """SSE payload should include pending/in_progress/done counts."""
+        (tmp_path / ".koan-status").write_text("Idle")
+        inst, _ = self._make_client(tmp_path)
+        (inst / "missions.md").write_text(
+            "# Missions\n\n## Pending\n\n- task1\n- task2\n\n"
+            "## In Progress\n\n- task3\n\n## Done\n\n- task4\n"
+        )
+        with patch.object(dashboard, "KOAN_ROOT", tmp_path), \
+             patch.object(dashboard, "INSTANCE_DIR", inst), \
+             patch.object(dashboard, "MISSIONS_FILE", inst / "missions.md"), \
+             patch("app.dashboard.time.sleep", side_effect=RuntimeError("break")):
+            resp = dashboard.app.test_client().get("/api/state/stream")
+        data_line = None
+        for chunk in resp.response:
+            if isinstance(chunk, bytes):
+                chunk = chunk.decode()
+            if chunk.startswith("data: "):
+                data_line = chunk
+                break
+        assert data_line is not None
+        payload = json.loads(data_line[6:].strip())
+        assert payload["missions"] == {"pending": 2, "in_progress": 1, "done": 1}
+
 
 # ---------------------------------------------------------------------------
 # /api/status includes agent_state

@@ -667,6 +667,9 @@ def api_state_stream():
     def generate():
         last_json = None
         heartbeat_counter = 0
+        # Mutable containers for mtime-based mission count caching
+        missions_mtime = [0.0]
+        missions_counts = [{"pending": 0, "in_progress": 0, "done": 0}]
 
         while True:
             try:
@@ -678,6 +681,23 @@ def api_state_stream():
                 except Exception as e:
                     print(f"[dashboard] attention count error: {e}", file=sys.stderr)
                     state["attention_count"] = 0
+                # Add mission counts (uses mtime check to avoid re-parsing)
+                try:
+                    if MISSIONS_FILE.exists():
+                        mtime = MISSIONS_FILE.stat().st_mtime
+                        if mtime != missions_mtime[0]:
+                            missions_mtime[0] = mtime
+                            m = parse_missions()
+                            missions_counts[0] = {
+                                "pending": len(m["pending"]),
+                                "in_progress": len(m["in_progress"]),
+                                "done": len(m["done"]),
+                            }
+                    else:
+                        missions_counts[0] = {"pending": 0, "in_progress": 0, "done": 0}
+                except OSError:
+                    pass
+                state["missions"] = missions_counts[0]
                 state_json = json.dumps(state, sort_keys=True)
                 if state_json != last_json:
                     last_json = state_json
