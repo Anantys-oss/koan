@@ -618,7 +618,7 @@ class TestHandleQuotaExhaustion:
         )
         assert result is not None
 
-    def test_handles_both_files_missing(self, tmp_path):
+    def test_handles_both_files_missing(self, tmp_path, capsys):
         from app.quota_handler import handle_quota_exhaustion
 
         instance = str(tmp_path / "instance")
@@ -629,6 +629,11 @@ class TestHandleQuotaExhaustion:
             str(tmp_path / "nonexistent1"), str(tmp_path / "nonexistent2")
         )
         assert result is None
+
+        # Should warn when both files are unreadable
+        captured = capsys.readouterr()
+        assert "WARNING" in captured.err
+        assert "quota check unreliable" in captured.err
 
     def test_fallback_when_no_reset_time(self, tmp_path):
         from app.quota_handler import handle_quota_exhaustion

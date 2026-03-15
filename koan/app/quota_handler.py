@@ -237,11 +237,18 @@ def handle_quota_exhaustion(
     """
     # Read output files (stderr first, then stdout — matches original bash order)
     parts = []
+    read_failures = 0
     for filepath in [stderr_file, stdout_file]:
         try:
             parts.append(Path(filepath).read_text())
         except OSError:
-            pass
+            read_failures += 1
+    if read_failures == 2:
+        print(
+            f"[quota_handler] WARNING: could not read stdout ({stdout_file}) "
+            f"or stderr ({stderr_file}) — quota check unreliable",
+            file=sys.stderr,
+        )
     combined = "\n".join(parts)
 
     if not detect_quota_exhaustion(combined):
