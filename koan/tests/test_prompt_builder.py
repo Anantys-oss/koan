@@ -18,6 +18,7 @@ from app.prompt_builder import (
     _get_tdd_section,
     _get_verification_gate_section,
     _get_verbose_section,
+    _get_security_flagging_section,
 )
 
 
@@ -270,13 +271,15 @@ class TestBuildAgentPrompt:
         assert "Git Merge" in result
 
     @patch("app.prompt_builder._get_verbose_section", return_value="")
+    @patch("app.prompt_builder._get_security_flagging_section", return_value="")
     @patch("app.prompt_builder._get_submit_pr_section", return_value="")
     @patch("app.prompt_builder._get_deep_research", return_value="")
     @patch("app.prompt_builder._get_merge_policy", return_value="\nMerge\n")
     @patch("app.prompt_builder._get_branch_prefix", return_value="koan/")
     @patch("app.prompts.load_prompt")
     def test_autonomous_mode_instruction(
-        self, mock_load, mock_prefix, mock_merge, mock_deep, mock_submit_pr, mock_verbose,
+        self, mock_load, mock_prefix, mock_merge, mock_deep, mock_submit_pr,
+        mock_security, mock_verbose,
         prompt_env,
     ):
         mock_load.return_value = "Template"
@@ -1318,3 +1321,88 @@ class TestGetMissionTypeSection:
             available_pct=50,
         )
         mock_type_section.assert_called_once_with("")
+
+
+# --- Tests for _get_security_flagging_section ---
+
+
+class TestGetSecurityFlaggingSection:
+    """Tests for security vulnerability flagging prompt section."""
+
+    def test_returns_security_flagging_content(self):
+        """Section should load the security-flagging prompt."""
+        result = _get_security_flagging_section()
+        assert "SECURITY" in result
+        assert "vulnerability" in result.lower()
+
+    def test_contains_flagging_format(self):
+        """Section should include the flagging format instruction."""
+        result = _get_security_flagging_section()
+        assert "flag" in result.lower()
+
+    def test_mentions_example_vulnerability_classes(self):
+        """Section should mention key vulnerability categories."""
+        result = _get_security_flagging_section()
+        assert "SQL injection" in result
+        assert "command injection" in result
+        assert "path traversal" in result
+
+    @patch("app.prompt_builder._get_verbose_section", return_value="")
+    @patch("app.prompt_builder._get_submit_pr_section", return_value="")
+    @patch("app.prompt_builder._get_merge_policy", return_value="\nMerge\n")
+    @patch("app.prompt_builder._get_branch_prefix", return_value="koan/")
+    @patch("app.prompts.load_prompt")
+    def test_build_agent_prompt_includes_security_flagging(
+        self, mock_load, mock_prefix, mock_merge, mock_submit_pr, mock_verbose,
+        prompt_env,
+    ):
+        """build_agent_prompt should always include security flagging."""
+        mock_load.side_effect = lambda name, **kw: (
+            "Base prompt" if name == "agent" else
+            "# Security Vulnerability Flagging" if name == "security-flagging" else
+            ""
+        )
+
+        result = build_agent_prompt(
+            instance=prompt_env["instance"],
+            project_name="testproj",
+            project_path=prompt_env["project_path"],
+            run_num=1,
+            max_runs=20,
+            autonomous_mode="implement",
+            focus_area="Test area",
+            available_pct=50,
+            mission_title="Fix login bug",
+        )
+
+        assert "Security Vulnerability Flagging" in result
+
+    @patch("app.prompt_builder._get_verbose_section", return_value="")
+    @patch("app.prompt_builder._get_submit_pr_section", return_value="")
+    @patch("app.prompt_builder._get_merge_policy", return_value="\nMerge\n")
+    @patch("app.prompt_builder._get_branch_prefix", return_value="koan/")
+    @patch("app.prompts.load_prompt")
+    def test_included_in_autonomous_mode_too(
+        self, mock_load, mock_prefix, mock_merge, mock_submit_pr, mock_verbose,
+        prompt_env,
+    ):
+        """Security flagging should be included even without a mission."""
+        mock_load.side_effect = lambda name, **kw: (
+            "Base prompt" if name == "agent" else
+            "# Security Vulnerability Flagging" if name == "security-flagging" else
+            ""
+        )
+
+        result = build_agent_prompt(
+            instance=prompt_env["instance"],
+            project_name="testproj",
+            project_path=prompt_env["project_path"],
+            run_num=1,
+            max_runs=20,
+            autonomous_mode="deep",
+            focus_area="Test area",
+            available_pct=80,
+            mission_title="",
+        )
+
+        assert "Security Vulnerability Flagging" in result

@@ -236,6 +236,17 @@ def _get_verbose_section(instance: str) -> str:
     return load_prompt("verbose-mode", INSTANCE=instance)
 
 
+def _get_security_flagging_section() -> str:
+    """Return the security vulnerability flagging section.
+
+    Always included — instructs the agent to prominently flag potential
+    security vulnerabilities discovered during any type of work.
+    """
+    from app.prompts import load_prompt
+
+    return load_prompt("security-flagging")
+
+
 def build_agent_prompt(
     instance: str,
     project_name: str,
@@ -313,6 +324,9 @@ def build_agent_prompt(
 
     # Append merge policy
     prompt += _get_merge_policy(project_name)
+
+    # Append security vulnerability flagging (always included)
+    prompt += _get_security_flagging_section()
 
     # Append submit-pull-request section
     prompt += _get_submit_pr_section(project_path)
