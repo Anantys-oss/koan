@@ -2388,7 +2388,7 @@ class TestScopedDispatch:
         """Custom skill with command name ≠ skill name must dispatch correctly.
 
         When instance/skills/wp/refactor/SKILL.md has name: refactor but
-        commands: [name: wp-refactor], /wp.wp-refactor should resolve via
+        commands: [name: wp_refactor], /wp.wp_refactor should resolve via
         command name fallback in resolve_scoped_command.
         """
         instance = tmp_path / "instance"
@@ -2397,7 +2397,7 @@ class TestScopedDispatch:
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text(
             "---\nname: refactor\ndescription: WP refactoring\n"
-            "commands:\n  - name: wp-refactor\n    description: Refactor WP\n"
+            "commands:\n  - name: wp_refactor\n    description: Refactor WP\n"
             "handler: handler.py\n---\n"
         )
         (skill_dir / "handler.py").write_text(
@@ -2407,9 +2407,9 @@ class TestScopedDispatch:
              patch("app.command_handlers.INSTANCE_DIR", instance), \
              patch("app.bridge_state.INSTANCE_DIR", instance):
             _reset_registry()
-            handle_command("/wp.wp-refactor")
+            handle_command("/wp.wp_refactor")
         mock_send.assert_called()
-        assert "Refactored via wp-refactor" in mock_send.call_args[0][0]
+        assert "Refactored via wp_refactor" in mock_send.call_args[0][0]
         _reset_registry()
 
     @patch("app.command_handlers.send_telegram")
@@ -2421,7 +2421,7 @@ class TestScopedDispatch:
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text(
             "---\nname: deploy\ndescription: Deploy tool\n"
-            "commands:\n  - name: wp-deploy\n    description: Deploy WP\n"
+            "commands:\n  - name: wp_deploy\n    description: Deploy WP\n"
             "handler: handler.py\n---\n"
         )
         (skill_dir / "handler.py").write_text(
@@ -2432,9 +2432,9 @@ class TestScopedDispatch:
              patch("app.bridge_state.INSTANCE_DIR", instance):
             _reset_registry()
             # Plain command name (no scope prefix) should work via _command_map
-            handle_command("/wp-deploy")
+            handle_command("/wp_deploy")
         mock_send.assert_called()
-        assert "Deployed via wp-deploy" in mock_send.call_args[0][0]
+        assert "Deployed via wp_deploy" in mock_send.call_args[0][0]
         _reset_registry()
 
 
