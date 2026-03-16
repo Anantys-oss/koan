@@ -3,7 +3,12 @@
 import pytest
 from unittest.mock import patch, call
 
-from app.git_prep import get_upstream_remote, prepare_project_branch, PrepResult
+from app.git_prep import (
+    get_upstream_remote,
+    prepare_project_branch,
+    PrepResult,
+    _detect_remote_default_branch,
+)
 
 
 # --- get_upstream_remote ---
@@ -66,6 +71,67 @@ class TestGetUpstreamRemote:
              patch("app.git_prep.run_git", return_value=(1, "", "no remote")):
             result = get_upstream_remote("/path/to/proj", "myproj", "/koan")
         assert result == "origin"
+
+
+# --- _detect_remote_default_branch ---
+
+
+class TestDetectRemoteDefaultBranch:
+    """Tests for remote default branch detection."""
+
+    def test_local_symbolic_ref_master(self):
+        """Detects 'master' from local symbolic ref."""
+        with patch("app.git_prep.run_git") as mock_git:
+            mock_git.return_value = (0, "refs/remotes/origin/master", "")
+            result = _detect_remote_default_branch("origin", "/proj")
+        assert result == "master"
+
+    def test_local_symbolic_ref_main(self):
+        """Detects 'main' from local symbolic ref."""
+        with patch("app.git_prep.run_git") as mock_git:
+            mock_git.return_value = (0, "refs/remotes/upstream/main", "")
+            result = _detect_remote_default_branch("upstream", "/proj")
+        assert result == "main"
+
+    def test_local_ref_fails_falls_to_ls_remote(self):
+        """When symbolic-ref fails, falls back to ls-remote."""
+        with patch("app.git_prep.run_git") as mock_git:
+            mock_git.side_effect = [
+                (1, "", "not a symbolic ref"),  # symbolic-ref fails
+                (0, "ref: refs/heads/master\tHEAD\nabc123\tHEAD", ""),  # ls-remote
+            ]
+            result = _detect_remote_default_branch("origin", "/proj")
+        assert result == "master"
+
+    def test_both_methods_fail_returns_main(self):
+        """When both methods fail, returns 'main' as fallback."""
+        with patch("app.git_prep.run_git") as mock_git:
+            mock_git.side_effect = [
+                (1, "", "error"),  # symbolic-ref fails
+                (1, "", "error"),  # ls-remote fails
+            ]
+            result = _detect_remote_default_branch("origin", "/proj")
+        assert result == "main"
+
+    def test_empty_symbolic_ref_falls_to_ls_remote(self):
+        """Empty symbolic-ref output falls back to ls-remote."""
+        with patch("app.git_prep.run_git") as mock_git:
+            mock_git.side_effect = [
+                (0, "", ""),  # symbolic-ref returns empty
+                (0, "ref: refs/heads/develop\tHEAD\nabc\tHEAD", ""),
+            ]
+            result = _detect_remote_default_branch("origin", "/proj")
+        assert result == "develop"
+
+    def test_ls_remote_no_ref_line(self):
+        """ls-remote output with no ref: line falls back to 'main'."""
+        with patch("app.git_prep.run_git") as mock_git:
+            mock_git.side_effect = [
+                (1, "", "error"),
+                (0, "abc123\tHEAD", ""),  # no ref: line
+            ]
+            result = _detect_remote_default_branch("origin", "/proj")
+        assert result == "main"
 
 
 # --- PrepResult ---
@@ -166,17 +232,78 @@ class TestPrepareProjectBranch:
         assert result.success is True
         assert result.stashed is True
 
-    def test_fetch_failure(self):
-        """Fetch failure returns success=False."""
+    def test_fetch_failure_with_explicit_config(self):
+        """Fetch failure with explicit base_branch config returns success=False."""
         side_effect = _make_run_git_side_effect({
             "fetch": (1, "", "Could not resolve host"),
         })
+        stack, _ = self._patch_all(
+            run_git_side_effect=side_effect,
+            config={"projects": {"myproj": {"git_auto_merge": {"base_branch": "main"}}}},
+            auto_merge={"base_branch": "main"},
+        )
+        with stack:
+            result = prepare_project_branch("/proj", "myproj", "/koan")
+
+        assert result.success is False
+        assert "fetch failed" in result.error
+
+    def test_fetch_failure_detects_master_branch(self):
+        """Fetch 'main' fails, detects 'master' as remote default, retries successfully."""
+        calls = []
+
+        def side_effect(*args, **kwargs):
+            cmd = args[0] if args else ""
+            calls.append(args)
+            if cmd == "rev-parse":
+                return (0, "feature", "")
+            if cmd == "fetch":
+                # First fetch (main) fails, second (master) succeeds
+                fetch_calls = [c for c in calls if c[0] == "fetch"]
+                if len(fetch_calls) == 1:
+                    return (1, "", "fatal: couldn't find remote ref main")
+                return (0, "", "")
+            if cmd == "symbolic-ref":
+                return (0, "refs/remotes/origin/master", "")
+            if cmd == "status":
+                return (0, "", "")
+            if cmd == "checkout":
+                return (0, "", "")
+            if cmd == "merge":
+                return (0, "", "")
+            return (1, "", "no remote")
+
+        stack, _ = self._patch_all(run_git_side_effect=side_effect)
+        with stack:
+            result = prepare_project_branch("/proj", "myproj", "/koan")
+
+        assert result.success is True
+        assert result.base_branch == "master"
+
+    def test_fetch_failure_detection_same_branch_no_retry(self):
+        """When detection returns same branch ('main'), no retry — fails immediately."""
+        calls = []
+
+        def side_effect(*args, **kwargs):
+            cmd = args[0] if args else ""
+            calls.append(args)
+            if cmd == "rev-parse":
+                return (0, "feature", "")
+            if cmd == "fetch":
+                return (1, "", "Could not resolve host")
+            if cmd == "symbolic-ref":
+                return (0, "refs/remotes/origin/main", "")
+            return (1, "", "")
+
         stack, _ = self._patch_all(run_git_side_effect=side_effect)
         with stack:
             result = prepare_project_branch("/proj", "myproj", "/koan")
 
         assert result.success is False
         assert "fetch failed" in result.error
+        # Only one fetch call — no retry since detected == configured
+        fetch_calls = [c for c in calls if c[0] == "fetch"]
+        assert len(fetch_calls) == 1
 
     def test_branch_doesnt_exist_locally(self):
         """Base branch doesn't exist locally — creates from remote tracking."""

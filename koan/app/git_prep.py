@@ -23,6 +23,41 @@ from app.projects_config import (
 logger = logging.getLogger(__name__)
 
 
+def _detect_remote_default_branch(remote: str, project_path: str) -> str:
+    """Detect the default branch for a remote.
+
+    Resolution order:
+    1. Local symbolic ref (refs/remotes/<remote>/HEAD) — fast, no network
+    2. git ls-remote --symref — requires network but always accurate
+    3. Falls back to "main"
+    """
+    # 1. Try local symbolic ref (set after clone or fetch with --set-head)
+    rc, stdout, _ = run_git(
+        "symbolic-ref", f"refs/remotes/{remote}/HEAD", cwd=project_path
+    )
+    if rc == 0 and stdout:
+        # Output: refs/remotes/origin/master → extract "master"
+        branch = stdout.strip().rsplit("/", 1)[-1]
+        if branch:
+            return branch
+
+    # 2. Query remote (network call)
+    rc, stdout, _ = run_git(
+        "ls-remote", "--symref", remote, "HEAD",
+        cwd=project_path, timeout=15,
+    )
+    if rc == 0 and stdout:
+        for line in stdout.splitlines():
+            if line.startswith("ref:") and "HEAD" in line:
+                # Format: ref: refs/heads/master\tHEAD
+                ref_part = line.split()[1]
+                branch = ref_part.rsplit("/", 1)[-1]
+                if branch:
+                    return branch
+
+    return "main"
+
+
 @dataclass
 class PrepResult:
     """Result of pre-mission git preparation."""
@@ -85,11 +120,21 @@ def prepare_project_branch(
     remote = get_upstream_remote(project_path, project_name, koan_root)
     result.remote_used = remote
 
+    config_explicit = False
     try:
         config = load_projects_config(koan_root)
         if config:
             am = get_project_auto_merge(config, project_name)
             result.base_branch = am.get("base_branch", "main")
+            # Check if the project explicitly configures base_branch
+            # (vs inheriting the "main" default from get_project_auto_merge)
+            projects = config.get("projects", {}) or {}
+            proj_cfg = projects.get(project_name, {}) or {}
+            proj_am = proj_cfg.get("git_auto_merge", {}) or {}
+            defaults = config.get("defaults", {}) or {}
+            defaults_am = defaults.get("git_auto_merge", {}) or {}
+            if proj_am.get("base_branch") or defaults_am.get("base_branch"):
+                config_explicit = True
     except Exception as e:
         logger.warning("config load error for base_branch: %s", e)
 
@@ -99,6 +144,19 @@ def prepare_project_branch(
     rc, _, stderr = run_git(
         "fetch", remote, base_branch, cwd=project_path, timeout=30
     )
+    if rc != 0 and not config_explicit:
+        # Base branch was not explicitly configured — detect remote default
+        detected = _detect_remote_default_branch(remote, project_path)
+        if detected != base_branch:
+            logger.info(
+                "Default branch for %s/%s is '%s', not '%s'",
+                remote, project_name, detected, base_branch,
+            )
+            base_branch = detected
+            result.base_branch = detected
+            rc, _, stderr = run_git(
+                "fetch", remote, base_branch, cwd=project_path, timeout=30
+            )
     if rc != 0:
         result.success = False
         result.error = f"fetch failed: {stderr}"
