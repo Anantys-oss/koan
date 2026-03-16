@@ -2197,6 +2197,25 @@ class TestPipelineTracker:
         tracker.record("b", "fail", "boom")
         assert tracker.has_failures()
 
+    def test_has_issues(self):
+        from app.mission_runner import _PipelineTracker
+
+        tracker = _PipelineTracker()
+        tracker.record("a", "success")
+        assert not tracker.has_issues()
+
+        tracker2 = _PipelineTracker()
+        tracker2.record("a", "timeout", "deadline")
+        assert tracker2.has_issues()
+
+        tracker3 = _PipelineTracker()
+        tracker3.record("a", "skipped", "non-zero exit code")
+        assert tracker3.has_issues()
+
+        tracker4 = _PipelineTracker()
+        tracker4.record("a", "fail", "boom")
+        assert tracker4.has_issues()
+
     def test_summary_lines_format(self):
         from app.mission_runner import _PipelineTracker
 
@@ -2418,12 +2437,12 @@ class TestPipelineStepsInResult:
 class TestNotifyPipelineFailures:
     """Test _notify_pipeline_failures sends Telegram warnings on step failures."""
 
-    def test_no_notification_when_no_failures(self):
+    def test_no_notification_when_all_success(self):
         from app.mission_runner import _notify_pipeline_failures, _PipelineTracker
 
         tracker = _PipelineTracker()
         tracker.record("usage_update", "success")
-        tracker.record("reflection", "skipped", "not significant")
+        tracker.record("reflection", "success", "2.1s")
 
         with patch("app.notify.send_telegram") as mock_send:
             _notify_pipeline_failures(tracker, "test mission")
@@ -2443,8 +2462,8 @@ class TestNotifyPipelineFailures:
             msg = mock_send.call_args[0][0]
             assert "⚠️" in msg
             assert "audit security" in msg
-            assert "reflection (timeout after 60s)" in msg
-            assert "hooks (failed: my_hook)" in msg
+            assert "✗ reflection (timeout after 60s)" in msg
+            assert "✗ hooks (failed: my_hook)" in msg
 
     def test_no_mission_title_omits_prefix(self):
         from app.mission_runner import _notify_pipeline_failures, _PipelineTracker
@@ -2457,6 +2476,7 @@ class TestNotifyPipelineFailures:
             mock_send.assert_called_once()
             msg = mock_send.call_args[0][0]
             assert msg.startswith("⚠️ Pipeline issues:")
+            assert "✗ verification (verify crash)" in msg
 
     def test_notification_failure_does_not_raise(self):
         from app.mission_runner import _notify_pipeline_failures, _PipelineTracker
@@ -2468,7 +2488,7 @@ class TestNotifyPipelineFailures:
             # Should not raise — fire-and-forget
             _notify_pipeline_failures(tracker, "test")
 
-    def test_ignores_timeout_and_skipped_statuses(self):
+    def test_reports_timeout_and_skipped_statuses(self):
         from app.mission_runner import _notify_pipeline_failures, _PipelineTracker
 
         tracker = _PipelineTracker()
@@ -2477,7 +2497,10 @@ class TestNotifyPipelineFailures:
 
         with patch("app.notify.send_telegram") as mock_send:
             _notify_pipeline_failures(tracker, "test")
-            mock_send.assert_not_called()
+            mock_send.assert_called_once()
+            msg = mock_send.call_args[0][0]
+            assert "⏱ reflection (pipeline deadline exceeded)" in msg
+            assert "– hooks (non-zero exit code)" in msg
 
     @patch("app.mission_runner._write_pipeline_summary")
     @patch("app.mission_runner._record_session_outcome")

@@ -86,6 +86,13 @@ class _PipelineTracker:
     def has_failures(self) -> bool:
         return any(s["status"] == "fail" for s in self.steps.values())
 
+    def has_issues(self) -> bool:
+        """Return True if any step failed, timed out, or was skipped."""
+        return any(
+            s["status"] in ("fail", "timeout", "skipped")
+            for s in self.steps.values()
+        )
+
     def to_dict(self) -> Dict[str, dict]:
         return dict(self.steps)
 
@@ -572,26 +579,31 @@ def _notify_pipeline_failures(
     tracker: _PipelineTracker,
     mission_title: str = "",
 ) -> None:
-    """Send a Telegram warning if the post-mission pipeline had failures.
+    """Send a Telegram warning if the post-mission pipeline had issues.
 
-    Only notifies on 'fail' status — timeouts and skipped steps are expected
-    operational states that don't need a push notification.
+    Reports failed, timed-out, and skipped steps so users can see when
+    steps like reflection or auto_merge silently fail to complete.
     """
-    if not tracker.has_failures():
+    if not tracker.has_issues():
         return
     try:
         from app.notify import send_telegram
 
-        failed = [
-            f"{name} ({info['detail']})" if info["detail"] else name
-            for name, info in tracker.steps.items()
-            if info["status"] == "fail"
-        ]
-        if not failed:
+        _STATUS_ICONS = {"fail": "✗", "timeout": "⏱", "skipped": "–"}
+        issues = []
+        for name, info in tracker.steps.items():
+            icon = _STATUS_ICONS.get(info["status"])
+            if icon is None:
+                continue
+            label = f"{icon} {name}"
+            if info["detail"]:
+                label += f" ({info['detail']})"
+            issues.append(label)
+        if not issues:
             return
 
         prefix = f"[{mission_title}] " if mission_title else ""
-        msg = f"⚠️ {prefix}Pipeline issues: {', '.join(failed)}"
+        msg = f"⚠️ {prefix}Pipeline issues: {', '.join(issues)}"
         send_telegram(msg)
     except Exception as e:
         print(f"[mission_runner] Pipeline failure notification failed: {e}", file=sys.stderr)
