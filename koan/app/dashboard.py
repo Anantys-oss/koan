@@ -15,10 +15,12 @@ Usage:
     make dashboard
 """
 
+import collections
 import contextlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -1552,6 +1554,135 @@ def api_rules_delete(rule_id):
     if not removed:
         return jsonify({"error": "Rule not found"}), 404
     return jsonify({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# Logs viewer
+# ---------------------------------------------------------------------------
+
+_LOG_MAX_LINE_LENGTH = 2000
+_LOG_DEFAULT_LIMIT = 200
+_LOG_MAX_LIMIT = 2000
+
+
+def _tail_log(log_path: Path, limit: int) -> list[dict]:
+    """Return up to *limit* lines from *log_path* as dicts with text and n.
+
+    Uses a deque to avoid loading the full file into memory.
+    Returns [] if the file does not exist or cannot be read.
+    """
+    if not log_path.exists():
+        return []
+    buf: collections.deque = collections.deque(maxlen=limit)
+    try:
+        with open(log_path, "r", encoding="utf-8", errors="replace") as fh:
+            for n, line in enumerate(fh, start=1):
+                buf.append((n, line.rstrip("\n")))
+    except OSError:
+        pass
+    return [
+        {"n": n, "text": text[:_LOG_MAX_LINE_LENGTH]}
+        for n, text in buf
+    ]
+
+
+@app.route("/api/logs")
+def api_logs():
+    """Return recent log lines from run.log and/or awake.log.
+
+    Query params:
+      source  — "run", "awake", or "all" (default "all")
+      limit   — max lines to return per source (default 200, max 2000)
+      q       — optional substring filter (case-insensitive)
+    """
+    source = request.args.get("source", "all").lower()
+    try:
+        limit = max(1, min(int(request.args.get("limit", _LOG_DEFAULT_LIMIT)), _LOG_MAX_LIMIT))
+    except (ValueError, TypeError):
+        limit = _LOG_DEFAULT_LIMIT
+    q = request.args.get("q", "").lower()
+
+    logs_dir = KOAN_ROOT / "logs"
+
+    sources_to_read: list[str]
+    if source == "run":
+        sources_to_read = ["run"]
+    elif source == "awake":
+        sources_to_read = ["awake"]
+    else:
+        sources_to_read = ["run", "awake"]
+
+    lines: list[dict] = []
+    for src in sources_to_read:
+        log_path = logs_dir / f"{src}.log"
+        for entry in _tail_log(log_path, limit):
+            entry["source"] = src
+            lines.append(entry)
+
+    # When merging multiple sources the deques are already in file order;
+    # sort combined list by (source, n) so run lines come before awake lines
+    # within each interleaved block — simple stable ordering is fine here.
+    if len(sources_to_read) > 1:
+        lines.sort(key=lambda e: (e["source"], e["n"]))
+
+    if q:
+        lines = [e for e in lines if q in e["text"].lower()]
+
+    # Apply final limit across merged result
+    lines = lines[-limit:]
+
+    return jsonify({"lines": lines, "total": len(lines)})
+
+
+@app.route("/logs")
+def logs_page():
+    """Log viewer page."""
+    return render_template("logs.html")
+
+
+# ---------------------------------------------------------------------------
+# Health check
+# ---------------------------------------------------------------------------
+
+_DISK_WARN_PCT = 85
+_DISK_ERROR_PCT = 95
+
+
+def _check_process_alive(koan_root: Path, process_name: str) -> dict:
+    """Check whether a Kōan process is alive via its PID file."""
+    from app.signals import pid_file
+    pid_path = koan_root / pid_file(process_name)
+    if not pid_path.exists():
+        return {"alive": False, "status": "warn"}
+    try:
+        pid = int(pid_path.read_text().strip())
+        os.kill(pid, 0)  # signal 0: existence check only
+        return {"alive": True, "status": "ok"}
+    except (ValueError, OSError, ProcessLookupError, PermissionError):
+        return {"alive": False, "status": "warn"}
+
+
+@app.route("/api/health")
+def api_health():
+    """Aggregate health check: disk usage + process liveness."""
+    # Disk
+    try:
+        usage = shutil.disk_usage(str(KOAN_ROOT))
+        used_pct = int(usage.used * 100 / usage.total) if usage.total else 0
+        if used_pct >= _DISK_ERROR_PCT:
+            disk_status = "error"
+        elif used_pct >= _DISK_WARN_PCT:
+            disk_status = "warn"
+        else:
+            disk_status = "ok"
+        disk = {"used_pct": used_pct, "status": disk_status}
+    except OSError:
+        disk = {"used_pct": None, "status": "error"}
+
+    run_health = _check_process_alive(KOAN_ROOT, "run")
+    awake_health = _check_process_alive(KOAN_ROOT, "awake")
+
+    return jsonify({"disk": disk, "run": run_health, "awake": awake_health})
 
 
 # ---------------------------------------------------------------------------
