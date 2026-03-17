@@ -814,20 +814,27 @@ class TestRunRebase:
             assert success is True
             assert "Comment failed" in summary
 
+    @patch("app.rebase_pr._safe_checkout")
+    @patch("app.rebase_pr._checkout_pr_branch")
+    @patch("app.rebase_pr._rebase_with_conflict_resolution")
     @patch("app.rebase_pr.fetch_pr_context")
-    def test_aborts_on_pending_reviews(self, mock_ctx):
-        """Rebase should abort when pending (unsubmitted) reviews are detected."""
+    def test_warns_on_pending_reviews(self, mock_ctx, mock_rebase, mock_checkout, mock_safe):
+        """Rebase should warn but proceed when pending reviews are detected."""
         mock_ctx.return_value = {
             "title": "T", "body": "", "branch": "feat",
             "base": "main", "state": "", "author": "", "url": "",
             "diff": "", "review_comments": "", "reviews": "", "issue_comments": "",
             "has_pending_reviews": True,
         }
+        mock_checkout.return_value = "origin"
+        mock_rebase.return_value = None  # rebase fails (not the point of this test)
         notify = MagicMock()
         success, summary = run_rebase("o", "r", "1", "/p", notify_fn=notify)
-        assert success is False
-        assert "pending" in summary.lower()
-        assert "submit" in summary.lower()
+        # Should have warned via notify_fn about pending reviews
+        pending_calls = [c for c in notify.call_args_list if "pending" in str(c).lower()]
+        assert len(pending_calls) >= 1
+        # Should NOT have aborted — it proceeded to the rebase step
+        mock_checkout.assert_called_once()
 
     @patch("app.rebase_pr._safe_checkout")
     @patch("app.rebase_pr.run_gh")
