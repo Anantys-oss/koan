@@ -1435,22 +1435,31 @@ class TestGetSecurityFlaggingSection:
 class TestBuildAgentPromptParts:
     """Tests for the split prompt builder (system + user prompt)."""
 
-    @patch("app.prompt_builder._get_security_flagging_section", return_value="")
-    @patch("app.prompt_builder._get_verbose_section", return_value="")
-    @patch("app.prompt_builder._get_focus_section", return_value="")
-    @patch("app.prompt_builder._get_verification_gate_section", return_value="")
-    @patch("app.prompt_builder._get_tdd_section", return_value="")
-    @patch("app.prompt_builder._get_submit_pr_section", return_value="\n# Submit PR\nGuidelines")
-    @patch("app.prompt_builder._get_merge_policy", return_value="\n# Merge Policy\nDisabled")
-    @patch("app.prompt_builder._get_branch_prefix", return_value="koan/")
-    @patch("app.prompts.load_prompt")
-    def test_returns_tuple(
-        self, mock_load, mock_prefix, mock_merge, mock_submit,
-        mock_tdd, mock_verify, mock_focus, mock_verbose, mock_security, prompt_env,
-    ):
-        """build_agent_prompt_parts returns a (system_prompt, user_prompt) tuple."""
-        mock_load.return_value = "AGENT_TEMPLATE"
-        sys_prompt, user_prompt = build_agent_prompt_parts(
+    @pytest.fixture(autouse=True)
+    def _patch_prompt_helpers(self):
+        """Patch all prompt helper functions shared across every test."""
+        targets = [
+            ("app.prompts.load_prompt", "AGENT_TEMPLATE"),
+            ("app.prompt_builder._get_branch_prefix", "koan/"),
+            ("app.prompt_builder._get_merge_policy", "\n# Merge Policy\nDisabled"),
+            ("app.prompt_builder._get_submit_pr_section", "\n# Submit PR\nGuidelines"),
+            ("app.prompt_builder._get_tdd_section", ""),
+            ("app.prompt_builder._get_verification_gate_section", ""),
+            ("app.prompt_builder._get_focus_section", ""),
+            ("app.prompt_builder._get_verbose_section", ""),
+            ("app.prompt_builder._get_security_flagging_section", ""),
+        ]
+        import contextlib
+        with contextlib.ExitStack() as stack:
+            self.mocks = {}
+            for target, rv in targets:
+                m = stack.enter_context(patch(target, return_value=rv))
+                self.mocks[target] = m
+            yield
+
+    def _build(self, prompt_env, **overrides):
+        """Call build_agent_prompt_parts with common defaults."""
+        defaults = dict(
             instance=prompt_env["instance"],
             project_name="testproj",
             project_path=prompt_env["project_path"],
@@ -1460,146 +1469,45 @@ class TestBuildAgentPromptParts:
             focus_area="Test area",
             available_pct=50,
         )
+        defaults.update(overrides)
+        return build_agent_prompt_parts(**defaults)
+
+    def test_returns_tuple(self, prompt_env):
+        """build_agent_prompt_parts returns a (system_prompt, user_prompt) tuple."""
+        sys_prompt, user_prompt = self._build(prompt_env)
         assert isinstance(sys_prompt, str)
         assert isinstance(user_prompt, str)
 
-    @patch("app.prompt_builder._get_security_flagging_section", return_value="")
-    @patch("app.prompt_builder._get_verbose_section", return_value="")
-    @patch("app.prompt_builder._get_focus_section", return_value="")
-    @patch("app.prompt_builder._get_verification_gate_section", return_value="")
-    @patch("app.prompt_builder._get_tdd_section", return_value="")
-    @patch("app.prompt_builder._get_submit_pr_section", return_value="\n# Submit PR\nGuidelines")
-    @patch("app.prompt_builder._get_merge_policy", return_value="\n# Merge Policy\nDisabled")
-    @patch("app.prompt_builder._get_branch_prefix", return_value="koan/")
-    @patch("app.prompts.load_prompt")
-    def test_system_prompt_contains_merge_policy(
-        self, mock_load, mock_prefix, mock_merge, mock_submit,
-        mock_tdd, mock_verify, mock_focus, mock_verbose, mock_security, prompt_env,
-    ):
+    def test_system_prompt_contains_merge_policy(self, prompt_env):
         """System prompt contains merge policy and PR guidelines."""
-        mock_load.return_value = "AGENT_TEMPLATE"
-        sys_prompt, _ = build_agent_prompt_parts(
-            instance=prompt_env["instance"],
-            project_name="testproj",
-            project_path=prompt_env["project_path"],
-            run_num=1,
-            max_runs=20,
-            autonomous_mode="implement",
-            focus_area="Test area",
-            available_pct=50,
-        )
+        sys_prompt, _ = self._build(prompt_env)
         assert "Merge Policy" in sys_prompt
         assert "Submit PR" in sys_prompt
 
-    @patch("app.prompt_builder._get_security_flagging_section", return_value="")
-    @patch("app.prompt_builder._get_verbose_section", return_value="")
-    @patch("app.prompt_builder._get_focus_section", return_value="")
-    @patch("app.prompt_builder._get_verification_gate_section", return_value="")
-    @patch("app.prompt_builder._get_tdd_section", return_value="")
-    @patch("app.prompt_builder._get_submit_pr_section", return_value="\n# Submit PR\nGuidelines")
-    @patch("app.prompt_builder._get_merge_policy", return_value="\n# Merge Policy\nDisabled")
-    @patch("app.prompt_builder._get_branch_prefix", return_value="koan/")
-    @patch("app.prompts.load_prompt")
-    def test_user_prompt_contains_template(
-        self, mock_load, mock_prefix, mock_merge, mock_submit,
-        mock_tdd, mock_verify, mock_focus, mock_verbose, mock_security, prompt_env,
-    ):
+    def test_user_prompt_contains_template(self, prompt_env):
         """User prompt contains the agent template."""
-        mock_load.return_value = "AGENT_TEMPLATE"
-        _, user_prompt = build_agent_prompt_parts(
-            instance=prompt_env["instance"],
-            project_name="testproj",
-            project_path=prompt_env["project_path"],
-            run_num=1,
-            max_runs=20,
-            autonomous_mode="implement",
-            focus_area="Test area",
-            available_pct=50,
-        )
+        _, user_prompt = self._build(prompt_env)
         assert "AGENT_TEMPLATE" in user_prompt
 
-    @patch("app.prompt_builder._get_security_flagging_section", return_value="")
-    @patch("app.prompt_builder._get_verbose_section", return_value="")
-    @patch("app.prompt_builder._get_focus_section", return_value="")
-    @patch("app.prompt_builder._get_verification_gate_section",
-           return_value="\n# Verification Gate\nRules")
-    @patch("app.prompt_builder._get_tdd_section", return_value="")
-    @patch("app.prompt_builder._get_submit_pr_section", return_value="\n# Submit PR\n")
-    @patch("app.prompt_builder._get_merge_policy", return_value="\n# Merge Policy\n")
-    @patch("app.prompt_builder._get_branch_prefix", return_value="koan/")
-    @patch("app.prompts.load_prompt")
-    def test_verification_gate_in_system_prompt(
-        self, mock_load, mock_prefix, mock_merge, mock_submit,
-        mock_tdd, mock_verify, mock_focus, mock_verbose, mock_security, prompt_env,
-    ):
+    def test_verification_gate_in_system_prompt(self, prompt_env):
         """Verification gate goes to system prompt when present."""
-        mock_load.return_value = "TEMPLATE"
-        sys_prompt, user_prompt = build_agent_prompt_parts(
-            instance=prompt_env["instance"],
-            project_name="testproj",
-            project_path=prompt_env["project_path"],
-            run_num=1,
-            max_runs=20,
-            autonomous_mode="implement",
-            focus_area="Test area",
-            available_pct=50,
-            mission_title="Fix a bug",
+        self.mocks["app.prompt_builder._get_verification_gate_section"].return_value = (
+            "\n# Verification Gate\nRules"
         )
+        sys_prompt, user_prompt = self._build(prompt_env, mission_title="Fix a bug")
         assert "Verification Gate" in sys_prompt
         assert "Verification Gate" not in user_prompt
 
-    @patch("app.prompt_builder._get_security_flagging_section", return_value="")
-    @patch("app.prompt_builder._get_verbose_section", return_value="")
-    @patch("app.prompt_builder._get_focus_section", return_value="")
-    @patch("app.prompt_builder._get_verification_gate_section", return_value="")
-    @patch("app.prompt_builder._get_tdd_section", return_value="")
-    @patch("app.prompt_builder._get_submit_pr_section", return_value="\n# Submit PR\n")
-    @patch("app.prompt_builder._get_merge_policy", return_value="\n# Merge Policy\n")
-    @patch("app.prompt_builder._get_branch_prefix", return_value="koan/")
-    @patch("app.prompts.load_prompt")
-    def test_merge_policy_not_in_user_prompt(
-        self, mock_load, mock_prefix, mock_merge, mock_submit,
-        mock_tdd, mock_verify, mock_focus, mock_verbose, mock_security, prompt_env,
-    ):
+    def test_merge_policy_not_in_user_prompt(self, prompt_env):
         """Merge policy appears in system prompt, not user prompt."""
-        mock_load.return_value = "TEMPLATE"
-        sys_prompt, user_prompt = build_agent_prompt_parts(
-            instance=prompt_env["instance"],
-            project_name="testproj",
-            project_path=prompt_env["project_path"],
-            run_num=1,
-            max_runs=20,
-            autonomous_mode="implement",
-            focus_area="Test area",
-            available_pct=50,
-        )
+        sys_prompt, user_prompt = self._build(prompt_env)
         assert "Merge Policy" in sys_prompt
         assert "Merge Policy" not in user_prompt
 
-    @patch("app.prompt_builder._get_security_flagging_section", return_value="")
-    @patch("app.prompt_builder._get_verbose_section", return_value="")
-    @patch("app.prompt_builder._get_focus_section", return_value="")
-    @patch("app.prompt_builder._get_verification_gate_section", return_value="")
-    @patch("app.prompt_builder._get_tdd_section", return_value="")
-    @patch("app.prompt_builder._get_submit_pr_section", return_value="\n# Submit PR\n")
-    @patch("app.prompt_builder._get_merge_policy", return_value="\n# Merge Policy\n")
-    @patch("app.prompt_builder._get_branch_prefix", return_value="koan/")
-    @patch("app.prompts.load_prompt")
-    def test_spec_content_in_user_prompt(
-        self, mock_load, mock_prefix, mock_merge, mock_submit,
-        mock_tdd, mock_verify, mock_focus, mock_verbose, mock_security, prompt_env,
-    ):
+    def test_spec_content_in_user_prompt(self, prompt_env):
         """Mission spec goes to user prompt (variable content)."""
-        mock_load.return_value = "TEMPLATE"
-        _, user_prompt = build_agent_prompt_parts(
-            instance=prompt_env["instance"],
-            project_name="testproj",
-            project_path=prompt_env["project_path"],
-            run_num=1,
-            max_runs=20,
-            autonomous_mode="implement",
-            focus_area="Test area",
-            available_pct=50,
+        _, user_prompt = self._build(
+            prompt_env,
             mission_title="Fix a bug",
             spec_content="## Approach\nDo the thing",
         )
