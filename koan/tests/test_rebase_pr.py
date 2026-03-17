@@ -711,11 +711,12 @@ class TestPushWithFallback:
 # ---------------------------------------------------------------------------
 
 class TestRunRebase:
+    @patch("app.rebase_pr._run_ci_check_and_fix", return_value="")
     @patch("app.rebase_pr._safe_checkout")
     @patch("app.rebase_pr.run_gh")
     @patch("app.rebase_pr._run_git")
     @patch("app.rebase_pr.fetch_pr_context")
-    def test_successful_rebase(self, mock_ctx, mock_git, mock_gh, mock_safe):
+    def test_successful_rebase(self, mock_ctx, mock_git, mock_gh, mock_safe, mock_ci_check):
         mock_ctx.return_value = {
             "title": "Fix auth",
             "body": "Fix",
@@ -793,10 +794,11 @@ class TestRunRebase:
             assert "conflict" in summary.lower()
             mock_safe.assert_called_with("original", "/p")
 
+    @patch("app.rebase_pr._run_ci_check_and_fix", return_value="")
     @patch("app.rebase_pr._safe_checkout")
     @patch("app.rebase_pr.run_gh")
     @patch("app.rebase_pr.fetch_pr_context")
-    def test_comment_failure_non_fatal(self, mock_ctx, mock_gh, mock_safe):
+    def test_comment_failure_non_fatal(self, mock_ctx, mock_gh, mock_safe, mock_ci_check):
         mock_ctx.return_value = {
             "title": "T", "body": "", "branch": "feat",
             "base": "main", "state": "", "author": "", "url": "",
@@ -836,11 +838,12 @@ class TestRunRebase:
         # Should NOT have aborted — it proceeded to the rebase step
         mock_checkout.assert_called_once()
 
+    @patch("app.rebase_pr._run_ci_check_and_fix", return_value="")
     @patch("app.rebase_pr._safe_checkout")
     @patch("app.rebase_pr.run_gh")
     @patch("app.rebase_pr._apply_review_feedback")
     @patch("app.rebase_pr.fetch_pr_context")
-    def test_logs_comments_read(self, mock_ctx, mock_apply, mock_gh, mock_safe):
+    def test_logs_comments_read(self, mock_ctx, mock_apply, mock_gh, mock_safe, mock_ci_check):
         mock_ctx.return_value = {
             "title": "T", "body": "", "branch": "feat",
             "base": "main", "state": "", "author": "", "url": "",
@@ -861,10 +864,11 @@ class TestRunRebase:
             # Claude step should be called when feedback exists
             mock_apply.assert_called_once()
 
+    @patch("app.rebase_pr._run_ci_check_and_fix", return_value="")
     @patch("app.rebase_pr._safe_checkout")
     @patch("app.rebase_pr.run_gh")
     @patch("app.rebase_pr.fetch_pr_context")
-    def test_restores_branch_after_success(self, mock_ctx, mock_gh, mock_safe):
+    def test_restores_branch_after_success(self, mock_ctx, mock_gh, mock_safe, mock_ci_check):
         mock_ctx.return_value = {
             "title": "T", "body": "", "branch": "feat",
             "base": "main", "state": "", "author": "", "url": "",
@@ -890,10 +894,11 @@ class TestRunRebase:
             success, _ = run_rebase("o", "r", "1", "/p")
             mock_tg.assert_called()
 
+    @patch("app.rebase_pr._run_ci_check_and_fix", return_value="")
     @patch("app.rebase_pr._safe_checkout")
     @patch("app.rebase_pr.run_gh")
     @patch("app.rebase_pr.fetch_pr_context")
-    def test_passes_preferred_remote_to_rebase(self, mock_ctx, mock_gh, mock_safe):
+    def test_passes_preferred_remote_to_rebase(self, mock_ctx, mock_gh, mock_safe, mock_ci_check):
         """run_rebase must determine the correct base remote and pass it through."""
         mock_ctx.return_value = {
             "title": "T", "body": "", "branch": "koan/fix",
@@ -1024,11 +1029,12 @@ class TestApplyReviewFeedback:
 # ---------------------------------------------------------------------------
 
 class TestRunRebaseClaude:
+    @patch("app.rebase_pr._run_ci_check_and_fix", return_value="")
     @patch("app.rebase_pr._safe_checkout")
     @patch("app.rebase_pr.run_gh")
     @patch("app.rebase_pr._apply_review_feedback")
     @patch("app.rebase_pr.fetch_pr_context")
-    def test_claude_step_called_with_feedback(self, mock_ctx, mock_apply, mock_gh, mock_safe):
+    def test_claude_step_called_with_feedback(self, mock_ctx, mock_apply, mock_gh, mock_safe, mock_ci_check):
         mock_ctx.return_value = {
             "title": "Fix auth", "body": "", "branch": "feat",
             "base": "main", "state": "", "author": "", "url": "",
@@ -1047,11 +1053,12 @@ class TestRunRebaseClaude:
             assert success is True
             mock_apply.assert_called_once()
 
+    @patch("app.rebase_pr._run_ci_check_and_fix", return_value="")
     @patch("app.rebase_pr._safe_checkout")
     @patch("app.rebase_pr.run_gh")
     @patch("app.rebase_pr._apply_review_feedback")
     @patch("app.rebase_pr.fetch_pr_context")
-    def test_claude_step_skipped_without_feedback(self, mock_ctx, mock_apply, mock_gh, mock_safe):
+    def test_claude_step_skipped_without_feedback(self, mock_ctx, mock_apply, mock_gh, mock_safe, mock_ci_check):
         mock_ctx.return_value = {
             "title": "T", "body": "", "branch": "feat",
             "base": "main", "state": "", "author": "", "url": "",
@@ -1069,11 +1076,12 @@ class TestRunRebaseClaude:
             assert success is True
             mock_apply.assert_not_called()
 
+    @patch("app.rebase_pr._run_ci_check_and_fix", return_value="")
     @patch("app.rebase_pr._safe_checkout")
     @patch("app.rebase_pr.run_gh")
     @patch("app.rebase_pr._apply_review_feedback")
     @patch("app.rebase_pr.fetch_pr_context")
-    def test_skill_dir_passed_to_apply(self, mock_ctx, mock_apply, mock_gh, mock_safe):
+    def test_skill_dir_passed_to_apply(self, mock_ctx, mock_apply, mock_gh, mock_safe, mock_ci_check):
         mock_ctx.return_value = {
             "title": "T", "body": "", "branch": "feat",
             "base": "main", "state": "", "author": "", "url": "",
@@ -1092,12 +1100,13 @@ class TestRunRebaseClaude:
             call_kwargs = mock_apply.call_args
             assert call_kwargs[1].get("skill_dir") == REBASE_SKILL_DIR
 
+    @patch("app.rebase_pr._run_ci_check_and_fix", return_value="")
     @patch("app.rebase_pr._safe_checkout")
     @patch("app.rebase_pr.run_gh")
     @patch("app.rebase_pr._apply_review_feedback")
     @patch("app.rebase_pr.fetch_pr_context")
     def test_claude_branch_switch_restored_after_feedback(
-        self, mock_ctx, mock_apply, mock_gh, mock_safe
+        self, mock_ctx, mock_apply, mock_gh, mock_safe, mock_ci_check
     ):
         """If Claude switches branches during feedback, we restore the PR branch."""
         mock_ctx.return_value = {
@@ -1126,12 +1135,13 @@ class TestRunRebaseClaude:
             checkout_calls = [c[0][0] for c in mock_safe.call_args_list]
             assert "feat" in checkout_calls  # restored to PR branch
 
+    @patch("app.rebase_pr._run_ci_check_and_fix", return_value="")
     @patch("app.rebase_pr._safe_checkout")
     @patch("app.rebase_pr.run_gh")
     @patch("app.rebase_pr._apply_review_feedback")
     @patch("app.rebase_pr.fetch_pr_context")
     def test_claude_stays_on_branch_no_restore(
-        self, mock_ctx, mock_apply, mock_gh, mock_safe
+        self, mock_ctx, mock_apply, mock_gh, mock_safe, mock_ci_check
     ):
         """If Claude stays on the correct branch, no extra checkout happens."""
         mock_ctx.return_value = {

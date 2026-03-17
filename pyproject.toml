@@ -13,3 +13,4 @@ filterwarnings = [
 markers = [
     "slow: marks tests as slow (run in dedicated CI groups)",
 ]
+timeout = 60
