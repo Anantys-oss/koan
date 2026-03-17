@@ -620,6 +620,38 @@ def _run_in_worker(fn, *args):
         _worker_thread.start()
 
 
+# ---------------------------------------------------------------------------
+# Outbox flush thread — formats via Claude in background to keep polling fast
+# ---------------------------------------------------------------------------
+
+_outbox_thread: Optional[threading.Thread] = None
+_outbox_lock = threading.Lock()
+
+
+def _flush_outbox_async():
+    """Run flush_outbox() in a background thread if not already running.
+
+    flush_outbox() calls Claude CLI for message formatting (up to 30s).
+    Running it synchronously in the main loop blocks Telegram polling,
+    making the bridge unresponsive to commands like /list during busy
+    periods (e.g. rebase missions producing frequent outbox messages).
+    """
+    global _outbox_thread
+    with _outbox_lock:
+        if _outbox_thread is not None and _outbox_thread.is_alive():
+            return  # Previous flush still running — skip this cycle
+        _outbox_thread = threading.Thread(target=_flush_outbox_safe, daemon=True)
+        _outbox_thread.start()
+
+
+def _flush_outbox_safe():
+    """Wrapper that catches exceptions so the thread exits cleanly."""
+    try:
+        flush_outbox()
+    except Exception as e:
+        log("error", f"Background flush_outbox failed: {e}")
+
+
 # Inject callbacks into command_handlers to break circular dependency
 set_callbacks(handle_chat=handle_chat, run_in_worker=_run_in_worker)
 
@@ -852,10 +884,7 @@ def main():
                 if was_restart:
                     _ensure_runner_alive()
 
-            try:
-                flush_outbox()
-            except Exception as e:
-                log("error", f"flush_outbox failed: {e}")
+            _flush_outbox_async()
 
             try:
                 write_heartbeat(str(KOAN_ROOT))
