@@ -35,6 +35,18 @@ from pathlib import Path
 from typing import Tuple
 
 
+def _get_language_section() -> str:
+    """Return the language enforcement section if a preference is set."""
+    try:
+        from app.language_preference import get_language_instruction
+        instruction = get_language_instruction()
+        if instruction:
+            return f"\n\n# Language Preference\n\n{instruction}\n"
+    except (ImportError, OSError):
+        pass
+    return ""
+
+
 def _load_config_safe() -> dict:
     """Load config.yaml, returning empty dict on failure."""
     try:
@@ -370,6 +382,9 @@ def build_agent_prompt(
     # Append verbose mode section if active
     prompt += _get_verbose_section(instance)
 
+    # Append language preference (overrides soul.md default)
+    prompt += _get_language_section()
+
     return prompt
 
 
@@ -485,6 +500,10 @@ def build_agent_prompt_parts(
     if security:
         sys_parts.append(security)
 
+    lang = _get_language_section()
+    if lang:
+        sys_parts.append(lang)
+
     system_prompt = "\n\n".join(part for part in sys_parts if part)
 
     return system_prompt, user_prompt
@@ -507,12 +526,17 @@ def build_contemplative_prompt(
     """
     from app.prompts import load_prompt
 
-    return load_prompt(
+    prompt = load_prompt(
         "contemplative",
         INSTANCE=instance,
         PROJECT_NAME=project_name,
         SESSION_INFO=session_info,
     )
+
+    # Append language preference (overrides soul.md default)
+    prompt += _get_language_section()
+
+    return prompt
 
 
 def main():

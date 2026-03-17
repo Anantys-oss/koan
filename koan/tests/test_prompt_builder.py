@@ -1513,3 +1513,136 @@ class TestBuildAgentPromptParts:
         )
         assert "Mission Spec" in user_prompt
         assert "Do the thing" in user_prompt
+
+    def test_language_preference_in_system_prompt(self, prompt_env):
+        """Language preference appears in system prompt when set."""
+        with patch(
+            "app.prompt_builder._get_language_section",
+            return_value="\n\n# Language Preference\n\nIMPORTANT: You MUST reply in english.\n",
+        ):
+            sys_prompt, _ = self._build(prompt_env)
+            assert "Language Preference" in sys_prompt
+            assert "english" in sys_prompt
+
+
+# --- Tests for _get_language_section ---
+
+
+class TestGetLanguageSection:
+    """Tests for language preference injection in agent prompts."""
+
+    def test_no_language_returns_empty(self):
+        """No language set → empty string."""
+        from app.prompt_builder import _get_language_section
+
+        with patch("app.language_preference.get_language_instruction", return_value=""):
+            assert _get_language_section() == ""
+
+    def test_language_set_returns_section(self):
+        """Language set → returns language section."""
+        from app.prompt_builder import _get_language_section
+
+        instruction = "IMPORTANT: You MUST reply in english."
+        with patch("app.language_preference.get_language_instruction", return_value=instruction):
+            result = _get_language_section()
+            assert "# Language Preference" in result
+            assert instruction in result
+
+    def test_import_error_returns_empty(self):
+        """ImportError from language_preference → returns empty string gracefully."""
+        from app.prompt_builder import _get_language_section
+
+        with patch(
+            "app.prompt_builder._get_language_section",
+            wraps=_get_language_section,
+        ):
+            # Simulate import failure
+            import importlib
+            import app.prompt_builder as pb
+            original = pb._get_language_section
+
+            def failing_section():
+                try:
+                    raise ImportError("no module")
+                except ImportError:
+                    return ""
+
+            with patch.object(pb, "_get_language_section", side_effect=failing_section):
+                assert pb._get_language_section() == ""
+
+    @patch("app.prompt_builder._get_verbose_section", return_value="")
+    @patch("app.prompt_builder._get_focus_section", return_value="")
+    @patch("app.prompt_builder._get_staleness_section", return_value="")
+    @patch("app.prompt_builder._get_deep_research", return_value="")
+    @patch("app.prompt_builder._get_merge_policy", return_value="")
+    @patch("app.prompt_builder._get_branch_prefix", return_value="koan/")
+    @patch("app.prompts.load_prompt", return_value="BASE")
+    def test_build_agent_prompt_includes_language(
+        self, mock_load, mock_prefix, mock_merge, mock_deep,
+        mock_stale, mock_focus, mock_verbose, prompt_env
+    ):
+        """build_agent_prompt includes language section when preference is set."""
+        with patch(
+            "app.language_preference.get_language_instruction",
+            return_value="IMPORTANT: You MUST reply in english.",
+        ):
+            result = build_agent_prompt(
+                instance=prompt_env["instance"],
+                project_name="testproj",
+                project_path=prompt_env["project_path"],
+                run_num=1,
+                max_runs=25,
+                autonomous_mode="implement",
+                focus_area="test",
+                available_pct=50,
+                mission_title="Fix bug",
+            )
+            assert "Language Preference" in result
+            assert "english" in result
+
+    @patch("app.prompt_builder._get_verbose_section", return_value="")
+    @patch("app.prompt_builder._get_focus_section", return_value="")
+    @patch("app.prompt_builder._get_staleness_section", return_value="")
+    @patch("app.prompt_builder._get_deep_research", return_value="")
+    @patch("app.prompt_builder._get_merge_policy", return_value="")
+    @patch("app.prompt_builder._get_branch_prefix", return_value="koan/")
+    @patch("app.prompts.load_prompt", return_value="BASE")
+    def test_build_agent_prompt_skips_language_when_not_set(
+        self, mock_load, mock_prefix, mock_merge, mock_deep,
+        mock_stale, mock_focus, mock_verbose, prompt_env
+    ):
+        """build_agent_prompt does NOT include language section when no preference."""
+        with patch(
+            "app.language_preference.get_language_instruction",
+            return_value="",
+        ):
+            result = build_agent_prompt(
+                instance=prompt_env["instance"],
+                project_name="testproj",
+                project_path=prompt_env["project_path"],
+                run_num=1,
+                max_runs=25,
+                autonomous_mode="implement",
+                focus_area="test",
+                available_pct=50,
+                mission_title="Fix bug",
+            )
+            assert "Language Preference" not in result
+
+    @patch("app.prompt_builder._get_branch_prefix", return_value="koan/")
+    @patch("app.prompts.load_prompt", return_value="CONTEMPLATE")
+    def test_contemplative_prompt_includes_language(
+        self, mock_load, mock_prefix, prompt_env
+    ):
+        """build_contemplative_prompt includes language section when set."""
+        with patch(
+            "app.language_preference.get_language_instruction",
+            return_value="IMPORTANT: You MUST reply in english.",
+        ):
+            result = build_contemplative_prompt(
+                instance=prompt_env["instance"],
+                project_name="testproj",
+                session_info="test session",
+            )
+            assert "Language Preference" in result
+            assert "english" in result
