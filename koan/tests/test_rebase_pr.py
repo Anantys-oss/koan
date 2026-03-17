@@ -1506,6 +1506,7 @@ class TestFetchPrContextHeadOwner:
                 "headRepositoryOwner": {"login": "contributor"},
                 "url": "https://github.com/upstream/repo/pull/1",
             })),
+            MagicMock(returncode=0, stdout="0"),  # review comment count
             MagicMock(returncode=0, stdout=""),  # diff
             MagicMock(returncode=0, stdout=""),  # review comments
             MagicMock(returncode=0, stdout=""),  # reviews
@@ -1523,6 +1524,7 @@ class TestFetchPrContextHeadOwner:
                 "headRefName": "feat",
                 "baseRefName": "main",
             })),
+            MagicMock(returncode=0, stdout="0"),  # review comment count
             MagicMock(returncode=0, stdout=""),
             MagicMock(returncode=0, stdout=""),
             MagicMock(returncode=0, stdout=""),
