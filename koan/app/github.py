@@ -11,7 +11,12 @@ import subprocess
 import time
 from typing import Dict, Optional
 
-from app.retry import retry_with_backoff, is_gh_transient
+from app.retry import (
+    retry_with_backoff,
+    is_gh_transient,
+    is_gh_secondary_rate_limit,
+    parse_retry_after,
+)
 
 
 class SSOAuthRequired(RuntimeError):
@@ -42,7 +47,7 @@ def _is_sso_error(stderr: str) -> bool:
 _cached_gh_username = None
 
 
-def run_gh(*args, cwd=None, timeout=30, stdin_data=None):
+def run_gh(*args, cwd=None, timeout=30, stdin_data=None, idempotent=True):
     """Run a ``gh`` CLI command and return stripped stdout.
 
     Args:
@@ -50,6 +55,13 @@ def run_gh(*args, cwd=None, timeout=30, stdin_data=None):
         cwd: Working directory for the subprocess.
         timeout: Seconds before the command is killed.
         stdin_data: Optional string passed to the process via stdin.
+        idempotent: Controls retry behaviour for secondary rate limits
+            (abuse detection).  Set to ``True`` (default) for read-only
+            operations or write operations that are safe to repeat (e.g.
+            updating an existing comment, adding a reaction).  Set to
+            ``False`` for operations that must not be duplicated (e.g. PR
+            creation, review submission) — secondary rate limit errors will
+            then be re-raised immediately without retrying.
 
     Returns:
         Stripped stdout string.
@@ -73,13 +85,20 @@ def run_gh(*args, cwd=None, timeout=30, stdin_data=None):
             )
         return result.stdout.strip()
 
+    def _is_transient(exc: BaseException) -> bool:
+        """Only retry secondary rate limits when the operation is idempotent."""
+        if is_gh_secondary_rate_limit(exc):
+            return idempotent
+        return is_gh_transient(exc)
+
     from app.security_audit import GIT_OPERATION, _redact_list, log_event
 
     try:
         result = retry_with_backoff(
             _invoke,
             retryable=(RuntimeError, OSError, subprocess.TimeoutExpired),
-            is_transient=is_gh_transient,
+            is_transient=_is_transient,
+            get_retry_delay=parse_retry_after,
             label=f"gh {' '.join(args[:2])}",
         )
         log_event(GIT_OPERATION, details={
@@ -122,7 +141,7 @@ def pr_create(title, body, draft=True, base=None, repo=None, head=None, cwd=None
         args.extend(["--repo", repo])
     if head:
         args.extend(["--head", head])
-    return run_gh(*args, cwd=cwd)
+    return run_gh(*args, cwd=cwd, idempotent=False)
 
 
 def issue_create(title, body, labels=None, repo=None, cwd=None):
@@ -147,7 +166,7 @@ def issue_create(title, body, labels=None, repo=None, cwd=None):
         args.extend(["--label", ",".join(labels)])
     if repo:
         args.extend(["--repo", repo])
-    return run_gh(*args, cwd=cwd)
+    return run_gh(*args, cwd=cwd, idempotent=False)
 
 
 def api(endpoint, method="GET", jq=None, input_data=None, cwd=None,
