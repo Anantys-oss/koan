@@ -530,6 +530,7 @@ class TestFetchPrContext:
         })
         mock_gh.side_effect = [
             pr_meta,           # PR metadata
+            "1",               # review_comments count
             "diff content",    # diff
             "comment1",        # review comments
             "review1",         # reviews
@@ -544,11 +545,12 @@ class TestFetchPrContext:
         assert ctx["review_comments"] == "comment1"
         assert ctx["reviews"] == "review1"
         assert ctx["issue_comments"] == "discussion1"
-        assert mock_gh.call_count == 5
+        assert ctx["has_pending_reviews"] is False
+        assert mock_gh.call_count == 6
 
     @patch("app.rebase_pr.run_gh")
     def test_handles_invalid_json(self, mock_gh):
-        mock_gh.side_effect = ["not json", "", "", "", ""]
+        mock_gh.side_effect = ["not json", "0", "", "", "", ""]
         ctx = fetch_pr_context("o", "r", "1")
         assert ctx["title"] == ""
         assert ctx["branch"] == ""
@@ -642,7 +644,7 @@ class TestRunPrReview:
         mock_models.return_value = {"mission": "", "fallback": "sonnet"}
 
         mock_rebase_gh.side_effect = [
-            self._mock_pr_context(), "diff", "reviewer comment", "reviews", "thread",
+            self._mock_pr_context(), "0", "diff", "reviewer comment", "reviews", "thread",
         ]
         mock_claude.return_value = {"success": True, "output": "Fixed", "error": ""}
         mock_commit.return_value = True
@@ -690,7 +692,7 @@ class TestRunPrReview:
         mock_models.return_value = {"mission": "", "fallback": "sonnet"}
 
         mock_rebase_gh.side_effect = [
-            self._mock_pr_context(), "diff", "comment", "review", "thread",
+            self._mock_pr_context(), "0", "diff", "comment", "review", "thread",
         ]
         # 3 Claude calls: review feedback, refactor, quality review
         mock_claude.return_value = {"success": True, "output": "Done", "error": ""}
@@ -731,7 +733,7 @@ class TestRunPrReview:
             "url": "https://github.com/o/r/pull/1",
         })
         # No comments/reviews
-        mock_rebase_gh.side_effect = [pr_meta, "diff", "", "", ""]
+        mock_rebase_gh.side_effect = [pr_meta, "0", "diff", "", "", ""]
         mock_commit.return_value = False
 
         notify = MagicMock()
@@ -758,7 +760,7 @@ class TestRunPrReview:
         mock_models.return_value = {"mission": "", "fallback": "sonnet"}
 
         mock_rebase_gh.side_effect = [
-            self._mock_pr_context(), "diff", "", "", "",
+            self._mock_pr_context(), "0", "diff", "", "", "",
         ]
         mock_claude.return_value = {"success": True, "output": "Fixed", "error": ""}
         mock_commit.return_value = True
