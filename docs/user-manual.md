@@ -458,12 +458,13 @@ Use this before `/plan` when the idea is architecturally complex, when you want 
 
 **`/review`** — Queue a code review for a pull request or issue.
 
-- **Usage:** `/review <github-pr-or-issue-url> [--architecture] [--errors] [--plan-url <issue-url>]`
+- **Usage:** `/review <github-pr-or-issue-url> [--architecture] [--errors] [--comments] [--plan-url <issue-url>]`
 - **Aliases:** `/rv`
 - **GitHub @mention:** `@koan-bot /review` on a PR
 - **Flags:**
   - `--architecture` — Architecture-focused review (SOLID principles, layering, coupling, abstraction boundaries)
   - `--errors` — Run an additional **silent-failure-hunter** pass that scans for swallowed exceptions, silent null returns, unhandled promises, and other silent error paths. Also auto-triggered when the diff contains error-handling patterns (`try/except`, `catch`, etc.)
+  - `--comments` — Comment quality review (factual accuracy, completeness, stale TODOs, misleading language)
 
 <details>
 <summary>Use cases</summary>
@@ -472,6 +473,7 @@ Use this before `/plan` when the idea is architecturally complex, when you want 
 - `/rv https://github.com/org/repo/pull/55` — Same thing, shorter
 - `/review https://github.com/org/repo/pull/55 --architecture` — Architecture-focused review
 - `/review https://github.com/org/repo/pull/55 --errors` — Include silent-failure-hunter analysis
+- `/review https://github.com/org/repo/pull/55 --comments` — Comment quality review
 - `/review https://github.com/org/repo/pull/55 --architecture --errors` — Both passes
 </details>
 

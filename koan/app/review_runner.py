@@ -299,6 +299,7 @@ def build_review_prompt(
     context: dict,
     skill_dir: Optional[Path] = None,
     architecture: bool = False,
+    comments: bool = False,
     repliable_comments: Optional[List[dict]] = None,
     plan_body: Optional[str] = None,
     project_path: Optional[str] = None,
@@ -322,6 +323,8 @@ def build_review_prompt(
         prompt_name = "review-with-plan"
     elif architecture:
         prompt_name = "review-architecture"
+    elif comments:
+        prompt_name = "review-comments"
     else:
         prompt_name = "review"
 
@@ -1159,6 +1162,7 @@ def run_review(
     plan_url: Optional[str] = None,
     project_name: Optional[str] = None,
     errors: bool = False,
+    comments: bool = False,
 ) -> Tuple[bool, str, Optional[dict]]:
     """Execute a read-only code review on a PR.
 
@@ -1177,6 +1181,7 @@ def run_review(
         errors: If True, run an additional silent-failure-hunter pass to detect
             swallowed exceptions and silent error paths. Auto-triggered when
             the diff contains error-handling patterns.
+        comments: If True, use comment-quality review prompt.
 
     Returns:
         (success, summary, review_data) tuple. review_data is the validated
@@ -1278,8 +1283,8 @@ def run_review(
     # Step 2: Build review prompt
     prompt = build_review_prompt(
         context, skill_dir=skill_dir, architecture=architecture,
-        repliable_comments=repliable_comments, plan_body=plan_body or None,
-        project_path=project_path,
+        comments=comments, repliable_comments=repliable_comments,
+        plan_body=plan_body or None, project_path=project_path,
     )
 
     # Step 3: Run Claude review (read-only)
@@ -1482,6 +1487,10 @@ def main(argv=None):
         help="Run an additional silent-failure-hunter pass to detect swallowed "
              "exceptions and silent error paths.",
     )
+    parser.add_argument(
+        "--comments", action="store_true",
+        help="Use comment-quality review (accuracy, completeness, stale TODOs)",
+    )
     cli_args = parser.parse_args(argv)
 
     try:
@@ -1499,6 +1508,7 @@ def main(argv=None):
         plan_url=cli_args.plan_url,
         project_name=cli_args.project_name,
         errors=cli_args.errors,
+        comments=cli_args.comments,
     )
     print(summary)
     return 0 if success else 1

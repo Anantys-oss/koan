@@ -965,6 +965,7 @@ class TestMainCli:
             plan_url=None,
             project_name=None,
             errors=False,
+            comments=False,
         )
 
     @patch("app.review_runner.run_review")
