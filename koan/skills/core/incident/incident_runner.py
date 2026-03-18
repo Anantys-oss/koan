@@ -214,7 +214,7 @@ def _submit_incident_pr(
         return None
 
     project_name = guess_project_name(project_path)
-    base_branch = resolve_base_branch(project_name)
+    base_branch = resolve_base_branch(project_name, project_path)
     commits = get_commit_subjects(project_path, base_branch=base_branch)
 
     if not commits:

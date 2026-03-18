@@ -1267,6 +1267,60 @@ projects:
 """)
         assert resolve_base_branch("app") == "main"
 
+    def test_auto_detection_with_project_path(self, tmp_path, monkeypatch):
+        """When project_path is provided and no explicit config, auto-detect from remote."""
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        (tmp_path / "projects.yaml").write_text("""
+defaults:
+  git_auto_merge:
+    base_branch: main
+projects:
+  myrepo:
+    path: /tmp/myrepo
+""")
+        # Mock auto-detection to return "master"
+        monkeypatch.setattr(
+            "app.git_prep.detect_remote_default_branch",
+            lambda remote, path: "master",
+        )
+        monkeypatch.setattr(
+            "app.git_prep.get_upstream_remote",
+            lambda path, name, root: "origin",
+        )
+        assert resolve_base_branch("myrepo", "/tmp/myrepo") == "master"
+
+    def test_auto_detection_skipped_without_project_path(self, tmp_path, monkeypatch):
+        """Without project_path, auto-detection is skipped — falls back to config."""
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        (tmp_path / "projects.yaml").write_text("""
+defaults:
+  git_auto_merge:
+    base_branch: main
+projects:
+  myrepo:
+    path: /tmp/myrepo
+""")
+        # Even if detect would return "master", without project_path it's not called
+        assert resolve_base_branch("myrepo") == "main"
+
+    def test_explicit_project_config_overrides_detection(self, tmp_path, monkeypatch):
+        """Explicit project-level base_branch trumps auto-detection."""
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        (tmp_path / "projects.yaml").write_text("""
+projects:
+  myrepo:
+    path: /tmp/myrepo
+    git_auto_merge:
+      base_branch: develop
+""")
+        # detect_remote_default_branch should NOT be called
+        def fail_detect(*a, **kw):
+            raise AssertionError("Should not be called")
+        monkeypatch.setattr(
+            "app.git_prep.detect_remote_default_branch", fail_detect,
+        )
+        assert resolve_base_branch("myrepo", "/tmp/myrepo") == "develop"
+
 
 # ---------------------------------------------------------------------------
 # get_project_submit_to_repository (additional tests in test_projects_config)

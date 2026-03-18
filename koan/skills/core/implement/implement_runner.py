@@ -302,7 +302,7 @@ def _submit_implement_pr(
     from app.projects_config import resolve_base_branch
 
     project_name = guess_project_name(project_path)
-    base_branch = resolve_base_branch(project_name)
+    base_branch = resolve_base_branch(project_name, project_path)
     commits = get_commit_subjects(project_path, base_branch=base_branch)
 
     summary = _generate_pr_summary(
