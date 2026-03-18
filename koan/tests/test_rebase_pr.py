@@ -1861,7 +1861,7 @@ class TestFetchPrContextHeadOwner:
             })),
             MagicMock(returncode=0, stdout="0"),  # review comment count
             MagicMock(returncode=0, stdout=""),  # diff
-            MagicMock(returncode=0, stdout=""),  # timeline
+            MagicMock(returncode=0, stdout=""),  # timeline (last push timestamp)
             MagicMock(returncode=0, stdout=""),  # review comments
             MagicMock(returncode=0, stdout=""),  # reviews
             MagicMock(returncode=0, stdout=""),  # issue comments
@@ -1881,7 +1881,7 @@ class TestFetchPrContextHeadOwner:
             })),
             MagicMock(returncode=0, stdout="0"),  # review comment count
             MagicMock(returncode=0, stdout=""),  # diff
-            MagicMock(returncode=0, stdout=""),  # timeline
+            MagicMock(returncode=0, stdout=""),  # timeline (last push timestamp)
             MagicMock(returncode=0, stdout=""),  # review comments
             MagicMock(returncode=0, stdout=""),  # reviews
             MagicMock(returncode=0, stdout=""),  # issue comments
