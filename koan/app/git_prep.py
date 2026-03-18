@@ -126,13 +126,14 @@ def prepare_project_branch(
         if config:
             am = get_project_auto_merge(config, project_name)
             result.base_branch = am.get("base_branch", "main")
-            # Check if the project explicitly configures base_branch
-            # (vs inheriting the "main" default from get_project_auto_merge)
+            # Check if the project explicitly configures base_branch.
+            # Only project-level overrides count as explicit — the defaults
+            # section provides a generic fallback that should NOT prevent
+            # auto-detection for repos whose default branch differs (e.g.
+            # "master" repos when defaults say "main").
             projects = config.get("projects", {}) or {}
             proj_cfg = projects.get(project_name, {}) or {}
             proj_am = proj_cfg.get("git_auto_merge", {}) or {}
-            defaults = config.get("defaults", {}) or {}
-            defaults_am = defaults.get("git_auto_merge", {}) or {}
             if proj_am.get("base_branch"):
                 config_explicit = True
     except Exception as e:

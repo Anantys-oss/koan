@@ -232,8 +232,8 @@ class TestPrepareProjectBranch:
         assert result.success is True
         assert result.stashed is True
 
-    def test_fetch_failure_with_explicit_config(self):
-        """Fetch failure with explicit base_branch config returns success=False."""
+    def test_fetch_failure_with_explicit_project_config(self):
+        """Fetch failure with project-level base_branch config returns success=False."""
         side_effect = _make_run_git_side_effect({
             "fetch": (1, "", "Could not resolve host"),
         })
@@ -247,6 +247,50 @@ class TestPrepareProjectBranch:
 
         assert result.success is False
         assert "fetch failed" in result.error
+
+    def test_defaults_base_branch_does_not_prevent_autodetect(self):
+        """defaults.git_auto_merge.base_branch should NOT prevent auto-detection.
+
+        Regression: when projects.yaml has defaults.git_auto_merge.base_branch=main
+        but no project-level override, repos with 'master' as default branch failed
+        because auto-detection was skipped (config_explicit=True from defaults).
+        """
+        calls = []
+
+        def side_effect(*args, **kwargs):
+            cmd = args[0] if args else ""
+            calls.append(args)
+            if cmd == "rev-parse":
+                return (0, "feature", "")
+            if cmd == "fetch":
+                fetch_calls = [c for c in calls if c[0] == "fetch"]
+                if len(fetch_calls) == 1:
+                    return (1, "", "fatal: couldn't find remote ref main")
+                return (0, "", "")
+            if cmd == "symbolic-ref":
+                return (0, "refs/remotes/upstream/master", "")
+            if cmd == "status":
+                return (0, "", "")
+            if cmd == "checkout":
+                return (0, "", "")
+            if cmd == "merge":
+                return (0, "", "")
+            return (1, "", "no remote")
+
+        # Simulate: defaults have base_branch=main, but project has NO override
+        stack, _ = self._patch_all(
+            run_git_side_effect=side_effect,
+            config={
+                "defaults": {"git_auto_merge": {"base_branch": "main"}},
+                "projects": {},  # No project-level config for myproj
+            },
+            auto_merge={"base_branch": "main"},
+        )
+        with stack:
+            result = prepare_project_branch("/proj", "myproj", "/koan")
+
+        assert result.success is True
+        assert result.base_branch == "master"
 
     def test_fetch_failure_detects_master_branch(self):
         """Fetch 'main' fails, detects 'master' as remote default, retries successfully."""
