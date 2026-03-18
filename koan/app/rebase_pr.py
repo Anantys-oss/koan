@@ -246,6 +246,13 @@ def run_rebase(
     except Exception as e:
         return False, f"Failed to fetch PR context: {e}"
 
+    # Skip if the PR is already merged or closed — nothing to rebase
+    pr_state = context.get("state", "").upper()
+    if pr_state in ("MERGED", "CLOSED"):
+        msg = f"PR #{pr_number} is already {pr_state.lower()} — skipping rebase."
+        notify_fn(msg)
+        return True, msg
+
     if not context["branch"]:
         return False, "Could not determine PR branch name."
 

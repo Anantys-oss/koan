@@ -860,6 +860,32 @@ class TestRunRebase:
         assert "Failed to fetch" in summary
 
     @patch("app.rebase_pr.fetch_pr_context")
+    def test_skip_merged_pr(self, mock_ctx):
+        """Rebase should skip and succeed when the PR is already merged."""
+        mock_ctx.return_value = {
+            "title": "T", "body": "", "branch": "feat",
+            "base": "main", "state": "MERGED", "author": "", "url": "",
+            "diff": "", "review_comments": "", "reviews": "", "issue_comments": "",
+        }
+        notify = MagicMock()
+        success, summary = run_rebase("o", "r", "1", "/p", notify_fn=notify)
+        assert success is True
+        assert "merged" in summary.lower()
+
+    @patch("app.rebase_pr.fetch_pr_context")
+    def test_skip_closed_pr(self, mock_ctx):
+        """Rebase should skip and succeed when the PR is closed."""
+        mock_ctx.return_value = {
+            "title": "T", "body": "", "branch": "feat",
+            "base": "main", "state": "CLOSED", "author": "", "url": "",
+            "diff": "", "review_comments": "", "reviews": "", "issue_comments": "",
+        }
+        notify = MagicMock()
+        success, summary = run_rebase("o", "r", "1", "/p", notify_fn=notify)
+        assert success is True
+        assert "closed" in summary.lower()
+
+    @patch("app.rebase_pr.fetch_pr_context")
     def test_missing_branch(self, mock_ctx):
         mock_ctx.return_value = {"branch": "", "base": "main", "title": "T",
                                   "body": "", "state": "", "author": "", "url": "",
