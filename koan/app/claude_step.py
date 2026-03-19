@@ -17,7 +17,7 @@ from typing import List, Optional, Tuple
 
 from app.cli_provider import build_full_command, run_command
 from app.config import get_model_config
-from app.git_utils import run_git_strict
+from app.git_utils import ordered_remotes, run_git_strict
 from app.github import pr_create, run_gh
 from app.prompts import load_prompt_or_skill
 
@@ -52,18 +52,8 @@ def _abort_rebase_safely(project_path: str) -> None:
         print(f"[claude_step] rebase --abort failed (non-fatal): {e}", file=sys.stderr)
 
 
-def _ordered_remotes(preferred: Optional[str]) -> List[str]:
-    """Return remote names to try, with *preferred* first if given.
-
-    Always includes both ``origin`` and ``upstream`` (de-duplicated).
-    """
-    remotes: list[str] = []
-    if preferred:
-        remotes.append(preferred)
-    for r in ("origin", "upstream"):
-        if r not in remotes:
-            remotes.append(r)
-    return remotes
+# Re-export for backward compatibility — canonical source is git_utils.ordered_remotes
+_ordered_remotes = ordered_remotes
 
 
 def _rebase_onto_target(

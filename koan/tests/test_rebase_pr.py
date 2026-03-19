@@ -10,6 +10,7 @@ import pytest
 from app.claude_step import _rebase_onto_target, _run_git
 from app.utils import truncate_text
 from app.github_url_parser import parse_pr_url
+from app.git_utils import ordered_remotes
 from app.rebase_pr import (
     fetch_pr_context,
     build_comment_summary,
@@ -23,7 +24,6 @@ from app.rebase_pr import (
     _get_conflicted_files,
     _get_current_branch,
     _is_conflict_failure,
-    _ordered_remotes,
     _push_with_fallback,
     _rebase_with_conflict_resolution,
     _check_pr_state,
@@ -367,7 +367,7 @@ class TestSafeCheckout:
 
 
 # ---------------------------------------------------------------------------
-# _find_remote_for_repo / _ordered_remotes
+# _find_remote_for_repo / ordered_remotes
 # ---------------------------------------------------------------------------
 
 class TestFindRemoteForRepo:
@@ -425,17 +425,17 @@ class TestOrderedRemotes:
     """Test remote ordering with preferred remote."""
 
     def test_no_preferred(self):
-        assert _ordered_remotes(None) == ["origin", "upstream"]
+        assert ordered_remotes(None) == ["origin", "upstream"]
 
     def test_preferred_origin(self):
         # origin already in default list — should be first, no duplicate
-        assert _ordered_remotes("origin") == ["origin", "upstream"]
+        assert ordered_remotes("origin") == ["origin", "upstream"]
 
     def test_preferred_upstream(self):
-        assert _ordered_remotes("upstream") == ["upstream", "origin"]
+        assert ordered_remotes("upstream") == ["upstream", "origin"]
 
     def test_preferred_custom(self):
-        assert _ordered_remotes("fork") == ["fork", "origin", "upstream"]
+        assert ordered_remotes("fork") == ["fork", "origin", "upstream"]
 
 
 # ---------------------------------------------------------------------------

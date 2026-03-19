@@ -32,6 +32,7 @@ from app.claude_step import (
     run_claude_step,
     wait_for_ci,
 )
+from app.git_utils import ordered_remotes as _ordered_remotes
 from app.github import run_gh
 from app.prompts import load_prompt, load_prompt_or_skill, load_skill_prompt  # noqa: F401 — safety import
 from app.utils import _GITHUB_REMOTE_RE, truncate_text
@@ -167,20 +168,6 @@ def _find_remote_for_repo(
             if slug == target:
                 return remote_name
     return None
-
-
-def _ordered_remotes(preferred: Optional[str]) -> List[str]:
-    """Return remote names to try, with *preferred* first if given.
-
-    Always includes both ``origin`` and ``upstream`` (de-duplicated).
-    """
-    remotes = []
-    if preferred:
-        remotes.append(preferred)
-    for r in ("origin", "upstream"):
-        if r not in remotes:
-            remotes.append(r)
-    return remotes
 
 
 def _has_review_feedback(context: dict) -> bool:

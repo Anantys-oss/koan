@@ -10,7 +10,7 @@ Replaces 5 separate run_git() implementations with two unified functions:
 
 import os
 import subprocess
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 
 def run_git(
@@ -80,3 +80,17 @@ def run_git_strict(
         cmd_str = " ".join(["git"] + list(args))
         raise RuntimeError(f"git failed: {cmd_str} — {result.stderr[:200]}")
     return result.stdout.strip()
+
+
+def ordered_remotes(preferred: Optional[str] = None) -> List[str]:
+    """Return remote names to try, with *preferred* first if given.
+
+    Always includes both ``origin`` and ``upstream`` (de-duplicated).
+    """
+    remotes: list[str] = []
+    if preferred:
+        remotes.append(preferred)
+    for r in ("origin", "upstream"):
+        if r not in remotes:
+            remotes.append(r)
+    return remotes

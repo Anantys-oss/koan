@@ -5,7 +5,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from app.git_utils import run_git, run_git_strict
+from app.git_utils import ordered_remotes, run_git, run_git_strict
 
 
 class TestRunGit:
@@ -155,3 +155,25 @@ class TestRunGitStrict:
             run_git_strict("push")
         # Error message should truncate stderr to 200 chars
         assert len(str(exc_info.value)) < 300
+
+
+class TestOrderedRemotes:
+    """Tests for ordered_remotes() — remote priority ordering."""
+
+    def test_no_preferred(self):
+        assert ordered_remotes() == ["origin", "upstream"]
+
+    def test_no_preferred_explicit_none(self):
+        assert ordered_remotes(None) == ["origin", "upstream"]
+
+    def test_preferred_origin(self):
+        assert ordered_remotes("origin") == ["origin", "upstream"]
+
+    def test_preferred_upstream(self):
+        assert ordered_remotes("upstream") == ["upstream", "origin"]
+
+    def test_preferred_custom(self):
+        assert ordered_remotes("fork") == ["fork", "origin", "upstream"]
+
+    def test_preferred_empty_string(self):
+        assert ordered_remotes("") == ["origin", "upstream"]
