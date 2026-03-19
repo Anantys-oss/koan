@@ -800,14 +800,15 @@ class TestFlushOutbox:
     @patch("app.awake._format_outbox_message", return_value="Formatted msg")
     @patch("app.awake.send_telegram", return_value=True)
     def test_flush_formats_and_sends(self, mock_send, mock_fmt, tmp_path):
-        from app.notify import NotificationPriority
         outbox = tmp_path / "outbox.md"
         outbox.write_text("Raw message here")
         with patch("app.awake.OUTBOX_FILE", outbox):
             flush_outbox()
         mock_fmt.assert_called_once_with("Raw message here")
-        mock_send.assert_called_once_with("Formatted msg",
-                                          priority=NotificationPriority.ACTION)
+        mock_send.assert_called_once()
+        call_kwargs = mock_send.call_args
+        assert call_kwargs[0][0] == "Formatted msg"
+        assert call_kwargs[1]["priority"].name == "ACTION"
         assert outbox.read_text() == ""
 
     @patch("app.awake._format_outbox_message", return_value="Formatted msg")
@@ -938,13 +939,14 @@ class TestFlushOutbox:
     @patch("app.awake.send_telegram", return_value=True)
     def test_flush_no_expansion_without_project(self, mock_send, mock_fmt, tmp_path):
         """When no project tag is found, text is sent unchanged."""
-        from app.notify import NotificationPriority
         outbox = tmp_path / "outbox.md"
         outbox.write_text("All good")
         with patch("app.awake.OUTBOX_FILE", outbox):
             flush_outbox()
-        mock_send.assert_called_once_with("All good",
-                                          priority=NotificationPriority.ACTION)
+        mock_send.assert_called_once()
+        call_kwargs = mock_send.call_args
+        assert call_kwargs[0][0] == "All good"
+        assert call_kwargs[1]["priority"].name == "ACTION"
 
 
 class TestRequeueOutbox:
