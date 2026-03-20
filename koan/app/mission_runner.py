@@ -748,7 +748,7 @@ def run_post_mission(
 
         # 3. Check for quota exhaustion
         _report("checking quota")
-        from app.quota_handler import handle_quota_exhaustion
+        from app.quota_handler import handle_quota_exhaustion, QUOTA_CHECK_UNRELIABLE
 
         koan_root = _get_koan_root(instance_dir)
         quota_result = handle_quota_exhaustion(
@@ -759,7 +759,11 @@ def run_post_mission(
             stdout_file=stdout_file,
             stderr_file=stderr_file,
         )
-        if quota_result is not None:
+        if quota_result is QUOTA_CHECK_UNRELIABLE:
+            log(f"⚠️  Quota check unreliable for {project_name} — "
+                "could not read log files, skipping quota detection")
+            tracker.record("quota_check", "warning", "unreliable — log files unreadable")
+        elif quota_result is not None:
             result["quota_exhausted"] = True
             result["quota_info"] = quota_result
             tracker.record("quota_check", "success", "quota exhausted — early return")

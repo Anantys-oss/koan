@@ -61,6 +61,11 @@ _MAX_RETRY_MINUTES = 1440   # 24 hours in minutes
 _MAX_RETRY_HOURS = 24       # 24 hours
 _DEFAULT_RETRY_SECONDS = 3600  # 1 hour fallback for zero/negative values
 
+# Sentinel returned when quota check is unreliable (both log files unreadable).
+# Callers should check `result is QUOTA_CHECK_UNRELIABLE` to distinguish from
+# "quota not exhausted" (None) and "quota exhausted" (tuple).
+QUOTA_CHECK_UNRELIABLE = ("__unreliable__", "Quota check failed: could not read log files")
+
 
 def _clamp_retry_seconds(seconds: int) -> int:
     """Clamp retry seconds to sane bounds.
@@ -253,6 +258,7 @@ def handle_quota_exhaustion(
             f"or stderr ({stderr_file}) — quota check unreliable",
             file=sys.stderr,
         )
+        return QUOTA_CHECK_UNRELIABLE
     combined = "\n".join(parts)
 
     if not detect_quota_exhaustion(combined):
@@ -302,7 +308,10 @@ if __name__ == "__main__":
         stdout_file=sys.argv[6],
         stderr_file=sys.argv[7],
     )
-    if result:
+    if result is QUOTA_CHECK_UNRELIABLE:
+        print("UNRELIABLE: could not read log files", file=sys.stderr)
+        sys.exit(2)
+    elif result:
         reset_display, resume_message = result
         # Output for bash: RESET_DISPLAY|RESUME_MSG
         print(f"{reset_display}|{resume_message}")
