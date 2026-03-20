@@ -2080,6 +2080,71 @@ class TestNotificationCache:
         assert mock_process.call_args[0][0]["id"] == "2"
 
 
+class TestNotificationCacheIdValidation:
+    """Verify that notifications with missing/falsy IDs are not cached."""
+
+    def setup_method(self):
+        from app.loop_manager import reset_github_backoff
+        reset_github_backoff()
+
+    def test_missing_id_returns_none_key(self):
+        from app.loop_manager import _notif_cache_key
+        notif = {"updated_at": "2026-03-20T10:00:00Z"}
+        assert _notif_cache_key(notif) is None
+
+    def test_none_id_returns_none_key(self):
+        from app.loop_manager import _notif_cache_key
+        notif = {"id": None, "updated_at": "2026-03-20T10:00:00Z"}
+        assert _notif_cache_key(notif) is None
+
+    def test_empty_string_id_returns_none_key(self):
+        from app.loop_manager import _notif_cache_key
+        notif = {"id": "", "updated_at": "2026-03-20T10:00:00Z"}
+        assert _notif_cache_key(notif) is None
+
+    def test_falsy_zero_id_returns_none_key(self):
+        from app.loop_manager import _notif_cache_key
+        notif = {"id": 0, "updated_at": "2026-03-20T10:00:00Z"}
+        assert _notif_cache_key(notif) is None
+
+    def test_truthy_id_returns_valid_key(self):
+        from app.loop_manager import _notif_cache_key
+        notif = {"id": "42", "updated_at": "2026-03-20T10:00:00Z"}
+        key = _notif_cache_key(notif)
+        assert key == ("42", "2026-03-20T10:00:00Z")
+
+    def test_idless_notif_is_never_cached(self):
+        from app.loop_manager import _is_notif_cached, _cache_notif
+        notif = {"updated_at": "2026-03-20T10:00:00Z"}
+        _cache_notif(notif)
+        assert not _is_notif_cached(notif)
+
+    def test_idless_notifs_dont_collide(self):
+        """Two ID-less notifications with different updated_at must not
+        deduplicate against each other."""
+        from app.loop_manager import _is_notif_cached, _cache_notif
+        notif_a = {"updated_at": "2026-03-20T10:00:00Z",
+                   "subject": {"title": "A"}}
+        notif_b = {"updated_at": "2026-03-20T11:00:00Z",
+                   "subject": {"title": "B"}}
+        _cache_notif(notif_a)
+        _cache_notif(notif_b)
+        # Neither should be considered cached — both pass through
+        assert not _is_notif_cached(notif_a)
+        assert not _is_notif_cached(notif_b)
+
+    def test_warning_logged_for_missing_id(self, caplog):
+        import logging
+        from app.loop_manager import _notif_cache_key
+        notif = {"subject": {"title": "Test PR"},
+                 "updated_at": "2026-03-20T10:00:00Z"}
+        with caplog.at_level(logging.WARNING, logger="app.loop_manager"):
+            result = _notif_cache_key(notif)
+        assert result is None
+        assert "missing 'id'" in caplog.text
+        assert "Test PR" in caplog.text
+
+
 # --- Thread-safety tests ---
 
 

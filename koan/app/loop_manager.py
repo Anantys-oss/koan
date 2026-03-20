@@ -235,14 +235,28 @@ def _github_log(message: str, level: str = "info") -> None:
         log.info(message)
 
 
-def _notif_cache_key(notif: dict) -> tuple:
-    """Build a cache key from a notification's thread ID and updated_at."""
-    return (str(notif.get("id", "")), notif.get("updated_at", ""))
+def _notif_cache_key(notif: dict) -> Optional[tuple]:
+    """Build a cache key from a notification's thread ID and updated_at.
+
+    Returns None if the notification has no truthy ``id`` — callers must
+    skip caching to avoid all ID-less notifications colliding on the same
+    cache slot.
+    """
+    notif_id = notif.get("id")
+    if not notif_id:
+        log.warning(
+            "GitHub notification missing 'id', skipping cache: %s",
+            notif.get("subject", {}).get("title", "<unknown>"),
+        )
+        return None
+    return (str(notif_id), notif.get("updated_at", ""))
 
 
 def _is_notif_cached(notif: dict) -> bool:
     """Check if a notification is in the processing cache and not expired."""
     key = _notif_cache_key(notif)
+    if key is None:
+        return False  # ID-less notifications are never considered cached
     with _notif_cache_lock:
         cached_at = _notif_cache.get(key)
         if cached_at is None:
@@ -256,6 +270,8 @@ def _is_notif_cached(notif: dict) -> bool:
 def _cache_notif(notif: dict) -> None:
     """Add a notification to the processing cache."""
     key = _notif_cache_key(notif)
+    if key is None:
+        return  # Warning already emitted by _notif_cache_key
     now = time.time()
     with _notif_cache_lock:
         _notif_cache[key] = now
