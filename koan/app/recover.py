@@ -36,8 +36,10 @@ from app.notify import format_and_send
 # Number of failed recovery attempts before a mission is marked unrecoverable
 MAX_RECOVERY_ATTEMPTS = 3
 
-# Regex to parse and strip the [r:N] recovery counter tag from mission text
-_RECOVERY_COUNTER_RE = re.compile(r"\s*\[r:(\d+)\]")
+# Regex to parse and strip the [r:N] recovery counter tag from mission text.
+# Matches any content inside [r:...] (not just digits) so malformed tags
+# are still caught by strip/set operations.
+_RECOVERY_COUNTER_RE = re.compile(r"\s*\[r:([^\]]*)\]")
 
 
 # ---------------------------------------------------------------------------
@@ -45,9 +47,14 @@ _RECOVERY_COUNTER_RE = re.compile(r"\s*\[r:(\d+)\]")
 # ---------------------------------------------------------------------------
 
 def _get_recovery_attempts(mission_line: str) -> int:
-    """Parse the [r:N] counter from a mission line. Returns 0 if absent."""
+    """Parse the [r:N] counter from a mission line. Returns 0 if absent or malformed."""
     m = _RECOVERY_COUNTER_RE.search(mission_line)
-    return int(m.group(1)) if m else 0
+    if not m:
+        return 0
+    try:
+        return int(m.group(1))
+    except (ValueError, TypeError):
+        return 0
 
 
 def _set_recovery_attempts(mission_line: str, n: int) -> str:
