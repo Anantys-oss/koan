@@ -992,6 +992,20 @@ See [docs/auto-update.md](auto-update.md) for details.
 - `/add_project https://github.com/org/new-repo myproject` — Add with a custom name
 </details>
 
+### Removing Projects
+
+**`/delete_project`** — Remove a project from the workspace.
+
+- **Usage:** `/delete_project <project-name>`
+- **Aliases:** `/delete`, `/del`
+
+<details>
+<summary>Use cases</summary>
+
+- `/delete_project myrepo` — Remove a project directory and its projects.yaml entry
+- `/del myrepo` — Same, using short alias
+</details>
+
 ### Performance Profiling
 
 **`/profile`** — Queue a performance profiling mission for a project.
@@ -1135,6 +1149,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/restart` | — | P | Restart processes (no code pull) |
 | `/snapshot` | — | P | Export memory state |
 | `/add_project <url>` | `/add_project` | P | Add a project from GitHub |
+| `/delete_project <name>` | `/delete`, `/del` | P | Remove a project from workspace |
 | `/profile <project>` | `/perf`, `/benchmark` | P | Performance profiling mission |
 | `/tech_debt [project]` | `/td`, `/debt` | P | Scan project for tech debt |
 | `/dead_code [project]` | `/dc` | P | Scan for unused code |
