@@ -58,6 +58,14 @@ fast_reply: false
 # Default: 3600 (60 minutes). Previous default was 900 (15 minutes).
 skill_timeout: 3600
 
+# Skill max turns — maximum agentic turns for heavy skill execution
+# Controls how many back-and-forth turns Claude CLI is allowed during
+# /implement, /fix, and /incident invocations. Complex multi-step plans
+# may need more turns to complete. If you see "Reached max turns (N)"
+# errors, increase this value.
+# Default: 200.
+# skill_max_turns: 200
+
 # Contemplative mode trigger chance (0-100%)
 # When no mission is pending, this is the probability of running a reflective
 # session instead of autonomous work. Allows regular moments of introspection

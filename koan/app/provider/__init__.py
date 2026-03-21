@@ -309,5 +309,17 @@ def run_command_streaming(
             f"CLI invocation failed: {stderr_text[:300]}"
         )
 
+    # Notify user when max turns ceiling was hit so they know how to raise it
+    import re
+    if re.search(r"Reached max turns", stdout_text, re.IGNORECASE):
+        print(
+            f"\n⚠️  Claude hit the max turns limit ({max_turns}). "
+            f"The mission may be incomplete.\n"
+            f"   To increase: set skill_max_turns in instance/config.yaml "
+            f"(current: {max_turns}).\n",
+            file=sys.stderr,
+            flush=True,
+        )
+
     from app.claude_step import strip_cli_noise
     return strip_cli_noise(stdout_text.strip())

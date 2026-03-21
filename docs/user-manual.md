@@ -753,6 +753,10 @@ schedule:
   timezone: UTC
   active_hours: "00:00-23:59" # Default: always active
 
+# Skill execution limits
+skill_timeout: 3600           # Max seconds for /fix, /implement, /incident
+skill_max_turns: 200          # Max agentic turns for heavy skills
+
 # Prompt guard (content safety)
 prompt_guard: true            # Enable prompt injection detection
 ```

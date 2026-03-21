@@ -181,11 +181,11 @@ def _execute_fix(
     )
 
     from app.cli_provider import CLAUDE_TOOLS, run_command_streaming
-    from app.config import get_skill_timeout
+    from app.config import get_skill_max_turns, get_skill_timeout
     return run_command_streaming(
         prompt, project_path,
         allowed_tools=sorted(CLAUDE_TOOLS),
-        max_turns=50, timeout=get_skill_timeout(),
+        max_turns=get_skill_max_turns(), timeout=get_skill_timeout(),
     )
 
 

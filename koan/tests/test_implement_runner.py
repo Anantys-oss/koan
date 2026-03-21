@@ -229,7 +229,7 @@ class TestExecuteImplementation:
             call_kwargs = mock_run.call_args
             assert call_kwargs[0][0] == "prompt"
             assert call_kwargs[0][1] == "/project"
-            assert call_kwargs[1]["max_turns"] == 50
+            assert call_kwargs[1]["max_turns"] == 200
             assert call_kwargs[1]["timeout"] == 3600
             assert result == "ok"
 
