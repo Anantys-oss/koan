@@ -32,7 +32,7 @@ defaults:
     base_branch: "main"
     strategy: "squash"
 
-  # CLI provider — which AI CLI to use ("claude", "copilot", "local")
+  # CLI provider — which AI CLI to use ("claude", "codex", "copilot", "local")
   # Per-project overrides allow different providers for different repos.
   # Can also be set globally in config.yaml or via KOAN_CLI_PROVIDER env var.
   # cli_provider: "claude"

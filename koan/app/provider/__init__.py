@@ -2,17 +2,18 @@
 CLI provider abstraction for Kōan.
 
 Allows switching between Claude Code CLI, GitHub Copilot CLI,
-or a local LLM server as the underlying AI agent binary. Each
-provider knows how to translate Kōan's generic command spec into
-provider-specific flags.
+OpenAI Codex CLI, or a local LLM server as the underlying AI agent
+binary. Each provider knows how to translate Kōan's generic command
+spec into provider-specific flags.
 
 Configuration:
     config.yaml:  cli_provider: "claude"   (default)
-    env var:      KOAN_CLI_PROVIDER=copilot (overrides config.yaml)
+    env var:      KOAN_CLI_PROVIDER=codex  (overrides config.yaml)
 
 Package structure:
     provider/base.py         — CLIProvider base class + tool constants
     provider/claude.py       — ClaudeProvider implementation
+    provider/codex.py        — CodexProvider implementation
     provider/copilot.py      — CopilotProvider implementation
     provider/local.py        — LocalLLMProvider implementation
     provider/ollama_launch.py — OllamaLaunchProvider (ollama launch claude)
@@ -33,6 +34,7 @@ from app.provider.base import (  # noqa: F401
 
 # Import concrete providers
 from app.provider.claude import ClaudeProvider  # noqa: F401
+from app.provider.codex import CodexProvider  # noqa: F401
 from app.provider.copilot import CopilotProvider  # noqa: F401
 from app.provider.local import LocalLLMProvider  # noqa: F401
 from app.provider.ollama_launch import OllamaLaunchProvider  # noqa: F401
@@ -44,6 +46,7 @@ from app.provider.ollama_launch import OllamaLaunchProvider  # noqa: F401
 
 _PROVIDERS = {
     "claude": ClaudeProvider,
+    "codex": CodexProvider,
     "copilot": CopilotProvider,
     "local": LocalLLMProvider,
     "ollama-launch": OllamaLaunchProvider,

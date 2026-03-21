@@ -4,6 +4,7 @@ CLI provider abstraction — backward-compatible re-export facade.
 All implementation lives in the app.provider package:
     app/provider/base.py    — CLIProvider base class + tool constants
     app/provider/claude.py  — ClaudeProvider
+    app/provider/codex.py   — CodexProvider
     app/provider/copilot.py — CopilotProvider
     app/provider/local.py   — LocalLLMProvider
     app/provider/ollama_launch.py — OllamaLaunchProvider
@@ -20,6 +21,7 @@ from app.provider import (  # noqa: F401
     TOOL_NAME_MAP,
     # Concrete providers
     ClaudeProvider,
+    CodexProvider,
     CopilotProvider,
     LocalLLMProvider,
     OllamaLaunchProvider,
