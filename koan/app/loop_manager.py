@@ -741,7 +741,7 @@ def process_github_notifications(
                 _github_log(f"Notification error for {repo}: {error[:100]}", "warning")
                 _post_error_for_notification(notif, error)
 
-        # Drain non-actionable notifications (ci_activity, review_requested,
+        # Drain non-actionable notifications (ci_activity, state_change,
         # etc.) to prevent accumulation that blocks future @mention detection.
         # When old notifications pile up on a thread, new @mentions may update
         # the existing notification instead of creating a fresh "mention" one.
@@ -780,7 +780,7 @@ _MAX_DRAIN_PER_CYCLE = 30
 def _drain_notifications(notifications: list) -> int:
     """Mark non-actionable notifications as read to prevent accumulation.
 
-    Non-actionable notifications (ci_activity, review_requested, state_change,
+    Non-actionable notifications (ci_activity, state_change,
     etc.) pile up on threads the bot owns. When they stay unread, new @mentions
     on those threads may update the existing notification instead of creating a
     fresh "mention"-reason notification, causing @mentions to be missed.
