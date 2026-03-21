@@ -351,6 +351,22 @@ def get_mission_timeout() -> int:
     return _safe_int(config.get("mission_timeout", 3600), 3600)
 
 
+def get_skill_max_turns() -> int:
+    """Get max turns for skill execution (fix, implement, incident).
+
+    Controls the maximum number of agentic turns Claude CLI is allowed
+    to take during heavy-lifting skill invocations. Higher values allow
+    complex implementations to complete without hitting the ceiling.
+
+    Config key: skill_max_turns (default: 200).
+
+    Returns:
+        Maximum number of turns.
+    """
+    config = _load_config()
+    return _safe_int(config.get("skill_max_turns", 200), 200)
+
+
 def get_plan_review_config() -> dict:
     """Get plan review loop configuration from config.yaml.
 
