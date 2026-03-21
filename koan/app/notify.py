@@ -13,6 +13,7 @@ Usage from Python:
     send_telegram("Mission completed: security audit")
 """
 
+import logging
 import os
 import subprocess
 import sys
@@ -20,6 +21,8 @@ import threading
 from enum import Enum
 from pathlib import Path
 from typing import Dict, Optional, Tuple
+
+log = logging.getLogger(__name__)
 
 from app.utils import load_dotenv
 
@@ -75,12 +78,9 @@ def _get_min_priority() -> NotificationPriority:
             result = _PRIORITY_NAME_MAP.get(key)
             if result is not None:
                 return result
-            print(
-                f"[notify] Invalid min_priority value '{raw}', defaulting to 'action'.",
-                file=sys.stderr,
-            )
+            log.warning("Invalid min_priority value '%s', defaulting to 'action'.", raw)
     except Exception as e:
-        print(f"[notify] Could not load min_priority from config: {e}", file=sys.stderr)
+        log.warning("Could not load min_priority from config: %s", e)
     return NotificationPriority.ACTION
 
 
@@ -113,8 +113,7 @@ def _write_suppressed_to_journal(text: str, priority: NotificationPriority):
         )
         append_to_journal(instance_dir, "notifications", entry)
     except Exception as e:
-        print(f"[notify] Failed to write suppressed message to journal: {e}",
-              file=sys.stderr)
+        log.warning("Failed to write suppressed message to journal: %s", e)
 
 
 class TypingIndicator:
