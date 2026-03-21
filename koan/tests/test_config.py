@@ -372,6 +372,35 @@ class TestGetSkillTimeout:
             assert get_skill_timeout() == 3600
 
 
+# --- get_skill_max_turns ---
+
+
+class TestGetSkillMaxTurns:
+    def test_default(self):
+        from app.config import get_skill_max_turns
+
+        with _mock_config({}):
+            assert get_skill_max_turns() == 200
+
+    def test_custom(self):
+        from app.config import get_skill_max_turns
+
+        with _mock_config({"skill_max_turns": 100}):
+            assert get_skill_max_turns() == 100
+
+    def test_string_value_coerced(self):
+        from app.config import get_skill_max_turns
+
+        with _mock_config({"skill_max_turns": "300"}):
+            assert get_skill_max_turns() == 300
+
+    def test_invalid_string_returns_default(self):
+        from app.config import get_skill_max_turns
+
+        with _mock_config({"skill_max_turns": "infinite"}):
+            assert get_skill_max_turns() == 200
+
+
 # --- get_mission_timeout ---
 
 

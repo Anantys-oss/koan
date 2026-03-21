@@ -151,7 +151,7 @@ def _execute_incident(
     skill_dir: Optional[Path] = None,
 ) -> str:
     """Execute the incident triage via Claude CLI."""
-    from app.config import get_branch_prefix, get_skill_timeout
+    from app.config import get_branch_prefix, get_skill_max_turns, get_skill_timeout
 
     branch_prefix = get_branch_prefix()
     timestamp = str(int(time.time()))
@@ -167,7 +167,7 @@ def _execute_incident(
     return run_command_streaming(
         prompt, project_path,
         allowed_tools=sorted(CLAUDE_TOOLS),
-        max_turns=50, timeout=get_skill_timeout(),
+        max_turns=get_skill_max_turns(), timeout=get_skill_timeout(),
     )
 
 
