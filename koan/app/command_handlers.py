@@ -64,10 +64,24 @@ def handle_command(text: str):
         send_telegram("⏹️ Stop requested. Current mission will complete, then Kōan will stop.")
         return
 
-    if cmd in ("/pause", "/sleep"):
-        from app.pause_manager import is_paused, create_pause
+    if cmd in ("/pause", "/sleep") or cmd.startswith(("/pause ", "/sleep ")):
+        from app.pause_manager import is_paused, create_pause, parse_duration
         if is_paused(str(KOAN_ROOT)):
             send_telegram("⏸️ Already paused. /resume to unpause.")
+            return
+
+        # Parse optional duration argument: /pause 2h, /pause 30m, /pause 1h30m
+        args = text.strip().split(None, 1)[1].strip() if " " in text.strip() else ""
+        duration_secs = parse_duration(args) if args else None
+
+        if duration_secs:
+            import time as _time
+            from app.reset_parser import time_until_reset
+            resume_at = int(_time.time()) + duration_secs
+            remaining = time_until_reset(resume_at)
+            create_pause(str(KOAN_ROOT), reason="timed", timestamp=resume_at,
+                         display=f"until {remaining} (paused for {args})")
+            send_telegram(f"⏸️ Paused for {args}. Auto-resumes in ~{remaining}. /resume to unpause early.")
         else:
             create_pause(str(KOAN_ROOT), reason="manual", display="paused via Telegram")
             send_telegram("⏸️ Paused. No missions will run. /resume to unpause.")
@@ -406,7 +420,7 @@ _GROUP_META = {
 _CORE_COMMAND_HELP = [
     ("help",   "Show help overview or details",   ["h"],                    "system"),
     ("stop",   "Stop the run loop",               [],                      "system"),
-    ("pause",  "Pause mission processing",         ["sleep"],              "system"),
+    ("pause",  "Pause mission processing (optional: /pause 2h)",  ["sleep"],  "system"),
     ("resume", "Resume mission processing",        ["work", "awake", "run", "start"], "system"),
     ("skill",  "Manage skill packages",            [],                     "system"),
 ]

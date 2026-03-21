@@ -640,7 +640,7 @@ class TestHandleQuotaExhaustion:
         assert result is not None
 
     def test_handles_both_files_missing(self, tmp_path, capsys):
-        from app.quota_handler import handle_quota_exhaustion
+        from app.quota_handler import handle_quota_exhaustion, QUOTA_CHECK_UNRELIABLE
 
         instance = str(tmp_path / "instance")
         os.makedirs(instance)
@@ -649,7 +649,8 @@ class TestHandleQuotaExhaustion:
             str(tmp_path), instance, "koan", 1,
             str(tmp_path / "nonexistent1"), str(tmp_path / "nonexistent2")
         )
-        assert result is None
+        assert result is QUOTA_CHECK_UNRELIABLE
+        assert result is not None  # callers using `is not None` won't confuse it with "no quota"
 
         # Should warn when both files are unreadable
         captured = capsys.readouterr()
@@ -775,6 +776,20 @@ class TestCLI:
             env={**os.environ, "PYTHONPATH": os.path.join(os.path.dirname(__file__), "..")}
         )
         assert result.returncode == 1
+
+    def test_cli_exits_2_when_both_files_missing(self, tmp_path):
+        instance = str(tmp_path / "instance")
+        os.makedirs(instance)
+
+        result = subprocess.run(
+            [sys.executable, "-m", "app.quota_handler", "check",
+             str(tmp_path), instance, "koan", "5",
+             str(tmp_path / "nope1"), str(tmp_path / "nope2")],
+            capture_output=True, text=True,
+            env={**os.environ, "PYTHONPATH": os.path.join(os.path.dirname(__file__), "..")}
+        )
+        assert result.returncode == 2
+        assert "UNRELIABLE" in result.stderr
 
     def test_cli_missing_args(self):
         result = subprocess.run(

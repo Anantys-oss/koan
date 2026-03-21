@@ -80,6 +80,23 @@ def _handle_status(ctx) -> str:
         reason = state.reason if state else ""
         if reason == "quota":
             parts.append("\n⏸️ Mode: Paused (quota exhausted)")
+            if state and state.timestamp > 0:
+                try:
+                    from app.reset_parser import time_until_reset
+                    remaining = time_until_reset(state.timestamp)
+                    parts.append(f"  Resets in ~{remaining}")
+                except Exception:
+                    pass
+        elif reason == "timed":
+            if state and state.timestamp > 0:
+                try:
+                    from app.reset_parser import time_until_reset
+                    remaining = time_until_reset(state.timestamp)
+                    parts.append(f"\n⏸️ Mode: Paused (~{remaining} remaining)")
+                except Exception:
+                    parts.append("\n⏸️ Mode: Paused (timed)")
+            else:
+                parts.append("\n⏸️ Mode: Paused (timed)")
         elif reason == "max_runs":
             parts.append("\n⏸️ Mode: Paused (max runs reached)")
         else:

@@ -590,16 +590,20 @@ def check_auto_merge(
 def _notify_pipeline_failures(
     tracker: _PipelineTracker,
     mission_title: str = "",
+    instance_dir: str = "",
 ) -> None:
-    """Send a Telegram warning if the post-mission pipeline had issues.
+    """Write a warning to outbox.md if the post-mission pipeline had issues.
 
     Reports failed, timed-out, and skipped steps so users can see when
     steps like reflection or auto_merge silently fail to complete.
+
+    Writing to outbox.md instead of calling Telegram directly ensures the
+    bridge retries delivery on transient network errors.
     """
     if not tracker.has_issues():
         return
     try:
-        from app.notify import send_telegram
+        from app.utils import append_to_outbox
 
         _ISSUE_ICONS = {"fail": "✗", "timeout": "⏱", "skipped": "–"}
         issues = []
@@ -616,7 +620,8 @@ def _notify_pipeline_failures(
 
         prefix = f"[{mission_title}] " if mission_title else ""
         msg = f"⚠️ {prefix}Pipeline issues: {', '.join(issues)}"
-        send_telegram(msg)
+        outbox_path = Path(instance_dir) / "outbox.md"
+        append_to_outbox(outbox_path, msg + "\n")
     except Exception as e:
         print(f"[mission_runner] Pipeline failure notification failed: {e}", file=sys.stderr)
 
@@ -748,7 +753,7 @@ def run_post_mission(
 
         # 3. Check for quota exhaustion
         _report("checking quota")
-        from app.quota_handler import handle_quota_exhaustion
+        from app.quota_handler import handle_quota_exhaustion, QUOTA_CHECK_UNRELIABLE
 
         koan_root = _get_koan_root(instance_dir)
         quota_result = handle_quota_exhaustion(
@@ -759,7 +764,11 @@ def run_post_mission(
             stdout_file=stdout_file,
             stderr_file=stderr_file,
         )
-        if quota_result is not None:
+        if quota_result is QUOTA_CHECK_UNRELIABLE:
+            log(f"⚠️  Quota check unreliable for {project_name} — "
+                "could not read log files, skipping quota detection")
+            tracker.record("quota_check", "warning", "unreliable — log files unreadable")
+        elif quota_result is not None:
             result["quota_exhausted"] = True
             result["quota_info"] = quota_result
             tracker.record("quota_check", "success", "quota exhausted — early return")
@@ -905,8 +914,8 @@ def run_post_mission(
         result["pipeline_steps"] = tracker.to_dict()
         _write_pipeline_summary(instance_dir, project_name, tracker, mission_title)
 
-        # Notify user of pipeline failures via Telegram
-        _notify_pipeline_failures(tracker, mission_title)
+        # Notify user of pipeline failures via outbox (retried by bridge)
+        _notify_pipeline_failures(tracker, mission_title, instance_dir)
 
         return result
     finally:

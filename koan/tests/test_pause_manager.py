@@ -743,3 +743,109 @@ class TestCreatePauseAtomicWrite:
             content = mock_aw.call_args_list[0][0][1]
             assert "quota" in content
             assert "1707000000" in content
+
+
+class TestParseDuration:
+    """Test parse_duration helper function."""
+
+    def test_hours_only(self):
+        from app.pause_manager import parse_duration
+
+        assert parse_duration("2h") == 7200
+
+    def test_minutes_only(self):
+        from app.pause_manager import parse_duration
+
+        assert parse_duration("30m") == 1800
+
+    def test_hours_and_minutes(self):
+        from app.pause_manager import parse_duration
+
+        assert parse_duration("1h30m") == 5400
+
+    def test_large_minutes(self):
+        from app.pause_manager import parse_duration
+
+        assert parse_duration("90m") == 5400
+
+    def test_strips_whitespace(self):
+        from app.pause_manager import parse_duration
+
+        assert parse_duration("  2h  ") == 7200
+
+    def test_case_insensitive(self):
+        from app.pause_manager import parse_duration
+
+        assert parse_duration("2H") == 7200
+        assert parse_duration("30M") == 1800
+
+    def test_invalid_returns_none(self):
+        from app.pause_manager import parse_duration
+
+        assert parse_duration("") is None
+        assert parse_duration("abc") is None
+        assert parse_duration("2") is None
+
+    def test_zero_duration_returns_none(self):
+        from app.pause_manager import parse_duration
+
+        assert parse_duration("0h") is None
+        assert parse_duration("0m") is None
+
+
+class TestTimedPauseAutoResume:
+    """Test auto-resume for timed (time-bounded manual) pauses."""
+
+    def test_timed_pauses_before_resume_time(self):
+        from app.pause_manager import PauseState, should_auto_resume
+
+        resume_at = 2000
+        state = PauseState(reason="timed", timestamp=resume_at, display="until 5pm")
+        assert should_auto_resume(state, now=1999) is False
+
+    def test_timed_resumes_at_exact_time(self):
+        from app.pause_manager import PauseState, should_auto_resume
+
+        resume_at = 2000
+        state = PauseState(reason="timed", timestamp=resume_at, display="until 5pm")
+        assert should_auto_resume(state, now=2000) is True
+
+    def test_timed_resumes_after_time(self):
+        from app.pause_manager import PauseState, should_auto_resume
+
+        resume_at = 2000
+        state = PauseState(reason="timed", timestamp=resume_at, display="until 5pm")
+        assert should_auto_resume(state, now=3000) is True
+
+    def test_timed_with_zero_timestamp_stays_paused(self):
+        from app.pause_manager import PauseState, should_auto_resume
+
+        state = PauseState(reason="timed", timestamp=0, display="")
+        assert should_auto_resume(state, now=9999) is False
+
+    def test_is_timed_property(self):
+        from app.pause_manager import PauseState
+
+        timed = PauseState(reason="timed", timestamp=2000, display="")
+        manual = PauseState(reason="manual", timestamp=0, display="")
+        quota = PauseState(reason="quota", timestamp=2000, display="")
+        assert timed.is_timed is True
+        assert manual.is_timed is False
+        assert quota.is_timed is False
+
+    def test_check_and_resume_returns_message_for_timed(self, tmp_path, monkeypatch):
+        from app.pause_manager import create_pause, check_and_resume
+
+        now = 1000000
+        resume_at = now + 7200  # 2 hours from now
+        create_pause(str(tmp_path), "timed", resume_at, "until 5pm (paused for 2h)")
+
+        # Still paused before resume time
+        monkeypatch.setattr("app.pause_manager.time.time", lambda: now + 3600)
+        assert check_and_resume(str(tmp_path)) is None
+
+        # Auto-resumes at resume time
+        monkeypatch.setattr("app.pause_manager.time.time", lambda: resume_at + 1)
+        msg = check_and_resume(str(tmp_path))
+        assert msg is not None
+        assert "timed" in msg.lower() or "expired" in msg.lower() or "until 5pm" in msg

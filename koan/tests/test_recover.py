@@ -525,6 +525,28 @@ class TestRecoveryCounterHelpers:
         result = _strip_recovery_counter("- Fix the bug")
         assert result == "- Fix the bug"
 
+    def test_get_attempts_malformed_non_integer(self):
+        """Malformed [r:abc] defaults to 0 instead of raising ValueError."""
+        assert _get_recovery_attempts("- Fix the bug [r:abc]") == 0
+
+    def test_get_attempts_malformed_float(self):
+        """Malformed [r:3.5] defaults to 0."""
+        assert _get_recovery_attempts("- Fix the bug [r:3.5]") == 0
+
+    def test_get_attempts_malformed_empty(self):
+        """Malformed [r:] defaults to 0."""
+        assert _get_recovery_attempts("- Fix the bug [r:]") == 0
+
+    def test_strip_malformed_counter(self):
+        """Malformed [r:abc] is still stripped from the line."""
+        result = _strip_recovery_counter("- Fix the bug [r:abc]")
+        assert result == "- Fix the bug"
+
+    def test_set_replaces_malformed_counter(self):
+        """Malformed [r:abc] is replaced with a valid counter."""
+        result = _set_recovery_attempts("- Fix the bug [r:abc]", 1)
+        assert result == "- Fix the bug [r:1]"
+
 
 # ---------------------------------------------------------------------------
 # State classification
@@ -589,6 +611,18 @@ class TestRecoveryCounterIntegration:
         content = missions.read_text()
         assert "[r:2]" in content
         assert "[r:1]" not in content
+
+    def test_malformed_counter_recovered_as_first_attempt(self, instance_dir):
+        """A mission with a malformed [r:abc] counter is treated as 0 attempts."""
+        missions = instance_dir / "missions.md"
+        missions.write_text(_missions(in_progress="- Fix the bug [r:abc]"))
+
+        count = recover_missions(str(instance_dir))
+        assert count == 1
+
+        content = missions.read_text()
+        assert "[r:1]" in content
+        assert "[r:abc]" not in content
 
     def test_counter_preserved_in_pending(self, instance_dir):
         """The [r:N] tag is present in Pending after recovery."""

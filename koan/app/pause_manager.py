@@ -19,6 +19,7 @@ that could permanently block the agent.
 
 import json
 import os
+import re
 import sys
 import time
 from dataclasses import dataclass
@@ -39,13 +40,36 @@ QUOTA_RETRY_SECONDS = 3600  # 1 hour
 class PauseState:
     """Represents the current pause state."""
 
-    reason: str  # "quota", "max_runs", or other
-    timestamp: int  # Reset time (quota) or pause time (max_runs)
+    reason: str  # "quota", "max_runs", "timed", "manual", or other
+    timestamp: int  # Reset time (quota/timed) or pause time (max_runs)
     display: str  # Human-readable info
 
     @property
     def is_quota(self) -> bool:
         return self.reason == "quota"
+
+    @property
+    def is_timed(self) -> bool:
+        return self.reason == "timed"
+
+
+def parse_duration(text: str) -> Optional[int]:
+    """Parse a duration string like '2h', '30m', '1h30m' into seconds.
+
+    Returns None if the text cannot be parsed or the duration is zero.
+    """
+    text = text.strip().lower()
+    if not text:
+        return None
+
+    match = re.fullmatch(r"(?:(\d+)h)?(?:(\d+)m)?", text)
+    if not match or not any(match.groups()):
+        return None
+
+    hours = int(match.group(1) or 0)
+    minutes = int(match.group(2) or 0)
+    total = hours * 3600 + minutes * 60
+    return total if total > 0 else None
 
 
 def is_paused(koan_root: str) -> bool:
@@ -99,6 +123,7 @@ def should_auto_resume(state: PauseState, now: Optional[int] = None) -> bool:
 
     For manual pauses: never auto-resume (only /resume clears them).
     For quota pauses: resume when current time >= reset timestamp.
+    For timed pauses: resume when current time >= resume timestamp.
     For max_runs/other: resume after DEFAULT_COOLDOWN_SECONDS (5h).
     """
     if state.reason == "manual":
@@ -107,8 +132,8 @@ def should_auto_resume(state: PauseState, now: Optional[int] = None) -> bool:
     if now is None:
         now = int(time.time())
 
-    if state.is_quota:
-        # Quota: resume when reset time is reached
+    if state.is_quota or state.is_timed:
+        # Quota/timed: resume when the stored timestamp is reached
         return state.timestamp > 0 and now >= state.timestamp
     else:
         # Non-quota: resume after 5h cooldown from pause time
@@ -177,6 +202,8 @@ def check_and_resume(koan_root: str) -> Optional[str]:
 
     if state.is_quota:
         return f"quota reset time reached ({state.display})"
+    elif state.is_timed:
+        return f"timed pause expired ({state.display})"
     else:
         return f"5h have passed since pause ({state.reason})"
 

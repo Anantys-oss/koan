@@ -743,6 +743,11 @@ tools:
   allowed: []                 # Whitelist (empty = all allowed)
   blocked: []                 # Blacklist specific tools
 
+# Start on pause — boot directly into pause mode
+# Useful for scheduled launches (cron, launchd) where you want
+# the stack running but idle until you explicitly /resume.
+start_on_pause: false
+
 # Schedule (when Kōan is allowed to work)
 schedule:
   timezone: UTC
@@ -887,6 +892,27 @@ Kōan supports multiple CLI backends. Configure globally via `KOAN_CLI_PROVIDER`
 
 ### System Management
 
+**`/pause`** — Pause mission processing. Kōan stays running but won't pick up new missions.
+
+- **Aliases:** `/sleep`
+
+<details>
+<summary>Use cases</summary>
+
+- `/pause` — Temporarily stop mission work without shutting down
+- Resume with `/resume` when ready
+</details>
+
+**`/resume`** — Resume mission processing after a pause (manual or automatic).
+
+- **Aliases:** `/work`, `/awake`, `/run`, `/start`
+
+<details>
+<summary>Use cases</summary>
+
+- `/resume` — Unpause after a manual `/pause` or quota exhaustion
+</details>
+
 **`/shutdown`** — Shutdown both the agent loop and the messaging bridge.
 
 <details>
@@ -964,6 +990,20 @@ See [docs/auto-update.md](auto-update.md) for details.
 
 - `/add_project https://github.com/org/new-repo` — Add a new repo for Kōan to manage
 - `/add_project https://github.com/org/new-repo myproject` — Add with a custom name
+</details>
+
+### Removing Projects
+
+**`/delete_project`** — Remove a project from the workspace.
+
+- **Usage:** `/delete_project <project-name>`
+- **Aliases:** `/delete`, `/del`
+
+<details>
+<summary>Use cases</summary>
+
+- `/delete_project myrepo` — Remove a project directory and its projects.yaml entry
+- `/del myrepo` — Same, using short alias
 </details>
 
 ### Performance Profiling
@@ -1102,11 +1142,14 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/language <lang>` | `/lng` | P | Set reply language |
 | `/french` | `/fr`, `/francais`, `/français` | P | Switch to French |
 | `/english` | `/en`, `/anglais` | P | Switch to English |
+| `/pause` | `/sleep` | P | Pause mission processing |
+| `/resume` | `/work`, `/awake`, `/run`, `/start` | P | Resume mission processing |
 | `/shutdown` | — | P | Shutdown all processes |
 | `/update` | `/upgrade` | P | Update Kōan and restart |
 | `/restart` | — | P | Restart processes (no code pull) |
 | `/snapshot` | — | P | Export memory state |
 | `/add_project <url>` | `/add_project` | P | Add a project from GitHub |
+| `/delete_project <name>` | `/delete`, `/del` | P | Remove a project from workspace |
 | `/profile <project>` | `/perf`, `/benchmark` | P | Performance profiling mission |
 | `/tech_debt [project]` | `/td`, `/debt` | P | Scan project for tech debt |
 | `/dead_code [project]` | `/dc` | P | Scan for unused code |

@@ -9,6 +9,16 @@
 # project_path: "/path/to/your/project"
 # pilot_repo: "/path/to/koan"
 
+# Start on pause — boot directly into pause mode
+# When true, Kōan starts paused and waits for an explicit /resume before
+# picking up missions. Useful for scheduled launches (cron, launchd) where
+# you want the stack running but idle until you're ready.
+# Manual pauses (/pause) are preserved; stale system pauses (quota, max_runs)
+# are replaced with a clean start_on_pause reason.
+# The /resume command sets KOAN_SKIP_START_PAUSE=1 internally so auto-restart
+# after resume doesn't immediately re-pause.
+# start_on_pause: false
+
 # Budget & Scheduling
 # These are the primary source of truth for run loop configuration.
 # max_runs_per_day: Maximum runs before auto-pause (resets on /resume or quota reset)
