@@ -212,6 +212,22 @@ def _format_output(by_project, hours):
             title = _truncate_title(pr["title"])
             lines.append(f"  ⏳ #{pr['number']} {title}")
 
+    # Collect all URLs in listing order (merged then open, grouped by project)
+    urls = []
+    for project in sorted(by_project):
+        data = by_project[project]
+        for pr in data["merged"]:
+            if pr.get("url"):
+                urls.append(pr["url"])
+        for pr in data["open"]:
+            if pr.get("url"):
+                urls.append(pr["url"])
+
+    if urls:
+        lines.append("")
+        lines.append("Links:")
+        lines.extend(urls)
+
     return "\n".join(lines)
 
 

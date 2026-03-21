@@ -321,6 +321,80 @@ class TestFormatOutput:
         output = _format_output(by_project, 48)
         assert "last 48h" in output
 
+    def test_links_section_appended(self):
+        by_project = {
+            "koan": {
+                "merged": [
+                    {"number": 1, "title": "feat: X", "url": "https://github.com/org/repo/pull/1", "merged_at": ""},
+                ],
+                "open": [
+                    {"number": 2, "title": "feat: Y", "url": "https://github.com/org/repo/pull/2", "created_at": ""},
+                ],
+            },
+        }
+        output = _format_output(by_project, 24)
+        assert "\nLinks:" in output
+        assert "https://github.com/org/repo/pull/1" in output
+        assert "https://github.com/org/repo/pull/2" in output
+
+    def test_links_order_matches_listing(self):
+        """Links follow listing order: merged first, then open, grouped by project."""
+        by_project = {
+            "alpha": {
+                "merged": [
+                    {"number": 10, "title": "A", "url": "https://github.com/org/alpha/pull/10", "merged_at": ""},
+                ],
+                "open": [],
+            },
+            "beta": {
+                "merged": [],
+                "open": [
+                    {"number": 20, "title": "B", "url": "https://github.com/org/beta/pull/20", "created_at": ""},
+                ],
+            },
+        }
+        output = _format_output(by_project, 24)
+        lines = output.split("\n")
+        links_start = lines.index("Links:")
+        link_lines = [l for l in lines[links_start + 1:] if l.strip()]
+        assert link_lines == [
+            "https://github.com/org/alpha/pull/10",
+            "https://github.com/org/beta/pull/20",
+        ]
+
+    def test_no_links_section_when_urls_empty(self):
+        """No Links section when all url fields are empty."""
+        by_project = {
+            "koan": {
+                "merged": [
+                    {"number": 1, "title": "X", "url": "", "merged_at": ""},
+                ],
+                "open": [],
+            },
+        }
+        output = _format_output(by_project, 24)
+        assert "Links:" not in output
+
+    def test_links_skips_empty_urls(self):
+        """PRs with empty url are excluded from Links section."""
+        by_project = {
+            "koan": {
+                "merged": [
+                    {"number": 1, "title": "A", "url": "https://github.com/org/repo/pull/1", "merged_at": ""},
+                    {"number": 2, "title": "B", "url": "", "merged_at": ""},
+                ],
+                "open": [],
+            },
+        }
+        output = _format_output(by_project, 24)
+        assert "Links:" in output
+        assert "https://github.com/org/repo/pull/1" in output
+        # Only 1 link line after "Links:"
+        lines = output.split("\n")
+        links_start = lines.index("Links:")
+        link_lines = [l for l in lines[links_start + 1:] if l.strip()]
+        assert len(link_lines) == 1
+
 
 # ---------------------------------------------------------------------------
 # handle (integration)
