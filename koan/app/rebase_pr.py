@@ -286,7 +286,12 @@ def run_rebase(
     original_branch = _get_current_branch(project_path)
 
     try:
-        fetch_remote = _checkout_pr_branch(branch, project_path)
+        fetch_remote = _checkout_pr_branch(
+            branch, project_path,
+            head_remote=head_remote,
+            head_owner=context.get("head_owner", ""),
+            repo=repo,
+        )
     except Exception as e:
         return False, f"Failed to checkout branch `{branch}`: {e}"
 
@@ -885,27 +890,71 @@ def _apply_review_feedback(
 
 
 
-def _checkout_pr_branch(branch: str, project_path: str) -> str:
-    """Checkout the PR branch, fetching from origin or upstream.
+def _checkout_pr_branch(
+    branch: str,
+    project_path: str,
+    head_remote: Optional[str] = None,
+    head_owner: str = "",
+    repo: str = "",
+) -> str:
+    """Checkout the PR branch, fetching from the appropriate remote.
 
     Uses ``git checkout -B`` to create or reset the local branch,
     ensuring a stale local branch with the same name never blocks
     the checkout.
 
+    When the PR comes from a fork that has no local remote configured,
+    the fork is added as a temporary remote named ``fork-<owner>`` and
+    fetched from there.
+
+    Args:
+        branch: The branch name to checkout.
+        project_path: Local path to the git repository.
+        head_remote: Pre-resolved remote name for the PR head (from
+            ``_find_remote_for_repo``).  Tried first if given.
+        head_owner: GitHub owner of the PR's head repository.  Used to
+            add a temporary remote when no existing remote matches.
+        repo: GitHub repository name.  Used together with *head_owner*.
+
     Returns:
         The remote name used for the fetch (e.g. ``"origin"`` or ``"upstream"``).
     """
-    # Try origin first, then upstream (for cross-repo PRs)
-    fetch_remote = "origin"
-    try:
-        _run_git(["git", "fetch", "origin", branch], cwd=project_path)
-    except Exception:
+    # Build ordered list of remotes to try: head_remote first, then origin/upstream
+    remotes = _ordered_remotes(head_remote)
+
+    for remote in remotes:
         try:
-            _run_git(["git", "fetch", "upstream", branch], cwd=project_path)
-            fetch_remote = "upstream"
+            _run_git(["git", "fetch", remote, branch], cwd=project_path)
+            # Success — use this remote
+            fetch_remote = remote
+            break
         except Exception:
+            continue
+    else:
+        # None of the known remotes had the branch.
+        # If we know the fork owner, add it as a temporary remote and retry.
+        if head_owner and repo:
+            fork_remote = f"fork-{head_owner}"
+            fork_url = f"https://github.com/{head_owner}/{repo}.git"
+            try:
+                _run_git(
+                    ["git", "remote", "add", fork_remote, fork_url],
+                    cwd=project_path,
+                )
+            except Exception:
+                # Remote may already exist from a previous run
+                pass
+            try:
+                _run_git(["git", "fetch", fork_remote, branch], cwd=project_path)
+                fetch_remote = fork_remote
+            except Exception:
+                raise RuntimeError(
+                    f"Branch `{branch}` not found on any remote "
+                    f"(tried {', '.join(remotes)} and {fork_remote})"
+                )
+        else:
             raise RuntimeError(
-                f"Branch `{branch}` not found on origin or upstream"
+                f"Branch `{branch}` not found on {' or '.join(remotes)}"
             )
 
     # -B creates the branch if missing, or resets it if it already exists.

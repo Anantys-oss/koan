@@ -201,16 +201,60 @@ class TestCheckoutPrBranch:
         assert len(checkout_cmds) == 1
         assert "upstream/feat/upstream-only" in checkout_cmds[0]
 
-    def test_raises_if_both_remotes_fail(self):
-        """If both origin and upstream fail, raises RuntimeError."""
+    def test_raises_if_all_remotes_fail(self):
+        """If all remotes fail and no fork info, raises RuntimeError."""
         def mock_run(cmd, **kwargs):
             if cmd[:2] == ["git", "fetch"]:
                 raise RuntimeError("remote ref not found")
             return MagicMock(returncode=0, stdout="", stderr="")
 
         with patch("app.claude_step.subprocess.run", side_effect=mock_run):
-            with pytest.raises(RuntimeError, match="not found on origin or upstream"):
+            with pytest.raises(RuntimeError, match="not found on"):
                 _checkout_pr_branch("nonexistent", "/project")
+
+    def test_tries_head_remote_first(self):
+        """When head_remote is given, it should be tried before origin."""
+        calls = []
+        def mock_run(cmd, **kwargs):
+            calls.append(cmd)
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("app.claude_step.subprocess.run", side_effect=mock_run):
+            result = _checkout_pr_branch(
+                "feat/branch", "/project", head_remote="myfork",
+            )
+
+        assert result == "myfork"
+        fetch_cmds = [c for c in calls if c[:2] == ["git", "fetch"]]
+        # head_remote should be tried first
+        assert fetch_cmds[0] == ["git", "fetch", "myfork", "feat/branch"]
+
+    def test_adds_fork_remote_when_no_match(self):
+        """When branch not found on any known remote, adds fork remote."""
+        calls = []
+        def mock_run(cmd, **kwargs):
+            calls.append(cmd)
+            # All standard remotes fail for fetch
+            if cmd[:2] == ["git", "fetch"] and cmd[2] in ("origin", "upstream"):
+                raise RuntimeError("remote ref not found")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("app.claude_step.subprocess.run", side_effect=mock_run):
+            result = _checkout_pr_branch(
+                "feat/fix", "/project",
+                head_owner="someuser", repo="somerepo",
+            )
+
+        assert result == "fork-someuser"
+        # Should have added the remote
+        add_cmds = [c for c in calls if "remote" in c and "add" in c]
+        assert len(add_cmds) == 1
+        assert "fork-someuser" in add_cmds[0]
+        assert "https://github.com/someuser/somerepo.git" in add_cmds[0]
+        # Should have fetched from the fork remote
+        fetch_cmds = [c for c in calls if c[:2] == ["git", "fetch"]]
+        fork_fetches = [c for c in fetch_cmds if c[2] == "fork-someuser"]
+        assert len(fork_fetches) == 1
 
 
 # ---------------------------------------------------------------------------
