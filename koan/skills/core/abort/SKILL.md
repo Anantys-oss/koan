@@ -1,13 +1,13 @@
 ---
-name: skip
+name: abort
 scope: core
 group: missions
-description: Skip the current in-progress mission and move to the next one
+description: Abort the current in-progress mission and move to the next one
 version: 1.0.0
 audience: bridge
 commands:
-  - name: skip
+  - name: abort
     description: Abort the current mission and pick up the next pending one
-    usage: /skip
+    usage: /abort
 handler: handler.py
 ---
