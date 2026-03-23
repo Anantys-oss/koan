@@ -277,13 +277,13 @@ class TestFetchMergedPrs:
         mock_run.return_value = _mock_gh_success([{
             "number": 1,
             "title": "fix: something",
-            "createdAt": "2026-02-20T10:00:00Z",
-            "mergedAt": "2026-02-21T10:00:00Z",
+            "createdAt": _iso_hours_ago(48),
+            "mergedAt": _iso_hours_ago(24),
             "headRefName": "koan/fix-something",
         }])
 
         result = fetch_merged_prs("/fake/path")
-        assert result[0]["hours_to_merge"] == 24.0
+        assert result[0]["hours_to_merge"] == pytest.approx(24.0, abs=0.1)
 
     @patch("app.config.get_branch_prefix", return_value="koan/")
     @patch("subprocess.run")
