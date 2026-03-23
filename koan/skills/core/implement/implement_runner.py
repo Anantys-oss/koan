@@ -12,6 +12,7 @@ CLI:
     python3 -m skills.core.implement.implement_runner --project-path <path> --project-name <name> --issue-url <url>
 """
 
+import datetime
 import hashlib
 import logging
 import re
@@ -38,6 +39,16 @@ logger = logging.getLogger(__name__)
 
 # Path to the plan skill directory (used for loading the plan-review prompt)
 _PLAN_SKILL_DIR = Path(__file__).resolve().parent.parent / "plan"
+
+
+def _progress(msg: str) -> None:
+    """Print a timestamped progress line to stdout.
+
+    These lines are captured by ``_run_skill_mission`` in run.py and
+    appended to ``pending.md``, making them visible via ``/live``.
+    """
+    ts = datetime.datetime.now().strftime("%H:%M")
+    print(f"{ts} — {msg}", flush=True)
 
 
 # Regex pattern matching plan structure markers
@@ -84,7 +95,7 @@ def run_implement(
     context_label = f" ({context})" if context else ""
     project_name = project_name or project_name_for_path(project_path)
 
-    print(f"[implement] Fetching tracker issue {issue_url}", flush=True)
+    _progress(f"Fetching tracker issue {issue_url}")
 
     # The tracker (GitHub or Jira) resolves itself from the URL — the runner
     # never branches on provider.
@@ -126,6 +137,7 @@ def run_implement(
             f"No plan found in issue {label}. "
             "The issue should contain implementation phases."
         )
+    _progress(f"Plan extracted from issue ({len(plan)} chars, {len(comments)} comments)")
 
     # Plan-review quality gate with autonomous improvement loop
     gate_result = _run_plan_review_gate(
@@ -155,6 +167,7 @@ def run_implement(
     )
 
     # Invoke Claude with the plan
+    _progress("Starting implementation with Claude...")
     effective_context = (context or "Implement the full plan.") + improvement_context
     try:
         output = _execute_implementation(
@@ -213,6 +226,7 @@ def run_implement(
             )
 
     # Post-implementation: submit draft PR (only for GitHub issues with repo info)
+    _progress("Implementation complete, submitting draft PR...")
     pr_url = None
     if owner and repo:
         try:

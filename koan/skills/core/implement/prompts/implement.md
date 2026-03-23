@@ -13,6 +13,23 @@ You are implementing a plan from the configured issue tracker. Your job is to re
 
 {CONTEXT}
 {PROJECT_MEMORY}
+
+## Progress Reporting
+
+Your stdout is streamed to `/live` so the human can track progress in real time.
+Print a brief status line at the start of each major step — one line, no decoration:
+
+```
+→ Exploring codebase structure
+→ Creating branch koan/implement-42
+→ Phase 1: Adding user email migration
+→ Running test suite (47 tests)
+→ Phase 2: Updating API validation
+→ All phases complete, pushing branch
+```
+
+At minimum, print one line per phase and before running tests.
+
 ## Instructions
 
 1. **Read the plan carefully**: Understand the overall goal, the phases, and the acceptance criteria for each phase.

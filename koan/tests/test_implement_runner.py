@@ -1297,6 +1297,42 @@ class TestGetProjectSubmitToRepository:
 
 
 # ---------------------------------------------------------------------------
+# Progress output
+# ---------------------------------------------------------------------------
+
+class TestProgressOutput:
+    """Verify that run_implement prints timestamped progress lines to stdout."""
+
+    def test_progress_lines_emitted(self, capsys):
+        """Pipeline stages should print HH:MM — <message> lines."""
+        notify = MagicMock()
+        body = "### Summary\nPlan\n#### Phase 1: Do it"
+        with patch(f"{_IMPL_MODULE}.fetch_issue",
+                    return_value=_github_issue(title="Title", body=body)), \
+             patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
+             patch(f"{_IMPL_MODULE}._execute_implementation",
+                    return_value="Done"), \
+             patch(f"{_IMPL_MODULE}.get_commit_subjects",
+                    return_value=["feat: implement plan"]), \
+             patch(f"{_IMPL_MODULE}._submit_implement_pr",
+                    return_value="https://github.com/o/r/pull/10"), \
+             patch(f"{_IMPL_MODULE}.get_current_branch",
+                    return_value="koan/implement-42"):
+            run_implement(
+                "/project",
+                "https://github.com/o/r/issues/42",
+                notify_fn=notify,
+            )
+        captured = capsys.readouterr().out
+        lines = captured.strip().splitlines()
+        progress_lines = [l for l in lines if " — " in l]
+        assert len(progress_lines) >= 3, f"Expected ≥3 progress lines, got: {progress_lines}"
+        import re
+        for line in progress_lines:
+            assert re.match(r"\d{2}:\d{2} — ", line), f"Bad format: {line}"
+
+
+# ---------------------------------------------------------------------------
 # run_implement — updated integration tests
 # ---------------------------------------------------------------------------
 
