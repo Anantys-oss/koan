@@ -879,7 +879,7 @@ class TestArchitectureFlag:
         )
 
         mock_fetch.return_value = pr_context
-        mock_claude.return_value = "## PR Review — Fix auth bypass\n\nGood"
+        mock_claude.return_value = ("## PR Review — Fix auth bypass\n\nGood", "")
         mock_notify = MagicMock()
 
         run_review(
@@ -1182,7 +1182,7 @@ class TestRunReviewWithReplies:
                 {"comment_id": 100, "reply": "Good question — the reason is X."},
             ],
         }
-        mock_claude.return_value = json.dumps(review_with_replies)
+        mock_claude.return_value = (json.dumps(review_with_replies), "")
         mock_repliable.return_value = [
             {"id": 100, "type": "review_comment", "user": "alice", "body": "Why?"},
         ]
@@ -1209,7 +1209,7 @@ class TestRunReviewWithReplies:
     ):
         """No reply posting when there are no repliable comments."""
         mock_fetch.return_value = pr_context
-        mock_claude.return_value = json.dumps(LGTM_REVIEW_JSON)
+        mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
         mock_notify = MagicMock()
 
         success, summary, _ = run_review(
