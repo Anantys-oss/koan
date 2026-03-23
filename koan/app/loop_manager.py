@@ -355,28 +355,51 @@ def _load_github_config(config: dict, koan_root: str, instance_dir: str) -> Opti
 
 # Module-level cache for the GitHub notification skill registry.
 # _build_skill_registry() is called every ~30s cycle; caching avoids
-# rebuilding from filesystem each time.
+# rebuilding from filesystem each time.  Invalidated when skills
+# directories change on disk (mtime check).
 _gh_cached_registry = None
 _gh_cached_extra_dirs: Optional[tuple] = None
+_gh_cached_mtime: float = 0.0
+
+
+def _skills_dir_mtime(instance_dir: str) -> float:
+    """Get the max mtime of core and instance skills directories."""
+    best = 0.0
+    core_dir = Path(__file__).resolve().parent.parent / "skills" / "core"
+    try:
+        best = max(best, core_dir.stat().st_mtime)
+    except OSError:
+        pass
+    instance_skills = Path(instance_dir) / "skills"
+    if instance_skills.is_dir():
+        try:
+            best = max(best, instance_skills.stat().st_mtime)
+        except OSError:
+            pass
+    return best
 
 
 def _build_skill_registry(instance_dir: str):
     """Build combined skill registry from core and instance skills.
 
     Uses a module-level cache to avoid rebuilding from filesystem on
-    every GitHub notification polling cycle (~30s).
+    every GitHub notification polling cycle (~30s).  Automatically
+    invalidates when skills directories change on disk (new skill added).
 
     Returns:
         Populated SkillRegistry
     """
-    global _gh_cached_registry, _gh_cached_extra_dirs
+    global _gh_cached_registry, _gh_cached_extra_dirs, _gh_cached_mtime
     from app.skills import build_registry
 
     instance_skills = Path(instance_dir) / "skills"
     extra = tuple(p for p in [instance_skills] if p.is_dir())
+    current_mtime = _skills_dir_mtime(instance_dir)
 
     with _github_state_lock:
-        if _gh_cached_registry is not None and extra == _gh_cached_extra_dirs:
+        if (_gh_cached_registry is not None
+                and extra == _gh_cached_extra_dirs
+                and current_mtime <= _gh_cached_mtime):
             return _gh_cached_registry
 
     registry = build_registry(list(extra))
@@ -384,6 +407,7 @@ def _build_skill_registry(instance_dir: str):
     with _github_state_lock:
         _gh_cached_registry = registry
         _gh_cached_extra_dirs = extra
+        _gh_cached_mtime = current_mtime
 
     return registry
 

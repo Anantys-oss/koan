@@ -1905,12 +1905,14 @@ class TestBuildSkillRegistryCache:
         import app.loop_manager as lm
         lm._gh_cached_registry = None
         lm._gh_cached_extra_dirs = None
+        lm._gh_cached_mtime = 0.0
 
     def teardown_method(self):
         """Reset cache after each test."""
         import app.loop_manager as lm
         lm._gh_cached_registry = None
         lm._gh_cached_extra_dirs = None
+        lm._gh_cached_mtime = 0.0
 
     @patch("app.skills.build_registry")
     def test_caches_registry_across_calls(self, mock_build, tmp_path):
@@ -1958,6 +1960,33 @@ class TestBuildSkillRegistryCache:
         args = mock_build.call_args[0][0]
         assert len(args) == 1
         assert args[0] == skills_dir
+
+    @patch("app.skills.build_registry")
+    def test_rebuilds_when_mtime_changes(self, mock_build, tmp_path):
+        """Cache invalidates when skills directory mtime increases."""
+        import app.loop_manager as lm
+        from app.loop_manager import _build_skill_registry
+
+        mock_registry_1 = MagicMock()
+        mock_registry_2 = MagicMock()
+        mock_build.side_effect = [mock_registry_1, mock_registry_2]
+
+        # First call builds
+        r1 = _build_skill_registry(str(tmp_path))
+        assert r1 is mock_registry_1
+
+        # Second call returns cached
+        r2 = _build_skill_registry(str(tmp_path))
+        assert r2 is mock_registry_1
+        assert mock_build.call_count == 1
+
+        # Simulate mtime change by decrementing cached mtime
+        lm._gh_cached_mtime -= 1.0
+
+        # Third call detects change and rebuilds
+        r3 = _build_skill_registry(str(tmp_path))
+        assert r3 is mock_registry_2
+        assert mock_build.call_count == 2
 
 
 # --- Test notification processing cache ---

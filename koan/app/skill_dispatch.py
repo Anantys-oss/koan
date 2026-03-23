@@ -33,9 +33,28 @@ from app.utils import is_known_project
 # bridge_state.py caches via _get_registry(), but translate_cli_skill_mission()
 # (called from run.py) was rebuilding the registry from filesystem on every
 # invocation.  This cache avoids that overhead.
+# Invalidated when skills directories change on disk (mtime check).
 _cached_registry = None
 _cached_extra_dirs: Optional[tuple] = None
+_cached_mtime: float = 0.0
 _registry_lock = threading.Lock()
+
+
+def _get_skills_dir_mtime(instance_dir: Path) -> float:
+    """Get the max mtime of core and instance skills directories."""
+    best = 0.0
+    core_dir = Path(__file__).resolve().parent.parent / "skills" / "core"
+    try:
+        best = max(best, core_dir.stat().st_mtime)
+    except OSError:
+        pass
+    instance_skills = instance_dir / "skills"
+    if instance_skills.is_dir():
+        try:
+            best = max(best, instance_skills.stat().st_mtime)
+        except OSError:
+            pass
+    return best
 
 
 # Mapping of skill command names to their CLI runner modules.
@@ -600,14 +619,19 @@ def translate_cli_skill_mission(
 
     # Look up skill in registry — cached to avoid rebuilding from filesystem
     # on every mission check.  Lock protects against concurrent rebuild races
-    # when multiple missions start simultaneously.
-    global _cached_registry, _cached_extra_dirs
+    # when multiple missions start simultaneously.  Mtime check invalidates
+    # the cache when skills directories change on disk.
+    global _cached_registry, _cached_extra_dirs, _cached_mtime
     instance_skills_dir = instance_dir / "skills"
     extra = tuple(p for p in [instance_skills_dir] if p.is_dir())
+    current_mtime = _get_skills_dir_mtime(instance_dir)
     with _registry_lock:
-        if _cached_registry is None or extra != _cached_extra_dirs:
+        if (_cached_registry is None
+                or extra != _cached_extra_dirs
+                or current_mtime > _cached_mtime):
             _cached_registry = build_registry(list(extra))
             _cached_extra_dirs = extra
+            _cached_mtime = current_mtime
         registry = _cached_registry
 
     skill = registry.get(scope, name)
