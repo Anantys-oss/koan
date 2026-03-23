@@ -52,7 +52,8 @@ def _count_commits_since_base(
             cwd=project_path,
         ).strip()
         return len(log.splitlines()) if log else 0
-    except Exception:
+    except Exception as e:
+        print(f"[squash_pr] merge-base count failed: {e}", file=sys.stderr)
         return 0
 
 
@@ -154,14 +155,16 @@ def _force_push(branch: str, project_path: str) -> str:
                 cwd=project_path,
             )
             return remote
-        except Exception:
+        except Exception as e:
+            print(f"[squash_pr] force-with-lease failed on {remote}: {e}", file=sys.stderr)
             try:
                 _run_git(
                     ["git", "push", remote, branch, "--force"],
                     cwd=project_path,
                 )
                 return remote
-            except Exception:
+            except Exception as e2:
+                print(f"[squash_pr] force push failed on {remote}: {e2}", file=sys.stderr)
                 continue
     raise RuntimeError(f"Cannot push `{branch}`: all remotes rejected the push.")
 
@@ -242,7 +245,8 @@ def run_squash(
     effective_remote = base_remote or fetch_remote or "origin"
     try:
         _run_git(["git", "fetch", effective_remote, base], cwd=project_path)
-    except Exception:
+    except Exception as e_fetch:
+        print(f"[squash_pr] fetch base from {effective_remote} failed: {e_fetch}", file=sys.stderr)
         # Try origin as fallback
         try:
             _run_git(["git", "fetch", "origin", base], cwd=project_path)
@@ -273,7 +277,8 @@ def run_squash(
             ["git", "diff", f"{base_ref}..HEAD"],
             cwd=project_path, timeout=30,
         )
-    except Exception:
+    except Exception as e:
+        print(f"[squash_pr] diff generation failed: {e}", file=sys.stderr)
         diff = ""
 
     # -- Step 5: Generate commit message + PR metadata --
@@ -374,7 +379,8 @@ def _checkout_pr_branch(
                 cwd=project_path,
             )
             return remote
-        except Exception:
+        except Exception as e:
+            print(f"[squash_pr] checkout from {remote} failed: {e}", file=sys.stderr)
             continue
 
     # Try adding fork remote if known
@@ -386,8 +392,8 @@ def _checkout_pr_branch(
                 ["git", "remote", "add", fork_remote, fork_url],
                 cwd=project_path,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[squash_pr] add fork remote failed: {e}", file=sys.stderr)
         try:
             _run_git(["git", "fetch", fork_remote, branch], cwd=project_path)
             _run_git(
@@ -395,8 +401,8 @@ def _checkout_pr_branch(
                 cwd=project_path,
             )
             return fork_remote
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[squash_pr] fetch from fork remote failed: {e}", file=sys.stderr)
 
     raise RuntimeError(
         f"Branch `{branch}` not found on any remote "
