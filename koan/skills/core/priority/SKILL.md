@@ -9,5 +9,6 @@ commands:
   - name: priority
     description: Move a pending mission to a new position
     usage: /priority <n>, /priority <n> <position>
+    aliases: [prio]
 handler: handler.py
 ---
