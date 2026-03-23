@@ -79,6 +79,21 @@ class TestParseMentionCommand:
         result = parse_mention_command(body, "bot")
         assert result == ("rebase", "")
 
+    def test_command_with_slash_prefix(self):
+        """Users often type @bot /command (Telegram habit) — slash must be stripped."""
+        result = parse_mention_command("@bot /squash", "bot")
+        assert result == ("squash", "")
+
+    def test_command_with_slash_prefix_and_url(self):
+        result = parse_mention_command(
+            "@koan /squash https://github.com/owner/repo/pull/42", "koan"
+        )
+        assert result == ("squash", "https://github.com/owner/repo/pull/42")
+
+    def test_command_with_slash_prefix_and_context(self):
+        result = parse_mention_command("@bot /plan fix the login page", "bot")
+        assert result == ("plan", "fix the login page")
+
 
 class TestApiUrlToWebUrl:
     def test_pr_url(self):

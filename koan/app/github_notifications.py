@@ -206,8 +206,8 @@ def parse_mention_command(comment_body: str, nickname: str) -> Optional[Tuple[st
     # Remove code blocks to avoid matching mentions in code
     clean_body = _CODE_BLOCK_RE.sub('', comment_body)
 
-    # Match @nickname followed by a command word
-    pattern = rf'@{re.escape(nickname)}\s+(\w+)(.*?)(?:\n|$)'
+    # Match @nickname followed by a command word (optional leading / is stripped)
+    pattern = rf'@{re.escape(nickname)}\s+/?(\w+)(.*?)(?:\n|$)'
     match = re.search(pattern, clean_body, re.IGNORECASE)
     if not match:
         return None
