@@ -803,6 +803,41 @@ class TestRecoveryJSONLLog:
 # Dry-run mode
 # ---------------------------------------------------------------------------
 
+class TestRecoverPendingJournalTOCTOU:
+    """TOCTOU race: pending.md deleted between exists() and read_text()."""
+
+    def test_pending_deleted_after_exists_check(self, instance_dir):
+        """If pending.md is deleted between exists() and read_text(), recovery
+        should not raise FileNotFoundError — it should treat it as absent.
+
+        This is a benign race: the agent process deletes pending.md after
+        completing a mission, while recover.py is concurrently checking it.
+        """
+        missions = instance_dir / "missions.md"
+        missions.write_text(_missions(in_progress="- Stale task"))
+
+        pending_path = instance_dir / "journal" / "pending.md"
+        pending_path.parent.mkdir(parents=True, exist_ok=True)
+        pending_path.write_text("# Mission\n---\n10:00 — started\n")
+
+        original_read_text = Path.read_text
+
+        def _disappearing_read_text(self, *args, **kwargs):
+            """Simulate the file vanishing between exists() and read_text()."""
+            if self.name == "pending.md" and "journal" in str(self):
+                # Delete the file to simulate the race, then let read_text fail
+                self.unlink(missing_ok=True)
+                return original_read_text(self, *args, **kwargs)
+            return original_read_text(self, *args, **kwargs)
+
+        with patch.object(Path, "read_text", _disappearing_read_text):
+            # This must NOT raise FileNotFoundError
+            count = recover_missions(str(instance_dir))
+
+        # Mission should still be recovered (as "dead", not "partial")
+        assert count == 1
+
+
 class TestDryRun:
     """Dry-run mode classifies without modifying missions.md."""
 
