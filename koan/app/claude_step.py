@@ -546,10 +546,13 @@ def _commit_with_hook_fallback(commit_args: list, cwd: str, run_git=None) -> Non
         raise
 
 
-def commit_if_changes(project_path: str, message: str) -> bool:
+def commit_if_changes(project_path: str, message: str, amend: bool = False) -> bool:
     """Stage all changes and commit if there are any.
 
-    Returns True if a commit was created.
+    Args:
+        amend: If True, amend the previous commit instead of creating a new one.
+
+    Returns True if a commit was created (or amended).
     """
     status = subprocess.run(
         ["git", "status", "--porcelain"],
@@ -560,7 +563,10 @@ def commit_if_changes(project_path: str, message: str) -> bool:
         return False
 
     _run_git(["git", "add", "-A"], cwd=project_path)
-    _commit_with_hook_fallback(["-m", message], project_path, _run_git)
+    if amend:
+        _commit_with_hook_fallback(["--amend", "--no-edit"], project_path, _run_git)
+    else:
+        _commit_with_hook_fallback(["-m", message], project_path, _run_git)
     return True
 
 
@@ -577,6 +583,7 @@ def run_claude_step(
     max_duration: Optional[int] = None,
     use_skill: bool = False,
     use_convention_subject: bool = False,
+    amend: bool = False,
 ) -> StepResult:
     """Run a Claude Code step: invoke CLI, commit changes, log result.
 
@@ -586,6 +593,7 @@ def run_claude_step(
         use_convention_subject: If True, parse COMMIT_SUBJECT from Claude's
                    output and use it instead of *commit_msg*. Falls back to
                    *commit_msg* if no valid subject is found.
+        amend: If True, amend the previous commit instead of creating a new one.
 
     Returns:
         A :class:`StepResult` — truthy when a commit was created (backward
@@ -632,7 +640,7 @@ def run_claude_step(
             parsed = parse_commit_subject(cleaned_output)
             if parsed:
                 effective_msg = _sanitize_commit_subject(parsed)
-        committed = commit_if_changes(project_path, effective_msg)
+        committed = commit_if_changes(project_path, effective_msg, amend=amend)
         if committed and success_label:
             actions_log.append(success_label)
         return StepResult(committed=committed, output=cleaned_output)
