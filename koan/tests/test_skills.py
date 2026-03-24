@@ -1579,35 +1579,61 @@ class TestHyphenValidation:
     """Ensure skills with hyphens in command names or aliases are rejected."""
 
     def test_command_name_with_hyphen_skipped(self, caplog):
-        """A skill whose command name contains a hyphen is not registered."""
+        """A command whose name contains a hyphen is skipped, but the skill is still registered."""
         skill = Skill(
             name="bad_skill", scope="custom",
+            commands=[
+                SkillCommand(name="bad-cmd", description="nope"),
+                SkillCommand(name="good_cmd", description="ok"),
+            ],
+        )
+        registry = SkillRegistry()
+
+        with caplog.at_level("ERROR", logger="app.skills"):
+            registry._register(skill)
+
+        # The skill itself is registered
+        assert registry.get("custom", "bad_skill") is not None
+        # The bad command is not in the command map
+        assert registry.find_by_command("bad-cmd") is None
+        # The good command IS registered
+        assert registry.find_by_command("good_cmd") is not None
+        assert "contains a hyphen" in caplog.text
+        assert "bad-cmd" in caplog.text
+
+    def test_command_name_with_hyphen_only_command(self, caplog):
+        """A skill whose only command has a hyphen is registered but has no commands mapped."""
+        skill = Skill(
+            name="bad_skill_only", scope="custom",
             commands=[SkillCommand(name="bad-cmd", description="nope")],
         )
         registry = SkillRegistry()
 
-        with caplog.at_level("WARNING", logger="app.skills"):
+        with caplog.at_level("ERROR", logger="app.skills"):
             registry._register(skill)
 
-        assert registry.get("custom", "bad_skill") is None
+        # Skill registered, but no commands accessible
+        assert registry.get("custom", "bad_skill_only") is not None
         assert registry.find_by_command("bad-cmd") is None
-        assert "contains a hyphen" in caplog.text
-        assert "bad-cmd" in caplog.text
 
     def test_alias_with_hyphen_skipped(self, caplog):
-        """A skill whose alias contains a hyphen is not registered."""
+        """An alias containing a hyphen is skipped, but the command and skill remain."""
         skill = Skill(
             name="bad_skill2", scope="custom",
-            commands=[SkillCommand(name="good_cmd", aliases=["bad-alias"])],
+            commands=[SkillCommand(name="good_cmd", aliases=["bad-alias", "good_alias"])],
         )
         registry = SkillRegistry()
 
-        with caplog.at_level("WARNING", logger="app.skills"):
+        with caplog.at_level("ERROR", logger="app.skills"):
             registry._register(skill)
 
-        assert registry.get("custom", "bad_skill2") is None
-        assert registry.find_by_command("good_cmd") is None
-        assert "contains a hyphen" in caplog.text
+        # Skill and command are registered
+        assert registry.get("custom", "bad_skill2") is not None
+        assert registry.find_by_command("good_cmd") is not None
+        # Good alias works, bad alias doesn't
+        assert registry.find_by_command("good_alias") is not None
+        assert registry.find_by_command("bad-alias") is None
+        assert "contain a hyphen" in caplog.text
         assert "bad-alias" in caplog.text
 
     def test_underscore_names_accepted(self):

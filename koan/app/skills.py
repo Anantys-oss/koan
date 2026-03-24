@@ -289,25 +289,35 @@ class SkillRegistry:
         """Register a skill and build command lookup."""
         key = skill.qualified_name
 
-        # Reject skills whose command names or aliases contain hyphens.
+        # Reject individual commands/aliases whose names contain hyphens.
         # Hyphens break Telegram command parsing (treated as word boundary).
         # See CLAUDE.md "No hyphens in skill names or aliases".
+        # Only the offending command/alias is skipped — the rest of the skill
+        # is still registered.
+        valid_commands: List[SkillCommand] = []
         for cmd in skill.commands:
             if "-" in cmd.name:
-                _log.warning(
+                _log.error(
                     "Skill %s: command '%s' contains a hyphen — "
-                    "skipping registration. Use underscores instead.",
+                    "skipping this command. Use underscores instead.",
                     key, cmd.name,
                 )
-                return
-            for alias in cmd.aliases:
-                if "-" in alias:
-                    _log.warning(
-                        "Skill %s: alias '%s' contains a hyphen — "
-                        "skipping registration. Use underscores instead.",
-                        key, alias,
-                    )
-                    return
+                continue
+            # Filter out hyphenated aliases, keep the rest
+            bad_aliases = [a for a in cmd.aliases if "-" in a]
+            if bad_aliases:
+                _log.error(
+                    "Skill %s: alias(es) %s contain a hyphen — "
+                    "skipping these aliases. Use underscores instead.",
+                    key, ", ".join(repr(a) for a in bad_aliases),
+                )
+            clean_aliases = [a for a in cmd.aliases if "-" not in a]
+            valid_commands.append(SkillCommand(
+                name=cmd.name,
+                description=cmd.description,
+                aliases=clean_aliases,
+                usage=cmd.usage,
+            ))
 
         self._skills[key] = skill
 
@@ -320,8 +330,8 @@ class SkillRegistry:
                 key,
             )
 
-        # Map each command name and alias to this skill
-        for cmd in skill.commands:
+        # Map each valid command name and alias to this skill
+        for cmd in valid_commands:
             self._command_map[cmd.name] = skill
             for alias in cmd.aliases:
                 self._command_map[alias] = skill
