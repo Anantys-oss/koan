@@ -955,26 +955,18 @@ Kōan supports multiple CLI backends. Configure globally via `KOAN_CLI_PROVIDER`
 - `/shutdown` — Gracefully stop everything (e.g., before system maintenance)
 </details>
 
-**`/cycle`** — Finish the current mission, pull updates, and restart.
-
-- Graceful maintenance cycle: waits for work to complete before updating.
-- Equivalent to `/stop` + `/update` + `/restart`, but in one step.
-
-<details>
-<summary>Use cases</summary>
-
-- `/cycle` — "Finish what you're doing, update yourself, and come back"
-</details>
-
-**`/update`** — Pull the latest Kōan code from upstream and restart.
+**`/update`** — Finish the current mission, pull updates, and restart.
 
 - **Aliases:** `/upgrade`
-- Only restarts when new code is pulled. Use `/restart` to force a restart without pulling.
+- Graceful update: waits for the current mission to complete before pulling and restarting.
+- If the update fails, Kōan still restarts (you asked for it).
+- Use `/restart` if you just need a fresh start without pulling code.
 
 <details>
 <summary>Use cases</summary>
 
-- `/update` — Get the latest features and fixes
+- `/update` — "Finish what you're doing, update yourself, and come back"
+- `/upgrade` — Same as `/update`
 </details>
 
 **`/restart`** — Restart both agent and bridge processes without pulling new code.
@@ -1192,8 +1184,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/pause` | `/sleep` | P | Pause mission processing |
 | `/resume` | `/work`, `/awake`, `/run`, `/start` | P | Resume mission processing |
 | `/shutdown` | — | P | Shutdown all processes |
-| `/cycle` | — | P | Finish mission, update, restart |
-| `/update` | `/upgrade` | P | Update Kōan and restart |
+| `/update` | `/upgrade` | P | Finish mission, update, restart |
 | `/restart` | — | P | Restart processes (no code pull) |
 | `/snapshot` | — | P | Export memory state |
 | `/add_project <url>` | `/add_project` | P | Add a project from GitHub |
