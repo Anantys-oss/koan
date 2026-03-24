@@ -1564,8 +1564,8 @@ class TestMainLoop:
     @patch("app.run.run_startup", return_value=(5, 10, "koan/"))
     @patch("app.run.acquire_pidfile")
     @patch("app.run.release_pidfile")
-    def test_cycle_file_triggers_update_and_restart(self, mock_release, mock_acquire, mock_startup, mock_subproc, koan_root):
-        """Cycle file triggers _handle_cycle and exits with RESTART_EXIT_CODE."""
+    def test_update_signal_triggers_update_and_restart(self, mock_release, mock_acquire, mock_startup, mock_subproc, koan_root):
+        """Update signal file triggers _handle_update and exits with RESTART_EXIT_CODE."""
         from app.run import main_loop
         from app.restart_manager import RESTART_EXIT_CODE
 
@@ -1581,18 +1581,18 @@ class TestMainLoop:
 
         with pytest.raises(SystemExit) as exc:
             with patch("app.run._notify"):
-                with patch("app.run._handle_cycle") as mock_cycle:
+                with patch("app.run._handle_update") as mock_update:
                     main_loop()
         assert exc.value.code == RESTART_EXIT_CODE
-        mock_cycle.assert_called_once()
-        # Cycle file should be cleaned up
+        mock_update.assert_called_once()
+        # Signal file should be cleaned up
         assert not (koan_root / ".koan-cycle").exists()
 
     @patch("app.run.subprocess.run")
     @patch("app.run.run_startup", return_value=(5, 10, "koan/"))
     @patch("app.run.acquire_pidfile")
     @patch("app.run.release_pidfile")
-    def test_stale_cycle_file_cleared_on_startup(self, mock_release, mock_acquire, mock_startup, mock_subproc, koan_root):
+    def test_stale_update_signal_cleared_on_startup(self, mock_release, mock_acquire, mock_startup, mock_subproc, koan_root):
         """Stale .koan-cycle from a previous session is cleared on startup."""
         from app.run import main_loop
 
@@ -1617,13 +1617,13 @@ class TestMainLoop:
 
 
 # ---------------------------------------------------------------------------
-# Test: _handle_cycle
+# Test: _handle_update
 # ---------------------------------------------------------------------------
 
-class TestHandleCycle:
-    def test_cycle_with_updates(self, tmp_path):
-        """_handle_cycle pulls updates and requests restart."""
-        from app.run import _handle_cycle
+class TestHandleUpdate:
+    def test_update_with_new_commits(self, tmp_path):
+        """_handle_update pulls updates and requests restart."""
+        from app.run import _handle_update
         from app.update_manager import UpdateResult
 
         instance = str(tmp_path / "instance")
@@ -1638,16 +1638,16 @@ class TestHandleCycle:
              patch("app.restart_manager.request_restart") as mock_restart, \
              patch("app.pause_manager.remove_pause") as mock_unpause, \
              patch("app.run._notify") as mock_notify:
-            _handle_cycle(str(tmp_path), instance, 10)
+            _handle_update(str(tmp_path), instance, 10)
 
         mock_pull.assert_called_once()
         mock_restart.assert_called_once_with(str(tmp_path))
         mock_unpause.assert_called_once_with(str(tmp_path))
         assert "3 new commits" in mock_notify.call_args[0][1]
 
-    def test_cycle_already_up_to_date(self, tmp_path):
-        """_handle_cycle still restarts even when no updates found."""
-        from app.run import _handle_cycle
+    def test_update_already_up_to_date(self, tmp_path):
+        """_handle_update still restarts even when no updates found."""
+        from app.run import _handle_update
         from app.update_manager import UpdateResult
 
         instance = str(tmp_path / "instance")
@@ -1662,14 +1662,14 @@ class TestHandleCycle:
              patch("app.restart_manager.request_restart") as mock_restart, \
              patch("app.pause_manager.remove_pause"), \
              patch("app.run._notify") as mock_notify:
-            _handle_cycle(str(tmp_path), instance, 5)
+            _handle_update(str(tmp_path), instance, 5)
 
         mock_restart.assert_called_once()
         assert "up to date" in mock_notify.call_args[0][1]
 
-    def test_cycle_update_fails_still_restarts(self, tmp_path):
-        """_handle_cycle restarts even when update fails."""
-        from app.run import _handle_cycle
+    def test_update_fails_still_restarts(self, tmp_path):
+        """_handle_update restarts even when update fails."""
+        from app.run import _handle_update
         from app.update_manager import UpdateResult
 
         instance = str(tmp_path / "instance")
@@ -1684,7 +1684,7 @@ class TestHandleCycle:
              patch("app.restart_manager.request_restart") as mock_restart, \
              patch("app.pause_manager.remove_pause"), \
              patch("app.run._notify") as mock_notify:
-            _handle_cycle(str(tmp_path), instance, 3)
+            _handle_update(str(tmp_path), instance, 3)
 
         mock_restart.assert_called_once()
         assert "failed" in mock_notify.call_args[0][1]

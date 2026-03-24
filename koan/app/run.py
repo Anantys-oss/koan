@@ -497,15 +497,15 @@ def _commit_instance(instance: str, message: str = ""):
 
 
 # ---------------------------------------------------------------------------
-# Cycle handler (update + restart)
+# Update handler (graceful update + restart)
 # ---------------------------------------------------------------------------
 
-def _handle_cycle(koan_root: str, instance: str, count: int):
-    """Handle /cycle: pull upstream updates, then trigger restart.
+def _handle_update(koan_root: str, instance: str, count: int):
+    """Handle /update: pull upstream updates, then trigger restart.
 
     Called after the current mission completes. Pulls the latest code
     and requests a restart. If the pull fails, notifies and still restarts
-    (the user explicitly asked for a cycle).
+    (the user explicitly asked for an update).
     """
     from app.update_manager import pull_upstream
     from app.restart_manager import request_restart
@@ -513,14 +513,14 @@ def _handle_cycle(koan_root: str, instance: str, count: int):
 
     result = pull_upstream(Path(koan_root))
     if not result.success:
-        log("koan", f"Cycle update failed: {result.error}")
-        _notify(instance, f"🔄 Cycle: update failed ({result.error}), restarting anyway.")
+        log("koan", f"Update failed: {result.error}")
+        _notify(instance, f"🔄 Update failed ({result.error}), restarting anyway.")
     elif result.changed:
-        log("koan", f"Cycle update: {result.summary()}")
-        _notify(instance, f"🔄 Cycle complete after {count} runs. {result.summary()} Restarting...")
+        log("koan", f"Update: {result.summary()}")
+        _notify(instance, f"🔄 Update complete after {count} runs. {result.summary()} Restarting...")
     else:
-        log("koan", "Cycle: already up to date, restarting.")
-        _notify(instance, f"🔄 Cycle complete after {count} runs. Already up to date. Restarting...")
+        log("koan", "Update: already up to date, restarting.")
+        _notify(instance, f"🔄 Update complete after {count} runs. Already up to date. Restarting...")
 
     remove_pause(koan_root)
     request_restart(koan_root)
@@ -562,7 +562,7 @@ def handle_pause(
         _reset_usage_session(instance)
         return "resume"
 
-    # Sleep 5 min in 5s increments — check for resume/stop/restart/shutdown/cycle
+    # Sleep 5 min in 5s increments — check for resume/stop/restart/shutdown/update
     with protected_phase("Paused — waiting for resume"):
         for _ in range(60):
             if not Path(koan_root, PAUSE_FILE).exists():
@@ -574,7 +574,7 @@ def handle_pause(
                 log("pause", "Shutdown signal detected while paused")
                 break
             if Path(koan_root, CYCLE_FILE).exists():
-                log("pause", "Cycle signal detected while paused")
+                log("pause", "Update signal detected while paused")
                 break
             if check_restart(koan_root):
                 break
@@ -657,12 +657,12 @@ def main_loop():
                 _notify(instance, f"Kōan stopped on request after {count} runs. Last project: {current}.")
                 break
 
-            # --- Cycle check (finish mission → update → restart) ---
+            # --- Update check (finish mission → update → restart) ---
             cycle_file = Path(koan_root, CYCLE_FILE)
             if cycle_file.exists():
-                log("koan", "Cycle requested. Updating and restarting...")
+                log("koan", "Update requested. Updating and restarting...")
                 cycle_file.unlink(missing_ok=True)
-                _handle_cycle(koan_root, instance, count)
+                _handle_update(koan_root, instance, count)
                 sys.exit(RESTART_EXIT_CODE)
 
             # --- Shutdown check (stops both agent loop and bridge) ---

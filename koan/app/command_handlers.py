@@ -46,7 +46,7 @@ def set_callbacks(
 
 # Core commands that remain hardcoded (safety-critical or bootstrap)
 CORE_COMMANDS = frozenset({
-    "help", "stop", "cycle", "sleep", "resume", "skill",
+    "help", "stop", "update", "upgrade", "sleep", "resume", "skill",
     "pause", "work", "awake", "start", "run",  # aliases for sleep/resume
 })
 
@@ -64,10 +64,10 @@ def handle_command(text: str):
         send_telegram("⏹️ Stop requested. Current mission will complete, then Kōan will stop.")
         return
 
-    if cmd == "/cycle":
+    if cmd in ("/update", "/upgrade"):
         from app.utils import atomic_write
         atomic_write(KOAN_ROOT / CYCLE_FILE, "CYCLE")
-        send_telegram("🔄 Cycle requested. Current mission will complete, then Kōan will update and restart.")
+        send_telegram("🔄 Update requested. Current mission will complete, then Kōan will update and restart.")
         return
 
     if cmd in ("/pause", "/sleep") or cmd.startswith(("/pause ", "/sleep ")):
@@ -426,7 +426,7 @@ _GROUP_META = {
 _CORE_COMMAND_HELP = [
     ("help",   "Show help overview or details",   ["h"],                    "system"),
     ("stop",   "Stop the run loop",               [],                      "system"),
-    ("cycle",  "Finish current mission, update, restart", [],              "system"),
+    ("update", "Finish current mission, update, restart", ["upgrade"],     "system"),
     ("pause",  "Pause mission processing (optional: /pause 2h)",  ["sleep"],  "system"),
     ("resume", "Resume mission processing",        ["work", "awake", "run", "start"], "system"),
     ("skill",  "Manage skill packages",            [],                     "system"),
