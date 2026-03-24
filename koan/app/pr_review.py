@@ -16,6 +16,7 @@ Multi-step pipeline for /pr command:
 import json
 import os
 import re
+import subprocess
 from pathlib import Path
 from typing import Optional, Tuple, List
 
@@ -301,6 +302,12 @@ def run_pr_review(
     # ── Step 6: Simplify pass (post-review, readability-only) ─────────
     if refactor_skill:
         notify_fn(f"Running simplify pass ({refactor_skill} --simplify)...")
+        # If the branch has a single commit, amend it; otherwise add a new commit
+        rev_count = subprocess.run(
+            ["git", "rev-list", "--count", f"{base}..HEAD"],
+            capture_output=True, text=True, cwd=project_path, timeout=30,
+        )
+        single_commit = rev_count.stdout.strip() == "1"
         _run_claude_step(
             prompt=build_simplify_prompt(project_path, refactor_skill, skill_dir=skill_dir),
             project_path=project_path,
@@ -309,6 +316,7 @@ def run_pr_review(
             failure_label="Simplify step skipped",
             actions_log=actions_log,
             use_skill=True,
+            amend=single_commit,
         )
 
     # ── Step 7: Run tests ──────────────────────────────────────────────
