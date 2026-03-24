@@ -691,6 +691,7 @@ class TestRunPrReview:
         assert success is False
         assert "Failed to fetch" in summary
 
+    @patch("app.pr_review.subprocess")
     @patch("app.pr_review.detect_skills", return_value=("atoomic.refactor", "atoomic.review"))
     @patch("app.pr_review.detect_test_command", return_value="make test")
     @patch("app.pr_review.run_project_tests")
@@ -704,9 +705,11 @@ class TestRunPrReview:
     @patch("app.rebase_pr.run_gh")
     def test_full_pipeline_with_skills_and_tests(
         self, mock_rebase_gh, mock_flags, mock_models, mock_cs_git, mock_commit,
-        mock_claude, mock_git, mock_gh, mock_tests, mock_test_cmd, mock_skills
+        mock_claude, mock_git, mock_gh, mock_tests, mock_test_cmd, mock_skills,
+        mock_subprocess
     ):
         mock_models.return_value = {"mission": "", "fallback": "sonnet"}
+        mock_subprocess.run.return_value = MagicMock(stdout="1\n")
 
         mock_rebase_gh.side_effect = [
             self._mock_pr_context(), "0", "diff", "comment", "review", "thread",
@@ -793,6 +796,7 @@ class TestRunPrReview:
         assert success is True
         assert "fixed" in summary.lower() or "passing" in summary.lower()
 
+    @patch("app.pr_review.subprocess")
     @patch("app.pr_review.detect_skills", return_value=("atoomic.refactor", None))
     @patch("app.pr_review.detect_test_command", return_value=None)
     @patch("app.pr_review.run_gh")
@@ -805,10 +809,12 @@ class TestRunPrReview:
     @patch("app.rebase_pr.run_gh")
     def test_simplify_pass_runs_after_refactor(
         self, mock_rebase_gh, mock_flags, mock_models, mock_cs_git, mock_commit,
-        mock_claude, mock_git, mock_gh, mock_test_cmd, mock_skills
+        mock_claude, mock_git, mock_gh, mock_test_cmd, mock_skills,
+        mock_subprocess
     ):
         """Simplify pass (--simplify) runs after refactor when refactor skill is available."""
         mock_models.return_value = {"mission": "", "fallback": "sonnet"}
+        mock_subprocess.run.return_value = MagicMock(stdout="1\n")
         mock_rebase_gh.side_effect = [
             self._mock_pr_context(), "0", "diff", "reviewer comment", "review", "thread",
         ]
