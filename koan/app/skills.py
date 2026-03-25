@@ -332,9 +332,22 @@ class SkillRegistry:
 
         # Map each valid command name and alias to this skill
         for cmd in valid_commands:
+            self._check_collision(cmd.name, skill, is_alias=False)
             self._command_map[cmd.name] = skill
             for alias in cmd.aliases:
+                self._check_collision(alias, skill, is_alias=True)
                 self._command_map[alias] = skill
+
+    def _check_collision(self, name: str, skill: Skill, *, is_alias: bool) -> None:
+        """Log a warning if *name* is already registered by a different skill."""
+        existing = self._command_map.get(name)
+        if existing is not None and existing.qualified_name != skill.qualified_name:
+            kind = "alias" if is_alias else "command"
+            _log.warning(
+                "Skill %s: %s '%s' collides with skill %s — "
+                "the earlier registration will be overwritten.",
+                skill.qualified_name, kind, name, existing.qualified_name,
+            )
 
     def get(self, scope: str, name: str) -> Optional[Skill]:
         return self._skills.get(f"{scope}.{name}")

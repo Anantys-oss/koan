@@ -10,6 +10,6 @@ commands:
   - name: doctor
     description: Run diagnostic self-checks
     usage: /doctor [--full]
-    aliases: [diag, checkup]
+    aliases: [diag]
 handler: handler.py
 ---

@@ -1670,3 +1670,220 @@ class TestHyphenValidation:
         assert not violations, (
             f"Core skills with hyphens in commands/aliases: {', '.join(violations)}"
         )
+
+
+class TestAliasCollisionDetection:
+    """Verify that SkillRegistry warns when two skills register the same command/alias."""
+
+    def test_command_collision_warns(self, tmp_path, caplog):
+        """Two skills with the same command name should log a warning."""
+        skill_a = tmp_path / "core" / "skill_a"
+        skill_a.mkdir(parents=True)
+        (skill_a / "SKILL.md").write_text(textwrap.dedent("""\
+            ---
+            name: skill_a
+            scope: core
+            description: First skill
+            group: status
+            commands:
+              - name: deploy
+                description: Deploy A
+            ---
+        """))
+
+        skill_b = tmp_path / "core" / "skill_b"
+        skill_b.mkdir(parents=True)
+        (skill_b / "SKILL.md").write_text(textwrap.dedent("""\
+            ---
+            name: skill_b
+            scope: core
+            description: Second skill
+            group: status
+            commands:
+              - name: deploy
+                description: Deploy B
+            ---
+        """))
+
+        with caplog.at_level("WARNING"):
+            registry = SkillRegistry(tmp_path)
+
+        assert "collides" in caplog.text
+        assert "deploy" in caplog.text
+        assert "core.skill_a" in caplog.text
+        assert "core.skill_b" in caplog.text
+
+        # The later skill wins (overwrites)
+        found = registry.find_by_command("deploy")
+        assert found is not None
+        assert found.name == "skill_b"
+
+    def test_alias_collision_warns(self, tmp_path, caplog):
+        """Two skills with overlapping aliases should log a warning."""
+        skill_a = tmp_path / "core" / "skill_a"
+        skill_a.mkdir(parents=True)
+        (skill_a / "SKILL.md").write_text(textwrap.dedent("""\
+            ---
+            name: skill_a
+            scope: core
+            description: First skill
+            group: status
+            commands:
+              - name: alpha
+                description: Alpha cmd
+                aliases: [a]
+            ---
+        """))
+
+        skill_b = tmp_path / "core" / "skill_b"
+        skill_b.mkdir(parents=True)
+        (skill_b / "SKILL.md").write_text(textwrap.dedent("""\
+            ---
+            name: skill_b
+            scope: core
+            description: Second skill
+            group: status
+            commands:
+              - name: beta
+                description: Beta cmd
+                aliases: [a]
+            ---
+        """))
+
+        with caplog.at_level("WARNING"):
+            SkillRegistry(tmp_path)
+
+        assert "collides" in caplog.text
+        assert "alias" in caplog.text
+        assert "'a'" in caplog.text
+
+    def test_alias_collides_with_command_warns(self, tmp_path, caplog):
+        """An alias that matches another skill's command name should warn."""
+        skill_a = tmp_path / "core" / "skill_a"
+        skill_a.mkdir(parents=True)
+        (skill_a / "SKILL.md").write_text(textwrap.dedent("""\
+            ---
+            name: skill_a
+            scope: core
+            description: First skill
+            group: status
+            commands:
+              - name: deploy
+                description: Deploy
+            ---
+        """))
+
+        skill_b = tmp_path / "core" / "skill_b"
+        skill_b.mkdir(parents=True)
+        (skill_b / "SKILL.md").write_text(textwrap.dedent("""\
+            ---
+            name: skill_b
+            scope: core
+            description: Second skill
+            group: status
+            commands:
+              - name: ship
+                description: Ship it
+                aliases: [deploy]
+            ---
+        """))
+
+        with caplog.at_level("WARNING"):
+            SkillRegistry(tmp_path)
+
+        assert "collides" in caplog.text
+        assert "deploy" in caplog.text
+
+    def test_same_skill_multiple_commands_no_warning(self, tmp_path, caplog):
+        """A skill registering its own commands should never trigger a collision."""
+        skill_a = tmp_path / "core" / "skill_a"
+        skill_a.mkdir(parents=True)
+        (skill_a / "SKILL.md").write_text(textwrap.dedent("""\
+            ---
+            name: skill_a
+            scope: core
+            description: Multi-command skill
+            group: status
+            commands:
+              - name: start
+                description: Start
+              - name: stop
+                description: Stop
+            ---
+        """))
+
+        with caplog.at_level("WARNING"):
+            SkillRegistry(tmp_path)
+
+        assert "collides" not in caplog.text
+
+    def test_no_collision_across_different_commands(self, tmp_path, caplog):
+        """Skills with distinct commands should not warn."""
+        skill_a = tmp_path / "core" / "skill_a"
+        skill_a.mkdir(parents=True)
+        (skill_a / "SKILL.md").write_text(textwrap.dedent("""\
+            ---
+            name: skill_a
+            scope: core
+            description: First
+            group: status
+            commands:
+              - name: alpha
+                description: Alpha
+            ---
+        """))
+
+        skill_b = tmp_path / "core" / "skill_b"
+        skill_b.mkdir(parents=True)
+        (skill_b / "SKILL.md").write_text(textwrap.dedent("""\
+            ---
+            name: skill_b
+            scope: core
+            description: Second
+            group: status
+            commands:
+              - name: beta
+                description: Beta
+            ---
+        """))
+
+        with caplog.at_level("WARNING"):
+            SkillRegistry(tmp_path)
+
+        assert "collides" not in caplog.text
+
+    def test_no_collision_on_real_core_skills(self):
+        """Verify no alias/command collisions exist in shipped core skills."""
+        import logging
+        logger = logging.getLogger("app.skills")
+        with pytest.raises(AssertionError) if False else _NullContext():
+            pass
+
+        # Build registry and check for collision warnings
+        from app.skills import get_default_skills_dir
+        import io
+
+        handler = logging.StreamHandler(io.StringIO())
+        handler.setLevel(logging.WARNING)
+        logger.addHandler(handler)
+        try:
+            SkillRegistry(get_default_skills_dir())
+            output = handler.stream.getvalue()
+        finally:
+            logger.removeHandler(handler)
+
+        collisions = [
+            line for line in output.splitlines() if "collides" in line
+        ]
+        assert not collisions, (
+            f"Core skills have command/alias collisions:\n"
+            + "\n".join(collisions)
+        )
+
+
+class _NullContext:
+    """No-op context manager."""
+    def __enter__(self):
+        return self
+    def __exit__(self, *args):
+        return False
