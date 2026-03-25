@@ -138,6 +138,13 @@ class TestComputeReviewHash:
         ]
         assert _compute_review_hash(prs_a) == _compute_review_hash(prs_b)
 
+    def test_returns_full_sha256_hex_digest(self):
+        """Hash must be a full 64-char SHA-256 hex digest to prevent cache collisions."""
+        prs = [{"number": 1, "reviews": [{"body": "lgtm"}], "review_comments": []}]
+        h = _compute_review_hash(prs)
+        assert len(h) == 64
+        assert all(c in "0123456789abcdef" for c in h)
+
 
 # ─── cache ───────────────────────────────────────────────────────────────
 

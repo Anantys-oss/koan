@@ -274,7 +274,7 @@ def _compute_review_hash(prs: List[dict]) -> str:
         for comment in pr.get("review_comments", []):
             parts.append(comment.get("body") or "")
     content = "|".join(parts)
-    return hashlib.sha256(content.encode()).hexdigest()[:16]
+    return hashlib.sha256(content.encode()).hexdigest()
 
 
 def _get_cache_path(instance_dir: str) -> Path:
