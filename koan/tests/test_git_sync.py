@@ -64,6 +64,22 @@ class TestGetKoanBranches:
         with patch("app.git_sync.run_git", return_value=""):
             assert _sync().get_koan_branches() == []
 
+    def test_glob_pattern_uses_prefix_start(self):
+        """Glob pattern must match prefix at start, not anywhere in the name.
+
+        Bug: the old pattern f"*{prefix}*" would cause git branch --list to
+        scan branches like "feature/fix-koan/stuff" that merely contain the
+        prefix. The correct pattern is f"{prefix}*" (prefix-anchored).
+        """
+        with patch("app.git_sync.run_git", return_value="") as mock_git:
+            _sync().get_koan_branches()
+        # Verify the glob pattern passed to git branch --list
+        call_args = mock_git.call_args
+        assert call_args is not None
+        git_args = call_args[0]  # positional args: (cwd, "branch", "-a", "--list", pattern)
+        glob_pattern = git_args[-1]  # last argument is the pattern
+        assert glob_pattern == "koan/*", f"Expected 'koan/*' but got '{glob_pattern}'"
+
 
 class TestGetMergedBranches:
     def test_parses_merged(self):
@@ -72,6 +88,20 @@ class TestGetMergedBranches:
             merged = _sync().get_merged_branches()
         assert "koan/done-feature" in merged
         assert "koan/old-fix" in merged
+
+
+    def test_glob_pattern_uses_prefix_start(self):
+        """Glob pattern must match prefix at start for merged branches too."""
+        with patch("app.git_sync.run_git", return_value="") as mock_git:
+            _sync().get_merged_branches()
+        # Find the call that includes "--list" (the branch listing call)
+        list_calls = [
+            c for c in mock_git.call_args_list
+            if len(c[0]) >= 4 and "--list" in c[0]
+        ]
+        assert list_calls, "Expected at least one git branch --list call"
+        glob_pattern = list_calls[0][0][-1]
+        assert glob_pattern == "koan/*", f"Expected 'koan/*' but got '{glob_pattern}'"
 
 
 class TestGetUnmergedBranches:

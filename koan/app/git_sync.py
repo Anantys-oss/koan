@@ -84,7 +84,7 @@ class GitSync:
     def get_koan_branches(self) -> List[str]:
         """List all agent branches (local and remote)."""
         prefix = _get_prefix()
-        glob_pattern = f"*{prefix}*"
+        glob_pattern = f"{prefix}*"
         output = run_git(self.project_path, "branch", "-a", "--list", glob_pattern)
         branches = []
         for line in output.splitlines():
@@ -116,7 +116,7 @@ class GitSync:
     def get_merged_branches(self) -> List[str]:
         """List agent branches merged into any target branch."""
         prefix = _get_prefix()
-        glob_pattern = f"*{prefix}*"
+        glob_pattern = f"{prefix}*"
         targets = self._get_target_branches()
         merged = set()
         for target in targets:
