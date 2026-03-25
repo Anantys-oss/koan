@@ -277,7 +277,7 @@ def fetch_unread_notifications(known_repos: Optional[Set[str]] = None,
         endpoint = "notifications"
         if since:
             endpoint = f"notifications?since={since}&all=true"
-        raw = api(endpoint, extra_args=["--paginate"])
+        raw = api(endpoint, extra_args=["--paginate"], timeout=30)
     except (RuntimeError, subprocess.TimeoutExpired, OSError) as e:
         _record_fetch_failure(str(e))
         return FetchResult([], [])
@@ -427,7 +427,7 @@ def get_comment_from_notification(notification: dict) -> Optional[dict]:
         return None
 
     try:
-        raw = api(endpoint)
+        raw = api(endpoint, timeout=30)
         return json.loads(raw) if raw else None
     except SSOAuthRequired:
         _record_sso_failure(f"get_comment endpoint={endpoint[:80]}")
@@ -522,7 +522,7 @@ def find_mention_in_thread(
         "?per_page=30&sort=created&direction=desc"
     )
     try:
-        raw = api(issue_endpoint)
+        raw = api(issue_endpoint, timeout=30)
         comments = json.loads(raw) if raw else []
     except SSOAuthRequired:
         _record_sso_failure(f"find_mention issue_comments {owner}/{repo}#{number}")
@@ -542,7 +542,7 @@ def find_mention_in_thread(
             "?per_page=30&sort=created&direction=desc"
         )
         try:
-            raw = api(review_endpoint)
+            raw = api(review_endpoint, timeout=30)
             review_comments = json.loads(raw) if raw else []
         except SSOAuthRequired:
             _record_sso_failure(f"find_mention review_comments {owner}/{repo}#{number}")
@@ -570,7 +570,7 @@ def mark_notification_read(thread_id: str) -> bool:
         True if successful, False otherwise.
     """
     try:
-        api(f"notifications/threads/{thread_id}", method="PATCH")
+        api(f"notifications/threads/{thread_id}", method="PATCH", timeout=30)
         return True
     except RuntimeError:
         return False
@@ -635,7 +635,7 @@ def check_already_processed(comment_id: str, bot_username: str,
     # Check GitHub reactions — any reaction from the bot means processed
     endpoint = _reactions_endpoint(comment_api_url, owner, repo, comment_id)
     try:
-        raw = api(endpoint)
+        raw = api(endpoint, timeout=30)
         reactions = json.loads(raw) if raw else []
         if isinstance(reactions, list):
             for reaction in reactions:
@@ -672,6 +672,7 @@ def add_reaction(owner: str, repo: str, comment_id: str,
             endpoint,
             method="POST",
             extra_args=["-f", f"content={emoji}"],
+            timeout=30,
         )
         _processed_comments.add(comment_id)
         return True
@@ -698,7 +699,7 @@ def check_user_permission(owner: str, repo: str, username: str,
 
     # Wildcard: verify at least write access via GitHub API
     try:
-        raw = api(f"repos/{owner}/{repo}/collaborators/{username}/permission")
+        raw = api(f"repos/{owner}/{repo}/collaborators/{username}/permission", timeout=30)
         data = json.loads(raw) if raw else {}
         permission = data.get("permission", "none")
         return permission in ("admin", "write")
