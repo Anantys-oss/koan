@@ -63,19 +63,16 @@ _reply_timestamps: Dict[str, List[float]] = {}
 def _quarantine_github_mission(text: str, reason: str, author: str):
     """Write a flagged GitHub mission to the quarantine file."""
     import os
-    from datetime import datetime
     from pathlib import Path
+
+    from app.missions import quarantine_mission
 
     koan_root = os.environ.get("KOAN_ROOT", "")
     if not koan_root:
         return
     quarantine_path = Path(koan_root) / "instance" / "missions-quarantine.md"
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-    entry = f"- 🛡️ [{timestamp}] (github/@{author}) {reason}: {text[:500]}\n"
-    try:
-        with open(quarantine_path, "a") as f:
-            f.write(entry)
-    except OSError:
+    ok = quarantine_mission(quarantine_path, text, reason, source=f"github/@{author}")
+    if not ok:
         log.warning("GitHub: failed to write quarantine entry: %s", reason)
 
 

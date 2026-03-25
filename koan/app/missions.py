@@ -1532,3 +1532,59 @@ def count_in_progress(content: str) -> int:
     """Count the number of missions currently in progress."""
     sections = parse_sections(content)
     return len(sections.get("in_progress", []))
+
+
+# ---------------------------------------------------------------------------
+# Quarantine helpers
+# ---------------------------------------------------------------------------
+
+# Max quarantine file size in bytes. Once exceeded, the oldest half of
+# entries is pruned to make room.  100 KB is ~200 entries at ~500 bytes each.
+QUARANTINE_MAX_BYTES = 100_000
+
+
+def quarantine_mission(
+    quarantine_path: "Path",
+    text: str,
+    reason: str,
+    source: str = "unknown",
+) -> bool:
+    """Append a flagged mission to the quarantine file.
+
+    Args:
+        quarantine_path: Path to missions-quarantine.md.
+        text: The mission text (truncated to 500 chars).
+        reason: Why it was quarantined.
+        source: Origin label (e.g. "telegram", "github/@user").
+
+    Returns:
+        True if the entry was written, False on error.
+    """
+    from pathlib import Path  # local to avoid top-level import
+
+    quarantine_path = Path(quarantine_path)
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    entry = f"- \U0001f6e1\ufe0f [{timestamp}] ({source}) {reason}: {text[:500]}\n"
+    try:
+        _enforce_quarantine_cap(quarantine_path)
+        with open(quarantine_path, "a") as f:
+            f.write(entry)
+        return True
+    except OSError:
+        return False
+
+
+def _enforce_quarantine_cap(path: "Path") -> None:
+    """If the quarantine file exceeds QUARANTINE_MAX_BYTES, prune oldest half."""
+    from pathlib import Path
+
+    path = Path(path)
+    if not path.exists():
+        return
+    size = path.stat().st_size
+    if size <= QUARANTINE_MAX_BYTES:
+        return
+    lines = path.read_text().splitlines(keepends=True)
+    # Keep the newer half
+    half = len(lines) // 2
+    path.write_text("".join(lines[half:]))

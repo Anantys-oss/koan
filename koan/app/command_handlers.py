@@ -717,15 +717,10 @@ def _handle_start():
 
 def _quarantine_mission(text: str, reason: str, source: str = "unknown"):
     """Write a blocked/flagged mission to the quarantine file for human review."""
-    from datetime import datetime
+    from app.missions import quarantine_mission
 
-    quarantine_path = INSTANCE_DIR / "missions-quarantine.md"
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-    entry = f"- 🛡️ [{timestamp}] ({source}) {reason}: {text[:500]}\n"
-    try:
-        with open(quarantine_path, "a") as f:
-            f.write(entry)
-    except OSError:
+    ok = quarantine_mission(INSTANCE_DIR / "missions-quarantine.md", text, reason, source)
+    if not ok:
         log("guard", f"Failed to write quarantine entry: {reason}")
 
 

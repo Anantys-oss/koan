@@ -27,6 +27,8 @@ from app.missions import (
     normalize_content,
     promote_all_ideas,
     promote_idea,
+    quarantine_mission,
+    QUARANTINE_MAX_BYTES,
     reorder_mission,
     sanitize_mission_text,
     stamp_queued,
@@ -34,6 +36,7 @@ from app.missions import (
     start_mission,
     strip_timestamps,
     prune_done_section,
+    _enforce_quarantine_cap,
     _flush_in_progress_to_done,
     DEFAULT_SKELETON,
 )
@@ -2691,3 +2694,86 @@ class TestInsertMissionNewlineSanitization:
         for line in result.split("\n"):
             if "fix" in line and "bug" in line:
                 assert "\n" not in line.replace("\n", "")  # trivially true per line
+
+
+# ---------------------------------------------------------------------------
+# quarantine_mission shared helper
+# ---------------------------------------------------------------------------
+
+class TestQuarantineMission:
+
+    def test_writes_entry(self, tmp_path):
+        qpath = tmp_path / "missions-quarantine.md"
+        ok = quarantine_mission(qpath, "bad text", "injection", source="telegram")
+        assert ok is True
+        content = qpath.read_text()
+        assert "injection" in content
+        assert "bad text" in content
+        assert "telegram" in content
+        assert "\U0001f6e1\ufe0f" in content  # shield emoji
+
+    def test_appends_multiple(self, tmp_path):
+        qpath = tmp_path / "missions-quarantine.md"
+        quarantine_mission(qpath, "first", "reason1", source="telegram")
+        quarantine_mission(qpath, "second", "reason2", source="github/@alice")
+        content = qpath.read_text()
+        assert "first" in content
+        assert "second" in content
+        assert "github/@alice" in content
+
+    def test_truncates_long_text(self, tmp_path):
+        qpath = tmp_path / "missions-quarantine.md"
+        long_text = "x" * 1000
+        quarantine_mission(qpath, long_text, "too long")
+        content = qpath.read_text()
+        # Entry should contain at most 500 chars of the text
+        assert "x" * 500 in content
+        assert "x" * 501 not in content
+
+    def test_returns_false_on_oserror(self, tmp_path):
+        # Non-existent parent → OSError
+        qpath = tmp_path / "no" / "such" / "dir" / "quarantine.md"
+        ok = quarantine_mission(qpath, "text", "reason")
+        assert ok is False
+
+    def test_default_source(self, tmp_path):
+        qpath = tmp_path / "missions-quarantine.md"
+        quarantine_mission(qpath, "text", "reason")
+        assert "unknown" in qpath.read_text()
+
+
+class TestQuarantineSizeCap:
+
+    def test_no_prune_under_limit(self, tmp_path):
+        qpath = tmp_path / "quarantine.md"
+        qpath.write_text("- entry 1\n- entry 2\n")
+        _enforce_quarantine_cap(qpath)
+        assert "entry 1" in qpath.read_text()
+        assert "entry 2" in qpath.read_text()
+
+    def test_prunes_when_over_limit(self, tmp_path):
+        qpath = tmp_path / "quarantine.md"
+        # Write enough data to exceed the cap
+        lines = [f"- entry {i}: {'x' * 200}\n" for i in range(600)]
+        qpath.write_text("".join(lines))
+        assert qpath.stat().st_size > QUARANTINE_MAX_BYTES
+        _enforce_quarantine_cap(qpath)
+        remaining = qpath.read_text()
+        # Older half was pruned
+        assert "entry 0" not in remaining
+        assert "entry 1" not in remaining
+        # Newer half is kept
+        assert "entry 599" in remaining
+        # File is smaller now
+        assert qpath.stat().st_size < QUARANTINE_MAX_BYTES * 0.7
+
+    def test_cap_enforced_on_write(self, tmp_path):
+        qpath = tmp_path / "quarantine.md"
+        lines = [f"- old entry {i}: {'y' * 200}\n" for i in range(600)]
+        qpath.write_text("".join(lines))
+        quarantine_mission(qpath, "new entry", "reason", source="test")
+        content = qpath.read_text()
+        # Old entries pruned
+        assert "old entry 0" not in content
+        # New entry present
+        assert "new entry" in content
