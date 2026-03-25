@@ -170,7 +170,7 @@ def issue_create(title, body, labels=None, repo=None, cwd=None):
 
 
 def api(endpoint, method="GET", jq=None, input_data=None, cwd=None,
-        extra_args=None):
+        extra_args=None, timeout=30):
     """Call ``gh api`` for lower-level GitHub API access.
 
     Args:
@@ -180,6 +180,7 @@ def api(endpoint, method="GET", jq=None, input_data=None, cwd=None,
         input_data: If provided, passed via stdin (``-F body=@-``).
         cwd: Working directory.
         extra_args: Additional arguments for ``gh api``.
+        timeout: Seconds before the subprocess is killed (default 30).
 
     Returns:
         Stripped stdout string.
@@ -194,7 +195,7 @@ def api(endpoint, method="GET", jq=None, input_data=None, cwd=None,
     if input_data is not None:
         args.extend(["-F", "body=@-"])
 
-    return run_gh(*args, cwd=cwd, stdin_data=input_data)
+    return run_gh(*args, cwd=cwd, stdin_data=input_data, timeout=timeout)
 
 
 def fetch_issue_with_comments(owner, repo, issue_number):

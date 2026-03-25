@@ -589,7 +589,8 @@ class TestCheckAlreadyProcessedWithUrl:
                                           comment_api_url=url)
         assert result is True
         mock_api.assert_called_once_with(
-            "repos/owner/repo/pulls/comments/42/reactions"
+            "repos/owner/repo/pulls/comments/42/reactions",
+            timeout=30,
         )
 
     @patch("app.github_notifications.api")
@@ -603,7 +604,8 @@ class TestCheckAlreadyProcessedWithUrl:
                                           comment_api_url=url)
         assert result is True
         mock_api.assert_called_once_with(
-            "repos/owner/repo/issues/comments/99/reactions"
+            "repos/owner/repo/issues/comments/99/reactions",
+            timeout=30,
         )
 
     @patch("app.github_notifications.api")
@@ -613,7 +615,8 @@ class TestCheckAlreadyProcessedWithUrl:
 
         check_already_processed("50", "bot", "owner", "repo")
         mock_api.assert_called_once_with(
-            "repos/owner/repo/issues/comments/50/reactions"
+            "repos/owner/repo/issues/comments/50/reactions",
+            timeout=30,
         )
 
 
@@ -635,6 +638,7 @@ class TestAddReactionWithUrl:
             "repos/owner/repo/pulls/comments/77/reactions",
             method="POST",
             extra_args=["-f", "content=+1"],
+            timeout=30,
         )
 
     @patch("app.github_notifications.api")
@@ -649,6 +653,7 @@ class TestAddReactionWithUrl:
             "repos/o/r/issues/comments/88/reactions",
             method="POST",
             extra_args=["-f", "content=eyes"],
+            timeout=30,
         )
 
     @patch("app.github_notifications.api")
@@ -660,6 +665,7 @@ class TestAddReactionWithUrl:
             "repos/owner/repo/issues/comments/33/reactions",
             method="POST",
             extra_args=["-f", "content=+1"],
+            timeout=30,
         )
 
 
