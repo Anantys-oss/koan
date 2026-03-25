@@ -854,6 +854,8 @@ projects:
       severity_threshold: medium
 ```
 
+See [docs/security-review.md](security-review.md) for the full list of detected patterns, risk scoring details, and pipeline integration.
+
 ### Custom Skills
 
 Kōan's skill system is fully extensible. Install skills from Git repos or create your own.

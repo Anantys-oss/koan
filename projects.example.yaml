@@ -152,6 +152,14 @@ projects:
   #   path: "/Users/yourname/workspace/oss-lib"
   #   max_open_prs: 3                        # Keep max 3 open PRs for this repo
 
+  # Example: a production API with strict security review (blocks auto-merge)
+  # production-api:
+  #   path: "/Users/yourname/workspace/production-api"
+  #   security_review:
+  #     enabled: true
+  #     blocking: true           # Block auto-merge for risky changes
+  #     severity_threshold: medium
+
   # Example: a project using GitHub Copilot instead of Claude
   # copilot-project:
   #   path: "/Users/yourname/workspace/copilot-project"
