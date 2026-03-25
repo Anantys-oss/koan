@@ -895,6 +895,7 @@ class TestCallApi:
             mock.side_effect = error
             with pytest.raises(RuntimeError, match="API error 500"):
                 _call_api("http://localhost/v1", "model", [])
+            error.close()
 
     def test_url_error_raises_runtime(self):
         """URLError is wrapped in RuntimeError with connection hint."""

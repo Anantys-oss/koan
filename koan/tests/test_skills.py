@@ -1852,38 +1852,17 @@ class TestAliasCollisionDetection:
 
         assert "collides" not in caplog.text
 
-    def test_no_collision_on_real_core_skills(self):
+    def test_no_collision_on_real_core_skills(self, caplog):
         """Verify no alias/command collisions exist in shipped core skills."""
-        import logging
-        logger = logging.getLogger("app.skills")
-        with pytest.raises(AssertionError) if False else _NullContext():
-            pass
-
-        # Build registry and check for collision warnings
         from app.skills import get_default_skills_dir
-        import io
 
-        handler = logging.StreamHandler(io.StringIO())
-        handler.setLevel(logging.WARNING)
-        logger.addHandler(handler)
-        try:
+        with caplog.at_level("WARNING", logger="app.skills"):
             SkillRegistry(get_default_skills_dir())
-            output = handler.stream.getvalue()
-        finally:
-            logger.removeHandler(handler)
 
         collisions = [
-            line for line in output.splitlines() if "collides" in line
+            rec.message for rec in caplog.records if "collides" in rec.message
         ]
         assert not collisions, (
             f"Core skills have command/alias collisions:\n"
             + "\n".join(collisions)
         )
-
-
-class _NullContext:
-    """No-op context manager."""
-    def __enter__(self):
-        return self
-    def __exit__(self, *args):
-        return False
