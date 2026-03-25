@@ -15,7 +15,8 @@ import sys
 from pathlib import Path
 from typing import Optional, Tuple
 
-from app.github import run_gh, issue_create
+from app.github import run_gh, issue_create, fetch_issue_with_comments
+from app.github_url_parser import parse_issue_url, parse_github_url
 from app.prompts import load_prompt_or_skill
 
 # Maximum spec review iterations before posting best-effort result
@@ -30,6 +31,7 @@ def run_deepplan(
     idea: str,
     notify_fn=None,
     skill_dir: Optional[Path] = None,
+    issue_url: Optional[str] = None,
 ) -> Tuple[bool, str]:
     """Execute the deep plan pipeline.
 
@@ -39,12 +41,26 @@ def run_deepplan(
     4. Queue a /plan <issue-url> follow-up mission.
     5. Notify via Telegram.
 
+    Args:
+        project_path: Local path to the project repository.
+        idea: Idea or feature to design (free text).
+        notify_fn: Optional notification function.
+        skill_dir: Optional skill directory for prompt loading.
+        issue_url: Optional GitHub issue URL to fetch context from.
+            When provided, the issue title/body/comments are fetched
+            and used to enrich the idea context for exploration.
+
     Returns:
         (success, summary) tuple.
     """
     if notify_fn is None:
         from app.notify import send_telegram
         notify_fn = send_telegram
+
+    # When issue_url is provided, fetch issue context and enrich the idea
+    issue_context = ""
+    if issue_url:
+        idea, issue_context = _enrich_idea_from_issue(idea, issue_url, notify_fn)
 
     notify_fn(f"\U0001f9e0 Deep planning: {idea[:100]}{'...' if len(idea) > 100 else ''}")
 
@@ -55,7 +71,7 @@ def run_deepplan(
 
     # Phase 1: Explore design approaches
     try:
-        spec = _explore_design(project_path, idea, skill_dir)
+        spec = _explore_design(project_path, idea, skill_dir, issue_context=issue_context)
     except Exception as e:
         return False, f"Design exploration failed: {str(e)[:300]}"
 
@@ -95,9 +111,76 @@ def run_deepplan(
     return True, summary
 
 
-def _explore_design(project_path, idea, skill_dir=None):
+def _enrich_idea_from_issue(idea, issue_url, notify_fn):
+    """Fetch issue context from GitHub and enrich the idea.
+
+    Args:
+        idea: Current idea text (may be just the URL).
+        issue_url: GitHub issue URL.
+        notify_fn: Notification function.
+
+    Returns:
+        Tuple of (enriched_idea, issue_context_text).
+    """
+    try:
+        owner, repo, number = parse_issue_url(issue_url)
+    except ValueError:
+        # Try PR URL format (GitHub issues API works for PRs too)
+        try:
+            owner, repo, url_type, number = parse_github_url(issue_url)
+        except ValueError:
+            return idea, ""
+
+    notify_fn(f"\U0001f50d Fetching issue #{number} from {owner}/{repo}...")
+
+    try:
+        title, body, comments = fetch_issue_with_comments(owner, repo, number)
+    except Exception as e:
+        print(f"[deepplan_runner] Failed to fetch issue: {e}", file=sys.stderr)
+        return idea, ""
+
+    # Build the enriched idea from issue content
+    enriched = title or idea
+    issue_parts = []
+    if body:
+        issue_parts.append(f"## Issue Description\n\n{body}")
+    if comments:
+        formatted = _format_issue_comments(comments)
+        if formatted:
+            issue_parts.append(f"## Discussion\n\n{formatted}")
+
+    issue_context = "\n\n".join(issue_parts)
+
+    # If the original idea was just the URL, use the issue title as the idea
+    if idea.strip() == issue_url.strip():
+        enriched_idea = title if title else idea
+    else:
+        enriched_idea = idea
+
+    return enriched_idea, issue_context
+
+
+def _format_issue_comments(comments):
+    """Format issue comments into readable text."""
+    if not isinstance(comments, list) or not comments:
+        return ""
+    parts = []
+    for c in comments:
+        author = c.get("author", "unknown")
+        date = c.get("date", "")[:10]
+        body = c.get("body", "").strip()
+        if body:
+            parts.append(f"**{author}** ({date}):\n{body}")
+    return "\n\n---\n\n".join(parts)
+
+
+def _explore_design(project_path, idea, skill_dir=None, issue_context=""):
     """Run Claude to explore 2-3 design approaches for the idea."""
-    prompt = load_prompt_or_skill(skill_dir, "deepplan-explore", IDEA=idea)
+    prompt = load_prompt_or_skill(
+        skill_dir, "deepplan-explore",
+        IDEA=idea,
+        ISSUE_CONTEXT=issue_context,
+    )
 
     from app.cli_provider import run_command
     from app.config import get_skill_timeout
@@ -296,17 +379,24 @@ def main(argv=None):
         "--project-path", required=True,
         help="Local path to the project repository",
     )
-    parser.add_argument(
-        "--idea", required=True,
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument(
+        "--idea",
         help="Idea or feature to design",
+    )
+    group.add_argument(
+        "--issue-url",
+        help="GitHub issue URL to use as context for the design exploration",
     )
     cli_args = parser.parse_args(argv)
 
     skill_dir = Path(__file__).resolve().parent
 
+    idea = cli_args.idea or cli_args.issue_url
     success, summary = run_deepplan(
         project_path=cli_args.project_path,
-        idea=cli_args.idea,
+        idea=idea,
+        issue_url=cli_args.issue_url,
         skill_dir=skill_dir,
     )
     print(summary)

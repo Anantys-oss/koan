@@ -6,6 +6,8 @@ This spec will be posted as a GitHub issue — write it as a living document tha
 
 {IDEA}
 
+{ISSUE_CONTEXT}
+
 ## Instructions
 
 1. **Understand the idea**: Restate the problem in your own words. What is the user really asking for?

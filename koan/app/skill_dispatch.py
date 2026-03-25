@@ -319,7 +319,15 @@ def _build_brainstorm_cmd(
 def _build_deepplan_cmd(
     base_cmd: List[str], args: str, project_path: str,
 ) -> List[str]:
-    """Build deepplan_runner command."""
+    """Build deepplan_runner command.
+
+    Detects GitHub issue URLs in args and passes them as --issue-url.
+    Falls back to --idea for free-text input.
+    """
+    url_and_context = _extract_pr_or_issue_url_and_context(args)
+    if url_and_context:
+        issue_url, _context = url_and_context
+        return base_cmd + ["--project-path", project_path, "--issue-url", issue_url]
     return base_cmd + ["--project-path", project_path, "--idea", args.strip()]
 
 

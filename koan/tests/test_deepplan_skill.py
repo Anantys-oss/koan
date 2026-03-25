@@ -403,3 +403,172 @@ class TestSkillDispatch:
         )
         assert cmd is not None
         assert "--idea" in cmd
+
+    def test_build_deepplan_cmd_with_issue_url(self, tmp_path):
+        from app.skill_dispatch import build_skill_command
+        cmd = build_skill_command(
+            command="deepplan",
+            args="https://github.com/owner/repo/issues/42",
+            project_name="koan",
+            project_path=str(tmp_path),
+            koan_root=str(tmp_path),
+            instance_dir=str(tmp_path),
+        )
+        assert cmd is not None
+        assert "--issue-url" in cmd
+        assert "https://github.com/owner/repo/issues/42" in cmd
+        assert "--idea" not in cmd
+
+    def test_build_deepplan_cmd_free_text_no_issue_url(self, tmp_path):
+        from app.skill_dispatch import build_skill_command
+        cmd = build_skill_command(
+            command="deepplan",
+            args="Improve the caching layer",
+            project_name="koan",
+            project_path=str(tmp_path),
+            koan_root=str(tmp_path),
+            instance_dir=str(tmp_path),
+        )
+        assert cmd is not None
+        assert "--idea" in cmd
+        assert "--issue-url" not in cmd
+
+
+# ---------------------------------------------------------------------------
+# Handler — GitHub issue URL support
+# ---------------------------------------------------------------------------
+
+class TestHandlerWithIssueUrl:
+    def test_issue_url_queues_mission(self, handler, ctx):
+        ctx.args = "https://github.com/owner/repo/issues/42"
+        with patch("app.github_skill_helpers.resolve_project_for_repo",
+                    return_value=("/path/repo", "repo")):
+            result = handler.handle(ctx)
+        assert "queued" in result.lower()
+        assert "#42" in result
+        missions = (ctx.instance_dir / "missions.md").read_text()
+        assert "/deepplan https://github.com/owner/repo/issues/42" in missions
+        assert "[project:repo]" in missions
+
+    def test_issue_url_project_not_found(self, handler, ctx):
+        ctx.args = "https://github.com/owner/unknown/issues/42"
+        with patch("app.github_skill_helpers.resolve_project_for_repo",
+                    return_value=(None, None)):
+            result = handler.handle(ctx)
+        assert "Could not find" in result or "not found" in result.lower()
+
+    def test_non_issue_url_treated_as_idea(self, handler, ctx):
+        """PR URLs are not treated as issue URLs by the handler."""
+        ctx.args = "https://github.com/owner/repo/pull/42"
+        with patch("app.utils.get_known_projects", return_value=[("koan", "/path")]):
+            result = handler.handle(ctx)
+        # Should be treated as free-text idea
+        missions = (ctx.instance_dir / "missions.md").read_text()
+        assert "/deepplan" in missions
+
+    def test_usage_includes_issue_url(self, handler, ctx):
+        ctx.args = ""
+        result = handler.handle(ctx)
+        assert "github-issue-url" in result
+
+
+# ---------------------------------------------------------------------------
+# Handler — _parse_issue_url
+# ---------------------------------------------------------------------------
+
+class TestParseIssueUrl:
+    def test_valid_issue_url(self, handler):
+        result = handler._parse_issue_url("https://github.com/owner/repo/issues/42")
+        assert result is not None
+        url, owner, repo, number = result
+        assert owner == "owner"
+        assert repo == "repo"
+        assert number == "42"
+
+    def test_not_an_issue_url(self, handler):
+        result = handler._parse_issue_url("Refactor the auth middleware")
+        assert result is None
+
+    def test_pr_url_not_matched(self, handler):
+        result = handler._parse_issue_url("https://github.com/owner/repo/pull/42")
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Runner — issue URL support
+# ---------------------------------------------------------------------------
+
+class TestRunnerWithIssueUrl:
+    def test_issue_url_enriches_idea(self, runner, tmp_path):
+        """Runner fetches issue context when issue_url is provided."""
+        valid_spec = (
+            "Design spec: improve caching strategy\n\n"
+            "### Summary\n\nThis spec covers caching improvements.\n\n"
+            "### Alternatives Considered\n\n- **Approach A (recommended)**: Redis.\n"
+            "### Recommended Approach\n\nUse Redis.\n\n"
+            "### Scope\n\nCaching.\n\n"
+            "### Out of Scope\n\nAuth.\n\n"
+            "### Open Questions\n\nNone."
+        )
+
+        with patch.object(runner, "_get_repo_info", return_value=("owner", "repo")), \
+             patch.object(runner, "fetch_issue_with_comments",
+                          return_value=("Fix caching bug", "The cache is broken", [])), \
+             patch.object(runner, "_explore_design", return_value=valid_spec) as mock_explore, \
+             patch.object(runner, "_review_spec", return_value=(True, "")), \
+             patch.object(runner, "issue_create", return_value="https://github.com/o/r/issues/1"), \
+             patch.object(runner, "_queue_plan_mission"), \
+             patch("app.notify.send_telegram"):
+
+            success, summary = runner.run_deepplan(
+                project_path=str(tmp_path),
+                idea="https://github.com/owner/repo/issues/99",
+                issue_url="https://github.com/owner/repo/issues/99",
+                skill_dir=RUNNER_PATH.parent,
+            )
+
+        assert success is True
+        # explore_design should receive enriched idea and issue context
+        call_args = mock_explore.call_args
+        assert call_args is not None
+        # The idea should be the issue title, not the URL
+        assert "Fix caching bug" in str(call_args)
+
+    def test_issue_url_with_comments(self, runner, tmp_path):
+        """Runner includes comments in issue context."""
+        comments = [
+            {"author": "alice", "date": "2026-01-01T10:00:00Z", "body": "I think we should use Redis"},
+            {"author": "bob", "date": "2026-01-02T10:00:00Z", "body": "Memcached might be better"},
+        ]
+
+        with patch.object(runner, "fetch_issue_with_comments",
+                          return_value=("Cache issue", "Fix caching", comments)), \
+             patch("app.notify.send_telegram"):
+
+            idea, context = runner._enrich_idea_from_issue(
+                "https://github.com/o/r/issues/1",
+                "https://github.com/o/r/issues/1",
+                lambda msg: None,
+            )
+
+        assert idea == "Cache issue"
+        assert "alice" in context
+        assert "Redis" in context
+        assert "bob" in context
+        assert "Memcached" in context
+
+    def test_issue_fetch_failure_falls_back(self, runner, tmp_path):
+        """Runner falls back gracefully when issue fetch fails."""
+        with patch.object(runner, "fetch_issue_with_comments",
+                          side_effect=RuntimeError("API error")), \
+             patch("app.notify.send_telegram"):
+
+            idea, context = runner._enrich_idea_from_issue(
+                "https://github.com/o/r/issues/1",
+                "https://github.com/o/r/issues/1",
+                lambda msg: None,
+            )
+
+        # Falls back to original idea text
+        assert idea == "https://github.com/o/r/issues/1"
+        assert context == ""

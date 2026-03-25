@@ -8,10 +8,14 @@ def handle(ctx):
         /deepplan                          -- usage help
         /deepplan <idea>                   -- deepplan for default project
         /deepplan <project> <idea>         -- deepplan for a specific project
+        /deepplan <github-issue-url>       -- deepplan from a GitHub issue
 
     Queues a mission that invokes Claude to explore 2-3 design approaches,
     run a spec review loop, post the spec as a GitHub issue, and queue a
     follow-up /plan mission for human approval.
+
+    When given a GitHub issue URL, the project is auto-detected from the
+    repository and the issue title/body/comments are used as context.
     """
     args = ctx.args.strip()
 
@@ -19,11 +23,17 @@ def handle(ctx):
         return (
             "Usage:\n"
             "  /deepplan <idea> -- spec-first design for default project\n"
-            "  /deepplan <project> <idea> -- for a specific project\n\n"
+            "  /deepplan <project> <idea> -- for a specific project\n"
+            "  /deepplan <github-issue-url> -- from a GitHub issue\n\n"
             "Explores 2-3 design approaches, posts a spec as a GitHub issue,\n"
             "then queues /plan for your approval. Catches design flaws before\n"
             "any code is written."
         )
+
+    # Check for GitHub issue URL
+    issue_result = _parse_issue_url(args)
+    if issue_result:
+        return _queue_deepplan_from_issue(ctx, issue_result)
 
     # Parse optional project prefix
     project, idea = _parse_project_arg(args)
@@ -32,6 +42,47 @@ def handle(ctx):
         return "Please provide an idea. Ex: /deepplan Refactor the auth middleware"
 
     return _queue_deepplan(ctx, project, idea)
+
+
+def _parse_issue_url(args):
+    """Detect a GitHub issue URL in the arguments.
+
+    Returns:
+        Tuple of (url, owner, repo, issue_number) or None if no issue URL found.
+    """
+    from app.github_skill_helpers import extract_github_url
+
+    result = extract_github_url(args, url_type="issue")
+    if not result:
+        return None
+
+    url, _context = result
+
+    from app.github_url_parser import parse_issue_url
+    try:
+        owner, repo, number = parse_issue_url(url)
+    except ValueError:
+        return None
+
+    return url, owner, repo, number
+
+
+def _queue_deepplan_from_issue(ctx, issue_result):
+    """Queue a deepplan mission from a GitHub issue URL."""
+    from app.utils import insert_pending_mission
+    from app.github_skill_helpers import resolve_project_for_repo, format_project_not_found_error
+
+    url, owner, repo, number = issue_result
+
+    project_path, project_name = resolve_project_for_repo(repo, owner=owner)
+    if not project_path:
+        return format_project_not_found_error(repo, owner=owner)
+
+    mission_entry = f"- [project:{project_name}] /deepplan {url}"
+    missions_path = ctx.instance_dir / "missions.md"
+    insert_pending_mission(missions_path, mission_entry)
+
+    return f"\U0001f9e0 Deep plan queued from issue #{number} ({owner}/{repo}, project: {project_name})"
 
 
 def _parse_project_arg(args):

@@ -10,7 +10,7 @@ github_context_aware: true
 commands:
   - name: deepplan
     description: Deep design an idea — explores approaches, posts spec as GitHub issue, queues /plan
-    usage: /deepplan <idea>, /deepplan <project> <idea>
+    usage: /deepplan <idea>, /deepplan <project> <idea>, /deepplan <github-issue-url>
     aliases: [deeplan]
 handler: handler.py
 ---
