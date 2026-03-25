@@ -465,6 +465,12 @@ class TestSkillRegistry:
         # "s" is too short for cutoff, but "deplo" should match "deploy"
         assert registry.suggest_command("deplo") == "deploy"
 
+    def test_suggest_command_short_abbreviation(self, tmp_path):
+        registry = SkillRegistry(self._make_skill_tree(tmp_path))
+        # Short abbreviations like "fo" should match "focus" at 0.5 cutoff
+        assert registry.suggest_command("fo", extra_commands=["focus", "review"]) == "focus"
+        assert registry.suggest_command("up", extra_commands=["update", "quota"]) == "update"
+
     def test_list_all(self, tmp_path):
         registry = SkillRegistry(self._make_skill_tree(tmp_path))
         skills = registry.list_all()

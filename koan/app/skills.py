@@ -375,7 +375,7 @@ class SkillRegistry:
         if extra_commands:
             candidates.extend(extra_commands)
 
-        matches = difflib.get_close_matches(command_name, candidates, n=1, cutoff=0.6)
+        matches = difflib.get_close_matches(command_name, candidates, n=1, cutoff=0.5)
         return matches[0] if matches else None
 
     def list_all(self) -> List[Skill]:
