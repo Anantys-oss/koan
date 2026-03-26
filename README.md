@@ -281,6 +281,17 @@ projects:
       mission: opus
 ```
 
+### Renaming a Project
+
+To rename a project across `projects.yaml`, memory, journals, missions, and all instance files:
+
+```bash
+make rename-project old=webapp new=my-webapp          # dry-run (preview changes)
+make rename-project old=webapp new=my-webapp apply=1   # apply changes
+```
+
+The tool updates the project key in `projects.yaml`, renames `memory/projects/<old>/` to `memory/projects/<new>/`, renames journal files (`journal/*/<old>.md`), and replaces `[project:<old>]` tags and `"project": "<old>"` references in all instance files.
+
 ### CLI Providers
 
 Koan isn't locked to Claude. Swap the backend per-project:
@@ -341,6 +352,7 @@ instance/                 # Your private data (gitignored)
 | `make dashboard` | Web UI (port 5001) |
 | `make test` | Run test suite |
 | `make say m="..."` | Send a test message |
+| `make rename-project old=X new=Y` | Rename a project everywhere (dry-run by default, add `apply=1` to execute) |
 | `make clean` | Remove virtualenv |
 
 ## Philosophy
