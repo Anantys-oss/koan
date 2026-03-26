@@ -939,6 +939,10 @@ def interruptible_sleep(
         from app.health_check import write_run_heartbeat
         write_run_heartbeat(koan_root)
 
+        # Feature tip: surface an unseen skill to the user (throttled)
+        from app.feature_tips import maybe_send_feature_tip
+        maybe_send_feature_tip(instance_dir)
+
         # Run periodic heartbeat checks (throttled to once per 30 min)
         from app.heartbeat import run_stale_mission_check, run_disk_space_check
         run_stale_mission_check(instance_dir)
