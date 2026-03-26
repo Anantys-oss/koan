@@ -2,7 +2,7 @@
 export
 
 .PHONY: install onboard setup start stop status restart
-.PHONY: clean say migrate test sync-instance
+.PHONY: clean say migrate test sync-instance rename-project
 .PHONY: awake run errand-run errand-awake dashboard
 .PHONY: ollama logs ssh-forward
 .PHONY: install-systemctl-service uninstall-systemctl-service
@@ -165,6 +165,11 @@ install:
 
 onboard: setup
 	@cd koan && KOAN_ROOT=$(PWD) PYTHONPATH=. ../$(PYTHON) -m app.onboarding $(ARGS)
+
+rename-project: setup
+	@test -n "$(old)" || (echo "Usage: make rename-project old=foo new=bar [apply=1]" && exit 1)
+	@test -n "$(new)" || (echo "Usage: make rename-project old=foo new=bar [apply=1]" && exit 1)
+	cd koan && KOAN_ROOT=$(PWD) PYTHONPATH=. ../$(PYTHON) -m app.rename_project $(old) $(new) $(if $(apply),--apply,)
 
 clean:
 	rm -rf $(VENV)
