@@ -82,34 +82,22 @@ def drain_one(instance_dir: str) -> Optional[str]:
     full_repo = entry["full_repo"]
     pr_number = entry.get("pr_number", "?")
 
-    print(f"[ci_queue] Checking CI for PR #{pr_number} ({branch})...",
-          file=sys.stderr)
-
     status, run_id = check_ci_status(branch, full_repo)
 
     if status == "success":
         ci_queue.remove(instance_dir, pr_url)
-        msg = f"CI passed for PR #{pr_number} ({branch})"
-        print(f"[ci_queue] {msg}", file=sys.stderr)
-        return msg
+        return f"CI passed for PR #{pr_number} ({branch})"
 
     if status == "failure":
         ci_queue.remove(instance_dir, pr_url)
-        # Inject a /ci_check mission for the agent to fix
         _inject_ci_fix_mission(instance_dir, pr_url, entry)
-        msg = f"CI failed for PR #{pr_number} — /ci_check mission queued"
-        print(f"[ci_queue] {msg}", file=sys.stderr)
-        return msg
+        return f"CI failed for PR #{pr_number} — /ci_check mission queued"
 
     if status == "none":
         ci_queue.remove(instance_dir, pr_url)
-        msg = f"No CI runs found for PR #{pr_number} — removed from queue"
-        print(f"[ci_queue] {msg}", file=sys.stderr)
-        return msg
+        return f"No CI runs found for PR #{pr_number} — removed from queue"
 
     # status == "pending" — leave in queue
-    print(f"[ci_queue] CI still running for PR #{pr_number} — will check next iteration",
-          file=sys.stderr)
     return None
 
 
@@ -131,7 +119,6 @@ def _inject_ci_fix_mission(instance_dir: str, pr_url: str, entry: dict):
         missions_path,
         lambda content: insert_mission(content, mission_text, urgent=True),
     )
-    print(f"[ci_queue] Injected mission: {mission_text}", file=sys.stderr)
 
 
 def _project_name_from_path(project_path: str) -> str:
