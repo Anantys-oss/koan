@@ -465,6 +465,7 @@ Use this before `/plan` when the idea is architecturally complex, when you want 
   - `--architecture` — Architecture-focused review (SOLID principles, layering, coupling, abstraction boundaries)
   - `--errors` — Run an additional **silent-failure-hunter** pass that scans for swallowed exceptions, silent null returns, unhandled promises, and other silent error paths. Also auto-triggered when the diff contains error-handling patterns (`try/except`, `catch`, etc.)
   - `--comments` — Comment quality review (factual accuracy, completeness, stale TODOs, misleading language)
+- **Issue tracker enrichment:** When the PR body references JIRA tickets (`PROJ-123`) or cross-repo GitHub issues (`owner/repo#123`), Kōan automatically fetches their summaries and includes them as context in the review. See [Issue Tracker Enrichment](issue-tracker.md) for configuration details.
 
 <details>
 <summary>Use cases</summary>
@@ -1145,6 +1146,7 @@ Key per-project settings:
 - **`security_review`** — Automatic diff analysis for dangerous patterns before auto-merge (see below)
 - **`authorized_users`** — GitHub users allowed to trigger via @mention
 - **`exploration`** — Enable/disable autonomous exploration
+- **`issue_tracker`** — Override issue tracker type per project (`github` or `jira`); see [Issue Tracker Enrichment](issue-tracker.md)
 
 #### Security Review
 
