@@ -1063,6 +1063,20 @@ See [docs/auto-update.md](auto-update.md) for details.
 - `/del myrepo` — Same, using short alias
 </details>
 
+### Renaming Projects
+
+**`/rename`** — Rename a project across all configuration and instance files.
+
+- **Usage:** `/rename <old_name> <new_name>`
+- **Aliases:** `/rename_project`
+
+<details>
+<summary>Use cases</summary>
+
+- `/rename anantys-back aback` — Rename a project everywhere (projects.yaml, memory, journals, instance files)
+- `/rename my-long-project mlp` — Shorten a project name for easier typing
+</details>
+
 ### Performance Profiling
 
 **`/profile`** — Queue a performance profiling mission for a project.
@@ -1210,6 +1224,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/snapshot` | — | P | Export memory state |
 | `/add_project <url>` | `/add_project` | P | Add a project from GitHub |
 | `/delete_project <name>` | `/delete`, `/del` | P | Remove a project from workspace |
+| `/rename <old> <new>` | `/rename_project` | P | Rename a project everywhere |
 | `/profile <project>` | `/perf`, `/benchmark` | P | Performance profiling mission |
 | `/tech_debt [project]` | `/td`, `/debt` | P | Scan project for tech debt |
 | `/dead_code [project]` | `/dc` | P | Scan for unused code |
