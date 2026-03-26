@@ -181,11 +181,13 @@ def _build_health_section(koan_root, instance_dir) -> list:
         age = get_run_heartbeat_age(str(koan_root))
         if age >= 0:
             if age < 120:
-                health_items.append(f"Heartbeat: {age:.0f}s ago")
+                health_items.append(f"💓 Heartbeat: {age:.0f}s ago")
+            elif age < 900:
+                health_items.append(f"💓 Heartbeat: {age / 60:.0f}m ago")
             else:
                 health_items.append(f"⚠️ Heartbeat: {age / 60:.0f}m ago")
         else:
-            health_items.append("Heartbeat: n/a")
+            health_items.append("💓 Heartbeat: n/a")
 
         # Stale missions (read-only check, no alerting)
         stale = check_stale_missions(str(instance_dir))
@@ -206,7 +208,7 @@ def _build_health_section(koan_root, instance_dir) -> list:
             if free_gb < 1.0:
                 health_items.append(f"⚠️ Disk: {free_gb:.1f} GB free")
             else:
-                health_items.append(f"Disk: {free_gb:.0f} GB free")
+                health_items.append(f"💾 Disk: {free_gb:.0f} GB free")
 
         if health_items:
             lines.append("\nHealth")
@@ -233,10 +235,10 @@ def _check_usage_staleness(instance_dir) -> str:
         if age_hours > 6:
             return f"⚠️ Usage: stale ({age_hours:.0f}h old, 75% fallback active)"
         elif age_hours > 1:
-            return f"Usage: {age_hours:.1f}h old"
+            return f"📊 Usage: {age_hours:.1f}h old"
         else:
             minutes = age_seconds / 60
-            return f"Usage: {minutes:.0f}m old"
+            return f"📊 Usage: {minutes:.0f}m old"
     except OSError:
         return "⚠️ Usage: unreadable"
 
@@ -247,17 +249,15 @@ def _check_github_notifications() -> str:
         from app.github import api
         raw = api("notifications?per_page=100")
         if not raw or raw.strip() == "[]":
-            return "GitHub: 0 unread"
+            return "📬 GitHub: 0 unread"
 
         import json
         notifications = json.loads(raw)
         count = len(notifications)
         if count >= 100:
-            return f"⚠️ GitHub: {count}+ unread"
-        elif count >= 20:
-            return f"⚠️ GitHub: {count} unread"
+            return f"📬 GitHub: {count}+ unread"
         else:
-            return f"GitHub: {count} unread"
+            return f"📬 GitHub: {count} unread"
     except Exception:
         return None
 

@@ -790,7 +790,7 @@ class TestCheckGithubNotifications:
         from skills.core.status.handler import _check_github_notifications
         with patch("app.github.api", return_value="[]"):
             result = _check_github_notifications()
-        assert result == "GitHub: 0 unread"
+        assert result == "📬 GitHub: 0 unread"
 
     def test_some_notifications(self):
         """Small number of notifications shows count."""
@@ -799,27 +799,27 @@ class TestCheckGithubNotifications:
         fake = json.dumps([{"id": str(i)} for i in range(5)])
         with patch("app.github.api", return_value=fake):
             result = _check_github_notifications()
-        assert result == "GitHub: 5 unread"
-        assert "⚠️" not in result
+        assert result == "📬 GitHub: 5 unread"
 
-    def test_many_notifications_warning(self):
-        """20+ unread notifications triggers a warning."""
+    def test_many_notifications_no_warning(self):
+        """20+ unread notifications shows mailbox icon, not warning."""
         import json
         from skills.core.status.handler import _check_github_notifications
         fake = json.dumps([{"id": str(i)} for i in range(25)])
         with patch("app.github.api", return_value=fake):
             result = _check_github_notifications()
-        assert "⚠️" in result
+        assert "📬" in result
+        assert "⚠️" not in result
         assert "25 unread" in result
 
     def test_overflow_notifications(self):
-        """100+ unread shows overflow indicator."""
+        """100+ unread shows overflow indicator with mailbox icon."""
         import json
         from skills.core.status.handler import _check_github_notifications
         fake = json.dumps([{"id": str(i)} for i in range(100)])
         with patch("app.github.api", return_value=fake):
             result = _check_github_notifications()
-        assert "⚠️" in result
+        assert "📬" in result
         assert "100+" in result
 
     def test_api_failure_returns_none(self):
