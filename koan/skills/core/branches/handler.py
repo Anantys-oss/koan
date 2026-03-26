@@ -41,22 +41,25 @@ def _resolve_project(args: str, ctx) -> Tuple[str, Optional[str]]:
     """Resolve project name and path from args or context."""
     from app.utils import get_known_projects
 
-    projects = get_known_projects()
+    projects = get_known_projects()  # list of (name, path) tuples
     if not projects:
         return "", None
 
+    # Build a dict for easy lookup
+    proj_dict = dict(projects)
+
     if args:
         # Match by name
-        for name, path in projects.items():
+        for name, path in proj_dict.items():
             if name.lower() == args.lower():
                 return name, path
         return args, None
 
     # Default: first project or koan itself
-    if "koan" in projects:
-        return "koan", projects["koan"]
-    name = next(iter(projects))
-    return name, projects[name]
+    if "koan" in proj_dict:
+        return "koan", proj_dict["koan"]
+    name, path = projects[0]
+    return name, path
 
 
 def _get_branches_info(project_path: str) -> List[Dict]:
