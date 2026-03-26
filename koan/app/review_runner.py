@@ -17,6 +17,7 @@ CLI:
 """
 
 import json
+import os
 import re
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -1534,7 +1535,7 @@ def main(argv=None):
     )
     parser.add_argument(
         "--project-name",
-        help="Project name for injecting project-specific learnings into the review prompt.",
+        help="Project name for injecting project-specific learnings and per-project issue tracker config.",
     )
     parser.add_argument(
         "--errors", action="store_true",
@@ -1544,6 +1545,10 @@ def main(argv=None):
     parser.add_argument(
         "--comments", action="store_true",
         help="Use comment-quality review (accuracy, completeness, stale TODOs)",
+    )
+    parser.add_argument(
+        "--koan-root",
+        help="Koan root directory for loading config.yaml and projects.yaml.",
     )
     cli_args = parser.parse_args(argv)
 
@@ -1555,6 +1560,18 @@ def main(argv=None):
 
     skill_dir = Path(__file__).resolve().parent.parent / "skills" / "core" / "review"
 
+    # Load config for issue tracker enrichment when koan_root is available
+    global_config = None
+    projects_config = None
+    koan_root = cli_args.koan_root
+    if not koan_root:
+        koan_root = os.environ.get("KOAN_ROOT", "")
+    if koan_root:
+        from app.utils import load_config
+        from app.projects_config import load_projects_config
+        global_config = load_config()
+        projects_config = load_projects_config(koan_root)
+
     success, summary, _review_data = run_review(
         owner, repo, pr_number, cli_args.project_path,
         skill_dir=skill_dir,
@@ -1563,6 +1580,8 @@ def main(argv=None):
         project_name=cli_args.project_name,
         errors=cli_args.errors,
         comments=cli_args.comments,
+        global_config=global_config,
+        projects_config=projects_config,
     )
     print(summary)
     return 0 if success else 1
