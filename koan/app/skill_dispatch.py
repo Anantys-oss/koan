@@ -547,6 +547,8 @@ def _build_review_cmd(
     cmd = base_cmd + [url_match.group(0), "--project-path", project_path]
     if "--architecture" in args:
         cmd.append("--architecture")
+    if "--errors" in args:
+        cmd.append("--errors")
     plan_url, _ = _extract_flag(args, _PLAN_URL_RE)
     if plan_url:
         cmd.extend(["--plan-url", plan_url])
