@@ -52,6 +52,15 @@ CORE_COMMANDS = frozenset({
 })
 
 
+def _has_in_progress_mission() -> bool:
+    """Check if any mission is currently in progress."""
+    from app.missions import count_in_progress
+    try:
+        content = MISSIONS_FILE.read_text(encoding="utf-8")
+        return count_in_progress(content) > 0
+    except FileNotFoundError:
+        return False
+
 
 def handle_command(text: str):
     """Handle /commands — core commands hardcoded, rest via skills."""
@@ -61,12 +70,18 @@ def handle_command(text: str):
 
     if cmd == "/stop":
         atomic_write(KOAN_ROOT / STOP_FILE, "STOP")
-        send_telegram("⏹️ Stop requested. Current mission will complete, then Kōan will stop.")
+        if _has_in_progress_mission():
+            send_telegram("⏹️ Stop requested. Current mission will complete, then Kōan will stop.")
+        else:
+            send_telegram("⏹️ Stop requested. Kōan will stop after the current cycle.")
         return
 
     if cmd in ("/update", "/upgrade"):
         atomic_write(KOAN_ROOT / CYCLE_FILE, "CYCLE")
-        send_telegram("🔄 Update requested. Current mission will complete, then Kōan will update and restart.")
+        if _has_in_progress_mission():
+            send_telegram("🔄 Update requested. Current mission will complete, then Kōan will update and restart.")
+        else:
+            send_telegram("🔄 Update requested. Kōan will update and restart.")
         return
 
     if cmd in ("/pause", "/sleep") or cmd.startswith(("/pause ", "/sleep ")):
