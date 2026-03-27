@@ -14,6 +14,7 @@ STOP_FILE = ".koan-stop"
 SHUTDOWN_FILE = ".koan-shutdown"
 RESTART_FILE = ".koan-restart"
 CYCLE_FILE = ".koan-cycle"
+ABORT_FILE = ".koan-abort"
 
 # -- Pause / quota signals ----------------------------------------------------
 
@@ -29,6 +30,7 @@ RUN_HEARTBEAT_FILE = ".koan-run-heartbeat"
 # -- Mode flags ----------------------------------------------------------------
 
 FOCUS_FILE = ".koan-focus"
+PASSIVE_FILE = ".koan-passive"
 VERBOSE_FILE = ".koan-verbose"
 
 # -- Project tracking ----------------------------------------------------------

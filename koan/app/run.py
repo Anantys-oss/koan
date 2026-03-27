@@ -50,7 +50,9 @@ from app.signals import (
     CYCLE_FILE,
     PAUSE_FILE,
     PROJECT_FILE,
+    RESTART_FILE,
     SHUTDOWN_FILE,
+    ABORT_FILE,
     STATUS_FILE,
     STOP_FILE,
 )
@@ -261,8 +263,9 @@ def run_claude_task(
 
     Returns the child exit code.
     """
-    global _last_mission_timed_out
+    global _last_mission_timed_out, _last_mission_aborted
     _last_mission_timed_out = False
+    _last_mission_aborted = False
 
     _sig.task_running = True
     _sig.first_ctrl_c = 0
@@ -318,6 +321,19 @@ def run_claude_task(
                         proc.wait(timeout=30)
                         break
                     except subprocess.TimeoutExpired:
+                        # Check for abort signal (user sent /abort)
+                        koan_root_path = os.environ.get("KOAN_ROOT", "")
+                        abort_path = Path(koan_root_path, ABORT_FILE) if koan_root_path else None
+                        if abort_path and abort_path.exists():
+                            log("koan", "Abort signal detected — aborting current mission")
+                            abort_path.unlink(missing_ok=True)
+                            _last_mission_aborted = True
+                            _kill_process_group(proc)
+                            try:
+                                proc.wait(timeout=10)
+                            except subprocess.TimeoutExpired:
+                                log("error", f"Process {proc.pid} unkillable after abort — abandoning")
+                            break
                         if timed_out:
                             # Watchdog already fired but process survived —
                             # make one last kill attempt from the main thread.
@@ -344,7 +360,9 @@ def run_claude_task(
                 cleanup()
 
         exit_code = proc.returncode
-        if timed_out:
+        if _last_mission_aborted:
+            exit_code = 1
+        elif timed_out:
             exit_code = 1
             _last_mission_timed_out = True
     finally:
@@ -463,6 +481,60 @@ def _notify_mission_end(
             log("error", f"Failure context extraction failed: {e}")
 
     _notify(instance, msg)
+
+
+# ---------------------------------------------------------------------------
+# Startup delay (#1039)
+# ---------------------------------------------------------------------------
+
+DEFAULT_STARTUP_DELAY = 30  # seconds
+
+
+def _startup_delay(koan_root: str) -> None:
+    """Wait before the first iteration so /pause can be processed.
+
+    When ``make start`` launches koan, the first mission can be picked up
+    before the Telegram bridge has time to process a /pause command.  This
+    interruptible delay (default 30 s, configurable via ``startup_delay``
+    in config.yaml) closes the race window.
+
+    The delay is skipped when:
+    - The agent is already paused (.koan-pause exists).
+    - ``startup_delay`` is set to ``0``.
+
+    The delay is interrupted early if any lifecycle signal appears
+    (.koan-pause, .koan-stop, .koan-shutdown, .koan-restart).
+    """
+    from app.utils import load_config
+
+    delay = load_config().get("startup_delay", DEFAULT_STARTUP_DELAY)
+    if delay <= 0:
+        return
+
+    # Already paused — skip directly into the main loop's pause handler
+    if Path(koan_root, PAUSE_FILE).exists():
+        log("koan", "Already paused at startup — skipping startup delay.")
+        return
+
+    log(
+        "koan",
+        f"Startup delay: waiting {delay}s before first mission "
+        f"(send /pause now if needed).",
+    )
+
+    tick = 2  # check signals every 2 s
+    elapsed = 0
+    while elapsed < delay:
+        time.sleep(min(tick, delay - elapsed))
+        elapsed += tick
+
+        # Any lifecycle signal → break out
+        for sig in (PAUSE_FILE, STOP_FILE, SHUTDOWN_FILE, RESTART_FILE):
+            if Path(koan_root, sig).exists():
+                log("koan", f"Signal detected during startup delay ({sig}), proceeding.")
+                return
+
+    log("koan", "Startup delay complete — entering main loop.")
 
 
 # ---------------------------------------------------------------------------
@@ -626,6 +698,7 @@ def main_loop():
     Path(koan_root, STOP_FILE).unlink(missing_ok=True)
     Path(koan_root, SHUTDOWN_FILE).unlink(missing_ok=True)
     Path(koan_root, CYCLE_FILE).unlink(missing_ok=True)
+    Path(koan_root, ABORT_FILE).unlink(missing_ok=True)
     clear_restart(koan_root)
 
     # Install SIGINT handler
@@ -646,6 +719,12 @@ def main_loop():
         max_runs, interval, branch_prefix = run_startup(koan_root, instance, projects)
 
         git_sync_interval = int(os.environ.get("KOAN_GIT_SYNC_INTERVAL", "5"))
+
+        # --- Startup delay (#1039) ---
+        # Give the user a window to send /pause before the first mission runs.
+        # Without this, a mission can be picked up immediately after startup,
+        # racing with the Telegram bridge processing of /pause.
+        _startup_delay(koan_root)
 
         while True:
             # --- Stop check ---
@@ -1053,7 +1132,17 @@ def _handle_skill_dispatch(
         from app.skill_dispatch import (
             translate_cli_skill_mission,
             strip_passthrough_command,
+            expand_combo_skill,
         )
+
+        # Combo skills (e.g. /rr) are bridge-side handlers that queue
+        # multiple sub-missions. Expand them and mark the original done.
+        if expand_combo_skill(mission_title, instance):
+            log("mission", "Decision: COMBO EXPAND (sub-missions queued)")
+            _notify(instance, f"🔀 [{project_name}] Combo skill expanded into sub-missions")
+            _finalize_mission(instance, mission_title, project_name, exit_code=0)
+            _commit_instance(instance)
+            return True, mission_title
 
         # Some /commands (e.g. /gh_request) are bridge-side handlers that
         # can also land in the mission queue via GitHub notifications.
@@ -1112,6 +1201,7 @@ _MISSION_RETRY_DELAY = 10  # seconds
 # were a transient network error (the retryable-pattern list matches
 # "timeout" which would otherwise trigger a second full-length run).
 _last_mission_timed_out = False
+_last_mission_aborted = False
 
 
 def _get_git_head(project_path: str) -> str:
@@ -1158,6 +1248,12 @@ def _maybe_retry_mission(
     # RETRYABLE pattern and start another full-length session.
     if _last_mission_timed_out:
         log("koan", "Skipping retry — mission was killed by watchdog timeout")
+        return claude_exit, stdout_file, stderr_file
+
+    # User-initiated aborts must not be retried — the user explicitly asked
+    # to stop this mission.
+    if _last_mission_aborted:
+        log("koan", "Skipping retry — mission was aborted by user")
         return claude_exit, stdout_file, stderr_file
 
     # Read output for classification
@@ -1325,6 +1421,10 @@ def _run_iteration(
 
     # Idle wait actions — all follow the same sleep-and-check pattern
     _IDLE_WAIT_CONFIG = {
+        "passive_wait": lambda p: (
+            f"Passive mode — read-only, waiting for /active ({p.get('passive_remaining', 'indefinite')})",
+            f"👁️ Passive — read-only ({p.get('passive_remaining', 'indefinite')})",
+        ),
         "focus_wait": lambda p: (
             f"Focus mode active ({p.get('focus_remaining', 'unknown')} remaining) — no missions pending, sleeping",
             f"Focus mode — waiting for missions ({p.get('focus_remaining', 'unknown')} remaining)",
@@ -1613,12 +1713,44 @@ def _run_iteration(
                 log("error", f"Failed to read CLI output: {e}, {e2}")
         _reset_terminal()
 
+        # --- Auth error detection (logged-out Claude) ---
+        # If Claude is logged out, requeue the mission instead of failing it
+        # and pause the agent until the human re-authenticates.
+        if claude_exit != 0 and original_mission_title:
+            from app.cli_errors import ErrorCategory, classify_cli_error
+            try:
+                _auth_stdout = Path(stdout_file).read_text()
+            except OSError:
+                _auth_stdout = ""
+            try:
+                _auth_stderr = Path(stderr_file).read_text()
+            except OSError:
+                _auth_stderr = ""
+            _auth_category = classify_cli_error(claude_exit, _auth_stdout, _auth_stderr)
+            if _auth_category == ErrorCategory.AUTH:
+                log("error", "Claude is logged out — requeueing mission to Pending")
+                _requeue_mission_in_file(instance, original_mission_title)
+                from app.pause_manager import create_pause
+                create_pause(koan_root, "auth")
+                _notify(instance, (
+                    "🔐 Claude is logged out. Please run `claude /login` to re-authenticate.\n\n"
+                    "The current mission has been moved back to Pending. "
+                    "Use /resume after logging in."
+                ))
+                return True  # consumed API budget before auth expired
+
         # Complete/fail mission in missions.md (safety net — idempotent if Claude already did it)
         # Done BEFORE post-mission pipeline so quota exhaustion can't skip it.
         # Use original_mission_title because that's the needle in "In Progress".
         # cli_skill translation may have changed mission_title to a different string.
         if original_mission_title:
             _finalize_mission(instance, original_mission_title, project_name, claude_exit)
+
+        # If mission was aborted, notify and skip heavy post-mission pipeline
+        if _last_mission_aborted and original_mission_title:
+            log("koan", f"Mission aborted: {original_mission_title[:60]}")
+            _notify(instance, f"⏭️ [{project_name}] Mission aborted: {original_mission_title[:60]}")
+            return True  # count as productive so loop continues immediately
 
         # Post-mission pipeline
         _status_prefix = f"Run {run_num}/{max_runs}"
@@ -1883,6 +2015,19 @@ def _update_mission_in_file(instance: str, mission_title: str, *, failed: bool =
     except Exception as e:
         label = "fail" if failed else "complete"
         log("error", f"Could not {label} mission in missions.md: {e}")
+
+
+def _requeue_mission_in_file(instance: str, mission_title: str):
+    """Move mission from In Progress back to Pending via locked write."""
+    try:
+        from app.missions import requeue_mission
+        from app.utils import modify_missions_file
+        missions_path = Path(instance, "missions.md")
+        if not missions_path.exists():
+            return
+        modify_missions_file(missions_path, lambda c: requeue_mission(c, mission_title))
+    except Exception as e:
+        log("error", f"Could not requeue mission in missions.md: {e}")
 
 
 def _finalize_mission(instance: str, mission_title: str, project_name: str, exit_code: int):

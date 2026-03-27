@@ -7,13 +7,16 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.github_command_handler import (
+    _ASSIGNMENT_REASON_TO_COMMAND,
     _error_replies,
+    _expand_combo_mission,
     _extract_url_from_context,
     _fetch_and_filter_comment,
     _handle_help_command,
     _notify_github_question,
     _notify_github_reply,
     _post_help_reply,
+    _try_assignment_notification,
     _try_nlp_classification,
     _try_reply,
     _validate_and_parse_command,
@@ -418,6 +421,9 @@ class TestProcessSingleNotification:
         assert error is None
         mock_insert.assert_called_once()
         mock_react.assert_called_once()
+        # Notification dict is annotated with parsed command and author
+        assert sample_notification["_koan_command"] == "rebase"
+        assert sample_notification["_koan_author"] == "alice"
 
     @patch("app.github_command_handler.mark_notification_read")
     @patch("app.github_command_handler.is_notification_stale", return_value=True)
@@ -2909,3 +2915,380 @@ class TestContextAwareCoreSkills:
         mission = build_mission_from_command(skill, command_name, "", notif, "myproject")
 
         assert mission == f"- [project:myproject] /{command_name} https://github.com/o/r/pull/42 📬"
+
+
+class TestExpandComboMission:
+    """Tests for _expand_combo_mission — expanding /rr into /review + /rebase."""
+
+    def test_rr_expands_to_review_and_rebase(self):
+        """The /rr combo should expand into /review and /rebase missions."""
+        mission = "- [project:koan] /rr https://github.com/o/r/pull/42 📬"
+        result = _expand_combo_mission("rr", mission, "koan")
+        assert len(result) == 2
+        assert "/review https://github.com/o/r/pull/42 📬" in result[0]
+        assert "/rebase https://github.com/o/r/pull/42 📬" in result[1]
+
+    def test_reviewrebase_expands(self):
+        """The /reviewrebase alias should also expand."""
+        mission = "- [project:koan] /reviewrebase https://github.com/o/r/pull/42 📬"
+        result = _expand_combo_mission("reviewrebase", mission, "koan")
+        assert len(result) == 2
+        assert "/review" in result[0]
+        assert "/rebase" in result[1]
+
+    def test_non_combo_passthrough(self):
+        """Non-combo commands should return the original mission unchanged."""
+        mission = "- [project:koan] /rebase https://github.com/o/r/pull/42 📬"
+        result = _expand_combo_mission("rebase", mission, "koan")
+        assert result == [mission]
+
+    def test_preserves_project_tag(self):
+        """Expanded missions should keep the [project:] tag."""
+        mission = "- [project:myproj] /rr https://github.com/o/r/pull/42 📬"
+        result = _expand_combo_mission("rr", mission, "myproj")
+        for entry in result:
+            assert "[project:myproj]" in entry
+
+    def test_preserves_url_and_context(self):
+        """URL and trailing markers should be preserved in expanded missions."""
+        mission = "- [project:koan] /rr https://github.com/o/r/pull/42 focus on security 📬"
+        result = _expand_combo_mission("rr", mission, "koan")
+        for entry in result:
+            assert "https://github.com/o/r/pull/42" in entry
+            assert "focus on security" in entry
+            assert "📬" in entry
+
+
+class TestComboSkillGithubIntegration:
+    """Integration test: @bot rr via GitHub @mention expands into sub-missions."""
+
+    @patch("app.github_command_handler.mark_notification_read")
+    @patch("app.github_command_handler.add_reaction", return_value=True)
+    @patch("app.github_command_handler.check_user_permission", return_value=True)
+    @patch("app.github_command_handler.check_already_processed", return_value=False)
+    @patch("app.github_command_handler.is_self_mention", return_value=False)
+    @patch("app.github_command_handler.is_notification_stale", return_value=False)
+    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler.resolve_project_from_notification")
+    @patch("app.utils.insert_pending_mission")
+    def test_rr_mention_inserts_two_sub_missions(
+        self, mock_insert, mock_resolve, mock_get_comment,
+        mock_stale, mock_self, mock_processed, mock_perm,
+        mock_react, mock_read, tmp_path,
+    ):
+        """@bot rr on a PR should insert /review and /rebase, not /rr."""
+        # Build a registry that includes the review_rebase skill
+        from app.skills import build_registry
+        registry = build_registry()
+
+        mock_resolve.return_value = ("koan", "sukria", "koan")
+        mock_get_comment.return_value = {
+            "id": 99999,
+            "url": "https://api.github.com/repos/sukria/koan/issues/comments/99999",
+            "body": "@testbot rr",
+            "user": {"login": "alice"},
+        }
+
+        notification = {
+            "id": "12345",
+            "reason": "mention",
+            "updated_at": "2026-02-11T20:00:00Z",
+            "repository": {"full_name": "sukria/koan"},
+            "subject": {
+                "type": "PullRequest",
+                "url": "https://api.github.com/repos/sukria/koan/pulls/42",
+                "latest_comment_url": "https://api.github.com/repos/sukria/koan/issues/comments/99999",
+            },
+        }
+
+        config = {"github": {"nickname": "testbot", "authorized_users": ["*"]}}
+
+        with patch.dict("os.environ", {"KOAN_ROOT": str(tmp_path)}):
+            success, error = process_single_notification(
+                notification, registry, config, None, "testbot",
+            )
+
+        assert success is True
+        assert error is None
+        # Should have inserted TWO missions, not one
+        assert mock_insert.call_count == 2
+        calls = [c[0][1] for c in mock_insert.call_args_list]
+        assert any("/review" in c for c in calls), f"Expected /review in {calls}"
+        assert any("/rebase" in c for c in calls), f"Expected /rebase in {calls}"
+        # Neither should contain /rr
+        for c in calls:
+            assert "/rr " not in c, f"Found unexpanded /rr in mission: {c}"
+
+    @patch("app.github_command_handler.mark_notification_read")
+    @patch("app.github_command_handler.add_reaction", return_value=True)
+    @patch("app.github_command_handler.check_user_permission", return_value=True)
+    @patch("app.github_command_handler.check_already_processed", return_value=False)
+    @patch("app.github_command_handler.is_self_mention", return_value=False)
+    @patch("app.github_command_handler.is_notification_stale", return_value=False)
+    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler.resolve_project_from_notification")
+    @patch("app.utils.insert_pending_mission")
+    def test_regular_command_still_inserts_one_mission(
+        self, mock_insert, mock_resolve, mock_get_comment,
+        mock_stale, mock_self, mock_processed, mock_perm,
+        mock_react, mock_read, tmp_path,
+    ):
+        """Non-combo commands like @bot rebase should still insert exactly one mission."""
+        from app.skills import build_registry
+        registry = build_registry()
+
+        mock_resolve.return_value = ("koan", "sukria", "koan")
+        mock_get_comment.return_value = {
+            "id": 99999,
+            "url": "https://api.github.com/repos/sukria/koan/issues/comments/99999",
+            "body": "@testbot rebase",
+            "user": {"login": "alice"},
+        }
+
+        notification = {
+            "id": "12345",
+            "reason": "mention",
+            "updated_at": "2026-02-11T20:00:00Z",
+            "repository": {"full_name": "sukria/koan"},
+            "subject": {
+                "type": "PullRequest",
+                "url": "https://api.github.com/repos/sukria/koan/pulls/42",
+                "latest_comment_url": "https://api.github.com/repos/sukria/koan/issues/comments/99999",
+            },
+        }
+
+        config = {"github": {"nickname": "testbot", "authorized_users": ["*"]}}
+
+        with patch.dict("os.environ", {"KOAN_ROOT": str(tmp_path)}):
+            success, error = process_single_notification(
+                notification, registry, config, None, "testbot",
+            )
+
+        assert success is True
+        assert mock_insert.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# _try_assignment_notification — review_requested and assign
+# ---------------------------------------------------------------------------
+
+
+class TestTryAssignmentNotification:
+    """Tests for assignment-based notification handling."""
+
+    @pytest.fixture
+    def review_notification(self):
+        return {
+            "id": "77001",
+            "reason": "review_requested",
+            "updated_at": "2026-03-21T01:00:00Z",
+            "repository": {"full_name": "sukria/koan"},
+            "subject": {
+                "type": "PullRequest",
+                "url": "https://api.github.com/repos/sukria/koan/pulls/99",
+            },
+        }
+
+    @pytest.fixture
+    def assign_notification(self):
+        return {
+            "id": "77002",
+            "reason": "assign",
+            "updated_at": "2026-03-21T01:00:00Z",
+            "repository": {"full_name": "sukria/koan"},
+            "subject": {
+                "type": "Issue",
+                "url": "https://api.github.com/repos/sukria/koan/issues/55",
+            },
+        }
+
+    @pytest.fixture
+    def review_registry(self):
+        """Registry with review and implement skills (both github_enabled)."""
+        reg = SkillRegistry()
+        reg._register(Skill(
+            name="review",
+            scope="core",
+            description="Review PR",
+            github_enabled=True,
+            github_context_aware=True,
+            commands=[SkillCommand(name="review", aliases=["rv"])],
+        ))
+        reg._register(Skill(
+            name="implement",
+            scope="core",
+            description="Implement issue",
+            github_enabled=True,
+            github_context_aware=True,
+            commands=[SkillCommand(name="implement", aliases=["impl"])],
+        ))
+        return reg
+
+    def test_review_requested_queues_review_mission(
+        self, review_notification, review_registry, tmp_path, monkeypatch,
+    ):
+        """review_requested notification queues /review <PR URL>."""
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        missions_path = tmp_path / "instance" / "missions.md"
+        missions_path.parent.mkdir(parents=True)
+        missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        with patch("app.github_command_handler.resolve_project_from_notification",
+                    return_value=("koan", "sukria", "koan")), \
+             patch("app.github_command_handler.is_notification_stale", return_value=False), \
+             patch("app.github_command_handler.mark_notification_read"):
+            result = _try_assignment_notification(
+                review_notification, review_registry, {},
+            )
+
+        assert result is True
+        content = missions_path.read_text()
+        assert "/review https://github.com/sukria/koan/pull/99" in content
+        assert "[project:koan]" in content
+
+    def test_assign_queues_implement_mission(
+        self, assign_notification, review_registry, tmp_path, monkeypatch,
+    ):
+        """assign notification queues /implement <issue URL>."""
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        missions_path = tmp_path / "instance" / "missions.md"
+        missions_path.parent.mkdir(parents=True)
+        missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        with patch("app.github_command_handler.resolve_project_from_notification",
+                    return_value=("koan", "sukria", "koan")), \
+             patch("app.github_command_handler.is_notification_stale", return_value=False), \
+             patch("app.github_command_handler.mark_notification_read"):
+            result = _try_assignment_notification(
+                assign_notification, review_registry, {},
+            )
+
+        assert result is True
+        content = missions_path.read_text()
+        assert "/implement https://github.com/sukria/koan/issues/55" in content
+        assert "[project:koan]" in content
+
+    def test_irrelevant_reason_returns_false(self, review_registry):
+        """Notifications with non-assignment reasons are ignored."""
+        notif = {"reason": "mention", "id": "1"}
+        result = _try_assignment_notification(notif, review_registry, {})
+        assert result is False
+
+    def test_stale_notification_skipped(
+        self, review_notification, review_registry,
+    ):
+        """Stale assignment notifications are marked read and skipped."""
+        with patch("app.github_command_handler.is_notification_stale", return_value=True), \
+             patch("app.github_command_handler.mark_notification_read") as mock_mark:
+            result = _try_assignment_notification(
+                review_notification, review_registry, {},
+            )
+
+        assert result is False
+        mock_mark.assert_called_once()
+
+    def test_unknown_repo_skipped(
+        self, review_notification, review_registry,
+    ):
+        """Notifications from unknown repos are skipped."""
+        with patch("app.github_command_handler.is_notification_stale", return_value=False), \
+             patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=None), \
+             patch("app.github_command_handler.mark_notification_read") as mock_mark:
+            result = _try_assignment_notification(
+                review_notification, review_registry, {},
+            )
+
+        assert result is False
+        mock_mark.assert_called_once()
+
+    def test_no_subject_url_skipped(self, review_registry):
+        """Notifications without a subject URL are skipped."""
+        notif = {
+            "id": "77003",
+            "reason": "review_requested",
+            "updated_at": "2026-03-21T01:00:00Z",
+            "repository": {"full_name": "sukria/koan"},
+            "subject": {"type": "PullRequest"},
+        }
+        with patch("app.github_command_handler.is_notification_stale", return_value=False), \
+             patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=("koan", "sukria", "koan")), \
+             patch("app.github_command_handler.mark_notification_read") as mock_mark:
+            result = _try_assignment_notification(
+                notif, review_registry, {},
+            )
+
+        assert result is False
+        mock_mark.assert_called_once()
+
+    def test_command_not_github_enabled(self):
+        """If the mapped command is not github_enabled, skip."""
+        reg = SkillRegistry()
+        reg._register(Skill(
+            name="review",
+            scope="core",
+            description="Review PR",
+            github_enabled=False,  # not enabled
+            commands=[SkillCommand(name="review")],
+        ))
+        notif = {
+            "id": "77004",
+            "reason": "review_requested",
+            "updated_at": "2026-03-21T01:00:00Z",
+            "repository": {"full_name": "sukria/koan"},
+            "subject": {"url": "https://api.github.com/repos/sukria/koan/pulls/10"},
+        }
+        result = _try_assignment_notification(notif, reg, {})
+        assert result is False
+
+    def test_assignment_reason_mapping(self):
+        """Verify the reason-to-command mapping."""
+        assert _ASSIGNMENT_REASON_TO_COMMAND["review_requested"] == "review"
+        assert _ASSIGNMENT_REASON_TO_COMMAND["assign"] == "implement"
+
+    def test_process_single_notification_routes_review_requested(
+        self, review_notification, review_registry, tmp_path, monkeypatch,
+    ):
+        """process_single_notification routes review_requested to assignment handler."""
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        missions_path = tmp_path / "instance" / "missions.md"
+        missions_path.parent.mkdir(parents=True)
+        missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        with patch("app.github_command_handler._fetch_and_filter_comment", return_value=None), \
+             patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=("koan", "sukria", "koan")), \
+             patch("app.github_command_handler.is_notification_stale", return_value=False), \
+             patch("app.github_command_handler.mark_notification_read"):
+            success, error = process_single_notification(
+                review_notification, review_registry, {}, None, "koan-bot",
+            )
+
+        assert success is True
+        assert error is None
+        content = missions_path.read_text()
+        assert "/review" in content
+
+    def test_process_single_notification_routes_assign(
+        self, assign_notification, review_registry, tmp_path, monkeypatch,
+    ):
+        """process_single_notification routes assign to assignment handler."""
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        missions_path = tmp_path / "instance" / "missions.md"
+        missions_path.parent.mkdir(parents=True)
+        missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        with patch("app.github_command_handler._fetch_and_filter_comment", return_value=None), \
+             patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=("koan", "sukria", "koan")), \
+             patch("app.github_command_handler.is_notification_stale", return_value=False), \
+             patch("app.github_command_handler.mark_notification_read"):
+            success, error = process_single_notification(
+                assign_notification, review_registry, {}, None, "koan-bot",
+            )
+
+        assert success is True
+        assert error is None
+        content = missions_path.read_text()
+        assert "/implement" in content

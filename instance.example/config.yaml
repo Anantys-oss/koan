@@ -19,12 +19,23 @@
 # after resume doesn't immediately re-pause.
 # start_on_pause: false
 
+# Start in passive mode — boot into read-only mode
+# When true, Kōan starts in passive mode: the loop runs (heartbeat, GitHub
+# notification polling, Telegram commands) but never executes missions or
+# autonomous work. Use /active to resume normal execution.
+# start_passive: false
+
 # Budget & Scheduling
 # These are the primary source of truth for run loop configuration.
 # max_runs_per_day: Maximum runs before auto-pause (resets on /resume or quota reset)
 # interval_seconds: Seconds between runs (how often the loop iterates)
 max_runs_per_day: 20
 interval_seconds: 300
+
+# Startup delay — seconds to wait before the first mission after boot.
+# Gives you time to send /pause before any mission runs.
+# Set to 0 to disable. Skipped automatically if already paused at startup.
+# startup_delay: 30
 
 # Auto-pause — automatically pause after max_runs or idle timeout.
 # When false, Kōan keeps running indefinitely (quota and error pauses still apply).

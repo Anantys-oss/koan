@@ -103,7 +103,20 @@ def _handle_status(ctx) -> str:
             parts.append("\n⏸️ Mode: Paused")
         parts.append("  /resume to unpause")
     else:
-        parts.append("\n🟢 Mode: Working")
+        # Check passive mode before showing "Working"
+        try:
+            from app.passive_manager import check_passive
+            passive_state = check_passive(str(koan_root))
+            if passive_state:
+                remaining = passive_state.remaining_display()
+                if passive_state.duration == 0:
+                    parts.append("\n👁️ Mode: Passive (read-only)")
+                else:
+                    parts.append(f"\n👁️ Mode: Passive (read-only, {remaining} remaining)")
+            else:
+                parts.append("\n🟢 Mode: Active")
+        except Exception:
+            parts.append("\n🟢 Mode: Active")
 
     # Show focus mode if active
     try:
@@ -181,16 +194,26 @@ def _build_health_section(koan_root, instance_dir) -> list:
         age = get_run_heartbeat_age(str(koan_root))
         if age >= 0:
             if age < 120:
-                health_items.append(f"Heartbeat: {age:.0f}s ago")
+                health_items.append(f"💓 Heartbeat: {age:.0f}s ago")
+            elif age < 900:
+                health_items.append(f"💓 Heartbeat: {age / 60:.0f}m ago")
             else:
                 health_items.append(f"⚠️ Heartbeat: {age / 60:.0f}m ago")
         else:
-            health_items.append("Heartbeat: n/a")
+            health_items.append("💓 Heartbeat: n/a")
 
         # Stale missions (read-only check, no alerting)
         stale = check_stale_missions(str(instance_dir))
         if stale:
             health_items.append(f"⚠️ {len(stale)} stale mission(s)")
+
+        # Usage data freshness
+        health_items.append(_check_usage_staleness(instance_dir))
+
+        # GitHub notification queue depth
+        gh_item = _check_github_notifications()
+        if gh_item:
+            health_items.append(gh_item)
 
         # Disk space
         free_gb = get_disk_free_gb(str(koan_root))
@@ -198,7 +221,7 @@ def _build_health_section(koan_root, instance_dir) -> list:
             if free_gb < 1.0:
                 health_items.append(f"⚠️ Disk: {free_gb:.1f} GB free")
             else:
-                health_items.append(f"Disk: {free_gb:.0f} GB free")
+                health_items.append(f"💾 Disk: {free_gb:.0f} GB free")
 
         if health_items:
             lines.append("\nHealth")
@@ -207,6 +230,49 @@ def _build_health_section(koan_root, instance_dir) -> list:
     except Exception:
         pass
     return lines
+
+
+def _check_usage_staleness(instance_dir) -> str:
+    """Check if usage.md is stale (>6h), which triggers the 75% fallback."""
+    import os
+    import time
+
+    usage_path = instance_dir / "usage.md"
+    if not usage_path.exists():
+        return "⚠️ Usage: no data (defaulting to 75%)"
+
+    try:
+        age_seconds = time.time() - os.path.getmtime(usage_path)
+        age_hours = age_seconds / 3600
+
+        if age_hours > 6:
+            return f"⚠️ Usage: stale ({age_hours:.0f}h old, 75% fallback active)"
+        elif age_hours > 1:
+            return f"📊 Usage: {age_hours:.1f}h old"
+        else:
+            minutes = age_seconds / 60
+            return f"📊 Usage: {minutes:.0f}m old"
+    except OSError:
+        return "⚠️ Usage: unreadable"
+
+
+def _check_github_notifications() -> str:
+    """Check unread GitHub notification queue depth."""
+    try:
+        from app.github import api
+        raw = api("notifications?per_page=100")
+        if not raw or raw.strip() == "[]":
+            return "📬 GitHub: 0 unread"
+
+        import json
+        notifications = json.loads(raw)
+        count = len(notifications)
+        if count >= 100:
+            return f"📬 GitHub: {count}+ unread"
+        else:
+            return f"📬 GitHub: {count} unread"
+    except Exception:
+        return None
 
 
 def _handle_ping(ctx) -> str:

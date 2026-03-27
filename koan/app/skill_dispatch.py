@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from app.github_url_parser import ISSUE_URL_PATTERN, PR_URL_PATTERN
+from app.missions import strip_timestamps
 from app.utils import is_known_project
 
 # Module-level registry cache for the run process.
@@ -80,6 +81,7 @@ _SKILL_RUNNERS = {
     "claude.md": "app.claudemd_refresh",
     "claude_md": "app.claudemd_refresh",
     "incident": "skills.core.incident.incident_runner",
+    "audit": "skills.core.audit.audit_runner",
 }
 
 # Commands that look like /skills but should be sent to Claude as regular
@@ -88,6 +90,20 @@ _SKILL_RUNNERS = {
 # on the bridge side (Telegram) but can also land in the mission queue
 # via GitHub notifications.
 _PASSTHROUGH_TO_CLAUDE = {"gh_request"}
+
+# Combo skills: bridge-side handlers that queue multiple sub-missions.
+# When these arrive in the agent loop (e.g. from a GitHub @mention),
+# we expand them into their constituent sub-commands instead of failing.
+# Each entry maps command_name -> list of sub-commands to queue.
+_COMBO_SKILLS = {
+    "rr": ["review", "rebase"],
+    "reviewrebase": ["review", "rebase"],
+}
+
+def get_combo_sub_commands(command_name: str) -> list:
+    """Return the list of sub-commands for a combo skill, or empty list."""
+    return list(_COMBO_SKILLS.get(command_name, []))
+
 
 _PROJECT_TAG_RE = re.compile(r"^\[projec?t:([a-zA-Z0-9_-]+)\]\s*")
 _PROJECT_WORD_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
@@ -214,11 +230,22 @@ def build_skill_command(
 
     runner_module = _SKILL_RUNNERS.get(command)
     if not runner_module:
-        debug_log(
-            f"[skill_dispatch] build_skill_command: no runner for '{command}' "
-            f"(known: {', '.join(sorted(_SKILL_RUNNERS))})"
-        )
-        return None
+        # Fallback: auto-discover runner module from skills directory.
+        # This handles skills that have a <name>_runner.py but aren't
+        # yet registered in _SKILL_RUNNERS (e.g. after a code update
+        # before process restart, or newly added skills).
+        runner_module = _discover_runner_module(command)
+        if runner_module:
+            debug_log(
+                f"[skill_dispatch] build_skill_command: auto-discovered runner "
+                f"for '{command}' -> {runner_module}"
+            )
+        else:
+            debug_log(
+                f"[skill_dispatch] build_skill_command: no runner for '{command}' "
+                f"(known: {', '.join(sorted(_SKILL_RUNNERS))})"
+            )
+            return None
     debug_log(f"[skill_dispatch] build_skill_command: '{command}' -> {runner_module}")
 
     python = sys.executable
@@ -250,10 +277,18 @@ def build_skill_command(
         "claude.md": lambda: _build_claudemd_cmd(base_cmd, project_name, project_path),
         "claude_md": lambda: _build_claudemd_cmd(base_cmd, project_name, project_path),
         "incident": lambda: _build_incident_cmd(base_cmd, args, project_path, instance_dir),
+        "audit": lambda: _build_audit_cmd(
+            base_cmd, args, project_name, project_path, instance_dir,
+        ),
     }
 
     builder = _COMMAND_BUILDERS.get(command)
-    return builder() if builder else None
+    if builder:
+        return builder()
+    # Fallback: use generic builder for auto-discovered runners
+    return _build_generic_runner_cmd(
+        base_cmd, args, project_name, project_path, instance_dir,
+    )
 
 
 def _extract_issue_url_and_context(args: str) -> Optional[Tuple[str, str]]:
@@ -518,21 +553,136 @@ def _build_incident_cmd(
     return cmd
 
 
+def _build_audit_cmd(
+    base_cmd: List[str],
+    args: str,
+    project_name: str,
+    project_path: str,
+    instance_dir: str,
+) -> List[str]:
+    """Build audit_runner command.
+
+    Extra context is passed via --context-file (temp file) to avoid
+    shell escaping issues with long text.  ``limit=N`` is extracted
+    and forwarded as ``--max-issues N``.
+    """
+    import re
+    import tempfile
+
+    cmd = base_cmd + [
+        "--project-path", project_path,
+        "--project-name", project_name,
+        "--instance-dir", instance_dir,
+    ]
+
+    # Extract limit=N before writing context
+    limit_match = re.search(r"\blimit=(\d+)\b", args, re.IGNORECASE)
+    if limit_match:
+        cmd.extend(["--max-issues", limit_match.group(1)])
+        args = (args[:limit_match.start()] + args[limit_match.end():]).strip()
+        args = re.sub(r"  +", " ", args)
+
+    # Write extra context to a temp file to avoid shell escaping issues
+    if args.strip():
+        fd, path = tempfile.mkstemp(prefix="koan-audit-", suffix=".txt")
+        with open(fd, "w", encoding="utf-8") as f:
+            f.write(args)
+        cmd.extend(["--context-file", path])
+
+    return cmd
+
+
+def _discover_runner_module(command: str) -> Optional[str]:
+    """Auto-discover a runner module for a skill command.
+
+    Convention: if ``skills/core/<command>/<command>_runner.py`` exists,
+    return the dotted module path ``skills.core.<command>.<command>_runner``.
+
+    Also checks instance skill directories via the cached registry.
+
+    This is a fallback for commands not listed in ``_SKILL_RUNNERS``,
+    ensuring new skills with runner modules are discoverable without
+    requiring a hardcoded registration.
+    """
+    # Check core skills directory first (most common case)
+    core_dir = Path(__file__).resolve().parent.parent / "skills" / "core"
+    runner_path = core_dir / command / f"{command}_runner.py"
+    if runner_path.is_file():
+        return f"skills.core.{command}.{command}_runner"
+
+    # Check instance skills via registry (external scopes)
+    # This is heavier — only runs when core lookup misses.
+    try:
+        from app.skills import build_registry
+        registry = build_registry()
+        skill = registry.find_by_command(command)
+        if skill and skill.scope != "core":
+            runner_name = f"{skill.name}_runner"
+            candidate = skill.path.parent / f"{runner_name}.py"
+            if candidate.is_file():
+                # Convert filesystem path to dotted module path relative to
+                # the skills directory
+                return f"skills.{skill.scope}.{skill.name}.{runner_name}"
+    except (ImportError, OSError, ValueError) as e:
+        from app.debug import debug_log
+        debug_log(f"[skill_dispatch] _discover_runner_module: registry lookup failed: {e}")
+
+    return None
+
+
+def _build_generic_runner_cmd(
+    base_cmd: List[str],
+    args: str,
+    project_name: str,
+    project_path: str,
+    instance_dir: str,
+) -> List[str]:
+    """Build a generic runner command with standard arguments.
+
+    Used for auto-discovered runners that follow the standard CLI interface:
+    ``--project-path``, ``--project-name``, ``--instance-dir``, plus optional
+    ``--context-file`` for any extra mission text.
+    """
+    import tempfile
+
+    cmd = base_cmd + [
+        "--project-path", project_path,
+        "--project-name", project_name,
+        "--instance-dir", instance_dir,
+    ]
+
+    # Pass extra context via temp file to avoid shell escaping issues
+    cleaned_args = strip_timestamps(args).strip()
+    if cleaned_args:
+        fd, path = tempfile.mkstemp(prefix="koan-ctx-", suffix=".txt")
+        with open(fd, "w", encoding="utf-8") as f:
+            f.write(cleaned_args)
+        cmd.extend(["--context-file", path])
+
+    return cmd
+
+
 def cleanup_skill_temp_files(skill_cmd: List[str]) -> None:
     """Remove temp files created by skill command builders.
 
     Currently handles:
     - ``--error-file`` temp files from ``_build_incident_cmd()``
+    - ``--context-file`` temp files from ``_build_audit_cmd()`` and
+      ``_build_generic_runner_cmd()``
 
     Safe to call on any skill_cmd — silently skips if no temp files found.
     """
     import os
 
+    _TEMP_FILE_FLAGS = {
+        "--error-file": "/koan-incident-",
+        "--context-file": "/koan-",
+    }
     for i, token in enumerate(skill_cmd):
-        if token == "--error-file" and i + 1 < len(skill_cmd):
+        prefix = _TEMP_FILE_FLAGS.get(token)
+        if prefix and i + 1 < len(skill_cmd):
             path = skill_cmd[i + 1]
-            # Only remove files we created (koan-incident-* in temp dir)
-            if "/koan-incident-" in path:
+            if prefix in path:
                 try:
                     os.unlink(path)
                 except OSError:
@@ -586,6 +736,48 @@ def strip_passthrough_command(mission_text: str) -> Optional[str]:
     if command in _PASSTHROUGH_TO_CLAUDE:
         return args if args else None
     return None
+
+
+def expand_combo_skill(
+    mission_text: str,
+    instance_dir: str,
+) -> bool:
+    """Expand a combo skill mission into its constituent sub-missions.
+
+    Combo skills (e.g. /rr) are bridge-side handlers that queue multiple
+    sub-commands. When they arrive in the agent loop (via GitHub @mentions),
+    we expand them into separate pending missions.
+
+    Args:
+        mission_text: The full mission text (e.g. "[project:koan] /rr <url>").
+        instance_dir: Path to the instance directory.
+
+    Returns:
+        True if the mission was expanded (caller should mark it done),
+        False if not a combo skill.
+    """
+    project_id, command, args = parse_skill_mission(mission_text)
+    sub_commands = _COMBO_SKILLS.get(command)
+    if not sub_commands:
+        return False
+
+    from app.utils import insert_pending_mission
+
+    missions_path = Path(instance_dir) / "missions.md"
+    tag = f"[project:{project_id}] " if project_id else ""
+
+    # Insert sub-missions in order (insert_pending_mission appends to bottom
+    # of Pending by default, so FIFO ordering is preserved).
+    for sub_cmd in sub_commands:
+        entry = f"- {tag}/{sub_cmd} {args}".rstrip()
+        insert_pending_mission(missions_path, entry)
+
+    print(
+        f"  Combo skill /{command} expanded into: "
+        + ", ".join(f"/{c}" for c in sub_commands),
+        file=sys.stderr,
+    )
+    return True
 
 
 def translate_cli_skill_mission(
@@ -694,6 +886,10 @@ def dispatch_skill_mission(
         return None
 
     parsed_project, command, args = parse_skill_mission(mission_text)
+    # Strip lifecycle timestamps (⏳, ▶) and the 📬 GitHub origin marker
+    # that the mission system appends — they are metadata, not arguments
+    # for the skill runner.
+    args = strip_timestamps(args).replace("📬", "").strip()
     debug_log(
         f"[skill_dispatch] dispatch: parsed project='{parsed_project}' "
         f"command='{command}' args='{args[:80]}'"

@@ -9,6 +9,7 @@ from app.skill_dispatch import (
     build_skill_command,
     dispatch_skill_mission,
     strip_passthrough_command,
+    expand_combo_skill,
     validate_skill_args,
 )
 
@@ -1240,3 +1241,191 @@ class TestStripPassthroughCommand:
     def test_regular_mission_not_passthrough(self):
         result = strip_passthrough_command("Fix the login bug")
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# expand_combo_skill
+# ---------------------------------------------------------------------------
+
+class TestExpandComboSkill:
+    """Combo skills expand into multiple sub-missions in the queue."""
+
+    def test_rr_expands_to_review_and_rebase(self, tmp_path):
+        """The /rr combo skill should insert /review and /rebase missions."""
+        missions_md = tmp_path / "missions.md"
+        missions_md.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        result = expand_combo_skill(
+            "[project:koan] /rr https://github.com/owner/repo/pull/42",
+            str(tmp_path),
+        )
+
+        assert result is True
+        content = missions_md.read_text()
+        assert "/review https://github.com/owner/repo/pull/42" in content
+        assert "/rebase https://github.com/owner/repo/pull/42" in content
+        # Both should have project tag
+        assert "[project:koan] /review" in content
+        assert "[project:koan] /rebase" in content
+
+    def test_reviewrebase_alias_works(self, tmp_path):
+        """The primary command /reviewrebase should also expand."""
+        missions_md = tmp_path / "missions.md"
+        missions_md.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        result = expand_combo_skill(
+            "[project:koan] /reviewrebase https://github.com/owner/repo/pull/42",
+            str(tmp_path),
+        )
+
+        assert result is True
+        content = missions_md.read_text()
+        assert "/review" in content
+        assert "/rebase" in content
+
+    def test_review_order_preserved(self, tmp_path):
+        """/review should come before /rebase in the pending section."""
+        missions_md = tmp_path / "missions.md"
+        missions_md.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        expand_combo_skill(
+            "[project:koan] /rr https://github.com/owner/repo/pull/42",
+            str(tmp_path),
+        )
+
+        content = missions_md.read_text()
+        review_pos = content.index("/review")
+        rebase_pos = content.index("/rebase")
+        assert review_pos < rebase_pos, "/review should come before /rebase"
+
+    def test_non_combo_returns_false(self, tmp_path):
+        """Regular skills should not be expanded."""
+        missions_md = tmp_path / "missions.md"
+        missions_md.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        result = expand_combo_skill("/rebase https://github.com/owner/repo/pull/42", str(tmp_path))
+        assert result is False
+
+    def test_regular_mission_returns_false(self, tmp_path):
+        """Non-skill missions should not be expanded."""
+        result = expand_combo_skill("Fix the login bug", str(tmp_path))
+        assert result is False
+
+    def test_no_project_tag(self, tmp_path):
+        """/rr without project tag should still expand (no tag in sub-missions)."""
+        missions_md = tmp_path / "missions.md"
+        missions_md.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        result = expand_combo_skill(
+            "/rr https://github.com/owner/repo/pull/42",
+            str(tmp_path),
+        )
+
+        assert result is True
+        content = missions_md.read_text()
+        assert "/review https://github.com/owner/repo/pull/42" in content
+        assert "[project:" not in content
+
+
+# ---------------------------------------------------------------------------
+# Auto-discovery fallback
+# ---------------------------------------------------------------------------
+
+class TestAutoDiscovery:
+    """Tests for convention-based runner module auto-discovery."""
+
+    KOAN_ROOT = "/home/user/koan"
+    INSTANCE = "/home/user/koan/instance"
+    PROJECT = "myproject"
+    PROJECT_PATH = "/home/user/workspace/myproject"
+
+    def _build(self, command, args=""):
+        return build_skill_command(
+            command=command,
+            args=args,
+            project_name=self.PROJECT,
+            project_path=self.PROJECT_PATH,
+            koan_root=self.KOAN_ROOT,
+            instance_dir=self.INSTANCE,
+        )
+
+    def test_audit_discoverable(self):
+        """audit_runner.py exists in skills/core/audit/ — should be found."""
+        from app.skill_dispatch import _discover_runner_module
+        result = _discover_runner_module("audit")
+        assert result == "skills.core.audit.audit_runner"
+
+    def test_nonexistent_skill_returns_none(self):
+        """A command with no runner module returns None."""
+        from app.skill_dispatch import _discover_runner_module
+        result = _discover_runner_module("nonexistent_skill_xyz")
+        assert result is None
+
+    def test_fallback_builds_command_for_known_runner(self):
+        """When _SKILL_RUNNERS lacks an entry but runner exists, fallback works."""
+        import app.skill_dispatch as sd
+
+        # Temporarily remove "audit" from _SKILL_RUNNERS to simulate stale cache
+        original = sd._SKILL_RUNNERS.copy()
+        original_builders = None
+        try:
+            del sd._SKILL_RUNNERS["audit"]
+            cmd = self._build("audit")
+            assert cmd is not None
+            assert "skills.core.audit.audit_runner" in " ".join(cmd)
+            assert "--project-path" in cmd
+            assert "--project-name" in cmd
+            assert "--instance-dir" in cmd
+        finally:
+            sd._SKILL_RUNNERS.update(original)
+
+
+# ---------------------------------------------------------------------------
+# Timestamp stripping in dispatch
+# ---------------------------------------------------------------------------
+
+class TestTimestampStripping:
+    """Lifecycle timestamps should not leak into skill runner args."""
+
+    def test_dispatch_strips_queued_timestamp(self):
+        """⏳ timestamps should not appear in dispatched command args."""
+        cmd = dispatch_skill_mission(
+            "[project:koan] /audit ⏳(2026-03-26T20:21)",
+            "koan", "/tmp/project", "/tmp/koan", "/tmp/instance",
+        )
+        assert cmd is not None
+        # The timestamp should not appear in any argument
+        for arg in cmd:
+            assert "⏳" not in arg
+
+    def test_dispatch_strips_started_timestamp(self):
+        """▶ timestamps should not appear in dispatched command args."""
+        cmd = dispatch_skill_mission(
+            "/plan Add dark mode ▶(2026-03-26T20:30)",
+            "koan", "/tmp/project", "/tmp/koan", "/tmp/instance",
+        )
+        assert cmd is not None
+        for arg in cmd:
+            assert "▶" not in arg
+
+    def test_dispatch_strips_github_marker(self):
+        """📬 GitHub origin marker should not appear in dispatched command args."""
+        url = "https://github.com/owner/repo/pull/42"
+        cmd = dispatch_skill_mission(
+            f"[project:koan] /rebase {url} 📬",
+            "koan", "/tmp/project", "/tmp/koan", "/tmp/instance",
+        )
+        assert cmd is not None
+        for arg in cmd:
+            assert "📬" not in arg
+
+    def test_dispatch_preserves_real_args(self):
+        """Real arguments survive timestamp stripping."""
+        cmd = dispatch_skill_mission(
+            "[project:koan] /plan Add dark mode ⏳(2026-03-26T20:21)",
+            "koan", "/tmp/project", "/tmp/koan", "/tmp/instance",
+        )
+        assert cmd is not None
+        assert "--idea" in cmd
+        idea_idx = cmd.index("--idea")
+        assert cmd[idea_idx + 1] == "Add dark mode"

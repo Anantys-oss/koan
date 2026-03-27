@@ -92,6 +92,44 @@ class TestHandleCommandRouting:
         mock_send.assert_called_once()
         assert "Update requested" in mock_send.call_args[0][0]
 
+    def test_stop_message_mentions_mission_when_in_progress(self, patch_bridge_state, mock_send):
+        from app.command_handlers import handle_command
+        missions = patch_bridge_state / "instance" / "missions.md"
+        missions.parent.mkdir(parents=True, exist_ok=True)
+        missions.write_text("## In Progress\n- some mission\n## Pending\n## Done\n")
+        handle_command("/stop")
+        msg = mock_send.call_args[0][0]
+        assert "Current mission will complete" in msg
+
+    def test_stop_message_no_mission_reference_when_idle(self, patch_bridge_state, mock_send):
+        from app.command_handlers import handle_command
+        missions = patch_bridge_state / "instance" / "missions.md"
+        missions.parent.mkdir(parents=True, exist_ok=True)
+        missions.write_text("## In Progress\n## Pending\n## Done\n")
+        handle_command("/stop")
+        msg = mock_send.call_args[0][0]
+        assert "Current mission will complete" not in msg
+        assert "after the current cycle" in msg
+
+    def test_update_message_mentions_mission_when_in_progress(self, patch_bridge_state, mock_send):
+        from app.command_handlers import handle_command
+        missions = patch_bridge_state / "instance" / "missions.md"
+        missions.parent.mkdir(parents=True, exist_ok=True)
+        missions.write_text("## In Progress\n- some mission\n## Pending\n## Done\n")
+        handle_command("/update")
+        msg = mock_send.call_args[0][0]
+        assert "Current mission will complete" in msg
+
+    def test_update_message_no_mission_reference_when_idle(self, patch_bridge_state, mock_send):
+        from app.command_handlers import handle_command
+        missions = patch_bridge_state / "instance" / "missions.md"
+        missions.parent.mkdir(parents=True, exist_ok=True)
+        missions.write_text("## In Progress\n## Pending\n## Done\n")
+        handle_command("/update")
+        msg = mock_send.call_args[0][0]
+        assert "Current mission will complete" not in msg
+        assert "will update and restart" in msg
+
     def test_pause_command_creates_pause_file(self, patch_bridge_state, mock_send):
         from app.command_handlers import handle_command
         handle_command("/pause")

@@ -55,13 +55,9 @@ def run_gh(*args, cwd=None, timeout=30, stdin_data=None, idempotent=True):
         cwd: Working directory for the subprocess.
         timeout: Seconds before the command is killed.
         stdin_data: Optional string passed to the process via stdin.
-        idempotent: Controls retry behaviour for secondary rate limits
-            (abuse detection).  Set to ``True`` (default) for read-only
-            operations or write operations that are safe to repeat (e.g.
-            updating an existing comment, adding a reaction).  Set to
-            ``False`` for operations that must not be duplicated (e.g. PR
-            creation, review submission) — secondary rate limit errors will
-            then be re-raised immediately without retrying.
+        idempotent: Deprecated — secondary rate limits are now never
+            retried (they indicate abuse and retrying escalates GitHub's
+            response).  Kept for backward compatibility.
 
     Returns:
         Stripped stdout string.
@@ -85,19 +81,14 @@ def run_gh(*args, cwd=None, timeout=30, stdin_data=None, idempotent=True):
             )
         return result.stdout.strip()
 
-    def _is_transient(exc: BaseException) -> bool:
-        """Only retry secondary rate limits when the operation is idempotent."""
-        if is_gh_secondary_rate_limit(exc):
-            return idempotent
-        return is_gh_transient(exc)
-
     from app.security_audit import GIT_OPERATION, _redact_list, log_event
 
     try:
         result = retry_with_backoff(
             _invoke,
             retryable=(RuntimeError, OSError, subprocess.TimeoutExpired),
-            is_transient=_is_transient,
+            is_transient=is_gh_transient,
+            non_retryable=is_gh_secondary_rate_limit,
             get_retry_delay=parse_retry_after,
             label=f"gh {' '.join(args[:2])}",
         )
@@ -170,7 +161,7 @@ def issue_create(title, body, labels=None, repo=None, cwd=None):
 
 
 def api(endpoint, method="GET", jq=None, input_data=None, cwd=None,
-        extra_args=None):
+        extra_args=None, timeout=30):
     """Call ``gh api`` for lower-level GitHub API access.
 
     Args:
@@ -180,6 +171,7 @@ def api(endpoint, method="GET", jq=None, input_data=None, cwd=None,
         input_data: If provided, passed via stdin (``-F body=@-``).
         cwd: Working directory.
         extra_args: Additional arguments for ``gh api``.
+        timeout: Seconds before the subprocess is killed (default 30).
 
     Returns:
         Stripped stdout string.
@@ -194,7 +186,7 @@ def api(endpoint, method="GET", jq=None, input_data=None, cwd=None,
     if input_data is not None:
         args.extend(["-F", "body=@-"])
 
-    return run_gh(*args, cwd=cwd, stdin_data=input_data)
+    return run_gh(*args, cwd=cwd, stdin_data=input_data, timeout=timeout)
 
 
 def fetch_issue_with_comments(owner, repo, issue_number):

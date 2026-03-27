@@ -628,6 +628,7 @@ from app.config import (  # noqa: E402, F401
     get_tools_description,
     get_model_config,
     get_start_on_pause,
+    get_start_passive,
     get_max_runs,
     get_interval_seconds,
     get_fast_reply_model,

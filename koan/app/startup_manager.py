@@ -73,11 +73,14 @@ def discover_workspace(koan_root: str, projects: list) -> list:
 
 
 def validate_config(koan_root: str):
-    """Validate config.yaml keys and types, warn on typos or bad values."""
+    """Validate config.yaml keys and types, warn on typos or bad values.
+
+    Also detects config drift (keys in the template but missing from user config).
+    """
     from app.utils import load_config
     from app.config_validator import validate_and_warn
     config = load_config()
-    validate_and_warn(config)
+    validate_and_warn(config, koan_root=koan_root)
 
 
 def run_sanity_checks(instance: str):
@@ -242,6 +245,27 @@ def handle_start_on_pause(koan_root: str):
         create_pause(koan_root, "start_on_pause")
 
 
+def handle_start_passive(koan_root: str):
+    """Enter passive mode on startup if configured.
+
+    When start_passive=true in config.yaml, creates .koan-passive with no
+    duration (indefinite). Requires explicit /active to resume.
+    No-op if already passive.
+    """
+    from app.config import get_start_passive
+
+    if not get_start_passive():
+        return
+
+    from app.passive_manager import is_passive, create_passive
+
+    if is_passive(koan_root):
+        return  # already passive, don't overwrite
+
+    log("passive", "start_passive=true in config. Entering passive mode.")
+    create_passive(koan_root, duration=0, reason="start_passive")
+
+
 def setup_git_identity():
     """Set git author/committer from KOAN_EMAIL env var."""
     koan_email = os.environ.get("KOAN_EMAIL", "")
@@ -364,8 +388,9 @@ def run_startup(koan_root: str, instance: str, projects: list):
     with protected_phase("Self-reflection check"):
         _safe_run("Self-reflection check", check_self_reflection, instance)
 
-    # Start on pause
+    # Start on pause / passive
     _safe_run("Start on pause", handle_start_on_pause, koan_root)
+    _safe_run("Start passive", handle_start_passive, koan_root)
 
     # Git identity and GitHub auth
     _safe_run("Git identity", setup_git_identity)

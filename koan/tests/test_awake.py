@@ -791,6 +791,30 @@ class TestHandleChat:
         # Must save the error message to conversation history
         assert mock_save.call_count >= 2  # user msg + error msg
 
+    @patch("app.awake.save_conversation_message")
+    @patch("app.awake.load_recent_history", return_value=[])
+    @patch("app.awake.format_conversation_history", return_value="")
+    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.awake.get_chat_tools", return_value="")
+    @patch("app.awake.send_telegram")
+    @patch("app.awake.subprocess.run")
+    def test_empty_response_sends_fallback(self, mock_run, mock_send, mock_tools,
+                                           mock_tools_desc, mock_fmt, mock_hist,
+                                           mock_save, tmp_path):
+        """Empty Claude response (exit 0, blank stdout) must still reply to the user."""
+        mock_run.return_value = MagicMock(stdout="", returncode=0, stderr="")
+        with patch("app.awake.INSTANCE_DIR", tmp_path), \
+             patch("app.awake.KOAN_ROOT", tmp_path), \
+             patch("app.awake.PROJECT_PATH", ""), \
+             patch("app.awake.CONVERSATION_HISTORY_FILE", tmp_path / "history.jsonl"), \
+             patch("app.awake.SOUL", ""), \
+             patch("app.awake.SUMMARY", ""):
+            handle_chat("hello")
+        # User must receive a reply — not silence
+        mock_send.assert_called_once()
+        # Must persist the fallback to conversation history
+        assert mock_save.call_count >= 2  # user msg + fallback msg
+
 
 # ---------------------------------------------------------------------------
 # flush_outbox
@@ -1788,13 +1812,13 @@ class TestPauseCommand:
         assert "max runs" in status.lower()
 
     def test_status_shows_working_when_active(self, tmp_path):
-        """Status shows Working when no pause/stop."""
+        """Status shows Active when no pause/stop/passive."""
         (tmp_path / "instance").mkdir()
         (tmp_path / "instance" / "missions.md").write_text(
             "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n"
         )
         status = _call_status_handler(tmp_path)
-        assert "Working" in status
+        assert "Active" in status
 
     def test_status_shows_stopping(self, tmp_path):
         """Status shows Stopping when stop file exists."""
@@ -2031,7 +2055,7 @@ class TestPauseAwareness:
             "# Missions\n\n## Pending\n\n## In Progress\n\n"
         )
         status = _call_status_handler(tmp_path)
-        assert "Working" in status
+        assert "Active" in status
 
     @patch("app.awake.save_conversation_message")
     @patch("app.awake.load_recent_history", return_value=[])

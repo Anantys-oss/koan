@@ -141,6 +141,11 @@ If Kōan misclassifies your message, use `/chat` to force chat mode:
 - `/cancel auth` — Cancel the mission matching "auth"
 </details>
 
+**`/abort`** — Abort the current in-progress mission and move to the next one.
+
+- **Usage:** `/abort`
+- The running Claude subprocess is killed, the mission is moved to Failed, and the agent loop picks the next pending item.
+
 **`/priority`** — Move a pending mission to a different position in the queue.
 
 - **Usage:** `/priority <n>` (move to top) or `/priority <n> <position>`
@@ -185,7 +190,7 @@ If Kōan misclassifies your message, use `/chat` to force chat mode:
 - `/logs` — Quick check of recent agent and bridge output without SSH access
 </details>
 
-**`/quota`** — Check remaining API quota (live, no cache).
+**`/quota [remaining_%]`** — Check remaining API quota (live, no cache), or override the internal estimate.
 
 - **Aliases:** `/q`
 
@@ -193,6 +198,8 @@ If Kōan misclassifies your message, use `/chat` to force chat mode:
 <summary>Use cases</summary>
 
 - `/quota` — See how much API budget is left before adding heavy missions
+- `/quota 32` — Tell Kōan it has 32% remaining (fixes drift when internal estimate is wrong)
+- If Kōan is paused due to quota but the API is actually available, `/quota 50` will correct the estimate and clear the pause
 </details>
 
 **`/verbose`** / **`/silent`** — Toggle real-time progress updates. When verbose is on, Kōan sends progress messages as it works.
@@ -251,6 +258,21 @@ Kōan can manage multiple projects simultaneously. It rotates between them based
 - `/focus` — "I need all attention on the webapp for the next few hours"
 - `/focus 1h` — Short focused sprint
 - `/unfocus` — "OK, back to normal"
+</details>
+
+**`/passive`** — Enter passive (read-only) mode. The agent loop keeps running (heartbeat, GitHub notification polling, Telegram commands) but never executes missions or autonomous work. Missions accumulate as Pending.
+
+- **Usage:** `/passive [duration]` — no duration = indefinite
+- **Examples:** `/passive`, `/passive 4h`, `/passive 2h30m`
+
+**`/active`** — Exit passive mode and resume normal execution. Queued missions drain naturally.
+
+<details>
+<summary>Use cases</summary>
+
+- `/passive` — "I'm at the desk, don't touch anything"
+- `/passive 4h` — "Hands off for the next 4 hours"
+- `/active` — "I'm done, you can work again"
 </details>
 
 ---
@@ -389,6 +411,19 @@ Use this before `/plan` when the idea is architecturally complex, when you want 
 - `/rebase https://github.com/org/repo/pull/42` — Resolve conflicts and update the PR
 </details>
 
+**`/reviewrebase`** — Review a PR then rebase it, so review insights feed the rebase.
+
+- **Usage:** `/reviewrebase <pr-url>`
+- **Aliases:** `/rr`
+- **GitHub @mention:** `@koan-bot /rr` on a PR
+
+<details>
+<summary>Use cases</summary>
+
+- `/rr https://github.com/org/repo/pull/42` — Queues `/review` then `/rebase` in sequence
+- Extra context after the URL is passed to the review step (e.g., `/rr <url> focus on error handling`)
+</details>
+
 **`/squash`** — Squash all PR commits into a single clean commit.
 
 - **Usage:** `/squash <pr-url>`
@@ -421,6 +456,18 @@ Use this before `/plan` when the idea is architecturally complex, when you want 
 <summary>Use cases</summary>
 
 - `/pr https://github.com/org/repo/pull/55` — Review a PR and apply updates
+</details>
+
+**`/branches`** — List koan branches and open PRs with recommended merge order and stats.
+
+- **Usage:** `/branches [project_name]`
+- **Aliases:** `/br`, `/prs`
+
+<details>
+<summary>Use cases</summary>
+
+- `/branches` — Show all koan branches for the default project with merge recommendations
+- `/branches koan` — Show branches for a specific project
 </details>
 
 **`/check`** — Run project health checks on a PR or issue (rebase, review, plan as needed).
@@ -615,7 +662,7 @@ Kōan automatically adapts its work intensity based on remaining API quota:
 | **REVIEW** | <15% | Read-only analysis, code audits, lightweight tasks |
 | **WAIT** | <5% | Graceful pause until quota resets |
 
-You don't need to manage this — Kōan adjusts automatically. Use `/quota` to see the current mode.
+You don't need to manage this — Kōan adjusts automatically. Use `/quota` to see the current mode. If the internal estimate drifts from reality, use `/quota <N>` to override (e.g., `/quota 50` tells Kōan it has 50% remaining).
 
 ### Exploration Mode
 
@@ -891,6 +938,7 @@ Ten skills can be triggered by commenting `@koan-bot <command>` on GitHub issues
 | `/fix` | `@koan-bot /fix` on an issue |
 | `/review` | `@koan-bot /review` on a PR |
 | `/rebase` | `@koan-bot /rebase` on a PR |
+| `/reviewrebase` | `@koan-bot /rr` on a PR |
 | `/recreate` | `@koan-bot /recreate` on a PR |
 | `/refactor` | `@koan-bot /refactor` on a PR or issue |
 | `/plan` | `@koan-bot /plan <idea>` on an issue |
@@ -1047,6 +1095,20 @@ See [docs/auto-update.md](auto-update.md) for details.
 - `/del myrepo` — Same, using short alias
 </details>
 
+### Renaming Projects
+
+**`/rename`** — Rename a project across all configuration and instance files.
+
+- **Usage:** `/rename <old_name> <new_name>`
+- **Aliases:** `/rename_project`
+
+<details>
+<summary>Use cases</summary>
+
+- `/rename anantys-back aback` — Rename a project everywhere (projects.yaml, memory, journals, instance files)
+- `/rename my-long-project mlp` — Shorten a project name for easier typing
+</details>
+
 ### Performance Profiling
 
 **`/profile`** — Queue a performance profiling mission for a project.
@@ -1092,6 +1154,28 @@ See [docs/auto-update.md](auto-update.md) for details.
 - `/dead_code` — Scan the default project
 </details>
 
+### Codebase Audit
+
+**`/audit`** — Audit a project for optimizations, simplifications, and potential issues. Creates a GitHub issue for each finding with detailed problem description, impact analysis, suggested fix, and severity/effort classification.
+
+- **Usage:** `/audit <project-name> [extra context] [limit=N]`
+- **GitHub @mention:** `@koan-bot /audit` on an issue or PR
+- Default: top 5 most important findings. Use `limit=N` to override.
+
+<details>
+<summary>Use cases</summary>
+
+- `/audit koan` — Full audit of the koan project (top 5 findings)
+- `/audit webapp focus on the auth module` — Audit with specific focus
+- `/audit mylib look for performance bottlenecks limit=10` — Targeted audit with custom limit
+</details>
+
+Each finding becomes a GitHub issue with:
+- **Problem** — What's wrong and why it matters
+- **Why This Matters** — Impact on bugs, performance, or maintainability
+- **Suggested Fix** — Concrete description of what to change
+- **Details table** — Severity, category, location, and effort estimate
+
 ### Incident Triage
 
 **`/incident`** — Triage a production error from a stack trace or log snippet. Kōan will parse the error, identify the root cause, propose a fix with tests, and submit a draft PR.
@@ -1134,6 +1218,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/mission <text>` | — | B | Queue a new mission (`--now` for top priority) |
 | `/list` | `/queue`, `/ls` | B | List pending and in-progress missions |
 | `/cancel <n>` | `/remove`, `/clear` | B | Cancel a pending mission |
+| `/abort` | — | B | Abort current mission, pick next pending |
 | `/priority <n>` | — | B | Reorder a pending mission in the queue |
 | `/status` | `/st` | B | Quick status overview |
 | `/ping` | — | B | Check if the agent loop is alive |
@@ -1141,13 +1226,15 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/metrics` | — | B | Mission success rates and reliability stats |
 | `/live` | `/progress` | B | Show live progress of current mission |
 | `/logs` | — | B | Show last 10 lines from run and awake logs |
-| `/quota` | `/q` | B | Check LLM quota (live) |
+| `/quota [N]` | `/q` | B | Check LLM quota (live), or override remaining % |
 | `/chat <msg>` | — | B | Force chat mode (bypass mission detection) |
 | `/verbose` | — | B | Enable real-time progress updates |
 | `/silent` | — | B | Disable real-time progress updates |
 | `/projects` | `/proj` | B | List configured projects |
 | `/focus [duration]` | — | B | Lock agent to one project |
 | `/unfocus` | — | B | Exit focus mode |
+| `/passive [duration]` | — | B | Enter read-only passive mode |
+| `/active` | — | B | Exit passive mode, resume execution |
 | `/brainstorm <topic>` | — | I | Decompose topic into linked sub-issues + master issue |
 | `/plan <desc>` | — | I | Create a structured implementation plan |
 | `/deepplan <idea\|issue-url>` | `/deeplan` | I | Spec-first design: explore approaches, post spec, queue /plan |
@@ -1157,9 +1244,11 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/refactor <desc>` | `/rf` | I | Targeted refactoring mission |
 | `/ask <comment-url>` | — | I | Ask a question about a PR/issue — posts AI reply to GitHub |
 | `/rebase <PR>` | `/rb` | I | Rebase a PR onto its base branch |
+| `/reviewrebase <PR>` | `/rr` | I | Review then rebase a PR (combo) |
 | `/squash <PR>` | `/sq` | I | Squash all PR commits into one clean commit |
 | `/recreate <PR>` | `/rc` | I | Re-implement a PR from scratch |
 | `/pr <PR>` | — | I | Review and update a GitHub PR |
+| `/branches [project]` | `/br`, `/prs` | B | List koan branches + PRs with merge order |
 | `/check <url>` | `/inspect` | I | Run project health checks on a PR/issue |
 | `/gh_request <url> <text>` | — | I | Route natural-language GitHub request to the right skill |
 | `/claudemd [project]` | `/claude`, `/claude.md`, `/claude_md` | I | Refresh a project's CLAUDE.md |
@@ -1193,14 +1282,16 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/snapshot` | — | P | Export memory state |
 | `/add_project <url>` | `/add_project` | P | Add a project from GitHub |
 | `/delete_project <name>` | `/delete`, `/del` | P | Remove a project from workspace |
+| `/rename <old> <new>` | `/rename_project` | P | Rename a project everywhere |
 | `/profile <project>` | `/perf`, `/benchmark` | P | Performance profiling mission |
+| `/audit <project> [ctx] [limit=N]` | — | P | Audit project, create GitHub issues (top N, default 5) |
 | `/tech_debt [project]` | `/td`, `/debt` | P | Scan project for tech debt |
 | `/dead_code [project]` | `/dc` | P | Scan for unused code |
 | `/incident <error>` | — | P | Triage a production error |
 | `/scaffold_skill <scope> <name> <desc>` | `/scaffold`, `/new_skill` | P | Generate SKILL.md + handler.py for a new custom skill |
 
-Skills marked with GitHub @mention support: `/brainstorm`, `/plan`, `/implement`, `/fix`, `/review`, `/rebase`, `/recreate`, `/refactor`, `/profile`, `/gh_request`. See [GitHub Commands](github-commands.md) for details.
+Skills marked with GitHub @mention support: `/audit`, `/brainstorm`, `/plan`, `/implement`, `/fix`, `/review`, `/rebase`, `/recreate`, `/refactor`, `/profile`, `/gh_request`. See [GitHub Commands](github-commands.md) for details.
 
 ---
 
-*This manual covers all 41 core skills. For the full command reference with tabular format, see [docs/skills.md](skills.md). For skill authoring, see [koan/skills/README.md](../koan/skills/README.md).*
+*This manual covers all 42 core skills. For the full command reference with tabular format, see [docs/skills.md](skills.md). For skill authoring, see [koan/skills/README.md](../koan/skills/README.md).*

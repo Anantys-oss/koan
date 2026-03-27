@@ -144,6 +144,20 @@ def _inject_recurring(instance_dir: Path):
         return []
 
 
+def _drain_ci_queue(instance_dir: Path):
+    """Drain one CI queue entry (non-blocking).
+
+    Returns:
+        status message string, or None if queue is empty / still pending.
+    """
+    try:
+        from app.ci_queue_runner import drain_one
+        return drain_one(str(instance_dir))
+    except (ImportError, OSError, ValueError) as e:
+        _log_iteration("error", f"CI queue drain error: {e}")
+        return None
+
+
 def _fallback_mission_extract(instance_dir: Path, projects_str: str,
                               context_msg: str):
     """Attempt direct mission extraction when the picker fails or returns empty.
@@ -221,15 +235,16 @@ def _projects_to_str(projects: List[Tuple[str, str]]) -> str:
 
 def _resolve_project_path(
     project_name: str, projects: List[Tuple[str, str]],
-) -> Optional[str]:
-    """Find the path for a project name.
+) -> Optional[Tuple[str, str]]:
+    """Find the canonical name and path for a project name (case-insensitive).
 
     Returns:
-        Path string or None if not found
+        (canonical_name, path) tuple or None if not found
     """
+    lower = project_name.lower()
     for name, path in projects:
-        if name == project_name:
-            return path
+        if name.lower() == lower:
+            return (name, path)
     return None
 
 
@@ -292,6 +307,21 @@ def _check_focus(koan_root: str):
         return check_focus(koan_root)
     except (ImportError, OSError, ValueError) as e:
         _log_iteration("error", f"Focus check failed: {e}")
+        return None
+
+
+def _check_passive(koan_root: str):
+    """Check passive mode state.
+
+    Returns:
+        PassiveState object if active, None if not active.
+        Gracefully returns None if passive_manager module is not available.
+    """
+    try:
+        from app.passive_manager import check_passive
+        return check_passive(koan_root)
+    except (ImportError, OSError, ValueError) as e:
+        _log_iteration("error", f"Passive check failed: {e}")
         return None
 
 
@@ -573,6 +603,7 @@ def _make_result(*, action, project_name, project_path="",
                  mission_title="", autonomous_mode, focus_area="",
                  available_pct, decision_reason, display_lines,
                  recurring_injected, focus_remaining=None,
+                 passive_remaining=None,
                  schedule_mode="normal", error=None,
                  tracker_error=None):
     """Build a standardised iteration-plan result dict."""
@@ -588,6 +619,7 @@ def _make_result(*, action, project_name, project_path="",
         "display_lines": display_lines,
         "recurring_injected": recurring_injected,
         "focus_remaining": focus_remaining,
+        "passive_remaining": passive_remaining,
         "schedule_mode": schedule_mode,
         "error": error,
         "tracker_error": tracker_error,
@@ -669,7 +701,7 @@ def plan_iteration(
     Returns:
         dict with iteration plan:
         {
-            "action": "mission" | "autonomous" | "contemplative" | "focus_wait" | "schedule_wait" | "exploration_wait" | "pr_limit_wait" | "wait_pause" | "error",
+            "action": "mission" | "autonomous" | "contemplative" | "passive_wait" | "focus_wait" | "schedule_wait" | "exploration_wait" | "pr_limit_wait" | "wait_pause" | "error",
             "project_name": str,
             "project_path": str,
             "mission_title": str (empty for autonomous/contemplative),
@@ -731,6 +763,9 @@ def plan_iteration(
     # Step 3: Inject recurring missions
     recurring_injected = _inject_recurring(instance)
 
+    # Step 3b: Drain CI queue (one entry per iteration, non-blocking)
+    ci_drain_msg = _drain_ci_queue(instance)
+
     # Step 4: Pick mission
     mission_project, mission_title = _pick_mission(
         instance, projects_str, run_num, autonomous_mode, last_project,
@@ -740,11 +775,39 @@ def plan_iteration(
     else:
         _log_iteration("koan", "No pending mission — entering autonomous mode")
 
+    # Step 4b: Passive mode gate — block all execution
+    # Missions stay Pending, no autonomous work. Must check before start_mission().
+    passive_state = _check_passive(koan_root)
+    if passive_state is not None:
+        remaining = passive_state.remaining_display()
+        _log_iteration("koan", f"Passive mode active ({remaining}) — skipping execution")
+        return _make_result(
+            action="passive_wait",
+            project_name=mission_project or (projects[0][0] if projects else "default"),
+            project_path="",
+            mission_title="",
+            autonomous_mode=autonomous_mode,
+            focus_area="Passive mode: read-only, no execution",
+            available_pct=available_pct,
+            decision_reason=f"Passive mode — read-only ({remaining})",
+            display_lines=display_lines,
+            recurring_injected=recurring_injected,
+            focus_remaining=None,
+            schedule_mode=schedule_state.mode if schedule_state else "normal",
+            tracker_error=tracker_error,
+            passive_remaining=remaining,
+        )
+
     # Step 5: Resolve project
     if mission_project and mission_title:
-        # Mission picked — resolve project path
-        project_name = mission_project
-        project_path = _resolve_project_path(project_name, projects)
+        # Mission picked — resolve project path (case-insensitive)
+        resolved = _resolve_project_path(mission_project, projects)
+
+        if resolved is None:
+            project_name = mission_project
+            project_path = None
+        else:
+            project_name, project_path = resolved
 
         if project_path is None:
             known = _get_known_project_names(projects)

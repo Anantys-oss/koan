@@ -1,4 +1,8 @@
-"""Koan quota skill — live LLM quota check, no cache."""
+"""Koan quota skill — live LLM quota check + manual override.
+
+/quota        — show current quota metrics
+/quota <N>    — override: tell koan that N% has been used (fixes drift)
+"""
 
 import json
 from datetime import datetime, timedelta
@@ -14,7 +18,55 @@ STATS_CACHE_PATH = Path.home() / ".claude" / "stats-cache.json"
 
 
 def handle(ctx):
-    """Check LLM quota live and display friendly metrics."""
+    """Check LLM quota live, or override remaining % if argument given."""
+    args = (ctx.args or "").strip()
+
+    # --- Override mode: /quota <N> ---
+    if args:
+        return _handle_override(ctx, args)
+
+    # --- Display mode: /quota ---
+    return _handle_display(ctx)
+
+
+def _handle_override(ctx, args):
+    """Override internal quota estimation with human-provided used %."""
+    try:
+        used_pct = int(args)
+    except ValueError:
+        return f"Usage: /quota <used_%>\nExample: /quota 5 (= 5% used, 95% remaining)"
+
+    if used_pct < 0 or used_pct > 100:
+        return "Used percentage must be between 0 and 100."
+
+    instance_dir = ctx.instance_dir
+    koan_root = ctx.koan_root
+    state_file = instance_dir / "usage_state.json"
+    usage_md = instance_dir / "usage.md"
+
+    # Apply the override
+    from app.usage_estimator import cmd_set_used
+    cmd_set_used(used_pct, state_file, usage_md)
+
+    # If paused for quota, clear the pause
+    unpaused = False
+    from app.pause_manager import is_paused, get_pause_state, remove_pause
+    if is_paused(str(koan_root)):
+        state = get_pause_state(str(koan_root))
+        if state and state.is_quota:
+            remove_pause(str(koan_root))
+            unpaused = True
+
+    # Confirm
+    remaining_pct = 100 - used_pct
+    msg = f"Quota override applied: {used_pct}% used ({remaining_pct}% remaining)."
+    if unpaused:
+        msg += "\nQuota pause cleared — agent will resume on next iteration."
+    return msg
+
+
+def _handle_display(ctx):
+    """Show current quota metrics (original behavior)."""
     instance_dir = ctx.instance_dir
     koan_root = ctx.koan_root
 
