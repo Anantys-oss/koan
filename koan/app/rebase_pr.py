@@ -14,6 +14,7 @@ Pipeline:
 """
 
 import json
+import re
 import subprocess
 import sys
 import time
@@ -253,6 +254,27 @@ def run_rebase(
     if not context["branch"]:
         return False, "Could not determine PR branch name."
 
+    # ── Already-solved check ──────────────────────────────────────────
+    # Ask Claude whether HEAD already addresses the intent of this PR.
+    # Must run before checkout to avoid unnecessary git state mutations.
+    already_solved, resolved_by = _check_if_already_solved(
+        actions_log=actions_log,
+        pr_context=context,
+        skill_dir=skill_dir,
+        project_path=project_path,
+    )
+    if already_solved:
+        _close_pr_as_duplicate(
+            owner=owner,
+            repo=repo,
+            pr_number=pr_number,
+            resolved_by=resolved_by,
+            pr_context=context,
+            project_path=project_path,
+            notify_fn=notify_fn,
+        )
+        return False, f"PR #{pr_number} closed — already solved by {resolved_by}"
+
     # Warn about pending (unsubmitted) reviews we cannot read
     if context.get("has_pending_reviews"):
         notify_fn(
@@ -386,6 +408,170 @@ def run_rebase(
         f"- {a}" for a in actions_log
     )
     return True, summary
+
+
+# ---------------------------------------------------------------------------
+# Already-solved check
+# ---------------------------------------------------------------------------
+
+def _check_if_already_solved(
+    actions_log: List[str],
+    pr_context: dict,
+    skill_dir: Optional[Path],
+    project_path: str,
+) -> Tuple[bool, Optional[str]]:
+    """Ask Claude whether HEAD already addresses the intent of this PR.
+
+    Returns (True, resolved_by) when Claude is highly confident the work is
+    already done, (False, None) otherwise.  Falls through on any error so the
+    rebase pipeline continues normally.
+    """
+    from app.cli_provider import build_full_command
+    from app.config import get_model_config
+
+    base = pr_context.get("base", "main")
+
+    # Collect recent commits on the base branch for context
+    recent_commits = ""
+    try:
+        recent_commits = _run_git(
+            ["git", "log", "--oneline", "-30", base],
+            cwd=project_path, timeout=15,
+        )
+    except Exception as e:
+        print(f"[rebase_pr] git log for already-solved check failed: {e}", file=sys.stderr)
+
+    prompt = load_prompt_or_skill(
+        skill_dir, "already_solved",
+        TITLE=pr_context.get("title", ""),
+        BODY=pr_context.get("body", ""),
+        BRANCH=pr_context.get("branch", ""),
+        BASE=base,
+        DIFF=pr_context.get("diff", ""),
+        RECENT_COMMITS=recent_commits,
+    )
+
+    models = get_model_config()
+    cmd = build_full_command(
+        prompt=prompt,
+        allowed_tools=[],
+        model=models.get("review", models["mission"]),
+        fallback=models["fallback"],
+        max_turns=3,
+    )
+
+    result = run_claude(cmd, project_path, timeout=120)
+
+    if not result["success"]:
+        actions_log.append("Already-solved check: skipped (Claude call failed)")
+        return False, None
+
+    # Extract the first JSON object from the output
+    raw = result.get("output", "")
+    json_match = re.search(r'\{[^{}]*\}', raw, re.DOTALL)
+    if not json_match:
+        actions_log.append("Already-solved check: skipped (no JSON in response)")
+        return False, None
+
+    try:
+        data = json.loads(json_match.group(0))
+    except (json.JSONDecodeError, ValueError):
+        actions_log.append("Already-solved check: skipped (JSON parse error)")
+        return False, None
+
+    already_solved = data.get("already_solved", False)
+    confidence = data.get("confidence", "low")
+    resolved_by = data.get("resolved_by") or None
+    reasoning = data.get("reasoning", "")
+
+    if already_solved and confidence == "high":
+        actions_log.append(
+            f"Already-solved check: positive (confidence=high, resolved_by={resolved_by})"
+        )
+        return True, resolved_by
+
+    # Low/medium confidence or not solved — log and continue
+    label = "positive (skipped — confidence not high)" if already_solved else "negative"
+    actions_log.append(
+        f"Already-solved check: {label} "
+        f"(confidence={confidence}, reasoning={reasoning[:100]})"
+    )
+    return False, None
+
+
+_CLOSES_RE = re.compile(
+    r'(?:closes?|fixes?|resolves?)\s+'
+    r'(?:([a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+)#(\d+)|#(\d+))',
+    re.IGNORECASE,
+)
+
+
+def _close_pr_as_duplicate(
+    owner: str,
+    repo: str,
+    pr_number: str,
+    resolved_by: Optional[str],
+    pr_context: dict,
+    project_path: str,
+    notify_fn=None,
+) -> None:
+    """Close a PR that is already solved, with an explanatory comment.
+
+    Also closes the linked issue (Closes #NNN / Fixes #NNN) when found in
+    the PR body.
+    """
+    full_repo = f"{owner}/{repo}"
+    resolved_ref = resolved_by or "a recent commit"
+
+    comment_text = (
+        f"## PR Closed — Already Solved\n\n"
+        f"This PR's intent has already been addressed by {resolved_ref}.\n\n"
+        f"Kōan detected (with high confidence) that the work described in this PR "
+        f"is no longer needed — the base branch already contains an equivalent fix.\n\n"
+        f"If this determination is incorrect, please reopen the PR and add a comment "
+        f"explaining what is still needed.\n\n"
+        f"---\n_Automated by Kōan_"
+    )
+
+    try:
+        run_gh("pr", "comment", pr_number, "--repo", full_repo, "--body", comment_text)
+    except Exception as e:
+        print(f"[rebase_pr] PR comment failed: {e}", file=sys.stderr)
+
+    try:
+        run_gh("pr", "close", pr_number, "--repo", full_repo)
+    except Exception as e:
+        print(f"[rebase_pr] PR close failed: {e}", file=sys.stderr)
+
+    # Close any linked issue referenced in the PR body
+    body = pr_context.get("body", "") or ""
+    for match in _CLOSES_RE.finditer(body):
+        cross_repo = match.group(1)  # e.g. "org/repo" or None
+        issue_num = match.group(2) or match.group(3)
+        if not issue_num:
+            continue
+
+        if cross_repo:
+            issue_repo = cross_repo
+        else:
+            issue_repo = full_repo
+
+        issue_comment = (
+            f"This issue was linked to PR #{pr_number} which has been closed "
+            f"because its intent was already addressed by {resolved_ref}.\n\n"
+            f"---\n_Automated by Kōan_"
+        )
+        try:
+            run_gh("issue", "comment", issue_num, "--repo", issue_repo, "--body", issue_comment)
+            run_gh("issue", "close", issue_num, "--repo", issue_repo)
+        except Exception as e:
+            print(f"[rebase_pr] issue close failed ({issue_repo}#{issue_num}): {e}", file=sys.stderr)
+
+    if notify_fn:
+        pr_title = pr_context.get("title", f"PR #{pr_number}")
+        notify_fn(
+            f"PR #{pr_number} ({pr_title}) closed — already solved by {resolved_ref}."
+        )
 
 
 # ---------------------------------------------------------------------------

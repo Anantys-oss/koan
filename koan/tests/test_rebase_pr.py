@@ -20,6 +20,8 @@ from app.rebase_pr import (
     _build_rebase_comment,
     _build_rebase_prompt,
     _checkout_pr_branch,
+    _check_if_already_solved,
+    _close_pr_as_duplicate,
     _find_remote_for_repo,
     _get_conflicted_files,
     _get_current_branch,
@@ -861,6 +863,11 @@ class TestPushWithFallback:
 # ---------------------------------------------------------------------------
 
 class TestRunRebase:
+    @pytest.fixture(autouse=True)
+    def mock_already_solved(self):
+        with patch("app.rebase_pr._check_if_already_solved", return_value=(False, None)):
+            yield
+
     @patch("app.rebase_pr._run_ci_check_and_fix", return_value="")
     @patch("app.rebase_pr._safe_checkout")
     @patch("app.rebase_pr.run_gh")
@@ -1217,6 +1224,11 @@ class TestApplyReviewFeedback:
 # ---------------------------------------------------------------------------
 
 class TestRunRebaseClaude:
+    @pytest.fixture(autouse=True)
+    def mock_already_solved(self):
+        with patch("app.rebase_pr._check_if_already_solved", return_value=(False, None)):
+            yield
+
     @patch("app.rebase_pr._run_ci_check_and_fix", return_value="")
     @patch("app.rebase_pr._safe_checkout")
     @patch("app.rebase_pr.run_gh")
@@ -2159,6 +2171,11 @@ class TestRunRebasePassesChangeSummary:
     """run_rebase should pass the change summary from _apply_review_feedback
     through to _build_rebase_comment."""
 
+    @pytest.fixture(autouse=True)
+    def mock_already_solved(self):
+        with patch("app.rebase_pr._check_if_already_solved", return_value=(False, None)):
+            yield
+
     @patch("app.rebase_pr._run_ci_check_and_fix", return_value="")
     @patch("app.rebase_pr._safe_checkout")
     @patch("app.rebase_pr.run_gh")
@@ -2188,3 +2205,242 @@ class TestRunRebasePassesChangeSummary:
             # Verify _build_rebase_comment was called with change_summary
             call_kwargs = mock_comment.call_args
             assert call_kwargs[1].get("change_summary") == "Fixed the auth bug."
+
+# ---------------------------------------------------------------------------
+# _check_if_already_solved
+# ---------------------------------------------------------------------------
+
+class TestCheckIfAlreadySolved:
+    """Unit tests for _check_if_already_solved()."""
+
+    _PR_CONTEXT = {
+        "title": "Fix auth bug",
+        "body": "Fixes a login issue.",
+        "branch": "koan/fix-auth",
+        "base": "main",
+        "diff": "+fix",
+        "review_comments": "",
+        "reviews": "",
+        "issue_comments": "",
+    }
+
+    @patch("app.rebase_pr.run_claude")
+    @patch("app.cli_provider.build_full_command", return_value=["claude", "--fake"])
+    @patch("app.config.get_model_config", return_value={"mission": "m", "fallback": "f", "review": "r"})
+    @patch("app.rebase_pr._run_git", return_value="abc1234 fix auth login\ndef5678 refactor utils")
+    def test_high_confidence_positive_returns_true(self, _git, _mc, _cmd, mock_claude):
+        mock_claude.return_value = {
+            "success": True,
+            "output": '{"already_solved": true, "resolved_by": "https://github.com/o/r/pull/99", "confidence": "high", "reasoning": "PR #99 already fixed this."}',
+            "error": "",
+        }
+        actions = []
+        result, resolved_by = _check_if_already_solved(actions, self._PR_CONTEXT, REBASE_SKILL_DIR, "/project")
+        assert result is True
+        assert resolved_by == "https://github.com/o/r/pull/99"
+        assert any("positive" in a for a in actions)
+
+    @patch("app.rebase_pr.run_claude")
+    @patch("app.cli_provider.build_full_command", return_value=["claude", "--fake"])
+    @patch("app.config.get_model_config", return_value={"mission": "m", "fallback": "f", "review": "r"})
+    @patch("app.rebase_pr._run_git", return_value="abc1234 some commit")
+    def test_negative_returns_false(self, _git, _mc, _cmd, mock_claude):
+        mock_claude.return_value = {
+            "success": True,
+            "output": '{"already_solved": false, "resolved_by": null, "confidence": "high", "reasoning": "Work is still needed."}',
+            "error": "",
+        }
+        actions = []
+        result, resolved_by = _check_if_already_solved(actions, self._PR_CONTEXT, REBASE_SKILL_DIR, "/project")
+        assert result is False
+        assert resolved_by is None
+
+    @patch("app.rebase_pr.run_claude")
+    @patch("app.cli_provider.build_full_command", return_value=["claude", "--fake"])
+    @patch("app.config.get_model_config", return_value={"mission": "m", "fallback": "f", "review": "r"})
+    @patch("app.rebase_pr._run_git", return_value="")
+    def test_medium_confidence_skipped(self, _git, _mc, _cmd, mock_claude):
+        """Medium confidence should NOT close the PR."""
+        mock_claude.return_value = {
+            "success": True,
+            "output": '{"already_solved": true, "resolved_by": "abc1234", "confidence": "medium", "reasoning": "Possibly."}',
+            "error": "",
+        }
+        actions = []
+        result, _ = _check_if_already_solved(actions, self._PR_CONTEXT, REBASE_SKILL_DIR, "/project")
+        assert result is False
+        assert any("skipped" in a.lower() or "not high" in a.lower() for a in actions)
+
+    @patch("app.rebase_pr.run_claude")
+    @patch("app.cli_provider.build_full_command", return_value=["claude", "--fake"])
+    @patch("app.config.get_model_config", return_value={"mission": "m", "fallback": "f", "review": "r"})
+    @patch("app.rebase_pr._run_git", return_value="")
+    def test_claude_failure_returns_false(self, _git, _mc, _cmd, mock_claude):
+        mock_claude.return_value = {"success": False, "output": "", "error": "timeout"}
+        actions = []
+        result, _ = _check_if_already_solved(actions, self._PR_CONTEXT, REBASE_SKILL_DIR, "/project")
+        assert result is False
+        assert any("skipped" in a for a in actions)
+
+    @patch("app.rebase_pr.run_claude")
+    @patch("app.cli_provider.build_full_command", return_value=["claude", "--fake"])
+    @patch("app.config.get_model_config", return_value={"mission": "m", "fallback": "f", "review": "r"})
+    @patch("app.rebase_pr._run_git", return_value="")
+    def test_malformed_json_returns_false(self, _git, _mc, _cmd, mock_claude):
+        mock_claude.return_value = {
+            "success": True,
+            "output": "This is not JSON at all.",
+            "error": "",
+        }
+        actions = []
+        result, _ = _check_if_already_solved(actions, self._PR_CONTEXT, REBASE_SKILL_DIR, "/project")
+        assert result is False
+
+    @patch("app.rebase_pr.run_claude")
+    @patch("app.cli_provider.build_full_command", return_value=["claude", "--fake"])
+    @patch("app.config.get_model_config", return_value={"mission": "m", "fallback": "f", "review": "r"})
+    @patch("app.rebase_pr._run_git", return_value="")
+    def test_json_embedded_in_text_is_parsed(self, _git, _mc, _cmd, mock_claude):
+        """JSON embedded in verbose output should still be parsed."""
+        mock_claude.return_value = {
+            "success": True,
+            "output": 'Let me analyze... {"already_solved": true, "resolved_by": "abc1234", "confidence": "high", "reasoning": "Fixed."} Done.',
+            "error": "",
+        }
+        actions = []
+        result, resolved_by = _check_if_already_solved(actions, self._PR_CONTEXT, REBASE_SKILL_DIR, "/project")
+        assert result is True
+        assert resolved_by == "abc1234"
+
+
+# ---------------------------------------------------------------------------
+# _close_pr_as_duplicate
+# ---------------------------------------------------------------------------
+
+class TestClosePrAsDuplicate:
+    """Unit tests for _close_pr_as_duplicate()."""
+
+    _PR_CONTEXT = {
+        "title": "Fix auth bug",
+        "body": "Fixes the login issue.\n\nCloses #123",
+        "branch": "koan/fix-auth",
+        "base": "main",
+    }
+
+    @patch("app.rebase_pr.run_gh")
+    def test_posts_comment_and_closes_pr(self, mock_gh):
+        _close_pr_as_duplicate(
+            owner="o", repo="r", pr_number="42",
+            resolved_by="https://github.com/o/r/pull/99",
+            pr_context={"title": "Fix", "body": ""},
+            project_path="/project",
+        )
+        gh_calls = [call[0] for call in mock_gh.call_args_list]
+        # Must comment on the PR
+        assert any(c[0] == "pr" and c[1] == "comment" for c in gh_calls)
+        # Must close the PR
+        assert any(c[0] == "pr" and c[1] == "close" for c in gh_calls)
+
+    @patch("app.rebase_pr.run_gh")
+    def test_closes_linked_issue(self, mock_gh):
+        _close_pr_as_duplicate(
+            owner="o", repo="r", pr_number="42",
+            resolved_by="abc1234",
+            pr_context=self._PR_CONTEXT,
+            project_path="/project",
+        )
+        gh_calls = [call[0] for call in mock_gh.call_args_list]
+        # Must comment on and close the linked issue #123
+        assert any(c[0] == "issue" and c[1] == "comment" and c[2] == "123" for c in gh_calls)
+        assert any(c[0] == "issue" and c[1] == "close" and c[2] == "123" for c in gh_calls)
+
+    @patch("app.rebase_pr.run_gh")
+    def test_no_linked_issue_skips_issue_close(self, mock_gh):
+        _close_pr_as_duplicate(
+            owner="o", repo="r", pr_number="42",
+            resolved_by="abc1234",
+            pr_context={"title": "Fix", "body": "No issue reference here."},
+            project_path="/project",
+        )
+        gh_calls = [call[0] for call in mock_gh.call_args_list]
+        assert not any(c[0] == "issue" for c in gh_calls)
+
+    @patch("app.rebase_pr.run_gh")
+    def test_notify_fn_called(self, mock_gh):
+        notify = MagicMock()
+        _close_pr_as_duplicate(
+            owner="o", repo="r", pr_number="42",
+            resolved_by="https://github.com/o/r/pull/99",
+            pr_context={"title": "Fix auth", "body": ""},
+            project_path="/project",
+            notify_fn=notify,
+        )
+        notify.assert_called_once()
+        msg = notify.call_args[0][0]
+        assert "42" in msg
+        assert "closed" in msg.lower()
+
+    @patch("app.rebase_pr.run_gh")
+    def test_gh_failure_non_fatal(self, mock_gh):
+        """run_gh errors should not propagate — the function is best-effort."""
+        mock_gh.side_effect = RuntimeError("network error")
+        # Should not raise
+        _close_pr_as_duplicate(
+            owner="o", repo="r", pr_number="42",
+            resolved_by=None,
+            pr_context={"title": "Fix", "body": ""},
+            project_path="/project",
+        )
+
+
+# ---------------------------------------------------------------------------
+# run_rebase — already-solved integration
+# ---------------------------------------------------------------------------
+
+class TestRunRebaseAlreadySolved:
+    """run_rebase should close PRs detected as already solved."""
+
+    @patch("app.rebase_pr._close_pr_as_duplicate")
+    @patch("app.rebase_pr._check_if_already_solved", return_value=(True, "https://github.com/o/r/pull/55"))
+    @patch("app.rebase_pr._checkout_pr_branch")
+    @patch("app.rebase_pr.fetch_pr_context")
+    def test_already_solved_closes_pr_without_checkout(
+        self, mock_ctx, mock_checkout, mock_check, mock_close
+    ):
+        mock_ctx.return_value = {
+            "title": "Fix auth", "body": "", "branch": "feat",
+            "base": "main", "state": "OPEN", "author": "", "url": "",
+            "diff": "", "review_comments": "", "reviews": "", "issue_comments": "",
+        }
+        notify = MagicMock()
+        success, summary = run_rebase("o", "r", "42", "/project", notify_fn=notify)
+        assert success is False
+        assert "already solved" in summary.lower()
+        mock_close.assert_called_once()
+        # Checkout must NOT have been called
+        mock_checkout.assert_not_called()
+
+    @patch("app.rebase_pr._check_if_already_solved", return_value=(False, None))
+    @patch("app.rebase_pr._close_pr_as_duplicate")
+    @patch("app.rebase_pr.fetch_pr_context")
+    def test_not_already_solved_continues_rebase(
+        self, mock_ctx, mock_close, mock_check
+    ):
+        mock_ctx.return_value = {
+            "title": "T", "body": "", "branch": "feat",
+            "base": "main", "state": "OPEN", "author": "", "url": "",
+            "diff": "", "review_comments": "", "reviews": "", "issue_comments": "",
+        }
+        notify = MagicMock()
+        with patch("app.rebase_pr._get_current_branch", return_value="main"), \
+             patch("app.rebase_pr._checkout_pr_branch") as mock_checkout, \
+             patch("app.rebase_pr._rebase_with_conflict_resolution", return_value="origin"), \
+             patch("app.rebase_pr._push_with_fallback", return_value={
+                 "success": True, "actions": ["Force-pushed"], "error": ""
+             }), \
+             patch("app.rebase_pr.run_gh"), \
+             patch("app.rebase_pr._safe_checkout"), \
+             patch("app.rebase_pr._run_ci_check_and_fix", return_value=""):
+            success, _ = run_rebase("o", "r", "1", "/project", notify_fn=notify)
+        mock_close.assert_not_called()
+        mock_checkout.assert_called_once()
