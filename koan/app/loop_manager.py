@@ -99,7 +99,7 @@ def validate_projects(
 
 
 def lookup_project(project_name: str, projects: list) -> Optional[str]:
-    """Find project path by name.
+    """Find project path by name (case-insensitive).
 
     Args:
         project_name: Name to look up.
@@ -108,8 +108,9 @@ def lookup_project(project_name: str, projects: list) -> Optional[str]:
     Returns:
         Project path if found, None otherwise.
     """
+    lower = project_name.lower()
     for name, path in projects:
-        if name == project_name:
+        if name.lower() == lower:
             return path
     return None
 

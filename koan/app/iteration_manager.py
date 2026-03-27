@@ -235,15 +235,16 @@ def _projects_to_str(projects: List[Tuple[str, str]]) -> str:
 
 def _resolve_project_path(
     project_name: str, projects: List[Tuple[str, str]],
-) -> Optional[str]:
-    """Find the path for a project name.
+) -> Optional[Tuple[str, str]]:
+    """Find the canonical name and path for a project name (case-insensitive).
 
     Returns:
-        Path string or None if not found
+        (canonical_name, path) tuple or None if not found
     """
+    lower = project_name.lower()
     for name, path in projects:
-        if name == project_name:
-            return path
+        if name.lower() == lower:
+            return (name, path)
     return None
 
 
@@ -759,9 +760,14 @@ def plan_iteration(
 
     # Step 5: Resolve project
     if mission_project and mission_title:
-        # Mission picked — resolve project path
-        project_name = mission_project
-        project_path = _resolve_project_path(project_name, projects)
+        # Mission picked — resolve project path (case-insensitive)
+        resolved = _resolve_project_path(mission_project, projects)
+
+        if resolved is None:
+            project_name = mission_project
+            project_path = None
+        else:
+            project_name, project_path = resolved
 
         if project_path is None:
             known = _get_known_project_names(projects)
