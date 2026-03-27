@@ -1360,6 +1360,10 @@ def _run_iteration(
 
     # Idle wait actions — all follow the same sleep-and-check pattern
     _IDLE_WAIT_CONFIG = {
+        "passive_wait": lambda p: (
+            f"Passive mode — read-only, waiting for /active ({p.get('passive_remaining', 'indefinite')})",
+            f"👁️ Passive — read-only ({p.get('passive_remaining', 'indefinite')})",
+        ),
         "focus_wait": lambda p: (
             f"Focus mode active ({p.get('focus_remaining', 'unknown')} remaining) — no missions pending, sleeping",
             f"Focus mode — waiting for missions ({p.get('focus_remaining', 'unknown')} remaining)",
