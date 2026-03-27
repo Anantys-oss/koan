@@ -4,7 +4,7 @@ import pytest
 
 from app.config_validator import (
     validate_config, validate_and_warn, _check_type, _check_schedule_overlap,
-    _suggest_typo, detect_config_drift, _collect_keys,
+    _suggest_typo, detect_config_drift, _collect_keys, _find_commented_keys,
 )
 
 
@@ -341,6 +341,10 @@ class TestValidateAndWarn:
         (tmp_path / "instance.example").mkdir()
         (tmp_path / "instance.example" / "config.yaml").write_text(yaml.dump(template))
 
+        # Write user config file (no commented keys) so comment detection works
+        (tmp_path / "instance").mkdir()
+        (tmp_path / "instance" / "config.yaml").write_text(yaml.dump(user))
+
         messages = validate_and_warn(user, koan_root=str(tmp_path))
         assert len(messages) == 1
         assert "Config drift" in messages[0]
@@ -377,8 +381,15 @@ class TestCollectKeys:
 # ---------------------------------------------------------------------------
 
 class TestDetectConfigDrift:
-    def _setup_configs(self, tmp_path, template_config, user_config=None):
-        """Helper to create template and optional user config files."""
+    def _setup_configs(self, tmp_path, template_config, user_config=None,
+                        user_config_text=None):
+        """Helper to create template and optional user config files.
+
+        Args:
+            user_config: Dict to dump as YAML for instance/config.yaml.
+            user_config_text: Raw text to write as instance/config.yaml
+                (for testing commented-out keys). Takes precedence over user_config.
+        """
         import yaml
 
         (tmp_path / "instance.example").mkdir(exist_ok=True)
@@ -386,7 +397,10 @@ class TestDetectConfigDrift:
             yaml.dump(template_config)
         )
 
-        if user_config is not None:
+        if user_config_text is not None:
+            (tmp_path / "instance").mkdir(exist_ok=True)
+            (tmp_path / "instance" / "config.yaml").write_text(user_config_text)
+        elif user_config is not None:
             (tmp_path / "instance").mkdir(exist_ok=True)
             (tmp_path / "instance" / "config.yaml").write_text(
                 yaml.dump(user_config)
@@ -483,3 +497,39 @@ class TestDetectConfigDrift:
         # Children of missing parents should be filtered
         assert "auto_update.enabled" not in missing
         assert "dashboard.port" not in missing
+
+    def test_commented_key_excluded_from_drift(self, tmp_path):
+        """A key commented out in user config should not be reported as drift."""
+        template = {"max_runs_per_day": 20, "debug": False, "fast_reply": True}
+        user_text = "max_runs_per_day: 20\n# debug: false\n"
+        self._setup_configs(tmp_path, template, user_config_text=user_text)
+        user = {"max_runs_per_day": 20}
+        missing = detect_config_drift(str(tmp_path), user_config=user)
+        assert "debug" not in missing
+        assert "fast_reply" in missing
+
+    def test_commented_nested_key_excluded(self, tmp_path):
+        """A nested key commented out should not be reported."""
+        template = {"budget": {"warn_at_percent": 70, "stop_at_percent": 85}}
+        user_text = "budget:\n  warn_at_percent: 70\n  # stop_at_percent: 85\n"
+        self._setup_configs(tmp_path, template, user_config_text=user_text)
+        user = {"budget": {"warn_at_percent": 70}}
+        missing = detect_config_drift(str(tmp_path), user_config=user)
+        assert missing == []
+
+    def test_commented_section_excludes_children(self, tmp_path):
+        """A whole section commented out should not report the section or children."""
+        template = {"auto_update": {"enabled": True, "notify": False}}
+        user_text = "# auto_update:\n#   enabled: true\n#   notify: false\n"
+        self._setup_configs(tmp_path, template, user_config_text=user_text)
+        user = {}
+        missing = detect_config_drift(str(tmp_path), user_config=user)
+        assert missing == []
+
+    def test_no_user_config_file_skips_comment_check(self, tmp_path):
+        """When user_config is passed but no file exists, comment check is skipped gracefully."""
+        template = {"debug": False}
+        self._setup_configs(tmp_path, template)
+        # No instance/config.yaml — pass user_config directly
+        missing = detect_config_drift(str(tmp_path), user_config={})
+        assert "debug" in missing

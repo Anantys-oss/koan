@@ -10,8 +10,9 @@ new features they may not know about.
 """
 
 import difflib
+import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from app.run_log import log
 
@@ -300,6 +301,16 @@ def _collect_keys(d: dict, prefix: str = "") -> set:
     return keys
 
 
+def _find_commented_keys(text: str) -> Set[str]:
+    """Extract key names from commented-out YAML lines.
+
+    Matches lines like "# key_name:" or "#key_name: value" at any indentation.
+    Returns the set of key names found (leaf names only, not full paths).
+    """
+    pattern = re.compile(r"^\s*#\s*(\w+)\s*:", re.MULTILINE)
+    return {m.group(1) for m in pattern.finditer(text)}
+
+
 def detect_config_drift(
     koan_root: str,
     user_config: Optional[dict] = None,
@@ -308,6 +319,10 @@ def detect_config_drift(
 
     Compares key trees recursively. Reports keys present in the template
     but absent from the user's config as advisory info (not errors).
+
+    Keys that are commented out in the user's config file are excluded from
+    the drift report — a commented key means the user is aware of it and
+    has chosen to use the default value.
 
     Args:
         koan_root: Path to the koan root directory (where instance.example/ lives).
@@ -332,8 +347,16 @@ def detect_config_drift(
     if not isinstance(template_config, dict):
         return []
 
+    # Read raw user config text to detect commented-out keys
+    user_path = root / "instance" / "config.yaml"
+    commented_keys: Set[str] = set()
+    if user_path.exists():
+        try:
+            commented_keys = _find_commented_keys(user_path.read_text())
+        except Exception:
+            pass  # Non-critical — proceed without comment detection
+
     if user_config is None:
-        user_path = root / "instance" / "config.yaml"
         if not user_path.exists():
             return []
         try:
@@ -353,10 +376,15 @@ def detect_config_drift(
 
     # Filter out parent keys whose children are also missing
     # (e.g., if "auto_update" is missing, don't also report "auto_update.enabled")
+    # Also filter out keys that are commented out in the user's config file
     filtered = []
     for key in missing:
         parent = key.rsplit(".", 1)[0] if "." in key else None
         if parent and parent in missing:
+            continue
+        # Check if the leaf key name is commented out in the user's config
+        leaf = key.rsplit(".", 1)[-1]
+        if leaf in commented_keys:
             continue
         filtered.append(key)
 
