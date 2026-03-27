@@ -195,6 +195,16 @@ def get_start_on_pause() -> bool:
     return bool(config.get("start_on_pause", False))
 
 
+def get_start_passive() -> bool:
+    """Check if start_passive is enabled in config.yaml.
+
+    Returns True if koan should boot directly into passive mode
+    (read-only: no missions, no exploration, no Claude CLI calls).
+    """
+    config = _load_config()
+    return bool(config.get("start_passive", False))
+
+
 def get_auto_pause() -> bool:
     """Check if auto-pause is enabled in config.yaml.
 

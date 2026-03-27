@@ -19,6 +19,12 @@
 # after resume doesn't immediately re-pause.
 # start_on_pause: false
 
+# Start in passive mode — boot into read-only mode
+# When true, Kōan starts in passive mode: the loop runs (heartbeat, GitHub
+# notification polling, Telegram commands) but never executes missions or
+# autonomous work. Use /active to resume normal execution.
+# start_passive: false
+
 # Budget & Scheduling
 # These are the primary source of truth for run loop configuration.
 # max_runs_per_day: Maximum runs before auto-pause (resets on /resume or quota reset)

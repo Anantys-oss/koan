@@ -33,6 +33,7 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "post_mission_timeout": "int",
     "contemplative_chance": "int",
     "start_on_pause": "bool",
+    "start_passive": "bool",
     "skip_permissions": "bool",
     "cli_provider": "str",
     "telegram": _NESTED,

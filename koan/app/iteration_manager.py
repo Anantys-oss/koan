@@ -295,6 +295,21 @@ def _check_focus(koan_root: str):
         return None
 
 
+def _check_passive(koan_root: str):
+    """Check passive mode state.
+
+    Returns:
+        PassiveState object if active, None if not active.
+        Gracefully returns None if passive_manager module is not available.
+    """
+    try:
+        from app.passive_manager import check_passive
+        return check_passive(koan_root)
+    except (ImportError, OSError, ValueError) as e:
+        _log_iteration("error", f"Passive check failed: {e}")
+        return None
+
+
 def _select_random_exploration_project(
     projects: List[Tuple[str, str]],
     last_project: str = "",
@@ -573,6 +588,7 @@ def _make_result(*, action, project_name, project_path="",
                  mission_title="", autonomous_mode, focus_area="",
                  available_pct, decision_reason, display_lines,
                  recurring_injected, focus_remaining=None,
+                 passive_remaining=None,
                  schedule_mode="normal", error=None,
                  tracker_error=None):
     """Build a standardised iteration-plan result dict."""
@@ -588,6 +604,7 @@ def _make_result(*, action, project_name, project_path="",
         "display_lines": display_lines,
         "recurring_injected": recurring_injected,
         "focus_remaining": focus_remaining,
+        "passive_remaining": passive_remaining,
         "schedule_mode": schedule_mode,
         "error": error,
         "tracker_error": tracker_error,
@@ -669,7 +686,7 @@ def plan_iteration(
     Returns:
         dict with iteration plan:
         {
-            "action": "mission" | "autonomous" | "contemplative" | "focus_wait" | "schedule_wait" | "exploration_wait" | "pr_limit_wait" | "wait_pause" | "error",
+            "action": "mission" | "autonomous" | "contemplative" | "passive_wait" | "focus_wait" | "schedule_wait" | "exploration_wait" | "pr_limit_wait" | "wait_pause" | "error",
             "project_name": str,
             "project_path": str,
             "mission_title": str (empty for autonomous/contemplative),
@@ -739,6 +756,29 @@ def plan_iteration(
         _log_iteration("mission", f"Mission picked: [{mission_project}] {mission_title[:80]}")
     else:
         _log_iteration("koan", "No pending mission — entering autonomous mode")
+
+    # Step 4b: Passive mode gate — block all execution
+    # Missions stay Pending, no autonomous work. Must check before start_mission().
+    passive_state = _check_passive(koan_root)
+    if passive_state is not None:
+        remaining = passive_state.remaining_display()
+        _log_iteration("koan", f"Passive mode active ({remaining}) — skipping execution")
+        return _make_result(
+            action="passive_wait",
+            project_name=mission_project or (projects[0][0] if projects else "default"),
+            project_path="",
+            mission_title="",
+            autonomous_mode=autonomous_mode,
+            focus_area="Passive mode: read-only, no execution",
+            available_pct=available_pct,
+            decision_reason=f"Passive mode — read-only ({remaining})",
+            display_lines=display_lines,
+            recurring_injected=recurring_injected,
+            focus_remaining=None,
+            schedule_mode=schedule_state.mode if schedule_state else "normal",
+            tracker_error=tracker_error,
+            passive_remaining=remaining,
+        )
 
     # Step 5: Resolve project
     if mission_project and mission_title:
