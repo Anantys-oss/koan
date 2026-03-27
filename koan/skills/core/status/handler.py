@@ -103,7 +103,20 @@ def _handle_status(ctx) -> str:
             parts.append("\n⏸️ Mode: Paused")
         parts.append("  /resume to unpause")
     else:
-        parts.append("\n🟢 Mode: Working")
+        # Check passive mode before showing "Working"
+        try:
+            from app.passive_manager import check_passive
+            passive_state = check_passive(str(koan_root))
+            if passive_state:
+                remaining = passive_state.remaining_display()
+                if passive_state.duration == 0:
+                    parts.append("\n👁️ Mode: Passive (read-only)")
+                else:
+                    parts.append(f"\n👁️ Mode: Passive (read-only, {remaining} remaining)")
+            else:
+                parts.append("\n🟢 Mode: Active")
+        except Exception:
+            parts.append("\n🟢 Mode: Active")
 
     # Show focus mode if active
     try:
