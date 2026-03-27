@@ -6,6 +6,7 @@ from app.passive_manager import (
     create_passive,
     remove_passive,
 )
+from app.pause_manager import is_paused, remove_pause
 
 
 def handle(ctx):
@@ -39,16 +40,23 @@ def handle(ctx):
         else:
             return f"❌ Invalid duration: '{args}'. Examples: 4h, 2h30m, 90m"
 
+    # Auto-resume if paused — /passive supersedes /pause
+    resumed = False
+    if is_paused(koan_root):
+        remove_pause(koan_root)
+        resumed = True
+
     state = create_passive(koan_root, duration=duration, reason="manual")
     remaining = state.remaining_display(now=state.activated_at)
+    resumed_note = " (pause lifted) " if resumed else " "
     if duration == 0:
         return (
-            "👁️ Passive mode ON. "
+            f"👁️{resumed_note}Passive mode ON. "
             "Read-only — no missions, no branches. "
             "Use /active to resume."
         )
     return (
-        f"👁️ Passive mode ON for {remaining}. "
+        f"👁️{resumed_note}Passive mode ON for {remaining}. "
         "Read-only — no missions, no branches. "
         "Use /active to resume early."
     )

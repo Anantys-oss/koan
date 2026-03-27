@@ -391,3 +391,59 @@ class TestStatusHandlerPassiveIntegration:
         result = _handle_status(ctx)
         assert "Passive" in result
         assert "remaining" in result
+
+
+class TestPassiveAutoResumePause:
+    """Test that /passive auto-lifts /pause."""
+
+    def _make_ctx(self, tmp_path, command_name="passive", args=""):
+        class FakeCtx:
+            pass
+
+        ctx = FakeCtx()
+        ctx.koan_root = tmp_path
+        ctx.instance_dir = tmp_path / "instance"
+        ctx.command_name = command_name
+        ctx.args = args
+        os.makedirs(ctx.instance_dir, exist_ok=True)
+        return ctx
+
+    def test_passive_lifts_pause(self, tmp_path):
+        from app.pause_manager import is_paused
+        from skills.core.passive.handler import handle
+
+        # Create a pause file
+        pause_file = tmp_path / ".koan-pause"
+        pause_file.write_text("")
+
+        assert is_paused(str(tmp_path))
+
+        ctx = self._make_ctx(tmp_path)
+        result = handle(ctx)
+
+        assert not is_paused(str(tmp_path))
+        assert "pause lifted" in result
+        assert "Passive mode ON" in result
+
+    def test_passive_without_pause_no_resumed_note(self, tmp_path):
+        from skills.core.passive.handler import handle
+
+        ctx = self._make_ctx(tmp_path)
+        result = handle(ctx)
+
+        assert "pause lifted" not in result
+        assert "Passive mode ON" in result
+
+    def test_passive_timed_lifts_pause(self, tmp_path):
+        from app.pause_manager import is_paused
+        from skills.core.passive.handler import handle
+
+        pause_file = tmp_path / ".koan-pause"
+        pause_file.write_text("")
+
+        ctx = self._make_ctx(tmp_path, args="2h")
+        result = handle(ctx)
+
+        assert not is_paused(str(tmp_path))
+        assert "pause lifted" in result
+        assert "2h00m" in result
