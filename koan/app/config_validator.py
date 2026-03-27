@@ -353,8 +353,8 @@ def detect_config_drift(
     if user_path.exists():
         try:
             commented_keys = _find_commented_keys(user_path.read_text())
-        except Exception:
-            pass  # Non-critical — proceed without comment detection
+        except Exception as e:
+            log("warn", f"[config] Could not read config for comment detection: {e}")
 
     if user_config is None:
         if not user_path.exists():
