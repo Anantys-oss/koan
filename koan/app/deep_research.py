@@ -28,9 +28,27 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 
+_STOP_WORDS = frozenset({
+    "a", "an", "the", "is", "are", "was", "were", "be", "been",
+    "for", "and", "or", "but", "in", "on", "at", "to", "of",
+    "with", "from", "by", "add", "feat", "fix", "implement",
+    "update", "refactor", "test", "github",
+})
+
+_BRANCH_ISSUE_RE = re.compile(r"(?:implement|fix|issue)[/-](\d+)")
+
+
 def _extract_issue_numbers(text: str) -> set[int]:
-    """Extract GitHub issue/PR numbers (#NNN) from a string."""
+    """Extract GitHub issue/PR numbers (#NNN) from a string.
+
+    Assumes PR/issue-style text (titles, branch names), not arbitrary markdown.
+    """
     return {int(m) for m in re.findall(r"#(\d+)", text)}
+
+
+def _extract_branch_issue_numbers(branch: str) -> set[int]:
+    """Extract issue numbers from branch naming patterns like 'implement-1042'."""
+    return {int(m) for m in _BRANCH_ISSUE_RE.findall(branch)}
 
 
 def _normalize_tokens(text: str) -> set[str]:
@@ -39,12 +57,6 @@ def _normalize_tokens(text: str) -> set[str]:
     Strips common noise words to improve overlap detection between
     topic descriptions and PR titles.
     """
-    _STOP_WORDS = {
-        "a", "an", "the", "is", "are", "was", "were", "be", "been",
-        "for", "and", "or", "but", "in", "on", "at", "to", "of",
-        "with", "from", "by", "add", "feat", "fix", "implement",
-        "update", "refactor", "test", "github",
-    }
     tokens = set(re.findall(r"[a-z]{3,}", text.lower()))
     return tokens - _STOP_WORDS
 
@@ -171,8 +183,7 @@ class DeepResearch:
             covered_issues |= _extract_issue_numbers(branch)
 
             # Also extract issue numbers from branch patterns like "implement-1042"
-            for m in re.findall(r"(?:implement|fix|issue)[/-](\d+)", branch):
-                covered_issues.add(int(m))
+            covered_issues |= _extract_branch_issue_numbers(branch)
 
             # Build token set for fuzzy matching
             pr_tokens[number] = _normalize_tokens(title) | _normalize_tokens(branch)
@@ -201,8 +212,7 @@ class DeepResearch:
                 pr_title = pr.get("title", "")
                 pr_branch = pr.get("headRefName", "")
                 pr_issues = _extract_issue_numbers(pr_title) | _extract_issue_numbers(pr_branch)
-                for m in re.findall(r"(?:implement|fix|issue)[/-](\d+)", pr_branch):
-                    pr_issues.add(int(m))
+                pr_issues |= _extract_branch_issue_numbers(pr_branch)
                 if pr_issues & topic_issues:
                     return pr.get("number")
 
