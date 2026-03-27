@@ -970,6 +970,11 @@ def process_single_notification(
     # Mark notification as read
     mark_notification_read(str(notification.get("id", "")))
 
+    # Annotate notification with parsed command/author for downstream consumers
+    # (e.g. _notify_mission_from_mention in loop_manager).
+    notification["_koan_command"] = command_name
+    notification["_koan_author"] = comment_author
+
     log.info("GitHub: created mission from @%s: %s", comment_author, command_name)
     return True, None
 

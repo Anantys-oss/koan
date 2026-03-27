@@ -419,6 +419,9 @@ class TestProcessSingleNotification:
         assert error is None
         mock_insert.assert_called_once()
         mock_react.assert_called_once()
+        # Notification dict is annotated with parsed command and author
+        assert sample_notification["_koan_command"] == "rebase"
+        assert sample_notification["_koan_author"] == "alice"
 
     @patch("app.github_command_handler.mark_notification_read")
     @patch("app.github_command_handler.is_notification_stale", return_value=True)

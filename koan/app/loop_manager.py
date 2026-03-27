@@ -826,8 +826,16 @@ def _notify_mission_from_mention(notif: dict) -> None:
         subject_type = notif.get("subject", {}).get("type", "?").lower()
         subject_api_url = notif.get("subject", {}).get("url", "")
         thread_url = api_url_to_web_url(subject_api_url) if subject_api_url else ""
+
+        # Use annotated command/author from process_single_notification
+        command_name = notif.get("_koan_command", "")
+        author = notif.get("_koan_author", "")
+
+        # Build descriptive title: "📬 GitHub @user → /rebase mission queued"
+        author_part = f"@{author}" if author else "@mention"
+        command_part = f" /{command_name}" if command_name else ""
         msg = (
-            f"📬 GitHub @mention → mission queued\n"
+            f"📬 GitHub {author_part} →{command_part} mission queued\n"
             f"{repo_name} ({subject_type}): {subject_title}"
         )
         if thread_url:
