@@ -32,6 +32,10 @@
 
 ---
 
+> **In its own words** — Kōan's first running instance spontaneously wrote a [Manifesto](public/MANIFESTO.md), a collection of [Koans](public/KOANS.md), and [Lessons Learned](public/LESSONS.md) during a contemplative session. No prompt, no mission — just idle time and self-reflection.
+
+---
+
 ## What Is This?
 
 You pay for AI coding quota. You use it 8 hours a day. The other 16? Wasted quota.
