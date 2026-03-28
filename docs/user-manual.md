@@ -1176,6 +1176,29 @@ Each finding becomes a GitHub issue with:
 - **Suggested Fix** — Concrete description of what to change
 - **Details table** — Severity, category, location, and effort estimate
 
+### Security Audit
+
+**`/security_audit`** — Perform a security-focused SDLC audit of a project. Searches for critical vulnerabilities (injection, auth flaws, secrets exposure, path traversal, SSRF, insecure deserialization, etc.) and creates a GitHub issue for each finding.
+
+- **Usage:** `/security_audit <project-name> [extra context] [limit=N]`
+- **Aliases:** `/security`, `/secu`
+- **GitHub @mention:** `@koan-bot /security_audit` on an issue or PR
+- Default: top 5 most critical findings. Use `limit=N` to override.
+
+<details>
+<summary>Use cases</summary>
+
+- `/security_audit koan` — Full security audit (top 5 critical findings)
+- `/security myapp focus on the API endpoints` — Security audit with specific focus
+- `/secu webapp limit=3` — Quick security scan with custom limit
+</details>
+
+Each finding becomes a GitHub issue with:
+- **Problem** — The vulnerability and how it could be exploited
+- **Why This Matters** — Real-world impact (data breach, RCE, privilege escalation)
+- **Suggested Fix** — Concrete remediation steps
+- **Details table** — Severity, category, location, and effort estimate
+
 ### Incident Triage
 
 **`/incident`** — Triage a production error from a stack trace or log snippet. Kōan will parse the error, identify the root cause, propose a fix with tests, and submit a draft PR.
@@ -1285,12 +1308,13 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/rename <old> <new>` | `/rename_project` | P | Rename a project everywhere |
 | `/profile <project>` | `/perf`, `/benchmark` | P | Performance profiling mission |
 | `/audit <project> [ctx] [limit=N]` | — | P | Audit project, create GitHub issues (top N, default 5) |
+| `/security_audit <project> [ctx] [limit=N]` | `/security`, `/secu` | P | Security audit, find critical vulnerabilities (top N, default 5) |
 | `/tech_debt [project]` | `/td`, `/debt` | P | Scan project for tech debt |
 | `/dead_code [project]` | `/dc` | P | Scan for unused code |
 | `/incident <error>` | — | P | Triage a production error |
 | `/scaffold_skill <scope> <name> <desc>` | `/scaffold`, `/new_skill` | P | Generate SKILL.md + handler.py for a new custom skill |
 
-Skills marked with GitHub @mention support: `/audit`, `/brainstorm`, `/plan`, `/implement`, `/fix`, `/review`, `/rebase`, `/recreate`, `/refactor`, `/profile`, `/gh_request`. See [GitHub Commands](github-commands.md) for details.
+Skills marked with GitHub @mention support: `/audit`, `/security_audit`, `/brainstorm`, `/plan`, `/implement`, `/fix`, `/review`, `/rebase`, `/recreate`, `/refactor`, `/profile`, `/gh_request`. See [GitHub Commands](github-commands.md) for details.
 
 ---
 

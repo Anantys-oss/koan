@@ -82,6 +82,9 @@ _SKILL_RUNNERS = {
     "claude_md": "app.claudemd_refresh",
     "incident": "skills.core.incident.incident_runner",
     "audit": "skills.core.audit.audit_runner",
+    "security_audit": "skills.core.security_audit.security_audit_runner",
+    "security": "skills.core.security_audit.security_audit_runner",
+    "secu": "skills.core.security_audit.security_audit_runner",
 }
 
 # Commands that look like /skills but should be sent to Claude as regular
@@ -278,6 +281,15 @@ def build_skill_command(
         "claude_md": lambda: _build_claudemd_cmd(base_cmd, project_name, project_path),
         "incident": lambda: _build_incident_cmd(base_cmd, args, project_path, instance_dir),
         "audit": lambda: _build_audit_cmd(
+            base_cmd, args, project_name, project_path, instance_dir,
+        ),
+        "security_audit": lambda: _build_audit_cmd(
+            base_cmd, args, project_name, project_path, instance_dir,
+        ),
+        "security": lambda: _build_audit_cmd(
+            base_cmd, args, project_name, project_path, instance_dir,
+        ),
+        "secu": lambda: _build_audit_cmd(
             base_cmd, args, project_name, project_path, instance_dir,
         ),
     }
