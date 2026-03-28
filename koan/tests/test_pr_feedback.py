@@ -336,12 +336,16 @@ class TestFetchMergedPrs:
     @patch("subprocess.run")
     def test_filters_by_days_cutoff(self, mock_run, _prefix):
         """PRs merged before the days cutoff are excluded."""
+        # Use dates relative to "now" so the test doesn't go stale
+        now = datetime.now(timezone.utc)
+        recent_merged = (now - timedelta(days=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        recent_created = (now - timedelta(days=6)).strftime("%Y-%m-%dT%H:%M:%SZ")
         mock_run.return_value = _mock_gh_success([
             {
                 "number": 1,
                 "title": "fix: recent",
-                "createdAt": "2026-02-25T10:00:00Z",
-                "mergedAt": "2026-02-26T10:00:00Z",
+                "createdAt": recent_created,
+                "mergedAt": recent_merged,
                 "headRefName": "koan/fix-recent",
             },
             {
@@ -362,11 +366,14 @@ class TestFetchMergedPrs:
     @patch("subprocess.run")
     def test_days_parameter_respected(self, mock_run, _prefix):
         """Different days values produce different filtering."""
+        now = datetime.now(timezone.utc)
+        merged = (now - timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        created = (now - timedelta(days=11)).strftime("%Y-%m-%dT%H:%M:%SZ")
         mock_run.return_value = _mock_gh_success([{
             "number": 1,
             "title": "fix: something",
-            "createdAt": "2026-02-25T10:00:00Z",
-            "mergedAt": "2026-02-26T10:00:00Z",
+            "createdAt": created,
+            "mergedAt": merged,
             "headRefName": "koan/fix-something",
         }])
 
@@ -376,7 +383,7 @@ class TestFetchMergedPrs:
 
         # With days=0 — only PRs merged today
         result = fetch_merged_prs("/fake/path", days=0)
-        # The PR from Feb 26 is far in the past, so should be excluded
+        # The PR from 10 days ago should be excluded
         assert len(result) == 0
 
 
