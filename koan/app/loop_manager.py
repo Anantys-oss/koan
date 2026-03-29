@@ -65,12 +65,16 @@ def validate_projects(
 ) -> Optional[str]:
     """Validate project configuration.
 
+    Missing directories or non-git repos are warned about and filtered out.
+    Only returns an error if no valid projects remain after filtering.
+
     Args:
         projects: List of (name, path) tuples.
         max_projects: Maximum allowed projects.
 
     Returns:
         Error message string if validation fails, None if valid.
+        Side effect: prints warnings for skipped projects to stderr.
     """
     if not projects:
         return "No projects configured. Create projects.yaml or set KOAN_PROJECTS env var."
@@ -78,9 +82,13 @@ def validate_projects(
     if len(projects) > max_projects:
         return f"Max {max_projects} projects allowed. You have {len(projects)}."
 
+    valid_count = 0
     for name, path in projects:
         if not os.path.isdir(path):
-            return f"Project '{name}' path does not exist: {path}"
+            print(f"[warn] Project '{name}' path does not exist: {path} — skipping. "
+                  f"Remove it from projects.yaml to silence this warning.",
+                  file=sys.stderr)
+            continue
 
         # Verify the project path is a git repository
         try:
@@ -91,9 +99,18 @@ def validate_projects(
                 timeout=5,
             )
             if result.returncode != 0:
-                return f"Project '{name}' is not a git repository: {path}"
+                print(f"[warn] Project '{name}' is not a git repository: {path} — skipping.",
+                      file=sys.stderr)
+                continue
         except (OSError, subprocess.TimeoutExpired):
-            return f"Project '{name}' is not a git repository: {path}"
+            print(f"[warn] Project '{name}' is not a git repository: {path} — skipping.",
+                  file=sys.stderr)
+            continue
+
+        valid_count += 1
+
+    if valid_count == 0:
+        return "No valid project directories found. Check your projects.yaml paths."
 
     return None
 
@@ -1027,8 +1044,10 @@ def _cli_validate_projects(args: list) -> None:
         print(error, file=sys.stderr)
         sys.exit(1)
 
+    # Only list projects with valid directories
     for name, path in projects:
-        print(f"{name}:{path}")
+        if os.path.isdir(path):
+            print(f"{name}:{path}")
 
 
 def _cli_lookup_project(args: list) -> None:
