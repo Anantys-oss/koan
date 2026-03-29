@@ -2,6 +2,7 @@
 name: rename
 scope: core
 group: config
+emoji: ✏️
 description: Rename a project across all configuration and instance files
 version: 1.0.0
 audience: bridge

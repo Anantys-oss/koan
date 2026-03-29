@@ -5,6 +5,7 @@ description: Generate a new skill from a description
 version: 1.0.0
 audience: bridge
 group: system
+emoji: 🧩
 worker: true
 commands:
   - name: scaffold_skill

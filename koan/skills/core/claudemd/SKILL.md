@@ -2,6 +2,7 @@
 name: claudemd
 scope: core
 group: code
+emoji: 📝
 description: Refresh or create CLAUDE.md for a project based on recent architectural changes
 version: 1.0.0
 audience: hybrid

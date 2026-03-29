@@ -59,7 +59,7 @@ class TestMissionPrefix:
 
     def test_check_prefix(self):
         from skills.core.list.handler import mission_prefix
-        assert mission_prefix("- /check https://github.com/pr/42") == "\u2705"
+        assert mission_prefix("- /check https://github.com/pr/42") == "\U0001f50d"
 
     def test_refactor_prefix(self):
         from skills.core.list.handler import mission_prefix
@@ -76,6 +76,22 @@ class TestMissionPrefix:
     def test_claude_md_prefix(self):
         from skills.core.list.handler import mission_prefix
         assert mission_prefix("- /claude_md frontend") == "\U0001f4dd"
+
+    def test_security_audit_prefix(self):
+        from skills.core.list.handler import mission_prefix
+        assert mission_prefix("- /security_audit koan") == "\U0001f6e1\ufe0f"
+
+    def test_security_alias_prefix(self):
+        from skills.core.list.handler import mission_prefix
+        assert mission_prefix("- /security koan") == "\U0001f6e1\ufe0f"
+
+    def test_audit_prefix(self):
+        from skills.core.list.handler import mission_prefix
+        assert mission_prefix("- /audit koan") == "\U0001f50e"
+
+    def test_incident_prefix(self):
+        from skills.core.list.handler import mission_prefix
+        assert mission_prefix("- /incident koan server down") == "\U0001f6a8"
 
     def test_unknown_command_gets_generic_prefix(self):
         from skills.core.list.handler import mission_prefix
@@ -324,8 +340,8 @@ class TestListHandler:
         """)
         ctx = self._make_ctx(tmp_path, missions)
         result = handle(ctx)
-        # /check now has its own ✅ prefix
-        assert "\u2705" in result
+        # /check gets its SKILL.md emoji (🔍, matching the handler ack)
+        assert "\U0001f50d" in result
 
     def test_unknown_command_gets_generic_prefix(self, tmp_path):
         from skills.core.list.handler import handle
@@ -491,7 +507,7 @@ class TestGithubOriginMarker:
         """)
         ctx = self._make_ctx(tmp_path, missions)
         result = handle(ctx)
-        assert "📬✅" in result
+        assert "📬🔍" in result
 
 
 # ---------------------------------------------------------------------------

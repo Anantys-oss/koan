@@ -2,6 +2,7 @@
 name: list
 scope: core
 group: missions
+emoji: 📋
 description: List current missions
 version: 1.0.0
 audience: bridge

@@ -2,6 +2,7 @@
 name: restart
 scope: core
 group: system
+emoji: 🔄
 description: Restart both agent and bridge processes
 version: 1.0.0
 audience: bridge

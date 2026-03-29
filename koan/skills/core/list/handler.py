@@ -2,23 +2,6 @@
 
 import re
 
-# Unicode prefixes for mission categories.
-_CATEGORY_PREFIXES = {
-    "plan": "🧠",
-    "implement": "🔨",
-    "fix": "🐞",
-    "rebase": "🔄",
-    "recreate": "🔁",
-    "ai": "✨",
-    "magic": "✨",
-    "review": "🔍",
-    "check": "✅",
-    "refactor": "🛠️",
-    "claudemd": "📝",
-    "claude": "📝",
-    "claude_md": "📝",
-}
-
 _MISSION_PREFIX = "📋"
 
 # Trailing marker appended by GitHub @mention missions.
@@ -30,21 +13,57 @@ _COMMAND_RE = re.compile(
 )
 
 
+def _build_emoji_map():
+    """Build a command→emoji map from the skill registry.
+
+    Falls back to an empty dict if the registry can't be loaded.
+    """
+    try:
+        from app.skills import build_registry
+        from pathlib import Path
+        import os
+
+        registry = build_registry()
+        emoji_map = {}
+        for skill in registry.list_all():
+            if not skill.emoji:
+                continue
+            for cmd in skill.commands:
+                emoji_map[cmd.name] = skill.emoji
+                for alias in cmd.aliases:
+                    emoji_map[alias] = skill.emoji
+        return emoji_map
+    except Exception:
+        return {}
+
+
+# Lazy-loaded cache (populated on first call to mission_prefix).
+_emoji_cache = None
+
+
 def mission_prefix(raw_line):
     """Return a unicode prefix for a mission line based on its category.
 
-    Known slash commands get their category emoji.
+    Known slash commands get their skill emoji from SKILL.md.
     Unknown slash commands and free-text missions both get the generic 📋.
     """
+    global _emoji_cache
+    if _emoji_cache is None:
+        _emoji_cache = _build_emoji_map()
+
     m = _COMMAND_RE.match(raw_line.strip())
     if m:
         command = m.group(1).lower()
-        return _CATEGORY_PREFIXES.get(command, _MISSION_PREFIX)
+        return _emoji_cache.get(command, _MISSION_PREFIX)
     return _MISSION_PREFIX
 
 
 def handle(ctx):
     """Handle /list command -- display numbered mission list."""
+    # Reset emoji cache on each /list invocation to pick up new skills.
+    global _emoji_cache
+    _emoji_cache = None
+
     missions_file = ctx.instance_dir / "missions.md"
 
     if not missions_file.exists():

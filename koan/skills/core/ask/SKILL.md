@@ -2,6 +2,7 @@
 name: ask
 scope: core
 group: pr
+emoji: ❓
 description: "Ask Kōan a question about a GitHub PR or issue — fetches context and posts an AI reply"
 version: 1.0.0
 audience: hybrid

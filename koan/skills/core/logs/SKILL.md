@@ -2,6 +2,7 @@
 name: logs
 scope: core
 group: status
+emoji: 📜
 description: Show last lines from run and awake logs
 version: 1.0.0
 audience: bridge

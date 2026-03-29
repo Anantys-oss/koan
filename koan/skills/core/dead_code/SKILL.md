@@ -2,6 +2,7 @@
 name: dead_code
 scope: core
 group: code
+emoji: 🪦
 description: Scan a project for unused code (imports, functions, classes, dead branches)
 version: 1.0.0
 audience: hybrid

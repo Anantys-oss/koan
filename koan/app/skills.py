@@ -77,6 +77,7 @@ class Skill:
     github_context_aware: bool = False
     cli_skill: Optional[str] = None
     group: str = ""
+    emoji: str = ""
 
     @property
     def qualified_name(self) -> str:
@@ -242,6 +243,9 @@ def parse_skill_md(path: Path) -> Optional[Skill]:
     # Parse group (for /help grouping)
     group = meta.get("group", "")
 
+    # Parse emoji (for /list display)
+    emoji = meta.get("emoji", "")
+
     return Skill(
         name=meta["name"],
         scope=meta.get("scope", skill_dir.parent.name),
@@ -257,6 +261,7 @@ def parse_skill_md(path: Path) -> Optional[Skill]:
         github_context_aware=github_context_aware,
         cli_skill=cli_skill,
         group=group,
+        emoji=emoji,
     )
 
 

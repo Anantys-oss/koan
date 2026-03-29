@@ -1,6 +1,7 @@
 ---
 name: checkup
 group: code
+emoji: 🩺
 description: Run a health check on all open PRs across projects
 commands:
   - name: checkup
