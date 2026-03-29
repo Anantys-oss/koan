@@ -2,6 +2,7 @@
 name: recurring
 scope: core
 group: missions
+emoji: 🔁
 description: Manage recurring missions (hourly, daily, weekly, custom interval)
 version: 1.2.0
 audience: bridge

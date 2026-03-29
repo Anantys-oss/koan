@@ -2,6 +2,7 @@
 name: priority
 scope: core
 group: missions
+emoji: ⬆️
 description: Reorder pending missions in the queue
 version: 1.0.0
 audience: bridge

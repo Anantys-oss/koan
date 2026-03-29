@@ -2,6 +2,7 @@
 name: review_rebase
 scope: core
 group: pr
+emoji: 🔍
 description: "Queue a review then rebase combo for a PR (ex: /rr https://github.com/owner/repo/pull/42)"
 version: 1.0.0
 audience: hybrid

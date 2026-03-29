@@ -2,6 +2,7 @@
 name: abort
 scope: core
 group: missions
+emoji: 🚫
 description: Abort the current in-progress mission and move to the next one
 version: 1.0.0
 audience: bridge

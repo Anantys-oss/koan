@@ -2,6 +2,7 @@
 name: deepplan
 scope: core
 group: code
+emoji: 🧠
 description: Spec-first design with Socratic exploration of 2-3 approaches before planning
 version: 1.0.0
 audience: hybrid

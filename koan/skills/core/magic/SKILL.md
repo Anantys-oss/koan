@@ -2,6 +2,7 @@
 name: magic
 scope: core
 group: ideas
+emoji: ✨
 description: Instant creative exploration of a project
 version: 1.1.0
 audience: bridge

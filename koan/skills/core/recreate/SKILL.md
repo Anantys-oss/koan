@@ -2,6 +2,7 @@
 name: recreate
 scope: core
 group: pr
+emoji: 🔁
 description: "Recreate a diverged PR from scratch (ex: /recreate https://github.com/owner/repo/pull/42)"
 version: 1.0.0
 audience: hybrid

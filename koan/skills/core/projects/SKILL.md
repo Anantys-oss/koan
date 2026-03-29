@@ -2,6 +2,7 @@
 name: projects
 scope: core
 group: config
+emoji: 📂
 description: List configured projects
 version: 1.0.0
 audience: bridge

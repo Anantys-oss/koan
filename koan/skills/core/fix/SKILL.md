@@ -2,6 +2,7 @@
 name: fix
 scope: core
 group: code
+emoji: 🐞
 description: "Fix a GitHub issue end-to-end, or batch-queue all open issues from a repo"
 version: 1.1.0
 audience: hybrid

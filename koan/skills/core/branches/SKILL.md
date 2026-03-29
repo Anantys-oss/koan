@@ -2,6 +2,7 @@
 name: branches
 scope: core
 group: pr
+emoji: 🌿
 description: List koan branches and open PRs with recommended merge order and stats
 version: 1.0.0
 audience: bridge

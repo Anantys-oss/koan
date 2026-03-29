@@ -2,6 +2,7 @@
 name: chat
 scope: core
 group: missions
+emoji: 💬
 description: Force chat mode (bypass mission detection)
 version: 1.0.0
 audience: bridge

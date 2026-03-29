@@ -2,6 +2,7 @@
 name: done
 scope: core
 group: status
+emoji: ✔️
 description: List merged and open PRs from the last 24 hours across all projects
 version: 1.0.0
 audience: bridge

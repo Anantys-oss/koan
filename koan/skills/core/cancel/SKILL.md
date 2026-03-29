@@ -2,6 +2,7 @@
 name: cancel
 scope: core
 group: missions
+emoji: ❌
 description: Cancel a pending mission
 version: 1.0.0
 audience: bridge

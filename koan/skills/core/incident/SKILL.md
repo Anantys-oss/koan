@@ -2,6 +2,7 @@
 name: incident
 scope: core
 group: system
+emoji: 🚨
 description: "Triage and fix a production error from a pasted stack trace or log snippet"
 version: 1.0.0
 audience: hybrid
