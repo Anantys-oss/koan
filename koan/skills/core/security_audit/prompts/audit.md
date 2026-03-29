@@ -83,6 +83,27 @@ Systematically examine each attack surface area. For each, trace the data flow f
 - Exposed admin panels, debug endpoints, or internal APIs
 - Docker running as root, overly permissive container capabilities
 
+#### K. Memory Safety & Native Boundary Vulnerabilities
+- **Buffer overflows / out-of-bounds access**: writes or reads beyond allocated memory, unsafe copies, unchecked buffer lengths, fixed-size buffers, stack/heap corruption
+- **Integer overflow / underflow / truncation**: attacker-controlled sizes, offsets, or counts that wrap and lead to undersized allocations or incorrect bounds checks
+- **Use-after-free / double free / uninitialized memory**: lifetime bugs in native code, extensions, FFI bindings, C/C++/Rust unsafe blocks, or third-party native modules
+- **Unsafe parsing of untrusted binary data**: images, archives, compressed formats, protocol frames, file metadata, custom serialization formats
+- **Native boundary trust issues**: Python/Node/Perl/Ruby code passing untrusted data into C/C++ libraries, shell tools, or unsafe system APIs without validating size, encoding, or structure
+
+When auditing projects that include native code, FFI bindings, image/file parsers, compression, archive extraction, custom protocol handling, or unsafe blocks, explicitly trace attacker-controlled length/offset values to memory operations. Treat memory corruption bugs as critical when they could lead to denial of service, information disclosure, or remote code execution.
+
+#### L. Request Handling, Cross-Origin, and Browser Abuse
+- **CSRF** on state-changing endpoints that rely on cookies or ambient browser credentials
+- **Open redirect** and unvalidated forwards that can aid phishing, token leakage, or auth bypass chains
+- **HTTP request smuggling / header parsing inconsistencies** where reverse proxy and app disagree on message boundaries or trusted headers
+- **Host header / proxy trust issues** leading to poisoned links, cache poisoning, SSRF pivots, or auth bypass
+
+#### M. Denial of Service & Resource Exhaustion
+- Missing rate limiting, anti-automation, or abuse controls on expensive endpoints
+- Unbounded file upload, decompression, parsing, regex, pagination, or recursive processing
+- Hash-collision, regex backtracking, zip bombs, image bombs, and oversized JSON/XML payloads
+- Expensive auth flows or report/export endpoints that can be abused for CPU, memory, disk, or queue exhaustion
+
 ### Phase 3 — Produce Findings
 
 For EACH finding, produce a block in this exact format. Use `---FINDING---` as separator between findings:
@@ -91,7 +112,7 @@ For EACH finding, produce a block in this exact format. Use `---FINDING---` as s
 ---FINDING---
 TITLE: Security: <concise one-line summary>
 SEVERITY: <critical|high|medium|low>
-CATEGORY: <injection|auth|secrets|path_traversal|ssrf|deserialization|crypto|race_condition|dependency|config>
+CATEGORY: <injection|auth|secrets|path_traversal|ssrf|deserialization|crypto|race_condition|dependency|config|memory_safety|request_handling|dos>
 LOCATION: <file_path:line_range>
 PROBLEM: <2-3 sentences explaining the vulnerability and how it could be exploited>
 WHY: <1-2 sentences on the real-world impact — data breach, RCE, privilege escalation, etc.>
