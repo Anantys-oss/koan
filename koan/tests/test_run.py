@@ -145,13 +145,25 @@ class TestParseProjects:
         with pytest.raises(SystemExit):
             parse_projects()
 
-    def test_nonexistent_path_exits(self, tmp_path, monkeypatch):
+    def test_all_nonexistent_paths_exits(self, tmp_path, monkeypatch):
         from app import utils
         monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
         monkeypatch.setenv("KOAN_PROJECTS", f"bad:{tmp_path}/nonexistent")
         from app.run import parse_projects
         with pytest.raises(SystemExit):
             parse_projects()
+
+    def test_some_nonexistent_paths_filtered(self, tmp_path, monkeypatch):
+        """Missing project dirs are skipped; valid ones are kept."""
+        from app import utils
+        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+        from app.run import parse_projects
+        p = tmp_path / "good"
+        p.mkdir()
+        monkeypatch.setenv("KOAN_PROJECTS", f"good:{p};bad:{tmp_path}/nonexistent")
+        result = parse_projects()
+        assert len(result) == 1
+        assert result[0] == ("good", str(p))
 
     def test_too_many_projects(self, tmp_path, monkeypatch):
         from app import utils
@@ -2684,10 +2696,17 @@ class TestRunIterationProjectRefresh:
     @patch("app.run.plan_iteration")
     @patch("app.run._notify")
     def test_refreshed_projects_passed_to_plan(self, mock_notify, mock_plan, koan_root):
-        """When get_known_projects returns updated list, plan_iteration sees it."""
+        """When get_known_projects returns updated list, plan_iteration sees it.
+
+        Projects with missing directories are filtered out during refresh.
+        """
         from app.run import _run_iteration
 
-        refreshed_projects = [("test", str(koan_root)), ("new-proj", "/tmp/new")]
+        # Create a second real directory for the new project
+        new_proj_dir = koan_root / "new-proj-dir"
+        new_proj_dir.mkdir()
+
+        refreshed_projects = [("test", str(koan_root)), ("new-proj", str(new_proj_dir))]
 
         mock_plan.return_value = {
             "action": "error",
@@ -2721,6 +2740,46 @@ class TestRunIterationProjectRefresh:
         # plan_iteration should have received the refreshed list
         call_kwargs = mock_plan.call_args[1]
         assert call_kwargs["projects"] == refreshed_projects
+
+    @patch("app.run.plan_iteration")
+    @patch("app.run._notify")
+    def test_missing_project_dirs_filtered_on_refresh(self, mock_notify, mock_plan, koan_root):
+        """Projects with non-existent directories are filtered out during refresh."""
+        from app.run import _run_iteration
+
+        refreshed_projects = [("test", str(koan_root)), ("missing", "/tmp/nonexistent-xyz")]
+
+        mock_plan.return_value = {
+            "action": "error",
+            "error": "test-stop",
+            "project_name": "test",
+            "project_path": str(koan_root),
+            "mission_title": "",
+            "autonomous_mode": "implement",
+            "focus_area": "",
+            "available_pct": 50,
+            "decision_reason": "Default",
+            "display_lines": [],
+            "recurring_injected": [],
+        }
+
+        instance = str(koan_root / "instance")
+
+        with patch("app.utils.get_known_projects", return_value=refreshed_projects), \
+             patch("app.loop_manager.process_github_notifications", return_value=0):
+            _run_iteration(
+                koan_root=str(koan_root),
+                instance=instance,
+                projects=[("test", str(koan_root))],
+                count=0,
+                max_runs=5,
+                interval=10,
+                git_sync_interval=5,
+            )
+
+        # Only the existing project should be passed to plan_iteration
+        call_kwargs = mock_plan.call_args[1]
+        assert call_kwargs["projects"] == [("test", str(koan_root))]
 
     @patch("app.run.plan_iteration")
     @patch("app.run._notify")

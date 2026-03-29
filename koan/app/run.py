@@ -393,7 +393,9 @@ def parse_projects() -> list:
     1. projects.yaml (if exists)
     2. KOAN_PROJECTS env var (fallback)
 
-    Returns list of (name, path) tuples. Exits on error.
+    Returns list of (name, path) tuples. Exits on error (only if no
+    valid projects remain). Missing project directories are warned about
+    and filtered out instead of crashing.
     """
     from app.utils import get_known_projects
     projects = get_known_projects()
@@ -406,12 +408,19 @@ def parse_projects() -> list:
         log("error", f"Max 50 projects allowed. You have {len(projects)}.")
         sys.exit(1)
 
+    valid = []
     for name, path in projects:
         if not Path(path).is_dir():
-            log("error", f"Project '{name}' path does not exist: {path}")
-            sys.exit(1)
+            log("warn", f"Project '{name}' path does not exist: {path} — skipping. "
+                f"Remove it from projects.yaml to silence this warning.")
+        else:
+            valid.append((name, path))
 
-    return projects
+    if not valid:
+        log("error", "No valid project directories found. Check your projects.yaml paths.")
+        sys.exit(1)
+
+    return valid
 
 
 # ---------------------------------------------------------------------------
@@ -1347,7 +1356,16 @@ def _run_iteration(
     from app.utils import get_known_projects
     refreshed = get_known_projects()
     if refreshed:
-        projects = refreshed
+        # Filter out projects whose directories no longer exist
+        valid = []
+        for name, path in refreshed:
+            if Path(path).is_dir():
+                valid.append((name, path))
+            else:
+                log("warn", f"Project '{name}' directory missing: {path} — skipping. "
+                    f"Remove it from projects.yaml to silence this warning.")
+        if valid:
+            projects = valid
 
     # Check GitHub notifications before planning (converts @mentions to missions
     # so plan_iteration() sees them immediately instead of waiting for sleep)
