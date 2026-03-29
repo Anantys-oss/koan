@@ -141,7 +141,7 @@ class TestEnrichAndMerge:
         prs = [{"branch": "koan/foo", "number": 42, "title": "Fix foo",
                 "additions": 10, "deletions": 5, "created_at": "",
                 "is_draft": False, "review_decision": "APPROVED",
-                "has_reviews": True, "labels": []}]
+                "has_reviews": True, "labels": [], "url": "https://github.com/org/repo/pull/42"}]
 
         result = _enrich_and_merge(branches, prs)
         assert len(result) == 1
@@ -162,7 +162,7 @@ class TestEnrichAndMerge:
         prs = [{"branch": "koan/remote-only", "number": 99, "title": "Remote PR",
                 "additions": 50, "deletions": 10, "created_at": "",
                 "is_draft": True, "review_decision": "",
-                "has_reviews": False, "labels": []}]
+                "has_reviews": False, "labels": [], "url": "https://github.com/org/repo/pull/99"}]
         result = _enrich_and_merge([], prs)
         assert len(result) == 1
         assert result[0]["has_pr"] is True
@@ -183,6 +183,7 @@ class TestFormatOutput:
              "pr_title": "Fix the bug", "pr_additions": 10, "pr_deletions": 3,
              "pr_is_draft": False, "pr_review_decision": "APPROVED",
              "pr_has_reviews": True, "pr_labels": [],
+             "pr_url": "https://github.com/org/repo/pull/42",
              "age": "2 days ago", "timestamp": 100, "commits": 2,
              "diffstat": (2, 10, 3), "conflicts": False},
         ]
@@ -192,6 +193,7 @@ class TestFormatOutput:
         assert "+10/-3" in output
         assert "approved" in output
         assert "1 approved" in output
+        assert "https://github.com/org/repo/pull/42" in output
 
     def test_conflicts_shown(self):
         entries = [
@@ -210,6 +212,20 @@ class TestFormatOutput:
         ]
         output = _format_output("koan", entries)
         assert "no PR" in output
+        assert "https://" not in output
+
+    def test_pr_url_displayed(self):
+        entries = [
+            {"branch": "koan/with-url", "has_pr": True, "pr_number": 77,
+             "pr_title": "Add feature", "pr_additions": 20, "pr_deletions": 5,
+             "pr_is_draft": False, "pr_review_decision": "",
+             "pr_has_reviews": False, "pr_labels": [],
+             "pr_url": "https://github.com/org/repo/pull/77",
+             "age": "1 day ago", "timestamp": 300, "commits": 3,
+             "diffstat": (2, 20, 5), "conflicts": False},
+        ]
+        output = _format_output("koan", entries)
+        assert "https://github.com/org/repo/pull/77" in output
 
 
 # ---------------------------------------------------------------------------
@@ -263,7 +279,8 @@ class TestHandle:
             {"branch": "koan/a", "number": 10, "title": "Feature A",
              "additions": 5, "deletions": 2, "created_at": "",
              "is_draft": False, "review_decision": "",
-             "has_reviews": False, "labels": []},
+             "has_reviews": False, "labels": [],
+             "url": "https://github.com/org/repo/pull/10"},
         ]
         with patch("app.utils.get_known_projects",
                     return_value={"koan": "/tmp/koan"}), \
@@ -274,3 +291,4 @@ class TestHandle:
             result = handle(ctx)
         assert "Feature A" in result
         assert "PR #10" in result
+        assert "https://github.com/org/repo/pull/10" in result

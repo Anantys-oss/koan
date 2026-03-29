@@ -229,7 +229,7 @@ def _get_open_prs(project_path: str) -> List[Dict]:
             "--state", "open",
             "--limit", "50",
             "--json", "number,title,headRefName,additions,deletions,createdAt,"
-                      "isDraft,reviewDecision,reviews,labels",
+                      "isDraft,reviewDecision,reviews,labels,url",
             cwd=project_path,
             timeout=30,
         )
@@ -258,6 +258,7 @@ def _get_open_prs(project_path: str) -> List[Dict]:
             "review_decision": pr.get("reviewDecision", ""),
             "has_reviews": bool(pr.get("reviews")),
             "labels": [l.get("name", "") for l in (pr.get("labels") or [])],
+            "url": pr.get("url", ""),
         }
         result.append(info)
 
@@ -294,6 +295,7 @@ def _enrich_and_merge(
             entry["pr_review_decision"] = pr["review_decision"]
             entry["pr_has_reviews"] = pr["has_reviews"]
             entry["pr_labels"] = pr["labels"]
+            entry["pr_url"] = pr.get("url", "")
         enriched.append(entry)
 
     # PRs without local branches (from other contributors/forks)
@@ -319,6 +321,7 @@ def _enrich_and_merge(
                 "pr_review_decision": pr["review_decision"],
                 "pr_has_reviews": pr["has_reviews"],
                 "pr_labels": pr["labels"],
+                "pr_url": pr.get("url", ""),
             }
             enriched.append(entry)
 
@@ -414,6 +417,8 @@ def _format_output(project_name: str, entries: List[Dict]) -> str:
         status = ", ".join(indicators)
         title = entry.get("pr_title", "")
 
+        pr_url = entry.get("pr_url", "")
+
         if title:
             lines.append(f"\n{i}. {short_branch}")
             lines.append(f"   {title}")
@@ -421,6 +426,9 @@ def _format_output(project_name: str, entries: List[Dict]) -> str:
         else:
             lines.append(f"\n{i}. {short_branch}")
             lines.append(f"   {size_str} | {age} | {status}")
+
+        if pr_url:
+            lines.append(f"   {pr_url}")
 
     # Summary stats
     total_prs = sum(1 for e in entries if e.get("has_pr"))
