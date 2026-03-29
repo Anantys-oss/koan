@@ -3,7 +3,7 @@ export
 
 .PHONY: install onboard setup start stop status restart
 .PHONY: clean say migrate test test-skills test-strict coverage lint sync-instance rename-project release
-.PHONY: awake run errand-run errand-awake dashboard koan api api-token webhook
+.PHONY: awake run chat errand-run errand-awake dashboard koan api api-token webhook
 .PHONY: ollama logs ssh-forward
 .PHONY: install-systemctl-service uninstall-systemctl-service
 .PHONY: install-user-service uninstall-user-service
@@ -94,6 +94,9 @@ awake: setup
 
 run: setup
 	$(KOAN_RUN) app/run.py
+
+chat: setup
+	cd koan && KOAN_ROOT=$(PWD) PYTHONPATH=. ../$(PYTHON) app/chat_process.py
 
 say: setup
 	@test -n "$(m)" || (echo "Usage: make say m=\"your message\"" && exit 1)
@@ -273,12 +276,12 @@ ollama: setup
 
 logs:
 	@mkdir -p logs
-	@if [ ! -f logs/run.log ] && [ ! -f logs/awake.log ] && [ ! -f logs/ollama.log ]; then \
+	@if [ ! -f logs/run.log ] && [ ! -f logs/awake.log ] && [ ! -f logs/chat.log ] && [ ! -f logs/ollama.log ]; then \
 		echo "No log files found. Start Kōan first with 'make start'."; \
 		exit 1; \
 	fi
 	@echo "→ Watching Kōan logs + live progress (Ctrl-C to stop watching — Kōan keeps running)"
-	@tail -F logs/run.log logs/awake.log logs/ollama.log instance/journal/pending.md 2>/dev/null
+	@tail -F logs/run.log logs/awake.log logs/chat.log logs/ollama.log instance/journal/pending.md 2>/dev/null
 
 install:
 	@$(MAKE) --no-print-directory setup
