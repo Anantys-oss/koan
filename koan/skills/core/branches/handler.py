@@ -178,8 +178,12 @@ def _get_branches_info(project_path: str) -> List[Dict]:
     return result
 
 
-def _check_conflicts(project_path: str, branch: str) -> bool:
-    """Check if a branch would conflict when merged into main."""
+def _check_conflicts(project_path: str, branch: str) -> Optional[bool]:
+    """Check if a branch would conflict when merged into main.
+
+    Returns True if conflicts detected, False if clean, None if
+    the check failed (merge-base error, timeout, etc.).
+    """
     import subprocess
 
     try:
@@ -189,11 +193,11 @@ def _check_conflicts(project_path: str, branch: str) -> bool:
             capture_output=True, text=True, cwd=project_path, timeout=5,
         )
         if result.returncode != 0:
-            return False  # Can't determine, assume no conflict
+            return None  # Can't determine
 
         base = result.stdout.strip()
         if not base:
-            return False
+            return None
 
         # Use merge-tree to simulate merge
         result = subprocess.run(
@@ -203,7 +207,7 @@ def _check_conflicts(project_path: str, branch: str) -> bool:
         # merge-tree outputs conflict markers if there are conflicts
         return "<<<<<<" in result.stdout
     except (subprocess.TimeoutExpired, OSError):
-        return False
+        return None
 
 
 def _parse_shortstat(stat: str) -> Tuple[int, int, int]:
@@ -352,12 +356,20 @@ def _merge_score(entry: Dict) -> Tuple:
         _, ins, dels = entry.get("diffstat", (0, 0, 0))
         size = ins + dels
 
-    conflicts = entry.get("conflicts", False)
+    conflict_status = entry.get("conflicts")
     timestamp = entry.get("timestamp", 0)
+
+    # Conflict sort: 0 = clean, 1 = unknown, 2 = conflicts
+    if conflict_status is True:
+        conflict_score = 2
+    elif conflict_status is None:
+        conflict_score = 1
+    else:
+        conflict_score = 0
 
     return (
         0 if is_approved else (1 if has_reviews else 2),  # review status
-        1 if conflicts else 0,                             # conflicts
+        conflict_score,                                    # conflicts
         size,                                               # change size
         timestamp,                                          # age (older first)
     )
@@ -402,8 +414,11 @@ def _format_output(project_name: str, entries: List[Dict]) -> str:
         else:
             indicators.append("no PR")
 
-        if entry.get("conflicts"):
+        conflict_status = entry.get("conflicts")
+        if conflict_status is True:
             indicators.append("conflicts")
+        elif conflict_status is None:
+            indicators.append("conflicts unknown")
 
         # Size info
         if entry.get("has_pr"):
@@ -437,7 +452,7 @@ def _format_output(project_name: str, entries: List[Dict]) -> str:
     # Summary stats
     total_prs = sum(1 for e in entries if e.get("has_pr"))
     approved = sum(1 for e in entries if e.get("pr_review_decision") == "APPROVED")
-    with_conflicts = sum(1 for e in entries if e.get("conflicts"))
+    with_conflicts = sum(1 for e in entries if e.get("conflicts") is True)
     drafts = sum(1 for e in entries if e.get("pr_is_draft"))
     no_pr = sum(1 for e in entries if not e.get("has_pr"))
 
