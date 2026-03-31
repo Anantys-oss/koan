@@ -151,6 +151,7 @@ def _get_branches_info(project_path: str) -> List[Dict]:
         else:
             info["diffstat"] = (0, 0, 0)
 
+        # Conflict check via merge-tree (two-step: find base, then simulate merge)
         info["conflicts"] = _check_conflicts(project_path, branch)
 
         result.append(info)
