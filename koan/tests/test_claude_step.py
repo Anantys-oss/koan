@@ -141,7 +141,8 @@ class TestRebaseOntoTarget:
         assert result == "origin"
         assert mock_git.call_count == 2
         mock_git.assert_any_call(
-            ["git", "fetch", "origin", "main"], cwd="/project"
+            ["git", "fetch", "origin", "+refs/heads/main:refs/remotes/origin/main"],
+            cwd="/project", timeout=60,
         )
 
     @patch("app.cli_exec.subprocess.run")
