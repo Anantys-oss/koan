@@ -94,28 +94,29 @@ def _get_branches_info(project_path: str) -> List[Dict]:
     if not branches:
         return []
 
-    # Get ages via for-each-ref
+    # Batch fetch age/timestamp via single for-each-ref (O(1) instead of O(N))
+    # Use TAB delimiter to handle spaces in relative dates like "3 days ago"
     rc, ref_output, _ = run_git(
         "for-each-ref",
-        "--format=%(committerdate:unix) %(committerdate:relative) %(refname:short)",
+        "--format=%(committerdate:unix)\t%(committerdate:relative)\t%(refname:short)",
         f"refs/heads/{prefix}*",
         cwd=project_path,
     )
 
-    age_data = {}
+    age_data = {}  # branch_name -> {"timestamp": int, "age": str}
     if rc == 0 and ref_output:
         for line in ref_output.splitlines():
-            parts = line.strip().split(None, 2)
-            if len(parts) >= 3:
+            parts = line.strip().split("\t", 2)
+            if len(parts) == 3:
+                ts_str, relative, ref_name = parts
                 try:
-                    # parts[0] = unix ts, parts[1...] = "3 days ago koan/branch"
-                    # Actually: format gives us ts, relative, refname
-                    # But relative can have spaces ("3 days ago"), so split differently
-                    pass
+                    age_data[ref_name] = {
+                        "timestamp": int(ts_str),
+                        "age": relative,
+                    }
                 except ValueError:
                     pass
 
-    # Better approach: get age and commit count per branch
     result = []
     for branch in sorted(branches):
         info = {"branch": branch, "has_pr": False}
@@ -130,23 +131,10 @@ def _get_branches_info(project_path: str) -> List[Dict]:
         else:
             info["commits"] = 0
 
-        # Last commit date (relative)
-        rc, date_str, _ = run_git(
-            "log", "-1", "--format=%cr", branch,
-            cwd=project_path, timeout=5,
-        )
-        if rc == 0:
-            info["age"] = date_str.strip()
-
-        # Last commit date (unix) for sorting
-        rc, ts_str, _ = run_git(
-            "log", "-1", "--format=%ct", branch,
-            cwd=project_path, timeout=5,
-        )
-        if rc == 0 and ts_str.strip().isdigit():
-            info["timestamp"] = int(ts_str.strip())
-        else:
-            info["timestamp"] = 0
+        # Age and timestamp from batch for-each-ref data
+        ref = age_data.get(branch, {})
+        info["age"] = ref.get("age", "")
+        info["timestamp"] = ref.get("timestamp", 0)
 
         # Skip branches fully merged into origin/main (0 commits ahead)
         if info["commits"] == 0:

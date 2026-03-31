@@ -347,18 +347,18 @@ class TestGetBranchesInfoFiltering:
             if cmd == "branch":
                 return 0, "  koan/merged-branch\n  koan/active-branch\n", ""
             if cmd == "for-each-ref":
-                return 0, "", ""
+                # TAB-delimited: unix_ts\trelative\trefname
+                lines = (
+                    "1000000\t2 days ago\tkoan/merged-branch\n"
+                    "1000000\t2 days ago\tkoan/active-branch"
+                )
+                return 0, lines, ""
             if cmd == "rev-list":
                 branch = args[-1] if len(args) > 2 else ""
                 call_count["rev-list"] += 1
                 if "merged-branch" in branch:
                     return 0, "0", ""  # merged: 0 commits ahead
                 return 0, "3", ""  # active: 3 commits ahead
-            if cmd == "log":
-                if "%cr" in args:
-                    return 0, "2 days ago", ""
-                if "%ct" in args:
-                    return 0, "1000000", ""
             if cmd == "diff":
                 return 0, "1 file changed, 5 insertions(+)", ""
             return 0, "", ""
@@ -372,6 +372,31 @@ class TestGetBranchesInfoFiltering:
         assert "koan/active-branch" in branch_names
         assert "koan/merged-branch" not in branch_names
         assert len(result) == 1
+
+    def test_for_each_ref_populates_age_and_timestamp(self):
+        """Age and timestamp come from the batch for-each-ref query, not per-branch git log."""
+        from skills.core.branches.handler import _get_branches_info
+
+        def fake_run_git(*args, cwd=None, timeout=None):
+            cmd = args[0] if args else ""
+            if cmd == "branch":
+                return 0, "  koan/my-feature\n", ""
+            if cmd == "for-each-ref":
+                return 0, "1711843200\t5 hours ago\tkoan/my-feature", ""
+            if cmd == "rev-list":
+                return 0, "2", ""
+            if cmd == "diff":
+                return 0, "1 file changed, 10 insertions(+)", ""
+            return 0, "", ""
+
+        with patch("app.git_utils.run_git", side_effect=fake_run_git), \
+             patch("app.config.get_branch_prefix", return_value="koan/"), \
+             patch("skills.core.branches.handler._check_conflicts", return_value=False):
+            result = _get_branches_info("/fake/path")
+
+        assert len(result) == 1
+        assert result[0]["age"] == "5 hours ago"
+        assert result[0]["timestamp"] == 1711843200
 
 
 # ---------------------------------------------------------------------------
