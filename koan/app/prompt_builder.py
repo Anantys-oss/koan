@@ -29,10 +29,19 @@ Usage:
 """
 
 import argparse
+import logging
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Tuple
+
+logger = logging.getLogger(__name__)
+
+# Matches template placeholders like {INSTANCE}, {PROJECT_NAME}, etc.
+# Only uppercase letters, digits, and underscores — at least 2 chars to avoid
+# false positives on prose like {n} or {x}.
+_PLACEHOLDER_RE = re.compile(r"\{([A-Z][A-Z_0-9]+)\}")
 
 
 def _get_language_section() -> str:
@@ -286,6 +295,18 @@ def _build_mission_instruction(mission_title: str, project_name: str) -> str:
     )
 
 
+def _warn_unresolved_placeholders(text: str, template_name: str) -> None:
+    """Log a warning if any {PLACEHOLDER} tokens remain after substitution."""
+    unresolved = _PLACEHOLDER_RE.findall(text)
+    if unresolved:
+        unique = sorted(set(unresolved))
+        logger.warning(
+            "[prompt_builder] Unresolved placeholders in '%s': %s",
+            template_name,
+            ", ".join(f"{{{p}}}" for p in unique),
+        )
+
+
 def _load_agent_template(
     instance: str,
     project_name: str,
@@ -302,7 +323,7 @@ def _load_agent_template(
 
     mission_instruction = _build_mission_instruction(mission_title, project_name)
     branch_prefix = _get_branch_prefix()
-    return load_prompt(
+    result = load_prompt(
         "agent",
         INSTANCE=instance,
         PROJECT_PATH=project_path,
@@ -315,6 +336,8 @@ def _load_agent_template(
         MISSION_INSTRUCTION=mission_instruction,
         BRANCH_PREFIX=branch_prefix,
     )
+    _warn_unresolved_placeholders(result, "agent")
+    return result
 
 
 def _append_spec(prompt: str, spec_content: str, mission_title: str) -> str:
@@ -522,6 +545,7 @@ def build_contemplative_prompt(
         PROJECT_NAME=project_name,
         SESSION_INFO=session_info,
     )
+    _warn_unresolved_placeholders(prompt, "contemplative")
 
     # Append language preference (overrides soul.md default)
     prompt += _get_language_section()
