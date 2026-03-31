@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from skills.core.branches.handler import (
     handle,
+    _check_conflicts,
     _parse_shortstat,
     _merge_score,
     _recommend_merge_order,
@@ -86,6 +87,16 @@ class TestMergeScore:
                   "has_pr": True, "pr_additions": 10, "pr_deletions": 5,
                   "conflicts": True, "timestamp": 100}
         assert _merge_score(clean) < _merge_score(dirty)
+
+    def test_unknown_conflicts_between_clean_and_dirty(self):
+        """None (unknown) sorts between False (clean) and True (conflicts)."""
+        base = {"pr_review_decision": "", "pr_has_reviews": False,
+                "has_pr": True, "pr_additions": 10, "pr_deletions": 5,
+                "timestamp": 100}
+        clean = {**base, "conflicts": False}
+        unknown = {**base, "conflicts": None}
+        dirty = {**base, "conflicts": True}
+        assert _merge_score(clean) < _merge_score(unknown) < _merge_score(dirty)
 
     def test_smaller_changes_first(self):
         small = {"pr_review_decision": "", "pr_has_reviews": False,
@@ -204,6 +215,26 @@ class TestFormatOutput:
         output = _format_output("koan", entries)
         assert "conflicts" in output.lower()
 
+    def test_conflicts_unknown_shown(self):
+        """When _check_conflicts returns None (failure), output shows 'unknown'."""
+        entries = [
+            {"branch": "koan/unknown-branch", "has_pr": False,
+             "age": "1 day ago", "timestamp": 200, "commits": 1,
+             "diffstat": (1, 5, 0), "conflicts": None},
+        ]
+        output = _format_output("koan", entries)
+        assert "conflicts unknown" in output.lower()
+
+    def test_conflicts_false_not_shown(self):
+        """When conflicts is False (clean), no conflict indicator appears."""
+        entries = [
+            {"branch": "koan/clean-branch", "has_pr": False,
+             "age": "1 day ago", "timestamp": 200, "commits": 1,
+             "diffstat": (1, 5, 0), "conflicts": False},
+        ]
+        output = _format_output("koan", entries)
+        assert "conflicts" not in output.lower()
+
     def test_no_pr_shown(self):
         entries = [
             {"branch": "koan/no-pr", "has_pr": False,
@@ -226,6 +257,76 @@ class TestFormatOutput:
         ]
         output = _format_output("koan", entries)
         assert "https://github.com/org/repo/pull/77" in output
+
+
+# ---------------------------------------------------------------------------
+# _check_conflicts
+# ---------------------------------------------------------------------------
+
+class TestCheckConflicts:
+    """Verify _check_conflicts returns None when git merge-base fails."""
+
+    def test_returns_none_on_merge_base_failure(self):
+        """When merge-base exits non-zero, should return None not False."""
+        import subprocess
+
+        def fake_run(*args, **kwargs):
+            r = SimpleNamespace(returncode=1, stdout="", stderr="fatal: not a git repo")
+            return r
+
+        with patch("subprocess.run", side_effect=fake_run):
+            result = _check_conflicts("/fake/path", "koan/some-branch")
+        assert result is None
+
+    def test_returns_none_on_timeout(self):
+        """When subprocess times out, should return None not False."""
+        import subprocess
+
+        def fake_run(*args, **kwargs):
+            raise subprocess.TimeoutExpired(cmd="git", timeout=5)
+
+        with patch("subprocess.run", side_effect=fake_run):
+            result = _check_conflicts("/fake/path", "koan/some-branch")
+        assert result is None
+
+    def test_returns_none_on_empty_base(self):
+        """When merge-base returns empty stdout, should return None."""
+        def fake_run(*args, **kwargs):
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with patch("subprocess.run", side_effect=fake_run):
+            result = _check_conflicts("/fake/path", "koan/some-branch")
+        assert result is None
+
+    def test_returns_true_on_conflict(self):
+        """When merge-tree output contains conflict markers, return True."""
+        call_count = [0]
+
+        def fake_run(*args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:  # merge-base
+                return SimpleNamespace(returncode=0, stdout="abc123\n", stderr="")
+            # merge-tree
+            return SimpleNamespace(returncode=0, stdout="<<<<<<< \nsome conflict\n>>>>>>>\n", stderr="")
+
+        with patch("subprocess.run", side_effect=fake_run):
+            result = _check_conflicts("/fake/path", "koan/some-branch")
+        assert result is True
+
+    def test_returns_false_on_clean_merge(self):
+        """When merge-tree output has no conflict markers, return False."""
+        call_count = [0]
+
+        def fake_run(*args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:  # merge-base
+                return SimpleNamespace(returncode=0, stdout="abc123\n", stderr="")
+            # merge-tree
+            return SimpleNamespace(returncode=0, stdout="clean merge output\n", stderr="")
+
+        with patch("subprocess.run", side_effect=fake_run):
+            result = _check_conflicts("/fake/path", "koan/some-branch")
+        assert result is False
 
 
 # ---------------------------------------------------------------------------
