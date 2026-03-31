@@ -20,10 +20,13 @@ are automatically surfaced to the agent without additional wiring.
 
 import hashlib
 import json
+import logging
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
+
+log = logging.getLogger(__name__)
 
 
 def fetch_pr_reviews(
@@ -132,7 +135,7 @@ def _fetch_reviews_for_pr(project_path: str, pr_number: int) -> List[dict]:
                 try:
                     reviews.append(json.loads(line))
                 except json.JSONDecodeError:
-                    pass
+                    log.warning("Malformed JSON in review data for PR #%d: %s", pr_number, line)
         return reviews
     except Exception as e:
         print(f"[pr_review_learning] Reviews fetch failed for #{pr_number}: {e}",
@@ -160,7 +163,7 @@ def _fetch_review_comments_for_pr(project_path: str, pr_number: int) -> List[dic
                 try:
                     comments.append(json.loads(line))
                 except json.JSONDecodeError:
-                    pass
+                    log.warning("Malformed JSON in review comment for PR #%d: %s", pr_number, line)
         return comments
     except Exception as e:
         print(f"[pr_review_learning] Comments fetch failed for #{pr_number}: {e}",

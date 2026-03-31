@@ -10,6 +10,8 @@ import pytest
 from app.pr_review_learning import (
     _append_lessons_to_learnings,
     _compute_review_hash,
+    _fetch_review_comments_for_pr,
+    _fetch_reviews_for_pr,
     _is_cache_fresh,
     _parse_iso,
     _write_cache,
@@ -366,6 +368,43 @@ class TestFetchPrReviews:
         with patch.dict("sys.modules", {"app.github": None}):
             result = fetch_pr_reviews("/fake/path")
             assert result == []
+
+
+# ─── _fetch_reviews_for_pr / _fetch_review_comments_for_pr warnings ─────
+
+
+class TestFetchReviewsWarnsOnMalformedJson:
+    """Malformed gh --jq output should log a warning, not be silently discarded."""
+
+    @patch("app.github.run_gh")
+    def test_malformed_review_line_logs_warning(self, mock_gh, caplog):
+        good = json.dumps({"state": "APPROVED", "body": "lgtm", "user": "r"})
+        mock_gh.return_value = f"{good}\nNOT-JSON\n"
+
+        import logging
+        logger = logging.getLogger("app.pr_review_learning")
+        logger.addHandler(logging.NullHandler())
+        with caplog.at_level(logging.DEBUG, logger="app.pr_review_learning"):
+            result = _fetch_reviews_for_pr("/fake", 42)
+
+        assert len(result) == 1  # good line parsed
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("PR #42" in r.message for r in warnings)
+
+    @patch("app.github.run_gh")
+    def test_malformed_comment_line_logs_warning(self, mock_gh, caplog):
+        good = json.dumps({"body": "fix this", "path": "a.py", "user": "r"})
+        mock_gh.return_value = f"{good}\n{{broken\n"
+
+        import logging
+        logger = logging.getLogger("app.pr_review_learning")
+        logger.addHandler(logging.NullHandler())
+        with caplog.at_level(logging.DEBUG, logger="app.pr_review_learning"):
+            result = _fetch_review_comments_for_pr("/fake", 7)
+
+        assert len(result) == 1
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("PR #7" in r.message for r in warnings)
 
 
 # ─── learn_from_reviews (integration) ────────────────────────────────────
