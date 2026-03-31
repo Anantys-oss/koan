@@ -269,11 +269,9 @@ def _read_pending_content(instance_dir: str) -> str:
     """Read pending.md content before archival for session classification."""
     pending_path = Path(instance_dir) / "journal" / "pending.md"
     try:
-        if pending_path.exists():
-            return pending_path.read_text()
+        return pending_path.read_text()
     except (OSError, FileNotFoundError):
-        pass
-    return ""
+        return ""
 
 
 def _read_stdout_summary(stdout_file: str, max_chars: int = 2000) -> str:
@@ -366,14 +364,9 @@ def archive_pending(instance_dir: str, project_name: str, run_num: int) -> bool:
         True if pending.md was archived, False if it didn't exist.
     """
     pending_path = Path(instance_dir) / "journal" / "pending.md"
-    if not pending_path.exists():
-        return False
-
-    # Read pending content — guard against file disappearing between
-    # exists() check and read (TOCTOU race with the agent's own cleanup).
     try:
         pending_content = pending_path.read_text()
-    except FileNotFoundError:
+    except (OSError, FileNotFoundError):
         return False
 
     # Append pending content to daily journal (with file locking)
