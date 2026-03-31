@@ -49,24 +49,24 @@ def skill_dir():
 class TestFetchUpstreamTarget:
     def test_upstream_preferred(self):
         """upstream is tried first (source-of-truth in fork setups)."""
-        with patch("app.recreate_pr._run_git") as mock_git:
+        with patch("app.recreate_pr._fetch_branch") as mock_fetch:
             result = _fetch_upstream_target("main", "/project")
             assert result == "upstream"
-            mock_git.assert_called_once_with(
-                ["git", "fetch", "upstream", "main"], cwd="/project"
+            mock_fetch.assert_called_once_with(
+                "upstream", "main", cwd="/project",
             )
 
     def test_falls_back_to_origin(self):
         """When upstream fails, falls back to origin."""
-        with patch("app.recreate_pr._run_git") as mock_git:
-            mock_git.side_effect = [RuntimeError("no upstream"), None]
+        with patch("app.recreate_pr._fetch_branch") as mock_fetch:
+            mock_fetch.side_effect = [RuntimeError("no upstream"), None]
             result = _fetch_upstream_target("main", "/project")
             assert result == "origin"
-            assert mock_git.call_count == 2
+            assert mock_fetch.call_count == 2
 
     def test_both_fail_returns_none(self):
-        with patch("app.recreate_pr._run_git") as mock_git:
-            mock_git.side_effect = RuntimeError("fail")
+        with patch("app.recreate_pr._fetch_branch") as mock_fetch:
+            mock_fetch.side_effect = RuntimeError("fail")
             result = _fetch_upstream_target("main", "/project")
             assert result is None
 

@@ -319,6 +319,7 @@ class TestSquashRunner:
              patch("app.squash_pr._get_current_branch", return_value="main"), \
              patch("app.squash_pr._checkout_pr_branch", return_value="origin"), \
              patch("app.squash_pr._run_git", return_value=""), \
+             patch("app.squash_pr._fetch_branch", return_value=""), \
              patch("app.squash_pr._count_commits_since_base", return_value=1), \
              patch("app.squash_pr._safe_checkout"), \
              patch("app.squash_pr._find_remote_for_repo", return_value="origin"):

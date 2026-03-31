@@ -40,6 +40,21 @@ def _run_git(cmd: list, cwd: str = None, timeout: int = 60) -> str:
 _REBASE_EXCEPTIONS = (RuntimeError, subprocess.TimeoutExpired, OSError)
 
 
+def _fetch_branch(remote: str, branch: str, cwd: str = None, timeout: int = 60) -> str:
+    """Fetch a branch using an explicit refspec to guarantee tracking ref update.
+
+    ``git fetch <remote> <branch>`` fetches objects but does NOT update
+    ``refs/remotes/<remote>/<branch>`` — it only writes to FETCH_HEAD.
+    A subsequent ``git checkout -B branch remote/branch`` then uses the
+    **stale** tracking ref instead of the freshly fetched state.
+
+    Using an explicit refspec ``+refs/heads/X:refs/remotes/R/X`` ensures
+    the remote tracking ref is always up-to-date after fetch.
+    """
+    refspec = f"+refs/heads/{branch}:refs/remotes/{remote}/{branch}"
+    return _run_git(["git", "fetch", remote, refspec], cwd=cwd, timeout=timeout)
+
+
 def _abort_rebase_safely(project_path: str) -> None:
     """Abort a rebase in progress, ignoring errors."""
     try:
@@ -75,7 +90,7 @@ def _rebase_onto_target(
     """
     for remote in _ordered_remotes(preferred_remote):
         try:
-            _run_git(["git", "fetch", remote, base], cwd=project_path)
+            _fetch_branch(remote, base, cwd=project_path)
         except _REBASE_EXCEPTIONS as e:
             print(f"[claude_step] Fetch {remote}/{base} failed: {e}", file=sys.stderr)
             continue
@@ -84,7 +99,7 @@ def _rebase_onto_target(
         # replay to only the PR's commits.
         if head_remote and head_remote != remote:
             try:
-                _run_git(["git", "fetch", head_remote, base], cwd=project_path)
+                _fetch_branch(head_remote, base, cwd=project_path)
                 _run_git(
                     ["git", "rebase", "--onto", f"{remote}/{base}",
                      f"{head_remote}/{base}", "--autostash"],

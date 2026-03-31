@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from app.claude_step import (
+    _fetch_branch,
     _get_current_branch,
     _run_git,
     _safe_checkout,
@@ -244,12 +245,12 @@ def run_squash(
     # Fetch the base branch to get an accurate merge-base
     effective_remote = base_remote or fetch_remote or "origin"
     try:
-        _run_git(["git", "fetch", effective_remote, base], cwd=project_path)
+        _fetch_branch(effective_remote, base, cwd=project_path)
     except Exception as e_fetch:
         print(f"[squash_pr] fetch base from {effective_remote} failed: {e_fetch}", file=sys.stderr)
         # Try origin as fallback
         try:
-            _run_git(["git", "fetch", "origin", base], cwd=project_path)
+            _fetch_branch("origin", base, cwd=project_path)
             effective_remote = "origin"
         except Exception as e:
             _safe_checkout(original_branch, project_path)
@@ -373,7 +374,7 @@ def _checkout_pr_branch(
 
     for remote in remotes:
         try:
-            _run_git(["git", "fetch", remote, branch], cwd=project_path)
+            _fetch_branch(remote, branch, cwd=project_path)
             _run_git(
                 ["git", "checkout", "-B", branch, f"{remote}/{branch}"],
                 cwd=project_path,
@@ -395,7 +396,7 @@ def _checkout_pr_branch(
         except Exception as e:
             print(f"[squash_pr] add fork remote failed: {e}", file=sys.stderr)
         try:
-            _run_git(["git", "fetch", fork_remote, branch], cwd=project_path)
+            _fetch_branch(fork_remote, branch, cwd=project_path)
             _run_git(
                 ["git", "checkout", "-B", branch, f"{fork_remote}/{branch}"],
                 cwd=project_path,
