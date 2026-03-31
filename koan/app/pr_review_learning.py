@@ -296,6 +296,72 @@ def _get_cache_path(instance_dir: str) -> Path:
     return Path(instance_dir) / ".koan-review-learning-hash"
 
 
+# ─── Consecutive failure tracking ───────────────────────────────────────
+
+_FAILURE_COUNTER_FILE = ".koan-pr-review-analysis-failures"
+_FAILURE_ALERT_THRESHOLD = 3
+
+
+def _get_failure_counter_path(instance_dir: str) -> Path:
+    """Get the path to the analysis failure counter file."""
+    return Path(instance_dir) / _FAILURE_COUNTER_FILE
+
+
+def _read_failure_count(instance_dir: str) -> int:
+    """Read the current consecutive failure count. Returns 0 if no file."""
+    path = _get_failure_counter_path(instance_dir)
+    if not path.exists():
+        return 0
+    try:
+        return int(path.read_text().strip())
+    except (OSError, ValueError):
+        return 0
+
+
+def _increment_failure_count(instance_dir: str) -> int:
+    """Increment and persist the consecutive failure counter. Returns new count."""
+    count = _read_failure_count(instance_dir) + 1
+    try:
+        from app.utils import atomic_write
+        atomic_write(_get_failure_counter_path(instance_dir), str(count) + "\n")
+    except OSError as e:
+        print(f"[pr_review_learning] Failure counter write failed: {e}",
+              file=sys.stderr)
+    return count
+
+
+def _reset_failure_count(instance_dir: str) -> None:
+    """Reset the failure counter (on successful analysis)."""
+    path = _get_failure_counter_path(instance_dir)
+    if path.exists():
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
+def _notify_analysis_failures(instance_dir: str, count: int) -> None:
+    """Send outbox alert when consecutive failures reach threshold."""
+    if count < _FAILURE_ALERT_THRESHOLD:
+        return
+    # Only alert on exact threshold to avoid spamming every subsequent failure
+    if count != _FAILURE_ALERT_THRESHOLD:
+        return
+    try:
+        from app.utils import append_to_outbox
+        from app.notify import NotificationPriority
+        outbox_path = Path(instance_dir) / "outbox.md"
+        msg = (
+            f"⚠️ PR review learning has failed {count} times in a row — "
+            f"learnings have stopped accumulating. "
+            f"Possible causes: CLI quota, API errors, or no actionable review content.\n"
+        )
+        append_to_outbox(outbox_path, msg, priority=NotificationPriority.WARNING)
+    except Exception as e:
+        print(f"[pr_review_learning] Failed to send failure alert: {e}",
+              file=sys.stderr)
+
+
 def _is_cache_fresh(instance_dir: str, current_hash: str) -> bool:
     """Check if the cached hash matches (no new reviews to process)."""
     cache_path = _get_cache_path(instance_dir)
@@ -427,7 +493,12 @@ def learn_from_reviews(
     result["analyzed"] = True
     if not lessons_text:
         result["skipped_reason"] = "empty_analysis"
+        count = _increment_failure_count(instance_dir)
+        _notify_analysis_failures(instance_dir, count)
         return result
+
+    # Analysis succeeded — reset failure counter
+    _reset_failure_count(instance_dir)
 
     # Persist to learnings.md
     added = _append_lessons_to_learnings(instance_dir, project_name, lessons_text)

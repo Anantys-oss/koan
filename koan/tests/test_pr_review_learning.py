@@ -12,9 +12,14 @@ from app.pr_review_learning import (
     _compute_review_hash,
     _fetch_review_comments_for_pr,
     _fetch_reviews_for_pr,
+    _increment_failure_count,
     _is_cache_fresh,
+    _notify_analysis_failures,
     _parse_iso,
+    _read_failure_count,
+    _reset_failure_count,
     _write_cache,
+    _FAILURE_ALERT_THRESHOLD,
     analyze_reviews_with_cli,
     fetch_pr_reviews,
     format_reviews_for_analysis,
@@ -482,3 +487,109 @@ class TestLearnFromReviews:
         # Cache must NOT be written on empty analysis (API failure),
         # so future retries can re-attempt the analysis
         mock_cache_write.assert_not_called()
+
+    @patch("app.pr_review_learning._notify_analysis_failures")
+    @patch("app.pr_review_learning._increment_failure_count")
+    @patch("app.pr_review_learning._is_cache_fresh")
+    @patch("app.pr_review_learning.analyze_reviews_with_cli")
+    @patch("app.pr_review_learning.fetch_pr_reviews")
+    def test_empty_analysis_increments_failure_counter(
+        self, mock_fetch, mock_analyze, mock_cache_check,
+        mock_increment, mock_notify,
+    ):
+        mock_fetch.return_value = [
+            {
+                "number": 1, "title": "feat: X", "was_merged": True,
+                "reviews": [{"state": "APPROVED", "body": "ok", "user": "r"}],
+                "review_comments": [],
+            },
+        ]
+        mock_cache_check.return_value = False
+        mock_analyze.return_value = ""
+        mock_increment.return_value = 2
+
+        result = learn_from_reviews("/instance", "proj", "/path")
+        assert result["skipped_reason"] == "empty_analysis"
+        mock_increment.assert_called_once_with("/instance")
+        mock_notify.assert_called_once_with("/instance", 2)
+
+    @patch("app.pr_review_learning._reset_failure_count")
+    @patch("app.pr_review_learning._append_lessons_to_learnings")
+    @patch("app.pr_review_learning._write_cache")
+    @patch("app.pr_review_learning._is_cache_fresh")
+    @patch("app.pr_review_learning.analyze_reviews_with_cli")
+    @patch("app.pr_review_learning.fetch_pr_reviews")
+    def test_successful_analysis_resets_failure_counter(
+        self, mock_fetch, mock_analyze, mock_cache_check,
+        mock_cache_write, mock_append, mock_reset,
+    ):
+        mock_fetch.return_value = [
+            {
+                "number": 1, "title": "feat: X", "was_merged": True,
+                "reviews": [{"state": "APPROVED", "body": "ok", "user": "r"}],
+                "review_comments": [],
+            },
+        ]
+        mock_cache_check.return_value = False
+        mock_analyze.return_value = "- New lesson"
+        mock_append.return_value = 1
+
+        result = learn_from_reviews("/instance", "proj", "/path")
+        assert result["lessons_added"] == 1
+        mock_reset.assert_called_once_with("/instance")
+
+
+# ─── Consecutive failure tracking ───────────────────────────────────────
+
+
+class TestFailureCounter:
+    def test_read_returns_zero_when_no_file(self, tmp_path):
+        assert _read_failure_count(str(tmp_path)) == 0
+
+    def test_increment_from_zero(self, tmp_path):
+        count = _increment_failure_count(str(tmp_path))
+        assert count == 1
+        assert _read_failure_count(str(tmp_path)) == 1
+
+    def test_increment_accumulates(self, tmp_path):
+        _increment_failure_count(str(tmp_path))
+        _increment_failure_count(str(tmp_path))
+        count = _increment_failure_count(str(tmp_path))
+        assert count == 3
+        assert _read_failure_count(str(tmp_path)) == 3
+
+    def test_reset_removes_file(self, tmp_path):
+        _increment_failure_count(str(tmp_path))
+        _increment_failure_count(str(tmp_path))
+        _reset_failure_count(str(tmp_path))
+        assert _read_failure_count(str(tmp_path)) == 0
+
+    def test_reset_noop_when_no_file(self, tmp_path):
+        # Should not raise
+        _reset_failure_count(str(tmp_path))
+
+    def test_read_handles_corrupt_file(self, tmp_path):
+        counter_path = tmp_path / ".koan-pr-review-analysis-failures"
+        counter_path.write_text("not-a-number\n")
+        assert _read_failure_count(str(tmp_path)) == 0
+
+
+class TestNotifyAnalysisFailures:
+    def test_no_alert_below_threshold(self):
+        with patch("app.utils.append_to_outbox") as mock_append:
+            _notify_analysis_failures("/instance", _FAILURE_ALERT_THRESHOLD - 1)
+            mock_append.assert_not_called()
+
+    def test_alert_at_threshold(self, tmp_path):
+        with patch("app.utils.append_to_outbox") as mock_append:
+            _notify_analysis_failures(str(tmp_path), _FAILURE_ALERT_THRESHOLD)
+            mock_append.assert_called_once()
+            msg = mock_append.call_args[0][1]
+            assert "failed" in msg
+            assert str(_FAILURE_ALERT_THRESHOLD) in msg
+
+    def test_no_alert_above_threshold(self):
+        """Only alert at exact threshold to avoid spamming."""
+        with patch("app.utils.append_to_outbox") as mock_append:
+            _notify_analysis_failures("/instance", _FAILURE_ALERT_THRESHOLD + 1)
+            mock_append.assert_not_called()
