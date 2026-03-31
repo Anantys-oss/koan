@@ -187,6 +187,9 @@ def run_ci_check_and_fix(pr_url: str, project_path: str) -> Tuple[bool, str]:
             actions_log=actions_log,
             notify_fn=notify_stderr,
         )
+    except Exception as e:
+        actions_log.append(f"CI check/fix crashed: {e}")
+        ci_section = f"CI check failed with error: {e}"
     finally:
         _safe_checkout(original_branch, project_path)
 
@@ -218,7 +221,12 @@ def main(argv=None):
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    success, summary = run_ci_check_and_fix(cli_args.url, cli_args.project_path)
+    try:
+        success, summary = run_ci_check_and_fix(cli_args.url, cli_args.project_path)
+    except Exception as exc:
+        print(f"[ci_check] Unexpected error: {exc}", file=sys.stderr)
+        success = False
+        summary = f"CI check crashed: {exc}"
 
     # Output JSON to stdout for mission_runner consumption
     result = {
