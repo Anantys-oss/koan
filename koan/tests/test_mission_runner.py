@@ -2262,7 +2262,11 @@ class TestPipelineTracker:
         result = tracker.run_step("bad_step", failing)
         assert result is None
         assert tracker.steps["bad_step"]["status"] == "fail"
-        assert "boom" in tracker.steps["bad_step"]["detail"]
+        detail = tracker.steps["bad_step"]["detail"]
+        assert "boom" in detail
+        # Elapsed time is included in failure detail
+        assert detail.startswith("failed after ")
+        assert "s: " in detail
 
     def test_run_step_timeout(self):
         from app.mission_runner import _PipelineTracker

@@ -85,7 +85,8 @@ class _PipelineTracker:
             self.record(step, "success", f"{elapsed:.1f}s")
             return result
         except Exception as e:
-            self.record(step, "fail", str(e))
+            elapsed = time.monotonic() - t0
+            self.record(step, "fail", f"failed after {elapsed:.0f}s: {e}")
             print(f"[mission_runner] {step} failed: {e}", file=sys.stderr)
             return None
 
