@@ -195,8 +195,8 @@ class TestCheckoutPrBranch:
 
         assert result == "upstream"
         fetch_cmds = [c for c in calls if c[:2] == ["git", "fetch"]]
-        assert ["git", "fetch", "origin", "feat/upstream-only"] in fetch_cmds
-        assert ["git", "fetch", "upstream", "feat/upstream-only"] in fetch_cmds
+        assert ["git", "fetch", "origin", "+refs/heads/feat/upstream-only:refs/remotes/origin/feat/upstream-only"] in fetch_cmds
+        assert ["git", "fetch", "upstream", "+refs/heads/feat/upstream-only:refs/remotes/upstream/feat/upstream-only"] in fetch_cmds
 
         # Checkout should use upstream, not origin
         checkout_cmds = [c for c in calls if "checkout" in c]
@@ -229,7 +229,7 @@ class TestCheckoutPrBranch:
         assert result == "myfork"
         fetch_cmds = [c for c in calls if c[:2] == ["git", "fetch"]]
         # head_remote should be tried first
-        assert fetch_cmds[0] == ["git", "fetch", "myfork", "feat/branch"]
+        assert fetch_cmds[0] == ["git", "fetch", "myfork", "+refs/heads/feat/branch:refs/remotes/myfork/feat/branch"]
 
     def test_adds_fork_remote_when_no_match(self):
         """When branch not found on any known remote, adds fork remote."""
@@ -1529,8 +1529,8 @@ class TestRebaseOntoTarget_OntoMode:
         assert result == "upstream"
         # Should have fetched both remotes' base branches
         fetch_cmds = [c for c in calls if c[:2] == ["git", "fetch"]]
-        assert ["git", "fetch", "upstream", "main"] in fetch_cmds
-        assert ["git", "fetch", "origin", "main"] in fetch_cmds
+        assert ["git", "fetch", "upstream", "+refs/heads/main:refs/remotes/upstream/main"] in fetch_cmds
+        assert ["git", "fetch", "origin", "+refs/heads/main:refs/remotes/origin/main"] in fetch_cmds
         # Should use --onto
         rebase_cmds = [c for c in calls if "rebase" in c and "--abort" not in c]
         assert len(rebase_cmds) == 1
@@ -1601,7 +1601,7 @@ class TestRebaseOntoTarget_OntoMode:
         def mock_run(cmd, **kwargs):
             calls.append(cmd)
             # head_remote fetch fails
-            if cmd[:3] == ["git", "fetch", "origin"] and "main" in cmd:
+            if cmd[:3] == ["git", "fetch", "origin"] and any("main" in arg for arg in cmd):
                 raise RuntimeError("fetch failed")
             return MagicMock(returncode=0, stdout="", stderr="")
 

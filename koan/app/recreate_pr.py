@@ -20,6 +20,7 @@ from typing import List, Optional, Tuple
 
 from app.claude_step import (
     _build_pr_prompt,
+    _fetch_branch,
     _get_current_branch,
     _get_diffstat,
     _push_with_pr_fallback,
@@ -225,7 +226,7 @@ def _fetch_upstream_target(base: str, project_path: str) -> Optional[str]:
     """
     for remote in ("upstream", "origin"):
         try:
-            _run_git(["git", "fetch", remote, base], cwd=project_path)
+            _fetch_branch(remote, base, cwd=project_path)
             return remote
         except (RuntimeError, OSError):
             continue

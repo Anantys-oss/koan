@@ -23,6 +23,7 @@ from typing import List, Optional, Tuple
 
 from app.claude_step import (
     _build_pr_prompt,
+    _fetch_branch,
     _fetch_failed_logs,
     _get_current_branch,
     _get_diffstat,
@@ -606,7 +607,7 @@ def _rebase_with_conflict_resolution(
     """
     for remote in _ordered_remotes(preferred_remote):
         try:
-            _run_git(["git", "fetch", remote, base], cwd=project_path)
+            _fetch_branch(remote, base, cwd=project_path)
         except Exception as e:
             print(f"[rebase_pr] fetch {remote}/{base} failed: {e}", file=sys.stderr)
             continue
@@ -616,7 +617,7 @@ def _rebase_with_conflict_resolution(
         # history when the fork has diverged).
         if head_remote and head_remote != remote:
             try:
-                _run_git(["git", "fetch", head_remote, base], cwd=project_path)
+                _fetch_branch(head_remote, base, cwd=project_path)
                 _run_git(
                     ["git", "rebase", "--onto", f"{remote}/{base}",
                      f"{head_remote}/{base}", "--autostash"],
@@ -1140,7 +1141,7 @@ def _checkout_pr_branch(
 
     for remote in remotes:
         try:
-            _run_git(["git", "fetch", remote, branch], cwd=project_path)
+            _fetch_branch(remote, branch, cwd=project_path)
             # Success — use this remote
             fetch_remote = remote
             break
@@ -1162,7 +1163,7 @@ def _checkout_pr_branch(
                 # Remote may already exist from a previous run
                 print(f"[rebase_pr] remote add {fork_remote} failed (may already exist): {e}", file=sys.stderr)
             try:
-                _run_git(["git", "fetch", fork_remote, branch], cwd=project_path)
+                _fetch_branch(fork_remote, branch, cwd=project_path)
                 fetch_remote = fork_remote
             except Exception:
                 raise RuntimeError(
