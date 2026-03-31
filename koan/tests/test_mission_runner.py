@@ -929,6 +929,16 @@ class TestReadPendingContent:
             content = _read_pending_content(str(tmp_path))
         assert content == ""
 
+    def test_no_toctou_race_on_missing_file(self, tmp_path):
+        """File gone before read_text — handled without exists() check."""
+        from app.mission_runner import _read_pending_content
+
+        journal_dir = tmp_path / "journal"
+        journal_dir.mkdir()
+        # No pending.md created — read_text hits FileNotFoundError directly
+        content = _read_pending_content(str(tmp_path))
+        assert content == ""
+
 
 class TestReadStdoutSummary:
     """Test _read_stdout_summary — fallback content for session classification."""
