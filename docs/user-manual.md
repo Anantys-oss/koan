@@ -491,6 +491,19 @@ review_dispatch:
 - Reviewer leaves comments on a PR → next `/check` run creates a mission to address them
 </details>
 
+**`/ci_check`** — Check and fix CI failures on a GitHub PR using Claude.
+
+- **Usage:** `/ci_check <pr-url>`
+
+Usually auto-triggered when CI fails after a `/rebase`, but can also be invoked manually. Fetches failure logs, checks out the PR branch, and runs Claude to attempt a fix. If the fix produces a commit, it force-pushes and re-enqueues the PR for CI monitoring.
+
+<details>
+<summary>Use cases</summary>
+
+- `/ci_check https://github.com/org/repo/pull/42` — Attempt to fix CI failures on a PR
+- Auto-injected by the CI queue when a post-rebase CI run fails
+</details>
+
 **`/gh_request`** — Route a natural-language GitHub request to the appropriate action.
 
 - **Usage:** `/gh_request <github-url> <request text>`
@@ -1283,6 +1296,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/pr <PR>` | — | I | Review and update a GitHub PR |
 | `/branches [project]` | `/br`, `/prs` | B | List koan branches + PRs with merge order |
 | `/check <url>` | `/inspect` | I | Run project health checks on a PR/issue |
+| `/ci_check <PR>` | — | I | Check and fix CI failures on a PR |
 | `/gh_request <url> <text>` | — | I | Route natural-language GitHub request to the right skill |
 | `/claudemd [project]` | `/claude`, `/claude.md`, `/claude_md` | I | Refresh a project's CLAUDE.md |
 | `/gha_audit [project]` | `/gha` | I | Audit GitHub Actions for security issues |

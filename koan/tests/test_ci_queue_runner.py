@@ -1,4 +1,4 @@
-"""Tests for ci_queue_runner — focuses on error handling in run_ci_check_and_fix and main()."""
+"""Tests for ci_queue_runner — CI queue drain, error handling, and fix pipeline."""
 
 import json
 from unittest.mock import MagicMock, patch
@@ -13,9 +13,12 @@ PROJECT_PATH = "/tmp/test-project"
 @pytest.fixture
 def _mock_pr_context():
     """Patch external dependencies so run_ci_check_and_fix can run without real git/GitHub."""
-    fake_context = {"branch": "fix-branch", "base": "main"}
+    fake_context = {"branch": "fix-branch", "base": "main", "url": PR_URL}
     with (
         patch("app.rebase_pr.fetch_pr_context", return_value=fake_context),
+        patch("app.ci_queue_runner.check_ci_status", return_value=("failure", 123)),
+        patch("app.claude_step._fetch_failed_logs", return_value="Error: test failed"),
+        patch("app.rebase_pr._check_pr_state", return_value=("OPEN", "MERGEABLE")),
         patch("app.claude_step._get_current_branch", return_value="main"),
         patch("app.claude_step._run_git"),
         patch("app.claude_step._safe_checkout"),
@@ -24,36 +27,30 @@ def _mock_pr_context():
 
 
 class TestRunCiCheckAndFixErrorHandling:
-    """Verify that exceptions from _run_ci_check_and_fix are caught, not propagated.
-
-    Before the fix, run_ci_check_and_fix() used try/finally (no except) around
-    _run_ci_check_and_fix(). Any exception from CI polling, git ops, or Claude
-    CLI would propagate up, crash the subprocess, and produce no JSON output —
-    causing the mission runner to see exit code 1 with no parseable result.
-    """
+    """Verify that exceptions in the fix pipeline are caught, not propagated."""
 
     @pytest.mark.usefixtures("_mock_pr_context")
-    def test_exception_in_ci_fix_returns_failure_tuple(self):
-        """When _run_ci_check_and_fix raises, run_ci_check_and_fix returns (False, summary)."""
+    def test_exception_in_fix_returns_failure_tuple(self):
+        """When _attempt_ci_fixes raises, run_ci_check_and_fix returns (False, summary)."""
         from app.ci_queue_runner import run_ci_check_and_fix
 
         with patch(
-            "app.rebase_pr._run_ci_check_and_fix",
-            side_effect=RuntimeError("gh run list failed"),
+            "app.ci_queue_runner._attempt_ci_fixes",
+            side_effect=RuntimeError("Claude crashed"),
         ):
             success, summary = run_ci_check_and_fix(PR_URL, PROJECT_PATH)
 
         assert success is False
-        assert "gh run list failed" in summary
+        assert "Claude crashed" in summary
 
     @pytest.mark.usefixtures("_mock_pr_context")
-    def test_exception_in_ci_fix_still_restores_branch(self):
+    def test_exception_in_fix_still_restores_branch(self):
         """After a crash, _safe_checkout is still called to restore the original branch."""
         from app.ci_queue_runner import run_ci_check_and_fix
 
         with (
             patch(
-                "app.rebase_pr._run_ci_check_and_fix",
+                "app.ci_queue_runner._attempt_ci_fixes",
                 side_effect=RuntimeError("boom"),
             ),
             patch("app.claude_step._safe_checkout") as mock_checkout,
@@ -61,6 +58,52 @@ class TestRunCiCheckAndFixErrorHandling:
             run_ci_check_and_fix(PR_URL, PROJECT_PATH)
 
         mock_checkout.assert_called_once_with("main", PROJECT_PATH)
+
+    def test_ci_already_passing_returns_success(self):
+        """If CI is already passing, return success without attempting fixes."""
+        from app.ci_queue_runner import run_ci_check_and_fix
+
+        fake_context = {"branch": "fix-branch", "base": "main"}
+        with (
+            patch("app.rebase_pr.fetch_pr_context", return_value=fake_context),
+            patch("app.ci_queue_runner.check_ci_status", return_value=("success", 123)),
+        ):
+            success, summary = run_ci_check_and_fix(PR_URL, PROJECT_PATH)
+
+        assert success is True
+        assert "already passing" in summary
+
+    def test_pr_already_merged_returns_success(self):
+        """If PR is already merged, skip CI fix."""
+        from app.ci_queue_runner import run_ci_check_and_fix
+
+        fake_context = {"branch": "fix-branch", "base": "main"}
+        with (
+            patch("app.rebase_pr.fetch_pr_context", return_value=fake_context),
+            patch("app.ci_queue_runner.check_ci_status", return_value=("failure", 123)),
+            patch("app.claude_step._fetch_failed_logs", return_value="Error: test failed"),
+            patch("app.rebase_pr._check_pr_state", return_value=("MERGED", "UNKNOWN")),
+        ):
+            success, summary = run_ci_check_and_fix(PR_URL, PROJECT_PATH)
+
+        assert success is True
+        assert "merged" in summary.lower()
+
+    def test_pr_with_conflicts_returns_failure(self):
+        """If PR has merge conflicts, skip CI fix."""
+        from app.ci_queue_runner import run_ci_check_and_fix
+
+        fake_context = {"branch": "fix-branch", "base": "main"}
+        with (
+            patch("app.rebase_pr.fetch_pr_context", return_value=fake_context),
+            patch("app.ci_queue_runner.check_ci_status", return_value=("failure", 123)),
+            patch("app.claude_step._fetch_failed_logs", return_value="Error: test failed"),
+            patch("app.rebase_pr._check_pr_state", return_value=("OPEN", "CONFLICTING")),
+        ):
+            success, summary = run_ci_check_and_fix(PR_URL, PROJECT_PATH)
+
+        assert success is False
+        assert "conflicts" in summary.lower()
 
 
 class TestMainErrorHandling:
@@ -159,3 +202,64 @@ class TestDrainOneErrorHandling:
 
         assert "failed" in result.lower()
         mock_inject.assert_called_once_with("/tmp/instance", PR_URL, entry)
+
+
+class TestAttemptCiFixes:
+    """Verify the fix pipeline attempts Claude-based fixes correctly."""
+
+    def test_claude_produces_no_changes_gives_up(self):
+        """If Claude produces no changes, the pipeline stops."""
+        from app.ci_queue_runner import _attempt_ci_fixes
+
+        with (
+            patch("app.claude_step._run_git", return_value=""),
+            patch("app.rebase_pr.truncate_text", side_effect=lambda t, n: t),
+            patch("app.rebase_pr._build_ci_fix_prompt", return_value="fix this"),
+            patch("app.claude_step.run_claude_step", return_value=False),
+        ):
+            actions_log = []
+            result = _attempt_ci_fixes(
+                branch="fix-branch",
+                base="main",
+                full_repo="owner/repo",
+                pr_number="42",
+                pr_url=PR_URL,
+                project_path=PROJECT_PATH,
+                context={"url": PR_URL},
+                ci_logs="Error: test failed",
+                actions_log=actions_log,
+                max_attempts=2,
+            )
+
+        assert result is False
+        assert any("no changes" in a.lower() for a in actions_log)
+
+    def test_successful_fix_and_push(self):
+        """If Claude fixes and push succeeds, reports success when CI is pending."""
+        from app.ci_queue_runner import _attempt_ci_fixes
+
+        with (
+            patch("app.claude_step._run_git", return_value=""),
+            patch("app.rebase_pr.truncate_text", side_effect=lambda t, n: t),
+            patch("app.rebase_pr._build_ci_fix_prompt", return_value="fix this"),
+            patch("app.claude_step.run_claude_step", return_value=True),
+            patch("app.rebase_pr._force_push"),
+            patch("app.ci_queue_runner.check_ci_status", return_value=("pending", 789)),
+            patch("time.sleep"),
+        ):
+            actions_log = []
+            result = _attempt_ci_fixes(
+                branch="fix-branch",
+                base="main",
+                full_repo="owner/repo",
+                pr_number="42",
+                pr_url=PR_URL,
+                project_path=PROJECT_PATH,
+                context={"url": PR_URL},
+                ci_logs="Error: test failed",
+                actions_log=actions_log,
+                max_attempts=2,
+            )
+
+        assert result is True
+        assert any("pushed" in a.lower() for a in actions_log)
