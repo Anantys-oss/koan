@@ -247,7 +247,13 @@ def run_claude_step(
             actions_log.append(success_label)
             return True
     elif failure_label:
-        actions_log.append(f"{failure_label}: {result['error'][:200]}")
+        error_detail = result['error'][:200]
+        # Claude CLI often reports errors via stdout, not stderr.
+        # Include stdout snippet when stderr is empty to aid debugging.
+        if "no stderr" in error_detail and result.get("output"):
+            stdout_snippet = result["output"][-300:]
+            error_detail = f"{error_detail} | stdout: {stdout_snippet}"
+        actions_log.append(f"{failure_label}: {error_detail}")
     return False
 
 
@@ -434,6 +440,7 @@ def _build_pr_prompt(
     prompt_name: str,
     context: dict,
     skill_dir: Optional[Path] = None,
+    max_diff_chars: int = 80_000,
 ) -> str:
     """Build a prompt for Claude to process PR feedback.
 
@@ -444,13 +451,24 @@ def _build_pr_prompt(
         prompt_name: Prompt template name (e.g. "rebase", "recreate").
         context: PR context dict from fetch_pr_context().
         skill_dir: Optional skill directory for prompt resolution.
+        max_diff_chars: Maximum characters for the diff section to prevent
+            context window overflow on large PRs.
     """
+    diff = context.get("diff", "")
+    if len(diff) > max_diff_chars:
+        diff = diff[:max_diff_chars] + "\n\n... (diff truncated — too large for context window)"
+        print(
+            f"[claude_step] Diff truncated from {len(context.get('diff', ''))} "
+            f"to {max_diff_chars} chars",
+            file=sys.stderr,
+        )
+
     kwargs = dict(
         TITLE=context["title"],
         BODY=context.get("body", ""),
         BRANCH=context["branch"],
         BASE=context["base"],
-        DIFF=context.get("diff", ""),
+        DIFF=diff,
         REVIEW_COMMENTS=context.get("review_comments", ""),
         REVIEWS=context.get("reviews", ""),
         ISSUE_COMMENTS=context.get("issue_comments", ""),
