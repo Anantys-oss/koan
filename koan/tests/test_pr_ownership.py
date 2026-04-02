@@ -63,7 +63,7 @@ class TestCiCheckOwnership:
     def test_rejects_pr_from_other_instance(self, handler, ctx):
         ctx.args = "https://github.com/sukria/koan/pull/55"
         with _project_patches()[0], _project_patches()[1], \
-             patch.object(handler, "is_own_pr",
+             patch("app.github_skill_helpers.is_own_pr",
                           return_value=(False, "other-instance/branch")), \
              patch("app.utils.insert_pending_mission") as mock_insert:
             result = handler.handle(ctx)
@@ -74,7 +74,7 @@ class TestCiCheckOwnership:
     def test_accepts_pr_from_own_instance(self, handler, ctx):
         ctx.args = "https://github.com/sukria/koan/pull/55"
         with _project_patches()[0], _project_patches()[1], \
-             patch.object(handler, "is_own_pr",
+             patch("app.github_skill_helpers.is_own_pr",
                           return_value=(True, "koan/fix-ci")), \
              patch("app.utils.insert_pending_mission") as mock_insert:
             result = handler.handle(ctx)
@@ -128,7 +128,7 @@ class TestCheckRunnerOwnership:
                 notify_fn=notify,
             )
             assert success is True
-            assert "not mine" in msg.lower() or "Not my" in msg or "not mine" in msg
+            assert "not mine" in msg.lower()
             mock_insert.assert_not_called()
 
     def test_queues_rebase_for_own_pr(self, tmp_path):
