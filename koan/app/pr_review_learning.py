@@ -319,7 +319,11 @@ def _read_failure_count(instance_dir: str) -> int:
 
 
 def _increment_failure_count(instance_dir: str) -> int:
-    """Increment and persist the consecutive failure counter. Returns new count."""
+    """Increment and persist the consecutive failure counter. Returns new count.
+
+    Note: read-modify-write is not atomic, but this is only called from the
+    single-threaded agent loop (learn_from_reviews), so no locking is needed.
+    """
     count = _read_failure_count(instance_dir) + 1
     try:
         from app.utils import atomic_write
@@ -357,7 +361,7 @@ def _notify_analysis_failures(instance_dir: str, count: int) -> None:
             f"Possible causes: CLI quota, API errors, or no actionable review content.\n"
         )
         append_to_outbox(outbox_path, msg, priority=NotificationPriority.WARNING)
-    except Exception as e:
+    except (OSError, ImportError) as e:
         print(f"[pr_review_learning] Failed to send failure alert: {e}",
               file=sys.stderr)
 

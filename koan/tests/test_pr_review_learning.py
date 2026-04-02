@@ -575,9 +575,9 @@ class TestFailureCounter:
 
 
 class TestNotifyAnalysisFailures:
-    def test_no_alert_below_threshold(self):
+    def test_no_alert_below_threshold(self, tmp_path):
         with patch("app.utils.append_to_outbox") as mock_append:
-            _notify_analysis_failures("/instance", _FAILURE_ALERT_THRESHOLD - 1)
+            _notify_analysis_failures(str(tmp_path), _FAILURE_ALERT_THRESHOLD - 1)
             mock_append.assert_not_called()
 
     def test_alert_at_threshold(self, tmp_path):
@@ -588,8 +588,8 @@ class TestNotifyAnalysisFailures:
             assert "failed" in msg
             assert str(_FAILURE_ALERT_THRESHOLD) in msg
 
-    def test_no_alert_above_threshold(self):
+    def test_no_alert_above_threshold(self, tmp_path):
         """Only alert at exact threshold to avoid spamming."""
         with patch("app.utils.append_to_outbox") as mock_append:
-            _notify_analysis_failures("/instance", _FAILURE_ALERT_THRESHOLD + 1)
+            _notify_analysis_failures(str(tmp_path), _FAILURE_ALERT_THRESHOLD + 1)
             mock_append.assert_not_called()
