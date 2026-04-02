@@ -2580,3 +2580,42 @@ class TestCheckSSOFailures:
                 _check_sso_failures()
 
             mock_outbox.assert_not_called()
+
+
+class TestDrainCiQueueDuringSleep:
+    """Verify CI queue is drained during interruptible_sleep."""
+
+    def test_drain_called_during_sleep(self, tmp_path):
+        """drain_one is called during interruptible sleep (throttled)."""
+        import app.loop_manager as lm
+
+        # Reset throttle so our call goes through
+        lm._last_ci_queue_sleep_check = 0
+
+        with patch("app.ci_queue_runner.drain_one", return_value="CI passed for PR #42") as mock_drain:
+            lm._drain_ci_queue_during_sleep(str(tmp_path), 0)
+
+        mock_drain.assert_called_once_with(str(tmp_path))
+
+    def test_drain_throttled(self, tmp_path):
+        """drain_one is NOT called if within the throttle window."""
+        import time
+        import app.loop_manager as lm
+
+        # Set last check to now — should be throttled
+        lm._last_ci_queue_sleep_check = time.monotonic()
+
+        with patch("app.ci_queue_runner.drain_one") as mock_drain:
+            lm._drain_ci_queue_during_sleep(str(tmp_path), 0)
+
+        mock_drain.assert_not_called()
+
+    def test_drain_none_is_silent(self, tmp_path):
+        """When drain_one returns None (queue empty), no error raised."""
+        import app.loop_manager as lm
+
+        lm._last_ci_queue_sleep_check = 0
+
+        with patch("app.ci_queue_runner.drain_one", return_value=None):
+            # Should not raise
+            lm._drain_ci_queue_during_sleep(str(tmp_path), 0)

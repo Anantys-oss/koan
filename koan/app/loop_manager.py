@@ -144,6 +144,35 @@ def format_project_list(projects: list) -> str:
     return "\n".join(f"  \u2022 {name}" for name, _ in sorted(projects))
 
 
+# --- CI queue drain during sleep ---
+
+# Throttle: minimum seconds between CI queue checks during sleep.
+_CI_QUEUE_SLEEP_INTERVAL = 30
+_last_ci_queue_sleep_check: float = 0
+
+
+def _drain_ci_queue_during_sleep(instance_dir: str, elapsed: float):
+    """Drain CI queue during interruptible sleep (throttled).
+
+    Called every ~10s from the sleep loop but only actually checks CI
+    status every _CI_QUEUE_SLEEP_INTERVAL seconds to avoid API spam.
+    """
+    global _last_ci_queue_sleep_check
+
+    now = time.monotonic()
+    if now - _last_ci_queue_sleep_check < _CI_QUEUE_SLEEP_INTERVAL:
+        return
+    _last_ci_queue_sleep_check = now
+
+    try:
+        from app.ci_queue_runner import drain_one
+        msg = drain_one(instance_dir)
+        if msg:
+            log.info("CI queue (sleep): %s", msg)
+    except (ImportError, OSError, ValueError) as e:
+        log.debug("CI queue drain error during sleep: %s", e)
+
+
 # --- Pending.md creation ---
 
 
@@ -975,6 +1004,11 @@ def interruptible_sleep(
         from app.heartbeat import run_stale_mission_check, run_disk_space_check
         run_stale_mission_check(instance_dir)
         run_disk_space_check(koan_root)
+
+        # Drain CI queue (throttled to once per 30s).
+        # Completed CI runs inject missions or log success — detected faster
+        # than waiting for the next full iteration.
+        _drain_ci_queue_during_sleep(instance_dir, elapsed)
 
         # Check GitHub notifications (throttled to once per 60s).
         # Track wall time: API calls can be slow and should count toward elapsed.

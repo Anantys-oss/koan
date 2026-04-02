@@ -317,9 +317,11 @@ def _attempt_ci_fixes(
             return True
 
         if new_status == "pending":
-            # CI is running with our fix — can't wait 10min, report optimistically
-            actions_log.append(f"CI running after fix push (attempt {attempt})")
-            return True  # The fix was pushed; CI result will be picked up by drain_one
+            # CI is running with our fix — re-enqueue so drain_one monitors
+            # the result during interruptible_sleep (~30s checks).
+            _reenqueue_for_monitoring(pr_url, branch, full_repo, pr_number, project_path)
+            actions_log.append(f"CI running after fix push (attempt {attempt}) — re-enqueued for monitoring")
+            return True
 
         # CI already shows failure (unlikely this fast) — get new logs
         if new_run_id:
@@ -327,6 +329,31 @@ def _attempt_ci_fixes(
 
     actions_log.append(f"CI still failing after {max_attempts} fix attempts")
     return False
+
+
+def _reenqueue_for_monitoring(
+    pr_url: str, branch: str, full_repo: str,
+    pr_number: str, project_path: str,
+):
+    """Re-enqueue a PR for CI monitoring after pushing a fix.
+
+    This ensures drain_one() picks up the new CI run result during
+    interruptible_sleep, rather than leaving it unmonitored.
+    """
+    import os
+
+    koan_root = os.environ.get("KOAN_ROOT", "")
+    if not koan_root:
+        print("[ci_check] KOAN_ROOT not set, cannot re-enqueue", file=sys.stderr)
+        return
+
+    instance_dir = os.path.join(koan_root, "instance")
+    try:
+        from app.ci_queue import enqueue
+        enqueue(instance_dir, pr_url, branch, full_repo, pr_number, project_path)
+        print(f"[ci_check] Re-enqueued {pr_url} for CI monitoring", file=sys.stderr)
+    except Exception as e:
+        print(f"[ci_check] Failed to re-enqueue: {e}", file=sys.stderr)
 
 
 def main(argv=None):
