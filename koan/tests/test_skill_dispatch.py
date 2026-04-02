@@ -658,9 +658,8 @@ class TestHandlerCleanFormat:
             lambda url: ("sukria", "koan", "42"),
         )
 
-        import skills.core.rebase.handler as rebase_handler
         monkeypatch.setattr(
-            rebase_handler, "is_own_pr",
+            "app.github_skill_helpers.is_own_pr",
             lambda owner, repo, pr: (True, "koan/some-branch"),
         )
 

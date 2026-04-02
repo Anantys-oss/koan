@@ -82,9 +82,9 @@ class TestHandleRouting:
 
 class TestMissionQueuing:
     def _own_pr_patch(self, handler_mod):
-        """Patch is_own_pr on the handler module to return owned=True."""
-        return patch.object(
-            handler_mod, "is_own_pr",
+        """Patch is_own_pr on the helper module used by the handler."""
+        return patch(
+            "app.github_skill_helpers.is_own_pr",
             return_value=(True, "koan/some-branch"),
         )
 
