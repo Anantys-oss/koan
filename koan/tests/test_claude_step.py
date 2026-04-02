@@ -447,6 +447,58 @@ class TestRunClaudeStep:
         "app.claude_step.get_model_config",
         return_value={"mission": "", "fallback": "", "chat": "", "lightweight": "", "review_mode": ""},
     )
+    def test_failure_includes_stdout_when_no_stderr(self, mock_config, mock_flags, mock_claude):
+        """When CLI exits with no stderr, stdout should be included in the error log."""
+        mock_claude.return_value = {
+            "success": False,
+            "output": "Error: context window exceeded for this prompt",
+            "error": "Exit code 1: no stderr",
+        }
+        actions = []
+        run_claude_step(
+            prompt="fix bug",
+            project_path="/project",
+            commit_msg="fix: bug",
+            success_label="Fixed",
+            failure_label="Fix failed",
+            actions_log=actions,
+        )
+        assert len(actions) == 1
+        assert "stdout:" in actions[0]
+        assert "context window exceeded" in actions[0]
+
+    @patch("app.claude_step.run_claude")
+    @patch("app.claude_step.build_full_command", return_value=["claude", "-p", "test"])
+    @patch(
+        "app.claude_step.get_model_config",
+        return_value={"mission": "", "fallback": "", "chat": "", "lightweight": "", "review_mode": ""},
+    )
+    def test_failure_no_stdout_fallback_when_stderr_present(self, mock_config, mock_flags, mock_claude):
+        """When stderr is present, stdout should NOT be appended."""
+        mock_claude.return_value = {
+            "success": False,
+            "output": "some output",
+            "error": "Exit code 1: actual error message",
+        }
+        actions = []
+        run_claude_step(
+            prompt="fix bug",
+            project_path="/project",
+            commit_msg="fix: bug",
+            success_label="Fixed",
+            failure_label="Fix failed",
+            actions_log=actions,
+        )
+        assert len(actions) == 1
+        assert "stdout:" not in actions[0]
+        assert "actual error message" in actions[0]
+
+    @patch("app.claude_step.run_claude")
+    @patch("app.claude_step.build_full_command", return_value=["claude", "-p", "test"])
+    @patch(
+        "app.claude_step.get_model_config",
+        return_value={"mission": "", "fallback": "", "chat": "", "lightweight": "", "review_mode": ""},
+    )
     def test_failure_empty_label_no_log(self, mock_config, mock_flags, mock_claude):
         mock_claude.return_value = {
             "success": False,
@@ -729,6 +781,25 @@ class TestBuildPrPrompt:
         assert kwargs["BASE"] == "main"
         assert kwargs["DIFF"] == "+code"
         assert kwargs["REVIEW_COMMENTS"] == "looks good"
+
+    @patch("app.claude_step.load_prompt_or_skill", return_value="ok")
+    def test_truncates_large_diff(self, mock_lp, context):
+        """Large diffs should be truncated to prevent context window overflow."""
+        from app.claude_step import _build_pr_prompt
+        context["diff"] = "x" * 100_000
+        _build_pr_prompt("recreate", context, max_diff_chars=50_000)
+        _, kwargs = mock_lp.call_args
+        assert len(kwargs["DIFF"]) < 100_000
+        assert "truncated" in kwargs["DIFF"]
+
+    @patch("app.claude_step.load_prompt_or_skill", return_value="ok")
+    def test_small_diff_not_truncated(self, mock_lp, context):
+        """Small diffs should pass through unchanged."""
+        from app.claude_step import _build_pr_prompt
+        context["diff"] = "+small change"
+        _build_pr_prompt("recreate", context)
+        _, kwargs = mock_lp.call_args
+        assert kwargs["DIFF"] == "+small change"
 
 
 # ---------- _push_with_pr_fallback ----------
