@@ -275,6 +275,7 @@ class TestAttemptCiFixes:
             patch("app.claude_step.run_claude_step", return_value=True),
             patch("app.rebase_pr._force_push"),
             patch("app.ci_queue_runner.check_ci_status", return_value=("pending", 789)),
+            patch("app.ci_queue_runner._reenqueue_for_monitoring") as mock_reenqueue,
             patch("time.sleep"),
         ):
             actions_log = []
@@ -293,3 +294,25 @@ class TestAttemptCiFixes:
 
         assert result is True
         assert any("pushed" in a.lower() for a in actions_log)
+        # Verify re-enqueue was called so drain_one monitors the new CI run
+        mock_reenqueue.assert_called_once_with(
+            PR_URL, "fix-branch", "owner/repo", "42", PROJECT_PATH,
+        )
+        assert any("re-enqueued" in a.lower() for a in actions_log)
+
+    def test_reenqueue_called_on_pending_ci(self):
+        """After pushing a fix, if CI is pending, the PR is re-enqueued for monitoring."""
+        from app.ci_queue_runner import _reenqueue_for_monitoring
+
+        with (
+            patch.dict("os.environ", {"KOAN_ROOT": "/tmp/test-koan"}),
+            patch("app.ci_queue.enqueue") as mock_enqueue,
+        ):
+            _reenqueue_for_monitoring(
+                PR_URL, "fix-branch", "owner/repo", "42", PROJECT_PATH,
+            )
+
+        mock_enqueue.assert_called_once_with(
+            "/tmp/test-koan/instance",
+            PR_URL, "fix-branch", "owner/repo", "42", PROJECT_PATH,
+        )
