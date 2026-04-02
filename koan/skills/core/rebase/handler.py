@@ -5,6 +5,7 @@ from app.github_skill_helpers import (
     extract_github_url,
     format_project_not_found_error,
     format_success_message,
+    is_own_pr,
     queue_github_mission,
     resolve_project_for_repo,
 )
@@ -46,6 +47,17 @@ def handle(ctx):
     project_path, project_name = resolve_project_for_repo(repo, owner=owner)
     if not project_path:
         return format_project_not_found_error(repo, owner=owner)
+
+    try:
+        owned, head_branch = is_own_pr(owner, repo, pr_number)
+    except Exception as e:
+        return f"\u274c Failed to check PR ownership: {str(e)[:200]}"
+
+    if not owned:
+        return (
+            f"\u274c Not my PR — branch `{head_branch}` was not created by "
+            f"this instance. I only rebase my own pull requests."
+        )
 
     queue_github_mission(ctx, "rebase", pr_url, project_name)
 
