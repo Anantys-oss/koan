@@ -471,10 +471,10 @@ def main():
 ╚══════════════════════════════════════════════════════════════════╝
 
     Starting setup wizard at: {url}
-{f"""
-    💡 To bind to a different address, restart with:
-       SETUP_HOSTNAME=<your-ip> make install
-""" if args.host == "127.0.0.1" else ""}
+{"" if args.host != "127.0.0.1" else '''
+    Tip: To bind to a different address, restart with:
+         SETUP_HOSTNAME=<your-ip> make install
+'''}
     Press Ctrl+C to stop.
 """)
 
