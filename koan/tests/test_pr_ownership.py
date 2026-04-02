@@ -63,8 +63,8 @@ class TestCiCheckOwnership:
     def test_rejects_pr_from_other_instance(self, handler, ctx):
         ctx.args = "https://github.com/sukria/koan/pull/55"
         with _project_patches()[0], _project_patches()[1], \
-             patch.object(handler, "is_own_pr",
-                          return_value=(False, "other-instance/branch")), \
+             patch("app.github_skill_helpers.is_own_pr",
+                   return_value=(False, "other-instance/branch")), \
              patch("app.utils.insert_pending_mission") as mock_insert:
             result = handler.handle(ctx)
             assert "Not my PR" in result
@@ -74,8 +74,8 @@ class TestCiCheckOwnership:
     def test_accepts_pr_from_own_instance(self, handler, ctx):
         ctx.args = "https://github.com/sukria/koan/pull/55"
         with _project_patches()[0], _project_patches()[1], \
-             patch.object(handler, "is_own_pr",
-                          return_value=(True, "koan/fix-ci")), \
+             patch("app.github_skill_helpers.is_own_pr",
+                   return_value=(True, "koan/fix-ci")), \
              patch("app.utils.insert_pending_mission") as mock_insert:
             result = handler.handle(ctx)
             assert "queued" in result.lower()
