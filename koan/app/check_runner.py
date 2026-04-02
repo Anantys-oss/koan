@@ -146,6 +146,15 @@ def _handle_pr(owner, repo, pr_number, instance_dir, koan_root, notify_fn):
     prefix = get_branch_prefix()
     is_own = head_branch.startswith(prefix)
 
+    if not is_own:
+        mark_checked(instance_dir, url, updated_at)
+        msg = (
+            f"\u274c PR #{pr_number} — branch `{head_branch}` is not mine. "
+            f"Skipping."
+        )
+        notify_fn(msg)
+        return True, msg
+
     # Build status report
     actions = []
     missions_path = instance_dir / "missions.md"
@@ -153,13 +162,6 @@ def _handle_pr(owner, repo, pr_number, instance_dir, koan_root, notify_fn):
 
     # 1. Check if rebase is needed
     if needs_reb:
-        if not is_own:
-            msg = (
-                f"\u274c PR #{pr_number} needs rebase but branch "
-                f"`{head_branch}` is not mine — skipping."
-            )
-            notify_fn(msg)
-            return True, msg
         _queue_rebase(owner, repo, pr_number, missions_path,
                       koan_root, instance_dir)
         actions.append("\u267b\ufe0f Rebase queued \u2014 PR has merge conflicts")
