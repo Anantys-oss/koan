@@ -182,7 +182,7 @@ class TestPROwnership:
         ctx.args = "https://github.com/sukria/koan/pull/42"
         with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
              patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
-             patch("app.github_skill_helpers.is_own_pr", return_value=(False, "other-bot/fix-thing")), \
+             patch.object(handler, "is_own_pr", return_value=(False, "other-bot/fix-thing")), \
              patch("app.utils.insert_pending_mission") as mock_insert:
             result = handler.handle(ctx)
             assert "Not my PR" in result
@@ -194,7 +194,7 @@ class TestPROwnership:
         ctx.args = "https://github.com/sukria/koan/pull/42"
         with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
              patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
-             patch("app.github_skill_helpers.is_own_pr", return_value=(True, "koan/fix-thing")), \
+             patch.object(handler, "is_own_pr", return_value=(True, "koan/fix-thing")), \
              patch("app.utils.insert_pending_mission") as mock_insert:
             result = handler.handle(ctx)
             assert "queued" in result.lower()
@@ -205,7 +205,7 @@ class TestPROwnership:
         ctx.args = "https://github.com/sukria/koan/pull/42"
         with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
              patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
-             patch("app.github_skill_helpers.is_own_pr", side_effect=Exception("API timeout")):
+             patch.object(handler, "is_own_pr", side_effect=Exception("API timeout")):
             result = handler.handle(ctx)
             assert "\u274c" in result
             assert "ownership" in result.lower()
