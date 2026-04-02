@@ -204,6 +204,23 @@ def api(endpoint, method="GET", jq=None, input_data=None, cwd=None,
     return run_gh(*args, cwd=cwd, stdin_data=input_data, timeout=timeout)
 
 
+def fetch_issue_state(owner, repo, issue_number):
+    """Fetch the state of a GitHub issue (open/closed).
+
+    Returns:
+        The issue state string (e.g. "open", "closed"), or "open" on error.
+    """
+    try:
+        result = api(
+            f"repos/{owner}/{repo}/issues/{issue_number}",
+            jq=".state",
+        )
+        state = result.strip().strip('"')
+        return state if state in ("open", "closed") else "open"
+    except Exception:
+        return "open"
+
+
 def fetch_issue_with_comments(owner, repo, issue_number):
     """Fetch issue title, body and comments via gh API.
 

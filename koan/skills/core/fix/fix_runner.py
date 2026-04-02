@@ -15,7 +15,7 @@ import logging
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from app.github import fetch_issue_with_comments
+from app.github import fetch_issue_state, fetch_issue_with_comments
 from app.github_url_parser import parse_issue_url
 from app.pr_submit import (
     get_current_branch,
@@ -60,6 +60,16 @@ def run_fix(
         return False, str(e)
 
     context_label = f" ({context})" if context else ""
+
+    # Early exit if the issue is already closed
+    state = fetch_issue_state(owner, repo, issue_number)
+    if state == "closed":
+        msg = f"Issue #{issue_number} ({owner}/{repo}) is already closed — skipping."
+        logger.info(msg)
+        if notify_fn:
+            notify_fn(f"\u2139\ufe0f {msg}")
+        return False, msg
+
     notify_fn(
         f"\U0001f527 Fixing issue #{issue_number} "
         f"({owner}/{repo}){context_label}..."

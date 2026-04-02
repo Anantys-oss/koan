@@ -10,8 +10,9 @@ from app.github import (
     SSOAuthRequired, _is_sso_error,
     run_gh, pr_create, issue_create, api,
     get_gh_username, count_open_prs, cached_count_open_prs,
-    batch_count_open_prs, fetch_issue_with_comments, detect_parent_repo,
-    resolve_target_repo, _upstream_remote_repo, _parse_remote_url,
+    batch_count_open_prs, fetch_issue_state, fetch_issue_with_comments,
+    detect_parent_repo, resolve_target_repo, _upstream_remote_repo,
+    _parse_remote_url,
 )
 import app.github as github_module
 
@@ -567,6 +568,26 @@ class TestRunGhStdinData:
 # ---------------------------------------------------------------------------
 # fetch_issue_with_comments
 # ---------------------------------------------------------------------------
+
+
+class TestFetchIssueState:
+
+    @patch("app.github.api", return_value='"closed"')
+    def test_returns_closed(self, mock_api):
+        assert fetch_issue_state("o", "r", 42) == "closed"
+        mock_api.assert_called_once()
+
+    @patch("app.github.api", return_value='"open"')
+    def test_returns_open(self, mock_api):
+        assert fetch_issue_state("o", "r", 42) == "open"
+
+    @patch("app.github.api", return_value="unexpected")
+    def test_unknown_state_defaults_open(self, mock_api):
+        assert fetch_issue_state("o", "r", 42) == "open"
+
+    @patch("app.github.api", side_effect=RuntimeError("gh failed"))
+    def test_api_error_defaults_open(self, mock_api):
+        assert fetch_issue_state("o", "r", 42) == "open"
 
 
 class TestFetchIssueWithComments:
