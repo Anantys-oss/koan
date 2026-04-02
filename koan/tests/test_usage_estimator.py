@@ -862,3 +862,180 @@ class TestCmdSetUsed:
         state = json.loads(state_file.read_text())
         # 30% of 1M = 300k
         assert state["session_tokens"] == 300_000
+
+
+# ---------------------------------------------------------------------------
+# parse_claude_usage_output — Parse real usage from `claude usage` CLI
+# ---------------------------------------------------------------------------
+
+from app.usage_estimator import parse_claude_usage_output
+
+
+class TestParseClaudeUsageOutput:
+    """Tests for parsing `claude usage` CLI output to get real API percentages."""
+
+    SAMPLE_OUTPUT = """
+  Current session
+  █████████▌                                         19% used
+  Resets 3am (UTC)
+
+  Current week (all models)
+  ██████████████████████████████████████             76% used
+  Resets Apr 6, 1am (UTC)
+
+  Current week (Sonnet only)
+                                                     0% used
+  Resets Apr 4, 11pm (UTC)
+"""
+
+    def test_parses_session_percentage(self):
+        result = parse_claude_usage_output(self.SAMPLE_OUTPUT)
+        assert result is not None
+        assert result["session_pct"] == 19
+
+    def test_parses_weekly_percentage(self):
+        result = parse_claude_usage_output(self.SAMPLE_OUTPUT)
+        assert result["weekly_pct"] == 76
+
+    def test_parses_session_reset(self):
+        result = parse_claude_usage_output(self.SAMPLE_OUTPUT)
+        assert "3am" in result["session_reset"]
+
+    def test_parses_weekly_reset(self):
+        result = parse_claude_usage_output(self.SAMPLE_OUTPUT)
+        assert "Apr 6" in result["weekly_reset"]
+
+    def test_zero_percent(self):
+        output = """
+  Current session
+                                                     0% used
+  Resets 5am (UTC)
+
+  Current week (all models)
+                                                     0% used
+  Resets Apr 10, 2am (UTC)
+"""
+        result = parse_claude_usage_output(output)
+        assert result["session_pct"] == 0
+        assert result["weekly_pct"] == 0
+
+    def test_100_percent(self):
+        output = """
+  Current session
+  ██████████████████████████████████████████████████ 100% used
+  Resets 2am (UTC)
+
+  Current week (all models)
+  ██████████████████████████████████████████████████ 100% used
+  Resets Apr 7, 1am (UTC)
+"""
+        result = parse_claude_usage_output(output)
+        assert result["session_pct"] == 100
+        assert result["weekly_pct"] == 100
+
+    def test_returns_none_on_empty_output(self):
+        assert parse_claude_usage_output("") is None
+        assert parse_claude_usage_output("some random text") is None
+
+    def test_returns_none_on_error_output(self):
+        assert parse_claude_usage_output("Error: could not fetch usage") is None
+
+    def test_partial_output_session_only(self):
+        """If only session is present (no weekly), return None — we need both."""
+        output = """
+  Current session
+  █████████▌                                         19% used
+  Resets 3am (UTC)
+"""
+        result = parse_claude_usage_output(output)
+        assert result is None
+
+    def test_different_reset_format(self):
+        """Handle different reset time formats."""
+        output = """
+  Current session
+  ████████████████████                               40% used
+  Resets 11pm (UTC)
+
+  Current week (all models)
+  ██████████████████████████████                     60% used
+  Resets Apr 10, 11pm (UTC)
+"""
+        result = parse_claude_usage_output(output)
+        assert result["session_pct"] == 40
+        assert result["weekly_pct"] == 60
+        assert "11pm" in result["session_reset"]
+
+
+class TestCmdRefreshFromCli:
+    """Tests for cmd_refresh_from_cli — refresh usage.md from `claude usage` output."""
+
+    SAMPLE_OUTPUT = """
+  Current session
+  █████████▌                                         19% used
+  Resets 3am (UTC)
+
+  Current week (all models)
+  ██████████████████████████████████████             76% used
+  Resets Apr 6, 1am (UTC)
+
+  Current week (Sonnet only)
+                                                     0% used
+  Resets Apr 4, 11pm (UTC)
+"""
+
+    def test_writes_usage_md_from_cli(self, tmp_path):
+        from app.usage_estimator import cmd_refresh_from_cli
+        usage_md = tmp_path / "usage.md"
+
+        mock_result = type("Result", (), {
+            "stdout": self.SAMPLE_OUTPUT, "stderr": "", "returncode": 0
+        })()
+        with patch("subprocess.run", return_value=mock_result):
+            success = cmd_refresh_from_cli(usage_md)
+
+        assert success is True
+        content = usage_md.read_text()
+        assert "19%" in content
+        assert "76%" in content
+        # Should be parseable by usage_tracker
+        assert "Session" in content
+        assert "Weekly" in content
+
+    def test_returns_false_on_cli_failure(self, tmp_path):
+        from app.usage_estimator import cmd_refresh_from_cli
+        usage_md = tmp_path / "usage.md"
+
+        with patch("subprocess.run", side_effect=OSError("not found")):
+            success = cmd_refresh_from_cli(usage_md)
+
+        assert success is False
+        assert not usage_md.exists()
+
+    def test_returns_false_on_unparseable_output(self, tmp_path):
+        from app.usage_estimator import cmd_refresh_from_cli
+        usage_md = tmp_path / "usage.md"
+
+        mock_result = type("Result", (), {
+            "stdout": "Error: something went wrong", "stderr": "", "returncode": 1
+        })()
+        with patch("subprocess.run", return_value=mock_result):
+            success = cmd_refresh_from_cli(usage_md)
+
+        assert success is False
+
+    def test_usage_md_format_compatible_with_tracker(self, tmp_path):
+        """The written usage.md must be parseable by UsageTracker."""
+        from app.usage_estimator import cmd_refresh_from_cli
+        from app.usage_tracker import UsageTracker
+        usage_md = tmp_path / "usage.md"
+
+        mock_result = type("Result", (), {
+            "stdout": self.SAMPLE_OUTPUT, "stderr": "", "returncode": 0
+        })()
+        with patch("subprocess.run", return_value=mock_result):
+            cmd_refresh_from_cli(usage_md)
+
+        tracker = UsageTracker(usage_md, runs_completed=0)
+        assert tracker.session_pct == 19.0
+        assert tracker.weekly_pct == 76.0

@@ -40,11 +40,20 @@ def _log_iteration(category: str, message: str):
 
 
 def _refresh_usage(usage_state: Path, usage_md: Path, count: int):
-    """Refresh usage.md from accumulated token state.
+    """Refresh usage.md, preferring real API data from ``claude usage``.
 
-    Always refreshes — critical after auto-resume so stale usage.md
-    is cleared and session resets are detected.
+    Tries ``claude usage`` CLI first for accurate percentages.
+    Falls back to internal token-accumulation estimates on failure.
     """
+    try:
+        from app.usage_estimator import cmd_refresh_from_cli
+        if cmd_refresh_from_cli(usage_md):
+            _log_iteration("koan", "Usage refreshed from claude CLI")
+            return
+    except (ImportError, OSError, ValueError) as e:
+        _log_iteration("error", f"CLI usage refresh failed: {e}")
+
+    # Fallback: internal token estimates
     try:
         from app.usage_estimator import cmd_refresh
         cmd_refresh(usage_state, usage_md)
