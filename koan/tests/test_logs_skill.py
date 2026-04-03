@@ -57,23 +57,23 @@ class TestTail:
         result = mod._tail(f)
         assert result == ["line1", "line2", "line3"]
 
-    def test_exactly_20_lines(self, tmp_path):
+    def test_exactly_30_lines(self, tmp_path):
         mod = _load_handler()
         f = tmp_path / "exact.log"
-        lines = [f"line{i}" for i in range(20)]
+        lines = [f"line{i}" for i in range(30)]
         f.write_text("\n".join(lines) + "\n")
         result = mod._tail(f)
-        assert len(result) == 20
+        assert len(result) == 30
 
-    def test_more_than_20_lines(self, tmp_path):
+    def test_more_than_30_lines(self, tmp_path):
         mod = _load_handler()
         f = tmp_path / "long.log"
-        lines = [f"line{i}" for i in range(40)]
+        lines = [f"line{i}" for i in range(50)]
         f.write_text("\n".join(lines) + "\n")
         result = mod._tail(f)
-        assert len(result) == 20
+        assert len(result) == 30
         assert result[0] == "line20"
-        assert result[-1] == "line39"
+        assert result[-1] == "line49"
 
     def test_strips_ansi_codes(self, tmp_path):
         mod = _load_handler()
@@ -171,10 +171,10 @@ class TestHandle:
         _setup_logs(tmp_path, run_content=lines + "\n")
         ctx = _make_ctx(tmp_path)
         result = mod.handle(ctx)
-        # Should only show last 20 lines
-        assert "log entry 30" in result
+        # Should only show last 30 lines
+        assert "log entry 20" in result
         assert "log entry 49" in result
-        assert "log entry 29" not in result
+        assert "log entry 19" not in result
 
     def test_filter_case_insensitive(self, tmp_path):
         mod = _load_handler()
