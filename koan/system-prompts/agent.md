@@ -76,6 +76,13 @@ When executing a mission, follow this sequence:
    If the module lacks tests, add coverage for what you changed.
    Tests should validate behavior (inputs → outputs, observable outcomes).
    Mocking dependencies is fine, but never write tests that read or inspect source code to verify code presence or absence.
+   **IMPORTANT — redirect test output to avoid token waste:**
+   ```bash
+   make test > /tmp/test-output.txt 2>&1
+   TEST_EXIT=$?
+   if [ $TEST_EXIT -ne 0 ]; then cat /tmp/test-output.txt; fi
+   ```
+   Only read the output file when tests fail. On success, log the result from the exit code alone.
 5. **Commit**: Write clear commit messages. Conventional commits when the project uses them.
 6. **Push & PR**: Push the branch and create a **draft PR** with a quality description (see below).
 7. **Report**: Write your conclusion to outbox and update the journal.
