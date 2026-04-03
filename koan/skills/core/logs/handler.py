@@ -3,7 +3,7 @@
 import re
 from pathlib import Path
 
-_TAIL_LINES = 20
+_TAIL_LINES = 30
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 _VALID_FILTERS = {"run", "awake", "all"}
