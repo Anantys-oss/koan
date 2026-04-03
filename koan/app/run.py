@@ -946,8 +946,8 @@ def _handle_contemplative(
                     "contemplative", "",
                     duration_seconds=int(time.time()) - contemp_start,
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                log("warn", f"Failed to log contemplative usage: {e}")
         finally:
             _cleanup_temp(stdout_file, stderr_file)
     except KeyboardInterrupt:
