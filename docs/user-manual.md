@@ -182,12 +182,16 @@ If Kōan misclassifies your message, use `/chat` to force chat mode:
 - `/live` — Check what Kōan is doing right now during a long mission
 </details>
 
-**`/logs`** — Show the last 10 lines from run.log and awake.log, formatted in code blocks.
+**`/logs [run|awake|all]`** — Show the last 20 lines from log files, formatted in code blocks.
+
+- **Default:** Shows only `run.log`. Use `awake` for bridge logs, `all` for both.
 
 <details>
 <summary>Use cases</summary>
 
-- `/logs` — Quick check of recent agent and bridge output without SSH access
+- `/logs` — Quick check of recent agent output (run.log only)
+- `/logs awake` — Check bridge/Telegram polling output
+- `/logs all` — See both run and awake logs
 </details>
 
 **`/quota [remaining_%]`** — Check remaining API quota (live, no cache), or override the internal estimate.
@@ -1271,7 +1275,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/usage` | — | B | Detailed quota and progress |
 | `/metrics` | — | B | Mission success rates and reliability stats |
 | `/live` | `/progress` | B | Show live progress of current mission |
-| `/logs` | — | B | Show last 10 lines from run and awake logs |
+| `/logs [run\|awake\|all]` | — | B | Show last 20 lines from logs (default: run) |
 | `/quota [N]` | `/q` | B | Check LLM quota (live), or override remaining % |
 | `/chat <msg>` | — | B | Force chat mode (bypass mission detection) |
 | `/verbose` | — | B | Enable real-time progress updates |

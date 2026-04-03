@@ -1,11 +1,17 @@
-"""Kōan logs skill — show last lines from run and awake logs."""
+"""Kōan logs skill — show last lines from run and/or awake logs."""
 
 import re
 from pathlib import Path
 
-_LOG_FILES = ["run.log", "awake.log"]
-_TAIL_LINES = 10
+_TAIL_LINES = 20
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+_VALID_FILTERS = {"run", "awake", "all"}
+_LOG_MAP = {
+    "run": ["run.log"],
+    "awake": ["awake.log"],
+    "all": ["run.log", "awake.log"],
+}
 
 
 def _strip_ansi(text):
@@ -27,11 +33,21 @@ def _tail(path, n=_TAIL_LINES):
 
 
 def handle(ctx):
-    """Handle /logs command — show last 10 lines from each log file."""
-    logs_dir = ctx.koan_root / "logs"
-    sections = []
+    """Handle /logs command — show last lines from run and/or awake logs.
 
-    for filename in _LOG_FILES:
+    Usage: /logs [run|awake|all]  (default: run)
+    """
+    logs_dir = ctx.koan_root / "logs"
+
+    # Parse filter argument
+    arg = (ctx.args or "").strip().lower()
+    if arg and arg not in _VALID_FILTERS:
+        return f"Unknown filter `{arg}`. Use: /logs [run|awake|all]"
+    log_filter = arg or "run"
+    log_files = _LOG_MAP[log_filter]
+
+    sections = []
+    for filename in log_files:
         lines = _tail(logs_dir / filename)
         if lines:
             label = filename.replace(".log", "")
