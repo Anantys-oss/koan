@@ -168,7 +168,7 @@ def check_pending_journal(instance_dir: str) -> bool:
 # Main recovery logic
 # ---------------------------------------------------------------------------
 
-def recover_missions(instance_dir: str, dry_run: bool = False) -> int:
+def recover_missions(instance_dir: str, dry_run: bool = False) -> tuple:
     """Move stale in-progress missions back to pending or escalate to failed.
 
     Enhanced recovery with state classification:
@@ -188,7 +188,9 @@ def recover_missions(instance_dir: str, dry_run: bool = False) -> int:
         Tuple of (count of missions moved to Pending, list of escalated mission lines).
     """
     missions_path = Path(instance_dir) / "missions.md"
-    if not missions_path.exists():
+    try:
+        missions_path.read_text()
+    except FileNotFoundError:
         return 0, []
 
     from app.missions import find_section_boundaries, normalize_content

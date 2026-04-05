@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 
-def fallback_extract(content: str, projects_str: str) -> tuple:
+def fallback_extract(content: str, projects_str: str) -> tuple[str | None, str | None]:
     """Extract the first pending mission in FIFO order."""
     from app.missions import extract_next_pending
 
