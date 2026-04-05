@@ -341,8 +341,7 @@ def _reset_failure_count(instance_dir: str) -> None:
         try:
             path.unlink()
         except OSError as e:
-            print(f"[pr_review_learning] Failure counter reset failed: {e}",
-                  file=sys.stderr)
+            log.warning("Failure counter reset failed: %s", e)
 
 
 def _notify_analysis_failures(instance_dir: str, count: int) -> None:
