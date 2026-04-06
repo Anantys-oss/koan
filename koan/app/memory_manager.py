@@ -24,13 +24,15 @@ Commands:
     cleanup                         Run all cleanup tasks
 """
 
+import hashlib
 import re
 import shutil
+import subprocess
 import sys
 from collections import defaultdict
 from datetime import datetime, date, timedelta
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from app.utils import atomic_write
 
@@ -502,6 +504,188 @@ class MemoryManager:
         atomic_write(learnings_path, "\n".join(result) + "\n")
         return removed
 
+    def compact_learnings(
+        self,
+        project_name: str,
+        max_lines: int = 100,
+        project_path: Optional[str] = None,
+    ) -> Dict[str, int]:
+        """Semantically compact a project's learnings using Claude CLI.
+
+        Uses a lightweight model to merge redundant entries, remove obsolete
+        ones (cross-referenced with the project's file tree), and consolidate
+        by topic. Falls back to cap_learnings() if the Claude call fails.
+
+        Args:
+            project_name: Project whose learnings to compact.
+            max_lines: Target number of content lines after compaction.
+            project_path: Path to the project's git repo (for file tree).
+                If None, attempts to resolve from projects.yaml.
+
+        Returns:
+            Dict with stats: original_lines, compacted_lines, skipped (bool).
+        """
+        learnings_path = self._learnings_path(project_name)
+        if not learnings_path.exists():
+            return {"original_lines": 0, "compacted_lines": 0, "skipped": True}
+
+        try:
+            content = learnings_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            print(f"[memory_manager] Error reading {learnings_path}: {e}", file=sys.stderr)
+            return {"original_lines": 0, "compacted_lines": 0, "skipped": True}
+
+        # Count content lines (non-header, non-blank)
+        lines = content.splitlines()
+        content_lines = [l for l in lines if l.strip() and not l.startswith("#")]
+        original_count = len(content_lines)
+
+        # Skip if below threshold (no compaction needed)
+        if original_count <= max_lines:
+            return {"original_lines": original_count, "compacted_lines": original_count, "skipped": True}
+
+        # Hash-based skip: don't re-compact if content hasn't changed
+        content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        hash_path = self.instance_dir / f".koan-learnings-compact-hash-{project_name}"
+        if hash_path.exists():
+            try:
+                stored_hash = hash_path.read_text().strip()
+                if stored_hash == content_hash:
+                    return {"original_lines": original_count, "compacted_lines": original_count, "skipped": True}
+            except (OSError, ValueError):
+                pass
+
+        # Resolve project path for file tree
+        if project_path is None:
+            project_path = self._resolve_project_path(project_name)
+
+        # Get file tree for cross-reference
+        file_tree = self._get_file_tree(project_path)
+
+        # Truncate input if very large (keep first 20 + last 500 lines)
+        if len(lines) > 520:
+            truncated_lines = lines[:20] + ["", "... (middle entries omitted) ...", ""] + lines[-500:]
+            learnings_input = "\n".join(truncated_lines)
+        else:
+            learnings_input = content
+
+        # Extract header for preservation
+        header_lines = []
+        for line in lines:
+            if line.startswith("#") or (not line.strip() and not header_lines):
+                header_lines.append(line)
+            elif line.strip() == "" and header_lines:
+                header_lines.append(line)
+            else:
+                break
+
+        # Call Claude CLI for semantic compaction
+        try:
+            compacted = self._run_compaction_cli(learnings_input, file_tree, max_lines, project_path)
+        except Exception as e:
+            print(f"[memory_manager] Compaction CLI failed for {project_name}: {e}", file=sys.stderr)
+            # Fallback: just cap learnings
+            self.cap_learnings(project_name, max_lines)
+            return {"original_lines": original_count, "compacted_lines": max_lines, "skipped": False, "fallback": True}
+
+        if not compacted or not compacted.strip():
+            print(f"[memory_manager] Compaction returned empty for {project_name}, skipping", file=sys.stderr)
+            return {"original_lines": original_count, "compacted_lines": original_count, "skipped": True}
+
+        # Build result: header + compaction marker + compacted content
+        compacted_lines = [l for l in compacted.splitlines() if l.strip()]
+        compacted_count = len(compacted_lines)
+        today = date.today().isoformat()
+
+        result_parts = header_lines if header_lines else [f"# Learnings — {project_name}", ""]
+        result_parts.append(f"_(compacted from {original_count} to {compacted_count} lines on {today})_")
+        result_parts.append("")
+        result_parts.append(compacted.strip())
+        result_parts.append("")
+
+        atomic_write(learnings_path, "\n".join(result_parts))
+
+        # Store hash of the NEW content to avoid re-compacting
+        new_content = learnings_path.read_text(encoding="utf-8")
+        new_hash = hashlib.sha256(new_content.encode("utf-8")).hexdigest()
+        try:
+            atomic_write(hash_path, new_hash)
+        except OSError:
+            pass
+
+        return {"original_lines": original_count, "compacted_lines": compacted_count, "skipped": False}
+
+    def _resolve_project_path(self, project_name: str) -> Optional[str]:
+        """Resolve a project's filesystem path from projects.yaml."""
+        try:
+            import os
+            from app.projects_config import load_projects_config, get_projects_from_config
+            koan_root = os.environ.get("KOAN_ROOT", "")
+            if not koan_root:
+                return None
+            config = load_projects_config(koan_root)
+            if not config:
+                return None
+            for name, path in get_projects_from_config(config):
+                if name.lower() == project_name.lower():
+                    return path
+        except Exception:
+            pass
+        return None
+
+    def _get_file_tree(self, project_path: Optional[str]) -> str:
+        """Get file tree from a project using git ls-files."""
+        if not project_path:
+            return "(project path not available)"
+        try:
+            result = subprocess.run(
+                ["git", "ls-files"],
+                capture_output=True, text=True, timeout=10,
+                cwd=project_path,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+        return "(file tree not available)"
+
+    def _run_compaction_cli(
+        self, learnings_content: str, file_tree: str, max_lines: int,
+        project_path: Optional[str],
+    ) -> str:
+        """Run Claude CLI to semantically compact learnings."""
+        from app.cli_provider import build_full_command
+        from app.config import get_model_config
+        from app.prompts import load_prompt
+
+        prompt = load_prompt(
+            "learnings-compaction",
+            LEARNINGS_CONTENT=learnings_content,
+            FILE_TREE=file_tree,
+            MAX_LINES=str(max_lines),
+        )
+        models = get_model_config()
+
+        cmd = build_full_command(
+            prompt=prompt,
+            allowed_tools=[],
+            model=models.get("lightweight", "haiku"),
+            fallback=models.get("fallback", "sonnet"),
+            max_turns=1,
+        )
+
+        from app.cli_exec import run_cli_with_retry
+
+        cwd = project_path or "."
+        result = run_cli_with_retry(
+            cmd,
+            capture_output=True, text=True,
+            timeout=120, cwd=cwd,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"CLI returned {result.returncode}: {result.stderr[:200]}")
+        return result.stdout.strip()
+
     def export_snapshot(self) -> Path:
         """Export critical memory state to memory/SNAPSHOT.md.
 
@@ -748,6 +932,16 @@ def cap_learnings(instance_dir: str, project_name: str, max_lines: int = 200) ->
     return MemoryManager(instance_dir).cap_learnings(project_name, max_lines)
 
 
+def compact_learnings(
+    instance_dir: str, project_name: str, max_lines: int = 100,
+    project_path: Optional[str] = None,
+) -> Dict[str, int]:
+    """Semantically compact a project's learnings using Claude CLI."""
+    return MemoryManager(instance_dir).compact_learnings(
+        project_name, max_lines, project_path
+    )
+
+
 def run_cleanup(
     instance_dir: str,
     max_sessions: int = 15,
@@ -773,7 +967,8 @@ if __name__ == "__main__":
         )
         print(
             "Commands: scoped-summary <project>, compact [max], "
-            "cleanup-learnings <project>, archive-journals [days], cleanup, "
+            "cleanup-learnings <project>, compact-learnings [project], "
+            "archive-journals [days], cleanup, "
             "snapshot, hydrate",
             file=sys.stderr,
         )
@@ -800,6 +995,23 @@ if __name__ == "__main__":
             sys.exit(1)
         removed = mgr.cleanup_learnings(sys.argv[3])
         print(f"Deduped: {removed} lines removed")
+
+    elif command == "compact-learnings":
+        if len(sys.argv) < 4:
+            # Compact all projects
+            if mgr.projects_dir.exists():
+                for project_dir in mgr.projects_dir.iterdir():
+                    if project_dir.is_dir():
+                        name = project_dir.name
+                        stats = mgr.compact_learnings(name)
+                        print(f"  {name}: {stats}")
+            else:
+                print("No projects directory found")
+        else:
+            project = sys.argv[3]
+            stats = mgr.compact_learnings(project)
+            for k, v in stats.items():
+                print(f"  {k}: {v}")
 
     elif command == "archive-journals":
         days = int(sys.argv[3]) if len(sys.argv) > 3 else 30

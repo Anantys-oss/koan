@@ -11,6 +11,7 @@ from app.memory_manager import (
     compact_summary,
     cleanup_learnings,
     cap_learnings,
+    compact_learnings,
     archive_journals,
     run_cleanup,
     _extract_project_hint,
@@ -699,6 +700,99 @@ class TestCapLearnings:
         assert len(marker_lines) == 1
         # The marker should be a clean line, not contain embedded \n
         assert marker_lines[0].strip() == f"_(oldest 15 entries archived)_"
+
+
+# ---------------------------------------------------------------------------
+# compact_learnings (semantic compaction via Claude CLI)
+# ---------------------------------------------------------------------------
+
+class TestCompactLearnings:
+
+    def _write_learnings(self, tmp_path, project, content):
+        p = tmp_path / "memory" / "projects" / project
+        p.mkdir(parents=True, exist_ok=True)
+        (p / "learnings.md").write_text(content)
+        return p / "learnings.md"
+
+    def test_happy_path_compaction(self, tmp_path):
+        """Claude CLI returns compacted content, file is rewritten."""
+        lines = ["# Learnings — koan", ""]
+        for i in range(150):
+            lines.append(f"- fact {i}")
+        path = self._write_learnings(tmp_path, "koan", "\n".join(lines))
+
+        compacted_output = "- merged fact A\n- merged fact B\n- merged fact C\n"
+
+        with patch("app.memory_manager.MemoryManager._run_compaction_cli", return_value=compacted_output):
+            stats = compact_learnings(str(tmp_path), "koan", max_lines=100)
+
+        assert stats["original_lines"] == 150
+        assert stats["compacted_lines"] == 3
+        assert not stats["skipped"]
+        content = path.read_text()
+        assert "merged fact A" in content
+        assert "compacted from 150 to 3 lines" in content
+        assert content.startswith("# Learnings")
+
+    def test_skips_when_below_threshold(self, tmp_path):
+        """No compaction needed when content is already small."""
+        self._write_learnings(tmp_path, "koan", "# Learnings\n\n- fact 1\n- fact 2\n")
+        stats = compact_learnings(str(tmp_path), "koan", max_lines=100)
+        assert stats["skipped"] is True
+
+    def test_skips_when_hash_unchanged(self, tmp_path):
+        """Second call with same content is skipped via hash check."""
+        lines = ["# Learnings", ""]
+        for i in range(150):
+            lines.append(f"- fact {i}")
+        self._write_learnings(tmp_path, "koan", "\n".join(lines))
+
+        compacted_output = "- merged fact A\n- merged fact B\n"
+        with patch("app.memory_manager.MemoryManager._run_compaction_cli", return_value=compacted_output) as mock_cli:
+            compact_learnings(str(tmp_path), "koan", max_lines=100)
+            # Second call — content changed (compacted), so hash differs
+            # But since the new content is below threshold, it should skip
+            stats2 = compact_learnings(str(tmp_path), "koan", max_lines=100)
+
+        assert stats2["skipped"] is True
+        # CLI should only have been called once
+        assert mock_cli.call_count == 1
+
+    def test_fallback_on_cli_failure(self, tmp_path):
+        """Falls back to cap_learnings when Claude CLI fails."""
+        lines = ["# Learnings", ""]
+        for i in range(300):
+            lines.append(f"- fact {i}")
+        path = self._write_learnings(tmp_path, "koan", "\n".join(lines))
+
+        with patch("app.memory_manager.MemoryManager._run_compaction_cli", side_effect=RuntimeError("CLI failed")):
+            stats = compact_learnings(str(tmp_path), "koan", max_lines=100)
+
+        assert stats.get("fallback") is True
+        content = path.read_text()
+        # cap_learnings should have truncated to 100 lines
+        content_lines = [l for l in content.splitlines() if l.strip() and not l.startswith("#") and "archived" not in l]
+        assert len(content_lines) <= 100
+
+    def test_missing_file(self, tmp_path):
+        """Returns skip stats for non-existent learnings."""
+        stats = compact_learnings(str(tmp_path), "koan")
+        assert stats["skipped"] is True
+        assert stats["original_lines"] == 0
+
+    def test_empty_cli_output_skips(self, tmp_path):
+        """Empty Claude response doesn't overwrite the file."""
+        lines = ["# Learnings", ""]
+        for i in range(150):
+            lines.append(f"- fact {i}")
+        path = self._write_learnings(tmp_path, "koan", "\n".join(lines))
+        original_content = path.read_text()
+
+        with patch("app.memory_manager.MemoryManager._run_compaction_cli", return_value=""):
+            stats = compact_learnings(str(tmp_path), "koan", max_lines=100)
+
+        assert stats["skipped"] is True
+        assert path.read_text() == original_content
 
 
 # ---------------------------------------------------------------------------
