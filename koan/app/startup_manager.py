@@ -128,14 +128,34 @@ def _write_cleanup_marker():
         pass
 
 
+def _load_memory_config() -> dict:
+    """Load the memory: section from config.yaml with defaults."""
+    try:
+        from app.utils import load_config
+        config = load_config()
+    except Exception:
+        config = {}
+    mem_cfg = config.get("memory", {}) or {}
+    return {
+        "learnings_max_lines": mem_cfg.get("learnings_max_lines", 100),
+        "learnings_hard_cap": mem_cfg.get("learnings_hard_cap", 200),
+        "global_personality_max": mem_cfg.get("global_personality_max", 150),
+        "global_emotional_max": mem_cfg.get("global_emotional_max", 100),
+        "compaction_interval_hours": mem_cfg.get("compaction_interval_hours", 24),
+    }
+
+
 def cleanup_memory(instance: str):
     """Run memory compaction and cleanup.
 
-    Throttled to once per 24 hours to avoid redundant work on fast restart
-    cycles. On cold boot (summary.md missing but SNAPSHOT.md exists),
-    hydrates memory from snapshot before running cleanup.
+    Throttled based on compaction_interval_hours (default 24h) to avoid
+    redundant work on fast restart cycles. On cold boot (summary.md missing
+    but SNAPSHOT.md exists), hydrates memory from snapshot before running cleanup.
     """
-    if not _should_run_cleanup():
+    mem_cfg = _load_memory_config()
+    interval = mem_cfg["compaction_interval_hours"]
+
+    if not _should_run_cleanup(max_age_hours=interval):
         import time
         marker = _cleanup_marker_path()
         try:
@@ -161,7 +181,12 @@ def cleanup_memory(instance: str):
         if restored:
             log("health", f"Hydrated {len(restored)} file(s) from snapshot")
 
-    stats = mgr.run_cleanup()
+    stats = mgr.run_cleanup(
+        max_learnings_lines=mem_cfg["learnings_hard_cap"],
+        compact_learnings_lines=mem_cfg["learnings_max_lines"],
+        global_personality_max=mem_cfg["global_personality_max"],
+        global_emotional_max=mem_cfg["global_emotional_max"],
+    )
     _write_cleanup_marker()
 
     # Log notable compaction stats

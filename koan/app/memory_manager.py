@@ -912,6 +912,8 @@ class MemoryManager:
         delete_after_days: int = 90,
         max_learnings_lines: int = 200,
         compact_learnings_lines: int = 100,
+        global_personality_max: int = 150,
+        global_emotional_max: int = 100,
     ) -> dict:
         """Run all cleanup tasks. Returns stats dict."""
         stats = {}
@@ -941,8 +943,8 @@ class MemoryManager:
 
         # Cap append-only global memory files
         _GLOBAL_CAPS = {
-            "personality-evolution.md": 150,
-            "emotional-memory.md": 100,
+            "personality-evolution.md": global_personality_max,
+            "emotional-memory.md": global_emotional_max,
         }
         for filename, cap in _GLOBAL_CAPS.items():
             capped = self.cap_global_memory(filename, cap)
@@ -1013,11 +1015,14 @@ def run_cleanup(
     delete_after_days: int = 90,
     max_learnings_lines: int = 200,
     compact_learnings_lines: int = 100,
+    global_personality_max: int = 150,
+    global_emotional_max: int = 100,
 ) -> dict:
     """Run all cleanup tasks. Returns stats dict."""
     return MemoryManager(instance_dir).run_cleanup(
         max_sessions, archive_after_days, delete_after_days,
         max_learnings_lines, compact_learnings_lines,
+        global_personality_max, global_emotional_max,
     )
 
 

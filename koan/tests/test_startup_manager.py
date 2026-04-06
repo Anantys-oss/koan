@@ -183,28 +183,45 @@ class TestRunSanityChecks:
 # ---------------------------------------------------------------------------
 
 class TestCleanupMemory:
+    @patch("app.startup_manager._load_memory_config", return_value={
+        "learnings_max_lines": 100, "learnings_hard_cap": 200,
+        "global_personality_max": 150, "global_emotional_max": 100,
+        "compaction_interval_hours": 24,
+    })
     @patch("app.startup_manager._should_run_cleanup", return_value=True)
     @patch("app.startup_manager._write_cleanup_marker")
     @patch("app.memory_manager.MemoryManager")
-    def test_calls_run_cleanup(self, mock_mgr_cls, mock_write, mock_should, capsys):
+    def test_calls_run_cleanup(self, mock_mgr_cls, mock_write, mock_should, mock_cfg, capsys):
         from app.startup_manager import cleanup_memory
         mock_mgr = mock_mgr_cls.return_value
         mock_mgr.summary_path.exists.return_value = True
+        mock_mgr.run_cleanup.return_value = {}
         cleanup_memory("/tmp/instance")
         mock_mgr_cls.assert_called_once_with("/tmp/instance")
-        mock_mgr.run_cleanup.assert_called_once()
+        mock_mgr.run_cleanup.assert_called_once_with(
+            max_learnings_lines=200,
+            compact_learnings_lines=100,
+            global_personality_max=150,
+            global_emotional_max=100,
+        )
         mock_write.assert_called_once()
         out = capsys.readouterr().out
         assert "Running memory cleanup" in out
 
+    @patch("app.startup_manager._load_memory_config", return_value={
+        "learnings_max_lines": 100, "learnings_hard_cap": 200,
+        "global_personality_max": 150, "global_emotional_max": 100,
+        "compaction_interval_hours": 24,
+    })
     @patch("app.startup_manager._should_run_cleanup", return_value=True)
     @patch("app.startup_manager._write_cleanup_marker")
     @patch("app.memory_manager.MemoryManager")
-    def test_hydrates_on_cold_boot(self, mock_mgr_cls, mock_write, mock_should, capsys):
+    def test_hydrates_on_cold_boot(self, mock_mgr_cls, mock_write, mock_should, mock_cfg, capsys):
         """When summary.md is missing but SNAPSHOT.md exists, hydrate first."""
         from app.startup_manager import cleanup_memory
         mock_mgr = mock_mgr_cls.return_value
         mock_mgr.summary_path.exists.return_value = False
+        mock_mgr.run_cleanup.return_value = {}
         snapshot_mock = type("P", (), {"exists": lambda s: True})()
         mock_mgr.memory_dir.__truediv__ = lambda s, x: snapshot_mock
         mock_mgr.instance_dir.__truediv__ = lambda s, x: type("P", (), {"exists": lambda s: False})()
@@ -215,10 +232,15 @@ class TestCleanupMemory:
         out = capsys.readouterr().out
         assert "Cold boot detected" in out
 
+    @patch("app.startup_manager._load_memory_config", return_value={
+        "learnings_max_lines": 100, "learnings_hard_cap": 200,
+        "global_personality_max": 150, "global_emotional_max": 100,
+        "compaction_interval_hours": 24,
+    })
     @patch("app.startup_manager._should_run_cleanup", return_value=False)
     @patch("app.startup_manager._cleanup_marker_path")
     @patch("app.memory_manager.MemoryManager")
-    def test_skips_when_recent(self, mock_mgr_cls, mock_marker_path, mock_should, tmp_path, capsys):
+    def test_skips_when_recent(self, mock_mgr_cls, mock_marker_path, mock_should, mock_cfg, tmp_path, capsys):
         """Cleanup should be skipped if it ran recently."""
         import time
         from app.startup_manager import cleanup_memory
@@ -271,6 +293,46 @@ class TestCleanupThrottle:
         assert marker.exists()
         ts = float(marker.read_text().strip())
         assert abs(ts - time.time()) < 5
+
+
+# ---------------------------------------------------------------------------
+# Test: _load_memory_config
+# ---------------------------------------------------------------------------
+
+class TestLoadMemoryConfig:
+    def test_defaults_when_no_config(self):
+        from app.startup_manager import _load_memory_config
+        with patch("app.utils.load_config", side_effect=Exception("no config")):
+            cfg = _load_memory_config()
+        assert cfg["learnings_max_lines"] == 100
+        assert cfg["learnings_hard_cap"] == 200
+        assert cfg["global_personality_max"] == 150
+        assert cfg["global_emotional_max"] == 100
+        assert cfg["compaction_interval_hours"] == 24
+
+    def test_overrides_from_config(self):
+        from app.startup_manager import _load_memory_config
+        mock_config = {
+            "memory": {
+                "learnings_max_lines": 50,
+                "learnings_hard_cap": 300,
+                "compaction_interval_hours": 12,
+            }
+        }
+        with patch("app.utils.load_config", return_value=mock_config):
+            cfg = _load_memory_config()
+        assert cfg["learnings_max_lines"] == 50
+        assert cfg["learnings_hard_cap"] == 300
+        assert cfg["compaction_interval_hours"] == 12
+        # Unset values use defaults
+        assert cfg["global_personality_max"] == 150
+        assert cfg["global_emotional_max"] == 100
+
+    def test_empty_memory_section(self):
+        from app.startup_manager import _load_memory_config
+        with patch("app.utils.load_config", return_value={"memory": None}):
+            cfg = _load_memory_config()
+        assert cfg["learnings_max_lines"] == 100
 
 
 # ---------------------------------------------------------------------------
