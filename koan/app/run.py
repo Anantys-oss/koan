@@ -1411,12 +1411,14 @@ def _run_iteration(
         _notify(instance, f"⚠️ Budget tracker error: {plan['tracker_error']} — running in review-only mode until fixed")
 
     # Display usage
-    log("quota", "Usage Status:")
+    log("quota", "Usage (token estimate — may differ from real API quota):")
     if plan["display_lines"]:
         for line in plan["display_lines"]:
             print(f"  {line}")
     else:
         print("  [No usage data available - using fallback mode]")
+    if plan.get("cost_today"):
+        print(f"  Cost today: ${plan['cost_today']:.2f}")
     print(f"  Safety margin: 10% → Available: {plan['available_pct']}%")
     print()
 

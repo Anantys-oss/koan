@@ -108,11 +108,15 @@ def _get_usage_decision(usage_md: Path, count: int, projects_str: str):
             if weekly_match:
                 display_lines.append(weekly_match.group(0).strip())
 
+        # Get today's actual cost from cost tracker (accurate, not estimated)
+        cost_today = _get_cost_today(usage_md.parent)
+
         return {
             "mode": mode,
             "available_pct": available_pct,
             "reason": reason,
             "display_lines": display_lines,
+            "cost_today": cost_today,
         }
     except (ImportError, OSError, ValueError) as e:
         _log_iteration("error", f"Usage tracker error: {e}")
@@ -123,6 +127,20 @@ def _get_usage_decision(usage_md: Path, count: int, projects_str: str):
             "display_lines": [],
             "tracker_error": str(e),
         }
+
+
+def _get_cost_today(instance_dir: Path) -> float:
+    """Get today's actual API cost from cost tracker JSONL data.
+
+    Returns 0.0 if cost tracking is unavailable.
+    """
+    try:
+        from app.cost_tracker import summarize_day
+        summary = summarize_day(instance_dir)
+        return summary.get("total_cost_usd", 0.0)
+    except Exception as e:
+        _log_iteration("error", f"Cost tracker read failed: {e}")
+        return 0.0
 
 
 def _inject_recurring(instance_dir: Path):
@@ -607,7 +625,7 @@ def _make_result(*, action, project_name, project_path="",
                  recurring_injected, focus_remaining=None,
                  passive_remaining=None,
                  schedule_mode="normal", error=None,
-                 tracker_error=None):
+                 tracker_error=None, cost_today=0.0):
     """Build a standardised iteration-plan result dict."""
     return {
         "action": action,
@@ -625,6 +643,7 @@ def _make_result(*, action, project_name, project_path="",
         "schedule_mode": schedule_mode,
         "error": error,
         "tracker_error": tracker_error,
+        "cost_today": cost_today,
     }
 
 
@@ -738,6 +757,7 @@ def plan_iteration(
     decision_reason = decision["reason"]
     display_lines = decision["display_lines"]
     tracker_error = decision.get("tracker_error")
+    cost_today = decision.get("cost_today", 0.0)
     _log_iteration("koan", f"Usage decision: mode={autonomous_mode}, available={available_pct}%")
 
     # Step 2b: Check schedule and cap mode based on deep_hours config.
@@ -957,6 +977,7 @@ def plan_iteration(
         recurring_injected=recurring_injected,
         schedule_mode=schedule_state.mode if schedule_state else "normal",
         tracker_error=tracker_error,
+        cost_today=cost_today,
     )
 
 

@@ -1,6 +1,5 @@
 """Claude Code CLI provider implementation."""
 
-import subprocess
 from typing import List, Optional, Tuple
 
 from app.provider.base import CLIProvider
@@ -73,28 +72,13 @@ class ClaudeProvider(CLIProvider):
         return flags
 
     def check_quota_available(self, project_path: str, timeout: int = 15) -> Tuple[bool, str]:
-        """Check Claude API quota via ``claude usage`` (no tokens consumed).
+        """Check Claude API quota availability.
 
-        Runs ``claude usage`` and checks the output for quota exhaustion
-        signals. Unlike a prompt-based probe, this costs zero tokens.
+        Note: ``claude usage`` is not a real subcommand — it would be
+        interpreted as a prompt and hang.  Instead, we always return
+        True and rely on quota_handler.py to detect exhaustion from
+        the actual CLI output after each run.
         """
-        cmd = [self.binary(), "usage"]
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                cwd=project_path,
-            )
-            combined = (result.stderr or "") + "\n" + (result.stdout or "")
-            from app.quota_handler import detect_quota_exhaustion
-            if detect_quota_exhaustion(combined):
-                return False, combined
-            return True, ""
-        except subprocess.TimeoutExpired:
-            # Timeout — proceed optimistically
-            return True, ""
-        except (subprocess.SubprocessError, OSError, ImportError):
-            # Non-quota error — proceed optimistically
-            return True, ""
+        # No lightweight zero-cost probe exists in the Claude CLI.
+        # Quota exhaustion is detected post-run by quota_handler.py.
+        return True, ""

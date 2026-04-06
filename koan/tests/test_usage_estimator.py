@@ -240,8 +240,8 @@ class TestWriteUsageMd:
         _write_usage_md(state, usage_md, config)
 
         content = usage_md.read_text()
-        assert "Session (5hr) : 25%" in content
-        assert "Weekly (7 day) : 25%" in content
+        assert "Session (5hr) : ~25%" in content
+        assert "Weekly (7 day) : ~25%" in content
         assert "reset in" in content
 
     def test_caps_at_100_percent(self, tmp_path, usage_md):
@@ -332,8 +332,8 @@ class TestCmdRefresh:
         cmd_refresh(state_file, usage_md)
 
         content = usage_md.read_text()
-        assert "Session (5hr) : 10%" in content
-        assert "Weekly (7 day) : 5%" in content
+        assert "Session (5hr) : ~10%" in content
+        assert "Weekly (7 day) : ~5%" in content
 
     @patch("app.usage_estimator.load_config", return_value={})
     def test_fresh_state_if_no_file(self, mock_config, state_file, usage_md):
@@ -673,7 +673,7 @@ class TestCmdResetSession:
         cmd_reset_session(state_file, usage_md)
 
         content = usage_md.read_text()
-        assert "Session (5hr) : 0%" in content
+        assert "Session (5hr) : ~0%" in content
 
     @patch("app.usage_estimator.load_config", return_value={
         "usage": {"session_token_limit": 500000, "weekly_token_limit": 5000000}
@@ -721,7 +721,7 @@ class TestCmdResetSession:
 
         # Now usage.md should show 0% session, which means mode != "wait"
         content = usage_md.read_text()
-        assert "Session (5hr) : 0%" in content
+        assert "Session (5hr) : ~0%" in content
 
     @patch("app.usage_estimator.load_config", return_value={})
     def test_cli_reset_session(self, mock_config, tmp_path):
