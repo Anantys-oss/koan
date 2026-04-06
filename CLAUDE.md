@@ -99,7 +99,7 @@ Communication between processes happens through shared files in `instance/` with
 - **`claude_step.py`** — Shared helpers for git operations and Claude CLI invocation (used by pr_review, rebase_pr, recreate_pr)
 
 **Other:**
-- **`memory_manager.py`** — Per-project memory isolation and compaction
+- **`memory_manager.py`** — Per-project memory isolation, compaction, and cleanup. Includes semantic learnings compaction (Claude-powered dedup/merge), global memory file rotation, and configurable thresholds via `config.yaml` `memory:` section
 - **`usage_tracker.py`** — Budget tracking; decides autonomous mode (REVIEW/IMPLEMENT/DEEP/WAIT) based on quota percentage
 - **`recover.py`** — Crash recovery for stale in-progress missions
 - **`prompts.py`** — System prompt loader; `load_prompt()` for `koan/system-prompts/*.md`, `load_skill_prompt()` for skill-bound prompts

@@ -1075,6 +1075,28 @@ Kōan maintains persistent memory across sessions through several interconnected
 
 Memory is automatically compacted over time. Kōan uses it to build context for each mission, remembering past decisions, patterns, and mistakes.
 
+#### Memory Compaction
+
+Kōan runs automatic memory maintenance every 24 hours (configurable) during the startup cleanup cycle:
+
+1. **Learnings dedup** — Removes exact-duplicate lines from `learnings.md` files
+2. **Semantic compaction** — Uses Claude (lightweight model) to merge redundant entries, remove references to deleted code, and consolidate by topic. Cross-references the project's file tree to identify obsolete entries.
+3. **Hard cap** — Safety-net truncation that keeps only the most recent entries if the file is still too large after compaction
+4. **Global memory rotation** — Truncates append-only files (`personality-evolution.md`, `emotional-memory.md`) to prevent unbounded growth
+
+Configure thresholds in `config.yaml`:
+
+```yaml
+memory:
+  learnings_max_lines: 100        # Target after semantic compaction
+  learnings_hard_cap: 200         # Absolute max (safety net)
+  global_personality_max: 150     # Max lines for personality-evolution.md
+  global_emotional_max: 100       # Max lines for emotional-memory.md
+  compaction_interval_hours: 24   # How often cleanup runs
+```
+
+Manual compaction via CLI: `python3 memory_manager.py <instance_dir> compact-learnings [project]`
+
 ### Personality Customization
 
 Edit `instance/soul.md` to define Kōan's personality. This file shapes how Kōan communicates, what tone it uses, and what personality traits it exhibits. It's loaded into every interaction.
