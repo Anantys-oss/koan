@@ -504,6 +504,47 @@ class MemoryManager:
         atomic_write(learnings_path, "\n".join(result) + "\n")
         return removed
 
+    def cap_global_memory(self, filename: str, max_lines: int = 150) -> int:
+        """Truncate an append-only global memory file to keep recent entries.
+
+        Same logic as cap_learnings but for files under memory/global/.
+        Preserves the # header and keeps the last max_lines content lines.
+        Only triggers when content exceeds the threshold.
+
+        Returns number of lines removed.
+        """
+        filepath = self.memory_dir / "global" / filename
+        if not filepath.exists():
+            return 0
+
+        try:
+            content = filepath.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            print(f"[memory_manager] Error reading {filepath}: {e}", file=sys.stderr)
+            return 0
+
+        lines = content.splitlines()
+
+        headers = []
+        content_lines = []
+        in_header = True
+        for line in lines:
+            if in_header and (line.startswith("#") or line.strip() == ""):
+                headers.append(line)
+            else:
+                in_header = False
+                content_lines.append(line)
+
+        if len(content_lines) <= max_lines:
+            return 0
+
+        removed = len(content_lines) - max_lines
+        kept = content_lines[-max_lines:]
+
+        result = headers + ["", f"_(oldest {removed} entries rotated)_", ""] + kept
+        atomic_write(filepath, "\n".join(result) + "\n")
+        return removed
+
     def compact_learnings(
         self,
         project_name: str,
@@ -885,6 +926,17 @@ class MemoryManager:
                     capped = self.cap_learnings(name, max_learnings_lines)
                     if capped > 0:
                         stats[f"learnings_capped_{name}"] = capped
+
+        # Cap append-only global memory files
+        _GLOBAL_CAPS = {
+            "personality-evolution.md": 150,
+            "emotional-memory.md": 100,
+        }
+        for filename, cap in _GLOBAL_CAPS.items():
+            capped = self.cap_global_memory(filename, cap)
+            if capped > 0:
+                stem = filename.replace(".md", "").replace("-", "_")
+                stats[f"global_capped_{stem}"] = capped
 
         journal_stats = self.archive_journals(archive_after_days, delete_after_days)
         stats.update(journal_stats)
