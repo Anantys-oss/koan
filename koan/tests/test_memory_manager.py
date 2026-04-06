@@ -796,6 +796,78 @@ class TestCompactLearnings:
 
 
 # ---------------------------------------------------------------------------
+# cap_global_memory (global memory file rotation)
+# ---------------------------------------------------------------------------
+
+class TestCapGlobalMemory:
+
+    def _write_global(self, tmp_path, filename, content):
+        p = tmp_path / "memory" / "global"
+        p.mkdir(parents=True, exist_ok=True)
+        (p / filename).write_text(content)
+        return p / filename
+
+    def test_caps_oversized_file(self, tmp_path):
+        lines = ["# Personality Evolution", ""]
+        for i in range(200):
+            lines.append(f"- reflection {i}")
+        path = self._write_global(tmp_path, "personality-evolution.md", "\n".join(lines))
+
+        mgr = MemoryManager(str(tmp_path))
+        removed = mgr.cap_global_memory("personality-evolution.md", max_lines=150)
+        assert removed == 50
+        content = path.read_text()
+        assert "reflection 199" in content
+        assert "reflection 0" not in content
+        assert "rotated" in content
+
+    def test_no_cap_when_small(self, tmp_path):
+        self._write_global(tmp_path, "emotional-memory.md", "# Emotional\n\n- happy\n- calm\n")
+        mgr = MemoryManager(str(tmp_path))
+        assert mgr.cap_global_memory("emotional-memory.md", max_lines=100) == 0
+
+    def test_missing_file(self, tmp_path):
+        mgr = MemoryManager(str(tmp_path))
+        assert mgr.cap_global_memory("nonexistent.md") == 0
+
+    def test_preserves_header(self, tmp_path):
+        lines = ["# Personality Evolution", ""]
+        for i in range(200):
+            lines.append(f"- reflection {i}")
+        path = self._write_global(tmp_path, "personality-evolution.md", "\n".join(lines))
+
+        mgr = MemoryManager(str(tmp_path))
+        mgr.cap_global_memory("personality-evolution.md", max_lines=50)
+        content = path.read_text()
+        assert content.startswith("# Personality Evolution")
+
+    def test_run_cleanup_caps_global_files(self, tmp_path):
+        """run_cleanup caps personality-evolution.md and emotional-memory.md."""
+        mem = tmp_path / "memory"
+        mem.mkdir()
+        (mem / "summary.md").write_text("# Summary\n")
+
+        global_dir = mem / "global"
+        global_dir.mkdir()
+
+        # personality-evolution: 200 lines (threshold 150)
+        lines = ["# PE", ""]
+        for i in range(200):
+            lines.append(f"- reflection {i}")
+        (global_dir / "personality-evolution.md").write_text("\n".join(lines))
+
+        # emotional-memory: 150 lines (threshold 100)
+        lines = ["# EM", ""]
+        for i in range(150):
+            lines.append(f"- feeling {i}")
+        (global_dir / "emotional-memory.md").write_text("\n".join(lines))
+
+        stats = run_cleanup(str(tmp_path))
+        assert stats.get("global_capped_personality_evolution", 0) == 50
+        assert stats.get("global_capped_emotional_memory", 0) == 50
+
+
+# ---------------------------------------------------------------------------
 # Archive safety: write archives BEFORE deleting sources
 # ---------------------------------------------------------------------------
 
