@@ -459,6 +459,65 @@ class TestRunCleanup:
         stats = run_cleanup(str(tmp_path))
         assert stats["summary_compacted"] == 0
 
+    def test_pipeline_runs_dedup_compact_cap_in_order(self, tmp_path):
+        """Verify the three-step learnings pipeline: dedup -> compact -> cap."""
+        mem = tmp_path / "memory"
+        mem.mkdir()
+        (mem / "summary.md").write_text("# Summary\n")
+
+        proj = mem / "projects" / "koan"
+        proj.mkdir(parents=True)
+        lines = ["# Learnings", ""]
+        # 250 unique lines + 50 duplicates = dedup should remove 50
+        for i in range(250):
+            lines.append(f"- fact {i}")
+        for i in range(50):
+            lines.append(f"- fact {i}")  # duplicates
+        (proj / "learnings.md").write_text("\n".join(lines))
+
+        call_order = []
+        original_cleanup = MemoryManager.cleanup_learnings
+        original_compact = MemoryManager.compact_learnings
+        original_cap = MemoryManager.cap_learnings
+
+        def track_cleanup(self, name):
+            call_order.append("dedup")
+            return original_cleanup(self, name)
+
+        def track_compact(self, name, max_lines=100):
+            call_order.append("compact")
+            return {"skipped": True}
+
+        def track_cap(self, name, max_lines=200):
+            call_order.append("cap")
+            return original_cap(self, name, max_lines)
+
+        with patch.object(MemoryManager, "cleanup_learnings", track_cleanup), \
+             patch.object(MemoryManager, "compact_learnings", track_compact), \
+             patch.object(MemoryManager, "cap_learnings", track_cap):
+            run_cleanup(str(tmp_path))
+
+        assert call_order == ["dedup", "compact", "cap"]
+
+    def test_compaction_failure_does_not_break_pipeline(self, tmp_path):
+        """If compact_learnings raises, cap_learnings still runs."""
+        mem = tmp_path / "memory"
+        mem.mkdir()
+        (mem / "summary.md").write_text("# Summary\n")
+
+        proj = mem / "projects" / "koan"
+        proj.mkdir(parents=True)
+        lines = ["# Learnings", ""]
+        for i in range(300):
+            lines.append(f"- fact {i}")
+        (proj / "learnings.md").write_text("\n".join(lines))
+
+        with patch.object(MemoryManager, "compact_learnings", side_effect=RuntimeError("boom")):
+            stats = run_cleanup(str(tmp_path), max_learnings_lines=50)
+
+        # cap_learnings should still run as safety net
+        assert stats.get("learnings_capped_koan", 0) == 250
+
 
 # ---------------------------------------------------------------------------
 # _extract_session_digest
@@ -1133,7 +1192,9 @@ class TestMemoryManagerClass:
             lines.append(f"- fact {i}")
         (proj / "learnings.md").write_text("\n".join(lines))
 
-        stats = run_cleanup(str(tmp_path), max_learnings_lines=50)
+        # Mock compact_learnings so it doesn't interfere with cap test
+        with patch.object(MemoryManager, "compact_learnings", return_value={"skipped": True}):
+            stats = run_cleanup(str(tmp_path), max_learnings_lines=50)
         assert stats.get("learnings_capped_koan", 0) == 250
         content = (proj / "learnings.md").read_text()
         assert "fact 299" in content

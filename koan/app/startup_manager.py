@@ -161,8 +161,17 @@ def cleanup_memory(instance: str):
         if restored:
             log("health", f"Hydrated {len(restored)} file(s) from snapshot")
 
-    mgr.run_cleanup()
+    stats = mgr.run_cleanup()
     _write_cleanup_marker()
+
+    # Log notable compaction stats
+    for key, value in stats.items():
+        if key.startswith("learnings_compacted_"):
+            project = key[len("learnings_compacted_"):]
+            log("health", f"Learnings compacted for {project}: {value}")
+        elif key.startswith("global_capped_"):
+            name = key[len("global_capped_"):]
+            log("health", f"Global memory capped: {name} ({value} lines removed)")
 
 
 def prune_missions_done(instance: str):

@@ -911,6 +911,7 @@ class MemoryManager:
         archive_after_days: int = 30,
         delete_after_days: int = 90,
         max_learnings_lines: int = 200,
+        compact_learnings_lines: int = 100,
     ) -> dict:
         """Run all cleanup tasks. Returns stats dict."""
         stats = {}
@@ -920,9 +921,20 @@ class MemoryManager:
             for project_dir in self.projects_dir.iterdir():
                 if project_dir.is_dir():
                     name = project_dir.name
+                    # Step 1: dedup exact duplicates
                     removed = self.cleanup_learnings(name)
                     if removed > 0:
                         stats[f"learnings_dedup_{name}"] = removed
+                    # Step 2: semantic compaction (Claude-powered)
+                    try:
+                        compact_stats = self.compact_learnings(name, compact_learnings_lines)
+                        if not compact_stats.get("skipped"):
+                            stats[f"learnings_compacted_{name}"] = (
+                                f"{compact_stats['original_lines']}->{compact_stats['compacted_lines']}"
+                            )
+                    except Exception as e:
+                        print(f"[memory_manager] Compaction failed for {name}: {e}", file=sys.stderr)
+                    # Step 3: hard cap as safety net
                     capped = self.cap_learnings(name, max_learnings_lines)
                     if capped > 0:
                         stats[f"learnings_capped_{name}"] = capped
@@ -1000,10 +1012,12 @@ def run_cleanup(
     archive_after_days: int = 30,
     delete_after_days: int = 90,
     max_learnings_lines: int = 200,
+    compact_learnings_lines: int = 100,
 ) -> dict:
     """Run all cleanup tasks. Returns stats dict."""
     return MemoryManager(instance_dir).run_cleanup(
-        max_sessions, archive_after_days, delete_after_days, max_learnings_lines
+        max_sessions, archive_after_days, delete_after_days,
+        max_learnings_lines, compact_learnings_lines,
     )
 
 
