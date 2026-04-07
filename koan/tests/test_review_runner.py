@@ -751,6 +751,25 @@ class TestRunClaudeReview:
     @patch("app.claude_step.run_claude")
     @patch("app.cli_provider.build_full_command", return_value=["claude", "--test"])
     @patch("app.config.get_model_config", return_value={"mission": "m", "fallback": "f"})
+    def test_failure_logs_stdout_to_stderr(
+        self, mock_config, mock_build, mock_claude, capsys,
+    ):
+        """When CLI fails with stdout content, it is logged for diagnostics."""
+        from app.review_runner import _run_claude_review
+
+        mock_claude.return_value = {
+            "success": False,
+            "output": "Error: context window exceeded",
+            "error": "Exit code 1: no stderr | stdout: Error: context window exceeded",
+        }
+        _run_claude_review("prompt", "/tmp/project")
+        captured = capsys.readouterr()
+        assert "stdout from failed run" in captured.err
+        assert "context window exceeded" in captured.err
+
+    @patch("app.claude_step.run_claude")
+    @patch("app.cli_provider.build_full_command", return_value=["claude", "--test"])
+    @patch("app.config.get_model_config", return_value={"mission": "m", "fallback": "f"})
     def test_default_timeout_is_600(
         self, mock_config, mock_build, mock_claude,
     ):

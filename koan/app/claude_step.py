@@ -157,6 +157,12 @@ def run_claude(cmd: list, cwd: str, timeout: int = 600) -> dict:
         )
         if result.returncode != 0:
             stderr_snippet = result.stderr[-500:] if result.stderr else "no stderr"
+            # When stderr is empty, stdout often contains the actual error
+            # (e.g. "Error: context window exceeded").  Include it so callers
+            # get actionable diagnostics instead of just "no stderr".
+            stdout_text = result.stdout.strip()
+            if not result.stderr and stdout_text:
+                stderr_snippet = f"no stderr | stdout: {stdout_text[-500:]}"
             log_event(SUBPROCESS_EXEC, details={
                 "cmd": _redact_list(cmd),
                 "cwd": cwd,
@@ -164,7 +170,7 @@ def run_claude(cmd: list, cwd: str, timeout: int = 600) -> dict:
             }, result="failure")
             return {
                 "success": False,
-                "output": result.stdout.strip(),
+                "output": stdout_text,
                 "error": f"Exit code {result.returncode}: {stderr_snippet}",
             }
         log_event(SUBPROCESS_EXEC, details={
