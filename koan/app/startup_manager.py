@@ -8,6 +8,7 @@ Called from run.py's main_loop() during process initialization.
 """
 
 import os
+import time
 from pathlib import Path
 
 from app.run_log import log
@@ -228,12 +229,31 @@ def handle_start_on_pause(koan_root: str):
     to prevent auto-resume from a previous session. Preserves
     manual pauses (user explicitly requested via /pause).
 
-    Skipped when KOAN_SKIP_START_PAUSE=1 (set by /resume auto-restart
-    to avoid immediately re-pausing the freshly launched runner).
+    Skipped when:
+    - KOAN_SKIP_START_PAUSE=1 (set by /resume auto-restart to avoid
+      immediately re-pausing the freshly launched runner).
+    - .koan-skip-start-pause file exists with a recent timestamp (set by
+      /resume during startup to prevent the race where handle_start_on_pause
+      re-creates the pause file after /resume removed it).
     """
     if os.environ.get("KOAN_SKIP_START_PAUSE") == "1":
         log("pause", "start_on_pause skipped (KOAN_SKIP_START_PAUSE=1)")
         return
+
+    from app.signals import SKIP_START_PAUSE_FILE
+
+    skip_file = Path(koan_root) / SKIP_START_PAUSE_FILE
+    if skip_file.exists():
+        try:
+            ts = int(skip_file.read_text().strip())
+            age = time.time() - ts
+            if age < 300:  # Fresh (< 5 min) — /resume was sent during startup
+                skip_file.unlink(missing_ok=True)
+                log("pause", "start_on_pause skipped (/resume requested during startup)")
+                return
+        except (ValueError, OSError):
+            pass
+        skip_file.unlink(missing_ok=True)
 
     from app.utils import get_start_on_pause
 

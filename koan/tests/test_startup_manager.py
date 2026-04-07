@@ -453,6 +453,38 @@ class TestHandleStartOnPause:
         handle_start_on_pause(str(koan_root))
         assert (koan_root / ".koan-pause").exists()
 
+    @patch("app.utils.get_start_on_pause", return_value=True)
+    def test_skip_when_skip_file_exists(self, mock_config, koan_root, capsys):
+        """Fresh .koan-skip-start-pause prevents pause creation (/resume during startup)."""
+        import time as _time
+        (koan_root / ".koan-skip-start-pause").write_text(str(int(_time.time())))
+        from app.startup_manager import handle_start_on_pause
+        handle_start_on_pause(str(koan_root))
+        assert not (koan_root / ".koan-pause").exists()
+        assert not (koan_root / ".koan-skip-start-pause").exists()  # cleaned up
+        out = capsys.readouterr().out
+        assert "skipped" in out.lower()
+
+    @patch("app.utils.get_start_on_pause", return_value=True)
+    def test_stale_skip_file_ignored(self, mock_config, koan_root, capsys):
+        """Stale .koan-skip-start-pause (>5min) does not prevent pause."""
+        import time as _time
+        stale_ts = int(_time.time()) - 600  # 10 minutes ago
+        (koan_root / ".koan-skip-start-pause").write_text(str(stale_ts))
+        from app.startup_manager import handle_start_on_pause
+        handle_start_on_pause(str(koan_root))
+        assert (koan_root / ".koan-pause").exists()
+        assert not (koan_root / ".koan-skip-start-pause").exists()  # cleaned up
+
+    @patch("app.utils.get_start_on_pause", return_value=True)
+    def test_corrupt_skip_file_ignored(self, mock_config, koan_root):
+        """Corrupt .koan-skip-start-pause does not prevent pause."""
+        (koan_root / ".koan-skip-start-pause").write_text("not-a-number")
+        from app.startup_manager import handle_start_on_pause
+        handle_start_on_pause(str(koan_root))
+        assert (koan_root / ".koan-pause").exists()
+        assert not (koan_root / ".koan-skip-start-pause").exists()
+
 
 # ---------------------------------------------------------------------------
 # Test: setup_git_identity
