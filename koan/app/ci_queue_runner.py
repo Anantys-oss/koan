@@ -75,7 +75,7 @@ def drain_one(instance_dir: str) -> Optional[str]:
 
     Also migrates legacy .ci-queue.json entries to ## CI on first call.
     """
-    from app.missions import get_ci_items
+    from app.missions import get_ci_items, remove_ci_item, update_ci_item_attempt
     from app.utils import modify_missions_file
 
     missions_path = Path(instance_dir) / "missions.md"
@@ -83,6 +83,10 @@ def drain_one(instance_dir: str) -> Optional[str]:
     # One-time migration from legacy JSON queue
     _maybe_migrate_json_queue(instance_dir, missions_path)
 
+    # NOTE: We read missions.md outside the modify_missions_file lock. Between
+    # this read and the later locked write, another process could modify the file.
+    # This is an accepted race — check_ci_status() is the slow external call,
+    # and the lambdas passed to modify_missions_file re-read content under lock.
     content = missions_path.read_text() if missions_path.exists() else ""
     items = get_ci_items(content)
     if not items:
@@ -102,7 +106,7 @@ def drain_one(instance_dir: str) -> Optional[str]:
     if status == "success":
         modify_missions_file(
             missions_path,
-            lambda c: __import__("app.missions", fromlist=["remove_ci_item"]).remove_ci_item(c, pr_url),
+            lambda c: remove_ci_item(c, pr_url),
         )
         _write_outbox(
             instance_dir,
@@ -115,7 +119,7 @@ def drain_one(instance_dir: str) -> Optional[str]:
             # Increment attempt counter, inject fix mission
             modify_missions_file(
                 missions_path,
-                lambda c: __import__("app.missions", fromlist=["update_ci_item_attempt"]).update_ci_item_attempt(c, pr_url),
+                lambda c: update_ci_item_attempt(c, pr_url),
             )
             _inject_ci_fix_mission(instance_dir, pr_url, entry)
             return f"CI failed for PR #{pr_number} — /ci_check mission queued (attempt {attempt + 1}/{max_attempts})"
@@ -123,7 +127,7 @@ def drain_one(instance_dir: str) -> Optional[str]:
             # Max attempts exhausted
             modify_missions_file(
                 missions_path,
-                lambda c: __import__("app.missions", fromlist=["remove_ci_item"]).remove_ci_item(c, pr_url),
+                lambda c: remove_ci_item(c, pr_url),
             )
             _write_outbox(
                 instance_dir,
@@ -134,7 +138,7 @@ def drain_one(instance_dir: str) -> Optional[str]:
     if status == "none":
         modify_missions_file(
             missions_path,
-            lambda c: __import__("app.missions", fromlist=["remove_ci_item"]).remove_ci_item(c, pr_url),
+            lambda c: remove_ci_item(c, pr_url),
         )
         return f"No CI runs found for PR #{pr_number} — removed from ## CI"
 
