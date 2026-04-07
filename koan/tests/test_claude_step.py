@@ -287,6 +287,20 @@ class TestRunClaude:
         assert "no stderr" in result["error"]
 
     @patch("app.cli_exec.subprocess.run")
+    def test_failure_no_stderr_includes_stdout(self, mock_run):
+        """When stderr is empty but stdout has content, error includes stdout."""
+        mock_run.return_value = MagicMock(
+            returncode=1,
+            stdout="Error: context window exceeded",
+            stderr="",
+        )
+        result = run_claude(["claude", "-p", "test"], "/project")
+        assert result["success"] is False
+        assert "no stderr" in result["error"]
+        assert "stdout:" in result["error"]
+        assert "context window exceeded" in result["error"]
+
+    @patch("app.cli_exec.subprocess.run")
     def test_timeout(self, mock_run):
         mock_run.side_effect = subprocess.TimeoutExpired(cmd="claude", timeout=600)
         result = run_claude(["claude", "-p", "test"], "/project")
