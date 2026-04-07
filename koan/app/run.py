@@ -1417,7 +1417,7 @@ def _run_iteration(
             print(f"  {line}")
     else:
         print("  [No usage data available - using fallback mode]")
-    if plan.get("cost_today"):
+    if plan.get("cost_today", 0.0) > 0:
         print(f"  Cost today: ${plan['cost_today']:.2f}")
     print(f"  Safety margin: 10% → Available: {plan['available_pct']}%")
     print()
