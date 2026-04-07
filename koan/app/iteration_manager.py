@@ -138,7 +138,7 @@ def _get_cost_today(instance_dir: Path) -> float:
         from app.cost_tracker import summarize_day
         summary = summarize_day(instance_dir)
         return summary.get("total_cost_usd", 0.0)
-    except Exception as e:
+    except (ImportError, OSError, ValueError, KeyError) as e:
         _log_iteration("error", f"Cost tracker read failed: {e}")
         return 0.0
 
