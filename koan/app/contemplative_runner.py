@@ -34,6 +34,7 @@ def build_contemplative_command(
     project_name: str,
     session_info: str,
     extra_flags: Optional[List[str]] = None,
+    github_nickname: Optional[str] = None,
 ) -> List[str]:
     """Build the full CLI command for a contemplative session.
 
@@ -42,16 +43,30 @@ def build_contemplative_command(
         project_name: Current project name.
         session_info: Context string for the session.
         extra_flags: Additional CLI flags (model, fallback, etc.).
+        github_nickname: Bot's GitHub nickname for the pre-check guard.
+            If None, resolved from config at build time.  Pass empty string
+            to explicitly disable (e.g. GitHub not configured).
 
     Returns:
         Complete command list ready for subprocess.run().
     """
     from app.prompt_builder import build_contemplative_prompt
 
+    if github_nickname is None:
+        try:
+            from app.utils import load_config
+            from app.github_config import get_github_nickname
+            cfg = load_config()
+            github_nickname = get_github_nickname(cfg)
+        except Exception as e:
+            print(f"[contemplative_runner] Could not load GitHub nickname: {e}", file=sys.stderr)
+            github_nickname = ""
+
     prompt = build_contemplative_prompt(
         instance=instance,
         project_name=project_name,
         session_info=session_info,
+        github_nickname=github_nickname,
     )
 
     from app.cli_provider import build_full_command

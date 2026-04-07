@@ -526,6 +526,7 @@ def build_contemplative_prompt(
     instance: str,
     project_name: str,
     session_info: str,
+    github_nickname: str = "",
 ) -> str:
     """Build the contemplative session prompt from template.
 
@@ -533,6 +534,9 @@ def build_contemplative_prompt(
         instance: Path to instance directory
         project_name: Current project name
         session_info: Context about current session state
+        github_nickname: Bot's GitHub nickname for pre-check instructions.
+            Pass empty string (default) when GitHub is not configured — the
+            prompt's GitHub section will be omitted automatically.
 
     Returns:
         Complete contemplative prompt string
@@ -544,7 +548,27 @@ def build_contemplative_prompt(
         INSTANCE=instance,
         PROJECT_NAME=project_name,
         SESSION_INFO=session_info,
+        GITHUB_NICKNAME=github_nickname,
     )
+
+    # Strip the GitHub pre-check block when no nickname is configured.
+    # The block is delimited by {GITHUB_CHECK_BLOCK_START} / {GITHUB_CHECK_BLOCK_END}
+    # sentinel lines in the template.
+    if not github_nickname:
+        import re
+        prompt = re.sub(
+            r"\{GITHUB_CHECK_BLOCK_START\}.*?\{GITHUB_CHECK_BLOCK_END\}\n?",
+            "",
+            prompt,
+            flags=re.DOTALL,
+        )
+    else:
+        # Remove the sentinel markers, leaving the block content intact.
+        prompt = prompt.replace("{GITHUB_CHECK_BLOCK_START}\n", "")
+        prompt = prompt.replace("{GITHUB_CHECK_BLOCK_END}\n", "")
+        prompt = prompt.replace("{GITHUB_CHECK_BLOCK_START}", "")
+        prompt = prompt.replace("{GITHUB_CHECK_BLOCK_END}", "")
+
     _warn_unresolved_placeholders(prompt, "contemplative")
 
     # Append language preference (overrides soul.md default)
@@ -577,6 +601,7 @@ def main():
     contemplate_parser.add_argument("--instance", required=True)
     contemplate_parser.add_argument("--project-name", required=True)
     contemplate_parser.add_argument("--session-info", required=True)
+    contemplate_parser.add_argument("--github-nickname", default="")
 
     args = parser.parse_args()
 
@@ -597,6 +622,7 @@ def main():
             instance=args.instance,
             project_name=args.project_name,
             session_info=args.session_info,
+            github_nickname=args.github_nickname,
         ))
 
 

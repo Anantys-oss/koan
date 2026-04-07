@@ -590,6 +590,7 @@ class TestBuildContemplativePrompt:
             INSTANCE=prompt_env["instance"],
             PROJECT_NAME="testproj",
             SESSION_INFO="Pause mode. Run loop paused.",
+            GITHUB_NICKNAME="",
         )
         assert result == "Contemplative template"
 
@@ -606,6 +607,52 @@ class TestBuildContemplativePrompt:
         call_kwargs = mock_load.call_args[1]
         assert "Run 5/25" in call_kwargs["SESSION_INFO"]
         assert "deep" in call_kwargs["SESSION_INFO"]
+
+    def test_github_nickname_included_in_prompt(self, prompt_env):
+        """When github_nickname is set, the pre-check block appears with the nickname."""
+        result = build_contemplative_prompt(
+            instance=prompt_env["instance"],
+            project_name="testproj",
+            session_info="Run 1/10",
+            github_nickname="Koan-Bot",
+        )
+        assert "Koan-Bot" in result
+        # Sentinel markers must not remain in the output
+        assert "GITHUB_CHECK_BLOCK_START" not in result
+        assert "GITHUB_CHECK_BLOCK_END" not in result
+        # The pre-check instructions should be present
+        assert "gh issue view" in result
+        assert "gh pr list" in result
+
+    def test_github_nickname_empty_omits_check_block(self, prompt_env):
+        """When github_nickname is empty, the pre-check block is stripped."""
+        result = build_contemplative_prompt(
+            instance=prompt_env["instance"],
+            project_name="testproj",
+            session_info="Run 1/10",
+            github_nickname="",
+        )
+        # Sentinel markers must not remain
+        assert "GITHUB_CHECK_BLOCK_START" not in result
+        assert "GITHUB_CHECK_BLOCK_END" not in result
+        # GitHub-specific instructions should be absent
+        assert "gh issue view" not in result
+        assert "gh pr list" not in result
+
+    def test_github_nickname_default_is_empty(self, prompt_env):
+        """github_nickname defaults to empty string (no GitHub check block)."""
+        result_default = build_contemplative_prompt(
+            instance=prompt_env["instance"],
+            project_name="testproj",
+            session_info="Run 1/10",
+        )
+        result_explicit_empty = build_contemplative_prompt(
+            instance=prompt_env["instance"],
+            project_name="testproj",
+            session_info="Run 1/10",
+            github_nickname="",
+        )
+        assert result_default == result_explicit_empty
 
 
 # --- Tests for CLI interface ---
@@ -666,6 +713,7 @@ class TestCLI:
             instance=prompt_env["instance"],
             project_name="koan",
             session_info="Pause mode",
+            github_nickname="",
         )
         captured = capsys.readouterr()
         assert "Contemplate output" in captured.out

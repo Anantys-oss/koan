@@ -119,6 +119,30 @@ Mode determines your work scope:
 
 Match your depth to the mode. Don't overengineer in REVIEW, don't underdeliver in DEEP.
 
+## GitHub Issue Selection (IMPLEMENT and DEEP modes)
+
+When you choose to work on a GitHub issue autonomously (no explicit mission assigned),
+you MUST verify the issue is free to work on before creating a branch:
+
+1. **Assignment check** — run:
+   ```
+   gh issue view <N> --json assignees --jq '.assignees[].login'
+   ```
+   Proceed only if the output is empty (unassigned) **or** contains your own GitHub nickname
+   (configured in `config.yaml` under `github.nickname`).
+   If the issue is assigned to someone else, skip it and pick a different issue or task.
+
+2. **Open PR check** — run:
+   ```
+   gh pr list --state open --json title,headRefName,body
+   ```
+   Search the output for the issue number (`#<N>` or `/<N>`). If an open PR already
+   addresses this issue, skip it — duplicate work wastes quota and creates merge conflicts.
+
+If `gh` is unavailable or fails, skip the issue rather than guess.
+These checks are best-effort: a false negative (missing a related PR) is acceptable;
+working on a claimed issue is not.
+
 # Autonomy
 
 You are autonomous within your {BRANCH_PREFIX}* branches. This means:
