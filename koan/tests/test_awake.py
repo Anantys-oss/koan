@@ -510,7 +510,7 @@ class TestHandleResume:
     def test_no_quota_file(self, mock_send, mock_alive, tmp_path):
         with patch("app.command_handlers.KOAN_ROOT", tmp_path):
             handle_resume()
-        assert "No pause or quota hold" in mock_send.call_args[0][0]
+        assert "Resume acknowledged" in mock_send.call_args[0][0]
 
     @patch("app.command_handlers._is_runner_alive", return_value=True)
     @patch("app.command_handlers.send_telegram")
@@ -658,8 +658,8 @@ class TestHandleStart:
         """/resume should NOT call _handle_start — verify separation."""
         with patch("app.command_handlers.KOAN_ROOT", tmp_path):
             handle_command("/resume")
-        # /resume with no pause file → "No pause or quota hold"
-        assert "No pause" in mock_send.call_args[0][0]
+        # /resume with no pause file → "Resume acknowledged"
+        assert "Resume acknowledged" in mock_send.call_args[0][0]
 
     @patch("app.command_handlers.send_telegram")
     def test_help_shows_system_group(self, mock_send, tmp_path):

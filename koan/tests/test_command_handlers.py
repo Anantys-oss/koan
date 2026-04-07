@@ -497,7 +497,67 @@ class TestHandleResume:
         from app.command_handlers import handle_resume
         handle_resume()
         mock_send.assert_called_once()
-        assert "No pause" in mock_send.call_args[0][0]
+        assert "Resume acknowledged" in mock_send.call_args[0][0]
+        # Skip file should be created to prevent startup re-pause
+        assert (patch_bridge_state / ".koan-skip-start-pause").exists()
+
+    def test_resume_creates_skip_file(self, mock_alive, patch_bridge_state, mock_send):
+        """Resuming from pause writes .koan-skip-start-pause to prevent race."""
+        from app.command_handlers import handle_resume
+        (patch_bridge_state / ".koan-pause").touch()
+        handle_resume()
+        assert (patch_bridge_state / ".koan-skip-start-pause").exists()
+
+
+# ---------------------------------------------------------------------------
+# Test: /resume during startup race condition
+# ---------------------------------------------------------------------------
+
+@patch("app.command_handlers._is_runner_alive", return_value=True)
+class TestResumeDuringStartupRace:
+    """Verify /resume during startup prevents handle_start_on_pause from re-pausing.
+
+    Bug: if /resume is sent while the runner is still in run_startup()
+    (e.g., during the startup notification), handle_start_on_pause either
+    hasn't run yet (re-creates pause) or already ran (pause was just removed
+    but the startup log still shows paused). The skip file mechanism ensures
+    that no matter when /resume arrives during startup, the pause is not
+    re-created.
+    """
+
+    @patch("app.utils.get_start_on_pause", return_value=True)
+    def test_resume_before_start_on_pause_prevents_repause(
+        self, mock_config, mock_alive, patch_bridge_state, mock_send
+    ):
+        """Scenario: /resume arrives before handle_start_on_pause runs."""
+        from app.command_handlers import handle_resume
+        from app.startup_manager import handle_start_on_pause
+
+        # No pause file yet (startup hasn't created it)
+        handle_resume()
+        # Now startup runs handle_start_on_pause
+        handle_start_on_pause(str(patch_bridge_state))
+        # The skip file should prevent the pause from being created
+        assert not (patch_bridge_state / ".koan-pause").exists()
+
+    @patch("app.utils.get_start_on_pause", return_value=True)
+    def test_resume_after_start_on_pause_prevents_repause(
+        self, mock_config, mock_alive, patch_bridge_state, mock_send
+    ):
+        """Scenario: /resume arrives after handle_start_on_pause created the pause."""
+        from app.command_handlers import handle_resume
+        from app.startup_manager import handle_start_on_pause
+
+        # Startup creates the pause first
+        handle_start_on_pause(str(patch_bridge_state))
+        assert (patch_bridge_state / ".koan-pause").exists()
+        # Then /resume removes it
+        handle_resume()
+        assert not (patch_bridge_state / ".koan-pause").exists()
+        # If startup were to call handle_start_on_pause again (e.g., after
+        # a crash-restart), the skip file prevents re-pause
+        handle_start_on_pause(str(patch_bridge_state))
+        assert not (patch_bridge_state / ".koan-pause").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -1744,11 +1804,11 @@ class TestHandleResumeAutoRestart:
     def test_resume_no_pause_alive_runner_shows_info(
         self, mock_alive, patch_bridge_state, mock_send
     ):
-        """When no pause and runner is alive, show info message."""
+        """When no pause and runner is alive, show resume acknowledged message."""
         from app.command_handlers import handle_resume
         handle_resume()
         mock_send.assert_called_once()
-        assert "No pause" in mock_send.call_args[0][0]
+        assert "Resume acknowledged" in mock_send.call_args[0][0]
 
     @patch("app.pid_manager.check_pidfile", return_value=None)
     @patch("app.pid_manager.start_runner", return_value=(True, "Agent loop started (PID 999)"))
