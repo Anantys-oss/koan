@@ -58,9 +58,10 @@ def _get_skills_dir_mtime(instance_dir: Path) -> float:
     return best
 
 
-# Mapping of skill command names to their CLI runner modules.
-# Each entry: command_name -> (module_name, arg_builder_function_name)
-_SKILL_RUNNERS = {
+# Canonical skill command names -> runner modules.
+# Aliases are declared separately in _COMMAND_ALIASES and expanded
+# programmatically into _SKILL_RUNNERS to avoid duplication (#1094).
+_CANONICAL_RUNNERS = {
     "plan": "app.plan_runner",
     "implement": "skills.core.implement.implement_runner",
     "fix": "skills.core.fix.fix_runner",
@@ -75,18 +76,40 @@ _SKILL_RUNNERS = {
     "profile": "skills.core.profile.profile_runner",
     "brainstorm": "skills.core.brainstorm.brainstorm_runner",
     "deepplan": "skills.core.deepplan.deepplan_runner",
-    "deeplan": "skills.core.deepplan.deepplan_runner",
     "claudemd": "app.claudemd_refresh",
-    "claude": "app.claudemd_refresh",
-    "claude.md": "app.claudemd_refresh",
-    "claude_md": "app.claudemd_refresh",
     "incident": "skills.core.incident.incident_runner",
     "audit": "skills.core.audit.audit_runner",
     "security_audit": "skills.core.security_audit.security_audit_runner",
-    "security": "skills.core.security_audit.security_audit_runner",
-    "secu": "skills.core.security_audit.security_audit_runner",
     "ci_check": "app.ci_queue_runner",
 }
+
+# Alias -> canonical command name. Declared once, expanded into
+# _SKILL_RUNNERS and used by _resolve_canonical() for builder/validator
+# dispatch. Adding a new alias only requires one entry here.
+_COMMAND_ALIASES = {
+    "deeplan": "deepplan",
+    "claude": "claudemd",
+    "claude.md": "claudemd",
+    "claude_md": "claudemd",
+    "security": "security_audit",
+    "secu": "security_audit",
+}
+
+# Full mapping including aliases — used for runner module lookup.
+_SKILL_RUNNERS = {
+    **_CANONICAL_RUNNERS,
+    **{alias: _CANONICAL_RUNNERS[canonical]
+       for alias, canonical in _COMMAND_ALIASES.items()},
+}
+
+
+def _resolve_canonical(command: str) -> str:
+    """Resolve a command alias to its canonical name.
+
+    Returns the canonical name if ``command`` is an alias, otherwise
+    returns ``command`` unchanged.
+    """
+    return _COMMAND_ALIASES.get(command, command)
 
 # Commands that look like /skills but should be sent to Claude as regular
 # missions. The /prefix is stripped and the remaining text becomes the task.
@@ -255,11 +278,14 @@ def build_skill_command(
     python = sys.executable
     base_cmd = [python, "-m", runner_module]
 
-    # Dispatch to command-specific builder
+    # Resolve alias to canonical name so the builder dict only needs
+    # canonical entries — no duplication for aliases (#1094, #1096).
+    canonical = _resolve_canonical(command)
+
+    # Dispatch to command-specific builder (canonical names only).
     _COMMAND_BUILDERS = {
         "brainstorm": lambda: _build_brainstorm_cmd(base_cmd, args, project_path),
         "deepplan": lambda: _build_deepplan_cmd(base_cmd, args, project_path),
-        "deeplan": lambda: _build_deepplan_cmd(base_cmd, args, project_path),
         "plan": lambda: _build_plan_cmd(base_cmd, args, project_path),
         "implement": lambda: _build_implement_cmd(base_cmd, args, project_path),
         "fix": lambda: _build_implement_cmd(base_cmd, args, project_path),
@@ -277,9 +303,6 @@ def build_skill_command(
         ),
         "profile": lambda: _build_profile_cmd(base_cmd, args, project_path, instance_dir),
         "claudemd": lambda: _build_claudemd_cmd(base_cmd, project_name, project_path),
-        "claude": lambda: _build_claudemd_cmd(base_cmd, project_name, project_path),
-        "claude.md": lambda: _build_claudemd_cmd(base_cmd, project_name, project_path),
-        "claude_md": lambda: _build_claudemd_cmd(base_cmd, project_name, project_path),
         "incident": lambda: _build_incident_cmd(base_cmd, args, project_path, instance_dir),
         "audit": lambda: _build_audit_cmd(
             base_cmd, args, project_name, project_path, instance_dir,
@@ -287,16 +310,10 @@ def build_skill_command(
         "security_audit": lambda: _build_audit_cmd(
             base_cmd, args, project_name, project_path, instance_dir,
         ),
-        "security": lambda: _build_audit_cmd(
-            base_cmd, args, project_name, project_path, instance_dir,
-        ),
-        "secu": lambda: _build_audit_cmd(
-            base_cmd, args, project_name, project_path, instance_dir,
-        ),
         "ci_check": lambda: _build_pr_url_cmd(base_cmd, args, project_path),
     }
 
-    builder = _COMMAND_BUILDERS.get(command)
+    builder = _COMMAND_BUILDERS.get(canonical)
     if builder:
         return builder()
     # Fallback: use generic builder for auto-discovered runners
@@ -709,26 +726,28 @@ def validate_skill_args(command: str, args: str) -> Optional[str]:
     Returns None if the command is unknown (caller should handle that case)
     or if the args are valid.
 
-    Note: validation mirrors the URL checks in _build_pr_url_cmd,
-    _build_implement_cmd, and _build_check_cmd. Update both when
-    adding new URL-requiring skills.
+    Aliases are resolved to their canonical name before validation (#1097),
+    so ``/secu`` gets the same validation as ``/security_audit``.
     """
     if command not in _SKILL_RUNNERS:
         return None
 
-    if command in ("rebase", "recreate", "review", "squash", "ci_check"):
+    canonical = _resolve_canonical(command)
+
+    # Validation rules use canonical names — aliases inherit automatically.
+    if canonical in ("rebase", "recreate", "review", "squash", "ci_check"):
         if not _PR_URL_RE.search(args):
             return (
                 f"/{command} requires a PR URL "
                 f"(e.g. https://github.com/owner/repo/pull/123)"
             )
-    elif command in ("implement", "fix"):
+    elif canonical in ("implement", "fix"):
         if not (_ISSUE_URL_RE.search(args) or _PR_URL_RE.search(args)):
             return (
                 f"/{command} requires a GitHub issue or PR URL "
                 f"(e.g. https://github.com/owner/repo/issues/42)"
             )
-    elif command == "check":
+    elif canonical == "check":
         if not (_PR_URL_RE.search(args) or _ISSUE_URL_RE.search(args)):
             return "/check requires a GitHub URL (PR or issue)"
 
