@@ -24,6 +24,7 @@ from app.claude_step import (
     run_claude_step as _run_claude_step,
     run_project_tests,
 )
+from app.config import get_skill_max_turns
 from app.github import run_gh
 from app.prompts import load_prompt_or_skill
 from app.rebase_pr import fetch_pr_context, _find_remote_for_repo
@@ -253,7 +254,7 @@ def run_pr_review(
             success_label="Addressed reviewer feedback",
             failure_label="Review feedback step failed",
             actions_log=actions_log,
-            max_turns=30,
+            max_turns=get_skill_max_turns(),
         )
 
     # ── Step 4: Refactor pass ─────────────────────────────────────────
@@ -309,7 +310,7 @@ def run_pr_review(
                 success_label="",  # handled below via retest
                 failure_label="",
                 actions_log=[],  # discard — we log based on retest below
-                max_turns=15,
+                max_turns=get_skill_max_turns(),
                 timeout=600,
             )
 

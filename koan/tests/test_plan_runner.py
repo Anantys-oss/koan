@@ -478,15 +478,16 @@ class TestGenerateIterationPlan:
 # ---------------------------------------------------------------------------
 
 class TestRunClaudePlan:
+    @patch("app.config.get_skill_max_turns", return_value=50)
     @patch("app.config.get_skill_timeout", return_value=3600)
     @patch("app.cli_provider.run_command_streaming", return_value="result with spaces")
-    def test_returns_stripped_output(self, mock_cmd, mock_timeout):
+    def test_returns_stripped_output(self, mock_cmd, mock_timeout, mock_turns):
         result = _run_claude_plan("test prompt", "/project")
         assert result == "result with spaces"
         mock_cmd.assert_called_once_with(
             "test prompt", "/project",
             allowed_tools=["Read", "Glob", "Grep", "WebFetch"],
-            max_turns=25, timeout=3600,
+            max_turns=50, timeout=3600,
         )
 
     @patch("app.cli_provider.run_command_streaming",

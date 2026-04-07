@@ -36,6 +36,7 @@ from app.claude_step import (
     strip_cli_noise,
     wait_for_ci,
 )
+from app.config import get_skill_max_turns
 from app.git_utils import ordered_remotes as _ordered_remotes
 from app.github import run_gh
 from app.prompts import load_prompt, load_prompt_or_skill, load_skill_prompt  # noqa: F401 — safety import
@@ -782,7 +783,7 @@ def _resolve_rebase_conflicts(
             allowed_tools=["Bash", "Read", "Write", "Glob", "Grep", "Edit"],
             model=models["mission"],
             fallback=models["fallback"],
-            max_turns=15,
+            max_turns=get_skill_max_turns(),
         )
         result = run_claude(cmd, project_path, timeout=300)
 
@@ -960,7 +961,7 @@ def _fix_existing_ci_failures(
         success_label="Applied pre-push CI fix",
         failure_label="Pre-push CI fix step produced no changes",
         actions_log=actions_log,
-        max_turns=15,
+        max_turns=get_skill_max_turns(),
     )
 
     if fixed:
@@ -1086,7 +1087,7 @@ def _run_ci_check_and_fix(
             success_label=f"Applied CI fix (attempt {attempt})",
             failure_label=f"CI fix step failed (attempt {attempt})",
             actions_log=actions_log,
-            max_turns=15,
+            max_turns=get_skill_max_turns(),
         )
 
         if not fixed:
@@ -1171,7 +1172,7 @@ def _apply_review_feedback(
         allowed_tools=["Bash", "Read", "Write", "Glob", "Grep", "Edit"],
         model=models["mission"],
         fallback=models["fallback"],
-        max_turns=20,
+        max_turns=get_skill_max_turns(),
     )
 
     result = run_claude(cmd, project_path, timeout=600)

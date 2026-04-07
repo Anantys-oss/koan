@@ -331,7 +331,7 @@ def _run_claude_review(
     """
     from app.claude_step import run_claude
     from app.cli_provider import build_full_command
-    from app.config import get_model_config
+    from app.config import get_model_config, get_skill_max_turns
 
     models = get_model_config()
     cmd = build_full_command(
@@ -339,7 +339,7 @@ def _run_claude_review(
         allowed_tools=["Read", "Glob", "Grep"],
         model=models["mission"],
         fallback=models["fallback"],
-        max_turns=15,
+        max_turns=get_skill_max_turns(),
     )
 
     result = run_claude(cmd, project_path, timeout=timeout)
