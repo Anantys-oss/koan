@@ -346,7 +346,17 @@ def _run_claude_review(
     if result["success"]:
         return result["output"], ""
     error = result.get("error", "unknown error")
-    print(f"[review_runner] Claude review failed: {error}", file=sys.stderr)
+    # Log stdout from the failed run — it often contains the actual error
+    # that stderr does not (Claude CLI reports many errors via stdout).
+    stdout = result.get("output", "")
+    if stdout:
+        print(
+            f"[review_runner] Claude review failed: {error}\n"
+            f"[review_runner] stdout from failed run (last 500 chars): {stdout[-500:]}",
+            file=sys.stderr,
+        )
+    else:
+        print(f"[review_runner] Claude review failed: {error}", file=sys.stderr)
     return "", error
 
 
