@@ -22,6 +22,9 @@ def _mock_pr_context():
         patch("app.claude_step._get_current_branch", return_value="main"),
         patch("app.claude_step._run_git"),
         patch("app.claude_step._safe_checkout"),
+        patch("app.claude_step._fetch_branch"),
+        patch("app.rebase_pr._find_remote_for_repo", return_value="origin"),
+        patch("app.git_utils.ordered_remotes", return_value=["origin"]),
     ):
         yield
 
@@ -323,6 +326,73 @@ class TestAttemptCiFixes:
             PR_URL, "fix-branch", "owner/repo", "42", PROJECT_PATH,
         )
         assert any("re-enqueued" in a.lower() for a in actions_log)
+
+    def test_base_remote_used_for_diff(self):
+        """The base_remote parameter is used for git diff instead of hardcoded origin."""
+        from app.ci_queue_runner import _attempt_ci_fixes
+
+        run_git_calls = []
+
+        def capture_run_git(cmd, cwd=None, timeout=None):
+            run_git_calls.append(cmd)
+            return ""
+
+        with (
+            patch("app.claude_step._run_git", side_effect=capture_run_git),
+            patch("app.rebase_pr.truncate_text", side_effect=lambda t, n: t),
+            patch("app.rebase_pr._build_ci_fix_prompt", return_value="fix this"),
+            patch("app.claude_step.run_claude_step", return_value=False),
+        ):
+            actions_log = []
+            _attempt_ci_fixes(
+                branch="fix-branch",
+                base="main",
+                full_repo="owner/repo",
+                pr_number="42",
+                pr_url=PR_URL,
+                project_path=PROJECT_PATH,
+                context={"url": PR_URL},
+                ci_logs="Error: test failed",
+                actions_log=actions_log,
+                max_attempts=1,
+                base_remote="upstream",
+            )
+
+        # Verify the diff command uses the specified base_remote
+        diff_cmds = [c for c in run_git_calls if "diff" in c]
+        assert any("upstream/main" in str(c) for c in diff_cmds), (
+            f"Expected 'upstream/main' in diff command, got: {diff_cmds}"
+        )
+
+    def test_configurable_max_turns_used(self):
+        """run_claude_step is called with get_skill_max_turns() not a hardcoded value."""
+        from app.ci_queue_runner import _attempt_ci_fixes
+
+        with (
+            patch("app.claude_step._run_git", return_value=""),
+            patch("app.rebase_pr.truncate_text", side_effect=lambda t, n: t),
+            patch("app.rebase_pr._build_ci_fix_prompt", return_value="fix this"),
+            patch("app.claude_step.run_claude_step", return_value=False) as mock_step,
+            patch("app.config.get_skill_max_turns", return_value=42),
+            patch("app.config.get_skill_timeout", return_value=999),
+        ):
+            _attempt_ci_fixes(
+                branch="fix-branch",
+                base="main",
+                full_repo="owner/repo",
+                pr_number="42",
+                pr_url=PR_URL,
+                project_path=PROJECT_PATH,
+                context={"url": PR_URL},
+                ci_logs="Error: test failed",
+                actions_log=[],
+                max_attempts=1,
+            )
+
+        # Verify configurable values are passed through
+        call_kwargs = mock_step.call_args[1]
+        assert call_kwargs["max_turns"] == 42
+        assert call_kwargs["timeout"] == 999
 
     def test_reenqueue_called_on_pending_ci(self):
         """After pushing a fix, if CI is pending, the PR is re-enqueued in ## CI section."""

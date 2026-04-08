@@ -368,17 +368,36 @@ def run_ci_check_and_fix(pr_url: str, project_path: str) -> Tuple[bool, str]:
     if mergeable == "CONFLICTING":
         return False, "PR has merge conflicts — CI fix skipped (rebase needed first)."
 
-    # Checkout the PR branch
-    from app.claude_step import _get_current_branch, _run_git, _safe_checkout
+    # Checkout the PR branch using the safe pattern (fetch + checkout -B)
+    from app.claude_step import (
+        _fetch_branch, _get_current_branch, _run_git, _safe_checkout,
+    )
+    from app.rebase_pr import _find_remote_for_repo
 
     original_branch = _get_current_branch(project_path)
 
+    # Resolve remotes: base_remote for the PR target, head_remote for the branch
+    base_remote = _find_remote_for_repo(owner, repo, project_path) or "origin"
+    head_owner = context.get("head_owner", owner)
+    head_remote = _find_remote_for_repo(head_owner, repo, project_path)
+
     try:
+        from app.git_utils import ordered_remotes as _ordered_remotes
+        fetch_remote = None
+        for remote in _ordered_remotes(head_remote):
+            try:
+                _fetch_branch(remote, branch, cwd=project_path)
+                fetch_remote = remote
+                break
+            except (RuntimeError, OSError):
+                continue
+        if not fetch_remote:
+            return False, f"Branch `{branch}` not found on any remote"
+        # -B resets the local branch to match remote, avoiding stale state
         _run_git(
-            ["git", "fetch", "origin", f"{branch}:{branch}"],
+            ["git", "checkout", "-B", branch, f"{fetch_remote}/{branch}"],
             cwd=project_path,
         )
-        _run_git(["git", "checkout", branch], cwd=project_path)
     except Exception as e:
         return False, f"Failed to checkout {branch}: {e}"
 
@@ -396,6 +415,7 @@ def run_ci_check_and_fix(pr_url: str, project_path: str) -> Tuple[bool, str]:
             ci_logs=ci_logs,
             actions_log=actions_log,
             max_attempts=max_fix_attempts,
+            base_remote=base_remote,
         )
     except Exception as e:
         actions_log.append(f"CI check/fix crashed: {e}")
@@ -418,6 +438,7 @@ def _attempt_ci_fixes(
     ci_logs: str,
     actions_log: list,
     max_attempts: int,
+    base_remote: str = "origin",
 ) -> bool:
     """Attempt to fix CI failures using Claude. Returns True if CI passes."""
     from app.claude_step import (
@@ -425,6 +446,7 @@ def _attempt_ci_fixes(
         _run_git,
         run_claude_step,
     )
+    from app.config import get_skill_max_turns, get_skill_timeout
     from app.rebase_pr import (
         _build_ci_fix_prompt,
         _force_push,
@@ -439,7 +461,7 @@ def _attempt_ci_fixes(
         diff = ""
         try:
             diff = _run_git(
-                ["git", "diff", f"origin/{base}..HEAD"],
+                ["git", "diff", f"{base_remote}/{base}..HEAD"],
                 cwd=project_path, timeout=30,
             )
         except Exception as e:
@@ -456,7 +478,8 @@ def _attempt_ci_fixes(
             success_label=f"Applied CI fix (attempt {attempt})",
             failure_label=f"CI fix step failed (attempt {attempt})",
             actions_log=actions_log,
-            max_turns=15,
+            max_turns=get_skill_max_turns(),
+            timeout=get_skill_timeout(),
         )
 
         if not fixed:
