@@ -55,6 +55,54 @@ def _project_patches():
 # /ci_check — ownership
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Stale module cache — simulates long-running bridge after code update
+# ---------------------------------------------------------------------------
+
+class TestStaleCachedModule:
+    """Handlers must not crash when github_skill_helpers was cached before
+    is_own_pr was added (e.g. bridge process not restarted after update)."""
+
+    @pytest.mark.parametrize("skill_name", ["rebase", "ci_check"])
+    def test_handler_recovers_when_is_own_pr_missing(self, skill_name, ctx):
+        """Handler reloads github_skill_helpers if is_own_pr is absent."""
+        import json
+        import sys
+
+        ctx.args = "https://github.com/sukria/koan/pull/55"
+
+        module = sys.modules.get("app.github_skill_helpers")
+        if module is None:
+            import importlib
+            module = importlib.import_module("app.github_skill_helpers")
+
+        # Simulate stale cache: temporarily remove is_own_pr from the module
+        original_fn = getattr(module, "is_own_pr", None)
+        if original_fn is None:
+            pytest.skip("is_own_pr already absent — cannot simulate stale cache")
+        del module.is_own_pr
+        assert not hasattr(module, "is_own_pr"), "setup: is_own_pr should be gone"
+
+        handler = _load_handler(skill_name)
+        try:
+            with _project_patches()[0], _project_patches()[1], \
+                 patch("app.github.run_gh",
+                       return_value=json.dumps({"headRefName": "koan/fix-thing"})), \
+                 patch("app.config.get_branch_prefix", return_value="koan/"), \
+                 patch("app.utils.insert_pending_mission"):
+                result = handler.handle(ctx)
+                # Must NOT surface the raw AttributeError
+                assert "has no attribute 'is_own_pr'" not in result, (
+                    f"Handler exposed stale-module AttributeError: {result}"
+                )
+                # Handler should either queue or reject, not error out
+                assert "queued" in result.lower() or "Not my PR" in result, (
+                    f"Unexpected response: {result}"
+                )
+        finally:
+            module.is_own_pr = original_fn
+
+
 class TestCiCheckOwnership:
     @pytest.fixture
     def handler(self):
