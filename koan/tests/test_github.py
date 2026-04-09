@@ -975,3 +975,29 @@ class TestSanitizeGithubComment:
         result = sanitize_github_comment(text)
         assert "`@copilot`" in result
         assert "@copilot:" not in result.split("`@copilot`")[0]
+
+    def test_bare_dependabot(self):
+        assert sanitize_github_comment("Thanks @dependabot") == "Thanks `@dependabot`"
+
+    def test_bare_dependabot_capitalized(self):
+        assert sanitize_github_comment("@Dependabot updated") == "`@Dependabot` updated"
+
+    def test_dependabot_already_escaped(self):
+        assert sanitize_github_comment("`@dependabot` is fine") == "`@dependabot` is fine"
+
+    def test_dependabot_no_partial_match(self):
+        assert sanitize_github_comment("@dependabot-preview is different") == "@dependabot-preview is different"
+
+    def test_bare_github_actions(self):
+        assert sanitize_github_comment("See @github-actions run") == "See `@github-actions` run"
+
+    def test_github_actions_capitalized(self):
+        assert sanitize_github_comment("@GitHub-Actions failed") == "`@GitHub-Actions` failed"
+
+    def test_github_actions_already_escaped(self):
+        assert sanitize_github_comment("`@github-actions` ok") == "`@github-actions` ok"
+
+    def test_mixed_bots(self):
+        text = "@copilot and @dependabot and @github-actions"
+        result = sanitize_github_comment(text)
+        assert result == "`@copilot` and `@dependabot` and `@github-actions`"

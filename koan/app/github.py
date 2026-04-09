@@ -20,21 +20,29 @@ from app.retry import (
 )
 
 
-# Regex to match bare @copilot mentions (case-insensitive), with negative
+# Bot usernames whose @mentions should be escaped in GitHub comments to
+# avoid triggering automated bot responses.
+_BOT_USERNAMES = ('copilot', 'dependabot', 'github-actions')
+
+# Regex to match bare @bot mentions (case-insensitive), with negative
 # lookbehind/lookahead to skip already-backtick-escaped variants.
-_COPILOT_RE = re.compile(r'(?<!`)@(copilot)\b(?!`)', re.IGNORECASE)
+_BOT_MENTION_RE = re.compile(
+    r'(?<!`)@(' + '|'.join(re.escape(u) for u in _BOT_USERNAMES) + r')\b(?!`)',
+    re.IGNORECASE,
+)
 
 
-def sanitize_github_comment(text: str) -> str:
-    """Escape bare @copilot mentions so GitHub doesn't trigger the Copilot bot.
+def sanitize_github_comment(text: Optional[str]) -> Optional[str]:
+    """Escape bare bot @mentions so GitHub doesn't trigger automated bots.
 
-    Replaces ``@copilot`` (any capitalisation) with `` `@copilot` `` unless it
-    is already enclosed in backticks.  Safe to call on any string including
-    empty strings and ``None`` values.
+    Replaces ``@copilot``, ``@dependabot``, ``@github-actions`` (any
+    capitalisation) with backtick-escaped variants unless already enclosed
+    in backticks.  Safe to call on any string including empty strings and
+    ``None`` values.
     """
     if not text:
         return text
-    return _COPILOT_RE.sub(r'`@\1`', text)
+    return _BOT_MENTION_RE.sub(r'`@\1`', text)
 
 
 class SSOAuthRequired(RuntimeError):
