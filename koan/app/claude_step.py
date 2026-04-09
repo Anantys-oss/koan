@@ -250,15 +250,16 @@ def run_claude_step(
         max_turns=max_turns,
     )
 
+    from app.commit_conventions import parse_commit_subject
+
     result = run_claude(cmd, project_path, timeout=timeout)
     if result["success"]:
         effective_msg = commit_msg
         if use_convention_subject:
-            from app.commit_conventions import parse_commit_subject
             output = strip_cli_noise(result.get("output", ""))
             parsed = parse_commit_subject(output)
             if parsed:
-                effective_msg = parsed
+                effective_msg = _sanitize_commit_subject(parsed)
         committed = commit_if_changes(project_path, effective_msg)
         if committed and success_label:
             actions_log.append(success_label)
@@ -548,6 +549,24 @@ def _build_pr_prompt(
         COMMIT_SUBJECT_INSTRUCTION=commit_subject_instruction,
     )
     return load_prompt_or_skill(skill_dir, prompt_name, **kwargs)
+
+
+def _sanitize_commit_subject(subject: str) -> str:
+    """Sanitize a parsed commit subject for safe use in git commit messages.
+
+    Strips control characters and collapses whitespace to prevent
+    malformed or adversarial subjects from breaking git log output.
+    """
+    import unicodedata
+
+    # Strip control characters (keep printable + spaces)
+    cleaned = "".join(
+        ch for ch in subject
+        if not unicodedata.category(ch).startswith("C") or ch == "\t"
+    )
+    # Collapse whitespace and strip
+    cleaned = " ".join(cleaned.split()).strip()
+    return cleaned
 
 
 def _load_commit_subject_instruction(skill_dir: Optional[Path] = None) -> str:
