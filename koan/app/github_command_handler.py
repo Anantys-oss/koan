@@ -171,6 +171,64 @@ def get_github_enabled_commands_with_descriptions(
     return sorted(commands.items())
 
 
+# Group labels for the help message, keyed by SKILL.md ``group`` field.
+_GROUP_LABELS: Dict[str, str] = {
+    "code": "Code & Development",
+    "pr": "Pull Requests",
+    "status": "Status & Info",
+    "missions": "Missions",
+    "config": "Configuration",
+    "ideas": "Ideas & Planning",
+    "system": "System",
+}
+
+
+def _get_github_enabled_skills(registry: SkillRegistry) -> List[Tuple[str, "Skill"]]:
+    """Collect github-enabled skills, deduplicated by primary command name.
+
+    Returns a list of (primary_command_name, Skill) sorted by name.
+    """
+    from app.skills import Skill as _Skill  # noqa: F811 — local alias for type hint
+
+    seen: Dict[str, object] = {}
+    for skill in registry.list_all():
+        if not skill.github_enabled:
+            continue
+        for cmd in skill.commands:
+            if cmd.name not in seen:
+                seen[cmd.name] = skill
+    return sorted(seen.items(), key=lambda t: t[0])
+
+
+def _format_command_line(
+    cmd_name: str,
+    skill,
+    bot_username: str,
+) -> str:
+    """Format a single command entry for help output.
+
+    Includes emoji, command, aliases, and description.
+    """
+    # Find the matching SkillCommand for alias info
+    cmd_obj = None
+    for c in skill.commands:
+        if c.name == cmd_name:
+            cmd_obj = c
+            break
+
+    emoji = skill.emoji or ""
+    description = (cmd_obj.description if cmd_obj and cmd_obj.description else skill.description) or ""
+
+    # Build alias hint
+    aliases = ""
+    if cmd_obj and cmd_obj.aliases:
+        alias_str = ", ".join(f"`{a}`" for a in cmd_obj.aliases)
+        aliases = f" (alias: {alias_str})"
+
+    prefix = f"{emoji} " if emoji else ""
+    return f"- {prefix}`@{bot_username} {cmd_name}`{aliases} — {description}"
+
+
 def format_help_message(
     invalid_command: str,
     registry: SkillRegistry,
@@ -186,16 +244,49 @@ def format_help_message(
     Returns:
         A formatted markdown help message for GitHub comments.
     """
-    commands = get_github_enabled_commands_with_descriptions(registry)
-
     suggestion = registry.suggest_command(invalid_command)
     hint = f" Did you mean `{suggestion}`?" if suggestion else ""
-    lines = [f"Unknown command `{invalid_command}`.{hint} Here are the commands I support:\n"]
-    for name, description in commands:
-        lines.append(f"- `@{bot_username} {name}` — {description}")
-
+    lines = [f"Unknown command `{invalid_command}`.{hint}\n"]
+    lines.append(_build_grouped_command_list(registry, bot_username))
     lines.append(f"\nUsage: `@{bot_username} <command>` in any PR or issue comment.")
     return "\n".join(lines)
+
+
+def _build_grouped_command_list(
+    registry: SkillRegistry,
+    bot_username: str,
+) -> str:
+    """Build a grouped command list for help output.
+
+    Groups commands by their SKILL.md ``group`` field with section headers.
+    Commands without a recognized group go under "Other".
+    """
+    entries = _get_github_enabled_skills(registry)
+
+    # Bucket by group
+    groups: Dict[str, List[str]] = {}
+    for cmd_name, skill in entries:
+        group = skill.group or "other"
+        line = _format_command_line(cmd_name, skill, bot_username)
+        groups.setdefault(group, []).append(line)
+
+    # Render in a stable order: known groups first, then unknowns
+    lines: List[str] = []
+    for group_key, label in _GROUP_LABELS.items():
+        if group_key not in groups:
+            continue
+        lines.append(f"### {label}")
+        lines.extend(groups.pop(group_key))
+        lines.append("")
+
+    # Any remaining (unknown) groups
+    for group_key in sorted(groups):
+        label = group_key.replace("_", " ").title()
+        lines.append(f"### {label}")
+        lines.extend(groups[group_key])
+        lines.append("")
+
+    return "\n".join(lines).rstrip()
 
 
 def format_help_list_message(
@@ -214,13 +305,9 @@ def format_help_list_message(
     Returns:
         A formatted markdown help message for GitHub comments.
     """
-    commands = get_github_enabled_commands_with_descriptions(registry)
-
     lines = ["Here are the commands I support:\n"]
-    for name, description in commands:
-        lines.append(f"- `@{bot_username} {name}` — {description}")
-
-    lines.append(f"- `@{bot_username} help` — Show this help message")
+    lines.append(_build_grouped_command_list(registry, bot_username))
+    lines.append(f"\nℹ️ `@{bot_username} help` — Show this help message")
     lines.append(f"\nUsage: `@{bot_username} <command>` in any PR or issue comment.")
     return "\n".join(lines)
 
