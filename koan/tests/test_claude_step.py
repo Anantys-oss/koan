@@ -646,6 +646,96 @@ class TestRunClaudeStep:
         assert actions == []
 
 
+# ---------- run_claude_step with use_convention_subject ----------
+
+
+class TestRunClaudeStepConventionSubject:
+    """Tests for run_claude_step with use_convention_subject flag."""
+
+    @patch("app.claude_step.commit_if_changes", return_value=True)
+    @patch("app.claude_step.run_claude")
+    @patch("app.claude_step.build_full_command", return_value=["claude", "-p", "fix"])
+    @patch(
+        "app.claude_step.get_model_config",
+        return_value={"mission": "", "fallback": "", "chat": "", "lightweight": "", "review_mode": ""},
+    )
+    def test_uses_parsed_subject(self, _mc, _cmd, mock_claude, mock_commit):
+        """When use_convention_subject=True and Claude outputs COMMIT_SUBJECT,
+        the parsed subject should be used instead of the default."""
+        mock_claude.return_value = {
+            "success": True,
+            "output": "Fixed it.\nCOMMIT_SUBJECT: Case PROJECT-123 Fix auth\n",
+            "error": "",
+        }
+        actions = []
+        result = run_claude_step(
+            prompt="fix",
+            project_path="/project",
+            commit_msg="fix: default message",
+            success_label="OK",
+            failure_label="Fail",
+            actions_log=actions,
+            use_convention_subject=True,
+        )
+        assert result is True
+        commit_msg = mock_commit.call_args[0][1]
+        assert commit_msg == "Case PROJECT-123 Fix auth"
+
+    @patch("app.claude_step.commit_if_changes", return_value=True)
+    @patch("app.claude_step.run_claude")
+    @patch("app.claude_step.build_full_command", return_value=["claude", "-p", "fix"])
+    @patch(
+        "app.claude_step.get_model_config",
+        return_value={"mission": "", "fallback": "", "chat": "", "lightweight": "", "review_mode": ""},
+    )
+    def test_falls_back_to_default(self, _mc, _cmd, mock_claude, mock_commit):
+        """When use_convention_subject=True but no COMMIT_SUBJECT found,
+        falls back to the provided commit_msg."""
+        mock_claude.return_value = {
+            "success": True,
+            "output": "Fixed it.\n",
+            "error": "",
+        }
+        actions = []
+        run_claude_step(
+            prompt="fix",
+            project_path="/project",
+            commit_msg="fix: default message",
+            success_label="OK",
+            failure_label="Fail",
+            actions_log=actions,
+            use_convention_subject=True,
+        )
+        commit_msg = mock_commit.call_args[0][1]
+        assert commit_msg == "fix: default message"
+
+    @patch("app.claude_step.commit_if_changes", return_value=True)
+    @patch("app.claude_step.run_claude")
+    @patch("app.claude_step.build_full_command", return_value=["claude", "-p", "fix"])
+    @patch(
+        "app.claude_step.get_model_config",
+        return_value={"mission": "", "fallback": "", "chat": "", "lightweight": "", "review_mode": ""},
+    )
+    def test_disabled_by_default(self, _mc, _cmd, mock_claude, mock_commit):
+        """When use_convention_subject is False (default), always uses commit_msg."""
+        mock_claude.return_value = {
+            "success": True,
+            "output": "COMMIT_SUBJECT: should be ignored\n",
+            "error": "",
+        }
+        actions = []
+        run_claude_step(
+            prompt="fix",
+            project_path="/project",
+            commit_msg="fix: default",
+            success_label="OK",
+            failure_label="Fail",
+            actions_log=actions,
+        )
+        commit_msg = mock_commit.call_args[0][1]
+        assert commit_msg == "fix: default"
+
+
 # ---------- _get_current_branch ----------
 
 

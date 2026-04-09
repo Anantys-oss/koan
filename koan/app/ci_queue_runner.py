@@ -401,6 +401,12 @@ def run_ci_check_and_fix(pr_url: str, project_path: str) -> Tuple[bool, str]:
     except Exception as e:
         return False, f"Failed to checkout {branch}: {e}"
 
+    # Detect project commit conventions for convention-aware commit messages
+    from app.commit_conventions import get_project_commit_guidance
+    commit_conventions = get_project_commit_guidance(
+        project_path, f"{base_remote}/{base}",
+    )
+
     actions_log = []
 
     try:
@@ -416,6 +422,7 @@ def run_ci_check_and_fix(pr_url: str, project_path: str) -> Tuple[bool, str]:
             actions_log=actions_log,
             max_attempts=max_fix_attempts,
             base_remote=base_remote,
+            commit_conventions=commit_conventions,
         )
     except Exception as e:
         actions_log.append(f"CI check/fix crashed: {e}")
@@ -439,6 +446,7 @@ def _attempt_ci_fixes(
     actions_log: list,
     max_attempts: int,
     base_remote: str = "origin",
+    commit_conventions: str = "",
 ) -> bool:
     """Attempt to fix CI failures using Claude. Returns True if CI passes."""
     from app.claude_step import (
@@ -469,7 +477,10 @@ def _attempt_ci_fixes(
         diff = truncate_text(diff, 8000)
 
         # Build prompt and run Claude
-        ci_fix_prompt = _build_ci_fix_prompt(context, ci_logs, diff)
+        ci_fix_prompt = _build_ci_fix_prompt(
+            context, ci_logs, diff,
+            commit_conventions=commit_conventions,
+        )
 
         fixed = run_claude_step(
             prompt=ci_fix_prompt,
@@ -480,6 +491,7 @@ def _attempt_ci_fixes(
             actions_log=actions_log,
             max_turns=get_skill_max_turns(),
             timeout=get_skill_timeout(),
+            use_convention_subject=bool(commit_conventions),
         )
 
         if not fixed:
