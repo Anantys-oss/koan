@@ -237,7 +237,7 @@ def _save_processed_tracker(tracker_path: Path, processed: Set[str]) -> None:
         from app.utils import atomic_write
 
         # Trim to most recent 5000 entries (arbitrary stable order)
-        ids = sorted(processed)[-5000:]
+        ids = sorted(processed, key=lambda x: int(x) if x.isdigit() else 0)[-5000:]
         atomic_write(tracker_path, json.dumps(ids, indent=2))
     except Exception as e:
         log.debug("Failed to save Jira processed tracker: %s", e)
@@ -322,7 +322,13 @@ def _search_issues_with_comments(
     # Build JQL: project in (FOO, BAR) AND updated >= "YYYY-MM-DD HH:MM"
     # Jira JQL uses "YYYY-MM-DD HH:MM" format for datetime comparisons
     since_str = since.strftime("%Y-%m-%d %H:%M")
-    project_in = ", ".join(f'"{k}"' for k in project_keys)
+    # Validate project keys to prevent JQL injection (keys must be alphanumeric)
+    _PROJECT_KEY_RE = re.compile(r'^[A-Z0-9]+$')
+    safe_keys = [k for k in project_keys if _PROJECT_KEY_RE.match(k)]
+    if not safe_keys:
+        log.warning("Jira: no valid project keys after sanitization (got %s)", project_keys)
+        return []
+    project_in = ", ".join(f'"{k}"' for k in safe_keys)
     jql = f'project in ({project_in}) AND updated >= "{since_str}" ORDER BY updated DESC'
 
     issues = []
@@ -469,13 +475,21 @@ def fetch_jira_mentions(
     else:
         since = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
 
-    # Search for recently-updated issues
+    # Search for recently-updated issues (cap at 20 to limit API calls)
+    _MAX_ISSUES_PER_CYCLE = 20
     issues = _search_issues_with_comments(base_url, auth_header, project_keys, since)
     if not issues:
         log.debug("Jira: no recently-updated issues found")
         return JiraFetchResult([])
 
-    log.debug("Jira: found %d recently-updated issues", len(issues))
+    if len(issues) > _MAX_ISSUES_PER_CYCLE:
+        log.debug(
+            "Jira: found %d issues, capping at %d to limit API calls",
+            len(issues), _MAX_ISSUES_PER_CYCLE,
+        )
+        issues = issues[:_MAX_ISSUES_PER_CYCLE]
+    else:
+        log.debug("Jira: found %d recently-updated issues", len(issues))
 
     # Collect @mention comments from all issues
     mentions = []

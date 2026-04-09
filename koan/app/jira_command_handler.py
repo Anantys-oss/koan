@@ -94,7 +94,8 @@ def _check_user_permission(author_email: str, allowed_users: List[str]) -> bool:
     """
     if "*" in allowed_users:
         return True
-    return author_email in allowed_users
+    email_lower = author_email.lower()
+    return any(u.lower() == email_lower for u in allowed_users)
 
 
 def build_jira_mission(

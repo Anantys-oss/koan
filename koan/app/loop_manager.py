@@ -956,14 +956,13 @@ _jira_state_lock = threading.Lock()
 
 
 def _jira_log(message: str, level: str = "info") -> None:
-    """Print a console-visible log message for Jira notifications."""
-    print(f"[jira] {message}", flush=True)
+    """Log a message for Jira notifications."""
     if level == "debug":
-        log.debug(message)
+        log.debug("[jira] %s", message)
     elif level == "warning":
-        log.warning(message)
+        log.warning("[jira] %s", message)
     else:
-        log.info(message)
+        log.info("[jira] %s", message)
 
 
 def _get_effective_jira_interval_locked() -> int:
