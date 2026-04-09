@@ -520,7 +520,7 @@ def post_quality_comment(project_path: str, quality_report: dict) -> bool:
 
     Returns True if comment was posted.
     """
-    from app.github import run_gh
+    from app.github import run_gh, sanitize_github_comment
 
     # Only comment if there are actual issues
     has_issues = False
@@ -560,7 +560,7 @@ def post_quality_comment(project_path: str, quality_report: dict) -> bool:
 
     try:
         run_gh(
-            "pr", "comment", "--body", comment_body,
+            "pr", "comment", "--body", sanitize_github_comment(comment_body),
             cwd=project_path, timeout=15,
         )
         return True

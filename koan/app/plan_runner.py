@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 from typing import Optional, Tuple
 
-from app.github import run_gh, issue_create, api, fetch_issue_with_comments, resolve_target_repo
+from app.github import run_gh, issue_create, api, fetch_issue_with_comments, resolve_target_repo, sanitize_github_comment
 from app.github_url_parser import parse_github_url, parse_issue_url
 from app.prompts import load_prompt_or_skill
 
@@ -580,7 +580,7 @@ def _comment_on_issue(owner, repo, issue_number, body):
     """Post a comment on an existing GitHub issue."""
     api(
         f"repos/{owner}/{repo}/issues/{issue_number}/comments",
-        input_data=body,
+        input_data=sanitize_github_comment(body),
     )
 
 

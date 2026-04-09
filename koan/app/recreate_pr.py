@@ -29,7 +29,7 @@ from app.claude_step import (
     run_claude_step,
     run_project_tests,
 )
-from app.github import run_gh
+from app.github import run_gh, sanitize_github_comment
 from app.prompts import load_prompt, load_skill_prompt  # noqa: F401 — safety import
 from app.rebase_pr import (
     build_comment_summary,
@@ -196,7 +196,7 @@ def run_recreate(
         run_gh(
             "pr", "comment", pr_number,
             "--repo", full_repo,
-            "--body", comment_body,
+            "--body", sanitize_github_comment(comment_body),
         )
         actions_log.append("Commented on original PR")
     except Exception as e:

@@ -38,7 +38,7 @@ from app.claude_step import (
 )
 from app.config import get_skill_max_turns
 from app.git_utils import ordered_remotes as _ordered_remotes
-from app.github import run_gh
+from app.github import run_gh, sanitize_github_comment
 from app.prompts import load_prompt, load_prompt_or_skill, load_skill_prompt  # noqa: F401 — safety import
 from app.utils import _GITHUB_REMOTE_RE, truncate_text
 
@@ -411,7 +411,7 @@ def run_rebase(
         run_gh(
             "pr", "comment", pr_number,
             "--repo", full_repo,
-            "--body", comment_body,
+            "--body", sanitize_github_comment(comment_body),
         )
         actions_log.append("Commented on PR")
     except Exception as e:
@@ -551,7 +551,7 @@ def _close_pr_as_duplicate(
     )
 
     try:
-        run_gh("pr", "comment", pr_number, "--repo", full_repo, "--body", comment_text)
+        run_gh("pr", "comment", pr_number, "--repo", full_repo, "--body", sanitize_github_comment(comment_text))
     except Exception as e:
         print(f"[rebase_pr] PR comment failed: {e}", file=sys.stderr)
 
@@ -579,7 +579,7 @@ def _close_pr_as_duplicate(
             f"---\n_Automated by Kōan_"
         )
         try:
-            run_gh("issue", "comment", issue_num, "--repo", issue_repo, "--body", issue_comment)
+            run_gh("issue", "comment", issue_num, "--repo", issue_repo, "--body", sanitize_github_comment(issue_comment))
             run_gh("issue", "close", issue_num, "--repo", issue_repo)
         except Exception as e:
             print(f"[rebase_pr] issue close failed ({issue_repo}#{issue_num}): {e}", file=sys.stderr)

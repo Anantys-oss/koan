@@ -242,13 +242,13 @@ def _post_help_reply(
     Returns:
         True if posted successfully.
     """
-    from app.github import api
+    from app.github import api, sanitize_github_comment
 
     try:
         api(
             f"repos/{owner}/{repo}/issues/{issue_number}/comments",
             method="POST",
-            extra_args=["-f", f"body={help_message}"],
+            extra_args=["-f", f"body={sanitize_github_comment(help_message)}"],
         )
         return True
     except RuntimeError:
@@ -1128,9 +1128,9 @@ def post_error_reply(
     if error_key in _error_replies:
         return False
 
-    from app.github import api
+    from app.github import api, sanitize_github_comment
 
-    body = f"❌ {error_message}"
+    body = sanitize_github_comment(f"❌ {error_message}")
     try:
         api(
             f"repos/{owner}/{repo}/issues/{issue_number}/comments",

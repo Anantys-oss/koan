@@ -18,7 +18,7 @@ import re
 from typing import Optional
 
 from app.cli_provider import run_command
-from app.github import api
+from app.github import api, sanitize_github_comment
 from app.prompts import load_prompt
 from app.utils import truncate_text
 
@@ -249,10 +249,11 @@ def post_reply(
         True if posted successfully.
     """
     try:
+        safe_body = sanitize_github_comment(body)
         api(
             f"repos/{owner}/{repo}/issues/{issue_number}/comments",
             method="POST",
-            extra_args=["-f", f"body={body}"],
+            extra_args=["-f", f"body={safe_body}"],
         )
         return True
     except RuntimeError as e:

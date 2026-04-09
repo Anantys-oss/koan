@@ -20,6 +20,23 @@ from app.retry import (
 )
 
 
+# Regex to match bare @copilot mentions (case-insensitive), with negative
+# lookbehind/lookahead to skip already-backtick-escaped variants.
+_COPILOT_RE = re.compile(r'(?<!`)@(copilot)\b(?!`)', re.IGNORECASE)
+
+
+def sanitize_github_comment(text: str) -> str:
+    """Escape bare @copilot mentions so GitHub doesn't trigger the Copilot bot.
+
+    Replaces ``@copilot`` (any capitalisation) with `` `@copilot` `` unless it
+    is already enclosed in backticks.  Safe to call on any string including
+    empty strings and ``None`` values.
+    """
+    if not text:
+        return text
+    return _COPILOT_RE.sub(r'`@\1`', text)
+
+
 class SSOAuthRequired(RuntimeError):
     """Raised when a GitHub API call fails due to missing SSO authorization.
 
