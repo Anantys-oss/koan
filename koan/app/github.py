@@ -27,7 +27,7 @@ _BOT_USERNAMES = ('copilot', 'dependabot', 'github-actions')
 # Regex to match bare @bot mentions (case-insensitive), with negative
 # lookbehind/lookahead to skip already-backtick-escaped variants.
 _BOT_MENTION_RE = re.compile(
-    r'(?<!`)@(' + '|'.join(re.escape(u) for u in _BOT_USERNAMES) + r')\b(?!`)',
+    r'(?<!`)@(' + '|'.join(re.escape(u) for u in _BOT_USERNAMES) + r')(?![\w-])(?!`)',
     re.IGNORECASE,
 )
 
