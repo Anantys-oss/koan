@@ -2272,6 +2272,100 @@ class TestApplyReviewFeedbackDescriptiveCommit:
         assert "Updated error handling" in commit_msg
 
 
+class TestApplyReviewFeedbackConventionAware:
+    """_apply_review_feedback should use a parsed COMMIT_SUBJECT when
+    commit_conventions are provided."""
+
+    @patch("app.rebase_pr.commit_if_changes", return_value=True)
+    @patch("app.rebase_pr.run_claude")
+    @patch("app.cli_provider.build_full_command", return_value=["claude", "--fake"])
+    @patch("app.config.get_model_config", return_value={"mission": "m", "fallback": "f"})
+    def test_uses_parsed_subject_when_conventions_provided(
+        self, _mc, _cmd, mock_claude, mock_commit,
+    ):
+        mock_claude.return_value = {
+            "success": True,
+            "output": (
+                "Fixed the auth bug.\n\n"
+                "COMMIT_SUBJECT: Case PROJECT-52496 Fix auth token expiry\n"
+            ),
+            "error": "",
+        }
+        context = {
+            "title": "Fix", "body": "", "branch": "br", "base": "main",
+            "diff": "+code", "review_comments": "fix this",
+            "reviews": "", "issue_comments": "",
+        }
+        actions = []
+        _apply_review_feedback(
+            context, "42", "/project", actions,
+            skill_dir=REBASE_SKILL_DIR,
+            commit_conventions="## Commit Conventions\nUse Case PROJECT-XXXXX.",
+        )
+        commit_msg = mock_commit.call_args[0][1]
+        assert "Case PROJECT-52496" in commit_msg
+        assert "rebase: apply review feedback" not in commit_msg
+
+    @patch("app.rebase_pr.commit_if_changes", return_value=True)
+    @patch("app.rebase_pr.run_claude")
+    @patch("app.cli_provider.build_full_command", return_value=["claude", "--fake"])
+    @patch("app.config.get_model_config", return_value={"mission": "m", "fallback": "f"})
+    def test_falls_back_when_no_subject_parsed(
+        self, _mc, _cmd, mock_claude, mock_commit,
+    ):
+        """Falls back to default subject when Claude doesn't output COMMIT_SUBJECT."""
+        mock_claude.return_value = {
+            "success": True,
+            "output": "Fixed the auth bug.\n",
+            "error": "",
+        }
+        context = {
+            "title": "Fix", "body": "", "branch": "br", "base": "main",
+            "diff": "+code", "review_comments": "fix this",
+            "reviews": "", "issue_comments": "",
+        }
+        actions = []
+        _apply_review_feedback(
+            context, "42", "/project", actions,
+            skill_dir=REBASE_SKILL_DIR,
+            commit_conventions="## Commit Conventions\nUse Case PROJECT-XXXXX.",
+        )
+        commit_msg = mock_commit.call_args[0][1]
+        assert "rebase: apply review feedback on #42" in commit_msg
+
+    @patch("app.rebase_pr.commit_if_changes", return_value=True)
+    @patch("app.rebase_pr.run_claude")
+    @patch("app.cli_provider.build_full_command", return_value=["claude", "--fake"])
+    @patch("app.config.get_model_config", return_value={"mission": "m", "fallback": "f"})
+    def test_strips_subject_line_from_body(
+        self, _mc, _cmd, mock_claude, mock_commit,
+    ):
+        """The COMMIT_SUBJECT line should not appear in the commit body."""
+        mock_claude.return_value = {
+            "success": True,
+            "output": (
+                "Fixed auth bug.\n"
+                "COMMIT_SUBJECT: Case PROJECT-123 Fix auth\n"
+                "More details here."
+            ),
+            "error": "",
+        }
+        context = {
+            "title": "Fix", "body": "", "branch": "br", "base": "main",
+            "diff": "+code", "review_comments": "fix this",
+            "reviews": "", "issue_comments": "",
+        }
+        actions = []
+        _apply_review_feedback(
+            context, "42", "/project", actions,
+            skill_dir=REBASE_SKILL_DIR,
+            commit_conventions="## Commit Conventions\nUse Case prefix.",
+        )
+        commit_msg = mock_commit.call_args[0][1]
+        assert "COMMIT_SUBJECT:" not in commit_msg
+        assert "Fixed auth bug" in commit_msg
+
+
 class TestBuildRebaseCommentChangeSummary:
     """_build_rebase_comment should include a change summary section
     when review feedback was applied (issue #964)."""

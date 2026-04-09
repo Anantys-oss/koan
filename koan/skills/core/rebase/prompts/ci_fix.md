@@ -32,6 +32,8 @@ already be resolved by those changes. Before fixing anything, check whether the
 failing code still exists in its current form — if the problem area was already
 changed by the rebase or feedback step, skip it.
 
+{COMMIT_CONVENTIONS}
+
 ## Your Task
 
 **IMPORTANT: Do NOT create new branches or switch branches with git checkout/switch.
@@ -46,3 +48,5 @@ Stay on the current branch. Your changes will be committed and pushed automatica
 7. **If all failures appear to be already resolved**, make no changes and report that.
 
 When you're done, output a concise summary of what you fixed and why.
+
+{COMMIT_SUBJECT_INSTRUCTION}

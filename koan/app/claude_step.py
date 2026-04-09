@@ -223,12 +223,16 @@ def run_claude_step(
     max_turns: int = 20,
     timeout: int = 600,
     use_skill: bool = False,
+    use_convention_subject: bool = False,
 ) -> bool:
     """Run a Claude Code step: invoke CLI, commit changes, log result.
 
     Args:
         use_skill: If True, include the Skill tool in allowed tools
                    so Claude can invoke registered skills (e.g. /refactor).
+        use_convention_subject: If True, parse COMMIT_SUBJECT from Claude's
+                   output and use it instead of *commit_msg*. Falls back to
+                   *commit_msg* if no valid subject is found.
 
     Returns True if the step produced a commit.
     """
@@ -248,7 +252,14 @@ def run_claude_step(
 
     result = run_claude(cmd, project_path, timeout=timeout)
     if result["success"]:
-        committed = commit_if_changes(project_path, commit_msg)
+        effective_msg = commit_msg
+        if use_convention_subject:
+            from app.commit_conventions import parse_commit_subject
+            output = strip_cli_noise(result.get("output", ""))
+            parsed = parse_commit_subject(output)
+            if parsed:
+                effective_msg = parsed
+        committed = commit_if_changes(project_path, effective_msg)
         if committed and success_label:
             actions_log.append(success_label)
             return True
@@ -494,6 +505,7 @@ def _build_pr_prompt(
     context: dict,
     skill_dir: Optional[Path] = None,
     max_diff_chars: int = 80_000,
+    commit_conventions: str = "",
 ) -> str:
     """Build a prompt for Claude to process PR feedback.
 
@@ -506,6 +518,9 @@ def _build_pr_prompt(
         skill_dir: Optional skill directory for prompt resolution.
         max_diff_chars: Maximum characters for the diff section to prevent
             context window overflow on large PRs.
+        commit_conventions: Project commit convention guidance to include
+            in the prompt. When non-empty, also loads the commit subject
+            instruction fragment.
     """
     diff = context.get("diff", "")
     if len(diff) > max_diff_chars:
@@ -516,6 +531,10 @@ def _build_pr_prompt(
             file=sys.stderr,
         )
 
+    commit_subject_instruction = ""
+    if commit_conventions:
+        commit_subject_instruction = _load_commit_subject_instruction(skill_dir)
+
     kwargs = dict(
         TITLE=context["title"],
         BODY=context.get("body", ""),
@@ -525,8 +544,32 @@ def _build_pr_prompt(
         REVIEW_COMMENTS=context.get("review_comments", ""),
         REVIEWS=context.get("reviews", ""),
         ISSUE_COMMENTS=context.get("issue_comments", ""),
+        COMMIT_CONVENTIONS=commit_conventions,
+        COMMIT_SUBJECT_INSTRUCTION=commit_subject_instruction,
     )
     return load_prompt_or_skill(skill_dir, prompt_name, **kwargs)
+
+
+def _load_commit_subject_instruction(skill_dir: Optional[Path] = None) -> str:
+    """Load the commit subject instruction prompt fragment.
+
+    Tries the skill directory first, then falls back to system prompts.
+    Returns empty string if the fragment is not found.
+    """
+    if skill_dir is not None:
+        path = skill_dir / "prompts" / "commit_subject_instruction.md"
+        try:
+            return path.read_text()
+        except (FileNotFoundError, OSError):
+            pass
+
+    # Fall back to system-prompts directory
+    from app.prompts import PROMPT_DIR
+    path = PROMPT_DIR / "commit_subject_instruction.md"
+    try:
+        return path.read_text()
+    except (FileNotFoundError, OSError):
+        return ""
 
 
 # -- Push with PR fallback (shared config) ----------------------------------

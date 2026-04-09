@@ -300,6 +300,12 @@ def run_rebase(
     head_owner = context.get("head_owner", "")
     head_remote = _find_remote_for_repo(head_owner, repo, project_path) if head_owner else None
 
+    # Detect project commit conventions for convention-aware commit messages
+    from app.commit_conventions import get_project_commit_guidance
+    commit_conventions = get_project_commit_guidance(
+        project_path, f"{base_remote}/{base}",
+    )
+
     # Log comment summary for awareness
     comment_summary = build_comment_summary(context)
     if comment_summary and "No comments" not in comment_summary:
@@ -345,6 +351,7 @@ def run_rebase(
         change_summary = _apply_review_feedback(
             context, pr_number, project_path, actions_log,
             skill_dir=skill_dir,
+            commit_conventions=commit_conventions,
         )
 
         # Claude may switch branches during feedback — ensure we're still
@@ -368,6 +375,7 @@ def run_rebase(
         actions_log=actions_log,
         notify_fn=notify_fn,
         skill_dir=skill_dir,
+        commit_conventions=commit_conventions,
     )
 
     # ── Step 6: Collect diffstat before push ──────────────────────────
@@ -912,6 +920,7 @@ def _fix_existing_ci_failures(
     actions_log: List[str],
     notify_fn,
     skill_dir: Optional[Path] = None,
+    commit_conventions: str = "",
 ) -> bool:
     """Check the most recent CI run and fix failures before pushing.
 
@@ -952,6 +961,7 @@ def _fix_existing_ci_failures(
 
     ci_fix_prompt = _build_ci_fix_prompt(
         context, ci_logs, diff, skill_dir=skill_dir,
+        commit_conventions=commit_conventions,
     )
 
     fixed = run_claude_step(
@@ -962,6 +972,7 @@ def _fix_existing_ci_failures(
         failure_label="Pre-push CI fix step produced no changes",
         actions_log=actions_log,
         max_turns=get_skill_max_turns(),
+        use_convention_subject=bool(commit_conventions),
     )
 
     if fixed:
@@ -1027,6 +1038,7 @@ def _run_ci_check_and_fix(
     actions_log: List[str],
     notify_fn,
     skill_dir: Optional[Path] = None,
+    commit_conventions: str = "",
 ) -> str:
     """Poll CI after push, attempt fixes if failing. Returns CI section for PR comment."""
 
@@ -1077,6 +1089,7 @@ def _run_ci_check_and_fix(
 
         ci_fix_prompt = _build_ci_fix_prompt(
             context, ci_logs, diff, skill_dir=skill_dir,
+            commit_conventions=commit_conventions,
         )
 
         # Run Claude to fix the CI failures
@@ -1088,6 +1101,7 @@ def _run_ci_check_and_fix(
             failure_label=f"CI fix step failed (attempt {attempt})",
             actions_log=actions_log,
             max_turns=get_skill_max_turns(),
+            use_convention_subject=bool(commit_conventions),
         )
 
         if not fixed:
@@ -1130,21 +1144,37 @@ def _build_ci_fix_prompt(
     ci_logs: str,
     diff: str,
     skill_dir: Optional[Path] = None,
+    commit_conventions: str = "",
 ) -> str:
     """Build a prompt for Claude to fix CI failures."""
+    from app.claude_step import _load_commit_subject_instruction
+
+    commit_subject_instruction = ""
+    if commit_conventions:
+        commit_subject_instruction = _load_commit_subject_instruction(skill_dir)
+
     kwargs = dict(
         TITLE=context.get("title", ""),
         BRANCH=context.get("branch", ""),
         BASE=context.get("base", ""),
         CI_LOGS=truncate_text(ci_logs, 6000),
         DIFF=truncate_text(diff, 8000),
+        COMMIT_CONVENTIONS=commit_conventions,
+        COMMIT_SUBJECT_INSTRUCTION=commit_subject_instruction,
     )
     return load_prompt_or_skill(skill_dir, "ci_fix", **kwargs)
 
 
-def _build_rebase_prompt(context: dict, skill_dir: Optional[Path] = None) -> str:
+def _build_rebase_prompt(
+    context: dict,
+    skill_dir: Optional[Path] = None,
+    commit_conventions: str = "",
+) -> str:
     """Build a prompt for Claude to analyze and apply review feedback."""
-    return _build_pr_prompt("rebase", context, skill_dir=skill_dir)
+    return _build_pr_prompt(
+        "rebase", context, skill_dir=skill_dir,
+        commit_conventions=commit_conventions,
+    )
 
 
 def _apply_review_feedback(
@@ -1153,6 +1183,7 @@ def _apply_review_feedback(
     project_path: str,
     actions_log: List[str],
     skill_dir: Optional[Path] = None,
+    commit_conventions: str = "",
 ) -> str:
     """Analyze review comments via Claude and apply requested changes.
 
@@ -1164,7 +1195,10 @@ def _apply_review_feedback(
     from app.cli_provider import build_full_command
     from app.config import get_model_config
 
-    prompt = _build_rebase_prompt(context, skill_dir=skill_dir)
+    prompt = _build_rebase_prompt(
+        context, skill_dir=skill_dir,
+        commit_conventions=commit_conventions,
+    )
 
     models = get_model_config()
     cmd = build_full_command(
@@ -1185,12 +1219,21 @@ def _apply_review_feedback(
 
     # Extract Claude's change summary from its output
     change_summary = strip_cli_noise(result.get("output", "")).strip()
+
+    # Try to parse a convention-aware commit subject from Claude's output
+    parsed_subject = None
+    if commit_conventions:
+        from app.commit_conventions import parse_commit_subject, strip_commit_subject_line
+        parsed_subject = parse_commit_subject(change_summary)
+        # Remove the COMMIT_SUBJECT marker from the summary body
+        change_summary = strip_commit_subject_line(change_summary)
+
     # Truncate overly long summaries (keep last portion which is the summary)
     if len(change_summary) > 1000:
         change_summary = change_summary[-1000:]
 
     # Build a descriptive commit message with the summary as the body
-    subject = f"rebase: apply review feedback on #{pr_number}"
+    subject = parsed_subject or f"rebase: apply review feedback on #{pr_number}"
     if change_summary:
         commit_msg = f"{subject}\n\n{change_summary}"
     else:
