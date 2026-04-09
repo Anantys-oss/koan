@@ -23,7 +23,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from app.github import run_gh
+from app.github import run_gh, sanitize_github_comment
 from app.github_url_parser import ISSUE_URL_PATTERN
 from app.prompts import load_prompt_or_skill
 from app.rebase_pr import fetch_pr_context
@@ -642,7 +642,7 @@ def _post_review_comment(
         run_gh(
             "pr", "comment", pr_number,
             "--repo", f"{owner}/{repo}",
-            "--body", body,
+            "--body", sanitize_github_comment(body),
         )
         return True
     except Exception as e:
@@ -689,10 +689,11 @@ def _post_comment_replies(
         try:
             if original["type"] == "review_comment":
                 # Reply to an inline review comment via the API
+                safe_reply = sanitize_github_comment(reply_text)
                 run_gh(
                     "api", f"repos/{full_repo}/pulls/{pr_number}/comments",
                     "-X", "POST",
-                    "-f", f"body={reply_text}",
+                    "-f", f"body={safe_reply}",
                     "-F", f"in_reply_to={comment_id}",
                 )
             else:
@@ -701,7 +702,7 @@ def _post_comment_replies(
                 quote_line = original["body"].split("\n")[0]
                 if len(quote_line) > 100:
                     quote_line = quote_line[:100] + "..."
-                body = f"> @{user}: {quote_line}\n\n{reply_text}"
+                body = sanitize_github_comment(f"> @{user}: {quote_line}\n\n{reply_text}")
                 run_gh(
                     "pr", "comment", pr_number,
                     "--repo", full_repo,

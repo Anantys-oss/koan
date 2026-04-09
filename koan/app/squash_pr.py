@@ -33,7 +33,7 @@ from app.claude_step import (
 from app.cli_provider import build_full_command
 from app.config import get_model_config
 from app.git_utils import ordered_remotes as _ordered_remotes
-from app.github import run_gh
+from app.github import run_gh, sanitize_github_comment
 from app.prompts import load_prompt_or_skill
 from app.rebase_pr import _find_remote_for_repo, fetch_pr_context
 from app.utils import truncate_text
@@ -344,7 +344,7 @@ def run_squash(
         run_gh(
             "pr", "comment", pr_number,
             "--repo", full_repo,
-            "--body", comment_body,
+            "--body", sanitize_github_comment(comment_body),
         )
         actions_log.append("Commented on PR")
     except Exception as e:

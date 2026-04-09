@@ -19,7 +19,7 @@ from app.cli_provider import build_full_command, run_command
 from app.config import get_model_config
 from app.git_utils import get_current_branch as _git_utils_get_current_branch
 from app.git_utils import ordered_remotes, run_git_strict
-from app.github import pr_create, run_gh
+from app.github import pr_create, run_gh, sanitize_github_comment
 from app.prompts import load_prompt_or_skill
 
 # Backward-compatible alias — callers should import from app.cli_provider
@@ -642,7 +642,7 @@ def _push_with_pr_fallback(
             run_gh(
                 "pr", "comment", pr_number,
                 "--repo", full_repo,
-                "--body", cfg["crosslink"].format(ref=new_pr_ref, base=base),
+                "--body", sanitize_github_comment(cfg["crosslink"].format(ref=new_pr_ref, base=base)),
             )
             actions.append("Cross-linked original PR")
         except Exception as e:

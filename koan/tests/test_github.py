@@ -13,6 +13,7 @@ from app.github import (
     batch_count_open_prs, fetch_issue_state, fetch_issue_with_comments,
     detect_parent_repo, resolve_target_repo, _upstream_remote_repo,
     _parse_remote_url,
+    sanitize_github_comment,
 )
 import app.github as github_module
 
@@ -934,3 +935,43 @@ class TestCachedCountOpenPrs:
         mock_time.return_value = 1299.0
         cached_count_open_prs("owner/repo", "koan-bot")
         mock_count.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# sanitize_github_comment
+# ---------------------------------------------------------------------------
+
+class TestSanitizeGithubComment:
+    def test_bare_lowercase(self):
+        assert sanitize_github_comment("Hi @copilot please review") == "Hi `@copilot` please review"
+
+    def test_bare_capitalized(self):
+        assert sanitize_github_comment("Hi @Copilot please review") == "Hi `@Copilot` please review"
+
+    def test_bare_uppercase(self):
+        assert sanitize_github_comment("@COPILOT look at this") == "`@COPILOT` look at this"
+
+    def test_already_escaped_not_double_escaped(self):
+        assert sanitize_github_comment("`@copilot` is already escaped") == "`@copilot` is already escaped"
+
+    def test_no_partial_match(self):
+        assert sanitize_github_comment("@copilotx is not copilot") == "@copilotx is not copilot"
+
+    def test_no_mention(self):
+        assert sanitize_github_comment("no mention here") == "no mention here"
+
+    def test_empty_string(self):
+        assert sanitize_github_comment("") == ""
+
+    def test_none_passthrough(self):
+        assert sanitize_github_comment(None) is None
+
+    def test_multiple_occurrences(self):
+        result = sanitize_github_comment("@copilot and @Copilot and @COPILOT")
+        assert result == "`@copilot` and `@Copilot` and `@COPILOT`"
+
+    def test_in_quote_header(self):
+        text = "> @copilot: can you fix this?\n\nSure, here's how."
+        result = sanitize_github_comment(text)
+        assert "`@copilot`" in result
+        assert "@copilot:" not in result.split("`@copilot`")[0]

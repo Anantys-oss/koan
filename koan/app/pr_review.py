@@ -25,7 +25,7 @@ from app.claude_step import (
     run_project_tests,
 )
 from app.config import get_skill_max_turns
-from app.github import run_gh
+from app.github import run_gh, sanitize_github_comment
 from app.prompts import load_prompt_or_skill
 from app.rebase_pr import fetch_pr_context, _find_remote_for_repo
 
@@ -345,7 +345,7 @@ def run_pr_review(
         run_gh(
             "pr", "comment", pr_number,
             "--repo", full_repo,
-            "--body", comment_body,
+            "--body", sanitize_github_comment(comment_body),
         )
         actions_log.append("Commented on PR")
     except Exception as e:
