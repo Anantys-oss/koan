@@ -2350,6 +2350,48 @@ class TestFormatHelpListMessage:
         assert "help" in msg
         assert "Usage:" in msg
 
+    def test_grouped_by_category(self):
+        """Commands are grouped by their SKILL.md group field."""
+        review = Skill(
+            name="review", scope="core", group="code", emoji="🔍",
+            github_enabled=True,
+            commands=[SkillCommand(name="review", description="Review a PR", aliases=["rv"])],
+        )
+        rebase = Skill(
+            name="rebase", scope="core", group="pr", emoji="🔄",
+            github_enabled=True,
+            commands=[SkillCommand(name="rebase", description="Rebase a PR", aliases=["rb"])],
+        )
+        reg = SkillRegistry()
+        reg._register(review)
+        reg._register(rebase)
+        msg = format_help_list_message(reg, "koanbot")
+        # Group headers present
+        assert "### Code & Development" in msg
+        assert "### Pull Requests" in msg
+        # Emoji present
+        assert "🔍" in msg
+        assert "🔄" in msg
+        # Aliases shown
+        assert "`rv`" in msg
+        assert "`rb`" in msg
+        # Code section appears before PR section
+        code_pos = msg.index("### Code & Development")
+        pr_pos = msg.index("### Pull Requests")
+        assert code_pos < pr_pos
+
+    def test_ungrouped_skills_go_to_other(self):
+        """Skills without a recognized group appear under their group name."""
+        skill = Skill(
+            name="custom", scope="core", group="", github_enabled=True,
+            commands=[SkillCommand(name="custom", description="A custom command")],
+        )
+        reg = SkillRegistry()
+        reg._register(skill)
+        msg = format_help_list_message(reg, "koanbot")
+        assert "`@koanbot custom`" in msg
+        assert "A custom command" in msg
+
 
 # ---------------------------------------------------------------------------
 # _post_help_reply

@@ -211,7 +211,8 @@ class TestRunFix:
     @patch(f"{_FIX_MODULE}.get_current_branch", return_value="koan.atoomic/fix-issue-42")
     @patch(f"{_FIX_MODULE}._execute_fix", return_value="Done")
     @patch(f"{_FIX_MODULE}.fetch_issue_with_comments")
-    def test_success_with_pr(self, mock_fetch, mock_execute, mock_branch, mock_pr):
+    @patch(f"{_FIX_MODULE}.fetch_issue_state", return_value="open")
+    def test_success_with_pr(self, mock_state, mock_fetch, mock_execute, mock_branch, mock_pr):
         mock_fetch.return_value = ("Bug title", "Bug body", [])
         notify = MagicMock()
 
@@ -235,7 +236,8 @@ class TestRunFix:
         assert success is False
 
     @patch(f"{_FIX_MODULE}.fetch_issue_with_comments")
-    def test_empty_issue(self, mock_fetch):
+    @patch(f"{_FIX_MODULE}.fetch_issue_state", return_value="open")
+    def test_empty_issue(self, mock_state, mock_fetch):
         mock_fetch.return_value = ("Title", "", [])
         notify = MagicMock()
 
@@ -251,7 +253,8 @@ class TestRunFix:
     @patch(f"{_FIX_MODULE}.get_current_branch", return_value="koan.atoomic/fix-issue-42")
     @patch(f"{_FIX_MODULE}._execute_fix", return_value="Done")
     @patch(f"{_FIX_MODULE}.fetch_issue_with_comments")
-    def test_success_no_pr(self, mock_fetch, mock_execute, mock_branch, mock_pr):
+    @patch(f"{_FIX_MODULE}.fetch_issue_state", return_value="open")
+    def test_success_no_pr(self, mock_state, mock_fetch, mock_execute, mock_branch, mock_pr):
         mock_fetch.return_value = ("Title", "Body text", [])
         notify = MagicMock()
 
@@ -265,7 +268,8 @@ class TestRunFix:
 
     @patch(f"{_FIX_MODULE}._execute_fix", return_value="")
     @patch(f"{_FIX_MODULE}.fetch_issue_with_comments")
-    def test_empty_claude_output(self, mock_fetch, mock_execute):
+    @patch(f"{_FIX_MODULE}.fetch_issue_state", return_value="open")
+    def test_empty_claude_output(self, mock_state, mock_fetch, mock_execute):
         mock_fetch.return_value = ("Title", "Body", [])
         notify = MagicMock()
 
@@ -276,6 +280,23 @@ class TestRunFix:
         )
         assert success is False
         assert "empty output" in summary.lower()
+
+    @patch(f"{_FIX_MODULE}.fetch_issue_state", return_value="closed")
+    def test_closed_issue_skipped(self, mock_state):
+        """A closed issue should be skipped immediately without invoking Claude."""
+        notify = MagicMock()
+
+        success, summary = run_fix(
+            project_path="/path",
+            issue_url="https://github.com/o/r/issues/42",
+            notify_fn=notify,
+        )
+
+        assert success is False
+        assert "already closed" in summary.lower()
+        # Verify notification was sent
+        notify.assert_called_once()
+        assert "already closed" in notify.call_args[0][0].lower()
 
 
 # ---------------------------------------------------------------------------

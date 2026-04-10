@@ -23,19 +23,22 @@ from typing import List, Optional, Tuple
 
 from app.claude_step import (
     _build_pr_prompt,
+    _fetch_branch,
     _fetch_failed_logs,
     _get_current_branch,
     _get_diffstat,
     _run_git,
     _safe_checkout,
+    check_existing_ci,
     commit_if_changes,
     run_claude,
     run_claude_step,
     strip_cli_noise,
     wait_for_ci,
 )
+from app.config import get_skill_max_turns
 from app.git_utils import ordered_remotes as _ordered_remotes
-from app.github import run_gh
+from app.github import run_gh, sanitize_github_comment
 from app.prompts import load_prompt, load_prompt_or_skill, load_skill_prompt  # noqa: F401 — safety import
 from app.utils import _GITHUB_REMOTE_RE, truncate_text
 
@@ -216,8 +219,9 @@ def run_rebase(
         2. Checkout the PR branch locally
         3. Rebase onto the upstream target branch
         4. Analyze review comments and apply changes (if feedback exists)
-        5. Force-push to the existing branch (always recycles the PR)
-        6. Comment on the PR with a summary
+        5. Check existing CI — fix failures before pushing
+        6. Force-push to the existing branch (always recycles the PR)
+        7. Comment on the PR with a summary
 
     Args:
         owner: GitHub owner (e.g., "owner")
@@ -296,6 +300,12 @@ def run_rebase(
     head_owner = context.get("head_owner", "")
     head_remote = _find_remote_for_repo(head_owner, repo, project_path) if head_owner else None
 
+    # Detect project commit conventions for convention-aware commit messages
+    from app.commit_conventions import get_project_commit_guidance
+    commit_conventions = get_project_commit_guidance(
+        project_path, f"{base_remote}/{base}",
+    )
+
     # Log comment summary for awareness
     comment_summary = build_comment_summary(context)
     if comment_summary and "No comments" not in comment_summary:
@@ -341,6 +351,7 @@ def run_rebase(
         change_summary = _apply_review_feedback(
             context, pr_number, project_path, actions_log,
             skill_dir=skill_dir,
+            commit_conventions=commit_conventions,
         )
 
         # Claude may switch branches during feedback — ensure we're still
@@ -353,10 +364,24 @@ def run_rebase(
             )
             _safe_checkout(branch, project_path)
 
-    # ── Step 5: Collect diffstat before push ──────────────────────────
+    # ── Step 5: Pre-push CI check — fix existing failures ──────────────
+    _fix_existing_ci_failures(
+        branch=branch,
+        base=base,
+        full_repo=full_repo,
+        pr_number=pr_number,
+        project_path=project_path,
+        context=context,
+        actions_log=actions_log,
+        notify_fn=notify_fn,
+        skill_dir=skill_dir,
+        commit_conventions=commit_conventions,
+    )
+
+    # ── Step 6: Collect diffstat before push ──────────────────────────
     diffstat = _get_diffstat(f"{rebase_remote}/{base}", project_path)
 
-    # ── Step 6: Push the result ───────────────────────────────────────
+    # ── Step 7: Push the result ───────────────────────────────────────
     notify_fn(f"Pushing `{branch}`...")
     push_result = _push_with_fallback(
         branch, base, full_repo, pr_number, context, project_path,
@@ -372,7 +397,7 @@ def run_rebase(
             "\n".join(f"- {a}" for a in actions_log)
         )
 
-    # ── Step 7: Enqueue async CI check ─────────────────────────────────
+    # ── Step 8: Enqueue async CI check ─────────────────────────────────
     ci_section = _enqueue_ci_check(
         branch=branch,
         full_repo=full_repo,
@@ -382,7 +407,7 @@ def run_rebase(
         actions_log=actions_log,
     )
 
-    # ── Step 8: Comment on the PR ─────────────────────────────────────
+    # ── Step 9: Comment on the PR ─────────────────────────────────────
     comment_body = _build_rebase_comment(
         pr_number, branch, base, actions_log, context,
         diffstat=diffstat,
@@ -394,7 +419,7 @@ def run_rebase(
         run_gh(
             "pr", "comment", pr_number,
             "--repo", full_repo,
-            "--body", comment_body,
+            "--body", sanitize_github_comment(comment_body),
         )
         actions_log.append("Commented on PR")
     except Exception as e:
@@ -534,7 +559,7 @@ def _close_pr_as_duplicate(
     )
 
     try:
-        run_gh("pr", "comment", pr_number, "--repo", full_repo, "--body", comment_text)
+        run_gh("pr", "comment", pr_number, "--repo", full_repo, "--body", sanitize_github_comment(comment_text))
     except Exception as e:
         print(f"[rebase_pr] PR comment failed: {e}", file=sys.stderr)
 
@@ -562,7 +587,7 @@ def _close_pr_as_duplicate(
             f"---\n_Automated by Kōan_"
         )
         try:
-            run_gh("issue", "comment", issue_num, "--repo", issue_repo, "--body", issue_comment)
+            run_gh("issue", "comment", issue_num, "--repo", issue_repo, "--body", sanitize_github_comment(issue_comment))
             run_gh("issue", "close", issue_num, "--repo", issue_repo)
         except Exception as e:
             print(f"[rebase_pr] issue close failed ({issue_repo}#{issue_num}): {e}", file=sys.stderr)
@@ -606,7 +631,7 @@ def _rebase_with_conflict_resolution(
     """
     for remote in _ordered_remotes(preferred_remote):
         try:
-            _run_git(["git", "fetch", remote, base], cwd=project_path)
+            _fetch_branch(remote, base, cwd=project_path)
         except Exception as e:
             print(f"[rebase_pr] fetch {remote}/{base} failed: {e}", file=sys.stderr)
             continue
@@ -616,7 +641,7 @@ def _rebase_with_conflict_resolution(
         # history when the fork has diverged).
         if head_remote and head_remote != remote:
             try:
-                _run_git(["git", "fetch", head_remote, base], cwd=project_path)
+                _fetch_branch(head_remote, base, cwd=project_path)
                 _run_git(
                     ["git", "rebase", "--onto", f"{remote}/{base}",
                      f"{head_remote}/{base}", "--autostash"],
@@ -766,7 +791,7 @@ def _resolve_rebase_conflicts(
             allowed_tools=["Bash", "Read", "Write", "Glob", "Grep", "Edit"],
             model=models["mission"],
             fallback=models["fallback"],
-            max_turns=15,
+            max_turns=get_skill_max_turns(),
         )
         result = run_claude(cmd, project_path, timeout=300)
 
@@ -885,6 +910,79 @@ def _force_push(remote: str, branch: str, project_path: str) -> None:
         )
 
 
+def _fix_existing_ci_failures(
+    branch: str,
+    base: str,
+    full_repo: str,
+    pr_number: str,
+    project_path: str,
+    context: dict,
+    actions_log: List[str],
+    notify_fn,
+    skill_dir: Optional[Path] = None,
+    commit_conventions: str = "",
+) -> bool:
+    """Check the most recent CI run and fix failures before pushing.
+
+    Inspects the last CI run on the branch (from before the rebase).  If it
+    failed, fetches the logs, invokes Claude to apply fixes, and amends the
+    commit so the fix is included in the upcoming force-push.
+
+    Returns True if a fix was applied, False otherwise.
+    """
+    pr_url = context.get("url") or f"https://github.com/{full_repo}/pull/{pr_number}"
+
+    notify_fn(f"Checking existing CI on [{branch}]({pr_url})...")
+    ci_status, run_id, ci_logs = check_existing_ci(branch, full_repo)
+
+    if ci_status != "failure":
+        if ci_status == "success":
+            actions_log.append("Pre-push CI check: previous run passed")
+        elif ci_status == "pending":
+            actions_log.append("Pre-push CI check: previous run still pending")
+        else:
+            actions_log.append("Pre-push CI check: no CI runs found")
+        return False
+
+    notify_fn(f"Previous CI failed — analyzing logs to fix before push...")
+    actions_log.append(f"Pre-push CI check: previous run #{run_id} failed")
+
+    # Build CI fix prompt with current diff
+    rebase_remote = "origin"
+    diff = ""
+    try:
+        diff = _run_git(
+            ["git", "diff", f"{rebase_remote}/{base}..HEAD"],
+            cwd=project_path, timeout=30,
+        )
+    except Exception as e:
+        print(f"[rebase_pr] diff fetch for CI fix failed: {e}", file=sys.stderr)
+    diff = truncate_text(diff, 8000)
+
+    ci_fix_prompt = _build_ci_fix_prompt(
+        context, ci_logs, diff, skill_dir=skill_dir,
+        commit_conventions=commit_conventions,
+    )
+
+    fixed = run_claude_step(
+        prompt=ci_fix_prompt,
+        project_path=project_path,
+        commit_msg=f"fix: resolve pre-existing CI failures on #{pr_number}",
+        success_label="Applied pre-push CI fix",
+        failure_label="Pre-push CI fix step produced no changes",
+        actions_log=actions_log,
+        max_turns=get_skill_max_turns(),
+        use_convention_subject=bool(commit_conventions),
+    )
+
+    if fixed:
+        actions_log.append("Pre-push CI fix applied")
+    else:
+        actions_log.append("Pre-push CI fix: no changes needed or Claude found nothing to fix")
+
+    return fixed
+
+
 def _enqueue_ci_check(
     branch: str,
     full_repo: str,
@@ -893,8 +991,12 @@ def _enqueue_ci_check(
     context: dict,
     actions_log: List[str],
 ) -> str:
-    """Enqueue an async CI check instead of blocking. Returns CI section for PR comment."""
+    """Enqueue an async CI check in the ## CI section of missions.md.
+
+    Returns CI section text for the PR comment.
+    """
     import os
+    from pathlib import Path
 
     koan_root = os.environ.get("KOAN_ROOT")
     if not koan_root:
@@ -905,12 +1007,20 @@ def _enqueue_ci_check(
     pr_url = context.get("url") or f"https://github.com/{full_repo}/pull/{pr_number}"
 
     try:
-        from app.ci_queue import enqueue
-        added = enqueue(instance_dir, pr_url, branch, full_repo, pr_number, project_path)
-        if added:
-            actions_log.append("CI check enqueued (async)")
-        else:
-            actions_log.append("CI check re-enqueued (async)")
+        from app.ci_queue_runner import _project_name_from_path
+        from app.missions import add_ci_item
+        from app.utils import load_config, modify_missions_file
+
+        config = load_config()
+        max_attempts = config.get("ci_fix_max_attempts", 5)
+        project_name = _project_name_from_path(project_path)
+        missions_path = Path(instance_dir) / "missions.md"
+
+        modify_missions_file(
+            missions_path,
+            lambda c: add_ci_item(c, project_name, pr_url, pr_number, branch, full_repo, max_attempts),
+        )
+        actions_log.append("CI check enqueued in ## CI (async)")
         return "CI will be checked asynchronously."
     except Exception as e:
         print(f"[rebase] CI enqueue failed: {e}", file=sys.stderr)
@@ -928,6 +1038,7 @@ def _run_ci_check_and_fix(
     actions_log: List[str],
     notify_fn,
     skill_dir: Optional[Path] = None,
+    commit_conventions: str = "",
 ) -> str:
     """Poll CI after push, attempt fixes if failing. Returns CI section for PR comment."""
 
@@ -978,6 +1089,7 @@ def _run_ci_check_and_fix(
 
         ci_fix_prompt = _build_ci_fix_prompt(
             context, ci_logs, diff, skill_dir=skill_dir,
+            commit_conventions=commit_conventions,
         )
 
         # Run Claude to fix the CI failures
@@ -988,7 +1100,8 @@ def _run_ci_check_and_fix(
             success_label=f"Applied CI fix (attempt {attempt})",
             failure_label=f"CI fix step failed (attempt {attempt})",
             actions_log=actions_log,
-            max_turns=15,
+            max_turns=get_skill_max_turns(),
+            use_convention_subject=bool(commit_conventions),
         )
 
         if not fixed:
@@ -1031,21 +1144,37 @@ def _build_ci_fix_prompt(
     ci_logs: str,
     diff: str,
     skill_dir: Optional[Path] = None,
+    commit_conventions: str = "",
 ) -> str:
     """Build a prompt for Claude to fix CI failures."""
+    from app.claude_step import _load_commit_subject_instruction
+
+    commit_subject_instruction = ""
+    if commit_conventions:
+        commit_subject_instruction = _load_commit_subject_instruction(skill_dir)
+
     kwargs = dict(
         TITLE=context.get("title", ""),
         BRANCH=context.get("branch", ""),
         BASE=context.get("base", ""),
         CI_LOGS=truncate_text(ci_logs, 6000),
         DIFF=truncate_text(diff, 8000),
+        COMMIT_CONVENTIONS=commit_conventions,
+        COMMIT_SUBJECT_INSTRUCTION=commit_subject_instruction,
     )
     return load_prompt_or_skill(skill_dir, "ci_fix", **kwargs)
 
 
-def _build_rebase_prompt(context: dict, skill_dir: Optional[Path] = None) -> str:
+def _build_rebase_prompt(
+    context: dict,
+    skill_dir: Optional[Path] = None,
+    commit_conventions: str = "",
+) -> str:
     """Build a prompt for Claude to analyze and apply review feedback."""
-    return _build_pr_prompt("rebase", context, skill_dir=skill_dir)
+    return _build_pr_prompt(
+        "rebase", context, skill_dir=skill_dir,
+        commit_conventions=commit_conventions,
+    )
 
 
 def _apply_review_feedback(
@@ -1054,6 +1183,7 @@ def _apply_review_feedback(
     project_path: str,
     actions_log: List[str],
     skill_dir: Optional[Path] = None,
+    commit_conventions: str = "",
 ) -> str:
     """Analyze review comments via Claude and apply requested changes.
 
@@ -1065,7 +1195,10 @@ def _apply_review_feedback(
     from app.cli_provider import build_full_command
     from app.config import get_model_config
 
-    prompt = _build_rebase_prompt(context, skill_dir=skill_dir)
+    prompt = _build_rebase_prompt(
+        context, skill_dir=skill_dir,
+        commit_conventions=commit_conventions,
+    )
 
     models = get_model_config()
     cmd = build_full_command(
@@ -1073,7 +1206,7 @@ def _apply_review_feedback(
         allowed_tools=["Bash", "Read", "Write", "Glob", "Grep", "Edit"],
         model=models["mission"],
         fallback=models["fallback"],
-        max_turns=20,
+        max_turns=get_skill_max_turns(),
     )
 
     result = run_claude(cmd, project_path, timeout=600)
@@ -1086,12 +1219,21 @@ def _apply_review_feedback(
 
     # Extract Claude's change summary from its output
     change_summary = strip_cli_noise(result.get("output", "")).strip()
+
+    # Try to parse a convention-aware commit subject from Claude's output
+    parsed_subject = None
+    if commit_conventions:
+        from app.commit_conventions import parse_commit_subject, strip_commit_subject_line
+        parsed_subject = parse_commit_subject(change_summary)
+        # Remove the COMMIT_SUBJECT marker from the summary body
+        change_summary = strip_commit_subject_line(change_summary)
+
     # Truncate overly long summaries (keep last portion which is the summary)
     if len(change_summary) > 1000:
         change_summary = change_summary[-1000:]
 
     # Build a descriptive commit message with the summary as the body
-    subject = f"rebase: apply review feedback on #{pr_number}"
+    subject = parsed_subject or f"rebase: apply review feedback on #{pr_number}"
     if change_summary:
         commit_msg = f"{subject}\n\n{change_summary}"
     else:
@@ -1140,7 +1282,7 @@ def _checkout_pr_branch(
 
     for remote in remotes:
         try:
-            _run_git(["git", "fetch", remote, branch], cwd=project_path)
+            _fetch_branch(remote, branch, cwd=project_path)
             # Success — use this remote
             fetch_remote = remote
             break
@@ -1162,7 +1304,7 @@ def _checkout_pr_branch(
                 # Remote may already exist from a previous run
                 print(f"[rebase_pr] remote add {fork_remote} failed (may already exist): {e}", file=sys.stderr)
             try:
-                _run_git(["git", "fetch", fork_remote, branch], cwd=project_path)
+                _fetch_branch(fork_remote, branch, cwd=project_path)
                 fetch_remote = fork_remote
             except Exception:
                 raise RuntimeError(

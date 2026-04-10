@@ -29,10 +29,19 @@ Usage:
 """
 
 import argparse
+import logging
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Tuple
+
+logger = logging.getLogger(__name__)
+
+# Matches template placeholders like {INSTANCE}, {PROJECT_NAME}, etc.
+# Only uppercase letters, digits, and underscores — at least 2 chars to avoid
+# false positives on prose like {n} or {x}.
+_PLACEHOLDER_RE = re.compile(r"\{([A-Z][A-Z_0-9]+)\}")
 
 
 def _get_language_section() -> str:
@@ -286,6 +295,18 @@ def _build_mission_instruction(mission_title: str, project_name: str) -> str:
     )
 
 
+def _warn_unresolved_placeholders(text: str, template_name: str) -> None:
+    """Log a warning if any {PLACEHOLDER} tokens remain after substitution."""
+    unresolved = _PLACEHOLDER_RE.findall(text)
+    if unresolved:
+        unique = sorted(set(unresolved))
+        logger.warning(
+            "[prompt_builder] Unresolved placeholders in '%s': %s",
+            template_name,
+            ", ".join(f"{{{p}}}" for p in unique),
+        )
+
+
 def _load_agent_template(
     instance: str,
     project_name: str,
@@ -302,7 +323,7 @@ def _load_agent_template(
 
     mission_instruction = _build_mission_instruction(mission_title, project_name)
     branch_prefix = _get_branch_prefix()
-    return load_prompt(
+    result = load_prompt(
         "agent",
         INSTANCE=instance,
         PROJECT_PATH=project_path,
@@ -315,6 +336,8 @@ def _load_agent_template(
         MISSION_INSTRUCTION=mission_instruction,
         BRANCH_PREFIX=branch_prefix,
     )
+    _warn_unresolved_placeholders(result, "agent")
+    return result
 
 
 def _append_spec(prompt: str, spec_content: str, mission_title: str) -> str:
@@ -503,6 +526,7 @@ def build_contemplative_prompt(
     instance: str,
     project_name: str,
     session_info: str,
+    github_nickname: str = "",
 ) -> str:
     """Build the contemplative session prompt from template.
 
@@ -510,6 +534,9 @@ def build_contemplative_prompt(
         instance: Path to instance directory
         project_name: Current project name
         session_info: Context about current session state
+        github_nickname: Bot's GitHub nickname for pre-check instructions.
+            Pass empty string (default) when GitHub is not configured — the
+            prompt's GitHub section will be omitted automatically.
 
     Returns:
         Complete contemplative prompt string
@@ -521,7 +548,28 @@ def build_contemplative_prompt(
         INSTANCE=instance,
         PROJECT_NAME=project_name,
         SESSION_INFO=session_info,
+        GITHUB_NICKNAME=github_nickname,
     )
+
+    # Strip the GitHub pre-check block when no nickname is configured.
+    # The block is delimited by {GITHUB_CHECK_BLOCK_START} / {GITHUB_CHECK_BLOCK_END}
+    # sentinel lines in the template.
+    if not github_nickname:
+        import re
+        prompt = re.sub(
+            r"\{GITHUB_CHECK_BLOCK_START\}.*?\{GITHUB_CHECK_BLOCK_END\}\n?",
+            "",
+            prompt,
+            flags=re.DOTALL,
+        )
+    else:
+        # Remove the sentinel markers, leaving the block content intact.
+        prompt = prompt.replace("{GITHUB_CHECK_BLOCK_START}\n", "")
+        prompt = prompt.replace("{GITHUB_CHECK_BLOCK_END}\n", "")
+        prompt = prompt.replace("{GITHUB_CHECK_BLOCK_START}", "")
+        prompt = prompt.replace("{GITHUB_CHECK_BLOCK_END}", "")
+
+    _warn_unresolved_placeholders(prompt, "contemplative")
 
     # Append language preference (overrides soul.md default)
     prompt += _get_language_section()
@@ -553,6 +601,7 @@ def main():
     contemplate_parser.add_argument("--instance", required=True)
     contemplate_parser.add_argument("--project-name", required=True)
     contemplate_parser.add_argument("--session-info", required=True)
+    contemplate_parser.add_argument("--github-nickname", default="")
 
     args = parser.parse_args()
 
@@ -573,6 +622,7 @@ def main():
             instance=args.instance,
             project_name=args.project_name,
             session_info=args.session_info,
+            github_nickname=args.github_nickname,
         ))
 
 

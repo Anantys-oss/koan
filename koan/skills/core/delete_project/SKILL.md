@@ -2,6 +2,7 @@
 name: delete_project
 scope: core
 group: config
+emoji: 🗑️
 description: Remove a project from the workspace
 version: 1.0.0
 audience: bridge

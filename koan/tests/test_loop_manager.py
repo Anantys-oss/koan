@@ -107,13 +107,26 @@ class TestValidateProjects:
         assert result is not None
         assert "Max 2" in result
 
-    def test_missing_path(self, tmp_path):
+    def test_all_missing_paths(self, tmp_path):
         from app.loop_manager import validate_projects
 
         result = validate_projects([("proj1", "/nonexistent/path/xyz")])
         assert result is not None
-        assert "does not exist" in result
-        assert "proj1" in result
+        assert "No valid project" in result
+
+    def test_some_missing_paths_still_valid(self, tmp_path):
+        """When some projects have missing dirs, valid ones keep the config valid."""
+        from app.loop_manager import validate_projects
+
+        p1 = tmp_path / "existing"
+        p1.mkdir()
+        subprocess.run(["git", "init"], cwd=p1, capture_output=True)
+
+        result = validate_projects([
+            ("existing", str(p1)),
+            ("missing", "/nonexistent/path/xyz"),
+        ])
+        assert result is None  # valid — at least one project exists
 
     def test_single_valid_project(self, tmp_path):
         from app.loop_manager import validate_projects
@@ -123,7 +136,7 @@ class TestValidateProjects:
         assert result is None
 
     def test_non_git_directory(self, tmp_path):
-        """A valid directory that is not a git repo should be rejected."""
+        """A directory that is not a git repo is skipped; if it's the only one, validation fails."""
         from app.loop_manager import validate_projects
 
         proj = tmp_path / "not-a-repo"
@@ -131,11 +144,10 @@ class TestValidateProjects:
 
         result = validate_projects([("myproj", str(proj))])
         assert result is not None
-        assert "not a git repository" in result
-        assert "myproj" in result
+        assert "No valid project" in result
 
     def test_mixed_git_and_non_git(self, tmp_path):
-        """First project is a git repo, second is not — should catch the second."""
+        """First project is a git repo, second is not — warns but still valid."""
         from app.loop_manager import validate_projects
 
         p1 = tmp_path / "repo"
@@ -145,9 +157,20 @@ class TestValidateProjects:
         subprocess.run(["git", "init"], cwd=p1, capture_output=True)
 
         result = validate_projects([("repo", str(p1)), ("plain", str(p2))])
+        assert result is None  # valid — at least one project is a git repo
+
+    def test_all_non_git_fails(self, tmp_path):
+        """All projects are non-git directories — should fail."""
+        from app.loop_manager import validate_projects
+
+        p1 = tmp_path / "plain1"
+        p2 = tmp_path / "plain2"
+        p1.mkdir()
+        p2.mkdir()
+
+        result = validate_projects([("plain1", str(p1)), ("plain2", str(p2))])
         assert result is not None
-        assert "plain" in result
-        assert "not a git repository" in result
+        assert "No valid project" in result
 
 
 # --- Test lookup_project ---
@@ -1094,8 +1117,10 @@ class TestDrainNotifications:
             result = process_github_notifications(str(tmp_path), str(tmp_path))
 
         assert result == 1  # 1 actionable processed
-        # Drain notification should also be marked as read
-        mock_mark.assert_called_once_with("400")
+        # Both actionable and drain notifications should be marked as read
+        assert mock_mark.call_count == 2
+        mock_mark.assert_any_call("1")    # actionable
+        mock_mark.assert_any_call("400")  # drain
 
 
 # --- Test _normalize_github_url ---
@@ -2557,3 +2582,42 @@ class TestCheckSSOFailures:
                 _check_sso_failures()
 
             mock_outbox.assert_not_called()
+
+
+class TestDrainCiQueueDuringSleep:
+    """Verify CI queue is drained during interruptible_sleep."""
+
+    def test_drain_called_during_sleep(self, tmp_path):
+        """drain_one is called during interruptible sleep (throttled)."""
+        import app.loop_manager as lm
+
+        # Reset throttle so our call goes through
+        lm._last_ci_queue_sleep_check = 0
+
+        with patch("app.ci_queue_runner.drain_one", return_value="CI passed for PR #42") as mock_drain:
+            lm._drain_ci_queue_during_sleep(str(tmp_path), 0)
+
+        mock_drain.assert_called_once_with(str(tmp_path))
+
+    def test_drain_throttled(self, tmp_path):
+        """drain_one is NOT called if within the throttle window."""
+        import time
+        import app.loop_manager as lm
+
+        # Set last check to now — should be throttled
+        lm._last_ci_queue_sleep_check = time.monotonic()
+
+        with patch("app.ci_queue_runner.drain_one") as mock_drain:
+            lm._drain_ci_queue_during_sleep(str(tmp_path), 0)
+
+        mock_drain.assert_not_called()
+
+    def test_drain_none_is_silent(self, tmp_path):
+        """When drain_one returns None (queue empty), no error raised."""
+        import app.loop_manager as lm
+
+        lm._last_ci_queue_sleep_check = 0
+
+        with patch("app.ci_queue_runner.drain_one", return_value=None):
+            # Should not raise
+            lm._drain_ci_queue_during_sleep(str(tmp_path), 0)

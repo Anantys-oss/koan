@@ -2,6 +2,7 @@
 name: review
 scope: core
 group: code
+emoji: 🔍
 description: "Queue a code review mission (ex: /review https://github.com/owner/repo/pull/42)"
 version: 1.0.0
 audience: hybrid

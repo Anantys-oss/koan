@@ -20,6 +20,7 @@ from typing import List, Optional, Tuple
 
 from app.claude_step import (
     _build_pr_prompt,
+    _fetch_branch,
     _get_current_branch,
     _get_diffstat,
     _push_with_pr_fallback,
@@ -28,7 +29,7 @@ from app.claude_step import (
     run_claude_step,
     run_project_tests,
 )
-from app.github import run_gh
+from app.github import run_gh, sanitize_github_comment
 from app.prompts import load_prompt, load_skill_prompt  # noqa: F401 — safety import
 from app.rebase_pr import (
     build_comment_summary,
@@ -195,7 +196,7 @@ def run_recreate(
         run_gh(
             "pr", "comment", pr_number,
             "--repo", full_repo,
-            "--body", comment_body,
+            "--body", sanitize_github_comment(comment_body),
         )
         actions_log.append("Commented on original PR")
     except Exception as e:
@@ -225,7 +226,7 @@ def _fetch_upstream_target(base: str, project_path: str) -> Optional[str]:
     """
     for remote in ("upstream", "origin"):
         try:
-            _run_git(["git", "fetch", remote, base], cwd=project_path)
+            _fetch_branch(remote, base, cwd=project_path)
             return remote
         except (RuntimeError, OSError):
             continue
@@ -248,7 +249,7 @@ def _reimpl_feature(
 
     Returns True if the step produced a commit, False otherwise.
     """
-    from app.config import get_skill_timeout
+    from app.config import get_skill_max_turns, get_skill_timeout
     prompt = _build_recreate_prompt(context, skill_dir=skill_dir)
     return run_claude_step(
         prompt=prompt,
@@ -257,7 +258,7 @@ def _reimpl_feature(
         success_label="Reimplemented feature from scratch",
         failure_label="Feature reimplementation step failed",
         actions_log=actions_log,
-        max_turns=30,
+        max_turns=get_skill_max_turns(),
         timeout=get_skill_timeout(),
     )
 

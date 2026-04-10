@@ -2,6 +2,7 @@
 name: quota
 scope: core
 group: status
+emoji: 📊
 description: Check LLM quota or override used %
 version: 1.1.0
 audience: bridge

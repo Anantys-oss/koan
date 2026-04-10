@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from skills.core.branches.handler import (
     handle,
+    _check_conflicts,
     _parse_shortstat,
     _merge_score,
     _recommend_merge_order,
@@ -87,6 +88,16 @@ class TestMergeScore:
                   "conflicts": True, "timestamp": 100}
         assert _merge_score(clean) < _merge_score(dirty)
 
+    def test_unknown_conflicts_between_clean_and_dirty(self):
+        """None (unknown) sorts between False (clean) and True (conflicts)."""
+        base = {"pr_review_decision": "", "pr_has_reviews": False,
+                "has_pr": True, "pr_additions": 10, "pr_deletions": 5,
+                "timestamp": 100}
+        clean = {**base, "conflicts": False}
+        unknown = {**base, "conflicts": None}
+        dirty = {**base, "conflicts": True}
+        assert _merge_score(clean) < _merge_score(unknown) < _merge_score(dirty)
+
     def test_smaller_changes_first(self):
         small = {"pr_review_decision": "", "pr_has_reviews": False,
                   "has_pr": True, "pr_additions": 5, "pr_deletions": 2,
@@ -141,7 +152,7 @@ class TestEnrichAndMerge:
         prs = [{"branch": "koan/foo", "number": 42, "title": "Fix foo",
                 "additions": 10, "deletions": 5, "created_at": "",
                 "is_draft": False, "review_decision": "APPROVED",
-                "has_reviews": True, "labels": []}]
+                "has_reviews": True, "labels": [], "url": "https://github.com/org/repo/pull/42"}]
 
         result = _enrich_and_merge(branches, prs)
         assert len(result) == 1
@@ -162,7 +173,7 @@ class TestEnrichAndMerge:
         prs = [{"branch": "koan/remote-only", "number": 99, "title": "Remote PR",
                 "additions": 50, "deletions": 10, "created_at": "",
                 "is_draft": True, "review_decision": "",
-                "has_reviews": False, "labels": []}]
+                "has_reviews": False, "labels": [], "url": "https://github.com/org/repo/pull/99"}]
         result = _enrich_and_merge([], prs)
         assert len(result) == 1
         assert result[0]["has_pr"] is True
@@ -183,6 +194,7 @@ class TestFormatOutput:
              "pr_title": "Fix the bug", "pr_additions": 10, "pr_deletions": 3,
              "pr_is_draft": False, "pr_review_decision": "APPROVED",
              "pr_has_reviews": True, "pr_labels": [],
+             "pr_url": "https://github.com/org/repo/pull/42",
              "age": "2 days ago", "timestamp": 100, "commits": 2,
              "diffstat": (2, 10, 3), "conflicts": False},
         ]
@@ -192,6 +204,7 @@ class TestFormatOutput:
         assert "+10/-3" in output
         assert "approved" in output
         assert "1 approved" in output
+        assert "https://github.com/org/repo/pull/42" in output
 
     def test_conflicts_shown(self):
         entries = [
@@ -202,6 +215,26 @@ class TestFormatOutput:
         output = _format_output("koan", entries)
         assert "conflicts" in output.lower()
 
+    def test_conflicts_unknown_shown(self):
+        """When _check_conflicts returns None (failure), output shows 'unknown'."""
+        entries = [
+            {"branch": "koan/unknown-branch", "has_pr": False,
+             "age": "1 day ago", "timestamp": 200, "commits": 1,
+             "diffstat": (1, 5, 0), "conflicts": None},
+        ]
+        output = _format_output("koan", entries)
+        assert "conflicts unknown" in output.lower()
+
+    def test_conflicts_false_not_shown(self):
+        """When conflicts is False (clean), no conflict indicator appears."""
+        entries = [
+            {"branch": "koan/clean-branch", "has_pr": False,
+             "age": "1 day ago", "timestamp": 200, "commits": 1,
+             "diffstat": (1, 5, 0), "conflicts": False},
+        ]
+        output = _format_output("koan", entries)
+        assert "conflicts" not in output.lower()
+
     def test_no_pr_shown(self):
         entries = [
             {"branch": "koan/no-pr", "has_pr": False,
@@ -210,6 +243,160 @@ class TestFormatOutput:
         ]
         output = _format_output("koan", entries)
         assert "no PR" in output
+        assert "https://" not in output
+
+    def test_pr_url_displayed(self):
+        entries = [
+            {"branch": "koan/with-url", "has_pr": True, "pr_number": 77,
+             "pr_title": "Add feature", "pr_additions": 20, "pr_deletions": 5,
+             "pr_is_draft": False, "pr_review_decision": "",
+             "pr_has_reviews": False, "pr_labels": [],
+             "pr_url": "https://github.com/org/repo/pull/77",
+             "age": "1 day ago", "timestamp": 300, "commits": 3,
+             "diffstat": (2, 20, 5), "conflicts": False},
+        ]
+        output = _format_output("koan", entries)
+        assert "https://github.com/org/repo/pull/77" in output
+
+
+# ---------------------------------------------------------------------------
+# _check_conflicts
+# ---------------------------------------------------------------------------
+
+class TestCheckConflicts:
+    """Verify _check_conflicts returns None when git merge-base fails."""
+
+    def test_returns_none_on_merge_base_failure(self):
+        """When merge-base exits non-zero, should return None not False."""
+        import subprocess
+
+        def fake_run(*args, **kwargs):
+            r = SimpleNamespace(returncode=1, stdout="", stderr="fatal: not a git repo")
+            return r
+
+        with patch("subprocess.run", side_effect=fake_run):
+            result = _check_conflicts("/fake/path", "koan/some-branch")
+        assert result is None
+
+    def test_returns_none_on_timeout(self):
+        """When subprocess times out, should return None not False."""
+        import subprocess
+
+        def fake_run(*args, **kwargs):
+            raise subprocess.TimeoutExpired(cmd="git", timeout=5)
+
+        with patch("subprocess.run", side_effect=fake_run):
+            result = _check_conflicts("/fake/path", "koan/some-branch")
+        assert result is None
+
+    def test_returns_none_on_empty_base(self):
+        """When merge-base returns empty stdout, should return None."""
+        def fake_run(*args, **kwargs):
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with patch("subprocess.run", side_effect=fake_run):
+            result = _check_conflicts("/fake/path", "koan/some-branch")
+        assert result is None
+
+    def test_returns_true_on_conflict(self):
+        """When merge-tree output contains conflict markers, return True."""
+        call_count = [0]
+
+        def fake_run(*args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:  # merge-base
+                return SimpleNamespace(returncode=0, stdout="abc123\n", stderr="")
+            # merge-tree
+            return SimpleNamespace(returncode=0, stdout="<<<<<<< \nsome conflict\n>>>>>>>\n", stderr="")
+
+        with patch("subprocess.run", side_effect=fake_run):
+            result = _check_conflicts("/fake/path", "koan/some-branch")
+        assert result is True
+
+    def test_returns_false_on_clean_merge(self):
+        """When merge-tree output has no conflict markers, return False."""
+        call_count = [0]
+
+        def fake_run(*args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:  # merge-base
+                return SimpleNamespace(returncode=0, stdout="abc123\n", stderr="")
+            # merge-tree
+            return SimpleNamespace(returncode=0, stdout="clean merge output\n", stderr="")
+
+        with patch("subprocess.run", side_effect=fake_run):
+            result = _check_conflicts("/fake/path", "koan/some-branch")
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# _get_branches_info (merged branch filtering)
+# ---------------------------------------------------------------------------
+
+class TestGetBranchesInfoFiltering:
+    """Branches fully merged into origin/main (0 commits ahead) are excluded."""
+
+    def test_merged_branches_excluded(self):
+        """Branches with 0 commits ahead of origin/main should not appear."""
+        from skills.core.branches.handler import _get_branches_info
+
+        call_count = {"rev-list": 0}
+
+        def fake_run_git(*args, cwd=None, timeout=None):
+            cmd = args[0] if args else ""
+            if cmd == "branch":
+                return 0, "  koan/merged-branch\n  koan/active-branch\n", ""
+            if cmd == "for-each-ref":
+                # TAB-delimited: unix_ts\trelative\trefname
+                lines = (
+                    "1000000\t2 days ago\tkoan/merged-branch\n"
+                    "1000000\t2 days ago\tkoan/active-branch"
+                )
+                return 0, lines, ""
+            if cmd == "rev-list":
+                branch = args[-1] if len(args) > 2 else ""
+                call_count["rev-list"] += 1
+                if "merged-branch" in branch:
+                    return 0, "0", ""  # merged: 0 commits ahead
+                return 0, "3", ""  # active: 3 commits ahead
+            if cmd == "diff":
+                return 0, "1 file changed, 5 insertions(+)", ""
+            return 0, "", ""
+
+        with patch("app.git_utils.run_git", side_effect=fake_run_git), \
+             patch("app.config.get_branch_prefix", return_value="koan/"), \
+             patch("skills.core.branches.handler._check_conflicts", return_value=False):
+            result = _get_branches_info("/fake/path")
+
+        branch_names = [b["branch"] for b in result]
+        assert "koan/active-branch" in branch_names
+        assert "koan/merged-branch" not in branch_names
+        assert len(result) == 1
+
+    def test_for_each_ref_populates_age_and_timestamp(self):
+        """Age and timestamp come from the batch for-each-ref query, not per-branch git log."""
+        from skills.core.branches.handler import _get_branches_info
+
+        def fake_run_git(*args, cwd=None, timeout=None):
+            cmd = args[0] if args else ""
+            if cmd == "branch":
+                return 0, "  koan/my-feature\n", ""
+            if cmd == "for-each-ref":
+                return 0, "1711843200\t5 hours ago\tkoan/my-feature", ""
+            if cmd == "rev-list":
+                return 0, "2", ""
+            if cmd == "diff":
+                return 0, "1 file changed, 10 insertions(+)", ""
+            return 0, "", ""
+
+        with patch("app.git_utils.run_git", side_effect=fake_run_git), \
+             patch("app.config.get_branch_prefix", return_value="koan/"), \
+             patch("skills.core.branches.handler._check_conflicts", return_value=False):
+            result = _get_branches_info("/fake/path")
+
+        assert len(result) == 1
+        assert result[0]["age"] == "5 hours ago"
+        assert result[0]["timestamp"] == 1711843200
 
 
 # ---------------------------------------------------------------------------
@@ -263,7 +450,8 @@ class TestHandle:
             {"branch": "koan/a", "number": 10, "title": "Feature A",
              "additions": 5, "deletions": 2, "created_at": "",
              "is_draft": False, "review_decision": "",
-             "has_reviews": False, "labels": []},
+             "has_reviews": False, "labels": [],
+             "url": "https://github.com/org/repo/pull/10"},
         ]
         with patch("app.utils.get_known_projects",
                     return_value={"koan": "/tmp/koan"}), \
@@ -274,3 +462,4 @@ class TestHandle:
             result = handle(ctx)
         assert "Feature A" in result
         assert "PR #10" in result
+        assert "https://github.com/org/repo/pull/10" in result

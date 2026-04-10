@@ -19,6 +19,7 @@ ABORT_FILE = ".koan-abort"
 # -- Pause / quota signals ----------------------------------------------------
 
 PAUSE_FILE = ".koan-pause"
+SKIP_START_PAUSE_FILE = ".koan-skip-start-pause"
 QUOTA_RESET_FILE = ".koan-quota-reset"
 
 # -- Status / heartbeat -------------------------------------------------------

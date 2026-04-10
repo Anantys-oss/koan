@@ -879,78 +879,27 @@ class TestLocalProviderResolution:
 # ---------------------------------------------------------------------------
 
 class TestClaudeQuotaCheck:
-    """Tests for ClaudeProvider.check_quota_available()."""
+    """Tests for ClaudeProvider.check_quota_available().
+
+    The method is a no-op that always returns (True, '') because
+    'claude usage' is not a real CLI subcommand. Quota exhaustion is
+    detected post-run by quota_handler.py instead.
+    """
 
     def setup_method(self):
         self.provider = ClaudeProvider()
 
-    @patch("app.provider.claude.subprocess.run")
-    @patch("app.quota_handler.detect_quota_exhaustion", return_value=False)
-    def test_quota_available(self, mock_detect, mock_run):
-        """Returns (True, '') when quota is available."""
-        mock_run.return_value = MagicMock(stderr="", stdout="Usage: 50%")
-        available, detail = self.provider.check_quota_available("/fake/path")
-        assert available is True
-        assert detail == ""
-        mock_run.assert_called_once()
-        mock_detect.assert_called_once()
-
-    @patch("app.provider.claude.subprocess.run")
-    @patch("app.quota_handler.detect_quota_exhaustion", return_value=True)
-    def test_quota_exhausted(self, mock_detect, mock_run):
-        """Returns (False, output) when quota is exhausted."""
-        mock_run.return_value = MagicMock(
-            stderr="Rate limit exceeded",
-            stdout="Quota exhausted"
-        )
-        available, detail = self.provider.check_quota_available("/fake/path")
-        assert available is False
-        assert "Quota exhausted" in detail
-
-    @patch("app.provider.claude.subprocess.run")
-    def test_timeout_returns_available(self, mock_run):
-        """Timeout is treated optimistically — proceed as if quota available."""
-        import subprocess
-        mock_run.side_effect = subprocess.TimeoutExpired(cmd=["claude", "usage"], timeout=15)
+    def test_always_returns_available(self):
+        """Always returns (True, '') — no subprocess call."""
         available, detail = self.provider.check_quota_available("/fake/path")
         assert available is True
         assert detail == ""
 
-    @patch("app.provider.claude.subprocess.run")
-    def test_other_exception_returns_available(self, mock_run):
-        """Non-quota exceptions treated optimistically."""
-        mock_run.side_effect = OSError("binary not found")
-        available, detail = self.provider.check_quota_available("/fake/path")
+    def test_custom_timeout_ignored(self):
+        """Timeout parameter accepted but has no effect."""
+        available, detail = self.provider.check_quota_available("/fake/path", timeout=30)
         assert available is True
         assert detail == ""
-
-    @patch("app.provider.claude.subprocess.run")
-    @patch("app.quota_handler.detect_quota_exhaustion", return_value=False)
-    def test_custom_timeout(self, mock_detect, mock_run):
-        """Custom timeout is passed to subprocess.run."""
-        mock_run.return_value = MagicMock(stderr="", stdout="ok")
-        self.provider.check_quota_available("/fake/path", timeout=30)
-        call_kwargs = mock_run.call_args[1]
-        assert call_kwargs["timeout"] == 30
-
-    @patch("app.provider.claude.subprocess.run")
-    @patch("app.quota_handler.detect_quota_exhaustion", return_value=False)
-    def test_uses_project_path_as_cwd(self, mock_detect, mock_run):
-        """subprocess.run cwd is set to project_path."""
-        mock_run.return_value = MagicMock(stderr="", stdout="ok")
-        self.provider.check_quota_available("/my/project")
-        call_kwargs = mock_run.call_args[1]
-        assert call_kwargs["cwd"] == "/my/project"
-
-    @patch("app.provider.claude.subprocess.run")
-    @patch("app.quota_handler.detect_quota_exhaustion", return_value=False)
-    def test_combines_stderr_and_stdout(self, mock_detect, mock_run):
-        """Both stderr and stdout are combined for quota detection."""
-        mock_run.return_value = MagicMock(stderr="warning", stdout="usage data")
-        self.provider.check_quota_available("/fake/path")
-        combined = mock_detect.call_args[0][0]
-        assert "warning" in combined
-        assert "usage data" in combined
 
 
 # ---------------------------------------------------------------------------

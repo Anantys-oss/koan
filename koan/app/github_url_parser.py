@@ -1,16 +1,19 @@
-"""GitHub URL parsing utilities.
+"""GitHub and Jira URL parsing utilities.
 
-Provides centralized parsing for GitHub PR and issue URLs with consistent
-error handling and validation.
+Provides centralized parsing for GitHub PR/issue URLs and Jira issue URLs
+with consistent error handling and validation.
 """
 
 import re
-from typing import Tuple
+from typing import Optional, Tuple
 
 # GitHub URL patterns
 PR_URL_PATTERN = r'https?://github\.com/([^/]+)/([^/]+)/pull/(\d+)'
 ISSUE_URL_PATTERN = r'https?://github\.com/([^/]+)/([^/]+)/issues/(\d+)'
 PR_OR_ISSUE_PATTERN = r'https?://github\.com/([^/]+)/([^/]+)/(pull|issues)/(\d+)'
+
+# Jira URL pattern: https://org.atlassian.net/browse/PROJ-123
+JIRA_ISSUE_URL_PATTERN = r'https?://[^/]+\.atlassian\.net/browse/([A-Z][A-Z0-9]+-\d+)'
 
 
 def _clean_url(url: str) -> str:
@@ -122,3 +125,41 @@ def parse_github_url(url: str) -> Tuple[str, str, str, str]:
     if not match:
         raise ValueError(f"Invalid GitHub URL: {url}")
     return match.group(1), match.group(2), match.group(3), match.group(4)
+
+
+# --- Jira URL helpers ---
+
+def is_jira_url(url: str) -> bool:
+    """Check whether a URL is a Jira issue URL."""
+    return bool(re.search(JIRA_ISSUE_URL_PATTERN, _clean_url(url)))
+
+
+def parse_jira_url(url: str) -> str:
+    """Extract the issue key from a Jira browse URL.
+
+    Args:
+        url: Jira issue URL (e.g. https://org.atlassian.net/browse/PROJ-123)
+
+    Returns:
+        Issue key (e.g. "PROJ-123")
+
+    Raises:
+        ValueError: If the URL doesn't match expected Jira format
+    """
+    clean_url = _clean_url(url)
+    match = re.search(JIRA_ISSUE_URL_PATTERN, clean_url)
+    if not match:
+        raise ValueError(f"Invalid Jira URL: {url}")
+    return match.group(1)
+
+
+def search_jira_url(text: str) -> Optional[Tuple[str, str]]:
+    """Search for a Jira issue URL anywhere in text.
+
+    Returns:
+        Tuple of (full_url, issue_key) or None if not found.
+    """
+    match = re.search(JIRA_ISSUE_URL_PATTERN, text)
+    if not match:
+        return None
+    return match.group(0), match.group(1)

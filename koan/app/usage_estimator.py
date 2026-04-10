@@ -235,8 +235,8 @@ def _write_usage_md(state: dict, usage_md: Path, config: dict):
 
     content = f"""# Usage (estimated by koan)
 
-Session (5hr) : {session_pct}% (reset in {session_reset})
-Weekly (7 day) : {weekly_pct}% (Resets in {weekly_reset})
+Session (5hr) : ~{session_pct}% (reset in {session_reset})
+Weekly (7 day) : ~{weekly_pct}% (Resets in {weekly_reset})
 """
     if cache_line:
         content += f"{cache_line}\n"

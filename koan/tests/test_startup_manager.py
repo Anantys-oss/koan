@@ -345,26 +345,37 @@ class TestCheckHealth:
 # ---------------------------------------------------------------------------
 
 class TestCheckSelfReflection:
+    @patch("app.config.get_startup_reflection", return_value=False)
+    def test_disabled_by_default_skips_reflection(self, mock_cfg):
+        """When startup_reflection is false, self-reflection is never triggered."""
+        from app.startup_manager import check_self_reflection
+        with patch("app.self_reflection.should_reflect") as mock_should:
+            check_self_reflection("/tmp/instance")
+            mock_should.assert_not_called()
+
+    @patch("app.config.get_startup_reflection", return_value=True)
     @patch("app.self_reflection.should_reflect", return_value=False)
-    def test_not_due(self, mock_should, capsys):
+    def test_enabled_but_not_due(self, mock_should, mock_cfg, capsys):
         from app.startup_manager import check_self_reflection
         check_self_reflection("/tmp/instance")
         mock_should.assert_called_once()
 
+    @patch("app.config.get_startup_reflection", return_value=True)
     @patch("app.self_reflection.notify_outbox")
     @patch("app.self_reflection.save_reflection")
     @patch("app.self_reflection.run_reflection", return_value="Some observations")
     @patch("app.self_reflection.should_reflect", return_value=True)
-    def test_triggers_reflection(self, mock_should, mock_run, mock_save, mock_notify):
+    def test_enabled_triggers_reflection(self, mock_should, mock_run, mock_save, mock_notify, mock_cfg):
         from app.startup_manager import check_self_reflection
         check_self_reflection("/tmp/instance")
         mock_run.assert_called_once()
         mock_save.assert_called_once()
         mock_notify.assert_called_once()
 
+    @patch("app.config.get_startup_reflection", return_value=True)
     @patch("app.self_reflection.run_reflection", return_value="")
     @patch("app.self_reflection.should_reflect", return_value=True)
-    def test_empty_observations_skips_save(self, mock_should, mock_run):
+    def test_enabled_empty_observations_skips_save(self, mock_should, mock_run, mock_cfg):
         from app.startup_manager import check_self_reflection
         with patch("app.self_reflection.save_reflection") as mock_save:
             check_self_reflection("/tmp/instance")
@@ -441,6 +452,38 @@ class TestHandleStartOnPause:
         from app.startup_manager import handle_start_on_pause
         handle_start_on_pause(str(koan_root))
         assert (koan_root / ".koan-pause").exists()
+
+    @patch("app.utils.get_start_on_pause", return_value=True)
+    def test_skip_when_skip_file_exists(self, mock_config, koan_root, capsys):
+        """Fresh .koan-skip-start-pause prevents pause creation (/resume during startup)."""
+        import time as _time
+        (koan_root / ".koan-skip-start-pause").write_text(str(int(_time.time())))
+        from app.startup_manager import handle_start_on_pause
+        handle_start_on_pause(str(koan_root))
+        assert not (koan_root / ".koan-pause").exists()
+        assert not (koan_root / ".koan-skip-start-pause").exists()  # cleaned up
+        out = capsys.readouterr().out
+        assert "skipped" in out.lower()
+
+    @patch("app.utils.get_start_on_pause", return_value=True)
+    def test_stale_skip_file_ignored(self, mock_config, koan_root, capsys):
+        """Stale .koan-skip-start-pause (>5min) does not prevent pause."""
+        import time as _time
+        stale_ts = int(_time.time()) - 600  # 10 minutes ago
+        (koan_root / ".koan-skip-start-pause").write_text(str(stale_ts))
+        from app.startup_manager import handle_start_on_pause
+        handle_start_on_pause(str(koan_root))
+        assert (koan_root / ".koan-pause").exists()
+        assert not (koan_root / ".koan-skip-start-pause").exists()  # cleaned up
+
+    @patch("app.utils.get_start_on_pause", return_value=True)
+    def test_corrupt_skip_file_ignored(self, mock_config, koan_root):
+        """Corrupt .koan-skip-start-pause does not prevent pause."""
+        (koan_root / ".koan-skip-start-pause").write_text("not-a-number")
+        from app.startup_manager import handle_start_on_pause
+        handle_start_on_pause(str(koan_root))
+        assert (koan_root / ".koan-pause").exists()
+        assert not (koan_root / ".koan-skip-start-pause").exists()
 
 
 # ---------------------------------------------------------------------------

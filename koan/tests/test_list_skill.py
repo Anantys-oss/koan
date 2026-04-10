@@ -2,6 +2,7 @@
 
 import re
 import textwrap
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -59,7 +60,7 @@ class TestMissionPrefix:
 
     def test_check_prefix(self):
         from skills.core.list.handler import mission_prefix
-        assert mission_prefix("- /check https://github.com/pr/42") == "\u2705"
+        assert mission_prefix("- /check https://github.com/pr/42") == "\U0001f50d"
 
     def test_refactor_prefix(self):
         from skills.core.list.handler import mission_prefix
@@ -76,6 +77,22 @@ class TestMissionPrefix:
     def test_claude_md_prefix(self):
         from skills.core.list.handler import mission_prefix
         assert mission_prefix("- /claude_md frontend") == "\U0001f4dd"
+
+    def test_security_audit_prefix(self):
+        from skills.core.list.handler import mission_prefix
+        assert mission_prefix("- /security_audit koan") == "\U0001f6e1\ufe0f"
+
+    def test_security_alias_prefix(self):
+        from skills.core.list.handler import mission_prefix
+        assert mission_prefix("- /security koan") == "\U0001f6e1\ufe0f"
+
+    def test_audit_prefix(self):
+        from skills.core.list.handler import mission_prefix
+        assert mission_prefix("- /audit koan") == "\U0001f50e"
+
+    def test_incident_prefix(self):
+        from skills.core.list.handler import mission_prefix
+        assert mission_prefix("- /incident koan server down") == "\U0001f6a8"
 
     def test_unknown_command_gets_generic_prefix(self):
         from skills.core.list.handler import mission_prefix
@@ -324,8 +341,8 @@ class TestListHandler:
         """)
         ctx = self._make_ctx(tmp_path, missions)
         result = handle(ctx)
-        # /check now has its own ✅ prefix
-        assert "\u2705" in result
+        # /check gets its SKILL.md emoji (🔍, matching the handler ack)
+        assert "\U0001f50d" in result
 
     def test_unknown_command_gets_generic_prefix(self, tmp_path):
         from skills.core.list.handler import handle
@@ -491,7 +508,7 @@ class TestGithubOriginMarker:
         """)
         ctx = self._make_ctx(tmp_path, missions)
         result = handle(ctx)
-        assert "📬✅" in result
+        assert "📬🔍" in result
 
 
 # ---------------------------------------------------------------------------
@@ -573,3 +590,137 @@ class TestListCommandRouting:
         help_text = mock_send.call_args[0][0]
         assert "/list" in help_text
         assert "missions" in help_text.lower()
+
+
+# ---------------------------------------------------------------------------
+# Friendly timestamp formatting
+# ---------------------------------------------------------------------------
+
+class TestFriendlyTimestamps:
+    """Test the timestamp humanization in /list display."""
+
+    def test_format_time_am(self):
+        from skills.core.list.handler import _format_time_friendly
+        assert _format_time_friendly(9, 0) == "9am"
+
+    def test_format_time_pm(self):
+        from skills.core.list.handler import _format_time_friendly
+        assert _format_time_friendly(14, 0) == "2pm"
+
+    def test_format_time_noon(self):
+        from skills.core.list.handler import _format_time_friendly
+        assert _format_time_friendly(12, 0) == "12pm"
+
+    def test_format_time_midnight(self):
+        from skills.core.list.handler import _format_time_friendly
+        assert _format_time_friendly(0, 0) == "12am"
+
+    def test_format_time_with_minutes(self):
+        from skills.core.list.handler import _format_time_friendly
+        assert _format_time_friendly(9, 30) == "9:30am"
+
+    def test_format_time_pm_with_minutes(self):
+        from skills.core.list.handler import _format_time_friendly
+        assert _format_time_friendly(20, 14) == "8:14pm"
+
+    def test_today_timestamp(self):
+        from skills.core.list.handler import _format_friendly_timestamp
+        now = datetime(2026, 4, 7, 22, 0)
+        result = _format_friendly_timestamp("2026-04-07T20:14", now)
+        assert result == "@ 8:14pm"
+
+    def test_today_round_hour(self):
+        from skills.core.list.handler import _format_friendly_timestamp
+        now = datetime(2026, 4, 7, 22, 0)
+        result = _format_friendly_timestamp("2026-04-07T09:00", now)
+        assert result == "@ 9am"
+
+    def test_this_week_not_today(self):
+        from skills.core.list.handler import _format_friendly_timestamp
+        # 2026-04-07 is Tuesday; 2026-04-06 is Monday (same week)
+        now = datetime(2026, 4, 7, 22, 0)
+        result = _format_friendly_timestamp("2026-04-06T09:00", now)
+        assert result == "Mon @ 9am"
+
+    def test_older_than_this_week(self):
+        from skills.core.list.handler import _format_friendly_timestamp
+        # 2026-04-07 is Tuesday; 2026-03-31 is the previous Tuesday
+        now = datetime(2026, 4, 7, 22, 0)
+        result = _format_friendly_timestamp("2026-03-31T09:00", now)
+        assert result == "Tue 3/31 @ 9am"
+
+    def test_humanize_queued_only(self):
+        from skills.core.list.handler import _humanize_timestamps
+        now = datetime(2026, 4, 7, 22, 0)
+        text = "fix bug ⏳(2026-04-07T20:14)"
+        result = _humanize_timestamps(text, now)
+        assert result == "fix bug ⏳@ 8:14pm"
+
+    def test_humanize_queued_and_started(self):
+        from skills.core.list.handler import _humanize_timestamps
+        now = datetime(2026, 4, 7, 22, 0)
+        text = "fix bug ⏳(2026-04-07T20:14) ▶(2026-04-07T20:20)"
+        result = _humanize_timestamps(text, now)
+        # Should show last timestamp (started)
+        assert result == "fix bug ▶@ 8:20pm"
+
+    def test_humanize_no_timestamps(self):
+        from skills.core.list.handler import _humanize_timestamps
+        text = "fix bug"
+        result = _humanize_timestamps(text)
+        assert result == "fix bug"
+
+    def test_humanize_unparseable_timestamp(self):
+        from skills.core.list.handler import _format_friendly_timestamp
+        now = datetime(2026, 4, 7, 22, 0)
+        result = _format_friendly_timestamp("not-a-date", now)
+        assert result == "not-a-date"
+
+    def test_humanize_space_format(self):
+        """Handle ✅/❌ format with space instead of T."""
+        from skills.core.list.handler import _humanize_timestamps
+        now = datetime(2026, 4, 7, 22, 0)
+        text = "fix bug ⏳(2026-04-07T20:14) ▶(2026-04-07T20:20) ✅(2026-04-07 21:00)"
+        result = _humanize_timestamps(text, now)
+        assert result == "fix bug ✅@ 9pm"
+
+    def test_list_handler_renders_friendly_timestamps(self, tmp_path):
+        """Integration test: /list shows friendly timestamps, not raw ISO."""
+        from skills.core.list.handler import handle
+
+        now = datetime(2026, 4, 7, 22, 0)
+        missions = textwrap.dedent("""\
+            # Missions
+
+            ## Pending
+
+            - fix the login bug ⏳(2026-04-07T20:14)
+            - [project:koan] add dark mode ⏳(2026-04-06T09:00)
+
+            ## In Progress
+
+            - [project:koan] working on it ⏳(2026-04-07T14:00) ▶(2026-04-07T14:05)
+
+            ## Done
+        """)
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir(exist_ok=True)
+        (instance_dir / "missions.md").write_text(missions)
+        ctx = SkillContext(
+            koan_root=tmp_path,
+            instance_dir=instance_dir,
+            command_name="list",
+        )
+
+        with patch("skills.core.list.handler.datetime") as mock_dt:
+            mock_dt.now.return_value = now
+            mock_dt.strptime = datetime.strptime
+            result = handle(ctx)
+
+        # Raw ISO timestamps should not appear
+        assert "2026-04-07T20:14" not in result
+        assert "2026-04-06T09:00" not in result
+        # Friendly timestamps should appear
+        assert "⏳@ 8:14pm" in result
+        assert "⏳Mon @ 9am" in result
+        assert "▶@ 2:05pm" in result

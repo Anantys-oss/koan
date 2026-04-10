@@ -23,6 +23,7 @@ from app.rebase_pr import (
     _check_if_already_solved,
     _close_pr_as_duplicate,
     _find_remote_for_repo,
+    _fix_existing_ci_failures,
     _get_conflicted_files,
     _get_current_branch,
     _is_conflict_failure,
@@ -34,7 +35,7 @@ from app.rebase_pr import (
     _UNMERGED_STATUSES,
     MAX_CI_FIX_ATTEMPTS,
 )
-from app.claude_step import _is_permission_error, wait_for_ci
+from app.claude_step import _is_permission_error, check_existing_ci, wait_for_ci
 
 
 # ---------------------------------------------------------------------------
@@ -195,8 +196,8 @@ class TestCheckoutPrBranch:
 
         assert result == "upstream"
         fetch_cmds = [c for c in calls if c[:2] == ["git", "fetch"]]
-        assert ["git", "fetch", "origin", "feat/upstream-only"] in fetch_cmds
-        assert ["git", "fetch", "upstream", "feat/upstream-only"] in fetch_cmds
+        assert ["git", "fetch", "origin", "+refs/heads/feat/upstream-only:refs/remotes/origin/feat/upstream-only"] in fetch_cmds
+        assert ["git", "fetch", "upstream", "+refs/heads/feat/upstream-only:refs/remotes/upstream/feat/upstream-only"] in fetch_cmds
 
         # Checkout should use upstream, not origin
         checkout_cmds = [c for c in calls if "checkout" in c]
@@ -229,7 +230,7 @@ class TestCheckoutPrBranch:
         assert result == "myfork"
         fetch_cmds = [c for c in calls if c[:2] == ["git", "fetch"]]
         # head_remote should be tried first
-        assert fetch_cmds[0] == ["git", "fetch", "myfork", "feat/branch"]
+        assert fetch_cmds[0] == ["git", "fetch", "myfork", "+refs/heads/feat/branch:refs/remotes/myfork/feat/branch"]
 
     def test_adds_fork_remote_when_no_match(self):
         """When branch not found on any known remote, adds fork remote."""
@@ -868,12 +869,13 @@ class TestRunRebase:
         with patch("app.rebase_pr._check_if_already_solved", return_value=(False, None)):
             yield
 
+    @patch("app.rebase_pr._fix_existing_ci_failures", return_value=False)
     @patch("app.rebase_pr._run_ci_check_and_fix", return_value="")
     @patch("app.rebase_pr._safe_checkout")
     @patch("app.rebase_pr.run_gh")
     @patch("app.rebase_pr._run_git")
     @patch("app.rebase_pr.fetch_pr_context")
-    def test_successful_rebase(self, mock_ctx, mock_git, mock_gh, mock_safe, mock_ci_check):
+    def test_successful_rebase(self, mock_ctx, mock_git, mock_gh, mock_safe, mock_ci_check, mock_fix_ci):
         mock_ctx.return_value = {
             "title": "Fix auth",
             "body": "Fix",
@@ -977,11 +979,12 @@ class TestRunRebase:
             assert "conflict" in summary.lower()
             mock_safe.assert_called_with("original", "/p")
 
+    @patch("app.rebase_pr._fix_existing_ci_failures", return_value=False)
     @patch("app.rebase_pr._run_ci_check_and_fix", return_value="")
     @patch("app.rebase_pr._safe_checkout")
     @patch("app.rebase_pr.run_gh")
     @patch("app.rebase_pr.fetch_pr_context")
-    def test_comment_failure_non_fatal(self, mock_ctx, mock_gh, mock_safe, mock_ci_check):
+    def test_comment_failure_non_fatal(self, mock_ctx, mock_gh, mock_safe, mock_ci_check, mock_fix_ci):
         mock_ctx.return_value = {
             "title": "T", "body": "", "branch": "feat",
             "base": "main", "state": "", "author": "", "url": "",
@@ -1021,12 +1024,13 @@ class TestRunRebase:
         # Should NOT have aborted — it proceeded to the rebase step
         mock_checkout.assert_called_once()
 
+    @patch("app.rebase_pr._fix_existing_ci_failures", return_value=False)
     @patch("app.rebase_pr._run_ci_check_and_fix", return_value="")
     @patch("app.rebase_pr._safe_checkout")
     @patch("app.rebase_pr.run_gh")
     @patch("app.rebase_pr._apply_review_feedback")
     @patch("app.rebase_pr.fetch_pr_context")
-    def test_logs_comments_read(self, mock_ctx, mock_apply, mock_gh, mock_safe, mock_ci_check):
+    def test_logs_comments_read(self, mock_ctx, mock_apply, mock_gh, mock_safe, mock_ci_check, mock_fix_ci):
         mock_ctx.return_value = {
             "title": "T", "body": "", "branch": "feat",
             "base": "main", "state": "", "author": "", "url": "",
@@ -1047,11 +1051,12 @@ class TestRunRebase:
             # Claude step should be called when feedback exists
             mock_apply.assert_called_once()
 
+    @patch("app.rebase_pr._fix_existing_ci_failures", return_value=False)
     @patch("app.rebase_pr._run_ci_check_and_fix", return_value="")
     @patch("app.rebase_pr._safe_checkout")
     @patch("app.rebase_pr.run_gh")
     @patch("app.rebase_pr.fetch_pr_context")
-    def test_restores_branch_after_success(self, mock_ctx, mock_gh, mock_safe, mock_ci_check):
+    def test_restores_branch_after_success(self, mock_ctx, mock_gh, mock_safe, mock_ci_check, mock_fix_ci):
         mock_ctx.return_value = {
             "title": "T", "body": "", "branch": "feat",
             "base": "main", "state": "", "author": "", "url": "",
@@ -1077,11 +1082,12 @@ class TestRunRebase:
             success, _ = run_rebase("o", "r", "1", "/p")
             mock_tg.assert_called()
 
+    @patch("app.rebase_pr._fix_existing_ci_failures", return_value=False)
     @patch("app.rebase_pr._run_ci_check_and_fix", return_value="")
     @patch("app.rebase_pr._safe_checkout")
     @patch("app.rebase_pr.run_gh")
     @patch("app.rebase_pr.fetch_pr_context")
-    def test_passes_preferred_remote_to_rebase(self, mock_ctx, mock_gh, mock_safe, mock_ci_check):
+    def test_passes_preferred_remote_to_rebase(self, mock_ctx, mock_gh, mock_safe, mock_ci_check, mock_fix_ci):
         """run_rebase must determine the correct base remote and pass it through."""
         mock_ctx.return_value = {
             "title": "T", "body": "", "branch": "koan/fix",
@@ -1229,12 +1235,13 @@ class TestRunRebaseClaude:
         with patch("app.rebase_pr._check_if_already_solved", return_value=(False, None)):
             yield
 
+    @patch("app.rebase_pr._fix_existing_ci_failures", return_value=False)
     @patch("app.rebase_pr._run_ci_check_and_fix", return_value="")
     @patch("app.rebase_pr._safe_checkout")
     @patch("app.rebase_pr.run_gh")
     @patch("app.rebase_pr._apply_review_feedback")
     @patch("app.rebase_pr.fetch_pr_context")
-    def test_claude_step_called_with_feedback(self, mock_ctx, mock_apply, mock_gh, mock_safe, mock_ci_check):
+    def test_claude_step_called_with_feedback(self, mock_ctx, mock_apply, mock_gh, mock_safe, mock_ci_check, mock_fix_ci):
         mock_ctx.return_value = {
             "title": "Fix auth", "body": "", "branch": "feat",
             "base": "main", "state": "", "author": "", "url": "",
@@ -1253,12 +1260,13 @@ class TestRunRebaseClaude:
             assert success is True
             mock_apply.assert_called_once()
 
+    @patch("app.rebase_pr._fix_existing_ci_failures", return_value=False)
     @patch("app.rebase_pr._run_ci_check_and_fix", return_value="")
     @patch("app.rebase_pr._safe_checkout")
     @patch("app.rebase_pr.run_gh")
     @patch("app.rebase_pr._apply_review_feedback")
     @patch("app.rebase_pr.fetch_pr_context")
-    def test_claude_step_skipped_without_feedback(self, mock_ctx, mock_apply, mock_gh, mock_safe, mock_ci_check):
+    def test_claude_step_skipped_without_feedback(self, mock_ctx, mock_apply, mock_gh, mock_safe, mock_ci_check, mock_fix_ci):
         mock_ctx.return_value = {
             "title": "T", "body": "", "branch": "feat",
             "base": "main", "state": "", "author": "", "url": "",
@@ -1276,12 +1284,13 @@ class TestRunRebaseClaude:
             assert success is True
             mock_apply.assert_not_called()
 
+    @patch("app.rebase_pr._fix_existing_ci_failures", return_value=False)
     @patch("app.rebase_pr._run_ci_check_and_fix", return_value="")
     @patch("app.rebase_pr._safe_checkout")
     @patch("app.rebase_pr.run_gh")
     @patch("app.rebase_pr._apply_review_feedback")
     @patch("app.rebase_pr.fetch_pr_context")
-    def test_skill_dir_passed_to_apply(self, mock_ctx, mock_apply, mock_gh, mock_safe, mock_ci_check):
+    def test_skill_dir_passed_to_apply(self, mock_ctx, mock_apply, mock_gh, mock_safe, mock_ci_check, mock_fix_ci):
         mock_ctx.return_value = {
             "title": "T", "body": "", "branch": "feat",
             "base": "main", "state": "", "author": "", "url": "",
@@ -1300,13 +1309,14 @@ class TestRunRebaseClaude:
             call_kwargs = mock_apply.call_args
             assert call_kwargs[1].get("skill_dir") == REBASE_SKILL_DIR
 
+    @patch("app.rebase_pr._fix_existing_ci_failures", return_value=False)
     @patch("app.rebase_pr._run_ci_check_and_fix", return_value="")
     @patch("app.rebase_pr._safe_checkout")
     @patch("app.rebase_pr.run_gh")
     @patch("app.rebase_pr._apply_review_feedback")
     @patch("app.rebase_pr.fetch_pr_context")
     def test_claude_branch_switch_restored_after_feedback(
-        self, mock_ctx, mock_apply, mock_gh, mock_safe, mock_ci_check
+        self, mock_ctx, mock_apply, mock_gh, mock_safe, mock_ci_check, mock_fix_ci
     ):
         """If Claude switches branches during feedback, we restore the PR branch."""
         mock_ctx.return_value = {
@@ -1335,13 +1345,14 @@ class TestRunRebaseClaude:
             checkout_calls = [c[0][0] for c in mock_safe.call_args_list]
             assert "feat" in checkout_calls  # restored to PR branch
 
+    @patch("app.rebase_pr._fix_existing_ci_failures", return_value=False)
     @patch("app.rebase_pr._run_ci_check_and_fix", return_value="")
     @patch("app.rebase_pr._safe_checkout")
     @patch("app.rebase_pr.run_gh")
     @patch("app.rebase_pr._apply_review_feedback")
     @patch("app.rebase_pr.fetch_pr_context")
     def test_claude_stays_on_branch_no_restore(
-        self, mock_ctx, mock_apply, mock_gh, mock_safe, mock_ci_check
+        self, mock_ctx, mock_apply, mock_gh, mock_safe, mock_ci_check, mock_fix_ci
     ):
         """If Claude stays on the correct branch, no extra checkout happens."""
         mock_ctx.return_value = {
@@ -1529,8 +1540,8 @@ class TestRebaseOntoTarget_OntoMode:
         assert result == "upstream"
         # Should have fetched both remotes' base branches
         fetch_cmds = [c for c in calls if c[:2] == ["git", "fetch"]]
-        assert ["git", "fetch", "upstream", "main"] in fetch_cmds
-        assert ["git", "fetch", "origin", "main"] in fetch_cmds
+        assert ["git", "fetch", "upstream", "+refs/heads/main:refs/remotes/upstream/main"] in fetch_cmds
+        assert ["git", "fetch", "origin", "+refs/heads/main:refs/remotes/origin/main"] in fetch_cmds
         # Should use --onto
         rebase_cmds = [c for c in calls if "rebase" in c and "--abort" not in c]
         assert len(rebase_cmds) == 1
@@ -1601,7 +1612,7 @@ class TestRebaseOntoTarget_OntoMode:
         def mock_run(cmd, **kwargs):
             calls.append(cmd)
             # head_remote fetch fails
-            if cmd[:3] == ["git", "fetch", "origin"] and "main" in cmd:
+            if cmd[:3] == ["git", "fetch", "origin"] and any("main" in arg for arg in cmd):
                 raise RuntimeError("fetch failed")
             return MagicMock(returncode=0, stdout="", stderr="")
 
@@ -1832,6 +1843,132 @@ class TestWaitForCi:
         }])
         status, run_id, logs = wait_for_ci("koan/fix", "owner/repo", timeout=600)
         assert status == "timeout"
+
+
+class TestCheckExistingCi:
+    """Tests for check_existing_ci() in claude_step — single-shot CI status check."""
+
+    @patch("app.claude_step.run_gh")
+    def test_ci_success(self, mock_gh):
+        mock_gh.return_value = json.dumps([{
+            "databaseId": 100,
+            "status": "completed",
+            "conclusion": "success",
+        }])
+        status, run_id, logs = check_existing_ci("koan/fix", "owner/repo")
+        assert status == "success"
+        assert run_id == 100
+        assert logs == ""
+
+    @patch("app.claude_step._fetch_failed_logs", return_value="test_foo FAILED")
+    @patch("app.claude_step.run_gh")
+    def test_ci_failure(self, mock_gh, mock_logs):
+        mock_gh.return_value = json.dumps([{
+            "databaseId": 200,
+            "status": "completed",
+            "conclusion": "failure",
+        }])
+        status, run_id, logs = check_existing_ci("koan/fix", "owner/repo")
+        assert status == "failure"
+        assert run_id == 200
+        assert "test_foo FAILED" in logs
+
+    @patch("app.claude_step.run_gh")
+    def test_ci_pending(self, mock_gh):
+        mock_gh.return_value = json.dumps([{
+            "databaseId": 300,
+            "status": "in_progress",
+            "conclusion": "",
+        }])
+        status, run_id, logs = check_existing_ci("koan/fix", "owner/repo")
+        assert status == "pending"
+        assert run_id == 300
+
+    @patch("app.claude_step.run_gh")
+    def test_no_ci_runs(self, mock_gh):
+        mock_gh.return_value = "[]"
+        status, run_id, logs = check_existing_ci("koan/fix", "owner/repo")
+        assert status == "none"
+        assert run_id is None
+
+    @patch("app.claude_step.run_gh", side_effect=RuntimeError("network"))
+    def test_gh_error_returns_none(self, mock_gh):
+        status, run_id, logs = check_existing_ci("koan/fix", "owner/repo")
+        assert status == "none"
+
+
+class TestFixExistingCiFailures:
+    """Tests for _fix_existing_ci_failures() — pre-push CI check and fix."""
+
+    def _make_context(self):
+        return {
+            "title": "Fix bug",
+            "branch": "koan/fix",
+            "base": "main",
+            "body": "",
+            "diff": "",
+            "url": "https://github.com/owner/repo/pull/42",
+        }
+
+    @patch("app.rebase_pr.check_existing_ci", return_value=("success", 100, ""))
+    def test_ci_success_skips(self, mock_ci):
+        actions = []
+        result = _fix_existing_ci_failures(
+            "koan/fix", "main", "owner/repo", "42", "/project",
+            self._make_context(), actions, lambda m: None,
+        )
+        assert result is False
+        assert any("previous run passed" in a for a in actions)
+
+    @patch("app.rebase_pr.check_existing_ci", return_value=("none", None, ""))
+    def test_no_ci_runs_skips(self, mock_ci):
+        actions = []
+        result = _fix_existing_ci_failures(
+            "koan/fix", "main", "owner/repo", "42", "/project",
+            self._make_context(), actions, lambda m: None,
+        )
+        assert result is False
+        assert any("no CI runs" in a for a in actions)
+
+    @patch("app.rebase_pr.check_existing_ci", return_value=("pending", 300, ""))
+    def test_ci_pending_skips(self, mock_ci):
+        actions = []
+        result = _fix_existing_ci_failures(
+            "koan/fix", "main", "owner/repo", "42", "/project",
+            self._make_context(), actions, lambda m: None,
+        )
+        assert result is False
+        assert any("pending" in a for a in actions)
+
+    @patch("app.rebase_pr.run_claude_step", return_value=True)
+    @patch("app.rebase_pr._build_ci_fix_prompt", return_value="fix prompt")
+    @patch("app.rebase_pr._run_git", return_value="diff output")
+    @patch("app.rebase_pr.check_existing_ci", return_value=("failure", 200, "test_foo FAILED"))
+    def test_ci_failure_triggers_fix(self, mock_ci, mock_git, mock_prompt, mock_claude):
+        actions = []
+        notify_calls = []
+        result = _fix_existing_ci_failures(
+            "koan/fix", "main", "owner/repo", "42", "/project",
+            self._make_context(), actions, lambda m: notify_calls.append(m),
+        )
+        assert result is True
+        mock_claude.assert_called_once()
+        assert any("Pre-push CI fix applied" in a for a in actions)
+        # Verify notify was called about analyzing logs
+        assert any("analyzing" in m.lower() for m in notify_calls)
+
+    @patch("app.rebase_pr.run_claude_step", return_value=False)
+    @patch("app.rebase_pr._build_ci_fix_prompt", return_value="fix prompt")
+    @patch("app.rebase_pr._run_git", return_value="diff output")
+    @patch("app.rebase_pr.check_existing_ci", return_value=("failure", 200, "error"))
+    def test_ci_failure_no_changes(self, mock_ci, mock_git, mock_prompt, mock_claude):
+        actions = []
+        result = _fix_existing_ci_failures(
+            "koan/fix", "main", "owner/repo", "42", "/project",
+            self._make_context(), actions, lambda m: None,
+        )
+        assert result is False
+        assert any("no changes needed" in a for a in actions)
 
 
 class TestRunCiCheckAndFix:
@@ -2135,6 +2272,100 @@ class TestApplyReviewFeedbackDescriptiveCommit:
         assert "Updated error handling" in commit_msg
 
 
+class TestApplyReviewFeedbackConventionAware:
+    """_apply_review_feedback should use a parsed COMMIT_SUBJECT when
+    commit_conventions are provided."""
+
+    @patch("app.rebase_pr.commit_if_changes", return_value=True)
+    @patch("app.rebase_pr.run_claude")
+    @patch("app.cli_provider.build_full_command", return_value=["claude", "--fake"])
+    @patch("app.config.get_model_config", return_value={"mission": "m", "fallback": "f"})
+    def test_uses_parsed_subject_when_conventions_provided(
+        self, _mc, _cmd, mock_claude, mock_commit,
+    ):
+        mock_claude.return_value = {
+            "success": True,
+            "output": (
+                "Fixed the auth bug.\n\n"
+                "COMMIT_SUBJECT: Case PROJECT-52496 Fix auth token expiry\n"
+            ),
+            "error": "",
+        }
+        context = {
+            "title": "Fix", "body": "", "branch": "br", "base": "main",
+            "diff": "+code", "review_comments": "fix this",
+            "reviews": "", "issue_comments": "",
+        }
+        actions = []
+        _apply_review_feedback(
+            context, "42", "/project", actions,
+            skill_dir=REBASE_SKILL_DIR,
+            commit_conventions="## Commit Conventions\nUse Case PROJECT-XXXXX.",
+        )
+        commit_msg = mock_commit.call_args[0][1]
+        assert "Case PROJECT-52496" in commit_msg
+        assert "rebase: apply review feedback" not in commit_msg
+
+    @patch("app.rebase_pr.commit_if_changes", return_value=True)
+    @patch("app.rebase_pr.run_claude")
+    @patch("app.cli_provider.build_full_command", return_value=["claude", "--fake"])
+    @patch("app.config.get_model_config", return_value={"mission": "m", "fallback": "f"})
+    def test_falls_back_when_no_subject_parsed(
+        self, _mc, _cmd, mock_claude, mock_commit,
+    ):
+        """Falls back to default subject when Claude doesn't output COMMIT_SUBJECT."""
+        mock_claude.return_value = {
+            "success": True,
+            "output": "Fixed the auth bug.\n",
+            "error": "",
+        }
+        context = {
+            "title": "Fix", "body": "", "branch": "br", "base": "main",
+            "diff": "+code", "review_comments": "fix this",
+            "reviews": "", "issue_comments": "",
+        }
+        actions = []
+        _apply_review_feedback(
+            context, "42", "/project", actions,
+            skill_dir=REBASE_SKILL_DIR,
+            commit_conventions="## Commit Conventions\nUse Case PROJECT-XXXXX.",
+        )
+        commit_msg = mock_commit.call_args[0][1]
+        assert "rebase: apply review feedback on #42" in commit_msg
+
+    @patch("app.rebase_pr.commit_if_changes", return_value=True)
+    @patch("app.rebase_pr.run_claude")
+    @patch("app.cli_provider.build_full_command", return_value=["claude", "--fake"])
+    @patch("app.config.get_model_config", return_value={"mission": "m", "fallback": "f"})
+    def test_strips_subject_line_from_body(
+        self, _mc, _cmd, mock_claude, mock_commit,
+    ):
+        """The COMMIT_SUBJECT line should not appear in the commit body."""
+        mock_claude.return_value = {
+            "success": True,
+            "output": (
+                "Fixed auth bug.\n"
+                "COMMIT_SUBJECT: Case PROJECT-123 Fix auth\n"
+                "More details here."
+            ),
+            "error": "",
+        }
+        context = {
+            "title": "Fix", "body": "", "branch": "br", "base": "main",
+            "diff": "+code", "review_comments": "fix this",
+            "reviews": "", "issue_comments": "",
+        }
+        actions = []
+        _apply_review_feedback(
+            context, "42", "/project", actions,
+            skill_dir=REBASE_SKILL_DIR,
+            commit_conventions="## Commit Conventions\nUse Case prefix.",
+        )
+        commit_msg = mock_commit.call_args[0][1]
+        assert "COMMIT_SUBJECT:" not in commit_msg
+        assert "Fixed auth bug" in commit_msg
+
+
 class TestBuildRebaseCommentChangeSummary:
     """_build_rebase_comment should include a change summary section
     when review feedback was applied (issue #964)."""
@@ -2176,6 +2407,7 @@ class TestRunRebasePassesChangeSummary:
         with patch("app.rebase_pr._check_if_already_solved", return_value=(False, None)):
             yield
 
+    @patch("app.rebase_pr._fix_existing_ci_failures", return_value=False)
     @patch("app.rebase_pr._run_ci_check_and_fix", return_value="")
     @patch("app.rebase_pr._safe_checkout")
     @patch("app.rebase_pr.run_gh")
@@ -2183,7 +2415,7 @@ class TestRunRebasePassesChangeSummary:
     @patch("app.rebase_pr._apply_review_feedback", return_value="Fixed the auth bug.")
     @patch("app.rebase_pr.fetch_pr_context")
     def test_summary_forwarded_to_comment(
-        self, mock_ctx, mock_apply, mock_comment, mock_gh, mock_safe, mock_ci_check,
+        self, mock_ctx, mock_apply, mock_comment, mock_gh, mock_safe, mock_ci_check, mock_fix_ci,
     ):
         mock_ctx.return_value = {
             "title": "Fix auth", "body": "", "branch": "feat",
@@ -2440,7 +2672,8 @@ class TestRunRebaseAlreadySolved:
              }), \
              patch("app.rebase_pr.run_gh"), \
              patch("app.rebase_pr._safe_checkout"), \
-             patch("app.rebase_pr._run_ci_check_and_fix", return_value=""):
+             patch("app.rebase_pr._run_ci_check_and_fix", return_value=""), \
+             patch("app.rebase_pr._fix_existing_ci_failures", return_value=False):
             success, _ = run_rebase("o", "r", "1", "/project", notify_fn=notify)
         mock_close.assert_not_called()
         mock_checkout.assert_called_once()

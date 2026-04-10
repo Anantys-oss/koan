@@ -182,12 +182,16 @@ If Kōan misclassifies your message, use `/chat` to force chat mode:
 - `/live` — Check what Kōan is doing right now during a long mission
 </details>
 
-**`/logs`** — Show the last 10 lines from run.log and awake.log, formatted in code blocks.
+**`/logs [run|awake|all]`** — Show the last 20 lines from log files, formatted in code blocks.
+
+- **Default:** Shows only `run.log`. Use `awake` for bridge logs, `all` for both.
 
 <details>
 <summary>Use cases</summary>
 
-- `/logs` — Quick check of recent agent and bridge output without SSH access
+- `/logs` — Quick check of recent agent output (run.log only)
+- `/logs awake` — Check bridge/Telegram polling output
+- `/logs all` — See both run and awake logs
 </details>
 
 **`/quota [remaining_%]`** — Check remaining API quota (live, no cache), or override the internal estimate.
@@ -475,10 +479,33 @@ Use this before `/plan` when the idea is architecturally complex, when you want 
 - **Usage:** `/check <pr-or-issue-url>`
 - **Aliases:** `/inspect`
 
+The check loop also **auto-forwards unresolved human review comments** on Kōan-created PRs. When a reviewer leaves comments, `/check` detects them and creates a mission to address the feedback — no explicit @mention required. Fingerprint-based deduplication (SHA-256 of sorted comment IDs) prevents re-dispatching the same set of comments across repeated checks. Bot comments (Codecov, Dependabot, etc.) are filtered out automatically.
+
+Configure this behavior in `config.yaml`:
+
+```yaml
+review_dispatch:
+  include_drafts: true   # Also dispatch for draft PRs (default: true)
+```
+
 <details>
 <summary>Use cases</summary>
 
 - `/check https://github.com/org/repo/pull/42` — Let Kōan decide what a PR needs
+- Reviewer leaves comments on a PR → next `/check` run creates a mission to address them
+</details>
+
+**`/ci_check`** — Check and fix CI failures on a GitHub PR using Claude.
+
+- **Usage:** `/ci_check <pr-url>`
+
+Usually auto-triggered when CI fails after a `/rebase`, but can also be invoked manually. Fetches failure logs, checks out the PR branch, and runs Claude to attempt a fix. If the fix produces a commit, it force-pushes and re-enqueues the PR for CI monitoring.
+
+<details>
+<summary>Use cases</summary>
+
+- `/ci_check https://github.com/org/repo/pull/42` — Attempt to fix CI failures on a PR
+- Auto-injected by the CI queue when a post-rebase CI run fails
 </details>
 
 **`/gh_request`** — Route a natural-language GitHub request to the appropriate action.
@@ -843,6 +870,19 @@ prompt_guard: true            # Enable prompt injection detection
 
 See `instance.example/config.yaml` for all available options.
 
+**`/config_check`** — Detect drift between your `instance/config.yaml` and the template at `instance.example/config.yaml`. Reports two things:
+
+- **Missing keys** — in the template but absent from your config. These are new features released since you last synced and are probably worth reviewing.
+- **Extra keys** — in your config but absent from the template. These are usually deprecated/removed settings (or typos).
+
+Run it after every Kōan update to stay in sync:
+
+```
+/config_check
+```
+
+The same check runs automatically as part of `/doctor` — use `/config_check` when you only want the config slice without the rest of the diagnostic report.
+
 ### Per-Project Overrides
 
 Projects are configured in `projects.yaml` at `KOAN_ROOT`. Each project can override defaults:
@@ -1176,6 +1216,29 @@ Each finding becomes a GitHub issue with:
 - **Suggested Fix** — Concrete description of what to change
 - **Details table** — Severity, category, location, and effort estimate
 
+### Security Audit
+
+**`/security_audit`** — Perform a security-focused SDLC audit of a project. Searches for critical vulnerabilities (injection, auth flaws, secrets exposure, path traversal, SSRF, insecure deserialization, etc.) and creates a GitHub issue for each finding.
+
+- **Usage:** `/security_audit <project-name> [extra context] [limit=N]`
+- **Aliases:** `/security`, `/secu`
+- **GitHub @mention:** `@koan-bot /security_audit` on an issue or PR
+- Default: top 5 most critical findings. Use `limit=N` to override.
+
+<details>
+<summary>Use cases</summary>
+
+- `/security_audit koan` — Full security audit (top 5 critical findings)
+- `/security myapp focus on the API endpoints` — Security audit with specific focus
+- `/secu webapp limit=3` — Quick security scan with custom limit
+</details>
+
+Each finding becomes a GitHub issue with:
+- **Problem** — The vulnerability and how it could be exploited
+- **Why This Matters** — Real-world impact (data breach, RCE, privilege escalation)
+- **Suggested Fix** — Concrete remediation steps
+- **Details table** — Severity, category, location, and effort estimate
+
 ### Incident Triage
 
 **`/incident`** — Triage a production error from a stack trace or log snippet. Kōan will parse the error, identify the root cause, propose a fix with tests, and submit a draft PR.
@@ -1225,7 +1288,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/usage` | — | B | Detailed quota and progress |
 | `/metrics` | — | B | Mission success rates and reliability stats |
 | `/live` | `/progress` | B | Show live progress of current mission |
-| `/logs` | — | B | Show last 10 lines from run and awake logs |
+| `/logs [run\|awake\|all]` | — | B | Show last 20 lines from logs (default: run) |
 | `/quota [N]` | `/q` | B | Check LLM quota (live), or override remaining % |
 | `/chat <msg>` | — | B | Force chat mode (bypass mission detection) |
 | `/verbose` | — | B | Enable real-time progress updates |
@@ -1250,8 +1313,10 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/pr <PR>` | — | I | Review and update a GitHub PR |
 | `/branches [project]` | `/br`, `/prs` | B | List koan branches + PRs with merge order |
 | `/check <url>` | `/inspect` | I | Run project health checks on a PR/issue |
+| `/ci_check <PR>` | — | I | Check and fix CI failures on a PR |
 | `/gh_request <url> <text>` | — | I | Route natural-language GitHub request to the right skill |
 | `/claudemd [project]` | `/claude`, `/claude.md`, `/claude_md` | I | Refresh a project's CLAUDE.md |
+| `/config_check` | `/cfgcheck`, `/configcheck` | P | Detect config.yaml drift against instance.example template |
 | `/gha_audit [project]` | `/gha` | I | Audit GitHub Actions for security issues |
 | `/changelog [project]` | `/changes` | I | Generate changelog from commits/journal |
 | `/daily <text>` | — | I | Schedule a daily recurring mission |
@@ -1285,12 +1350,13 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/rename <old> <new>` | `/rename_project` | P | Rename a project everywhere |
 | `/profile <project>` | `/perf`, `/benchmark` | P | Performance profiling mission |
 | `/audit <project> [ctx] [limit=N]` | — | P | Audit project, create GitHub issues (top N, default 5) |
+| `/security_audit <project> [ctx] [limit=N]` | `/security`, `/secu` | P | Security audit, find critical vulnerabilities (top N, default 5) |
 | `/tech_debt [project]` | `/td`, `/debt` | P | Scan project for tech debt |
 | `/dead_code [project]` | `/dc` | P | Scan for unused code |
 | `/incident <error>` | — | P | Triage a production error |
 | `/scaffold_skill <scope> <name> <desc>` | `/scaffold`, `/new_skill` | P | Generate SKILL.md + handler.py for a new custom skill |
 
-Skills marked with GitHub @mention support: `/audit`, `/brainstorm`, `/plan`, `/implement`, `/fix`, `/review`, `/rebase`, `/recreate`, `/refactor`, `/profile`, `/gh_request`. See [GitHub Commands](github-commands.md) for details.
+Skills marked with GitHub @mention support: `/audit`, `/security_audit`, `/brainstorm`, `/plan`, `/implement`, `/fix`, `/review`, `/rebase`, `/recreate`, `/refactor`, `/profile`, `/gh_request`. See [GitHub Commands](github-commands.md) for details.
 
 ---
 

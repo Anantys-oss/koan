@@ -36,6 +36,15 @@ from typing import Callable, Dict, List, Optional
 POST_MISSION_TIMEOUT = 300  # default; overridden by config at runtime
 
 
+def _log_runner(category: str, message: str):
+    """Log mission runner events via run_log.log() for timestamps and color."""
+    try:
+        from app.run_log import log as _run_log
+        _run_log(category, message)
+    except ImportError:
+        print(f"[{category}] {message}", file=sys.stderr)
+
+
 def _resolve_post_mission_timeout() -> int:
     """Read post_mission_timeout from config, falling back to module constant."""
     from app.config import get_post_mission_timeout
@@ -85,8 +94,9 @@ class _PipelineTracker:
             self.record(step, "success", f"{elapsed:.1f}s")
             return result
         except Exception as e:
-            self.record(step, "fail", str(e))
-            print(f"[mission_runner] {step} failed: {e}", file=sys.stderr)
+            elapsed = time.monotonic() - t0
+            self.record(step, "fail", f"failed after {elapsed:.0f}s: {e}")
+            _log_runner("error", f"{step} failed after {elapsed:.0f}s: {e}")
             return None
 
     def summary_lines(self) -> List[str]:
@@ -141,7 +151,7 @@ def _write_pipeline_summary(
         entry = header + "\n" + "\n".join(lines) + "\n"
         append_to_journal(Path(instance_dir), project_name, entry)
     except Exception as e:
-        print(f"[mission_runner] Pipeline summary write failed: {e}", file=sys.stderr)
+        _log_runner("error", f"Pipeline summary write failed: {e}")
 
 
 def _extract_cache_line(stdout_file: str) -> str:
@@ -159,7 +169,7 @@ def _extract_cache_line(stdout_file: str) -> str:
             input_tokens=detailed.get("input_tokens", 0),
         )
     except Exception as e:
-        print(f"[mission_runner] cache line extraction failed: {e}", file=sys.stderr)
+        _log_runner("error", f"Cache line extraction failed: {e}")
         return ""
 
 
@@ -184,7 +194,7 @@ def build_mission_command(
     Returns:
         Complete command list ready for subprocess.
     """
-    from app.config import get_mission_tools, get_model_config
+    from app.config import get_mission_tools, get_model_config, get_mcp_configs
     from app.cli_provider import build_full_command
 
     # Get mission tools (comma-separated list)
@@ -202,6 +212,9 @@ def build_mission_command(
         model = models["review_mode"]
     fallback = models["fallback"]
 
+    # Get MCP server configs
+    mcp_configs = get_mcp_configs(project_name)
+
     # Build provider-specific command
     cmd = build_full_command(
         prompt=prompt,
@@ -209,6 +222,7 @@ def build_mission_command(
         model=model,
         fallback=fallback,
         output_format="json",
+        mcp_configs=mcp_configs,
         plugin_dirs=plugin_dirs,
         system_prompt=system_prompt,
     )
@@ -233,6 +247,37 @@ def get_mission_flags(autonomous_mode: str = "", project_name: str = "") -> str:
     from app.config import get_claude_flags_for_role
 
     return get_claude_flags_for_role("mission", autonomous_mode, project_name)
+
+
+def check_json_success(stdout_file: str) -> bool:
+    """Check if Claude CLI JSON output indicates a successful session.
+
+    The Claude Code CLI can exit with non-zero even when the session
+    completed successfully.  This function parses the JSON output and
+    returns True when the session result signals success, allowing the
+    caller to override a misleading exit code.
+
+    Checks (in order):
+    - ``is_error`` is explicitly ``False``
+    - ``subtype`` equals ``"success"``
+    """
+    try:
+        raw = Path(stdout_file).read_text()
+        if not raw.strip():
+            return False
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return False
+        # Explicit error flag takes priority
+        if data.get("is_error") is True:
+            return False
+        if data.get("is_error") is False:
+            return True
+        if data.get("subtype") == "success":
+            return True
+        return False
+    except (OSError, json.JSONDecodeError, TypeError):
+        return False
 
 
 def parse_claude_output(raw_text: str) -> str:
@@ -269,11 +314,9 @@ def _read_pending_content(instance_dir: str) -> str:
     """Read pending.md content before archival for session classification."""
     pending_path = Path(instance_dir) / "journal" / "pending.md"
     try:
-        if pending_path.exists():
-            return pending_path.read_text()
+        return pending_path.read_text()
     except (OSError, FileNotFoundError):
-        pass
-    return ""
+        return ""
 
 
 def _read_stdout_summary(stdout_file: str, max_chars: int = 2000) -> str:
@@ -319,7 +362,7 @@ def _record_session_outcome(
             mission_title=mission_title,
         )
     except Exception as e:
-        print(f"[mission_runner] Session outcome recording failed: {e}", file=sys.stderr)
+        _log_runner("error", f"Session outcome recording failed: {e}")
 
 
 def _record_cost_event(
@@ -351,7 +394,43 @@ def _record_cost_event(
             cost_usd=detailed.get("cost_usd", 0.0),
         )
     except Exception as e:
-        print(f"[mission_runner] Cost tracking failed: {e}", file=sys.stderr)
+        _log_runner("error", f"Cost tracking failed: {e}")
+
+
+def _log_activity_usage(
+    instance_dir: str,
+    project_name: str,
+    stdout_file: str,
+    autonomous_mode: str,
+    mission_title: str,
+    duration_seconds: int = 0,
+) -> None:
+    """Log activity usage to logs/usage.log (fire-and-forget)."""
+    try:
+        from app.usage_estimator import extract_tokens_detailed
+        from app.activity_usage_logger import log_activity_usage
+
+        detailed = extract_tokens_detailed(Path(stdout_file))
+        if detailed is None:
+            return
+
+        activity_type = "mission" if mission_title else autonomous_mode or "autonomous"
+        description = mission_title or f"autonomous ({autonomous_mode})"
+
+        log_activity_usage(
+            project=project_name or "_global",
+            activity_type=activity_type,
+            description=description,
+            duration_seconds=duration_seconds,
+            input_tokens=detailed["input_tokens"],
+            output_tokens=detailed["output_tokens"],
+            cache_read_tokens=detailed.get("cache_read_input_tokens", 0),
+            cache_creation_tokens=detailed.get("cache_creation_input_tokens", 0),
+            cost_usd=detailed.get("cost_usd", 0.0),
+            model=detailed.get("model", ""),
+        )
+    except Exception as e:
+        print(f"[mission_runner] Activity usage logging failed: {e}", file=sys.stderr)
 
 
 def archive_pending(instance_dir: str, project_name: str, run_num: int) -> bool:
@@ -366,14 +445,9 @@ def archive_pending(instance_dir: str, project_name: str, run_num: int) -> bool:
         True if pending.md was archived, False if it didn't exist.
     """
     pending_path = Path(instance_dir) / "journal" / "pending.md"
-    if not pending_path.exists():
-        return False
-
-    # Read pending content — guard against file disappearing between
-    # exists() check and read (TOCTOU race with the agent's own cleanup).
     try:
         pending_content = pending_path.read_text()
-    except FileNotFoundError:
+    except (OSError, FileNotFoundError):
         return False
 
     # Append pending content to daily journal (with file locking)
@@ -404,7 +478,7 @@ def update_usage(stdout_file: str, usage_state: str, usage_md: str) -> bool:
         cmd_update(Path(stdout_file), Path(usage_state), Path(usage_md))
         return True
     except Exception as e:
-        print(f"[mission_runner] Usage update failed: {e}", file=sys.stderr)
+        _log_runner("error", f"Usage update failed: {e}")
         return False
 
 
@@ -448,7 +522,7 @@ def trigger_reflection(
             write_to_journal(inst, reflection)
             return True
     except Exception as e:
-        print(f"[mission_runner] Reflection failed: {e}", file=sys.stderr)
+        _log_runner("error", f"Reflection failed: {e}")
     return False
 
 
@@ -468,7 +542,7 @@ def _get_quality_gate_mode(instance_dir: str, project_name: str) -> str:
             if gate in ("strict", "warn", "off"):
                 return gate
     except Exception as e:
-        print(f"[mission_runner] Quality gate config error: {e}", file=sys.stderr)
+        _log_runner("error", f"Quality gate config error: {e}")
     return "warn"
 
 
@@ -522,7 +596,7 @@ def _is_lint_blocking(instance_dir: str, project_name: str) -> bool:
         lint_config = get_project_lint_config(config, project_name)
         return lint_config.get("blocking", True) and lint_config.get("enabled", False)
     except Exception as e:
-        print(f"[mission_runner] Lint config check failed: {e}", file=sys.stderr)
+        _log_runner("error", f"Lint config check failed: {e}")
         return False
 
 
@@ -606,17 +680,17 @@ def check_auto_merge(
             from app.pr_quality import should_block_auto_merge, post_quality_comment
             gate_mode = _get_quality_gate_mode(instance_dir, project_name)
             if should_block_auto_merge(quality_report, gate_mode):
-                print(f"[mission_runner] Auto-merge blocked by quality gate ({gate_mode})")
+                _log_runner("mission", f"Auto-merge blocked by quality gate ({gate_mode})")
                 try:
                     post_quality_comment(project_path, quality_report)
                 except Exception as e:
-                    print(f"[mission_runner] Quality comment failed: {e}", file=sys.stderr)
+                    _log_runner("error", f"Quality comment failed: {e}")
                 return None
 
         auto_merge_branch(instance_dir, project_name, project_path, branch)
         return branch
     except Exception as e:
-        print(f"[mission_runner] Auto-merge check failed: {e}", file=sys.stderr)
+        _log_runner("error", f"Auto-merge check failed: {e}")
         return None
 
 
@@ -657,7 +731,7 @@ def _notify_pipeline_failures(
         outbox_path = Path(instance_dir) / "outbox.md"
         append_to_outbox(outbox_path, msg + "\n", priority=NotificationPriority.WARNING)
     except Exception as e:
-        print(f"[mission_runner] Pipeline failure notification failed: {e}", file=sys.stderr)
+        _log_runner("error", f"Pipeline failure notification failed: {e}")
 
 
 def _fire_post_mission_hook(
@@ -687,7 +761,7 @@ def _fire_post_mission_hook(
             result=dict(result),
         )
     except Exception as e:
-        print(f"[hooks] post_mission hook error: {e}", file=sys.stderr)
+        _log_runner("error", f"post_mission hook error: {e}")
         return {"_fire_post_mission_hook": str(e)}
 
 
@@ -782,9 +856,17 @@ def run_post_mission(
 
         # 2. Compute duration (needed for quota early-return, reflection, and outcome tracking)
         if start_time > 0:
-            duration_minutes = (int(datetime.now().timestamp()) - start_time) // 60
+            duration_seconds = int(datetime.now().timestamp()) - start_time
+            duration_minutes = duration_seconds // 60
         else:
+            duration_seconds = 0
             duration_minutes = 0
+
+        # 2b. Log activity usage to logs/usage.log (human-readable, rotated)
+        _log_activity_usage(
+            instance_dir, project_name, stdout_file,
+            autonomous_mode, mission_title, duration_seconds,
+        )
 
         # 3. Check for quota exhaustion
         _report("checking quota")

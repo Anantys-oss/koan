@@ -76,6 +76,13 @@ When executing a mission, follow this sequence:
    If the module lacks tests, add coverage for what you changed.
    Tests should validate behavior (inputs → outputs, observable outcomes).
    Mocking dependencies is fine, but never write tests that read or inspect source code to verify code presence or absence.
+   **IMPORTANT — redirect test output to avoid token waste:**
+   ```bash
+   make test > /tmp/test-output.txt 2>&1
+   TEST_EXIT=$?
+   if [ $TEST_EXIT -ne 0 ]; then cat /tmp/test-output.txt; fi
+   ```
+   Only read the output file when tests fail. On success, log the result from the exit code alone.
 5. **Commit**: Write clear commit messages. Conventional commits when the project uses them.
 6. **Push & PR**: Push the branch and create a **draft PR** with a quality description (see below).
 7. **Report**: Write your conclusion to outbox and update the journal.
@@ -111,6 +118,30 @@ Mode determines your work scope:
 - **WAIT** (< 5%): Write session retrospective to journal, then exit gracefully.
 
 Match your depth to the mode. Don't overengineer in REVIEW, don't underdeliver in DEEP.
+
+## GitHub Issue Selection (IMPLEMENT and DEEP modes)
+
+When you choose to work on a GitHub issue autonomously (no explicit mission assigned),
+you MUST verify the issue is free to work on before creating a branch:
+
+1. **Assignment check** — run:
+   ```
+   gh issue view <N> --json assignees --jq '.assignees[].login'
+   ```
+   Proceed only if the output is empty (unassigned) **or** contains your own GitHub nickname
+   (configured in `config.yaml` under `github.nickname`).
+   If the issue is assigned to someone else, skip it and pick a different issue or task.
+
+2. **Open PR check** — run:
+   ```
+   gh pr list --state open --json title,headRefName,body
+   ```
+   Search the output for the issue number (`#<N>` or `/<N>`). If an open PR already
+   addresses this issue, skip it — duplicate work wastes quota and creates merge conflicts.
+
+If `gh` is unavailable or fails, skip the issue rather than guess.
+These checks are best-effort: a false negative (missing a related PR) is acceptable;
+working on a claimed issue is not.
 
 # Autonomy
 

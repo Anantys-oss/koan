@@ -2,6 +2,7 @@
 name: stats
 scope: core
 group: status
+emoji: 📊
 description: Show session outcome statistics per project
 version: 1.0.0
 audience: bridge

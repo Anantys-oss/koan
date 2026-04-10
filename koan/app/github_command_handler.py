@@ -171,6 +171,64 @@ def get_github_enabled_commands_with_descriptions(
     return sorted(commands.items())
 
 
+# Group labels for the help message, keyed by SKILL.md ``group`` field.
+_GROUP_LABELS: Dict[str, str] = {
+    "code": "Code & Development",
+    "pr": "Pull Requests",
+    "status": "Status & Info",
+    "missions": "Missions",
+    "config": "Configuration",
+    "ideas": "Ideas & Planning",
+    "system": "System",
+}
+
+
+def _get_github_enabled_skills(registry: SkillRegistry) -> List[Tuple[str, "Skill"]]:
+    """Collect github-enabled skills, deduplicated by primary command name.
+
+    Returns a list of (primary_command_name, Skill) sorted by name.
+    """
+    from app.skills import Skill as _Skill  # noqa: F811 — local alias for type hint
+
+    seen: Dict[str, object] = {}
+    for skill in registry.list_all():
+        if not skill.github_enabled:
+            continue
+        for cmd in skill.commands:
+            if cmd.name not in seen:
+                seen[cmd.name] = skill
+    return sorted(seen.items(), key=lambda t: t[0])
+
+
+def _format_command_line(
+    cmd_name: str,
+    skill,
+    bot_username: str,
+) -> str:
+    """Format a single command entry for help output.
+
+    Includes emoji, command, aliases, and description.
+    """
+    # Find the matching SkillCommand for alias info
+    cmd_obj = None
+    for c in skill.commands:
+        if c.name == cmd_name:
+            cmd_obj = c
+            break
+
+    emoji = skill.emoji or ""
+    description = (cmd_obj.description if cmd_obj and cmd_obj.description else skill.description) or ""
+
+    # Build alias hint
+    aliases = ""
+    if cmd_obj and cmd_obj.aliases:
+        alias_str = ", ".join(f"`{a}`" for a in cmd_obj.aliases)
+        aliases = f" (alias: {alias_str})"
+
+    prefix = f"{emoji} " if emoji else ""
+    return f"- {prefix}`@{bot_username} {cmd_name}`{aliases} — {description}"
+
+
 def format_help_message(
     invalid_command: str,
     registry: SkillRegistry,
@@ -186,16 +244,49 @@ def format_help_message(
     Returns:
         A formatted markdown help message for GitHub comments.
     """
-    commands = get_github_enabled_commands_with_descriptions(registry)
-
     suggestion = registry.suggest_command(invalid_command)
     hint = f" Did you mean `{suggestion}`?" if suggestion else ""
-    lines = [f"Unknown command `{invalid_command}`.{hint} Here are the commands I support:\n"]
-    for name, description in commands:
-        lines.append(f"- `@{bot_username} {name}` — {description}")
-
+    lines = [f"Unknown command `{invalid_command}`.{hint}\n"]
+    lines.append(_build_grouped_command_list(registry, bot_username))
     lines.append(f"\nUsage: `@{bot_username} <command>` in any PR or issue comment.")
     return "\n".join(lines)
+
+
+def _build_grouped_command_list(
+    registry: SkillRegistry,
+    bot_username: str,
+) -> str:
+    """Build a grouped command list for help output.
+
+    Groups commands by their SKILL.md ``group`` field with section headers.
+    Commands without a recognized group go under "Other".
+    """
+    entries = _get_github_enabled_skills(registry)
+
+    # Bucket by group
+    groups: Dict[str, List[str]] = {}
+    for cmd_name, skill in entries:
+        group = skill.group or "other"
+        line = _format_command_line(cmd_name, skill, bot_username)
+        groups.setdefault(group, []).append(line)
+
+    # Render in a stable order: known groups first, then unknowns
+    lines: List[str] = []
+    for group_key, label in _GROUP_LABELS.items():
+        if group_key not in groups:
+            continue
+        lines.append(f"### {label}")
+        lines.extend(groups.pop(group_key))
+        lines.append("")
+
+    # Any remaining (unknown) groups
+    for group_key in sorted(groups):
+        label = group_key.replace("_", " ").title()
+        lines.append(f"### {label}")
+        lines.extend(groups[group_key])
+        lines.append("")
+
+    return "\n".join(lines).rstrip()
 
 
 def format_help_list_message(
@@ -214,13 +305,9 @@ def format_help_list_message(
     Returns:
         A formatted markdown help message for GitHub comments.
     """
-    commands = get_github_enabled_commands_with_descriptions(registry)
-
     lines = ["Here are the commands I support:\n"]
-    for name, description in commands:
-        lines.append(f"- `@{bot_username} {name}` — {description}")
-
-    lines.append(f"- `@{bot_username} help` — Show this help message")
+    lines.append(_build_grouped_command_list(registry, bot_username))
+    lines.append(f"\nℹ️ `@{bot_username} help` — Show this help message")
     lines.append(f"\nUsage: `@{bot_username} <command>` in any PR or issue comment.")
     return "\n".join(lines)
 
@@ -242,13 +329,13 @@ def _post_help_reply(
     Returns:
         True if posted successfully.
     """
-    from app.github import api
+    from app.github import api, sanitize_github_comment
 
     try:
         api(
             f"repos/{owner}/{repo}/issues/{issue_number}/comments",
             method="POST",
-            extra_args=["-f", f"body={help_message}"],
+            extra_args=["-f", f"body={sanitize_github_comment(help_message)}"],
         )
         return True
     except RuntimeError:
@@ -474,7 +561,7 @@ def _fetch_and_filter_comment(notification: dict, bot_username: str, max_age_hou
             repo_name,
         )
         need_thread_search = True
-    elif f"@{bot_username}".lower() not in comment.get("body", "").lower():
+    elif f"@{bot_username}".lower() not in (comment.get("body") or "").lower():
         # latest_comment_url shifted to a comment that doesn't mention the bot
         # (e.g., CI bot commented after the @mention, or PR body was returned)
         comment_author = comment.get("user", {}).get("login", "?")
@@ -734,8 +821,8 @@ def _try_reply(
         post_reply,
     )
 
-    # Fetch context and generate reply
-    thread_context = fetch_thread_context(owner, repo, issue_number)
+    # Fetch context and generate reply (exclude bot's own comments to avoid self-reply)
+    thread_context = fetch_thread_context(owner, repo, issue_number, bot_username=bot_username)
     reply_text = generate_reply(
         question=question_text,
         thread_context=thread_context,
@@ -1082,6 +1169,11 @@ def process_single_notification(
     comment_api_url = comment.get("url", "")
     add_reaction(owner, repo, comment_id, comment_api_url=comment_api_url)
 
+    # Persist locally so restarts don't re-queue if reaction API failed
+    from app.github_notification_tracker import track_comment
+    instance_dir = str(Path(koan_root) / "instance")
+    track_comment(instance_dir, comment_id)
+
     # Mark notification as read
     mark_notification_read(str(notification.get("id", "")))
 
@@ -1123,9 +1215,9 @@ def post_error_reply(
     if error_key in _error_replies:
         return False
 
-    from app.github import api
+    from app.github import api, sanitize_github_comment
 
-    body = f"❌ {error_message}"
+    body = sanitize_github_comment(f"❌ {error_message}")
     try:
         api(
             f"repos/{owner}/{repo}/issues/{issue_number}/comments",

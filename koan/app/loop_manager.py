@@ -31,6 +31,15 @@ from app.missions import count_pending
 from app.utils import atomic_write
 
 
+def _log_loop(category: str, message: str):
+    """Log loop manager events via run_log.log() for timestamps and color."""
+    try:
+        from app.run_log import log as _run_log
+        _run_log(category, message)
+    except ImportError:
+        print(f"[{category}] {message}", file=sys.stderr)
+
+
 # --- Focus area resolution ---
 
 # Maps autonomous mode to human-readable focus area description.
@@ -65,12 +74,16 @@ def validate_projects(
 ) -> Optional[str]:
     """Validate project configuration.
 
+    Missing directories or non-git repos are warned about and filtered out.
+    Only returns an error if no valid projects remain after filtering.
+
     Args:
         projects: List of (name, path) tuples.
         max_projects: Maximum allowed projects.
 
     Returns:
         Error message string if validation fails, None if valid.
+        Side effect: prints warnings for skipped projects to stderr.
     """
     if not projects:
         return "No projects configured. Create projects.yaml or set KOAN_PROJECTS env var."
@@ -78,9 +91,12 @@ def validate_projects(
     if len(projects) > max_projects:
         return f"Max {max_projects} projects allowed. You have {len(projects)}."
 
+    valid_count = 0
     for name, path in projects:
         if not os.path.isdir(path):
-            return f"Project '{name}' path does not exist: {path}"
+            _log_loop("health", f"Project '{name}' path does not exist: {path} — skipping. "
+                      f"Remove it from projects.yaml to silence this warning.")
+            continue
 
         # Verify the project path is a git repository
         try:
@@ -91,9 +107,16 @@ def validate_projects(
                 timeout=5,
             )
             if result.returncode != 0:
-                return f"Project '{name}' is not a git repository: {path}"
+                _log_loop("health", f"Project '{name}' is not a git repository: {path} — skipping.")
+                continue
         except (OSError, subprocess.TimeoutExpired):
-            return f"Project '{name}' is not a git repository: {path}"
+            _log_loop("health", f"Project '{name}' is not a git repository: {path} — skipping.")
+            continue
+
+        valid_count += 1
+
+    if valid_count == 0:
+        return "No valid project directories found. Check your projects.yaml paths."
 
     return None
 
@@ -125,6 +148,35 @@ def format_project_list(projects: list) -> str:
         Formatted string with bullet points, one per line.
     """
     return "\n".join(f"  \u2022 {name}" for name, _ in sorted(projects))
+
+
+# --- CI queue drain during sleep ---
+
+# Throttle: minimum seconds between CI queue checks during sleep.
+_CI_QUEUE_SLEEP_INTERVAL = 30
+_last_ci_queue_sleep_check: float = 0
+
+
+def _drain_ci_queue_during_sleep(instance_dir: str, elapsed: float):
+    """Drain CI queue during interruptible sleep (throttled).
+
+    Called every ~10s from the sleep loop but only actually checks CI
+    status every _CI_QUEUE_SLEEP_INTERVAL seconds to avoid API spam.
+    """
+    global _last_ci_queue_sleep_check
+
+    now = time.monotonic()
+    if now - _last_ci_queue_sleep_check < _CI_QUEUE_SLEEP_INTERVAL:
+        return
+    _last_ci_queue_sleep_check = now
+
+    try:
+        from app.ci_queue_runner import drain_one
+        msg = drain_one(instance_dir)
+        if msg:
+            log.info("CI queue (sleep): %s", msg)
+    except (ImportError, OSError, ValueError) as e:
+        log.debug("CI queue drain error during sleep: %s", e)
 
 
 # --- Pending.md creation ---
@@ -730,6 +782,14 @@ def process_github_notifications(
             # re-processed (which could create duplicate missions).
             _cache_notif(notif)
 
+            # Mark as read so subsequent checks (including after restart)
+            # skip this notification. The all=true fetch still returns read
+            # notifications, but they'll be filtered by the persistent
+            # tracker or reaction-based dedup much faster.
+            thread_id = str(notif.get("id", ""))
+            if thread_id:
+                mark_notification_read(thread_id)
+
             if success:
                 missions_created += 1
                 repo = notif.get("repository", {}).get("full_name", "?")
@@ -892,6 +952,215 @@ def _post_error_for_notification(notif: dict, error: str) -> None:
                 _pending_error_replies.append(entry)
 
 
+# --- Jira notification processing ---
+
+# Throttle: minimum seconds between Jira notification checks.
+# Overridden at runtime by jira.check_interval_seconds from config.yaml.
+_JIRA_CHECK_INTERVAL = 60
+# Maximum backoff interval when checks are consistently empty.
+# Overridden at runtime by jira.max_check_interval_seconds from config.yaml.
+_JIRA_MAX_CHECK_INTERVAL = 180
+_last_jira_check: float = 0
+_last_jira_check_iso: str = ""
+_consecutive_jira_empty: int = 0
+_jira_interval_loaded: bool = False
+_jira_config_logged: bool = False
+# Lock protecting all Jira module-level state.
+_jira_state_lock = threading.Lock()
+
+
+def _jira_log(message: str, level: str = "info") -> None:
+    """Log a message for Jira notifications."""
+    if level == "debug":
+        log.debug("[jira] %s", message)
+    elif level == "warning":
+        log.warning("[jira] %s", message)
+    else:
+        log.info("[jira] %s", message)
+
+
+def _get_effective_jira_interval_locked() -> int:
+    """Compute Jira check interval with backoff. Caller must hold _jira_state_lock."""
+    if _consecutive_jira_empty <= 0:
+        return _JIRA_CHECK_INTERVAL
+    return min(
+        _JIRA_CHECK_INTERVAL * (2 ** _consecutive_jira_empty),
+        _JIRA_MAX_CHECK_INTERVAL,
+    )
+
+
+def _load_processed_jira_tracker(instance_dir: str):
+    """Load the persistent Jira processed-comment tracker."""
+    from app.jira_notifications import _load_processed_tracker
+    tracker_path = Path(instance_dir) / ".jira-processed.json"
+    return _load_processed_tracker(tracker_path), tracker_path
+
+
+def process_jira_notifications(
+    koan_root: str,
+    instance_dir: str,
+) -> int:
+    """Check Jira comments for @mentions and create missions.
+
+    Respects throttling with exponential backoff: starts at
+    check_interval_seconds (default 60s), doubles on each empty
+    result (up to max_check_interval_seconds), resets on finding mentions.
+
+    Args:
+        koan_root: Path to koan root directory.
+        instance_dir: Path to instance directory.
+
+    Returns:
+        Number of missions created.
+    """
+    global _last_jira_check, _last_jira_check_iso, _consecutive_jira_empty
+    global _JIRA_CHECK_INTERVAL, _JIRA_MAX_CHECK_INTERVAL, _jira_interval_loaded
+    global _jira_config_logged
+
+    # Load configured intervals on first call (lazy)
+    with _jira_state_lock:
+        need_interval_load = not _jira_interval_loaded
+
+    if need_interval_load:
+        try:
+            from app.jira_config import get_jira_check_interval, get_jira_max_check_interval
+            from app.utils import load_config
+
+            cfg = load_config()
+            with _jira_state_lock:
+                _JIRA_CHECK_INTERVAL = get_jira_check_interval(cfg)
+                _JIRA_MAX_CHECK_INTERVAL = get_jira_max_check_interval(cfg)
+                _jira_interval_loaded = True
+        except (ImportError, OSError, ValueError) as e:
+            log.debug("Could not load Jira check interval from config: %s", e)
+
+    now = time.time()
+    with _jira_state_lock:
+        effective_interval = _get_effective_jira_interval_locked()
+        if now - _last_jira_check < effective_interval:
+            return 0
+        _last_jira_check = now
+
+    try:
+        from app.jira_config import (
+            get_jira_enabled,
+            get_jira_nickname,
+            get_jira_project_map,
+            validate_jira_config,
+        )
+        from app.utils import load_config
+
+        config = load_config()
+
+        if not get_jira_enabled(config):
+            with _jira_state_lock:
+                if not _jira_config_logged:
+                    log.debug("Jira integration disabled (jira.enabled not set in config.yaml)")
+                    _jira_config_logged = True
+            return 0
+
+        error = validate_jira_config(config)
+        if error:
+            with _jira_state_lock:
+                if not _jira_config_logged:
+                    _jira_log(f"Config error: {error}", "warning")
+                    _jira_config_logged = True
+            return 0
+
+        nickname = get_jira_nickname(config)
+        project_map = get_jira_project_map(config)
+        from app.jira_config import get_jira_branch_map
+        branch_map = get_jira_branch_map(config)
+
+        with _jira_state_lock:
+            if not _jira_config_logged:
+                _jira_log(
+                    f"Monitoring @{nickname} mentions across {len(project_map)} project(s)"
+                )
+                _jira_config_logged = True
+
+        # Determine since window
+        from datetime import timedelta, timezone
+
+        with _jira_state_lock:
+            since_value = _last_jira_check_iso or None
+
+        if since_value is None:
+            from app.jira_config import get_jira_max_age_hours
+            from datetime import datetime as _dt
+
+            max_age = get_jira_max_age_hours(config)
+            since_value = (
+                _dt.now(timezone.utc) - timedelta(hours=max_age)
+            ).strftime("%Y-%m-%dT%H:%M:%SZ")
+            _jira_log(
+                f"Cold start: fetching mentions since {since_value} "
+                f"(max_age={max_age}h lookback)"
+            )
+
+        from app.jira_notifications import fetch_jira_mentions
+
+        result = fetch_jira_mentions(config, project_map, since_iso=since_value)
+
+        from datetime import datetime as _dt
+
+        new_iso = _dt.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        with _jira_state_lock:
+            _last_jira_check_iso = new_iso
+
+        mentions = result.mentions
+
+        if mentions:
+            _jira_log(f"Found {len(mentions)} @{nickname} mention(s)")
+        else:
+            log.debug("Jira: no @%s mentions found", nickname)
+
+        # Load persistent processed tracker
+        processed_set, tracker_path = _load_processed_jira_tracker(instance_dir)
+
+        # Build skill registry (reuse GitHub's cached registry helper)
+        registry = _build_skill_registry(instance_dir)
+
+        from app.jira_command_handler import process_jira_mention
+
+        missions_created = 0
+        for mention in mentions:
+            success, error_msg = process_jira_mention(
+                mention, registry, config, processed_set,
+                branch_map=branch_map,
+            )
+            if success:
+                missions_created += 1
+                issue_key = mention.get("issue_key", "?")
+                _jira_log(f"Mission queued from @{nickname} mention on {issue_key}")
+            elif error_msg:
+                log.debug("Jira: mention skipped: %s", error_msg)
+
+        # Persist updated tracker
+        if mentions:
+            from app.jira_notifications import _save_processed_tracker
+            _save_processed_tracker(tracker_path, processed_set)
+
+        # Update backoff
+        with _jira_state_lock:
+            if missions_created > 0 or mentions:
+                _consecutive_jira_empty = 0
+            else:
+                _consecutive_jira_empty += 1
+                if _consecutive_jira_empty > 1:
+                    log.debug(
+                        "Jira: no mentions (%d consecutive), next check in %ds",
+                        _consecutive_jira_empty,
+                        _get_effective_jira_interval_locked(),
+                    )
+
+        return missions_created
+
+    except (ImportError, OSError, ValueError, RuntimeError) as e:
+        log.warning("Jira notification check failed: %s", e)
+        return 0
+
+
 # --- Interruptible sleep ---
 
 
@@ -908,7 +1177,7 @@ def check_pending_missions(instance_dir: str) -> bool:
     except FileNotFoundError:
         return False
     except (OSError, ValueError) as e:
-        print(f"[loop_manager] Error reading missions.md: {e}", file=sys.stderr)
+        _log_loop("error", f"Error reading missions.md: {e}")
         return False
 
 
@@ -959,10 +1228,21 @@ def interruptible_sleep(
         run_stale_mission_check(instance_dir)
         run_disk_space_check(koan_root)
 
+        # Drain CI queue (throttled to once per 30s).
+        # Completed CI runs inject missions or log success — detected faster
+        # than waiting for the next full iteration.
+        _drain_ci_queue_during_sleep(instance_dir, elapsed)
+
         # Check GitHub notifications (throttled to once per 60s).
         # Track wall time: API calls can be slow and should count toward elapsed.
         t0 = time.monotonic()
         if process_github_notifications(koan_root, instance_dir) > 0:
+            return "mission"
+        elapsed += time.monotonic() - t0
+
+        # Check Jira notifications (throttled to once per 60s).
+        t0 = time.monotonic()
+        if process_jira_notifications(koan_root, instance_dir) > 0:
             return "mission"
         elapsed += time.monotonic() - t0
 
@@ -1027,8 +1307,10 @@ def _cli_validate_projects(args: list) -> None:
         print(error, file=sys.stderr)
         sys.exit(1)
 
+    # Only list projects with valid directories
     for name, path in projects:
-        print(f"{name}:{path}")
+        if os.path.isdir(path):
+            print(f"{name}:{path}")
 
 
 def _cli_lookup_project(args: list) -> None:

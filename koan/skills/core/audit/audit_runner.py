@@ -281,6 +281,7 @@ def _save_audit_report(
     project_name: str,
     findings: List[AuditFinding],
     issue_urls: List[str],
+    report_name: str = "audit",
 ) -> Path:
     """Save the audit summary to the project's learnings directory."""
     from datetime import datetime as _dt
@@ -288,7 +289,7 @@ def _save_audit_report(
     learnings_dir = instance_dir / "memory" / "projects" / project_name
     learnings_dir.mkdir(parents=True, exist_ok=True)
 
-    report_path = learnings_dir / "audit.md"
+    report_path = learnings_dir / f"{report_name}.md"
 
     timestamp = _dt.now().strftime("%Y-%m-%d %H:%M")
     lines = [
@@ -323,6 +324,7 @@ def run_audit(
     max_issues: int = DEFAULT_MAX_ISSUES,
     notify_fn=None,
     skill_dir: Optional[Path] = None,
+    report_name: str = "audit",
 ) -> Tuple[bool, str]:
     """Execute a codebase audit on a project.
 
@@ -334,6 +336,7 @@ def run_audit(
         max_issues: Maximum number of findings to create issues for.
         notify_fn: Optional callback for progress notifications.
         skill_dir: Optional path to the audit skill directory for prompts.
+        report_name: Base name for the saved report file (default: "audit").
 
     Returns:
         (success, summary) tuple.
@@ -387,6 +390,7 @@ def run_audit(
     # Step 6: Save report
     report_path = _save_audit_report(
         instance_path, project_name, findings, issue_urls,
+        report_name=report_name,
     )
 
     # Build summary

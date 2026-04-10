@@ -2,6 +2,7 @@
 name: squash
 scope: core
 group: pr
+emoji: 🔄
 description: "Squash all PR commits into one clean commit (ex: /squash https://github.com/owner/repo/pull/42)"
 version: 1.0.0
 audience: hybrid

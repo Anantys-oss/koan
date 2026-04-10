@@ -141,7 +141,8 @@ class TestRebaseOntoTarget:
         assert result == "origin"
         assert mock_git.call_count == 2
         mock_git.assert_any_call(
-            ["git", "fetch", "origin", "main"], cwd="/project"
+            ["git", "fetch", "origin", "+refs/heads/main:refs/remotes/origin/main"],
+            cwd="/project", timeout=60,
         )
 
     @patch("app.cli_exec.subprocess.run")
@@ -284,6 +285,20 @@ class TestRunClaude:
         result = run_claude(["claude", "-p", "test"], "/project")
         assert result["success"] is False
         assert "no stderr" in result["error"]
+
+    @patch("app.cli_exec.subprocess.run")
+    def test_failure_no_stderr_includes_stdout(self, mock_run):
+        """When stderr is empty but stdout has content, error includes stdout."""
+        mock_run.return_value = MagicMock(
+            returncode=1,
+            stdout="Error: context window exceeded",
+            stderr="",
+        )
+        result = run_claude(["claude", "-p", "test"], "/project")
+        assert result["success"] is False
+        assert "no stderr" in result["error"]
+        assert "stdout:" in result["error"]
+        assert "context window exceeded" in result["error"]
 
     @patch("app.cli_exec.subprocess.run")
     def test_timeout(self, mock_run):
@@ -446,6 +461,58 @@ class TestRunClaudeStep:
         "app.claude_step.get_model_config",
         return_value={"mission": "", "fallback": "", "chat": "", "lightweight": "", "review_mode": ""},
     )
+    def test_failure_includes_stdout_when_no_stderr(self, mock_config, mock_flags, mock_claude):
+        """When CLI exits with no stderr, stdout should be included in the error log."""
+        mock_claude.return_value = {
+            "success": False,
+            "output": "Error: context window exceeded for this prompt",
+            "error": "Exit code 1: no stderr",
+        }
+        actions = []
+        run_claude_step(
+            prompt="fix bug",
+            project_path="/project",
+            commit_msg="fix: bug",
+            success_label="Fixed",
+            failure_label="Fix failed",
+            actions_log=actions,
+        )
+        assert len(actions) == 1
+        assert "stdout:" in actions[0]
+        assert "context window exceeded" in actions[0]
+
+    @patch("app.claude_step.run_claude")
+    @patch("app.claude_step.build_full_command", return_value=["claude", "-p", "test"])
+    @patch(
+        "app.claude_step.get_model_config",
+        return_value={"mission": "", "fallback": "", "chat": "", "lightweight": "", "review_mode": ""},
+    )
+    def test_failure_no_stdout_fallback_when_stderr_present(self, mock_config, mock_flags, mock_claude):
+        """When stderr is present, stdout should NOT be appended."""
+        mock_claude.return_value = {
+            "success": False,
+            "output": "some output",
+            "error": "Exit code 1: actual error message",
+        }
+        actions = []
+        run_claude_step(
+            prompt="fix bug",
+            project_path="/project",
+            commit_msg="fix: bug",
+            success_label="Fixed",
+            failure_label="Fix failed",
+            actions_log=actions,
+        )
+        assert len(actions) == 1
+        assert "stdout:" not in actions[0]
+        assert "actual error message" in actions[0]
+
+    @patch("app.claude_step.run_claude")
+    @patch("app.claude_step.build_full_command", return_value=["claude", "-p", "test"])
+    @patch(
+        "app.claude_step.get_model_config",
+        return_value={"mission": "", "fallback": "", "chat": "", "lightweight": "", "review_mode": ""},
+    )
     def test_failure_empty_label_no_log(self, mock_config, mock_flags, mock_claude):
         mock_claude.return_value = {
             "success": False,
@@ -577,6 +644,96 @@ class TestRunClaudeStep:
         # commit_if_changes returns True but label is empty — still returns False
         assert result is False
         assert actions == []
+
+
+# ---------- run_claude_step with use_convention_subject ----------
+
+
+class TestRunClaudeStepConventionSubject:
+    """Tests for run_claude_step with use_convention_subject flag."""
+
+    @patch("app.claude_step.commit_if_changes", return_value=True)
+    @patch("app.claude_step.run_claude")
+    @patch("app.claude_step.build_full_command", return_value=["claude", "-p", "fix"])
+    @patch(
+        "app.claude_step.get_model_config",
+        return_value={"mission": "", "fallback": "", "chat": "", "lightweight": "", "review_mode": ""},
+    )
+    def test_uses_parsed_subject(self, _mc, _cmd, mock_claude, mock_commit):
+        """When use_convention_subject=True and Claude outputs COMMIT_SUBJECT,
+        the parsed subject should be used instead of the default."""
+        mock_claude.return_value = {
+            "success": True,
+            "output": "Fixed it.\nCOMMIT_SUBJECT: Case PROJECT-123 Fix auth\n",
+            "error": "",
+        }
+        actions = []
+        result = run_claude_step(
+            prompt="fix",
+            project_path="/project",
+            commit_msg="fix: default message",
+            success_label="OK",
+            failure_label="Fail",
+            actions_log=actions,
+            use_convention_subject=True,
+        )
+        assert result is True
+        commit_msg = mock_commit.call_args[0][1]
+        assert commit_msg == "Case PROJECT-123 Fix auth"
+
+    @patch("app.claude_step.commit_if_changes", return_value=True)
+    @patch("app.claude_step.run_claude")
+    @patch("app.claude_step.build_full_command", return_value=["claude", "-p", "fix"])
+    @patch(
+        "app.claude_step.get_model_config",
+        return_value={"mission": "", "fallback": "", "chat": "", "lightweight": "", "review_mode": ""},
+    )
+    def test_falls_back_to_default(self, _mc, _cmd, mock_claude, mock_commit):
+        """When use_convention_subject=True but no COMMIT_SUBJECT found,
+        falls back to the provided commit_msg."""
+        mock_claude.return_value = {
+            "success": True,
+            "output": "Fixed it.\n",
+            "error": "",
+        }
+        actions = []
+        run_claude_step(
+            prompt="fix",
+            project_path="/project",
+            commit_msg="fix: default message",
+            success_label="OK",
+            failure_label="Fail",
+            actions_log=actions,
+            use_convention_subject=True,
+        )
+        commit_msg = mock_commit.call_args[0][1]
+        assert commit_msg == "fix: default message"
+
+    @patch("app.claude_step.commit_if_changes", return_value=True)
+    @patch("app.claude_step.run_claude")
+    @patch("app.claude_step.build_full_command", return_value=["claude", "-p", "fix"])
+    @patch(
+        "app.claude_step.get_model_config",
+        return_value={"mission": "", "fallback": "", "chat": "", "lightweight": "", "review_mode": ""},
+    )
+    def test_disabled_by_default(self, _mc, _cmd, mock_claude, mock_commit):
+        """When use_convention_subject is False (default), always uses commit_msg."""
+        mock_claude.return_value = {
+            "success": True,
+            "output": "COMMIT_SUBJECT: should be ignored\n",
+            "error": "",
+        }
+        actions = []
+        run_claude_step(
+            prompt="fix",
+            project_path="/project",
+            commit_msg="fix: default",
+            success_label="OK",
+            failure_label="Fail",
+            actions_log=actions,
+        )
+        commit_msg = mock_commit.call_args[0][1]
+        assert commit_msg == "fix: default"
 
 
 # ---------- _get_current_branch ----------
@@ -728,6 +885,25 @@ class TestBuildPrPrompt:
         assert kwargs["BASE"] == "main"
         assert kwargs["DIFF"] == "+code"
         assert kwargs["REVIEW_COMMENTS"] == "looks good"
+
+    @patch("app.claude_step.load_prompt_or_skill", return_value="ok")
+    def test_truncates_large_diff(self, mock_lp, context):
+        """Large diffs should be truncated to prevent context window overflow."""
+        from app.claude_step import _build_pr_prompt
+        context["diff"] = "x" * 100_000
+        _build_pr_prompt("recreate", context, max_diff_chars=50_000)
+        _, kwargs = mock_lp.call_args
+        assert len(kwargs["DIFF"]) < 100_000
+        assert "truncated" in kwargs["DIFF"]
+
+    @patch("app.claude_step.load_prompt_or_skill", return_value="ok")
+    def test_small_diff_not_truncated(self, mock_lp, context):
+        """Small diffs should pass through unchanged."""
+        from app.claude_step import _build_pr_prompt
+        context["diff"] = "+small change"
+        _build_pr_prompt("recreate", context)
+        _, kwargs = mock_lp.call_args
+        assert kwargs["DIFF"] == "+small change"
 
 
 # ---------- _push_with_pr_fallback ----------

@@ -94,28 +94,30 @@ def _get_branches_info(project_path: str) -> List[Dict]:
     if not branches:
         return []
 
-    # Get ages via for-each-ref
+    # Batch fetch age/timestamp via single for-each-ref (O(1) instead of O(N))
+    # Use TAB delimiter to handle spaces in relative dates like "3 days ago"
     rc, ref_output, _ = run_git(
         "for-each-ref",
-        "--format=%(committerdate:unix) %(committerdate:relative) %(refname:short)",
+        "--format=%(committerdate:unix)\t%(committerdate:relative)\t%(refname:short)",
         f"refs/heads/{prefix}*",
         cwd=project_path,
     )
 
-    age_data = {}
+    age_data = {}  # branch_name -> {"timestamp": int, "age": str}
     if rc == 0 and ref_output:
         for line in ref_output.splitlines():
-            parts = line.strip().split(None, 2)
-            if len(parts) >= 3:
+            parts = line.strip().split("\t", 2)
+            if len(parts) == 3:
+                ts_str, relative, ref_name = parts
                 try:
-                    # parts[0] = unix ts, parts[1...] = "3 days ago koan/branch"
-                    # Actually: format gives us ts, relative, refname
-                    # But relative can have spaces ("3 days ago"), so split differently
-                    pass
+                    age_data[ref_name] = {
+                        "timestamp": int(ts_str),
+                        "age": relative,
+                    }
                 except ValueError:
                     pass
 
-    # Better approach: get age and commit count per branch
+
     result = []
     for branch in sorted(branches):
         info = {"branch": branch, "has_pr": False}
@@ -130,23 +132,14 @@ def _get_branches_info(project_path: str) -> List[Dict]:
         else:
             info["commits"] = 0
 
-        # Last commit date (relative)
-        rc, date_str, _ = run_git(
-            "log", "-1", "--format=%cr", branch,
-            cwd=project_path, timeout=5,
-        )
-        if rc == 0:
-            info["age"] = date_str.strip()
+        # Age and timestamp from batch for-each-ref data
+        ref = age_data.get(branch, {})
+        info["age"] = ref.get("age", "")
+        info["timestamp"] = ref.get("timestamp", 0)
 
-        # Last commit date (unix) for sorting
-        rc, ts_str, _ = run_git(
-            "log", "-1", "--format=%ct", branch,
-            cwd=project_path, timeout=5,
-        )
-        if rc == 0 and ts_str.strip().isdigit():
-            info["timestamp"] = int(ts_str.strip())
-        else:
-            info["timestamp"] = 0
+        # Skip branches fully merged into origin/main (0 commits ahead)
+        if info["commits"] == 0:
+            continue
 
         # Diff stat (additions + deletions)
         rc, stat, _ = run_git(
@@ -158,15 +151,6 @@ def _get_branches_info(project_path: str) -> List[Dict]:
         else:
             info["diffstat"] = (0, 0, 0)
 
-        # Quick conflict check via merge-tree
-        rc, merge_out, _ = run_git(
-            "merge-tree",
-            "$(git merge-base origin/main " + branch + ")",
-            "origin/main", branch,
-            cwd=project_path, timeout=10,
-        )
-        # merge-tree with subcommand doesn't work that way in git,
-        # use a simpler approach
         info["conflicts"] = _check_conflicts(project_path, branch)
 
         result.append(info)
@@ -174,8 +158,12 @@ def _get_branches_info(project_path: str) -> List[Dict]:
     return result
 
 
-def _check_conflicts(project_path: str, branch: str) -> bool:
-    """Check if a branch would conflict when merged into main."""
+def _check_conflicts(project_path: str, branch: str) -> Optional[bool]:
+    """Check if a branch would conflict when merged into main.
+
+    Returns True if conflicts detected, False if clean, None if
+    the check failed (merge-base error, timeout, etc.).
+    """
     import subprocess
 
     try:
@@ -185,11 +173,11 @@ def _check_conflicts(project_path: str, branch: str) -> bool:
             capture_output=True, text=True, cwd=project_path, timeout=5,
         )
         if result.returncode != 0:
-            return False  # Can't determine, assume no conflict
+            return None  # Can't determine
 
         base = result.stdout.strip()
         if not base:
-            return False
+            return None
 
         # Use merge-tree to simulate merge
         result = subprocess.run(
@@ -199,7 +187,7 @@ def _check_conflicts(project_path: str, branch: str) -> bool:
         # merge-tree outputs conflict markers if there are conflicts
         return "<<<<<<" in result.stdout
     except (subprocess.TimeoutExpired, OSError):
-        return False
+        return None
 
 
 def _parse_shortstat(stat: str) -> Tuple[int, int, int]:
@@ -229,7 +217,7 @@ def _get_open_prs(project_path: str) -> List[Dict]:
             "--state", "open",
             "--limit", "50",
             "--json", "number,title,headRefName,additions,deletions,createdAt,"
-                      "isDraft,reviewDecision,reviews,labels",
+                      "isDraft,reviewDecision,reviews,labels,url",
             cwd=project_path,
             timeout=30,
         )
@@ -258,6 +246,7 @@ def _get_open_prs(project_path: str) -> List[Dict]:
             "review_decision": pr.get("reviewDecision", ""),
             "has_reviews": bool(pr.get("reviews")),
             "labels": [l.get("name", "") for l in (pr.get("labels") or [])],
+            "url": pr.get("url", ""),
         }
         result.append(info)
 
@@ -294,6 +283,7 @@ def _enrich_and_merge(
             entry["pr_review_decision"] = pr["review_decision"]
             entry["pr_has_reviews"] = pr["has_reviews"]
             entry["pr_labels"] = pr["labels"]
+            entry["pr_url"] = pr.get("url", "")
         enriched.append(entry)
 
     # PRs without local branches (from other contributors/forks)
@@ -319,6 +309,7 @@ def _enrich_and_merge(
                 "pr_review_decision": pr["review_decision"],
                 "pr_has_reviews": pr["has_reviews"],
                 "pr_labels": pr["labels"],
+                "pr_url": pr.get("url", ""),
             }
             enriched.append(entry)
 
@@ -345,12 +336,20 @@ def _merge_score(entry: Dict) -> Tuple:
         _, ins, dels = entry.get("diffstat", (0, 0, 0))
         size = ins + dels
 
-    conflicts = entry.get("conflicts", False)
+    conflict_status = entry.get("conflicts")
     timestamp = entry.get("timestamp", 0)
+
+    # Conflict sort: 0 = clean, 1 = unknown, 2 = conflicts
+    if conflict_status is True:
+        conflict_score = 2
+    elif conflict_status is None:
+        conflict_score = 1
+    else:
+        conflict_score = 0
 
     return (
         0 if is_approved else (1 if has_reviews else 2),  # review status
-        1 if conflicts else 0,                             # conflicts
+        conflict_score,                                    # conflicts
         size,                                               # change size
         timestamp,                                          # age (older first)
     )
@@ -395,8 +394,11 @@ def _format_output(project_name: str, entries: List[Dict]) -> str:
         else:
             indicators.append("no PR")
 
-        if entry.get("conflicts"):
+        conflict_status = entry.get("conflicts")
+        if conflict_status is True:
             indicators.append("conflicts")
+        elif conflict_status is None:
+            indicators.append("conflicts unknown")
 
         # Size info
         if entry.get("has_pr"):
@@ -414,6 +416,8 @@ def _format_output(project_name: str, entries: List[Dict]) -> str:
         status = ", ".join(indicators)
         title = entry.get("pr_title", "")
 
+        pr_url = entry.get("pr_url", "")
+
         if title:
             lines.append(f"\n{i}. {short_branch}")
             lines.append(f"   {title}")
@@ -422,10 +426,13 @@ def _format_output(project_name: str, entries: List[Dict]) -> str:
             lines.append(f"\n{i}. {short_branch}")
             lines.append(f"   {size_str} | {age} | {status}")
 
+        if pr_url:
+            lines.append(f"   {pr_url}")
+
     # Summary stats
     total_prs = sum(1 for e in entries if e.get("has_pr"))
     approved = sum(1 for e in entries if e.get("pr_review_decision") == "APPROVED")
-    with_conflicts = sum(1 for e in entries if e.get("conflicts"))
+    with_conflicts = sum(1 for e in entries if e.get("conflicts") is True)
     drafts = sum(1 for e in entries if e.get("pr_is_draft"))
     no_pr = sum(1 for e in entries if not e.get("has_pr"))
 

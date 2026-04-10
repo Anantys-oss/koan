@@ -54,6 +54,7 @@ Communication between processes happens through shared files in `instance/` with
 - **`projects_config.py`** — Project configuration loader for `projects.yaml`. `load_projects_config()`, `get_projects_from_config()`, `get_project_config()` (merged defaults + overrides), `get_project_auto_merge()`, `get_project_cli_provider()`, `get_project_models()`, `get_project_tools()`. Per-project overrides for CLI provider, model selection, and tool restrictions. `ensure_github_urls()` auto-populates `github_url` fields from git remotes at startup.
 - **`projects_migration.py`** — One-shot migration from env vars (`KOAN_PROJECTS`/`KOAN_PROJECT_PATH`) to `projects.yaml`. Runs at startup if `projects.yaml` doesn't exist.
 - **`utils.py`** — File locking (thread + file locks), config loading, atomic writes, `get_branch_prefix()`, `get_known_projects()` (projects.yaml > KOAN_PROJECTS)
+- **`commit_conventions.py`** — Project commit convention detection and parsing. `get_project_commit_guidance()` reads CLAUDE.md commit-related sections or infers conventions from recent commit history. `parse_commit_subject()` extracts `COMMIT_SUBJECT:` markers from Claude output. Used by `rebase_pr.py` and `ci_queue_runner.py` to produce convention-aware commit messages.
 
 **Agent loop pipeline** (called from `run.py`):
 - **`iteration_manager.py`** — Per-iteration decision-making: usage refresh, mode selection, recurring injection, mission picking, project resolution.
@@ -62,7 +63,7 @@ Communication between processes happens through shared files in `instance/` with
 - **`contemplative_runner.py`** — Contemplative session runner (probability roll, prompt building, CLI invocation)
 - **`quota_handler.py`** — Quota exhaustion detection from CLI output; parses reset times, creates pause state, writes journal entries
 - **`prompt_builder.py`** — Agent prompt assembly for the agent loop
-- **`pr_review_learning.py`** — Extracts actionable lessons from human PR reviews using Claude CLI (lightweight model). Fetches review data from GitHub, sends raw comments to Claude for natural-language analysis, and persists new lessons to `memory/projects/{name}/learnings.md` (write-once, read-many). Uses content-hash caching to skip re-analysis when reviews haven't changed.
+- **`pr_review_learning.py`** — Extracts actionable lessons from human PR reviews using Claude CLI (lightweight model). Fetches review data from GitHub, sends raw comments to Claude for natural-language analysis, and persists new lessons to `memory/projects/{name}/learnings.md` (write-once, read-many). Uses content-hash caching to skip re-analysis when reviews haven't changed. Also handles **review comment dispatch**: `fetch_unresolved_review_comments()` gathers unresolved inline + review-body comments (bot-filtered), `compute_comment_fingerprint()` produces a SHA-256 dedup key, and `dispatch_review_comments_mission()` inserts a mission only when the fingerprint changes (tracked in `.review-dispatch-tracker.json`).
 - **`skill_dispatch.py`** — Direct skill execution from agent loop. Detects `/command` missions, parses project prefix and command, dispatches to skill-specific runners (plan, rebase, recreate, check, claudemd) bypassing the Claude agent
 - **`hooks.py`** — Hook system for extensible lifecycle events. Discovers `.py` modules from `instance/hooks/`, registers handlers by event name, fires them sequentially with per-handler error isolation. Events: `session_start`, `session_end`, `pre_mission`, `post_mission`.
 
@@ -115,7 +116,7 @@ Communication between processes happens through shared files in `instance/` with
 Extensible command plugin system. Each skill lives in `skills/<scope>/<skill-name>/` with a `SKILL.md` (YAML frontmatter defining commands, aliases, metadata) and an optional `handler.py`.
 
 - **`skills.py`** — Registry that discovers SKILL.md files, parses frontmatter (custom lite YAML parser, no PyYAML), maps commands/aliases to skills, and dispatches execution.
-- **Core skills** live in `koan/skills/core/` (audit, cancel, chat, check, claudemd, delete_project, focus, idea, implement, journal, language, list, live, magic, mission, passive, plan, pr, priority, projects, quota, rebase, recreate, recurring, refactor, reflect, review, shutdown, sparring, start, status, update, verbose)
+- **Core skills** live in `koan/skills/core/` (audit, cancel, chat, check, claudemd, config_check, delete_project, focus, idea, implement, journal, language, list, live, magic, mission, passive, plan, pr, priority, projects, quota, rebase, recreate, recurring, refactor, reflect, review, security_audit, shutdown, sparring, start, status, update, verbose)
 - **Custom skills** loaded from `instance/skills/<scope>/` — each scope directory can be a cloned Git repo for team sharing.
 - **Handler pattern**: `def handle(ctx: SkillContext) -> Optional[str]` — return string for Telegram reply, empty string for "already handled", None for no message.
 - **`worker: true`** flag in SKILL.md marks blocking skills (Claude calls, API requests) that run in a background thread.
@@ -134,6 +135,10 @@ Extensible command plugin system. Each skill lives in `skills/<scope>/<skill-nam
 - `journal/` — Daily logs organized as `YYYY-MM-DD/project.md`
 - `hooks/` — User-defined Python hook modules for lifecycle events (see `instance.example/hooks/README.md`)
 
+## Python compatibility
+
+All code must support **Python 3.11+**. Do not use syntax or stdlib features introduced after Python 3.11 (e.g., `type` statements from 3.12, `TypeVar` defaults from 3.13). CI tests against multiple Python versions — if it doesn't run on 3.11, it doesn't ship.
+
 ## Conventions
 
 - Claude always creates **`<prefix>/*` branches** (default `koan/`, configurable via `branch_prefix` in `config.yaml`), never commits to main
@@ -147,4 +152,11 @@ Extensible command plugin system. Each skill lives in `skills/<scope>/<skill-nam
 - **User manual maintenance** — When adding, removing, or modifying a core skill, update `docs/user-manual.md` accordingly: add the skill to the appropriate tier section and the quick-reference appendix. The manual must stay in sync with `koan/skills/core/`.
 - **Help group enforcement** — Every core skill MUST have a `group:` field in its SKILL.md frontmatter (one of: missions, code, pr, status, config, ideas, system). This ensures commands are discoverable via `/help`. If adding a new hardcoded core command (not skill-based), add it to `_CORE_COMMAND_HELP` in `command_handlers.py`. The test suite enforces this — `TestCoreSkillGroupEnforcement` will fail if a core skill is missing its group.
 - **No hyphens in skill names or aliases** — Skill command names, aliases, and directory names MUST use underscores (`_`), never hyphens (`-`). Hyphens break Telegram command parsing because Telegram treats the hyphen as a word boundary, cutting the command short. Example: use `dead_code` not `dead-code`, `scaffold_skill` not `scaffold-skill`.
+- **Adding a new core skill** — Every core skill requires ALL of the following. Missing any step leaves the skill broken or undiscoverable:
+  1. **Skill directory**: Create `koan/skills/core/<skill_name>/SKILL.md` with frontmatter including `name`, `description`, `group` (one of: missions, code, pr, status, config, ideas, system), `commands`, and `audience`. Add `handler.py` if the skill needs Python logic (omit for prompt-only skills).
+  2. **Runner registration** (if the skill runs via the agent loop): Add an entry in `_SKILL_RUNNERS` dict in `skill_dispatch.py` mapping the command name to its runner module. Also add any needed command builder in `_COMMAND_BUILDERS` and validation in `validate_skill_args()`.
+  3. **CLAUDE.md skill list**: Update the "Core skills" line in the Skills system section to include the new skill name (keep alphabetical order).
+  4. **User manual**: Update `docs/user-manual.md` — add the skill to the appropriate tier section and the quick-reference appendix.
+  5. **Tests**: The `TestCoreSkillGroupEnforcement` test will fail if the SKILL.md is missing or lacks a `group:` field — run the test suite to verify.
+  See `koan/skills/README.md` for the full SKILL.md format and handler conventions.
 - **Documentation maintenance** — When adding or modifying a feature, update the corresponding section in `README.md` and/or the relevant `docs/*.md` file (e.g., `docs/user-manual.md`, `docs/skills.md`, `docs/auto-update.md`). If no documentation file exists for the feature, create one under `docs/`. Public-facing documentation must stay in sync with the codebase — undocumented features are invisible to users.

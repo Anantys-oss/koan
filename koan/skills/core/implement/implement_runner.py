@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from app.github import fetch_issue_with_comments
-from app.github_url_parser import parse_github_url, parse_issue_url
+from app.github_url_parser import is_jira_url, parse_github_url, parse_issue_url, parse_jira_url
 from app.pr_submit import (
     get_current_branch,
     guess_project_name,
@@ -41,6 +41,7 @@ def run_implement(
     context: Optional[str] = None,
     notify_fn=None,
     skill_dir: Optional[Path] = None,
+    base_branch: Optional[str] = None,
 ) -> Tuple[bool, str]:
     """Execute the implement pipeline.
 
@@ -61,31 +62,52 @@ def run_implement(
         from app.notify import send_telegram
         notify_fn = send_telegram
 
-    # Parse issue or PR URL (GitHub's issues API works for PRs too)
-    try:
-        owner, repo, _url_type, issue_number = parse_github_url(issue_url)
-    except ValueError as e:
-        return False, str(e)
-
     context_label = f" ({context})" if context else ""
-    notify_fn(
-        f"\U0001f528 Implementing issue #{issue_number} "
-        f"({owner}/{repo}){context_label}..."
-    )
+    _is_jira = is_jira_url(issue_url)
 
-    # Fetch issue content
-    try:
-        title, body, comments = fetch_issue_with_comments(
-            owner, repo, issue_number
+    # Parse URL and fetch issue content
+    if _is_jira:
+        try:
+            issue_key = parse_jira_url(issue_url)
+        except ValueError as e:
+            return False, str(e)
+
+        notify_fn(
+            f"\U0001f528 Implementing Jira issue {issue_key}{context_label}..."
         )
-    except Exception as e:
-        return False, f"Failed to fetch issue: {str(e)[:300]}"
+
+        try:
+            from app.jira_notifications import fetch_jira_issue
+            title, body, comments = fetch_jira_issue(issue_key)
+        except Exception as e:
+            return False, f"Failed to fetch Jira issue: {str(e)[:300]}"
+
+        owner, repo, issue_number = None, None, issue_key
+    else:
+        # Parse issue or PR URL (GitHub's issues API works for PRs too)
+        try:
+            owner, repo, _url_type, issue_number = parse_github_url(issue_url)
+        except ValueError as e:
+            return False, str(e)
+
+        notify_fn(
+            f"\U0001f528 Implementing issue #{issue_number} "
+            f"({owner}/{repo}){context_label}..."
+        )
+
+        try:
+            title, body, comments = fetch_issue_with_comments(
+                owner, repo, issue_number
+            )
+        except Exception as e:
+            return False, f"Failed to fetch issue: {str(e)[:300]}"
 
     # Extract the most recent plan
     plan = _extract_latest_plan(body, comments)
+    label = issue_key if _is_jira else f"#{issue_number}"
     if not plan:
         return False, (
-            f"No plan found in issue #{issue_number}. "
+            f"No plan found in issue {label}. "
             "The issue should contain implementation phases."
         )
 
@@ -106,48 +128,51 @@ def run_implement(
     if not output:
         return False, "Claude returned empty output."
 
-    # Post-implementation: submit draft PR
+    # Post-implementation: submit draft PR (only for GitHub issues with repo info)
     pr_url = None
-    try:
-        pr_url = _submit_implement_pr(
-            project_path=project_path,
-            owner=owner,
-            repo=repo,
-            issue_number=str(issue_number),
-            issue_title=title,
-            issue_url=issue_url,
-            skill_dir=skill_dir,
-        )
-    except Exception as e:
-        logger.warning("PR submission failed: %s", e)
+    if owner and repo:
+        try:
+            pr_url = _submit_implement_pr(
+                project_path=project_path,
+                owner=owner,
+                repo=repo,
+                issue_number=str(issue_number),
+                issue_title=title,
+                issue_url=issue_url,
+                skill_dir=skill_dir,
+                base_branch=base_branch,
+            )
+        except Exception as e:
+            logger.warning("PR submission failed: %s", e)
 
     # Build notification and summary
     branch = get_current_branch(project_path)
     if pr_url:
         notify_fn(
-            f"\u2705 Implementation complete for issue #{issue_number}"
+            f"\u2705 Implementation complete for issue {label}"
             f"{context_label}\nDraft PR: {pr_url}"
         )
         summary = (
-            f"Implementation complete for #{issue_number}{context_label}"
+            f"Implementation complete for {label}{context_label}"
             f"\nDraft PR: {pr_url}"
         )
     elif branch not in ("main", "master"):
         notify_fn(
-            f"\u2705 Implementation complete for issue #{issue_number}"
-            f"{context_label}\nBranch: {branch} (PR creation failed)"
+            f"\u2705 Implementation complete for issue {label}"
+            f"{context_label}\nBranch: {branch}"
+            f"{'' if pr_url else ' (PR creation skipped)' if _is_jira else ' (PR creation failed)'}"
         )
         summary = (
-            f"Implementation complete for #{issue_number}{context_label}"
+            f"Implementation complete for {label}{context_label}"
             f"\nBranch: {branch}"
         )
     else:
         notify_fn(
-            f"\u26a0\ufe0f Implementation complete for issue #{issue_number}"
+            f"\u26a0\ufe0f Implementation complete for issue {label}"
             f"{context_label} \u2014 changes landed on {branch}, no PR created"
         )
         summary = (
-            f"Implementation complete for #{issue_number}{context_label}"
+            f"Implementation complete for {label}{context_label}"
             f" (on {branch}, no PR)"
         )
 
@@ -296,14 +321,15 @@ def _submit_implement_pr(
     issue_title: str,
     issue_url: str,
     skill_dir: Optional[Path] = None,
+    base_branch: Optional[str] = None,
 ) -> Optional[str]:
     """Build implement-specific PR title/body and delegate to shared submit."""
     from app.pr_submit import get_commit_subjects
     from app.projects_config import resolve_base_branch
 
     project_name = guess_project_name(project_path)
-    base_branch = resolve_base_branch(project_name, project_path)
-    commits = get_commit_subjects(project_path, base_branch=base_branch)
+    effective_base = base_branch or resolve_base_branch(project_name, project_path)
+    commits = get_commit_subjects(project_path, base_branch=effective_base)
 
     summary = _generate_pr_summary(
         project_path, issue_title, issue_url, commits, skill_dir,
@@ -326,6 +352,7 @@ def _submit_implement_pr(
             pr_title=pr_title,
             pr_body=pr_body,
             issue_url=issue_url,
+            base_branch=base_branch,
         )
     except Exception as e:
         logger.warning("PR submission failed: %s", e)
@@ -356,6 +383,11 @@ def main(argv=None):
         help="Additional context (e.g. 'Phase 1 to 3')",
         default=None,
     )
+    parser.add_argument(
+        "--base-branch",
+        help="Target branch for the PR (e.g. '11.126')",
+        default=None,
+    )
     cli_args = parser.parse_args(argv)
 
     skill_dir = Path(__file__).resolve().parent
@@ -365,6 +397,7 @@ def main(argv=None):
         issue_url=cli_args.issue_url,
         context=cli_args.context,
         skill_dir=skill_dir,
+        base_branch=cli_args.base_branch,
     )
     print(summary)
     return 0 if success else 1

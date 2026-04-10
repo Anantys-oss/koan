@@ -206,15 +206,18 @@ def _format_koan_usage(state, session_limit, weekly_limit):
         days_to_monday = 7
 
     lines = [
-        "Session quota",
-        f"  {_progress_bar(session_pct)} {session_pct}%",
+        "Session quota (token estimate)",
+        f"  {_progress_bar(session_pct)} ~{session_pct}%",
         f"  {_format_tokens(session_tokens)} / {_format_tokens(session_limit)} tokens",
         f"  Resets in {session_reset} | {runs} run(s) this session",
         "",
-        "Weekly quota",
-        f"  {_progress_bar(weekly_pct)} {weekly_pct}%",
+        "Weekly quota (token estimate)",
+        f"  {_progress_bar(weekly_pct)} ~{weekly_pct}%",
         f"  {_format_tokens(weekly_tokens)} / {_format_tokens(weekly_limit)} tokens",
         f"  Resets in {days_to_monday}d",
+        "",
+        "⚠️ These are estimates based on token counting.",
+        "Real API quota may differ — use /quota <N> to correct.",
     ]
 
     return "\n".join(lines)

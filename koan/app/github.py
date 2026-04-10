@@ -8,8 +8,9 @@ which sets ``GH_TOKEN`` — this module has no auth logic.
 import json
 import re
 import subprocess
+import sys
 import time
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from app.retry import (
     retry_with_backoff,
@@ -17,6 +18,31 @@ from app.retry import (
     is_gh_secondary_rate_limit,
     parse_retry_after,
 )
+
+
+# Bot usernames whose @mentions should be escaped in GitHub comments to
+# avoid triggering automated bot responses.
+_BOT_USERNAMES = ('copilot', 'dependabot', 'github-actions')
+
+# Regex to match bare @bot mentions (case-insensitive), with negative
+# lookbehind/lookahead to skip already-backtick-escaped variants.
+_BOT_MENTION_RE = re.compile(
+    r'(?<!`)@(' + '|'.join(re.escape(u) for u in _BOT_USERNAMES) + r')(?![\w-])(?!`)',
+    re.IGNORECASE,
+)
+
+
+def sanitize_github_comment(text: Optional[str]) -> Optional[str]:
+    """Escape bare bot @mentions so GitHub doesn't trigger automated bots.
+
+    Replaces ``@copilot``, ``@dependabot``, ``@github-actions`` (any
+    capitalisation) with backtick-escaped variants unless already enclosed
+    in backticks.  Safe to call on any string including empty strings and
+    ``None`` values.
+    """
+    if not text:
+        return text
+    return _BOT_MENTION_RE.sub(r'`@\1`', text)
 
 
 class SSOAuthRequired(RuntimeError):
@@ -160,6 +186,21 @@ def issue_create(title, body, labels=None, repo=None, cwd=None):
     return run_gh(*args, cwd=cwd, idempotent=False)
 
 
+def issue_edit(number, body, cwd=None):
+    """Update a GitHub issue body via ``gh issue edit``.
+
+    Args:
+        number: Issue number (string or int).
+        body: New body text (markdown).
+        cwd: Working directory (must be inside a git repo).
+    """
+    from app.leak_detector import scan_and_redact
+
+    body = scan_and_redact(body, context="Issue body")
+    return run_gh("issue", "edit", str(number), "--body", body,
+                  cwd=cwd, idempotent=False)
+
+
 def api(endpoint, method="GET", jq=None, input_data=None, cwd=None,
         extra_args=None, timeout=30):
     """Call ``gh api`` for lower-level GitHub API access.
@@ -187,6 +228,24 @@ def api(endpoint, method="GET", jq=None, input_data=None, cwd=None,
         args.extend(["-F", "body=@-"])
 
     return run_gh(*args, cwd=cwd, stdin_data=input_data, timeout=timeout)
+
+
+def fetch_issue_state(owner, repo, issue_number):
+    """Fetch the state of a GitHub issue (open/closed).
+
+    Returns:
+        The issue state string (e.g. "open", "closed"), or "open" on error.
+    """
+    try:
+        result = api(
+            f"repos/{owner}/{repo}/issues/{issue_number}",
+            jq=".state",
+        )
+        state = result.strip().strip('"')
+        return state if state in ("open", "closed") else "open"
+    except Exception as e:
+        print(f"[github] fetch_issue_state error: {e}", file=sys.stderr)
+        return "open"
 
 
 def fetch_issue_with_comments(owner, repo, issue_number):
@@ -444,6 +503,43 @@ def batch_count_open_prs(repos: list, author: str) -> Dict[str, int]:
     except (RuntimeError, subprocess.TimeoutExpired, json.JSONDecodeError,
             OSError, TypeError, KeyError):
         return {}
+
+
+def list_open_pr_branches(repo: str, author: str, cwd: str = None) -> List[str]:
+    """List branch names of open PRs by a specific author in a repository.
+
+    Args:
+        repo: Repository in ``owner/repo`` format.
+        author: GitHub username to filter by. If empty, returns ``[]``.
+        cwd: Optional working directory.
+
+    Returns:
+        Sorted list of branch names (headRefName) for open PRs.
+        Returns empty list on error.
+    """
+    if not author:
+        return []
+
+    try:
+        output = run_gh(
+            "pr", "list",
+            "--repo", repo,
+            "--state", "open",
+            "--author", author,
+            "--json", "headRefName",
+            cwd=cwd, timeout=15,
+        )
+        prs = json.loads(output) if output else []
+        if not isinstance(prs, list):
+            return []
+        return sorted({
+            pr["headRefName"]
+            for pr in prs
+            if isinstance(pr, dict) and pr.get("headRefName")
+        })
+    except (RuntimeError, subprocess.TimeoutExpired, json.JSONDecodeError,
+            TypeError, KeyError):
+        return []
 
 
 def count_open_prs(repo: str, author: str, cwd: str = None) -> int:

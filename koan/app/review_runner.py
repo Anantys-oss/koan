@@ -23,7 +23,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from app.github import run_gh
+from app.github import run_gh, sanitize_github_comment
 from app.github_url_parser import ISSUE_URL_PATTERN
 from app.prompts import load_prompt_or_skill
 from app.rebase_pr import fetch_pr_context
@@ -32,7 +32,24 @@ from app.review_schema import validate_review
 _ISSUE_URL_RE = re.compile(ISSUE_URL_PATTERN)
 
 
-def _fetch_inline_review_comments(full_repo: str, pr_number: str) -> List[dict]:
+def _resolve_bot_username() -> str:
+    """Read the bot's GitHub nickname from config.yaml.
+
+    Returns empty string if not configured (filtering is then skipped).
+    """
+    try:
+        from app.utils import load_config
+        config = load_config()
+        github = config.get("github") or {}
+        return str(github.get("nickname", "")).strip()
+    except Exception as e:
+        print(f"[review_runner] could not resolve bot username: {e}", file=sys.stderr)
+        return ""
+
+
+def _fetch_inline_review_comments(
+    full_repo: str, pr_number: str, bot_username: str = "",
+) -> List[dict]:
     """Fetch inline review comments (code-level) for a PR."""
     results: List[dict] = []
     try:
@@ -46,6 +63,9 @@ def _fetch_inline_review_comments(full_repo: str, pr_number: str) -> List[dict]:
                 try:
                     item = json.loads(line)
                     if item.get("user_type") == "Bot":
+                        continue
+                    # Skip bot's own comments to prevent self-reply loops
+                    if bot_username and item["user"].lower() == bot_username.lower():
                         continue
                     results.append({
                         "id": item["id"],
@@ -62,7 +82,9 @@ def _fetch_inline_review_comments(full_repo: str, pr_number: str) -> List[dict]:
     return results
 
 
-def _fetch_issue_comments(full_repo: str, pr_number: str) -> List[dict]:
+def _fetch_issue_comments(
+    full_repo: str, pr_number: str, bot_username: str = "",
+) -> List[dict]:
     """Fetch issue-level comments (conversation thread) for a PR."""
     results: List[dict] = []
     try:
@@ -76,6 +98,9 @@ def _fetch_issue_comments(full_repo: str, pr_number: str) -> List[dict]:
                 try:
                     item = json.loads(line)
                     if item.get("user_type") == "Bot":
+                        continue
+                    # Skip bot's own comments to prevent self-reply loops
+                    if bot_username and item["user"].lower() == bot_username.lower():
                         continue
                     results.append({
                         "id": item["id"],
@@ -93,6 +118,7 @@ def _fetch_issue_comments(full_repo: str, pr_number: str) -> List[dict]:
 def fetch_repliable_comments(
     owner: str, repo: str, pr_number: str,
     parallel: bool = True,
+    bot_username: str = "",
 ) -> List[dict]:
     """Fetch PR comments with their IDs for reply targeting.
 
@@ -107,19 +133,21 @@ def fetch_repliable_comments(
         parallel: When True (default), fetch inline and issue comments
             concurrently using two threads. Set to False to force sequential
             fetching (useful in tests or single-threaded contexts).
+        bot_username: If provided, comments from this user are excluded
+            to prevent self-reply loops.
     """
     full_repo = f"{owner}/{repo}"
     comments: List[dict] = []
 
     if parallel:
         with ThreadPoolExecutor(max_workers=2) as pool:
-            f_inline = pool.submit(_fetch_inline_review_comments, full_repo, pr_number)
-            f_issue = pool.submit(_fetch_issue_comments, full_repo, pr_number)
+            f_inline = pool.submit(_fetch_inline_review_comments, full_repo, pr_number, bot_username)
+            f_issue = pool.submit(_fetch_issue_comments, full_repo, pr_number, bot_username)
             comments.extend(f_inline.result())
             comments.extend(f_issue.result())
     else:
-        comments.extend(_fetch_inline_review_comments(full_repo, pr_number))
-        comments.extend(_fetch_issue_comments(full_repo, pr_number))
+        comments.extend(_fetch_inline_review_comments(full_repo, pr_number, bot_username))
+        comments.extend(_fetch_issue_comments(full_repo, pr_number, bot_username))
 
     return comments
 
@@ -303,7 +331,7 @@ def _run_claude_review(
     """
     from app.claude_step import run_claude
     from app.cli_provider import build_full_command
-    from app.config import get_model_config
+    from app.config import get_model_config, get_skill_max_turns
 
     models = get_model_config()
     cmd = build_full_command(
@@ -311,14 +339,24 @@ def _run_claude_review(
         allowed_tools=["Read", "Glob", "Grep"],
         model=models["mission"],
         fallback=models["fallback"],
-        max_turns=15,
+        max_turns=get_skill_max_turns(),
     )
 
     result = run_claude(cmd, project_path, timeout=timeout)
     if result["success"]:
         return result["output"], ""
     error = result.get("error", "unknown error")
-    print(f"[review_runner] Claude review failed: {error}", file=sys.stderr)
+    # Log stdout from the failed run — it often contains the actual error
+    # that stderr does not (Claude CLI reports many errors via stdout).
+    stdout = result.get("output", "")
+    if stdout:
+        print(
+            f"[review_runner] Claude review failed: {error}\n"
+            f"[review_runner] stdout from failed run (last 500 chars): {stdout[-500:]}",
+            file=sys.stderr,
+        )
+    else:
+        print(f"[review_runner] Claude review failed: {error}", file=sys.stderr)
     return "", error
 
 
@@ -536,18 +574,27 @@ def _format_review_as_markdown(review_data: dict, title: str = "") -> str:
         lines.append(f"### {emoji} {heading}")
         lines.append("")
         for i, item in enumerate(items, 1):
-            loc = f"`{item['file']}`"
-            if item.get("line_start") and item["line_start"] > 0:
-                loc += f", L{item['line_start']}"
+            has_loc = item.get("line_start") and item["line_start"] > 0
+            if has_loc:
+                loc = f"`{item['file']}`, L{item['line_start']}"
                 if item.get("line_end") and item["line_end"] != item["line_start"]:
                     loc += f"-{item['line_end']}"
-            lines.append(f"**{i}. {item['title']}** ({loc})")
+                summary_line = f"<b>{i}. {item['title']}</b> ({loc})"
+            else:
+                summary_line = f"<b>{i}. {item['title']}</b>"
+            lines.append("<details>")
+            lines.append("<summary>")
+            lines.append(summary_line)
+            lines.append("</summary>")
+            lines.append("")
             lines.append(item["comment"])
             if item.get("code_snippet"):
                 lines.append("")
                 lines.append("```")
                 lines.append(item["code_snippet"])
                 lines.append("```")
+            lines.append("")
+            lines.append("</details>")
             lines.append("")
 
     # Checklist
@@ -595,7 +642,7 @@ def _post_review_comment(
         run_gh(
             "pr", "comment", pr_number,
             "--repo", f"{owner}/{repo}",
-            "--body", body,
+            "--body", sanitize_github_comment(body),
         )
         return True
     except Exception as e:
@@ -642,10 +689,11 @@ def _post_comment_replies(
         try:
             if original["type"] == "review_comment":
                 # Reply to an inline review comment via the API
+                safe_reply = sanitize_github_comment(reply_text)
                 run_gh(
                     "api", f"repos/{full_repo}/pulls/{pr_number}/comments",
                     "-X", "POST",
-                    "-f", f"body={reply_text}",
+                    "-f", f"body={safe_reply}",
                     "-F", f"in_reply_to={comment_id}",
                 )
             else:
@@ -654,7 +702,7 @@ def _post_comment_replies(
                 quote_line = original["body"].split("\n")[0]
                 if len(quote_line) > 100:
                     quote_line = quote_line[:100] + "..."
-                body = f"> @{user}: {quote_line}\n\n{reply_text}"
+                body = sanitize_github_comment(f"> @{user}: {quote_line}\n\n{reply_text}")
                 run_gh(
                     "pr", "comment", pr_number,
                     "--repo", full_repo,
@@ -772,13 +820,16 @@ def run_review(
 
     full_repo = f"{owner}/{repo}"
 
+    # Resolve bot username to exclude own comments from repliable list
+    bot_username = _resolve_bot_username()
+
     # Step 1: Fetch PR context and repliable comments in parallel
     notify_fn(f"Reviewing PR #{pr_number} ({full_repo})...")
     if concurrency_enabled and github_workers > 1:
         with ThreadPoolExecutor(max_workers=min(2, github_workers)) as pool:
             f_context = pool.submit(fetch_pr_context, owner, repo, pr_number)
             f_comments = pool.submit(
-                fetch_repliable_comments, owner, repo, pr_number, True,
+                fetch_repliable_comments, owner, repo, pr_number, True, bot_username,
             )
             try:
                 context = f_context.result()
@@ -790,7 +841,9 @@ def run_review(
             context = fetch_pr_context(owner, repo, pr_number)
         except Exception as e:
             return False, f"Failed to fetch PR context: {e}", None
-        repliable_comments = fetch_repliable_comments(owner, repo, pr_number, parallel=False)
+        repliable_comments = fetch_repliable_comments(
+            owner, repo, pr_number, parallel=False, bot_username=bot_username,
+        )
 
     if not context.get("diff"):
         return False, f"PR #{pr_number} has no diff — nothing to review.", None

@@ -24,6 +24,17 @@ def _make_ctx(tmp_path, args=""):
     return SkillContext(koan_root=tmp_path, instance_dir=tmp_path / "instance", args=args)
 
 
+def _setup_logs(tmp_path, run_content=None, awake_content=None):
+    """Create logs directory with optional log files."""
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir(exist_ok=True)
+    if run_content is not None:
+        (logs_dir / "run.log").write_text(run_content)
+    if awake_content is not None:
+        (logs_dir / "awake.log").write_text(awake_content)
+    return logs_dir
+
+
 class TestTail:
     """Tests for _tail helper."""
 
@@ -46,23 +57,23 @@ class TestTail:
         result = mod._tail(f)
         assert result == ["line1", "line2", "line3"]
 
-    def test_exactly_10_lines(self, tmp_path):
+    def test_exactly_30_lines(self, tmp_path):
         mod = _load_handler()
         f = tmp_path / "exact.log"
-        lines = [f"line{i}" for i in range(10)]
+        lines = [f"line{i}" for i in range(30)]
         f.write_text("\n".join(lines) + "\n")
         result = mod._tail(f)
-        assert len(result) == 10
+        assert len(result) == 30
 
-    def test_more_than_10_lines(self, tmp_path):
+    def test_more_than_30_lines(self, tmp_path):
         mod = _load_handler()
         f = tmp_path / "long.log"
-        lines = [f"line{i}" for i in range(20)]
+        lines = [f"line{i}" for i in range(50)]
         f.write_text("\n".join(lines) + "\n")
         result = mod._tail(f)
-        assert len(result) == 10
-        assert result[0] == "line10"
-        assert result[-1] == "line19"
+        assert len(result) == 30
+        assert result[0] == "line20"
+        assert result[-1] == "line49"
 
     def test_strips_ansi_codes(self, tmp_path):
         mod = _load_handler()
@@ -96,52 +107,82 @@ class TestHandle:
         result = mod.handle(ctx)
         assert "No log files found" in result
 
-    def test_run_log_only(self, tmp_path):
+    def test_default_shows_run_only(self, tmp_path):
+        """Default (no argument) should show only run.log."""
         mod = _load_handler()
-        logs_dir = tmp_path / "logs"
-        logs_dir.mkdir()
-        (logs_dir / "run.log").write_text("Starting agent loop\nPicking mission\n")
+        _setup_logs(tmp_path, run_content="run line\n", awake_content="awake line\n")
         ctx = _make_ctx(tmp_path)
         result = mod.handle(ctx)
         assert "📋 run" in result
-        assert "```" in result
-        assert "Starting agent loop" in result
+        assert "run line" in result
         assert "📋 awake" not in result
 
-    def test_both_logs(self, tmp_path):
+    def test_filter_run(self, tmp_path):
         mod = _load_handler()
-        logs_dir = tmp_path / "logs"
-        logs_dir.mkdir()
-        (logs_dir / "run.log").write_text("run line 1\nrun line 2\n")
-        (logs_dir / "awake.log").write_text("awake line 1\nawake line 2\n")
-        ctx = _make_ctx(tmp_path)
+        _setup_logs(tmp_path, run_content="run line\n", awake_content="awake line\n")
+        ctx = _make_ctx(tmp_path, args="run")
+        result = mod.handle(ctx)
+        assert "📋 run" in result
+        assert "📋 awake" not in result
+
+    def test_filter_awake(self, tmp_path):
+        mod = _load_handler()
+        _setup_logs(tmp_path, run_content="run line\n", awake_content="awake line\n")
+        ctx = _make_ctx(tmp_path, args="awake")
+        result = mod.handle(ctx)
+        assert "📋 awake" in result
+        assert "awake line" in result
+        assert "📋 run" not in result
+
+    def test_filter_all(self, tmp_path):
+        mod = _load_handler()
+        _setup_logs(tmp_path, run_content="run line\n", awake_content="awake line\n")
+        ctx = _make_ctx(tmp_path, args="all")
         result = mod.handle(ctx)
         assert "📋 run" in result
         assert "📋 awake" in result
-        assert "run line 1" in result
-        assert "awake line 1" in result
+
+    def test_invalid_filter(self, tmp_path):
+        mod = _load_handler()
+        _setup_logs(tmp_path, run_content="run line\n")
+        ctx = _make_ctx(tmp_path, args="banana")
+        result = mod.handle(ctx)
+        assert "Unknown filter" in result
+
+    def test_run_log_only_file(self, tmp_path):
+        """When only run.log exists, default still works."""
+        mod = _load_handler()
+        _setup_logs(tmp_path, run_content="Starting agent loop\nPicking mission\n")
+        ctx = _make_ctx(tmp_path)
+        result = mod.handle(ctx)
+        assert "📋 run" in result
+        assert "Starting agent loop" in result
 
     def test_code_block_wrapping(self, tmp_path):
         mod = _load_handler()
-        logs_dir = tmp_path / "logs"
-        logs_dir.mkdir()
-        (logs_dir / "run.log").write_text("hello\n")
+        _setup_logs(tmp_path, run_content="hello\n")
         ctx = _make_ctx(tmp_path)
         result = mod.handle(ctx)
         assert "```\nhello\n```" in result
 
     def test_truncates_long_logs(self, tmp_path):
         mod = _load_handler()
-        logs_dir = tmp_path / "logs"
-        logs_dir.mkdir()
         lines = "\n".join(f"log entry {i}" for i in range(50))
-        (logs_dir / "run.log").write_text(lines + "\n")
+        _setup_logs(tmp_path, run_content=lines + "\n")
         ctx = _make_ctx(tmp_path)
         result = mod.handle(ctx)
-        # Should only show last 10 lines
-        assert "log entry 40" in result
+        # Should only show last 30 lines
+        assert "log entry 20" in result
         assert "log entry 49" in result
-        assert "log entry 39" not in result
+        assert "log entry 19" not in result
+
+    def test_filter_case_insensitive(self, tmp_path):
+        mod = _load_handler()
+        _setup_logs(tmp_path, run_content="run line\n", awake_content="awake line\n")
+        ctx = _make_ctx(tmp_path, args="AWAKE")
+        result = mod.handle(ctx)
+        assert "📋 awake" in result
+        assert "📋 run" not in result
 
 
 class TestSkillMetadata:

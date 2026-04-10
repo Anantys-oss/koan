@@ -393,7 +393,9 @@ def parse_projects() -> list:
     1. projects.yaml (if exists)
     2. KOAN_PROJECTS env var (fallback)
 
-    Returns list of (name, path) tuples. Exits on error.
+    Returns list of (name, path) tuples. Exits on error (only if no
+    valid projects remain). Missing project directories are warned about
+    and filtered out instead of crashing.
     """
     from app.utils import get_known_projects
     projects = get_known_projects()
@@ -406,12 +408,19 @@ def parse_projects() -> list:
         log("error", f"Max 50 projects allowed. You have {len(projects)}.")
         sys.exit(1)
 
+    valid = []
     for name, path in projects:
         if not Path(path).is_dir():
-            log("error", f"Project '{name}' path does not exist: {path}")
-            sys.exit(1)
+            log("warn", f"Project '{name}' path does not exist: {path} — skipping. "
+                f"Remove it from projects.yaml to silence this warning.")
+        else:
+            valid.append((name, path))
 
-    return projects
+    if not valid:
+        log("error", "No valid project directories found. Check your projects.yaml paths.")
+        sys.exit(1)
+
+    return valid
 
 
 # ---------------------------------------------------------------------------
@@ -923,11 +932,22 @@ def _handle_contemplative(
         os.close(fd_out)
         fd_err, stderr_file = tempfile.mkstemp(prefix="koan-contemp-err-")
         os.close(fd_err)
+        contemp_start = int(time.time())
         try:
             run_claude_task(
                 cmd, stdout_file, stderr_file, cwd=koan_root,
                 instance_dir=instance, project_name=project_name, run_num=run_num,
             )
+            # Log contemplative usage before temp files are cleaned up
+            try:
+                from app.mission_runner import _log_activity_usage
+                _log_activity_usage(
+                    instance, project_name, stdout_file,
+                    "contemplative", "",
+                    duration_seconds=int(time.time()) - contemp_start,
+                )
+            except Exception as e:
+                log("warn", f"Failed to log contemplative usage: {e}")
         finally:
             _cleanup_temp(stdout_file, stderr_file)
     except KeyboardInterrupt:
@@ -1347,19 +1367,45 @@ def _run_iteration(
     from app.utils import get_known_projects
     refreshed = get_known_projects()
     if refreshed:
-        projects = refreshed
+        # Filter out projects whose directories no longer exist
+        valid = []
+        for name, path in refreshed:
+            if Path(path).is_dir():
+                valid.append((name, path))
+            else:
+                log("warn", f"Project '{name}' directory missing: {path} — skipping. "
+                    f"Remove it from projects.yaml to silence this warning.")
+        if valid:
+            projects = valid
 
     # Check GitHub notifications before planning (converts @mentions to missions
     # so plan_iteration() sees them immediately instead of waiting for sleep)
+    log("koan", "Checking GitHub notifications...")
     from app.loop_manager import process_github_notifications
     try:
         gh_missions = process_github_notifications(koan_root, instance)
         if gh_missions > 0:
             log("github", f"Pre-iteration: {gh_missions} mission(s) created from GitHub notifications")
+        else:
+            log("koan", "No new GitHub notifications")
     except Exception as e:
         log("error", f"Pre-iteration GitHub notification check failed: {e}")
 
+    # Check Jira notifications before planning (converts @mentions to missions
+    # so plan_iteration() sees them immediately instead of waiting for sleep)
+    log("koan", "Checking Jira notifications...")
+    from app.loop_manager import process_jira_notifications
+    try:
+        jira_missions = process_jira_notifications(koan_root, instance)
+        if jira_missions > 0:
+            log("jira", f"Pre-iteration: {jira_missions} mission(s) created from Jira notifications")
+        else:
+            log("koan", "No new Jira notifications")
+    except Exception as e:
+        log("error", f"Pre-iteration Jira notification check failed: {e}")
+
     # Plan iteration (delegated to iteration_manager)
+    log("koan", "Planning iteration...")
     last_project = _read_current_project(koan_root)
     plan = plan_iteration(
         instance_dir=instance,
@@ -1382,12 +1428,14 @@ def _run_iteration(
         _notify(instance, f"⚠️ Budget tracker error: {plan['tracker_error']} — running in review-only mode until fixed")
 
     # Display usage
-    log("quota", "Usage Status:")
+    log("quota", "Usage (token estimate — may differ from real API quota):")
     if plan["display_lines"]:
         for line in plan["display_lines"]:
             print(f"  {line}")
     else:
         print("  [No usage data available - using fallback mode]")
+    if plan.get("cost_today", 0.0) > 0:
+        print(f"  Cost today: ${plan['cost_today']:.2f}")
     print(f"  Safety margin: 10% → Available: {plan['available_pct']}%")
     print()
 
@@ -1458,8 +1506,10 @@ def _run_iteration(
 
     # --- Pre-flight quota check ---
     if action in ("mission", "autonomous"):
+        log("koan", "Running pre-flight quota check...")
         if _run_preflight_check(plan, koan_root, instance, count):
             return False  # quota exhausted pre-flight — not productive
+        log("koan", "Pre-flight OK — quota available")
 
     # --- Execute mission or autonomous run ---
     mission_title = plan["mission_title"]
@@ -1469,6 +1519,7 @@ def _run_iteration(
 
     # --- Dedup guard ---
     if mission_title:
+        log("koan", "Checking mission dedup history...")
         try:
             from app.mission_history import should_skip_mission
             if should_skip_mission(instance, mission_title, max_executions=3):
@@ -1608,6 +1659,7 @@ def _run_iteration(
         log("error", f"Failed to create pending.md: {e}")
 
     # Execute Claude
+    log("koan", "Building CLI command and launching Claude...")
     if mission_title:
         set_status(koan_root, f"Run {run_num}/{max_runs} — executing mission on {project_name}")
     else:
@@ -1673,6 +1725,8 @@ def _run_iteration(
             instance_dir=instance, project_name=project_name, run_num=run_num,
         )
         _debug_log(f"[run] cli: exit_code={claude_exit}")
+        elapsed_min = (int(time.time()) - mission_start) / 60
+        log("koan", f"Claude CLI finished (exit={claude_exit}, {elapsed_min:.1f}min)")
 
         # --- Mission retry on transient CLI errors ---
         # One retry for missions, zero for autonomous (they're lower-priority).
@@ -1691,7 +1745,19 @@ def _run_iteration(
                 has_mission=bool(mission_title),
             )
 
+        # --- JSON success override ---
+        # Claude CLI can return non-zero even when the session JSON shows
+        # success (is_error=false).  Override the exit code so the
+        # post-mission pipeline (verification, reflection, auto-merge)
+        # is not skipped and the notification shows ✅ instead of ❌.
+        if claude_exit != 0:
+            from app.mission_runner import check_json_success
+            if check_json_success(stdout_file):
+                log("koan", f"CLI exited {claude_exit} but JSON output indicates success — overriding to 0")
+                claude_exit = 0
+
         # Verify core files survived the mission (after retry, so result is final)
+        log("koan", "Running core file integrity check...")
         integrity_warnings = check_core_files(koan_root, core_snapshot, project_path)
         if integrity_warnings:
             log_integrity_warnings(integrity_warnings)
@@ -1781,6 +1847,7 @@ def _run_iteration(
             return True  # count as productive so loop continues immediately
 
         # Post-mission pipeline
+        log("koan", "Starting post-mission pipeline...")
         _status_prefix = f"Run {run_num}/{max_runs}"
         set_status(koan_root, f"{_status_prefix} — finalizing")
         try:

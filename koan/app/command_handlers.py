@@ -618,12 +618,32 @@ def _auto_restart_runner() -> bool:
     return ok
 
 
+def _write_skip_start_pause():
+    """Signal handle_start_on_pause to skip pause creation.
+
+    Writes a timestamp to .koan-skip-start-pause so that if the runner's
+    startup sequence hasn't reached handle_start_on_pause yet, it will
+    see this file and skip creating the pause — preventing the race where
+    /resume removes the pause but startup re-creates it.
+    """
+    from app.signals import SKIP_START_PAUSE_FILE
+    try:
+        (KOAN_ROOT / SKIP_START_PAUSE_FILE).write_text(str(int(time.time())))
+    except OSError:
+        pass
+
+
 def handle_resume():
     """Resume from pause or quota exhaustion.
 
     If the run process is dead, automatically restarts it with
     KOAN_SKIP_START_PAUSE=1 so start_on_pause doesn't immediately
     re-pause the freshly launched runner.
+
+    Also writes .koan-skip-start-pause to prevent the race condition
+    where /resume arrives during the startup sequence — before
+    handle_start_on_pause() has run — and the pause file gets
+    (re-)created after /resume removed it.
     """
     from app.pause_manager import get_pause_state, remove_pause
 
@@ -638,6 +658,7 @@ def handle_resume():
         reset_display = state.display if state else ""
 
         remove_pause(str(KOAN_ROOT))
+        _write_skip_start_pause()
 
         if reason == "quota":
             # Reset internal session counters so the estimator doesn't
@@ -672,11 +693,15 @@ def handle_resume():
 
     # Legacy fallback: old .koan-quota-reset file (can be removed in future)
     if not quota_file.exists():
+        # No pause file yet — runner might still be in startup with
+        # start_on_pause about to create one. Write skip signal to prevent it.
+        _write_skip_start_pause()
+
         # No pause state, but runner might be dead — restart it
         if not _is_runner_alive():
             _auto_restart_runner()
         else:
-            send_telegram("ℹ️ No pause or quota hold detected. /status to check.")
+            send_telegram("▶️ Resume acknowledged. If the agent was starting up, pause will be skipped.")
         return
 
     try:
@@ -730,7 +755,7 @@ def _handle_start():
         send_telegram(f"❌ {msg}")
 
 
-def _quarantine_mission(text: str, reason: str, source: str = "unknown"):
+def quarantine_mission(text: str, reason: str, source: str = "unknown"):
     """Write a blocked/flagged mission to the quarantine file for human review."""
     from app.missions import quarantine_mission
 
@@ -777,14 +802,14 @@ def handle_mission(text: str):
                     f"🛡️ Mission blocked — suspicious content detected: {guard_result.reason}"
                 )
                 log("guard", f"BLOCKED mission: {guard_result.reason} | {mission_text[:100]}")
-                _quarantine_mission(mission_text, guard_result.reason, source="telegram")
+                quarantine_mission(mission_text, guard_result.reason, source="telegram")
                 return
             else:
                 send_telegram(
                     f"⚠️ Warning — mission queued but flagged: {guard_result.reason}"
                 )
                 log("guard", f"WARNING mission: {guard_result.reason} | {mission_text[:100]}")
-                _quarantine_mission(mission_text, guard_result.reason, source="telegram")
+                quarantine_mission(mission_text, guard_result.reason, source="telegram")
 
     # Format mission entry with project tag if specified
     if project:

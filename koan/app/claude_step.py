@@ -19,7 +19,7 @@ from app.cli_provider import build_full_command, run_command
 from app.config import get_model_config
 from app.git_utils import get_current_branch as _git_utils_get_current_branch
 from app.git_utils import ordered_remotes, run_git_strict
-from app.github import pr_create, run_gh
+from app.github import pr_create, run_gh, sanitize_github_comment
 from app.prompts import load_prompt_or_skill
 
 # Backward-compatible alias — callers should import from app.cli_provider
@@ -38,6 +38,21 @@ def _run_git(cmd: list, cwd: str = None, timeout: int = 60) -> str:
 
 
 _REBASE_EXCEPTIONS = (RuntimeError, subprocess.TimeoutExpired, OSError)
+
+
+def _fetch_branch(remote: str, branch: str, cwd: str = None, timeout: int = 60) -> str:
+    """Fetch a branch using an explicit refspec to guarantee tracking ref update.
+
+    ``git fetch <remote> <branch>`` fetches objects but does NOT update
+    ``refs/remotes/<remote>/<branch>`` — it only writes to FETCH_HEAD.
+    A subsequent ``git checkout -B branch remote/branch`` then uses the
+    **stale** tracking ref instead of the freshly fetched state.
+
+    Using an explicit refspec ``+refs/heads/X:refs/remotes/R/X`` ensures
+    the remote tracking ref is always up-to-date after fetch.
+    """
+    refspec = f"+refs/heads/{branch}:refs/remotes/{remote}/{branch}"
+    return _run_git(["git", "fetch", remote, refspec], cwd=cwd, timeout=timeout)
 
 
 def _abort_rebase_safely(project_path: str) -> None:
@@ -75,7 +90,7 @@ def _rebase_onto_target(
     """
     for remote in _ordered_remotes(preferred_remote):
         try:
-            _run_git(["git", "fetch", remote, base], cwd=project_path)
+            _fetch_branch(remote, base, cwd=project_path)
         except _REBASE_EXCEPTIONS as e:
             print(f"[claude_step] Fetch {remote}/{base} failed: {e}", file=sys.stderr)
             continue
@@ -84,7 +99,7 @@ def _rebase_onto_target(
         # replay to only the PR's commits.
         if head_remote and head_remote != remote:
             try:
-                _run_git(["git", "fetch", head_remote, base], cwd=project_path)
+                _fetch_branch(head_remote, base, cwd=project_path)
                 _run_git(
                     ["git", "rebase", "--onto", f"{remote}/{base}",
                      f"{head_remote}/{base}", "--autostash"],
@@ -142,6 +157,12 @@ def run_claude(cmd: list, cwd: str, timeout: int = 600) -> dict:
         )
         if result.returncode != 0:
             stderr_snippet = result.stderr[-500:] if result.stderr else "no stderr"
+            # When stderr is empty, stdout often contains the actual error
+            # (e.g. "Error: context window exceeded").  Include it so callers
+            # get actionable diagnostics instead of just "no stderr".
+            stdout_text = result.stdout.strip()
+            if not result.stderr and stdout_text:
+                stderr_snippet = f"no stderr | stdout: {stdout_text[-500:]}"
             log_event(SUBPROCESS_EXEC, details={
                 "cmd": _redact_list(cmd),
                 "cwd": cwd,
@@ -149,7 +170,7 @@ def run_claude(cmd: list, cwd: str, timeout: int = 600) -> dict:
             }, result="failure")
             return {
                 "success": False,
-                "output": result.stdout.strip(),
+                "output": stdout_text,
                 "error": f"Exit code {result.returncode}: {stderr_snippet}",
             }
         log_event(SUBPROCESS_EXEC, details={
@@ -202,12 +223,16 @@ def run_claude_step(
     max_turns: int = 20,
     timeout: int = 600,
     use_skill: bool = False,
+    use_convention_subject: bool = False,
 ) -> bool:
     """Run a Claude Code step: invoke CLI, commit changes, log result.
 
     Args:
         use_skill: If True, include the Skill tool in allowed tools
                    so Claude can invoke registered skills (e.g. /refactor).
+        use_convention_subject: If True, parse COMMIT_SUBJECT from Claude's
+                   output and use it instead of *commit_msg*. Falls back to
+                   *commit_msg* if no valid subject is found.
 
     Returns True if the step produced a commit.
     """
@@ -225,14 +250,28 @@ def run_claude_step(
         max_turns=max_turns,
     )
 
+    from app.commit_conventions import parse_commit_subject
+
     result = run_claude(cmd, project_path, timeout=timeout)
     if result["success"]:
-        committed = commit_if_changes(project_path, commit_msg)
+        effective_msg = commit_msg
+        if use_convention_subject:
+            output = strip_cli_noise(result.get("output", ""))
+            parsed = parse_commit_subject(output)
+            if parsed:
+                effective_msg = _sanitize_commit_subject(parsed)
+        committed = commit_if_changes(project_path, effective_msg)
         if committed and success_label:
             actions_log.append(success_label)
             return True
     elif failure_label:
-        actions_log.append(f"{failure_label}: {result['error'][:200]}")
+        error_detail = result['error'][:200]
+        # Claude CLI often reports errors via stdout, not stderr.
+        # Include stdout snippet when stderr is empty to aid debugging.
+        if "no stderr" in error_detail and result.get("output"):
+            stdout_snippet = result["output"][-300:]
+            error_detail = f"{error_detail} | stdout: {stdout_snippet}"
+        actions_log.append(f"{failure_label}: {error_detail}")
     return False
 
 
@@ -404,6 +443,53 @@ def _fetch_failed_logs(run_id: int, full_repo: str, max_chars: int = 8000) -> st
         return f"(Could not fetch logs: {e})"
 
 
+def check_existing_ci(
+    branch: str,
+    full_repo: str,
+) -> Tuple[str, Optional[int], str]:
+    """Check the most recent CI run on a branch without polling.
+
+    Unlike ``wait_for_ci`` which polls until completion, this does a single
+    check to see the current CI state.  Useful for inspecting pre-existing
+    failures before pushing a new version.
+
+    Returns:
+        (status, run_id, logs) where:
+        - status: "success", "failure", "pending", or "none"
+        - run_id: GitHub Actions run ID (None if no runs found)
+        - logs: Failed job logs (empty unless status is "failure")
+    """
+    try:
+        raw = run_gh(
+            "run", "list",
+            "--branch", branch,
+            "--repo", full_repo,
+            "--json", "databaseId,status,conclusion",
+            "--limit", "1",
+        )
+        runs = json.loads(raw) if raw.strip() else []
+    except Exception as e:
+        print(f"[claude_step] CI check error: {e}", file=sys.stderr)
+        return ("none", None, "")
+
+    if not runs:
+        return ("none", None, "")
+
+    run = runs[0]
+    run_id = run.get("databaseId")
+    status = run.get("status", "").lower()
+    conclusion = run.get("conclusion", "").lower()
+
+    if status == "completed":
+        if conclusion == "success":
+            return ("success", run_id, "")
+        logs = _fetch_failed_logs(run_id, full_repo)
+        return ("failure", run_id, logs)
+
+    # Still running or queued
+    return ("pending", run_id, "")
+
+
 def _is_permission_error(error_msg: str) -> bool:
     """Check if an error message indicates a permission/access problem."""
     indicators = [
@@ -419,6 +505,8 @@ def _build_pr_prompt(
     prompt_name: str,
     context: dict,
     skill_dir: Optional[Path] = None,
+    max_diff_chars: int = 80_000,
+    commit_conventions: str = "",
 ) -> str:
     """Build a prompt for Claude to process PR feedback.
 
@@ -429,18 +517,78 @@ def _build_pr_prompt(
         prompt_name: Prompt template name (e.g. "rebase", "recreate").
         context: PR context dict from fetch_pr_context().
         skill_dir: Optional skill directory for prompt resolution.
+        max_diff_chars: Maximum characters for the diff section to prevent
+            context window overflow on large PRs.
+        commit_conventions: Project commit convention guidance to include
+            in the prompt. When non-empty, also loads the commit subject
+            instruction fragment.
     """
+    diff = context.get("diff", "")
+    if len(diff) > max_diff_chars:
+        diff = diff[:max_diff_chars] + "\n\n... (diff truncated — too large for context window)"
+        print(
+            f"[claude_step] Diff truncated from {len(context.get('diff', ''))} "
+            f"to {max_diff_chars} chars",
+            file=sys.stderr,
+        )
+
+    commit_subject_instruction = ""
+    if commit_conventions:
+        commit_subject_instruction = _load_commit_subject_instruction(skill_dir)
+
     kwargs = dict(
         TITLE=context["title"],
         BODY=context.get("body", ""),
         BRANCH=context["branch"],
         BASE=context["base"],
-        DIFF=context.get("diff", ""),
+        DIFF=diff,
         REVIEW_COMMENTS=context.get("review_comments", ""),
         REVIEWS=context.get("reviews", ""),
         ISSUE_COMMENTS=context.get("issue_comments", ""),
+        COMMIT_CONVENTIONS=commit_conventions,
+        COMMIT_SUBJECT_INSTRUCTION=commit_subject_instruction,
     )
     return load_prompt_or_skill(skill_dir, prompt_name, **kwargs)
+
+
+def _sanitize_commit_subject(subject: str) -> str:
+    """Sanitize a parsed commit subject for safe use in git commit messages.
+
+    Strips control characters and collapses whitespace to prevent
+    malformed or adversarial subjects from breaking git log output.
+    """
+    import unicodedata
+
+    # Strip control characters (keep printable + spaces)
+    cleaned = "".join(
+        ch for ch in subject
+        if not unicodedata.category(ch).startswith("C") or ch == "\t"
+    )
+    # Collapse whitespace and strip
+    cleaned = " ".join(cleaned.split()).strip()
+    return cleaned
+
+
+def _load_commit_subject_instruction(skill_dir: Optional[Path] = None) -> str:
+    """Load the commit subject instruction prompt fragment.
+
+    Tries the skill directory first, then falls back to system prompts.
+    Returns empty string if the fragment is not found.
+    """
+    if skill_dir is not None:
+        path = skill_dir / "prompts" / "commit_subject_instruction.md"
+        try:
+            return path.read_text()
+        except (FileNotFoundError, OSError):
+            pass
+
+    # Fall back to system-prompts directory
+    from app.prompts import PROMPT_DIR
+    path = PROMPT_DIR / "commit_subject_instruction.md"
+    try:
+        return path.read_text()
+    except (FileNotFoundError, OSError):
+        return ""
 
 
 # -- Push with PR fallback (shared config) ----------------------------------
@@ -556,7 +704,7 @@ def _push_with_pr_fallback(
             run_gh(
                 "pr", "comment", pr_number,
                 "--repo", full_repo,
-                "--body", cfg["crosslink"].format(ref=new_pr_ref, base=base),
+                "--body", sanitize_github_comment(cfg["crosslink"].format(ref=new_pr_ref, base=base)),
             )
             actions.append("Cross-linked original PR")
         except Exception as e:

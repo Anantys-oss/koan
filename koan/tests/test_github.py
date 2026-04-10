@@ -10,8 +10,10 @@ from app.github import (
     SSOAuthRequired, _is_sso_error,
     run_gh, pr_create, issue_create, api,
     get_gh_username, count_open_prs, cached_count_open_prs,
-    batch_count_open_prs, fetch_issue_with_comments, detect_parent_repo,
-    resolve_target_repo, _upstream_remote_repo, _parse_remote_url,
+    batch_count_open_prs, fetch_issue_state, fetch_issue_with_comments,
+    detect_parent_repo, resolve_target_repo, _upstream_remote_repo,
+    _parse_remote_url,
+    sanitize_github_comment,
 )
 import app.github as github_module
 
@@ -569,6 +571,26 @@ class TestRunGhStdinData:
 # ---------------------------------------------------------------------------
 
 
+class TestFetchIssueState:
+
+    @patch("app.github.api", return_value='"closed"')
+    def test_returns_closed(self, mock_api):
+        assert fetch_issue_state("o", "r", 42) == "closed"
+        mock_api.assert_called_once()
+
+    @patch("app.github.api", return_value='"open"')
+    def test_returns_open(self, mock_api):
+        assert fetch_issue_state("o", "r", 42) == "open"
+
+    @patch("app.github.api", return_value="unexpected")
+    def test_unknown_state_defaults_open(self, mock_api):
+        assert fetch_issue_state("o", "r", 42) == "open"
+
+    @patch("app.github.api", side_effect=RuntimeError("gh failed"))
+    def test_api_error_defaults_open(self, mock_api):
+        assert fetch_issue_state("o", "r", 42) == "open"
+
+
 class TestFetchIssueWithComments:
 
     @patch("app.github.api")
@@ -913,3 +935,69 @@ class TestCachedCountOpenPrs:
         mock_time.return_value = 1299.0
         cached_count_open_prs("owner/repo", "koan-bot")
         mock_count.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# sanitize_github_comment
+# ---------------------------------------------------------------------------
+
+class TestSanitizeGithubComment:
+    def test_bare_lowercase(self):
+        assert sanitize_github_comment("Hi @copilot please review") == "Hi `@copilot` please review"
+
+    def test_bare_capitalized(self):
+        assert sanitize_github_comment("Hi @Copilot please review") == "Hi `@Copilot` please review"
+
+    def test_bare_uppercase(self):
+        assert sanitize_github_comment("@COPILOT look at this") == "`@COPILOT` look at this"
+
+    def test_already_escaped_not_double_escaped(self):
+        assert sanitize_github_comment("`@copilot` is already escaped") == "`@copilot` is already escaped"
+
+    def test_no_partial_match(self):
+        assert sanitize_github_comment("@copilotx is not copilot") == "@copilotx is not copilot"
+
+    def test_no_mention(self):
+        assert sanitize_github_comment("no mention here") == "no mention here"
+
+    def test_empty_string(self):
+        assert sanitize_github_comment("") == ""
+
+    def test_none_passthrough(self):
+        assert sanitize_github_comment(None) is None
+
+    def test_multiple_occurrences(self):
+        result = sanitize_github_comment("@copilot and @Copilot and @COPILOT")
+        assert result == "`@copilot` and `@Copilot` and `@COPILOT`"
+
+    def test_in_quote_header(self):
+        text = "> @copilot: can you fix this?\n\nSure, here's how."
+        result = sanitize_github_comment(text)
+        assert "`@copilot`" in result
+        assert "@copilot:" not in result.split("`@copilot`")[0]
+
+    def test_bare_dependabot(self):
+        assert sanitize_github_comment("Thanks @dependabot") == "Thanks `@dependabot`"
+
+    def test_bare_dependabot_capitalized(self):
+        assert sanitize_github_comment("@Dependabot updated") == "`@Dependabot` updated"
+
+    def test_dependabot_already_escaped(self):
+        assert sanitize_github_comment("`@dependabot` is fine") == "`@dependabot` is fine"
+
+    def test_dependabot_no_partial_match(self):
+        assert sanitize_github_comment("@dependabot-preview is different") == "@dependabot-preview is different"
+
+    def test_bare_github_actions(self):
+        assert sanitize_github_comment("See @github-actions run") == "See `@github-actions` run"
+
+    def test_github_actions_capitalized(self):
+        assert sanitize_github_comment("@GitHub-Actions failed") == "`@GitHub-Actions` failed"
+
+    def test_github_actions_already_escaped(self):
+        assert sanitize_github_comment("`@github-actions` ok") == "`@github-actions` ok"
+
+    def test_mixed_bots(self):
+        text = "@copilot and @dependabot and @github-actions"
+        result = sanitize_github_comment(text)
+        assert result == "`@copilot` and `@dependabot` and `@github-actions`"

@@ -18,7 +18,7 @@ import re
 from typing import Optional
 
 from app.cli_provider import run_command
-from app.github import api
+from app.github import api, sanitize_github_comment
 from app.prompts import load_prompt
 from app.utils import truncate_text
 
@@ -65,8 +65,16 @@ def fetch_thread_context(
     owner: str,
     repo: str,
     issue_number: str,
+    bot_username: str = "",
 ) -> dict:
     """Fetch issue/PR context for reply generation.
+
+    Args:
+        owner: Repository owner.
+        repo: Repository name.
+        issue_number: Issue/PR number.
+        bot_username: If provided, comments from this user are excluded
+            from the context to prevent self-reply loops.
 
     Returns:
         Dict with keys: title, body, comments, is_pr, diff_summary.
@@ -101,9 +109,11 @@ def fetch_thread_context(
         )
         comments = json.loads(raw) if raw else []
         if isinstance(comments, list):
+            bot_lower = bot_username.lower() if bot_username else ""
             context["comments"] = [
                 {"author": c.get("author", "?"), "body": truncate_text(c.get("body", ""), 500)}
                 for c in comments
+                if not (bot_lower and c.get("author", "").lower() == bot_lower)
             ]
     except (RuntimeError, json.JSONDecodeError):
         pass
@@ -212,7 +222,7 @@ def generate_reply(
             project_path=project_path,
             allowed_tools=["Read", "Glob", "Grep"],
             model_key="chat",
-            max_turns=1,
+            max_turns=3,
             timeout=120,
         )
         return clean_reply(reply) if reply else None
@@ -239,10 +249,11 @@ def post_reply(
         True if posted successfully.
     """
     try:
+        safe_body = sanitize_github_comment(body)
         api(
             f"repos/{owner}/{repo}/issues/{issue_number}/comments",
             method="POST",
-            extra_args=["-f", f"body={body}"],
+            extra_args=["-f", f"body={safe_body}"],
         )
         return True
     except RuntimeError as e:

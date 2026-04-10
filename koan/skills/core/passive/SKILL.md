@@ -2,6 +2,7 @@
 name: passive
 scope: core
 group: config
+emoji: 😴
 description: Passive mode — read-only, no missions or exploration. Use /active to resume.
 version: 1.0.0
 audience: bridge

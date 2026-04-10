@@ -137,6 +137,7 @@ class TestBuildContemplativeCommand:
             instance="/my/instance",
             project_name="myproject",
             session_info="my info",
+            github_nickname="",
         )
 
     @patch("app.config.get_contemplative_tools")

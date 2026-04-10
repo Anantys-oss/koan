@@ -2,6 +2,7 @@
 name: gh_request
 scope: core
 group: pr
+emoji: 🔀
 description: "Handle natural-language GitHub requests — classify intent and dispatch to the right skill"
 version: 1.0.0
 audience: hybrid

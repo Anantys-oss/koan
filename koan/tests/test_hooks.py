@@ -538,3 +538,267 @@ class TestSessionEndHookWiring:
         from app import run
         source = inspect.getsource(run)
         assert 'fire_hook("session_end"' in source
+
+
+# ---------------------------------------------------------------------------
+# Automation rule execution tests
+# ---------------------------------------------------------------------------
+
+
+import yaml as _yaml
+
+
+def _write_rules(instance_dir, rules_data):
+    """Write automation_rules.yaml into instance_dir."""
+    path = Path(instance_dir) / "automation_rules.yaml"
+    path.write_text(_yaml.dump(rules_data))
+
+
+class TestAutomationRuleExecution:
+    """Tests for automation rule execution in HookRegistry.fire()."""
+
+    def _make_registry(self, tmp_path):
+        """Create a HookRegistry with empty hooks dir and given instance_dir."""
+        hooks_dir = tmp_path / "hooks"
+        hooks_dir.mkdir()
+        (tmp_path / "missions.md").write_text(
+            "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n"
+        )
+        return HookRegistry(hooks_dir, instance_dir=str(tmp_path))
+
+    def test_read_automation_rules_empty_when_absent(self, tmp_path):
+        from app.hooks import read_automation_rules
+        rules = read_automation_rules(str(tmp_path))
+        assert rules == []
+
+    def test_read_automation_rules_returns_rules_when_present(self, tmp_path):
+        from app.hooks import read_automation_rules
+        _write_rules(str(tmp_path), [
+            {"id": "r1", "event": "post_mission", "action": "notify", "enabled": True, "created": ""},
+        ])
+        rules = read_automation_rules(str(tmp_path))
+        assert len(rules) == 1
+        assert rules[0].id == "r1"
+
+    def test_rule_fires_on_matching_event(self, tmp_path):
+        _write_rules(str(tmp_path), [
+            {"id": "r1", "event": "post_mission", "action": "notify",
+             "params": {"message": "hello"}, "enabled": True, "created": ""},
+        ])
+        registry = self._make_registry(tmp_path)
+        registry.fire("post_mission")
+        outbox = (tmp_path / "outbox.md").read_text()
+        assert "hello" in outbox
+
+    def test_rule_not_fired_on_non_matching_event(self, tmp_path):
+        _write_rules(str(tmp_path), [
+            {"id": "r1", "event": "pre_mission", "action": "notify",
+             "params": {"message": "should_not_appear"}, "enabled": True, "created": ""},
+        ])
+        registry = self._make_registry(tmp_path)
+        registry.fire("post_mission")
+        outbox_path = tmp_path / "outbox.md"
+        assert not outbox_path.exists() or "should_not_appear" not in outbox_path.read_text()
+
+    def test_disabled_rule_is_skipped(self, tmp_path):
+        _write_rules(str(tmp_path), [
+            {"id": "r1", "event": "post_mission", "action": "notify",
+             "params": {"message": "disabled"}, "enabled": False, "created": ""},
+        ])
+        registry = self._make_registry(tmp_path)
+        registry.fire("post_mission")
+        outbox_path = tmp_path / "outbox.md"
+        assert not outbox_path.exists() or "disabled" not in outbox_path.read_text()
+
+    def test_loop_guard_skips_after_max_fires(self, tmp_path):
+        _write_rules(str(tmp_path), [
+            {"id": "r1", "event": "post_mission", "action": "notify",
+             "params": {"message": "tick"}, "enabled": True, "created": ""},
+        ])
+        # Set max_fires_per_minute=2 via config
+        import yaml
+        (tmp_path / "config.yaml").write_text(
+            yaml.dump({"automation_rules": {"max_fires_per_minute": 2}})
+        )
+        hooks_dir = tmp_path / "hooks"
+        hooks_dir.mkdir()
+        from app.hooks import HookRegistry
+        from unittest.mock import patch
+        registry = HookRegistry(hooks_dir, instance_dir=str(tmp_path))
+        # Patch load_config to return our config
+        config = {"automation_rules": {"max_fires_per_minute": 2}}
+        with patch("app.hooks.HookRegistry._loop_guard") as mock_guard:
+            # First 2 calls: not guarded; 3rd: guarded
+            mock_guard.side_effect = [False, False, True]
+            registry.fire("post_mission")
+            registry.fire("post_mission")
+            registry.fire("post_mission")
+        # After 2 fires the 3rd should be skipped; outbox should have exactly 2 entries
+        outbox_text = (tmp_path / "outbox.md").read_text()
+        assert outbox_text.count("tick") == 2
+
+    def test_notify_action_appends_to_outbox(self, tmp_path):
+        _write_rules(str(tmp_path), [
+            {"id": "r1", "event": "post_mission", "action": "notify",
+             "params": {"message": "mission done"}, "enabled": True, "created": ""},
+        ])
+        registry = self._make_registry(tmp_path)
+        registry.fire("post_mission")
+        outbox = (tmp_path / "outbox.md").read_text()
+        assert "mission done" in outbox
+
+    def test_create_mission_appends_to_pending(self, tmp_path):
+        _write_rules(str(tmp_path), [
+            {"id": "r1", "event": "post_mission", "action": "create_mission",
+             "params": {"text": "Follow-up task"}, "enabled": True, "created": ""},
+        ])
+        registry = self._make_registry(tmp_path)
+        registry.fire("post_mission")
+        missions = (tmp_path / "missions.md").read_text()
+        assert "Follow-up task" in missions
+
+    def test_pause_action_writes_koan_pause(self, tmp_path):
+        _write_rules(str(tmp_path), [
+            {"id": "r1", "event": "pre_mission", "action": "pause",
+             "enabled": True, "created": ""},
+        ])
+        registry = self._make_registry(tmp_path)
+        # koan-pause lives in parent of instance_dir (KOAN_ROOT)
+        pause_file = tmp_path.parent / ".koan-pause"
+        assert not pause_file.exists()
+        registry.fire("pre_mission")
+        assert pause_file.exists()
+
+    def test_resume_action_removes_koan_pause(self, tmp_path):
+        _write_rules(str(tmp_path), [
+            {"id": "r1", "event": "session_start", "action": "resume",
+             "enabled": True, "created": ""},
+        ])
+        registry = self._make_registry(tmp_path)
+        pause_file = tmp_path.parent / ".koan-pause"
+        pause_file.write_text("test\n")
+        assert pause_file.exists()
+        registry.fire("session_start")
+        assert not pause_file.exists()
+
+    def test_resume_action_idempotent_when_not_paused(self, tmp_path):
+        _write_rules(str(tmp_path), [
+            {"id": "r1", "event": "session_start", "action": "resume",
+             "enabled": True, "created": ""},
+        ])
+        registry = self._make_registry(tmp_path)
+        # Should not raise even if pause file doesn't exist
+        registry.fire("session_start")
+
+    def test_auto_merge_skipped_when_project_path_absent(self, tmp_path, capsys):
+        _write_rules(str(tmp_path), [
+            {"id": "r1", "event": "post_mission", "action": "auto_merge",
+             "enabled": True, "created": ""},
+        ])
+        registry = self._make_registry(tmp_path)
+        # No project_path in ctx
+        registry.fire("post_mission")
+        captured = capsys.readouterr()
+        assert "auto_merge action skipped" in captured.err
+
+    def test_auto_merge_fires_when_project_path_present(self, tmp_path):
+        _write_rules(str(tmp_path), [
+            {"id": "r1", "event": "post_mission", "action": "auto_merge",
+             "enabled": True, "created": ""},
+        ])
+        registry = self._make_registry(tmp_path)
+        from unittest.mock import patch
+        with patch("app.git_auto_merge.auto_merge_branch") as mock_merge:
+            registry.fire(
+                "post_mission",
+                project_path=str(tmp_path),
+                project_name="myproj",
+                branch="koan/test-branch",
+            )
+            mock_merge.assert_called_once_with(
+                str(tmp_path), "myproj", str(tmp_path), "koan/test-branch"
+            )
+
+    def test_exception_in_rule_does_not_block_subsequent_rules(self, tmp_path):
+        _write_rules(str(tmp_path), [
+            # First rule: bad action that will raise internally
+            {"id": "r_bad", "event": "post_mission", "action": "notify",
+             "params": {}, "enabled": True, "created": ""},
+            # Second rule: creates a mission — should still run
+            {"id": "r_good", "event": "post_mission", "action": "create_mission",
+             "params": {"text": "second rule ran"}, "enabled": True, "created": ""},
+        ])
+        hooks_dir = tmp_path / "hooks"
+        hooks_dir.mkdir()
+        (tmp_path / "missions.md").write_text(
+            "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n"
+        )
+        from app.hooks import HookRegistry
+        registry = HookRegistry(hooks_dir, instance_dir=str(tmp_path))
+        # Patch _execute_rule to raise on the first call but not second
+        original = registry._execute_rule
+        call_count = [0]
+        def patched_execute(rule, ctx):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise RuntimeError("first rule exploded")
+            original(rule, ctx)
+        registry._execute_rule = patched_execute
+        registry.fire("post_mission")
+        missions = (tmp_path / "missions.md").read_text()
+        assert "second rule ran" in missions
+
+    def test_no_registry_when_instance_dir_absent(self, tmp_path):
+        """Rules are not evaluated when instance_dir is not provided."""
+        hooks_dir = tmp_path / "hooks"
+        hooks_dir.mkdir()
+        registry = HookRegistry(hooks_dir)  # No instance_dir
+        # Should not try to load rules and not raise
+        registry.fire("post_mission")
+
+
+class TestAutomationRuleJournal:
+    """Verify _execute_rule writes a [automation_rule]-tagged journal entry."""
+
+    def test_journal_entry_written_on_rule_fire(self, tmp_path):
+        from app.hooks import HookRegistry
+        from datetime import datetime, timezone
+        import re
+
+        hooks_dir = tmp_path / "hooks"
+        hooks_dir.mkdir()
+        (tmp_path / "missions.md").write_text(
+            "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n"
+        )
+        _write_rules(str(tmp_path), [
+            {"id": "j1", "event": "post_mission", "action": "notify",
+             "params": {"message": "journal test"}, "enabled": True, "created": ""},
+        ])
+        registry = HookRegistry(hooks_dir, instance_dir=str(tmp_path))
+        registry.fire("post_mission")
+
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        journal_file = tmp_path / "journal" / today / "automation.md"
+        assert journal_file.exists(), f"Expected journal file at {journal_file}"
+        content = journal_file.read_text()
+        assert "[automation_rule]" in content
+        assert "j1" in content
+        assert "post_mission" in content
+        assert "notify" in content
+
+    def test_journal_dir_created_if_absent(self, tmp_path):
+        from app.hooks import HookRegistry
+        hooks_dir = tmp_path / "hooks"
+        hooks_dir.mkdir()
+        (tmp_path / "missions.md").write_text(
+            "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n"
+        )
+        _write_rules(str(tmp_path), [
+            {"id": "j2", "event": "post_mission", "action": "notify",
+             "params": {"message": "create dir"}, "enabled": True, "created": ""},
+        ])
+        registry = HookRegistry(hooks_dir, instance_dir=str(tmp_path))
+        # Ensure journal dir doesn't exist yet
+        assert not (tmp_path / "journal").exists()
+        registry.fire("post_mission")
+        assert (tmp_path / "journal").is_dir()

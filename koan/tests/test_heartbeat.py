@@ -183,7 +183,13 @@ class TestRunStaleMissionCheck:
 
 class TestCheckDiskSpace:
 
-    def test_sufficient_space(self, tmp_path):
+    @patch("app.heartbeat.shutil.disk_usage")
+    def test_sufficient_space(self, mock_usage, tmp_path):
+        mock_usage.return_value = type("Usage", (), {
+            "total": 100 * 1024**3,
+            "used": 90 * 1024**3,
+            "free": 10 * 1024**3,
+        })()
         assert check_disk_space(str(tmp_path)) is True
 
     @patch("app.heartbeat.shutil.disk_usage")
@@ -228,7 +234,13 @@ class TestRunDiskSpaceCheck:
         mock_send.assert_not_called()
 
     @patch("app.notify.send_telegram")
-    def test_sufficient_space_no_alert(self, mock_send, tmp_path):
+    @patch("app.heartbeat.shutil.disk_usage")
+    def test_sufficient_space_no_alert(self, mock_usage, mock_send, tmp_path):
+        mock_usage.return_value = type("Usage", (), {
+            "total": 100 * 1024**3,
+            "used": 90 * 1024**3,
+            "free": 10 * 1024**3,
+        })()
         result = run_disk_space_check(str(tmp_path))
         assert result is True
         mock_send.assert_not_called()

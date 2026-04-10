@@ -96,6 +96,7 @@ def submit_draft_pr(
     pr_title: str,
     pr_body: str,
     issue_url: Optional[str] = None,
+    base_branch: Optional[str] = None,
 ) -> Optional[str]:
     """Push branch and create a draft PR.
 
@@ -116,6 +117,9 @@ def submit_draft_pr(
         pr_title: Full PR title string (caller builds it).
         pr_body: Full PR body markdown (caller builds it).
         issue_url: Optional issue URL for the cross-link comment.
+        base_branch: Optional target branch for the PR (e.g. "11.126").
+            When set, overrides the auto-resolved base branch for both
+            commit diffing and the PR's --base flag.
 
     Returns:
         PR URL on success, or None on failure.
@@ -138,8 +142,8 @@ def submit_draft_pr(
         logger.debug("No existing PR found (or check failed): %s", e)
 
     # Verify we have commits to submit
-    base_branch = resolve_base_branch(project_name, project_path)
-    commits = get_commit_subjects(project_path, base_branch=base_branch)
+    effective_base = base_branch or resolve_base_branch(project_name, project_path)
+    commits = get_commit_subjects(project_path, base_branch=effective_base)
     if not commits:
         logger.info("No commits on branch — skipping PR creation")
         return None
@@ -163,6 +167,9 @@ def submit_draft_pr(
         "draft": True,
         "cwd": project_path,
     }
+
+    if base_branch:
+        pr_kwargs["base"] = base_branch
 
     if target["is_fork"]:
         pr_kwargs["repo"] = target["repo"]

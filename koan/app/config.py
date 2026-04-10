@@ -178,6 +178,34 @@ def get_model_config(project_name: str = "") -> dict:
     return result
 
 
+def get_mcp_configs(project_name: str = "") -> List[str]:
+    """Get MCP server config file paths from config.yaml with per-project overrides.
+
+    Resolution order:
+    1. projects.yaml mcp list for the project (replaces global if set)
+    2. config.yaml mcp list
+    3. Empty list (no MCP servers)
+
+    Args:
+        project_name: Optional project name for per-project overrides.
+
+    Returns:
+        List of file paths to MCP config JSON files.
+    """
+    config = _load_config()
+    result = config.get("mcp", [])
+    if not isinstance(result, list):
+        result = []
+
+    # Per-project override replaces global list entirely
+    project_overrides = _load_project_overrides(project_name)
+    project_mcp = project_overrides.get("mcp")
+    if project_mcp is not None:
+        result = project_mcp if isinstance(project_mcp, list) else []
+
+    return [entry for entry in result if isinstance(entry, str) and entry]
+
+
 def _safe_int(value, default: int) -> int:
     """Safely convert a config value to int, returning default on failure."""
     try:
@@ -203,6 +231,16 @@ def get_start_passive() -> bool:
     """
     config = _load_config()
     return bool(config.get("start_passive", False))
+
+
+def get_startup_reflection() -> bool:
+    """Check if startup_reflection is enabled in config.yaml.
+
+    Returns True if koan should run the self-reflection check on startup.
+    Defaults to False to avoid unexpected Claude CLI calls at boot time.
+    """
+    config = _load_config()
+    return bool(config.get("startup_reflection", False))
 
 
 def get_auto_pause() -> bool:
@@ -591,6 +629,32 @@ def get_auto_merge_config(config: dict, project_name: str) -> dict:
         "base_branch": global_cfg.get("base_branch", "main"),
         "strategy": global_cfg.get("strategy", "squash"),
         "rules": global_cfg.get("rules", []),
+    }
+
+
+def get_branch_cleanup_config() -> dict:
+    """Get branch cleanup configuration from config.yaml.
+
+    Controls automatic deletion of merged local and remote branches during
+    git sync. Cleanup runs every ``git_sync_interval`` iterations for each
+    project.
+
+    Config key: branch_cleanup
+      - enabled (bool): Master switch (default: True)
+      - delete_remote_branches (bool): Also push-delete remote branches
+          after local deletion (default: True). Set to False to only
+          clean up local refs without touching the remote.
+
+    Returns:
+        Dict with keys: enabled (bool), delete_remote_branches (bool).
+    """
+    config = _load_config()
+    cleanup_cfg = config.get("branch_cleanup", {})
+    if not isinstance(cleanup_cfg, dict):
+        cleanup_cfg = {}
+    return {
+        "enabled": bool(cleanup_cfg.get("enabled", True)),
+        "delete_remote_branches": bool(cleanup_cfg.get("delete_remote_branches", True)),
     }
 
 

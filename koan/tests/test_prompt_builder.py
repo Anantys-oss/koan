@@ -20,6 +20,7 @@ from app.prompt_builder import (
     _get_verification_gate_section,
     _get_verbose_section,
     _get_security_flagging_section,
+    _warn_unresolved_placeholders,
 )
 
 
@@ -589,6 +590,7 @@ class TestBuildContemplativePrompt:
             INSTANCE=prompt_env["instance"],
             PROJECT_NAME="testproj",
             SESSION_INFO="Pause mode. Run loop paused.",
+            GITHUB_NICKNAME="",
         )
         assert result == "Contemplative template"
 
@@ -605,6 +607,52 @@ class TestBuildContemplativePrompt:
         call_kwargs = mock_load.call_args[1]
         assert "Run 5/25" in call_kwargs["SESSION_INFO"]
         assert "deep" in call_kwargs["SESSION_INFO"]
+
+    def test_github_nickname_included_in_prompt(self, prompt_env):
+        """When github_nickname is set, the pre-check block appears with the nickname."""
+        result = build_contemplative_prompt(
+            instance=prompt_env["instance"],
+            project_name="testproj",
+            session_info="Run 1/10",
+            github_nickname="Koan-Bot",
+        )
+        assert "Koan-Bot" in result
+        # Sentinel markers must not remain in the output
+        assert "GITHUB_CHECK_BLOCK_START" not in result
+        assert "GITHUB_CHECK_BLOCK_END" not in result
+        # The pre-check instructions should be present
+        assert "gh issue view" in result
+        assert "gh pr list" in result
+
+    def test_github_nickname_empty_omits_check_block(self, prompt_env):
+        """When github_nickname is empty, the pre-check block is stripped."""
+        result = build_contemplative_prompt(
+            instance=prompt_env["instance"],
+            project_name="testproj",
+            session_info="Run 1/10",
+            github_nickname="",
+        )
+        # Sentinel markers must not remain
+        assert "GITHUB_CHECK_BLOCK_START" not in result
+        assert "GITHUB_CHECK_BLOCK_END" not in result
+        # GitHub-specific instructions should be absent
+        assert "gh issue view" not in result
+        assert "gh pr list" not in result
+
+    def test_github_nickname_default_is_empty(self, prompt_env):
+        """github_nickname defaults to empty string (no GitHub check block)."""
+        result_default = build_contemplative_prompt(
+            instance=prompt_env["instance"],
+            project_name="testproj",
+            session_info="Run 1/10",
+        )
+        result_explicit_empty = build_contemplative_prompt(
+            instance=prompt_env["instance"],
+            project_name="testproj",
+            session_info="Run 1/10",
+            github_nickname="",
+        )
+        assert result_default == result_explicit_empty
 
 
 # --- Tests for CLI interface ---
@@ -665,6 +713,7 @@ class TestCLI:
             instance=prompt_env["instance"],
             project_name="koan",
             session_info="Pause mode",
+            github_nickname="",
         )
         captured = capsys.readouterr()
         assert "Contemplate output" in captured.out
@@ -1646,3 +1695,78 @@ class TestGetLanguageSection:
             )
             assert "Language Preference" in result
             assert "english" in result
+
+
+# --- Tests for _warn_unresolved_placeholders ---
+
+
+class TestWarnUnresolvedPlaceholders:
+    """Tests for post-substitution placeholder detection."""
+
+    def test_no_warning_when_all_resolved(self, caplog):
+        """Clean text produces no warning."""
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="app.prompt_builder"):
+            _warn_unresolved_placeholders("Hello world, no placeholders here.", "test")
+        assert caplog.records == []
+
+    def test_warns_on_unresolved_placeholder(self, caplog):
+        """Unresolved {PLACEHOLDER} triggers a warning."""
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="app.prompt_builder"):
+            _warn_unresolved_placeholders(
+                "Hello {INSTANCE}, welcome to {MISSING_VAR}.", "agent"
+            )
+        assert len(caplog.records) == 1
+        assert "INSTANCE" in caplog.records[0].message
+        assert "MISSING_VAR" in caplog.records[0].message
+        assert "'agent'" in caplog.records[0].message
+
+    def test_ignores_lowercase_braces(self, caplog):
+        """Lowercase brace content like {n} or {example} is not flagged."""
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="app.prompt_builder"):
+            _warn_unresolved_placeholders("Use {n} items in {example}.", "test")
+        assert caplog.records == []
+
+    def test_deduplicates_placeholders(self, caplog):
+        """Repeated placeholders are reported once."""
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="app.prompt_builder"):
+            _warn_unresolved_placeholders(
+                "{FOO} and {FOO} and {BAR}", "test"
+            )
+        assert len(caplog.records) == 1
+        msg = caplog.records[0].message
+        assert msg.count("{FOO}") == 1
+        assert "{BAR}" in msg
+
+    def test_agent_template_integration(self, prompt_env, caplog):
+        """_load_agent_template warns when a placeholder is missing from substitution."""
+        import logging
+        from app.prompt_builder import _load_agent_template
+
+        # load_prompt returns already-substituted text; simulate a template
+        # where one placeholder was NOT provided to load_prompt
+        substituted_with_leftover = "You are on testproj with {BOGUS_PLACEHOLDER}."
+        with patch("app.prompts.load_prompt", return_value=substituted_with_leftover), \
+             patch("app.prompt_builder._get_branch_prefix", return_value="koan/"), \
+             caplog.at_level(logging.WARNING, logger="app.prompt_builder"):
+            result = _load_agent_template(
+                instance=prompt_env["instance"],
+                project_name="testproj",
+                project_path=prompt_env["project_path"],
+                run_num=1,
+                max_runs=10,
+                autonomous_mode="implement",
+                focus_area="test",
+                available_pct=50,
+                mission_title="test mission",
+            )
+        assert "{BOGUS_PLACEHOLDER}" in result
+        assert len(caplog.records) == 1
+        assert "BOGUS_PLACEHOLDER" in caplog.records[0].message

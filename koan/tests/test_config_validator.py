@@ -4,7 +4,8 @@ import pytest
 
 from app.config_validator import (
     validate_config, validate_and_warn, _check_type, _check_schedule_overlap,
-    _suggest_typo, detect_config_drift, _collect_keys, _find_commented_keys,
+    _suggest_typo, detect_config_drift, find_extra_config_keys,
+    _collect_keys, _find_commented_keys,
 )
 
 
@@ -533,3 +534,114 @@ class TestDetectConfigDrift:
         # No instance/config.yaml — pass user_config directly
         missing = detect_config_drift(str(tmp_path), user_config={})
         assert "debug" in missing
+
+
+# ---------------------------------------------------------------------------
+# find_extra_config_keys
+# ---------------------------------------------------------------------------
+
+class TestFindExtraConfigKeys:
+    def _setup_template(self, tmp_path, template_config):
+        import yaml
+        (tmp_path / "instance.example").mkdir(exist_ok=True)
+        (tmp_path / "instance.example" / "config.yaml").write_text(
+            yaml.dump(template_config)
+        )
+
+    def test_no_extras(self, tmp_path):
+        template = {"max_runs_per_day": 20, "debug": False}
+        self._setup_template(tmp_path, template)
+        extras = find_extra_config_keys(str(tmp_path), user_config=template)
+        assert extras == []
+
+    def test_detects_extra_top_level_key(self, tmp_path):
+        template = {"max_runs_per_day": 20}
+        user = {"max_runs_per_day": 20, "legacy_flag": True}
+        self._setup_template(tmp_path, template)
+        extras = find_extra_config_keys(str(tmp_path), user_config=user)
+        assert extras == ["legacy_flag"]
+
+    def test_detects_extra_nested_key(self, tmp_path):
+        template = {"budget": {"warn_at_percent": 70}}
+        user = {"budget": {"warn_at_percent": 70, "old_key": 1}}
+        self._setup_template(tmp_path, template)
+        extras = find_extra_config_keys(str(tmp_path), user_config=user)
+        assert "budget.old_key" in extras
+        assert "budget" not in extras
+
+    def test_collapses_extra_parent_over_children(self, tmp_path):
+        """If a whole section is extra, its children are not reported separately."""
+        template = {"max_runs_per_day": 20}
+        user = {"max_runs_per_day": 20, "removed": {"a": 1, "b": 2}}
+        self._setup_template(tmp_path, template)
+        extras = find_extra_config_keys(str(tmp_path), user_config=user)
+        assert extras == ["removed"]
+
+    def test_missing_template_returns_empty(self, tmp_path):
+        # No template file written
+        extras = find_extra_config_keys(str(tmp_path), user_config={"a": 1})
+        assert extras == []
+
+    def test_loads_user_config_from_file(self, tmp_path):
+        import yaml
+        template = {"max_runs_per_day": 20}
+        user = {"max_runs_per_day": 20, "extra_key": "x"}
+        self._setup_template(tmp_path, template)
+        (tmp_path / "instance").mkdir(exist_ok=True)
+        (tmp_path / "instance" / "config.yaml").write_text(yaml.dump(user))
+        extras = find_extra_config_keys(str(tmp_path))
+        assert extras == ["extra_key"]
+
+    def test_missing_user_config_file_returns_empty(self, tmp_path):
+        template = {"max_runs_per_day": 20}
+        self._setup_template(tmp_path, template)
+        extras = find_extra_config_keys(str(tmp_path))
+        assert extras == []
+
+    def test_results_are_sorted(self, tmp_path):
+        template = {}
+        user = {"z_key": 1, "a_key": 2, "m_key": 3}
+        self._setup_template(tmp_path, template)
+        extras = find_extra_config_keys(str(tmp_path), user_config=user)
+        assert extras == ["a_key", "m_key", "z_key"]
+
+    def test_both_drift_directions_independent(self, tmp_path):
+        """Template and user configs with drift in both directions: each fn reports its side."""
+        template = {"only_in_template": 1, "shared": 2}
+        user = {"only_in_user": 3, "shared": 2}
+        self._setup_template(tmp_path, template)
+        missing = detect_config_drift(str(tmp_path), user_config=user)
+        extras = find_extra_config_keys(str(tmp_path), user_config=user)
+        assert missing == ["only_in_template"]
+        assert extras == ["only_in_user"]
+
+    def test_commented_template_key_not_reported_as_extra(self, tmp_path):
+        """A key shown commented-out in the template is an opt-in default, not a typo."""
+        (tmp_path / "instance.example").mkdir(exist_ok=True)
+        # `auto_pause` is documented in the template as a commented default.
+        (tmp_path / "instance.example" / "config.yaml").write_text(
+            "max_runs_per_day: 20\n# auto_pause: false\n"
+        )
+        user = {"max_runs_per_day": 20, "auto_pause": True}
+        extras = find_extra_config_keys(str(tmp_path), user_config=user)
+        assert extras == []
+
+    def test_commented_nested_template_key_not_reported(self, tmp_path):
+        """A nested commented template key is also accepted when the user uncomments it."""
+        (tmp_path / "instance.example").mkdir(exist_ok=True)
+        (tmp_path / "instance.example" / "config.yaml").write_text(
+            "budget:\n  warn_at_percent: 70\n  # stop_at_percent: 85\n"
+        )
+        user = {"budget": {"warn_at_percent": 70, "stop_at_percent": 85}}
+        extras = find_extra_config_keys(str(tmp_path), user_config=user)
+        assert extras == []
+
+    def test_uncommented_key_still_detected_as_typo(self, tmp_path):
+        """A genuinely unknown key is still reported even when other keys are commented."""
+        (tmp_path / "instance.example").mkdir(exist_ok=True)
+        (tmp_path / "instance.example" / "config.yaml").write_text(
+            "max_runs_per_day: 20\n# auto_pause: false\n"
+        )
+        user = {"max_runs_per_day": 20, "totally_unknown": 1}
+        extras = find_extra_config_keys(str(tmp_path), user_config=user)
+        assert extras == ["totally_unknown"]

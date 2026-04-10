@@ -86,6 +86,7 @@ Skills marked **GitHub @mention** can be triggered by commenting `@koan-bot <com
 | `/language <lang>` | `/lng`, `/fr`, `/en` | Set reply language preference |
 | `/verbose` | — | Enable real-time progress updates |
 | `/silent` | — | Disable real-time progress updates |
+| `/config_check` | `/cfgcheck`, `/configcheck` | Detect drift between instance/config.yaml and the template |
 
 ## System
 

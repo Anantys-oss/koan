@@ -91,7 +91,7 @@ class UsageTracker:
 
         # Parse session line
         session_match = re.search(
-            r'Session\s*\([^)]+\)\s*:\s*(\d+)%\s*\((?:reset|resets)\s+in\s+([^)]+)\)',
+            r'Session\s*\([^)]+\)\s*:\s*~?(\d+)%\s*\((?:reset|resets)\s+in\s+([^)]+)\)',
             content,
             re.IGNORECASE
         )
@@ -101,7 +101,7 @@ class UsageTracker:
 
         # Parse weekly line
         weekly_match = re.search(
-            r'Weekly\s*\([^)]+\)\s*:\s*(\d+)%\s*\((?:reset|resets)\s+in\s+([^)]+)\)',
+            r'Weekly\s*\([^)]+\)\s*:\s*~?(\d+)%\s*\((?:reset|resets)\s+in\s+([^)]+)\)',
             content,
             re.IGNORECASE
         )

@@ -51,6 +51,11 @@ defaults:
   #   mission: ["Read", "Glob", "Grep", "Edit", "Write", "Bash"]
   #   chat: ["Read", "Glob", "Grep"]
 
+  # MCP server configuration — paths to MCP config JSON files.
+  # Replaces the global mcp list from config.yaml when set.
+  # mcp:
+  #   - "/path/to/project-specific-mcp.json"
+
   # Exploration — controls autonomous work on this project.
   #
   # When enabled, the agent may autonomously:
@@ -82,6 +87,17 @@ defaults:
   # Set to 0 or omit for unlimited.
   # Default: 0 (unlimited)
   max_open_prs: 10
+
+  # Max pending branches — limit total unreviewed work per project.
+  # Counts the union of local unmerged koan/* branches and open PRs
+  # (deduplicated by branch name). When the limit is reached, both
+  # mission pickup AND exploration are blocked for this project until
+  # existing branches are reviewed/merged.
+  # More comprehensive than max_open_prs (which only gates exploration
+  # and only counts GitHub PRs).
+  # Set to 0 for unlimited.
+  # Default: 10
+  max_pending_branches: 10
 
 projects:
   # Example: your main project (minimal config — inherits all defaults)
@@ -136,6 +152,7 @@ projects:
   # oss-lib:
   #   path: "/Users/yourname/workspace/oss-lib"
   #   max_open_prs: 3                        # Keep max 3 open PRs for this repo
+  #   max_pending_branches: 5                # Cap total unreviewed branches
 
   # Example: a project using GitHub Copilot instead of Claude
   # copilot-project:

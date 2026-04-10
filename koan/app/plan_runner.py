@@ -21,8 +21,8 @@ import sys
 from pathlib import Path
 from typing import Optional, Tuple
 
-from app.github import run_gh, issue_create, api, fetch_issue_with_comments, resolve_target_repo
-from app.github_url_parser import parse_github_url, parse_issue_url
+from app.github import run_gh, issue_create, api, fetch_issue_with_comments, resolve_target_repo, sanitize_github_comment
+from app.github_url_parser import is_jira_url, parse_github_url, parse_issue_url, parse_jira_url
 from app.prompts import load_prompt_or_skill
 
 # Label used to tag plan issues for searchability
@@ -142,23 +142,51 @@ def _run_issue_plan(
     context: Optional[str] = None,
 ) -> Tuple[bool, str]:
     """Read an existing issue/PR + comments, generate updated plan, post comment."""
-    try:
-        # Accept both issue and PR URLs — GitHub's issues API works for PRs too.
-        owner, repo, _url_type, issue_number = parse_github_url(issue_url)
-    except ValueError:
-        return False, f"Invalid GitHub URL: {issue_url}"
+    _is_jira = is_jira_url(issue_url)
 
-    notify_fn(f"\U0001f4d6 Reading issue #{issue_number} ({owner}/{repo})...")
+    if _is_jira:
+        try:
+            issue_key = parse_jira_url(issue_url)
+        except ValueError:
+            return False, f"Invalid Jira URL: {issue_url}"
 
-    try:
-        title, body, comments = _fetch_issue_context(owner, repo, issue_number)
-    except Exception as e:
-        return False, f"Failed to fetch issue: {str(e)[:300]}"
+        notify_fn(f"\U0001f4d6 Reading Jira issue {issue_key}...")
+
+        try:
+            from app.jira_notifications import fetch_jira_issue
+            title, body, jira_comments = fetch_jira_issue(issue_key)
+        except Exception as e:
+            return False, f"Failed to fetch Jira issue: {str(e)[:300]}"
+
+        # Format comments as plain text for the plan prompt
+        comments_text = ""
+        if jira_comments:
+            parts = []
+            for c in jira_comments:
+                parts.append(f"**{c['author']}**:\n{c['body']}")
+            comments_text = "\n\n---\n\n".join(parts)
+
+        label = issue_key
+        owner, repo, issue_number = None, None, issue_key
+    else:
+        try:
+            owner, repo, _url_type, issue_number = parse_github_url(issue_url)
+        except ValueError:
+            return False, f"Invalid GitHub URL: {issue_url}"
+
+        notify_fn(f"\U0001f4d6 Reading issue #{issue_number} ({owner}/{repo})...")
+
+        try:
+            title, body, comments_text = _fetch_issue_context(owner, repo, issue_number)
+        except Exception as e:
+            return False, f"Failed to fetch issue: {str(e)[:300]}"
+
+        label = f"#{issue_number}"
 
     # Build full issue context for the iteration prompt
-    context_parts = [f"## Original Issue #{issue_number}: {title}\n\n{body}"]
-    if comments:
-        context_parts.append(f"\n\n## Discussion Comments\n\n{comments}")
+    context_parts = [f"## Original Issue {label}: {title}\n\n{body}"]
+    if comments_text:
+        context_parts.append(f"\n\n## Discussion Comments\n\n{comments_text}")
     else:
         context_parts.append("\n\n*No comments yet on this issue.*")
     if context:
@@ -175,7 +203,12 @@ def _run_issue_plan(
     if not plan:
         return False, "Claude returned an empty plan."
 
-    # Post as a comment on the issue
+    # Post as a comment on the issue (GitHub only — Jira posting not supported yet)
+    if _is_jira:
+        # For Jira issues, send plan inline via notification
+        notify_fn(f"\u2705 Plan for {label} ({title[:60]}):\n\n{plan[:3500]}")
+        return True, f"Plan generated for {label}"
+
     iteration_title = _extract_title(plan)
     plan_body = _strip_title_line(plan)
     comment_body = (
@@ -189,12 +222,11 @@ def _run_issue_plan(
         notify_fn(f"Plan ready but comment failed ({e}):\n\n{plan[:3000]}")
         return True, f"Plan generated but comment failed: {e}"
 
-    issue_label = f"#{issue_number}"
     if title:
-        issue_label = f"#{issue_number} ({title[:60]})"
+        label = f"#{issue_number} ({title[:60]})"
     result_url = f"https://github.com/{owner}/{repo}/issues/{issue_number}"
-    notify_fn(f"\u2705 Plan posted as comment on {issue_label}: {result_url}")
-    return True, f"Plan posted on {issue_label}: {result_url}"
+    notify_fn(f"\u2705 Plan posted as comment on {label}: {result_url}")
+    return True, f"Plan posted on {label}: {result_url}"
 
 
 # ---------------------------------------------------------------------------
@@ -464,11 +496,11 @@ def _is_error_output(output: str) -> bool:
 def _run_claude_plan(prompt, project_path):
     """Execute Claude CLI with the given prompt and return the output."""
     from app.cli_provider import run_command_streaming
-    from app.config import get_skill_timeout
+    from app.config import get_skill_max_turns, get_skill_timeout
     output = run_command_streaming(
         prompt, project_path,
         allowed_tools=["Read", "Glob", "Grep", "WebFetch"],
-        max_turns=25, timeout=get_skill_timeout(),
+        max_turns=get_skill_max_turns(), timeout=get_skill_timeout(),
     )
     if _is_error_output(output):
         raise RuntimeError(output)
@@ -580,7 +612,7 @@ def _comment_on_issue(owner, repo, issue_number, body):
     """Post a comment on an existing GitHub issue."""
     api(
         f"repos/{owner}/{repo}/issues/{issue_number}/comments",
-        input_data=body,
+        input_data=sanitize_github_comment(body),
     )
 
 

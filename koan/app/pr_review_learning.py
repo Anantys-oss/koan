@@ -20,10 +20,14 @@ are automatically surfaced to the agent without additional wiring.
 
 import hashlib
 import json
+import logging
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
+
+log = logging.getLogger(__name__)
 
 
 def fetch_pr_reviews(
@@ -111,61 +115,71 @@ def fetch_pr_reviews(
     return enriched
 
 
-def _fetch_reviews_for_pr(project_path: str, pr_number: int) -> List[dict]:
-    """Fetch review submissions for a single PR."""
+def _fetch_gh_jsonl(
+    project_path: str,
+    endpoint: str,
+    jq_filter: str,
+    pr_number: int,
+    label: str,
+) -> List[dict]:
+    """Fetch a GitHub API endpoint and parse newline-delimited JSON.
+
+    Shared helper for review and comment fetching — handles the run_gh call,
+    JSONL parsing, and error handling in one place.
+
+    Args:
+        project_path: Path to the git repository.
+        endpoint: API endpoint template (use {owner}/{repo} placeholders).
+        jq_filter: jq expression to reshape each item.
+        pr_number: PR number (for error messages).
+        label: Human-readable label for error context (e.g. "reviews").
+
+    Returns:
+        List of parsed JSON objects, or empty list on failure.
+    """
     try:
         from app.github import run_gh
         raw = run_gh(
-            "api",
-            f"repos/{{owner}}/{{repo}}/pulls/{pr_number}/reviews",
-            "--jq", ".[].{state: .state, body: .body, user: .user.login}",
-            cwd=project_path,
-            timeout=10,
+            "api", endpoint, "--jq", jq_filter,
+            cwd=project_path, timeout=10,
         )
         if not raw.strip():
             return []
-        # gh --jq outputs one JSON object per line
-        reviews = []
+        results = []
         for line in raw.strip().split("\n"):
             line = line.strip()
             if line:
                 try:
-                    reviews.append(json.loads(line))
+                    results.append(json.loads(line))
                 except json.JSONDecodeError:
-                    pass
-        return reviews
-    except Exception as e:
-        print(f"[pr_review_learning] Reviews fetch failed for #{pr_number}: {e}",
+                    log.warning("Malformed JSON in %s for PR #%d: %s", label, pr_number, line)
+        return results
+    except (RuntimeError, subprocess.TimeoutExpired) as e:
+        print(f"[pr_review_learning] {label.capitalize()} fetch failed for #{pr_number}: {e}",
               file=sys.stderr)
         return []
+
+
+def _fetch_reviews_for_pr(project_path: str, pr_number: int) -> List[dict]:
+    """Fetch review submissions for a single PR."""
+    return _fetch_gh_jsonl(
+        project_path,
+        f"repos/{{owner}}/{{repo}}/pulls/{pr_number}/reviews",
+        ".[].{state: .state, body: .body, user: .user.login}",
+        pr_number,
+        "reviews",
+    )
 
 
 def _fetch_review_comments_for_pr(project_path: str, pr_number: int) -> List[dict]:
     """Fetch inline review comments for a single PR."""
-    try:
-        from app.github import run_gh
-        raw = run_gh(
-            "api",
-            f"repos/{{owner}}/{{repo}}/pulls/{pr_number}/comments",
-            "--jq", ".[].{body: .body, path: .path, user: .user.login}",
-            cwd=project_path,
-            timeout=10,
-        )
-        if not raw.strip():
-            return []
-        comments = []
-        for line in raw.strip().split("\n"):
-            line = line.strip()
-            if line:
-                try:
-                    comments.append(json.loads(line))
-                except json.JSONDecodeError:
-                    pass
-        return comments
-    except Exception as e:
-        print(f"[pr_review_learning] Comments fetch failed for #{pr_number}: {e}",
-              file=sys.stderr)
-        return []
+    return _fetch_gh_jsonl(
+        project_path,
+        f"repos/{{owner}}/{{repo}}/pulls/{pr_number}/comments",
+        ".[].{body: .body, path: .path, user: .user.login}",
+        pr_number,
+        "review comments",
+    )
 
 
 def format_reviews_for_analysis(prs: List[dict]) -> str:
@@ -280,6 +294,76 @@ def _compute_review_hash(prs: List[dict]) -> str:
 def _get_cache_path(instance_dir: str) -> Path:
     """Get the path to the review learning cache file."""
     return Path(instance_dir) / ".koan-review-learning-hash"
+
+
+# ─── Consecutive failure tracking ───────────────────────────────────────
+
+_FAILURE_COUNTER_FILE = ".koan-pr-review-analysis-failures"
+_FAILURE_ALERT_THRESHOLD = 3
+
+
+def _get_failure_counter_path(instance_dir: str) -> Path:
+    """Get the path to the analysis failure counter file."""
+    return Path(instance_dir) / _FAILURE_COUNTER_FILE
+
+
+def _read_failure_count(instance_dir: str) -> int:
+    """Read the current consecutive failure count. Returns 0 if no file."""
+    path = _get_failure_counter_path(instance_dir)
+    if not path.exists():
+        return 0
+    try:
+        return int(path.read_text().strip())
+    except (OSError, ValueError):
+        return 0
+
+
+def _increment_failure_count(instance_dir: str) -> int:
+    """Increment and persist the consecutive failure counter. Returns new count.
+
+    Note: read-modify-write is not atomic, but this is only called from the
+    single-threaded agent loop (learn_from_reviews), so no locking is needed.
+    """
+    count = _read_failure_count(instance_dir) + 1
+    try:
+        from app.utils import atomic_write
+        atomic_write(_get_failure_counter_path(instance_dir), str(count) + "\n")
+    except OSError as e:
+        print(f"[pr_review_learning] Failure counter write failed: {e}",
+              file=sys.stderr)
+    return count
+
+
+def _reset_failure_count(instance_dir: str) -> None:
+    """Reset the failure counter (on successful analysis)."""
+    path = _get_failure_counter_path(instance_dir)
+    if path.exists():
+        try:
+            path.unlink()
+        except OSError as e:
+            log.warning("Failure counter reset failed: %s", e)
+
+
+def _notify_analysis_failures(instance_dir: str, count: int) -> None:
+    """Send outbox alert when consecutive failures reach threshold."""
+    if count < _FAILURE_ALERT_THRESHOLD:
+        return
+    # Only alert on exact threshold to avoid spamming every subsequent failure
+    if count != _FAILURE_ALERT_THRESHOLD:
+        return
+    try:
+        from app.utils import append_to_outbox
+        from app.notify import NotificationPriority
+        outbox_path = Path(instance_dir) / "outbox.md"
+        msg = (
+            f"⚠️ PR review learning has failed {count} times in a row — "
+            f"learnings have stopped accumulating. "
+            f"Possible causes: CLI quota, API errors, or no actionable review content.\n"
+        )
+        append_to_outbox(outbox_path, msg, priority=NotificationPriority.WARNING)
+    except (OSError, ImportError) as e:
+        print(f"[pr_review_learning] Failed to send failure alert: {e}",
+              file=sys.stderr)
 
 
 def _is_cache_fresh(instance_dir: str, current_hash: str) -> bool:
@@ -413,7 +497,12 @@ def learn_from_reviews(
     result["analyzed"] = True
     if not lessons_text:
         result["skipped_reason"] = "empty_analysis"
+        count = _increment_failure_count(instance_dir)
+        _notify_analysis_failures(instance_dir, count)
         return result
+
+    # Analysis succeeded — reset failure counter
+    _reset_failure_count(instance_dir)
 
     # Persist to learnings.md
     added = _append_lessons_to_learnings(instance_dir, project_name, lessons_text)

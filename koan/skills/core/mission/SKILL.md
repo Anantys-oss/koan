@@ -2,6 +2,7 @@
 name: mission
 scope: core
 group: missions
+emoji: 🎯
 description: Create or manage missions
 version: 1.1.0
 audience: bridge

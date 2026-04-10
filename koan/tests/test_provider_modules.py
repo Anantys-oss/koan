@@ -265,34 +265,12 @@ class TestClaudeProvider:
             "--plugin-dir", "/a", "--plugin-dir", "/b"
         ]
 
-    @patch("subprocess.run")
-    def test_check_quota_available(self, mock_run):
-        mock_run.return_value = MagicMock(
-            stdout="Session: 25%", stderr="", returncode=0
-        )
+    def test_check_quota_always_available(self):
+        """check_quota_available is a no-op — always returns (True, '')."""
         p = ClaudeProvider()
         available, detail = p.check_quota_available("/tmp")
         assert available is True
-        mock_run.assert_called_once()
-
-    @patch("subprocess.run")
-    def test_check_quota_exhausted(self, mock_run):
-        mock_run.return_value = MagicMock(
-            stdout="", stderr="Your rate limit will reset", returncode=1
-        )
-        p = ClaudeProvider()
-        with patch("app.quota_handler.detect_quota_exhaustion", return_value=True):
-            available, detail = p.check_quota_available("/tmp")
-        assert available is False
-        assert "rate limit" in detail
-
-    @patch("subprocess.run", side_effect=TimeoutError)
-    def test_check_quota_timeout_optimistic(self, mock_run):
-        """Timeout should default to optimistic (available)."""
-        p = ClaudeProvider()
-        with patch("subprocess.run", side_effect=__import__("subprocess").TimeoutExpired("cmd", 15)):
-            available, _ = p.check_quota_available("/tmp")
-        assert available is True
+        assert detail == ""
 
 
 # ---------------------------------------------------------------------------
