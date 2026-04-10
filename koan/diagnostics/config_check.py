@@ -45,7 +45,7 @@ def run(koan_root: str, instance_dir: str) -> List[CheckResult]:
                 ))
 
             # Config drift detection — check for new template keys
-            from app.config_validator import detect_config_drift
+            from app.config_validator import detect_config_drift, find_extra_config_keys
             missing_keys = detect_config_drift(koan_root, user_config=config)
             if missing_keys:
                 results.append(CheckResult(
@@ -53,6 +53,17 @@ def run(koan_root: str, instance_dir: str) -> List[CheckResult]:
                     severity="info",
                     message=f"Config drift: {len(missing_keys)} key(s) in template not in your config: {', '.join(missing_keys)}",
                     hint="See instance.example/config.yaml for documentation on new features",
+                ))
+
+            # Extra keys — user has keys the template doesn't know about.
+            # Usually deprecated/removed features or typos.
+            extra_keys = find_extra_config_keys(koan_root, user_config=config)
+            if extra_keys:
+                results.append(CheckResult(
+                    name="config_extras",
+                    severity="warn",
+                    message=f"Config has {len(extra_keys)} key(s) not in template: {', '.join(extra_keys)}",
+                    hint="These may be deprecated or typos — compare with instance.example/config.yaml",
                 ))
         except Exception as e:
             results.append(CheckResult(

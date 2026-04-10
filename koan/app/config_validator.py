@@ -391,6 +391,83 @@ def detect_config_drift(
     return filtered
 
 
+def find_extra_config_keys(
+    koan_root: str,
+    user_config: Optional[dict] = None,
+) -> List[str]:
+    """Report keys present in the user's config but absent from the template.
+
+    Extras usually mean deprecated or removed features — or user typos that
+    `validate_config` didn't catch (e.g. misspelled keys nested under dicts).
+
+    Keys that are commented out in the template (e.g. ``# auto_pause: false``
+    shown as an opt-in example) are treated as known and not reported — users
+    uncommenting such a key should not be told it's a typo.
+
+    Like :func:`detect_config_drift`, parent keys are preferred over children
+    when both are missing from the template, to keep reports concise.
+
+    Args:
+        koan_root: Path to the koan root directory (where instance.example/ lives).
+        user_config: The user's loaded config dict. If None, loads from instance/config.yaml.
+
+    Returns:
+        List of extra key paths (dotted notation).
+    """
+    root = Path(koan_root)
+    template_path = root / "instance.example" / "config.yaml"
+
+    if not template_path.exists():
+        return []
+
+    try:
+        import yaml
+        template_text = template_path.read_text()
+        template_config = yaml.safe_load(template_text) or {}
+    except Exception as e:
+        log("warn", f"[config] Could not load template config: {e}")
+        return []
+
+    if not isinstance(template_config, dict):
+        return []
+
+    # Keys that appear commented-out in the template are documented defaults
+    # the user may legitimately uncomment — don't flag them as extras.
+    template_commented_keys: Set[str] = _find_commented_keys(template_text)
+
+    if user_config is None:
+        user_path = root / "instance" / "config.yaml"
+        if not user_path.exists():
+            return []
+        try:
+            user_config = yaml.safe_load(user_path.read_text()) or {}
+        except Exception as e:
+            log("warn", f"[config] Could not load user config for drift check: {e}")
+            return []
+
+    if not isinstance(user_config, dict):
+        return []
+
+    template_keys = _collect_keys(template_config)
+    user_keys = _collect_keys(user_config)
+
+    extra = sorted(user_keys - template_keys)
+
+    # Collapse children into their parent when the parent is also extra,
+    # and drop keys whose leaf name is commented out in the template.
+    filtered = []
+    for key in extra:
+        parent = key.rsplit(".", 1)[0] if "." in key else None
+        if parent and parent in extra:
+            continue
+        leaf = key.rsplit(".", 1)[-1]
+        if leaf in template_commented_keys:
+            continue
+        filtered.append(key)
+
+    return filtered
+
+
 def validate_and_warn(config: dict, koan_root: Optional[str] = None) -> List[str]:
     """Validate config and log warnings. Optionally detect config drift.
 
