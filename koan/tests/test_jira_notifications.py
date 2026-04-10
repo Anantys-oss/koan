@@ -291,13 +291,12 @@ class TestFetchJiraMentions:
         assert result.mentions == []
 
     @patch("app.jira_notifications._jira_get")
-    def test_finds_mention_in_comment(self, mock_get):
+    @patch("app.jira_notifications._jira_post")
+    def test_finds_mention_in_comment(self, mock_post, mock_get):
         """Single @mention comment is returned as a mention dict."""
-        # First call: JQL search; second call: issue comments
-        mock_get.side_effect = [
-            self._make_search_response("FOO-123"),
-            self._make_comments_response("456", "@koan-bot plan"),
-        ]
+        # POST for JQL search; GET for issue comments
+        mock_post.return_value = self._make_search_response("FOO-123")
+        mock_get.return_value = self._make_comments_response("456", "@koan-bot plan")
 
         config = self._make_config()
         project_map = {"FOO": "myproject"}
@@ -311,61 +310,63 @@ class TestFetchJiraMentions:
         assert mention["author_email"] == "user@example.com"
 
     @patch("app.jira_notifications._jira_get")
-    def test_skips_comment_without_mention(self, mock_get):
+    @patch("app.jira_notifications._jira_post")
+    def test_skips_comment_without_mention(self, mock_post, mock_get):
         """Comments without @bot are not returned."""
-        mock_get.side_effect = [
-            self._make_search_response("FOO-123"),
-            self._make_comments_response("456", "just a regular comment"),
-        ]
+        mock_post.return_value = self._make_search_response("FOO-123")
+        mock_get.return_value = self._make_comments_response("456", "just a regular comment")
 
         config = self._make_config()
         result = fetch_jira_mentions(config, {"FOO": "myproject"})
         assert result.mentions == []
 
-    @patch("app.jira_notifications._jira_get")
-    def test_skips_unknown_project(self, mock_get):
+    @patch("app.jira_notifications._jira_post")
+    def test_skips_unknown_project(self, mock_post):
         """Issues with no project mapping are skipped."""
-        mock_get.side_effect = [
-            self._make_search_response("BAR-456"),
-        ]
+        mock_post.return_value = self._make_search_response("BAR-456")
 
         config = self._make_config()
         # BAR not in project_map
         result = fetch_jira_mentions(config, {"FOO": "myproject"})
         assert result.mentions == []
 
-    @patch("app.jira_notifications._jira_get")
-    def test_pagination_across_three_pages(self, mock_get):
-        """Pagination: 3 pages of issues are all fetched."""
-        from datetime import datetime, timezone
+    def test_pagination_across_three_pages(self):
+        """Pagination: 3 pages of issues are all fetched via nextPageToken."""
+        call_count = [0]
 
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000+0000")
-
-        def search_side_effect(base_url, auth_header, path, params=None):
+        def post_side_effect(base_url, auth_header, path, body=None):
             if "/search" in path:
-                start = params.get("startAt", 0) if params else 0
-                max_r = params.get("maxResults", 50) if params else 50
-                # Simulate 3 pages of 2 issues each
+                call_count[0] += 1
                 all_issues = [{"key": f"FOO-{i}", "fields": {}} for i in range(6)]
-                batch = all_issues[start:start + max_r]
-                return {"issues": batch, "total": 6}
-            elif "/comment" in path:
-                # Return no comments for simplicity
+                # Page 1: items 0-1, page 2: items 2-3, page 3: items 4-5
+                page = call_count[0]
+                start = (page - 1) * 2
+                batch = all_issues[start:start + 2]
+                is_last = page >= 3
+                result = {"issues": batch, "isLast": is_last}
+                if not is_last:
+                    result["nextPageToken"] = f"token-page-{page + 1}"
+                return result
+            return None
+
+        def get_side_effect(base_url, auth_header, path, params=None):
+            if "/comment" in path:
                 return {"comments": [], "total": 0}
             return None
 
-        mock_get.side_effect = search_side_effect
-
         config = self._make_config()
-        # Use a small maxResults to force pagination
-        with patch("app.jira_notifications._jira_get", side_effect=search_side_effect):
+        with patch("app.jira_notifications._jira_post", side_effect=post_side_effect), \
+             patch("app.jira_notifications._jira_get", side_effect=get_side_effect):
             result = fetch_jira_mentions(config, {"FOO": "myproject"})
 
         assert isinstance(result, JiraFetchResult)
+        assert call_count[0] == 3
 
     @patch("app.jira_notifications._jira_get")
-    def test_api_failure_returns_empty(self, mock_get):
+    @patch("app.jira_notifications._jira_post")
+    def test_api_failure_returns_empty(self, mock_post, mock_get):
         """API failure returns empty result, doesn't raise."""
+        mock_post.return_value = None
         mock_get.return_value = None
 
         config = self._make_config()

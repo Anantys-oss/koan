@@ -52,7 +52,7 @@ def _jira_get(base_url: str, auth_header: str, path: str, params: Optional[Dict[
     Args:
         base_url: Jira instance base URL (e.g. https://myorg.atlassian.net).
         auth_header: Basic auth header value.
-        path: API path (e.g. /rest/api/3/search).
+        path: API path (e.g. /rest/api/3/issue/{key}/comment).
         params: Optional query parameters.
 
     Returns:
@@ -76,6 +76,37 @@ def _jira_get(base_url: str, auth_header: str, path: str, params: Optional[Dict[
             return json.loads(raw) if raw else None
     except Exception as e:
         log.warning("Jira API GET %s failed: %s", path, e)
+        return None
+
+
+def _jira_post(base_url: str, auth_header: str, path: str, body: Dict[str, Any]) -> Optional[dict]:
+    """Make a POST request to the Jira REST API.
+
+    Args:
+        base_url: Jira instance base URL (e.g. https://myorg.atlassian.net).
+        auth_header: Basic auth header value.
+        path: API path (e.g. /rest/api/3/search/jql).
+        body: JSON request body.
+
+    Returns:
+        Parsed JSON dict/list, or None on error.
+    """
+    try:
+        import urllib.request
+
+        url = base_url + path
+        data = json.dumps(body).encode("utf-8")
+
+        req = urllib.request.Request(url, data=data, method="POST")
+        req.add_header("Authorization", auth_header)
+        req.add_header("Accept", "application/json")
+        req.add_header("Content-Type", "application/json")
+
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            raw = resp.read().decode("utf-8")
+            return json.loads(raw) if raw else None
+    except Exception as e:
+        log.warning("Jira API POST %s failed: %s", path, e)
         return None
 
 
@@ -331,18 +362,20 @@ def _search_issues_with_comments(
     project_in = ", ".join(f'"{k}"' for k in safe_keys)
     jql = f'project in ({project_in}) AND updated >= "{since_str}" ORDER BY updated DESC'
 
-    issues = []
-    start_at = 0
+    issues: List[dict] = []
     max_results = 50
+    next_page_token: Optional[str] = None
 
     while True:
-        params = {
+        body: Dict[str, Any] = {
             "jql": jql,
-            "startAt": start_at,
             "maxResults": max_results,
-            "fields": "summary,updated",
+            "fields": ["summary", "updated"],
         }
-        data = _jira_get(base_url, auth_header, "/rest/api/3/search", params)
+        if next_page_token is not None:
+            body["nextPageToken"] = next_page_token
+
+        data = _jira_post(base_url, auth_header, "/rest/api/3/search/jql", body)
         if not data or not isinstance(data, dict):
             break
 
@@ -351,10 +384,11 @@ def _search_issues_with_comments(
             break
 
         issues.extend(batch)
-        total = data.get("total", 0)
-        start_at += len(batch)
 
-        if start_at >= total or len(batch) < max_results:
+        if data.get("isLast", True):
+            break
+        next_page_token = data.get("nextPageToken")
+        if not next_page_token:
             break
 
     return issues
