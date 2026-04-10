@@ -50,13 +50,26 @@ Kōan will:
 
 ## Available Commands
 
+Any skill with `github_enabled: true` in its `SKILL.md` can be triggered via @mentions. Currently **16 commands** are available:
+
 | Command | Aliases | What it does | Context-aware |
 |---------|---------|--------------|---------------|
-| `rebase` | `rb` | Rebase a PR onto latest upstream | No |
-| `recreate` | `rc` | Recreate a diverged PR from scratch | No |
-| `review` | `rv` | Queue a code review for a PR or issue | No |
+| `ask` | — | Ask Koan a question about a PR or issue | **Yes** |
+| `audit` | — | Audit a project codebase and create issues for findings | **Yes** |
+| `brainstorm` | — | Decompose a topic into linked GitHub issues | **Yes** |
+| `deepplan` | `deeplan` | Spec-first design with Socratic exploration | **Yes** |
+| `fix` | — | Fix a GitHub issue end-to-end, or batch-queue all open issues | **Yes** |
+| `gh_request` | — | Natural-language GitHub request dispatch | **Yes** |
 | `implement` | `impl` | Implement a GitHub issue | **Yes** |
-| `refactor` | `rf` | Queue a refactoring mission | No |
+| `plan` | — | Deep-think and create a structured plan | **Yes** |
+| `profile` | `perf`, `benchmark` | Queue a performance profiling mission | **Yes** |
+| `rebase` | `rb` | Rebase a PR onto latest upstream | **Yes** |
+| `recreate` | `rc` | Recreate a diverged PR from scratch | **Yes** |
+| `refactor` | `rf` | Queue a refactoring mission | **Yes** |
+| `review` | `rv` | Queue a code review for a PR or issue | **Yes** |
+| `reviewrebase` | `rr` | Review then rebase combo for a PR | **Yes** |
+| `security_audit` | `security`, `secu` | Security-focused audit of a codebase | **Yes** |
+| `squash` | `sq` | Squash all PR commits into one clean commit | **Yes** |
 
 ### Context-aware commands
 
@@ -280,8 +293,20 @@ The repo must be configured in `projects.yaml` with a valid `path`. Kōan resolv
 
 Expected behavior when Kōan was interrupted between mission creation and reaction. The duplicate will be harmless — the agent detects already-completed missions.
 
+## Co-existence with Jira
+
+GitHub and Jira integrations can run simultaneously. Both dispatch the same set of commands (any skill with `github_enabled: true`) but serve different roles:
+
+- **GitHub**: Code-centric actions — PR rebases, code reviews, issue implementation with direct diff access.
+- **Jira**: Project-level planning — feature planning, audits, and implementation from Jira tickets.
+
+Missions from GitHub are marked with 📬, missions from Jira with 🎫. Both enter the same mission queue.
+
+See [Jira Integration](jira-integration.md) for full setup instructions and the combined configuration guide.
+
 ## Related
 
+- [Jira Integration](jira-integration.md) — Jira @mention integration (complementary)
 - [Skills README](../koan/skills/README.md) — Skill authoring guide with `github_enabled` flag documentation
 - [Messaging: Telegram](messaging-telegram.md) — Alternative command interface via Telegram
 - [Messaging: Slack](messaging-slack.md) — Alternative command interface via Slack
