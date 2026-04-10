@@ -216,6 +216,7 @@ class TestProcessJiraMention:
         with patch("app.jira_command_handler.get_jira_nickname", return_value="koan-bot"), \
              patch("app.jira_command_handler.get_jira_authorized_users", return_value=["*"]), \
              patch("app.jira_config.get_jira_max_age_hours", return_value=24), \
+             patch("app.jira_command_handler.acknowledge_jira_comment", return_value=True), \
              patch("app.jira_command_handler._notify_mission_from_jira"):
 
             processed_set = set()
@@ -270,6 +271,7 @@ class TestProcessJiraMention:
         with patch("app.jira_command_handler.get_jira_nickname", return_value="koan-bot"), \
              patch("app.jira_command_handler.get_jira_authorized_users", return_value=["*"]), \
              patch("app.jira_config.get_jira_max_age_hours", return_value=24), \
+             patch("app.jira_command_handler.acknowledge_jira_comment", return_value=True), \
              patch("app.jira_command_handler._notify_mission_from_jira"):
 
             processed_set = set()
