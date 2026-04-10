@@ -2,7 +2,7 @@
 
 Control Koan directly from Jira issue comments using `@mention` commands.
 
-> **Introduced in**: commit `fd3ccf8` — Jira @mention integration mirroring the GitHub notification pipeline.
+> **Introduced in**: commit `fd3ccf8`. Enhanced with Jira URL support in skills, comment acknowledgment, and per-project target branches.
 
 ## Overview
 
@@ -53,9 +53,16 @@ Tell Koan which Jira project keys correspond to which Koan projects:
 ```yaml
 jira:
   projects:
+    # Simple format — project name only:
     FOO: myproject        # FOO-123 → project "myproject"
-    BAR: anotherproject   # BAR-456 → project "anotherproject"
+
+    # Extended format — with optional target branch for PRs:
+    BAR:
+      project: anotherproject   # BAR-456 → project "anotherproject"
+      branch: "11.126"          # PRs target branch "11.126" instead of repo default
 ```
+
+Both formats can be mixed. The `branch` field is optional — when omitted, PRs target the repository's default branch as usual.
 
 ### 4. Post a command in a Jira issue comment
 
@@ -67,8 +74,9 @@ Koan will:
 1. Detect the @mention during its next polling cycle
 2. Validate the command and user permissions
 3. Create a pending mission: `- [project:myproject] /plan https://myorg.atlassian.net/browse/FOO-123 🎫`
-4. Send a Telegram notification confirming the mission was queued
-5. Execute it in the next agent loop iteration
+4. Post a `👍 Mission queued: /plan` acknowledgment reply on the Jira comment
+5. Send a Telegram notification confirming the mission was queued
+6. Execute it in the next agent loop iteration — fetching the full Jira issue context (title, description, and all comments)
 
 ## Configuration Reference
 
@@ -86,7 +94,7 @@ All settings live under the `jira:` key in `instance/config.yaml`.
 | `max_age_hours` | int | `24` | Ignore comments older than this (stale protection) |
 | `check_interval_seconds` | int | `60` | Base polling interval in seconds (min: 10) |
 | `max_check_interval_seconds` | int | `180` | Maximum backoff interval when idle (min: 30) |
-| `projects` | dict | `{}` | Jira project key to Koan project name mapping |
+| `projects` | dict | `{}` | Jira project key mapping. Simple: `FOO: myproject`. Extended: `FOO: {project: myproject, branch: "11.126"}` |
 
 ### Environment variables
 
@@ -141,38 +149,58 @@ You can override the default project mapping using the `repo:` token:
 
 This routes the mission to `other-project` instead of the project mapped to the Jira issue's project key.
 
+### Branch override with `branch:`
+
+You can override the target branch for PRs using the `branch:` token:
+
+```
+@koan-bot fix branch:main
+```
+
+This takes highest priority — overriding both the per-project `branch` configured in `jira.projects` and the repository's default branch. Useful for one-off requests targeting a different release branch.
+
+When a target branch is set (via config or override), the feature branch is created from it and the PR targets it with `--base`.
+
 ## How It Works
 
 ### Architecture
 
 ```
-loop_manager.py              ← Polls during sleep cycle (throttled, after GitHub check)
+run.py                       ← Pre-iteration check (before plan_iteration)
+loop_manager.py              ← Also polls during sleep cycle (throttled, after GitHub check)
   ↓
 jira_notifications.py        ← Fetches & filters Jira comments, parses @mentions
   ↓
 jira_command_handler.py      ← Validates commands, checks permissions, creates missions
   ↓
-jira_config.py               ← Reads jira: config from config.yaml
+jira_config.py               ← Reads jira: config (project map + branch map)
   ↓
 skills.py                    ← Skill flags: github_enabled (reused for Jira)
 ```
 
 ### Notification processing flow
 
+Jira notifications are checked in two places:
+- **Pre-iteration**: At the start of each agent loop iteration (so `plan_iteration()` sees Jira missions immediately)
+- **During sleep**: Between iterations (same as GitHub, with exponential backoff)
+
 ```
-1. Sleep cycle tick → process_jira_notifications()
-2. Build JQL query: issues updated in mapped projects since last check
-3. Fetch recent comments on matching issues
-4. For each comment containing @nickname:
+1. process_jira_notifications()
+2. Build JQL query (POST /rest/api/3/search/jql): issues updated in mapped projects since last check
+3. Paginate results using cursor-based nextPageToken
+4. Fetch recent comments on matching issues
+5. For each comment containing @nickname:
    a. Skip if already processed (in-memory set + .jira-processed.json)
    b. Skip if stale (> max_age_hours)
    c. Parse @mention → extract (command, context)
    d. Handle repo: override if present
-   e. Validate command → skill must have github_enabled: true
-   f. Check user permission → allowlist of Jira account emails
-   g. Insert mission into missions.md
-   h. Mark comment as processed (in-memory + persistent tracker)
-   i. Notify via Telegram (🎫 emoji prefix)
+   e. Handle branch: override if present (or use per-project config default)
+   f. Validate command → skill must have github_enabled: true
+   g. Check user permission → allowlist of Jira account emails
+   h. Insert mission into missions.md (with branch:X token if set)
+   i. Mark comment as processed (in-memory + persistent tracker)
+   j. Post 👍 acknowledgment reply on the Jira comment
+   k. Notify via Telegram (🎫 emoji prefix)
 ```
 
 ### ADF (Atlassian Document Format) handling
@@ -198,6 +226,23 @@ Two-tier approach matching the GitHub integration pattern:
 | 3+ consecutive empty | `max_check_interval_seconds` cap (default: 180s) |
 
 Backoff resets immediately when any mention is found.
+
+## Jira Issue Context in Skills
+
+When a mission originates from a Jira URL (e.g. `/fix https://myorg.atlassian.net/browse/FOO-123`), the skill runners (`/fix`, `/plan`, `/implement`) automatically detect the Jira URL and fetch full issue context from the Jira REST API:
+
+- **Title**: Issue summary
+- **Description**: Full issue body (converted from ADF to plain text)
+- **All comments**: Every comment with author attribution (ADF to plain text)
+
+This context is fed to Claude the same way GitHub issue context would be — the agent sees the complete Jira issue when working on the fix or plan.
+
+Skills that accept GitHub issue/PR URLs also accept Jira browse URLs:
+- `/fix https://myorg.atlassian.net/browse/FOO-123`
+- `/plan https://myorg.atlassian.net/browse/FOO-123`
+- `/implement https://myorg.atlassian.net/browse/FOO-123`
+
+When the source is Jira, GitHub-specific steps (closed-state check, PR submission) are adjusted — PR submission still works if the Koan project has a `github_url` configured in `projects.yaml`.
 
 ## Security Model
 
@@ -254,8 +299,10 @@ jira:
   nickname: "koan-bot"
   authorized_users: ["*"]
   projects:
-    PROJ: myproject
-    INFRA: infrastructure
+    PROJ: myproject              # Simple format
+    INFRA:                       # Extended format with target branch
+      project: infrastructure
+      branch: "11.126"
 ```
 
 ```bash
@@ -283,9 +330,12 @@ Both can trigger the same set of commands. The difference is the context URL att
 4. **Check polling**: Look for `[jira]` log entries in `make logs`. If you see "no recently-updated issues found", the JQL query isn't matching.
 5. **Verify API access**: Test manually:
    ```bash
-   curl -u "email@example.com:YOUR_API_TOKEN" \
-     "https://myorg.atlassian.net/rest/api/3/search?jql=project=FOO&maxResults=1"
+   curl -X POST -u "email@example.com:YOUR_API_TOKEN" \
+     -H "Content-Type: application/json" \
+     "https://myorg.atlassian.net/rest/api/3/search/jql" \
+     -d '{"jql": "project = FOO", "maxResults": 1}'
    ```
+   > **Note**: Jira Cloud deprecated `GET /rest/api/3/search` (returns HTTP 410). Koan uses `POST /rest/api/3/search/jql` with cursor-based pagination.
 
 ### Mission queued but not executed
 

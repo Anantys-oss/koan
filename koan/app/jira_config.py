@@ -120,11 +120,19 @@ def get_jira_max_check_interval(config: dict) -> int:
 def get_jira_project_map(config: dict) -> Dict[str, str]:
     """Get the mapping of Jira project keys to Kōan project names.
 
-    Example config:
+    Supports both simple and extended formats:
+
+        # Simple (string value):
         jira:
           projects:
             FOO: myproject
-            BAR: anotherproject
+
+        # Extended (object value with optional branch):
+        jira:
+          projects:
+            FOO:
+              project: myproject
+              branch: "11.126"
 
     Returns:
         Dict of {jira_project_key: koan_project_name}.
@@ -133,7 +141,42 @@ def get_jira_project_map(config: dict) -> Dict[str, str]:
     projects = jira.get("projects") or {}
     if not isinstance(projects, dict):
         return {}
-    return {str(k): str(v) for k, v in projects.items()}
+    result = {}
+    for k, v in projects.items():
+        if isinstance(v, dict):
+            result[str(k)] = str(v.get("project", ""))
+        else:
+            result[str(k)] = str(v)
+    return result
+
+
+def get_jira_branch_map(config: dict) -> Dict[str, str]:
+    """Get the mapping of Jira project keys to target branches.
+
+    Only returns entries that have an explicit branch configured
+    via the extended format:
+
+        jira:
+          projects:
+            FOO:
+              project: myproject
+              branch: "11.126"
+
+    Returns:
+        Dict of {jira_project_key: branch_name}. Keys without a branch
+        are omitted.
+    """
+    jira = config.get("jira") or {}
+    projects = jira.get("projects") or {}
+    if not isinstance(projects, dict):
+        return {}
+    result = {}
+    for k, v in projects.items():
+        if isinstance(v, dict):
+            branch = v.get("branch")
+            if branch:
+                result[str(k)] = str(branch)
+    return result
 
 
 def validate_jira_config(config: dict) -> Optional[str]:

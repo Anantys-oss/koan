@@ -1069,6 +1069,8 @@ def process_jira_notifications(
 
         nickname = get_jira_nickname(config)
         project_map = get_jira_project_map(config)
+        from app.jira_config import get_jira_branch_map
+        branch_map = get_jira_branch_map(config)
 
         with _jira_state_lock:
             if not _jira_config_logged:
@@ -1125,6 +1127,7 @@ def process_jira_notifications(
         for mention in mentions:
             success, error_msg = process_jira_mention(
                 mention, registry, config, processed_set,
+                branch_map=branch_map,
             )
             if success:
                 missions_created += 1

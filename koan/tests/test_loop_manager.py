@@ -1119,8 +1119,8 @@ class TestDrainNotifications:
         assert result == 1  # 1 actionable processed
         # Both actionable and drain notifications should be marked as read
         assert mock_mark.call_count == 2
-        mock_mark.assert_any_call("1")
-        mock_mark.assert_any_call("400")
+        mock_mark.assert_any_call("1")    # actionable
+        mock_mark.assert_any_call("400")  # drain
 
 
 # --- Test _normalize_github_url ---

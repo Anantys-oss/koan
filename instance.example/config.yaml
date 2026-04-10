@@ -336,8 +336,10 @@ usage:
 #   check_interval_seconds: 60           # Base polling interval (default: 60, min: 10)
 #   max_check_interval_seconds: 180      # Backoff cap when idle (default: 180, min: 30)
 #   projects:                            # Jira project key → Kōan project name mapping
-#     FOO: myproject                     # e.g. FOO-123 → project "myproject"
-#     BAR: anotherproject
+#     FOO: myproject                     # Simple: FOO-123 → project "myproject"
+#     BAR:                               # Extended: with optional target branch
+#       project: anotherproject          #   BAR-456 → project "anotherproject"
+#       branch: "11.126"                 #   PRs target branch "11.126" instead of default
 
 # Review concurrency — parallel GitHub API calls during code reviews
 # When enabled, PR context and comment fetching run concurrently using a

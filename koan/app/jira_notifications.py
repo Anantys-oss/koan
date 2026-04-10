@@ -384,6 +384,22 @@ def resolve_project_from_jira_key(issue_key: str, project_map: Dict[str, str]) -
     return project_map.get(jira_project_key)
 
 
+def resolve_branch_from_jira_key(issue_key: str, branch_map: Dict[str, str]) -> Optional[str]:
+    """Map a Jira issue key to a configured target branch.
+
+    Args:
+        issue_key: Full Jira issue key like "FOO-123".
+        branch_map: Dict from jira_config.get_jira_branch_map().
+
+    Returns:
+        Branch name or None if no branch is configured for this project key.
+    """
+    if not issue_key or "-" not in issue_key:
+        return None
+    jira_project_key = issue_key.split("-")[0].upper()
+    return branch_map.get(jira_project_key)
+
+
 def _search_issues_with_comments(
     base_url: str,
     auth_header: str,

@@ -415,13 +415,35 @@ def _build_plan_cmd(
     url_and_context = _extract_pr_or_issue_url_and_context(args)
     if url_and_context:
         issue_url, context = url_and_context
+
+        # Extract branch: token before passing context to runner
+        base_branch, context = _extract_branch_token(context)
+
         cmd.extend(["--issue-url", issue_url])
+        if base_branch:
+            cmd.extend(["--base-branch", base_branch])
         if context:
             cmd.extend(["--context", context])
     else:
         cmd.extend(["--idea", args])
 
     return cmd
+
+
+_BRANCH_TOKEN_RE = re.compile(r'\bbranch:(\S+)', re.IGNORECASE)
+
+
+def _extract_branch_token(context: str) -> Tuple[Optional[str], str]:
+    """Extract a branch:NAME token from context text.
+
+    Returns (branch_name, cleaned_context) or (None, context).
+    """
+    match = _BRANCH_TOKEN_RE.search(context)
+    if not match:
+        return None, context
+    branch = match.group(1)
+    cleaned = (context[:match.start()] + context[match.end():]).strip()
+    return branch, cleaned
 
 
 def _build_implement_cmd(
@@ -436,13 +458,19 @@ def _build_implement_cmd(
     url_and_context = _extract_pr_or_issue_url_and_context(args)
     if not url_and_context:
         return None
-    
+
     issue_url, context = url_and_context
+
+    # Extract branch: token before passing context to runner
+    base_branch, context = _extract_branch_token(context)
+
     cmd = base_cmd + [
         "--project-path", project_path,
         "--issue-url", issue_url,
     ]
 
+    if base_branch:
+        cmd.extend(["--base-branch", base_branch])
     if context:
         cmd.extend(["--context", context])
 

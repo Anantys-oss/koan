@@ -41,6 +41,7 @@ def run_implement(
     context: Optional[str] = None,
     notify_fn=None,
     skill_dir: Optional[Path] = None,
+    base_branch: Optional[str] = None,
 ) -> Tuple[bool, str]:
     """Execute the implement pipeline.
 
@@ -139,6 +140,7 @@ def run_implement(
                 issue_title=title,
                 issue_url=issue_url,
                 skill_dir=skill_dir,
+                base_branch=base_branch,
             )
         except Exception as e:
             logger.warning("PR submission failed: %s", e)
@@ -319,14 +321,15 @@ def _submit_implement_pr(
     issue_title: str,
     issue_url: str,
     skill_dir: Optional[Path] = None,
+    base_branch: Optional[str] = None,
 ) -> Optional[str]:
     """Build implement-specific PR title/body and delegate to shared submit."""
     from app.pr_submit import get_commit_subjects
     from app.projects_config import resolve_base_branch
 
     project_name = guess_project_name(project_path)
-    base_branch = resolve_base_branch(project_name, project_path)
-    commits = get_commit_subjects(project_path, base_branch=base_branch)
+    effective_base = base_branch or resolve_base_branch(project_name, project_path)
+    commits = get_commit_subjects(project_path, base_branch=effective_base)
 
     summary = _generate_pr_summary(
         project_path, issue_title, issue_url, commits, skill_dir,
@@ -349,6 +352,7 @@ def _submit_implement_pr(
             pr_title=pr_title,
             pr_body=pr_body,
             issue_url=issue_url,
+            base_branch=base_branch,
         )
     except Exception as e:
         logger.warning("PR submission failed: %s", e)
@@ -379,6 +383,11 @@ def main(argv=None):
         help="Additional context (e.g. 'Phase 1 to 3')",
         default=None,
     )
+    parser.add_argument(
+        "--base-branch",
+        help="Target branch for the PR (e.g. '11.126')",
+        default=None,
+    )
     cli_args = parser.parse_args(argv)
 
     skill_dir = Path(__file__).resolve().parent
@@ -388,6 +397,7 @@ def main(argv=None):
         issue_url=cli_args.issue_url,
         context=cli_args.context,
         skill_dir=skill_dir,
+        base_branch=cli_args.base_branch,
     )
     print(summary)
     return 0 if success else 1

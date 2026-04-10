@@ -29,6 +29,7 @@ from app.jira_notifications import (
     check_jira_already_processed,
     mark_jira_comment_processed,
     parse_jira_mention_command,
+    resolve_branch_from_jira_key,
 )
 from app.skills import SkillRegistry
 
@@ -59,6 +60,28 @@ def _extract_repo_override(context: str) -> Tuple[Optional[str], str]:
     # Remove the repo: token from context
     cleaned = (context[:match.start()] + context[match.end():]).strip()
     return project_name, cleaned
+
+
+def _extract_branch_override(context: str) -> Tuple[Optional[str], str]:
+    """Parse a 'branch:name' token from comment context.
+
+    When a commenter writes "@bot fix branch:11.126", the branch: token
+    overrides the default branch mapping from jira.projects.
+
+    Args:
+        context: The context string after the command word.
+
+    Returns:
+        Tuple of (branch_name_or_None, cleaned_context).
+        The branch: token is removed from the cleaned context.
+    """
+    match = re.search(r'\bbranch:(\S+)', context, re.IGNORECASE)
+    if not match:
+        return None, context
+
+    branch_name = match.group(1)
+    cleaned = (context[:match.start()] + context[match.end():]).strip()
+    return branch_name, cleaned
 
 
 def validate_command(command_name: str, registry: SkillRegistry) -> Optional[object]:
@@ -106,6 +129,7 @@ def build_jira_mission(
     issue_key: str,
     issue_url: str,
     project_name: str,
+    target_branch: Optional[str] = None,
 ) -> str:
     """Construct a mission string from a Jira @mention.
 
@@ -116,6 +140,7 @@ def build_jira_mission(
         issue_key: Jira issue key (e.g. "FOO-123").
         issue_url: Full URL to the Jira issue (for missions.md).
         project_name: The resolved Kōan project name.
+        target_branch: Optional target branch for PRs (from config or override).
 
     Returns:
         A mission entry string like "- [project:X] /command url context 🎫"
@@ -127,6 +152,8 @@ def build_jira_mission(
     parts = [f"/{command_name}"]
     if issue_url:
         parts.append(issue_url)
+    if target_branch:
+        parts.append(f"branch:{target_branch}")
     if context and skill.github_context_aware:
         parts.append(context)
 
@@ -140,6 +167,7 @@ def process_jira_mention(
     registry: SkillRegistry,
     config: dict,
     processed_set: Set[str],
+    branch_map: Optional[Dict[str, str]] = None,
 ) -> Tuple[bool, Optional[str]]:
     """Process a single Jira @mention and create a mission if valid.
 
@@ -154,6 +182,9 @@ def process_jira_mention(
         config: Global config dict (from config.yaml).
         processed_set: Set of already-processed comment IDs (mutated in-place
                        when a new comment is processed).
+        branch_map: Optional mapping of Jira project keys to target branches
+                    (from jira_config.get_jira_branch_map()). When set, the
+                    resolved branch is injected into the mission context.
 
     Returns:
         Tuple of (success, error_message). error_message is None on success.
@@ -215,6 +246,24 @@ def process_jira_mention(
         )
         project_name = repo_override
 
+    # Handle branch: override in context (highest priority)
+    branch_override, context = _extract_branch_override(context)
+    if branch_override:
+        target_branch = branch_override
+        log.debug(
+            "Jira: branch: override '%s' for comment %s",
+            target_branch, comment_id,
+        )
+    elif branch_map:
+        target_branch = resolve_branch_from_jira_key(issue_key, branch_map)
+        if target_branch:
+            log.debug(
+                "Jira: config branch '%s' for %s",
+                target_branch, issue_key,
+            )
+    else:
+        target_branch = None
+
     # Validate command
     skill = validate_command(command_name, registry)
     if not skill:
@@ -236,6 +285,7 @@ def process_jira_mention(
     # Build mission entry
     mission_entry = build_jira_mission(
         skill, command_name, context, issue_key, issue_url, project_name,
+        target_branch=target_branch,
     )
     log.info(
         "Jira: inserting mission from %s (%s): %s",

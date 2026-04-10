@@ -33,10 +33,11 @@ def run_fix(
     context: Optional[str] = None,
     notify_fn=None,
     skill_dir: Optional[Path] = None,
+    base_branch: Optional[str] = None,
 ) -> Tuple[bool, str]:
     """Execute the fix pipeline.
 
-    Fetches the GitHub issue, builds a fix prompt, and invokes Claude to
+    Fetches the GitHub or Jira issue, builds a fix prompt, and invokes Claude to
     understand, plan, test, and fix the issue.
 
     Args:
@@ -135,6 +136,7 @@ def run_fix(
             issue_number=str(issue_number),
             issue_title=title,
             issue_url=issue_url,
+            base_branch=base_branch,
         )
 
     # Build notification and summary
@@ -255,14 +257,15 @@ def _submit_fix_pr(
     issue_number: str,
     issue_title: str,
     issue_url: str,
+    base_branch: Optional[str] = None,
 ) -> Optional[str]:
     """Build fix-specific PR title/body and delegate to shared submit."""
     from app.pr_submit import get_commit_subjects
     from app.projects_config import resolve_base_branch
 
     project_name = guess_project_name(project_path)
-    base_branch = resolve_base_branch(project_name, project_path)
-    commits = get_commit_subjects(project_path, base_branch=base_branch)
+    effective_base = base_branch or resolve_base_branch(project_name, project_path)
+    commits = get_commit_subjects(project_path, base_branch=effective_base)
     commits_text = "\n".join(f"- {s}" for s in commits)
 
     pr_title = f"fix: {issue_title}"[:70]
@@ -283,6 +286,7 @@ def _submit_fix_pr(
             pr_title=pr_title,
             pr_body=pr_body,
             issue_url=issue_url,
+            base_branch=base_branch,
         )
     except Exception as e:
         logger.warning("PR submission failed: %s", e)
@@ -313,6 +317,11 @@ def main(argv=None):
         help="Additional context (e.g. 'backend only')",
         default=None,
     )
+    parser.add_argument(
+        "--base-branch",
+        help="Target branch for the PR (e.g. '11.126')",
+        default=None,
+    )
     cli_args = parser.parse_args(argv)
 
     skill_dir = Path(__file__).resolve().parent
@@ -322,6 +331,7 @@ def main(argv=None):
         issue_url=cli_args.issue_url,
         context=cli_args.context,
         skill_dir=skill_dir,
+        base_branch=cli_args.base_branch,
     )
     print(summary)
     return 0 if success else 1
