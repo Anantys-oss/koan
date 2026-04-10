@@ -1391,6 +1391,19 @@ def _run_iteration(
     except Exception as e:
         log("error", f"Pre-iteration GitHub notification check failed: {e}")
 
+    # Check Jira notifications before planning (converts @mentions to missions
+    # so plan_iteration() sees them immediately instead of waiting for sleep)
+    log("koan", "Checking Jira notifications...")
+    from app.loop_manager import process_jira_notifications
+    try:
+        jira_missions = process_jira_notifications(koan_root, instance)
+        if jira_missions > 0:
+            log("jira", f"Pre-iteration: {jira_missions} mission(s) created from Jira notifications")
+        else:
+            log("koan", "No new Jira notifications")
+    except Exception as e:
+        log("error", f"Pre-iteration Jira notification check failed: {e}")
+
     # Plan iteration (delegated to iteration_manager)
     log("koan", "Planning iteration...")
     last_project = _read_current_project(koan_root)
