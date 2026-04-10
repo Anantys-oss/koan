@@ -457,6 +457,103 @@ def _get_issue_comments(
     return comments
 
 
+def fetch_jira_issue(
+    issue_key: str,
+) -> Tuple[str, str, List[dict]]:
+    """Fetch a Jira issue's title, description, and comments.
+
+    Uses the Jira config from config.yaml to authenticate.
+
+    Args:
+        issue_key: Jira issue key (e.g. "CPANEL-52372").
+
+    Returns:
+        Tuple of (title, body, comments) where comments is a list of
+        dicts with "author" and "body" keys.
+
+    Raises:
+        RuntimeError: If Jira is not configured or the API call fails.
+    """
+    from app.jira_config import (
+        get_jira_api_token,
+        get_jira_base_url,
+        get_jira_email,
+        get_jira_enabled,
+        validate_jira_config,
+    )
+    from app.utils import load_config
+
+    config = load_config()
+    if not get_jira_enabled(config):
+        raise RuntimeError("Jira integration is not enabled in config.yaml")
+
+    error = validate_jira_config(config)
+    if error:
+        raise RuntimeError(f"Jira config error: {error}")
+
+    base_url = get_jira_base_url(config)
+    email = get_jira_email(config)
+    api_token = get_jira_api_token(config)
+    auth_header = _make_auth_header(email, api_token)
+
+    # Fetch the issue itself
+    data = _jira_get(base_url, auth_header, f"/rest/api/3/issue/{issue_key}")
+    if not data or not isinstance(data, dict):
+        raise RuntimeError(f"Failed to fetch Jira issue {issue_key}")
+
+    fields = data.get("fields", {})
+    title = fields.get("summary", "")
+
+    # Description is ADF (Atlassian Document Format) on Jira Cloud
+    desc_node = fields.get("description")
+    body = _adf_to_text(desc_node) if desc_node else ""
+
+    # Fetch all comments (no time filter — we want full context)
+    all_comments = []
+    start_at = 0
+    max_results = 100
+
+    while True:
+        params = {
+            "startAt": start_at,
+            "maxResults": max_results,
+            "orderBy": "created",
+        }
+        cdata = _jira_get(
+            base_url, auth_header,
+            f"/rest/api/3/issue/{issue_key}/comment",
+            params,
+        )
+        if not cdata or not isinstance(cdata, dict):
+            break
+
+        batch = cdata.get("comments", [])
+        if not batch:
+            break
+
+        for comment in batch:
+            author_data = comment.get("author", {})
+            author_name = (
+                author_data.get("displayName")
+                or author_data.get("emailAddress")
+                or "unknown"
+            )
+            comment_body_node = comment.get("body")
+            comment_text = _adf_to_text(comment_body_node) if comment_body_node else ""
+            if comment_text.strip():
+                all_comments.append({
+                    "author": author_name,
+                    "body": comment_text,
+                })
+
+        total = cdata.get("total", 0)
+        start_at += len(batch)
+        if start_at >= total or len(batch) < max_results:
+            break
+
+    return title, body, all_comments
+
+
 def fetch_jira_mentions(
     config: dict,
     project_map: Dict[str, str],

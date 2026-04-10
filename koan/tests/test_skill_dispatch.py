@@ -1027,7 +1027,11 @@ class TestValidateSkillArgs:
     def test_implement_no_url(self):
         err = validate_skill_args("implement", "fix the login bug")
         assert err is not None
-        assert "/implement requires a GitHub issue or PR URL" in err
+        assert "/implement requires" in err
+
+    def test_implement_jira_url_accepted(self):
+        """Jira URLs are valid for /implement."""
+        assert validate_skill_args("implement", "https://org.atlassian.net/browse/PROJ-123") is None
 
     def test_implement_pr_url_accepted(self):
         """PR URLs are valid for /implement — GitHub issues API works for PRs."""
@@ -1089,7 +1093,11 @@ class TestValidateSkillArgs:
     def test_fix_no_url(self):
         err = validate_skill_args("fix", "fix the login bug")
         assert err is not None
-        assert "/fix requires a GitHub issue or PR URL" in err
+        assert "/fix requires" in err
+
+    def test_fix_jira_url_accepted(self):
+        """Jira URLs are valid for /fix."""
+        assert validate_skill_args("fix", "https://org.atlassian.net/browse/CPANEL-52372") is None
 
     def test_fix_pr_url_accepted(self):
         """PR URLs are valid for /fix — same as /implement."""
