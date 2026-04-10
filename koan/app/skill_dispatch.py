@@ -26,7 +26,7 @@ import threading
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from app.github_url_parser import ISSUE_URL_PATTERN, PR_URL_PATTERN
+from app.github_url_parser import ISSUE_URL_PATTERN, JIRA_ISSUE_URL_PATTERN, PR_URL_PATTERN
 from app.missions import strip_timestamps
 from app.utils import is_known_project
 
@@ -138,6 +138,7 @@ _PROJECT_WORD_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
 # Compiled patterns for URL matching
 _PR_URL_RE = re.compile(PR_URL_PATTERN)
 _ISSUE_URL_RE = re.compile(ISSUE_URL_PATTERN)
+_JIRA_URL_RE = re.compile(JIRA_ISSUE_URL_PATTERN)
 
 
 def _strip_project_prefix(text: str) -> Tuple[str, str]:
@@ -323,38 +324,43 @@ def build_skill_command(
 
 
 def _extract_issue_url_and_context(args: str) -> Optional[Tuple[str, str]]:
-    """Extract issue URL and remaining context from arguments.
-    
+    """Extract issue URL (GitHub or Jira) and remaining context from arguments.
+
     Args:
         args: Argument string potentially containing an issue URL.
-        
+
     Returns:
         Tuple of (issue_url, context) or None if no URL found.
         Context is the text after the URL, stripped.
     """
     issue_match = _ISSUE_URL_RE.search(args)
     if not issue_match:
+        issue_match = _JIRA_URL_RE.search(args)
+    if not issue_match:
         return None
-    
+
     issue_url = issue_match.group(0)
     context = args[issue_match.end():].strip()
     return issue_url, context
 
 
 def _extract_pr_or_issue_url_and_context(args: str) -> Optional[Tuple[str, str]]:
-    """Extract PR or issue URL and remaining context from arguments.
+    """Extract PR, issue, or Jira URL and remaining context from arguments.
 
-    Unlike _extract_issue_url_and_context (issue-only), this matches
-    both /issues/ and /pull/ URLs. Used by /plan which can iterate on
-    either type.
+    Matches GitHub /issues/ and /pull/ URLs, and Jira /browse/PROJ-123 URLs.
+    Used by /plan, /fix, /implement which can work with either source.
 
     Returns:
         Tuple of (url, context) or None if no URL found.
     """
+    # Try GitHub first
     match = re.search(
         r'https?://github\.com/[^/]+/[^/]+/(?:issues|pull)/\d+',
         args,
     )
+    if not match:
+        # Try Jira
+        match = _JIRA_URL_RE.search(args)
     if not match:
         return None
     url = match.group(0)
@@ -493,8 +499,8 @@ def _build_check_cmd(
     koan_root: str,
 ) -> Optional[List[str]]:
     """Build check_runner command."""
-    # Extract URL from args
-    url_match = _PR_URL_RE.search(args) or _ISSUE_URL_RE.search(args)
+    # Extract URL from args (GitHub PR/issue or Jira)
+    url_match = _PR_URL_RE.search(args) or _ISSUE_URL_RE.search(args) or _JIRA_URL_RE.search(args)
     if not url_match:
         return None
     return base_cmd + [
@@ -742,14 +748,17 @@ def validate_skill_args(command: str, args: str) -> Optional[str]:
                 f"(e.g. https://github.com/owner/repo/pull/123)"
             )
     elif canonical in ("implement", "fix"):
-        if not (_ISSUE_URL_RE.search(args) or _PR_URL_RE.search(args)):
+        if not (_ISSUE_URL_RE.search(args) or _PR_URL_RE.search(args)
+                or _JIRA_URL_RE.search(args)):
             return (
-                f"/{command} requires a GitHub issue or PR URL "
-                f"(e.g. https://github.com/owner/repo/issues/42)"
+                f"/{command} requires a GitHub issue/PR URL or Jira URL "
+                f"(e.g. https://github.com/owner/repo/issues/42 or "
+                f"https://org.atlassian.net/browse/PROJ-123)"
             )
     elif canonical == "check":
-        if not (_PR_URL_RE.search(args) or _ISSUE_URL_RE.search(args)):
-            return "/check requires a GitHub URL (PR or issue)"
+        if not (_PR_URL_RE.search(args) or _ISSUE_URL_RE.search(args)
+                or _JIRA_URL_RE.search(args)):
+            return "/check requires a GitHub URL (PR or issue) or Jira URL"
 
     return None
 
