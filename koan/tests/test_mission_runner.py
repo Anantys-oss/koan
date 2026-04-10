@@ -161,6 +161,74 @@ class TestParseClaudeOutput:
         assert parse_claude_output(raw) == raw.strip()
 
 
+class TestCheckJsonSuccess:
+    """Test check_json_success — detects successful sessions from JSON output."""
+
+    def test_is_error_false_means_success(self, tmp_path):
+        from app.mission_runner import check_json_success
+
+        f = tmp_path / "stdout.json"
+        f.write_text(json.dumps({"type": "result", "is_error": False, "result": "done"}))
+        assert check_json_success(str(f)) is True
+
+    def test_is_error_true_means_failure(self, tmp_path):
+        from app.mission_runner import check_json_success
+
+        f = tmp_path / "stdout.json"
+        f.write_text(json.dumps({"type": "result", "is_error": True}))
+        assert check_json_success(str(f)) is False
+
+    def test_subtype_success_means_success(self, tmp_path):
+        from app.mission_runner import check_json_success
+
+        f = tmp_path / "stdout.json"
+        f.write_text(json.dumps({"type": "result", "subtype": "success"}))
+        assert check_json_success(str(f)) is True
+
+    def test_empty_file_means_failure(self, tmp_path):
+        from app.mission_runner import check_json_success
+
+        f = tmp_path / "stdout.json"
+        f.write_text("")
+        assert check_json_success(str(f)) is False
+
+    def test_missing_file_means_failure(self):
+        from app.mission_runner import check_json_success
+
+        assert check_json_success("/nonexistent/path") is False
+
+    def test_invalid_json_means_failure(self, tmp_path):
+        from app.mission_runner import check_json_success
+
+        f = tmp_path / "stdout.json"
+        f.write_text("not json at all")
+        assert check_json_success(str(f)) is False
+
+    def test_no_relevant_keys_means_failure(self, tmp_path):
+        from app.mission_runner import check_json_success
+
+        f = tmp_path / "stdout.json"
+        f.write_text(json.dumps({"status": "ok"}))
+        assert check_json_success(str(f)) is False
+
+    def test_real_world_success_output(self, tmp_path):
+        """Reproduce the exact pattern from the run 2 failure."""
+        from app.mission_runner import check_json_success
+
+        output = {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "duration_ms": 529131,
+            "result": "Mission complete.",
+            "stop_reason": "end_turn",
+            "total_cost_usd": 1.88,
+        }
+        f = tmp_path / "stdout.json"
+        f.write_text(json.dumps(output))
+        assert check_json_success(str(f)) is True
+
+
 class TestArchivePending:
     """Test archive_pending function."""
 

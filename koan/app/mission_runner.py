@@ -249,6 +249,37 @@ def get_mission_flags(autonomous_mode: str = "", project_name: str = "") -> str:
     return get_claude_flags_for_role("mission", autonomous_mode, project_name)
 
 
+def check_json_success(stdout_file: str) -> bool:
+    """Check if Claude CLI JSON output indicates a successful session.
+
+    The Claude Code CLI can exit with non-zero even when the session
+    completed successfully.  This function parses the JSON output and
+    returns True when the session result signals success, allowing the
+    caller to override a misleading exit code.
+
+    Checks (in order):
+    - ``is_error`` is explicitly ``False``
+    - ``subtype`` equals ``"success"``
+    """
+    try:
+        raw = Path(stdout_file).read_text()
+        if not raw.strip():
+            return False
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return False
+        # Explicit error flag takes priority
+        if data.get("is_error") is True:
+            return False
+        if data.get("is_error") is False:
+            return True
+        if data.get("subtype") == "success":
+            return True
+        return False
+    except (OSError, json.JSONDecodeError, TypeError):
+        return False
+
+
 def parse_claude_output(raw_text: str) -> str:
     """Extract human-readable text from Claude JSON output.
 

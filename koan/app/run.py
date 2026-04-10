@@ -1732,6 +1732,17 @@ def _run_iteration(
                 has_mission=bool(mission_title),
             )
 
+        # --- JSON success override ---
+        # Claude CLI can return non-zero even when the session JSON shows
+        # success (is_error=false).  Override the exit code so the
+        # post-mission pipeline (verification, reflection, auto-merge)
+        # is not skipped and the notification shows ✅ instead of ❌.
+        if claude_exit != 0:
+            from app.mission_runner import check_json_success
+            if check_json_success(stdout_file):
+                log("koan", f"CLI exited {claude_exit} but JSON output indicates success — overriding to 0")
+                claude_exit = 0
+
         # Verify core files survived the mission (after retry, so result is final)
         log("koan", "Running core file integrity check...")
         integrity_warnings = check_core_files(koan_root, core_snapshot, project_path)
