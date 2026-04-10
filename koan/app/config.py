@@ -697,3 +697,34 @@ def get_review_concurrency_config() -> dict:
         "enabled": bool(review_cfg.get("enabled", True)),
         "github_workers": _safe_int(review_cfg.get("github_workers", 4), 4),
     }
+
+
+def get_review_ignore_config() -> dict:
+    """Get review ignore patterns from config.yaml.
+
+    Controls which files are excluded from PR review diffs. Patterns are
+    applied before building the Claude prompt, reducing token spend on
+    generated code, lock files, and vendor directories.
+
+    Config key: review_ignore
+      - glob (list): Glob patterns (e.g. "vendor/**", "*.lock")
+      - regex (list): Regex patterns matched against full path
+
+    Returns:
+        Dict with keys: glob (list), regex (list). Both always present;
+        values default to [].
+    """
+    config = _load_config()
+    review_ignore = config.get("review_ignore", {}) or {}
+    if not isinstance(review_ignore, dict):
+        return {"glob": [], "regex": []}
+
+    globs = review_ignore.get("glob", [])
+    if not isinstance(globs, list):
+        globs = []
+
+    regexes = review_ignore.get("regex", [])
+    if not isinstance(regexes, list):
+        regexes = []
+
+    return {"glob": [str(p) for p in globs], "regex": [str(p) for p in regexes]}
