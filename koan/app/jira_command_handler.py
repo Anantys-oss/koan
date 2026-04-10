@@ -25,6 +25,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 from app.jira_config import get_jira_authorized_users, get_jira_nickname
 from app.jira_notifications import (
+    acknowledge_jira_comment,
     check_jira_already_processed,
     mark_jira_comment_processed,
     parse_jira_mention_command,
@@ -258,6 +259,9 @@ def process_jira_mention(
 
     # Mark as processed
     mark_jira_comment_processed(comment_id, processed_set)
+
+    # Acknowledge in Jira (post 👍 reply comment, mirrors GitHub reaction)
+    acknowledge_jira_comment(issue_key, command_name)
 
     # Notify Telegram
     _notify_mission_from_jira(mention, command_name)
