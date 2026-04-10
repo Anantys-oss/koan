@@ -261,7 +261,18 @@ def process_jira_mention(
     mark_jira_comment_processed(comment_id, processed_set)
 
     # Acknowledge in Jira (post 👍 reply comment, mirrors GitHub reaction)
-    acknowledge_jira_comment(issue_key, command_name)
+    from app.jira_config import (
+        get_jira_api_token,
+        get_jira_base_url,
+        get_jira_email,
+    )
+    from app.jira_notifications import _make_auth_header
+
+    base_url = get_jira_base_url(config)
+    email = get_jira_email(config)
+    api_token = get_jira_api_token(config)
+    ack_auth = _make_auth_header(email, api_token)
+    acknowledge_jira_comment(issue_key, command_name, base_url, ack_auth)
 
     # Notify Telegram
     _notify_mission_from_jira(mention, command_name)

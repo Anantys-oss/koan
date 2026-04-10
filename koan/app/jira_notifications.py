@@ -311,33 +311,27 @@ def mark_jira_comment_processed(comment_id: str, processed_set: Set[str]) -> Non
     processed_set.add(str_id)
 
 
-def acknowledge_jira_comment(issue_key: str, command_name: str) -> bool:
+def acknowledge_jira_comment(issue_key: str, command_name: str, base_url: str, auth_header: str) -> bool:
     """Post a brief acknowledgment reply on a Jira issue comment.
 
     Mirrors GitHub's 👍 reaction by posting a short reply comment.
-    Uses Jira config from config.yaml to authenticate.
+
+    Note: posting this comment updates the issue's ``updated`` timestamp,
+    which will cause ``_search_issues_with_comments`` to re-fetch the issue
+    on the next polling cycle.  This is harmless (the bot won't self-trigger
+    because the ack comment lacks an @mention), but does add extra API calls
+    for the remainder of the ``max_age_hours`` window.
 
     Args:
         issue_key: Jira issue key (e.g. "CPANEL-52372").
         command_name: The command being executed (e.g. "fix").
+        base_url: Jira instance base URL (e.g. https://myorg.atlassian.net).
+        auth_header: Basic auth header value.
 
     Returns:
         True if the comment was posted, False on error.
     """
     try:
-        from app.jira_config import (
-            get_jira_api_token,
-            get_jira_base_url,
-            get_jira_email,
-        )
-        from app.utils import load_config
-
-        config = load_config()
-        base_url = get_jira_base_url(config)
-        email = get_jira_email(config)
-        api_token = get_jira_api_token(config)
-        auth_header = _make_auth_header(email, api_token)
-
         # ADF body with thumbs-up emoji + command acknowledgment
         body = {
             "body": {
