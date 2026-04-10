@@ -290,6 +290,52 @@ class TestTruncate:
 
 
 # ---------------------------------------------------------------------------
+# _get_server_ip()
+# ---------------------------------------------------------------------------
+
+class TestGetServerIp:
+    """Test the _get_server_ip() helper."""
+
+    def test_returns_ip_string(self):
+        from skills.core.status.handler import _get_server_ip
+        result = _get_server_ip()
+        # Should return a dotted IP or "unknown"
+        assert isinstance(result, str)
+        if result != "unknown":
+            parts = result.split(".")
+            assert len(parts) == 4
+
+    def test_returns_unknown_on_failure(self):
+        from skills.core.status.handler import _get_server_ip
+        with patch("socket.socket") as mock_socket:
+            mock_socket.return_value.__enter__ = MagicMock(
+                side_effect=OSError("no network")
+            )
+            result = _get_server_ip()
+        assert result == "unknown"
+
+    def test_ip_shown_in_status(self, tmp_path):
+        """Server IP appears in /status output."""
+        instance = tmp_path / "instance"
+        instance.mkdir()
+        from skills.core.status.handler import _handle_status
+        ctx = _make_ctx("status", instance, tmp_path)
+        with patch("skills.core.status.handler._get_server_ip", return_value="192.168.1.42"):
+            result = _handle_status(ctx)
+        assert "🌐 IP: 192.168.1.42" in result
+
+    def test_ip_hidden_when_unknown(self, tmp_path):
+        """When IP can't be determined, no IP line shown."""
+        instance = tmp_path / "instance"
+        instance.mkdir()
+        from skills.core.status.handler import _handle_status
+        ctx = _make_ctx("status", instance, tmp_path)
+        with patch("skills.core.status.handler._get_server_ip", return_value="unknown"):
+            result = _handle_status(ctx)
+        assert "IP:" not in result
+
+
+# ---------------------------------------------------------------------------
 # _handle_ping()
 # ---------------------------------------------------------------------------
 

@@ -1,6 +1,21 @@
 """Kōan status skill — consolidates /status, /ping, /usage."""
 
 
+def _get_server_ip() -> str:
+    """Return the IP address of the main network interface.
+
+    Uses a UDP socket connection to determine the default route IP
+    without actually sending any data.
+    """
+    import socket
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+    except Exception:
+        return "unknown"
+
+
 def _needs_ollama() -> bool:
     """Return True if the configured provider requires ollama serve."""
     try:
@@ -117,6 +132,11 @@ def _handle_status(ctx) -> str:
                 parts.append("\n🟢 Mode: Active")
         except Exception:
             parts.append("\n🟢 Mode: Active")
+
+    # Show server IP
+    server_ip = _get_server_ip()
+    if server_ip != "unknown":
+        parts.append(f"  🌐 IP: {server_ip}")
 
     # Show focus mode if active
     try:
