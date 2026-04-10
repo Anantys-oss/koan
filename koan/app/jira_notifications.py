@@ -311,6 +311,69 @@ def mark_jira_comment_processed(comment_id: str, processed_set: Set[str]) -> Non
     processed_set.add(str_id)
 
 
+def acknowledge_jira_comment(issue_key: str, command_name: str) -> bool:
+    """Post a brief acknowledgment reply on a Jira issue comment.
+
+    Mirrors GitHub's 👍 reaction by posting a short reply comment.
+    Uses Jira config from config.yaml to authenticate.
+
+    Args:
+        issue_key: Jira issue key (e.g. "CPANEL-52372").
+        command_name: The command being executed (e.g. "fix").
+
+    Returns:
+        True if the comment was posted, False on error.
+    """
+    try:
+        from app.jira_config import (
+            get_jira_api_token,
+            get_jira_base_url,
+            get_jira_email,
+        )
+        from app.utils import load_config
+
+        config = load_config()
+        base_url = get_jira_base_url(config)
+        email = get_jira_email(config)
+        api_token = get_jira_api_token(config)
+        auth_header = _make_auth_header(email, api_token)
+
+        # ADF body with thumbs-up emoji + command acknowledgment
+        body = {
+            "body": {
+                "version": 1,
+                "type": "doc",
+                "content": [{
+                    "type": "paragraph",
+                    "content": [
+                        {
+                            "type": "emoji",
+                            "attrs": {
+                                "shortName": ":thumbsup:",
+                                "id": "1f44d",
+                                "text": "\U0001f44d",
+                            },
+                        },
+                        {
+                            "type": "text",
+                            "text": f" Mission queued: /{command_name}",
+                        },
+                    ],
+                }],
+            },
+        }
+
+        result = _jira_post(
+            base_url, auth_header,
+            f"/rest/api/3/issue/{issue_key}/comment",
+            body,
+        )
+        return result is not None
+    except Exception as e:
+        log.debug("Failed to acknowledge Jira comment on %s: %s", issue_key, e)
+        return False
+
+
 def resolve_project_from_jira_key(issue_key: str, project_map: Dict[str, str]) -> Optional[str]:
     """Map a Jira issue key (e.g. FOO-123) to a Kōan project name.
 
