@@ -161,7 +161,8 @@ Communication happens through shared markdown files in `instance/` — atomic wr
 - **Branch isolation** — All work happens in `koan/*` branches. Never commits to `main`
 - **Auto-merge** — Configurable per-project merge strategies (squash/merge/rebase)
 - **Git sync awareness** — Tracks branch state, detects merges, reports sync status
-- **GitHub integration** — Draft PRs, issue creation, PR reviews, rebasing — all via `gh` CLI
+- **GitHub integration** — Draft PRs, issue creation, PR reviews, rebasing — all via `gh` CLI. [Docs](docs/github-commands.md)
+- **Jira integration** — Respond to @mentions in Jira issue comments to queue missions. Runs alongside GitHub. [Docs](docs/jira-integration.md)
 - **PR review comment forwarding** — When reviewers leave comments on Koan-created PRs, the check loop auto-creates missions to address them (fingerprint-deduped, bot-filtered)
 - **GitHub @mention triggers** — Koan responds to @mentions on issues and PRs
 
