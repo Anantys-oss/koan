@@ -870,6 +870,19 @@ prompt_guard: true            # Enable prompt injection detection
 
 See `instance.example/config.yaml` for all available options.
 
+**`/config_check`** — Detect drift between your `instance/config.yaml` and the template at `instance.example/config.yaml`. Reports two things:
+
+- **Missing keys** — in the template but absent from your config. These are new features released since you last synced and are probably worth reviewing.
+- **Extra keys** — in your config but absent from the template. These are usually deprecated/removed settings (or typos).
+
+Run it after every Kōan update to stay in sync:
+
+```
+/config_check
+```
+
+The same check runs automatically as part of `/doctor` — use `/config_check` when you only want the config slice without the rest of the diagnostic report.
+
 ### Per-Project Overrides
 
 Projects are configured in `projects.yaml` at `KOAN_ROOT`. Each project can override defaults:
@@ -1303,6 +1316,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/ci_check <PR>` | — | I | Check and fix CI failures on a PR |
 | `/gh_request <url> <text>` | — | I | Route natural-language GitHub request to the right skill |
 | `/claudemd [project]` | `/claude`, `/claude.md`, `/claude_md` | I | Refresh a project's CLAUDE.md |
+| `/config_check` | `/cfgcheck`, `/configcheck` | P | Detect config.yaml drift against instance.example template |
 | `/gha_audit [project]` | `/gha` | I | Audit GitHub Actions for security issues |
 | `/changelog [project]` | `/changes` | I | Generate changelog from commits/journal |
 | `/daily <text>` | — | I | Schedule a daily recurring mission |
