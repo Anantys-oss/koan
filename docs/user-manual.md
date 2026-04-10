@@ -866,6 +866,15 @@ skill_max_turns: 200          # Max agentic turns for heavy skills
 
 # Prompt guard (content safety)
 prompt_guard: true            # Enable prompt injection detection
+
+# Review ignore — exclude files from /review PR diffs
+# Reduces token spend on generated/vendored code
+# review_ignore:
+#   glob:
+#     - "vendor/**"    # all files under vendor/
+#     - "*.lock"       # lock files at any depth
+#   regex:
+#     - '.*\.pb\.go$'  # protobuf-generated files (full path regex)
 ```
 
 See `instance.example/config.yaml` for all available options.
@@ -915,16 +924,6 @@ Key per-project settings:
 - **`git_auto_merge`** — Auto-merge completed PRs (strategy: squash/merge/rebase)
 - **`authorized_users`** — GitHub users allowed to trigger via @mention
 - **`exploration`** — Enable/disable autonomous exploration
-- **`review_ignore`** — Exclude files from `/review` PR diffs (reduces token spend on generated/vendored code):
-  ```yaml
-  review_ignore:
-    glob:
-      - "vendor/**"    # all files under vendor/
-      - "*.lock"       # lock files at any depth
-    regex:
-      - '.*\.pb\.go$'  # protobuf-generated files (full path regex)
-  ```
-  When all files match, the review returns "nothing to review" without calling Claude.
 
 ### Custom Skills
 

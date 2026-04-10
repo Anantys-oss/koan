@@ -813,7 +813,6 @@ class TestMainCli:
             skill_dir=Path(__file__).resolve().parent.parent / "skills" / "core" / "review",
             architecture=False,
             plan_url=None,
-            project_config=None,
         )
 
     @patch("app.review_runner.run_review")
@@ -2177,7 +2176,96 @@ class TestIncrementalReview:
 
 
 # ---------------------------------------------------------------------------
-# run_review with project_config (review_ignore filtering)
+# Review ignore config: get_review_ignore_config
+# ---------------------------------------------------------------------------
+
+class TestReviewIgnoreConfig:
+    """Tests for get_review_ignore_config() in app.config."""
+
+    def test_defaults_when_no_config(self):
+        """Returns empty lists when review_ignore is absent from config."""
+        from app.config import get_review_ignore_config
+
+        with patch("app.config._load_config", return_value={}):
+            cfg = get_review_ignore_config()
+
+        assert cfg == {"glob": [], "regex": []}
+
+    def test_reads_glob_and_regex(self):
+        """Reads glob and regex lists from config."""
+        from app.config import get_review_ignore_config
+
+        with patch("app.config._load_config", return_value={
+            "review_ignore": {
+                "glob": ["vendor/**", "*.lock"],
+                "regex": [r".*\.pb\.go$"],
+            },
+        }):
+            cfg = get_review_ignore_config()
+
+        assert cfg["glob"] == ["vendor/**", "*.lock"]
+        assert cfg["regex"] == [r".*\.pb\.go$"]
+
+    def test_partial_config_glob_only(self):
+        """Only glob patterns configured, regex defaults to []."""
+        from app.config import get_review_ignore_config
+
+        with patch("app.config._load_config", return_value={
+            "review_ignore": {"glob": ["*.min.js"]},
+        }):
+            cfg = get_review_ignore_config()
+
+        assert cfg["glob"] == ["*.min.js"]
+        assert cfg["regex"] == []
+
+    def test_partial_config_regex_only(self):
+        """Only regex patterns configured, glob defaults to []."""
+        from app.config import get_review_ignore_config
+
+        with patch("app.config._load_config", return_value={
+            "review_ignore": {"regex": [r"^docs/"]},
+        }):
+            cfg = get_review_ignore_config()
+
+        assert cfg["glob"] == []
+        assert cfg["regex"] == [r"^docs/"]
+
+    def test_non_dict_config_returns_empty(self):
+        """A non-dict review_ignore value returns empty lists."""
+        from app.config import get_review_ignore_config
+
+        with patch("app.config._load_config", return_value={
+            "review_ignore": "invalid",
+        }):
+            cfg = get_review_ignore_config()
+
+        assert cfg == {"glob": [], "regex": []}
+
+    def test_non_list_glob_returns_empty(self):
+        """A non-list glob value returns empty list."""
+        from app.config import get_review_ignore_config
+
+        with patch("app.config._load_config", return_value={
+            "review_ignore": {"glob": "not-a-list"},
+        }):
+            cfg = get_review_ignore_config()
+
+        assert cfg["glob"] == []
+
+    def test_coerces_values_to_strings(self):
+        """Non-string patterns are coerced to strings."""
+        from app.config import get_review_ignore_config
+
+        with patch("app.config._load_config", return_value={
+            "review_ignore": {"glob": [123, True]},
+        }):
+            cfg = get_review_ignore_config()
+
+        assert cfg["glob"] == ["123", "True"]
+
+
+# ---------------------------------------------------------------------------
+# run_review with review_ignore filtering (from config.yaml)
 # ---------------------------------------------------------------------------
 
 _MULTI_FILE_DIFF = (
@@ -2206,7 +2294,7 @@ _MULTI_FILE_DIFF = (
 
 
 class TestRunReviewWithIgnoreFilter:
-    """Tests that project_config.review_ignore is applied in run_review()."""
+    """Tests that review_ignore from config.yaml is applied in run_review()."""
 
     def _make_pr_context(self, diff=None):
         return {
@@ -2226,25 +2314,23 @@ class TestRunReviewWithIgnoreFilter:
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
     @patch("app.review_runner._set_in_progress_marker", return_value=None)
     @patch("app.review_runner.find_bot_comment", return_value=None)
+    @patch("app.config.get_review_ignore_config", return_value={"glob": ["vendor/**", "*.json"], "regex": []})
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
     @patch("app.review_runner.run_gh")
     @patch("app.review_runner._run_claude_review")
     @patch("app.review_runner.fetch_pr_context")
     def test_review_ignore_glob_filters_diff_before_prompt(
-        self, mock_fetch, mock_claude, mock_gh, mock_repliable,
+        self, mock_fetch, mock_claude, mock_gh, mock_repliable, mock_ignore,
         mock_find_bot, _mock_ip, _mock_shas, review_skill_dir,
     ):
         """Files matching review_ignore.glob are stripped from the diff before Claude."""
         mock_fetch.return_value = self._make_pr_context()
         mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
 
-        project_config = {"review_ignore": {"glob": ["vendor/**", "*.json"]}}
-
         run_review(
             "owner", "repo", "1", "/tmp/project",
             notify_fn=MagicMock(),
             skill_dir=review_skill_dir,
-            project_config=project_config,
         )
 
         # The prompt passed to Claude should not contain vendor or lock files
@@ -2256,23 +2342,21 @@ class TestRunReviewWithIgnoreFilter:
 
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
     @patch("app.review_runner.find_bot_comment", return_value=None)
+    @patch("app.config.get_review_ignore_config", return_value={"glob": ["**"], "regex": []})
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
     @patch("app.review_runner._run_claude_review")
     @patch("app.review_runner.fetch_pr_context")
     def test_all_files_ignored_returns_nothing_to_review(
-        self, mock_fetch, mock_claude, mock_repliable,
+        self, mock_fetch, mock_claude, mock_repliable, mock_ignore,
         mock_find_bot, _mock_shas, review_skill_dir,
     ):
         """When all files are ignored the review returns early with 'nothing to review'."""
         mock_fetch.return_value = self._make_pr_context()
 
-        project_config = {"review_ignore": {"glob": ["**"]}}
-
         success, summary, _ = run_review(
             "owner", "repo", "1", "/tmp/project",
             notify_fn=MagicMock(),
             skill_dir=review_skill_dir,
-            project_config=project_config,
         )
 
         assert success is False
@@ -2282,15 +2366,16 @@ class TestRunReviewWithIgnoreFilter:
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
     @patch("app.review_runner._set_in_progress_marker", return_value=None)
     @patch("app.review_runner.find_bot_comment", return_value=None)
+    @patch("app.config.get_review_ignore_config", return_value={"glob": [], "regex": []})
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
     @patch("app.review_runner.run_gh")
     @patch("app.review_runner._run_claude_review")
     @patch("app.review_runner.fetch_pr_context")
-    def test_no_project_config_no_filtering(
-        self, mock_fetch, mock_claude, mock_gh, mock_repliable,
+    def test_no_ignore_config_no_filtering(
+        self, mock_fetch, mock_claude, mock_gh, mock_repliable, mock_ignore,
         mock_find_bot, _mock_ip, _mock_shas, review_skill_dir,
     ):
-        """Without project_config, the full diff reaches Claude unchanged."""
+        """Without review_ignore patterns, the full diff reaches Claude unchanged."""
         mock_fetch.return_value = self._make_pr_context()
         mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
 
@@ -2298,7 +2383,6 @@ class TestRunReviewWithIgnoreFilter:
             "owner", "repo", "1", "/tmp/project",
             notify_fn=MagicMock(),
             skill_dir=review_skill_dir,
-            project_config=None,
         )
 
         prompt_sent = mock_claude.call_args[0][0]
@@ -2308,25 +2392,23 @@ class TestRunReviewWithIgnoreFilter:
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
     @patch("app.review_runner._set_in_progress_marker", return_value=None)
     @patch("app.review_runner.find_bot_comment", return_value=None)
+    @patch("app.config.get_review_ignore_config", return_value={"glob": [], "regex": []})
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
     @patch("app.review_runner.run_gh")
     @patch("app.review_runner._run_claude_review")
     @patch("app.review_runner.fetch_pr_context")
     def test_empty_ignore_patterns_no_filtering(
-        self, mock_fetch, mock_claude, mock_gh, mock_repliable,
+        self, mock_fetch, mock_claude, mock_gh, mock_repliable, mock_ignore,
         mock_find_bot, _mock_ip, _mock_shas, review_skill_dir,
     ):
-        """project_config with empty review_ignore lists leaves diff unchanged."""
+        """Empty review_ignore lists leaves diff unchanged."""
         mock_fetch.return_value = self._make_pr_context()
         mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
-
-        project_config = {"review_ignore": {"glob": [], "regex": []}}
 
         run_review(
             "owner", "repo", "1", "/tmp/project",
             notify_fn=MagicMock(),
             skill_dir=review_skill_dir,
-            project_config=project_config,
         )
 
         prompt_sent = mock_claude.call_args[0][0]
