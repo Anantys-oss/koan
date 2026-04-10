@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from app.github import fetch_issue_state, fetch_issue_with_comments
-from app.github_url_parser import parse_issue_url
+from app.github_url_parser import is_jira_url, parse_issue_url, parse_jira_url
 from app.pr_submit import (
     get_current_branch,
     guess_project_name,
@@ -53,38 +53,57 @@ def run_fix(
         from app.notify import send_telegram
         notify_fn = send_telegram
 
-    # Parse issue URL
-    try:
-        owner, repo, issue_number = parse_issue_url(issue_url)
-    except ValueError as e:
-        return False, str(e)
-
     context_label = f" ({context})" if context else ""
+    _is_jira = is_jira_url(issue_url)
 
-    # Early exit if the issue is already closed
-    state = fetch_issue_state(owner, repo, issue_number)
-    if state == "closed":
-        msg = f"Issue #{issue_number} ({owner}/{repo}) is already closed — skipping."
-        logger.info(msg)
-        if notify_fn:
-            notify_fn(f"\u2139\ufe0f {msg}")
-        return False, msg
+    # Parse URL and fetch issue content
+    if _is_jira:
+        try:
+            issue_key = parse_jira_url(issue_url)
+        except ValueError as e:
+            return False, str(e)
 
-    notify_fn(
-        f"\U0001f527 Fixing issue #{issue_number} "
-        f"({owner}/{repo}){context_label}..."
-    )
-
-    # Fetch issue content
-    try:
-        title, body, comments = fetch_issue_with_comments(
-            owner, repo, issue_number
+        notify_fn(
+            f"\U0001f527 Fixing Jira issue {issue_key}{context_label}..."
         )
-    except Exception as e:
-        return False, f"Failed to fetch issue: {str(e)[:300]}"
+
+        try:
+            from app.jira_notifications import fetch_jira_issue
+            title, body, comments = fetch_jira_issue(issue_key)
+        except Exception as e:
+            return False, f"Failed to fetch Jira issue: {str(e)[:300]}"
+
+        owner, repo, issue_number = None, None, issue_key
+    else:
+        try:
+            owner, repo, issue_number = parse_issue_url(issue_url)
+        except ValueError as e:
+            return False, str(e)
+
+        # Early exit if the issue is already closed
+        state = fetch_issue_state(owner, repo, issue_number)
+        if state == "closed":
+            msg = f"Issue #{issue_number} ({owner}/{repo}) is already closed — skipping."
+            logger.info(msg)
+            if notify_fn:
+                notify_fn(f"\u2139\ufe0f {msg}")
+            return False, msg
+
+        notify_fn(
+            f"\U0001f527 Fixing issue #{issue_number} "
+            f"({owner}/{repo}){context_label}..."
+        )
+
+        try:
+            title, body, comments = fetch_issue_with_comments(
+                owner, repo, issue_number
+            )
+        except Exception as e:
+            return False, f"Failed to fetch issue: {str(e)[:300]}"
 
     if not body and not comments:
-        return False, f"Issue #{issue_number} has no content."
+        label = issue_key if _is_jira else f"#{issue_number}"
+        return False, f"Issue {label} has no content."
 
     # Build full issue body (include relevant comments)
     full_body = _build_issue_body(body, comments)
@@ -106,43 +125,47 @@ def run_fix(
     if not output:
         return False, "Claude returned empty output."
 
-    # Post-fix: submit draft PR
-    pr_url = _submit_fix_pr(
-        project_path=project_path,
-        owner=owner,
-        repo=repo,
-        issue_number=str(issue_number),
-        issue_title=title,
-        issue_url=issue_url,
-    )
+    # Post-fix: submit draft PR (only for GitHub issues with repo info)
+    pr_url = None
+    if owner and repo:
+        pr_url = _submit_fix_pr(
+            project_path=project_path,
+            owner=owner,
+            repo=repo,
+            issue_number=str(issue_number),
+            issue_title=title,
+            issue_url=issue_url,
+        )
 
     # Build notification and summary
     branch = get_current_branch(project_path)
+    label = issue_key if _is_jira else f"#{issue_number}"
     if pr_url:
         notify_fn(
-            f"\u2705 Fix complete for issue #{issue_number}"
+            f"\u2705 Fix complete for issue {label}"
             f"{context_label}\nDraft PR: {pr_url}"
         )
         summary = (
-            f"Fix complete for #{issue_number}{context_label}"
+            f"Fix complete for {label}{context_label}"
             f"\nDraft PR: {pr_url}"
         )
     elif branch not in ("main", "master"):
         notify_fn(
-            f"\u2705 Fix complete for issue #{issue_number}"
-            f"{context_label}\nBranch: {branch} (PR creation failed)"
+            f"\u2705 Fix complete for issue {label}"
+            f"{context_label}\nBranch: {branch}"
+            f"{'' if pr_url else ' (PR creation skipped)' if _is_jira else ' (PR creation failed)'}"
         )
         summary = (
-            f"Fix complete for #{issue_number}{context_label}"
+            f"Fix complete for {label}{context_label}"
             f"\nBranch: {branch}"
         )
     else:
         notify_fn(
-            f"\u26a0\ufe0f Fix complete for issue #{issue_number}"
+            f"\u26a0\ufe0f Fix complete for issue {label}"
             f"{context_label} \u2014 changes landed on {branch}, no PR created"
         )
         summary = (
-            f"Fix complete for #{issue_number}{context_label}"
+            f"Fix complete for {label}{context_label}"
             f" (on {branch}, no PR)"
         )
 
