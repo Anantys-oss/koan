@@ -782,6 +782,14 @@ def process_github_notifications(
             # re-processed (which could create duplicate missions).
             _cache_notif(notif)
 
+            # Mark as read so subsequent checks (including after restart)
+            # skip this notification. The all=true fetch still returns read
+            # notifications, but they'll be filtered by the persistent
+            # tracker or reaction-based dedup much faster.
+            thread_id = str(notif.get("id", ""))
+            if thread_id:
+                mark_notification_read(thread_id)
+
             if success:
                 missions_created += 1
                 repo = notif.get("repository", {}).get("full_name", "?")
