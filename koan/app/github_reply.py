@@ -222,8 +222,8 @@ def generate_reply(
             project_path=project_path,
             allowed_tools=["Read", "Glob", "Grep"],
             model_key="chat",
-            max_turns=3,
-            timeout=120,
+            max_turns=5,
+            timeout=300,
         )
         return clean_reply(reply) if reply else None
     except Exception as e:
