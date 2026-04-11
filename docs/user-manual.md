@@ -508,6 +508,17 @@ Usually auto-triggered when CI fails after a `/rebase`, but can also be invoked 
 - Auto-injected by the CI queue when a post-rebase CI run fails
 </details>
 
+**`/ci_recovery`** — Show CI failure recovery status for all open Kōan PRs.
+
+- **Usage:** `/ci_recovery`
+- **Aliases:** `/ci_fix`
+
+<details>
+<summary>Use cases</summary>
+
+- `/ci_recovery` — See which PRs have active CI recovery sessions, attempt counts, and last attempt timestamps
+</details>
+
 **`/gh_request`** — Route a natural-language GitHub request to the appropriate action.
 
 - **Usage:** `/gh_request <github-url> <request text>`
@@ -1323,6 +1334,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/branches [project]` | `/br`, `/prs` | B | List koan branches + PRs with merge order |
 | `/check <url>` | `/inspect` | I | Run project health checks on a PR/issue |
 | `/ci_check <PR>` | — | I | Check and fix CI failures on a PR |
+| `/ci_recovery` | `/ci_fix` | I | Show CI failure recovery status for open Kōan PRs |
 | `/gh_request <url> <text>` | — | I | Route natural-language GitHub request to the right skill |
 | `/claudemd [project]` | `/claude`, `/claude.md`, `/claude_md` | I | Refresh a project's CLAUDE.md |
 | `/config_check` | `/cfgcheck`, `/configcheck` | P | Detect config.yaml drift against instance.example template |
