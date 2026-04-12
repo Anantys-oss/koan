@@ -680,9 +680,9 @@ class TestHandleStart:
 
 class TestHandleChat:
     @patch("app.awake.save_conversation_message")
-    @patch("app.awake.load_recent_history", return_value=[])
-    @patch("app.awake.format_conversation_history", return_value="")
-    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.conversation_history.load_recent_history", return_value=[])
+    @patch("app.conversation_history.format_conversation_history", return_value="")
+    @patch("app.config.get_tools_description", return_value="")
     @patch("app.awake.get_chat_tools", return_value="")
     @patch("app.awake.send_telegram", return_value=True)
     @patch("app.awake.subprocess.run")
@@ -703,9 +703,9 @@ class TestHandleChat:
         assert mock_save.call_count == 2
 
     @patch("app.awake.save_conversation_message")
-    @patch("app.awake.load_recent_history", return_value=[])
-    @patch("app.awake.format_conversation_history", return_value="")
-    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.conversation_history.load_recent_history", return_value=[])
+    @patch("app.conversation_history.format_conversation_history", return_value="")
+    @patch("app.config.get_tools_description", return_value="")
     @patch("app.awake.get_chat_tools", return_value="")
     @patch("app.awake.send_telegram")
     @patch("app.awake.subprocess.run")
@@ -725,9 +725,9 @@ class TestHandleChat:
         assert "Timeout" in mock_send.call_args[0][0]
 
     @patch("app.awake.save_conversation_message")
-    @patch("app.awake.load_recent_history", return_value=[])
-    @patch("app.awake.format_conversation_history", return_value="")
-    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.conversation_history.load_recent_history", return_value=[])
+    @patch("app.conversation_history.format_conversation_history", return_value="")
+    @patch("app.config.get_tools_description", return_value="")
     @patch("app.awake.get_chat_tools", return_value="")
     @patch("app.awake.send_telegram")
     @patch("app.awake.subprocess.run")
@@ -745,9 +745,9 @@ class TestHandleChat:
         assert "couldn't formulate" in mock_send.call_args[0][0]
 
     @patch("app.awake.save_conversation_message")
-    @patch("app.awake.load_recent_history", return_value=[])
-    @patch("app.awake.format_conversation_history", return_value="")
-    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.conversation_history.load_recent_history", return_value=[])
+    @patch("app.conversation_history.format_conversation_history", return_value="")
+    @patch("app.config.get_tools_description", return_value="")
     @patch("app.awake.get_chat_tools", return_value="")
     @patch("app.awake.send_telegram", return_value=True)
     @patch("app.awake.subprocess.run")
@@ -768,9 +768,9 @@ class TestHandleChat:
         mock_run.assert_called_once()
 
     @patch("app.awake.save_conversation_message")
-    @patch("app.awake.load_recent_history", return_value=[])
-    @patch("app.awake.format_conversation_history", return_value="")
-    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.conversation_history.load_recent_history", return_value=[])
+    @patch("app.conversation_history.format_conversation_history", return_value="")
+    @patch("app.config.get_tools_description", return_value="")
     @patch("app.awake.get_chat_tools", return_value="")
     @patch("app.awake.send_telegram")
     @patch("app.cli_exec.run_cli")
@@ -793,9 +793,9 @@ class TestHandleChat:
         assert mock_save.call_count >= 2  # user msg + error msg
 
     @patch("app.awake.save_conversation_message")
-    @patch("app.awake.load_recent_history", return_value=[])
-    @patch("app.awake.format_conversation_history", return_value="")
-    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.conversation_history.load_recent_history", return_value=[])
+    @patch("app.conversation_history.format_conversation_history", return_value="")
+    @patch("app.config.get_tools_description", return_value="")
     @patch("app.awake.get_chat_tools", return_value="")
     @patch("app.awake.send_telegram")
     @patch("app.awake.subprocess.run")
@@ -1836,9 +1836,9 @@ class TestPauseCommand:
 
 class TestChatLiteRetryErrors:
     @patch("app.awake.save_conversation_message")
-    @patch("app.awake.load_recent_history", return_value=[])
-    @patch("app.awake.format_conversation_history", return_value="")
-    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.conversation_history.load_recent_history", return_value=[])
+    @patch("app.conversation_history.format_conversation_history", return_value="")
+    @patch("app.config.get_tools_description", return_value="")
     @patch("app.awake.get_chat_tools", return_value="")
     @patch("app.awake.send_telegram")
     @patch("app.awake.subprocess.run")
@@ -1861,9 +1861,9 @@ class TestChatLiteRetryErrors:
         assert "went wrong" in mock_send.call_args[0][0].lower()
 
     @patch("app.awake.save_conversation_message")
-    @patch("app.awake.load_recent_history", return_value=[])
-    @patch("app.awake.format_conversation_history", return_value="")
-    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.conversation_history.load_recent_history", return_value=[])
+    @patch("app.conversation_history.format_conversation_history", return_value="")
+    @patch("app.config.get_tools_description", return_value="")
     @patch("app.awake.get_chat_tools", return_value="")
     @patch("app.awake.send_telegram")
     @patch("app.awake.subprocess.run")
@@ -1886,9 +1886,9 @@ class TestChatLiteRetryErrors:
         assert "timeout" in mock_send.call_args[0][0].lower()
 
     @patch("app.awake.save_conversation_message")
-    @patch("app.awake.load_recent_history", return_value=[])
-    @patch("app.awake.format_conversation_history", return_value="")
-    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.conversation_history.load_recent_history", return_value=[])
+    @patch("app.conversation_history.format_conversation_history", return_value="")
+    @patch("app.config.get_tools_description", return_value="")
     @patch("app.awake.get_chat_tools", return_value="")
     @patch("app.awake.send_telegram")
     @patch("app.awake.subprocess.run")
@@ -1911,9 +1911,9 @@ class TestChatLiteRetryErrors:
         mock_sleep.assert_called_once_with(4)
 
     @patch("app.awake.save_conversation_message")
-    @patch("app.awake.load_recent_history", return_value=[])
-    @patch("app.awake.format_conversation_history", return_value="")
-    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.conversation_history.load_recent_history", return_value=[])
+    @patch("app.conversation_history.format_conversation_history", return_value="")
+    @patch("app.config.get_tools_description", return_value="")
     @patch("app.awake.get_chat_tools", return_value="")
     @patch("app.awake.send_telegram")
     @patch("app.awake.subprocess.run")
@@ -2057,9 +2057,9 @@ class TestPauseAwareness:
         assert "Active" in status
 
     @patch("app.awake.save_conversation_message")
-    @patch("app.awake.load_recent_history", return_value=[])
-    @patch("app.awake.format_conversation_history", return_value="")
-    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.conversation_history.load_recent_history", return_value=[])
+    @patch("app.conversation_history.format_conversation_history", return_value="")
+    @patch("app.config.get_tools_description", return_value="")
     @patch("app.awake.get_chat_tools", return_value="")
     @patch("app.awake.send_telegram", return_value=True)
     @patch("app.awake.subprocess.run")
@@ -2085,9 +2085,9 @@ class TestPauseAwareness:
         assert "PAUSED" in prompt or "⏸️" in prompt
 
     @patch("app.awake.save_conversation_message")
-    @patch("app.awake.load_recent_history", return_value=[])
-    @patch("app.awake.format_conversation_history", return_value="")
-    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.conversation_history.load_recent_history", return_value=[])
+    @patch("app.conversation_history.format_conversation_history", return_value="")
+    @patch("app.config.get_tools_description", return_value="")
     @patch("app.awake.get_chat_tools", return_value="")
     @patch("app.awake.send_telegram", return_value=True)
     @patch("app.awake.subprocess.run")
@@ -2133,9 +2133,9 @@ class TestChatToolsSecurity:
         assert "Bash" in tools
 
     @patch("app.awake.save_conversation_message")
-    @patch("app.awake.load_recent_history", return_value=[])
-    @patch("app.awake.format_conversation_history", return_value="")
-    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.conversation_history.load_recent_history", return_value=[])
+    @patch("app.conversation_history.format_conversation_history", return_value="")
+    @patch("app.config.get_tools_description", return_value="")
     @patch("app.awake.get_chat_tools", return_value="Read,Glob,Grep")  # Restricted!
     @patch("app.awake.send_telegram", return_value=True)
     @patch("app.awake.subprocess.run")
@@ -2889,9 +2889,9 @@ class TestBuildChatPromptMissionsReadProtection:
     """Tests that _build_chat_prompt handles OSError on missions.md read."""
 
     @patch("app.awake.save_conversation_message")
-    @patch("app.awake.load_recent_history", return_value=[])
-    @patch("app.awake.format_conversation_history", return_value="")
-    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.conversation_history.load_recent_history", return_value=[])
+    @patch("app.conversation_history.format_conversation_history", return_value="")
+    @patch("app.config.get_tools_description", return_value="")
     @patch("app.awake.get_chat_tools", return_value="")
     @patch("app.awake.send_telegram", return_value=True)
     @patch("app.awake.subprocess.run")
@@ -3165,11 +3165,11 @@ class TestAsyncOutboxFlush:
 class TestBuildChatPromptHardTruncation:
     """Tests that _build_chat_prompt truncates user text as last resort."""
 
-    @patch("app.awake.save_conversation_message")
-    @patch("app.awake.load_recent_history", return_value=[])
-    @patch("app.awake.format_conversation_history", return_value="")
-    @patch("app.awake.get_tools_description", return_value="")
-    @patch("app.awake.get_chat_tools", return_value="")
+    @patch("app.conversation_history.save_conversation_message")
+    @patch("app.conversation_history.load_recent_history", return_value=[])
+    @patch("app.conversation_history.format_conversation_history", return_value="")
+    @patch("app.config.get_tools_description", return_value="")
+    @patch("app.config.get_chat_tools", return_value="")
     @patch("app.awake.send_telegram", return_value=True)
     @patch("app.awake.subprocess.run")
     def test_truncates_long_message_in_lite_mode(
@@ -3177,28 +3177,31 @@ class TestBuildChatPromptHardTruncation:
         mock_hist, mock_save, tmp_path
     ):
         """When lite=True and prompt still exceeds 12k, user text is truncated."""
-        from app.awake import _build_chat_prompt
+        from app.chat_context import build_chat_prompt
 
         # Create a very long user message that will exceed 12k even in lite mode
         long_text = "x" * 15000
 
-        with patch("app.awake.INSTANCE_DIR", tmp_path), \
-             patch("app.awake.KOAN_ROOT", tmp_path), \
-             patch("app.awake.MISSIONS_FILE", tmp_path / "missions.md"), \
-             patch("app.awake.SOUL", "test soul"), \
-             patch("app.awake.SUMMARY", ""):
-            prompt = _build_chat_prompt(long_text, lite=True)
+        prompt = build_chat_prompt(
+            long_text, lite=True,
+            instance_dir=tmp_path,
+            koan_root=tmp_path,
+            soul="test soul",
+            summary="",
+            conversation_history_file=tmp_path / "history.jsonl",
+            missions_file=tmp_path / "missions.md",
+        )
 
         # Prompt must be at or under the cap
         assert len(prompt) <= 12000, f"Prompt is {len(prompt)} chars, expected <= 12000"
         # The truncation marker should be present
         assert "[truncated]" in prompt
 
-    @patch("app.awake.save_conversation_message")
-    @patch("app.awake.load_recent_history", return_value=[])
-    @patch("app.awake.format_conversation_history", return_value="")
-    @patch("app.awake.get_tools_description", return_value="")
-    @patch("app.awake.get_chat_tools", return_value="")
+    @patch("app.conversation_history.save_conversation_message")
+    @patch("app.conversation_history.load_recent_history", return_value=[])
+    @patch("app.conversation_history.format_conversation_history", return_value="")
+    @patch("app.config.get_tools_description", return_value="")
+    @patch("app.config.get_chat_tools", return_value="")
     @patch("app.awake.send_telegram", return_value=True)
     @patch("app.awake.subprocess.run")
     def test_short_message_not_truncated(
@@ -3206,16 +3209,19 @@ class TestBuildChatPromptHardTruncation:
         mock_hist, mock_save, tmp_path
     ):
         """Short messages should not be truncated."""
-        from app.awake import _build_chat_prompt
+        from app.chat_context import build_chat_prompt
 
         short_text = "hello, how are you?"
 
-        with patch("app.awake.INSTANCE_DIR", tmp_path), \
-             patch("app.awake.KOAN_ROOT", tmp_path), \
-             patch("app.awake.MISSIONS_FILE", tmp_path / "missions.md"), \
-             patch("app.awake.SOUL", "test soul"), \
-             patch("app.awake.SUMMARY", ""):
-            prompt = _build_chat_prompt(short_text, lite=True)
+        prompt = build_chat_prompt(
+            short_text, lite=True,
+            instance_dir=tmp_path,
+            koan_root=tmp_path,
+            soul="test soul",
+            summary="",
+            conversation_history_file=tmp_path / "history.jsonl",
+            missions_file=tmp_path / "missions.md",
+        )
 
         assert "[truncated]" not in prompt
         assert short_text in prompt
