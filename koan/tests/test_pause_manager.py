@@ -849,3 +849,92 @@ class TestTimedPauseAutoResume:
         msg = check_and_resume(str(tmp_path))
         assert msg is not None
         assert "timed" in msg.lower() or "expired" in msg.lower() or "until 5pm" in msg
+
+
+class TestGetPauseStateEdgeCases:
+    def test_os_error_returns_none(self, tmp_path, monkeypatch):
+        from app.pause_manager import get_pause_state
+        (tmp_path / ".koan-pause").write_text("quota\n1\n")
+        real_open = open
+        def bad_open(path, *a, **kw):
+            if str(path).endswith(".koan-pause"):
+                raise OSError("disk fail")
+            return real_open(path, *a, **kw)
+        monkeypatch.setattr("builtins.open", bad_open)
+        assert get_pause_state(str(tmp_path)) is None
+
+
+class TestPauseManagerCLI:
+    """Exercise the CLI entry point in-process via runpy."""
+
+    def _run(self, *args, capsys=None):
+        import runpy
+        argv = ["pause_manager.py", *args]
+        exit_code = 0
+        try:
+            with pytest.MonkeyPatch.context() as mp:
+                mp.setattr(sys, "argv", argv)
+                runpy.run_module("app.pause_manager", run_name="__main__")
+        except SystemExit as e:
+            exit_code = e.code if isinstance(e.code, int) else 1
+        out, err = capsys.readouterr() if capsys else ("", "")
+        return exit_code, out, err
+
+    def test_no_args_prints_usage(self, capsys):
+        code, _, err = self._run(capsys=capsys)
+        assert code == 1 and "Usage:" in err
+
+    def test_check_when_not_paused(self, tmp_path, capsys):
+        code, _, _ = self._run("check", str(tmp_path), capsys=capsys)
+        assert code == 1
+
+    def test_status_when_not_paused(self, tmp_path, capsys):
+        import json
+        code, out, _ = self._run("status", str(tmp_path), capsys=capsys)
+        assert code == 0
+        data = json.loads(out.strip())
+        assert data["paused"] is False
+
+    def test_status_when_paused(self, tmp_path, capsys):
+        import json
+        (tmp_path / ".koan-pause").write_text("quota\n1707000000\nresets 10am\n")
+        code, out, _ = self._run("status", str(tmp_path), capsys=capsys)
+        assert code == 0
+        data = json.loads(out.strip())
+        assert data["paused"] is True and data["reason"] == "quota"
+
+    def test_status_paused_without_content(self, tmp_path, capsys):
+        import json
+        (tmp_path / ".koan-pause").touch()
+        code, out, _ = self._run("status", str(tmp_path), capsys=capsys)
+        data = json.loads(out.strip())
+        assert data["paused"] is True and data["reason"] == ""
+
+    def test_create_and_remove(self, tmp_path, capsys):
+        code, _, _ = self._run(
+            "create", str(tmp_path), "manual", "1234", "reason",
+            capsys=capsys,
+        )
+        assert code == 0 and (tmp_path / ".koan-pause").exists()
+        code, _, _ = self._run("remove", str(tmp_path), capsys=capsys)
+        assert code == 0 and not (tmp_path / ".koan-pause").exists()
+
+    def test_create_missing_reason(self, tmp_path, capsys):
+        code, _, err = self._run("create", str(tmp_path), capsys=capsys)
+        assert code == 1 and "Usage:" in err
+
+    def test_create_without_timestamp(self, tmp_path, capsys):
+        code, _, _ = self._run("create", str(tmp_path), "manual", capsys=capsys)
+        assert code == 0
+
+    def test_check_auto_resumes_expired(self, tmp_path, capsys):
+        import time
+        past = int(time.time()) - 1
+        (tmp_path / ".koan-pause").write_text(f"timed\n{past}\nuntil 10am\n")
+        code, out, _ = self._run("check", str(tmp_path), capsys=capsys)
+        assert code == 0
+        assert not (tmp_path / ".koan-pause").exists()
+
+    def test_unknown_command_exits_nonzero(self, tmp_path, capsys):
+        code, _, err = self._run("bogus", str(tmp_path), capsys=capsys)
+        assert code == 1 and "Unknown command" in err

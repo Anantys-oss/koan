@@ -378,3 +378,123 @@ class TestPruneWorktrees:
         captured = capsys.readouterr()
         # --verbose output should mention pruning
         assert "pruned" in captured.err.lower() or not Path(wt_path).exists()
+
+
+class TestWorktreeErrorPaths:
+    def test_branch_prefix_fallback(self):
+        from app.worktree_manager import _get_branch_prefix
+        with patch("app.config.get_branch_prefix", side_effect=RuntimeError("bad")):
+            assert _get_branch_prefix() == "koan"
+
+    def test_remove_worktree_requires_identifier(self, git_repo):
+        with pytest.raises(ValueError, match="session_id or worktree_path"):
+            remove_worktree(git_repo)
+
+    def test_remove_worktree_manual_cleanup(self, git_repo, capsys):
+        wt = create_worktree(git_repo)
+        assert Path(wt.path).exists()
+        real_run = subprocess.run
+        def fake_run(cmd, **kw):
+            if "worktree" in cmd and "remove" in cmd:
+                raise subprocess.CalledProcessError(1, cmd, stderr="lock")
+            return real_run(cmd, **kw)
+        with patch("app.worktree_manager.subprocess.run", side_effect=fake_run):
+            remove_worktree(git_repo, session_id=wt.session_id, force=True)
+        assert not Path(wt.path).exists()
+        assert "git worktree remove failed" in capsys.readouterr().err
+
+    def test_remove_worktree_branch_delete_failure(self, git_repo, capsys):
+        wt = create_worktree(git_repo)
+        real_run = subprocess.run
+        def fake_run(cmd, **kw):
+            if "branch" in cmd and "-D" in cmd:
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom")
+            return real_run(cmd, **kw)
+        with patch("app.worktree_manager.subprocess.run", side_effect=fake_run):
+            remove_worktree(git_repo, session_id=wt.session_id)
+        assert "git branch -D failed" in capsys.readouterr().err
+
+    def test_list_worktrees_empty_on_error(self, tmp_path):
+        assert list_worktrees(str(tmp_path)) == []
+
+    def test_list_worktrees_parses_session(self, git_repo):
+        wt = create_worktree(git_repo)
+        entries = list_worktrees(git_repo)
+        assert len(entries) >= 2
+        assert wt.session_id in [e.session_id for e in entries]
+
+    def test_cleanup_noop_if_no_dir(self, git_repo):
+        cleanup_stale_worktrees(git_repo, active_session_ids=["any"])
+
+    def test_cleanup_removes_inactive(self, git_repo):
+        wt1 = create_worktree(git_repo)
+        wt2 = create_worktree(git_repo)
+        cleanup_stale_worktrees(git_repo, active_session_ids=[wt1.session_id])
+        assert Path(wt1.path).exists()
+        assert not Path(wt2.path).exists()
+
+    def test_cleanup_logs_on_remove_failure(self, git_repo, capsys):
+        create_worktree(git_repo)
+        with patch("app.worktree_manager.remove_worktree",
+                   side_effect=RuntimeError("bad")):
+            cleanup_stale_worktrees(git_repo, active_session_ids=[])
+        assert "stale worktree cleanup error" in capsys.readouterr().err
+
+    def test_prune_handles_called_process_error(self, git_repo, capsys):
+        def bad_run(cmd, **kw):
+            raise subprocess.CalledProcessError(1, cmd, stderr="prune fail")
+        with patch("app.worktree_manager.subprocess.run", side_effect=bad_run):
+            prune_worktrees(git_repo)
+        assert "worktree prune failed" in capsys.readouterr().err
+
+    def test_prune_handles_missing_git(self, git_repo):
+        with patch("app.worktree_manager.subprocess.run",
+                   side_effect=FileNotFoundError("git")):
+            prune_worktrees(git_repo)
+
+    def test_setup_shared_deps_creates_symlink(self, tmp_path):
+        proj = tmp_path / "proj"
+        wt = tmp_path / "wt"
+        (proj / "node_modules").mkdir(parents=True)
+        wt.mkdir()
+        setup_shared_deps(str(wt), str(proj), ["node_modules"])
+        assert (wt / "node_modules").is_symlink()
+
+    def test_setup_shared_deps_skips_existing(self, tmp_path):
+        proj = tmp_path / "proj"
+        wt = tmp_path / "wt"
+        (proj / ".venv").mkdir(parents=True)
+        (wt / ".venv").mkdir(parents=True)
+        setup_shared_deps(str(wt), str(proj), [".venv"])
+        assert not (wt / ".venv").is_symlink()
+
+    def test_setup_shared_deps_handles_error(self, tmp_path):
+        proj = tmp_path / "proj"
+        wt = tmp_path / "wt"
+        (proj / "node_modules").mkdir(parents=True)
+        wt.mkdir()
+        with patch("app.worktree_manager.os.symlink", side_effect=OSError("perm")):
+            setup_shared_deps(str(wt), str(proj), ["node_modules"])
+
+    def test_ensure_gitignored_adds_pattern(self, tmp_path):
+        from app.worktree_manager import _ensure_gitignored
+        (tmp_path / ".gitignore").write_text("*.log\n")
+        _ensure_gitignored(str(tmp_path))
+        assert ".worktrees" in (tmp_path / ".gitignore").read_text()
+
+    def test_ensure_gitignored_skips_if_present(self, tmp_path):
+        from app.worktree_manager import _ensure_gitignored
+        original = "*.log\n/.worktrees/\n"
+        (tmp_path / ".gitignore").write_text(original)
+        _ensure_gitignored(str(tmp_path))
+        assert (tmp_path / ".gitignore").read_text() == original
+
+    def test_ensure_gitignored_noop_without_gitignore(self, tmp_path):
+        from app.worktree_manager import _ensure_gitignored
+        _ensure_gitignored(str(tmp_path))
+        assert not (tmp_path / ".gitignore").exists()
+
+    def test_resolve_base_ref_fallback(self, git_repo):
+        from app.worktree_manager import _resolve_base_ref
+        result = _resolve_base_ref(git_repo, "nonexistent")
+        assert result in ("main", "master", "HEAD")
