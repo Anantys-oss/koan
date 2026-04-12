@@ -372,14 +372,17 @@ def _run_claude_review(
 
 
 _ERROR_PATTERN_RE = re.compile(
-    r'try:|except |catch\(|\.catch\(|on_error|fallback',
+    r'try:|except |catch\(|\.catch\(|on_error',
     re.IGNORECASE,
 )
 
 
 def _should_run_error_hunter(diff: str) -> bool:
-    """Return True if the diff contains error-handling patterns worth scanning."""
-    return bool(_ERROR_PATTERN_RE.search(diff))
+    """Return True if added lines in the diff contain error-handling patterns."""
+    added_lines = '\n'.join(
+        line for line in diff.splitlines() if line.startswith('+')
+    )
+    return bool(_ERROR_PATTERN_RE.search(added_lines))
 
 
 def _run_error_hunter(
