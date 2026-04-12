@@ -448,12 +448,7 @@ def _route_to_chat_process(text: str) -> bool:
     if not _is_chat_process_running():
         return False
 
-    from app.chat_process import write_to_inbox, has_pending_requests
-
-    # If there are already pending requests, tell the user we're busy
-    if has_pending_requests():
-        send_telegram("⏳ Busy with a previous message. Try again in a moment.")
-        return True
+    from app.chat_process import write_to_inbox
 
     write_to_inbox(text)
     log("chat", "Chat routed to dedicated chat process")
