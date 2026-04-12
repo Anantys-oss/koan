@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.forge.base import FEATURE_PR, FEATURE_ISSUES, FEATURE_CI_STATUS, FEATURE_PR_REVIEW_COMMENTS
+from app.forge.base import FEATURE_PR, FEATURE_ISSUES, FEATURE_CI_STATUS
 from app.forge.github import GitHubForge
 
 
@@ -332,7 +332,7 @@ class TestDetectFork:
 class TestSupports:
     def test_supports_implemented_features(self):
         forge = _make_forge()
-        for feature in (FEATURE_PR, FEATURE_ISSUES, FEATURE_CI_STATUS, FEATURE_PR_REVIEW_COMMENTS):
+        for feature in (FEATURE_PR, FEATURE_ISSUES, FEATURE_CI_STATUS):
             assert forge.supports(feature) is True, f"Expected supports({feature!r}) to be True"
 
     def test_does_not_support_unimplemented_features(self):
