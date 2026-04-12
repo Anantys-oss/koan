@@ -577,9 +577,11 @@ class TestFetchPrContext:
             pr_meta,           # PR metadata
             "1",               # review_comments count
             "diff content",    # diff
+            "",                # last push timestamp (timeline)
             "comment1",        # review comments
             "review1",         # reviews
             "discussion1",     # issue comments
+            "",                # CI failures (pr checks)
         ]
 
         ctx = fetch_pr_context("owner", "repo", "1")
@@ -591,11 +593,11 @@ class TestFetchPrContext:
         assert ctx["reviews"] == "review1"
         assert ctx["issue_comments"] == "discussion1"
         assert ctx["has_pending_reviews"] is False
-        assert mock_gh.call_count == 6
+        assert mock_gh.call_count == 8
 
     @patch("app.rebase_pr.run_gh")
     def test_handles_invalid_json(self, mock_gh):
-        mock_gh.side_effect = ["not json", "0", "", "", "", ""]
+        mock_gh.side_effect = ["not json", "0", "", "", "", "", "", ""]
         ctx = fetch_pr_context("o", "r", "1")
         assert ctx["title"] == ""
         assert ctx["branch"] == ""
