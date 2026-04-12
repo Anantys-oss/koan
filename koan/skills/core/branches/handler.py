@@ -75,9 +75,11 @@ def _resolve_project(args: str, ctx) -> Tuple[str, Optional[str]]:
 def _get_branches_info(project_path: str) -> List[Dict]:
     """Get info about local koan/* branches."""
     from app.config import get_branch_prefix
+    from app.git_prep import detect_remote_default_branch
     from app.git_utils import run_git
 
     prefix = get_branch_prefix()
+    remote_main = f"origin/{detect_remote_default_branch('origin', project_path)}"
     branches = []
 
     # List local branches
@@ -124,7 +126,7 @@ def _get_branches_info(project_path: str) -> List[Dict]:
 
         # Commit count ahead of main
         rc, ahead, _ = run_git(
-            "rev-list", "--count", f"origin/main..{branch}",
+            "rev-list", "--count", f"{remote_main}..{branch}",
             cwd=project_path, timeout=5,
         )
         if rc == 0 and ahead.strip().isdigit():
@@ -137,13 +139,13 @@ def _get_branches_info(project_path: str) -> List[Dict]:
         info["age"] = ref.get("age", "")
         info["timestamp"] = ref.get("timestamp", 0)
 
-        # Skip branches fully merged into origin/main (0 commits ahead)
+        # Skip branches fully merged into remote main (0 commits ahead)
         if info["commits"] == 0:
             continue
 
         # Diff stat (additions + deletions)
         rc, stat, _ = run_git(
-            "diff", "--shortstat", f"origin/main...{branch}",
+            "diff", "--shortstat", f"{remote_main}...{branch}",
             cwd=project_path, timeout=10,
         )
         if rc == 0 and stat.strip():
@@ -153,7 +155,7 @@ def _get_branches_info(project_path: str) -> List[Dict]:
 
         # Quick conflict check via merge-tree --merge (git 2.38+)
         rc, merge_out, _ = run_git(
-            "merge-tree", "--merge", "origin/main", branch,
+            "merge-tree", "--merge", remote_main, branch,
             cwd=project_path, timeout=10,
         )
         if rc == 0:
@@ -162,14 +164,16 @@ def _get_branches_info(project_path: str) -> List[Dict]:
             info["conflicts"] = True
         else:
             # Fallback for older git versions without --merge support
-            info["conflicts"] = _check_conflicts(project_path, branch)
+            info["conflicts"] = _check_conflicts(project_path, branch, remote_main)
 
         result.append(info)
 
     return result
 
 
-def _check_conflicts(project_path: str, branch: str) -> Optional[bool]:
+def _check_conflicts(
+    project_path: str, branch: str, remote_main: str = "origin/main",
+) -> Optional[bool]:
     """Check if a branch would conflict when merged into main.
 
     Returns True if conflicts detected, False if clean, None if
@@ -180,7 +184,7 @@ def _check_conflicts(project_path: str, branch: str) -> Optional[bool]:
     try:
         # Get merge-base
         result = subprocess.run(
-            ["git", "merge-base", "origin/main", branch],
+            ["git", "merge-base", remote_main, branch],
             capture_output=True, text=True, cwd=project_path, timeout=5,
         )
         if result.returncode != 0:
@@ -192,7 +196,7 @@ def _check_conflicts(project_path: str, branch: str) -> Optional[bool]:
 
         # Use merge-tree to simulate merge
         result = subprocess.run(
-            ["git", "merge-tree", base, "origin/main", branch],
+            ["git", "merge-tree", base, remote_main, branch],
             capture_output=True, text=True, cwd=project_path, timeout=10,
         )
         # merge-tree outputs conflict markers if there are conflicts
