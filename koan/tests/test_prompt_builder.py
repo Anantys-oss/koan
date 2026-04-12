@@ -1211,7 +1211,7 @@ class TestGetTestingAntipatternsSection:
 
     def test_test_expecting_keyword_injects_antipatterns(self):
         """Mission with test-expecting keywords should inject anti-patterns reference."""
-        # 'implement', 'fix', 'add', 'create', 'build' all trigger _expects_tests
+        # 'implement', 'fix', 'add', 'create', 'build' all trigger expects_tests
         result = _get_testing_antipatterns_section("implement login feature")
         assert "Anti-Pattern" in result
 

@@ -269,17 +269,14 @@ def _get_testing_antipatterns_section(mission_title: str) -> str:
 
     from app.missions import extract_tdd_tag
 
+    from app.prompts import load_prompt
+
     if extract_tdd_tag(mission_title):
-        from app.prompts import load_prompt
         return load_prompt("testing-anti-patterns")
 
-    try:
-        from app.mission_verifier import _expects_tests
-        if _expects_tests(mission_title):
-            from app.prompts import load_prompt
-            return load_prompt("testing-anti-patterns")
-    except (ImportError, Exception):
-        pass
+    from app.mission_verifier import expects_tests
+    if expects_tests(mission_title):
+        return load_prompt("testing-anti-patterns")
 
     return ""
 
