@@ -740,3 +740,169 @@ class TestConvenienceFunctions:
     def test_build_max_turns_flags(self, _):
         from app.provider import build_max_turns_flags
         assert build_max_turns_flags(10) == ["--max-turns", "10"]
+
+
+class TestBuildFullCommand:
+    def test_delegates_to_provider(self):
+        from app.provider import build_full_command
+        fake_prov = MagicMock()
+        fake_prov.build_command.return_value = ["fake-cli", "-p", "hi"]
+        with patch("app.provider.get_provider", return_value=fake_prov), \
+             patch("app.config.get_skip_permissions", return_value=True):
+            cmd = build_full_command(prompt="hi", allowed_tools=["Bash"],
+                                     model="m", fallback="fb", max_turns=5)
+        assert cmd == ["fake-cli", "-p", "hi"]
+        assert fake_prov.build_command.call_args.kwargs["skip_permissions"] is True
+
+
+class TestGetProviderNameFallback:
+    def test_config_load_error_falls_back_to_claude(self, monkeypatch):
+        from app.provider import get_provider_name
+        monkeypatch.delenv("KOAN_CLI_PROVIDER", raising=False)
+        monkeypatch.delenv("CLI_PROVIDER", raising=False)
+        with patch("app.utils.load_config", side_effect=RuntimeError("bad")):
+            assert get_provider_name() == "claude"
+
+
+class TestRunCommand:
+    def test_success(self):
+        from app.provider import run_command
+        result = MagicMock(returncode=0, stdout="hello\n", stderr="")
+        with patch("app.config.get_model_config", return_value={"chat": "m", "fallback": "f"}), \
+             patch("app.provider.build_full_command", return_value=["fake"]), \
+             patch("app.cli_exec.run_cli_with_retry", return_value=result), \
+             patch("app.claude_step.strip_cli_noise", side_effect=lambda s: s):
+            assert run_command("hi", "/tmp", []) == "hello"
+
+    def test_failure_raises(self):
+        from app.provider import run_command
+        result = MagicMock(returncode=1, stdout="", stderr="boom")
+        with patch("app.config.get_model_config", return_value={"chat": "m", "fallback": "f"}), \
+             patch("app.provider.build_full_command", return_value=["fake"]), \
+             patch("app.cli_exec.run_cli_with_retry", return_value=result):
+            with pytest.raises(RuntimeError, match="CLI invocation failed"):
+                run_command("hi", "/tmp", [])
+
+
+class TestRunCommandStreaming:
+    def _make_proc(self, stdout_lines, stderr="", returncode=0):
+        proc = MagicMock()
+        stdout = MagicMock()
+        stdout.__iter__ = lambda self: iter(stdout_lines)
+        stdout.close = MagicMock()
+        proc.stdout = stdout
+        proc.stderr = MagicMock()
+        proc.stderr.read.return_value = stderr
+        proc.returncode = returncode
+        proc.wait.return_value = None
+        return proc
+
+    def test_happy_path(self, capsys):
+        from app.provider import run_command_streaming
+        proc = self._make_proc(["line1\n", "line2\n"])
+        cleanup = MagicMock()
+        with patch("app.config.get_model_config", return_value={"chat": "m", "fallback": "f"}), \
+             patch("app.provider.build_full_command", return_value=["fake"]), \
+             patch("app.cli_exec.popen_cli", return_value=(proc, cleanup)), \
+             patch("app.claude_step.strip_cli_noise", side_effect=lambda s: s):
+            out = run_command_streaming("hi", "/tmp", [])
+        assert "line1" in out and "line2" in out
+        cleanup.assert_called_once()
+
+    def test_failure_raises(self):
+        from app.provider import run_command_streaming
+        proc = self._make_proc(["oops\n"], stderr="err", returncode=1)
+        cleanup = MagicMock()
+        with patch("app.config.get_model_config", return_value={"chat": "m", "fallback": "f"}), \
+             patch("app.provider.build_full_command", return_value=["fake"]), \
+             patch("app.cli_exec.popen_cli", return_value=(proc, cleanup)), \
+             patch("app.claude_step.strip_cli_noise", side_effect=lambda s: s):
+            with pytest.raises(RuntimeError, match="CLI invocation failed"):
+                run_command_streaming("hi", "/tmp", [])
+
+    def test_timeout_raises(self):
+        import subprocess as sp
+        from app.provider import run_command_streaming
+        proc = self._make_proc([])
+        proc.wait.side_effect = [sp.TimeoutExpired("fake", 1), None]
+        cleanup = MagicMock()
+        with patch("app.config.get_model_config", return_value={"chat": "m", "fallback": "f"}), \
+             patch("app.provider.build_full_command", return_value=["fake"]), \
+             patch("app.cli_exec.popen_cli", return_value=(proc, cleanup)):
+            with pytest.raises(RuntimeError, match="timed out"):
+                run_command_streaming("hi", "/tmp", [], timeout=1)
+        proc.kill.assert_called_once()
+
+    def test_max_turns_warning(self, capsys):
+        from app.provider import run_command_streaming
+        proc = self._make_proc(["Reached max turns limit\n"])
+        cleanup = MagicMock()
+        with patch("app.config.get_model_config", return_value={"chat": "m", "fallback": "f"}), \
+             patch("app.provider.build_full_command", return_value=["fake"]), \
+             patch("app.cli_exec.popen_cli", return_value=(proc, cleanup)), \
+             patch("app.claude_step.strip_cli_noise", side_effect=lambda s: s):
+            run_command_streaming("hi", "/tmp", [], max_turns=2)
+        assert "max turns limit" in capsys.readouterr().err
+
+
+class TestCodexProvider:
+    def test_all_build_methods(self):
+        from app.provider.codex import CodexProvider
+        p = CodexProvider()
+        assert p.binary() == "codex"
+        with patch("app.provider.codex.shutil.which", return_value="/usr/bin/codex"):
+            assert p.is_available() is True
+        with patch("app.provider.codex.shutil.which", return_value=None):
+            assert p.is_available() is False
+        assert p.build_permission_args(True) == ["--yolo"]
+        assert p.build_permission_args(False) == ["--full-auto"]
+        assert p.build_prompt_args("hi") == ["exec", "hi"]
+        assert p.build_tool_args(allowed_tools=["Bash"]) == []
+        assert p.build_model_args(model="m") == ["--model", "m"]
+        assert p.build_model_args(model="", fallback="fb") == []
+        assert p.build_output_args("json") == []
+        assert p.build_max_turns_args(10) == []
+        assert p.build_mcp_args(configs=["x"]) == []
+        assert p.build_plugin_args(plugin_dirs=["/x"]) == []
+
+    def test_build_command_structure(self):
+        from app.provider.codex import CodexProvider
+        p = CodexProvider()
+        cmd = p.build_command(prompt="hello", model="gpt-5", skip_permissions=True)
+        assert cmd[0] == "codex" and "--yolo" in cmd and "exec" in cmd
+
+    def test_build_command_prepends_system_prompt(self):
+        from app.provider.codex import CodexProvider
+        cmd = CodexProvider().build_command(prompt="up", system_prompt="sys")
+        assert cmd[-1].startswith("sys")
+
+    def test_check_quota_success(self):
+        from app.provider.codex import CodexProvider
+        r = MagicMock(stdout="ok", stderr="", returncode=0)
+        with patch("app.provider.codex.subprocess.run", return_value=r), \
+             patch("app.quota_handler.detect_quota_exhaustion", return_value=False):
+            ok, msg = CodexProvider().check_quota_available("/tmp")
+        assert ok is True
+
+    def test_check_quota_exhausted(self):
+        from app.provider.codex import CodexProvider
+        r = MagicMock(stdout="", stderr="rate limit", returncode=1)
+        with patch("app.provider.codex.subprocess.run", return_value=r), \
+             patch("app.quota_handler.detect_quota_exhaustion", return_value=True):
+            ok, msg = CodexProvider().check_quota_available("/tmp")
+        assert ok is False
+
+    def test_check_quota_timeout_optimistic(self):
+        import subprocess as sp
+        from app.provider.codex import CodexProvider
+        with patch("app.provider.codex.subprocess.run",
+                   side_effect=sp.TimeoutExpired("codex", 1)):
+            ok, _ = CodexProvider().check_quota_available("/tmp")
+        assert ok is True
+
+    def test_check_quota_generic_error_optimistic(self):
+        from app.provider.codex import CodexProvider
+        with patch("app.provider.codex.subprocess.run",
+                   side_effect=OSError("no binary")):
+            ok, _ = CodexProvider().check_quota_available("/tmp")
+        assert ok is True

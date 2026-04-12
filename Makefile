@@ -51,10 +51,6 @@ say: setup
 
 test: setup
 	$(VENV)/bin/pip install -q pytest pytest-cov 2>/dev/null
-	cd koan && KOAN_ROOT=/tmp/test-koan PYTHONPATH=. ../$(PYTHON) -m pytest tests/ -v --cov=app --cov-report=term
-
-coverage: setup
-	$(VENV)/bin/pip install -q pytest pytest-cov 2>/dev/null
 	cd koan && KOAN_ROOT=/tmp/test-koan PYTHONPATH=. ../$(PYTHON) -m pytest tests/ -v --cov=app --cov-report=term-missing --cov-report=html:htmlcov
 
 migrate: setup

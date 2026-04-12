@@ -351,6 +351,234 @@ class TestSquashRunner:
         assert code == 1
 
 
+class TestSquashHelpers:
+    def test_count_commits_since_base_happy_path(self):
+        from app.squash_pr import _count_commits_since_base
+        with patch("app.squash_pr._run_git") as mock_git:
+            mock_git.side_effect = ["abc123\n", "sha1\nsha2\nsha3\n"]
+            assert _count_commits_since_base("origin/main", "/tmp") == 3
+
+    def test_count_commits_since_base_no_commits(self):
+        from app.squash_pr import _count_commits_since_base
+        with patch("app.squash_pr._run_git") as mock_git:
+            mock_git.side_effect = ["abc\n", "\n"]
+            assert _count_commits_since_base("origin/main", "/tmp") == 0
+
+    def test_count_commits_since_base_error_returns_zero(self):
+        from app.squash_pr import _count_commits_since_base
+        with patch("app.squash_pr._run_git", side_effect=RuntimeError("boom")):
+            assert _count_commits_since_base("origin/main", "/tmp") == 0
+
+    def test_squash_commits_runs_reset_and_commit(self):
+        from app.squash_pr import _squash_commits
+        with patch("app.squash_pr._run_git") as mock_git:
+            mock_git.side_effect = ["abc123\n", "", ""]
+            assert _squash_commits("origin/main", "/tmp", "feat: x") is True
+            calls = [c.args[0] for c in mock_git.call_args_list]
+            assert ["git", "merge-base", "origin/main", "HEAD"] in calls
+            assert ["git", "reset", "--soft", "abc123"] in calls
+            assert ["git", "commit", "-m", "feat: x"] in calls
+
+    def test_generate_squash_text_success(self):
+        from app.squash_pr import _generate_squash_text
+        output = (
+            "===COMMIT_MESSAGE===\nfeat: hello\n"
+            "===PR_TITLE===\nfeat: hello\n"
+            "===PR_DESCRIPTION===\ndesc here\n===END==="
+        )
+        context = {"title": "old", "body": "oldbody", "branch": "f", "base": "main"}
+        with patch("app.squash_pr.load_prompt_or_skill", return_value="prompt"), \
+             patch("app.squash_pr.get_model_config", return_value={
+                 "lightweight": "m1", "mission": "m2", "fallback": "m3"}), \
+             patch("app.squash_pr.build_full_command", return_value=["fake"]), \
+             patch("app.squash_pr.run_claude", return_value={"success": True, "output": output}):
+            result = _generate_squash_text(context, "diff body")
+        assert "feat: hello" in result["commit_message"]
+
+    def test_generate_squash_text_fallback_on_failure(self):
+        from app.squash_pr import _generate_squash_text
+        context = {"title": "fb-title", "body": "fb-body", "branch": "f", "base": "main"}
+        with patch("app.squash_pr.load_prompt_or_skill", return_value="p"), \
+             patch("app.squash_pr.get_model_config", return_value={
+                 "lightweight": "m1", "mission": "m2", "fallback": "m3"}), \
+             patch("app.squash_pr.build_full_command", return_value=["fake"]), \
+             patch("app.squash_pr.run_claude", return_value={"success": False, "output": ""}):
+            result = _generate_squash_text(context, "")
+        assert result["commit_message"] == "fb-title"
+
+    def test_force_push_first_remote_succeeds(self):
+        from app.squash_pr import _force_push
+        with patch("app.squash_pr._ordered_remotes", return_value=["origin"]), \
+             patch("app.squash_pr._run_git") as mock_git:
+            mock_git.return_value = ""
+            assert _force_push("feat", "/tmp") == "origin"
+
+    def test_force_push_falls_back_to_plain_force(self):
+        from app.squash_pr import _force_push
+        def fake_git(cmd, cwd=None, **kw):
+            if "--force-with-lease" in cmd:
+                raise RuntimeError("rejected")
+            return ""
+        with patch("app.squash_pr._ordered_remotes", return_value=["origin"]), \
+             patch("app.squash_pr._run_git", side_effect=fake_git):
+            assert _force_push("feat", "/tmp") == "origin"
+
+    def test_force_push_all_fail_raises(self):
+        from app.squash_pr import _force_push
+        with patch("app.squash_pr._ordered_remotes", return_value=["origin"]), \
+             patch("app.squash_pr._run_git", side_effect=RuntimeError("nope")):
+            with pytest.raises(RuntimeError, match="all remotes rejected"):
+                _force_push("feat", "/tmp")
+
+    def test_checkout_pr_branch_first_remote_wins(self):
+        from app.squash_pr import _checkout_pr_branch
+        with patch("app.squash_pr._ordered_remotes", return_value=["origin"]), \
+             patch("app.squash_pr._fetch_branch"), \
+             patch("app.squash_pr._run_git", return_value=""):
+            assert _checkout_pr_branch("feat", "/tmp") == "origin"
+
+    def test_checkout_pr_branch_fork_fallback(self):
+        from app.squash_pr import _checkout_pr_branch
+        calls = []
+        def fake_fetch(remote, branch, cwd=None):
+            calls.append(remote)
+            if remote in ("origin",):
+                raise RuntimeError("not found")
+        with patch("app.squash_pr._ordered_remotes", return_value=["origin"]), \
+             patch("app.squash_pr._fetch_branch", side_effect=fake_fetch), \
+             patch("app.squash_pr._run_git", return_value=""):
+            r = _checkout_pr_branch("feat", "/tmp", head_owner="alice", repo="koan")
+            assert r == "fork-alice"
+
+    def test_checkout_pr_branch_all_fail_raises(self):
+        from app.squash_pr import _checkout_pr_branch
+        with patch("app.squash_pr._ordered_remotes", return_value=["origin"]), \
+             patch("app.squash_pr._fetch_branch", side_effect=RuntimeError("nope")), \
+             patch("app.squash_pr._run_git", return_value=""):
+            with pytest.raises(RuntimeError, match="not found on any remote"):
+                _checkout_pr_branch("feat", "/tmp")
+
+
+class TestRunSquashFlow:
+    @pytest.fixture
+    def base_context(self):
+        return {
+            "title": "old title", "body": "old body", "branch": "feat",
+            "base": "main", "state": "OPEN", "author": "me",
+            "head_owner": "me", "url": "", "diff": "",
+            "review_comments": "", "reviews": "", "issue_comments": "",
+            "has_pending_reviews": False,
+        }
+
+    def _std_patches(self, ctx, commit_count=3, **overrides):
+        squash_text = {"commit_message": "m", "pr_title": "t", "pr_description": "d"}
+        defaults = dict(
+            fetch_pr_context=ctx,
+            _get_current_branch="main",
+            _checkout_pr_branch="origin",
+            _find_remote_for_repo="origin",
+            _fetch_branch="",
+            _run_git="",
+            _count_commits_since_base=commit_count,
+            _generate_squash_text=squash_text,
+            _squash_commits=True,
+            _force_push="origin",
+            run_gh="ok",
+            _safe_checkout=None,
+            sanitize_github_comment=lambda s: s,
+        )
+        defaults.update(overrides)
+        patches = []
+        for name, val in defaults.items():
+            target = f"app.squash_pr.{name}"
+            if callable(val) and not isinstance(val, MagicMock):
+                patches.append(patch(target, side_effect=val))
+            elif val is None:
+                patches.append(patch(target))
+            else:
+                patches.append(patch(target, return_value=val))
+        return patches
+
+    def _run(self, patches, *args, **kwargs):
+        from app.squash_pr import run_squash
+        for p in patches:
+            p.start()
+        try:
+            return run_squash(*args, **kwargs)
+        finally:
+            for p in patches:
+                p.stop()
+
+    def test_full_success(self, base_context):
+        ok, summary = self._run(
+            self._std_patches(base_context),
+            "o", "r", "42", "/tmp", notify_fn=MagicMock(),
+        )
+        assert ok is True
+        assert "#42" in summary and "Squashed 3 commits" in summary
+
+    def test_fetch_context_fails(self):
+        from app.squash_pr import run_squash
+        with patch("app.squash_pr.fetch_pr_context", side_effect=RuntimeError("down")):
+            ok, s = run_squash("o", "r", "1", "/tmp", notify_fn=MagicMock())
+        assert ok is False and "down" in s
+
+    def test_empty_branch_returns_error(self, base_context):
+        base_context["branch"] = ""
+        with patch("app.squash_pr.fetch_pr_context", return_value=base_context):
+            ok, s = self._run([], "o", "r", "1", "/tmp", notify_fn=MagicMock())
+        assert ok is False and "branch" in s.lower()
+
+    def test_checkout_failure(self, base_context):
+        p = self._std_patches(
+            base_context,
+            _checkout_pr_branch=RuntimeError("no branch"),
+        )
+        # Override _checkout_pr_branch to raise
+        for i, pp in enumerate(p):
+            if "_checkout_pr_branch" in str(pp.attribute):
+                p[i] = patch("app.squash_pr._checkout_pr_branch",
+                             side_effect=RuntimeError("no branch"))
+        ok, s = self._run(p, "o", "r", "1", "/tmp", notify_fn=MagicMock())
+        assert ok is False and "checkout" in s.lower()
+
+    def test_squash_step_fails(self, base_context):
+        p = self._std_patches(base_context)
+        # Replace _squash_commits patch with one that raises
+        new_patches = []
+        for pp in p:
+            if hasattr(pp, 'attribute') and pp.attribute == '_squash_commits':
+                new_patches.append(
+                    patch("app.squash_pr._squash_commits",
+                          side_effect=RuntimeError("conflict")))
+            else:
+                new_patches.append(pp)
+        ok, s = self._run(new_patches, "o", "r", "7", "/tmp", notify_fn=MagicMock())
+        assert ok is False and "Squash failed" in s
+
+    def test_force_push_fails(self, base_context):
+        p = self._std_patches(base_context)
+        new_patches = []
+        for pp in p:
+            if hasattr(pp, 'attribute') and pp.attribute == '_force_push':
+                new_patches.append(
+                    patch("app.squash_pr._force_push",
+                          side_effect=RuntimeError("auth")))
+            else:
+                new_patches.append(pp)
+        ok, s = self._run(new_patches, "o", "r", "7", "/tmp", notify_fn=MagicMock())
+        assert ok is False and "Push failed" in s
+
+    def test_pr_edit_failures_non_fatal(self, base_context):
+        def fake_gh(*args, **kw):
+            if "edit" in args:
+                raise RuntimeError("gh exploded")
+            return "ok"
+        p = self._std_patches(base_context, run_gh=fake_gh)
+        ok, s = self._run(p, "o", "r", "11", "/tmp", notify_fn=MagicMock())
+        assert ok is True and "non-fatal" in s
+
+
 # ---------------------------------------------------------------------------
 # GitHub @mention integration
 # ---------------------------------------------------------------------------
