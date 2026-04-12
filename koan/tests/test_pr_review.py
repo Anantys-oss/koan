@@ -780,7 +780,7 @@ class TestRunPrReview:
             "url": "https://github.com/o/r/pull/1",
         })
         # No comments/reviews
-        mock_rebase_gh.side_effect = [pr_meta, "0", "diff", "", "", ""]
+        mock_rebase_gh.side_effect = [pr_meta, "0", "diff", "", "", "", "", ""]
         mock_commit.return_value = False
 
         notify = MagicMock()
