@@ -101,10 +101,11 @@ def read_and_clear_inbox() -> list:
                             entries.append(json.loads(line))
                         except json.JSONDecodeError:
                             pass
-                if entries:
-                    f.seek(0)
-                    f.truncate()
-                    f.flush()
+                # Always truncate after reading — even if no valid entries
+                # were parsed — to prevent malformed lines from accumulating.
+                f.seek(0)
+                f.truncate()
+                f.flush()
             finally:
                 fcntl.flock(f, fcntl.LOCK_UN)
     except OSError:
@@ -314,18 +315,18 @@ def main():
         )
 
     _log("Chat process starting...")
-
-    # Load context once at startup
-    soul = _load_soul()
-    summary = _load_summary()
-    project_path = _resolve_project_path()
-
-    _log(f"Soul: {len(soul)} chars loaded")
     _log(f"Polling inbox every {INBOX_POLL_INTERVAL}s")
 
     try:
         while not _shutdown_requested:
             entries = read_and_clear_inbox()
+            if entries:
+                # Reload context each batch so edits to soul.md/summary.md
+                # are picked up without restarting the process.
+                soul = _load_soul()
+                summary = _load_summary()
+                project_path = _resolve_project_path()
+
             for entry in entries:
                 if _shutdown_requested:
                     break

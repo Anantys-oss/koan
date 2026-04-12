@@ -106,8 +106,8 @@ class TestChatRouting:
 
     @patch("app.awake._is_chat_process_running", return_value=True)
     @patch("app.awake.send_telegram")
-    def test_busy_when_pending_requests(self, mock_send, mock_running, monkeypatch, instance_dir):
-        """When inbox already has pending requests, send busy message."""
+    def test_queues_when_pending_requests(self, mock_send, mock_running, monkeypatch, instance_dir):
+        """When inbox already has pending requests, new messages are still queued."""
         from app.awake import _route_to_chat_process
 
         inbox = instance_dir / "chat-inbox.jsonl"
@@ -119,8 +119,12 @@ class TestChatRouting:
 
         result = _route_to_chat_process("second message")
         assert result is True
-        mock_send.assert_called_once()
-        assert "Busy" in mock_send.call_args[0][0]
+        # No busy message sent — both requests are queued
+        mock_send.assert_not_called()
+        # Verify both messages are in inbox
+        lines = inbox.read_text().strip().split("\n")
+        assert len(lines) == 2
+        assert json.loads(lines[1])["text"] == "second message"
 
 
 class TestRetryConstants:
