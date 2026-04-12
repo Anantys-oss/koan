@@ -12,6 +12,7 @@ venv/
 .coverage
 .coverage.*
 htmlcov/
+koan/htmlcov/
 
 # Runtime
 .koan-status

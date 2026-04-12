@@ -17,11 +17,10 @@ timeout = 60
 
 [tool.coverage.run]
 source = ["app"]
-omit = ["*/tests/*", "*/test_*"]
-parallel = true
+omit = ["tests/*", "app/setup_wizard.py"]
 
 [tool.coverage.report]
-show_missing = false
+show_missing = true
 precision = 1
 exclude_lines = [
     "pragma: no cover",
