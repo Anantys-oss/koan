@@ -6,7 +6,7 @@ the operations it supports.  Unsupported operations raise NotImplementedError.
 """
 
 import shutil
-from abc import ABC, abstractmethod
+from abc import ABC
 from typing import Dict, List, Optional, Tuple
 
 

@@ -219,7 +219,6 @@ class GitHubForge(ForgeProvider):
         "pr",
         "issues",
         "ci_status",
-        "pr_review_comments",
     })
 
     def supports(self, feature: str) -> bool:
