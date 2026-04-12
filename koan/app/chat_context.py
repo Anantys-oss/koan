@@ -196,6 +196,14 @@ def build_chat_prompt(
             project_path=project_path,
         )
 
+    # Last resort: if lite mode still exceeds the cap, truncate user message
+    if len(prompt) > MAX_PROMPT_CHARS:
+        overflow = len(prompt) - MAX_PROMPT_CHARS
+        max_text_len = max(200, len(text) - overflow - 50)
+        if len(text) > max_text_len:
+            truncated_text = text[:max_text_len] + "… [truncated]"
+            prompt = prompt.replace(text, truncated_text)
+
     return prompt
 
 
