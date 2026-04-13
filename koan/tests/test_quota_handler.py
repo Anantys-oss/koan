@@ -52,6 +52,23 @@ Your quota resets 10am (Europe/Paris)."""
         assert detect_quota_exhaustion(text) is True
 
 
+    def test_detects_hit_your_limit(self):
+        """Detect 'You've hit your limit' message from Claude Code CLI."""
+        from app.quota_handler import detect_quota_exhaustion
+
+        assert detect_quota_exhaustion("You've hit your limit · resets 6pm (UTC)") is True
+
+    def test_detects_hit_your_limit_without_contraction(self):
+        from app.quota_handler import detect_quota_exhaustion
+
+        assert detect_quota_exhaustion("You hit your limit") is True
+
+    def test_detects_hit_the_limit(self):
+        from app.quota_handler import detect_quota_exhaustion
+
+        assert detect_quota_exhaustion("hit the limit") is True
+
+
 class TestDetectQuotaExhaustionCopilot:
     """Test detect_quota_exhaustion with Copilot/GitHub-style messages."""
 

@@ -97,6 +97,12 @@ class TestClassifyCliError:
         result = classify_cli_error(1, stderr=stderr)
         assert result == ErrorCategory.QUOTA, f"Expected QUOTA for: {stderr}"
 
+    def test_hit_your_limit_is_quota(self):
+        """Claude Code CLI 'hit your limit' message should classify as QUOTA."""
+        result = classify_cli_error(
+            1, stderr="You've hit your limit · resets 6pm (UTC)")
+        assert result == ErrorCategory.QUOTA
+
     # -- Unknown errors ---------------------------------------------------------
 
     def test_unknown_for_unrecognized_error(self):

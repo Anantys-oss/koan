@@ -1386,6 +1386,44 @@ class TestRequeueMission:
         assert len(sections["in_progress"]) == 0
 
 
+    def test_requeue_from_failed_section(self):
+        """Requeue should rescue missions from Failed back to Pending.
+
+        This handles the case where quota exhaustion is detected after
+        _finalize_mission already moved the mission to Failed.
+        """
+        content = (
+            "## Pending\n\n"
+            "## In Progress\n\n"
+            "## Failed\n\n"
+            "- Fix login bug ❌(2026-04-13 14:47)\n"
+        )
+        result = requeue_mission(content, "Fix login bug")
+        sections = parse_sections(result)
+        assert len(sections["failed"]) == 0
+        assert len(sections["pending"]) == 1
+        assert "Fix login bug" in sections["pending"][0]
+        # Markers should be stripped
+        assert "❌" not in sections["pending"][0]
+        assert "2026-04-13" not in sections["pending"][0]
+
+    def test_requeue_prefers_in_progress_over_failed(self):
+        """If mission exists in both sections, In Progress takes priority."""
+        content = (
+            "## Pending\n\n"
+            "## In Progress\n\n"
+            "- Fix login bug ▶(2026-04-13T10:00)\n"
+            "## Failed\n\n"
+            "- Fix login bug ❌(2026-04-12 09:00)\n"
+        )
+        result = requeue_mission(content, "Fix login bug")
+        sections = parse_sections(result)
+        assert len(sections["in_progress"]) == 0
+        # Failed copy should remain untouched (requeue found it in In Progress first)
+        assert len(sections["failed"]) == 1
+        assert len(sections["pending"]) == 1
+
+
 # ---------------------------------------------------------------------------
 # parse_sections — failed section
 # ---------------------------------------------------------------------------
