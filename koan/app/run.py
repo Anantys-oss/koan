@@ -1489,15 +1489,31 @@ def _run_iteration(
             "PR limit reached for all projects — waiting for reviews",
             f"PR limit reached — waiting for reviews ({time.strftime('%H:%M')})",
         ),
+        "branch_saturated_wait": lambda p: (
+            p.get("decision_reason") or "Project branch-saturated — waiting for reviews/merges",
+            f"Branch-saturated — waiting ({time.strftime('%H:%M')})",
+        ),
     }
     if action in _IDLE_WAIT_CONFIG:
         log_msg, status_msg = _IDLE_WAIT_CONFIG[action](plan)
         log("koan", log_msg)
         set_status(koan_root, status_msg)
+        # branch_saturated_wait: the pending missions ARE the blocker
+        # (the picked mission's project is over its PR limit), so waking
+        # on pending missions would just tight-loop back into the same
+        # blocked state. Wait the full interval for PR count to change.
+        wake_on_mission = action != "branch_saturated_wait"
         with protected_phase(status_msg):
-            wake = interruptible_sleep(interval, koan_root, instance)
+            wake = interruptible_sleep(
+                interval, koan_root, instance,
+                wake_on_mission=wake_on_mission,
+            )
         if wake == "mission":
             log("koan", f"New mission detected during {action} — waking up")
+        # branch_saturated_wait is a human-unblock state (review PRs),
+        # not an idle state — don't accumulate toward auto-pause.
+        if action == "branch_saturated_wait":
+            return False  # blocked on external action — not idle, not productive
         return "idle"  # idle wait — not productive, trackable
 
     if action == "wait_pause":

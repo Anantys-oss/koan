@@ -479,6 +479,33 @@ class TestInterruptibleSleep:
         )
         assert result == "mission"
 
+    def test_wake_on_mission_false_ignores_pending(self, tmp_path):
+        """With wake_on_mission=False, pending missions must NOT wake the sleep.
+
+        Used by branch_saturated_wait: the pending missions are the blocker, so
+        waking on them would tight-loop back into the same blocked state.
+        """
+        from app.loop_manager import interruptible_sleep
+
+        koan_root = str(tmp_path / "root")
+        instance = str(tmp_path / "instance")
+        os.makedirs(koan_root, exist_ok=True)
+        os.makedirs(instance, exist_ok=True)
+
+        missions_md = Path(instance) / "missions.md"
+        missions_md.write_text("## Pending\n\n- Blocked mission\n\n## Done\n")
+
+        # Very short interval so the test completes quickly but still goes
+        # through the full sleep cycle without returning "mission".
+        result = interruptible_sleep(
+            interval=1,
+            koan_root=koan_root,
+            instance_dir=instance,
+            check_interval=1,
+            wake_on_mission=False,
+        )
+        assert result == "timeout"
+
     def test_priority_stop_over_pause(self, tmp_path):
         from app.loop_manager import interruptible_sleep
 

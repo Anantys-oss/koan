@@ -2373,37 +2373,6 @@ class TestPlanIterationBranchSaturation:
         assert result["action"] == "branch_saturated_wait"
         assert "Branch limit" in result["decision_reason"]
 
-    @patch("app.branch_limiter.count_pending_branches", return_value=10)
-    @patch("app.pick_mission.pick_mission", return_value="koan:fix a bug")
-    @patch("app.usage_estimator.cmd_refresh")
-    def test_mission_blocked_when_branch_saturated(
-        self, mock_refresh, mock_pick, mock_count,
-        instance_dir, koan_root, usage_state,
-    ):
-        """Mission is skipped when project is branch-saturated."""
-        (koan_root / "projects.yaml").write_text("""
-projects:
-  koan:
-    path: /path/to/koan
-    max_pending_branches: 5
-""")
-
-        usage_md = instance_dir / "usage.md"
-        usage_md.write_text("Session (5hr) : 30% (reset in 3h)\nWeekly (7 day) : 20% (Resets in 5d)\n")
-
-        result = plan_iteration(
-            instance_dir=str(instance_dir),
-            koan_root=str(koan_root),
-            run_num=2,
-            count=1,
-            projects=PROJECTS_LIST,
-            last_project="koan",
-            usage_state_path=str(usage_state),
-        )
-
-        assert result["action"] == "branch_saturated_wait"
-        assert result["project_name"] == "koan"
-
     @patch("app.branch_limiter.count_pending_branches", return_value=3)
     @patch("app.pick_mission.pick_mission", return_value="koan:fix a bug")
     @patch("app.usage_estimator.cmd_refresh")
@@ -2434,6 +2403,48 @@ projects:
 
         assert result["action"] == "mission"
         assert result["project_name"] == "koan"
+
+    @patch("app.branch_limiter.count_pending_branches", return_value=50)
+    @patch("app.pick_mission.pick_mission", return_value="koan:fix a bug")
+    @patch("app.usage_estimator.cmd_refresh")
+    def test_manual_mission_runs_despite_branch_saturation(
+        self, mock_refresh, mock_pick, mock_count,
+        instance_dir, koan_root, usage_state,
+    ):
+        """max_pending_branches is a self-throttle for autonomous exploration
+        only — explicit missions in missions.md must run regardless of how
+        many open PRs/unmerged branches the project has.
+
+        Regression: previously the picker post-check (commit 5fd621c) and
+        the saturated-projects loop (2b753ec) both returned
+        branch_saturated_wait for a mission whose project was over the limit.
+        A human queuing work should never be blocked by the agent's own
+        throttle.
+        """
+        (koan_root / "projects.yaml").write_text("""
+projects:
+  koan:
+    path: /path/to/koan
+    max_pending_branches: 5
+""")
+
+        usage_md = instance_dir / "usage.md"
+        usage_md.write_text("Session (5hr) : 30% (reset in 3h)\nWeekly (7 day) : 20% (Resets in 5d)\n")
+
+        result = plan_iteration(
+            instance_dir=str(instance_dir),
+            koan_root=str(koan_root),
+            run_num=2,
+            count=1,
+            projects=PROJECTS_LIST,
+            last_project="koan",
+            usage_state_path=str(usage_state),
+        )
+
+        # 50 >> 5 limit — but mission is manual, so it proceeds.
+        assert result["action"] == "mission"
+        assert result["project_name"] == "koan"
+        assert result["mission_title"] == "fix a bug"
 
 
 # === Tests: CLI interface ===
