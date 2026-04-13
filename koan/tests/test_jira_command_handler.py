@@ -17,17 +17,26 @@ from app.jira_command_handler import (
 
 @pytest.fixture
 def skill_registry():
-    """Minimal SkillRegistry with a github_enabled 'plan' skill."""
+    """Minimal SkillRegistry with a github_enabled 'plan' skill.
+
+    Test skills are configured as ``scope="core"`` with no handler so the
+    Jira bridge's in-process dispatch helper short-circuits and falls
+    through to the slash-mission path this fixture exercises.
+    """
     registry = MagicMock()
 
     # plan skill — github_enabled, context_aware
     plan_skill = MagicMock()
     plan_skill.github_enabled = True
     plan_skill.github_context_aware = True
+    plan_skill.scope = "core"
+    plan_skill.has_handler.return_value = False
 
     # noop skill — NOT github_enabled
     noop_skill = MagicMock()
     noop_skill.github_enabled = False
+    noop_skill.scope = "core"
+    noop_skill.has_handler.return_value = False
 
     def find_by_command(cmd):
         if cmd == "plan":
@@ -36,6 +45,8 @@ def skill_registry():
             rebase = MagicMock()
             rebase.github_enabled = True
             rebase.github_context_aware = False
+            rebase.scope = "core"
+            rebase.has_handler.return_value = False
             return rebase
         if cmd == "noop":
             return noop_skill
@@ -334,3 +345,121 @@ class TestProcessJiraMention:
         success, error = process_jira_mention(bad_mention, skill_registry, basic_config, set())
         assert success is False
         assert error is None
+
+
+class TestCustomHandlerDispatch:
+    """Custom skills under instance/skills/<scope>/ are invoked inline instead
+    of queueing a slash mission that has no runner module."""
+
+    def _make_custom_registry(self, handler_path: Path):
+        """Registry where 'cpfix' maps to a custom skill backed by handler_path."""
+        from app.skills import Skill, SkillCommand, SkillRegistry
+
+        skill = Skill(
+            name="cp_fix",
+            scope="cp",
+            description="cPanel fix",
+            handler_path=handler_path,
+            skill_dir=handler_path.parent,
+            github_enabled=True,
+            github_context_aware=True,
+            commands=[SkillCommand(name="cp_fix", aliases=["cpfix"])],
+        )
+        registry = SkillRegistry()
+        registry._register(skill)
+        return registry
+
+    def test_custom_handler_invoked_inline_not_queued(
+        self, tmp_path, monkeypatch, mention, basic_config,
+    ):
+        """When the resolved skill is custom+handler, the in-process helper
+        runs and missions.md is NOT touched by the slash-mission path."""
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        missions_path = instance_dir / "missions.md"
+        missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        # Handler writes a marker file so we can assert it actually ran.
+        marker = tmp_path / "handler_ran.txt"
+        handler_dir = tmp_path / "skills" / "cp" / "fix"
+        handler_dir.mkdir(parents=True)
+        handler = handler_dir / "handler.py"
+        handler.write_text(
+            f"def handle(ctx):\n"
+            f"    with open({str(marker)!r}, 'w') as f:\n"
+            f"        f.write(ctx.args)\n"
+            f"    return 'queued ' + ctx.args\n"
+        )
+
+        registry = self._make_custom_registry(handler)
+        cpfix_mention = dict(
+            mention,
+            body_text="@koan-bot cp_fix",
+            issue_key="CPANEL-555",
+            issue_url="https://test.atlassian.net/browse/CPANEL-555",
+        )
+
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+
+        with patch("app.jira_command_handler.get_jira_nickname", return_value="koan-bot"), \
+             patch("app.jira_command_handler.get_jira_authorized_users", return_value=["*"]), \
+             patch("app.jira_config.get_jira_max_age_hours", return_value=24), \
+             patch("app.jira_command_handler.acknowledge_jira_comment", return_value=True), \
+             patch("app.jira_command_handler._notify_mission_from_jira"):
+
+            success, error = process_jira_mention(
+                cpfix_mention, registry, basic_config, set(),
+            )
+
+        assert success is True
+        assert error is None
+        # Handler actually ran and saw the auto-fed Jira key.
+        assert marker.exists()
+        assert marker.read_text() == "CPANEL-555"
+        # The slash-mission path did NOT run — missions.md still empty of cp_fix.
+        assert "/cp_fix" not in missions_path.read_text()
+
+    def test_user_provided_key_wins_over_source_issue(
+        self, tmp_path, monkeypatch, mention, basic_config,
+    ):
+        """If the author typed CPANEL-1 but source issue is CPANEL-999, the
+        author's key is passed through unchanged."""
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        (instance_dir / "missions.md").write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        marker = tmp_path / "handler_ran.txt"
+        handler_dir = tmp_path / "skills" / "cp" / "fix"
+        handler_dir.mkdir(parents=True)
+        handler = handler_dir / "handler.py"
+        handler.write_text(
+            f"def handle(ctx):\n"
+            f"    with open({str(marker)!r}, 'w') as f:\n"
+            f"        f.write(ctx.args)\n"
+            f"    return 'ok'\n"
+        )
+
+        registry = self._make_custom_registry(handler)
+        author_mention = dict(
+            mention,
+            body_text="@koan-bot cp_fix CPANEL-1 please",
+            issue_key="CPANEL-999",
+        )
+
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+
+        with patch("app.jira_command_handler.get_jira_nickname", return_value="koan-bot"), \
+             patch("app.jira_command_handler.get_jira_authorized_users", return_value=["*"]), \
+             patch("app.jira_config.get_jira_max_age_hours", return_value=24), \
+             patch("app.jira_command_handler.acknowledge_jira_comment", return_value=True), \
+             patch("app.jira_command_handler._notify_mission_from_jira"):
+
+            success, _ = process_jira_mention(
+                author_mention, registry, basic_config, set(),
+            )
+
+        assert success is True
+        # Author's key is preserved — the source issue is NOT appended.
+        content = marker.read_text()
+        assert "CPANEL-1" in content
+        assert "CPANEL-999" not in content

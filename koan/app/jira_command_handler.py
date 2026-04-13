@@ -282,6 +282,45 @@ def process_jira_mention(
         mark_jira_comment_processed(comment_id, processed_set)
         return False, "Permission denied"
 
+    # Custom in-process dispatch: mirrors GitHub path. Skills under
+    # instance/skills/<scope>/ with a handler.py are invoked inline so they
+    # don't need a runner module registered for the slash-mission path.
+    from app.external_skill_dispatch import try_dispatch_custom_handler
+
+    inline_reply = try_dispatch_custom_handler(
+        skill,
+        command_name,
+        context,
+        source="jira",
+        jira_issue_key=issue_key,
+    )
+
+    if inline_reply is not None:
+        log.info(
+            "Jira: dispatched custom handler %s from %s (%s) reply=%r",
+            skill.qualified_name, author_name, issue_key,
+            (inline_reply or "")[:80],
+        )
+        mark_jira_comment_processed(comment_id, processed_set)
+
+        # Acknowledge in Jira (post 👍 reply comment) so the author knows the
+        # command landed, matching the slash-mission path below.
+        from app.jira_config import (
+            get_jira_api_token,
+            get_jira_base_url,
+            get_jira_email,
+        )
+        from app.jira_notifications import _make_auth_header
+
+        base_url = get_jira_base_url(config)
+        email = get_jira_email(config)
+        api_token = get_jira_api_token(config)
+        ack_auth = _make_auth_header(email, api_token)
+        acknowledge_jira_comment(issue_key, command_name, base_url, ack_auth)
+
+        _notify_mission_from_jira(mention, command_name)
+        return True, None
+
     # Build mission entry
     mission_entry = build_jira_mission(
         skill, command_name, context, issue_key, issue_url, project_name,

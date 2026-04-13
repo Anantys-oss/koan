@@ -733,6 +733,96 @@ class TestProcessSingleNotification:
         mock_insert.assert_not_called()
 
 
+class TestProcessNotificationCustomHandler:
+    """Custom skills under instance/skills/<scope>/ with a handler.py are
+    dispatched in-process by ``external_skill_dispatch.try_dispatch_custom_handler``
+    instead of being queued as slash missions without a runner."""
+
+    def _registry_with_custom_skill(self, handler_path: Path):
+        skill = Skill(
+            name="cp_fix",
+            scope="cp",
+            description="cPanel fix",
+            handler_path=handler_path,
+            skill_dir=handler_path.parent,
+            github_enabled=True,
+            github_context_aware=True,
+            commands=[SkillCommand(name="cp_fix", aliases=["cpfix"])],
+        )
+        reg = SkillRegistry()
+        reg._register(skill)
+        return reg
+
+    @patch("app.github_command_handler.mark_notification_read")
+    @patch("app.github_command_handler.add_reaction", return_value=True)
+    @patch("app.github_command_handler.check_user_permission", return_value=True)
+    @patch("app.github_command_handler.check_already_processed", return_value=False)
+    @patch("app.github_command_handler.is_self_mention", return_value=False)
+    @patch("app.github_command_handler.is_notification_stale", return_value=False)
+    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler.resolve_project_from_notification")
+    def test_custom_handler_runs_inline_and_no_slash_mission(
+        self, mock_resolve, mock_get_comment,
+        mock_stale, mock_self, mock_processed, mock_perm,
+        mock_react, mock_read, sample_notification, tmp_path,
+    ):
+        """The custom handler runs and missions.md is NOT touched via
+        ``insert_pending_mission`` from the slash-mission branch."""
+        # Handler writes a marker file so we can see it ran.
+        marker = tmp_path / "ran.txt"
+        handler_dir = tmp_path / "skills" / "cp" / "fix"
+        handler_dir.mkdir(parents=True)
+        handler = handler_dir / "handler.py"
+        handler.write_text(
+            f"def handle(ctx):\n"
+            f"    with open({str(marker)!r}, 'w') as f:\n"
+            f"        f.write(ctx.args)\n"
+            f"    return 'inline ok'\n"
+        )
+
+        # Notification subject title carries a Jira key that should be
+        # auto-fed when the user omits one from the command.
+        sample_notification["subject"]["title"] = "Broken login CPANEL-123"
+
+        registry = self._registry_with_custom_skill(handler)
+        mock_resolve.return_value = ("cp", "sukria", "koan")
+        mock_get_comment.return_value = {
+            "id": 99999,
+            "body": "@testbot cpfix",
+            "user": {"login": "alice"},
+            "url": "https://api.github.com/x",
+        }
+        config = {"github": {"nickname": "testbot", "authorized_users": ["*"]}}
+
+        with patch.dict("os.environ", {"KOAN_ROOT": str(tmp_path)}), \
+             patch("app.utils.insert_pending_mission") as mock_insert:
+            success, error = process_single_notification(
+                sample_notification, registry, config, None, "testbot",
+            )
+
+        assert success is True
+        assert error is None
+        # Handler ran inline and saw the auto-fed Jira key from the title.
+        assert marker.exists()
+        assert marker.read_text() == "CPANEL-123"
+        # The slash-mission path was bypassed — no direct insert_pending_mission
+        # call from process_single_notification itself.
+        # (The handler may insert its own mission through utils, but that
+        # would also hit mock_insert, so assert *either* zero calls or that
+        # no GitHub-flavoured slash mission was queued.)
+        for call in mock_insert.call_args_list:
+            assert "/cp_fix" not in str(call), (
+                "slash mission /cp_fix should NOT have been queued from GitHub path"
+            )
+            assert "📬" not in str(call), (
+                "📬-marked GitHub mission should NOT have been queued"
+            )
+        # Notification bookkeeping still happened.
+        mock_react.assert_called_once()
+        assert sample_notification["_koan_command"] == "cpfix"
+        assert sample_notification["_koan_author"] == "alice"
+
+
 class TestTryReply:
     """Tests for the _try_reply helper that generates AI replies."""
 
@@ -2379,6 +2469,28 @@ class TestFormatHelpListMessage:
         code_pos = msg.index("### Code & Development")
         pr_pos = msg.index("### Pull Requests")
         assert code_pos < pr_pos
+
+    def test_integrations_group_renders(self):
+        """Custom skills with group=integrations get a dedicated section."""
+        custom = Skill(
+            name="cp_fix", scope="cp", group="integrations", emoji="🐛",
+            github_enabled=True, github_context_aware=True,
+            commands=[SkillCommand(name="cp_fix", description="Fix a cp bug", aliases=["cpfix"])],
+        )
+        core = Skill(
+            name="rebase", scope="core", group="pr", emoji="🔄",
+            github_enabled=True,
+            commands=[SkillCommand(name="rebase", description="Rebase a PR")],
+        )
+        reg = SkillRegistry()
+        reg._register(core)
+        reg._register(custom)
+        msg = format_help_list_message(reg, "koanbot")
+        assert "### Integrations" in msg
+        assert "`@koanbot cp_fix`" in msg
+        assert "`cpfix`" in msg
+        # Integrations section comes after core groups (placed last in _GROUP_LABELS).
+        assert msg.index("### Pull Requests") < msg.index("### Integrations")
 
     def test_ungrouped_skills_go_to_other(self):
         """Skills without a recognized group appear under their group name."""

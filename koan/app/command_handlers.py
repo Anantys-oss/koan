@@ -426,13 +426,14 @@ def _handle_skill_sources():
 
 # Group display metadata: emoji + short description for /help L1
 _GROUP_META = {
-    "missions": ("📋", "Create, list, cancel missions"),
-    "code":     ("🔧", "Review, refactor, PR, fix, implement"),
-    "pr":       ("🔀", "Pull request management"),
-    "status":   ("📊", "System state, quota, logs"),
-    "config":   ("⚙️", "Projects, language, focus, verbose"),
-    "ideas":    ("💡", "Ideas, reflection, sparring"),
-    "system":   ("🔄", "Pause, stop, update, restart"),
+    "missions":     ("📋", "Create, list, cancel missions"),
+    "code":         ("🔧", "Review, refactor, PR, fix, implement"),
+    "pr":           ("🔀", "Pull request management"),
+    "status":       ("📊", "System state, quota, logs"),
+    "config":       ("⚙️", "Projects, language, focus, verbose"),
+    "ideas":        ("💡", "Ideas, reflection, sparring"),
+    "system":       ("🔄", "Pause, stop, update, restart"),
+    "integrations": ("🔌", "Custom integrations (cPanel, etc.)"),
 }
 
 # Core commands that are hardcoded (not skill-based) but should appear in /help.
@@ -449,7 +450,7 @@ _CORE_COMMAND_HELP = [
 # Ordered group list (controls display order in /help)
 _GROUP_ORDER = [
     "missions", "code", "pr", "status",
-    "config", "ideas", "system",
+    "config", "ideas", "system", "integrations",
 ]
 
 
@@ -490,7 +491,13 @@ def _handle_help_group(group: str, registry):
     emoji, description = _GROUP_META[group]
     parts = [f"{emoji} {group.title()} — {description}\n"]
 
-    skills = registry.list_by_group(group)
+    # The ``integrations`` group is reserved for non-core skills under
+    # ``instance/skills/<scope>/``; widen the lookup so they appear here
+    # even though the default ``list_by_group`` filters to core-only.
+    if group == "integrations":
+        skills = registry.list_by_group_any_scope(group)
+    else:
+        skills = registry.list_by_group(group)
     for skill in skills:
         for cmd in skill.commands:
             desc = cmd.description or skill.description

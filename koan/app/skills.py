@@ -398,6 +398,15 @@ class SkillRegistry:
         return [s for s in self._skills.values()
                 if s.scope == "core" and s.group == group]
 
+    def list_by_group_any_scope(self, group: str) -> List[Skill]:
+        """Return all skills in the given group, regardless of scope.
+
+        Used for the ``integrations`` help group, which is deliberately
+        reserved for non-core skills (e.g. skills under
+        ``instance/skills/<scope>/``).
+        """
+        return [s for s in self._skills.values() if s.group == group]
+
     def groups(self) -> List[str]:
         """Return sorted list of distinct help groups from core skills."""
         return sorted(set(

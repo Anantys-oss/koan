@@ -231,8 +231,9 @@ Any skill can opt into GitHub @mention triggering by adding flags to its `SKILL.
 ```yaml
 ---
 name: my-skill
-github_enabled: true              # Allow triggering via @mentions
+github_enabled: true              # Allow triggering via @mentions (also enables Jira)
 github_context_aware: true        # Pass extra text as context (optional)
+group: integrations               # Groups the skill under "Integrations" in help
 commands:
   - name: my-command
     description: "Does something useful"
@@ -240,7 +241,21 @@ handler: handler.py
 ---
 ```
 
-The skill's handler receives the same `SkillContext` whether triggered from Telegram or GitHub. The mission format is identical: `/my-command <url> [context]`.
+The skill's handler receives the same `SkillContext` whether triggered from Telegram, GitHub, or Jira. The mission format for core skills is `/my-command <url> [context]`.
+
+### In-process dispatch for custom skills
+
+Skills under `instance/skills/<scope>/` with a `handler.py` follow a shorter path: the GitHub/Jira bridges call `execute_skill(skill, ctx)` directly at notification time — the same entry point Telegram uses — instead of queueing a slash mission that has no registered runner in `skill_dispatch._SKILL_RUNNERS`. This keeps custom skills self-contained: the handler can queue whatever mission it needs via `insert_pending_mission`.
+
+The helper is `app.external_skill_dispatch.try_dispatch_custom_handler`. It also **auto-feeds a Jira key** into `ctx.args` when the author omitted one:
+
+- **Jira source**: the issue the comment is on.
+- **GitHub source**: the first `FOO-123`-style key found in the issue title, then body.
+- If the author already typed a key (e.g. `@bot cpfix CPANEL-1`), it's passed through verbatim.
+
+### Help grouping: the `integrations` group
+
+Non-core skills should set `group: integrations` so they render in a dedicated **Integrations** section at the bottom of `@bot help`, separate from the core command groups (code, pr, missions, …).
 
 See [koan/skills/README.md](../koan/skills/README.md) for the full skill authoring guide.
 

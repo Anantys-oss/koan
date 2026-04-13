@@ -588,6 +588,43 @@ class TestSkillRegistry:
         registry = SkillRegistry(tmp_path)
         assert registry.list_by_group("missions") == []
 
+    def test_list_by_group_any_scope_includes_non_core(self, tmp_path):
+        """list_by_group_any_scope returns skills from every scope.
+
+        Used by the integrations help group so custom skills appear under
+        /help integrations even though list_by_group() is core-only.
+        """
+        core_dir = tmp_path / "core" / "plan"
+        core_dir.mkdir(parents=True)
+        (core_dir / "SKILL.md").write_text(textwrap.dedent("""\
+            ---
+            name: plan
+            scope: core
+            group: code
+            commands:
+              - name: plan
+                description: Plan
+            ---
+        """))
+        custom_dir = tmp_path / "cp" / "fix"
+        custom_dir.mkdir(parents=True)
+        (custom_dir / "SKILL.md").write_text(textwrap.dedent("""\
+            ---
+            name: fix
+            scope: cp
+            group: integrations
+            commands:
+              - name: cp_fix
+                description: Fix cPanel bug
+            ---
+        """))
+        registry = SkillRegistry(tmp_path)
+        # Default behavior unchanged: only core returned.
+        assert registry.list_by_group("integrations") == []
+        # New helper returns custom-scoped skill.
+        names = sorted(s.name for s in registry.list_by_group_any_scope("integrations"))
+        assert names == ["fix"]
+
 
 # ---------------------------------------------------------------------------
 # Skill execution

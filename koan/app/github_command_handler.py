@@ -172,6 +172,11 @@ def get_github_enabled_commands_with_descriptions(
 
 
 # Group labels for the help message, keyed by SKILL.md ``group`` field.
+#
+# Order here controls section order in the rendered help. Core groups come
+# first; ``integrations`` is last so custom third-party skills (e.g. the
+# cPanel integration under ``instance/skills/cp/``) show up in a dedicated
+# trailing block.
 _GROUP_LABELS: Dict[str, str] = {
     "code": "Code & Development",
     "pr": "Pull Requests",
@@ -180,6 +185,7 @@ _GROUP_LABELS: Dict[str, str] = {
     "config": "Configuration",
     "ideas": "Ideas & Planning",
     "system": "System",
+    "integrations": "Integrations",
 }
 
 
@@ -1124,6 +1130,57 @@ def process_single_notification(
                 if guard_config["block_mode"]:
                     mark_notification_read(str(notification.get("id", "")))
                     return False, f"Mission blocked by prompt guard: {guard_result.reason}"
+
+    # Custom in-process dispatch: skills under instance/skills/<scope>/ with a
+    # handler.py are invoked inline (mirroring the Telegram path) instead of
+    # being queued as /command slash missions that have no runner registered
+    # in skill_dispatch._SKILL_RUNNERS. The helper returns None when the skill
+    # should fall through to the normal slash-mission path.
+    from app.external_skill_dispatch import try_dispatch_custom_handler
+
+    subject = notification.get("subject", {}) or {}
+    subject_title = subject.get("title", "") or ""
+
+    inline_reply = try_dispatch_custom_handler(
+        skill,
+        command_name,
+        context,
+        source="github",
+        github_title=subject_title,
+        github_body=comment.get("body", "") or "",
+    )
+
+    if inline_reply is not None:
+        # Handler ran inline — mark as processed the same way we would after
+        # queueing a slash mission so the notification isn't reprocessed.
+        # The handler itself is expected to queue whatever mission it needs.
+        comment_id = str(comment.get("id", ""))
+        comment_api_url = comment.get("url", "")
+        add_reaction(owner, repo, comment_id, comment_api_url=comment_api_url)
+
+        from app.github_notification_tracker import track_comment
+        from pathlib import Path as _Path
+        import os as _os
+
+        koan_root = _os.environ.get("KOAN_ROOT", "")
+        if koan_root:
+            instance_dir = str(_Path(koan_root) / "instance")
+            track_comment(instance_dir, comment_id)
+
+        mark_notification_read(str(notification.get("id", "")))
+
+        notification["_koan_command"] = command_name
+        notification["_koan_author"] = comment_author
+
+        log.info(
+            "GitHub: dispatched custom handler %s from @%s (reply=%r)",
+            skill.qualified_name, comment_author, (inline_reply or "")[:80],
+        )
+        # Success: caller's happy path handles logging/notification. The
+        # handler's reply text is logged but not posted back to GitHub — the
+        # cp handlers return a short status like "Fix queued for X" that is
+        # already surfaced via Telegram's mission-queued notification.
+        return True, None
 
     # Build and insert mission BEFORE reacting (so crash doesn't lose command)
     # For /ask: pass the comment's web URL so the mission stores only the URL,

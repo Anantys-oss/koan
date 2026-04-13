@@ -110,6 +110,8 @@ When `jira.enabled: true`, Koan validates the configuration at startup and warns
 
 Jira reuses the same `github_enabled: true` skill flag for command discovery — **both GitHub and Jira dispatch the exact same set of commands**. No separate Jira flag is needed.
 
+> **Custom skills under `instance/skills/<scope>/`** (e.g. the cPanel integration shipping `/cp_fix` and `/cp_plan`) are exposed here the same way: set `github_enabled: true` and `group: integrations` in their SKILL.md. Such skills with a `handler.py` are dispatched **in-process** by the Jira bridge — not queued as slash missions — and the handler automatically receives the originating Jira issue key in `ctx.args` when the commenter omitted one. See `koan/skills/README.md` for the full pattern.
+
 | Command | Aliases | What it does | Context-aware |
 |---------|---------|--------------|---------------|
 | `ask` | — | Ask Koan a question about a Jira issue | **Yes** |

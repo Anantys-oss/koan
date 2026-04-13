@@ -88,6 +88,8 @@ Skills default to `bridge` when `audience` is omitted (backward compatible).
 
 Skills with `github_enabled: true` can be triggered via GitHub @mentions in PR/issue comments. When a user posts `@bot-nickname rebase` in a PR comment, Kōan creates a mission automatically.
 
+> **Note:** the same `github_enabled` flag also governs **Jira** @mentions — both channels dispatch the same set of commands. There is no separate `jira_enabled` flag.
+
 ```yaml
 ---
 name: implement
@@ -105,6 +107,35 @@ github:
   commands_enabled: true        # Master switch
   authorized_users: ["*"]       # "*" = all, or ["alice", "bob"]
 ```
+
+#### Exposing custom skills to external channels
+
+Custom skills under `instance/skills/<scope>/` opt in the same way — add `github_enabled: true` (plus `group:` so they appear in the grouped help listing). Use the `integrations` group to place them in a dedicated **Integrations** section, separate from the core help groups.
+
+```yaml
+---
+name: fix
+scope: cp
+group: integrations
+emoji: 🐛
+github_enabled: true
+github_context_aware: true
+handler: handler.py
+commands:
+  - name: cp_fix
+    aliases: [cpfix]
+---
+```
+
+When the skill has a `handler.py`, the GitHub / Jira bridge invokes the handler **in-process** at notification time (the same path Telegram uses) instead of queueing a `/cp_fix …` slash mission. The handler is expected to queue whatever mission it needs via `insert_pending_mission` — mirroring `instance/skills/cp/fix/handler.py`.
+
+**Auto-feeding the source issue.** When the author doesn't include a Jira key in the command text, the bridge appends one automatically:
+
+- **Jira source**: the issue the comment was posted on.
+- **GitHub source**: the first Jira key found in the issue/PR title, then body.
+- **Author override**: if the author already typed a key (e.g. `@bot cpfix CPANEL-1`), that key is used verbatim and no auto-feed happens.
+
+This keeps the handler logic untouched — the detection lives at the dispatch boundary (`app.external_skill_dispatch.augment_args_with_issue_key`).
 
 ### Commands
 
