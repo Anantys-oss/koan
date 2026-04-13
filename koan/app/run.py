@@ -1378,10 +1378,21 @@ def _run_iteration(
         if valid:
             projects = valid
 
+    # Per-phase Telegram visibility for the first iteration only. After
+    # process start or /resume, count is 0 and the first iteration runs
+    # several slow steps (GH cold-start, Jira scan, plan_iteration) that
+    # together take ~30-90s before any mission notification fires. Surface
+    # progress to Telegram so the human knows what's happening. count>=1
+    # iterations stay quiet to avoid steady-state spam.
+    is_first_iteration = (count == 0)
+
     # Check GitHub notifications before planning (converts @mentions to missions
     # so plan_iteration() sees them immediately instead of waiting for sleep)
     log("koan", "Checking GitHub notifications...")
+    if is_first_iteration:
+        _notify(instance, "🔍 Scanning GitHub notifications (cold start, may take ~1 min)...")
     from app.loop_manager import process_github_notifications
+    gh_missions = 0
     try:
         gh_missions = process_github_notifications(koan_root, instance)
         if gh_missions > 0:
@@ -1394,7 +1405,13 @@ def _run_iteration(
     # Check Jira notifications before planning (converts @mentions to missions
     # so plan_iteration() sees them immediately instead of waiting for sleep)
     log("koan", "Checking Jira notifications...")
+    if is_first_iteration:
+        if gh_missions > 0:
+            _notify(instance, f"📋 GitHub: {gh_missions} new mission(s) queued. Scanning Jira...")
+        else:
+            _notify(instance, "📋 GitHub: scanned, no new missions. Scanning Jira...")
     from app.loop_manager import process_jira_notifications
+    jira_missions = 0
     try:
         jira_missions = process_jira_notifications(koan_root, instance)
         if jira_missions > 0:
@@ -1403,6 +1420,12 @@ def _run_iteration(
             log("koan", "No new Jira notifications")
     except Exception as e:
         log("error", f"Pre-iteration Jira notification check failed: {e}")
+
+    if is_first_iteration:
+        if jira_missions > 0:
+            _notify(instance, f"🎯 Jira: {jira_missions} new mission(s) queued. Picking first mission from queue...")
+        else:
+            _notify(instance, "🎯 Notifications clear. Picking first mission from queue...")
 
     # Plan iteration (delegated to iteration_manager)
     log("koan", "Planning iteration...")

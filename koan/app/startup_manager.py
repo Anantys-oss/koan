@@ -378,11 +378,11 @@ def check_auto_update(koan_root: str, instance: str) -> bool:
     return perform_auto_update(koan_root, instance)
 
 
-def run_morning_ritual(instance: str):
-    """Execute the morning ritual."""
+def run_morning_ritual(instance: str) -> bool:
+    """Execute the morning ritual. Returns True on success, False otherwise."""
     log("init", "Running morning ritual...")
     from app.rituals import run_ritual
-    run_ritual("morning", Path(instance))
+    return run_ritual("morning", Path(instance))
 
 
 # ---------------------------------------------------------------------------
@@ -482,7 +482,9 @@ def run_startup(koan_root: str, instance: str, projects: list):
     # Auto-update check (before daily report / morning ritual)
     updated = _safe_run("Auto-update check", check_auto_update, koan_root, instance)
     if updated:
-        # Restart signal has been set — exit to let wrapper restart us
+        # Restart signal has been set — notify so the human knows the agent
+        # is restarting under newer code, then exit to let wrapper restart us.
+        _notify(instance, "🔄 Auto-update pulled new commits — restarting under updated code...")
         import sys
         from app.restart_manager import RESTART_EXIT_CODE
         sys.exit(RESTART_EXIT_CODE)
@@ -490,8 +492,13 @@ def run_startup(koan_root: str, instance: str, projects: list):
     # Daily report
     _safe_run("Daily report", run_daily_report)
 
+    _notify(instance, "🌅 Running morning ritual (Claude CLI, up to ~90s)...")
     with protected_phase("Morning ritual"):
-        _safe_run("Morning ritual", run_morning_ritual, instance)
+        ritual_ok = _safe_run("Morning ritual", run_morning_ritual, instance)
+    if ritual_ok:
+        _notify(instance, "🌅 Morning ritual complete — preparing first iteration.")
+    else:
+        _notify(instance, "⚠️ Morning ritual skipped/failed — preparing first iteration anyway.")
 
     # Initialize hook system and fire session_start
     from app.hooks import fire_hook, init_hooks

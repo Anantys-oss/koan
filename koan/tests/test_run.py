@@ -2607,9 +2607,13 @@ class TestRunIterationErrorAction:
 
         # Mission moved to Failed
         mock_update.assert_called_once_with(instance, "do stuff", failed=True)
-        # User notified
-        mock_notify.assert_called_once()
-        assert "Unknown project: foo" in mock_notify.call_args[0][1]
+        # User notified about the error (filter out first-iteration startup
+        # notifications which can also fire when count=0).
+        error_msgs = [
+            c for c in mock_notify.call_args_list
+            if "Unknown project: foo" in c.args[1]
+        ]
+        assert len(error_msgs) == 1
         # Instance committed
         mock_commit.assert_called_once_with(instance)
 
@@ -2653,9 +2657,13 @@ class TestRunIterationErrorAction:
         mock_update.assert_not_called()
         # No instance commit
         mock_commit.assert_not_called()
-        # Notification sent
-        mock_notify.assert_called_once()
-        assert "Iteration error" in mock_notify.call_args[0][1]
+        # Iteration-error notification sent (filter out first-iteration
+        # startup notifications which can also fire when count=0).
+        error_msgs = [
+            c for c in mock_notify.call_args_list
+            if "Iteration error" in c.args[1]
+        ]
+        assert len(error_msgs) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -2742,6 +2750,105 @@ class TestRunIterationGitHubPreCheck:
                 interval=10,
                 git_sync_interval=5,
             )
+
+
+class TestRunIterationFirstIterationNotifications:
+    """Per-phase Telegram visibility for the first iteration after startup
+    or /resume. count==0 fires GH/Jira/picking notifications; count>=1 stays
+    quiet to avoid steady-state spam.
+    """
+
+    @staticmethod
+    def _stop_plan(koan_root):
+        return {
+            "action": "error",
+            "error": "test-stop",
+            "project_name": "test",
+            "project_path": str(koan_root),
+            "mission_title": "",
+            "autonomous_mode": "implement",
+            "focus_area": "",
+            "available_pct": 50,
+            "decision_reason": "Default",
+            "display_lines": [],
+            "recurring_injected": [],
+        }
+
+    @patch("app.run.plan_iteration")
+    @patch("app.run._notify")
+    @patch("app.loop_manager.process_jira_notifications", return_value=0)
+    @patch("app.loop_manager.process_github_notifications", return_value=0)
+    def test_first_iteration_emits_phase_notifications(
+        self, mock_gh, mock_jira, mock_notify, mock_plan, koan_root,
+    ):
+        """count=0: scanning-GH, scanning-Jira, picking-mission Telegrams all fire."""
+        from app.run import _run_iteration
+        mock_plan.return_value = self._stop_plan(koan_root)
+        instance = str(koan_root / "instance")
+
+        with patch("app.utils.get_known_projects", return_value=[("test", str(koan_root))]):
+            _run_iteration(
+                koan_root=str(koan_root), instance=instance,
+                projects=[("test", str(koan_root))],
+                count=0, max_runs=5, interval=10, git_sync_interval=5,
+            )
+
+        messages = [c.args[1] for c in mock_notify.call_args_list]
+        joined = " | ".join(messages)
+        assert "Scanning GitHub notifications" in joined
+        assert "Scanning Jira" in joined
+        assert "Picking first mission" in joined
+
+    @patch("app.run.plan_iteration")
+    @patch("app.run._notify")
+    @patch("app.loop_manager.process_jira_notifications", return_value=0)
+    @patch("app.loop_manager.process_github_notifications", return_value=0)
+    def test_subsequent_iteration_stays_quiet(
+        self, mock_gh, mock_jira, mock_notify, mock_plan, koan_root,
+    ):
+        """count>=1: no startup Telegrams. Steady-state must not spam."""
+        from app.run import _run_iteration
+        mock_plan.return_value = self._stop_plan(koan_root)
+        instance = str(koan_root / "instance")
+
+        with patch("app.utils.get_known_projects", return_value=[("test", str(koan_root))]):
+            _run_iteration(
+                koan_root=str(koan_root), instance=instance,
+                projects=[("test", str(koan_root))],
+                count=1, max_runs=5, interval=10, git_sync_interval=5,
+            )
+
+        messages = [c.args[1] for c in mock_notify.call_args_list]
+        joined = " | ".join(messages)
+        assert "Scanning GitHub" not in joined
+        assert "Scanning Jira" not in joined
+        assert "Picking first mission" not in joined
+
+    @patch("app.run.plan_iteration")
+    @patch("app.run._notify")
+    @patch("app.loop_manager.process_jira_notifications", return_value=2)
+    @patch("app.loop_manager.process_github_notifications", return_value=3)
+    def test_first_iteration_reports_mission_counts(
+        self, mock_gh, mock_jira, mock_notify, mock_plan, koan_root,
+    ):
+        """When notifications create missions, the count surfaces in the
+        startup messages so the human knows new work was queued.
+        """
+        from app.run import _run_iteration
+        mock_plan.return_value = self._stop_plan(koan_root)
+        instance = str(koan_root / "instance")
+
+        with patch("app.utils.get_known_projects", return_value=[("test", str(koan_root))]):
+            _run_iteration(
+                koan_root=str(koan_root), instance=instance,
+                projects=[("test", str(koan_root))],
+                count=0, max_runs=5, interval=10, git_sync_interval=5,
+            )
+
+        messages = [c.args[1] for c in mock_notify.call_args_list]
+        joined = " | ".join(messages)
+        assert "GitHub: 3 new mission" in joined
+        assert "Jira: 2 new mission" in joined
 
 
 class TestRunIterationProjectRefresh:
@@ -5508,7 +5615,9 @@ class TestRunIterationPaths:
                 return_value=PrepResult(success=False, error="checkout failed")
             ),
         ) as mocks:
-            result = self._call(tmp_path)
+            # count>=1 — testing operational failure, not first-iteration
+            # behavior; avoids the startup-only Telegram notifications.
+            result = self._call(tmp_path, count=1)
             assert result is False
             mock_update.assert_called_once_with(
                 str(Path(tmp_path) / "instance"), title, failed=True
@@ -5526,7 +5635,7 @@ class TestRunIterationPaths:
             tmp_path, plan,
             prepare_project_branch=MagicMock(side_effect=RuntimeError("git broke")),
         ) as mocks:
-            result = self._call(tmp_path)
+            result = self._call(tmp_path, count=1)
             assert result is False
             mock_update.assert_called_once_with(
                 str(Path(tmp_path) / "instance"), title, failed=True
