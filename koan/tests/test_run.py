@@ -1816,8 +1816,11 @@ class TestIdleWaitConfig:
             count=0, max_runs=10, interval=60, git_sync_interval=5,
         )
 
-        # Verify sleep was called with the interval
-        mock_sleep.assert_called_once_with(60, str(tmp_path), instance)
+        # Verify sleep was called with the interval and wakes on missions
+        # (default behaviour for non-branch-saturated waits).
+        mock_sleep.assert_called_once_with(
+            60, str(tmp_path), instance, wake_on_mission=True,
+        )
         # Verify status was set with focus info
         status_calls = [c for c in mock_status.call_args_list if "Focus mode" in str(c)]
         assert len(status_calls) >= 1
@@ -1890,6 +1893,56 @@ class TestIdleWaitConfig:
         mock_sleep.assert_called_once()
         status_calls = [c for c in mock_status.call_args_list if "PR limit" in str(c)]
         assert len(status_calls) >= 1
+
+    @patch("app.run.run_claude_task")
+    @patch("app.run.interruptible_sleep", return_value=None)
+    @patch("app.run.set_status")
+    @patch("app.run.log")
+    @patch("app.run.plan_iteration")
+    def test_branch_saturated_wait_action(
+        self, mock_plan, mock_log, mock_status, mock_sleep, mock_cli, tmp_path,
+    ):
+        """branch_saturated_wait must sleep without waking on pending missions,
+        not launch the CLI, and return non-idle so auto-pause is not tripped.
+
+        Regressions covered:
+          - Action fell through _IDLE_WAIT_CONFIG → autonomous CLI ran anyway.
+          - interruptible_sleep woke immediately on pending missions (the very
+            missions that caused the saturation), producing a 1-iter/sec tight
+            loop that burned through MAX_CONSECUTIVE_IDLE in seconds and
+            triggered bogus "Idle for 150 min — auto-pausing".
+        """
+        from app.run import _run_iteration
+        mock_plan.return_value = self._make_plan(
+            "branch_saturated_wait",
+            decision_reason="Project 'koan' at branch limit (36/10) — mission stays Pending",
+        )
+        instance = str(tmp_path / "instance")
+        os.makedirs(instance, exist_ok=True)
+        (tmp_path / ".koan-project").write_text("koan")
+
+        result = _run_iteration(
+            koan_root=str(tmp_path),
+            instance=instance,
+            projects=[("koan", "/tmp/koan")],
+            count=0, max_runs=10, interval=60, git_sync_interval=5,
+        )
+
+        # Slept once with wake_on_mission=False so the pending (blocked)
+        # missions don't short-circuit the wait into a tight loop.
+        mock_sleep.assert_called_once_with(
+            60, str(tmp_path), instance, wake_on_mission=False,
+        )
+        # Status contains "Branch-saturated", not "DEEP"
+        status_calls = [c for c in mock_status.call_args_list if "Branch-saturated" in str(c)]
+        assert len(status_calls) >= 1
+        assert not any("DEEP" in str(c) for c in mock_status.call_args_list)
+        # CLI must NOT be launched
+        mock_cli.assert_not_called()
+        # Must not count as "idle" — branch saturation is blocked-on-human,
+        # not truly idle. Returning "idle" would accumulate consecutive_idle
+        # and trigger the 150-min auto-pause path.
+        assert result != "idle"
 
     @patch("app.run.interruptible_sleep", return_value="mission")
     @patch("app.run.set_status")

@@ -88,13 +88,16 @@ defaults:
   # Default: 0 (unlimited)
   max_open_prs: 10
 
-  # Max pending branches — limit total unreviewed work per project.
-  # Counts the union of local unmerged koan/* branches and open PRs
-  # (deduplicated by branch name). When the limit is reached, both
-  # mission pickup AND exploration are blocked for this project until
-  # existing branches are reviewed/merged.
-  # More comprehensive than max_open_prs (which only gates exploration
-  # and only counts GitHub PRs).
+  # Max pending branches — limit total unreviewed work the agent will
+  # create via autonomous exploration. Counts the union of local unmerged
+  # <branch_prefix>/* branches and open PRs (deduplicated by branch
+  # name). When the limit is reached, autonomous exploration is paused
+  # for this project until existing branches are reviewed/merged.
+  # Explicit missions (queued in missions.md or via Jira/GitHub
+  # notifications) are never affected by this limit — it is a
+  # self-throttle for the agent, not a gate on human instructions.
+  # More comprehensive than max_open_prs because it also counts local
+  # unmerged branches, not just GitHub PRs.
   # Set to 0 for unlimited.
   # Default: 10
   max_pending_branches: 10

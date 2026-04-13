@@ -1186,6 +1186,7 @@ def interruptible_sleep(
     koan_root: str,
     instance_dir: str,
     check_interval: int = 10,
+    wake_on_mission: bool = True,
 ) -> str:
     """Sleep for a given interval, waking early on events.
 
@@ -1197,6 +1198,11 @@ def interruptible_sleep(
         koan_root: Path to koan root directory.
         instance_dir: Path to instance directory.
         check_interval: How often to check for wake events (seconds).
+        wake_on_mission: When True (default), return early if pending
+            missions or GitHub/Jira mission-inducing notifications appear.
+            Set False for wait states where pending missions are the
+            blocker (e.g. branch-saturated) and waking would just tight-
+            loop back into the same blocked state.
 
     Returns:
         Reason for waking: "timeout", "mission", "stop", "pause", "restart", "shutdown".
@@ -1204,7 +1210,7 @@ def interruptible_sleep(
     elapsed = 0
     while elapsed < interval:
         # Check signals BEFORE sleeping so events are detected immediately.
-        if check_pending_missions(instance_dir):
+        if wake_on_mission and check_pending_missions(instance_dir):
             return "mission"
         if _check_signal_file(koan_root, ".koan-stop"):
             return "stop"
@@ -1236,13 +1242,15 @@ def interruptible_sleep(
         # Check GitHub notifications (throttled to once per 60s).
         # Track wall time: API calls can be slow and should count toward elapsed.
         t0 = time.monotonic()
-        if process_github_notifications(koan_root, instance_dir) > 0:
+        gh_new = process_github_notifications(koan_root, instance_dir)
+        if wake_on_mission and gh_new > 0:
             return "mission"
         elapsed += time.monotonic() - t0
 
         # Check Jira notifications (throttled to once per 60s).
         t0 = time.monotonic()
-        if process_jira_notifications(koan_root, instance_dir) > 0:
+        jira_new = process_jira_notifications(koan_root, instance_dir)
+        if wake_on_mission and jira_new > 0:
             return "mission"
         elapsed += time.monotonic() - t0
 

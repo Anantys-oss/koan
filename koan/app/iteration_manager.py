@@ -846,12 +846,17 @@ def plan_iteration(
     # Step 3b: Drain CI queue (one entry per iteration, non-blocking)
     ci_drain_msg = _drain_ci_queue(instance)
 
-    # Step 4: Pick mission
+    # Step 4: Pick mission. Manual missions (queued in missions.md or via
+    # notifications) are always eligible regardless of branch saturation —
+    # max_pending_branches is a self-throttle for autonomous exploration,
+    # not a gate on human instructions. Saturation is enforced by
+    # _filter_exploration_projects in the no-mission path only.
     mission_project, mission_title = _pick_mission(
         instance, projects_str, run_num, autonomous_mode, last_project,
     )
     if mission_project and mission_title:
-        _log_iteration("mission", f"Mission picked: [{mission_project}] {mission_title[:80]}")
+        _log_iteration("mission",
+            f"Mission picked: [{mission_project}] {mission_title[:80]}")
     else:
         _log_iteration("koan", "No pending mission — entering autonomous mode")
 
@@ -878,9 +883,8 @@ def plan_iteration(
             passive_remaining=remaining,
         )
 
-    # Step 5: Resolve project
+    # Step 5: Resolve project for the picked mission.
     if mission_project and mission_title:
-        # Mission picked — resolve project path (case-insensitive)
         resolved = _resolve_project_path(mission_project, projects)
 
         if resolved is None:
@@ -904,56 +908,6 @@ def plan_iteration(
                 error=f"Unknown project '{project_name}'. Known: {', '.join(known)}",
                 tracker_error=tracker_error,
             )
-
-        # Step 5b: Branch saturation gate — skip mission if project is at limit
-        # Direct skill dispatch (/plan, /implement) bypasses this via skill_dispatch.py
-        try:
-            from app.projects_config import load_projects_config, get_project_max_pending_branches
-            branch_config = load_projects_config(koan_root)
-            if branch_config is not None:
-                branch_limit = get_project_max_pending_branches(branch_config, project_name)
-                if branch_limit > 0:
-                    from app.github import get_gh_username
-                    from app.branch_limiter import count_pending_branches
-
-                    branch_author = get_gh_username()
-                    project_cfg = branch_config.get("projects", {}).get(project_name, {}) or {}
-                    branch_urls = set()
-                    primary = project_cfg.get("github_url", "")
-                    if primary:
-                        branch_urls.add(primary)
-                    for u in project_cfg.get("github_urls", []):
-                        if u:
-                            branch_urls.add(u)
-
-                    instance_dir_str = str(instance)
-                    pending_count = count_pending_branches(
-                        instance_dir_str, project_name, project_path,
-                        list(branch_urls), branch_author,
-                    )
-                    if pending_count >= branch_limit:
-                        _log_iteration("koan",
-                            f"Project '{project_name}' branch-saturated "
-                            f"({pending_count}/{branch_limit}) — skipping mission")
-                        return _make_result(
-                            action="branch_saturated_wait",
-                            project_name=project_name,
-                            project_path=project_path,
-                            mission_title="",
-                            autonomous_mode=autonomous_mode,
-                            focus_area=f"Branch-saturated: {pending_count}/{branch_limit} pending branches",
-                            available_pct=available_pct,
-                            decision_reason=(
-                                f"Project '{project_name}' at branch limit "
-                                f"({pending_count}/{branch_limit}) — mission stays Pending"
-                            ),
-                            display_lines=display_lines,
-                            recurring_injected=recurring_injected,
-                            schedule_mode=schedule_state.mode if schedule_state else "normal",
-                            tracker_error=tracker_error,
-                        )
-        except (ImportError, OSError, ValueError) as e:
-            _log_iteration("debug", f"Branch saturation check failed: {e} — proceeding")
 
     else:
         # No mission — autonomous mode
