@@ -231,9 +231,8 @@ class TestGitHubIntegration:
 
     def test_get_open_issues_timeout(self, research_env):
         """Returns empty list on timeout."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = subprocess.TimeoutExpired(cmd="gh", timeout=30)
-
+        with patch("app.github.run_gh",
+                    side_effect=subprocess.TimeoutExpired(cmd="gh", timeout=30)):
             research = DeepResearch(
                 research_env["instance"],
                 research_env["project_name"],
@@ -1042,9 +1041,8 @@ class TestGetPendingPrsEdgeCases:
 
     def test_gh_timeout(self, research_env):
         """Returns empty list on timeout."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = subprocess.TimeoutExpired(cmd="gh", timeout=30)
-
+        with patch("app.github.run_gh",
+                    side_effect=subprocess.TimeoutExpired(cmd="gh", timeout=30)):
             research = DeepResearch(
                 research_env["instance"],
                 research_env["project_name"],

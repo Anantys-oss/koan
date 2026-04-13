@@ -704,7 +704,7 @@ class TestSearchExistingIssue:
             assert result is None
 
     def test_timeout_returns_none(self):
-        with patch("app.github.subprocess.run",
+        with patch("app.plan_runner.api",
                     side_effect=subprocess.TimeoutExpired(cmd="gh", timeout=30)):
             result = _search_existing_issue("o", "r", "idea")
             assert result is None
@@ -784,7 +784,8 @@ class TestGetRepoInfo:
             assert repo is None
 
     def test_timeout_returns_none(self):
-        with patch("app.github.subprocess.run",
+        with patch("app.plan_runner.resolve_target_repo", return_value=None), \
+             patch("app.plan_runner.run_gh",
                     side_effect=subprocess.TimeoutExpired(cmd="gh", timeout=15)):
             owner, repo = _get_repo_info("/path")
             assert owner is None

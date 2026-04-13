@@ -233,8 +233,11 @@ class TestAskHandlerFlow:
 
     @patch("app.utils.resolve_project_path", return_value="/path/to/project")
     @patch("app.utils.project_name_for_path", return_value="myproject")
+    @patch("app.github_reply.api", side_effect=RuntimeError("not found"))
     @patch("app.github.api", side_effect=RuntimeError("not found"))
-    def test_comment_not_found_returns_error(self, _mock_api, _mock_name, _mock_resolve):
+    def test_comment_not_found_returns_error(
+        self, _mock_gh_api, _mock_reply_api, _mock_name, _mock_resolve
+    ):
         from skills.core.ask.handler import handle
 
         url = "https://github.com/sukria/koan/issues/42#issuecomment-999"

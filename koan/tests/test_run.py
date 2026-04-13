@@ -807,7 +807,8 @@ class TestHandlePause:
         instance = str(koan_root / "instance")
         (koan_root / ".koan-pause").touch()
 
-        with patch("app.pause_manager.check_and_resume", return_value="Quota reset"):
+        with patch("app.pause_manager.check_and_resume", return_value="Quota reset"), \
+             patch("app.run._notify"):
             result = handle_pause(str(koan_root), instance, 5)
         assert result == "resume"
 
