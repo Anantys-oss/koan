@@ -139,6 +139,34 @@ def test_mission_fails_on_bad_input():
 
 ---
 
+## Anti-Pattern 6: Mocking subprocess.run through retry_with_backoff
+
+**Description**: Mocking `subprocess.run` to raise `TimeoutExpired` or other exceptions in tests that go through `run_gh()` or `api()`, which internally use `retry_with_backoff()`. The retry wrapper sleeps 1+2+4 seconds between attempts, adding 7+ seconds of real wall-clock time per test.
+
+**Bad example**:
+```python
+def test_timeout_returns_none(self):
+    with patch("app.github.subprocess.run",
+                side_effect=subprocess.TimeoutExpired(cmd="gh", timeout=15)):
+        result = _get_repo_info("/path")  # Takes 7+ seconds!
+    assert result == (None, None)
+```
+
+**Why it's dangerous**: Each test wastes 7 seconds of real sleep. With multiple such tests, the suite balloons by minutes. The test is supposed to verify error handling, not retry mechanics.
+
+**How to fix**: Mock at the `run_gh()` or `api()` level — above `retry_with_backoff` — so retries are never triggered.
+```python
+def test_timeout_returns_none(self):
+    with patch("app.plan_runner.run_gh",
+                side_effect=subprocess.TimeoutExpired(cmd="gh", timeout=15)):
+        result = _get_repo_info("/path")  # Returns instantly
+    assert result == (None, None)
+```
+
+**Red flags**: Tests taking >2 seconds that mock `subprocess.run` with exception side effects; any mock that targets `app.github.subprocess.run` in a file other than `test_github.py`.
+
+---
+
 ## Self-Check Before Committing Tests
 
 Run through this checklist before marking tests complete:
