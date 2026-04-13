@@ -707,6 +707,39 @@ class TestHandleChat:
     @patch("app.awake.format_conversation_history", return_value="")
     @patch("app.awake.get_tools_description", return_value="")
     @patch("app.awake.get_chat_tools", return_value="")
+    @patch("app.awake.send_telegram", return_value=True)
+    @patch("app.awake.subprocess.run")
+    def test_chat_cwd_is_koan_root_not_project_path(
+        self, mock_run, mock_send, mock_tools,
+        mock_tools_desc, mock_fmt, mock_hist, mock_save, tmp_path,
+    ):
+        """Chat CLI must run from KOAN_ROOT, not PROJECT_PATH, to avoid
+        session conflicts with concurrent mission execution."""
+        mock_run.return_value = MagicMock(stdout="reply", returncode=0)
+        koan_root = tmp_path / "koan-root"
+        project_path = tmp_path / "project"
+        koan_root.mkdir()
+        project_path.mkdir()
+        journal_dir = tmp_path / "journal" / "2026-02-01"
+        journal_dir.mkdir(parents=True)
+        with patch("app.awake.INSTANCE_DIR", tmp_path), \
+             patch("app.awake.KOAN_ROOT", koan_root), \
+             patch("app.awake.PROJECT_PATH", str(project_path)), \
+             patch("app.awake.CONVERSATION_HISTORY_FILE", tmp_path / "history.jsonl"), \
+             patch("app.awake.SOUL", "soul"), \
+             patch("app.awake.SUMMARY", "summary"):
+            handle_chat("hello")
+        assert mock_run.call_count >= 1
+        cwd_used = mock_run.call_args_list[0].kwargs.get("cwd")
+        assert cwd_used == str(koan_root), (
+            f"Chat cwd should be KOAN_ROOT ({koan_root}), not PROJECT_PATH ({project_path}). Got: {cwd_used}"
+        )
+
+    @patch("app.awake.save_conversation_message")
+    @patch("app.awake.load_recent_history", return_value=[])
+    @patch("app.awake.format_conversation_history", return_value="")
+    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.awake.get_chat_tools", return_value="")
     @patch("app.awake.send_telegram")
     @patch("app.awake.subprocess.run")
     def test_chat_timeout(self, mock_run, mock_send, mock_tools,
