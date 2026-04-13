@@ -429,7 +429,7 @@ def run_startup(koan_root: str, instance: str, projects: list):
     log("init", f"Starting. Max runs: {max_runs}, interval: {interval}s")
 
     # Import status/notify helpers lazily from run
-    from app.run import set_status, _build_startup_status, _notify
+    from app.run import set_status, _build_startup_status, _notify, _notify_raw
 
     project_list = "\n".join(f"  • {n}" for n, _ in sorted(projects))
     current_project = projects[0][0] if projects else "none"
@@ -450,7 +450,9 @@ def run_startup(koan_root: str, instance: str, projects: list):
     if updated:
         # Restart signal has been set — notify so the human knows the agent
         # is restarting under newer code, then exit to let wrapper restart us.
-        _notify(instance, "🔄 Auto-update pulled new commits — restarting under updated code...")
+        # Use _notify_raw so the verbatim text + 🔄 marker survive (skipping
+        # the Claude-CLI personality reformatter).
+        _notify_raw(instance, "🔄 Auto-update pulled new commits — restarting under updated code...")
         import sys
         from app.restart_manager import RESTART_EXIT_CODE
         sys.exit(RESTART_EXIT_CODE)
@@ -458,13 +460,15 @@ def run_startup(koan_root: str, instance: str, projects: list):
     # Daily report
     _safe_run("Daily report", run_daily_report)
 
-    _notify(instance, "🌅 Running morning ritual (Claude CLI, up to ~90s)...")
+    # Startup-status pings use _notify_raw so the 🌅/⚠️ markers and exact
+    # wording reach Telegram intact (no Claude CLI rewrite).
+    _notify_raw(instance, "🌅 Running morning ritual (Claude CLI, up to ~90s)...")
     with protected_phase("Morning ritual"):
         ritual_ok = _safe_run("Morning ritual", run_morning_ritual, instance)
     if ritual_ok:
-        _notify(instance, "🌅 Morning ritual complete — preparing first iteration.")
+        _notify_raw(instance, "🌅 Morning ritual complete — preparing first iteration.")
     else:
-        _notify(instance, "⚠️ Morning ritual skipped/failed — preparing first iteration anyway.")
+        _notify_raw(instance, "⚠️ Morning ritual skipped/failed — preparing first iteration anyway.")
 
     # Initialize hook system and fire session_start
     from app.hooks import fire_hook, init_hooks

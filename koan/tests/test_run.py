@@ -2774,13 +2774,15 @@ class TestRunIterationFirstIterationNotifications:
         }
 
     @patch("app.run.plan_iteration")
-    @patch("app.run._notify")
+    @patch("app.run._notify_raw")
     @patch("app.loop_manager.process_jira_notifications", return_value=0)
     @patch("app.loop_manager.process_github_notifications", return_value=0)
     def test_first_iteration_emits_phase_notifications(
-        self, mock_gh, mock_jira, mock_notify, mock_plan, koan_root,
+        self, mock_gh, mock_jira, mock_notify_raw, mock_plan, koan_root,
     ):
-        """count=0: scanning-GH, scanning-Jira, picking-mission Telegrams all fire."""
+        """count=0: scanning-GH, scanning-Jira, picking-mission Telegrams all
+        fire via _notify_raw (verbatim, no Claude-CLI rewrite).
+        """
         from app.run import _run_iteration
         mock_plan.return_value = self._stop_plan(koan_root)
         instance = str(koan_root / "instance")
@@ -2792,18 +2794,18 @@ class TestRunIterationFirstIterationNotifications:
                 count=0, max_runs=5, interval=10, git_sync_interval=5,
             )
 
-        messages = [c.args[1] for c in mock_notify.call_args_list]
+        messages = [c.args[1] for c in mock_notify_raw.call_args_list]
         joined = " | ".join(messages)
         assert "Scanning GitHub notifications" in joined
         assert "Scanning Jira" in joined
         assert "Picking first mission" in joined
 
     @patch("app.run.plan_iteration")
-    @patch("app.run._notify")
+    @patch("app.run._notify_raw")
     @patch("app.loop_manager.process_jira_notifications", return_value=0)
     @patch("app.loop_manager.process_github_notifications", return_value=0)
     def test_subsequent_iteration_stays_quiet(
-        self, mock_gh, mock_jira, mock_notify, mock_plan, koan_root,
+        self, mock_gh, mock_jira, mock_notify_raw, mock_plan, koan_root,
     ):
         """count>=1: no startup Telegrams. Steady-state must not spam."""
         from app.run import _run_iteration
@@ -2817,18 +2819,18 @@ class TestRunIterationFirstIterationNotifications:
                 count=1, max_runs=5, interval=10, git_sync_interval=5,
             )
 
-        messages = [c.args[1] for c in mock_notify.call_args_list]
+        messages = [c.args[1] for c in mock_notify_raw.call_args_list]
         joined = " | ".join(messages)
         assert "Scanning GitHub" not in joined
         assert "Scanning Jira" not in joined
         assert "Picking first mission" not in joined
 
     @patch("app.run.plan_iteration")
-    @patch("app.run._notify")
+    @patch("app.run._notify_raw")
     @patch("app.loop_manager.process_jira_notifications", return_value=2)
     @patch("app.loop_manager.process_github_notifications", return_value=3)
     def test_first_iteration_reports_mission_counts(
-        self, mock_gh, mock_jira, mock_notify, mock_plan, koan_root,
+        self, mock_gh, mock_jira, mock_notify_raw, mock_plan, koan_root,
     ):
         """When notifications create missions, the count surfaces in the
         startup messages so the human knows new work was queued.
@@ -2844,10 +2846,67 @@ class TestRunIterationFirstIterationNotifications:
                 count=0, max_runs=5, interval=10, git_sync_interval=5,
             )
 
-        messages = [c.args[1] for c in mock_notify.call_args_list]
+        messages = [c.args[1] for c in mock_notify_raw.call_args_list]
         joined = " | ".join(messages)
         assert "GitHub: 3 new mission" in joined
         assert "Jira: 2 new mission" in joined
+
+    @patch("app.run.plan_iteration")
+    @patch("app.notify.send_telegram")
+    @patch("app.run._notify")
+    @patch("app.loop_manager.process_jira_notifications", return_value=0)
+    @patch("app.loop_manager.process_github_notifications", return_value=0)
+    def test_first_iteration_status_messages_bypass_formatter(
+        self, mock_gh, mock_jira, mock_notify, mock_send, mock_plan, koan_root,
+    ):
+        """Startup-status notifications must NOT route through _notify (and
+        therefore NOT trigger the Claude-CLI formatter). They must reach
+        send_telegram directly via _notify_raw, with verbatim text + emoji.
+        """
+        from app.run import _run_iteration
+        mock_plan.return_value = self._stop_plan(koan_root)
+        instance = str(koan_root / "instance")
+
+        with patch("app.utils.get_known_projects", return_value=[("test", str(koan_root))]):
+            _run_iteration(
+                koan_root=str(koan_root), instance=instance,
+                projects=[("test", str(koan_root))],
+                count=0, max_runs=5, interval=10, git_sync_interval=5,
+            )
+
+        # _notify (formatter path) must not have received the status pings.
+        notify_msgs = " | ".join(c.args[1] for c in mock_notify.call_args_list)
+        assert "Scanning GitHub notifications" not in notify_msgs
+        assert "Scanning Jira" not in notify_msgs
+        assert "Picking first mission" not in notify_msgs
+
+        # send_telegram (raw path) received them verbatim, including emojis.
+        send_msgs = " | ".join(c.args[0] for c in mock_send.call_args_list)
+        assert "🔍 Scanning GitHub notifications" in send_msgs
+        assert "📋 GitHub: scanned, no new missions. Scanning Jira..." in send_msgs
+        assert "🎯 Notifications clear" in send_msgs
+
+
+class TestNotifyRaw:
+    """_notify_raw bypasses the Claude-CLI formatter and sends straight to
+    Telegram. Used for terse status pings where verbatim text matters.
+    """
+
+    @patch("app.notify.send_telegram")
+    def test_calls_send_telegram_directly(self, mock_send):
+        from app.run import _notify_raw
+        _notify_raw("/tmp/instance", "🔍 verbatim test")
+        mock_send.assert_called_once_with("🔍 verbatim test")
+
+    @patch("app.run.log")
+    @patch("app.notify.send_telegram", side_effect=RuntimeError("boom"))
+    def test_swallows_send_errors(self, mock_send, mock_log):
+        """Telegram failures must not crash the run loop; same contract as _notify."""
+        from app.run import _notify_raw
+        _notify_raw("/tmp/instance", "test")
+        # Error logged, no exception propagated.
+        assert any("Raw notification failed" in str(c)
+                   for c in mock_log.call_args_list)
 
 
 class TestRunIterationProjectRefresh:

@@ -888,6 +888,7 @@ class TestRunStartupNotifications:
     @patch("app.startup_manager.run_morning_ritual", return_value=True)
     @patch("app.startup_manager.run_daily_report")
     @patch("app.startup_manager.run_git_sync")
+    @patch("app.run._notify_raw")
     @patch("app.run._notify")
     @patch("app.run._build_startup_status", return_value="Active")
     @patch("app.run.set_status")
@@ -915,15 +916,15 @@ class TestRunStartupNotifications:
         mock_recover, mock_migrate, mock_gh_urls, mock_workspace,
         mock_sanity, mock_memory, mock_history, mock_health,
         mock_reflection, mock_pause, mock_git_id, mock_gh_auth,
-        mock_set_status, mock_build_status, mock_notify,
+        mock_set_status, mock_build_status, mock_notify, mock_notify_raw,
         mock_git_sync, mock_daily, mock_ritual,
     ):
         """When the morning ritual succeeds, both the start and complete
-        Telegram messages fire."""
+        Telegram messages fire via _notify_raw (verbatim, no formatter)."""
         from app.startup_manager import run_startup
         run_startup("/tmp/koan", "/tmp/koan/instance", [("proj1", "/p1")])
 
-        msgs = [c.args[1] for c in mock_notify.call_args_list]
+        msgs = [c.args[1] for c in mock_notify_raw.call_args_list]
         joined = " | ".join(msgs)
         assert "Running morning ritual" in joined
         assert "Morning ritual complete" in joined
@@ -932,6 +933,7 @@ class TestRunStartupNotifications:
     @patch("app.startup_manager.run_morning_ritual", return_value=False)
     @patch("app.startup_manager.run_daily_report")
     @patch("app.startup_manager.run_git_sync")
+    @patch("app.run._notify_raw")
     @patch("app.run._notify")
     @patch("app.run._build_startup_status", return_value="Active")
     @patch("app.run.set_status")
@@ -959,7 +961,7 @@ class TestRunStartupNotifications:
         mock_recover, mock_migrate, mock_gh_urls, mock_workspace,
         mock_sanity, mock_memory, mock_history, mock_health,
         mock_reflection, mock_pause, mock_git_id, mock_gh_auth,
-        mock_set_status, mock_build_status, mock_notify,
+        mock_set_status, mock_build_status, mock_notify, mock_notify_raw,
         mock_git_sync, mock_daily, mock_ritual,
     ):
         """When the morning ritual returns False (failed/skipped), the user
@@ -967,7 +969,7 @@ class TestRunStartupNotifications:
         from app.startup_manager import run_startup
         run_startup("/tmp/koan", "/tmp/koan/instance", [("proj1", "/p1")])
 
-        msgs = [c.args[1] for c in mock_notify.call_args_list]
+        msgs = [c.args[1] for c in mock_notify_raw.call_args_list]
         joined = " | ".join(msgs)
         assert "skipped/failed" in joined
         assert "Morning ritual complete" not in joined
@@ -976,6 +978,7 @@ class TestRunStartupNotifications:
     @patch("app.startup_manager.run_morning_ritual", return_value=True)
     @patch("app.startup_manager.run_daily_report")
     @patch("app.startup_manager.run_git_sync")
+    @patch("app.run._notify_raw")
     @patch("app.run._notify")
     @patch("app.run._build_startup_status", return_value="Active")
     @patch("app.run.set_status")
@@ -1003,11 +1006,11 @@ class TestRunStartupNotifications:
         mock_recover, mock_migrate, mock_gh_urls, mock_workspace,
         mock_sanity, mock_memory, mock_history, mock_health,
         mock_reflection, mock_pause, mock_git_id, mock_gh_auth,
-        mock_set_status, mock_build_status, mock_notify,
+        mock_set_status, mock_build_status, mock_notify, mock_notify_raw,
         mock_git_sync, mock_daily, mock_ritual, mock_auto_update,
     ):
         """When auto-update pulls new commits, the user is told the agent is
-        restarting under updated code before sys.exit fires.
+        restarting under updated code before sys.exit fires (via _notify_raw).
         """
         from app.startup_manager import run_startup
         from app.restart_manager import RESTART_EXIT_CODE
@@ -1016,6 +1019,6 @@ class TestRunStartupNotifications:
             run_startup("/tmp/koan", "/tmp/koan/instance", [("proj1", "/p1")])
 
         assert exc.value.code == RESTART_EXIT_CODE
-        msgs = [c.args[1] for c in mock_notify.call_args_list]
+        msgs = [c.args[1] for c in mock_notify_raw.call_args_list]
         joined = " | ".join(msgs)
         assert "Auto-update pulled new commits" in joined
