@@ -37,6 +37,7 @@ KOAN_ROOT=/tmp/test-koan .venv/bin/pytest koan/tests/test_missions.py -v
 - With `runpy.run_module()` (CLI tests), patch both `app.<module>.format_and_send` **and** `app.notify.format_and_send` — `runpy` re-executes the module so the import-level binding escapes the first patch.
 - When `load_dotenv()` would reload env vars from `.env` (defeating `monkeypatch.delenv`), patch `app.notify.load_dotenv` too.
 - **Test behavior, not implementation.** Unless the project's own conventions say otherwise, tests should validate what code does (inputs → outputs, side effects, observable state), not how it does it. Mocking internal dependencies of the unit under test is fine, but tests must never read or inspect actual source code to verify whether specific code is present or absent — that couples tests to implementation text rather than behavior. Prefer asserting on return values, raised exceptions, file contents, or other observable outcomes.
+- **Mock above retry_with_backoff, not below.** When testing error handling for `run_gh()`/`api()` callers, mock at the `run_gh` or `api` level — never at `app.github.subprocess.run`. Mocking subprocess.run causes `retry_with_backoff` to sleep 1+2+4s between retries, adding 7+ seconds per test. See `testing-anti-patterns.md` Anti-Pattern 6.
 
 ## Architecture
 
