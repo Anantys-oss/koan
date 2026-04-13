@@ -997,26 +997,34 @@ def fail_mission(content: str, mission_text: str) -> str:
 
 
 def requeue_mission(content: str, mission_text: str) -> str:
-    """Move a mission from In Progress back to Pending.
+    """Move a mission from In Progress (or Failed) back to Pending.
 
-    Used when an error is recoverable by human intervention (e.g. re-login)
-    rather than a mission failure.  Strips the started timestamp so the
-    mission looks like a fresh pending item.
+    Used when an error is recoverable (e.g. re-login, quota reset)
+    rather than a permanent mission failure.  Strips the started/failed
+    timestamps so the mission looks like a fresh pending item.
 
-    Returns content unchanged if the mission is not found in In Progress.
+    Searches In Progress first, then falls back to Failed — this handles
+    the case where quota is detected after _finalize_mission already moved
+    the mission to Failed.
+
+    Returns content unchanged if the mission is not found in either section.
     """
     needle = mission_text.strip()
     result = _remove_item_by_text(content, needle, "in_progress")
     if result is None:
+        result = _remove_item_by_text(content, needle, "failed")
+    if result is None:
         return content
 
     updated, removed = result
-    # Strip the "- " prefix and started marker so we re-insert cleanly
+    # Strip the "- " prefix and lifecycle markers so we re-insert cleanly
     display = removed.strip()
     if display.startswith("- "):
         display = display[2:]
     # Remove started timestamp (▶(2026-03-26T22:00))
     display = _STARTED_PATTERN.sub("", display).strip()
+    # Remove completed/failed marker (✅/❌(2026-04-13 14:47))
+    display = _COMPLETED_PATTERN.sub("", display).strip()
 
     entry = f"- {display}"
 

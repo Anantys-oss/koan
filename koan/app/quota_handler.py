@@ -41,6 +41,8 @@ _STRICT_QUOTA_PATTERNS = [
     r"insufficient.*credits?",
     r"billing.*(?:limit|period.*exceeded)",
     r"usage.*cap.*(?:reached|exceeded|hit)",
+    # Claude Code CLI: "You've hit your limit · resets 6pm (UTC)"
+    r"(?:you'?ve\s+)?hit\s+(?:your|the)\s+limit",
 ]
 
 # Loose patterns: generic terms that may appear in Claude's response text

@@ -1882,6 +1882,13 @@ def _run_iteration(
                     reset_display, resume_msg = "", "Auto-resume in ~5h"
                 log("quota", f"Quota reached. {reset_display}")
 
+                # Requeue mission: _finalize_mission already moved it to Failed,
+                # but quota failures are transient — move it back to Pending
+                # so it gets retried after the pause ends.
+                if original_mission_title:
+                    log("quota", "Requeueing mission to Pending (quota is transient)")
+                    _requeue_mission_in_file(instance, original_mission_title)
+
                 # Create pause state so the main loop actually stops
                 reset_ts, _disp = _compute_quota_reset_ts(instance)
                 from app.pause_manager import create_pause
@@ -1890,6 +1897,7 @@ def _run_iteration(
                 _commit_instance(instance, f"koan: quota exhausted {time.strftime('%Y-%m-%d-%H:%M')}")
                 _notify(instance, (
                     f"⚠️ Claude quota exhausted. {reset_display}\n\n"
+                    f"Mission '{original_mission_title[:60]}' moved back to Pending.\n"
                     f"Kōan paused after {count} runs. {resume_msg} or use /resume to restart manually."
                 ))
                 return True  # ran Claude before quota hit — productive
