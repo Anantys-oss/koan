@@ -698,6 +698,11 @@ def main_loop():
         log("error", "No instance/ directory found. Run: cp -r instance.example instance")
         sys.exit(1)
 
+    # Load .env so custom env vars (NOTION_API_KEY, SENTRY_ACCESS_TOKEN, etc.)
+    # are available to Claude subprocesses that inherit os.environ.
+    from app.utils import load_dotenv
+    load_dotenv()
+
     # Run pending data migrations (e.g. French→English header conversion)
     from app.migration_runner import run_pending_migrations
     applied = run_pending_migrations()
