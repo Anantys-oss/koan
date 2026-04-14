@@ -59,6 +59,34 @@ class TestSuggestTypo:
 
 
 # ---------------------------------------------------------------------------
+# Schema completeness — every _NESTED key must have a SECTION_SCHEMA
+# ---------------------------------------------------------------------------
+
+class TestSchemaCompleteness:
+    def test_all_nested_keys_have_section_schemas(self):
+        """Every top-level key marked as _NESTED in CONFIG_SCHEMA must have
+        a corresponding entry in SECTION_SCHEMAS. Missing entries mean nested
+        keys won't get type-checked or typo-detected at startup."""
+        from app.config_validator import CONFIG_SCHEMA, SECTION_SCHEMAS
+        nested_keys = [k for k, v in CONFIG_SCHEMA.items() if v == "dict"]
+        missing = [k for k in nested_keys if k not in SECTION_SCHEMAS]
+        assert missing == [], (
+            f"CONFIG_SCHEMA marks these as nested but SECTION_SCHEMAS "
+            f"has no entry for them: {missing}"
+        )
+
+    def test_section_schemas_only_for_nested_keys(self):
+        """SECTION_SCHEMAS should not define schemas for keys that aren't
+        declared as _NESTED in CONFIG_SCHEMA (stale section after rename)."""
+        from app.config_validator import CONFIG_SCHEMA, SECTION_SCHEMAS
+        nested_keys = {k for k, v in CONFIG_SCHEMA.items() if v == "dict"}
+        orphans = [k for k in SECTION_SCHEMAS if k not in nested_keys]
+        assert orphans == [], (
+            f"SECTION_SCHEMAS defines schemas for keys not in CONFIG_SCHEMA: {orphans}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # validate_config — valid configs
 # ---------------------------------------------------------------------------
 
