@@ -1419,26 +1419,32 @@ def _run_iteration(
 
     # Check Jira notifications before planning (converts @mentions to missions
     # so plan_iteration() sees them immediately instead of waiting for sleep)
-    log("koan", "Checking Jira notifications...")
-    if is_first_iteration:
-        if gh_missions > 0:
-            _notify_raw(instance, f"📋 GitHub: {gh_missions} new mission(s) queued. Scanning Jira...")
-        else:
-            _notify_raw(instance, "📋 GitHub: scanned, no new missions. Scanning Jira...")
-    from app.loop_manager import process_jira_notifications
+    from app.jira_config import get_jira_enabled
+    from app.utils import load_config
+    jira_enabled = get_jira_enabled(load_config())
     jira_missions = 0
-    try:
-        jira_missions = process_jira_notifications(koan_root, instance)
-        if jira_missions > 0:
-            log("jira", f"Pre-iteration: {jira_missions} mission(s) created from Jira notifications")
-        else:
-            log("koan", "No new Jira notifications")
-    except Exception as e:
-        log("error", f"Pre-iteration Jira notification check failed: {e}")
+    if jira_enabled:
+        log("koan", "Checking Jira notifications...")
+        if is_first_iteration:
+            if gh_missions > 0:
+                _notify_raw(instance, f"📋 GitHub: {gh_missions} new mission(s) queued. Scanning Jira...")
+            else:
+                _notify_raw(instance, "📋 GitHub: scanned, no new missions. Scanning Jira...")
+        from app.loop_manager import process_jira_notifications
+        try:
+            jira_missions = process_jira_notifications(koan_root, instance)
+            if jira_missions > 0:
+                log("jira", f"Pre-iteration: {jira_missions} mission(s) created from Jira notifications")
+            else:
+                log("koan", "No new Jira notifications")
+        except Exception as e:
+            log("error", f"Pre-iteration Jira notification check failed: {e}")
 
     if is_first_iteration:
-        if jira_missions > 0:
+        if jira_enabled and jira_missions > 0:
             _notify_raw(instance, f"🎯 Jira: {jira_missions} new mission(s) queued. Picking first mission from queue...")
+        elif gh_missions > 0:
+            _notify_raw(instance, f"🎯 GitHub: {gh_missions} new mission(s) queued. Picking first mission from queue...")
         else:
             _notify_raw(instance, "🎯 Notifications clear. Picking first mission from queue...")
 
