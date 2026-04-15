@@ -2786,10 +2786,11 @@ class TestRunIterationFirstIterationNotifications:
     @patch("app.jira_config.get_jira_enabled", return_value=True)
     @patch("app.run.plan_iteration")
     @patch("app.run._notify_raw")
+    @patch("app.run._notify")
     @patch("app.loop_manager.process_jira_notifications", return_value=0)
     @patch("app.loop_manager.process_github_notifications", return_value=0)
     def test_first_iteration_emits_phase_notifications(
-        self, mock_gh, mock_jira, mock_notify_raw, mock_plan, mock_jira_enabled, koan_root,
+        self, mock_gh, mock_jira, mock_notify, mock_notify_raw, mock_plan, mock_jira_enabled, koan_root,
     ):
         """count=0: scanning-GH, scanning-Jira, picking-mission Telegrams all
         fire via _notify_raw (verbatim, no Claude-CLI rewrite).
@@ -2813,10 +2814,11 @@ class TestRunIterationFirstIterationNotifications:
 
     @patch("app.run.plan_iteration")
     @patch("app.run._notify_raw")
+    @patch("app.run._notify")
     @patch("app.loop_manager.process_jira_notifications", return_value=0)
     @patch("app.loop_manager.process_github_notifications", return_value=0)
     def test_subsequent_iteration_stays_quiet(
-        self, mock_gh, mock_jira, mock_notify_raw, mock_plan, koan_root,
+        self, mock_gh, mock_jira, mock_notify, mock_notify_raw, mock_plan, koan_root,
     ):
         """After the first iteration, the startup trio must not re-fire —
         even when count stays 0 (non-productive idle/passive wake loop,
@@ -2850,9 +2852,10 @@ class TestRunIterationFirstIterationNotifications:
     @patch("app.jira_config.get_jira_enabled", return_value=False)
     @patch("app.run.plan_iteration")
     @patch("app.run._notify_raw")
+    @patch("app.run._notify")
     @patch("app.loop_manager.process_github_notifications", return_value=0)
     def test_first_iteration_skips_jira_when_disabled(
-        self, mock_gh, mock_notify_raw, mock_plan, mock_jira_enabled, koan_root,
+        self, mock_gh, mock_notify, mock_notify_raw, mock_plan, mock_jira_enabled, koan_root,
     ):
         """When Jira is not configured, no Jira-related messages appear."""
         from app.run import _run_iteration
@@ -2875,10 +2878,11 @@ class TestRunIterationFirstIterationNotifications:
     @patch("app.jira_config.get_jira_enabled", return_value=True)
     @patch("app.run.plan_iteration")
     @patch("app.run._notify_raw")
+    @patch("app.run._notify")
     @patch("app.loop_manager.process_jira_notifications", return_value=2)
     @patch("app.loop_manager.process_github_notifications", return_value=3)
     def test_first_iteration_reports_mission_counts(
-        self, mock_gh, mock_jira, mock_notify_raw, mock_plan, mock_jira_enabled, koan_root,
+        self, mock_gh, mock_jira, mock_notify, mock_notify_raw, mock_plan, mock_jira_enabled, koan_root,
     ):
         """When notifications create missions, the count surfaces in the
         startup messages so the human knows new work was queued.
