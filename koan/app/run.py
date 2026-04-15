@@ -1518,8 +1518,8 @@ def _run_iteration(
             f"👁️ Passive — read-only ({p.get('passive_remaining', 'indefinite')})",
         ),
         "focus_wait": lambda p: (
-            f"Focus mode active ({p.get('focus_remaining', 'unknown')} remaining) — no missions pending, sleeping",
-            f"Focus mode — waiting for missions ({p.get('focus_remaining', 'unknown')} remaining)",
+            f"Focus mode active ({p.get('focus_remaining', 'permanent')}) — no missions pending, sleeping",
+            f"Focus mode — waiting for missions ({p.get('focus_remaining', 'permanent')})",
         ),
         "schedule_wait": lambda _: (
             "Work hours active — waiting for missions (exploration suppressed)",

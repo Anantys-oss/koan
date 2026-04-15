@@ -223,6 +223,35 @@ def get_start_on_pause() -> bool:
     return bool(config.get("start_on_pause", False))
 
 
+def is_focus_mode() -> bool:
+    """Check if permanent focus mode is enabled via config.
+
+    Focus mode disables all autonomous work so Kōan only runs missions
+    that were explicitly queued (via Telegram, recurring, or GitHub
+    @mention). No contemplative sessions, no DEEP mode, no exploration
+    fallback.
+
+    This is the config-level permanent switch. The ``/focus`` Telegram
+    command provides time-bounded focus via ``.koan-focus`` file — both
+    mechanisms produce the same runtime behavior.
+
+    Resolution order:
+    1. ``KOAN_FOCUS`` env var (truthy: ``1``, ``true``, ``yes``, ``on``)
+    2. ``focus`` key in ``config.yaml``
+    3. Default: ``False``
+
+    Returns:
+        True when permanent focus mode is active.
+    """
+    env_value = os.environ.get("KOAN_FOCUS", "").strip().lower()
+    if env_value in ("1", "true", "yes", "on"):
+        return True
+    if env_value in ("0", "false", "no", "off"):
+        return False
+    config = _load_config()
+    return bool(config.get("focus", False))
+
+
 def get_start_passive() -> bool:
     """Check if start_passive is enabled in config.yaml.
 

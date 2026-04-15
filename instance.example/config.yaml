@@ -25,6 +25,26 @@
 # autonomous work. Use /active to resume normal execution.
 # start_passive: false
 
+# Focus mode (permanent) — only run explicitly queued missions
+# When true, Kōan becomes a pure "mission executor": no DEEP mode, no
+# contemplative sessions, no autonomous exploration. Only missions queued
+# via /mission (Telegram), recurring missions, and GitHub @mention commands
+# are executed. The loop idles (wake-on-mission) whenever the queue is empty.
+#
+# This is the config-level permanent switch. The /focus Telegram command
+# provides time-bounded focus (e.g. /focus 3h). Both produce the same
+# runtime behavior.
+#
+# Per-project override: set focus: true/false in projects.yaml under
+# defaults or individual projects. Config.yaml sets the global default.
+#
+# Differs from passive mode:
+#   - passive = no execution at all (missions stay Pending)
+#   - focus   = autonomous work disabled, but missions still run
+#
+# Env override: KOAN_FOCUS=1 (truthy values)
+# focus: false
+
 # Startup reflection — run self-reflection check on startup
 # When true, Kōan checks whether periodic self-reflection is due (every N
 # sessions) and, if so, invokes Claude to generate observations. Disabled by

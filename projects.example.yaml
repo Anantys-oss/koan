@@ -56,6 +56,21 @@ defaults:
   # mcp:
   #   - "/path/to/project-specific-mcp.json"
 
+  # Focus mode — disable autonomous work for this project.
+  #
+  # When enabled, the agent ONLY works on explicitly queued missions for
+  # this project — no contemplative sessions, no DEEP mode, no autonomous
+  # exploration. This is the per-project equivalent of the global
+  # config.yaml `focus: true` setting.
+  #
+  # Set at defaults level to control the global policy, then override
+  # per-project. Common patterns:
+  #   - defaults: true + myapp: false → all focused except myapp
+  #   - defaults: false + vendor: true → only vendor is focused
+  #
+  # Default: false
+  # focus: false
+
   # Exploration — controls autonomous work on this project.
   #
   # When enabled, the agent may autonomously:
@@ -150,6 +165,12 @@ projects:
   # my-main-app:
   #   path: "/Users/yourname/workspace/my-main-app"
   #   exploration: true                    # Override global false default
+
+  # Example: focus mode — missions only, no autonomous work
+  # Use when you want Kōan to be a quiet executor for a project.
+  # quiet-repo:
+  #   path: "/Users/yourname/workspace/quiet-repo"
+  #   focus: true                           # Only run queued missions
 
   # Example: a project with a lower PR limit (overrides default of 10)
   # oss-lib:

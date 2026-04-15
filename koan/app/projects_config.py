@@ -307,6 +307,32 @@ def get_project_mcp(config: dict, project_name: str) -> list:
     return mcp
 
 
+def get_project_focus(config: dict, project_name: str) -> bool:
+    """Get focus flag for a project from projects.yaml.
+
+    When True, the agent only works on explicitly queued missions for this
+    project — no contemplative sessions, no DEEP mode, no autonomous
+    exploration. Equivalent to ``exploration: false`` but unified under the
+    focus concept.
+
+    Supports defaults-level and per-project overrides. Common patterns:
+      - ``defaults: { focus: true }`` + ``myapp: { focus: false }``
+        → all projects focused except myapp
+      - ``defaults: { focus: false }`` + ``vendor: { focus: true }``
+        → only vendor is focused
+
+    Returns False by default (focus not enforced).
+    """
+    project_cfg = get_project_config(config, project_name)
+    value = project_cfg.get("focus", False)
+
+    # Handle string values like "true", "yes", "1"
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "yes", "1")
+
+    return bool(value)
+
+
 def get_project_exploration(config: dict, project_name: str) -> bool:
     """Get exploration flag for a project from projects.yaml.
 

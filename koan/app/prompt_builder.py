@@ -334,6 +334,62 @@ def _warn_unresolved_placeholders(text: str, template_name: str) -> None:
         )
 
 
+def _is_focus_mode() -> bool:
+    """Return True if focus mode is enabled (config-level or file-based).
+
+    Focus mode disables autonomous GitHub issue pickup — the agent prompt
+    replaces the ``GitHub Issue Selection`` section with an explicit
+    instruction to only act on explicitly-queued missions.
+
+    Checks both config.yaml/env (permanent) and .koan-focus file (temporary).
+    """
+    try:
+        from app.config import is_focus_mode
+        if is_focus_mode():
+            return True
+    except (ImportError, OSError, ValueError):
+        pass
+    # Also check file-based focus (.koan-focus from /focus command)
+    try:
+        koan_root = os.environ.get("KOAN_ROOT", "")
+        if koan_root:
+            from app.focus_manager import check_focus
+            return check_focus(koan_root) is not None
+    except (ImportError, OSError, ValueError):
+        pass
+    return False
+
+
+_GITHUB_ISSUE_SECTION_RE = re.compile(
+    r"## GitHub Issue Selection.*?(?=\n# Autonomy\b|\n## |\Z)",
+    re.DOTALL,
+)
+
+
+_FOCUS_MODE_REPLACEMENT = (
+    "## Focus Mode (autonomous GitHub pickup disabled)\n\n"
+    "Kōan is running in **focus mode**. You MUST NOT pick up "
+    "GitHub issues on your own.\n\n"
+    "- Only work on the explicit mission assigned above (if any).\n"
+    "- If no mission is assigned, do nothing autonomously — exit gracefully.\n"
+    "- Do not browse open issues, do not create branches for unassigned work,\n"
+    "  do not open speculative PRs.\n"
+    "- If the assigned mission references a specific GitHub issue, you may\n"
+    "  work on that issue only.\n\n"
+)
+
+
+def _apply_focus_mode_override(prompt: str) -> str:
+    """Replace the GitHub Issue Selection section when focus mode is active."""
+    if not _is_focus_mode():
+        return prompt
+    return _GITHUB_ISSUE_SECTION_RE.sub(
+        _FOCUS_MODE_REPLACEMENT.rstrip(),
+        prompt,
+        count=1,
+    )
+
+
 def _load_agent_template(
     instance: str,
     project_name: str,
@@ -363,6 +419,7 @@ def _load_agent_template(
         MISSION_INSTRUCTION=mission_instruction,
         BRANCH_PREFIX=branch_prefix,
     )
+    result = _apply_focus_mode_override(result)
     _warn_unresolved_placeholders(result, "agent")
     return result
 
