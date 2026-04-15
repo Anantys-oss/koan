@@ -340,11 +340,11 @@ def handle_chat(text: str):
     chat_tools_list = get_chat_tools().split(",")
     models = get_model_config()
 
-    # Run chat in INSTANCE_DIR so Claude's read-only tools can reach
-    # journal/, memory/, and missions.md for live project context.
-    # Distinct from KOAN_ROOT (agent loop) and project_path (missions),
-    # so per-dir session locks don't collide.
-    chat_cwd = str(INSTANCE_DIR)
+    # Run chat from KOAN_ROOT so paths line up with the rest of the system
+    # (reflection, agent loop). Chat only needs to read state under
+    # ./instance/ (journals, memory, missions) — not Kōan's own source code.
+    # The prompt tells Claude where to look.
+    chat_cwd = str(KOAN_ROOT)
 
     cmd = build_full_command(
         prompt=prompt,

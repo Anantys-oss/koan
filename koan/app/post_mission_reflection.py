@@ -205,7 +205,11 @@ def run_reflection(
         from app.cli_provider import build_full_command
 
         cmd = build_full_command(prompt=prompt, max_turns=1)
-        result = run_claude(cmd, cwd=str(instance_dir), timeout=60)
+        # Run in KOAN_ROOT (parent of instance_dir) to avoid Claude per-cwd
+        # session-lock collisions with concurrent Telegram chats that use
+        # cwd=INSTANCE_DIR. Prompt already embeds all needed content.
+        koan_root = instance_dir.parent
+        result = run_claude(cmd, cwd=str(koan_root), timeout=60)
 
         if result["success"]:
             output = strip_cli_noise(result["output"])

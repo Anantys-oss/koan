@@ -755,23 +755,25 @@ class TestHandleChat:
         self, mock_run, mock_send, mock_tools, mock_tools_desc,
         mock_fmt, mock_hist, mock_save, tmp_path,
     ):
-        """Chat CLI must run in instance/.chat-workspace/ to avoid Claude
-        session lock conflicts with concurrent mission execution."""
+        """Chat CLI must run from KOAN_ROOT so paths align with reflection
+        and the agent loop, and distinct from project_path to avoid session
+        lock conflicts with concurrent mission execution."""
         mock_run.return_value = MagicMock(stdout="ok", returncode=0)
+        koan_root = tmp_path
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
         project_path = str(tmp_path / "some-project")
-        with patch("app.awake.INSTANCE_DIR", tmp_path), \
-             patch("app.awake.KOAN_ROOT", tmp_path), \
+        with patch("app.awake.INSTANCE_DIR", instance_dir), \
+             patch("app.awake.KOAN_ROOT", koan_root), \
              patch("app.awake.PROJECT_PATH", project_path), \
-             patch("app.awake.CONVERSATION_HISTORY_FILE", tmp_path / "history.jsonl"), \
+             patch("app.awake.CONVERSATION_HISTORY_FILE", instance_dir / "history.jsonl"), \
              patch("app.awake.SOUL", ""), \
              patch("app.awake.SUMMARY", ""):
             handle_chat("hello")
         cwd = mock_run.call_args.kwargs.get("cwd")
-        assert cwd is not None
-        assert ".chat-workspace" in cwd
+        assert cwd == str(koan_root)
+        assert cwd != str(instance_dir)
         assert cwd != project_path
-        assert cwd != str(tmp_path)
-        assert (tmp_path / ".chat-workspace").is_dir()
 
     @patch("app.awake.save_conversation_message")
     @patch("app.awake.load_recent_history", return_value=[])

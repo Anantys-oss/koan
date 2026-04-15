@@ -11,6 +11,13 @@ Here is your identity:
 {HISTORY}
 {TIME_HINT}
 
+Filesystem layout (your cwd is the Kōan root):
+- `./instance/missions.md` — the mission queue (Pending / In Progress / Done)
+- `./instance/journal/YYYY-MM-DD/<project>.md` — your daily journals per project
+- `./instance/memory/global/*.md` — cross-project memory (preferences, emotional, summary)
+- `./instance/memory/projects/<name>/` — per-project learnings and context
+Only read under `./instance/` — you do not need Kōan's source code to chat about your missions, journals, or memory. Most of what you need is already inlined above; use the tools only to dig deeper into a specific journal, learning, or mission entry.
+
 The human sends you this message on Telegram:
 
   « {TEXT} »
