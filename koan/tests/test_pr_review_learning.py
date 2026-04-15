@@ -8,8 +8,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.pr_review_learning import (
+    _analyze_rejection_with_cli,
     _append_lessons_to_learnings,
     _compute_review_hash,
+    _fetch_issue_comments_for_pr,
     _fetch_review_comments_for_pr,
     _fetch_reviews_for_pr,
     _increment_failure_count,
@@ -19,6 +21,7 @@ from app.pr_review_learning import (
     _read_failure_count,
     _reset_failure_count,
     _write_cache,
+    _write_rejection_journal_entries,
     _FAILURE_ALERT_THRESHOLD,
     analyze_reviews_with_cli,
     fetch_pr_reviews,
@@ -436,13 +439,16 @@ class TestLearnFromReviews:
         assert result["skipped_reason"] == "cache_fresh"
         mock_write.assert_not_called()
 
+    @patch("app.pr_review_learning._write_rejection_journal_entries")
     @patch("app.pr_review_learning._append_lessons_to_learnings")
     @patch("app.pr_review_learning._write_cache")
     @patch("app.pr_review_learning._is_cache_fresh")
+    @patch("app.pr_review_learning._analyze_rejection_with_cli")
     @patch("app.pr_review_learning.analyze_reviews_with_cli")
     @patch("app.pr_review_learning.fetch_pr_reviews")
-    def test_full_flow(self, mock_fetch, mock_analyze, mock_cache_check,
-                       mock_cache_write, mock_append):
+    def test_full_flow(self, mock_fetch, mock_analyze, mock_reject_analyze,
+                       mock_cache_check, mock_cache_write, mock_append,
+                       mock_journal):
         mock_fetch.return_value = [
             {
                 "number": 1, "title": "feat: X", "was_merged": False,
@@ -450,10 +456,11 @@ class TestLearnFromReviews:
                     {"state": "CHANGES_REQUESTED", "body": "Too big!", "user": "r"},
                 ],
                 "review_comments": [],
+                "issue_comments": [],
             },
         ]
         mock_cache_check.return_value = False
-        mock_analyze.return_value = "- Keep PRs small and focused"
+        mock_reject_analyze.return_value = "- Keep PRs small and focused"
         mock_append.return_value = 1
 
         result = learn_from_reviews("/instance", "proj", "/path")
@@ -463,6 +470,8 @@ class TestLearnFromReviews:
         assert result["lessons_added"] == 1
         assert result["skipped_reason"] is None
         mock_cache_write.assert_called_once()
+        mock_analyze.assert_not_called()
+        mock_reject_analyze.assert_called_once()
 
     @patch("app.pr_review_learning._write_cache")
     @patch("app.pr_review_learning._is_cache_fresh")
@@ -593,3 +602,208 @@ class TestNotifyAnalysisFailures:
         with patch("app.utils.append_to_outbox") as mock_append:
             _notify_analysis_failures(str(tmp_path), _FAILURE_ALERT_THRESHOLD + 1)
             mock_append.assert_not_called()
+
+
+# ─── Issue comments for closed PRs ────────────────────────────────────
+
+
+class TestFetchIssueCommentsForPr:
+    @patch("app.github.run_gh")
+    def test_fetches_issue_comments(self, mock_gh):
+        comment = json.dumps({"body": "closing this", "user": "reviewer", "created_at": "2026-01-01T00:00:00Z"})
+        mock_gh.return_value = comment + "\n"
+        result = _fetch_issue_comments_for_pr("/fake", 42)
+        assert len(result) == 1
+        assert result[0]["body"] == "closing this"
+
+    @patch("app.github.run_gh")
+    def test_returns_empty_on_no_comments(self, mock_gh):
+        mock_gh.return_value = ""
+        result = _fetch_issue_comments_for_pr("/fake", 42)
+        assert result == []
+
+
+class TestFetchPrReviewsIssueComments:
+    """Verify issue comments are only fetched for closed-unmerged PRs."""
+
+    @patch("subprocess.run")
+    def test_closed_pr_gets_issue_comments(self, mock_run):
+        now = datetime.now(timezone.utc)
+        prs = [{
+            "number": 1, "title": "feat: bad",
+            "createdAt": now.isoformat(), "mergedAt": None,
+            "closedAt": now.isoformat(),
+            "headRefName": "koan/bad-idea", "state": "CLOSED",
+        }]
+        reviews_json = json.dumps({"state": "CHANGES_REQUESTED", "body": "no", "user": "r"})
+        comment_json = json.dumps({"body": "fix", "path": "a.py", "user": "r"})
+        issue_json = json.dumps({"body": "closing", "user": "r", "created_at": now.isoformat()})
+
+        def side_effect(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args", [])
+            cmd_str = " ".join(str(c) for c in cmd)
+            if "pr" in cmd_str and "list" in cmd_str:
+                return MagicMock(returncode=0, stdout=json.dumps(prs), stderr="")
+            if "issues" in cmd_str:
+                return MagicMock(returncode=0, stdout=issue_json + "\n", stderr="")
+            if "reviews" in cmd_str:
+                return MagicMock(returncode=0, stdout=reviews_json + "\n", stderr="")
+            return MagicMock(returncode=0, stdout=comment_json + "\n", stderr="")
+
+        mock_run.side_effect = side_effect
+        result = fetch_pr_reviews("/fake/path")
+        assert len(result) == 1
+        assert len(result[0]["issue_comments"]) == 1
+        assert result[0]["issue_comments"][0]["body"] == "closing"
+
+    @patch("subprocess.run")
+    def test_merged_pr_no_issue_comments(self, mock_run):
+        now = datetime.now(timezone.utc)
+        prs = [{
+            "number": 1, "title": "feat: good",
+            "createdAt": now.isoformat(),
+            "mergedAt": now.isoformat(),
+            "closedAt": now.isoformat(),
+            "headRefName": "koan/good", "state": "MERGED",
+        }]
+        reviews_json = json.dumps({"state": "APPROVED", "body": "lgtm", "user": "r"})
+
+        def side_effect(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args", [])
+            cmd_str = " ".join(str(c) for c in cmd)
+            if "pr" in cmd_str and "list" in cmd_str:
+                return MagicMock(returncode=0, stdout=json.dumps(prs), stderr="")
+            if "reviews" in cmd_str:
+                return MagicMock(returncode=0, stdout=reviews_json + "\n", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        mock_run.side_effect = side_effect
+        result = fetch_pr_reviews("/fake/path")
+        assert len(result) == 1
+        assert result[0]["issue_comments"] == []
+
+
+# ─── Format includes issue comments for closed PRs ────────────────────
+
+
+class TestFormatWithIssueComments:
+    def test_closed_pr_includes_issue_comments(self):
+        prs = [{
+            "number": 1, "title": "feat: bad", "was_merged": False,
+            "reviews": [], "review_comments": [],
+            "issue_comments": [{"body": "This isn't useful", "user": "human"}],
+        }]
+        result = format_reviews_for_analysis(prs)
+        assert "Comment by human: This isn't useful" in result
+        assert "CLOSED (not merged)" in result
+
+    def test_merged_pr_excludes_issue_comments(self):
+        prs = [{
+            "number": 1, "title": "feat: good", "was_merged": True,
+            "reviews": [{"state": "APPROVED", "body": "nice", "user": "r"}],
+            "review_comments": [],
+            "issue_comments": [{"body": "should not appear", "user": "human"}],
+        }]
+        result = format_reviews_for_analysis(prs)
+        assert "should not appear" not in result
+
+
+# ─── Rejection learning uses dedicated prompt ─────────────────────────
+
+
+class TestRejectionLearningPrompt:
+    @patch("app.pr_review_learning._write_rejection_journal_entries")
+    @patch("app.pr_review_learning._append_lessons_to_learnings")
+    @patch("app.pr_review_learning._write_cache")
+    @patch("app.pr_review_learning._is_cache_fresh")
+    @patch("app.pr_review_learning._analyze_rejection_with_cli")
+    @patch("app.pr_review_learning.analyze_reviews_with_cli")
+    @patch("app.pr_review_learning.fetch_pr_reviews")
+    def test_rejected_prs_use_rejection_prompt(
+        self, mock_fetch, mock_analyze, mock_reject,
+        mock_cache_check, mock_cache_write, mock_append, mock_journal,
+    ):
+        mock_fetch.return_value = [
+            {
+                "number": 1, "title": "feat: unwanted", "was_merged": False,
+                "reviews": [{"state": "CHANGES_REQUESTED", "body": "no", "user": "r"}],
+                "review_comments": [], "issue_comments": [],
+            },
+            {
+                "number": 2, "title": "feat: good", "was_merged": True,
+                "reviews": [{"state": "APPROVED", "body": "nice", "user": "r"}],
+                "review_comments": [], "issue_comments": [],
+            },
+        ]
+        mock_cache_check.return_value = False
+        mock_analyze.return_value = "- Good pattern"
+        mock_reject.return_value = "- Do not do X"
+        mock_append.return_value = 1
+
+        learn_from_reviews("/instance", "proj", "/path")
+
+        mock_analyze.assert_called_once()
+        mock_reject.assert_called_once()
+        # Verify rejection learnings get distinct section header
+        calls = mock_append.call_args_list
+        headers = [c.kwargs.get("section_header", c[0][3] if len(c[0]) > 3 else "PR review learnings") for c in calls]
+        assert "Rejected PR learnings" in headers
+
+
+# ─── Rejected PR journal entry ────────────────────────────────────────
+
+
+class TestRejectedPrJournalEntry:
+    @patch("app.journal.append_to_journal")
+    def test_writes_journal_for_rejected_prs(self, mock_journal):
+        rejected_prs = [
+            {"number": 42, "title": "feat: bad idea"},
+        ]
+        _write_rejection_journal_entries(
+            "/instance", "myproject", rejected_prs,
+            "- Do not touch the auth module\n- Keep scope narrow",
+        )
+        mock_journal.assert_called_once()
+        content = mock_journal.call_args[0][2]
+        assert "PR #42" in content
+        assert "bad idea" in content
+        assert "Do not touch the auth module" in content
+        assert "myproject" in content
+
+    @patch("app.journal.append_to_journal")
+    def test_no_lessons_uses_fallback_reason(self, mock_journal):
+        _write_rejection_journal_entries(
+            "/instance", "proj", [{"number": 1, "title": "X"}], "no bullets here",
+        )
+        mock_journal.assert_called_once()
+        content = mock_journal.call_args[0][2]
+        assert "No specific reason extracted" in content
+
+
+# ─── Rejected PR learnings section header ──────────────────────────────
+
+
+class TestRejectedPrLearningsSectionHeader:
+    def test_custom_section_header(self, tmp_path):
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        added = _append_lessons_to_learnings(
+            str(instance_dir), "proj", "- Never refactor logging",
+            section_header="Rejected PR learnings",
+        )
+        assert added == 1
+        learnings = instance_dir / "memory" / "projects" / "proj" / "learnings.md"
+        content = learnings.read_text()
+        assert "## Rejected PR learnings (" in content
+        assert "Never refactor logging" in content
+
+
+# ─── Cache includes issue comments ─────────────────────────────────────
+
+
+class TestCacheIncludesIssueComments:
+    def test_hash_changes_with_issue_comments(self):
+        prs1 = [{"number": 1, "reviews": [], "review_comments": [], "issue_comments": []}]
+        prs2 = [{"number": 1, "reviews": [], "review_comments": [],
+                 "issue_comments": [{"body": "closing"}]}]
+        assert _compute_review_hash(prs1) != _compute_review_hash(prs2)

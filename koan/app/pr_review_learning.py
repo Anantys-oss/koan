@@ -110,6 +110,12 @@ def fetch_pr_reviews(
         pr["reviews"] = reviews
         pr["review_comments"] = comments
         pr["was_merged"] = bool(pr.get("mergedAt"))
+
+        if not pr["was_merged"]:
+            pr["issue_comments"] = _fetch_issue_comments_for_pr(project_path, num)
+        else:
+            pr["issue_comments"] = []
+
         enriched.append(pr)
 
     return enriched
@@ -182,6 +188,17 @@ def _fetch_review_comments_for_pr(project_path: str, pr_number: int) -> List[dic
     )
 
 
+def _fetch_issue_comments_for_pr(project_path: str, pr_number: int) -> List[dict]:
+    """Fetch issue-thread comments for a PR (GitHub treats PRs as issues)."""
+    return _fetch_gh_jsonl(
+        project_path,
+        f"repos/{{owner}}/{{repo}}/issues/{pr_number}/comments",
+        ".[].{body: .body, user: .user.login, created_at: .created_at}",
+        pr_number,
+        "issue comments",
+    )
+
+
 def format_reviews_for_analysis(prs: List[dict]) -> str:
     """Format enriched PR data as text for Claude to analyze.
 
@@ -218,6 +235,13 @@ def format_reviews_for_analysis(prs: List[dict]) -> str:
             user = comment.get("user", "")
             if body:
                 lines.append(f"  Inline on {path} by {user}: {body}")
+
+        if not pr.get("was_merged"):
+            for comment in pr.get("issue_comments", []):
+                body = (comment.get("body") or "").strip()
+                user = comment.get("user", "")
+                if body:
+                    lines.append(f"  Comment by {user}: {body}")
 
         # Only include PRs that have actual review content
         if len(lines) > 1:
@@ -286,6 +310,8 @@ def _compute_review_hash(prs: List[dict]) -> str:
         for review in pr.get("reviews", []):
             parts.append(review.get("body") or "")
         for comment in pr.get("review_comments", []):
+            parts.append(comment.get("body") or "")
+        for comment in pr.get("issue_comments", []):
             parts.append(comment.get("body") or "")
     content = "|".join(parts)
     return hashlib.sha256(content.encode()).hexdigest()
@@ -392,6 +418,7 @@ def _append_lessons_to_learnings(
     instance_dir: str,
     project_name: str,
     lessons_text: str,
+    section_header: str = "PR review learnings",
 ) -> int:
     """Append new lessons to the project's learnings.md, skipping duplicates.
 
@@ -399,6 +426,7 @@ def _append_lessons_to_learnings(
         instance_dir: Path to the instance directory.
         project_name: Project name for scoping.
         lessons_text: Markdown bullet list from Claude analysis.
+        section_header: Section title prefix (date is appended automatically).
 
     Returns:
         Number of new lines appended.
@@ -438,7 +466,7 @@ def _append_lessons_to_learnings(
 
     # Build new content
     date_str = datetime.now().strftime("%Y-%m-%d")
-    section = f"\n## PR review learnings ({date_str})\n\n" + "\n".join(new_lines) + "\n"
+    section = f"\n## {section_header} ({date_str})\n\n" + "\n".join(new_lines) + "\n"
 
     if existing_content:
         new_content = existing_content.rstrip("\n") + "\n" + section
@@ -486,31 +514,138 @@ def learn_from_reviews(
         result["skipped_reason"] = "cache_fresh"
         return result
 
-    # Format reviews for analysis
-    review_text = format_reviews_for_analysis(prs)
-    if not review_text:
+    # Split into merged and rejected PRs
+    merged_prs = [pr for pr in prs if pr.get("was_merged")]
+    rejected_prs = [pr for pr in prs if not pr.get("was_merged")]
+
+    total_added = 0
+    any_analyzed = False
+    any_empty = False
+
+    # Analyze merged PRs with the standard prompt
+    if merged_prs:
+        merged_text = format_reviews_for_analysis(merged_prs)
+        if merged_text:
+            lessons = analyze_reviews_with_cli(merged_text, project_path)
+            any_analyzed = True
+            if lessons:
+                total_added += _append_lessons_to_learnings(
+                    instance_dir, project_name, lessons)
+            else:
+                any_empty = True
+
+    # Analyze rejected PRs with the dedicated rejection prompt
+    if rejected_prs:
+        rejected_text = format_reviews_for_analysis(rejected_prs)
+        if rejected_text:
+            lessons = _analyze_rejection_with_cli(rejected_text, project_path)
+            any_analyzed = True
+            if lessons:
+                added = _append_lessons_to_learnings(
+                    instance_dir, project_name, lessons,
+                    section_header="Rejected PR learnings")
+                total_added += added
+                _write_rejection_journal_entries(
+                    instance_dir, project_name, rejected_prs, lessons)
+            else:
+                any_empty = True
+
+    result["analyzed"] = any_analyzed
+
+    if not any_analyzed:
         result["skipped_reason"] = "no_review_content"
         return result
 
-    # Analyze with Claude CLI
-    lessons_text = analyze_reviews_with_cli(review_text, project_path)
-    result["analyzed"] = True
-    if not lessons_text:
+    if total_added == 0 and any_empty:
         result["skipped_reason"] = "empty_analysis"
         count = _increment_failure_count(instance_dir)
         _notify_analysis_failures(instance_dir, count)
         return result
 
-    # Analysis succeeded — reset failure counter
-    _reset_failure_count(instance_dir)
+    # At least some analysis succeeded — reset failure counter
+    if any_analyzed and not any_empty:
+        _reset_failure_count(instance_dir)
 
-    # Persist to learnings.md
-    added = _append_lessons_to_learnings(instance_dir, project_name, lessons_text)
-    result["lessons_added"] = added
-
-    # Update cache
+    result["lessons_added"] = total_added
     _write_cache(instance_dir, review_hash)
     return result
+
+
+def _analyze_rejection_with_cli(
+    review_text: str,
+    project_path: str,
+) -> str:
+    """Use Claude CLI with the rejection-specific prompt to extract lessons."""
+    from app.cli_provider import build_full_command
+    from app.config import get_model_config
+    from app.prompts import load_prompt
+
+    prompt = load_prompt("rejection-learning", REVIEW_DATA=review_text)
+    models = get_model_config()
+
+    cmd = build_full_command(
+        prompt=prompt,
+        allowed_tools=[],
+        model=models.get("lightweight", "haiku"),
+        fallback=models.get("fallback", "sonnet"),
+        max_turns=1,
+    )
+
+    from app.cli_exec import run_cli_with_retry
+
+    try:
+        result = run_cli_with_retry(
+            cmd,
+            capture_output=True, text=True,
+            timeout=60, cwd=project_path,
+        )
+        if result.returncode != 0:
+            print(
+                f"[pr_review_learning] Rejection analysis failed: {result.stderr[:200]}",
+                file=sys.stderr,
+            )
+            return ""
+        return result.stdout.strip()
+    except Exception as e:
+        print(f"[pr_review_learning] Rejection analysis error: {e}", file=sys.stderr)
+        return ""
+
+
+def _write_rejection_journal_entries(
+    instance_dir: str,
+    project_name: str,
+    rejected_prs: List[dict],
+    lessons_text: str,
+) -> None:
+    """Write journal entries for rejected PRs."""
+    try:
+        from app.journal import append_to_journal
+    except ImportError:
+        return
+
+    first_lesson = ""
+    for line in lessons_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("- "):
+            first_lesson = stripped[2:]
+            break
+
+    now = datetime.now().strftime("%H:%M")
+    for pr in rejected_prs:
+        title = pr.get("title", "untitled")
+        number = pr.get("number", "?")
+        reason = first_lesson or "No specific reason extracted"
+        content = (
+            f"## Rejected PR — {now}\n\n"
+            f"PR #{number}: {title}\n"
+            f"Reason: {reason}\n"
+            f"Learning recorded in memory/projects/{project_name}/learnings.md\n"
+        )
+        try:
+            append_to_journal(Path(instance_dir), project_name, content)
+        except Exception as e:
+            print(f"[pr_review_learning] Journal write failed for PR #{number}: {e}",
+                  file=sys.stderr)
 
 
 def _parse_iso(dt_str: str) -> Optional[datetime]:
