@@ -670,8 +670,8 @@ class MemoryManager:
             for name, path in get_projects_from_config(config):
                 if name.lower() == project_name.lower():
                     return path
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[memory_manager] project path resolution error: {e}", file=sys.stderr)
         return None
 
     def _get_file_tree(self, project_path: Optional[str]) -> str:
