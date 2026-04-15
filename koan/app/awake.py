@@ -298,6 +298,9 @@ def _build_chat_prompt(text: str, *, lite: bool = False) -> str:
     return prompt
 
 
+_CHAT_LOCK = threading.Lock()
+
+
 def _clean_chat_response(text: str, user_message: str = "") -> str:
     """Clean Claude CLI output for Telegram delivery.
 
@@ -351,7 +354,9 @@ def handle_chat(text: str):
         max_turns=5,
     )
 
-    with TypingIndicator():
+    # Serialize chat CLI calls: Claude takes a per-cwd session lock, so two
+    # overlapping chats in INSTANCE_DIR collide and one exits 1.
+    with _CHAT_LOCK, TypingIndicator():
         try:
             result = run_cli(
                 cmd,
