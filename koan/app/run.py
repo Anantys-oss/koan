@@ -1557,7 +1557,9 @@ def _run_iteration(
         # (the picked mission's project is over its PR limit), so waking
         # on pending missions would just tight-loop back into the same
         # blocked state. Wait the full interval for PR count to change.
-        wake_on_mission = action != "branch_saturated_wait"
+        # passive_wait: passive mode blocks all execution, so waking on
+        # a pending mission tight-loops (logs flood in make logs).
+        wake_on_mission = action not in ("branch_saturated_wait", "passive_wait")
         with protected_phase(status_msg):
             wake = interruptible_sleep(
                 interval, koan_root, instance,
