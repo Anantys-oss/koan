@@ -749,6 +749,35 @@ class TestHandleChat:
     @patch("app.awake.format_conversation_history", return_value="")
     @patch("app.awake.get_tools_description", return_value="")
     @patch("app.awake.get_chat_tools", return_value="")
+    @patch("app.awake.send_telegram")
+    @patch("app.awake.subprocess.run")
+    def test_chat_uses_dedicated_chat_workspace_cwd(
+        self, mock_run, mock_send, mock_tools, mock_tools_desc,
+        mock_fmt, mock_hist, mock_save, tmp_path,
+    ):
+        """Chat CLI must run in instance/.chat-workspace/ to avoid Claude
+        session lock conflicts with concurrent mission execution."""
+        mock_run.return_value = MagicMock(stdout="ok", returncode=0)
+        project_path = str(tmp_path / "some-project")
+        with patch("app.awake.INSTANCE_DIR", tmp_path), \
+             patch("app.awake.KOAN_ROOT", tmp_path), \
+             patch("app.awake.PROJECT_PATH", project_path), \
+             patch("app.awake.CONVERSATION_HISTORY_FILE", tmp_path / "history.jsonl"), \
+             patch("app.awake.SOUL", ""), \
+             patch("app.awake.SUMMARY", ""):
+            handle_chat("hello")
+        cwd = mock_run.call_args.kwargs.get("cwd")
+        assert cwd is not None
+        assert ".chat-workspace" in cwd
+        assert cwd != project_path
+        assert cwd != str(tmp_path)
+        assert (tmp_path / ".chat-workspace").is_dir()
+
+    @patch("app.awake.save_conversation_message")
+    @patch("app.awake.load_recent_history", return_value=[])
+    @patch("app.awake.format_conversation_history", return_value="")
+    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.awake.get_chat_tools", return_value="")
     @patch("app.awake.send_telegram", return_value=True)
     @patch("app.awake.subprocess.run")
     def test_chat_reads_journal_flat_fallback(self, mock_run, mock_send, mock_tools,

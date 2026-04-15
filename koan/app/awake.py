@@ -337,6 +337,9 @@ def handle_chat(text: str):
     chat_tools_list = get_chat_tools().split(",")
     models = get_model_config()
 
+    chat_cwd = str(INSTANCE_DIR / ".chat-workspace")
+    os.makedirs(chat_cwd, exist_ok=True)
+
     cmd = build_full_command(
         prompt=prompt,
         allowed_tools=chat_tools_list,
@@ -350,7 +353,7 @@ def handle_chat(text: str):
             result = run_cli(
                 cmd,
                 capture_output=True, text=True, timeout=CHAT_TIMEOUT,
-                cwd=PROJECT_PATH or str(KOAN_ROOT),
+                cwd=chat_cwd,
             )
             response = _clean_chat_response(result.stdout.strip(), text)
             if response:
@@ -362,7 +365,7 @@ def handle_chat(text: str):
                 )
                 log("chat", f"Chat reply: {response[:80]}...")
             elif result.returncode != 0:
-                log("error", f"Claude error: {result.stderr[:200]}")
+                log("error", f"Claude error (exit {result.returncode}): {result.stderr[:200]}")
                 error_msg = "⚠️ Hmm, I couldn't formulate a response. Try again?"
                 send_telegram(error_msg)
                 save_conversation_message(CONVERSATION_HISTORY_FILE, "assistant", error_msg)
@@ -389,7 +392,7 @@ def handle_chat(text: str):
                 result = run_cli(
                     lite_cmd,
                     capture_output=True, text=True, timeout=retry_timeout,
-                    cwd=PROJECT_PATH or str(KOAN_ROOT),
+                    cwd=chat_cwd,
                 )
                 response = _clean_chat_response(result.stdout.strip(), text)
                 if response:
