@@ -134,7 +134,9 @@ def _load_memory_config() -> dict:
     try:
         from app.utils import load_config
         config = load_config()
-    except Exception:
+    except Exception as e:
+        import sys
+        print(f"[startup_manager] load_config error: {e}", file=sys.stderr)
         config = {}
     mem_cfg = config.get("memory", {}) or {}
     return {
