@@ -314,6 +314,15 @@ usage:
 #   check_interval: 10      # Check every N iterations (default: 10)
 #   notify: true            # Notify on Telegram before/after update (default: true)
 
+
+
+# memory:
+#  learnings_max_lines: 100        # Target after semantic compaction
+#  learnings_hard_cap: 200         # Absolute max (safety net)
+#  global_personality_max: 150     # Max lines for personality-evolution.md
+#  global_emotional_max: 100       # Max lines for emotional-memory.md
+#  compaction_interval_hours: 24   # How often cleanup runs
+
 # GitHub notification-driven commands
 # Enable Kōan to respond to @mentions in GitHub PR/issue comments.
 # When a user posts "@nickname rebase" in a PR comment, Kōan reacts with 👍,

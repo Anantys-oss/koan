@@ -337,15 +337,18 @@ def handle_chat(text: str):
     chat_tools_list = get_chat_tools().split(",")
     models = get_model_config()
 
-    chat_cwd = str(INSTANCE_DIR / ".chat-workspace")
-    os.makedirs(chat_cwd, exist_ok=True)
+    # Run chat in INSTANCE_DIR so Claude's read-only tools can reach
+    # journal/, memory/, and missions.md for live project context.
+    # Distinct from KOAN_ROOT (agent loop) and project_path (missions),
+    # so per-dir session locks don't collide.
+    chat_cwd = str(INSTANCE_DIR)
 
     cmd = build_full_command(
         prompt=prompt,
         allowed_tools=chat_tools_list,
         model=models["chat"],
         fallback=models["fallback"],
-        max_turns=1,
+        max_turns=5,
     )
 
     with TypingIndicator():
@@ -386,7 +389,7 @@ def handle_chat(text: str):
                 allowed_tools=chat_tools_list,
                 model=models["chat"],
                 fallback=models["fallback"],
-                max_turns=1,
+                max_turns=5,
             )
             try:
                 result = run_cli(
