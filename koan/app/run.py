@@ -789,6 +789,8 @@ def main_loop():
                     count = 0
                     consecutive_errors = 0
                     consecutive_idle = 0
+                    global _startup_notified
+                    _startup_notified = False
                 continue
 
             # --- Iteration body (exception-protected) ---
@@ -1238,6 +1240,13 @@ _MISSION_RETRY_DELAY = 10  # seconds
 _last_mission_timed_out = False
 _last_mission_aborted = False
 
+# Tracks whether the cold-start Telegram burst (GH scan / Jira scan / first
+# mission pick) has already fired since process start or /resume. Decoupled
+# from the productive-run `count` because idle/passive/quota/sleep-wake paths
+# leave `count` at 0, which previously caused the startup trio to re-fire on
+# every non-productive wake-up (issue #1193).
+_startup_notified = False
+
 
 def _get_git_head(project_path: str) -> str:
     """Get current git HEAD SHA for retry safety check."""
@@ -1399,7 +1408,9 @@ def _run_iteration(
     # together take ~30-90s before any mission notification fires. Surface
     # progress to Telegram so the human knows what's happening. count>=1
     # iterations stay quiet to avoid steady-state spam.
-    is_first_iteration = (count == 0)
+    global _startup_notified
+    is_first_iteration = not _startup_notified
+    _startup_notified = True
 
     # Check GitHub notifications before planning (converts @mentions to missions
     # so plan_iteration() sees them immediately instead of waiting for sleep)

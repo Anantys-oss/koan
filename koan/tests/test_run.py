@@ -2774,6 +2774,13 @@ class TestRunIterationFirstIterationNotifications:
             "recurring_injected": [],
         }
 
+    @pytest.fixture(autouse=True)
+    def _reset_startup_flag(self):
+        import app.run as run_mod
+        run_mod._startup_notified = False
+        yield
+        run_mod._startup_notified = False
+
     @patch("app.jira_config.get_jira_enabled", return_value=True)
     @patch("app.run.plan_iteration")
     @patch("app.run._notify_raw")
@@ -2809,7 +2816,10 @@ class TestRunIterationFirstIterationNotifications:
     def test_subsequent_iteration_stays_quiet(
         self, mock_gh, mock_jira, mock_notify_raw, mock_plan, koan_root,
     ):
-        """count>=1: no startup Telegrams. Steady-state must not spam."""
+        """After the first iteration, the startup trio must not re-fire —
+        even when count stays 0 (non-productive idle/passive wake loop,
+        regression test for #1193).
+        """
         from app.run import _run_iteration
         mock_plan.return_value = self._stop_plan(koan_root)
         instance = str(koan_root / "instance")
@@ -2818,7 +2828,15 @@ class TestRunIterationFirstIterationNotifications:
             _run_iteration(
                 koan_root=str(koan_root), instance=instance,
                 projects=[("test", str(koan_root))],
-                count=1, max_runs=5, interval=10, git_sync_interval=5,
+                count=0, max_runs=5, interval=10, git_sync_interval=5,
+            )
+            mock_notify_raw.reset_mock()
+            # Simulate a non-productive wake-up: count still 0 because the
+            # previous iteration was idle/passive, not a productive mission.
+            _run_iteration(
+                koan_root=str(koan_root), instance=instance,
+                projects=[("test", str(koan_root))],
+                count=0, max_runs=5, interval=10, git_sync_interval=5,
             )
 
         messages = [c.args[1] for c in mock_notify_raw.call_args_list]
