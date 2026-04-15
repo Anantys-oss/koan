@@ -421,13 +421,13 @@ def get_skill_timeout() -> int:
     killed.  This applies to the heavy-lifting skills that invoke Claude
     with full tool access.
 
-    Config key: skill_timeout (default: 3600 — 60 minutes).
+    Config key: skill_timeout (default: 7200 — 2 hours).
 
     Returns:
         Timeout in seconds.
     """
     config = _load_config()
-    return _safe_int(config.get("skill_timeout", 3600), 3600)
+    return _safe_int(config.get("skill_timeout", 7200), 7200)
 
 
 def get_mission_timeout() -> int:

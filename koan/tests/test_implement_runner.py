@@ -230,7 +230,7 @@ class TestExecuteImplementation:
             assert call_kwargs[0][0] == "prompt"
             assert call_kwargs[0][1] == "/project"
             assert call_kwargs[1]["max_turns"] == 200
-            assert call_kwargs[1]["timeout"] == 3600
+            assert call_kwargs[1]["timeout"] == 7200
             assert result == "ok"
 
     def test_passes_allowed_tools(self):

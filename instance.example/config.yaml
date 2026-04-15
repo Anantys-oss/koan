@@ -106,9 +106,10 @@ fast_reply: false
 
 # Skill timeout — maximum seconds for heavy skill execution (fix, implement, recreate)
 # These skills invoke Claude with full tool access and can run for a long time.
+# Complex /implement missions with multi-phase plans routinely exceed 60 min.
 # Increase if you see timeouts on complex issues; decrease to save quota.
-# Default: 3600 (60 minutes). Previous default was 900 (15 minutes).
-skill_timeout: 3600
+# Default: 7200 (2 hours). Previous default was 3600 (60 minutes).
+skill_timeout: 7200
 
 # Skill max turns — maximum agentic turns for heavy skill execution
 # Controls how many back-and-forth turns Claude CLI is allowed during
