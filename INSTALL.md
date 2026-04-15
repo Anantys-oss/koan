@@ -1,5 +1,31 @@
 # Installation
 
+## Release channels
+
+Kōan has two branches you can track:
+
+- **`main`** (default) — bleeding edge. Every merged change lands here.
+- **`stable`** — contains only tagged releases, fast-forwarded at each release. Recommended for a predictable, vetted experience.
+
+Track stable:
+
+```bash
+git clone -b stable https://github.com/sukria/koan.git
+cd koan
+# update later with:
+git pull origin stable
+```
+
+Switch an existing checkout from `main` to `stable`:
+
+```bash
+git fetch origin
+git checkout stable
+git pull origin stable
+```
+
+See [docs/maint.md](docs/maint.md) for the release procedure and cadence philosophy.
+
 ## Quick Start (Wizard)
 
 The easiest way to set up Kōan is with the interactive wizard:

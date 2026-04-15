@@ -2,7 +2,7 @@
 export
 
 .PHONY: install onboard setup start stop status restart
-.PHONY: clean say migrate test coverage sync-instance rename-project
+.PHONY: clean say migrate test test-strict coverage sync-instance rename-project release
 .PHONY: awake run errand-run errand-awake dashboard
 .PHONY: ollama logs ssh-forward
 .PHONY: install-systemctl-service uninstall-systemctl-service
@@ -52,6 +52,16 @@ say: setup
 test: setup
 	$(VENV)/bin/pip install -q pytest pytest-cov 2>/dev/null
 	cd koan && KOAN_ROOT=/tmp/test-koan PYTHONPATH=. ../$(PYTHON) -m pytest tests/ -v --cov=app --cov-report=term-missing --cov-report=html:htmlcov
+
+test-strict: setup
+	@echo "→ running full test suite in strict mode (0 failures required)"
+	$(VENV)/bin/pip install -q pytest pytest-cov 2>/dev/null
+	@cd koan && KOAN_ROOT=/tmp/test-koan PYTHONPATH=. ../$(PYTHON) -m pytest tests/ -q --tb=short \
+		|| (echo "✗ tests failed — aborting" && exit 1)
+	@echo "✓ all tests passed"
+
+release: setup
+	@bash scripts/release.sh
 
 migrate: setup
 	cd koan && KOAN_ROOT=$(PWD) PYTHONPATH=. ../$(PYTHON) app/migrate_memory.py
