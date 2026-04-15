@@ -371,7 +371,7 @@ class TestGetSkillTimeout:
         from app.config import get_skill_timeout
 
         with _mock_config({}):
-            assert get_skill_timeout() == 3600
+            assert get_skill_timeout() == 7200
 
     def test_custom(self):
         from app.config import get_skill_timeout
@@ -389,13 +389,13 @@ class TestGetSkillTimeout:
         from app.config import get_skill_timeout
 
         with _mock_config({"skill_timeout": "forever"}):
-            assert get_skill_timeout() == 3600
+            assert get_skill_timeout() == 7200
 
     def test_none_returns_default(self):
         from app.config import get_skill_timeout
 
         with _mock_config({"skill_timeout": None}):
-            assert get_skill_timeout() == 3600
+            assert get_skill_timeout() == 7200
 
 
 # --- get_skill_max_turns ---

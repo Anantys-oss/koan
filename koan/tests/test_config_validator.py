@@ -81,7 +81,7 @@ class TestValidConfigProducesNoWarnings:
             "debug": True,
             "cli_output_journal": True,
             "branch_prefix": "koan",
-            "skill_timeout": 3600,
+            "skill_timeout": 7200,
             "contemplative_chance": 10,
             "start_on_pause": False,
             "skip_permissions": False,

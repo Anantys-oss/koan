@@ -2397,6 +2397,16 @@ def _run_skill_mission(
         timed_out = True
         log("error", f"Skill runner timed out ({skill_timeout}s)")
         debug_log(f"[run] skill exec: TIMEOUT ({skill_timeout}s)")
+        # Log last lines of captured output so the journal shows *where*
+        # the run stalled, not just that it timed out.
+        tail_lines = stdout_lines[-20:] if stdout_lines else []
+        if tail_lines:
+            tail_preview = "\n".join(tail_lines)
+            log("info", f"Last output before timeout:\n{tail_preview}")
+            debug_log(f"[run] timeout tail ({len(tail_lines)} lines):\n{tail_preview}")
+        else:
+            log("info", "No stdout captured before timeout")
+            debug_log("[run] timeout: no stdout lines captured")
         exit_code = 1
         skill_stdout = "\n".join(stdout_lines)
         skill_stderr = ""

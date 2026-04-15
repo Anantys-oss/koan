@@ -3871,8 +3871,8 @@ class TestRunSkillMissionEnv:
         # proc.wait() is now a 30s cleanup wait (real timeout via watchdog)
         mock_proc.wait.assert_called_once_with(timeout=30)
 
-    def test_skill_timeout_default_is_3600(self, tmp_path):
-        """Default skill timeout should be 3600s (60 minutes)."""
+    def test_skill_timeout_default_is_7200(self, tmp_path):
+        """Default skill timeout should be 7200s (2 hours)."""
         from app.run import _run_skill_mission
         koan_root = str(tmp_path)
         instance = str(tmp_path / "instance")
@@ -3900,8 +3900,8 @@ class TestRunSkillMissionEnv:
                 autonomous_mode="implement",
             )
 
-        # Default timeout from get_skill_timeout() is 3600s, enforced by watchdog
-        mock_timer_cls.assert_called_once_with(3600, mock_timer_cls.call_args[0][1])
+        # Default timeout from get_skill_timeout() is 7200s, enforced by watchdog
+        mock_timer_cls.assert_called_once_with(7200, mock_timer_cls.call_args[0][1])
         mock_timer.start.assert_called_once()
         mock_timer.cancel.assert_called_once()
         # proc.wait() is now a 30s cleanup wait
