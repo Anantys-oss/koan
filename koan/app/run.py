@@ -1247,6 +1247,14 @@ _last_mission_aborted = False
 # every non-productive wake-up (issue #1193).
 _startup_notified = False
 
+# Tracks whether the initial boot burst has already fired in this process.
+# Unlike _startup_notified, this is NEVER reset on /resume — it distinguishes
+# "first iteration after process launch" from "first iteration after resume".
+# Used to silence the "no new missions" / "Notifications clear" variants on
+# resume, where those messages are noise (empty state, nothing changed).
+# When resume produces new missions, the count-bearing variants still fire.
+_boot_notified = False
+
 
 def _get_git_head(project_path: str) -> str:
     """Get current git HEAD SHA for retry safety check."""
@@ -1408,9 +1416,11 @@ def _run_iteration(
     # together take ~30-90s before any mission notification fires. Surface
     # progress to Telegram so the human knows what's happening. count>=1
     # iterations stay quiet to avoid steady-state spam.
-    global _startup_notified
+    global _startup_notified, _boot_notified
     is_first_iteration = not _startup_notified
+    is_boot_iteration = not _boot_notified
     _startup_notified = True
+    _boot_notified = True
 
     # Check GitHub notifications before planning (converts @mentions to missions
     # so plan_iteration() sees them immediately instead of waiting for sleep)
@@ -1439,7 +1449,9 @@ def _run_iteration(
         if is_first_iteration:
             if gh_missions > 0:
                 _notify_raw(instance, f"📋 GitHub: {gh_missions} new mission(s) queued. Scanning Jira...")
-            else:
+            elif is_boot_iteration:
+                # Empty-state message: only surface at actual boot. On resume,
+                # the human doesn't need to be told "nothing new" every cycle.
                 _notify_raw(instance, "📋 GitHub: scanned, no new missions. Scanning Jira...")
         from app.loop_manager import process_jira_notifications
         try:
@@ -1456,7 +1468,9 @@ def _run_iteration(
             _notify_raw(instance, f"🎯 Jira: {jira_missions} new mission(s) queued. Picking first mission from queue...")
         elif gh_missions > 0:
             _notify_raw(instance, f"🎯 GitHub: {gh_missions} new mission(s) queued. Picking first mission from queue...")
-        else:
+        elif is_boot_iteration:
+            # Empty-state message: only at actual boot. Suppress on resume to
+            # avoid spamming the human after every /pause+/resume or auto-resume.
             _notify_raw(instance, "🎯 Notifications clear. Picking first mission from queue...")
 
     # Plan iteration (delegated to iteration_manager)

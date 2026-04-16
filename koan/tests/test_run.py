@@ -2778,8 +2778,10 @@ class TestRunIterationFirstIterationNotifications:
     def _reset_startup_flag(self):
         import app.run as run_mod
         run_mod._startup_notified = False
+        run_mod._boot_notified = False
         yield
         run_mod._startup_notified = False
+        run_mod._boot_notified = False
 
     @patch("app.jira_config.get_jira_enabled", return_value=True)
     @patch("app.run.plan_iteration")
@@ -2896,6 +2898,80 @@ class TestRunIterationFirstIterationNotifications:
         joined = " | ".join(messages)
         assert "GitHub: 3 new mission" in joined
         assert "Jira: 2 new mission" in joined
+
+    @patch("app.jira_config.get_jira_enabled", return_value=True)
+    @patch("app.run.plan_iteration")
+    @patch("app.run._notify_raw")
+    @patch("app.loop_manager.process_jira_notifications", return_value=0)
+    @patch("app.loop_manager.process_github_notifications", return_value=0)
+    def test_resume_without_missions_suppresses_empty_state_pings(
+        self, mock_gh, mock_jira, mock_notify_raw, mock_plan, mock_jira_enabled, koan_root,
+    ):
+        """After resume (simulated by resetting _startup_notified only), the
+        empty-state "scanned, no new missions" and "Notifications clear" pings
+        MUST be silenced. The "🔍 Scanning GitHub" progress ping still fires
+        so the human knows the cold-start scan is happening.
+        """
+        from app.run import _run_iteration
+        import app.run as run_mod
+        mock_plan.return_value = self._stop_plan(koan_root)
+        instance = str(koan_root / "instance")
+
+        with patch("app.utils.get_known_projects", return_value=[("test", str(koan_root))]):
+            # Boot iteration: all 3 messages expected
+            _run_iteration(
+                koan_root=str(koan_root), instance=instance,
+                projects=[("test", str(koan_root))],
+                count=0, max_runs=5, interval=10, git_sync_interval=5,
+            )
+            # Simulate /resume: only _startup_notified is reset, not _boot_notified
+            run_mod._startup_notified = False
+            mock_notify_raw.reset_mock()
+            _run_iteration(
+                koan_root=str(koan_root), instance=instance,
+                projects=[("test", str(koan_root))],
+                count=0, max_runs=5, interval=10, git_sync_interval=5,
+            )
+
+        messages = [c.args[1] for c in mock_notify_raw.call_args_list]
+        joined = " | ".join(messages)
+        # The cold-start progress ping stays — still useful on resume.
+        assert "Scanning GitHub notifications" in joined
+        # But the empty-state variants must NOT reappear on resume.
+        assert "scanned, no new missions" not in joined
+        assert "Notifications clear" not in joined
+
+    @patch("app.jira_config.get_jira_enabled", return_value=True)
+    @patch("app.run.plan_iteration")
+    @patch("app.run._notify_raw")
+    @patch("app.loop_manager.process_jira_notifications", return_value=1)
+    @patch("app.loop_manager.process_github_notifications", return_value=2)
+    def test_resume_with_missions_still_reports_counts(
+        self, mock_gh, mock_jira, mock_notify_raw, mock_plan, mock_jira_enabled, koan_root,
+    ):
+        """When resume brings new missions, count-bearing pings must still
+        fire — those carry real signal, unlike the empty-state variants.
+        """
+        from app.run import _run_iteration
+        import app.run as run_mod
+        mock_plan.return_value = self._stop_plan(koan_root)
+        instance = str(koan_root / "instance")
+
+        # Start in "already booted" state to simulate resume
+        run_mod._boot_notified = True
+        run_mod._startup_notified = False
+
+        with patch("app.utils.get_known_projects", return_value=[("test", str(koan_root))]):
+            _run_iteration(
+                koan_root=str(koan_root), instance=instance,
+                projects=[("test", str(koan_root))],
+                count=0, max_runs=5, interval=10, git_sync_interval=5,
+            )
+
+        messages = [c.args[1] for c in mock_notify_raw.call_args_list]
+        joined = " | ".join(messages)
+        assert "GitHub: 2 new mission" in joined
+        assert "Jira: 1 new mission" in joined
 
     @patch("app.jira_config.get_jira_enabled", return_value=True)
     @patch("app.run.plan_iteration")
