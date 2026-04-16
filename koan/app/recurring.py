@@ -25,6 +25,12 @@ The optional "at" field (e.g. "20:00") restricts when the mission fires:
   - daily: fires once per day, but only at or after the specified time
   - weekly: fires once per week, but only at or after the specified time
   - hourly: "at" is ignored (hourly already fires every hour)
+
+The optional "days" field restricts which days the mission fires:
+  - "weekdays" — Monday through Friday
+  - "weekends" — Saturday and Sunday
+  - "mon,wed,fri" — specific days (3-letter abbreviations, comma-separated)
+  - null/absent — fires every day (default)
 """
 
 import fcntl
@@ -47,6 +53,148 @@ import re
 _AT_TIME_RE = re.compile(r"^(\d{1,2}):(\d{2})\s+")
 # Regex for parsing interval strings like "5m", "2h", "1h30m", "90s"
 _INTERVAL_RE = re.compile(r"^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$")
+
+# Day-of-week abbreviations (Python weekday: 0=Monday)
+_DAY_ABBREVS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+_WEEKDAYS = {"mon", "tue", "wed", "thu", "fri"}
+_WEEKENDS = {"sat", "sun"}
+
+
+_FREQ_ORDER = {"every": 0, "hourly": 1, "daily": 2, "weekly": 3}
+
+
+def _sorted_missions(missions: List[Dict]) -> List[Dict]:
+    """Return missions sorted by frequency, matching the display order in /recurring."""
+    return sorted(missions, key=lambda m: _FREQ_ORDER.get(m["frequency"], 99))
+
+
+def _resolve_target(missions: List[Dict], identifier: str) -> Dict:
+    """Resolve a mission by number (1-indexed, display order) or keyword.
+
+    Numbers match the sorted display order shown by /recurring.
+    Keywords match against mission text (case-insensitive substring).
+
+    Raises:
+        ValueError: If identifier doesn't match any mission.
+    """
+    if not missions:
+        raise ValueError("No recurring missions configured.")
+
+    if identifier.isdigit():
+        sorted_list = _sorted_missions(missions)
+        idx = int(identifier) - 1
+        if idx < 0 or idx >= len(sorted_list):
+            raise ValueError(
+                f"Invalid number: {identifier}. "
+                f"Valid range: 1-{len(sorted_list)}"
+            )
+        return sorted_list[idx]
+
+    matches = [
+        m for m in missions
+        if identifier.lower() in m["text"].lower()
+    ]
+    if not matches:
+        raise ValueError(f"No recurring mission matching '{identifier}'.")
+    if len(matches) > 1:
+        raise ValueError(
+            f"Multiple matches for '{identifier}'. Be more specific or use a number."
+        )
+    return matches[0]
+
+
+def parse_days(text: str) -> str:
+    """Parse and validate a days-of-week specification.
+
+    Accepts:
+        "weekdays" — Monday through Friday
+        "weekends" — Saturday and Sunday
+        "mon,wed,fri" — specific day abbreviations (comma-separated)
+
+    Returns:
+        Normalized string (e.g. "weekdays", "weekends", "mon,wed,fri").
+
+    Raises:
+        ValueError: If any day abbreviation is invalid.
+    """
+    text = text.strip().lower()
+    if text in ("weekdays", "weekends"):
+        return text
+    days = [d.strip() for d in text.split(",") if d.strip()]
+    for d in days:
+        if d not in _DAY_ABBREVS:
+            raise ValueError(
+                f"Invalid day: '{d}'. Use 3-letter abbreviations: "
+                f"{', '.join(_DAY_ABBREVS)}, or 'weekdays'/'weekends'."
+            )
+    return ",".join(days)
+
+
+def _matches_day(days: Optional[str], now: datetime) -> bool:
+    """Check if the current day matches the days-of-week filter.
+
+    Returns True if no filter is set (always eligible).
+    """
+    if not days:
+        return True
+    today = _DAY_ABBREVS[now.weekday()]
+    if days == "weekdays":
+        return today in _WEEKDAYS
+    if days == "weekends":
+        return today in _WEEKENDS
+    allowed = {d.strip() for d in days.split(",")}
+    return today in allowed
+
+
+def toggle_recurring(recurring_path: Path, identifier: str, enabled: bool) -> str:
+    """Enable or disable a recurring mission by number or keyword.
+
+    Numbers match the sorted display order shown by /recurring.
+
+    Args:
+        recurring_path: Path to recurring.json
+        identifier: Number (1-indexed, display order) or keyword substring
+        enabled: True to enable, False to disable
+
+    Returns:
+        Description of the toggled mission
+
+    Raises:
+        ValueError: If identifier doesn't match any mission
+    """
+    def _toggle(missions: List[Dict]) -> str:
+        target = _resolve_target(missions, identifier)
+        target["enabled"] = enabled
+        return f"[{target['frequency']}] {target['text']}"
+
+    return _locked_modify(recurring_path, _toggle)
+
+
+def set_days(recurring_path: Path, identifier: str, days: Optional[str]) -> str:
+    """Set or clear the days-of-week filter on a recurring mission.
+
+    Numbers match the sorted display order shown by /recurring.
+
+    Args:
+        recurring_path: Path to recurring.json
+        identifier: Number (1-indexed, display order) or keyword substring
+        days: Days spec (e.g. "weekdays", "mon,wed,fri") or None to clear
+
+    Returns:
+        Description of the updated mission
+
+    Raises:
+        ValueError: If identifier doesn't match or days are invalid
+    """
+    if days:
+        days = parse_days(days)
+
+    def _set(missions: List[Dict]) -> str:
+        target = _resolve_target(missions, identifier)
+        target["days"] = days
+        return f"[{target['frequency']}] {target['text']}"
+
+    return _locked_modify(recurring_path, _set)
 
 
 def load_recurring(recurring_path: Path) -> List[Dict]:
@@ -236,11 +384,13 @@ def add_recurring(
 
 
 def remove_recurring(recurring_path: Path, identifier: str) -> str:
-    """Remove a recurring mission by number (1-indexed) or keyword.
+    """Remove a recurring mission by number (1-indexed, display order) or keyword.
+
+    Numbers match the sorted display order shown by /recurring.
 
     Args:
         recurring_path: Path to recurring.json
-        identifier: Number (1-indexed) or keyword substring
+        identifier: Number (1-indexed, display order) or keyword substring
 
     Returns:
         Description of the removed mission
@@ -249,51 +399,26 @@ def remove_recurring(recurring_path: Path, identifier: str) -> str:
         ValueError: If identifier doesn't match any mission
     """
     def _remove(missions: List[Dict]) -> str:
-        if not missions:
-            raise ValueError("No recurring missions configured.")
-
-        enabled = [m for m in missions if m.get("enabled", True)]
-        if not enabled:
-            raise ValueError("No active recurring missions.")
-
-        if identifier.isdigit():
-            idx = int(identifier) - 1
-            if idx < 0 or idx >= len(enabled):
-                raise ValueError(
-                    f"Invalid number: {identifier}. "
-                    f"Valid range: 1-{len(enabled)}"
-                )
-            target = enabled[idx]
-        else:
-            # Keyword match (case-insensitive substring)
-            matches = [
-                m for m in enabled
-                if identifier.lower() in m["text"].lower()
-            ]
-            if not matches:
-                raise ValueError(f"No recurring mission matching '{identifier}'.")
-            if len(matches) > 1:
-                raise ValueError(
-                    f"Multiple matches for '{identifier}'. Be more specific or use a number."
-                )
-            target = matches[0]
-
-        # Remove from list (mutate in place so _locked_modify saves correctly)
+        target = _resolve_target(missions, identifier)
         missions[:] = [m for m in missions if m["id"] != target["id"]]
         return f"[{target['frequency']}] {target['text']}"
 
     return _locked_modify(recurring_path, _remove)
 
 
-def list_recurring(recurring_path: Path) -> List[Dict]:
-    """List all enabled recurring missions.
+def list_recurring(recurring_path: Path, include_disabled: bool = True) -> List[Dict]:
+    """List recurring missions.
+
+    Args:
+        recurring_path: Path to recurring.json
+        include_disabled: If True, include disabled missions in the list.
 
     Returns list of mission dicts, sorted by frequency (hourly, daily, weekly).
     """
     missions = load_recurring(recurring_path)
-    enabled = [m for m in missions if m.get("enabled", True)]
-    freq_order = {"every": 0, "hourly": 1, "daily": 2, "weekly": 3}
-    return sorted(enabled, key=lambda m: freq_order.get(m["frequency"], 99))
+    if not include_disabled:
+        missions = [m for m in missions if m.get("enabled", True)]
+    return _sorted_missions(missions)
 
 
 def format_recurring_list(missions: List[Dict]) -> str:
@@ -310,19 +435,25 @@ def format_recurring_list(missions: List[Dict]) -> str:
         text = m["text"]
         project = m.get("project")
         last_run = m.get("last_run")
+        enabled = m.get("enabled", True)
+        days = m.get("days")
+
+        # Status indicator
+        status = "✅" if enabled else "⏸️"
 
         at = m.get("at")
         if freq == "every":
             interval_display = m.get("interval_display") or format_interval(m.get("interval_seconds", 0))
-            entry = f"  {i}. [every {interval_display}] {text}"
+            entry = f"  {i}. {status} [every {interval_display}] {text}"
         elif at:
-            entry = f"  {i}. [{freq} at {at}] {text}"
+            entry = f"  {i}. {status} [{freq} at {at}] {text}"
         else:
-            entry = f"  {i}. [{freq}] {text}"
+            entry = f"  {i}. {status} [{freq}] {text}"
+        if days:
+            entry += f" 📅{days}"
         if project:
             entry += f" (project: {project})"
         if last_run:
-            # Show relative time
             try:
                 last_dt = datetime.fromisoformat(last_run)
                 delta = datetime.now() - last_dt
@@ -374,6 +505,11 @@ def is_due(mission: Dict, now: Optional[datetime] = None) -> bool:
         return False
 
     now = now or datetime.now()
+
+    # Day-of-week filter — skip if today doesn't match
+    if not _matches_day(mission.get("days"), now):
+        return False
+
     last_run = mission.get("last_run")
     at = mission.get("at")
 
