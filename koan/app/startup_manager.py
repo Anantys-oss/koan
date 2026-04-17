@@ -499,12 +499,21 @@ def run_startup(koan_root: str, instance: str, projects: list):
     # Startup-status pings use _notify_raw so the 🌅/⚠️ markers and exact
     # wording reach Telegram intact (no Claude CLI rewrite).
     _notify_raw(instance, "🌅 Running morning ritual (Claude CLI, up to ~90s)...")
+    ritual_error = ""
     with protected_phase("Morning ritual"):
-        ritual_ok = _safe_run("Morning ritual", run_morning_ritual, instance)
+        try:
+            ritual_ok = run_morning_ritual(instance)
+        except Exception as e:
+            log("error", f"Morning ritual failed: {e}")
+            ritual_ok = None
+            ritual_error = str(e)
     if ritual_ok:
         _notify_raw(instance, "🌅 Morning ritual complete — preparing first iteration.")
+    elif ritual_ok is None:
+        reason = f" ({ritual_error})" if ritual_error else ""
+        _notify_raw(instance, f"⚠️ Morning ritual failed{reason} — preparing first iteration anyway.")
     else:
-        _notify_raw(instance, "⚠️ Morning ritual skipped/failed — preparing first iteration anyway.")
+        _notify_raw(instance, "⏭️ Morning ritual skipped — preparing first iteration.")
 
     # Initialize hook system and fire session_start
     from app.hooks import fire_hook, init_hooks

@@ -990,7 +990,8 @@ class TestRunStartupNotifications:
         joined = " | ".join(msgs)
         assert "Running morning ritual" in joined
         assert "Morning ritual complete" in joined
-        assert "skipped/failed" not in joined
+        assert "skipped" not in joined
+        assert "failed" not in joined
 
     @patch("app.startup_manager.run_morning_ritual", return_value=False)
     @patch("app.startup_manager.run_daily_report")
@@ -1016,7 +1017,7 @@ class TestRunStartupNotifications:
     @patch("app.utils.get_cli_binary_for_shell", return_value="claude")
     @patch("app.utils.get_interval_seconds", return_value=60)
     @patch("app.utils.get_max_runs", return_value=10)
-    def test_morning_ritual_failure_emits_skipped_message(
+    def test_morning_ritual_skip_emits_skipped_message(
         self,
         mock_max_runs, mock_interval, mock_cli, mock_prefix,
         mock_banner,
@@ -1026,14 +1027,62 @@ class TestRunStartupNotifications:
         mock_set_status, mock_build_status, mock_notify, mock_notify_raw,
         mock_git_sync, mock_daily, mock_ritual,
     ):
-        """When the morning ritual returns False (failed/skipped), the user
-        gets an honest message rather than a misleading "complete"."""
+        """When the morning ritual returns False (skipped), the user
+        gets a neutral message — no alarming ⚠️ icon."""
         from app.startup_manager import run_startup
         run_startup("/tmp/koan", "/tmp/koan/instance", [("proj1", "/p1")])
 
         msgs = [c.args[1] for c in mock_notify_raw.call_args_list]
         joined = " | ".join(msgs)
-        assert "skipped/failed" in joined
+        assert "⏭️" in joined
+        assert "skipped" in joined
+        assert "Morning ritual complete" not in joined
+        assert "⚠️" not in joined
+
+    @patch("app.startup_manager.run_morning_ritual", side_effect=RuntimeError("CLI not found"))
+    @patch("app.startup_manager.run_daily_report")
+    @patch("app.startup_manager.run_git_sync")
+    @patch("app.run._notify_raw")
+    @patch("app.run._notify")
+    @patch("app.run._build_startup_status", return_value="Active")
+    @patch("app.run.set_status")
+    @patch("app.startup_manager.setup_github_auth")
+    @patch("app.startup_manager.setup_git_identity")
+    @patch("app.startup_manager.handle_start_on_pause")
+    @patch("app.startup_manager.check_self_reflection")
+    @patch("app.startup_manager.check_health")
+    @patch("app.startup_manager.cleanup_mission_history")
+    @patch("app.startup_manager.cleanup_memory")
+    @patch("app.startup_manager.run_sanity_checks")
+    @patch("app.startup_manager.discover_workspace", return_value=[("proj1", "/p1")])
+    @patch("app.startup_manager.populate_github_urls")
+    @patch("app.startup_manager.run_migrations")
+    @patch("app.startup_manager.recover_crashed_missions")
+    @patch("app.banners.print_agent_banner")
+    @patch("app.utils.get_branch_prefix", return_value="koan/")
+    @patch("app.utils.get_cli_binary_for_shell", return_value="claude")
+    @patch("app.utils.get_interval_seconds", return_value=60)
+    @patch("app.utils.get_max_runs", return_value=10)
+    def test_morning_ritual_exception_emits_warning_with_reason(
+        self,
+        mock_max_runs, mock_interval, mock_cli, mock_prefix,
+        mock_banner,
+        mock_recover, mock_migrate, mock_gh_urls, mock_workspace,
+        mock_sanity, mock_memory, mock_history, mock_health,
+        mock_reflection, mock_pause, mock_git_id, mock_gh_auth,
+        mock_set_status, mock_build_status, mock_notify, mock_notify_raw,
+        mock_git_sync, mock_daily, mock_ritual,
+    ):
+        """When the morning ritual raises an exception, the user gets a ⚠️
+        warning with the error reason — not a generic skip message."""
+        from app.startup_manager import run_startup
+        run_startup("/tmp/koan", "/tmp/koan/instance", [("proj1", "/p1")])
+
+        msgs = [c.args[1] for c in mock_notify_raw.call_args_list]
+        joined = " | ".join(msgs)
+        assert "⚠️" in joined
+        assert "failed" in joined
+        assert "CLI not found" in joined
         assert "Morning ritual complete" not in joined
 
     @patch("app.startup_manager.check_auto_update", return_value=True)
