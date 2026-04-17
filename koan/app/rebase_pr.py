@@ -1374,43 +1374,114 @@ def _build_rebase_comment(
     ci_section: str = "",
     change_summary: str = "",
 ) -> str:
-    """Build a markdown comment summarizing the rebase."""
-    title = context.get("title", f"PR #{pr_number}")
+    """Build a structured markdown comment summarizing the rebase.
 
-    # Filter out mechanical pipeline steps for a cleaner actions list
+    Sections:
+    1. Summary — rebase type (simple vs. with adjustments) + one-liner
+    2. Changes — explicit list of changes beyond the rebase itself
+    3. Stats — diff summary (files, insertions, deletions)
+    4. Actions — pipeline steps performed
+    5. CI — test / CI status
+    """
+    has_feedback = _has_review_feedback(context) and any(
+        "feedback" in a.lower() for a in actions_log
+    )
+    has_conflicts = any("conflict" in a.lower() for a in actions_log)
+
+    # ── 1. Summary ──────────────────────────────────────────────────
+    if has_feedback:
+        rebase_type = "Rebase with requested adjustments"
+        summary_line = (
+            f"Branch `{branch}` was rebased onto `{base}` and review "
+            f"feedback was applied."
+        )
+    elif has_conflicts:
+        rebase_type = "Rebase with conflict resolution"
+        summary_line = (
+            f"Branch `{branch}` was rebased onto `{base}` with "
+            f"automatic conflict resolution."
+        )
+    else:
+        rebase_type = "Simple rebase"
+        summary_line = (
+            f"Branch `{branch}` was rebased onto `{base}` — "
+            f"no additional changes were needed."
+        )
+
+    parts = [f"## {rebase_type}\n"]
+    parts.append(f"{summary_line}\n")
+
+    # ── 2. Changes ──────────────────────────────────────────────────
+    # Only include when there are meaningful changes beyond rebasing
+    change_items = _extract_change_items(actions_log, change_summary)
+    if change_items:
+        parts.append("### Changes applied\n")
+        for item in change_items:
+            parts.append(f"- {item}")
+        parts.append("")
+
+    # ── 3. Stats ────────────────────────────────────────────────────
+    if diffstat:
+        parts.append(f"### Stats\n")
+        parts.append(f"```\n{diffstat}\n```\n")
+
+    # ── 4. Actions ──────────────────────────────────────────────────
+    # Filter mechanical pipeline noise
     meaningful_actions = [
         a for a in actions_log
         if not a.startswith("Read PR comments")
         and not a.startswith("Commented on PR")
     ]
-    actions_md = "\n".join(
-        f"- {a}" for a in meaningful_actions
-    ) if meaningful_actions else "- Rebased (no additional changes needed)"
+    if meaningful_actions:
+        parts.append("<details>\n<summary>Actions performed</summary>\n")
+        for a in meaningful_actions:
+            parts.append(f"- {a}")
+        parts.append("\n</details>\n")
 
-    parts = [f"## Rebase: {title}\n"]
-    parts.append(
-        f"Branch `{branch}` rebased onto `{base}` and force-pushed.\n"
-    )
-
-    if diffstat:
-        parts.append(f"**Diff**: {diffstat}\n")
-
-    # Show what review feedback was addressed
-    if _has_review_feedback(context) and any("feedback" in a.lower() for a in actions_log):
-        parts.append("Review feedback was analyzed and applied.\n")
-
-    # Include detailed change summary when review feedback produced code changes
-    if change_summary:
-        parts.append(f"### Changes\n\n{change_summary}\n")
-
-    parts.append(f"### Actions\n\n{actions_md}\n")
-
+    # ── 5. CI ───────────────────────────────────────────────────────
     if ci_section:
-        parts.append(f"### CI\n\n{ci_section}\n")
+        parts.append(f"### CI status\n")
+        parts.append(f"{ci_section}\n")
 
     parts.append("---\n_Automated by Kōan_")
 
     return "\n".join(parts)
+
+
+def _extract_change_items(
+    actions_log: List[str],
+    change_summary: str,
+) -> List[str]:
+    """Extract meaningful change descriptions for the Changes section.
+
+    Combines review-feedback changes (from Claude's change_summary) with
+    notable pipeline actions (conflict resolution, CI fixes, etc.).
+    """
+    items: List[str] = []
+
+    # Include Claude's change summary — split on newlines for multi-line summaries
+    if change_summary:
+        for line in change_summary.strip().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            # Strip leading "- " if present — we add our own
+            if line.startswith("- "):
+                line = line[2:]
+            if line:
+                items.append(line)
+
+    # Add notable pipeline actions (not already covered by change_summary)
+    for action in actions_log:
+        low = action.lower()
+        if "conflict" in low and "resolution" in low:
+            items.append(f"**Conflict resolution**: {action}")
+        elif "ci fix" in low and "applied" in low:
+            items.append(f"**CI fix**: {action}")
+        elif "pre-push ci fix applied" in low:
+            items.append("**Pre-push CI fix**: resolved failing checks before push")
+
+    return items
 
 
 def _is_conflict_failure(summary: str) -> bool:
