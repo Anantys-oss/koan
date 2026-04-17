@@ -155,6 +155,7 @@ class TestIsServerRunning:
     def test_running(self):
         mock_resp = MagicMock()
         mock_resp.status = 200
+        mock_resp.read.return_value = b'"Ollama is running"'
         mock_resp.__enter__ = lambda s: s
         mock_resp.__exit__ = MagicMock(return_value=False)
 
