@@ -35,8 +35,8 @@ class TestOllamaLaunchBasics:
         with patch("app.provider.ollama_launch.shutil.which", return_value=None):
             assert self.provider.is_available() is False
 
-    def test_get_env_empty(self):
-        assert self.provider.get_env() == {}
+    def test_get_env_default(self):
+        assert self.provider.get_env() == {"OLLAMA_NO_CLOUD": "1"}
 
     def test_check_quota_always_available(self):
         available, detail = self.provider.check_quota_available("/some/path")

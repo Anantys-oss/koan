@@ -51,6 +51,8 @@ def _api_request(
         return False, "Request timed out"
     except (json.JSONDecodeError, UnicodeDecodeError) as e:
         return False, f"Invalid response: {e}"
+    except OSError as e:
+        return False, str(e)
 
 
 def is_server_running(host: str = DEFAULT_HOST, timeout: int = 3) -> bool:

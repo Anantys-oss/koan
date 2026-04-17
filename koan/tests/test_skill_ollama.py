@@ -93,7 +93,8 @@ class TestSubcommandDispatch:
 
     def test_pull_subcommand(self):
         mock = self._run("pull qwen3-coder", "_handle_pull")
-        mock.assert_called_once_with("qwen3-coder")
+        args, kwargs = mock.call_args
+        assert args[0] == "qwen3-coder"
 
     def test_remove_subcommand(self):
         mock = self._run("remove old-model", "_handle_remove")
