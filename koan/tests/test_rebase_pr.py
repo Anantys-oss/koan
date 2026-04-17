@@ -526,10 +526,10 @@ class TestBuildRebaseComment:
             ["Rebased onto origin/main", "Force-pushed"],
             {"title": "Fix bug"},
         )
-        assert "## Rebase: Fix bug" in result
+        assert "## Simple rebase" in result
         assert "`koan/fix`" in result
         assert "`main`" in result
-        assert "Rebased" in result
+        assert "no additional changes" in result
         assert "Kōan" in result
 
     def test_empty_actions(self):
@@ -537,7 +537,7 @@ class TestBuildRebaseComment:
             "1", "br", "main", [],
             {"title": "PR"},
         )
-        assert "no additional changes needed" in result
+        assert "no additional changes" in result
 
     def test_diffstat_included(self):
         result = _build_rebase_comment(
@@ -547,7 +547,7 @@ class TestBuildRebaseComment:
             diffstat="3 files changed, 15 insertions(+), 5 deletions(-)",
         )
         assert "3 files changed" in result
-        assert "**Diff**" in result
+        assert "### Stats" in result
 
     def test_no_diffstat_when_empty(self):
         result = _build_rebase_comment(
@@ -556,7 +556,7 @@ class TestBuildRebaseComment:
             {"title": "Fix bug"},
             diffstat="",
         )
-        assert "**Diff**" not in result
+        assert "### Stats" not in result
 
     def test_review_feedback_noted(self):
         result = _build_rebase_comment(
@@ -564,7 +564,17 @@ class TestBuildRebaseComment:
             ["Rebased onto origin/main", "Applied review feedback"],
             {"title": "Fix bug", "review_comments": "please fix the typo"},
         )
-        assert "Review feedback was analyzed and applied" in result
+        assert "## Rebase with requested adjustments" in result
+        assert "review feedback was applied" in result
+
+    def test_conflict_resolution_noted(self):
+        result = _build_rebase_comment(
+            "42", "koan/fix", "main",
+            ["Resolved merge conflicts (1 round(s))"],
+            {"title": "Fix bug"},
+        )
+        assert "## Rebase with conflict resolution" in result
+        assert "automatic conflict resolution" in result
 
     def test_mechanical_actions_filtered(self):
         result = _build_rebase_comment(
@@ -575,6 +585,16 @@ class TestBuildRebaseComment:
         assert "Read PR comments" not in result
         assert "Commented on PR" not in result
         assert "Rebased" in result
+
+    def test_actions_in_collapsible_details(self):
+        result = _build_rebase_comment(
+            "42", "koan/fix", "main",
+            ["Rebased onto origin/main", "Force-pushed"],
+            {"title": "Fix bug"},
+        )
+        assert "<details>" in result
+        assert "Actions performed" in result
+        assert "</details>" in result
 
 
 # ---------------------------------------------------------------------------
@@ -2179,7 +2199,7 @@ class TestBuildRebaseCommentWithCi:
             {"title": "Fix bug"},
             ci_section="CI passed.",
         )
-        assert "### CI" in result
+        assert "### CI status" in result
         assert "CI passed." in result
 
     def test_no_ci_section_when_empty(self):
@@ -2189,7 +2209,7 @@ class TestBuildRebaseCommentWithCi:
             {"title": "Fix bug"},
             ci_section="",
         )
-        assert "### CI" not in result
+        assert "### CI status" not in result
 
 
 # ---------------------------------------------------------------------------
@@ -2377,7 +2397,7 @@ class TestBuildRebaseCommentChangeSummary:
             {"title": "Fix bug", "review_comments": "fix the typo"},
             change_summary="Fixed typo in error message and updated tests.",
         )
-        assert "### Changes" in result
+        assert "### Changes applied" in result
         assert "Fixed typo in error message" in result
 
     def test_no_change_summary_when_empty(self):
@@ -2387,7 +2407,7 @@ class TestBuildRebaseCommentChangeSummary:
             {"title": "Fix bug"},
             change_summary="",
         )
-        assert "### Changes" not in result
+        assert "### Changes applied" not in result
 
     def test_no_change_summary_when_none(self):
         result = _build_rebase_comment(
@@ -2395,7 +2415,7 @@ class TestBuildRebaseCommentChangeSummary:
             ["Rebased onto origin/main"],
             {"title": "Fix bug"},
         )
-        assert "### Changes" not in result
+        assert "### Changes applied" not in result
 
 
 class TestRunRebasePassesChangeSummary:
