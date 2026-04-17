@@ -451,6 +451,14 @@ Use this before `/plan` when the idea is architecturally complex, when you want 
 - **Aliases:** `/rb`
 - **GitHub @mention:** `@koan-bot /rebase` on a PR
 
+After completion, Kōan posts a structured comment on the PR with these sections:
+
+1. **Summary** — Classifies the rebase (simple / with adjustments / with conflict resolution)
+2. **Changes applied** — List of modifications beyond the rebase itself (review feedback, conflict resolution, CI fixes)
+3. **Stats** — Diff summary (files changed, insertions, deletions)
+4. **Actions performed** — Pipeline steps in a collapsible `<details>` block
+5. **CI status** — Test/CI outcome
+
 <details>
 <summary>Use cases</summary>
 
