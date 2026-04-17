@@ -27,10 +27,12 @@ from app.claude_step import (
     _fetch_failed_logs,
     _get_current_branch,
     _get_diffstat,
+    _rebase_onto_target,
     _run_git,
     _safe_checkout,
     check_existing_ci,
     commit_if_changes,
+    has_rebase_in_progress,
     run_claude,
     run_claude_step,
     strip_cli_noise,
@@ -616,10 +618,9 @@ def _rebase_with_conflict_resolution(
 ) -> Optional[str]:
     """Rebase onto target branch, resolving conflicts via Claude if needed.
 
-    Tries the *preferred_remote* first (matched from the PR's target repo),
-    then falls back to ``origin`` and ``upstream``.  When *head_remote* is
-    known and differs from the target remote, uses ``--onto`` to replay only
-    the PR's commits (between ``head_remote/base`` and HEAD) onto the target.
+    Delegates to :func:`claude_step._rebase_onto_target` for the core
+    fetch-and-rebase loop, injecting a conflict-resolution callback that
+    invokes Claude to resolve conflicted files.
 
     When ``git rebase`` hits conflicts, Claude is invoked to resolve the
     conflicted files, they are staged, and the rebase is continued.  This
@@ -629,84 +630,26 @@ def _rebase_with_conflict_resolution(
     Returns:
         Remote name used (e.g. "origin") on success, None on total failure.
     """
-    for remote in _ordered_remotes(preferred_remote):
-        try:
-            _fetch_branch(remote, base, cwd=project_path)
-        except Exception as e:
-            print(f"[rebase_pr] fetch {remote}/{base} failed: {e}", file=sys.stderr)
-            continue
 
-        # When head_remote differs from the target remote, use --onto to
-        # limit replay to only the PR's commits (avoids replaying upstream
-        # history when the fork has diverged).
-        if head_remote and head_remote != remote:
-            try:
-                _fetch_branch(head_remote, base, cwd=project_path)
-                _run_git(
-                    ["git", "rebase", "--onto", f"{remote}/{base}",
-                     f"{head_remote}/{base}", "--autostash"],
-                    cwd=project_path,
-                )
-                return remote  # Clean --onto rebase
-            except Exception as e:
-                print(f"[rebase_pr] --onto rebase failed: {e}", file=sys.stderr)
-                # Check if we're in a conflicted rebase state from --onto
-                if _has_rebase_in_progress(project_path):
-                    resolved = _resolve_rebase_conflicts(
-                        base, remote, project_path, context, actions_log,
-                        notify_fn=notify_fn, skill_dir=skill_dir,
-                        max_rounds=max_conflict_rounds,
-                    )
-                    if resolved:
-                        return remote
-                    _abort_rebase(project_path)
-                # Fall through to plain rebase
+    def _on_conflict(proj_path: str) -> bool:
+        """Conflict callback: resolve via Claude then continue the rebase."""
+        return _resolve_rebase_conflicts(
+            base, "",  # remote not needed — conflicts already in progress
+            proj_path, context, actions_log,
+            notify_fn=notify_fn, skill_dir=skill_dir,
+            max_rounds=max_conflict_rounds,
+        )
 
-        # Fallback: plain rebase (same repo PR, or --onto failed)
-        try:
-            _run_git(
-                ["git", "rebase", "--autostash", f"{remote}/{base}"],
-                cwd=project_path,
-            )
-            return remote  # Clean rebase — no conflicts
-        except Exception as e:
-            print(f"[rebase_pr] Rebase onto {remote}/{base} failed: {e}", file=sys.stderr)
-
-            # Check if we're in a conflicted rebase state
-            if not _has_rebase_in_progress(project_path):
-                # Non-conflict failure (e.g. dirty worktree) — abort and try next
-                _abort_rebase(project_path)
-                continue
-
-            # Conflict detected — try to resolve
-            resolved = _resolve_rebase_conflicts(
-                base, remote, project_path, context, actions_log,
-                notify_fn=notify_fn, skill_dir=skill_dir,
-                max_rounds=max_conflict_rounds,
-            )
-            if resolved:
-                return remote
-
-            # Resolution failed — abort and try next remote
-            _abort_rebase(project_path)
-
-    return None
-
-
-def _has_rebase_in_progress(project_path: str) -> bool:
-    """Check if a git rebase is in progress (typically due to conflicts)."""
-    git_dir = Path(project_path) / ".git"
-    return (git_dir / "rebase-merge").exists() or (git_dir / "rebase-apply").exists()
-
-
-def _abort_rebase(project_path: str) -> None:
-    """Abort a rebase in progress, ignoring errors."""
-    subprocess.run(
-        ["git", "rebase", "--abort"],
-        stdin=subprocess.DEVNULL,
-        capture_output=True, cwd=project_path,
-        timeout=30,
+    return _rebase_onto_target(
+        base, project_path,
+        preferred_remote=preferred_remote,
+        head_remote=head_remote,
+        on_conflict=_on_conflict,
     )
+
+
+# Backward-compatible alias — canonical source is now claude_step.has_rebase_in_progress
+_has_rebase_in_progress = has_rebase_in_progress
 
 
 _UNMERGED_STATUSES = frozenset({"DD", "AU", "UD", "UA", "DU", "AA", "UU"})

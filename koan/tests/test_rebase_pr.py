@@ -1709,7 +1709,7 @@ class TestRebaseWithConflictResolution_OntoMode:
             return MagicMock(returncode=0, stdout="", stderr="")
 
         with patch("app.claude_step.subprocess.run", side_effect=mock_run), \
-             patch("app.rebase_pr._has_rebase_in_progress", return_value=False):
+             patch("app.claude_step.has_rebase_in_progress", return_value=False):
             result = _rebase_with_conflict_resolution(
                 "main", "/project", self._base_context(), [],
                 preferred_remote="upstream",

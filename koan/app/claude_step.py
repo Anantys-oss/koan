@@ -13,7 +13,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 from app.cli_provider import build_full_command, run_command
 from app.config import get_model_config
@@ -68,6 +68,12 @@ def _abort_rebase_safely(project_path: str) -> None:
         print(f"[claude_step] rebase --abort failed (non-fatal): {e}", file=sys.stderr)
 
 
+def has_rebase_in_progress(project_path: str) -> bool:
+    """Check if a git rebase is in progress (typically due to conflicts)."""
+    git_dir = Path(project_path) / ".git"
+    return (git_dir / "rebase-merge").exists() or (git_dir / "rebase-apply").exists()
+
+
 # Re-export for backward compatibility — canonical source is git_utils.ordered_remotes
 _ordered_remotes = ordered_remotes
 
@@ -77,6 +83,7 @@ def _rebase_onto_target(
     project_path: str,
     preferred_remote: Optional[str] = None,
     head_remote: Optional[str] = None,
+    on_conflict: Optional[Callable[[str], bool]] = None,
 ) -> Optional[str]:
     """Rebase onto target branch, trying *preferred_remote* first.
 
@@ -84,6 +91,14 @@ def _rebase_onto_target(
     target repository), it is tried before the default ``origin`` /
     ``upstream`` fallbacks.  When *head_remote* is known and differs from
     the target remote, uses ``--onto`` to replay only the PR's commits.
+
+    Args:
+        on_conflict: Optional callback invoked when a rebase fails and a
+            rebase-in-progress is detected (i.e. conflicts exist).
+            Receives ``project_path`` and should return True if the
+            conflicts were resolved and the rebase completed, False
+            otherwise.  When None (default), conflicts cause an immediate
+            abort.
 
     Returns:
         Remote name used (e.g. "origin" or "upstream") on success, None on failure.
@@ -108,6 +123,9 @@ def _rebase_onto_target(
                 return remote
             except _REBASE_EXCEPTIONS as e:
                 print(f"[claude_step] --onto rebase failed: {e}", file=sys.stderr)
+                if on_conflict and has_rebase_in_progress(project_path):
+                    if on_conflict(project_path):
+                        return remote
                 _abort_rebase_safely(project_path)
                 # Fall through to plain rebase
 
@@ -120,6 +138,9 @@ def _rebase_onto_target(
             return remote
         except _REBASE_EXCEPTIONS as e:
             print(f"[claude_step] Rebase onto {remote}/{base} failed: {e}", file=sys.stderr)
+            if on_conflict and has_rebase_in_progress(project_path):
+                if on_conflict(project_path):
+                    return remote
             _abort_rebase_safely(project_path)
     return None
 
