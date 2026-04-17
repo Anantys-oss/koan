@@ -17,7 +17,6 @@ import json
 import re
 import subprocess
 import sys
-import time
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -40,6 +39,7 @@ from app.config import get_skill_max_turns
 from app.git_utils import ordered_remotes as _ordered_remotes
 from app.github import run_gh, sanitize_github_comment
 from app.prompts import load_prompt, load_prompt_or_skill, load_skill_prompt  # noqa: F401 — safety import
+from app.retry import retry_with_backoff
 from app.utils import _GITHUB_REMOTE_RE, truncate_text
 
 
@@ -62,20 +62,22 @@ def fetch_pr_context(owner: str, repo: str, pr_number: str) -> dict:
     # the comments endpoints don't return them to other users.
     # Retry once on transient failures — falling back to 0 incorrectly hides
     # pending reviews, causing the bot to miss unsubmitted review feedback.
-    api_review_comment_count = 0
-    for _attempt in range(2):
-        try:
-            count_json = run_gh(
-                "api", f"repos/{full_repo}/pulls/{pr_number}",
-                "--jq", ".review_comments",
-            )
-            api_review_comment_count = int(count_json.strip()) if count_json.strip() else 0
-            break
-        except (RuntimeError, ValueError):
-            if _attempt == 0:
-                time.sleep(2)
-                continue
-            api_review_comment_count = 0
+    def _fetch_review_comment_count() -> int:
+        count_json = run_gh(
+            "api", f"repos/{full_repo}/pulls/{pr_number}",
+            "--jq", ".review_comments",
+        )
+        return int(count_json.strip()) if count_json.strip() else 0
+
+    try:
+        api_review_comment_count = retry_with_backoff(
+            _fetch_review_comment_count,
+            max_attempts=2,
+            backoff=(1,),
+            retryable=(RuntimeError, ValueError),
+        )
+    except (RuntimeError, ValueError):
+        api_review_comment_count = 0
 
     # Fetch PR diff (may fail for very large PRs — GitHub HTTP 406)
     try:

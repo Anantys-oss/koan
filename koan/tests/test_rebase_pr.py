@@ -748,7 +748,7 @@ class TestFetchPrContext:
         context = fetch_pr_context("o", "r", "1")
         assert context["has_pending_reviews"] is False
 
-    @patch("app.rebase_pr.time.sleep")
+    @patch("app.retry.time.sleep")
     @patch("app.github.subprocess.run")
     def test_pending_review_count_fetch_failure_graceful(self, mock_run, mock_sleep):
         """If the review_comments count fetch fails twice, assume no pending reviews."""
@@ -767,9 +767,10 @@ class TestFetchPrContext:
         ]
         context = fetch_pr_context("o", "r", "1")
         assert context["has_pending_reviews"] is False
-        mock_sleep.assert_called_once_with(2)
+        # retry_with_backoff handles sleep internally — it sleeps once between the two attempts
+        assert mock_sleep.call_count == 1
 
-    @patch("app.rebase_pr.time.sleep")
+    @patch("app.retry.time.sleep")
     @patch("app.github.subprocess.run")
     def test_pending_review_count_retry_succeeds(self, mock_run, mock_sleep):
         """If count fetch fails once but retry succeeds, use the retried value."""
@@ -788,7 +789,8 @@ class TestFetchPrContext:
         ]
         context = fetch_pr_context("o", "r", "1")
         assert context["has_pending_reviews"] is True
-        mock_sleep.assert_called_once_with(2)
+        # retry_with_backoff sleeps once between the failed and successful attempt
+        assert mock_sleep.call_count == 1
 
 
 # ---------------------------------------------------------------------------
