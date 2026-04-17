@@ -153,13 +153,7 @@ class TestApiRequest:
 
 class TestIsServerRunning:
     def test_running(self):
-        mock_resp = MagicMock()
-        mock_resp.status = 200
-        mock_resp.read.return_value = b'"Ollama is running"'
-        mock_resp.__enter__ = lambda s: s
-        mock_resp.__exit__ = MagicMock(return_value=False)
-
-        with patch("app.ollama_client.urllib.request.urlopen", return_value=mock_resp):
+        with patch("app.ollama_client._api_request", return_value=(True, "Ollama is running")):
             assert is_server_running() is True
 
     def test_not_running(self):
