@@ -2673,11 +2673,12 @@ class TestRunIterationErrorAction:
 class TestRunIterationGitHubPreCheck:
     """_run_iteration checks GitHub notifications before planning."""
 
+    @patch("app.github_config.get_github_commands_enabled", return_value=True)
     @patch("app.run.plan_iteration")
     @patch("app.run._notify")
     @patch("app.loop_manager.process_github_notifications")
     def test_github_notifications_checked_before_planning(
-        self, mock_gh_notif, mock_notify, mock_plan, koan_root
+        self, mock_gh_notif, mock_notify, mock_plan, mock_gh_enabled, koan_root
     ):
         """process_github_notifications is called before plan_iteration."""
         from app.run import _run_iteration
@@ -2784,13 +2785,14 @@ class TestRunIterationFirstIterationNotifications:
         run_mod._boot_notified = False
 
     @patch("app.jira_config.get_jira_enabled", return_value=True)
+    @patch("app.github_config.get_github_commands_enabled", return_value=True)
     @patch("app.run.plan_iteration")
     @patch("app.run._notify_raw")
     @patch("app.run._notify")
     @patch("app.loop_manager.process_jira_notifications", return_value=0)
     @patch("app.loop_manager.process_github_notifications", return_value=0)
     def test_first_iteration_emits_phase_notifications(
-        self, mock_gh, mock_jira, mock_notify, mock_notify_raw, mock_plan, mock_jira_enabled, koan_root,
+        self, mock_gh, mock_jira, mock_notify, mock_notify_raw, mock_plan, mock_gh_enabled, mock_jira_enabled, koan_root,
     ):
         """count=0: scanning-GH, scanning-Jira, picking-mission Telegrams all
         fire via _notify_raw (verbatim, no Claude-CLI rewrite).
@@ -2850,12 +2852,13 @@ class TestRunIterationFirstIterationNotifications:
         assert "Picking first mission" not in joined
 
     @patch("app.jira_config.get_jira_enabled", return_value=False)
+    @patch("app.github_config.get_github_commands_enabled", return_value=True)
     @patch("app.run.plan_iteration")
     @patch("app.run._notify_raw")
     @patch("app.run._notify")
     @patch("app.loop_manager.process_github_notifications", return_value=0)
     def test_first_iteration_skips_jira_when_disabled(
-        self, mock_gh, mock_notify, mock_notify_raw, mock_plan, mock_jira_enabled, koan_root,
+        self, mock_gh, mock_notify, mock_notify_raw, mock_plan, mock_gh_enabled, mock_jira_enabled, koan_root,
     ):
         """When Jira is not configured, no Jira-related messages appear."""
         from app.run import _run_iteration
@@ -2876,13 +2879,14 @@ class TestRunIterationFirstIterationNotifications:
         assert "Notifications clear" in joined
 
     @patch("app.jira_config.get_jira_enabled", return_value=True)
+    @patch("app.github_config.get_github_commands_enabled", return_value=True)
     @patch("app.run.plan_iteration")
     @patch("app.run._notify_raw")
     @patch("app.run._notify")
     @patch("app.loop_manager.process_jira_notifications", return_value=2)
     @patch("app.loop_manager.process_github_notifications", return_value=3)
     def test_first_iteration_reports_mission_counts(
-        self, mock_gh, mock_jira, mock_notify, mock_notify_raw, mock_plan, mock_jira_enabled, koan_root,
+        self, mock_gh, mock_jira, mock_notify, mock_notify_raw, mock_plan, mock_gh_enabled, mock_jira_enabled, koan_root,
     ):
         """When notifications create missions, the count surfaces in the
         startup messages so the human knows new work was queued.
@@ -2904,12 +2908,13 @@ class TestRunIterationFirstIterationNotifications:
         assert "Jira: 2 new mission" in joined
 
     @patch("app.jira_config.get_jira_enabled", return_value=True)
+    @patch("app.github_config.get_github_commands_enabled", return_value=True)
     @patch("app.run.plan_iteration")
     @patch("app.run._notify_raw")
     @patch("app.loop_manager.process_jira_notifications", return_value=0)
     @patch("app.loop_manager.process_github_notifications", return_value=0)
     def test_resume_without_missions_suppresses_empty_state_pings(
-        self, mock_gh, mock_jira, mock_notify_raw, mock_plan, mock_jira_enabled, koan_root,
+        self, mock_gh, mock_jira, mock_notify_raw, mock_plan, mock_gh_enabled, mock_jira_enabled, koan_root,
     ):
         """After resume (simulated by resetting _startup_notified only), the
         empty-state "scanned, no new missions" and "Notifications clear" pings
@@ -2946,12 +2951,13 @@ class TestRunIterationFirstIterationNotifications:
         assert "Notifications clear" not in joined
 
     @patch("app.jira_config.get_jira_enabled", return_value=True)
+    @patch("app.github_config.get_github_commands_enabled", return_value=True)
     @patch("app.run.plan_iteration")
     @patch("app.run._notify_raw")
     @patch("app.loop_manager.process_jira_notifications", return_value=1)
     @patch("app.loop_manager.process_github_notifications", return_value=2)
     def test_resume_with_missions_still_reports_counts(
-        self, mock_gh, mock_jira, mock_notify_raw, mock_plan, mock_jira_enabled, koan_root,
+        self, mock_gh, mock_jira, mock_notify_raw, mock_plan, mock_gh_enabled, mock_jira_enabled, koan_root,
     ):
         """When resume brings new missions, count-bearing pings must still
         fire — those carry real signal, unlike the empty-state variants.
@@ -2978,13 +2984,14 @@ class TestRunIterationFirstIterationNotifications:
         assert "Jira: 1 new mission" in joined
 
     @patch("app.jira_config.get_jira_enabled", return_value=True)
+    @patch("app.github_config.get_github_commands_enabled", return_value=True)
     @patch("app.run.plan_iteration")
     @patch("app.notify.send_telegram")
     @patch("app.run._notify")
     @patch("app.loop_manager.process_jira_notifications", return_value=0)
     @patch("app.loop_manager.process_github_notifications", return_value=0)
     def test_first_iteration_status_messages_bypass_formatter(
-        self, mock_gh, mock_jira, mock_notify, mock_send, mock_plan, mock_jira_enabled, koan_root,
+        self, mock_gh, mock_jira, mock_notify, mock_send, mock_plan, mock_gh_enabled, mock_jira_enabled, koan_root,
     ):
         """Startup-status notifications must NOT route through _notify (and
         therefore NOT trigger the Claude-CLI formatter). They must reach
@@ -3012,6 +3019,37 @@ class TestRunIterationFirstIterationNotifications:
         assert "🔍 Scanning GitHub notifications" in send_msgs
         assert "📋 GitHub: scanned, no new missions. Scanning Jira..." in send_msgs
         assert "🎯 Notifications clear" in send_msgs
+
+    @patch("app.jira_config.get_jira_enabled", return_value=True)
+    @patch("app.github_config.get_github_commands_enabled", return_value=False)
+    @patch("app.run.plan_iteration")
+    @patch("app.run._notify_raw")
+    @patch("app.run._notify")
+    @patch("app.loop_manager.process_jira_notifications", return_value=0)
+    def test_github_disabled_omits_github_from_all_notifications(
+        self, mock_jira, mock_notify, mock_notify_raw, mock_plan, mock_gh_enabled, mock_jira_enabled, koan_root,
+    ):
+        """When GitHub is disabled, no GitHub-referencing messages must appear
+        in any Telegram notification (scanning, intermediate, or final).
+        The Jira-only intermediate message 'Scanning Jira notifications' fires instead.
+        """
+        from app.run import _run_iteration
+        mock_plan.return_value = self._stop_plan(koan_root)
+        instance = str(koan_root / "instance")
+
+        with patch("app.utils.get_known_projects", return_value=[("test", str(koan_root))]):
+            _run_iteration(
+                koan_root=str(koan_root), instance=instance,
+                projects=[("test", str(koan_root))],
+                count=0, max_runs=5, interval=10, git_sync_interval=5,
+            )
+
+        messages = [c.args[1] for c in mock_notify_raw.call_args_list]
+        joined = " | ".join(messages)
+        # No GitHub reference in any notification
+        assert "GitHub" not in joined
+        # Jira-only intermediate message fires instead
+        assert "Scanning Jira notifications" in joined
 
 
 class TestNotifyRaw:

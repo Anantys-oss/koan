@@ -1422,37 +1422,46 @@ def _run_iteration(
     _startup_notified = True
     _boot_notified = True
 
+    # Load config once for both GitHub and Jira gating below
+    from app.utils import load_config
+    from app.github_config import get_github_commands_enabled
+    from app.jira_config import get_jira_enabled
+    _boot_config = load_config()
+    github_enabled = get_github_commands_enabled(_boot_config)
+    jira_enabled = get_jira_enabled(_boot_config)
+
     # Check GitHub notifications before planning (converts @mentions to missions
     # so plan_iteration() sees them immediately instead of waiting for sleep)
-    log("koan", "Checking GitHub notifications...")
-    if is_first_iteration:
-        _notify_raw(instance, "🔍 Scanning GitHub notifications (cold start, may take ~1 min)...")
-    from app.loop_manager import process_github_notifications
     gh_missions = 0
-    try:
-        gh_missions = process_github_notifications(koan_root, instance)
-        if gh_missions > 0:
-            log("github", f"Pre-iteration: {gh_missions} mission(s) created from GitHub notifications")
-        else:
-            log("koan", "No new GitHub notifications")
-    except Exception as e:
-        log("error", f"Pre-iteration GitHub notification check failed: {e}")
+    if github_enabled:
+        log("koan", "Checking GitHub notifications...")
+        if is_first_iteration:
+            _notify_raw(instance, "🔍 Scanning GitHub notifications (cold start, may take ~1 min)...")
+        from app.loop_manager import process_github_notifications
+        try:
+            gh_missions = process_github_notifications(koan_root, instance)
+            if gh_missions > 0:
+                log("github", f"Pre-iteration: {gh_missions} mission(s) created from GitHub notifications")
+            else:
+                log("koan", "No new GitHub notifications")
+        except Exception as e:
+            log("error", f"Pre-iteration GitHub notification check failed: {e}")
 
     # Check Jira notifications before planning (converts @mentions to missions
     # so plan_iteration() sees them immediately instead of waiting for sleep)
-    from app.jira_config import get_jira_enabled
-    from app.utils import load_config
-    jira_enabled = get_jira_enabled(load_config())
     jira_missions = 0
     if jira_enabled:
         log("koan", "Checking Jira notifications...")
         if is_first_iteration:
-            if gh_missions > 0:
+            if github_enabled and gh_missions > 0:
                 _notify_raw(instance, f"📋 GitHub: {gh_missions} new mission(s) queued. Scanning Jira...")
             elif is_boot_iteration:
                 # Empty-state message: only surface at actual boot. On resume,
                 # the human doesn't need to be told "nothing new" every cycle.
-                _notify_raw(instance, "📋 GitHub: scanned, no new missions. Scanning Jira...")
+                if github_enabled:
+                    _notify_raw(instance, "📋 GitHub: scanned, no new missions. Scanning Jira...")
+                else:
+                    _notify_raw(instance, "📋 Scanning Jira notifications...")
         from app.loop_manager import process_jira_notifications
         try:
             jira_missions = process_jira_notifications(koan_root, instance)
