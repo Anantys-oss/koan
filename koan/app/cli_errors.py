@@ -99,6 +99,10 @@ def classify_cli_error(
     if exit_code == 0:
         return ErrorCategory.UNKNOWN
 
+    # Coerce to strings — callers (and tests using MagicMock) may pass
+    # non-string values; regex search requires str input.
+    stdout = str(stdout) if stdout else ""
+    stderr = str(stderr) if stderr else ""
     combined = f"{stdout}\n{stderr}"
 
     # Check quota first — quota_handler is the authority for quota detection.
