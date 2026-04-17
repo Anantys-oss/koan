@@ -212,6 +212,70 @@ class TestPROwnership:
 
 
 # ---------------------------------------------------------------------------
+# handle() — --now priority flag
+# ---------------------------------------------------------------------------
+
+class TestNowFlag:
+    def _own_pr_patch(self):
+        return patch(
+            "app.github_skill_helpers.is_own_pr",
+            return_value=(True, "koan/some-branch"),
+        )
+
+    def test_now_flag_queues_as_urgent(self, handler, ctx):
+        """--now flag causes the mission to be queued with urgent=True."""
+        ctx.args = "--now https://github.com/sukria/koan/pull/42"
+        with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
+             patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
+             patch("app.utils.insert_pending_mission") as mock_insert, \
+             self._own_pr_patch():
+            result = handler.handle(ctx)
+            assert "queued" in result.lower()
+            assert "(priority)" in result
+            mock_insert.assert_called_once()
+            assert mock_insert.call_args[1]["urgent"] is True
+
+    def test_now_flag_after_url(self, handler, ctx):
+        """--now after URL is also recognized (within first 5 words)."""
+        ctx.args = "https://github.com/sukria/koan/pull/42 --now"
+        with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
+             patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
+             patch("app.utils.insert_pending_mission") as mock_insert, \
+             self._own_pr_patch():
+            result = handler.handle(ctx)
+            assert "(priority)" in result
+            assert mock_insert.call_args[1]["urgent"] is True
+
+    def test_without_now_flag_not_urgent(self, handler, ctx):
+        """Without --now, mission is queued normally (not urgent)."""
+        ctx.args = "https://github.com/sukria/koan/pull/42"
+        with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
+             patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
+             patch("app.utils.insert_pending_mission") as mock_insert, \
+             self._own_pr_patch():
+            result = handler.handle(ctx)
+            assert "(priority)" not in result
+            assert mock_insert.call_args[1].get("urgent", False) is False
+
+    def test_now_flag_stripped_from_mission_text(self, handler, ctx):
+        """--now should not appear in the queued mission text."""
+        ctx.args = "--now https://github.com/sukria/koan/pull/42"
+        with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
+             patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
+             patch("app.utils.insert_pending_mission") as mock_insert, \
+             self._own_pr_patch():
+            handler.handle(ctx)
+            mission_entry = mock_insert.call_args[0][1]
+            assert "--now" not in mission_entry
+
+    def test_now_flag_usage_documented(self, handler, ctx):
+        """Empty args help text mentions --now."""
+        ctx.args = ""
+        result = handler.handle(ctx)
+        assert "--now" in result
+
+
+# ---------------------------------------------------------------------------
 # resolve_project_path (shared helper in utils)
 # ---------------------------------------------------------------------------
 

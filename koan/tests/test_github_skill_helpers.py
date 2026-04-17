@@ -442,3 +442,68 @@ class TestHandleGithubSkill:
         ctx = self._make_ctx(tmp_path, args="https://github.com/sukria/koan/issues/99")
         result = handle_github_skill(ctx, "implement", "pr-or-issue", parse_issue_4, "Implement queued")
         assert "issue #99" in result
+
+    @patch("app.utils.insert_pending_mission")
+    @patch("app.utils.project_name_for_path", return_value="koan")
+    @patch("app.utils.resolve_project_path", return_value="/path/to/koan")
+    def test_urgent_flag_passed_through(self, mock_path, mock_name, mock_insert, tmp_path):
+        """handle_github_skill with urgent=True passes urgent to insert_pending_mission."""
+        ctx = self._make_ctx(tmp_path, args="https://github.com/sukria/koan/pull/42")
+        result = handle_github_skill(
+            ctx, "review", "pr-or-issue", self._parse_3tuple, "Review queued", urgent=True,
+        )
+        assert "(priority)" in result
+        mock_insert.assert_called_once()
+        assert mock_insert.call_args[1]["urgent"] is True
+
+    @patch("app.utils.insert_pending_mission")
+    @patch("app.utils.project_name_for_path", return_value="koan")
+    @patch("app.utils.resolve_project_path", return_value="/path/to/koan")
+    def test_no_urgent_flag_default(self, mock_path, mock_name, mock_insert, tmp_path):
+        """handle_github_skill without urgent=True does not set urgent."""
+        ctx = self._make_ctx(tmp_path, args="https://github.com/sukria/koan/pull/42")
+        result = handle_github_skill(
+            ctx, "review", "pr-or-issue", self._parse_3tuple, "Review queued",
+        )
+        assert "(priority)" not in result
+        mock_insert.assert_called_once()
+        assert mock_insert.call_args[1].get("urgent", False) is False
+
+
+# ---------------------------------------------------------------------------
+# queue_github_mission — urgent parameter
+# ---------------------------------------------------------------------------
+
+class TestQueueGithubMissionUrgent:
+    """Tests for queue_github_mission() urgent parameter."""
+
+    def _make_ctx(self, tmp_path):
+        instance = tmp_path / "instance"
+        instance.mkdir()
+        (instance / "missions.md").write_text(
+            "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n"
+        )
+        return SkillContext(
+            koan_root=tmp_path,
+            instance_dir=instance,
+            command_name="rebase",
+            args="",
+        )
+
+    @patch("app.utils.insert_pending_mission")
+    def test_urgent_true_passed(self, mock_insert, tmp_path):
+        ctx = self._make_ctx(tmp_path)
+        queue_github_mission(
+            ctx, "rebase", "https://github.com/o/r/pull/1", "proj", urgent=True,
+        )
+        mock_insert.assert_called_once()
+        assert mock_insert.call_args[1]["urgent"] is True
+
+    @patch("app.utils.insert_pending_mission")
+    def test_urgent_false_by_default(self, mock_insert, tmp_path):
+        ctx = self._make_ctx(tmp_path)
+        queue_github_mission(
+            ctx, "rebase", "https://github.com/o/r/pull/1", "proj",
+        )
+        mock_insert.assert_called_once()
+        assert mock_insert.call_args[1].get("urgent", False) is False
