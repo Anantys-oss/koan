@@ -10,8 +10,8 @@ github_enabled: true
 github_context_aware: true
 commands:
   - name: review
-    description: "Queue a code review for a PR or issue"
-    usage: "/review <github-pr-or-issue-url> [context] [--plan-url <issue-url>] OR /review <github-repo-url> [--limit=N]"
+    description: "Queue a code review for a PR or issue. Use --now to queue at the top."
+    usage: "/review [--now] <github-pr-or-issue-url> [context] [--plan-url <issue-url>] OR /review <github-repo-url> [--limit=N]"
     aliases: [rv]
 handler: handler.py
 ---

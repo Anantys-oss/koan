@@ -248,6 +248,35 @@ class TestHandleRouting:
 
         mock_batch.assert_called_once()
 
+    @patch(f"{_HANDLER}.handle_github_skill")
+    def test_now_flag_passed_to_single_mode(self, mock_single):
+        """--now flag is extracted and passed as urgent=True to handle_github_skill."""
+        mock_single.return_value = "Fix queued (priority)"
+        ctx = self._make_ctx("--now https://github.com/owner/repo/issues/42")
+        result = handle(ctx)
+
+        mock_single.assert_called_once()
+        assert mock_single.call_args[1]["urgent"] is True
+
+    @patch(f"{_HANDLER}.handle_github_skill")
+    def test_now_flag_stripped_from_args(self, mock_single):
+        """--now is removed from ctx.args before delegating."""
+        mock_single.return_value = "Fix queued"
+        ctx = self._make_ctx("--now https://github.com/owner/repo/issues/42")
+        handle(ctx)
+
+        # ctx.args should have --now stripped
+        assert "--now" not in ctx.args
+
+    @patch(f"{_HANDLER}.handle_github_skill")
+    def test_without_now_flag_not_urgent(self, mock_single):
+        """Without --now, urgent defaults to False."""
+        mock_single.return_value = "Fix queued"
+        ctx = self._make_ctx("https://github.com/owner/repo/issues/42")
+        handle(ctx)
+
+        assert mock_single.call_args[1].get("urgent", False) is False
+
     @patch(f"{_HANDLER}._handle_batch")
     def test_hyphenated_repo_with_issues_path_routes_to_batch(self, mock_batch):
         """Regression: hyphenated repo names with /issues path must batch correctly."""

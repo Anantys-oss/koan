@@ -10,7 +10,7 @@ github_enabled: true
 github_context_aware: true
 commands:
   - name: rebase
-    description: "Queue a PR rebase (ex: /rebase https://github.com/owner/repo/pull/42)"
+    description: "Queue a PR rebase (ex: /rebase https://github.com/owner/repo/pull/42). Use --now to queue at the top."
     aliases: [rb]
 handler: handler.py
 ---

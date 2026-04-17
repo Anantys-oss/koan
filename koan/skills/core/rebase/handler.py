@@ -1,6 +1,7 @@
 """Kōan rebase skill -- queue a PR rebase mission."""
 
 from app.github_url_parser import parse_pr_url
+from app.missions import extract_now_flag
 import app.github_skill_helpers as _gh_helpers
 
 
@@ -9,25 +10,33 @@ def handle(ctx):
 
     Usage:
         /rebase https://github.com/owner/repo/pull/123
+        /rebase --now https://github.com/owner/repo/pull/123
 
     Queues a mission that rebases the PR branch onto its target,
     reads all comments for context, and pushes the result.
+    Use --now to queue at the top of the mission queue.
     """
     args = ctx.args.strip()
 
+    # Extract --now flag for priority queuing
+    urgent, args = extract_now_flag(args)
+
     if not args:
         return (
-            "Usage: /rebase <github-pr-url>\n"
-            "Ex: /rebase https://github.com/sukria/koan/pull/42\n\n"
+            "Usage: /rebase [--now] <github-pr-url>\n"
+            "Ex: /rebase https://github.com/sukria/koan/pull/42\n"
+            "Ex: /rebase --now https://github.com/sukria/koan/pull/42\n\n"
             "Queues a mission that rebases the PR branch onto its target, "
-            "reads comments for context, and force-pushes the result."
+            "reads comments for context, and force-pushes the result.\n"
+            "Use --now to queue at the top of the mission queue."
         )
 
     result = _gh_helpers.extract_github_url(args, url_type="pr")
     if not result:
         return (
             "\u274c No valid GitHub PR URL found.\n"
-            "Ex: /rebase https://github.com/owner/repo/pull/123"
+            "Ex: /rebase https://github.com/owner/repo/pull/123\n"
+            "Use --now to queue at the top: /rebase --now <url>"
         )
 
     pr_url, _ = result
@@ -58,6 +67,7 @@ def handle(ctx):
             f"this instance. I only rebase my own pull requests."
         )
 
-    _gh_helpers.queue_github_mission(ctx, "rebase", pr_url, project_name)
+    _gh_helpers.queue_github_mission(ctx, "rebase", pr_url, project_name, urgent=urgent)
 
-    return f"Rebase queued for {_gh_helpers.format_success_message('PR', pr_number, owner, repo)}"
+    priority = " (priority)" if urgent else ""
+    return f"Rebase queued{priority} for {_gh_helpers.format_success_message('PR', pr_number, owner, repo)}"
