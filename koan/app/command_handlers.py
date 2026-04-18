@@ -62,8 +62,26 @@ def _has_in_progress_mission() -> bool:
         return False
 
 
+def _strip_bot_mention(text: str) -> str:
+    """Strip @botname suffix from Telegram group commands.
+
+    In group chats, Telegram appends the bot username to commands:
+    ``/resume@MyBot`` instead of ``/resume``.  Strip it so command
+    matching works uniformly.
+    """
+    parts = text.split(None, 1)
+    if not parts:
+        return text
+    command = parts[0]
+    if "@" in command:
+        command = command.split("@", 1)[0]
+    rest = parts[1] if len(parts) > 1 else ""
+    return f"{command} {rest}".strip() if rest else command
+
+
 def handle_command(text: str):
     """Handle /commands — core commands hardcoded, rest via skills."""
+    text = _strip_bot_mention(text)
     cmd = text.strip().lower()
 
     # --- Core hardcoded commands (safety-critical / bootstrap) ---

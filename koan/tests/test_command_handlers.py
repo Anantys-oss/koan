@@ -1834,3 +1834,58 @@ class TestHandleResumeAutoRestart:
         result = _auto_restart_runner()
         assert result is False
         assert "Failed" in mock_send.call_args[0][0]
+
+
+# ---------------------------------------------------------------------------
+# _strip_bot_mention — Telegram group command normalization
+# ---------------------------------------------------------------------------
+
+class TestStripBotMention:
+    """Test _strip_bot_mention strips @botname from group commands."""
+
+    def test_plain_command_unchanged(self):
+        from app.command_handlers import _strip_bot_mention
+        assert _strip_bot_mention("/resume") == "/resume"
+
+    def test_command_with_bot_mention(self):
+        from app.command_handlers import _strip_bot_mention
+        assert _strip_bot_mention("/resume@MyKoanBot") == "/resume"
+
+    def test_command_with_mention_and_args(self):
+        from app.command_handlers import _strip_bot_mention
+        assert _strip_bot_mention("/pause@MyKoanBot 2h") == "/pause 2h"
+
+    def test_plain_command_with_args_unchanged(self):
+        from app.command_handlers import _strip_bot_mention
+        assert _strip_bot_mention("/help status") == "/help status"
+
+    def test_empty_string(self):
+        from app.command_handlers import _strip_bot_mention
+        assert _strip_bot_mention("") == ""
+
+    def test_whitespace_preserved_in_args(self):
+        from app.command_handlers import _strip_bot_mention
+        assert _strip_bot_mention("/implement@Bot   some task here") == "/implement some task here"
+
+    def test_at_in_args_not_stripped(self):
+        """@ in args (not in the command) should be preserved."""
+        from app.command_handlers import _strip_bot_mention
+        assert _strip_bot_mention("/chat tell user@example.com hi") == "/chat tell user@example.com hi"
+
+
+class TestHandleCommandGroupChat:
+    """handle_command should work with Telegram group-style /cmd@bot commands."""
+
+    @patch("app.command_handlers.atomic_write")
+    def test_stop_with_bot_mention(self, mock_write, patch_bridge_state, mock_send):
+        from app.command_handlers import handle_command
+        handle_command("/stop@MyKoanBot")
+        mock_write.assert_called_once()
+        mock_send.assert_called_once()
+        assert "Stop" in mock_send.call_args[0][0]
+
+    @patch("app.command_handlers.handle_resume")
+    def test_resume_with_bot_mention(self, mock_resume, patch_bridge_state, mock_send):
+        from app.command_handlers import handle_command
+        handle_command("/resume@MyKoanBot")
+        mock_resume.assert_called_once()
