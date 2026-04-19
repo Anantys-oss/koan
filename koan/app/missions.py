@@ -841,12 +841,16 @@ def _remove_item_by_text(
 
 def _move_pending_to_section(
     content: str, mission_text: str, section_key: str, marker: str, header: str,
+    cause: str = "",
 ) -> str:
     """Move a mission from Pending (or In Progress) to a target section.
 
     Shared implementation for complete_mission() and fail_mission().
     Searches Pending first, then falls back to In Progress.
     Returns content unchanged if the mission is not found in either section.
+
+    When *cause* is provided, it is appended to the entry as ``[cause]``
+    so the failure reason is visible in missions.md (e.g. ``[stagnation]``).
     """
     needle = mission_text.strip()
     result = _remove_pending_by_text(content, needle)
@@ -863,6 +867,8 @@ def _move_pending_to_section(
 
     timestamp = time.strftime("%Y-%m-%d %H:%M")
     entry = f"- {display} {marker} ({timestamp})"
+    if cause:
+        entry = f"{entry} [{cause}]"
 
     lines = updated.splitlines()
     boundaries = find_section_boundaries(lines)
@@ -983,17 +989,20 @@ def complete_mission(content: str, mission_text: str) -> str:
     return _move_pending_to_section(content, mission_text, "done", "\u2705", "Done")
 
 
-def fail_mission(content: str, mission_text: str) -> str:
+def fail_mission(content: str, mission_text: str, cause: str = "") -> str:
     """Move a mission from Pending (or In Progress) to Failed with a timestamp.
 
     Same pattern as complete_mission() but moves to ## Failed instead of ## Done.
     Searches Pending first, then In Progress.
 
+    When *cause* is provided (e.g. ``"stagnation"``), it is appended to the
+    failure entry as ``[cause]`` so the reason is visible in missions.md.
+
     Returns content unchanged if the mission is not found in either section.
     """
     from app.security_audit import MISSION_FAIL, log_event
     log_event(MISSION_FAIL, details={"mission": mission_text})
-    return _move_pending_to_section(content, mission_text, "failed", "\u274c", "Failed")
+    return _move_pending_to_section(content, mission_text, "failed", "\u274c", "Failed", cause=cause)
 
 
 def requeue_mission(content: str, mission_text: str) -> str:

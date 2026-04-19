@@ -104,6 +104,26 @@ fast_reply: false
 # it's visible in your task queue. Default: 5.
 # ci_fix_max_attempts: 5
 
+# Stagnation detection — abort Claude sessions that stop producing new output
+# When Claude gets stuck repeating the same tool calls or emitting identical
+# output, the stagnation monitor kills the session after N consecutive identical
+# samples, marking the mission as Failed [stagnation] and sending a Telegram warning.
+#
+# check_interval_seconds: how often to sample stdout (default: 60)
+# abort_after_cycles: consecutive identical samples before abort (default: 3)
+#   → default = 3 × 60s = 3 minutes of silence triggers abort
+# tail_bytes: bytes read from end of stdout per sample (default: 8192)
+# enabled: master switch (default: true); per-project override via
+#          stagnation_enabled: false in projects.yaml
+#
+# Set stagnation_enabled: false in projects.yaml for projects that have known
+# long silent phases (e.g. large compilations that produce no output for minutes).
+# stagnation:
+#   enabled: true
+#   check_interval_seconds: 60
+#   abort_after_cycles: 3
+#   tail_bytes: 8192
+
 # Skill timeout — maximum seconds for heavy skill execution (fix, implement, recreate)
 # These skills invoke Claude with full tool access and can run for a long time.
 # Complex /implement missions with multi-phase plans routinely exceed 60 min.

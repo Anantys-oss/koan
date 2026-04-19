@@ -236,6 +236,94 @@ def _on_sigint(signum, frame):
 
 
 # ---------------------------------------------------------------------------
+# Stagnation monitor
+# ---------------------------------------------------------------------------
+
+class StagnationMonitor:
+    """Daemon thread that detects Claude sessions stuck in a stagnant loop.
+
+    Hashes the last *tail_bytes* of *stdout_file* every *check_interval_seconds*.
+    After *abort_after_cycles* consecutive identical hashes, sets *stagnation_event*
+    so the main wait loop can kill the subprocess.
+
+    The hash includes the file size so that an empty file never falsely matches
+    a later non-empty state.  If the file doesn't exist yet, or is empty, the
+    sample is skipped (counter stays at zero).
+    """
+
+    def __init__(
+        self,
+        stdout_file: str,
+        check_interval_seconds: int,
+        abort_after_cycles: int,
+        tail_bytes: int,
+        stagnation_event: threading.Event,
+        stop_event: threading.Event,
+    ):
+        self._stdout_file = stdout_file
+        self._interval = check_interval_seconds
+        self._threshold = abort_after_cycles
+        self._tail_bytes = tail_bytes
+        self._stagnation_event = stagnation_event
+        self._stop_event = stop_event
+        self._thread = threading.Thread(
+            target=self._run, daemon=True, name="stagnation-monitor"
+        )
+
+    def start(self):
+        self._thread.start()
+
+    def _sample(self) -> Optional[bytes]:
+        """Read tail bytes from stdout_file. Returns None if file absent/empty."""
+        try:
+            path = Path(self._stdout_file)
+            if not path.exists():
+                return None
+            size = path.stat().st_size
+            if size == 0:
+                return None
+            with path.open("rb") as f:
+                try:
+                    f.seek(-min(self._tail_bytes, size), 2)
+                except OSError:
+                    f.seek(0)
+                tail = f.read(self._tail_bytes)
+            # Include size in hash so a growing file never matches a stale sample.
+            import hashlib
+            digest = hashlib.sha256(size.to_bytes(8, "little") + tail).digest()
+            return digest
+        except OSError:
+            return None
+
+    def _run(self):
+        import hashlib  # noqa: F811 — local import avoids top-level dependency
+        consecutive = 0
+        prev_hash: Optional[bytes] = None
+
+        while not self._stop_event.wait(timeout=self._interval):
+            if self._stagnation_event.is_set():
+                return
+            current = self._sample()
+            if current is None:
+                # File absent or empty — don't start counting yet
+                prev_hash = None
+                consecutive = 0
+                continue
+            if current == prev_hash:
+                consecutive += 1
+                log("warn", f"[stagnation] Identical output sample {consecutive}/{self._threshold}")
+                if consecutive >= self._threshold:
+                    log("error",
+                        f"[stagnation] No new output for {consecutive} cycles "
+                        f"× {self._interval}s — triggering abort")
+                    self._stagnation_event.set()
+                    return
+            else:
+                consecutive = 0
+            prev_hash = current
+
+
+# ---------------------------------------------------------------------------
 # Claude subprocess execution
 # ---------------------------------------------------------------------------
 
@@ -263,9 +351,10 @@ def run_claude_task(
 
     Returns the child exit code.
     """
-    global _last_mission_timed_out, _last_mission_aborted
+    global _last_mission_timed_out, _last_mission_aborted, _last_mission_stagnated
     _last_mission_timed_out = False
     _last_mission_aborted = False
+    _last_mission_stagnated = False
 
     _sig.task_running = True
     _sig.first_ctrl_c = 0
@@ -279,10 +368,14 @@ def run_claude_task(
         )
 
     from app.cli_exec import popen_cli
-    from app.config import get_mission_timeout
+    from app.config import get_mission_timeout, get_stagnation_config
 
     mission_timeout = get_mission_timeout()
     timed_out = False
+
+    stagnation_cfg = get_stagnation_config(project_name)
+    stagnation_event = threading.Event()
+    stagnation_stop = threading.Event()
 
     exit_code = 1  # default if subprocess never completes
     try:
@@ -311,6 +404,19 @@ def run_claude_task(
                 timer.daemon = True
                 timer.start()
 
+            # Stagnation monitor: kills the process if stdout stops changing
+            stagnation_monitor = None
+            if stagnation_cfg["enabled"] and stdout_file:
+                stagnation_monitor = StagnationMonitor(
+                    stdout_file=stdout_file,
+                    check_interval_seconds=stagnation_cfg["check_interval_seconds"],
+                    abort_after_cycles=stagnation_cfg["abort_after_cycles"],
+                    tail_bytes=stagnation_cfg["tail_bytes"],
+                    stagnation_event=stagnation_event,
+                    stop_event=stagnation_stop,
+                )
+                stagnation_monitor.start()
+
             try:
                 # Wait for child, handling SIGINT interruptions gracefully.
                 # Uses periodic timeout to detect watchdog kills — if
@@ -321,6 +427,19 @@ def run_claude_task(
                         proc.wait(timeout=30)
                         break
                     except subprocess.TimeoutExpired:
+                        # Check for stagnation abort
+                        if stagnation_event.is_set():
+                            n = stagnation_cfg["abort_after_cycles"]
+                            interval = stagnation_cfg["check_interval_seconds"]
+                            log("error",
+                                f"[stagnation] No new output for {n} cycles × {interval}s — aborting")
+                            _last_mission_stagnated = True
+                            _kill_process_group(proc)
+                            try:
+                                proc.wait(timeout=10)
+                            except subprocess.TimeoutExpired:
+                                log("error", f"Process {proc.pid} unkillable after stagnation abort — abandoning")
+                            break
                         # Check for abort signal (user sent /abort)
                         koan_root_path = os.environ.get("KOAN_ROOT", "")
                         abort_path = Path(koan_root_path, ABORT_FILE) if koan_root_path else None
@@ -355,12 +474,15 @@ def run_claude_task(
                         # Single CTRL-C — keep waiting
                         continue
             finally:
+                stagnation_stop.set()
                 if timer is not None:
                     timer.cancel()
                 cleanup()
 
         exit_code = proc.returncode
         if _last_mission_aborted:
+            exit_code = 1
+        elif _last_mission_stagnated:
             exit_code = 1
         elif timed_out:
             exit_code = 1
@@ -1239,6 +1361,7 @@ _MISSION_RETRY_DELAY = 10  # seconds
 # "timeout" which would otherwise trigger a second full-length run).
 _last_mission_timed_out = False
 _last_mission_aborted = False
+_last_mission_stagnated = False
 
 # Tracks whether the cold-start Telegram burst (GH scan / Jira scan / first
 # mission pick) has already fired since process start or /resume. Decoupled
@@ -1306,6 +1429,12 @@ def _maybe_retry_mission(
     # to stop this mission.
     if _last_mission_aborted:
         log("koan", "Skipping retry — mission was aborted by user")
+        return claude_exit, stdout_file, stderr_file
+
+    # Stagnation aborts must not be retried — the session is stuck and
+    # retrying would produce the same stagnant loop.
+    if _last_mission_stagnated:
+        log("koan", "Skipping retry — mission was aborted due to stagnation")
         return claude_exit, stdout_file, stderr_file
 
     # Read output for classification
@@ -1933,8 +2062,23 @@ def _run_iteration(
         # Done BEFORE post-mission pipeline so quota exhaustion can't skip it.
         # Use original_mission_title because that's the needle in "In Progress".
         # cli_skill translation may have changed mission_title to a different string.
+        stagnation_cause = "stagnation" if _last_mission_stagnated else ""
         if original_mission_title:
-            _finalize_mission(instance, original_mission_title, project_name, claude_exit)
+            _finalize_mission(
+                instance, original_mission_title, project_name, claude_exit,
+                cause=stagnation_cause,
+            )
+
+        # If mission stagnated, notify and skip heavy post-mission pipeline
+        if _last_mission_stagnated and original_mission_title:
+            n = 3  # default — config value already logged during abort
+            log("koan", f"Mission aborted (stagnation): {original_mission_title[:60]}")
+            from app.notify import send_telegram, NotificationPriority
+            send_telegram(
+                f"⚠️ [{project_name}] Mission aborted (stagnation): {original_mission_title[:60]}",
+                priority=NotificationPriority.WARNING,
+            )
+            return True  # count as productive so loop continues immediately
 
         # If mission was aborted, notify and skip heavy post-mission pipeline
         if _last_mission_aborted and original_mission_title:
@@ -2193,7 +2337,9 @@ def _start_mission_in_file(instance: str, mission_title: str):
         log("error", f"Could not start mission in missions.md: {e}")
 
 
-def _update_mission_in_file(instance: str, mission_title: str, *, failed: bool = False):
+def _update_mission_in_file(
+    instance: str, mission_title: str, *, failed: bool = False, cause: str = ""
+):
     """Move mission from Pending/In Progress to Done/Failed via locked write."""
     try:
         from app.missions import complete_mission, fail_mission
@@ -2201,12 +2347,17 @@ def _update_mission_in_file(instance: str, mission_title: str, *, failed: bool =
         missions_path = Path(instance, "missions.md")
         if not missions_path.exists():
             return
-        transform = fail_mission if failed else complete_mission
+
+        def transform(content):
+            if failed:
+                return fail_mission(content, mission_title, cause=cause)
+            return complete_mission(content, mission_title)
+
         before = [None]
 
         def tracked(content):
             before[0] = content
-            return transform(content, mission_title)
+            return transform(content)
 
         after = modify_missions_file(missions_path, tracked)
         if before[0] is not None and after == before[0]:
@@ -2229,9 +2380,11 @@ def _requeue_mission_in_file(instance: str, mission_title: str):
         log("error", f"Could not requeue mission in missions.md: {e}")
 
 
-def _finalize_mission(instance: str, mission_title: str, project_name: str, exit_code: int):
+def _finalize_mission(
+    instance: str, mission_title: str, project_name: str, exit_code: int, cause: str = ""
+):
     """Complete or fail a mission and record execution history."""
-    _update_mission_in_file(instance, mission_title, failed=(exit_code != 0))
+    _update_mission_in_file(instance, mission_title, failed=(exit_code != 0), cause=cause)
     try:
         from app.mission_history import record_execution
         record_execution(instance, mission_title, project_name, exit_code)

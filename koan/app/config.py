@@ -446,6 +446,40 @@ def get_mission_timeout() -> int:
     return _safe_int(config.get("mission_timeout", 3600), 3600)
 
 
+def get_stagnation_config(project_name: str = "") -> dict:
+    """Get stagnation monitor configuration.
+
+    Reads the ``stagnation:`` section from config.yaml and merges with any
+    per-project ``stagnation_enabled`` override from projects.yaml.
+
+    Returns a dict with keys:
+        enabled (bool): Whether the monitor is active. Default: True.
+        check_interval_seconds (int): Seconds between hash samples. Default: 60.
+        abort_after_cycles (int): Consecutive identical samples before abort. Default: 3.
+        tail_bytes (int): Bytes read from end of stdout_file per sample. Default: 8192.
+    """
+    config = _load_config()
+    section = config.get("stagnation") or {}
+
+    enabled = section.get("enabled", True)
+    check_interval = _safe_int(section.get("check_interval_seconds", 60), 60)
+    abort_after = _safe_int(section.get("abort_after_cycles", 3), 3)
+    tail_bytes = _safe_int(section.get("tail_bytes", 8192), 8192)
+
+    # Per-project override: stagnation_enabled in projects.yaml
+    if project_name:
+        overrides = _load_project_overrides(project_name)
+        if "stagnation_enabled" in overrides:
+            enabled = bool(overrides["stagnation_enabled"])
+
+    return {
+        "enabled": bool(enabled),
+        "check_interval_seconds": max(1, check_interval),
+        "abort_after_cycles": max(1, abort_after),
+        "tail_bytes": max(128, tail_bytes),
+    }
+
+
 def get_skill_max_turns() -> int:
     """Get max turns for skill execution (fix, implement, incident).
 

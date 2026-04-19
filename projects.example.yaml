@@ -95,6 +95,17 @@ defaults:
   # Default: true
   # exploration: true
 
+  # Stagnation detection — per-project override for the stagnation monitor.
+  #
+  # When true (default), the monitor watches stdout for repeated identical
+  # output and aborts the session after abort_after_cycles × check_interval_seconds
+  # of silence (configured globally in config.yaml stagnation: section).
+  # Set to false for projects with known long silent phases (e.g. large builds
+  # that produce no output for minutes).
+  #
+  # Default: true (inherits global stagnation.enabled from config.yaml)
+  # stagnation_enabled: true
+
   # Max open PRs — limit how many open PRs the agent can have per repo
   # before autonomous exploration is paused for this project.
   # Explicit missions are never affected by this limit.
