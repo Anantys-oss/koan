@@ -932,12 +932,17 @@ def _remove_item_by_text(
 
 def _move_pending_to_section(
     content: str, mission_text: str, section_key: str, marker: str, header: str,
+    cause_tag: str = "",
 ) -> str:
     """Move a mission from Pending (or In Progress) to a target section.
 
     Shared implementation for complete_mission() and fail_mission().
     Searches Pending first, then falls back to In Progress.
     Returns content unchanged if the mission is not found in either section.
+
+    When *cause_tag* is a non-empty string, it is appended in square
+    brackets after the timestamp — e.g. ``❌ (2026-04-19 03:45) [stagnation]``.
+    Used to surface why a mission failed without parsing logs.
     """
     needle = mission_text.strip()
     result = _remove_pending_by_text(content, needle)
@@ -954,6 +959,9 @@ def _move_pending_to_section(
 
     timestamp = time.strftime("%Y-%m-%d %H:%M")
     entry = f"- {display} {marker} ({timestamp})"
+    tag = (cause_tag or "").strip()
+    if tag:
+        entry = f"{entry} [{tag}]"
 
     lines = updated.splitlines()
     boundaries = find_section_boundaries(lines)
@@ -1074,17 +1082,24 @@ def complete_mission(content: str, mission_text: str) -> str:
     return _move_pending_to_section(content, mission_text, "done", "\u2705", "Done")
 
 
-def fail_mission(content: str, mission_text: str) -> str:
+def fail_mission(content: str, mission_text: str, cause_tag: str = "") -> str:
     """Move a mission from Pending (or In Progress) to Failed with a timestamp.
 
     Same pattern as complete_mission() but moves to ## Failed instead of ## Done.
     Searches Pending first, then In Progress.
 
+    When *cause_tag* is supplied (e.g. ``"stagnation"``), it is appended
+    in square brackets after the failure timestamp so operators can tell
+    a stuck-in-a-loop abort from a regular failure at a glance.
+
     Returns content unchanged if the mission is not found in either section.
     """
     from app.security_audit import MISSION_FAIL, log_event
-    log_event(MISSION_FAIL, details={"mission": mission_text})
-    return _move_pending_to_section(content, mission_text, "failed", "\u274c", "Failed")
+    log_event(MISSION_FAIL, details={"mission": mission_text, "cause_tag": cause_tag})
+    return _move_pending_to_section(
+        content, mission_text, "failed", "\u274c", "Failed",
+        cause_tag=cause_tag,
+    )
 
 
 def requeue_mission(content: str, mission_text: str) -> str:

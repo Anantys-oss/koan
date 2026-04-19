@@ -642,6 +642,69 @@ def get_effort_for_mode(autonomous_mode: str = "") -> str:
     return ""
 
 
+def get_stagnation_config(project_name: str = "") -> dict:
+    """Get stagnation-monitor configuration.
+
+    The stagnation monitor watches a running Claude CLI mission for a
+    stuck-in-a-loop pattern (identical trailing stdout hash across
+    several samples) and kills the subprocess before the full mission
+    timeout elapses, saving quota.
+
+    Config keys (under ``stagnation:`` in ``config.yaml``):
+        enabled (bool): master switch (default True).
+        check_interval_seconds (int): seconds between samples (default 60).
+        abort_after_cycles (int): consecutive identical samples required
+            to trigger abort. Must be >= 2. Default 3.
+        sample_lines (int): trailing stdout lines hashed each sample
+            (default 50).
+
+    Per-project overrides via ``projects.yaml`` ``stagnation:`` take
+    precedence. Setting ``enabled: false`` at project level disables the
+    monitor for that project only. Setting it to the boolean ``false``
+    directly (``stagnation: false``) is also accepted as a shortcut.
+
+    Args:
+        project_name: Optional project name for per-project overrides.
+
+    Returns:
+        Dict with the resolved values — always contains all four keys.
+    """
+    defaults = {
+        "enabled": True,
+        "check_interval_seconds": 60,
+        "abort_after_cycles": 3,
+        "sample_lines": 50,
+    }
+    config = _load_config()
+    base = config.get("stagnation", {})
+    if base is False:
+        base = {"enabled": False}
+    elif not isinstance(base, dict):
+        base = {}
+
+    project_overrides = _load_project_overrides(project_name)
+    proj = project_overrides.get("stagnation", {})
+    if proj is False:
+        proj = {"enabled": False}
+    elif not isinstance(proj, dict):
+        proj = {}
+
+    merged = {**defaults, **base, **proj}
+
+    abort_after = _safe_int(merged.get("abort_after_cycles"), defaults["abort_after_cycles"])
+    if abort_after < 2:
+        abort_after = 2
+
+    return {
+        "enabled": bool(merged.get("enabled", defaults["enabled"])),
+        "check_interval_seconds": max(
+            1, _safe_int(merged.get("check_interval_seconds"), defaults["check_interval_seconds"]),
+        ),
+        "abort_after_cycles": abort_after,
+        "sample_lines": max(1, _safe_int(merged.get("sample_lines"), defaults["sample_lines"])),
+    }
+
+
 def get_plan_review_config() -> dict:
     """Get plan review loop configuration from config.yaml.
 
