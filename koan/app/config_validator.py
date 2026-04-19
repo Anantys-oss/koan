@@ -77,6 +77,7 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "review_ignore": _NESTED,
     "automation_rules": _NESTED,
     "effort": _NESTED,
+    "stagnation": _NESTED,
 }
 
 # Sub-schemas for nested sections
@@ -186,6 +187,12 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
     "plan_review": {
         "enabled": "bool",
         "max_rounds": "int",
+    },
+    "stagnation": {
+        "enabled": "bool",
+        "check_interval_seconds": "int",
+        "abort_after_cycles": "int",
+        "sample_lines": "int",
     },
     "branch_cleanup": {
         "enabled": "bool",
