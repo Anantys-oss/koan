@@ -496,7 +496,7 @@ def _select_random_exploration_project(
     return random.choice(candidates)
 
 
-FilterResult = namedtuple("FilterResult", ["projects", "pr_limited", "branch_saturated"],
+FilterResult = namedtuple("FilterResult", ["projects", "pr_limited", "branch_saturated", "focus_gated"],
                          defaults=[[]])
 AutonomousDecision = namedtuple("AutonomousDecision", ["action", "focus_remaining"])
 
@@ -519,7 +519,7 @@ def _filter_exploration_projects(
     - ``branch_saturated``: list of project names excluded due to branch limit
     """
     from app.projects_config import (
-        load_projects_config, get_project_exploration,
+        load_projects_config, get_project_exploration, get_project_focus,
         get_project_max_open_prs,
     )
 
@@ -527,14 +527,25 @@ def _filter_exploration_projects(
         config = load_projects_config(koan_root)
     except (OSError, ValueError) as e:
         print(f"[iteration_manager] Could not load projects config: {e}", file=sys.stderr)
-        return FilterResult(projects=projects, pr_limited=[])
+        return FilterResult(projects=projects, pr_limited=[], branch_saturated=[], focus_gated=[])
 
     if config is None:
-        return FilterResult(projects=projects, pr_limited=[])
+        return FilterResult(projects=projects, pr_limited=[], branch_saturated=[], focus_gated=[])
+
+    # Gate 0: focus flag — filter out projects with focus: true
+    focus_gated = []
+    not_focused = []
+    for name, path in projects:
+        if get_project_focus(config, name):
+            _log_iteration("koan",
+                f"Project '{name}' has focus: true — excluding from exploration")
+            focus_gated.append(name)
+        else:
+            not_focused.append((name, path))
 
     # Gate 1: exploration flag
     exploration_enabled = [
-        (name, path) for name, path in projects
+        (name, path) for name, path in not_focused
         if get_project_exploration(config, name)
     ]
 
@@ -546,7 +557,7 @@ def _filter_exploration_projects(
         skip_pr_limit = should_relax_pr_limit(schedule_state)
 
     if skip_pr_limit:
-        return FilterResult(projects=exploration_enabled, pr_limited=[])
+        return FilterResult(projects=exploration_enabled, pr_limited=[], branch_saturated=[], focus_gated=focus_gated)
 
     from app.github import get_gh_username, batch_count_open_prs, cached_count_open_prs
     author = get_gh_username()
@@ -663,7 +674,7 @@ def _filter_exploration_projects(
             final_filtered.append((name, path))
 
     return FilterResult(projects=final_filtered, pr_limited=pr_limited,
-                        branch_saturated=branch_saturated)
+                        branch_saturated=branch_saturated, focus_gated=focus_gated)
 
 
 def _check_schedule():
@@ -994,8 +1005,12 @@ def plan_iteration(
                                                      schedule_state=schedule_state)
         exploration_projects = filter_result.projects
         if not exploration_projects:
-            # Determine whether this is exploration-disabled, PR-limited, or branch-saturated
-            if filter_result.branch_saturated:
+            # Determine whether this is focus-gated, exploration-disabled, PR-limited, or branch-saturated
+            if filter_result.focus_gated:
+                _log_iteration("koan", "All projects have focus enabled — waiting for queued missions")
+                wait_action = "exploration_wait"
+                wait_reason = "All projects have focus enabled — waiting for queued missions"
+            elif filter_result.branch_saturated:
                 _log_iteration("koan", "All exploration projects branch-saturated — waiting for reviews")
                 wait_action = "branch_saturated_wait"
                 wait_reason = (

@@ -1360,6 +1360,104 @@ projects:
         assert "bad yaml" in captured.err
 
 
+# === Tests: _filter_exploration_projects with focus mode ===
+
+
+class TestFilterExplorationProjectsFocus:
+
+    def test_filters_focused_projects(self, koan_root):
+        """Projects with focus: true are excluded from exploration."""
+        (koan_root / "projects.yaml").write_text("""
+projects:
+  koan:
+    path: /path/to/koan
+  backend:
+    path: /path/to/backend
+    focus: true
+  webapp:
+    path: /path/to/webapp
+""")
+        result = _filter_exploration_projects(PROJECTS_LIST, str(koan_root))
+        names = [name for name, _ in result.projects]
+        assert "koan" in names
+        assert "webapp" in names
+        assert "backend" not in names
+        assert "backend" in result.focus_gated
+
+    def test_returns_empty_when_all_focused(self, koan_root):
+        """All projects focused → empty list."""
+        (koan_root / "projects.yaml").write_text("""
+projects:
+  koan:
+    path: /path/to/koan
+    focus: true
+  backend:
+    path: /path/to/backend
+    focus: true
+  webapp:
+    path: /path/to/webapp
+    focus: true
+""")
+        result = _filter_exploration_projects(PROJECTS_LIST, str(koan_root))
+        assert result.projects == []
+        assert set(result.focus_gated) == {"koan", "backend", "webapp"}
+
+    def test_focused_projects_included_in_focus_gated_list(self, koan_root):
+        """Focus-gated projects are tracked separately in FilterResult."""
+        (koan_root / "projects.yaml").write_text("""
+projects:
+  koan:
+    path: /path/to/koan
+  backend:
+    path: /path/to/backend
+    focus: true
+  webapp:
+    path: /path/to/webapp
+    focus: true
+""")
+        result = _filter_exploration_projects(PROJECTS_LIST, str(koan_root))
+        assert result.focus_gated == ["backend", "webapp"]
+
+    def test_focus_flag_as_string(self, koan_root):
+        """Focus flag accepts string values like 'true' and 'yes'."""
+        (koan_root / "projects.yaml").write_text("""
+projects:
+  koan:
+    path: /path/to/koan
+    focus: "true"
+  backend:
+    path: /path/to/backend
+    focus: "yes"
+  webapp:
+    path: /path/to/webapp
+    focus: "false"
+""")
+        result = _filter_exploration_projects(PROJECTS_LIST, str(koan_root))
+        names = [name for name, _ in result.projects]
+        assert "webapp" in names
+        assert "koan" not in names
+        assert "backend" not in names
+
+    def test_defaults_focus_applies(self, koan_root):
+        """Defaults section focus: true applies to all unless overridden."""
+        (koan_root / "projects.yaml").write_text("""
+defaults:
+  focus: true
+projects:
+  koan:
+    path: /path/to/koan
+    focus: false
+  backend:
+    path: /path/to/backend
+  webapp:
+    path: /path/to/webapp
+""")
+        result = _filter_exploration_projects(PROJECTS_LIST, str(koan_root))
+        names = [name for name, _ in result.projects]
+        assert names == ["koan"]
+        assert set(result.focus_gated) == {"backend", "webapp"}
+
+
 # === Tests: _filter_exploration_projects with PR limits ===
 
 
@@ -2038,7 +2136,7 @@ class TestPlanIterationExploration:
         """When one project is exploration-disabled, another is selected."""
         # Return only webapp (koan and backend filtered out)
         mock_filter.return_value = FilterResult(
-            projects=[("webapp", "/path/to/webapp")], pr_limited=[],
+            projects=[("webapp", "/path/to/webapp")], pr_limited=[], branch_saturated=[],
         )
 
         usage_md = instance_dir / "usage.md"
@@ -2065,7 +2163,7 @@ class TestPlanIterationExploration:
         instance_dir, koan_root, usage_state,
     ):
         """All projects exploration-disabled → exploration_wait action."""
-        mock_filter.return_value = FilterResult(projects=[], pr_limited=[])
+        mock_filter.return_value = FilterResult(projects=[], pr_limited=[], branch_saturated=[])
 
         usage_md = instance_dir / "usage.md"
         usage_md.write_text("Session (5hr) : 30% (reset in 3h)\nWeekly (7 day) : 20% (Resets in 5d)\n")
@@ -2130,7 +2228,7 @@ projects:
     ):
         """Contemplative sessions use exploration-filtered project list."""
         mock_filter.return_value = FilterResult(
-            projects=[("webapp", "/path/to/webapp")], pr_limited=[],
+            projects=[("webapp", "/path/to/webapp")], pr_limited=[], branch_saturated=[],
         )
 
         usage_md = instance_dir / "usage.md"
@@ -2161,7 +2259,7 @@ projects:
         """With mixed enabled/disabled, only enabled projects are selected."""
         mock_filter.return_value = FilterResult(
             projects=[("koan", "/path/to/koan"), ("webapp", "/path/to/webapp")],
-            pr_limited=[],
+            pr_limited=[], branch_saturated=[],
         )
 
         usage_md = instance_dir / "usage.md"
@@ -2198,7 +2296,7 @@ class TestPlanIterationPrLimit:
     ):
         """When all exploration-eligible projects are PR-limited, action is pr_limit_wait."""
         mock_filter.return_value = FilterResult(
-            projects=[], pr_limited=["koan", "backend"],
+            projects=[], pr_limited=["koan", "backend"], branch_saturated=[],
         )
 
         usage_md = instance_dir / "usage.md"
@@ -2229,7 +2327,7 @@ class TestPlanIterationPrLimit:
     ):
         """Explicit missions run even when projects are PR-limited."""
         # _filter_exploration_projects is never called for missions
-        mock_filter.return_value = FilterResult(projects=[], pr_limited=["koan"])
+        mock_filter.return_value = FilterResult(projects=[], pr_limited=["koan"], branch_saturated=[])
 
         usage_md = instance_dir / "usage.md"
         usage_md.write_text("Session (5hr) : 30% (reset in 3h)\nWeekly (7 day) : 20% (Resets in 5d)\n")
@@ -2259,7 +2357,7 @@ class TestPlanIterationPrLimit:
     ):
         """Mix of exploration-disabled and PR-limited returns pr_limit_wait."""
         mock_filter.return_value = FilterResult(
-            projects=[], pr_limited=["koan"],
+            projects=[], pr_limited=["koan"], branch_saturated=[],
         )
 
         usage_md = instance_dir / "usage.md"
@@ -2289,7 +2387,7 @@ class TestPlanIterationPrLimit:
         """When only some projects are PR-limited, remaining are still explored."""
         mock_filter.return_value = FilterResult(
             projects=[("webapp", "/path/to/webapp")],
-            pr_limited=["koan"],
+            pr_limited=["koan"], branch_saturated=[],
         )
 
         usage_md = instance_dir / "usage.md"
@@ -2319,7 +2417,7 @@ class TestPlanIterationPrLimit:
     ):
         """All disabled with no PR-limited → exploration_wait, not pr_limit_wait."""
         mock_filter.return_value = FilterResult(
-            projects=[], pr_limited=[],
+            projects=[], pr_limited=[], branch_saturated=[],
         )
 
         usage_md = instance_dir / "usage.md"
@@ -2615,7 +2713,7 @@ class TestPlanIterationRandomSelection:
         """Autonomous mode should use random selection, not deterministic index."""
         mock_filter.return_value = FilterResult(
             projects=[("a", "/a"), ("b", "/b"), ("c", "/c")],
-            pr_limited=[],
+            pr_limited=[], branch_saturated=[],
         )
 
         usage_md = instance_dir / "usage.md"
@@ -2652,7 +2750,7 @@ class TestPlanIterationRandomSelection:
         """Autonomous mode should avoid the last project when multiple are available."""
         mock_filter.return_value = FilterResult(
             projects=[("koan", "/koan"), ("backend", "/backend")],
-            pr_limited=[],
+            pr_limited=[], branch_saturated=[],
         )
 
         usage_md = instance_dir / "usage.md"
@@ -2688,7 +2786,7 @@ class TestPlanIterationRandomSelection:
         """With stickiness=100, autonomous selection should keep the previous project."""
         mock_filter.return_value = FilterResult(
             projects=[("koan", "/koan"), ("backend", "/backend")],
-            pr_limited=[],
+            pr_limited=[], branch_saturated=[],
         )
 
         usage_md = instance_dir / "usage.md"
