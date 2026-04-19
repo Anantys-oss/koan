@@ -480,6 +480,97 @@ def extract_project_tag(line: str) -> str:
     return "default"
 
 
+# Regex to extract complexity tag: [complexity:trivial|simple|medium|complex]
+_COMPLEXITY_TAG_RE = re.compile(r'\[complexity:(trivial|simple|medium|complex)\]', re.IGNORECASE)
+
+
+def extract_complexity_tag(mission_text: str) -> Optional[str]:
+    """Extract the cached complexity tier from a mission line, or None.
+
+    Reads the [complexity:X] tag appended by tag_complexity_in_pending().
+
+    Args:
+        mission_text: Mission line or block text.
+
+    Returns:
+        Tier string ("trivial", "simple", "medium", "complex") or None.
+    """
+    match = _COMPLEXITY_TAG_RE.search(mission_text)
+    if match:
+        return match.group(1).lower()
+    return None
+
+
+def tag_complexity_in_pending(
+    mission_text: str,
+    tier: str,
+    missions_path,
+) -> None:
+    """Append a [complexity:X] tag to a pending mission line (atomic write).
+
+    Modifies only the first line of the mission that matches *mission_text*
+    in the Pending section.  Uses modify_missions_file() for atomic,
+    cross-process-safe writes.
+
+    The tag is inserted before any timestamp markers (⏳, ▶) so it does not
+    interfere with timestamp parsing.
+
+    Args:
+        mission_text: The mission description to find and tag (first-line match).
+        tier: Tier string — one of "trivial", "simple", "medium", "complex".
+        missions_path: Path-like object pointing to missions.md.
+    """
+    from app.utils import modify_missions_file
+    from pathlib import Path
+
+    missions_path = Path(missions_path)
+
+    def _apply(content: str) -> str:
+        lines = content.splitlines(keepends=True)
+        # Normalise the search key to first line only
+        search_key = mission_text.splitlines()[0].strip() if mission_text else ""
+        if not search_key:
+            return content
+
+        in_pending = False
+        for i, raw_line in enumerate(lines):
+            stripped = raw_line.strip()
+            # Track section headers
+            if stripped.startswith("##") and not stripped.startswith("###"):
+                section_name = stripped.lstrip("#").strip().lower()
+                normalized = _SECTION_MAP.get(section_name, "")
+                in_pending = normalized == "pending"
+                continue
+
+            if not in_pending:
+                continue
+
+            # First-line match — skip lines that already have the tag
+            if search_key in raw_line and not _COMPLEXITY_TAG_RE.search(raw_line):
+                # Insert tag before any timestamp markers (⏳ or ▶)
+                base = raw_line.rstrip("\n").rstrip("\r")
+                tag = f"[complexity:{tier}]"
+                # Find position of first timestamp marker if present
+                ts_match = re.search(r'\s*[⏳▶]\(', base)
+                if ts_match:
+                    insert_pos = ts_match.start()
+                    new_line = (
+                        base[:insert_pos]
+                        + f" {tag}"
+                        + base[insert_pos:]
+                    )
+                else:
+                    new_line = f"{base} {tag}"
+                # Restore original line ending
+                ending = raw_line[len(raw_line.rstrip("\r\n")):]
+                lines[i] = new_line + (ending or "\n")
+                break  # Only tag the first matching line
+
+        return "".join(lines)
+
+    modify_missions_file(missions_path, _apply)
+
+
 def group_by_project(content: str) -> Dict[str, Dict[str, List[str]]]:
     """Parse missions and group them by project.
 
