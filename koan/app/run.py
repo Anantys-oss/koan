@@ -1612,6 +1612,7 @@ def _run_iteration(
     autonomous_mode = plan["autonomous_mode"]
     focus_area = plan["focus_area"]
     available_pct = plan["available_pct"]
+    mission_tier = plan.get("mission_tier")  # complexity tier (may be None)
 
     # --- Dedup guard ---
     if mission_title:
@@ -1804,6 +1805,7 @@ def _run_iteration(
             project_name=project_name,
             plugin_dirs=plugin_dirs,
             system_prompt=system_prompt,
+            tier=mission_tier,
         )
 
         cmd_display = [c[:100] + '...' if len(c) > 100 else c for c in cmd[:6]]
@@ -1964,6 +1966,7 @@ def _run_iteration(
                 status_callback=lambda step: set_status(
                     koan_root, f"{_status_prefix} — {step}"
                 ),
+                mission_tier=mission_tier,
             )
 
             if post_result.get("pending_archived"):

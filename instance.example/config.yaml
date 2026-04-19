@@ -290,7 +290,34 @@ usage:
 #   - models: override model selection (mission, chat, lightweight, etc.)
 #   - tools: restrict available tools (mission, chat tool lists)
 #   - github: override authorized_users for GitHub @mention commands
+#   - complexity_routing: per-project override (false to disable, or tier overrides)
 # See projects.example.yaml for documentation and examples.
+
+# Complexity routing — pre-classify missions and route to cheapest capable model
+# A lightweight Haiku call assigns each mission a tier (trivial/simple/medium/complex)
+# before dispatch. The tier drives model selection and max-turns cap, saving quota
+# on simple work while reserving expensive models for genuinely complex tasks.
+# The tier is cached as [complexity:X] in missions.md so reruns skip re-classification.
+# Set enabled: false (or complexity_routing: false per-project) to disable entirely.
+# complexity_routing:
+#   enabled: true
+#   tiers:
+#     trivial:
+#       model: "haiku"          # Cheapest model for tiny mechanical changes
+#       max_turns: 10           # Reduced turn budget
+#       timeout_multiplier: 0.5 # Halve the default timeout
+#     simple:
+#       model: "sonnet"         # Capable model for small self-contained changes
+#       max_turns: 20
+#       timeout_multiplier: 0.75
+#     medium:
+#       model: ""               # Empty = use models.mission (no override)
+#       max_turns: 40
+#       timeout_multiplier: 1.0
+#     complex:
+#       model: ""               # Empty = use models.mission (no override)
+#       max_turns: 80           # Generous turns for architectural work
+#       timeout_multiplier: 1.5
 
 # Plan review loop — validates generated plans before posting to GitHub
 # A lightweight subagent (Haiku) reviews each plan for missing file paths,

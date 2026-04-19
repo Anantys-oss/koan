@@ -129,6 +129,7 @@ def _write_pipeline_summary(
     tracker: _PipelineTracker,
     mission_title: str = "",
     stdout_file: str = "",
+    mission_tier: Optional[str] = None,
 ) -> None:
     """Append a pipeline outcome summary to today's journal."""
     try:
@@ -148,6 +149,8 @@ def _write_pipeline_summary(
         header = f"\n### Pipeline summary — {now}"
         if mission_title:
             header += f"\nMission: {mission_title}"
+        if mission_tier:
+            header += f"\nComplexity: {mission_tier}"
         entry = header + "\n" + "\n".join(lines) + "\n"
         append_to_journal(Path(instance_dir), project_name, entry)
     except Exception as e:
@@ -180,6 +183,7 @@ def build_mission_command(
     project_name: str = "",
     plugin_dirs: Optional[List[str]] = None,
     system_prompt: str = "",
+    tier: Optional[str] = None,
 ) -> List[str]:
     """Build the CLI command for mission execution (provider-agnostic).
 
@@ -190,6 +194,9 @@ def build_mission_command(
         project_name: Optional project name for per-project tool overrides.
         plugin_dirs: Optional list of plugin directory paths to load.
         system_prompt: Optional system prompt for cache-friendly positioning.
+        tier: Optional complexity tier ("trivial"/"simple"/"medium"/"complex")
+            from the pre-classifier.  When set, overrides model and max_turns
+            per the complexity_routing config (unless REVIEW mode is active).
 
     Returns:
         Complete command list ready for subprocess.
@@ -209,8 +216,28 @@ def build_mission_command(
     models = get_model_config(project_name)
     model = models["mission"]
     if autonomous_mode == "review" and models["review_mode"]:
+        # REVIEW mode takes precedence over tier override (safety > cost)
         model = models["review_mode"]
     fallback = models["fallback"]
+
+    # Apply complexity tier overrides (model, max_turns).
+    # REVIEW mode guard already resolved above — tier only applies when NOT review.
+    max_turns_override = None
+    if tier and autonomous_mode != "review":
+        try:
+            from app.config import get_complexity_routing_config
+            routing = get_complexity_routing_config(project_name)
+            if routing and routing.get("enabled"):
+                tier_cfg = routing.get("tiers", {}).get(tier, {})
+                tier_model = tier_cfg.get("model", "")
+                if tier_model:
+                    model = tier_model
+                tier_turns = tier_cfg.get("max_turns")
+                if tier_turns:
+                    max_turns_override = int(tier_turns)
+        except Exception as e:
+            print(f"[mission_runner] complexity routing config error (non-blocking): {e}",
+                  file=sys.stderr)
 
     # Get MCP server configs
     mcp_configs = get_mcp_configs(project_name)
@@ -225,6 +252,7 @@ def build_mission_command(
         model=model,
         fallback=fallback,
         output_format="json",
+        max_turns=max_turns_override or 0,
         mcp_configs=mcp_configs,
         plugin_dirs=plugin_dirs,
         system_prompt=system_prompt,
@@ -783,6 +811,7 @@ def run_post_mission(
     autonomous_mode: str = "",
     start_time: int = 0,
     status_callback: Optional[Callable[[str], None]] = None,
+    mission_tier: Optional[str] = None,
 ) -> dict:
     """Run the complete post-mission processing pipeline.
 
@@ -914,7 +943,10 @@ def run_post_mission(
                 exit_code, mission_title, duration_minutes, result,
             )
             result["pipeline_steps"] = tracker.to_dict()
-            _write_pipeline_summary(instance_dir, project_name, tracker, mission_title)
+            _write_pipeline_summary(
+                instance_dir, project_name, tracker, mission_title,
+                mission_tier=mission_tier,
+            )
             return result  # Early return — no further processing on quota exhaustion
         tracker.record("quota_check", "success", "no exhaustion")
 
@@ -1047,6 +1079,7 @@ def run_post_mission(
         _write_pipeline_summary(
             instance_dir, project_name, tracker, mission_title,
             stdout_file=stdout_file,
+            mission_tier=mission_tier,
         )
 
         # Notify user of pipeline failures via outbox (retried by bridge)

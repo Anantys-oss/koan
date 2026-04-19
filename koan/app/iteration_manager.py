@@ -258,6 +258,67 @@ def _pick_mission(instance_dir: Path, projects_str: str, run_num: int,
             "Picker crashed but")
 
 
+def _classify_mission(
+    mission_title: str,
+    project_name: str,
+    missions_path,
+) -> Optional[str]:
+    """Classify mission complexity and cache the tier in missions.md.
+
+    Checks for an existing [complexity:X] tag first (cache hit).  If
+    absent, calls the lightweight model to classify the mission.
+
+    Args:
+        mission_title: The mission text to classify.
+        project_name: Project name for per-project model/routing config.
+        missions_path: Path to missions.md for tag caching.
+
+    Returns:
+        Tier string ("trivial", "simple", "medium", "complex") or None
+        when routing is disabled or classification fails.
+    """
+    try:
+        from app.config import get_complexity_routing_config
+        routing = get_complexity_routing_config(project_name)
+        if routing is None:
+            return None  # Routing disabled for this project
+    except Exception as e:
+        _log_iteration("error", f"Complexity routing config error: {e}")
+        return None
+
+    # Cache hit — already classified
+    try:
+        from app.missions import extract_complexity_tag
+        cached = extract_complexity_tag(mission_title)
+        if cached is not None:
+            _log_iteration("complexity",
+                f"mission='{mission_title[:60]}' tier={cached} (cached)")
+            return cached
+    except Exception as e:
+        _log_iteration("error", f"Complexity tag extraction error: {e}")
+
+    # Cache miss — call the classifier
+    try:
+        from app.complexity_classifier import classify_mission_complexity
+        tier_obj = classify_mission_complexity(mission_title, project_name)
+        tier = tier_obj.value
+    except Exception as e:
+        _log_iteration("error", f"Complexity classification error: {e}")
+        return "medium"  # Safe default
+
+    _log_iteration("complexity",
+        f"mission='{mission_title[:60]}' tier={tier}")
+
+    # Write tag to missions.md (best-effort — never block execution)
+    try:
+        from app.missions import tag_complexity_in_pending
+        tag_complexity_in_pending(mission_title, tier, missions_path)
+    except Exception as e:
+        _log_iteration("error", f"Complexity tag write error: {e}")
+
+    return tier
+
+
 def _projects_to_str(projects: List[Tuple[str, str]]) -> str:
     """Convert a list of (name, path) tuples to semicolon-separated string.
 
@@ -698,7 +759,8 @@ def _make_result(*, action, project_name, project_path="",
                  recurring_injected, focus_remaining=None,
                  passive_remaining=None,
                  schedule_mode="normal", error=None,
-                 tracker_error=None, cost_today=0.0):
+                 tracker_error=None, cost_today=0.0,
+                 mission_tier=None):
     """Build a standardised iteration-plan result dict."""
     return {
         "action": action,
@@ -717,6 +779,7 @@ def _make_result(*, action, project_name, project_path="",
         "error": error,
         "tracker_error": tracker_error,
         "cost_today": cost_today,
+        "mission_tier": mission_tier,
     }
 
 
@@ -954,6 +1017,15 @@ def plan_iteration(
                 tracker_error=tracker_error,
             )
 
+    # Step 5b: Pre-classify mission complexity (when a mission was picked
+    # and project resolved successfully).  Cache the tier in missions.md
+    # so re-runs skip the classifier call entirely.
+    mission_tier: Optional[str] = None
+    if mission_project and mission_title and project_path is not None:
+        mission_tier = _classify_mission(
+            mission_title, project_name, instance / "missions.md"
+        )
+
     else:
         # No mission — autonomous mode
         mission_title = ""
@@ -1122,6 +1194,7 @@ def plan_iteration(
         schedule_mode=schedule_state.mode if schedule_state else "normal",
         tracker_error=tracker_error,
         cost_today=cost_today,
+        mission_tier=mission_tier,
     )
 
 

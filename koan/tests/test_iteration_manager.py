@@ -436,7 +436,7 @@ class TestMakeResult:
             "autonomous_mode", "focus_area", "available_pct", "decision_reason",
             "display_lines", "recurring_injected", "focus_remaining",
             "passive_remaining", "schedule_mode", "error", "tracker_error",
-            "cost_today",
+            "cost_today", "mission_tier",
         }
         assert set(result.keys()) == expected_keys
 

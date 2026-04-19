@@ -206,6 +206,76 @@ def get_mcp_configs(project_name: str = "") -> List[str]:
     return [entry for entry in result if isinstance(entry, str) and entry]
 
 
+# Default tier-to-resource mapping used when complexity_routing is enabled
+# but specific tier values are absent from config.yaml.
+_COMPLEXITY_ROUTING_DEFAULTS: dict = {
+    "trivial": {"model": "haiku", "max_turns": 10, "timeout_multiplier": 0.5},
+    "simple":  {"model": "sonnet", "max_turns": 20, "timeout_multiplier": 0.75},
+    "medium":  {"model": "",       "max_turns": 40, "timeout_multiplier": 1.0},
+    "complex": {"model": "",       "max_turns": 80, "timeout_multiplier": 1.5},
+}
+
+
+def get_complexity_routing_config(project_name: str = "") -> Optional[dict]:
+    """Get complexity routing configuration with per-project overrides.
+
+    Resolution order:
+    1. Per-project ``complexity_routing`` key in projects.yaml (if set).
+       - A bare ``false`` / disabled flag disables routing for that project.
+    2. Global ``complexity_routing`` key in config.yaml.
+    3. Returns ``None`` when routing is disabled or not configured.
+
+    When routing is enabled the returned dict has a ``tiers`` sub-dict
+    mapping tier name → {model, max_turns, timeout_multiplier}.
+
+    An empty model string means "use whatever models.mission resolves to"
+    (no override).
+
+    Args:
+        project_name: Optional project name for per-project overrides.
+
+    Returns:
+        Dict with ``enabled`` and ``tiers`` keys, or ``None`` when disabled.
+    """
+    config = _load_config()
+    global_routing = config.get("complexity_routing", {})
+
+    # Per-project override — resolve before merging with global
+    project_overrides = _load_project_overrides(project_name)
+    project_routing = project_overrides.get("complexity_routing")
+
+    # A bare False or {"enabled": false} at project level disables entirely
+    if project_routing is False or (
+        isinstance(project_routing, dict)
+        and not project_routing.get("enabled", True)
+    ):
+        return None
+
+    # Merge: start with global, apply project-level tier overrides
+    if isinstance(project_routing, dict):
+        routing = {**global_routing, **project_routing}
+    else:
+        routing = global_routing if isinstance(global_routing, dict) else {}
+
+    # Disabled at global level
+    if not routing.get("enabled", False):
+        return None
+
+    # Build merged tier map — fill missing tiers from defaults
+    raw_tiers = routing.get("tiers", {})
+    if not isinstance(raw_tiers, dict):
+        raw_tiers = {}
+
+    tiers: dict = {}
+    for tier_name, tier_defaults in _COMPLEXITY_ROUTING_DEFAULTS.items():
+        override = raw_tiers.get(tier_name, {})
+        if not isinstance(override, dict):
+            override = {}
+        tiers[tier_name] = {**tier_defaults, **override}
+
+    return {"enabled": True, "tiers": tiers}
+
+
 def _safe_int(value, default: int) -> int:
     """Safely convert a config value to int, returning default on failure."""
     try:
