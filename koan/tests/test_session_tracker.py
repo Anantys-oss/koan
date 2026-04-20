@@ -842,26 +842,87 @@ class TestClassifyMissionType:
     def test_empty_title_is_autonomous(self):
         assert classify_mission_type("") == "autonomous"
 
-    def test_none_like_empty(self):
+    def test_whitespace_only_is_autonomous(self):
         assert classify_mission_type("  ") == "autonomous"
-
-    def test_skill_command(self):
-        assert classify_mission_type("/rebase https://github.com/o/r/pull/1") == "skill"
-
-    def test_implement_skill(self):
-        assert classify_mission_type("/implement https://github.com/o/r/issues/10") == "skill"
-
-    def test_review_skill(self):
-        assert classify_mission_type("/review https://github.com/o/r/pull/3") == "skill"
 
     def test_autonomous_label(self):
         assert classify_mission_type("Autonomous deep on koan") == "autonomous"
 
-    def test_freetext_mission(self):
-        assert classify_mission_type("Fix the auth module") == "mission"
+    def test_autonomous_reflection(self):
+        assert classify_mission_type("Autonomous reflection session") == "autonomous"
 
-    def test_mission_with_project_tag(self):
-        assert classify_mission_type("Fix auth [project:koan]") == "mission"
+    # Granular slash-command types
+    def test_plan(self):
+        assert classify_mission_type("/plan https://github.com/o/r/issues/5") == "plan"
+
+    def test_review(self):
+        assert classify_mission_type("/review https://github.com/o/r/pull/3") == "review"
+
+    def test_rebase(self):
+        assert classify_mission_type("/rebase https://github.com/o/r/pull/1") == "rebase"
+
+    def test_recreate(self):
+        assert classify_mission_type("/recreate https://github.com/o/r/pull/2") == "recreate"
+
+    def test_implement(self):
+        assert classify_mission_type("/implement https://github.com/o/r/issues/10") == "implement"
+
+    def test_fix(self):
+        assert classify_mission_type("/fix login bug") == "implement"
+
+    def test_ai_alias(self):
+        assert classify_mission_type("/ai fix the login bug") == "implement"
+
+    def test_refactor(self):
+        assert classify_mission_type("/refactor auth module") == "refactor"
+
+    def test_audit(self):
+        assert classify_mission_type("/audit dependencies") == "audit"
+
+    def test_security_audit(self):
+        assert classify_mission_type("/security_audit") == "audit"
+
+    def test_check(self):
+        assert classify_mission_type("/check koan") == "check"
+
+    def test_claudemd(self):
+        assert classify_mission_type("/claudemd koan") == "check"
+
+    def test_config_check(self):
+        assert classify_mission_type("/config_check") == "check"
+
+    def test_chat(self):
+        assert classify_mission_type("/chat what's up") == "chat"
+
+    def test_sparring(self):
+        assert classify_mission_type("/sparring architecture design") == "chat"
+
+    def test_idea(self):
+        assert classify_mission_type("/idea new feature") == "chat"
+
+    # /mission and unknown slash commands → freetext
+    def test_mission_command(self):
+        assert classify_mission_type("/mission add task to queue") == "freetext"
+
+    def test_unknown_slash_command(self):
+        assert classify_mission_type("/scaffold_skill my_skill") == "freetext"
+
+    def test_unknown_slash_command_short(self):
+        assert classify_mission_type("/unknown_cmd") == "freetext"
+
+    # Human free-text → freetext
+    def test_freetext_mission(self):
+        assert classify_mission_type("Fix the auth module") == "freetext"
+
+    def test_freetext_with_project_tag(self):
+        assert classify_mission_type("Fix auth [project:koan]") == "freetext"
+
+    # Case normalization
+    def test_mixed_case_rebase(self):
+        assert classify_mission_type("/Rebase https://github.com/o/r/pull/1") == "rebase"
+
+    def test_mixed_case_plan(self):
+        assert classify_mission_type("/PLAN issue") == "plan"
 
 
 # --- _detect_pr_created ---
@@ -918,7 +979,7 @@ class TestRecordOutcomeEnrichedFields:
             "Branch pushed. PR #42 created.",
             mission_title="/rebase https://github.com/o/r/pull/1",
         )
-        assert entry["mission_type"] == "skill"
+        assert entry["mission_type"] == "rebase"
         assert entry["has_pr"] is True
         assert entry["has_branch"] is True
 
@@ -937,6 +998,6 @@ class TestRecordOutcomeEnrichedFields:
             "Fixed the auth module. Branch pushed.",
             mission_title="Fix the auth module",
         )
-        assert entry["mission_type"] == "mission"
+        assert entry["mission_type"] == "freetext"
         assert entry["has_branch"] is True
         assert entry["has_pr"] is False
