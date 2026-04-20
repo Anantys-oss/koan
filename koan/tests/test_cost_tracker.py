@@ -114,6 +114,33 @@ class TestRecordUsage:
         line = (instance_dir / "usage" / f"{today}.jsonl").read_text().strip()
         assert ": " not in line  # No pretty-printing
 
+    def test_mission_type_written_when_provided(self, instance_dir):
+        """mission_type field appears in JSONL when explicitly passed."""
+        record_usage(
+            instance_dir, "koan", "sonnet", 1000, 500,
+            mission_type="rebase",
+        )
+        today = date.today().isoformat()
+        line = (instance_dir / "usage" / f"{today}.jsonl").read_text().strip()
+        entry = json.loads(line)
+        assert entry["mission_type"] == "rebase"
+
+    def test_mission_type_omitted_when_empty(self, instance_dir):
+        """mission_type field is absent when not passed (backwards compat)."""
+        record_usage(instance_dir, "koan", "sonnet", 1000, 500)
+        today = date.today().isoformat()
+        line = (instance_dir / "usage" / f"{today}.jsonl").read_text().strip()
+        entry = json.loads(line)
+        assert "mission_type" not in entry
+
+    def test_mission_type_omitted_for_empty_string(self, instance_dir):
+        """Explicitly passing empty string for mission_type omits the field."""
+        record_usage(instance_dir, "koan", "sonnet", 1000, 500, mission_type="")
+        today = date.today().isoformat()
+        line = (instance_dir / "usage" / f"{today}.jsonl").read_text().strip()
+        entry = json.loads(line)
+        assert "mission_type" not in entry
+
 
 class TestReadJsonl:
     def test_reads_existing_file(self, usage_dir):

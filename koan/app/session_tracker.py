@@ -167,28 +167,69 @@ def _extract_summary(journal_content: str, max_chars: int = 120) -> str:
     return ""
 
 
+# Dispatch table for classify_mission_type(): (compiled regex, mission_type).
+# Applied in order on the lowercased mission title from the start.
+# Add new skills here when they are added to koan/skills/core/.
+# Old JSONL records without mission_type should be treated as "unknown" by readers.
+_MISSION_TYPE_DISPATCH = [
+    (re.compile(r"^/plan\b"), "plan"),
+    (re.compile(r"^/review\b"), "review"),
+    (re.compile(r"^/rebase\b"), "rebase"),
+    (re.compile(r"^/recreate\b"), "recreate"),
+    (re.compile(r"^/(?:implement|fix|ai)\b"), "implement"),
+    (re.compile(r"^/refactor\b"), "refactor"),
+    (re.compile(r"^/(?:audit|security_audit)\b"), "audit"),
+    (re.compile(r"^/(?:check|claudemd|config_check)\b"), "check"),
+    (re.compile(r"^/(?:chat|sparring|idea)\b"), "chat"),
+]
+
+
 def classify_mission_type(mission_title: str) -> str:
-    """Classify a mission into a type category for metrics tracking.
+    """Classify a mission into a granular type category for metrics tracking.
+
+    Uses a regex dispatch table applied in order on the slash-command prefix.
+    Unknown slash commands fall through to "freetext" rather than inflating
+    any named bucket with uncategorized commands.
+
+    NOTE: When adding new core skills, add a row to _MISSION_TYPE_DISPATCH above
+    so that their missions are categorized rather than falling through to "freetext".
 
     Categories:
-        "skill" — Skill command (/rebase, /implement, /review, etc.)
-        "autonomous" — Autonomous exploration (no mission title or "Autonomous ...")
-        "mission" — Free-text human-submitted mission
+        "plan"      — /plan
+        "review"    — /review
+        "rebase"    — /rebase
+        "recreate"  — /recreate
+        "implement" — /implement, /fix, /ai
+        "refactor"  — /refactor
+        "audit"     — /audit, /security_audit
+        "check"     — /check, /claudemd, /config_check
+        "chat"      — /chat, /sparring, /idea
+        "freetext"  — /mission, other /…, or human free-text
+        "autonomous"— Empty title or "Autonomous …" prefix
 
     Args:
         mission_title: The mission title string.
 
     Returns:
-        One of "skill", "autonomous", or "mission".
+        One of the category strings above.
     """
     if not mission_title or not mission_title.strip():
         return "autonomous"
     title = mission_title.strip()
-    if _PRODUCTIVE_SKILLS.search(title):
-        return "skill"
     if title.lower().startswith("autonomous "):
         return "autonomous"
-    return "mission"
+
+    # Only apply dispatch table to slash commands
+    if not title.startswith("/"):
+        return "freetext"
+
+    lower = title.lower()
+    for pattern, mission_type in _MISSION_TYPE_DISPATCH:
+        if pattern.match(lower):
+            return mission_type
+
+    # Unknown slash command — fall through to freetext
+    return "freetext"
 
 
 def _detect_pr_created(content: str) -> bool:

@@ -38,6 +38,7 @@ def record_usage(
     cache_creation_input_tokens: int = 0,
     cache_read_input_tokens: int = 0,
     cost_usd: float = 0.0,
+    mission_type: str = "",
 ) -> bool:
     """Append a usage event to today's JSONL file.
 
@@ -52,6 +53,9 @@ def record_usage(
         cache_creation_input_tokens: Tokens written to prompt cache.
         cache_read_input_tokens: Tokens read from prompt cache.
         cost_usd: Actual cost reported by the API.
+        mission_type: Granular mission category (e.g. "rebase", "implement").
+            Omitted from records when empty; absent records should be treated
+            as "unknown" by downstream readers.
 
     Returns:
         True if the record was written successfully.
@@ -71,7 +75,10 @@ def record_usage(
         "mode": mode,
         "mission": mission,
     }
-    # Only include cache/cost fields when non-zero to keep old entries compact
+    # Only include optional fields when non-empty/non-zero to keep old entries compact.
+    # Readers must treat absent mission_type as "unknown".
+    if mission_type:
+        entry["mission_type"] = mission_type
     if cache_creation_input_tokens:
         entry["cache_creation_input_tokens"] = cache_creation_input_tokens
     if cache_read_input_tokens:

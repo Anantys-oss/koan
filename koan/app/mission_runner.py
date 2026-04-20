@@ -371,6 +371,7 @@ def _record_cost_event(
     stdout_file: str,
     autonomous_mode: str,
     mission_title: str,
+    mission_type: str = "",
 ) -> None:
     """Record structured usage event to JSONL cost tracker (fire-and-forget)."""
     try:
@@ -392,6 +393,7 @@ def _record_cost_event(
             cache_creation_input_tokens=detailed.get("cache_creation_input_tokens", 0),
             cache_read_input_tokens=detailed.get("cache_read_input_tokens", 0),
             cost_usd=detailed.get("cost_usd", 0.0),
+            mission_type=mission_type,
         )
     except Exception as e:
         _log_runner("error", f"Cost tracking failed: {e}")
@@ -849,9 +851,11 @@ def run_post_mission(
         tracker.record("usage_update", "success" if result["usage_updated"] else "fail")
 
         # 1b. Record structured usage to JSONL cost tracker
+        from app.session_tracker import classify_mission_type as _classify_type
+        _mission_type = _classify_type(mission_title)
         _record_cost_event(
             instance_dir, project_name, stdout_file,
-            autonomous_mode, mission_title,
+            autonomous_mode, mission_title, mission_type=_mission_type,
         )
 
         # 2. Compute duration (needed for quota early-return, reflection, and outcome tracking)
