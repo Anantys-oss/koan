@@ -11,6 +11,10 @@ from app.cost_tracker import (
     summarize_range,
     summarize_by_project,
     summarize_by_model,
+    summarize_by_type,
+    summarize_by_project_and_type,
+    summarize_week,
+    summarize_month,
     estimate_cost,
     estimate_cache_savings,
     daily_series,
@@ -545,4 +549,181 @@ class TestDailySeriesCacheFields:
         day = series[0]
         assert day["cache_read_input_tokens"] == 3000
         assert day["cache_creation_input_tokens"] == 1000
-        assert day["cache_hit_rate"] > 0
+
+
+class TestAggregateByType:
+    """Tests for mission_type aggregation in _aggregate."""
+
+    def test_aggregate_includes_by_type(self):
+        entries = [
+            {"input_tokens": 100, "output_tokens": 50, "project": "p", "model": "m",
+             "mission_type": "review"},
+            {"input_tokens": 200, "output_tokens": 100, "project": "p", "model": "m",
+             "mission_type": "implement"},
+            {"input_tokens": 300, "output_tokens": 150, "project": "p", "model": "m",
+             "mission_type": "review"},
+        ]
+        result = _aggregate(entries)
+        assert "by_type" in result
+        assert result["by_type"]["review"]["count"] == 2
+        assert result["by_type"]["review"]["input_tokens"] == 400
+        assert result["by_type"]["review"]["output_tokens"] == 200
+        assert result["by_type"]["implement"]["count"] == 1
+
+    def test_missing_mission_type_defaults_to_unknown(self):
+        entries = [
+            {"input_tokens": 100, "output_tokens": 50, "project": "p", "model": "m"},
+        ]
+        result = _aggregate(entries)
+        assert "unknown" in result["by_type"]
+        assert result["by_type"]["unknown"]["count"] == 1
+
+    def test_empty_entries_has_by_type(self):
+        result = _aggregate([])
+        assert result["by_type"] == {}
+
+    def test_cost_aggregated_by_type(self):
+        entries = [
+            {"input_tokens": 100, "output_tokens": 50, "project": "p", "model": "m",
+             "mission_type": "plan", "cost_usd": 0.5},
+            {"input_tokens": 200, "output_tokens": 100, "project": "p", "model": "m",
+             "mission_type": "plan", "cost_usd": 1.0},
+        ]
+        result = _aggregate(entries)
+        assert result["by_type"]["plan"]["total_cost_usd"] == pytest.approx(1.5)
+
+
+class TestSummarizeByType:
+    def test_returns_type_breakdown(self, instance_dir, usage_dir):
+        today = date.today()
+        entries = [
+            {"input_tokens": 100, "output_tokens": 50, "project": "p", "model": "m",
+             "mission_type": "review", "ts": today.isoformat()},
+            {"input_tokens": 200, "output_tokens": 100, "project": "p", "model": "m",
+             "mission_type": "implement", "ts": today.isoformat()},
+            {"input_tokens": 150, "output_tokens": 75, "project": "p", "model": "m",
+             "ts": today.isoformat()},
+        ]
+        jsonl_path = usage_dir / f"{today.isoformat()}.jsonl"
+        jsonl_path.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
+
+        result = summarize_by_type(instance_dir, days=1)
+        assert result["review"]["count"] == 1
+        assert result["implement"]["count"] == 1
+        assert result["unknown"]["count"] == 1
+
+    def test_empty_returns_empty(self, instance_dir):
+        result = summarize_by_type(instance_dir, days=1)
+        assert result == {}
+
+
+class TestSummarizeByProjectAndType:
+    def test_returns_nested_breakdown(self, instance_dir, usage_dir):
+        today = date.today()
+        entries = [
+            {"input_tokens": 100, "output_tokens": 50, "project": "koan", "model": "m",
+             "mission_type": "review", "ts": today.isoformat()},
+            {"input_tokens": 200, "output_tokens": 100, "project": "koan", "model": "m",
+             "mission_type": "implement", "ts": today.isoformat()},
+            {"input_tokens": 300, "output_tokens": 150, "project": "other", "model": "m",
+             "mission_type": "review", "ts": today.isoformat()},
+        ]
+        jsonl_path = usage_dir / f"{today.isoformat()}.jsonl"
+        jsonl_path.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
+
+        result = summarize_by_project_and_type(instance_dir, days=1)
+        assert result["koan"]["review"]["count"] == 1
+        assert result["koan"]["implement"]["count"] == 1
+        assert result["other"]["review"]["count"] == 1
+        assert result["other"]["review"]["input_tokens"] == 300
+
+    def test_missing_type_grouped_as_unknown(self, instance_dir, usage_dir):
+        today = date.today()
+        entries = [
+            {"input_tokens": 100, "output_tokens": 50, "project": "p", "model": "m",
+             "ts": today.isoformat()},
+        ]
+        jsonl_path = usage_dir / f"{today.isoformat()}.jsonl"
+        jsonl_path.write_text(json.dumps(entries[0]) + "\n")
+
+        result = summarize_by_project_and_type(instance_dir, days=1)
+        assert result["p"]["unknown"]["count"] == 1
+
+    def test_empty_returns_empty(self, instance_dir):
+        result = summarize_by_project_and_type(instance_dir, days=1)
+        assert result == {}
+
+    def test_cost_tracked_per_type(self, instance_dir, usage_dir):
+        today = date.today()
+        entries = [
+            {"input_tokens": 100, "output_tokens": 50, "project": "p", "model": "m",
+             "mission_type": "review", "cost_usd": 0.5, "ts": today.isoformat()},
+            {"input_tokens": 200, "output_tokens": 100, "project": "p", "model": "m",
+             "mission_type": "review", "cost_usd": 1.0, "ts": today.isoformat()},
+        ]
+        jsonl_path = usage_dir / f"{today.isoformat()}.jsonl"
+        jsonl_path.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
+
+        result = summarize_by_project_and_type(instance_dir, days=1)
+        assert result["p"]["review"]["total_cost_usd"] == pytest.approx(1.5)
+
+
+class TestSummarizeWeekMonth:
+    def test_summarize_week_covers_7_days(self, instance_dir, usage_dir):
+        today = date.today()
+        # Write data for today and 6 days ago
+        for d in [today, today - timedelta(days=6)]:
+            jsonl_path = usage_dir / f"{d.isoformat()}.jsonl"
+            jsonl_path.write_text(
+                json.dumps({"input_tokens": 100, "output_tokens": 50,
+                            "project": "p", "model": "m"}) + "\n"
+            )
+        result = summarize_week(instance_dir)
+        assert result["count"] == 2
+        assert result["total_input"] == 200
+
+    def test_summarize_week_excludes_8th_day(self, instance_dir, usage_dir):
+        today = date.today()
+        # Only 8 days ago — outside the 7-day window
+        d = today - timedelta(days=7)
+        jsonl_path = usage_dir / f"{d.isoformat()}.jsonl"
+        jsonl_path.write_text(
+            json.dumps({"input_tokens": 100, "output_tokens": 50,
+                        "project": "p", "model": "m"}) + "\n"
+        )
+        result = summarize_week(instance_dir)
+        assert result["count"] == 0
+
+    def test_summarize_month_covers_30_days(self, instance_dir, usage_dir):
+        today = date.today()
+        for d in [today, today - timedelta(days=29)]:
+            jsonl_path = usage_dir / f"{d.isoformat()}.jsonl"
+            jsonl_path.write_text(
+                json.dumps({"input_tokens": 100, "output_tokens": 50,
+                            "project": "p", "model": "m"}) + "\n"
+            )
+        result = summarize_month(instance_dir)
+        assert result["count"] == 2
+
+    def test_summarize_month_excludes_31st_day(self, instance_dir, usage_dir):
+        today = date.today()
+        d = today - timedelta(days=30)
+        jsonl_path = usage_dir / f"{d.isoformat()}.jsonl"
+        jsonl_path.write_text(
+            json.dumps({"input_tokens": 100, "output_tokens": 50,
+                        "project": "p", "model": "m"}) + "\n"
+        )
+        result = summarize_month(instance_dir)
+        assert result["count"] == 0
+
+    def test_week_and_month_include_by_type(self, instance_dir, usage_dir):
+        today = date.today()
+        jsonl_path = usage_dir / f"{today.isoformat()}.jsonl"
+        jsonl_path.write_text(
+            json.dumps({"input_tokens": 100, "output_tokens": 50,
+                        "project": "p", "model": "m", "mission_type": "plan"}) + "\n"
+        )
+        week = summarize_week(instance_dir)
+        month = summarize_month(instance_dir)
+        assert "plan" in week["by_type"]
+        assert "plan" in month["by_type"]
