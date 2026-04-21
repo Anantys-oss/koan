@@ -24,7 +24,7 @@ from typing import Dict, List, Optional, Tuple
 
 
 # Maximum entries to keep in session_outcomes.json (rolling window)
-MAX_OUTCOMES = 200
+MAX_OUTCOMES = 2000
 
 # TTL cache for _count_commits_since() — avoids repeated git subprocess calls
 # Key: (project_path, since_iso), Value: (commit_count, monotonic_timestamp)

@@ -1016,6 +1016,13 @@ def run_post_mission(
         )
         tracker.record("session_outcome", "success")
 
+        # 7b. Update daily metrics snapshot (fast local write)
+        try:
+            from app.daily_snapshot import update_daily_snapshot
+            update_daily_snapshot(instance_dir)
+        except Exception as e:
+            print(f"[mission_runner] daily snapshot failed: {e}", file=sys.stderr)
+
         # 8. Fire post-mission hooks
         if not _pipeline_expired.is_set():
             _report("running hooks")
