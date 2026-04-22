@@ -296,10 +296,10 @@ def build_skill_command(
         "review": lambda: _build_review_cmd(base_cmd, args, project_path),
         "ai": lambda: _build_ai_cmd(base_cmd, project_name, project_path, instance_dir),
         "check": lambda: _build_check_cmd(base_cmd, args, instance_dir, koan_root),
-        "tech_debt": lambda: _build_tech_debt_cmd(
+        "tech_debt": lambda: _build_project_info_cmd(
             base_cmd, project_name, project_path, instance_dir,
         ),
-        "dead_code": lambda: _build_dead_code_cmd(
+        "dead_code": lambda: _build_project_info_cmd(
             base_cmd, project_name, project_path, instance_dir,
         ),
         "profile": lambda: _build_profile_cmd(base_cmd, args, project_path, instance_dir),
@@ -374,17 +374,11 @@ def _build_brainstorm_cmd(
     """Build brainstorm_runner command."""
     cmd = base_cmd + ["--project-path", project_path]
 
-    # Extract --tag if present
-    tag_match = re.search(r'--tag\s+(\S+)', args)
-    if tag_match:
-        cmd.extend(["--tag", tag_match.group(1)])
-        # Remove --tag from args to get the topic
-        topic = args[:tag_match.start()].rstrip() + args[tag_match.end():]
-        topic = topic.strip()
-    else:
-        topic = args.strip()
+    tag, topic = _extract_flag(args, _TAG_RE)
+    if tag:
+        cmd.extend(["--tag", tag])
 
-    cmd.extend(["--topic", topic])
+    cmd.extend(["--topic", topic.strip() if topic else args.strip()])
     return cmd
 
 
@@ -403,20 +397,27 @@ def _build_deepplan_cmd(
     return base_cmd + ["--project-path", project_path, "--idea", args.strip()]
 
 
-def _build_plan_cmd(
+def _build_url_context_cmd(
     base_cmd: List[str], args: str, project_path: str,
-) -> List[str]:
-    """Build plan_runner command."""
+    *, idea_fallback: bool = False,
+) -> Optional[List[str]]:
+    """Build command for skills that accept a URL with optional branch and context.
+
+    Shared logic for /plan, /implement, /fix — all extract:
+    1. A GitHub issue/PR or Jira URL
+    2. An optional branch:NAME token
+    3. Remaining text as --context
+
+    Args:
+        idea_fallback: If True, fall back to --idea for free-text input
+            when no URL is found (used by /plan). If False, return None
+            when no URL is found (used by /implement, /fix).
+    """
     cmd = base_cmd + ["--project-path", project_path]
 
-    # Detect issue or PR URL vs free-text idea.
-    # PR URLs are accepted: GitHub's issues API works for PRs too,
-    # so plan_runner can fetch PR title/body/comments the same way.
     url_and_context = _extract_pr_or_issue_url_and_context(args)
     if url_and_context:
         issue_url, context = url_and_context
-
-        # Extract branch: token before passing context to runner
         base_branch, context = _extract_branch_token(context)
 
         cmd.extend(["--issue-url", issue_url])
@@ -424,13 +425,46 @@ def _build_plan_cmd(
             cmd.extend(["--base-branch", base_branch])
         if context:
             cmd.extend(["--context", context])
-    else:
-        cmd.extend(["--idea", args])
+        return cmd
 
-    return cmd
+    if idea_fallback:
+        cmd.extend(["--idea", args])
+        return cmd
+
+    return None
+
+
+def _build_plan_cmd(
+    base_cmd: List[str], args: str, project_path: str,
+) -> List[str]:
+    """Build plan_runner command."""
+    return _build_url_context_cmd(
+        base_cmd, args, project_path, idea_fallback=True,
+    )
 
 
 _BRANCH_TOKEN_RE = re.compile(r'\bbranch:(\S+)', re.IGNORECASE)
+_TAG_RE = re.compile(r'--tag\s+(\S+)')
+_PLAN_URL_RE = re.compile(r'--plan-url\s+(https://github\.com/[^\s]+)')
+_LIMIT_RE = re.compile(r'\blimit=(\d+)\b', re.IGNORECASE)
+
+
+def _extract_flag(
+    text: str, pattern: re.Pattern, group: int = 1,
+) -> Tuple[Optional[str], str]:
+    """Extract a flag/token from text via regex, returning (value, cleaned_text).
+
+    Centralizes the repeated pattern of: search for regex in args string,
+    capture a group, splice the match out, and return cleaned remainder.
+    Returns (None, text) if no match.
+    """
+    match = pattern.search(text)
+    if not match:
+        return None, text
+    value = match.group(group)
+    cleaned = (text[:match.start()] + text[match.end():]).strip()
+    cleaned = re.sub(r"  +", " ", cleaned)
+    return value, cleaned
 
 
 def _extract_branch_token(context: str) -> Tuple[Optional[str], str]:
@@ -438,12 +472,7 @@ def _extract_branch_token(context: str) -> Tuple[Optional[str], str]:
 
     Returns (branch_name, cleaned_context) or (None, context).
     """
-    match = _BRANCH_TOKEN_RE.search(context)
-    if not match:
-        return None, context
-    branch = match.group(1)
-    cleaned = (context[:match.start()] + context[match.end():]).strip()
-    return branch, cleaned
+    return _extract_flag(context, _BRANCH_TOKEN_RE)
 
 
 def _build_implement_cmd(
@@ -453,28 +482,8 @@ def _build_implement_cmd(
 
     Expects an issue or PR URL and optional context text after it.
     GitHub's issues API works for PRs too, so both URL types are valid.
-    Example args: "https://github.com/o/r/issues/42 Phase 1 to 3"
     """
-    url_and_context = _extract_pr_or_issue_url_and_context(args)
-    if not url_and_context:
-        return None
-
-    issue_url, context = url_and_context
-
-    # Extract branch: token before passing context to runner
-    base_branch, context = _extract_branch_token(context)
-
-    cmd = base_cmd + [
-        "--project-path", project_path,
-        "--issue-url", issue_url,
-    ]
-
-    if base_branch:
-        cmd.extend(["--base-branch", base_branch])
-    if context:
-        cmd.extend(["--context", context])
-
-    return cmd
+    return _build_url_context_cmd(base_cmd, args, project_path)
 
 
 def _build_pr_url_cmd(
@@ -497,12 +506,9 @@ def _build_review_cmd(
     cmd = base_cmd + [url_match.group(0), "--project-path", project_path]
     if "--architecture" in args:
         cmd.append("--architecture")
-    # Pass --plan-url if explicitly provided
-    plan_url_match = re.search(
-        r'--plan-url\s+(https://github\.com/[^\s]+)', args,
-    )
-    if plan_url_match:
-        cmd.extend(["--plan-url", plan_url_match.group(1)])
+    plan_url, _ = _extract_flag(args, _PLAN_URL_RE)
+    if plan_url:
+        cmd.extend(["--plan-url", plan_url])
     return cmd
 
 
@@ -538,27 +544,13 @@ def _build_check_cmd(
     ]
 
 
-def _build_tech_debt_cmd(
+def _build_project_info_cmd(
     base_cmd: List[str],
     project_name: str,
     project_path: str,
     instance_dir: str,
 ) -> List[str]:
-    """Build tech_debt_runner command."""
-    return base_cmd + [
-        "--project-path", project_path,
-        "--project-name", project_name,
-        "--instance-dir", instance_dir,
-    ]
-
-
-def _build_dead_code_cmd(
-    base_cmd: List[str],
-    project_name: str,
-    project_path: str,
-    instance_dir: str,
-) -> List[str]:
-    """Build dead_code_runner command."""
+    """Build command for skills that only need project info (tech_debt, dead_code)."""
     return base_cmd + [
         "--project-path", project_path,
         "--project-name", project_name,
@@ -631,7 +623,6 @@ def _build_audit_cmd(
     shell escaping issues with long text.  ``limit=N`` is extracted
     and forwarded as ``--max-issues N``.
     """
-    import re
     import tempfile
 
     cmd = base_cmd + [
@@ -640,12 +631,9 @@ def _build_audit_cmd(
         "--instance-dir", instance_dir,
     ]
 
-    # Extract limit=N before writing context
-    limit_match = re.search(r"\blimit=(\d+)\b", args, re.IGNORECASE)
-    if limit_match:
-        cmd.extend(["--max-issues", limit_match.group(1)])
-        args = (args[:limit_match.start()] + args[limit_match.end():]).strip()
-        args = re.sub(r"  +", " ", args)
+    limit, args = _extract_flag(args, _LIMIT_RE)
+    if limit:
+        cmd.extend(["--max-issues", limit])
 
     # Write extra context to a temp file to avoid shell escaping issues
     if args.strip():
