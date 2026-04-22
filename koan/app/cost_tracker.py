@@ -195,32 +195,8 @@ def summarize_by_project_and_type(instance_dir: Path, days: int = 7) -> dict:
     """
     end = date.today()
     start = end - timedelta(days=days - 1)
-    usage_dir = Path(instance_dir) / "usage"
-    entries = _read_jsonl_range(usage_dir, start, end)
-
-    result: dict = {}
-    for entry in entries:
-        project = entry.get("project", "_global")
-        mission_type = entry.get("mission_type", "unknown")
-        inp = entry.get("input_tokens", 0)
-        out = entry.get("output_tokens", 0)
-        cost = entry.get("cost_usd", 0.0)
-
-        if project not in result:
-            result[project] = {}
-        if mission_type not in result[project]:
-            result[project][mission_type] = {
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "total_cost_usd": 0.0,
-                "count": 0,
-            }
-        result[project][mission_type]["input_tokens"] += inp
-        result[project][mission_type]["output_tokens"] += out
-        result[project][mission_type]["total_cost_usd"] += cost
-        result[project][mission_type]["count"] += 1
-
-    return result
+    summary = summarize_range(instance_dir, start, end)
+    return summary["by_project_and_type"]
 
 
 def summarize_week(instance_dir: Path) -> dict:
@@ -244,7 +220,8 @@ def _aggregate(entries: list) -> dict:
         Dict with keys: total_input, total_output, count,
         cache_creation_input_tokens, cache_read_input_tokens,
         cache_hit_rate, total_cost_usd,
-        by_project (dict), by_model (dict).
+        by_project (dict), by_model (dict), by_type (dict),
+        by_project_and_type (dict).
     """
     result = {
         "total_input": 0,
@@ -256,6 +233,7 @@ def _aggregate(entries: list) -> dict:
         "by_project": {},
         "by_model": {},
         "by_type": {},
+        "by_project_and_type": {},
     }
 
     for entry in entries:
@@ -311,6 +289,21 @@ def _aggregate(entries: list) -> dict:
         result["by_type"][mission_type]["output_tokens"] += out
         result["by_type"][mission_type]["total_cost_usd"] += cost
         result["by_type"][mission_type]["count"] += 1
+
+        # By project and type (nested)
+        if project not in result["by_project_and_type"]:
+            result["by_project_and_type"][project] = {}
+        if mission_type not in result["by_project_and_type"][project]:
+            result["by_project_and_type"][project][mission_type] = {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_cost_usd": 0.0,
+                "count": 0,
+            }
+        result["by_project_and_type"][project][mission_type]["input_tokens"] += inp
+        result["by_project_and_type"][project][mission_type]["output_tokens"] += out
+        result["by_project_and_type"][project][mission_type]["total_cost_usd"] += cost
+        result["by_project_and_type"][project][mission_type]["count"] += 1
 
     # Compute cache hit rate: cache_read / (cache_read + non-cached input)
     total_cache_input = result["cache_read_input_tokens"] + result["cache_creation_input_tokens"]
