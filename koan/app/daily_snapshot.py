@@ -16,12 +16,12 @@ Integration points:
 """
 
 import json
-import os
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Optional
 
 from app import cost_tracker, session_tracker
+from app.utils import atomic_write
 
 
 def _metrics_dir(instance_dir: Path) -> Path:
@@ -57,7 +57,7 @@ def _build_snapshot(instance_dir: Path, d: date) -> dict:
 
     # Session outcomes for this date
     outcomes_path = instance_dir / "session_outcomes.json"
-    all_outcomes = session_tracker._load_outcomes(outcomes_path)
+    all_outcomes = session_tracker.load_outcomes(outcomes_path)
     date_str = d.isoformat()
     day_outcomes = [
         o for o in all_outcomes
@@ -140,10 +140,7 @@ def update_daily_snapshot(instance_dir: Path, d: Optional[date] = None) -> bool:
 
     try:
         content = json.dumps(snapshot, indent=2, separators=(",", ": "))
-        # Atomic write: temp file + rename
-        tmp_path = path.with_suffix(".tmp")
-        tmp_path.write_text(content, encoding="utf-8")
-        os.replace(str(tmp_path), str(path))
+        atomic_write(path, content)
         return True
     except OSError:
         return False
@@ -181,7 +178,7 @@ def read_daily_snapshot(
         outcomes_path = instance_dir / "session_outcomes.json"
         has_outcomes = False
         if outcomes_path.exists():
-            all_outcomes = session_tracker._load_outcomes(outcomes_path)
+            all_outcomes = session_tracker.load_outcomes(outcomes_path)
             date_str = d.isoformat()
             has_outcomes = any(
                 o.get("timestamp", "").startswith(date_str) for o in all_outcomes
@@ -193,9 +190,7 @@ def read_daily_snapshot(
             try:
                 path = _snapshot_path(instance_dir, d)
                 content = json.dumps(snapshot, indent=2, separators=(",", ": "))
-                tmp_path = path.with_suffix(".tmp")
-                tmp_path.write_text(content, encoding="utf-8")
-                os.replace(str(tmp_path), str(path))
+                atomic_write(path, content)
             except OSError:
                 pass
             return snapshot
@@ -395,7 +390,7 @@ def backfill_snapshots(
     # Also check session_outcomes for dates
     outcomes_path = instance_dir / "session_outcomes.json"
     if outcomes_path.exists():
-        all_outcomes = session_tracker._load_outcomes(outcomes_path)
+        all_outcomes = session_tracker.load_outcomes(outcomes_path)
         for o in all_outcomes:
             ts = o.get("timestamp", "")
             if len(ts) >= 10:

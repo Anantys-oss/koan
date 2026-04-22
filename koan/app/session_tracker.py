@@ -250,7 +250,7 @@ def record_outcome(
     outcomes_path = Path(instance_dir) / "session_outcomes.json"
 
     # Load existing outcomes
-    outcomes = _load_outcomes(outcomes_path)
+    outcomes = load_outcomes(outcomes_path)
 
     # Append and cap
     outcomes.append(entry)
@@ -267,7 +267,7 @@ def record_outcome(
     return entry
 
 
-def _load_outcomes(outcomes_path: Path) -> list:
+def load_outcomes(outcomes_path: Path) -> list:
     """Load outcomes from JSON file. Returns empty list on error."""
     if not outcomes_path.exists():
         return []
@@ -305,7 +305,7 @@ def get_recent_outcomes(
     """
     if _all_outcomes is None:
         outcomes_path = Path(instance_dir) / "session_outcomes.json"
-        _all_outcomes = _load_outcomes(outcomes_path)
+        _all_outcomes = load_outcomes(outcomes_path)
 
     project_outcomes = [o for o in _all_outcomes if o.get("project") == project]
     return project_outcomes[-limit:]
@@ -355,7 +355,7 @@ def get_staleness_warning(instance_dir: str, project: str) -> str:
     """
     # Load outcomes once for both staleness score and recent outcomes lookup
     outcomes_path = Path(instance_dir) / "session_outcomes.json"
-    all_outcomes = _load_outcomes(outcomes_path)
+    all_outcomes = load_outcomes(outcomes_path)
 
     score = get_staleness_score(instance_dir, project,
                                  _all_outcomes=all_outcomes)
@@ -428,7 +428,7 @@ def get_project_freshness(
     """
     if _all_outcomes is None:
         outcomes_path = Path(instance_dir) / "session_outcomes.json"
-        _all_outcomes = _load_outcomes(outcomes_path)
+        _all_outcomes = load_outcomes(outcomes_path)
 
     weights = {}
     for name, _ in projects:
@@ -537,7 +537,7 @@ def get_project_drift(
     """
     if _all_outcomes is None:
         outcomes_path = Path(instance_dir) / "session_outcomes.json"
-        _all_outcomes = _load_outcomes(outcomes_path)
+        _all_outcomes = load_outcomes(outcomes_path)
 
     drift = {}
     for name, path in projects:

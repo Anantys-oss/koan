@@ -1017,7 +1017,7 @@ def run_post_mission(
             from app.daily_snapshot import update_daily_snapshot
             update_daily_snapshot(instance_dir)
         except Exception as e:
-            print(f"[mission_runner] daily snapshot failed: {e}", file=sys.stderr)
+            _report(f"daily snapshot failed: {e}")
 
         # 8. Fire post-mission hooks
         if not _pipeline_expired.is_set():
