@@ -418,11 +418,11 @@ def _select_random_exploration_project(
     if instance_dir:
         try:
             from app.session_tracker import (
-                _load_outcomes, get_project_freshness, get_project_drift,
+                load_outcomes, get_project_freshness, get_project_drift,
             )
             from pathlib import Path as _Path
             outcomes_path = _Path(instance_dir) / "session_outcomes.json"
-            all_outcomes = _load_outcomes(outcomes_path)
+            all_outcomes = load_outcomes(outcomes_path)
 
             weights = get_project_freshness(instance_dir, projects,
                                              _all_outcomes=all_outcomes)

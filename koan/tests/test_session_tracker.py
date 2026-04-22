@@ -24,7 +24,7 @@ from app.session_tracker import (
     _detect_pr_created,
     _detect_branch_pushed,
     _extract_summary,
-    _load_outcomes,
+    load_outcomes,
     MAX_OUTCOMES,
 )
 
@@ -402,7 +402,7 @@ class TestGetProjectFreshness:
         assert weights["koan"] == 6  # staleness 2 → weight 6
 
 
-# --- _load_outcomes type validation ---
+# --- load_outcomes type validation ---
 
 class TestLoadOutcomesTypeValidation:
 
@@ -637,26 +637,26 @@ class TestRecordOutcomeMissionTitle:
         assert entry["outcome"] == "productive"
 
 
-# --- _load_outcomes type validation ---
+# --- load_outcomes type validation ---
 
 class TestLoadOutcomesValidation:
-    """Tests for _load_outcomes type safety."""
+    """Tests for load_outcomes type safety."""
 
     def test_dict_json_returns_empty(self, tmp_path):
         """A JSON object (not array) should be treated as corrupt."""
         outcomes_path = tmp_path / "session_outcomes.json"
         outcomes_path.write_text('{"not": "a list"}')
-        assert _load_outcomes(outcomes_path) == []
+        assert load_outcomes(outcomes_path) == []
 
     def test_string_json_returns_empty(self, tmp_path):
         outcomes_path = tmp_path / "session_outcomes.json"
         outcomes_path.write_text('"just a string"')
-        assert _load_outcomes(outcomes_path) == []
+        assert load_outcomes(outcomes_path) == []
 
     def test_valid_list_works(self, tmp_path):
         outcomes_path = tmp_path / "session_outcomes.json"
         outcomes_path.write_text('[{"a": 1}]')
-        result = _load_outcomes(outcomes_path)
+        result = load_outcomes(outcomes_path)
         assert len(result) == 1
 
 
