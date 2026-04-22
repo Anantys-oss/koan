@@ -1556,3 +1556,41 @@ class TestTimestampStripping:
         assert "--idea" in cmd
         idea_idx = cmd.index("--idea")
         assert cmd[idea_idx + 1] == "Add dark mode"
+
+
+# ---------------------------------------------------------------------------
+# _extract_flag — centralized flag extraction helper
+# ---------------------------------------------------------------------------
+
+class TestExtractFlag:
+    """Tests for _extract_flag() — generic regex extraction from args."""
+
+    def test_extracts_value_and_cleans_text(self):
+        from app.skill_dispatch import _extract_flag, _TAG_RE
+        value, cleaned = _extract_flag("some topic --tag mytag more text", _TAG_RE)
+        assert value == "mytag"
+        assert cleaned == "some topic more text"
+
+    def test_returns_none_when_no_match(self):
+        from app.skill_dispatch import _extract_flag, _TAG_RE
+        value, cleaned = _extract_flag("no tag here", _TAG_RE)
+        assert value is None
+        assert cleaned == "no tag here"
+
+    def test_limit_extraction(self):
+        from app.skill_dispatch import _extract_flag, _LIMIT_RE
+        value, cleaned = _extract_flag("check auth limit=5 carefully", _LIMIT_RE)
+        assert value == "5"
+        assert cleaned == "check auth carefully"
+
+    def test_branch_extraction(self):
+        from app.skill_dispatch import _extract_flag, _BRANCH_TOKEN_RE
+        value, cleaned = _extract_flag("context branch:feature/foo rest", _BRANCH_TOKEN_RE)
+        assert value == "feature/foo"
+        assert cleaned == "context rest"
+
+    def test_collapses_double_spaces(self):
+        from app.skill_dispatch import _extract_flag, _LIMIT_RE
+        value, cleaned = _extract_flag("before limit=3 after", _LIMIT_RE)
+        assert value == "3"
+        assert "  " not in cleaned
