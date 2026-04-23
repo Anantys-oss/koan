@@ -1,16 +1,10 @@
 """Koan fix skill -- queue a fix mission for a GitHub issue."""
 
-import importlib
 import re
 from typing import Optional, Tuple
 
 from app.github_url_parser import parse_issue_url
 from app.missions import extract_now_flag
-import app.github_skill_helpers as _gh_helpers
-
-# Guard against stale sys.modules cache after auto-update.
-importlib.reload(_gh_helpers)
-
 from app.github_skill_helpers import (
     handle_github_skill,
     resolve_project_for_repo,

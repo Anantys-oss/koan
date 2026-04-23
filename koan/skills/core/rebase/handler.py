@@ -1,15 +1,8 @@
 """Kōan rebase skill -- queue a PR rebase mission."""
 
-import importlib
-
 from app.github_url_parser import parse_pr_url
 from app.missions import extract_now_flag
 import app.github_skill_helpers as _gh_helpers
-
-# Guard against stale sys.modules cache after auto-update.
-# Skill handlers are loaded fresh each invocation, but their module-level
-# imports resolve from the cached (possibly outdated) sys.modules entry.
-importlib.reload(_gh_helpers)
 
 
 def handle(ctx):

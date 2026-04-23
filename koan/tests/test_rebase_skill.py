@@ -280,26 +280,22 @@ class TestNowFlag:
 # ---------------------------------------------------------------------------
 
 class TestStaleModuleReload:
-    """Verify the handler reloads github_skill_helpers to pick up new API."""
+    """Verify _execute_handler refreshes stale app modules before loading."""
 
-    def test_handler_calls_importlib_reload(self, handler):
-        """The handler module must reload _gh_helpers at load time so that
-        stale sys.modules entries are refreshed after auto-update."""
+    def test_execute_handler_refreshes_stale_modules(self):
+        """_execute_handler must reload github_skill_helpers so stale
+        sys.modules entries are refreshed after auto-update."""
         import importlib
         import app.github_skill_helpers as gh_mod
+        from app.skills import _refresh_stale_app_modules
 
-        # Temporarily remove queue_github_mission to simulate stale cache
         original = gh_mod.queue_github_mission
         del gh_mod.queue_github_mission
 
         try:
-            # Re-loading the handler should trigger importlib.reload,
-            # which re-executes github_skill_helpers.py and restores the attr
-            handler_mod = _load_handler()
-            # After reload, the function should be back
+            _refresh_stale_app_modules()
             assert hasattr(gh_mod, "queue_github_mission")
         finally:
-            # Restore in case reload didn't
             if not hasattr(gh_mod, "queue_github_mission"):
                 gh_mod.queue_github_mission = original
 

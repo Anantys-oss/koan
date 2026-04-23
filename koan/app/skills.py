@@ -495,6 +495,26 @@ def execute_skill(skill: Skill, ctx: SkillContext) -> Optional[Union[str, SkillE
     return None
 
 
+def _refresh_stale_app_modules() -> None:
+    """Reload app.* modules cached in sys.modules before handler execution.
+
+    Skill handlers are loaded fresh via exec_module() each invocation, but
+    their ``import app.foo`` statements resolve from sys.modules.  After an
+    auto-update the cached entry may be stale (missing new functions/args),
+    causing TypeErrors at call sites.  Reloading here fixes all handlers at
+    once — current and future — without per-handler boilerplate.
+    """
+    import sys
+    _MODULES_TO_REFRESH = ("app.github_skill_helpers",)
+    for name in _MODULES_TO_REFRESH:
+        mod = sys.modules.get(name)
+        if mod is not None:
+            try:
+                importlib.reload(mod)
+            except Exception:
+                pass
+
+
 def _execute_handler(skill: Skill, ctx: SkillContext) -> Optional[Union[str, SkillError]]:
     """Load and execute a Python handler."""
     handler_path = skill.handler_path
@@ -502,6 +522,8 @@ def _execute_handler(skill: Skill, ctx: SkillContext) -> Optional[Union[str, Ski
         return None
 
     try:
+        _refresh_stale_app_modules()
+
         spec = importlib.util.spec_from_file_location(
             f"skill_handler_{skill.qualified_name}",
             str(handler_path),
