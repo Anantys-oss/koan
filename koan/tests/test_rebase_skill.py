@@ -299,6 +299,50 @@ class TestStaleModuleReload:
             if not hasattr(gh_mod, "queue_github_mission"):
                 gh_mod.queue_github_mission = original
 
+    def test_stale_urgent_param_restored_after_reload(self):
+        """The exact scenario from #1235: queue_github_mission exists but
+        lacks the 'urgent' keyword argument.  After reload, the correct
+        signature is available."""
+        import inspect
+        import sys as _sys
+        import app.github_skill_helpers as gh_mod
+        from app.skills import _refresh_stale_app_modules
+
+        original = gh_mod.queue_github_mission
+
+        def stale(ctx, command, url, project_name, context=None):
+            pass
+
+        gh_mod.queue_github_mission = stale
+
+        try:
+            _refresh_stale_app_modules()
+            sig = inspect.signature(gh_mod.queue_github_mission)
+            assert "urgent" in sig.parameters
+        finally:
+            if gh_mod.queue_github_mission is stale:
+                gh_mod.queue_github_mission = original
+
+    def test_evicts_module_on_reload_failure(self):
+        """If importlib.reload raises, the stale entry is removed from
+        sys.modules so the handler's own import loads a fresh copy."""
+        import sys as _sys
+        from unittest.mock import patch as _patch
+
+        from app.skills import _refresh_stale_app_modules, _MODULES_TO_REFRESH
+
+        target = _MODULES_TO_REFRESH[0]
+        sentinel = type("StaleModule", (), {"__name__": target, "__spec__": None})()
+        _sys.modules[target] = sentinel
+
+        try:
+            with _patch("importlib.reload", side_effect=ImportError("boom")):
+                _refresh_stale_app_modules()
+            assert target not in _sys.modules or _sys.modules[target] is not sentinel
+        finally:
+            import importlib as _il
+            _sys.modules[target] = _il.import_module(target)
+
 
 # ---------------------------------------------------------------------------
 # resolve_project_path (shared helper in utils)
