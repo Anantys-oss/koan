@@ -46,12 +46,6 @@ def handle(ctx):
         return _gh_helpers.format_project_not_found_error(repo, owner=owner)
 
     try:
-        # Guard against stale sys.modules cache: if the bridge process started
-        # before is_own_pr was added, the cached module won't have it.
-        # Reload in-place so the function becomes available without a restart.
-        if not hasattr(_gh_helpers, "is_own_pr"):
-            import importlib
-            importlib.reload(_gh_helpers)
         owned, head_branch = _gh_helpers.is_own_pr(owner, repo, pr_number)
     except Exception as e:
         return f"\u274c Failed to check PR ownership: {str(e)[:200]}"

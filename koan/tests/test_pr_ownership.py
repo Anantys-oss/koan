@@ -65,9 +65,11 @@ class TestStaleCachedModule:
 
     @pytest.mark.parametrize("skill_name", ["rebase", "ci_check"])
     def test_handler_recovers_when_is_own_pr_missing(self, skill_name, ctx):
-        """Handler reloads github_skill_helpers if is_own_pr is absent."""
+        """_execute_handler's centralized refresh restores is_own_pr before
+        the handler runs, so the handler never sees the stale module."""
         import json
         import sys
+        from app.skills import _refresh_stale_app_modules
 
         ctx.args = "https://github.com/sukria/koan/pull/55"
 
@@ -82,6 +84,9 @@ class TestStaleCachedModule:
             pytest.skip("is_own_pr already absent — cannot simulate stale cache")
         del module.is_own_pr
         assert not hasattr(module, "is_own_pr"), "setup: is_own_pr should be gone"
+
+        # Simulate what _execute_handler does before loading the handler
+        _refresh_stale_app_modules()
 
         handler = _load_handler(skill_name)
         try:
