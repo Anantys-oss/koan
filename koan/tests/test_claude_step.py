@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 
 from app.claude_step import (
+    StepResult,
     _rebase_onto_target,
     _run_git,
     commit_if_changes,
@@ -405,7 +406,9 @@ class TestRunClaudeStep:
             failure_label="Fix failed",
             actions_log=actions,
         )
-        assert result is True
+        assert result  # StepResult is truthy when committed
+        assert result.committed is True
+        assert result.output == "done"
         assert "Bug fixed" in actions
 
     @patch("app.claude_step.commit_if_changes", return_value=False)
@@ -426,7 +429,8 @@ class TestRunClaudeStep:
             failure_label="Review failed",
             actions_log=actions,
         )
-        assert result is False
+        assert not result  # StepResult is falsy when not committed
+        assert result.committed is False
         assert actions == []
 
     @patch("app.claude_step.run_claude")
@@ -450,7 +454,8 @@ class TestRunClaudeStep:
             failure_label="Fix failed",
             actions_log=actions,
         )
-        assert result is False
+        assert not result
+        assert result.committed is False
         assert len(actions) == 1
         assert "Fix failed" in actions[0]
         assert "crash" in actions[0]
@@ -528,7 +533,7 @@ class TestRunClaudeStep:
             failure_label="",
             actions_log=actions,
         )
-        assert result is False
+        assert not result
         assert actions == []
 
     @patch("app.claude_step.commit_if_changes", return_value=True)
@@ -641,9 +646,10 @@ class TestRunClaudeStep:
             failure_label="Fail",
             actions_log=actions,
         )
-        # commit_if_changes returns True but label is empty — still returns False
-        assert result is False
-        assert actions == []
+        # commit_if_changes returns True, empty label means no log entry
+        assert result  # committed is True
+        assert result.committed is True
+        assert actions == []  # but nothing logged
 
 
 # ---------- run_claude_step with use_convention_subject ----------
@@ -677,7 +683,7 @@ class TestRunClaudeStepConventionSubject:
             actions_log=actions,
             use_convention_subject=True,
         )
-        assert result is True
+        assert result  # StepResult truthy when committed
         commit_msg = mock_commit.call_args[0][1]
         assert commit_msg == "Case PROJECT-123 Fix auth"
 

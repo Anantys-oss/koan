@@ -1201,37 +1201,30 @@ class TestBuildRebasePrompt:
 # ---------------------------------------------------------------------------
 
 class TestApplyReviewFeedback:
-    @patch("app.rebase_pr.commit_if_changes", return_value=True)
-    @patch("app.rebase_pr.run_claude")
-    @patch("app.cli_provider.build_full_command", return_value=["claude", "--fake"])
-    @patch("app.config.get_model_config", return_value={"mission": "m", "fallback": "f"})
-    def test_invokes_claude_and_commits(self, _mc, _cmd, mock_claude, mock_commit):
-        mock_claude.return_value = {
-            "success": True, "output": "Changed things.", "error": "",
-        }
+    @patch("app.rebase_pr.run_claude_step")
+    def test_invokes_claude_step_and_returns_summary(self, mock_step):
+        from app.claude_step import StepResult
+        mock_step.return_value = StepResult(committed=True, output="Changed things.")
         context = {
             "title": "Fix", "body": "", "branch": "br", "base": "main",
             "diff": "+code", "review_comments": "fix this",
             "reviews": "", "issue_comments": "",
         }
         actions = []
-        _apply_review_feedback(
+        summary = _apply_review_feedback(
             context, "42", "/project", actions,
             skill_dir=REBASE_SKILL_DIR,
         )
-        mock_claude.assert_called_once()
-        mock_commit.assert_called_once()
-        commit_msg = mock_commit.call_args[0][1]
-        assert "rebase: apply review feedback on #42" in commit_msg
+        mock_step.assert_called_once()
+        call_kwargs = mock_step.call_args.kwargs
+        assert call_kwargs["commit_msg"] == "rebase: apply review feedback on #42"
+        assert call_kwargs["success_label"] == "Applied review feedback"
+        assert summary == "Changed things."
 
-    @patch("app.rebase_pr.commit_if_changes", return_value=True)
-    @patch("app.rebase_pr.run_claude")
-    @patch("app.cli_provider.build_full_command", return_value=["claude", "--fake"])
-    @patch("app.config.get_model_config", return_value={"mission": "m", "fallback": "f"})
-    def test_logs_success(self, _mc, _cmd, mock_claude, mock_commit):
-        mock_claude.return_value = {
-            "success": True, "output": "Applied changes.", "error": "",
-        }
+    @patch("app.rebase_pr.run_claude_step")
+    def test_passes_success_label(self, mock_step):
+        from app.claude_step import StepResult
+        mock_step.return_value = StepResult(committed=True, output="Applied changes.")
         context = {
             "title": "Fix", "body": "", "branch": "br", "base": "main",
             "diff": "+code", "review_comments": "fix this",
@@ -1242,7 +1235,26 @@ class TestApplyReviewFeedback:
             context, "42", "/project", actions,
             skill_dir=REBASE_SKILL_DIR,
         )
-        assert "Applied review feedback" in actions
+        # Verify run_claude_step receives the actions_log and correct label
+        call_kwargs = mock_step.call_args.kwargs
+        assert call_kwargs["success_label"] == "Applied review feedback"
+        assert call_kwargs["actions_log"] is actions
+
+    @patch("app.rebase_pr.run_claude_step")
+    def test_returns_empty_when_no_commit(self, mock_step):
+        from app.claude_step import StepResult
+        mock_step.return_value = StepResult(committed=False, output="No changes needed.")
+        context = {
+            "title": "Fix", "body": "", "branch": "br", "base": "main",
+            "diff": "+code", "review_comments": "fix this",
+            "reviews": "", "issue_comments": "",
+        }
+        actions = []
+        summary = _apply_review_feedback(
+            context, "42", "/project", actions,
+            skill_dir=REBASE_SKILL_DIR,
+        )
+        assert summary == ""
 
 
 # ---------------------------------------------------------------------------
@@ -2217,20 +2229,16 @@ class TestBuildRebaseCommentWithCi:
 # ---------------------------------------------------------------------------
 
 class TestApplyReviewFeedbackDescriptiveCommit:
-    """_apply_review_feedback should return a change summary and use it in
-    the commit message so that rebase commits explain what changed."""
+    """_apply_review_feedback should return a change summary from Claude's output."""
 
-    @patch("app.rebase_pr.commit_if_changes", return_value=True)
-    @patch("app.rebase_pr.run_claude")
-    @patch("app.cli_provider.build_full_command", return_value=["claude", "--fake"])
-    @patch("app.config.get_model_config", return_value={"mission": "m", "fallback": "f"})
-    def test_returns_change_summary(self, _mc, _cmd, mock_claude, mock_commit):
+    @patch("app.rebase_pr.run_claude_step")
+    def test_returns_change_summary(self, mock_step):
         """When Claude produces changes, _apply_review_feedback returns the summary."""
-        mock_claude.return_value = {
-            "success": True,
-            "output": "Refactored auth to use JWT tokens and updated tests.",
-            "error": "",
-        }
+        from app.claude_step import StepResult
+        mock_step.return_value = StepResult(
+            committed=True,
+            output="Refactored auth to use JWT tokens and updated tests.",
+        )
         context = {
             "title": "Fix", "body": "", "branch": "br", "base": "main",
             "diff": "+code", "review_comments": "fix this",
@@ -2244,15 +2252,11 @@ class TestApplyReviewFeedbackDescriptiveCommit:
         assert summary is not None
         assert len(summary) > 0
 
-    @patch("app.rebase_pr.commit_if_changes", return_value=False)
-    @patch("app.rebase_pr.run_claude")
-    @patch("app.cli_provider.build_full_command", return_value=["claude", "--fake"])
-    @patch("app.config.get_model_config", return_value={"mission": "m", "fallback": "f"})
-    def test_returns_empty_when_no_changes(self, _mc, _cmd, mock_claude, mock_commit):
+    @patch("app.rebase_pr.run_claude_step")
+    def test_returns_empty_when_no_changes(self, mock_step):
         """When Claude produces no changes, returns empty string."""
-        mock_claude.return_value = {
-            "success": True, "output": "No changes needed.", "error": "",
-        }
+        from app.claude_step import StepResult
+        mock_step.return_value = StepResult(committed=False, output="No changes needed.")
         context = {
             "title": "Fix", "body": "", "branch": "br", "base": "main",
             "diff": "+code", "review_comments": "looks good",
@@ -2265,125 +2269,85 @@ class TestApplyReviewFeedbackDescriptiveCommit:
         )
         assert summary == ""
 
-    @patch("app.rebase_pr.commit_if_changes", return_value=True)
-    @patch("app.rebase_pr.run_claude")
-    @patch("app.cli_provider.build_full_command", return_value=["claude", "--fake"])
-    @patch("app.config.get_model_config", return_value={"mission": "m", "fallback": "f"})
-    def test_commit_message_includes_summary(self, _mc, _cmd, mock_claude, mock_commit):
-        """The commit message should include Claude's change summary as a body."""
-        mock_claude.return_value = {
-            "success": True,
-            "output": "Updated error handling in auth middleware.",
-            "error": "",
-        }
+    @patch("app.rebase_pr.run_claude_step")
+    def test_passes_correct_commit_msg(self, mock_step):
+        """The commit_msg passed to run_claude_step should follow the convention."""
+        from app.claude_step import StepResult
+        mock_step.return_value = StepResult(committed=True, output="Updated error handling.")
         context = {
             "title": "Fix", "body": "", "branch": "br", "base": "main",
             "diff": "+code", "review_comments": "fix error handling",
             "reviews": "", "issue_comments": "",
         }
-        actions = []
         _apply_review_feedback(
-            context, "42", "/project", actions,
+            context, "42", "/project", [],
             skill_dir=REBASE_SKILL_DIR,
         )
-        # Verify commit message has both subject and body
-        commit_msg = mock_commit.call_args[0][1]
-        assert "rebase: apply review feedback on #42" in commit_msg
-        assert "Updated error handling" in commit_msg
+        call_kwargs = mock_step.call_args.kwargs
+        assert call_kwargs["commit_msg"] == "rebase: apply review feedback on #42"
 
 
 class TestApplyReviewFeedbackConventionAware:
-    """_apply_review_feedback should use a parsed COMMIT_SUBJECT when
-    commit_conventions are provided."""
+    """_apply_review_feedback should pass use_convention_subject to run_claude_step
+    and strip COMMIT_SUBJECT from the returned change summary."""
 
-    @patch("app.rebase_pr.commit_if_changes", return_value=True)
-    @patch("app.rebase_pr.run_claude")
-    @patch("app.cli_provider.build_full_command", return_value=["claude", "--fake"])
-    @patch("app.config.get_model_config", return_value={"mission": "m", "fallback": "f"})
-    def test_uses_parsed_subject_when_conventions_provided(
-        self, _mc, _cmd, mock_claude, mock_commit,
-    ):
-        mock_claude.return_value = {
-            "success": True,
-            "output": (
-                "Fixed the auth bug.\n\n"
-                "COMMIT_SUBJECT: Case PROJECT-52496 Fix auth token expiry\n"
-            ),
-            "error": "",
-        }
+    @patch("app.rebase_pr.run_claude_step")
+    def test_enables_convention_subject_when_conventions_provided(self, mock_step):
+        from app.claude_step import StepResult
+        mock_step.return_value = StepResult(committed=True, output="Fixed it.")
         context = {
             "title": "Fix", "body": "", "branch": "br", "base": "main",
             "diff": "+code", "review_comments": "fix this",
             "reviews": "", "issue_comments": "",
         }
-        actions = []
         _apply_review_feedback(
-            context, "42", "/project", actions,
+            context, "42", "/project", [],
             skill_dir=REBASE_SKILL_DIR,
             commit_conventions="## Commit Conventions\nUse Case PROJECT-XXXXX.",
         )
-        commit_msg = mock_commit.call_args[0][1]
-        assert "Case PROJECT-52496" in commit_msg
-        assert "rebase: apply review feedback" not in commit_msg
+        call_kwargs = mock_step.call_args.kwargs
+        assert call_kwargs["use_convention_subject"] is True
 
-    @patch("app.rebase_pr.commit_if_changes", return_value=True)
-    @patch("app.rebase_pr.run_claude")
-    @patch("app.cli_provider.build_full_command", return_value=["claude", "--fake"])
-    @patch("app.config.get_model_config", return_value={"mission": "m", "fallback": "f"})
-    def test_falls_back_when_no_subject_parsed(
-        self, _mc, _cmd, mock_claude, mock_commit,
-    ):
-        """Falls back to default subject when Claude doesn't output COMMIT_SUBJECT."""
-        mock_claude.return_value = {
-            "success": True,
-            "output": "Fixed the auth bug.\n",
-            "error": "",
-        }
+    @patch("app.rebase_pr.run_claude_step")
+    def test_no_convention_subject_without_conventions(self, mock_step):
+        from app.claude_step import StepResult
+        mock_step.return_value = StepResult(committed=True, output="Fixed it.")
         context = {
             "title": "Fix", "body": "", "branch": "br", "base": "main",
             "diff": "+code", "review_comments": "fix this",
             "reviews": "", "issue_comments": "",
         }
-        actions = []
         _apply_review_feedback(
-            context, "42", "/project", actions,
+            context, "42", "/project", [],
             skill_dir=REBASE_SKILL_DIR,
-            commit_conventions="## Commit Conventions\nUse Case PROJECT-XXXXX.",
         )
-        commit_msg = mock_commit.call_args[0][1]
-        assert "rebase: apply review feedback on #42" in commit_msg
+        call_kwargs = mock_step.call_args.kwargs
+        assert call_kwargs["use_convention_subject"] is False
 
-    @patch("app.rebase_pr.commit_if_changes", return_value=True)
-    @patch("app.rebase_pr.run_claude")
-    @patch("app.cli_provider.build_full_command", return_value=["claude", "--fake"])
-    @patch("app.config.get_model_config", return_value={"mission": "m", "fallback": "f"})
-    def test_strips_subject_line_from_body(
-        self, _mc, _cmd, mock_claude, mock_commit,
-    ):
-        """The COMMIT_SUBJECT line should not appear in the commit body."""
-        mock_claude.return_value = {
-            "success": True,
-            "output": (
+    @patch("app.rebase_pr.run_claude_step")
+    def test_strips_subject_line_from_summary(self, mock_step):
+        """The COMMIT_SUBJECT line should not appear in the returned summary."""
+        from app.claude_step import StepResult
+        mock_step.return_value = StepResult(
+            committed=True,
+            output=(
                 "Fixed auth bug.\n"
                 "COMMIT_SUBJECT: Case PROJECT-123 Fix auth\n"
                 "More details here."
             ),
-            "error": "",
-        }
+        )
         context = {
             "title": "Fix", "body": "", "branch": "br", "base": "main",
             "diff": "+code", "review_comments": "fix this",
             "reviews": "", "issue_comments": "",
         }
-        actions = []
-        _apply_review_feedback(
-            context, "42", "/project", actions,
+        summary = _apply_review_feedback(
+            context, "42", "/project", [],
             skill_dir=REBASE_SKILL_DIR,
             commit_conventions="## Commit Conventions\nUse Case prefix.",
         )
-        commit_msg = mock_commit.call_args[0][1]
-        assert "COMMIT_SUBJECT:" not in commit_msg
-        assert "Fixed auth bug" in commit_msg
+        assert "COMMIT_SUBJECT:" not in summary
+        assert "Fixed auth bug" in summary
 
 
 class TestBuildRebaseCommentChangeSummary:
