@@ -125,6 +125,13 @@ skill_timeout: 7200
 # Default: 300 (5 minutes).
 # post_mission_timeout: 300
 
+# Worktree isolation: run each mission in an isolated git worktree instead
+# of the project's main working directory. Prevents dirty-state conflicts
+# from uncommitted changes, editor locks, or concurrent processes.
+# Orphaned worktrees from crashed sessions are cleaned up at startup.
+# Default: false.
+# worktree_isolation: false
+
 # Contemplative mode trigger chance (0-100%)
 # When no mission is pending, this is the probability of running a reflective
 # session instead of autonomous work. Allows regular moments of introspection

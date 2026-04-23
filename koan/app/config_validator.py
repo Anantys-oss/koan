@@ -38,6 +38,7 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "skill_timeout": "int",
     "skill_max_turns": "int",
     "mission_timeout": "int",
+    "worktree_isolation": "bool",
     "post_mission_timeout": "int",
     "contemplative_chance": "int",
     "ci_fix_max_attempts": "int",
