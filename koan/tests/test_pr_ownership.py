@@ -65,11 +65,10 @@ class TestStaleCachedModule:
 
     @pytest.mark.parametrize("skill_name", ["rebase", "ci_check"])
     def test_handler_recovers_when_is_own_pr_missing(self, skill_name, ctx):
-        """_execute_handler's centralized refresh restores is_own_pr before
-        the handler runs, so the handler never sees the stale module."""
+        """Handler's inline hasattr guard reloads the module when is_own_pr
+        is missing (stale sys.modules cache after auto-update)."""
         import json
         import sys
-        from app.skills import _refresh_stale_app_modules
 
         ctx.args = "https://github.com/sukria/koan/pull/55"
 
@@ -78,15 +77,11 @@ class TestStaleCachedModule:
             import importlib
             module = importlib.import_module("app.github_skill_helpers")
 
-        # Simulate stale cache: temporarily remove is_own_pr from the module
         original_fn = getattr(module, "is_own_pr", None)
         if original_fn is None:
             pytest.skip("is_own_pr already absent — cannot simulate stale cache")
         del module.is_own_pr
         assert not hasattr(module, "is_own_pr"), "setup: is_own_pr should be gone"
-
-        # Simulate what _execute_handler does before loading the handler
-        _refresh_stale_app_modules()
 
         handler = _load_handler(skill_name)
         try:
@@ -96,11 +91,9 @@ class TestStaleCachedModule:
                  patch("app.config.get_branch_prefix", return_value="koan/"), \
                  patch("app.utils.insert_pending_mission"):
                 result = handler.handle(ctx)
-                # Must NOT surface the raw AttributeError
                 assert "has no attribute 'is_own_pr'" not in result, (
                     f"Handler exposed stale-module AttributeError: {result}"
                 )
-                # Handler should either queue or reject, not error out
                 assert "queued" in result.lower() or "Not my PR" in result, (
                     f"Unexpected response: {result}"
                 )
