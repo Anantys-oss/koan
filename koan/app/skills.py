@@ -26,9 +26,11 @@ SKILL.md format:
     ...
 """
 
+import importlib
 import importlib.util
 import logging
 import re
+import sys
 from collections import namedtuple
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -495,6 +497,13 @@ def execute_skill(skill: Skill, ctx: SkillContext) -> Optional[Union[str, SkillE
     return None
 
 
+_MODULES_TO_REFRESH = (
+    "app.github_skill_helpers",
+    "app.github_url_parser",
+    "app.missions",
+)
+
+
 def _refresh_stale_app_modules() -> None:
     """Reload app.* modules cached in sys.modules before handler execution.
 
@@ -503,16 +512,18 @@ def _refresh_stale_app_modules() -> None:
     auto-update the cached entry may be stale (missing new functions/args),
     causing TypeErrors at call sites.  Reloading here fixes all handlers at
     once — current and future — without per-handler boilerplate.
+
+    If reload fails (e.g. partial write during update), the stale entry is
+    evicted so the handler's own ``import`` fetches a fresh copy from disk.
     """
-    import sys
-    _MODULES_TO_REFRESH = ("app.github_skill_helpers",)
     for name in _MODULES_TO_REFRESH:
         mod = sys.modules.get(name)
         if mod is not None:
             try:
                 importlib.reload(mod)
             except Exception as e:
-                _log.debug("Failed to reload %s: %s", name, e)
+                _log.debug("Failed to reload %s, evicting: %s", name, e)
+                sys.modules.pop(name, None)
 
 
 def _execute_handler(skill: Skill, ctx: SkillContext) -> Optional[Union[str, SkillError]]:
