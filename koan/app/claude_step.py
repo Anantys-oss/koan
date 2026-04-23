@@ -15,6 +15,27 @@ import time
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
+
+class StepResult:
+    """Result of a :func:`run_claude_step` invocation.
+
+    Behaves as a bool (truthy when a commit was created) for backward
+    compatibility, while also carrying the Claude CLI output text for
+    callers that need it (e.g. extracting change summaries).
+    """
+
+    __slots__ = ("committed", "output")
+
+    def __init__(self, committed: bool, output: str = ""):
+        self.committed = committed
+        self.output = output
+
+    def __bool__(self) -> bool:
+        return self.committed
+
+    def __repr__(self) -> str:
+        return f"StepResult(committed={self.committed!r}, output={self.output[:60]!r}...)"
+
 from app.cli_provider import build_full_command, run_command
 from app.config import get_model_config
 from app.git_utils import get_current_branch as _git_utils_get_current_branch
@@ -245,7 +266,7 @@ def run_claude_step(
     timeout: int = 600,
     use_skill: bool = False,
     use_convention_subject: bool = False,
-) -> bool:
+) -> StepResult:
     """Run a Claude Code step: invoke CLI, commit changes, log result.
 
     Args:
@@ -255,7 +276,10 @@ def run_claude_step(
                    output and use it instead of *commit_msg*. Falls back to
                    *commit_msg* if no valid subject is found.
 
-    Returns True if the step produced a commit.
+    Returns:
+        A :class:`StepResult` — truthy when a commit was created (backward
+        compatible with ``bool``), with ``.output`` carrying the cleaned
+        Claude CLI output text.
     """
     models = get_model_config()
 
@@ -274,17 +298,17 @@ def run_claude_step(
     from app.commit_conventions import parse_commit_subject
 
     result = run_claude(cmd, project_path, timeout=timeout)
+    cleaned_output = strip_cli_noise(result.get("output", ""))
     if result["success"]:
         effective_msg = commit_msg
         if use_convention_subject:
-            output = strip_cli_noise(result.get("output", ""))
-            parsed = parse_commit_subject(output)
+            parsed = parse_commit_subject(cleaned_output)
             if parsed:
                 effective_msg = _sanitize_commit_subject(parsed)
         committed = commit_if_changes(project_path, effective_msg)
         if committed and success_label:
             actions_log.append(success_label)
-            return True
+        return StepResult(committed=committed, output=cleaned_output)
     elif failure_label:
         error_detail = result['error'][:200]
         # Claude CLI often reports errors via stdout, not stderr.
@@ -293,7 +317,7 @@ def run_claude_step(
             stdout_snippet = result["output"][-300:]
             error_detail = f"{error_detail} | stdout: {stdout_snippet}"
         actions_log.append(f"{failure_label}: {error_detail}")
-    return False
+    return StepResult(committed=False, output=cleaned_output)
 
 
 def run_project_tests(project_path: str, test_cmd: str = "make test",

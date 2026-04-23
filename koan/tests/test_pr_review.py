@@ -204,7 +204,8 @@ class TestRunClaudeStep:
             commit_msg="test commit", success_label="Step done",
             failure_label="Step failed", actions_log=actions,
         )
-        assert result is True
+        assert result  # StepResult truthy when committed
+        assert result.committed is True
         assert "Step done" in actions
 
     @patch("app.claude_step.commit_if_changes", return_value=False)
@@ -219,7 +220,8 @@ class TestRunClaudeStep:
             commit_msg="msg", success_label="OK",
             failure_label="FAIL", actions_log=actions,
         )
-        assert result is False
+        assert not result
+        assert result.committed is False
         assert len(actions) == 0
 
     @patch("app.claude_step.run_claude")
@@ -233,7 +235,7 @@ class TestRunClaudeStep:
             commit_msg="msg", success_label="OK",
             failure_label="Step failed", actions_log=actions,
         )
-        assert result is False
+        assert not result
         assert any("Step failed" in a for a in actions)
 
     @patch("app.claude_step.commit_if_changes", return_value=True)
