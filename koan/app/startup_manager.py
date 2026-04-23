@@ -25,6 +25,36 @@ def recover_crashed_missions(instance: str):
     recover_missions(instance)
 
 
+def recover_orphaned_worktrees(koan_root: str, projects: list):
+    """Prune worktrees left behind by crashed sessions.
+
+    Iterates over all configured projects and runs cleanup_stale_worktrees
+    with an empty active-session list (no sessions survive a restart).
+    """
+    try:
+        from app.config import get_worktree_isolation
+        if not get_worktree_isolation():
+            return
+    except Exception as e:
+        log("error", f"Worktree isolation config check failed: {e}")
+        return
+
+    log("health", "Checking for orphaned worktrees...")
+    from app.worktree_manager import cleanup_stale_worktrees
+    cleaned = 0
+    for name, path in projects:
+        wt_dir = Path(path) / ".worktrees"
+        if wt_dir.exists() and any(wt_dir.iterdir()):
+            try:
+                cleanup_stale_worktrees(path, active_session_ids=[])
+                cleaned += 1
+                log("health", f"  Cleaned orphaned worktrees in {name}")
+            except Exception as e:
+                log("error", f"  Worktree cleanup failed for {name}: {e}")
+    if cleaned:
+        log("health", f"Recovered worktrees in {cleaned} project(s)")
+
+
 def run_migrations(koan_root: str):
     """Auto-migrate env vars to projects.yaml (one-shot, idempotent)."""
     from app.projects_migration import run_migration
@@ -444,6 +474,7 @@ def run_startup(koan_root: str, instance: str, projects: list):
         if result is not None:
             projects = result
 
+        _safe_run("Orphaned worktrees", recover_orphaned_worktrees, koan_root, projects)
         _safe_run("Sanity checks", run_sanity_checks, instance)
         _safe_run("Memory cleanup", cleanup_memory, instance)
         _safe_run("Missions pruning", prune_missions_done, instance)
