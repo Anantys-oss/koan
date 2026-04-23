@@ -282,15 +282,15 @@ class TestNowFlag:
 class TestStaleModuleReload:
     """Verify _execute_handler refreshes stale app modules before loading."""
 
-    def test_execute_handler_refreshes_stale_modules(self):
-        """_execute_handler must reload github_skill_helpers so stale
-        sys.modules entries are refreshed after auto-update."""
-        import importlib
+    def test_execute_handler_reloads_stale_modules(self):
+        """_refresh_stale_app_modules reloads the module in-place so
+        stale sys.modules entries are refreshed after auto-update."""
         import app.github_skill_helpers as gh_mod
         from app.skills import _refresh_stale_app_modules
 
         original = gh_mod.queue_github_mission
         del gh_mod.queue_github_mission
+        assert not hasattr(gh_mod, "queue_github_mission")
 
         try:
             _refresh_stale_app_modules()

@@ -511,8 +511,8 @@ def _refresh_stale_app_modules() -> None:
         if mod is not None:
             try:
                 importlib.reload(mod)
-            except Exception:
-                pass
+            except Exception as e:
+                _log.debug("Failed to reload %s: %s", name, e)
 
 
 def _execute_handler(skill: Skill, ctx: SkillContext) -> Optional[Union[str, SkillError]]:
