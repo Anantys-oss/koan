@@ -97,7 +97,8 @@ def run_gh(*args, cwd=None, timeout=30, stdin_data=None, idempotent=True):
     def _invoke():
         result = subprocess.run(
             cmd, **stdin_kwarg,
-            capture_output=True, text=True, timeout=timeout, cwd=cwd,
+            capture_output=True, timeout=timeout, cwd=cwd,
+            encoding="utf-8", errors="replace",
         )
         if result.returncode != 0:
             if _is_sso_error(result.stderr):
