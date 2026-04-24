@@ -304,19 +304,19 @@ usage:
 #   tiers:
 #     trivial:
 #       model: "haiku"          # Cheapest model for tiny mechanical changes
-#       max_turns: 10           # Reduced turn budget
+#       max_turns: 50           # Reduced turn budget
 #       timeout_multiplier: 0.5 # Halve the default timeout
 #     simple:
 #       model: "sonnet"         # Capable model for small self-contained changes
-#       max_turns: 20
+#       max_turns: 100
 #       timeout_multiplier: 0.75
 #     medium:
 #       model: ""               # Empty = use models.mission (no override)
-#       max_turns: 40
+#       max_turns: 100
 #       timeout_multiplier: 1.0
 #     complex:
 #       model: ""               # Empty = use models.mission (no override)
-#       max_turns: 80           # Generous turns for architectural work
+#       max_turns: 500          # Generous turns for architectural work
 #       timeout_multiplier: 1.5
 
 # Plan review loop — validates generated plans before posting to GitHub

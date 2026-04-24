@@ -4,14 +4,14 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 
-def _routing_cfg(enabled=True, trivial_model="haiku", trivial_turns=10):
+def _routing_cfg(enabled=True, trivial_model="haiku", trivial_turns=50):
     return {
         "enabled": enabled,
         "tiers": {
             "trivial": {"model": trivial_model, "max_turns": trivial_turns, "timeout_multiplier": 0.5},
-            "simple":  {"model": "sonnet", "max_turns": 20, "timeout_multiplier": 0.75},
-            "medium":  {"model": "",       "max_turns": 40, "timeout_multiplier": 1.0},
-            "complex": {"model": "",       "max_turns": 80, "timeout_multiplier": 1.5},
+            "simple":  {"model": "sonnet", "max_turns": 100, "timeout_multiplier": 0.75},
+            "medium":  {"model": "",       "max_turns": 100, "timeout_multiplier": 1.0},
+            "complex": {"model": "",       "max_turns": 500, "timeout_multiplier": 1.5},
         },
     }
 
@@ -66,12 +66,12 @@ class TestBuildMissionCommandTierOverride:
     def test_trivial_tier_uses_haiku_model(self):
         result = self._call(tier="trivial")
         assert result["model"] == "haiku"
-        assert result["max_turns"] == 10
+        assert result["max_turns"] == 50
 
     def test_simple_tier_uses_sonnet(self):
         result = self._call(tier="simple")
         assert result["model"] == "sonnet"
-        assert result["max_turns"] == 20
+        assert result["max_turns"] == 100
 
     def test_medium_tier_empty_model_keeps_mission_model(self):
         """Empty model string in tier config means no override."""
@@ -79,9 +79,9 @@ class TestBuildMissionCommandTierOverride:
         # medium has model="" so mission model should be used
         assert result["model"] == "my-model"
 
-    def test_complex_tier_uses_max_turns_80(self):
+    def test_complex_tier_uses_max_turns_500(self):
         result = self._call(tier="complex")
-        assert result["max_turns"] == 80
+        assert result["max_turns"] == 500
 
     def test_review_mode_takes_precedence_over_tier(self):
         """REVIEW mode model must not be overridden by tier."""

@@ -209,10 +209,10 @@ def get_mcp_configs(project_name: str = "") -> List[str]:
 # Default tier-to-resource mapping used when complexity_routing is enabled
 # but specific tier values are absent from config.yaml.
 _COMPLEXITY_ROUTING_DEFAULTS: dict = {
-    "trivial": {"model": "haiku", "max_turns": 10, "timeout_multiplier": 0.5},
-    "simple":  {"model": "sonnet", "max_turns": 20, "timeout_multiplier": 0.75},
-    "medium":  {"model": "",       "max_turns": 40, "timeout_multiplier": 1.0},
-    "complex": {"model": "",       "max_turns": 80, "timeout_multiplier": 1.5},
+    "trivial": {"model": "haiku", "max_turns": 50, "timeout_multiplier": 0.5},
+    "simple":  {"model": "sonnet", "max_turns": 100, "timeout_multiplier": 0.75},
+    "medium":  {"model": "",       "max_turns": 100, "timeout_multiplier": 1.0},
+    "complex": {"model": "",       "max_turns": 500, "timeout_multiplier": 1.5},
 }
 
 

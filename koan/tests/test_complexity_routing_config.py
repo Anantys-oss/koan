@@ -35,8 +35,8 @@ class TestGetComplexityRoutingConfig:
         tiers = result["tiers"]
         assert set(tiers.keys()) == {"trivial", "simple", "medium", "complex"}
         assert tiers["trivial"]["model"] == "haiku"
-        assert tiers["trivial"]["max_turns"] == 10
-        assert tiers["complex"]["max_turns"] == 80
+        assert tiers["trivial"]["max_turns"] == 50
+        assert tiers["complex"]["max_turns"] == 500
         assert tiers["medium"]["model"] == ""  # no override
 
     def test_partial_tier_override(self):
@@ -53,7 +53,7 @@ class TestGetComplexityRoutingConfig:
         assert result["tiers"]["trivial"]["model"] == "custom-haiku"
         assert result["tiers"]["trivial"]["max_turns"] == 5
         # Other tiers should still have defaults
-        assert result["tiers"]["complex"]["max_turns"] == 80
+        assert result["tiers"]["complex"]["max_turns"] == 500
 
     def test_project_false_overrides_global_enabled(self):
         from app.config import get_complexity_routing_config
