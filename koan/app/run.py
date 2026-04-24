@@ -1783,7 +1783,7 @@ def _run_iteration(
             project_skills = Path(project_path) / ".claude" / "skills"
             if project_skills.is_dir():
                 extra_dirs.append(project_skills)
-            instance_skills = instance / "skills"
+            instance_skills = Path(instance) / "skills"
             if instance_skills.is_dir():
                 extra_dirs.append(instance_skills)
             # Include user-installed Claude Code skills (~/.claude/skills/)
