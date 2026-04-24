@@ -356,7 +356,8 @@ def run_ci_check_and_fix(pr_url: str, project_path: str) -> Tuple[bool, str]:
         ci_logs = _fetch_failed_logs(run_id, full_repo)
 
     if not ci_logs:
-        return False, "CI failed but no failure logs available."
+        run_info = f" (run_id={run_id})" if run_id else " (no run_id)"
+        return False, f"CI failed but no failure logs available{run_info}."
 
     # Check PR state before attempting fix
     from app.rebase_pr import _check_pr_state

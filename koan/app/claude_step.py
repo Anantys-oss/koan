@@ -449,19 +449,29 @@ def wait_for_ci(
 def _fetch_failed_logs(run_id: int, full_repo: str, max_chars: int = 8000) -> str:
     """Fetch logs for failed jobs in a GitHub Actions run.
 
-    Returns truncated log output for context.
+    Returns truncated log output for context.  Retries once after a
+    short delay when the first attempt returns empty — GitHub sometimes
+    needs a few seconds to make logs available after a run completes.
     """
-    try:
-        raw = run_gh(
-            "run", "view", str(run_id),
-            "--repo", full_repo,
-            "--log-failed",
-        )
-        if len(raw) > max_chars:
-            return "... (truncated)\n" + raw[-max_chars:]
-        return raw
-    except Exception as e:
-        return f"(Could not fetch logs: {e})"
+    import time
+
+    for attempt in range(2):
+        try:
+            raw = run_gh(
+                "run", "view", str(run_id),
+                "--repo", full_repo,
+                "--log-failed",
+            )
+            if raw:
+                if len(raw) > max_chars:
+                    return "... (truncated)\n" + raw[-max_chars:]
+                return raw
+            # Empty response — retry after a brief pause
+            if attempt == 0:
+                time.sleep(5)
+        except Exception as e:
+            return f"(Could not fetch logs: {e})"
+    return ""
 
 
 def check_existing_ci(
