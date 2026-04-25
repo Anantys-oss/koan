@@ -184,6 +184,15 @@ tools:
 # Can also be set via KOAN_CLI_PROVIDER env var (overrides this)
 cli_provider: "claude"
 
+# Fallback providers for automatic failover on quota exhaustion.
+# When the primary provider hits quota limits, Koan tries these providers
+# in order. The agent loop continues on the first available fallback instead
+# of pausing. Koan probes the primary every 5 minutes and switches back
+# when quota recovers. Remove or leave empty to disable failover (default).
+# fallback_providers:
+#   - copilot
+#   - local
+
 # Skip permission prompts — adds --dangerously-skip-permissions to Claude CLI.
 # WARNING: Does NOT work when Koan runs as root (Claude CLI rejects it).
 # For MCP tools, use .claude/settings.local.json allowlists instead.

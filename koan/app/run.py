@@ -1392,6 +1392,14 @@ def _run_iteration(
     from app.health_check import write_run_heartbeat
     write_run_heartbeat(koan_root)
 
+    # If running on a fallback provider, probe whether the primary has recovered
+    from app.provider_failover import is_on_fallback, check_primary_recovery
+    if is_on_fallback():
+        # Use the first project path for the probe context
+        _probe_path = projects[0][1] if projects else ""
+        if check_primary_recovery(_probe_path):
+            log("failover", "Primary provider recovered — switching back")
+
     print()
     print(bold_cyan(f"=== Run {run_num}/{max_runs} — {time.strftime('%Y-%m-%d %H:%M:%S')} ==="))
 
@@ -1904,6 +1912,19 @@ def _run_iteration(
             elif _auth_category == ErrorCategory.QUOTA:
                 log("quota", "API quota exhausted — requeueing mission to Pending")
                 _requeue_mission_in_file(instance, original_mission_title)
+
+                # Try provider failover before pausing
+                from app.provider_failover import attempt_failover
+                from app.provider import get_provider_name
+                _failover_target = attempt_failover(get_provider_name())
+                if _failover_target:
+                    log("failover", f"Switched to fallback provider '{_failover_target}'")
+                    _notify(instance, (
+                        f"🔄 Quota exhausted on primary provider. "
+                        f"Switching to '{_failover_target}' — loop continues."
+                    ))
+                    return True  # continue loop with fallback provider
+
                 from app.quota_handler import handle_quota_exhaustion, QUOTA_CHECK_UNRELIABLE
                 quota_result = handle_quota_exhaustion(
                     koan_root=koan_root,
@@ -1985,14 +2006,29 @@ def _run_iteration(
                     log("quota", "Requeueing mission to Pending (quota is transient)")
                     _requeue_mission_in_file(instance, original_mission_title)
 
-                # Create pause state so the main loop actually stops
+                # Try provider failover before pausing
+                from app.provider_failover import attempt_failover
+                from app.provider import get_provider_name as _get_prov_name
+                _failover_target = attempt_failover(_get_prov_name())
+                if _failover_target:
+                    log("failover", f"Switched to fallback provider '{_failover_target}'")
+                    # Clear the pause that handle_quota_exhaustion may have created
+                    from app.pause_manager import remove_pause
+                    remove_pause(koan_root)
+                    _notify(instance, (
+                        f"🔄 Quota exhausted on primary provider. "
+                        f"Switching to '{_failover_target}' — loop continues."
+                    ))
+                    return True  # continue loop with fallback provider
+
+                # No fallback available — pause as before
                 reset_ts, _disp = _compute_quota_reset_ts(instance)
                 from app.pause_manager import create_pause
                 create_pause(koan_root, "quota", reset_ts, reset_display or _disp)
 
                 _commit_instance(instance, f"koan: quota exhausted {time.strftime('%Y-%m-%d-%H:%M')}")
                 _notify(instance, (
-                    f"⚠️ Claude quota exhausted. {reset_display}\n\n"
+                    f"⚠️ Quota exhausted. {reset_display}\n\n"
                     f"Mission '{original_mission_title[:60]}' moved back to Pending.\n"
                     f"Kōan paused after {count} runs. {resume_msg} or use /resume to restart manually."
                 ))

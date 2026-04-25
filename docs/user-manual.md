@@ -741,6 +741,18 @@ Kōan automatically adapts its work intensity based on remaining API quota:
 
 You don't need to manage this — Kōan adjusts automatically. Use `/quota` to see the current mode. If the internal estimate drifts from reality, use `/quota <N>` to override (e.g., `/quota 50` tells Kōan it has 50% remaining).
 
+#### Provider Failover
+
+When the primary provider hits quota limits, Kōan can automatically switch to a fallback provider instead of pausing. Configure in `config.yaml`:
+
+```yaml
+fallback_providers:
+  - copilot
+  - local
+```
+
+Kōan tries fallbacks in order, skipping unavailable ones. It probes the primary every 5 minutes and switches back when quota recovers. If no fallback is configured or available, it pauses as usual.
+
 ### Exploration Mode
 
 When exploration is enabled, Kōan may autonomously explore a project's codebase between missions — discovering improvements, noting issues, and building context.

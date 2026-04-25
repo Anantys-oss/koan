@@ -49,6 +49,7 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "attention_github_notifications": "bool",
     "skip_permissions": "bool",
     "cli_provider": "str",
+    "fallback_providers": "list",
     "mcp": "list",
     "telegram": _NESTED,
     "budget": _NESTED,

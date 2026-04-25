@@ -56,6 +56,9 @@ _PROVIDERS = {
 _cached_provider: Optional[CLIProvider] = None
 _cached_provider_name: str = ""
 
+# Runtime override set by provider_failover.py during quota failover.
+_provider_override: Optional[str] = None
+
 
 def reset_provider():
     """Reset the cached provider (for testing)."""
@@ -64,14 +67,37 @@ def reset_provider():
     _cached_provider_name = ""
 
 
+def set_provider_override(name: str) -> None:
+    """Override the active provider at runtime (e.g., for quota failover).
+
+    Clears the cached singleton so the next get_provider() call
+    instantiates the override.
+    """
+    global _provider_override
+    _provider_override = name
+    reset_provider()
+
+
+def clear_provider_override() -> None:
+    """Clear the runtime provider override, returning to the configured provider."""
+    global _provider_override
+    _provider_override = None
+    reset_provider()
+
+
 def get_provider_name() -> str:
     """Determine which CLI provider to use.
 
     Resolution order:
-    1. KOAN_CLI_PROVIDER env var (with CLI_PROVIDER fallback; highest priority)
-    2. config.yaml cli_provider key
-    3. Default: "claude"
+    1. Runtime override (set by provider_failover during quota failover)
+    2. KOAN_CLI_PROVIDER env var (with CLI_PROVIDER fallback; highest priority)
+    3. config.yaml cli_provider key
+    4. Default: "claude"
     """
+    # Failover override takes precedence over everything.
+    if _provider_override and _provider_override in _PROVIDERS:
+        return _provider_override
+
     # Lazy import to avoid circular dependency
     from app.utils import get_cli_provider_env, load_config
 
