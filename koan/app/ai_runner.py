@@ -65,10 +65,12 @@ def run_exploration(
     # Run Claude
     try:
         from app.cli_provider import run_command_streaming
+        from app.config import get_skill_max_turns, get_skill_timeout
         result = run_command_streaming(
             prompt, project_path,
             allowed_tools=["Read", "Glob", "Grep", "Bash"],
-            max_turns=10, timeout=600,
+            max_turns=get_skill_max_turns(),
+            timeout=get_skill_timeout(),
         )
     except Exception as e:
         return False, f"Exploration failed: {str(e)[:300]}"

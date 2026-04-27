@@ -269,19 +269,23 @@ class TestRunExploration:
         result_msg = notify.call_args_list[1][0][0]
         assert len(result_msg) <= 2100  # header + 2000 content
 
+    @patch("app.config.get_skill_timeout", return_value=999)
+    @patch("app.config.get_skill_max_turns", return_value=42)
     @patch("app.cli_provider.run_command_streaming", return_value="Found issues")
     @patch("app.ai_runner.get_missions_context", return_value="No active missions.")
     @patch("app.ai_runner.gather_project_structure", return_value="Directories: src/")
     @patch("app.ai_runner.gather_git_activity", return_value="Recent commits: abc")
     @patch("app.ai_runner.load_skill_prompt", return_value="Explore myapp")
-    def test_max_turns_is_10(
+    def test_max_turns_uses_skill_config(
         self, mock_prompt, mock_git, mock_struct, mock_missions, mock_claude,
-        tmp_path
+        mock_max_turns, mock_timeout, tmp_path
     ):
-        """Regression: max_turns=5 was too low for AI exploration sessions.
+        """ai_runner must read skill_max_turns/skill_timeout from app.config.
 
-        AI exploration needs enough turns to read project context and produce
-        meaningful output. max_turns=5 caused frequent early termination.
+        Previously hardcoded max_turns=10, timeout=600 — too low for real
+        exploration of large projects, and not adjustable via instance
+        config. Now defers to get_skill_max_turns()/get_skill_timeout()
+        like /implement, /fix, /incident, etc.
         """
         notify = MagicMock()
         run_exploration(
@@ -289,7 +293,8 @@ class TestRunExploration:
             notify_fn=notify,
         )
         call_kwargs = mock_claude.call_args[1]
-        assert call_kwargs["max_turns"] == 10
+        assert call_kwargs["max_turns"] == 42
+        assert call_kwargs["timeout"] == 999
 
 
 # ---------------------------------------------------------------------------
