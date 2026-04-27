@@ -446,6 +446,24 @@ def get_mission_timeout() -> int:
     return _safe_int(config.get("mission_timeout", 3600), 3600)
 
 
+def get_first_output_timeout() -> int:
+    """Get timeout in seconds for first output from CLI subprocesses.
+
+    If the Claude CLI produces zero stdout within this window, the
+    process is killed early instead of waiting the full skill/mission
+    timeout. A session that is silent for this long is almost certainly
+    stuck (API hang, network issue, quota wait).
+
+    Config key: first_output_timeout (default: 600 — 10 minutes).
+    Set to 0 to disable.
+
+    Returns:
+        Timeout in seconds.
+    """
+    config = _load_config()
+    return _safe_int(config.get("first_output_timeout", 600), 600)
+
+
 def get_skill_max_turns() -> int:
     """Get max turns for skill execution (fix, implement, incident).
 
