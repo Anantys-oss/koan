@@ -93,21 +93,8 @@ class SessionRegistry:
 
     def _write_unlocked(self, data: Dict[str, dict]):
         """Write sessions.json atomically (caller holds the file lock)."""
-        fd, tmp = tempfile.mkstemp(
-            dir=self.instance_dir, prefix=".koan-sessions-",
-        )
-        try:
-            with os.fdopen(fd, "w") as f:
-                json.dump(data, f, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, str(self._path))
-        except BaseException:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
+        from app.utils import atomic_write_json
+        atomic_write_json(self._path, data, indent=2)
 
     def _read_locked(self) -> Dict[str, dict]:
         """Read sessions.json under a shared file lock."""
