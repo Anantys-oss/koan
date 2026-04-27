@@ -40,6 +40,22 @@ from app.provider.local import LocalLLMProvider  # noqa: F401
 from app.provider.ollama_launch import OllamaLaunchProvider  # noqa: F401
 
 
+def _format_cli_error(returncode: int, stdout: str, stderr: str) -> str:
+    """Build a diagnostic message for non-zero CLI exits.
+
+    Includes exit code, stderr (truncated), and stdout (truncated) when
+    stderr is empty — Claude CLI sometimes prints fatal errors to stdout.
+    """
+    parts = [f"exit={returncode}"]
+    err = (stderr or "").strip()
+    out = (stdout or "").strip()
+    if err:
+        parts.append(f"stderr={err[:300]}")
+    if out and not err:
+        parts.append(f"stdout={out[:300]}")
+    return "CLI invocation failed: " + " | ".join(parts)
+
+
 # ---------------------------------------------------------------------------
 # Provider registry & resolution
 # ---------------------------------------------------------------------------
@@ -237,7 +253,7 @@ def run_command(
 
     if result.returncode != 0:
         raise RuntimeError(
-            f"CLI invocation failed: {result.stderr[:300]}"
+            _format_cli_error(result.returncode, result.stdout, result.stderr)
         )
 
     from app.claude_step import strip_cli_noise
@@ -306,7 +322,7 @@ def run_command_streaming(
     stdout_text = "\n".join(lines)
     if proc.returncode != 0:
         raise RuntimeError(
-            f"CLI invocation failed: {stderr_text[:300]}"
+            _format_cli_error(proc.returncode, stdout_text, stderr_text)
         )
 
     # Notify user when max turns ceiling was hit so they know how to raise it
