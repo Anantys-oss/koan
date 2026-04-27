@@ -436,7 +436,35 @@ class TestFormatReviewAsMarkdown:
         }
         md = _format_review_as_markdown(data)
         assert "- [x] No secrets" in md
-        assert "- [ ] Input validated — critical #1" in md
+        # #N refs must use fullwidth ＃ (U+FF03) to prevent GitHub auto-linking
+        assert "- [ ] Input validated \u2014 critical \uff031" in md
+        assert "#1" not in md
+
+    def test_checklist_finding_refs_escape_hash(self):
+        """All #N cross-references in checklist use fullwidth ＃ to prevent GitHub auto-linking."""
+        data = {
+            "file_comments": [],
+            "review_summary": {
+                "lgtm": False,
+                "summary": "Issues found.",
+                "checklist": [
+                    {"item": "Return type matches interface", "passed": False, "finding_ref": "warning #1"},
+                    {"item": "Null check present", "passed": False, "finding_ref": "warning #2"},
+                    {"item": "No duplicated validation", "passed": False, "finding_ref": "suggestion #1"},
+                    {"item": "No secrets", "passed": True, "finding_ref": ""},
+                ],
+            },
+        }
+        md = _format_review_as_markdown(data)
+        # Fullwidth ＃ must appear in refs
+        assert "\uff031" in md
+        assert "\uff032" in md
+        # ASCII # must NOT appear after the em dash (in finding refs)
+        checklist_lines = [l for l in md.splitlines() if l.startswith("- [")]
+        for line in checklist_lines:
+            if "\u2014" in line:  # em dash separates the ref
+                ref_part = line.split("\u2014", 1)[1]
+                assert "#" not in ref_part, f"ASCII # found in ref: {line!r}"
 
     def test_code_snippet_in_output(self):
         data = {

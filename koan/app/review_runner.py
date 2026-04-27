@@ -617,7 +617,14 @@ def _format_review_as_markdown(review_data: dict, title: str = "") -> str:
         lines.append("")
         for ci in checklist:
             mark = "x" if ci["passed"] else " "
-            ref = f" — {ci['finding_ref']}" if ci.get("finding_ref") else ""
+            finding_ref = ci.get("finding_ref", "")
+            if finding_ref:
+                # Replace ASCII # with fullwidth ＃ (U+FF03) to prevent GitHub
+                # from auto-linking cross-references to repository issues/PRs.
+                safe_ref = finding_ref.replace("#", "\uFF03")
+                ref = f" \u2014 {safe_ref}"
+            else:
+                ref = ""
             lines.append(f"- [{mark}] {ci['item']}{ref}")
         lines.append("")
 
