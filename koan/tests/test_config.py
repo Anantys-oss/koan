@@ -398,6 +398,29 @@ class TestGetSkillTimeout:
             assert get_skill_timeout() == 7200
 
 
+# --- get_first_output_timeout ---
+
+
+class TestGetFirstOutputTimeout:
+    def test_default(self):
+        from app.config import get_first_output_timeout
+
+        with _mock_config({}):
+            assert get_first_output_timeout() == 600
+
+    def test_custom(self):
+        from app.config import get_first_output_timeout
+
+        with _mock_config({"first_output_timeout": 300}):
+            assert get_first_output_timeout() == 300
+
+    def test_zero_disables(self):
+        from app.config import get_first_output_timeout
+
+        with _mock_config({"first_output_timeout": 0}):
+            assert get_first_output_timeout() == 0
+
+
 # --- get_skill_max_turns ---
 
 

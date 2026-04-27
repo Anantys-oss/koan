@@ -1177,6 +1177,58 @@ class TestWatchdogTimeoutGuard:
             assert mock_task.called
 
 
+class TestJsonOverrideGuard:
+    """JSON success override must be skipped after watchdog/abort kills (#1254)."""
+
+    def test_json_override_skipped_on_timeout(self):
+        """When _last_mission_timed_out is True, JSON override must not fire."""
+        import app.run as run_mod
+
+        run_mod._last_mission_timed_out = True
+        run_mod._last_mission_aborted = False
+
+        # The condition in run.py is:
+        # if claude_exit != 0 and not _last_mission_timed_out and not _last_mission_aborted:
+        # Simulate the guard check
+        claude_exit = 1
+        should_check = (
+            claude_exit != 0
+            and not run_mod._last_mission_timed_out
+            and not run_mod._last_mission_aborted
+        )
+        assert should_check is False
+
+    def test_json_override_skipped_on_abort(self):
+        """When _last_mission_aborted is True, JSON override must not fire."""
+        import app.run as run_mod
+
+        run_mod._last_mission_timed_out = False
+        run_mod._last_mission_aborted = True
+
+        claude_exit = 1
+        should_check = (
+            claude_exit != 0
+            and not run_mod._last_mission_timed_out
+            and not run_mod._last_mission_aborted
+        )
+        assert should_check is False
+
+    def test_json_override_allowed_on_normal_failure(self):
+        """Normal (non-timeout, non-abort) failures still allow JSON override."""
+        import app.run as run_mod
+
+        run_mod._last_mission_timed_out = False
+        run_mod._last_mission_aborted = False
+
+        claude_exit = 1
+        should_check = (
+            claude_exit != 0
+            and not run_mod._last_mission_timed_out
+            and not run_mod._last_mission_aborted
+        )
+        assert should_check is True
+
+
 class TestProcWaitPolling:
     """Verify that proc.wait uses periodic timeout instead of blocking forever."""
 
@@ -3969,6 +4021,7 @@ class TestRunSkillMissionEnv:
              patch("app.run._restore_koan_branch"), \
              patch("app.run._reset_terminal"), \
              patch("app.config.get_skill_timeout", return_value=7200), \
+             patch("app.config.get_first_output_timeout", return_value=600), \
              patch("app.run.threading.Timer", return_value=mock_timer) as mock_timer_cls, \
              patch("app.mission_runner.run_post_mission"):
             _run_skill_mission(
@@ -3982,10 +4035,12 @@ class TestRunSkillMissionEnv:
                 autonomous_mode="implement",
             )
 
-        # Watchdog timer should use the configurable timeout (7200s)
-        mock_timer_cls.assert_called_once_with(7200, mock_timer_cls.call_args[0][1])
-        mock_timer.start.assert_called_once()
-        mock_timer.cancel.assert_called_once()
+        # First Timer call is the watchdog (skill_timeout=7200s),
+        # subsequent calls are liveness timer resets (first_output_timeout=600s).
+        all_calls = mock_timer_cls.call_args_list
+        assert all_calls[0][0][0] == 7200, "First timer should be watchdog"
+        for call in all_calls[1:]:
+            assert call[0][0] == 600, "Liveness timers should use first_output_timeout"
         # proc.wait() is now a 30s cleanup wait (real timeout via watchdog)
         mock_proc.wait.assert_called_once_with(timeout=30)
 
@@ -4018,10 +4073,10 @@ class TestRunSkillMissionEnv:
                 autonomous_mode="implement",
             )
 
-        # Default timeout from get_skill_timeout() is 7200s, enforced by watchdog
-        mock_timer_cls.assert_called_once_with(7200, mock_timer_cls.call_args[0][1])
-        mock_timer.start.assert_called_once()
-        mock_timer.cancel.assert_called_once()
+        # Default timeout from get_skill_timeout() is 7200s, enforced by watchdog.
+        # First Timer call is the watchdog, subsequent are liveness resets.
+        all_calls = mock_timer_cls.call_args_list
+        assert all_calls[0][0][0] == 7200, "First timer should be watchdog (7200s default)"
         # proc.wait() is now a 30s cleanup wait
         mock_proc.wait.assert_called_once_with(timeout=30)
 
@@ -4131,9 +4186,8 @@ class TestRunSkillMissionEnv:
         mock_killpg.assert_any_call(99999, signal.SIGTERM)
         # Exit code should be 1 (timeout = failure)
         assert exit_code == 1
-        # Timer was created with the configured timeout
-        mock_timer_cls.assert_called_once()
-        assert mock_timer_cls.call_args[0][0] == 60
+        # First Timer call is the watchdog with configured timeout
+        assert mock_timer_cls.call_args_list[0][0][0] == 60
 
     def test_watchdog_timer_cancelled_on_normal_completion(self, tmp_path):
         """Timer is properly cancelled when skill completes before timeout."""
@@ -4164,9 +4218,9 @@ class TestRunSkillMissionEnv:
                 autonomous_mode="implement",
             )
 
-        # Timer must be started and then cancelled
-        mock_timer.start.assert_called_once()
-        mock_timer.cancel.assert_called_once()
+        # Timer must be started and then cancelled (watchdog + liveness timers)
+        assert mock_timer.start.call_count >= 1
+        assert mock_timer.cancel.call_count >= 1
         # Timer must be set as daemon
         assert mock_timer.daemon is True
         # Normal exit

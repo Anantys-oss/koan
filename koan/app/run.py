@@ -1846,7 +1846,9 @@ def _run_iteration(
         # success (is_error=false).  Override the exit code so the
         # post-mission pipeline (verification, reflection, auto-merge)
         # is not skipped and the notification shows ✅ instead of ❌.
-        if claude_exit != 0:
+        # NEVER override after a watchdog kill or user abort — partial
+        # JSON output from a killed process is not trustworthy (#1254).
+        if claude_exit != 0 and not _last_mission_timed_out and not _last_mission_aborted:
             from app.mission_runner import check_json_success
             if check_json_success(stdout_file):
                 log("koan", f"CLI exited {claude_exit} but JSON output indicates success — overriding to 0")
@@ -2366,6 +2368,36 @@ def _run_skill_mission(
         timer.daemon = True
         timer.start()
 
+        # Liveness watchdog: kills the process if no stdout is received
+        # within first_output_timeout seconds.  A Claude CLI session
+        # that produces zero output for this long is almost certainly
+        # stuck (API hang, network issue).  Each line of output resets
+        # the timer.  Set to 0 to disable.  (#1253)
+        from app.config import get_first_output_timeout
+        first_output_timeout = get_first_output_timeout()
+        liveness_timer = None
+        liveness_fired = False
+
+        def _liveness_watchdog():
+            nonlocal timed_out, liveness_fired
+            liveness_fired = True
+            timed_out = True
+            elapsed = int(time.time() - mission_start)
+            log("error", f"No output for {first_output_timeout}s — killing stuck process (elapsed: {elapsed}s)")
+            _kill_process_group(proc)
+
+        def _reset_liveness():
+            nonlocal liveness_timer
+            if first_output_timeout <= 0:
+                return
+            if liveness_timer is not None:
+                liveness_timer.cancel()
+            liveness_timer = threading.Timer(first_output_timeout, _liveness_watchdog)
+            liveness_timer.daemon = True
+            liveness_timer.start()
+
+        _reset_liveness()
+
         # Stream stdout line-by-line, appending each to pending.md
         # so /live shows real-time progress.  Open the file handle once
         # to avoid repeated open/close race with archive_pending.
@@ -2376,6 +2408,7 @@ def _run_skill_mission(
             debug_log(f"[run] cannot open pending.md for streaming: {e}")
         try:
             for line in proc.stdout:
+                _reset_liveness()
                 stripped = line.rstrip("\n")
                 stdout_lines.append(stripped)
                 print(stripped)
@@ -2389,6 +2422,8 @@ def _run_skill_mission(
             if pending_fh is not None:
                 pending_fh.close()
             timer.cancel()
+            if liveness_timer is not None:
+                liveness_timer.cancel()
 
         proc.wait(timeout=30)
         if timed_out:
@@ -2418,8 +2453,10 @@ def _run_skill_mission(
     except subprocess.TimeoutExpired:
         _kill_process_group(proc)
         timed_out = True
-        log("error", f"Skill runner timed out ({skill_timeout}s)")
-        debug_log(f"[run] skill exec: TIMEOUT ({skill_timeout}s)")
+        timeout_kind = "liveness" if liveness_fired else "watchdog"
+        timeout_val = first_output_timeout if liveness_fired else skill_timeout
+        log("error", f"Skill runner timed out ({timeout_kind}: {timeout_val}s)")
+        debug_log(f"[run] skill exec: TIMEOUT ({timeout_kind}: {timeout_val}s)")
         # Log last lines of captured output so the journal shows *where*
         # the run stalled, not just that it timed out.
         tail_lines = stdout_lines[-20:] if stdout_lines else []
@@ -2430,6 +2467,13 @@ def _run_skill_mission(
         else:
             log("info", "No stdout captured before timeout")
             debug_log("[run] timeout: no stdout lines captured")
+        # Log stderr — may contain API errors that explain the hang
+        try:
+            _timeout_stderr = Path(stderr_file).read_text().strip()
+            if _timeout_stderr:
+                debug_log(f"[run] timeout stderr:\n{_timeout_stderr[:2000]}")
+        except OSError:
+            pass
         exit_code = 1
         skill_stdout = "\n".join(stdout_lines)
         skill_stderr = ""
