@@ -13,12 +13,9 @@ Severities: critical > warning > info.
 Dismissed items are tracked in instance/.koan-attention-dismissed.json.
 """
 
-import fcntl
 import hashlib
 import json
-import os
 import sys
-import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -76,19 +73,10 @@ def load_dismissed(koan_root: str) -> set:
 
 def save_dismissed(koan_root: str, dismissed: set) -> None:
     """Atomically persist the set of dismissed item IDs."""
+    from app.utils import atomic_write_json
     path = _dismissed_file_path(koan_root)
     try:
-        data = sorted(dismissed)
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            dir=str(path.parent),
-            delete=False,
-            suffix=".tmp",
-        ) as tmp:
-            fcntl.flock(tmp, fcntl.LOCK_EX)
-            json.dump(data, tmp)
-            tmp_path = tmp.name
-        os.replace(tmp_path, path)
+        atomic_write_json(path, sorted(dismissed))
     except OSError:
         pass
 

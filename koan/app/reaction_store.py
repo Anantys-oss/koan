@@ -145,20 +145,6 @@ def compact_reactions(reactions_file: Path, keep: int = 200):
     if not reactions:
         return
 
-    import os
-    import tempfile
-    fd, tmp = tempfile.mkstemp(dir=str(reactions_file.parent), prefix=".koan-")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            fcntl.flock(f, fcntl.LOCK_EX)
-            for entry in reactions:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, str(reactions_file))
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    from app.utils import atomic_write
+    body = "".join(json.dumps(entry, ensure_ascii=False) + "\n" for entry in reactions)
+    atomic_write(reactions_file, body)

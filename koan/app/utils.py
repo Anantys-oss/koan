@@ -241,6 +241,15 @@ def atomic_write(path: Path, content: str):
         raise
 
 
+def atomic_write_json(path: Path, data, indent=None):
+    """Serialize ``data`` to JSON and write atomically via :func:`atomic_write`.
+
+    Convenience wrapper used by modules that persist dicts/lists as JSON.
+    """
+    import json
+    atomic_write(path, json.dumps(data, ensure_ascii=False, indent=indent))
+
+
 def truncate_text(text: str, max_chars: int) -> str:
     """Truncate text with indicator."""
     if len(text) <= max_chars:

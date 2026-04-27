@@ -780,8 +780,26 @@ class TestRunCommand:
         with patch("app.config.get_model_config", return_value={"chat": "m", "fallback": "f"}), \
              patch("app.provider.build_full_command", return_value=["fake"]), \
              patch("app.cli_exec.run_cli_with_retry", return_value=result):
-            with pytest.raises(RuntimeError, match="CLI invocation failed"):
+            with pytest.raises(RuntimeError, match="CLI invocation failed") as exc:
                 run_command("hi", "/tmp", [])
+            msg = str(exc.value)
+            assert "exit=1" in msg
+            assert "stderr=boom" in msg
+
+    def test_failure_includes_stdout_when_stderr_empty(self):
+        from app.provider import run_command
+        result = MagicMock(
+            returncode=2, stdout="auth token expired\nplease re-login", stderr=""
+        )
+        with patch("app.config.get_model_config", return_value={"chat": "m", "fallback": "f"}), \
+             patch("app.provider.build_full_command", return_value=["fake"]), \
+             patch("app.cli_exec.run_cli_with_retry", return_value=result):
+            with pytest.raises(RuntimeError, match="CLI invocation failed") as exc:
+                run_command("hi", "/tmp", [])
+            msg = str(exc.value)
+            assert "exit=2" in msg
+            assert "stdout=auth token expired" in msg
+            assert "stderr=" not in msg
 
 
 class TestRunCommandStreaming:
