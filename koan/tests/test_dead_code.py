@@ -143,6 +143,7 @@ class TestHandleQueueMission:
 
 from skills.core.dead_code.dead_code_runner import (
     build_dead_code_prompt,
+    _prescan_project,
     _extract_report_body,
     _extract_dead_code_score,
     _extract_missions,
@@ -151,6 +152,83 @@ from skills.core.dead_code.dead_code_runner import (
     run_dead_code,
     main,
 )
+
+
+class TestPrescanProject:
+    def test_detects_python_files(self, tmp_path):
+        (tmp_path / "main.py").write_text("print('hi')")
+        (tmp_path / "utils.py").write_text("x = 1")
+
+        result = _prescan_project(str(tmp_path))
+        assert "Python: 2 files" in result
+        assert "main.py" in result
+        assert "utils.py" in result
+
+    def test_detects_multiple_languages(self, tmp_path):
+        (tmp_path / "app.py").write_text("")
+        (tmp_path / "index.js").write_text("")
+        (tmp_path / "style.css").write_text("")
+
+        result = _prescan_project(str(tmp_path))
+        assert "Python" in result
+        assert "JavaScript" in result
+        assert "CSS" in result
+
+    def test_skips_venv_and_node_modules(self, tmp_path):
+        (tmp_path / ".venv").mkdir()
+        (tmp_path / ".venv" / "lib.py").write_text("")
+        (tmp_path / "node_modules").mkdir()
+        (tmp_path / "node_modules" / "pkg.js").write_text("")
+        (tmp_path / "real.py").write_text("")
+
+        result = _prescan_project(str(tmp_path))
+        assert "lib.py" not in result
+        assert "pkg.js" not in result
+        assert "real.py" in result
+
+    def test_empty_project_returns_empty(self, tmp_path):
+        result = _prescan_project(str(tmp_path))
+        assert result == ""
+
+    def test_caps_file_listing_at_200(self, tmp_path):
+        src = tmp_path / "src"
+        src.mkdir()
+        for i in range(250):
+            (src / f"mod_{i:03d}.py").write_text("")
+
+        result = _prescan_project(str(tmp_path))
+        assert "showing first 200 of 250" in result
+
+    def test_contains_inventory_header(self, tmp_path):
+        (tmp_path / "app.py").write_text("")
+
+        result = _prescan_project(str(tmp_path))
+        assert "## Pre-scan: Project Inventory" in result
+        assert "### Language breakdown" in result
+        assert "### Source files" in result
+
+
+class TestBuildPromptWithPrescan:
+    def test_prompt_includes_inventory_when_path_given(self, tmp_path):
+        (tmp_path / "app.py").write_text("print('hi')")
+
+        prompt = build_dead_code_prompt(
+            "test",
+            project_path=str(tmp_path),
+            skill_dir=Path(__file__).parent.parent / "skills" / "core" / "dead_code",
+        )
+        assert "Pre-scan: Project Inventory" in prompt
+        assert "Python" in prompt
+
+    def test_prompt_without_path_has_no_inventory(self):
+        prompt = build_dead_code_prompt(
+            "test",
+            skill_dir=Path(__file__).parent.parent / "skills" / "core" / "dead_code",
+        )
+        # The prompt instructions may mention "Pre-scan" but should not
+        # contain actual inventory data (language breakdown, source files).
+        assert "### Language breakdown" not in prompt
+        assert "### Source files" not in prompt
 
 
 class TestBuildPrompt:

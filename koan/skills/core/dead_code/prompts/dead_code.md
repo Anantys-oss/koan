@@ -4,6 +4,9 @@ You are performing a dead code analysis of the **{PROJECT_NAME}** project. Your 
 
 ### Phase 1 — Orientation
 
+**If a "Pre-scan: Project Inventory" section is appended below**, use it as your starting point — it contains the language breakdown and source file listing. You can skip the Glob exploration and jump straight to reading CLAUDE.md and key files. This saves turns for the actual analysis.
+
+**Otherwise**, do the full orientation:
 1. **Read the project's CLAUDE.md** (if it exists) for architecture overview, conventions, and key file paths.
 2. **Explore the directory structure**: Use Glob to understand the project layout — source directories, test directories, config files.
 3. **Identify the primary language(s)** and any frameworks in use (Django, Flask, React, etc.).
