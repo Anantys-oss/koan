@@ -153,11 +153,15 @@ class TestIssuesCoveredByPrs:
         assert _issues_covered_by_prs(prs, "o", "r") == {5}
 
     def test_issue_url_reference(self):
-        prs = [{"number": 10, "body": "See https://github.com/o/r/issues/42"}]
+        prs = [{"number": 10, "body": "Fixes https://github.com/o/r/issues/42"}]
         assert _issues_covered_by_prs(prs, "o", "r") == {42}
 
+    def test_issue_url_without_closing_keyword_ignored(self):
+        prs = [{"number": 10, "body": "See https://github.com/o/r/issues/42"}]
+        assert _issues_covered_by_prs(prs, "o", "r") == set()
+
     def test_url_from_different_repo_ignored(self):
-        prs = [{"number": 10, "body": "See https://github.com/other/repo/issues/42"}]
+        prs = [{"number": 10, "body": "Fixes https://github.com/other/repo/issues/42"}]
         assert _issues_covered_by_prs(prs, "o", "r") == set()
 
     def test_multiple_refs_in_one_body(self):
@@ -172,7 +176,7 @@ class TestIssuesCoveredByPrs:
         assert _issues_covered_by_prs([], "o", "r") == set()
 
     def test_owner_with_special_chars_escaped(self):
-        prs = [{"number": 1, "body": "https://github.com/a.b/c.d/issues/5"}]
+        prs = [{"number": 1, "body": "Closes https://github.com/a.b/c.d/issues/5"}]
         assert _issues_covered_by_prs(prs, "a.b", "c.d") == {5}
 
 
