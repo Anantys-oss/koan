@@ -183,11 +183,11 @@ def _explore_design(project_path, idea, skill_dir=None, issue_context=""):
     )
 
     from app.cli_provider import run_command
-    from app.config import get_skill_timeout
+    from app.config import get_analysis_max_turns, get_skill_timeout
     output = run_command(
         prompt, project_path,
         allowed_tools=["Read", "Glob", "Grep", "WebFetch"],
-        max_turns=25, timeout=get_skill_timeout(),
+        max_turns=get_analysis_max_turns(), timeout=get_skill_timeout(),
     )
     return output
 

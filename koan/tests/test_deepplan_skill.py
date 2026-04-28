@@ -572,3 +572,18 @@ class TestRunnerWithIssueUrl:
         # Falls back to original idea text
         assert idea == "https://github.com/o/r/issues/1"
         assert context == ""
+
+
+class TestExploreDesignMaxTurns:
+    """Verify _explore_design uses configurable max_turns, not a hardcoded value."""
+
+    def test_max_turns_from_config(self, runner):
+        """max_turns should come from get_analysis_max_turns()."""
+        mock_run = MagicMock(return_value="spec output")
+        with patch.object(runner, "load_prompt_or_skill", return_value="prompt"), \
+             patch("app.cli_provider.run_command", mock_run), \
+             patch("app.config.get_analysis_max_turns", return_value=42), \
+             patch("app.config.get_skill_timeout", return_value=600):
+            result = runner._explore_design("/tmp/proj", "idea")
+
+        assert mock_run.call_args[1]["max_turns"] == 42

@@ -480,6 +480,22 @@ def get_skill_max_turns() -> int:
     return _safe_int(config.get("skill_max_turns", 200), 200)
 
 
+def get_analysis_max_turns() -> int:
+    """Get max turns for read-only analysis skills (audit, dead_code, etc.).
+
+    These skills only use read tools (Read, Glob, Grep) and need fewer turns
+    than implementation skills, but previous hardcoded defaults (25-30)
+    were too tight for non-trivial codebases.
+
+    Config key: analysis_max_turns (default: 50).
+
+    Returns:
+        Maximum number of turns.
+    """
+    config = _load_config()
+    return _safe_int(config.get("analysis_max_turns", 50), 50)
+
+
 def get_post_mission_timeout() -> int:
     """Get timeout in seconds for the post-mission pipeline.
 
