@@ -187,7 +187,7 @@ def run_refresh(project_path: str, project_name: str) -> int:
     """
     from app.claude_step import run_claude
     from app.cli_provider import build_full_command
-    from app.config import get_branch_prefix, get_model_config
+    from app.config import get_branch_prefix, get_model_config, get_skill_max_turns
 
     project_path = str(Path(project_path).resolve())
     claude_md = Path(project_path) / "CLAUDE.md"
@@ -250,7 +250,7 @@ def run_refresh(project_path: str, project_name: str) -> int:
         allowed_tools=["Bash", "Read", "Write", "Edit", "Glob", "Grep"],
         model=models.get("mission", ""),
         fallback=models.get("fallback", ""),
-        max_turns=10,
+        max_turns=get_skill_max_turns(),
     )
 
     # Run Claude to edit CLAUDE.md

@@ -338,15 +338,17 @@ class TestRunRefresh:
 
         assert self._mock_prompt.call_args[1]["PROJECT_NAME"] == "myproject"
 
-    def test_max_turns_set(self, tmp_path):
+    def test_max_turns_uses_skill_config(self, tmp_path):
+        """max_turns should use get_skill_max_turns(), not a hardcoded value."""
         project = tmp_path / "project"
         project.mkdir()
         (project / "CLAUDE.md").write_text("# Project\n")
 
-        with patch("app.claudemd_refresh.build_git_context", return_value="abc Commit"):
+        with patch("app.claudemd_refresh.build_git_context", return_value="abc Commit"), \
+             patch("app.config.get_skill_max_turns", return_value=42):
             run_refresh(str(project), "test")
 
-        assert self._mock_build_cmd.call_args[1]["max_turns"] == 10
+        assert self._mock_build_cmd.call_args[1]["max_turns"] == 42
 
     def test_commit_stages_only_claudemd(self, tmp_path):
         """Commit should stage CLAUDE.md specifically, not git add -A."""
