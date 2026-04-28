@@ -46,12 +46,12 @@ def _run_claude_scan(prompt: str, project_path: str) -> str:
         Claude's analysis text, or empty string on failure.
     """
     from app.cli_provider import run_command_streaming
-    from app.config import get_skill_timeout
+    from app.config import get_analysis_max_turns, get_skill_timeout
 
     return run_command_streaming(
         prompt, project_path,
         allowed_tools=["Read", "Glob", "Grep"],
-        max_turns=25,
+        max_turns=get_analysis_max_turns(),
         timeout=get_skill_timeout(),
     )
 

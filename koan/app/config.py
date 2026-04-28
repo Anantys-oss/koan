@@ -551,10 +551,10 @@ def get_skill_max_turns() -> int:
 
 
 def get_analysis_max_turns() -> int:
-    """Get max turns for read-only analysis skills (audit, dead_code, etc.).
+    """Get max turns for read-only analysis skills (dead_code, tech_debt, audit).
 
     These skills only use read tools (Read, Glob, Grep) and need fewer turns
-    than implementation skills, but previous hardcoded defaults (25-30)
+    than implementation skills, but the previous hardcoded defaults (25-30)
     were too tight for non-trivial codebases.
 
     Config key: analysis_max_turns (default: 50).

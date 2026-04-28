@@ -17,22 +17,108 @@ CLI:
         --project-path <path> --project-name <name> --instance-dir <dir>
 """
 
+import os
 import re
+from collections import Counter
 from pathlib import Path
 from typing import Optional, Tuple
 
 from app.prompts import load_prompt_or_skill
 
+# Extensions mapped to language names for inventory
+_EXT_LANG = {
+    ".py": "Python", ".js": "JavaScript", ".ts": "TypeScript",
+    ".tsx": "TypeScript (JSX)", ".jsx": "JavaScript (JSX)",
+    ".rb": "Ruby", ".go": "Go", ".rs": "Rust", ".java": "Java",
+    ".c": "C", ".cpp": "C++", ".h": "C/C++ Header",
+    ".php": "PHP", ".pl": "Perl", ".pm": "Perl",
+    ".sh": "Shell", ".md": "Markdown", ".yml": "YAML", ".yaml": "YAML",
+    ".json": "JSON", ".toml": "TOML", ".css": "CSS", ".html": "HTML",
+}
+
+# Directories to always skip during pre-scan
+_SKIP_DIRS = {
+    "node_modules", ".venv", "venv", "__pycache__", ".git", "dist",
+    "build", "vendor", ".tox", ".mypy_cache", ".pytest_cache",
+    "htmlcov", ".eggs", "egg-info",
+}
+
+
+def _prescan_project(project_path: str) -> str:
+    """Generate a lightweight project inventory in Python.
+
+    Walks the source tree (skipping vendored/build dirs) and produces:
+    - Language breakdown by file count
+    - Source directory structure (depth-limited)
+    - List of source files (capped for prompt size)
+
+    This saves Claude 3-5 orientation turns by providing the info upfront.
+    """
+    root = Path(project_path)
+    lang_counts: Counter = Counter()
+    source_files: list = []
+
+    for dirpath, dirnames, filenames in os.walk(root):
+        # Prune skipped directories in-place
+        dirnames[:] = [
+            d for d in dirnames
+            if d not in _SKIP_DIRS and not d.endswith(".egg-info")
+        ]
+
+        rel_dir = Path(dirpath).relative_to(root)
+        for fname in filenames:
+            ext = Path(fname).suffix.lower()
+            lang = _EXT_LANG.get(ext)
+            if lang:
+                lang_counts[lang] += 1
+                rel_path = str(rel_dir / fname)
+                if rel_path.startswith("."):
+                    rel_path = rel_path[2:]  # strip "./"
+                source_files.append(rel_path)
+
+    if not source_files:
+        return ""
+
+    # Build language breakdown
+    lines = ["## Pre-scan: Project Inventory", ""]
+    lines.append("### Language breakdown")
+    for lang, count in lang_counts.most_common(10):
+        lines.append(f"- {lang}: {count} files")
+
+    # Build source file listing (cap at 200 to avoid prompt bloat)
+    lines.append("")
+    lines.append(f"### Source files ({len(source_files)} total)")
+    source_files.sort()
+    if len(source_files) > 200:
+        lines.append(f"(showing first 200 of {len(source_files)})")
+    for f in source_files[:200]:
+        lines.append(f"- {f}")
+
+    return "\n".join(lines)
+
 
 def build_dead_code_prompt(
     project_name: str,
+    project_path: Optional[str] = None,
     skill_dir: Optional[Path] = None,
 ) -> str:
-    """Build a prompt for Claude to scan for dead code."""
-    return load_prompt_or_skill(
+    """Build a prompt for Claude to scan for dead code.
+
+    If *project_path* is provided, a lightweight Python pre-scan is
+    prepended to the prompt so Claude can skip the orientation phase
+    and jump straight to dead-code analysis.
+    """
+    base_prompt = load_prompt_or_skill(
         skill_dir, "dead_code",
         PROJECT_NAME=project_name,
     )
+
+    if project_path:
+        inventory = _prescan_project(project_path)
+        if inventory:
+            return f"{base_prompt}\n\n{inventory}\n"
+
+    return base_prompt
 
 
 def _run_claude_scan(prompt: str, project_path: str) -> str:
@@ -46,12 +132,12 @@ def _run_claude_scan(prompt: str, project_path: str) -> str:
         Claude's analysis text, or empty string on failure.
     """
     from app.cli_provider import run_command_streaming
-    from app.config import get_skill_timeout
+    from app.config import get_analysis_max_turns, get_skill_timeout
 
     return run_command_streaming(
         prompt, project_path,
         allowed_tools=["Read", "Glob", "Grep"],
-        max_turns=25,
+        max_turns=get_analysis_max_turns(),
         timeout=get_skill_timeout(),
     )
 
@@ -192,9 +278,11 @@ def run_dead_code(
 
     instance_path = Path(instance_dir)
 
-    # Step 1: Build prompt
+    # Step 1: Build prompt (with Python pre-scan for orientation context)
     notify_fn(f"\U0001f50d Scanning for dead code in {project_name}...")
-    prompt = build_dead_code_prompt(project_name, skill_dir=skill_dir)
+    prompt = build_dead_code_prompt(
+        project_name, project_path=project_path, skill_dir=skill_dir,
+    )
 
     # Step 2: Run Claude scan (read-only)
     try:
