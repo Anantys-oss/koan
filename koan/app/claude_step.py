@@ -591,15 +591,23 @@ def _build_pr_prompt(
     if commit_conventions:
         commit_subject_instruction = _load_commit_subject_instruction(skill_dir)
 
+    from app.prompt_guard import fence_external_data
+
     kwargs = dict(
-        TITLE=context["title"],
-        BODY=context.get("body", ""),
+        TITLE=fence_external_data(context["title"], "PR title"),
+        BODY=fence_external_data(context.get("body", ""), "PR body"),
         BRANCH=context["branch"],
         BASE=context["base"],
         DIFF=diff,
-        REVIEW_COMMENTS=context.get("review_comments", ""),
-        REVIEWS=context.get("reviews", ""),
-        ISSUE_COMMENTS=context.get("issue_comments", ""),
+        REVIEW_COMMENTS=fence_external_data(
+            context.get("review_comments", ""), "review comments"
+        ),
+        REVIEWS=fence_external_data(
+            context.get("reviews", ""), "reviews"
+        ),
+        ISSUE_COMMENTS=fence_external_data(
+            context.get("issue_comments", ""), "issue comments"
+        ),
         COMMIT_CONVENTIONS=commit_conventions,
         COMMIT_SUBJECT_INSTRUCTION=commit_subject_instruction,
     )

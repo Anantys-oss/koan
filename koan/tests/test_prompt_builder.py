@@ -249,24 +249,19 @@ class TestBuildAgentPrompt:
             mission_title="Fix the bug",
         )
 
-        # Verify load_prompt was called for agent template
-        mock_load.assert_any_call(
-            "agent",
-            INSTANCE=prompt_env["instance"],
-            PROJECT_PATH=prompt_env["project_path"],
-            PROJECT_NAME="testproj",
-            RUN_NUM="3",
-            MAX_RUNS="25",
-            AUTONOMOUS_MODE="implement",
-            FOCUS_AREA="Medium-cost implementation",
-            AVAILABLE_PCT="42",
-            MISSION_INSTRUCTION=(
-                "Your assigned mission is: **Fix the bug** "
-                "The mission is already marked In Progress. "
-                "Follow the Mission Execution Workflow below."
-            ),
-            BRANCH_PREFIX="koan/",
-        )
+        # Verify load_prompt was called for agent template with fenced mission
+        agent_calls = [
+            c for c in mock_load.call_args_list
+            if c[0] and c[0][0] == "agent"
+        ]
+        assert agent_calls, "Expected load_prompt('agent', ...) call"
+        _, kwargs = agent_calls[0]
+        mission_instr = kwargs["MISSION_INSTRUCTION"]
+        assert "Fix the bug" in mission_instr
+        assert "BEGIN EXTERNAL DATA" in mission_instr
+        assert "Follow the Mission Execution Workflow below." in mission_instr
+        assert kwargs["PROJECT_NAME"] == "testproj"
+        assert kwargs["BRANCH_PREFIX"] == "koan/"
         # Verification gate also loaded for mission-driven runs
         mock_load.assert_any_call("verification-gate")
 

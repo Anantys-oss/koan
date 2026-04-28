@@ -309,8 +309,11 @@ def _get_security_flagging_section(mission_title: str, autonomous_mode: str) -> 
 def _build_mission_instruction(mission_title: str, project_name: str) -> str:
     """Build the mission instruction text for the agent prompt."""
     if mission_title:
+        from app.prompt_guard import fence_external_data
+
+        fenced = fence_external_data(mission_title, "mission text")
         return (
-            f"Your assigned mission is: **{mission_title}** "
+            f"Your assigned mission is:\n\n{fenced}\n\n"
             "The mission is already marked In Progress. "
             "Follow the Mission Execution Workflow below."
         )
