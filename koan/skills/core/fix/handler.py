@@ -1,8 +1,10 @@
 """Koan fix skill -- queue a fix mission for a GitHub issue."""
 
+import json
 import re
 from typing import Optional, Tuple
 
+from app.github import run_gh
 from app.github_url_parser import parse_issue_url
 from app.missions import extract_now_flag
 from app.github_skill_helpers import (
@@ -15,7 +17,11 @@ from app.github_skill_helpers import (
 
 _LIMIT_PATTERN = re.compile(r'--limit[=\s]+(\d+)', re.IGNORECASE)
 _CLOSING_REF = re.compile(
-    r'(?:fix(?:e[sd])?|close[sd]?|resolve[sd]?)\s+#(\d+)',
+    r'(?:fix(?:es|ed)?|close[sd]?|resolve[sd]?)\s+#(\d+)',
+    re.IGNORECASE,
+)
+_CLOSING_URL = re.compile(
+    r'(?:fix(?:es|ed)?|close[sd]?|resolve[sd]?)\s+https?://github\.com/([^/\s]+)/([^/\s]+)/issues/(\d+)',
     re.IGNORECASE,
 )
 
@@ -59,9 +65,6 @@ def _list_open_issues(owner: str, repo: str, limit: Optional[int] = None) -> lis
     Returns list of dicts with 'number', 'title', and 'url' keys,
     ordered by most recently created first.
     """
-    import json
-    from app.github import run_gh
-
     gh_limit = str(limit) if limit else "100"
     output = run_gh(
         "issue", "list",
@@ -80,9 +83,6 @@ def _list_open_prs(owner: str, repo: str) -> list:
 
     Returns list of dicts with 'number' and 'body' keys.
     """
-    import json
-    from app.github import run_gh
-
     output = run_gh(
         "pr", "list",
         "--repo", f"{owner}/{repo}",
@@ -98,15 +98,13 @@ def _list_open_prs(owner: str, repo: str) -> list:
 def _issues_covered_by_prs(prs: list, owner: str, repo: str) -> set:
     """Return set of issue numbers referenced by open PRs via closing keywords."""
     covered = set()
-    url_pattern = re.compile(
-        rf'github\.com/{re.escape(owner)}/{re.escape(repo)}/issues/(\d+)'
-    )
     for pr in prs:
         body = pr.get("body") or ""
         for m in _CLOSING_REF.finditer(body):
             covered.add(int(m.group(1)))
-        for m in url_pattern.finditer(body):
-            covered.add(int(m.group(1)))
+        for m in _CLOSING_URL.finditer(body):
+            if m.group(1) == owner and m.group(2) == repo:
+                covered.add(int(m.group(3)))
     return covered
 
 
