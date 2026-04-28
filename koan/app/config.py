@@ -496,6 +496,66 @@ def get_post_mission_timeout() -> int:
     return _safe_int(config.get("post_mission_timeout", 300), 300)
 
 
+# Default effort levels per autonomous mode.
+# Keys are autonomous modes, values are Claude CLI --effort levels.
+# "medium" is the provider default when no flag is passed — omitted here
+# so no flag is emitted unless the user configures an override.
+_DEFAULT_EFFORT_MAP = {
+    "review": "low",
+    "implement": "",
+    "deep": "high",
+}
+
+# Valid effort levels (matches Claude CLI --effort flag).
+_VALID_EFFORT_LEVELS = {"low", "medium", "high", "max", ""}
+
+
+def get_effort_for_mode(autonomous_mode: str = "") -> str:
+    """Get the reasoning effort level for the given autonomous mode.
+
+    Reads ``effort:`` section from config.yaml. Supports per-mode overrides:
+
+        effort:
+          review: low
+          implement: medium
+          deep: high
+
+    Or a single value to apply to all modes:
+
+        effort: high
+
+    Set ``effort: ""`` or omit the section entirely to disable effort
+    control (no ``--effort`` flag will be emitted).
+
+    Args:
+        autonomous_mode: Current mode (review/implement/deep/wait).
+
+    Returns:
+        Effort level string (e.g. "low", "high", "max") or empty string.
+    """
+    config = _load_config()
+    effort_config = config.get("effort")
+
+    if effort_config is None:
+        # No config — use defaults
+        return _DEFAULT_EFFORT_MAP.get(autonomous_mode, "")
+
+    if isinstance(effort_config, str):
+        # Single value for all modes
+        level = effort_config.strip().lower()
+        return level if level in _VALID_EFFORT_LEVELS else ""
+
+    if isinstance(effort_config, dict):
+        # Per-mode overrides
+        level = str(effort_config.get(autonomous_mode, "")).strip().lower()
+        if level in _VALID_EFFORT_LEVELS:
+            return level
+        # Fall back to defaults if mode not in config
+        return _DEFAULT_EFFORT_MAP.get(autonomous_mode, "")
+
+    return ""
+
+
 def get_plan_review_config() -> dict:
     """Get plan review loop configuration from config.yaml.
 

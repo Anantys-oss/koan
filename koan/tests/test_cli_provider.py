@@ -1172,3 +1172,50 @@ class TestPluginDirSupport:
         provider = CLIProvider()
         assert provider.build_plugin_args(["/tmp/plugins"]) == []
         assert provider.build_plugin_args(None) == []
+
+
+# ---------------------------------------------------------------------------
+# Effort args
+# ---------------------------------------------------------------------------
+
+
+class TestEffortSupport:
+    """Test --effort flag support across providers."""
+
+    def test_claude_provider_valid_effort(self):
+        p = ClaudeProvider()
+        assert p.build_effort_args("high") == ["--effort", "high"]
+        assert p.build_effort_args("low") == ["--effort", "low"]
+        assert p.build_effort_args("medium") == ["--effort", "medium"]
+        assert p.build_effort_args("max") == ["--effort", "max"]
+
+    def test_claude_provider_empty_effort(self):
+        p = ClaudeProvider()
+        assert p.build_effort_args("") == []
+        assert p.build_effort_args() == []
+
+    def test_claude_provider_invalid_effort(self):
+        p = ClaudeProvider()
+        assert p.build_effort_args("turbo") == []
+
+    def test_copilot_provider_returns_empty(self):
+        p = CopilotProvider()
+        assert p.build_effort_args("high") == []
+
+    def test_local_provider_returns_empty(self):
+        p = LocalLLMProvider()
+        assert p.build_effort_args("high") == []
+
+    def test_build_full_command_includes_effort(self):
+        with patch("app.provider.get_provider", return_value=ClaudeProvider()), \
+             patch("app.config.get_skip_permissions", return_value=True):
+            cmd = build_full_command(prompt="test", effort="high")
+            assert "--effort" in cmd
+            idx = cmd.index("--effort")
+            assert cmd[idx + 1] == "high"
+
+    def test_build_full_command_no_effort(self):
+        with patch("app.provider.get_provider", return_value=ClaudeProvider()), \
+             patch("app.config.get_skip_permissions", return_value=True):
+            cmd = build_full_command(prompt="test")
+            assert "--effort" not in cmd

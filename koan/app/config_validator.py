@@ -75,6 +75,7 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "review_concurrency": _NESTED,
     "review_ignore": _NESTED,
     "automation_rules": _NESTED,
+    "effort": _NESTED,
 }
 
 # Sub-schemas for nested sections
@@ -200,6 +201,11 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
     "automation_rules": {
         "max_fires_per_minute": "int",
     },
+    "effort": {
+        "review": "str",
+        "implement": "str",
+        "deep": "str",
+    },
 }
 
 # Type name → Python type(s) for isinstance checks
@@ -278,7 +284,12 @@ def validate_config(config: dict) -> List[Tuple[str, str]]:
         if expected == _NESTED:
             if value is None:
                 continue
+            # Some keys accept both a scalar shorthand and a dict form
+            # (e.g. effort: "high" vs effort: {review: low, deep: high}).
+            # Accept strings silently for these keys.
             if not isinstance(value, dict):
+                if key == "effort" and isinstance(value, str):
+                    continue
                 warnings.append((key, f"'{key}' should be a mapping, got {type(value).__name__}"))
                 continue
             section_schema = SECTION_SCHEMAS.get(key)

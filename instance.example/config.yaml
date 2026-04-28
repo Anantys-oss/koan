@@ -119,6 +119,16 @@ skill_timeout: 7200
 # Default: 200.
 # skill_max_turns: 200
 
+# Reasoning effort level — controls Claude's --effort flag per autonomous mode.
+# Higher effort = deeper reasoning but more tokens. Accepts per-mode overrides
+# or a single value for all modes. Valid levels: low, medium, high, max.
+# Omit or set to "" to use no --effort flag (provider default).
+# Default: review=low, implement=(none), deep=high.
+# effort:
+#   review: low
+#   implement: medium
+#   deep: high
+
 # Post-mission pipeline timeout — maximum seconds for the steps that run after
 # a mission completes: verification, reflection, PR review learning, auto-merge.
 # Increase if post-mission steps are being cut short; decrease to keep the loop snappy.
