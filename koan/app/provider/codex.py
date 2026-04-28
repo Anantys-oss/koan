@@ -115,6 +115,7 @@ class CodexProvider(CLIProvider):
         plugin_dirs: Optional[List[str]] = None,
         skip_permissions: bool = False,
         system_prompt: str = "",
+        effort: str = "",
     ) -> List[str]:
         """Build a complete Codex CLI command.
 

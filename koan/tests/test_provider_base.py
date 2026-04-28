@@ -335,3 +335,35 @@ class TestPluginArgsOverride:
         p = PluginProvider()
         cmd = p.build_command(prompt="go")
         assert "--plugin-dir" not in cmd
+
+
+# ---------------------------------------------------------------------------
+# Effort args
+# ---------------------------------------------------------------------------
+
+
+class TestEffortArgs:
+    """Test build_effort_args base implementation and build_command wiring."""
+
+    def test_base_returns_empty(self):
+        p = StubProvider()
+        assert p.build_effort_args("high") == []
+
+    def test_build_command_passes_effort(self):
+        """build_command should call build_effort_args with the effort parameter."""
+
+        class EffortProvider(StubProvider):
+            def build_effort_args(self, effort=""):
+                if effort:
+                    return ["--effort", effort]
+                return []
+
+        p = EffortProvider()
+        cmd = p.build_command(prompt="go", effort="high")
+        assert "--effort" in cmd
+        assert "high" in cmd
+
+    def test_build_command_no_effort(self):
+        p = StubProvider()
+        cmd = p.build_command(prompt="go")
+        assert "--effort" not in cmd

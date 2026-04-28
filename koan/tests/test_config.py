@@ -834,3 +834,47 @@ class TestBackwardCompat:
         assert callable(get_chat_tools)
         assert callable(get_model_config)
         assert callable(get_branch_prefix)
+
+
+# --- get_effort_for_mode ---
+
+
+class TestGetEffortForMode:
+    def test_defaults_no_config(self):
+        from app.config import get_effort_for_mode
+        with _mock_config({}):
+            assert get_effort_for_mode("review") == "low"
+            assert get_effort_for_mode("implement") == ""
+            assert get_effort_for_mode("deep") == "high"
+            assert get_effort_for_mode("wait") == ""
+
+    def test_string_config_applies_to_all_modes(self):
+        from app.config import get_effort_for_mode
+        with _mock_config({"effort": "max"}):
+            assert get_effort_for_mode("review") == "max"
+            assert get_effort_for_mode("implement") == "max"
+            assert get_effort_for_mode("deep") == "max"
+
+    def test_dict_config_per_mode(self):
+        from app.config import get_effort_for_mode
+        with _mock_config({"effort": {"review": "low", "deep": "max"}}):
+            assert get_effort_for_mode("review") == "low"
+            assert get_effort_for_mode("deep") == "max"
+            # Missing mode falls back to default
+            assert get_effort_for_mode("implement") == ""
+
+    def test_empty_string_disables(self):
+        from app.config import get_effort_for_mode
+        with _mock_config({"effort": ""}):
+            assert get_effort_for_mode("deep") == ""
+
+    def test_invalid_string_returns_empty(self):
+        from app.config import get_effort_for_mode
+        with _mock_config({"effort": "turbo"}):
+            assert get_effort_for_mode("deep") == ""
+
+    def test_invalid_dict_value_falls_back(self):
+        from app.config import get_effort_for_mode
+        with _mock_config({"effort": {"deep": "turbo"}}):
+            # Invalid value in dict falls back to default
+            assert get_effort_for_mode("deep") == "high"

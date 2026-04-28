@@ -56,6 +56,14 @@ class ClaudeProvider(CLIProvider):
             return ["--max-turns", str(max_turns)]
         return []
 
+    # Valid effort levels for Claude Code CLI --effort flag.
+    _EFFORT_LEVELS = {"low", "medium", "high", "max"}
+
+    def build_effort_args(self, effort: str = "") -> List[str]:
+        if effort and effort in self._EFFORT_LEVELS:
+            return ["--effort", effort]
+        return []
+
     def build_mcp_args(self, configs: Optional[List[str]] = None) -> List[str]:
         if not configs:
             return []

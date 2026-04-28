@@ -111,6 +111,18 @@ class CLIProvider:
         """
         return []
 
+    def build_effort_args(self, effort: str = "") -> List[str]:
+        """Build args for reasoning effort control.
+
+        Args:
+            effort: Effort level (e.g. "low", "medium", "high", "max").
+                Empty string means no override (use provider default).
+
+        Returns:
+            CLI flags list. Base implementation returns empty (no-op).
+        """
+        return []
+
     def build_permission_args(self, skip_permissions: bool = False) -> List[str]:
         """Build args for permission skipping.
 
@@ -131,6 +143,7 @@ class CLIProvider:
         plugin_dirs: Optional[List[str]] = None,
         skip_permissions: bool = False,
         system_prompt: str = "",
+        effort: str = "",
     ) -> List[str]:
         """Build a complete CLI command from generic parameters.
 
@@ -139,6 +152,8 @@ class CLIProvider:
             system_prompt: Optional system prompt text. When provided and the
                 provider supports it, sent via a dedicated flag (e.g.,
                 ``--append-system-prompt``). Otherwise prepended to *prompt*.
+            effort: Reasoning effort level (e.g. "low", "medium", "high", "max").
+                Empty string means no override.
 
         Returns a list of strings suitable for subprocess.run().
         """
@@ -158,6 +173,7 @@ class CLIProvider:
         cmd.extend(self.build_max_turns_args(max_turns))
         cmd.extend(self.build_mcp_args(mcp_configs))
         cmd.extend(self.build_plugin_args(plugin_dirs))
+        cmd.extend(self.build_effort_args(effort))
         return cmd
 
     def check_quota_available(self, project_path: str, timeout: int = 15) -> Tuple[bool, str]:

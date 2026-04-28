@@ -133,11 +133,18 @@ class OllamaLaunchProvider(CLIProvider):
         max_turns: int = 0,
         mcp_configs: Optional[List[str]] = None,
         plugin_dirs: Optional[List[str]] = None,
+        skip_permissions: bool = False,
+        system_prompt: str = "",
+        effort: str = "",
     ) -> List[str]:
         """Build: ollama launch claude --model X -- <claude-flags>.
 
         The ``--`` separator divides Ollama args from Claude Code args.
         """
+        # Handle system prompt: prepend to user prompt (no dedicated flag).
+        if system_prompt:
+            prompt = system_prompt + "\n\n" + prompt
+
         # Ollama part: binary + launch subcommand + model
         cmd = ["ollama", "launch", "claude"]
         effective_model = model or self._get_default_model()
@@ -154,6 +161,7 @@ class OllamaLaunchProvider(CLIProvider):
         cmd.extend(self.build_max_turns_args(max_turns))
         cmd.extend(self.build_mcp_args(mcp_configs))
         cmd.extend(self.build_plugin_args(plugin_dirs))
+        cmd.extend(self.build_effort_args(effort))
         return cmd
 
     def get_env(self) -> Dict[str, str]:
