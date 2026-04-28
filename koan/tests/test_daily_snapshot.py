@@ -121,7 +121,7 @@ class TestUpdateDailySnapshot:
         snapshot = json.loads(
             (instance_dir / "metrics" / f"{today.isoformat()}.json").read_text()
         )
-        assert snapshot["missions"]["by_type"]["skill"] == 1
+        assert snapshot["missions"]["by_type"]["implement"] == 1
         assert snapshot["missions"]["by_type"]["autonomous"] == 1
 
     def test_snapshot_is_idempotent(self, instance_dir):

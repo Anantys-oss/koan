@@ -93,7 +93,7 @@ class TestParseLimit:
 # ---------------------------------------------------------------------------
 
 class TestListOpenIssues:
-    @patch("app.github.run_gh")
+    @patch(f"{_HANDLER}.run_gh")
     def test_uses_valid_gh_flags_only(self, mock_gh):
         """Regression: gh issue list does not support --order or --sort flags."""
         mock_gh.return_value = "[]"
@@ -103,7 +103,7 @@ class TestListOpenIssues:
         assert "--order" not in args, "--order is not a valid gh issue list flag"
         assert "--sort" not in args, "--sort is not a valid gh issue list flag"
 
-    @patch("app.github.run_gh")
+    @patch(f"{_HANDLER}.run_gh")
     def test_passes_limit(self, mock_gh):
         mock_gh.return_value = "[]"
         _list_open_issues("owner", "repo", limit=5)
@@ -113,7 +113,7 @@ class TestListOpenIssues:
         limit_idx = args.index("--limit")
         assert args[limit_idx + 1] == "5"
 
-    @patch("app.github.run_gh")
+    @patch(f"{_HANDLER}.run_gh")
     def test_default_limit_100(self, mock_gh):
         mock_gh.return_value = "[]"
         _list_open_issues("owner", "repo")
@@ -185,13 +185,13 @@ class TestIssuesCoveredByPrs:
 # ---------------------------------------------------------------------------
 
 class TestListOpenPrs:
-    @patch("app.github.run_gh")
+    @patch(f"{_HANDLER}.run_gh")
     def test_returns_parsed_json(self, mock_gh):
         mock_gh.return_value = '[{"number": 1, "body": "fix #2"}]'
         result = _list_open_prs("o", "r")
         assert result == [{"number": 1, "body": "fix #2"}]
 
-    @patch("app.github.run_gh")
+    @patch(f"{_HANDLER}.run_gh")
     def test_empty_output(self, mock_gh):
         mock_gh.return_value = ""
         assert _list_open_prs("o", "r") == []
