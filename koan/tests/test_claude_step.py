@@ -870,7 +870,8 @@ class TestBuildPrPrompt:
         args, kwargs = mock_lp.call_args
         assert args[0] == tmp_path
         assert args[1] == "rebase"
-        assert kwargs["TITLE"] == "feat: add scanner"
+        assert "feat: add scanner" in kwargs["TITLE"]
+        assert "BEGIN EXTERNAL DATA" in kwargs["TITLE"]
 
     @patch("app.claude_step.load_prompt_or_skill", return_value="system prompt")
     def test_without_skill_dir(self, mock_lp, context):
@@ -890,7 +891,9 @@ class TestBuildPrPrompt:
         assert kwargs["BRANCH"] == "koan/scanner"
         assert kwargs["BASE"] == "main"
         assert kwargs["DIFF"] == "+code"
-        assert kwargs["REVIEW_COMMENTS"] == "looks good"
+        # REVIEW_COMMENTS is fenced with data boundaries
+        assert "looks good" in kwargs["REVIEW_COMMENTS"]
+        assert "BEGIN EXTERNAL DATA" in kwargs["REVIEW_COMMENTS"]
 
     @patch("app.claude_step.load_prompt_or_skill", return_value="ok")
     def test_truncates_large_diff(self, mock_lp, context):
