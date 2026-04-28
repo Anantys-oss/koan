@@ -484,3 +484,37 @@ class TestSkillDispatch:
         assert project == "koan"
         assert cmd == "brainstorm"
         assert "Improve caching --tag cache" in args
+
+
+# ---------------------------------------------------------------------------
+# Runner — max_turns config
+# ---------------------------------------------------------------------------
+
+RUNNER_PATH = Path(__file__).parent.parent / "skills" / "core" / "brainstorm" / "brainstorm_runner.py"
+
+
+def _load_runner():
+    spec = importlib.util.spec_from_file_location("brainstorm_runner", str(RUNNER_PATH))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.fixture
+def runner():
+    return _load_runner()
+
+
+class TestDecomposeMaxTurns:
+    """Verify _decompose_topic uses configurable max_turns, not a hardcoded value."""
+
+    def test_max_turns_from_config(self, runner):
+        """max_turns should come from get_analysis_max_turns()."""
+        mock_run = MagicMock(return_value="decomposition output")
+        with patch.object(runner, "load_prompt_or_skill", return_value="prompt"), \
+             patch("app.cli_provider.run_command_streaming", mock_run), \
+             patch("app.config.get_analysis_max_turns", return_value=42), \
+             patch("app.config.get_skill_timeout", return_value=600):
+            result = runner._decompose_topic("/tmp/proj", "topic")
+
+        assert mock_run.call_args[1]["max_turns"] == 42

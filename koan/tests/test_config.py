@@ -450,6 +450,35 @@ class TestGetSkillMaxTurns:
             assert get_skill_max_turns() == 200
 
 
+# --- get_analysis_max_turns ---
+
+
+class TestGetAnalysisMaxTurns:
+    def test_default(self):
+        from app.config import get_analysis_max_turns
+
+        with _mock_config({}):
+            assert get_analysis_max_turns() == 50
+
+    def test_custom(self):
+        from app.config import get_analysis_max_turns
+
+        with _mock_config({"analysis_max_turns": 75}):
+            assert get_analysis_max_turns() == 75
+
+    def test_string_value_coerced(self):
+        from app.config import get_analysis_max_turns
+
+        with _mock_config({"analysis_max_turns": "100"}):
+            assert get_analysis_max_turns() == 100
+
+    def test_invalid_string_returns_default(self):
+        from app.config import get_analysis_max_turns
+
+        with _mock_config({"analysis_max_turns": "lots"}):
+            assert get_analysis_max_turns() == 50
+
+
 # --- get_mission_timeout ---
 
 
