@@ -103,12 +103,12 @@ def build_audit_prompt(
 def _run_claude_audit(prompt: str, project_path: str) -> str:
     """Run Claude CLI with read-only tools and return the output text."""
     from app.cli_provider import run_command_streaming
-    from app.config import get_skill_timeout
+    from app.config import get_analysis_max_turns, get_skill_timeout
 
     return run_command_streaming(
         prompt, project_path,
         allowed_tools=["Read", "Glob", "Grep", "Bash(git log:*)"],
-        max_turns=30,
+        max_turns=get_analysis_max_turns(),
         timeout=get_skill_timeout(),
     )
 
