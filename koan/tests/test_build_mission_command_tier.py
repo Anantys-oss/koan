@@ -37,7 +37,7 @@ class TestBuildMissionCommandTierOverride:
 
         def fake_build(prompt, allowed_tools, model, fallback, output_format,
                        max_turns=0, mcp_configs=None, plugin_dirs=None,
-                       system_prompt=""):
+                       system_prompt="", effort=""):
             captured["model"] = model
             captured["max_turns"] = max_turns
             return ["fake", "cmd"]
@@ -113,7 +113,7 @@ class TestBuildMissionCommandTierOverride:
 
             def fake_build(prompt, allowed_tools, model, fallback, output_format,
                            max_turns=0, mcp_configs=None, plugin_dirs=None,
-                           system_prompt=""):
+                           system_prompt="", effort=""):
                 captured["model"] = model
                 captured["max_turns"] = max_turns
                 return ["fake", "cmd"]
