@@ -655,8 +655,8 @@ class TestFenceExternalData:
 
     def test_clean_content_has_fences(self):
         result = fence_external_data("Fix the login bug", "PR body")
-        assert "--- BEGIN EXTERNAL DATA (PR body) ---" in result
-        assert "--- END EXTERNAL DATA (PR body) ---" in result
+        assert "--- BEGIN EXTERNAL DATA (PR body) [" in result
+        assert "--- END EXTERNAL DATA (PR body) [" in result
         assert "Fix the login bug" in result
 
     def test_suspicious_content_has_warning(self):
