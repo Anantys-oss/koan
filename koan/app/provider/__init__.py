@@ -236,8 +236,15 @@ def run_command(
     )
 
     if result.returncode != 0:
+        # Claude CLI often reports errors in stdout (context overflow,
+        # max turns, etc.) — include stdout when stderr is empty.
+        error_detail = (result.stderr or "").strip()
+        if not error_detail:
+            error_detail = (result.stdout or "").strip()[-300:]
+        else:
+            error_detail = error_detail[:300]
         raise RuntimeError(
-            f"CLI invocation failed: {result.stderr[:300]}"
+            f"CLI invocation failed: {error_detail}"
         )
 
     from app.claude_step import strip_cli_noise
@@ -305,8 +312,15 @@ def run_command_streaming(
 
     stdout_text = "\n".join(lines)
     if proc.returncode != 0:
+        # Claude CLI often reports errors in stdout — include it when
+        # stderr is empty (mirrors run_command behavior).
+        error_detail = stderr_text.strip()
+        if not error_detail:
+            error_detail = stdout_text.strip()[-300:]
+        else:
+            error_detail = error_detail[:300]
         raise RuntimeError(
-            f"CLI invocation failed: {stderr_text[:300]}"
+            f"CLI invocation failed: {error_detail}"
         )
 
     # Notify user when max turns ceiling was hit so they know how to raise it
