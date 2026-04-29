@@ -48,6 +48,7 @@ class TestBuildMissionCommandTierOverride:
         with patch("app.config.get_model_config", return_value=models), \
              patch("app.config.get_mission_tools", return_value="Read,Glob"), \
              patch("app.config.get_mcp_configs", return_value=[]), \
+             patch("app.config.get_effort_for_mode", return_value=""), \
              patch("app.cli_provider.build_full_command", side_effect=fake_build), \
              patch("app.config.get_complexity_routing_config",
                    return_value=routing_cfg if routing_cfg is not None else _routing_cfg()):
@@ -122,6 +123,7 @@ class TestBuildMissionCommandTierOverride:
             with patch("app.config.get_model_config", return_value=models), \
                  patch("app.config.get_mission_tools", return_value="Read,Glob"), \
                  patch("app.config.get_mcp_configs", return_value=[]), \
+                 patch("app.config.get_effort_for_mode", return_value=""), \
                  patch("app.cli_provider.build_full_command", side_effect=fake_build), \
                  patch("app.config.get_complexity_routing_config", return_value=None):
                 build_mission_command(
