@@ -332,6 +332,7 @@ class TestStaleModuleReload:
         from app.skills import _refresh_stale_app_modules, _MODULES_TO_REFRESH
 
         target = _MODULES_TO_REFRESH[0]
+        saved = {name: _sys.modules.get(name) for name in _MODULES_TO_REFRESH}
         sentinel = type("StaleModule", (), {"__name__": target, "__spec__": None})()
         _sys.modules[target] = sentinel
 
@@ -340,8 +341,11 @@ class TestStaleModuleReload:
                 _refresh_stale_app_modules()
             assert target not in _sys.modules or _sys.modules[target] is not sentinel
         finally:
-            import importlib as _il
-            _sys.modules[target] = _il.import_module(target)
+            for name, orig in saved.items():
+                if orig is not None:
+                    _sys.modules[name] = orig
+                else:
+                    _sys.modules.pop(name, None)
 
 
 # ---------------------------------------------------------------------------
