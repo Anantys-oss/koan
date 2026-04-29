@@ -890,7 +890,8 @@ class TestBuildPrPrompt:
         _, kwargs = mock_lp.call_args
         assert kwargs["BRANCH"] == "koan/scanner"
         assert kwargs["BASE"] == "main"
-        assert kwargs["DIFF"] == "+code"
+        assert "+code" in kwargs["DIFF"]
+        assert "BEGIN EXTERNAL DATA" in kwargs["DIFF"]
         # REVIEW_COMMENTS is fenced with data boundaries
         assert "looks good" in kwargs["REVIEW_COMMENTS"]
         assert "BEGIN EXTERNAL DATA" in kwargs["REVIEW_COMMENTS"]
@@ -912,7 +913,8 @@ class TestBuildPrPrompt:
         context["diff"] = "+small change"
         _build_pr_prompt("recreate", context)
         _, kwargs = mock_lp.call_args
-        assert kwargs["DIFF"] == "+small change"
+        assert "+small change" in kwargs["DIFF"]
+        assert "BEGIN EXTERNAL DATA" in kwargs["DIFF"]
 
 
 # ---------- _push_with_pr_fallback ----------

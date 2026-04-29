@@ -598,7 +598,7 @@ def _build_pr_prompt(
         BODY=fence_external_data(context.get("body", ""), "PR body"),
         BRANCH=context["branch"],
         BASE=context["base"],
-        DIFF=diff,
+        DIFF=fence_external_data(diff, "PR diff", scan=False),
         REVIEW_COMMENTS=fence_external_data(
             context.get("review_comments", ""), "review comments"
         ),
