@@ -851,7 +851,20 @@ class TestRunCommandStreaming:
              patch("app.provider.build_full_command", return_value=["fake"]), \
              patch("app.cli_exec.popen_cli", return_value=(proc, cleanup)), \
              patch("app.claude_step.strip_cli_noise", side_effect=lambda s: s):
-            with pytest.raises(RuntimeError, match="CLI invocation failed"):
+            with pytest.raises(RuntimeError, match="err"):
+                run_command_streaming("hi", "/tmp", [])
+
+    def test_failure_includes_stdout_when_stderr_empty(self):
+        """When stderr is empty, stdout is included in the error."""
+        from app.provider import run_command_streaming
+        proc = self._make_proc(
+            ["Error: context window exceeded\n"], stderr="", returncode=1,
+        )
+        cleanup = MagicMock()
+        with patch("app.config.get_model_config", return_value={"chat": "m", "fallback": "f"}), \
+             patch("app.provider.build_full_command", return_value=["fake"]), \
+             patch("app.cli_exec.popen_cli", return_value=(proc, cleanup)):
+            with pytest.raises(RuntimeError, match="context window exceeded"):
                 run_command_streaming("hi", "/tmp", [])
 
     def test_max_turns_returns_partial_output(self, capsys):
