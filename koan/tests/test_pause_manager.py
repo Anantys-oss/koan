@@ -874,6 +874,7 @@ class TestPauseManagerCLI:
         try:
             with pytest.MonkeyPatch.context() as mp:
                 mp.setattr(sys, "argv", argv)
+                sys.modules.pop("app.pause_manager", None)
                 runpy.run_module("app.pause_manager", run_name="__main__")
         except SystemExit as e:
             exit_code = e.code if isinstance(e.code, int) else 1

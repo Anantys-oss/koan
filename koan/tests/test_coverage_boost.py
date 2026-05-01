@@ -184,6 +184,7 @@ class TestFocusManagerCLI:
         try:
             with pytest.MonkeyPatch.context() as mp:
                 mp.setattr(sys, "argv", argv)
+                sys.modules.pop("app.focus_manager", None)
                 runpy.run_module("app.focus_manager", run_name="__main__")
         except SystemExit as e:
             exit_code = e.code if isinstance(e.code, int) else 1
@@ -235,6 +236,7 @@ class TestPickMissionCLI:
         try:
             with pytest.MonkeyPatch.context() as mp:
                 mp.setattr(sys, "argv", argv)
+                sys.modules.pop("app.pick_mission", None)
                 runpy.run_module("app.pick_mission", run_name="__main__")
         except SystemExit as e:
             exit_code = e.code if isinstance(e.code, int) else 1
@@ -374,6 +376,7 @@ class TestQuotaHandlerCLI:
         try:
             with pytest.MonkeyPatch.context() as mp:
                 mp.setattr(sys, "argv", argv)
+                sys.modules.pop("app.quota_handler", None)
                 runpy.run_module("app.quota_handler", run_name="__main__")
         except SystemExit as e:
             exit_code = e.code if isinstance(e.code, int) else 1
