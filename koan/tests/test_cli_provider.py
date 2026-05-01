@@ -1000,7 +1000,7 @@ class TestRunCommand:
     @patch("app.config.get_model_config", return_value={"chat": "sonnet", "fallback": "haiku"})
     def test_failure_raises_runtime_error(self, mock_models, mock_run):
         """Non-zero exit raises RuntimeError with stderr snippet."""
-        mock_run.return_value = MagicMock(returncode=1, stderr="some error message")
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="some error message")
         with pytest.raises(RuntimeError, match="CLI invocation failed"):
             run_command(
                 prompt="analyze this",
