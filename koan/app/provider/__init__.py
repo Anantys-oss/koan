@@ -21,6 +21,7 @@ Package structure:
 """
 
 import os
+import re
 import subprocess
 import sys
 from typing import List, Optional
@@ -219,6 +220,26 @@ def build_full_command(
     )
 
 
+_MAX_TURNS_RE = re.compile(r"Reached max turns", re.IGNORECASE)
+
+
+def _is_max_turns_error(stdout: str) -> bool:
+    """Return True if the CLI output indicates a max-turns limit was hit."""
+    return bool(_MAX_TURNS_RE.search(stdout))
+
+
+def _warn_max_turns(max_turns: int, config_key: str = "skill_max_turns") -> None:
+    """Print a user-visible warning about max turns being hit."""
+    print(
+        f"\n⚠️  Claude hit the max turns limit ({max_turns}). "
+        f"The output may be incomplete.\n"
+        f"   To increase: set {config_key} in instance/config.yaml "
+        f"(current: {max_turns}).\n",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
 def run_command(
     prompt: str,
     project_path: str,
@@ -233,8 +254,13 @@ def run_command(
     configured CLI provider with a prompt and get back text output.
     Combines build_full_command + subprocess execution + error handling.
 
+    When the CLI hits its max-turns limit, the partial output is returned
+    instead of raising — the caller can still extract useful results from
+    an incomplete session.
+
     Raises:
-        RuntimeError: If the command exits with non-zero code.
+        RuntimeError: If the command exits with non-zero code (except
+            max-turns, which returns partial output).
     """
     from app.config import get_model_config
 
@@ -256,6 +282,12 @@ def run_command(
     )
 
     if result.returncode != 0:
+        # Max-turns is a graceful limit, not a hard error — return
+        # whatever Claude produced so callers can extract partial results.
+        if _is_max_turns_error(result.stdout or ""):
+            _warn_max_turns(max_turns)
+            from app.claude_step import strip_cli_noise
+            return strip_cli_noise(result.stdout.strip())
         raise RuntimeError(
             _format_cli_error(result.returncode, result.stdout, result.stderr)
         )
@@ -279,8 +311,13 @@ def run_command_streaming(
     This enables the skill dispatch layer in run.py to pipe the output
     into ``pending.md``, making it visible via ``/live``.
 
+    When the CLI hits its max-turns limit, the partial output is returned
+    instead of raising — the caller can still extract useful results from
+    an incomplete session.
+
     Raises:
-        RuntimeError: If the command exits with non-zero code.
+        RuntimeError: If the command exits with non-zero code (except
+            max-turns, which returns partial output).
     """
     from app.config import get_model_config
 
@@ -325,21 +362,20 @@ def run_command_streaming(
 
     stdout_text = "\n".join(lines)
     if proc.returncode != 0:
+        # Max-turns is a graceful limit — return partial output so callers
+        # can extract useful results from an incomplete session.
+        if _is_max_turns_error(stdout_text):
+            _warn_max_turns(max_turns)
+            from app.claude_step import strip_cli_noise
+            return strip_cli_noise(stdout_text.strip())
         raise RuntimeError(
             _format_cli_error(proc.returncode, stdout_text, stderr_text)
         )
 
-    # Notify user when max turns ceiling was hit so they know how to raise it
-    import re
-    if re.search(r"Reached max turns", stdout_text, re.IGNORECASE):
-        print(
-            f"\n⚠️  Claude hit the max turns limit ({max_turns}). "
-            f"The mission may be incomplete.\n"
-            f"   To increase: set skill_max_turns in instance/config.yaml "
-            f"(current: {max_turns}).\n",
-            file=sys.stderr,
-            flush=True,
-        )
+    # Warn on max-turns even when exit code is 0 (edge case: Claude
+    # completed its last allowed turn successfully)
+    if _is_max_turns_error(stdout_text):
+        _warn_max_turns(max_turns)
 
     from app.claude_step import strip_cli_noise
     return strip_cli_noise(stdout_text.strip())

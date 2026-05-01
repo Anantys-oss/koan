@@ -801,6 +801,22 @@ class TestRunCommand:
             assert "stdout=auth token expired" in msg
             assert "stderr=" not in msg
 
+    def test_max_turns_returns_partial_output(self, capsys):
+        """When CLI exits non-zero due to max turns, return partial output."""
+        from app.provider import run_command
+        result = MagicMock(
+            returncode=1,
+            stdout="partial result here\nError: Reached max turns (10)",
+            stderr="",
+        )
+        with patch("app.config.get_model_config", return_value={"chat": "m", "fallback": "f"}), \
+             patch("app.provider.build_full_command", return_value=["fake"]), \
+             patch("app.cli_exec.run_cli_with_retry", return_value=result), \
+             patch("app.claude_step.strip_cli_noise", side_effect=lambda s: s):
+            out = run_command("hi", "/tmp", [])
+        assert "partial result here" in out
+        assert "max turns limit" in capsys.readouterr().err
+
 
 class TestRunCommandStreaming:
     def _make_proc(self, stdout_lines, stderr="", returncode=0):
@@ -838,6 +854,22 @@ class TestRunCommandStreaming:
             with pytest.raises(RuntimeError, match="CLI invocation failed"):
                 run_command_streaming("hi", "/tmp", [])
 
+    def test_max_turns_returns_partial_output(self, capsys):
+        """When CLI exits non-zero due to max turns, return partial output."""
+        from app.provider import run_command_streaming
+        proc = self._make_proc(
+            ["partial report\n", "Error: Reached max turns (50)\n"],
+            returncode=1,
+        )
+        cleanup = MagicMock()
+        with patch("app.config.get_model_config", return_value={"chat": "m", "fallback": "f"}), \
+             patch("app.provider.build_full_command", return_value=["fake"]), \
+             patch("app.cli_exec.popen_cli", return_value=(proc, cleanup)), \
+             patch("app.claude_step.strip_cli_noise", side_effect=lambda s: s):
+            out = run_command_streaming("hi", "/tmp", [], max_turns=50)
+        assert "partial report" in out
+        assert "max turns limit" in capsys.readouterr().err
+
     def test_timeout_raises(self):
         import subprocess as sp
         from app.provider import run_command_streaming
@@ -851,7 +883,8 @@ class TestRunCommandStreaming:
                 run_command_streaming("hi", "/tmp", [], timeout=1)
         proc.kill.assert_called_once()
 
-    def test_max_turns_warning(self, capsys):
+    def test_max_turns_warning_exit_zero(self, capsys):
+        """When CLI exits 0 but output mentions max turns, still warn."""
         from app.provider import run_command_streaming
         proc = self._make_proc(["Reached max turns limit\n"])
         cleanup = MagicMock()
