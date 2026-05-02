@@ -8,6 +8,7 @@ gitignored and cannot be recovered from version control.
 Used as pre/post guards around Claude CLI invocations.
 """
 
+import subprocess
 import sys
 from pathlib import Path
 from typing import List, Optional, Set, Tuple
@@ -90,6 +91,77 @@ def check_core_files(
         else:
             warnings.append(f"Core file disappeared: {path}")
     return warnings
+
+
+def _is_git_tracked(project_path: Path, relpath: str) -> bool:
+    """Check whether *relpath* is tracked by git in *project_path*."""
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", relpath],
+            cwd=str(project_path),
+            capture_output=True,
+            timeout=10,
+        )
+        return result.returncode == 0
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+
+
+def _git_restore(project_path: Path, relpath: str) -> bool:
+    """Attempt to restore *relpath* via ``git checkout -- <file>``.
+
+    Returns True if the file was successfully restored.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "checkout", "--", relpath],
+            cwd=str(project_path),
+            capture_output=True,
+            timeout=10,
+        )
+        return result.returncode == 0 and (project_path / relpath).is_file()
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+
+
+def recover_project_files(
+    missing: Set[str],
+    project_path: Optional[str] = None,
+) -> Tuple[List[str], List[str]]:
+    """Attempt to recover missing project files via git checkout.
+
+    Only project-scoped files (``project:*``) that are tracked by git
+    are eligible for recovery.  Instance-level files (projects.yaml,
+    instance/*) are unversioned and cannot be restored automatically.
+
+    Returns ``(recovered, unrecoverable)`` — two lists of human-readable
+    descriptions.
+    """
+    recovered: List[str] = []
+    unrecoverable: List[str] = []
+
+    if not project_path:
+        # Without a project path, nothing can be restored via git.
+        for path in sorted(missing):
+            if path.startswith("project:"):
+                unrecoverable.append(f"Project file disappeared: {path[len('project:'):]}")
+            else:
+                unrecoverable.append(f"Core file disappeared: {path}")
+        return recovered, unrecoverable
+
+    proj = Path(project_path)
+    for path in sorted(missing):
+        if path.startswith("project:"):
+            relpath = path[len("project:"):]
+            if _is_git_tracked(proj, relpath) and _git_restore(proj, relpath):
+                recovered.append(relpath)
+            else:
+                unrecoverable.append(f"Project file disappeared: {relpath}")
+        else:
+            # Instance-level / KOAN_ROOT files — not recoverable via git.
+            unrecoverable.append(f"Core file disappeared: {path}")
+
+    return recovered, unrecoverable
 
 
 def log_integrity_warnings(warnings: List[str]) -> None:
