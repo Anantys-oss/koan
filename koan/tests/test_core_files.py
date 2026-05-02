@@ -1,6 +1,7 @@
 """Tests for core_files — unversioned file integrity checker."""
 
 import os
+import subprocess
 import pytest
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from app.core_files import (
     snapshot_core_files,
     check_core_files,
     log_integrity_warnings,
+    recover_project_files,
 )
 
 
@@ -131,6 +133,90 @@ class TestCheckCoreFiles:
         before = snapshot_core_files(str(tmp_path))
         warnings = check_core_files(str(tmp_path), before)
         assert warnings == []
+
+
+@pytest.fixture
+def git_project(tmp_path):
+    """Create a project directory with a git repo and tracked CLAUDE.md."""
+    proj = tmp_path / "gitproject"
+    proj.mkdir()
+    subprocess.run(["git", "init"], cwd=str(proj), capture_output=True, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@test.com"],
+        cwd=str(proj), capture_output=True, check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test"],
+        cwd=str(proj), capture_output=True, check=True,
+    )
+    (proj / "CLAUDE.md").write_text("# Project\n")
+    (proj / ".env").write_text("SECRET=xxx\n")
+    subprocess.run(["git", "add", "CLAUDE.md"], cwd=str(proj), capture_output=True, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "init"],
+        cwd=str(proj), capture_output=True, check=True,
+    )
+    return proj
+
+
+class TestRecoverProjectFiles:
+    def test_recover_tracked_file(self, git_project):
+        """CLAUDE.md is tracked — should be auto-recovered via git checkout."""
+        (git_project / "CLAUDE.md").unlink()
+        assert not (git_project / "CLAUDE.md").exists()
+
+        missing = {"project:CLAUDE.md"}
+        recovered, unrecoverable = recover_project_files(missing, str(git_project))
+
+        assert recovered == ["CLAUDE.md"]
+        assert unrecoverable == []
+        assert (git_project / "CLAUDE.md").exists()
+
+    def test_untracked_file_not_recovered(self, git_project):
+        """.env is not tracked — cannot be recovered."""
+        (git_project / ".env").unlink()
+
+        missing = {"project:.env"}
+        recovered, unrecoverable = recover_project_files(missing, str(git_project))
+
+        assert recovered == []
+        assert len(unrecoverable) == 1
+        assert ".env" in unrecoverable[0]
+
+    def test_core_files_not_recoverable(self, git_project):
+        """Instance-level files can't be recovered via git."""
+        missing = {"projects.yaml", "instance/soul.md"}
+        recovered, unrecoverable = recover_project_files(missing, str(git_project))
+
+        assert recovered == []
+        assert len(unrecoverable) == 2
+
+    def test_mixed_recovery(self, git_project):
+        """Mix of recoverable and unrecoverable files."""
+        (git_project / "CLAUDE.md").unlink()
+
+        missing = {"project:CLAUDE.md", "project:.env", "projects.yaml"}
+        # .env still exists, but we're testing the logic with the set
+        (git_project / ".env").unlink()
+        recovered, unrecoverable = recover_project_files(missing, str(git_project))
+
+        assert "CLAUDE.md" in recovered
+        assert any(".env" in u for u in unrecoverable)
+        assert any("projects.yaml" in u for u in unrecoverable)
+
+    def test_no_project_path(self):
+        """Without project_path, all items are unrecoverable."""
+        missing = {"project:CLAUDE.md", "projects.yaml"}
+        recovered, unrecoverable = recover_project_files(missing, None)
+
+        assert recovered == []
+        assert len(unrecoverable) == 2
+
+    def test_empty_missing_set(self, git_project):
+        """No missing files — nothing to do."""
+        recovered, unrecoverable = recover_project_files(set(), str(git_project))
+        assert recovered == []
+        assert unrecoverable == []
 
 
 class TestLogIntegrityWarnings:
