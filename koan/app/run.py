@@ -1139,9 +1139,15 @@ def _handle_skill_dispatch(
             # Verify core files survived skill execution
             skill_integrity = check_core_files(koan_root, skill_core_snapshot, project_path)
             if skill_integrity:
-                log_integrity_warnings(skill_integrity)
-                log("error", f"Core file integrity check failed after skill: {len(skill_integrity)} file(s) missing")
-                exit_code = 1
+                from app.core_files import recover_project_files
+                missing = skill_core_snapshot - snapshot_core_files(koan_root, project_path)
+                recovered, unrecoverable = recover_project_files(missing, project_path)
+                if recovered:
+                    log("core_files", f"Auto-recovered {len(recovered)} file(s): {', '.join(recovered)}")
+                if unrecoverable:
+                    log_integrity_warnings(unrecoverable)
+                    log("error", f"Core file integrity check failed after skill: {len(unrecoverable)} file(s) unrecoverable")
+                    exit_code = 1
         except KeyboardInterrupt:
             log("error", "Skill dispatch interrupted by user")
             _finalize_mission(instance, mission_title, project_name, 1)
@@ -1860,9 +1866,15 @@ def _run_iteration(
         log("koan", "Running core file integrity check...")
         integrity_warnings = check_core_files(koan_root, core_snapshot, project_path)
         if integrity_warnings:
-            log_integrity_warnings(integrity_warnings)
-            log("error", f"Core file integrity check failed: {len(integrity_warnings)} file(s) missing")
-            claude_exit = 1
+            from app.core_files import recover_project_files
+            missing = core_snapshot - snapshot_core_files(koan_root, project_path)
+            recovered, unrecoverable = recover_project_files(missing, project_path)
+            if recovered:
+                log("core_files", f"Auto-recovered {len(recovered)} file(s): {', '.join(recovered)}")
+            if unrecoverable:
+                log_integrity_warnings(unrecoverable)
+                log("error", f"Core file integrity check failed: {len(unrecoverable)} file(s) unrecoverable")
+                claude_exit = 1
 
         # Parse and display output
         try:
