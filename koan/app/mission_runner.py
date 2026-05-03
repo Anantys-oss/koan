@@ -919,8 +919,8 @@ def run_post_mission(
             stderr_file=stderr_file,
         )
         if quota_result is QUOTA_CHECK_UNRELIABLE:
-            log(f"⚠️  Quota check unreliable for {project_name} — "
-                "could not read log files, skipping quota detection")
+            _log_runner("quota", f"⚠️  Quota check unreliable for {project_name} — "
+                        "could not read log files, skipping quota detection")
             tracker.record("quota_check", "skipped", "unreliable — log files unreadable")
         elif quota_result is not None:
             result["quota_exhausted"] = True
