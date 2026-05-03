@@ -76,6 +76,13 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "review_ignore": _NESTED,
     "automation_rules": _NESTED,
     "effort": _NESTED,
+    "analysis_max_turns": "int",
+    "complexity_routing": _NESTED,
+    "focus": "bool",
+    "github_url": "str",
+    "max_parallel_sessions": "int",
+    "memory": _NESTED,
+    "audit": _NESTED,
 }
 
 # Sub-schemas for nested sections
@@ -141,6 +148,7 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
         "session_token_limit": "int",
         "weekly_token_limit": "int",
         "budget_mode": "str",
+        "pricing": "dict",
     },
     "email": {
         "enabled": "bool",
@@ -205,6 +213,22 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
         "review": "str",
         "implement": "str",
         "deep": "str",
+    },
+    "complexity_routing": {
+        "enabled": "bool",
+        "tiers": "dict",
+    },
+    "memory": {
+        "learnings_max_lines": "int",
+        "learnings_hard_cap": "int",
+        "global_personality_max": "int",
+        "global_emotional_max": "int",
+        "compaction_interval_hours": "int",
+    },
+    "audit": {
+        "enabled": "bool",
+        "max_size_mb": "int",
+        "redact_patterns": "list",
     },
 }
 
