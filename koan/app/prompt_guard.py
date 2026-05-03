@@ -194,12 +194,16 @@ def scan_mission_text(text: str) -> GuardResult:
             matched_categories=matched_categories,
         )
 
-    return GuardResult(
-        blocked=bool(warnings),
-        reason=warnings[0] if len(warnings) == 1 else None,
-        warnings=warnings if warnings else None,
-        matched_categories=matched_categories,
-    )
+    if warnings:
+        reason = warnings[0] if len(warnings) == 1 else "; ".join(warnings)
+        return GuardResult(
+            blocked=True,
+            reason=reason,
+            warnings=warnings,
+            matched_categories=matched_categories,
+        )
+
+    return GuardResult(blocked=False)
 
 
 def scan_external_data(text: str) -> GuardResult:
