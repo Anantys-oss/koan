@@ -194,10 +194,15 @@ def run_cli_with_retry(
 
         if attempt < max_attempts - 1:
             delay = backoff[min(attempt, len(backoff) - 1)]
+            err_detail = (result.stderr or "").strip()
+            if not err_detail:
+                err_detail = (result.stdout or "").strip()[-200:]
+            else:
+                err_detail = err_detail[:200]
             print(
                 f"[cli_exec] Retryable CLI error "
                 f"(attempt {attempt + 1}/{max_attempts}): "
-                f"{(result.stderr or '')[:200]} "
+                f"{err_detail} "
                 f"— retrying in {delay}s",
                 file=sys.stderr,
             )
