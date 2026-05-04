@@ -37,6 +37,7 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "branch_prefix": "str",
     "skill_timeout": "int",
     "skill_max_turns": "int",
+    "analysis_max_turns": "int",
     "mission_timeout": "int",
     "first_output_timeout": "int",
     "post_mission_timeout": "int",

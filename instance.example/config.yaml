@@ -119,6 +119,15 @@ skill_timeout: 7200
 # Default: 200.
 # skill_max_turns: 200
 
+# Analysis max turns — maximum turns for read-only analysis skills
+# Controls how many turns Claude CLI is allowed during /dead_code,
+# /tech_debt, /audit, /brainstorm, and /deepplan invocations. These
+# skills only use read tools (Read, Glob, Grep). The dead_code skill
+# includes Python AST pre-analysis to reduce turn consumption, but
+# large codebases may still need more headroom.
+# Default: 75.
+# analysis_max_turns: 75
+
 # Reasoning effort level — controls Claude's --effort flag per autonomous mode.
 # Higher effort = deeper reasoning but more tokens. Accepts per-mode overrides
 # or a single value for all modes. Valid levels: low, medium, high, max.

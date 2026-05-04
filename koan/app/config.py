@@ -557,13 +557,13 @@ def get_analysis_max_turns() -> int:
     than implementation skills, but the previous hardcoded defaults (25-30)
     were too tight for non-trivial codebases.
 
-    Config key: analysis_max_turns (default: 50).
+    Config key: analysis_max_turns (default: 75).
 
     Returns:
         Maximum number of turns.
     """
     config = _load_config()
-    return _safe_int(config.get("analysis_max_turns", 50), 50)
+    return _safe_int(config.get("analysis_max_turns", 75), 75)
 
 
 def get_post_mission_timeout() -> int:

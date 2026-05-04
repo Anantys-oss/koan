@@ -17,11 +17,12 @@ CLI:
         --project-path <path> --project-name <name> --instance-dir <dir>
 """
 
+import ast
 import os
 import re
 from collections import Counter
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from app.prompts import load_prompt_or_skill
 
@@ -97,6 +98,148 @@ def _prescan_project(project_path: str) -> str:
     return "\n".join(lines)
 
 
+# Max files to analyze with AST — avoid spending too long on huge monorepos
+_MAX_AST_FILES = 500
+
+# Max candidates to report — keeps prompt size manageable
+_MAX_CANDIDATES = 40
+
+
+def _collect_python_symbols(
+    root: Path,
+) -> Tuple[Dict[str, List[Tuple[str, int, str]]], List[Tuple[str, str]]]:
+    """Parse Python files via AST to collect defined symbols and file contents.
+
+    Returns:
+        (defined, file_contents) where:
+        - defined maps symbol_name → [(rel_path, lineno, kind)]
+        - file_contents is [(rel_path, text)] for reference searching
+    """
+    defined: Dict[str, List[Tuple[str, int, str]]] = {}
+    file_contents: List[Tuple[str, str]] = []
+    file_count = 0
+
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [
+            d for d in dirnames
+            if d not in _SKIP_DIRS and not d.endswith(".egg-info")
+        ]
+        for fname in filenames:
+            if not fname.endswith(".py"):
+                continue
+            file_count += 1
+            if file_count > _MAX_AST_FILES:
+                return defined, file_contents
+
+            fpath = Path(dirpath) / fname
+            try:
+                text = fpath.read_text(errors="replace")
+            except OSError:
+                continue
+
+            rel = str(fpath.relative_to(root))
+            if rel.startswith("./"):
+                rel = rel[2:]
+            file_contents.append((rel, text))
+
+            try:
+                tree = ast.parse(text, filename=rel)
+            except SyntaxError:
+                continue
+
+            for node in ast.iter_child_nodes(tree):
+                # Only collect top-level definitions (not nested helpers)
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    name = node.name
+                    # Skip private/dunder, test functions, and common patterns
+                    if name.startswith("_") or name.startswith("test"):
+                        continue
+                    defined.setdefault(name, []).append((rel, node.lineno, "function"))
+                elif isinstance(node, ast.ClassDef):
+                    name = node.name
+                    if name.startswith("_"):
+                        continue
+                    defined.setdefault(name, []).append((rel, node.lineno, "class"))
+
+    return defined, file_contents
+
+
+def _find_unreferenced_symbols(
+    defined: Dict[str, List[Tuple[str, int, str]]],
+    file_contents: List[Tuple[str, str]],
+) -> List[Tuple[str, str, int, str]]:
+    """Cross-reference defined symbols against all file contents.
+
+    Returns list of (name, rel_path, lineno, kind) for symbols that appear
+    in no other file besides their definition file.
+    """
+    candidates = []
+
+    for name, locations in defined.items():
+        # Skip very short names (high false-positive rate)
+        if len(name) <= 2:
+            continue
+
+        # Files where this symbol is defined
+        def_files = {loc[0] for loc in locations}
+
+        # Check if the name appears in any non-definition file
+        found_elsewhere = False
+        for rel, text in file_contents:
+            if rel in def_files:
+                continue
+            if name in text:
+                found_elsewhere = True
+                break
+
+        if not found_elsewhere:
+            for rel, lineno, kind in locations:
+                candidates.append((name, rel, lineno, kind))
+
+    # Sort by file path then line number for readability
+    candidates.sort(key=lambda c: (c[1], c[2]))
+    return candidates[:_MAX_CANDIDATES]
+
+
+def _prescan_python_references(project_path: str) -> str:
+    """Analyze Python files to find symbols with no cross-file references.
+
+    Uses AST parsing for definitions and simple text search for references.
+    This pre-computation saves Claude 10-20+ turns of manual Grep work.
+    """
+    root = Path(project_path)
+    defined, file_contents = _collect_python_symbols(root)
+
+    if not defined:
+        return ""
+
+    candidates = _find_unreferenced_symbols(defined, file_contents)
+    if not candidates:
+        return ""
+
+    lines = [
+        "## Pre-scan: Candidate Dead Code (Python AST analysis)",
+        "",
+        f"Analyzed {len(file_contents)} Python files. "
+        f"Found {len(candidates)} public symbols defined but never "
+        f"referenced in any other source file:",
+        "",
+    ]
+    for name, rel, lineno, kind in candidates:
+        lines.append(f"- `{name}` ({kind}) — {rel}:{lineno}")
+
+    lines.append("")
+    lines.append(
+        "**Verification needed:** These candidates were found by text search. "
+        "Framework-registered code (routes, fixtures, signals, admin classes), "
+        "dynamic dispatch (`getattr`, `importlib`), `__all__` re-exports, "
+        "and same-file callers are NOT filtered. "
+        "Verify each before including in your report."
+    )
+
+    return "\n".join(lines)
+
+
 def build_dead_code_prompt(
     project_name: str,
     project_path: Optional[str] = None,
@@ -114,9 +257,16 @@ def build_dead_code_prompt(
     )
 
     if project_path:
+        sections = []
         inventory = _prescan_project(project_path)
         if inventory:
-            return f"{base_prompt}\n\n{inventory}\n"
+            sections.append(inventory)
+        # Add Python-specific dead code candidates (AST analysis)
+        python_refs = _prescan_python_references(project_path)
+        if python_refs:
+            sections.append(python_refs)
+        if sections:
+            return base_prompt + "\n\n" + "\n\n".join(sections) + "\n"
 
     return base_prompt
 
