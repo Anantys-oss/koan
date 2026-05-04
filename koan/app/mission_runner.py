@@ -201,7 +201,11 @@ def build_mission_command(
     Returns:
         Complete command list ready for subprocess.
     """
-    from app.config import get_mission_tools, get_model_config, get_mcp_configs, get_effort_for_mode
+    from app.config import get_mission_tools, get_model_config, get_mcp_configs
+    try:
+        from app.config import get_effort_for_mode
+    except ImportError:
+        get_effort_for_mode = lambda _mode="": ""  # noqa: E731
     from app.cli_provider import build_full_command
 
     # Get mission tools (comma-separated list)
