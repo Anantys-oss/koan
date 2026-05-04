@@ -136,3 +136,49 @@ class TestBuildMissionCommandTierOverride:
         result = _call_disabled(tier="trivial", mission_model="base-model")
         assert result["model"] == "base-model"
         assert result["max_turns"] == 0
+
+
+class TestEffortImportFallback:
+    """Verify build_mission_command degrades gracefully when get_effort_for_mode
+    is missing from app.config (version mismatch / partial update)."""
+
+    def test_missing_effort_function_does_not_crash(self):
+        """When get_effort_for_mode is absent, effort defaults to empty string."""
+        import sys
+        import importlib
+
+        models = _base_models()
+        captured = {}
+
+        def fake_build(prompt, allowed_tools, model, fallback, output_format,
+                       max_turns=0, mcp_configs=None, plugin_dirs=None,
+                       system_prompt="", effort=""):
+            captured["effort"] = effort
+            return ["fake", "cmd"]
+
+        # Remove get_effort_for_mode from config to simulate version mismatch
+        import app.config as config_mod
+        original = getattr(config_mod, "get_effort_for_mode", None)
+        if hasattr(config_mod, "get_effort_for_mode"):
+            delattr(config_mod, "get_effort_for_mode")
+
+        # Force re-import of mission_runner so the try/except runs fresh
+        sys.modules.pop("app.mission_runner", None)
+
+        try:
+            from app.mission_runner import build_mission_command
+            with patch("app.config.get_model_config", return_value=models), \
+                 patch("app.config.get_mission_tools", return_value="Read,Glob"), \
+                 patch("app.config.get_mcp_configs", return_value=[]), \
+                 patch("app.cli_provider.build_full_command", side_effect=fake_build):
+                build_mission_command(
+                    prompt="test prompt",
+                    autonomous_mode="deep",
+                )
+            assert captured["effort"] == ""
+        finally:
+            # Restore original state
+            if original is not None:
+                config_mod.get_effort_for_mode = original
+            sys.modules.pop("app.mission_runner", None)
+            importlib.import_module("app.mission_runner")
