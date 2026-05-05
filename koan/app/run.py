@@ -310,10 +310,10 @@ def run_claude_task(
 
     Returns the child exit code.
     """
-    global _last_mission_timed_out, _last_mission_aborted, _last_mission_stagnated
+    global _last_mission_timed_out, _last_mission_aborted
     _last_mission_timed_out = False
     _last_mission_aborted = False
-    _last_mission_stagnated = False
+    _last_mission_stagnated.clear()
 
     _sig.task_running = True
     _sig.first_ctrl_c = 0
@@ -412,7 +412,7 @@ def run_claude_task(
                 if stagnation_monitor is not None:
                     stagnation_monitor.stop()
                     if stagnation_monitor.stagnated:
-                        _last_mission_stagnated = True
+                        _last_mission_stagnated.set()
                 cleanup()
 
         exit_code = proc.returncode
@@ -421,7 +421,7 @@ def run_claude_task(
         elif timed_out:
             exit_code = 1
             _last_mission_timed_out = True
-        elif _last_mission_stagnated:
+        elif _last_mission_stagnated.is_set():
             exit_code = 1
     finally:
         # Always stop journal streaming, even on exception
@@ -1306,7 +1306,9 @@ _last_mission_aborted = False
 # Set by run_claude_task when StagnationMonitor aborts the session for
 # repeating identical output. Distinguished from a watchdog timeout so the
 # operator gets a clear "stuck in a loop" signal in Telegram + missions.md.
-_last_mission_stagnated = False
+# Uses threading.Event for explicit cross-thread signaling between the
+# stagnation daemon (writer) and the main loop's _finalize_mission (reader).
+_last_mission_stagnated = threading.Event()
 
 # Tracks whether the cold-start Telegram burst (GH scan / Jira scan / first
 # mission pick) has already fired since process start or /resume. Decoupled
@@ -2336,12 +2338,11 @@ def _finalize_mission(instance: str, mission_title: str, project_name: str, exit
     The flag is per-call (cleared on consume) to avoid bleeding into
     the next mission's finalize step.
     """
-    global _last_mission_stagnated
     failed = exit_code != 0
     cause_tag = ""
-    if failed and _last_mission_stagnated:
+    if failed and _last_mission_stagnated.is_set():
         cause_tag = "stagnation"
-        _last_mission_stagnated = False
+        _last_mission_stagnated.clear()
         _notify_stagnation(mission_title, project_name)
 
     _update_mission_in_file(

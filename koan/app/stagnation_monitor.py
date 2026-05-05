@@ -179,6 +179,8 @@ class StagnationMonitor:
                     self._on_warn(self._consecutive)
                 except Exception as e:
                     # Never let a callback exception kill the monitor.
+                    # Intentional stderr diagnostic (not debug leftover) — keeps the
+                    # monitor decoupled from any project-level logging config.
                     print(f"[stagnation_monitor] on_warn error: {e}", file=sys.stderr)
 
         if self._consecutive >= self._abort_after and not self.stagnated:
@@ -186,4 +188,6 @@ class StagnationMonitor:
             try:
                 self._on_abort()
             except Exception as e:
+                # Intentional stderr diagnostic (not debug leftover) — keeps the
+                # monitor decoupled from any project-level logging config.
                 print(f"[stagnation_monitor] on_abort error: {e}", file=sys.stderr)
