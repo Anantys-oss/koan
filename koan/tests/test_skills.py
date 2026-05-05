@@ -17,7 +17,9 @@ from app.skills import (
     _parse_bool_flag,
     _parse_inline_list,
     _parse_yaml_lite,
+    _requirements_satisfied,
     build_registry,
+    ensure_requirements,
     execute_skill,
     get_default_skills_dir,
     parse_skill_md,
@@ -1909,3 +1911,192 @@ class TestAliasCollisionDetection:
             f"Core skills have command/alias collisions:\n"
             + "\n".join(collisions)
         )
+
+
+# ---------------------------------------------------------------------------
+# Skill requirements (auto-install)
+# ---------------------------------------------------------------------------
+
+
+class TestSkillRequirements:
+    """Tests for requirements: field parsing and auto-install."""
+
+    def test_requirements_parsed_from_skill_md(self, tmp_path):
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text(textwrap.dedent("""\
+            ---
+            name: fetcher
+            description: Fetch stuff
+            requirements: [requests, boto3]
+            commands:
+              - name: fetch
+                description: Fetch data
+            ---
+        """))
+        skill = parse_skill_md(skill_md)
+        assert skill is not None
+        assert skill.requirements == ["requests", "boto3"]
+
+    def test_requirements_empty_when_not_specified(self, tmp_path):
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text(textwrap.dedent("""\
+            ---
+            name: basic
+            description: No deps
+            commands:
+              - name: basic
+                description: Basic skill
+            ---
+        """))
+        skill = parse_skill_md(skill_md)
+        assert skill is not None
+        assert skill.requirements == []
+
+    def test_requirements_single_string(self, tmp_path):
+        """A single string requirement (not a list) is handled."""
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text(textwrap.dedent("""\
+            ---
+            name: single
+            description: One dep
+            requirements: requests
+            commands:
+              - name: single
+                description: Single
+            ---
+        """))
+        skill = parse_skill_md(skill_md)
+        assert skill is not None
+        assert skill.requirements == ["requests"]
+
+    def test_ensure_requirements_skips_when_no_requirements(self):
+        skill = Skill(name="nodeps", scope="test")
+        result = ensure_requirements(skill)
+        assert result is None
+
+    def test_ensure_requirements_skips_already_satisfied(self):
+        skill = Skill(name="cached", scope="test", requirements=["os"])
+        # Force the cache to think it's already satisfied
+        _requirements_satisfied.add("test.cached")
+        try:
+            result = ensure_requirements(skill)
+            assert result is None
+        finally:
+            _requirements_satisfied.discard("test.cached")
+
+    def test_ensure_requirements_succeeds_for_stdlib(self):
+        """stdlib modules like 'json' should be found without install."""
+        skill = Skill(name="stdlib_test", scope="test", requirements=["json"])
+        _requirements_satisfied.discard("test.stdlib_test")
+        try:
+            result = ensure_requirements(skill)
+            assert result is None
+            assert "test.stdlib_test" in _requirements_satisfied
+        finally:
+            _requirements_satisfied.discard("test.stdlib_test")
+
+    def test_ensure_requirements_installs_missing(self, monkeypatch):
+        """Missing packages trigger pip install."""
+        import subprocess as sp
+
+        skill = Skill(
+            name="missing_pkg", scope="test",
+            requirements=["nonexistent_pkg_xyz123"],
+        )
+        _requirements_satisfied.discard("test.missing_pkg")
+
+        # Mock subprocess.run to simulate successful install
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = ""
+        mock_result.stderr = ""
+
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return mock_result
+
+        monkeypatch.setattr("app.skills.subprocess.run", fake_run)
+
+        try:
+            result = ensure_requirements(skill)
+            assert result is None
+            assert len(calls) == 1
+            assert "nonexistent_pkg_xyz123" in calls[0]
+            assert "test.missing_pkg" in _requirements_satisfied
+        finally:
+            _requirements_satisfied.discard("test.missing_pkg")
+
+    def test_ensure_requirements_returns_error_on_failure(self, monkeypatch):
+        """Failed pip install returns error message."""
+        import subprocess as sp
+
+        skill = Skill(
+            name="fail_pkg", scope="test",
+            requirements=["bad_package_xyz"],
+        )
+        _requirements_satisfied.discard("test.fail_pkg")
+
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        mock_result.stdout = ""
+        mock_result.stderr = "No matching distribution"
+
+        monkeypatch.setattr("app.skills.subprocess.run", lambda cmd, **kw: mock_result)
+
+        try:
+            result = ensure_requirements(skill)
+            assert result is not None
+            assert "No matching distribution" in result
+            assert "test.fail_pkg" not in _requirements_satisfied
+        finally:
+            _requirements_satisfied.discard("test.fail_pkg")
+
+    def test_ensure_requirements_handles_version_specifiers(self, monkeypatch):
+        """Version specifiers (>=, ==) are stripped for import check."""
+        skill = Skill(
+            name="versioned", scope="test",
+            requirements=["json>=1.0"],  # json is stdlib, should import fine
+        )
+        _requirements_satisfied.discard("test.versioned")
+
+        try:
+            result = ensure_requirements(skill)
+            assert result is None
+            assert "test.versioned" in _requirements_satisfied
+        finally:
+            _requirements_satisfied.discard("test.versioned")
+
+    def test_execute_handler_fails_on_missing_requirements(self, tmp_path, monkeypatch):
+        """Handler execution returns SkillError when requirements can't be installed."""
+        handler = tmp_path / "handler.py"
+        handler.write_text("def handle(ctx): return 'ok'")
+
+        skill = Skill(
+            name="broken_deps", scope="test",
+            requirements=["impossible_package_xyz"],
+            handler_path=handler,
+            skill_dir=tmp_path,
+        )
+        _requirements_satisfied.discard("test.broken_deps")
+
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        mock_result.stdout = ""
+        mock_result.stderr = "Could not find package"
+
+        monkeypatch.setattr("app.skills.subprocess.run", lambda cmd, **kw: mock_result)
+
+        ctx = SkillContext(
+            koan_root=tmp_path,
+            instance_dir=tmp_path,
+            command_name="broken_deps",
+        )
+
+        try:
+            result = execute_skill(skill, ctx)
+            assert isinstance(result, SkillError)
+            assert "Could not find package" in result.message
+        finally:
+            _requirements_satisfied.discard("test.broken_deps")

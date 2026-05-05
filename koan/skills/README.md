@@ -60,6 +60,7 @@ handler: handler.py
 | `cli_skill` | no | Provider slash command to invoke (e.g. `audit`). Requires `audience: agent`. See [CLI skill bridge](#cli-skill-bridge). |
 | `github_enabled` | no | Set to `true` to allow triggering via GitHub @mentions (default: `false`) |
 | `github_context_aware` | no | Set to `true` if the skill accepts additional context after the command (default: `false`) |
+| `requirements` | no | Python packages to auto-install before first execution (e.g. `[requests, boto3]`) |
 
 ### Audience
 
@@ -144,6 +145,26 @@ A single skill can expose multiple commands. Each command has:
 - **`name`** — what the user types after `/` (e.g., `/greet`)
 - **`description`** — shown in help listings
 - **`aliases`** — alternative names (e.g., `/hi` resolves to the `greet` command)
+
+### Requirements (auto-install)
+
+Skills can declare Python package dependencies via the `requirements` field. Missing packages are automatically installed (via `pip`) before the handler's first execution in a session.
+
+```yaml
+---
+name: fetcher
+requirements: [requests, boto3]
+handler: handler.py
+commands:
+  - name: fetch
+    description: Fetch remote data
+---
+```
+
+- Packages are checked via `importlib.import_module()` — already-installed packages skip the install step (fast path).
+- Version specifiers are supported: `requests>=2.28`, `boto3==1.26.0`.
+- Install failures are reported as a `SkillError` (surfaced to Telegram), not silently swallowed.
+- The check runs once per skill per session — subsequent invocations skip directly.
 
 ### Prompt-only skills (no handler)
 
