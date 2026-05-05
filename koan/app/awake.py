@@ -48,6 +48,7 @@ from app.command_handlers import (
     set_callbacks,
 )
 from app.health_check import write_heartbeat
+from app.config import get_caveman_enabled
 from app.language_preference import get_language_instruction
 from app.notify import TypingIndicator, reset_flood_state, send_telegram
 from app.outbox_manager import OutboxManager, parse_outbox_priority
@@ -274,6 +275,13 @@ def _build_chat_prompt(text: str, *, lite: bool = False) -> str:
     lang_instruction = get_language_instruction()
     if lang_instruction:
         prompt += f"\n\n{lang_instruction}"
+
+    # Inject caveman token-reduction directive if enabled (appended after
+    # template assembly so it doesn't count against the lite-mode char budget)
+    if get_caveman_enabled():
+        from app.prompts import load_prompt
+
+        prompt += f"\n\n{load_prompt('caveman')}"
 
     # Inject emotional memory before the user message (if available)
     if emotional_context:

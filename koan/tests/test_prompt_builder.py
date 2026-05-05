@@ -21,6 +21,7 @@ from app.prompt_builder import (
     _get_verification_gate_section,
     _get_verbose_section,
     _get_security_flagging_section,
+    _get_caveman_section,
     _warn_unresolved_placeholders,
 )
 
@@ -268,6 +269,7 @@ class TestBuildAgentPrompt:
         # Merge policy appended
         assert "Git Merge" in result
 
+    @patch("app.prompt_builder._get_caveman_section", return_value="")
     @patch("app.prompt_builder._get_verbose_section", return_value="")
     @patch("app.prompt_builder._get_security_flagging_section", return_value="")
     @patch("app.prompt_builder._get_submit_pr_section", return_value="")
@@ -277,7 +279,7 @@ class TestBuildAgentPrompt:
     @patch("app.prompts.load_prompt")
     def test_autonomous_mode_instruction(
         self, mock_load, mock_prefix, mock_merge, mock_deep, mock_submit_pr,
-        mock_security, mock_verbose,
+        mock_security, mock_verbose, mock_caveman,
         prompt_env,
     ):
         mock_load.return_value = "Template"
@@ -1812,3 +1814,116 @@ class TestWarnUnresolvedPlaceholders:
         assert "{BOGUS_PLACEHOLDER}" in result
         assert len(caplog.records) == 1
         assert "BOGUS_PLACEHOLDER" in caplog.records[0].message
+
+
+# --- _get_caveman_section ---
+
+
+class TestGetCavemanSection:
+    def test_returns_directive_when_enabled(self):
+        caveman_text = "Use short sentences."
+        with patch("app.config.get_caveman_enabled", return_value=True), \
+             patch("app.prompts.load_prompt", return_value=caveman_text):
+            result = _get_caveman_section()
+        assert result == caveman_text
+
+    def test_returns_empty_when_disabled(self):
+        with patch("app.config.get_caveman_enabled", return_value=False):
+            result = _get_caveman_section()
+        assert result == ""
+
+    def test_included_in_build_agent_prompt_when_enabled(self, prompt_env):
+        caveman_text = "Caveman directive."
+        with patch("app.config.get_caveman_enabled", return_value=True), \
+             patch("app.prompts.load_prompt", return_value=caveman_text), \
+             patch("app.prompt_builder._load_agent_template", return_value="base"), \
+             patch("app.prompt_builder._get_merge_policy", return_value=""), \
+             patch("app.prompt_builder._get_submit_pr_section", return_value=""), \
+             patch("app.prompt_builder._get_tdd_section", return_value=""), \
+             patch("app.prompt_builder._get_testing_antipatterns_section", return_value=""), \
+             patch("app.prompt_builder._get_verification_gate_section", return_value=""), \
+             patch("app.prompt_builder._get_focus_section", return_value=""), \
+             patch("app.prompt_builder._get_verbose_section", return_value=""), \
+             patch("app.prompt_builder._get_language_section", return_value=""), \
+             patch("app.prompt_builder._get_security_flagging_section", return_value=""), \
+             patch("app.prompt_builder._get_mission_type_section", return_value=""), \
+             patch("app.prompt_builder._get_staleness_section", return_value=""), \
+             patch("app.prompt_builder._get_drift_section", return_value=""), \
+             patch("app.prompt_builder._get_pr_feedback_section", return_value=""), \
+             patch("app.prompt_builder._get_deep_research", return_value=""), \
+             patch("app.prompt_builder._append_spec", side_effect=lambda p, s, m: p):
+            prompt = build_agent_prompt(
+                instance=prompt_env["instance"],
+                project_name=prompt_env["project_name"],
+                project_path=prompt_env["project_path"],
+                run_num=1,
+                max_runs=10,
+                autonomous_mode="implement",
+                focus_area="",
+                available_pct=50,
+            )
+        assert caveman_text in prompt
+
+    def test_excluded_from_build_agent_prompt_when_disabled(self, prompt_env):
+        caveman_text = "Caveman directive."
+        with patch("app.config.get_caveman_enabled", return_value=False), \
+             patch("app.prompts.load_prompt", return_value=caveman_text), \
+             patch("app.prompt_builder._load_agent_template", return_value="base"), \
+             patch("app.prompt_builder._get_merge_policy", return_value=""), \
+             patch("app.prompt_builder._get_submit_pr_section", return_value=""), \
+             patch("app.prompt_builder._get_tdd_section", return_value=""), \
+             patch("app.prompt_builder._get_testing_antipatterns_section", return_value=""), \
+             patch("app.prompt_builder._get_verification_gate_section", return_value=""), \
+             patch("app.prompt_builder._get_focus_section", return_value=""), \
+             patch("app.prompt_builder._get_verbose_section", return_value=""), \
+             patch("app.prompt_builder._get_language_section", return_value=""), \
+             patch("app.prompt_builder._get_security_flagging_section", return_value=""), \
+             patch("app.prompt_builder._get_mission_type_section", return_value=""), \
+             patch("app.prompt_builder._get_staleness_section", return_value=""), \
+             patch("app.prompt_builder._get_drift_section", return_value=""), \
+             patch("app.prompt_builder._get_pr_feedback_section", return_value=""), \
+             patch("app.prompt_builder._get_deep_research", return_value=""), \
+             patch("app.prompt_builder._append_spec", side_effect=lambda p, s, m: p):
+            prompt = build_agent_prompt(
+                instance=prompt_env["instance"],
+                project_name=prompt_env["project_name"],
+                project_path=prompt_env["project_path"],
+                run_num=1,
+                max_runs=10,
+                autonomous_mode="implement",
+                focus_area="",
+                available_pct=50,
+            )
+        assert caveman_text not in prompt
+
+    def test_included_in_system_prompt_parts_when_enabled(self, prompt_env):
+        caveman_text = "Caveman directive."
+        with patch("app.config.get_caveman_enabled", return_value=True), \
+             patch("app.prompts.load_prompt", return_value=caveman_text), \
+             patch("app.prompt_builder._load_agent_template", return_value="base"), \
+             patch("app.prompt_builder._get_merge_policy", return_value=""), \
+             patch("app.prompt_builder._get_submit_pr_section", return_value=""), \
+             patch("app.prompt_builder._get_tdd_section", return_value=""), \
+             patch("app.prompt_builder._get_testing_antipatterns_section", return_value=""), \
+             patch("app.prompt_builder._get_verification_gate_section", return_value=""), \
+             patch("app.prompt_builder._get_focus_section", return_value=""), \
+             patch("app.prompt_builder._get_verbose_section", return_value=""), \
+             patch("app.prompt_builder._get_language_section", return_value=""), \
+             patch("app.prompt_builder._get_security_flagging_section", return_value=""), \
+             patch("app.prompt_builder._get_mission_type_section", return_value=""), \
+             patch("app.prompt_builder._get_staleness_section", return_value=""), \
+             patch("app.prompt_builder._get_drift_section", return_value=""), \
+             patch("app.prompt_builder._get_pr_feedback_section", return_value=""), \
+             patch("app.prompt_builder._get_deep_research", return_value=""), \
+             patch("app.prompt_builder._append_spec", side_effect=lambda p, s, m: p):
+            system_prompt, _ = build_agent_prompt_parts(
+                instance=prompt_env["instance"],
+                project_name=prompt_env["project_name"],
+                project_path=prompt_env["project_path"],
+                run_num=1,
+                max_runs=10,
+                autonomous_mode="implement",
+                focus_area="",
+                available_pct=50,
+            )
+        assert caveman_text in system_prompt
