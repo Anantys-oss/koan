@@ -44,6 +44,18 @@ logger = logging.getLogger(__name__)
 _PLACEHOLDER_RE = re.compile(r"\{([A-Z][A-Z_0-9]+)\}")
 
 
+def _get_caveman_section() -> str:
+    """Return the caveman output optimization section if enabled."""
+    try:
+        from app.config import is_caveman_mode
+        if is_caveman_mode():
+            from app.prompts import load_prompt
+            return load_prompt("caveman-mode")
+    except (ImportError, OSError):
+        pass
+    return ""
+
+
 def _get_language_section() -> str:
     """Return the language enforcement section if a preference is set."""
     try:
@@ -519,6 +531,9 @@ def build_agent_prompt(
     # Append verbose mode section if active
     prompt += _get_verbose_section(instance)
 
+    # Append caveman output optimization (token reduction)
+    prompt += _get_caveman_section()
+
     # Append language preference (overrides soul.md default)
     prompt += _get_language_section()
 
@@ -602,6 +617,10 @@ def build_agent_prompt_parts(
     verbose = _get_verbose_section(instance)
     if verbose:
         sys_parts.append(verbose)
+
+    caveman = _get_caveman_section()
+    if caveman:
+        sys_parts.append(caveman)
 
     security = _get_security_flagging_section(mission_title, autonomous_mode)
     if security:

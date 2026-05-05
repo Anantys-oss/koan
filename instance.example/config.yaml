@@ -474,3 +474,9 @@ usage:
 # The counter is in-memory and resets when the agent restarts.
 # automation_rules:
 #   max_fires_per_minute: 5   # Per-rule rate limit (default: 5, min: 1)
+
+# Output optimizations — reduce token consumption
+# These settings control prompt-level optimizations that reduce output verbosity
+# while preserving response quality.
+# optimizations:
+#   caveman: true    # Short sentences, no filler, direct answers (default: true)
