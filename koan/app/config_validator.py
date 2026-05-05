@@ -77,6 +77,7 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "review_ignore": _NESTED,
     "automation_rules": _NESTED,
     "effort": _NESTED,
+    "optimizations": _NESTED,
 }
 
 # Sub-schemas for nested sections
@@ -206,6 +207,9 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
         "review": "str",
         "implement": "str",
         "deep": "str",
+    },
+    "optimizations": {
+        "caveman": "bool",
     },
 }
 

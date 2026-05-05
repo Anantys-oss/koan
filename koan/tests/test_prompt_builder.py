@@ -268,6 +268,7 @@ class TestBuildAgentPrompt:
         # Merge policy appended
         assert "Git Merge" in result
 
+    @patch("app.prompt_builder._get_caveman_section", return_value="")
     @patch("app.prompt_builder._get_verbose_section", return_value="")
     @patch("app.prompt_builder._get_security_flagging_section", return_value="")
     @patch("app.prompt_builder._get_submit_pr_section", return_value="")
@@ -277,7 +278,7 @@ class TestBuildAgentPrompt:
     @patch("app.prompts.load_prompt")
     def test_autonomous_mode_instruction(
         self, mock_load, mock_prefix, mock_merge, mock_deep, mock_submit_pr,
-        mock_security, mock_verbose,
+        mock_security, mock_verbose, mock_caveman,
         prompt_env,
     ):
         mock_load.return_value = "Template"
@@ -1614,6 +1615,73 @@ class TestBuildAgentPromptParts:
             sys_prompt, _ = self._build(prompt_env)
             assert "Language Preference" in sys_prompt
             assert "english" in sys_prompt
+
+
+# --- Tests for _get_caveman_section ---
+
+
+class TestGetCavemanSection:
+    """Tests for caveman output optimization injection."""
+
+    def test_caveman_enabled_returns_prompt(self):
+        """When caveman is enabled (default), returns the caveman prompt."""
+        from app.prompt_builder import _get_caveman_section
+
+        with patch("app.config.is_caveman_mode", return_value=True):
+            with patch("app.prompts.load_prompt", return_value="# Caveman\nShort.") as mock_lp:
+                result = _get_caveman_section()
+                mock_lp.assert_called_once_with("caveman-mode")
+                assert "Caveman" in result
+
+    def test_caveman_disabled_returns_empty(self):
+        """When caveman is disabled, returns empty string."""
+        from app.prompt_builder import _get_caveman_section
+
+        with patch("app.config.is_caveman_mode", return_value=False):
+            result = _get_caveman_section()
+            assert result == ""
+
+    def test_caveman_import_error_returns_empty(self):
+        """ImportError from config → returns empty string gracefully."""
+        from app.prompt_builder import _get_caveman_section
+
+        with patch("app.prompt_builder._get_caveman_section", wraps=_get_caveman_section):
+            # Force ImportError by making is_caveman_mode unavailable
+            with patch.dict("sys.modules", {"app.config": None}):
+                result = _get_caveman_section()
+                assert result == ""
+
+
+class TestIsCavemanMode:
+    """Tests for config.is_caveman_mode()."""
+
+    def test_default_is_true(self):
+        """Default (no config) → caveman enabled."""
+        from app.config import is_caveman_mode
+
+        with patch("app.config._load_config", return_value={}):
+            assert is_caveman_mode() is True
+
+    def test_explicitly_enabled(self):
+        """Explicit optimizations.caveman: true."""
+        from app.config import is_caveman_mode
+
+        with patch("app.config._load_config", return_value={"optimizations": {"caveman": True}}):
+            assert is_caveman_mode() is True
+
+    def test_explicitly_disabled(self):
+        """Explicit optimizations.caveman: false."""
+        from app.config import is_caveman_mode
+
+        with patch("app.config._load_config", return_value={"optimizations": {"caveman": False}}):
+            assert is_caveman_mode() is False
+
+    def test_non_dict_optimizations_defaults_true(self):
+        """Non-dict optimizations value → default true."""
+        from app.config import is_caveman_mode
+
+        with patch("app.config._load_config", return_value={"optimizations": "invalid"}):
+            assert is_caveman_mode() is True
 
 
 # --- Tests for _get_language_section ---

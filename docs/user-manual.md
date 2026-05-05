@@ -917,6 +917,10 @@ skill_max_turns: 200          # Max agentic turns for heavy skills
 # Prompt guard (content safety)
 prompt_guard: true            # Enable prompt injection detection
 
+# Output optimizations
+optimizations:
+  caveman: true               # Reduce output tokens: short sentences, no filler (default: true)
+
 # Review ignore — exclude files from /review PR diffs
 # Reduces token spend on generated/vendored code
 # review_ignore:

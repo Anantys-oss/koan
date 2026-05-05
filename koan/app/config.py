@@ -921,3 +921,18 @@ def get_review_ignore_config() -> dict:
         regexes = []
 
     return {"glob": [str(p) for p in globs], "regex": [str(p) for p in regexes]}
+
+
+def is_caveman_mode() -> bool:
+    """Check if caveman output optimization is enabled.
+
+    When enabled, the agent prompt includes instructions to minimize
+    output tokens — short sentences, no filler, direct answers only.
+
+    Config key: optimizations.caveman (default: True)
+    """
+    config = _load_config()
+    optimizations = config.get("optimizations", {})
+    if not isinstance(optimizations, dict):
+        return True
+    return bool(optimizations.get("caveman", True))
