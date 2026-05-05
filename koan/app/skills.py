@@ -31,11 +31,12 @@ import importlib.util
 import logging
 import os
 import re
+import subprocess
 import sys
 from collections import namedtuple
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
 # Returned by _execute_handler() on unhandled exceptions so callers can
 # distinguish handler crashes from intentional error responses.
@@ -100,6 +101,7 @@ class Skill:
     # that should also flag a mission as belonging to this skill, for the case
     # where a handler emits plain-text titles without the slash command.
     title_markers: List[str] = field(default_factory=list)
+    requirements: List[str] = field(default_factory=list)
 
     @property
     def qualified_name(self) -> str:
@@ -279,6 +281,12 @@ def parse_skill_md(path: Path) -> Optional[Skill]:
     # Parse emoji (for /list display)
     emoji = meta.get("emoji", "")
 
+    # Parse requirements (for auto-install)
+    requirements_raw = meta.get("requirements", [])
+    if isinstance(requirements_raw, str):
+        requirements_raw = [requirements_raw] if requirements_raw else []
+    requirements = [r for r in requirements_raw if r]
+
     return Skill(
         name=meta["name"],
         scope=meta.get("scope", skill_dir.parent.name),
@@ -298,6 +306,7 @@ def parse_skill_md(path: Path) -> Optional[Skill]:
         caveman_enabled=caveman_enabled,
         forward_result_enabled=forward_result_enabled,
         title_markers=title_markers,
+        requirements=requirements,
     )
 
 
@@ -563,6 +572,66 @@ def execute_skill(skill: Skill, ctx: SkillContext) -> Optional[Union[str, SkillE
 # mtime cache: module_name -> last-seen mtime (float)
 _module_mtimes: Dict[str, float] = {}
 
+# Track which skills have already had their requirements satisfied this session
+_requirements_satisfied: Set[str] = set()
+
+
+def ensure_requirements(skill: Skill) -> Optional[str]:
+    """Check and install missing Python packages declared in a skill's requirements.
+
+    Returns None on success, or an error message string on failure.
+    """
+    if not skill.requirements:
+        return None
+
+    # Skip if already checked this session
+    if skill.qualified_name in _requirements_satisfied:
+        return None
+
+    missing = []
+    for pkg in skill.requirements:
+        # Normalize: pip package names use hyphens, but import names use underscores
+        import_name = pkg.replace("-", "_").split(">=")[0].split("==")[0].split("<")[0].strip()
+        try:
+            importlib.import_module(import_name)
+        except ImportError:
+            missing.append(pkg)
+
+    if not missing:
+        _requirements_satisfied.add(skill.qualified_name)
+        return None
+
+    # Install missing packages
+    _log.info(
+        "[skills] auto-installing %s for skill %s",
+        ", ".join(missing), skill.qualified_name,
+    )
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--quiet"] + missing,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if result.returncode != 0:
+            error_msg = (
+                f"Failed to install requirements for skill {skill.qualified_name}: "
+                f"{result.stderr.strip() or result.stdout.strip()}"
+            )
+            _log.error(error_msg)
+            return error_msg
+
+        _requirements_satisfied.add(skill.qualified_name)
+        return None
+    except subprocess.TimeoutExpired:
+        error_msg = f"Timeout installing requirements for skill {skill.qualified_name}"
+        _log.error(error_msg)
+        return error_msg
+    except Exception as e:
+        error_msg = f"Error installing requirements for skill {skill.qualified_name}: {e}"
+        _log.error(error_msg)
+        return error_msg
+
 
 def _refresh_stale_app_modules() -> None:
     """Reload app.* modules whose source files changed on disk.
@@ -615,6 +684,15 @@ def _execute_handler(skill: Skill, ctx: SkillContext) -> Optional[Union[str, Ski
     handler_path = skill.handler_path
     if handler_path is None:
         return None
+
+    # Auto-install declared requirements before first execution
+    req_error = ensure_requirements(skill)
+    if req_error:
+        return SkillError(
+            skill_name=skill.qualified_name,
+            exception=RuntimeError(req_error),
+            message=req_error,
+        )
 
     try:
         _refresh_stale_app_modules()
