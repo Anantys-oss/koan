@@ -235,6 +235,53 @@ def _on_sigint(signum, frame):
     log("koan", f"⚠️  Press CTRL-C again within {_sig.timeout}s to abort.{phase_hint}")
 
 
+def _start_stagnation_monitor(stdout_file: str, proc, project_name: str):
+    """Launch a StagnationMonitor for a running Claude subprocess.
+
+    Returns ``None`` when stagnation detection is disabled (via config
+    or per-project override) or if any setup error occurs — the monitor
+    is strictly a best-effort safety net and must never block mission
+    execution.
+    """
+    try:
+        from app.config import get_stagnation_config
+        from app.stagnation_monitor import StagnationMonitor
+    except Exception as e:
+        log("error", f"stagnation monitor import failed: {e}")
+        return None
+
+    try:
+        cfg = get_stagnation_config(project_name)
+    except Exception as e:
+        log("error", f"stagnation config error: {e}")
+        return None
+
+    if not cfg.get("enabled", True):
+        return None
+
+    def _on_warn(count: int) -> None:
+        log("koan", f"⚠️  Possible stagnation detected (identical output {count}x)")
+
+    def _on_abort() -> None:
+        log("error", "Stagnation confirmed — killing stuck Claude session")
+        _kill_process_group(proc)
+
+    try:
+        monitor = StagnationMonitor(
+            stdout_file=stdout_file,
+            on_abort=_on_abort,
+            on_warn=_on_warn,
+            check_interval_seconds=cfg["check_interval_seconds"],
+            abort_after_cycles=cfg["abort_after_cycles"],
+            sample_lines=cfg["sample_lines"],
+        )
+        monitor.start()
+        return monitor
+    except Exception as e:
+        log("error", f"stagnation monitor start failed: {e}")
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Claude subprocess execution
 # ---------------------------------------------------------------------------
@@ -266,6 +313,7 @@ def run_claude_task(
     global _last_mission_timed_out, _last_mission_aborted
     _last_mission_timed_out = False
     _last_mission_aborted = False
+    _last_mission_stagnated.clear()
 
     _sig.task_running = True
     _sig.first_ctrl_c = 0
@@ -310,6 +358,10 @@ def run_claude_task(
                 timer = threading.Timer(mission_timeout, _mission_watchdog)
                 timer.daemon = True
                 timer.start()
+
+            stagnation_monitor = _start_stagnation_monitor(
+                stdout_file, proc, project_name,
+            )
 
             try:
                 # Wait for child, handling SIGINT interruptions gracefully.
@@ -357,6 +409,10 @@ def run_claude_task(
             finally:
                 if timer is not None:
                     timer.cancel()
+                if stagnation_monitor is not None:
+                    stagnation_monitor.stop()
+                    if stagnation_monitor.stagnated:
+                        _last_mission_stagnated.set()
                 cleanup()
 
         exit_code = proc.returncode
@@ -365,6 +421,8 @@ def run_claude_task(
         elif timed_out:
             exit_code = 1
             _last_mission_timed_out = True
+        elif _last_mission_stagnated.is_set():
+            exit_code = 1
     finally:
         # Always stop journal streaming, even on exception
         if journal_stream:
@@ -1245,6 +1303,12 @@ _MISSION_RETRY_DELAY = 10  # seconds
 # "timeout" which would otherwise trigger a second full-length run).
 _last_mission_timed_out = False
 _last_mission_aborted = False
+# Set by run_claude_task when StagnationMonitor aborts the session for
+# repeating identical output. Distinguished from a watchdog timeout so the
+# operator gets a clear "stuck in a loop" signal in Telegram + missions.md.
+# Uses threading.Event for explicit cross-thread signaling between the
+# stagnation daemon (writer) and the main loop's _finalize_mission (reader).
+_last_mission_stagnated = threading.Event()
 
 # Tracks whether the cold-start Telegram burst (GH scan / Jira scan / first
 # mission pick) has already fired since process start or /resume. Decoupled
@@ -2210,20 +2274,38 @@ def _start_mission_in_file(instance: str, mission_title: str):
         log("error", f"Could not start mission in missions.md: {e}")
 
 
-def _update_mission_in_file(instance: str, mission_title: str, *, failed: bool = False):
-    """Move mission from Pending/In Progress to Done/Failed via locked write."""
+def _update_mission_in_file(
+    instance: str,
+    mission_title: str,
+    *,
+    failed: bool = False,
+    cause_tag: str = "",
+):
+    """Move mission from Pending/In Progress to Done/Failed via locked write.
+
+    *cause_tag* is only honored when *failed* is True; it is appended to
+    the missions.md entry (e.g. ``[stagnation]``) so the failure reason
+    is visible without digging through journals.
+    """
     try:
         from app.missions import complete_mission, fail_mission
         from app.utils import modify_missions_file
         missions_path = Path(instance, "missions.md")
         if not missions_path.exists():
             return
-        transform = fail_mission if failed else complete_mission
+
+        if failed:
+            def transform(content):
+                return fail_mission(content, mission_title, cause_tag=cause_tag)
+        else:
+            def transform(content):
+                return complete_mission(content, mission_title)
+
         before = [None]
 
         def tracked(content):
             before[0] = content
-            return transform(content, mission_title)
+            return transform(content)
 
         after = modify_missions_file(missions_path, tracked)
         if before[0] is not None and after == before[0]:
@@ -2247,13 +2329,46 @@ def _requeue_mission_in_file(instance: str, mission_title: str):
 
 
 def _finalize_mission(instance: str, mission_title: str, project_name: str, exit_code: int):
-    """Complete or fail a mission and record execution history."""
-    _update_mission_in_file(instance, mission_title, failed=(exit_code != 0))
+    """Complete or fail a mission and record execution history.
+
+    When the last mission was killed by the stagnation monitor, the
+    module-level flag ``_last_mission_stagnated`` is read and cleared
+    here so the failure entry in ``missions.md`` carries a
+    ``[stagnation]`` tag and a distinct Telegram notification is sent.
+    The flag is per-call (cleared on consume) to avoid bleeding into
+    the next mission's finalize step.
+    """
+    failed = exit_code != 0
+    cause_tag = ""
+    if failed and _last_mission_stagnated.is_set():
+        cause_tag = "stagnation"
+        _last_mission_stagnated.clear()
+        _notify_stagnation(mission_title, project_name)
+
+    _update_mission_in_file(
+        instance, mission_title, failed=failed, cause_tag=cause_tag,
+    )
     try:
         from app.mission_history import record_execution
         record_execution(instance, mission_title, project_name, exit_code)
     except (OSError, ValueError) as e:
         log("error", f"Mission history recording error: {e}")
+
+
+def _notify_stagnation(mission_title: str, project_name: str) -> None:
+    """Send a Telegram message announcing a stagnation abort."""
+    try:
+        from app.notify import NotificationPriority, send_telegram
+        short_title = mission_title[:120]
+        project_prefix = f"[{project_name}] " if project_name else ""
+        message = (
+            f"🛑 {project_prefix}Mission stopped — Claude was stuck in a loop "
+            f"(stagnation). Marked as Failed in missions.md.\n\n"
+            f"Mission: {short_title}"
+        )
+        send_telegram(message, priority=NotificationPriority.WARNING)
+    except Exception as e:
+        log("error", f"Stagnation notification failed: {e}")
 
 
 def _get_koan_branch(koan_root: str) -> str:
