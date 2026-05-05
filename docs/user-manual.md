@@ -917,6 +917,13 @@ skill_max_turns: 200          # Max agentic turns for heavy skills
 # Prompt guard (content safety)
 prompt_guard: true            # Enable prompt injection detection
 
+# Optimizations — token-reduction tweaks
+optimizations:
+  caveman: true               # Terse-communication directive (default: true)
+                              # Injects a directive to remove filler words and use
+                              # short sentences in chat replies and mission output.
+                              # Set to false if response quality suffers.
+
 # Review ignore — exclude files from /review PR diffs
 # Reduces token spend on generated/vendored code
 # review_ignore:

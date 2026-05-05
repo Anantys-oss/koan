@@ -484,6 +484,18 @@ def get_branch_prefix() -> str:
     return f"{prefix}/"
 
 
+def get_caveman_enabled() -> bool:
+    """Return True if the caveman token-reduction optimization is enabled.
+
+    Reads ``optimizations.caveman`` from config.yaml. Defaults to ``True``
+    so every fresh install gets the optimization; opt-out is explicit.
+
+    Config key: optimizations.caveman (default: true).
+    """
+    config = _load_config()
+    return bool(config.get("optimizations", {}).get("caveman", True))
+
+
 def get_skill_timeout() -> int:
     """Get timeout in seconds for skill execution (fix, implement, recreate).
 

@@ -164,6 +164,14 @@ contemplative_chance: 10
 # notifications:
 #   min_priority: action
 
+# Optimizations — token-reduction and performance tweaks
+# optimizations:
+#   # Caveman mode — inject a terse-communication directive into chat and agent prompts.
+#   # Removes filler words and encourages short, direct responses, reducing token usage.
+#   # Set to false to disable if response quality suffers for your use case.
+#   # Default: true
+#   caveman: true
+
 # Telegram
 # NOTE: Prefer setting these in .env (KOAN_TELEGRAM_TOKEN, KOAN_TELEGRAM_CHAT_ID)
 # These config values are only used if the env vars are not set.

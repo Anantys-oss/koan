@@ -752,6 +752,7 @@ from app.config import (  # noqa: E402, F401
     get_tool_flags_for_shell,
     get_output_flags_for_shell,
     get_auto_merge_config,
+    get_caveman_enabled,
 )
 
 from app.journal import (  # noqa: E402, F401

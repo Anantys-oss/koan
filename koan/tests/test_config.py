@@ -907,3 +907,32 @@ class TestGetEffortForMode:
         with _mock_config({"effort": {"deep": "turbo"}}):
             # Invalid value in dict falls back to default
             assert get_effort_for_mode("deep") == "high"
+
+
+# --- get_caveman_enabled ---
+
+
+class TestGetCavemanEnabled:
+    def test_default_true_when_no_config(self):
+        from app.config import get_caveman_enabled
+
+        with _mock_config({}):
+            assert get_caveman_enabled() is True
+
+    def test_true_when_explicitly_enabled(self):
+        from app.config import get_caveman_enabled
+
+        with _mock_config({"optimizations": {"caveman": True}}):
+            assert get_caveman_enabled() is True
+
+    def test_false_when_explicitly_disabled(self):
+        from app.config import get_caveman_enabled
+
+        with _mock_config({"optimizations": {"caveman": False}}):
+            assert get_caveman_enabled() is False
+
+    def test_true_when_optimizations_key_missing(self):
+        from app.config import get_caveman_enabled
+
+        with _mock_config({"some_other_key": "value"}):
+            assert get_caveman_enabled() is True

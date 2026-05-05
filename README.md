@@ -268,6 +268,10 @@ models:
 budget:
   warn_at_percent: 20
   stop_at_percent: 5
+
+# Optimizations — token-reduction tweaks
+optimizations:
+  caveman: true        # Inject terse-communication directive (reduces token usage)
 ```
 
 ### Multi-Project Setup

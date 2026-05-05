@@ -292,6 +292,18 @@ def _get_verbose_section(instance: str) -> str:
     return load_prompt("verbose-mode", INSTANCE=instance)
 
 
+def _get_caveman_section() -> str:
+    """Return the caveman token-reduction directive if enabled in config."""
+    from app.config import get_caveman_enabled
+
+    if not get_caveman_enabled():
+        return ""
+
+    from app.prompts import load_prompt
+
+    return load_prompt("caveman")
+
+
 def _get_security_flagging_section(mission_title: str, autonomous_mode: str) -> str:
     """Return the security vulnerability flagging section.
 
@@ -522,6 +534,9 @@ def build_agent_prompt(
     # Append language preference (overrides soul.md default)
     prompt += _get_language_section()
 
+    # Append caveman token-reduction directive if enabled
+    prompt += _get_caveman_section()
+
     return prompt
 
 
@@ -610,6 +625,10 @@ def build_agent_prompt_parts(
     lang = _get_language_section()
     if lang:
         sys_parts.append(lang)
+
+    caveman = _get_caveman_section()
+    if caveman:
+        sys_parts.append(caveman)
 
     system_prompt = "\n\n".join(part for part in sys_parts if part)
 
