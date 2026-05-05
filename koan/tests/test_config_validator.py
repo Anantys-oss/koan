@@ -6,6 +6,7 @@ from app.config_validator import (
     validate_config, validate_and_warn, _check_type, _check_schedule_overlap,
     _suggest_typo, detect_config_drift, find_extra_config_keys,
     _collect_keys, _find_commented_keys,
+    CONFIG_SCHEMA, SECTION_SCHEMAS,
 )
 
 
@@ -83,6 +84,61 @@ class TestSchemaCompleteness:
         orphans = [k for k in SECTION_SCHEMAS if k not in nested_keys]
         assert orphans == [], (
             f"SECTION_SCHEMAS defines schemas for keys not in CONFIG_SCHEMA: {orphans}"
+        )
+
+    def test_all_config_get_keys_in_schema(self):
+        """Every top-level key accessed via config.get("key") in koan/app/
+        must be declared in CONFIG_SCHEMA. This prevents config drift where
+        new features use undeclared keys that bypass validation."""
+        import re
+        from pathlib import Path
+
+        app_dir = Path(__file__).resolve().parent.parent / "app"
+        # Pattern: config.get("key_name" — captures the key name
+        pattern = re.compile(r'\bconfig\.get\("(\w+)"')
+
+        # Keys accessed in nested contexts (sub-dict .get calls) that are
+        # NOT top-level config keys — exclude them from the check.
+        # These are accessed on sub-dicts like github_cfg.get("nickname")
+        # where the variable is named something other than "config".
+        # We only check calls literally on a variable named "config".
+        found_keys: set = set()
+        for py_file in app_dir.rglob("*.py"):
+            text = py_file.read_text()
+            for match in pattern.finditer(text):
+                found_keys.add(match.group(1))
+
+        # Filter to keys that are plausible top-level config keys:
+        # must not be a sub-key name that's only ever accessed on a sub-dict.
+        # Heuristic: if a key exists in CONFIG_SCHEMA OR in any SECTION_SCHEMA
+        # values, it's known. We only flag keys in NEITHER.
+        all_known_sub_keys: set = set()
+        for section_keys in SECTION_SCHEMAS.values():
+            all_known_sub_keys.update(section_keys.keys())
+
+        # Keys accessed on non-instance-config dicts (e.g. projects_config,
+        # project-level dicts) that happen to use the variable name "config".
+        # These are false positives — not instance/config.yaml keys.
+        _NON_INSTANCE_CONFIG_KEYS = {
+            "defaults",      # projects.yaml schema (projects_config.py)
+            "projects",      # projects.yaml schema (projects_config.py)
+            "github_url",    # project-level config key (dashboard.py)
+        }
+
+        # Keys that appear in config.get() but are clearly sub-keys
+        # (they appear in SECTION_SCHEMAS but NOT as top-level keys)
+        # are false positives from nested dict access — skip them.
+        missing = sorted(
+            k for k in found_keys
+            if k not in CONFIG_SCHEMA
+            and k not in all_known_sub_keys
+            and k not in _NON_INSTANCE_CONFIG_KEYS
+        )
+
+        assert missing == [], (
+            f"These keys are accessed via config.get() in koan/app/ "
+            f"but are NOT declared in CONFIG_SCHEMA or SECTION_SCHEMAS: {missing}. "
+            f"Add them to CONFIG_SCHEMA in config_validator.py."
         )
 
 
