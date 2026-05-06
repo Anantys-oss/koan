@@ -22,7 +22,6 @@ from app.iteration_manager import (
     _fallback_mission_extract,
     _filter_exploration_projects,
     _get_known_project_names,
-    _get_project_by_index,
     _get_usage_decision,
     _inject_recurring,
     _make_result,
@@ -93,30 +92,6 @@ class TestResolveProjectPath:
         assert _resolve_project_path("BACKEND", PROJECTS_LIST) == ("backend", "/path/to/backend")
         assert _resolve_project_path("WebApp", PROJECTS_LIST) == ("webapp", "/path/to/webapp")
 
-
-class TestGetProjectByIndex:
-
-    def test_first_project(self):
-        name, path = _get_project_by_index(PROJECTS_LIST, 0)
-        assert name == "koan"
-        assert path == "/path/to/koan"
-
-    def test_second_project(self):
-        name, path = _get_project_by_index(PROJECTS_LIST, 1)
-        assert name == "backend"
-        assert path == "/path/to/backend"
-
-    def test_index_clamped_high(self):
-        name, path = _get_project_by_index(PROJECTS_LIST, 99)
-        assert name == "webapp"  # Last project
-
-    def test_index_clamped_low(self):
-        name, path = _get_project_by_index(PROJECTS_LIST, -1)
-        assert name == "koan"  # First project
-
-    def test_empty_projects(self):
-        name, path = _get_project_by_index([], 0)
-        assert name == "default"
 
 
 class TestGetKnownProjectNames:
