@@ -12,6 +12,7 @@ CLI:
 """
 
 import logging
+import re
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -76,8 +77,11 @@ def run_fix(
 
         owner, repo, issue_number = None, None, issue_key
     else:
+        # Normalize PR URLs to issue URLs — GitHub's API serves PR data
+        # through the issues endpoint, so /pull/N → /issues/N is safe.
+        normalized_url = re.sub(r'/pull/(\d+)$', r'/issues/\1', issue_url)
         try:
-            owner, repo, issue_number = parse_issue_url(issue_url)
+            owner, repo, issue_number = parse_issue_url(normalized_url)
         except ValueError as e:
             return False, str(e)
 

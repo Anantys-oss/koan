@@ -225,6 +225,25 @@ class TestRunFix:
         assert success is True
         assert "https://github.com/o/r/pull/1" in summary
 
+    @patch(f"{_FIX_MODULE}._submit_fix_pr", return_value="https://github.com/o/r/pull/99")
+    @patch(f"{_FIX_MODULE}.get_current_branch", return_value="koan.atoomic/fix-issue-446")
+    @patch(f"{_FIX_MODULE}._execute_fix", return_value="Done")
+    @patch(f"{_FIX_MODULE}.fetch_issue_with_comments")
+    @patch(f"{_FIX_MODULE}.fetch_issue_state", return_value="open")
+    def test_pr_url_accepted(self, mock_state, mock_fetch, mock_execute, mock_branch, mock_pr):
+        """PR URLs should be normalized to issue URLs (GitHub API compatibility)."""
+        mock_fetch.return_value = ("PR title", "PR body", [])
+        notify = MagicMock()
+
+        success, summary = run_fix(
+            project_path="/path",
+            issue_url="https://github.com/Perl-Critic/PPI/pull/446",
+            notify_fn=notify,
+        )
+
+        assert success is True
+        mock_state.assert_called_once_with("Perl-Critic", "PPI", "446")
+
     @patch(f"{_FIX_MODULE}.fetch_issue_with_comments")
     def test_invalid_url(self, mock_fetch):
         notify = MagicMock()
