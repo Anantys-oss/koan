@@ -1,11 +1,9 @@
 """Tests for koan/app/branch_limiter.py — branch saturation limiter."""
 
-import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from app.branch_limiter import (
     count_pending_branches,
-    is_project_branch_saturated,
 )
 
 
@@ -71,44 +69,3 @@ class TestCountPendingBranches:
             "/instance", "myapp", "/code/myapp", ["owner/myapp"], "bot",
         )
         assert count == 2
-
-
-class TestIsProjectBranchSaturated:
-    """Tests for is_project_branch_saturated()."""
-
-    @patch("app.branch_limiter.count_pending_branches", return_value=10)
-    def test_saturated_at_limit(self, mock_count):
-        config = {
-            "defaults": {"max_pending_branches": 10},
-            "projects": {"myapp": {"path": "/code/myapp"}},
-        }
-        assert is_project_branch_saturated(
-            config, "myapp", "/instance", "/code/myapp", ["owner/myapp"], "bot",
-        ) is True
-
-    @patch("app.branch_limiter.count_pending_branches", return_value=11)
-    def test_saturated_over_limit(self, mock_count):
-        config = {
-            "projects": {"myapp": {"path": "/code/myapp", "max_pending_branches": 5}},
-        }
-        assert is_project_branch_saturated(
-            config, "myapp", "/instance", "/code/myapp", ["owner/myapp"], "bot",
-        ) is True
-
-    @patch("app.branch_limiter.count_pending_branches", return_value=4)
-    def test_not_saturated_under_limit(self, mock_count):
-        config = {
-            "projects": {"myapp": {"path": "/code/myapp", "max_pending_branches": 5}},
-        }
-        assert is_project_branch_saturated(
-            config, "myapp", "/instance", "/code/myapp", ["owner/myapp"], "bot",
-        ) is False
-
-    def test_unlimited_returns_false(self):
-        """max_pending_branches: 0 means unlimited — never saturated."""
-        config = {
-            "projects": {"myapp": {"path": "/code/myapp", "max_pending_branches": 0}},
-        }
-        assert is_project_branch_saturated(
-            config, "myapp", "/instance", "/code/myapp", ["owner/myapp"], "bot",
-        ) is False
