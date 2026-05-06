@@ -343,17 +343,6 @@ def _resolve_project_path(
     return None
 
 
-def _get_project_by_index(projects: List[Tuple[str, str]], idx: int):
-    """Get (name, path) for project at given index.
-
-    Returns:
-        (name, path) tuple
-    """
-    if not projects:
-        return "default", ""
-    idx = max(0, min(idx, len(projects) - 1))
-    return projects[idx]
-
 
 def _get_known_project_names(projects: List[Tuple[str, str]]) -> list:
     """Extract sorted list of project names."""
