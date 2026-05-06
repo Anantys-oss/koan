@@ -10,7 +10,6 @@ exploration is blocked until branches are reviewed/merged.
 
 Provides:
 - count_pending_branches(project_path, github_urls, author) -> int
-- is_project_branch_saturated(config, project_name, ...) -> bool
 """
 
 import logging
@@ -70,34 +69,3 @@ def count_pending_branches(
 
     # Union: a branch with both a local copy and an open PR counts once
     return len(local_branches | pr_branches)
-
-
-def is_project_branch_saturated(
-    config: dict,
-    project_name: str,
-    instance_dir: str,
-    project_path: str,
-    github_urls: List[str],
-    author: str,
-) -> bool:
-    """Check if a project has reached its max_pending_branches limit.
-
-    Returns False if the limit is 0 (unlimited) or if the count is
-    below the limit.
-    """
-    from app.projects_config import get_project_max_pending_branches
-
-    limit = get_project_max_pending_branches(config, project_name)
-    if limit == 0:
-        return False
-
-    count = count_pending_branches(
-        instance_dir, project_name, project_path, github_urls, author,
-    )
-    if count >= limit:
-        log.info(
-            "Project '%s' branch-saturated (%d/%d pending branches)",
-            project_name, count, limit,
-        )
-        return True
-    return False

@@ -762,34 +762,6 @@ def get_cli_provider_name() -> str:
     return get_provider_name()
 
 
-def get_tool_flags_for_shell(tools: str) -> str:
-    """Convert comma-separated tool names to provider-specific flag string.
-
-    Args:
-        tools: Comma-separated Claude tool names (e.g., "Read,Write,Glob,Grep")
-
-    Returns:
-        Space-separated CLI flags for the configured provider.
-    """
-    from app.cli_provider import build_tool_flags
-    tool_list = [t.strip() for t in tools.split(",") if t.strip()]
-    flags = build_tool_flags(allowed_tools=tool_list)
-    return " ".join(flags)
-
-
-def get_output_flags_for_shell(fmt: str) -> str:
-    """Convert output format to provider-specific flag string.
-
-    Args:
-        fmt: Output format (e.g., "json")
-
-    Returns:
-        Space-separated CLI flags for the configured provider.
-    """
-    from app.cli_provider import build_output_flags
-    flags = build_output_flags(fmt)
-    return " ".join(flags)
-
 
 def get_auto_merge_config(config: dict, project_name: str) -> dict:
     """Get auto-merge config with per-project override support.

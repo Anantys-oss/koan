@@ -749,8 +749,6 @@ from app.config import (  # noqa: E402, F401
     get_claude_flags_for_role,
     get_cli_binary_for_shell,
     get_cli_provider_name,
-    get_tool_flags_for_shell,
-    get_output_flags_for_shell,
     get_auto_merge_config,
 )
 
