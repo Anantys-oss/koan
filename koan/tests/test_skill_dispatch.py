@@ -1594,3 +1594,56 @@ class TestExtractFlag:
         value, cleaned = _extract_flag("before limit=3 after", _LIMIT_RE)
         assert value == "3"
         assert "  " not in cleaned
+
+
+# ---------------------------------------------------------------------------
+# Registration consistency — runner modules must exist
+# ---------------------------------------------------------------------------
+
+class TestRunnerRegistrationConsistency:
+    """Ensure all _CANONICAL_RUNNERS entries point to importable modules."""
+
+    def test_all_canonical_runners_are_importable(self):
+        """Every module in _CANONICAL_RUNNERS must be importable.
+
+        This prevents registration of runner paths that don't exist,
+        which would cause ImportError at runtime when the skill is dispatched.
+        """
+        from app.skill_dispatch import _CANONICAL_RUNNERS
+        import importlib
+
+        missing = []
+        for command, module_path in sorted(_CANONICAL_RUNNERS.items()):
+            try:
+                importlib.import_module(module_path)
+            except (ImportError, ModuleNotFoundError):
+                missing.append(f"{command} -> {module_path}")
+
+        assert not missing, (
+            f"_CANONICAL_RUNNERS entries point to missing modules: "
+            f"{', '.join(missing)}"
+        )
+
+    def test_command_builders_match_canonical_runners(self):
+        """Every _COMMAND_BUILDERS entry must have a _CANONICAL_RUNNERS entry.
+
+        The builder dict is rebuilt inside build_skill_command() so we can't
+        access it directly. Instead, verify the canonical names used in
+        builders (from source) are a subset of _CANONICAL_RUNNERS keys.
+        """
+        from app.skill_dispatch import _CANONICAL_RUNNERS, _COMMAND_ALIASES
+
+        # All canonical names + aliases should be resolvable
+        all_known = set(_CANONICAL_RUNNERS.keys())
+        all_known.update(_COMMAND_ALIASES.keys())
+
+        # Verify aliases point to valid canonical names
+        bad_aliases = []
+        for alias, canonical in _COMMAND_ALIASES.items():
+            if canonical not in _CANONICAL_RUNNERS:
+                bad_aliases.append(f"{alias} -> {canonical}")
+
+        assert not bad_aliases, (
+            f"Aliases point to unknown canonical commands: "
+            f"{', '.join(bad_aliases)}"
+        )

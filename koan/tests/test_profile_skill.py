@@ -237,3 +237,198 @@ class TestSkillDispatch:
             )
         assert cmd is not None
         assert "profile_runner" in " ".join(cmd) or "profile.profile_runner" in " ".join(cmd)
+
+
+# ---------------------------------------------------------------------------
+# profile_runner — unit tests
+# ---------------------------------------------------------------------------
+
+class TestProfileRunner:
+    """Tests for the profile_runner module (prompt, parsing, saving)."""
+
+    def test_runner_module_importable(self):
+        import importlib
+        mod = importlib.import_module("skills.core.profile.profile_runner")
+        assert hasattr(mod, "run_profile")
+        assert hasattr(mod, "main")
+
+    def test_build_prompt_basic(self):
+        from skills.core.profile.profile_runner import build_profile_prompt
+        skill_dir = Path(__file__).parent.parent / "skills" / "core" / "profile"
+        prompt = build_profile_prompt("myproject", skill_dir=skill_dir)
+        assert "myproject" in prompt
+        assert "performance" in prompt.lower() or "profile" in prompt.lower()
+
+    def test_build_prompt_with_pr_url(self):
+        from skills.core.profile.profile_runner import build_profile_prompt
+        skill_dir = Path(__file__).parent.parent / "skills" / "core" / "profile"
+        prompt = build_profile_prompt(
+            "myproject",
+            pr_url="https://github.com/owner/repo/pull/42",
+            skill_dir=skill_dir,
+        )
+        assert "github.com/owner/repo/pull/42" in prompt
+        assert "PR Context" in prompt
+
+    def test_extract_report_body_with_header(self):
+        from skills.core.profile.profile_runner import _extract_report_body
+        raw = "Some preamble\n\nPerformance Profile — koan\n\n## Summary\nGood."
+        result = _extract_report_body(raw)
+        assert result.startswith("Performance Profile")
+
+    def test_extract_report_body_with_summary(self):
+        from skills.core.profile.profile_runner import _extract_report_body
+        raw = "Blah blah\n\n## Summary\nOverview here."
+        result = _extract_report_body(raw)
+        assert result.startswith("## Summary")
+
+    def test_extract_report_body_fallback(self):
+        from skills.core.profile.profile_runner import _extract_report_body
+        raw = "Just plain text output"
+        result = _extract_report_body(raw)
+        assert result == "Just plain text output"
+
+    def test_extract_perf_score(self):
+        from skills.core.profile.profile_runner import _extract_perf_score
+        report = "**Performance Score**: 4/10\nSome details"
+        assert _extract_perf_score(report) == 4
+
+    def test_extract_perf_score_none_if_missing(self):
+        from skills.core.profile.profile_runner import _extract_perf_score
+        assert _extract_perf_score("No score here") is None
+
+    def test_extract_perf_score_rejects_out_of_range(self):
+        from skills.core.profile.profile_runner import _extract_perf_score
+        assert _extract_perf_score("**Performance Score**: 15/10") is None
+
+    def test_extract_missions(self):
+        from skills.core.profile.profile_runner import _extract_missions
+        report = (
+            "## Findings\nStuff\n\n"
+            "## Suggested Missions\n"
+            "1. Optimize the hot loop in parser.py\n"
+            "2. Add caching to API calls\n"
+            "3. Reduce startup imports\n"
+        )
+        missions = _extract_missions(report)
+        assert len(missions) == 3
+        assert "Optimize" in missions[0]
+
+    def test_extract_missions_empty(self):
+        from skills.core.profile.profile_runner import _extract_missions
+        assert _extract_missions("No missions section") == []
+
+    def test_save_report(self, tmp_path):
+        from skills.core.profile.profile_runner import _save_report
+        report_path = _save_report(tmp_path, "myproject", "Test report", 5)
+        assert report_path.exists()
+        content = report_path.read_text()
+        assert "Test report" in content
+        assert "Performance score: 5/10" in content
+
+    def test_save_report_creates_dirs(self, tmp_path):
+        from skills.core.profile.profile_runner import _save_report
+        report_path = _save_report(tmp_path, "newproject", "Report", None)
+        assert report_path.exists()
+        assert "newproject" in str(report_path)
+
+    def test_queue_missions(self, tmp_path):
+        instance_dir = tmp_path
+        missions_md = instance_dir / "missions.md"
+        missions_md.write_text("## Pending\n\n## In Progress\n\n## Done\n")
+        from skills.core.profile.profile_runner import _queue_missions
+        queued = _queue_missions(instance_dir, "koan", ["Fix slow loop", "Add cache"])
+        assert queued == 2
+        content = missions_md.read_text()
+        assert "[project:koan]" in content
+
+    def test_run_profile_success(self, tmp_path):
+        from skills.core.profile.profile_runner import run_profile
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        missions_md = instance_dir / "missions.md"
+        missions_md.write_text("## Pending\n\n## In Progress\n\n## Done\n")
+        skill_dir = Path(__file__).parent.parent / "skills" / "core" / "profile"
+
+        raw_output = (
+            "Performance Profile — testproject\n\n"
+            "## Summary\nLooks good.\n\n"
+            "**Performance Score**: 3/10\n\n"
+            "## Findings\n\n### Critical\nNone\n\n"
+            "## Suggested Missions\n"
+            "1. Add connection pooling\n"
+        )
+        with patch(
+            "skills.core.profile.profile_runner._run_claude_scan",
+            return_value=raw_output,
+        ):
+            success, summary = run_profile(
+                project_path="/fake/path",
+                project_name="testproject",
+                instance_dir=str(instance_dir),
+                notify_fn=MagicMock(),
+                skill_dir=skill_dir,
+                queue_missions=True,
+            )
+        assert success is True
+        assert "performance_profile.md" in summary
+        assert "3/10" in summary
+
+    def test_run_profile_failure(self, tmp_path):
+        from skills.core.profile.profile_runner import run_profile
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        skill_dir = Path(__file__).parent.parent / "skills" / "core" / "profile"
+
+        with patch(
+            "skills.core.profile.profile_runner._run_claude_scan",
+            side_effect=RuntimeError("CLI failed"),
+        ):
+            success, summary = run_profile(
+                project_path="/fake/path",
+                project_name="testproject",
+                instance_dir=str(instance_dir),
+                notify_fn=MagicMock(),
+                skill_dir=skill_dir,
+            )
+        assert success is False
+        assert "failed" in summary.lower()
+
+    def test_run_profile_empty_output(self, tmp_path):
+        from skills.core.profile.profile_runner import run_profile
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        skill_dir = Path(__file__).parent.parent / "skills" / "core" / "profile"
+
+        with patch(
+            "skills.core.profile.profile_runner._run_claude_scan",
+            return_value="",
+        ):
+            success, summary = run_profile(
+                project_path="/fake/path",
+                project_name="testproject",
+                instance_dir=str(instance_dir),
+                notify_fn=MagicMock(),
+                skill_dir=skill_dir,
+            )
+        assert success is False
+        assert "no output" in summary.lower()
+
+    def test_main_cli(self, tmp_path):
+        from skills.core.profile.profile_runner import main
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        missions_md = instance_dir / "missions.md"
+        missions_md.write_text("## Pending\n\n## In Progress\n\n## Done\n")
+
+        with patch(
+            "skills.core.profile.profile_runner._run_claude_scan",
+            return_value="## Summary\nOK\n**Performance Score**: 2/10",
+        ):
+            exit_code = main([
+                "--project-path", str(tmp_path),
+                "--project-name", "test",
+                "--instance-dir", str(instance_dir),
+                "--no-queue",
+            ])
+        assert exit_code == 0
