@@ -330,6 +330,8 @@ def run_command_streaming(
         max_turns=max_turns,
     )
 
+    print("[cli] Starting Claude CLI session", flush=True)
+
     from app.cli_exec import popen_cli
 
     proc, cleanup = popen_cli(
