@@ -54,6 +54,7 @@ def run_fix(
         from app.notify import send_telegram
         notify_fn = send_telegram
 
+    print("[fix] Starting fix runner", flush=True)
     context_label = f" ({context})" if context else ""
     _is_jira = is_jira_url(issue_url)
 
@@ -67,6 +68,7 @@ def run_fix(
         notify_fn(
             f"\U0001f527 Fixing Jira issue {issue_key}{context_label}..."
         )
+        print(f"[fix] Fetching Jira issue {issue_key}", flush=True)
 
         try:
             from app.jira_notifications import fetch_jira_issue
@@ -94,6 +96,7 @@ def run_fix(
             f"\U0001f527 Fixing issue #{issue_number} "
             f"({owner}/{repo}){context_label}..."
         )
+        print(f"[fix] Fetching issue #{issue_number} from {owner}/{repo}", flush=True)
 
         try:
             title, body, comments = fetch_issue_with_comments(
@@ -102,6 +105,7 @@ def run_fix(
         except Exception as e:
             return False, f"Failed to fetch issue: {str(e)[:300]}"
 
+    print("[fix] Issue fetched, building prompt", flush=True)
     if not body and not comments:
         label = issue_key if _is_jira else f"#{issue_number}"
         return False, f"Issue {label} has no content."
@@ -110,6 +114,7 @@ def run_fix(
     full_body = _build_issue_body(body, comments)
 
     # Invoke Claude with the fix prompt
+    print("[fix] Invoking Claude for fix", flush=True)
     try:
         output = _execute_fix(
             project_path=project_path,
