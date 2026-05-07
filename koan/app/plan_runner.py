@@ -53,6 +53,10 @@ def run_plan(
         from app.notify import send_telegram
         notify_fn = send_telegram
 
+    # Heartbeat so the liveness watchdog in run.py knows we're alive
+    # before Claude CLI starts streaming.
+    print("[plan] Starting plan runner", flush=True)
+
     if issue_url:
         return _run_issue_plan(
             project_path, issue_url, notify_fn, skill_dir, context=context,
@@ -74,6 +78,7 @@ def _run_new_plan(
 ) -> Tuple[bool, str]:
     """Generate a plan for a new idea, reusing an existing issue if found."""
     notify_fn(f"\U0001f9e0 Planning: {idea[:100]}{'...' if len(idea) > 100 else ''}")
+    print(f"[plan] New plan for: {idea[:80]}", flush=True)
 
     # Check for an existing plan issue before generating
     owner, repo = _get_repo_info(project_path)
@@ -92,6 +97,7 @@ def _run_new_plan(
                 project_path, issue_url, notify_fn, skill_dir, context=context,
             )
 
+    print("[plan] Invoking Claude for plan generation", flush=True)
     try:
         plan = _generate_plan(
             project_path, idea, context=context or "", skill_dir=skill_dir,
@@ -151,6 +157,7 @@ def _run_issue_plan(
             return False, f"Invalid Jira URL: {issue_url}"
 
         notify_fn(f"\U0001f4d6 Reading Jira issue {issue_key}...")
+        print(f"[plan] Fetching Jira issue {issue_key}", flush=True)
 
         try:
             from app.jira_notifications import fetch_jira_issue
@@ -175,6 +182,7 @@ def _run_issue_plan(
             return False, f"Invalid GitHub URL: {issue_url}"
 
         notify_fn(f"\U0001f4d6 Reading issue #{issue_number} ({owner}/{repo})...")
+        print(f"[plan] Fetching issue #{issue_number} from {owner}/{repo}", flush=True)
 
         try:
             title, body, comments_text = _fetch_issue_context(owner, repo, issue_number)
@@ -183,6 +191,7 @@ def _run_issue_plan(
 
         label = f"#{issue_number}"
 
+    print(f"[plan] Issue fetched, building prompt", flush=True)
     # Build full issue context for the iteration prompt
     context_parts = [f"## Original Issue {label}: {title}\n\n{body}"]
     if comments_text:
@@ -193,6 +202,7 @@ def _run_issue_plan(
         context_parts.append(f"\n\n## User Instructions\n\n{context}")
     issue_context = "\n".join(context_parts)
 
+    print("[plan] Invoking Claude for plan generation", flush=True)
     try:
         plan = _generate_iteration_plan(
             project_path, issue_context, skill_dir=skill_dir
