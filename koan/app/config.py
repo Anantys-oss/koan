@@ -657,6 +657,10 @@ def get_stagnation_config(project_name: str = "") -> dict:
             to trigger abort. Must be >= 2. Default 3.
         sample_lines (int): trailing stdout lines hashed each sample
             (default 50).
+        max_retry_on_stagnation (int): how many times a stagnated mission
+            is re-queued before being marked Failed. ``0`` disables the
+            retry loop entirely (mission is failed on the first stagnation).
+            Default 3.
 
     Per-project overrides via ``projects.yaml`` ``stagnation:`` take
     precedence. Setting ``enabled: false`` at project level disables the
@@ -667,13 +671,14 @@ def get_stagnation_config(project_name: str = "") -> dict:
         project_name: Optional project name for per-project overrides.
 
     Returns:
-        Dict with the resolved values — always contains all four keys.
+        Dict with the resolved values — always contains all five keys.
     """
     defaults = {
         "enabled": True,
         "check_interval_seconds": 60,
         "abort_after_cycles": 3,
         "sample_lines": 50,
+        "max_retry_on_stagnation": 3,
     }
     config = _load_config()
     base = config.get("stagnation", {})
@@ -695,6 +700,10 @@ def get_stagnation_config(project_name: str = "") -> dict:
     if abort_after < 2:
         abort_after = 2
 
+    max_retry = _safe_int(merged.get("max_retry_on_stagnation"), defaults["max_retry_on_stagnation"])
+    if max_retry < 0:
+        max_retry = 0
+
     return {
         "enabled": bool(merged.get("enabled", defaults["enabled"])),
         "check_interval_seconds": max(
@@ -702,6 +711,7 @@ def get_stagnation_config(project_name: str = "") -> dict:
         ),
         "abort_after_cycles": abort_after,
         "sample_lines": max(1, _safe_int(merged.get("sample_lines"), defaults["sample_lines"])),
+        "max_retry_on_stagnation": max_retry,
     }
 
 

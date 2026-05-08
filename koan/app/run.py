@@ -2333,17 +2333,66 @@ def _finalize_mission(instance: str, mission_title: str, project_name: str, exit
 
     When the last mission was killed by the stagnation monitor, the
     module-level flag ``_last_mission_stagnated`` is read and cleared
-    here so the failure entry in ``missions.md`` carries a
-    ``[stagnation]`` tag and a distinct Telegram notification is sent.
-    The flag is per-call (cleared on consume) to avoid bleeding into
-    the next mission's finalize step.
+    here. Stagnation handling is gated by ``max_retry_on_stagnation``
+    in the stagnation config:
+
+    - if the per-mission retry count is below the cap, the mission is
+      re-queued to Pending (not failed), the counter is incremented,
+      and a "retry" Telegram notification is sent;
+    - once the cap is reached, the mission is marked Failed with a
+      ``[stagnation]`` tag, the counter is cleared, and the regular
+      stagnation notification is sent.
+
+    Successful completions and non-stagnation failures clear any
+    pending retry counter so the next attempt at the same mission
+    title starts fresh.
     """
     failed = exit_code != 0
     cause_tag = ""
+    stagnated = False
     if failed and _last_mission_stagnated.is_set():
-        cause_tag = "stagnation"
+        stagnated = True
         _last_mission_stagnated.clear()
+
+    if stagnated:
+        from app.config import get_stagnation_config
+        from app.stagnation_monitor import (
+            clear_retry_count,
+            get_retry_count,
+            increment_retry_count,
+        )
+
+        cfg = get_stagnation_config(project_name)
+        max_retry = int(cfg.get("max_retry_on_stagnation", 0))
+        already = get_retry_count(instance, mission_title)
+        if max_retry > 0 and already < max_retry:
+            new_count = increment_retry_count(instance, mission_title)
+            log("koan", (
+                f"Stagnation retry {new_count}/{max_retry} — "
+                f"requeueing mission: {mission_title[:60]}"
+            ))
+            _requeue_mission_in_file(instance, mission_title)
+            _notify_stagnation_retry(mission_title, project_name, new_count, max_retry)
+            try:
+                from app.mission_history import record_execution
+                record_execution(instance, mission_title, project_name, exit_code)
+            except (OSError, ValueError) as e:
+                log("error", f"Mission history recording error: {e}")
+            return
+
+        # Retry cap reached (or retries disabled): mark Failed with cause tag.
+        cause_tag = "stagnation"
+        clear_retry_count(instance, mission_title)
         _notify_stagnation(mission_title, project_name)
+    else:
+        # A non-stagnation outcome resets any prior retry counter so a
+        # mission that completes (or fails for a different reason) does
+        # not carry stale stagnation state into a later attempt.
+        try:
+            from app.stagnation_monitor import clear_retry_count
+            clear_retry_count(instance, mission_title)
+        except Exception:
+            pass
 
     _update_mission_in_file(
         instance, mission_title, failed=failed, cause_tag=cause_tag,
@@ -2369,6 +2418,24 @@ def _notify_stagnation(mission_title: str, project_name: str) -> None:
         send_telegram(message, priority=NotificationPriority.WARNING)
     except Exception as e:
         log("error", f"Stagnation notification failed: {e}")
+
+
+def _notify_stagnation_retry(
+    mission_title: str, project_name: str, attempt: int, max_attempts: int,
+) -> None:
+    """Send a Telegram message announcing a stagnation-triggered requeue."""
+    try:
+        from app.notify import NotificationPriority, send_telegram
+        short_title = mission_title[:120]
+        project_prefix = f"[{project_name}] " if project_name else ""
+        message = (
+            f"🔁 {project_prefix}Mission stagnated (Claude stuck in a loop) — "
+            f"requeueing for retry {attempt}/{max_attempts}.\n\n"
+            f"Mission: {short_title}"
+        )
+        send_telegram(message, priority=NotificationPriority.WARNING)
+    except Exception as e:
+        log("error", f"Stagnation retry notification failed: {e}")
 
 
 def _get_koan_branch(koan_root: str) -> str:

@@ -193,6 +193,7 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
         "check_interval_seconds": "int",
         "abort_after_cycles": "int",
         "sample_lines": "int",
+        "max_retry_on_stagnation": "int",
     },
     "branch_cleanup": {
         "enabled": "bool",
