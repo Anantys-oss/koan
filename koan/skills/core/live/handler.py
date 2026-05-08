@@ -43,7 +43,7 @@ def _get_in_progress_missions(instance_dir):
 
         result = []
         for mission in in_progress:
-            first_line = mission.split("\n")[0].lstrip("- ").strip()
+            first_line = mission.split("\n")[0].removeprefix("- ").strip()
             project = extract_project_tag(first_line)
             _, display = parse_project(first_line)
             display = strip_timestamps(display).strip()

@@ -30,12 +30,12 @@ def fallback_extract(content: str, projects_str: str) -> tuple[str | None, str |
     tag = re.search(r"\[projec?t:([a-zA-Z0-9_-]+)\]", line)
     if tag:
         project = tag.group(1)
-        title = re.sub(r"\[projec?t:[a-zA-Z0-9_-]+\]\s*", "", line).lstrip("- ").strip()
+        title = re.sub(r"\[projec?t:[a-zA-Z0-9_-]+\]\s*", "", line).removeprefix("- ").strip()
     else:
         # Default to first project
         parts = [p for p in projects_str.split(";") if p]
         project = parts[0].split(":")[0] if parts else "default"
-        title = line.lstrip("- ").strip()
+        title = line.removeprefix("- ").strip()
 
     return (project, title)
 

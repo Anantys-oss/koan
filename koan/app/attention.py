@@ -118,7 +118,7 @@ def _collect_failed_missions(koan_root: str) -> list:
             text_hash = hashlib.md5(mission_text.encode()).hexdigest()[:8]
             item_id = _make_id("failed-mission", text_hash)
             # Strip leading "- " and project tags for display
-            display = mission_text.strip().lstrip("- ")
+            display = mission_text.strip().removeprefix("- ")
             import re
             display = re.sub(r"\[projec?t:[a-zA-Z0-9_-]+\]\s*", "", display).strip()
             items.append({

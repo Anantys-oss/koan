@@ -27,7 +27,7 @@ def _normalize_key(mission_text: str) -> str:
     shares one dedup counter.
     """
     line = mission_text.strip().split("\n")[0]
-    line = line.lstrip("- ").strip()
+    line = line.removeprefix("- ").strip()
     line = _PROJECT_TAG_STRIP_RE.sub("", line).strip()
     return line
 
