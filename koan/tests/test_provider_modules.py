@@ -214,7 +214,7 @@ class TestClaudeProvider:
     def test_tool_args_disallowed(self):
         p = ClaudeProvider()
         args = p.build_tool_args(disallowed_tools=["Write", "Edit"])
-        assert args == ["--disallowedTools", "Write", "Edit"]
+        assert args == ["--disallowedTools", "Write,Edit"]
 
     def test_tool_args_both(self):
         p = ClaudeProvider()

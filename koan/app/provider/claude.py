@@ -35,7 +35,7 @@ class ClaudeProvider(CLIProvider):
         if allowed_tools:
             flags.extend(["--allowedTools", ",".join(allowed_tools)])
         if disallowed_tools:
-            flags.extend(["--disallowedTools"] + disallowed_tools)
+            flags.extend(["--disallowedTools", ",".join(disallowed_tools)])
         return flags
 
     def build_model_args(self, model: str = "", fallback: str = "") -> List[str]:
