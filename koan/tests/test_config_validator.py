@@ -673,3 +673,131 @@ class TestFindExtraConfigKeys:
         user = {"max_runs_per_day": 20, "totally_unknown": 1}
         extras = find_extra_config_keys(str(tmp_path), user_config=user)
         assert extras == ["totally_unknown"]
+
+
+# ---------------------------------------------------------------------------
+# Config schema drift prevention — scan codebase for config.get() usage
+# ---------------------------------------------------------------------------
+
+class TestConfigSchemaDriftPrevention:
+    """Scan koan/app/ for config.get("key") calls and verify each key is
+    declared in CONFIG_SCHEMA.
+
+    This catches a recurring problem: new features add config.get() calls
+    without updating CONFIG_SCHEMA, causing validate_config() to emit
+    spurious "unrecognized key" warnings for users who configure them.
+    """
+
+    # Keys accessed via config.get() that come from a different config
+    # source (projects.yaml, sub-dicts, or env vars) rather than the
+    # global instance/config.yaml schema.
+    _NON_INSTANCE_CONFIG_KEYS = {
+        # projects_config.py reads projects.yaml, not config.yaml
+        "defaults",
+        "projects",
+        # Accessed on sub-dicts (git_auto_merge section, etc.), not top-level
+        "enabled",
+        "rules",
+        "base_branch",
+        "strategy",
+        "warn_at_percent",
+        "stop_at_percent",
+        "pricing",
+        "budget_mode",
+        "blocking",
+        "delete_remote_branches",
+        "github_workers",
+        "glob",
+        "regex",
+        "max_fires_per_minute",
+        "max_rounds",
+        "same_project_stickiness_percent",
+        "block_mode",
+        # Sub-keys accessed on already-extracted nested sections
+        "nickname",
+        "commands_enabled",
+        "authorized_users",
+        "reply_enabled",
+        "reply_authorized_users",
+        "reply_rate_limit",
+        "natural_language",
+        "subscribe_enabled",
+        "subscribe_max_per_cycle",
+        "max_age_hours",
+        "check_interval_seconds",
+        "max_check_interval_seconds",
+        "bot_username",
+        "max_age",
+        # Sub-keys for nested sections (accessed on sub-dicts)
+        "bot_token",
+        "chat_id",
+        "mission",
+        "chat",
+        "lightweight",
+        "fallback",
+        "review_mode",
+        "description",
+        "deep_hours",
+        "work_hours",
+        "max_backups",
+        "max_size_mb",
+        "compress",
+        "base_url",
+        "model",
+        "api_key",
+        "session_token_limit",
+        "weekly_token_limit",
+        "max_per_day",
+        "require_approval",
+        "provider",
+        "check_interval",
+        "notify",
+        "port",
+        "min_priority",
+        "review",
+        "implement",
+        "deep",
+        "redact_patterns",
+        "tiers",
+        "learnings_max_lines",
+        "learnings_hard_cap",
+        "global_personality_max",
+        "global_emotional_max",
+        "compaction_interval_hours",
+        # project-level config keys (via get_project_config)
+        "github_url",
+        "path",
+        "git_auto_merge",
+        "pr_quality",
+        # jira sub-keys
+        "email",
+        "api_token",
+        "jira",
+    }
+
+    def test_all_config_get_keys_in_schema(self):
+        """Every top-level key accessed via config.get() in koan/app/
+        must be declared in CONFIG_SCHEMA."""
+        import re
+        from pathlib import Path
+        from app.config_validator import CONFIG_SCHEMA
+
+        app_dir = Path(__file__).parent.parent / "app"
+        pattern = re.compile(r'config\.get\(\s*["\'](\w+)["\']')
+
+        undeclared = set()
+        for py_file in app_dir.rglob("*.py"):
+            text = py_file.read_text()
+            for match in pattern.finditer(text):
+                key = match.group(1)
+                if key in self._NON_INSTANCE_CONFIG_KEYS:
+                    continue
+                if key not in CONFIG_SCHEMA:
+                    undeclared.add(key)
+
+        assert undeclared == set(), (
+            f"config.get() keys used in koan/app/ but missing from "
+            f"CONFIG_SCHEMA in config_validator.py: {sorted(undeclared)}. "
+            f"Either add them to CONFIG_SCHEMA or to "
+            f"_NON_INSTANCE_CONFIG_KEYS if they come from a different source."
+        )
