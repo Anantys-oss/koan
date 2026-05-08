@@ -96,7 +96,7 @@ class TestClaudeProvider:
 
     def test_tool_args_disallowed(self):
         result = self.provider.build_tool_args(disallowed_tools=["Bash", "Edit", "Write"])
-        assert result == ["--disallowedTools", "Bash", "Edit", "Write"]
+        assert result == ["--disallowedTools", "Bash,Edit,Write"]
 
     def test_tool_args_empty(self):
         assert self.provider.build_tool_args() == []

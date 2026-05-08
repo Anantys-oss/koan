@@ -351,7 +351,7 @@ class TestModelConfig:
         """DisallowedTools flags generated correctly."""
         from app.utils import build_claude_flags
         flags = build_claude_flags(disallowed_tools=["Bash", "Edit"])
-        assert flags == ["--disallowedTools", "Bash", "Edit"]
+        assert flags == ["--disallowedTools", "Bash,Edit"]
 
     def test_build_claude_flags_combined(self):
         """All flags combined."""

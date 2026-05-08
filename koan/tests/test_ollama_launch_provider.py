@@ -103,7 +103,7 @@ class TestOllamaLaunchFlags:
 
     def test_tool_args_disallowed(self):
         result = self.provider.build_tool_args(disallowed_tools=["Edit", "Write"])
-        assert result == ["--disallowedTools", "Edit", "Write"]
+        assert result == ["--disallowedTools", "Edit,Write"]
 
     def test_tool_args_empty(self):
         assert self.provider.build_tool_args() == []
