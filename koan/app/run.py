@@ -2391,8 +2391,8 @@ def _finalize_mission(instance: str, mission_title: str, project_name: str, exit
         try:
             from app.stagnation_monitor import clear_retry_count
             clear_retry_count(instance, mission_title)
-        except Exception:
-            pass
+        except Exception as e:
+            log("error", f"Stagnation retry counter cleanup error: {e}")
 
     _update_mission_in_file(
         instance, mission_title, failed=failed, cause_tag=cause_tag,
