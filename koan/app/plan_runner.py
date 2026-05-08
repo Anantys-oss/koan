@@ -399,7 +399,7 @@ def _review_warning_note(issues: str, max_rounds: int) -> str:
     return (
         f"\n\n> ⚠️ Plan review flagged unresolved items after {max_rounds} rounds "
         f"— human review recommended.\n>\n"
-        + "\n".join(f"> - {line.lstrip('- ')}" for line in issues.splitlines() if line.strip())
+        + "\n".join(f"> - {line.removeprefix('- ')}" for line in issues.splitlines() if line.strip())
     )
 
 
