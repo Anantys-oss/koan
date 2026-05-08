@@ -149,8 +149,11 @@ skill_timeout: 7200
 # How it works: a daemon thread samples the subprocess stdout every
 # ``check_interval_seconds`` and hashes the last ``sample_lines`` lines.
 # After ``abort_after_cycles`` consecutive identical hashes, the monitor
-# kills the process group, marks the mission Failed with a [stagnation]
-# cause tag in missions.md, and sends a distinct Telegram notification.
+# kills the process group and re-queues the mission to Pending so a fresh
+# Claude run can try again. After ``max_retry_on_stagnation`` consecutive
+# stagnation re-queues for the same mission, it is marked Failed with a
+# [stagnation] cause tag in missions.md and a distinct Telegram message.
+# Set ``max_retry_on_stagnation: 0`` to skip retries (fail on first stagnation).
 # Per-project overrides go in projects.yaml under ``stagnation:`` (set
 # ``stagnation: false`` or ``stagnation.enabled: false`` to disable).
 # stagnation:
@@ -158,6 +161,7 @@ skill_timeout: 7200
 #   check_interval_seconds: 60
 #   abort_after_cycles: 3
 #   sample_lines: 50
+#   max_retry_on_stagnation: 3
 
 # Contemplative mode trigger chance (0-100%)
 # When no mission is pending, this is the probability of running a reflective

@@ -32,9 +32,11 @@ Usage::
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import sys
 import threading
+from pathlib import Path
 from typing import Callable, Optional
 
 
@@ -44,6 +46,11 @@ _DEFAULT_ABORT_AFTER_CYCLES = 3    # identical hashes required to abort
 _DEFAULT_SAMPLE_LINES = 50         # trailing lines hashed
 _DEFAULT_MIN_BYTES = 512           # ignore tiny outputs (not enough signal)
 
+# Filename of the per-mission stagnation retry tracker (lives under
+# instance/). Persists across restarts so a stagnated mission requeued
+# right before a crash doesn't lose its retry count.
+_RETRY_TRACKER_FILENAME = ".stagnation-retries.json"
+
 
 def _tail_hash(stdout_file: str, sample_lines: int) -> Optional[str]:
     """Compute a SHA-256 hash over the last *sample_lines* lines of the file.
@@ -51,6 +58,13 @@ def _tail_hash(stdout_file: str, sample_lines: int) -> Optional[str]:
     Returns ``None`` if the file is unreadable, empty, or smaller than
     :data:`_DEFAULT_MIN_BYTES`. A ``None`` result means "no signal yet" —
     the caller should not count it toward consecutive-identical tracking.
+
+    Note: the seek-window is byte-aligned, not line-semantic. We open in
+    binary mode, jump to ``size - window``, and split on ``\\n`` — that
+    seek may land mid-codepoint inside a multi-byte UTF-8 sequence. This
+    is fine for our equality use-case (the same seek position produces
+    the same bytes, so identical inputs still hash identically), but the
+    hash represents byte content, not logical text.
     """
     try:
         size = os.path.getsize(stdout_file)
@@ -191,3 +205,87 @@ class StagnationMonitor:
                 # Intentional stderr diagnostic (not debug leftover) — keeps the
                 # monitor decoupled from any project-level logging config.
                 print(f"[stagnation_monitor] on_abort error: {e}", file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
+# Per-mission retry tracking
+# ---------------------------------------------------------------------------
+#
+# When a mission stagnates, we don't want to fail it outright on the first
+# detection — Claude can be unstuck by a fresh start. The tracker records
+# how many times each mission has stagnated so :func:`run._finalize_mission`
+# can decide between "requeue and try again" and "give up, mark Failed".
+# Counters are keyed by a stable SHA-256 of the mission title so very long
+# titles don't bloat the JSON, and identical titles in different instances
+# are isolated by living under ``instance/``.
+
+
+def _retry_tracker_path(instance_dir: str) -> Path:
+    """Path to the per-instance stagnation retry counter file."""
+    return Path(instance_dir) / _RETRY_TRACKER_FILENAME
+
+
+def _mission_key(mission_title: str) -> str:
+    """Stable, length-bounded key for a mission title."""
+    return hashlib.sha256(mission_title.encode("utf-8", errors="replace")).hexdigest()
+
+
+def _load_retry_tracker(instance_dir: str) -> dict:
+    path = _retry_tracker_path(instance_dir)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return data
+    except (OSError, json.JSONDecodeError):
+        pass
+    return {}
+
+
+def _save_retry_tracker(instance_dir: str, data: dict) -> None:
+    path = _retry_tracker_path(instance_dir)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    except OSError as e:
+        # Stderr diagnostic — losing the counter just means an extra retry,
+        # not a correctness bug.
+        print(f"[stagnation_monitor] retry tracker save error: {e}", file=sys.stderr)
+
+
+def get_retry_count(instance_dir: str, mission_title: str) -> int:
+    """Return how many times *mission_title* has been stagnation-requeued."""
+    data = _load_retry_tracker(instance_dir)
+    raw = data.get(_mission_key(mission_title), 0)
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return 0
+
+
+def increment_retry_count(instance_dir: str, mission_title: str) -> int:
+    """Increment and persist the stagnation retry counter for *mission_title*.
+
+    Returns the new count.
+    """
+    data = _load_retry_tracker(instance_dir)
+    key = _mission_key(mission_title)
+    current = data.get(key, 0)
+    try:
+        current = int(current)
+    except (TypeError, ValueError):
+        current = 0
+    new_count = max(0, current) + 1
+    data[key] = new_count
+    _save_retry_tracker(instance_dir, data)
+    return new_count
+
+
+def clear_retry_count(instance_dir: str, mission_title: str) -> None:
+    """Drop the retry counter for *mission_title* (e.g. on completion)."""
+    data = _load_retry_tracker(instance_dir)
+    key = _mission_key(mission_title)
+    if key in data:
+        data.pop(key, None)
+        _save_retry_tracker(instance_dir, data)

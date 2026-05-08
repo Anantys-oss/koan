@@ -961,7 +961,13 @@ def _move_pending_to_section(
     entry = f"- {display} {marker} ({timestamp})"
     tag = (cause_tag or "").strip()
     if tag:
-        entry = f"{entry} [{tag}]"
+        # Strip brackets to keep the missions.md entry parseable. Without this,
+        # an extended tag (e.g. retry counters supplied by callers) could
+        # introduce nested or unbalanced brackets and confuse downstream
+        # readers of missions.md.
+        tag = tag.replace("[", "").replace("]", "")
+        if tag:
+            entry = f"{entry} [{tag}]"
 
     lines = updated.splitlines()
     boundaries = find_section_boundaries(lines)

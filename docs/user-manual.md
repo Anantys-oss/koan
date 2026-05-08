@@ -917,11 +917,14 @@ skill_max_turns: 200          # Max agentic turns for heavy skills
 # Stagnation detection — kill Claude sessions stuck in a loop early
 # (identical trailing stdout hash across `abort_after_cycles` samples).
 # Prevents quota burn when Claude keeps retrying the same failing tool.
+# Stagnated missions are re-queued for retry up to `max_retry_on_stagnation`
+# times before being marked Failed, since a fresh start often unsticks Claude.
 stagnation:
   enabled: true               # Set false to disable globally
   check_interval_seconds: 60  # How often to sample subprocess stdout
   abort_after_cycles: 3       # Identical samples required to kill (min 2)
   sample_lines: 50            # Trailing lines hashed each sample
+  max_retry_on_stagnation: 3  # Stagnation requeues before marking Failed (0 disables retry)
 
 # Prompt guard (content safety)
 prompt_guard: true            # Enable prompt injection detection
