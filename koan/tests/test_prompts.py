@@ -182,6 +182,95 @@ class TestLoadSkillPrompt:
                     assert len(result) > 0, f"{skill_dir.name}/{md_file.stem} is empty"
 
 
+class TestLoadSkillPromptCavemanInjection:
+    """``load_skill_prompt`` auto-appends the caveman directive only when the
+    skill has explicitly opted in (SKILL.md ``caveman: true`` or config
+    ``optimizations.caveman.include``)."""
+
+    @staticmethod
+    def _make_skill(tmp_path, name, *, caveman_flag=None, prompt="Body {VAR}"):
+        skill_dir = tmp_path / name
+        (skill_dir / "prompts").mkdir(parents=True)
+        (skill_dir / "prompts" / "p.md").write_text(prompt)
+        frontmatter_extra = ""
+        if caveman_flag is not None:
+            frontmatter_extra = f"\ncaveman: {'true' if caveman_flag else 'false'}"
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\nscope: core{frontmatter_extra}\n---\n"
+        )
+        return skill_dir
+
+    def test_caveman_skipped_by_default(self, tmp_path):
+        """No ``caveman:`` flag — opt-in default keeps caveman off."""
+        from unittest.mock import patch
+        skill_dir = self._make_skill(tmp_path, "myskill")
+        with patch("app.config._load_config", return_value={}):
+            with patch("app.prompts.load_prompt", return_value="CAVEMAN-X"):
+                result = load_skill_prompt(skill_dir, "p", VAR="ok")
+        assert "CAVEMAN-X" not in result
+        assert result == "Body ok"
+
+    def test_caveman_appended_when_skill_md_opts_in(self, tmp_path):
+        from unittest.mock import patch
+        skill_dir = self._make_skill(tmp_path, "myskill", caveman_flag=True)
+        with patch("app.config._load_config", return_value={}):
+            with patch("app.prompts.load_prompt", return_value="CAVEMAN-X"):
+                result = load_skill_prompt(skill_dir, "p", VAR="ok")
+        assert result.startswith("Body ok")
+        assert "CAVEMAN-X" in result
+
+    def test_caveman_skipped_when_skill_md_explicitly_opts_out(self, tmp_path):
+        from unittest.mock import patch
+        skill_dir = self._make_skill(tmp_path, "myskill", caveman_flag=False)
+        with patch("app.config._load_config", return_value={}):
+            with patch("app.prompts.load_prompt", return_value="CAVEMAN-X"):
+                result = load_skill_prompt(skill_dir, "p", VAR="ok")
+        assert "CAVEMAN-X" not in result
+        assert result == "Body ok"
+
+    def test_caveman_appended_when_in_config_include(self, tmp_path):
+        from unittest.mock import patch
+        skill_dir = self._make_skill(tmp_path, "myskill")
+        with patch("app.config._load_config", return_value={
+            "optimizations": {"caveman": {"include": ["myskill"]}}
+        }):
+            with patch("app.prompts.load_prompt", return_value="CAVEMAN-X"):
+                result = load_skill_prompt(skill_dir, "p", VAR="ok")
+        assert "CAVEMAN-X" in result
+
+    def test_config_include_overrides_skill_md_false(self, tmp_path):
+        """Operator's ``include:`` config overrides a SKILL.md ``caveman: false``."""
+        from unittest.mock import patch
+        skill_dir = self._make_skill(tmp_path, "myskill", caveman_flag=False)
+        with patch("app.config._load_config", return_value={
+            "optimizations": {"caveman": {"include": ["myskill"]}}
+        }):
+            with patch("app.prompts.load_prompt", return_value="CAVEMAN-X"):
+                result = load_skill_prompt(skill_dir, "p", VAR="ok")
+        assert "CAVEMAN-X" in result
+
+    def test_caveman_skipped_when_globally_disabled(self, tmp_path):
+        from unittest.mock import patch
+        skill_dir = self._make_skill(tmp_path, "myskill", caveman_flag=True)
+        with patch("app.config._load_config", return_value={
+            "optimizations": {"caveman": {"enabled": False}}
+        }):
+            with patch("app.prompts.load_prompt", return_value="CAVEMAN-X"):
+                result = load_skill_prompt(skill_dir, "p", VAR="ok")
+        assert "CAVEMAN-X" not in result
+
+    def test_no_skill_md_means_no_injection(self, tmp_path):
+        """A bare directory without SKILL.md is not treated as a skill — caveman not appended."""
+        from unittest.mock import patch
+        prompts_dir = tmp_path / "prompts"
+        prompts_dir.mkdir()
+        (prompts_dir / "p.md").write_text("Body")
+        with patch("app.config._load_config", return_value={}):
+            with patch("app.prompts.load_prompt", return_value="CAVEMAN-X"):
+                result = load_skill_prompt(tmp_path, "p")
+        assert result == "Body"
+
+
 # ---------- load_prompt_or_skill ----------
 
 

@@ -6,6 +6,7 @@ emoji: 🔧
 description: "Check and fix CI failures on a GitHub PR"
 version: 1.0.0
 audience: hybrid
+caveman: true
 commands:
   - name: ci_check
     description: "Check and fix CI failures for a PR"

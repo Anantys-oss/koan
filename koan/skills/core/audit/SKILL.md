@@ -6,6 +6,7 @@ emoji: 🔎
 description: Audit a project codebase and create GitHub issues for each finding
 version: 1.0.0
 audience: hybrid
+caveman: false
 github_enabled: true
 github_context_aware: true
 commands:

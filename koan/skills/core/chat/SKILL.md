@@ -6,6 +6,7 @@ emoji: 💬
 description: Force chat mode (bypass mission detection)
 version: 1.0.0
 audience: bridge
+caveman: false
 worker: true
 commands:
   - name: chat

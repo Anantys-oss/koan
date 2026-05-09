@@ -929,6 +929,14 @@ stagnation:
 # Prompt guard (content safety)
 prompt_guard: true            # Enable prompt injection detection
 
+# Output optimizations — caveman directive ("no filler, 3–6 word sentences,
+# direct answers"). ``enabled`` controls the agent loop (default true);
+# skills are opt-in via SKILL.md ``caveman: true`` or this ``include`` list.
+optimizations:
+  caveman:
+    enabled: true
+    include: []                # canonical skill names, aliases auto-resolved
+
 # Review ignore — exclude files from /review PR diffs
 # Reduces token spend on generated/vendored code
 # review_ignore:
@@ -953,6 +961,50 @@ Run it after every Kōan update to stay in sync:
 ```
 
 The same check runs automatically as part of `/doctor` — use `/config_check` when you only want the config slice without the rest of the diagnostic report.
+
+### Caveman Output Optimization
+
+Caveman appends a "no filler, 3–6 word sentences, direct answers" directive to Claude prompts to reduce output tokens.
+
+**Where it applies by default:**
+
+- **Agent loop (regular missions)** — caveman is on by default. This is the highest-volume Claude entry point, so the directive yields the most savings here.
+- **Skills and chat — opt-in.** A skill receives caveman only when it explicitly says so. New skills (core or custom) inherit *no* caveman until the author or operator turns it on.
+
+**Core skills shipping with caveman opted in (`caveman: true`)** — these produce terse, status-style output where the directive helps:
+
+| Skill | Why caveman fits |
+|-------|------------------|
+| `/rebase`, `/recreate`, `/squash` | Git-plumbing skills; output is mostly status |
+| `/fix` | Focused issue-fix flow |
+| `/ci_check` | Diagnostic, action-oriented |
+| `/check` | PR/issue check report |
+| `/implement` | Mission narration during implementation |
+
+**Core skills shipping with caveman opted out (`caveman: false`)** — terseness directly hurts these (kept explicit for clarity, even though it matches the default):
+
+`/plan`, `/deepplan`, `/review`, `/security_audit`, `/audit`, `/brainstorm`, `/sparring`, `/incident`, `/claudemd`, `/chat`.
+
+**Operator override — the `include:` list:**
+
+```yaml
+optimizations:
+  caveman:
+    enabled: true
+    include: [my_custom_skill, deeplan]   # aliases auto-resolved → deepplan
+```
+
+Names match **canonical command names**; aliases declared in `koan/app/skill_dispatch.py` (`deeplan` → `deepplan`, `security`/`secu` → `security_audit`, …) resolve automatically. The operator's `include:` list overrides a SKILL.md `caveman: false`, giving instance owners the final say.
+
+**Switching the global flag off** disables caveman everywhere — agent loop included:
+
+```yaml
+optimizations:
+  caveman:
+    enabled: false
+```
+
+**Custom skill authors:** add `caveman: true` to your SKILL.md frontmatter when your skill produces terse output that benefits from the directive — see `koan/skills/README.md`.
 
 ### Per-Project Overrides
 

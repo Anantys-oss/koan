@@ -22,6 +22,7 @@ import sys
 import threading
 import time
 from datetime import date, datetime
+from pathlib import Path
 from typing import Optional, Tuple
 
 from app.bridge_log import log
@@ -274,6 +275,19 @@ def _build_chat_prompt(text: str, *, lite: bool = False) -> str:
     lang_instruction = get_language_instruction()
     if lang_instruction:
         prompt += f"\n\n{lang_instruction}"
+
+    # Inject caveman directive when enabled and the chat skill hasn't opted out.
+    # ``koan/skills/core/chat/SKILL.md`` ships with ``caveman: false`` so this
+    # is a no-op by default — but the resolution honours global config + the
+    # SKILL.md flag, giving operators a single knob to flip.
+    try:
+        from app.caveman import append_caveman
+        chat_skill_dir = (
+            Path(__file__).resolve().parent.parent / "skills" / "core" / "chat"
+        )
+        prompt = append_caveman(prompt, skill_name="chat", skill_dir=chat_skill_dir)
+    except Exception as e:
+        log("warn", f"[chat] caveman injection failed: {e}")
 
     # Inject emotional memory before the user message (if available)
     if emotional_context:

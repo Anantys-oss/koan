@@ -44,6 +44,28 @@ logger = logging.getLogger(__name__)
 _PLACEHOLDER_RE = re.compile(r"\{([A-Z][A-Z_0-9]+)\}")
 
 
+def _get_caveman_section() -> str:
+    """Return the caveman output optimization section if enabled.
+
+    Delegates to :func:`app.caveman.get_caveman_section` so the agent loop
+    and skill runners share a single resolution path.  The agent loop has no
+    associated skill, so only the global ``optimizations.caveman.enabled``
+    flag governs the result here.
+
+    Failures are non-fatal — caveman is an optimization, not a correctness
+    feature — but are logged so silent regressions stay visible.  This
+    matches the catch-and-log pattern used in
+    ``app.prompts._maybe_append_caveman`` and ``app.awake._build_chat_prompt``
+    so all three caveman injection sites behave the same way.
+    """
+    try:
+        from app.caveman import get_caveman_section
+        return get_caveman_section()
+    except Exception as e:
+        logger.warning("caveman section unavailable: %s", e)
+        return ""
+
+
 def _get_language_section() -> str:
     """Return the language enforcement section if a preference is set."""
     try:
@@ -519,6 +541,9 @@ def build_agent_prompt(
     # Append verbose mode section if active
     prompt += _get_verbose_section(instance)
 
+    # Append caveman output optimization (token reduction)
+    prompt += _get_caveman_section()
+
     # Append language preference (overrides soul.md default)
     prompt += _get_language_section()
 
@@ -602,6 +627,10 @@ def build_agent_prompt_parts(
     verbose = _get_verbose_section(instance)
     if verbose:
         sys_parts.append(verbose)
+
+    caveman = _get_caveman_section()
+    if caveman:
+        sys_parts.append(caveman)
 
     security = _get_security_flagging_section(mission_title, autonomous_mode)
     if security:
