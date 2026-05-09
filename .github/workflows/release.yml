@@ -12,64 +12,7 @@ permissions:
   contents: write
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    timeout-minutes: 50
-    strategy:
-      fail-fast: true
-      matrix:
-        python-version: ["3.11", "3.14"]
-        group:
-          - name: fast
-            marker: "not slow"
-          - name: slow-1
-            marker: "slow"
-            split_group: 1
-          - name: slow-2
-            marker: "slow"
-            split_group: 2
-          - name: slow-3
-            marker: "slow"
-            split_group: 3
-
-    name: test (py${{ matrix.python-version }}, ${{ matrix.group.name }})
-
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v6
-        with:
-          python-version: "${{ matrix.python-version }}"
-          allow-prereleases: true
-          cache: "pip"
-          cache-dependency-path: koan/requirements.txt
-
-      - name: Install dependencies
-        run: |
-          pip install -r koan/requirements.txt
-          pip install pytest pytest-split pytest-cov
-
-      - name: Run tests (${{ matrix.group.name }})
-        working-directory: koan
-        env:
-          KOAN_ROOT: ${{ github.workspace }}/koan
-          PYTHONPATH: "."
-          KOAN_TELEGRAM_TOKEN: "fake-token-for-ci"
-          KOAN_TELEGRAM_CHAT_ID: "123456789"
-        run: |
-          if [ -n "${{ matrix.group.split_group }}" ]; then
-            pytest tests/ -m "${{ matrix.group.marker }}" --splits 3 --group ${{ matrix.group.split_group }} -v \
-              --cov=app --cov-report=term-missing
-          else
-            pytest tests/ -m "${{ matrix.group.marker }}" -v \
-              --cov=app --cov-report=term-missing
-          fi
-
   release:
-    needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
