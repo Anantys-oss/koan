@@ -7,6 +7,11 @@ on:
         description: "Release version (e.g. v0.5, v1.0.0)"
         required: true
         type: string
+      update_stable:
+        description: "Update the 'stable' tag to point to this release"
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -62,18 +67,12 @@ jobs:
           git tag -a "${{ inputs.version }}" -m "Release ${{ inputs.version }}"
           git push origin "${{ inputs.version }}"
 
-      - name: Update stable branch
+      - name: Update stable tag
+        if: inputs.update_stable
         run: |
-          if git ls-remote --exit-code --heads origin stable >/dev/null 2>&1; then
-            echo "Fast-forwarding stable → ${{ inputs.version }}"
-            git fetch origin stable:stable 2>/dev/null || git branch -f stable origin/stable
-            git branch -f stable "${{ inputs.version }}"
-            git push origin stable
-          else
-            echo "Creating stable branch at ${{ inputs.version }}"
-            git branch stable "${{ inputs.version }}"
-            git push -u origin stable
-          fi
+          echo "Updating stable tag → ${{ inputs.version }}"
+          git tag -f stable "${{ inputs.version }}"
+          git push origin stable --force
 
       - name: Create GitHub release
         env:
