@@ -1927,7 +1927,7 @@ def _run_iteration(
                 stdout_file=stdout_file,
                 stderr_file=stderr_file,
                 cmd=cmd,
-                project_path=execution_cwd,
+                project_path=project_path,
                 pre_head=pre_head,
                 instance=instance,
                 project_name=project_name,
@@ -2775,14 +2775,10 @@ def _cleanup_worktree(worktree_info, project_path: str):
     need to be pushed to the remote before the worktree is destroyed.
     """
     wt_path = worktree_info.path
+    push_failed = False
 
-    # Push any branches the agent created (koan/* branches)
+    # Push any branches the agent created in the worktree
     try:
-        result = subprocess.run(
-            ["git", "branch", "--list", "koan*"],
-            cwd=wt_path,
-            capture_output=True, text=True, timeout=10,
-        )
         current_branch = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
             cwd=wt_path,
@@ -2811,10 +2807,16 @@ def _cleanup_worktree(worktree_info, project_path: str):
             )
             if push_result.returncode != 0:
                 log("error", f"Worktree push failed: {push_result.stderr.strip()}")
+                push_failed = True
     except (subprocess.SubprocessError, OSError) as e:
         log("error", f"Worktree branch push error: {e}")
+        push_failed = True
 
-    # Remove the worktree
+    # Remove the worktree — but preserve it if push failed to avoid data loss
+    if push_failed:
+        log("error", f"Worktree preserved at {wt_path} — push failed, manual intervention needed")
+        return
+
     try:
         from app.worktree_manager import remove_worktree
         remove_worktree(
