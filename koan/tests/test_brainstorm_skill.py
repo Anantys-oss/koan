@@ -1,6 +1,7 @@
 """Tests for the /brainstorm core skill — handler + runner."""
 
 import json
+import re
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -247,7 +248,11 @@ from skills.core.brainstorm.brainstorm_runner import (
     _coerce_top_ranked,
     _coerce_fast_wins,
     _coerce_overall_assessment,
+    _validate_issue_bodies,
+    _log_prompt_provenance,
+    REQUIRED_ISSUE_SECTIONS,
 )
+import skills.core.brainstorm.brainstorm_runner as brainstorm_runner
 
 
 class TestGenerateTag:
@@ -764,3 +769,244 @@ class TestDecomposeMaxTurns:
             result = runner._decompose_topic("/tmp/proj", "topic")
 
         assert mock_run.call_args[1]["max_turns"] == 42
+
+
+# ---------------------------------------------------------------------------
+# Structural validation
+# ---------------------------------------------------------------------------
+
+
+def _full_body():
+    """Return a body string containing every required section header."""
+    return "\n\n".join(f"{h}\nplaceholder" for h in REQUIRED_ISSUE_SECTIONS)
+
+
+class TestValidateIssueBodies:
+    def test_required_sections_constant_has_seven_headers(self):
+        assert len(REQUIRED_ISSUE_SECTIONS) == 7
+        # Spot-check the canonical names — these are also referenced in
+        # the prompt's required-sections checklist, so they must match.
+        assert "## Why This Matters" in REQUIRED_ISSUE_SECTIONS
+        assert "## Risks & Caveats" in REQUIRED_ISSUE_SECTIONS
+        assert "## Scores" in REQUIRED_ISSUE_SECTIONS
+        assert "## Priority" in REQUIRED_ISSUE_SECTIONS
+
+    def test_all_sections_present_returns_no_diagnostics(self):
+        issues = [
+            {"title": "Alpha", "body": _full_body()},
+            {"title": "Beta",  "body": _full_body()},
+        ]
+        assert _validate_issue_bodies(issues) == []
+
+    def test_one_missing_section_yields_one_diagnostic(self):
+        body = _full_body().replace("## Risks & Caveats\n", "")
+        diagnostics = _validate_issue_bodies(
+            [{"title": "Alpha", "body": body}]
+        )
+        assert len(diagnostics) == 1
+        assert "Issue 1" in diagnostics[0]
+        assert "Alpha" in diagnostics[0]
+        assert "## Risks & Caveats" in diagnostics[0]
+
+    def test_old_template_is_fully_rejected(self):
+        """The exact old-template body from the cryptoan run must
+        trigger diagnostics for all four newly-required headers."""
+        old_body = (
+            "## Context\nFoundational thing.\n\n"
+            "## Approach\nDo this.\n\n"
+            "## Acceptance Criteria\n- [ ] Done\n\n"
+            "## Dependencies\nNone."
+        )
+        diagnostics = _validate_issue_bodies(
+            [{"title": "Implement signal ensemble", "body": old_body}]
+        )
+        missing_headers = {d.split("missing '")[1].rstrip("'") for d in diagnostics}
+        assert "## Why This Matters" in missing_headers
+        assert "## Risks & Caveats" in missing_headers
+        assert "## Scores" in missing_headers
+        assert "## Priority" in missing_headers
+        # Old template did include these — should NOT be flagged
+        assert "## Approach" not in missing_headers
+        assert "## Acceptance Criteria" not in missing_headers
+        assert "## Dependencies" not in missing_headers
+
+    def test_empty_body_flags_all_seven_sections(self):
+        diagnostics = _validate_issue_bodies(
+            [{"title": "Empty", "body": ""}]
+        )
+        assert len(diagnostics) == len(REQUIRED_ISSUE_SECTIONS)
+
+    def test_missing_body_key_treated_as_empty(self):
+        diagnostics = _validate_issue_bodies([{"title": "No body"}])
+        assert len(diagnostics) == len(REQUIRED_ISSUE_SECTIONS)
+
+    def test_diagnostic_includes_issue_number_and_title_preview(self):
+        issues = [
+            {"title": "Alpha", "body": _full_body()},
+            {"title": "B" * 80, "body": ""},
+        ]
+        diagnostics = _validate_issue_bodies(issues)
+        assert all("Issue 2" in d for d in diagnostics)
+        # Title preview is truncated to 40 chars
+        assert all(("'" + "B" * 40 + "'") in d for d in diagnostics)
+
+
+# ---------------------------------------------------------------------------
+# Prompt provenance log
+# ---------------------------------------------------------------------------
+
+
+class TestPromptProvenance:
+    def test_logs_version_new_when_marker_present(self, capsys):
+        prompt = "Some prefix.\n\n## Why This Matters\n...rest of prompt."
+        _log_prompt_provenance(Path("/some/path/decompose.md"), prompt)
+        err = capsys.readouterr().err
+        assert "prompt_provenance" in err
+        assert "version=new" in err
+        assert "path=/some/path/decompose.md" in err
+        assert f"size={len(prompt)}" in err
+
+    def test_logs_version_old_when_marker_absent(self, capsys):
+        prompt = "You are a technical decomposition assistant.\n## Context\n..."
+        _log_prompt_provenance(Path("/old/decompose.md"), prompt)
+        err = capsys.readouterr().err
+        assert "version=old" in err
+
+    def test_includes_truncated_sha256(self, capsys):
+        prompt = "## Why This Matters\nbody"
+        _log_prompt_provenance(Path("/p.md"), prompt)
+        err = capsys.readouterr().err
+        match = re.search(r"head_sha256=([0-9a-f]+)", err)
+        assert match is not None
+        assert len(match.group(1)) == 12
+
+    def test_handles_none_path_gracefully(self, capsys):
+        _log_prompt_provenance(None, "## Why This Matters\nbody")
+        err = capsys.readouterr().err
+        assert "path=<system-prompt>" in err
+
+    def test_handles_empty_prompt(self, capsys):
+        _log_prompt_provenance(Path("/missing.md"), "")
+        err = capsys.readouterr().err
+        assert "size=0" in err
+        assert "version=old" in err  # marker absent → old
+
+
+# ---------------------------------------------------------------------------
+# run_brainstorm — retry-once on validation failure
+# ---------------------------------------------------------------------------
+
+
+def _decomposition_json(issues_bodies, master_summary="Initiative summary."):
+    """Build a JSON decomposition string from issue bodies."""
+    return json.dumps({
+        "master_summary": master_summary,
+        "issues": [
+            {"title": f"Issue {i+1}", "body": body}
+            for i, body in enumerate(issues_bodies)
+        ],
+    })
+
+
+_OLD_BODY = (
+    "## Context\nx\n\n## Approach\nx\n\n"
+    "## Acceptance Criteria\n- [ ] x\n\n## Dependencies\nNone"
+)
+
+
+class TestRunBrainstormRetry:
+    def _run(self, claude_outputs, issue_create_returns=None):
+        """Execute run_brainstorm with stubbed Claude + GitHub calls."""
+        if issue_create_returns is None:
+            issue_create_returns = [
+                f"https://github.com/o/r/issues/{100 + i}"
+                for i in range(len(claude_outputs[-1]) if claude_outputs else 3)
+            ]
+        notify = MagicMock()
+        # _build_decompose_prompt avoids touching disk
+        with patch.object(brainstorm_runner, "_build_decompose_prompt",
+                          return_value="<prompt>"), \
+             patch.object(brainstorm_runner, "_call_claude_with_prompt",
+                          side_effect=claude_outputs) as mock_claude, \
+             patch.object(brainstorm_runner, "_get_repo_info",
+                          return_value=("owner", "repo")), \
+             patch.object(brainstorm_runner, "_ensure_label"), \
+             patch.object(brainstorm_runner, "issue_create",
+                          side_effect=issue_create_returns) as mock_create, \
+             patch.object(brainstorm_runner, "_replace_sub_placeholders"):
+            success, summary = brainstorm_runner.run_brainstorm(
+                project_path="/proj",
+                topic="A topic",
+                tag="my-tag",
+                notify_fn=notify,
+            )
+        return success, summary, mock_claude, mock_create, notify
+
+    def test_no_retry_when_first_response_is_compliant(self):
+        good = _decomposition_json([_full_body()] * 3)
+        success, summary, mock_claude, mock_create, _notify = self._run(
+            [good],
+        )
+        assert success is True
+        assert mock_claude.call_count == 1
+        assert mock_create.call_count >= 3
+
+    def test_retries_once_when_first_response_is_old_shape(self):
+        bad = _decomposition_json([_OLD_BODY] * 3)
+        good = _decomposition_json([_full_body()] * 3)
+        success, summary, mock_claude, mock_create, notify = self._run(
+            [bad, good],
+        )
+        assert success is True
+        assert mock_claude.call_count == 2
+        # Second call must include the retry reminder appended to prompt
+        second_prompt = mock_claude.call_args_list[1].args[0]
+        assert "ATTENTION" in second_prompt
+        assert "## Why This Matters" in second_prompt
+        # User got a notification about the retry
+        assert any(
+            "retrying" in str(c).lower() or "template" in str(c).lower()
+            for c in notify.call_args_list
+        )
+        # Issues created from the retry response, not the bad first one
+        assert mock_create.call_count >= 3
+
+    def test_aborts_when_both_attempts_fail_validation(self):
+        bad = _decomposition_json([_OLD_BODY] * 3)
+        success, summary, mock_claude, mock_create, _notify = self._run(
+            [bad, bad],
+        )
+        assert success is False
+        assert mock_claude.call_count == 2
+        # No GitHub issues are created when validation fails twice
+        assert mock_create.call_count == 0
+        assert "Template enforcement failed" in summary
+
+    def test_summary_truncates_long_diagnostic_list(self):
+        # Three issues × 4 missing sections = 12 diagnostics
+        bad = _decomposition_json([_OLD_BODY] * 3)
+        success, summary, _claude, _create, _notify = self._run([bad, bad])
+        assert success is False
+        # Only the first three diagnostics in the summary, plus a count
+        assert "+9 more" in summary
+
+    def test_master_synthesis_warning_when_all_keys_absent(self, capsys):
+        good = _decomposition_json([_full_body()] * 3)
+        with patch.object(brainstorm_runner, "_build_decompose_prompt",
+                          return_value="<prompt>"), \
+             patch.object(brainstorm_runner, "_call_claude_with_prompt",
+                          return_value=good), \
+             patch.object(brainstorm_runner, "_get_repo_info",
+                          return_value=("o", "r")), \
+             patch.object(brainstorm_runner, "_ensure_label"), \
+             patch.object(brainstorm_runner, "issue_create",
+                          side_effect=[f"https://x/{i}" for i in range(10)]), \
+             patch.object(brainstorm_runner, "_replace_sub_placeholders"):
+            brainstorm_runner.run_brainstorm(
+                project_path="/proj",
+                topic="t",
+                tag="t",
+                notify_fn=MagicMock(),
+            )
+        err = capsys.readouterr().err
+        assert "master synthesis absent" in err

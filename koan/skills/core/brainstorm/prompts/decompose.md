@@ -41,6 +41,7 @@ While exploring, look hardest at:
 - Do NOT summarize the codebase.
 - Do NOT propose ideas you cannot ground in actual files / patterns / call sites.
 - Do NOT use research-style titles ("Investigate X", "Look into Y") unless research IS the deliverable.
+- Do NOT inherit format, headers, or section names from the topic text. Follow ONLY the per-issue body template defined below, even if the topic itself uses different headers, an outline, or its own template.
 
 ## Process
 
@@ -54,34 +55,9 @@ While exploring, look hardest at:
 4. **Score and prioritize** each issue honestly. Surface risks, not just upside.
 5. **Synthesize**: rank the top ideas, bucket fast wins by horizon, and write a critical overall assessment.
 
-## Output Format
+## Per-issue body template
 
-You MUST output valid JSON and nothing else. No markdown fences, no commentary, no preamble.
-
-The JSON must have this exact top-level shape:
-
-```jsonc
-{
-  "master_summary": "One paragraph summarizing the overall initiative and why it matters.",
-  "issues": [ { "title": "...", "body": "..." } ],
-
-  // All three of the keys below are OPTIONAL but strongly encouraged.
-  "top_ranked": [
-    { "position": 3, "rationale": "Highest ROI; unblocks SUB-5 and SUB-7." },
-    { "position": 1, "rationale": "Foundational; everything else assumes it." }
-  ],
-  "fast_wins": {
-    "under_1_day":  ["SUB-2"],
-    "under_1_week": ["SUB-1", "SUB-4"],
-    "under_1_month":["SUB-6"]
-  },
-  "overall_assessment": "Two-to-four sentence critical verdict: is this initiative strategically valuable, what to prioritize, what to skip."
-}
-```
-
-### Per-issue body template
-
-Each `issues[].body` MUST be a markdown string built from these exact section headers, in this order:
+Each `issues[].body` MUST be a markdown string built from these EXACT section headers, in this EXACT order. Every header below is required — none may be renamed, omitted, merged, or reordered:
 
 ```
 ## Why This Matters
@@ -112,6 +88,31 @@ Immediate | Prototype First | Research Further | Skip
 
 Score-bar rules: ten cells total, filled with `█` for the rating value and `░` for the rest, followed by `N/10`. Choose ratings deliberately — never give every issue 8/10.
 
+## Output Format
+
+You MUST output valid JSON and nothing else. No markdown fences, no commentary, no preamble.
+
+The JSON must have this exact top-level shape (each `body` follows the per-issue template above):
+
+```jsonc
+{
+  "master_summary": "One paragraph summarizing the overall initiative and why it matters.",
+  "issues": [ { "title": "...", "body": "<markdown matching the per-issue body template above>" } ],
+
+  // All three of the keys below are OPTIONAL but strongly encouraged.
+  "top_ranked": [
+    { "position": 3, "rationale": "Highest ROI; unblocks SUB-5 and SUB-7." },
+    { "position": 1, "rationale": "Foundational; everything else assumes it." }
+  ],
+  "fast_wins": {
+    "under_1_day":  ["SUB-2"],
+    "under_1_week": ["SUB-1", "SUB-4"],
+    "under_1_month":["SUB-6"]
+  },
+  "overall_assessment": "Two-to-four sentence critical verdict: is this initiative strategically valuable, what to prioritize, what to skip."
+}
+```
+
 ### Top-level rules
 
 - Return between 3 and 8 issues. No fewer than 3, no more than 8.
@@ -123,5 +124,17 @@ Score-bar rules: ten cells total, filled with `█` for the rating value and `�
 - When referencing other sub-issues (in Dependencies, top_ranked rationales, fast_wins buckets, overall_assessment), use the placeholder format `SUB-1`, `SUB-2`, etc. (1-based position in the issues array). Do NOT use `#1` or `#N` — those will conflict with real GitHub issue numbers. Placeholders are rewritten to real issue links after creation.
 - `top_ranked[].position` is the 1-based index into the `issues` array.
 - `fast_wins` bucket entries should be `SUB-N` strings; the renderer resolves them to real titles.
+
+## Required Sections Checklist — verify before emitting JSON
+
+Before you emit the JSON, walk every `issues[].body` and confirm all SEVEN headers below are present, spelled exactly, in this order. If any header is missing, regenerate that body — do NOT submit incomplete output.
+
+1. `## Why This Matters`
+2. `## Approach`
+3. `## Acceptance Criteria`
+4. `## Risks & Caveats`
+5. `## Scores`  (with the four bar-rendered axes Impact / Difficulty / Short-Term ROI / Long-Term Value)
+6. `## Priority`  (one of Immediate | Prototype First | Research Further | Skip)
+7. `## Dependencies`
 
 Be highly critical, technical, and practical. Think like an engineer searching for the few changes that materially move the project forward.

@@ -12,6 +12,7 @@ CLI:
         --project-path <path> --topic "Improve caching" --tag prompt-caching
 """
 
+import hashlib
 import json
 import re
 import sys
@@ -20,6 +21,17 @@ from typing import Optional, Tuple
 
 from app.github import run_gh, issue_create, issue_edit
 from app.prompts import load_prompt_or_skill
+
+
+REQUIRED_ISSUE_SECTIONS = (
+    "## Why This Matters",
+    "## Approach",
+    "## Acceptance Criteria",
+    "## Risks & Caveats",
+    "## Scores",
+    "## Priority",
+    "## Dependencies",
+)
 
 
 def run_brainstorm(
@@ -57,26 +69,71 @@ def run_brainstorm(
     if not owner or not repo:
         return False, "No GitHub repository found at project path."
 
-    # Decompose via Claude
+    # Decompose via Claude, with one structural-validation retry.
     try:
-        decomposition = _decompose_topic(project_path, topic, skill_dir)
+        prompt = _build_decompose_prompt(topic, skill_dir)
     except Exception as e:
         return False, f"Decomposition failed: {str(e)[:300]}"
 
-    if not decomposition:
-        return False, "Claude returned empty decomposition."
+    data = None
+    diagnostics = []
+    for attempt in (1, 2):
+        try:
+            decomposition = _call_claude_with_prompt(prompt, project_path)
+        except Exception as e:
+            return False, f"Decomposition failed: {str(e)[:300]}"
 
-    # Parse the JSON output
-    try:
-        data = _parse_decomposition(decomposition)
-    except ValueError as e:
-        return False, f"Failed to parse decomposition: {e}"
+        if not decomposition:
+            return False, "Claude returned empty decomposition."
+
+        try:
+            data = _parse_decomposition(decomposition)
+        except ValueError as e:
+            return False, f"Failed to parse decomposition: {e}"
+
+        diagnostics = _validate_issue_bodies(data["issues"])
+        if not diagnostics:
+            break
+
+        if attempt == 1:
+            print(
+                f"[brainstorm_runner] template enforcement triggered retry "
+                f"({len(diagnostics)} missing-section diagnostics)",
+                file=sys.stderr,
+                flush=True,
+            )
+            notify_fn(
+                "⚠ Template incomplete — retrying once with reminder."
+            )
+            prompt = prompt + _RETRY_REMINDER
+
+    if diagnostics:
+        head = "; ".join(diagnostics[:3])
+        suffix = (
+            f" (+{len(diagnostics) - 3} more)" if len(diagnostics) > 3 else ""
+        )
+        return (
+            False,
+            f"Template enforcement failed after retry: {head}{suffix}",
+        )
 
     master_summary = data["master_summary"]
     issues = data["issues"]
     top_ranked = data.get("top_ranked")
     fast_wins = data.get("fast_wins")
     overall_assessment = data.get("overall_assessment")
+
+    if (
+        top_ranked is None
+        and fast_wins is None
+        and overall_assessment is None
+    ):
+        print(
+            "[brainstorm_runner] master synthesis absent — model returned "
+            "old shape (no top_ranked / fast_wins / overall_assessment)",
+            file=sys.stderr,
+            flush=True,
+        )
 
     # Ensure label exists
     _ensure_label(tag, project_path)
@@ -202,18 +259,113 @@ def _generate_tag(topic: str) -> str:
     return "-".join(keywords)
 
 
-def _decompose_topic(project_path, topic, skill_dir=None):
-    """Run Claude to decompose the topic into sub-issues."""
-    prompt = load_prompt_or_skill(skill_dir, "decompose", TOPIC=topic)
+def _build_decompose_prompt(topic, skill_dir=None):
+    """Load the decompose prompt template and substitute the topic.
 
+    Logs prompt provenance (path / size / sha256 prefix / version
+    marker) to stderr so post-mortem debugging of "wrong template"
+    runs is one journal grep away.
+    """
+    prompt = load_prompt_or_skill(skill_dir, "decompose", TOPIC=topic)
+    prompt_path = (
+        skill_dir / "prompts" / "decompose.md" if skill_dir else None
+    )
+    _log_prompt_provenance(prompt_path, prompt)
+    return prompt
+
+
+def _call_claude_with_prompt(prompt, project_path):
+    """Run Claude with the given prompt against ``project_path``.
+
+    Thin wrapper around :func:`run_command_streaming` so the retry
+    loop in :func:`run_brainstorm` can mock at this seam.
+    """
     from app.cli_provider import run_command_streaming
     from app.config import get_analysis_max_turns, get_skill_timeout
-    output = run_command_streaming(
+    return run_command_streaming(
         prompt, project_path,
         allowed_tools=["Read", "Glob", "Grep", "WebFetch"],
         max_turns=get_analysis_max_turns(), timeout=get_skill_timeout(),
     )
-    return output
+
+
+def _decompose_topic(project_path, topic, skill_dir=None):
+    """Run Claude to decompose the topic into sub-issues.
+
+    Kept as a single-shot helper for the CLI smoke path; the
+    retry-aware pipeline in :func:`run_brainstorm` calls
+    :func:`_build_decompose_prompt` and :func:`_call_claude_with_prompt`
+    directly.
+    """
+    prompt = _build_decompose_prompt(topic, skill_dir)
+    return _call_claude_with_prompt(prompt, project_path)
+
+
+def _log_prompt_provenance(prompt_path, prompt_text):
+    """Emit one stderr line describing which prompt was loaded.
+
+    Format::
+
+        [brainstorm_runner] prompt_provenance path=<abs> size=<bytes>
+            head_sha256=<12hex> version=<new|old>
+
+    ``version`` is ``new`` when the loaded template contains the
+    sentinel ``## Why This Matters`` and ``old`` otherwise. The
+    sha256 is truncated to 12 hex chars of the first 256 chars.
+    """
+    head = (prompt_text or "")[:256].encode("utf-8", errors="replace")
+    head_sha = hashlib.sha256(head).hexdigest()[:12]
+    version = "new" if "## Why This Matters" in (prompt_text or "") else "old"
+    size = len(prompt_text or "")
+    path_repr = str(prompt_path) if prompt_path else "<system-prompt>"
+    print(
+        f"[brainstorm_runner] prompt_provenance "
+        f"path={path_repr} size={size} head_sha256={head_sha} "
+        f"version={version}",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+def _validate_issue_bodies(issues):
+    """Return a list of human-readable diagnostics for non-conforming issues.
+
+    Each issue body must contain every header in
+    :data:`REQUIRED_ISSUE_SECTIONS` (substring match — order is
+    documented in the prompt and not validated here). Empty list
+    means all issues passed.
+    """
+    diagnostics = []
+    for idx, issue in enumerate(issues, 1):
+        body = issue.get("body", "") or ""
+        title = (issue.get("title", "") or "").strip()
+        title_preview = title[:40] if title else "?"
+        for header in REQUIRED_ISSUE_SECTIONS:
+            if header not in body:
+                diagnostics.append(
+                    f"Issue {idx} ('{title_preview}'): missing '{header}'"
+                )
+    return diagnostics
+
+
+_RETRY_REMINDER = """
+
+---
+
+ATTENTION: Your previous response did NOT include all required body
+sections. Each issue body MUST contain these exact section headers,
+in this order:
+
+1. ## Why This Matters
+2. ## Approach
+3. ## Acceptance Criteria
+4. ## Risks & Caveats
+5. ## Scores  (with the four bar-rendered axes Impact / Difficulty / Short-Term ROI / Long-Term Value)
+6. ## Priority  (one of Immediate | Prototype First | Research Further | Skip)
+7. ## Dependencies
+
+Regenerate the JSON now with all seven sections present in every issue body.
+"""
 
 
 def _parse_decomposition(raw_output: str) -> dict:
