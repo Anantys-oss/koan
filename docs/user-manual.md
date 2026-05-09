@@ -329,7 +329,42 @@ These features turn Kōan from a task runner into a full development workflow pa
 
 ### Code Operations
 
-**`/brainstorm`** — Decompose a broad topic into multiple linked GitHub issues grouped under a master tracking issue.
+**`/brainstorm`** — Decompose a broad topic into 3-8 high-leverage GitHub sub-issues grouped under a master tracking issue.
+
+The decomposer runs as a senior-engineer-style ideation pass: it explores the codebase (if provided) or external source, hunts for compounding improvements, and refuses to pad with generic refactors. Every sub-issue body follows this template:
+
+```markdown
+## Why This Matters
+<leverage rationale — why this is unusual or high-leverage>
+
+## Approach
+<concrete implementation strategy, grounded in real files and patterns>
+
+## Acceptance Criteria
+- [ ] Criterion 1
+- [ ] Criterion 2
+
+## Risks & Caveats
+<hidden complexity, operational risk, maintenance burden>
+
+## Scores
+- Impact:          ████████░░ 8/10
+- Difficulty:      ██████░░░░ 6/10
+- Short-Term ROI:  ███████░░░ 7/10
+- Long-Term Value: █████████░ 9/10
+
+## Priority
+Immediate | Prototype First | Research Further | Skip
+
+## Dependencies
+<SUB-N references to other sub-issues, or "None">
+```
+
+The master tracking issue then synthesizes the set with three optional sections:
+
+- **Top Ranked** — sub-issues ordered by ROI / feasibility / strategic value, each with a one-line rationale.
+- **Fast Wins** — bucketed by horizon: `< 1 day`, `< 1 week`, `< 1 month`.
+- **Overall Assessment** — short critical verdict on whether the initiative is worth pursuing and what to prioritize.
 
 - **Usage:** `/brainstorm <topic>`, `/brainstorm <project> <topic>`, `/brainstorm <topic> --tag <label>`
 - **GitHub @mention:** `@koan-bot /brainstorm <topic>` on an issue
