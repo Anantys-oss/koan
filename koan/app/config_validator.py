@@ -78,6 +78,7 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "automation_rules": _NESTED,
     "effort": _NESTED,
     "stagnation": _NESTED,
+    "optimizations": _NESTED,
 }
 
 # Sub-schemas for nested sections
@@ -215,6 +216,13 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
         "implement": "str",
         "deep": "str",
     },
+    "optimizations": {
+        # Caveman is configured exclusively via the nested mapping
+        # ``caveman: {enabled: bool, include: [skill, ...]}``.  Deep
+        # validation of that mapping lives in
+        # :func:`_validate_caveman_nested` below.
+        "caveman": "dict",
+    },
 }
 
 # Type name → Python type(s) for isinstance checks
@@ -333,6 +341,13 @@ def validate_config(config: dict) -> List[Tuple[str, str]]:
                     f"'{key}' should be {exp_label}, got {type(value).__name__}",
                 ))
 
+    # Semantic check: deep-validate optimizations.caveman when it's a dict.
+    optimizations = config.get("optimizations")
+    if isinstance(optimizations, dict):
+        caveman = optimizations.get("caveman")
+        if isinstance(caveman, dict):
+            warnings.extend(_validate_caveman_nested(caveman))
+
     # Semantic check: warn on overlapping deep_hours and work_hours
     schedule = config.get("schedule")
     if isinstance(schedule, dict):
@@ -348,6 +363,45 @@ def validate_config(config: dict) -> List[Tuple[str, str]]:
                     f"Recommended: use non-overlapping ranges (e.g., deep_hours: \"0-8\", work_hours: \"8-20\")",
                 ))
 
+    return warnings
+
+
+_CAVEMAN_NESTED_SCHEMA: Dict[str, Any] = {
+    "enabled": "bool",
+    "include": "list",
+}
+
+
+def _validate_caveman_nested(caveman: dict) -> List[Tuple[str, str]]:
+    """Validate the nested ``optimizations.caveman`` dict."""
+    warnings: List[Tuple[str, str]] = []
+    known = list(_CAVEMAN_NESTED_SCHEMA.keys())
+    for key, value in caveman.items():
+        path = f"optimizations.caveman.{key}"
+        if key not in _CAVEMAN_NESTED_SCHEMA:
+            suggestion = _suggest_typo(key, known)
+            msg = f"unrecognized key '{path}'"
+            if suggestion:
+                msg += f" (did you mean 'optimizations.caveman.{suggestion}'?)"
+            warnings.append((path, msg))
+            continue
+        if value is None:
+            continue
+        expected = _CAVEMAN_NESTED_SCHEMA[key]
+        if not _check_type(value, expected):
+            exp_label = expected if isinstance(expected, str) else "/".join(expected)
+            warnings.append((
+                path,
+                f"'{path}' should be {exp_label}, got {type(value).__name__}",
+            ))
+            continue
+        if key == "include" and isinstance(value, list):
+            for idx, entry in enumerate(value):
+                if not isinstance(entry, str):
+                    warnings.append((
+                        f"{path}[{idx}]",
+                        f"'{path}[{idx}]' should be str, got {type(entry).__name__}",
+                    ))
     return warnings
 
 

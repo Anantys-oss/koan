@@ -6,6 +6,7 @@ emoji: 🧠
 description: Decompose a broad topic into linked GitHub issues with a master tracking issue
 version: 1.0.0
 audience: hybrid
+caveman: false
 github_enabled: true
 github_context_aware: true
 commands:

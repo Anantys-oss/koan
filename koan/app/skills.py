@@ -80,6 +80,13 @@ class Skill:
     cli_skill: Optional[str] = None
     group: str = ""
     emoji: str = ""
+    # ``caveman_enabled`` follows the SKILL.md frontmatter ``caveman:`` flag.
+    # Default ``False`` (opt-in): a skill must declare ``caveman: true`` in
+    # its frontmatter (or be listed in ``optimizations.caveman.include`` in
+    # ``config.yaml``) for the caveman directive to be appended.  Skills
+    # are also free to keep an explicit ``caveman: false`` to document
+    # intent, even though it matches the default.
+    caveman_enabled: bool = False
 
     @property
     def qualified_name(self) -> str:
@@ -179,7 +186,7 @@ def _parse_inline_list(s: str) -> List[str]:
 
 def _parse_bool_flag(meta: Dict[str, Any], key: str) -> bool:
     """Parse a boolean flag from SKILL.md frontmatter metadata.
-    
+
     Accepts: "true", "yes", "1" (case-insensitive) as truthy values.
     Returns False for any other value or if key is missing.
     """
@@ -229,10 +236,11 @@ def parse_skill_md(path: Path) -> Optional[Skill]:
 
     skill_dir = path.parent
 
-    # Parse boolean flags
+    # Parse boolean flags — caveman is opt-in (defaults to False).
     worker = _parse_bool_flag(meta, "worker")
     github_enabled = _parse_bool_flag(meta, "github_enabled")
     github_context_aware = _parse_bool_flag(meta, "github_context_aware")
+    caveman_enabled = _parse_bool_flag(meta, "caveman")
 
     # Parse audience (default: "bridge" for backward compatibility)
     audience = meta.get("audience", DEFAULT_AUDIENCE).lower()
@@ -264,6 +272,7 @@ def parse_skill_md(path: Path) -> Optional[Skill]:
         cli_skill=cli_skill,
         group=group,
         emoji=emoji,
+        caveman_enabled=caveman_enabled,
     )
 
 

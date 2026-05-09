@@ -493,3 +493,23 @@ usage:
 # The counter is in-memory and resets when the agent restarts.
 # automation_rules:
 #   max_fires_per_minute: 5   # Per-rule rate limit (default: 5, min: 1)
+
+# Output optimizations — reduce token consumption
+# These settings control prompt-level optimizations that reduce output verbosity
+# while preserving response quality.
+#
+# Caveman ("no filler, 3-6 word sentences, direct answers") applies by default
+# to the agent loop (regular missions) — that's where the bulk of token cost
+# lives.
+#
+# Skills are **opt-in**: a skill only receives caveman when it declares
+# ``caveman: true`` in its SKILL.md frontmatter, OR when its canonical name
+# is listed in ``optimizations.caveman.include`` below. Core skills shipping
+# with ``caveman: true``: /rebase, /recreate, /squash, /fix, /ci_check,
+# /check, /implement.
+#
+# Set ``enabled: false`` to suppress caveman everywhere (agent loop and skills):
+# optimizations:
+#   caveman:
+#     enabled: true
+#     include: [my_custom_skill]   # canonical names; aliases auto-resolved

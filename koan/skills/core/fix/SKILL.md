@@ -6,6 +6,7 @@ emoji: 🐞
 description: "Fix a GitHub issue end-to-end, or batch-queue all open issues from a repo"
 version: 1.1.0
 audience: hybrid
+caveman: true
 github_enabled: true
 github_context_aware: true
 commands:

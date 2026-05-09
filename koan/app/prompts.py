@@ -93,6 +93,10 @@ def load_skill_prompt(skill_dir: Path, name: str, **kwargs: str) -> str:
     Looks for ``skill_dir/prompts/<name>.md`` first, then falls back to
     the global ``system-prompts/`` directory for safe incremental migration.
 
+    The caveman directive (``optimizations.caveman``) is appended automatically
+    when the skill is not opted out — see :mod:`app.caveman` for resolution
+    rules.
+
     Args:
         skill_dir: Path to the skill directory (e.g. ``skills/core/plan``).
         name: Prompt file name without .md extension.
@@ -107,7 +111,8 @@ def load_skill_prompt(skill_dir: Path, name: str, **kwargs: str) -> str:
     except FileNotFoundError:
         # Skill prompt not found even via git — fall back to system-prompts/
         template = _read_prompt_with_git_fallback(get_prompt_path(name))
-    return _substitute(template, kwargs)
+    prompt = _substitute(template, kwargs)
+    return _maybe_append_caveman(prompt, skill_dir)
 
 
 def load_prompt_or_skill(
@@ -122,6 +127,11 @@ def load_prompt_or_skill(
         else:
             prompt = load_prompt(name, **kw)
 
+    When a ``skill_dir`` is supplied, the caveman directive is auto-appended
+    via :func:`load_skill_prompt`.  When it's ``None`` the caller is the agent
+    loop (or a system-prompt consumer) and is expected to inject caveman
+    itself if appropriate.
+
     Args:
         skill_dir: Path to the skill directory, or None for system prompts.
         name: Prompt file name without .md extension.
@@ -133,3 +143,26 @@ def load_prompt_or_skill(
     if skill_dir is not None:
         return load_skill_prompt(skill_dir, name, **kwargs)
     return load_prompt(name, **kwargs)
+
+
+def _maybe_append_caveman(prompt: str, skill_dir: Path) -> str:
+    """Append the caveman directive when the skill at ``skill_dir`` opts in.
+
+    Only fires when ``skill_dir`` actually contains a ``SKILL.md`` — that
+    keeps the behaviour of arbitrary directory paths (used in some tests and
+    legacy callers) untouched, and limits injection to real skill packages.
+
+    Failures are swallowed: caveman is an optimization, not a correctness
+    feature, and a faulty config or import error must not break prompt loads.
+    Any failure surfaces to stderr so silent regressions stay visible.
+    """
+    try:
+        if not (skill_dir / "SKILL.md").is_file():
+            return prompt
+        from app.caveman import append_caveman
+        return append_caveman(prompt, skill_name=skill_dir.name, skill_dir=skill_dir)
+    except Exception as e:
+        import sys
+        print(f"[prompts] caveman injection failed for {skill_dir}: {e}",
+              file=sys.stderr)
+        return prompt

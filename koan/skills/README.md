@@ -60,6 +60,7 @@ handler: handler.py
 | `cli_skill` | no | Provider slash command to invoke (e.g. `audit`). Requires `audience: agent`. See [CLI skill bridge](#cli-skill-bridge). |
 | `github_enabled` | no | Set to `true` to allow triggering via GitHub @mentions (default: `false`) |
 | `github_context_aware` | no | Set to `true` if the skill accepts additional context after the command (default: `false`) |
+| `caveman` | no | Set to `true` to opt this skill into the [caveman](#caveman-output-optimization) output optimization. Defaults to `false` (caveman does not apply unless explicitly opted in). |
 
 ### Audience
 
@@ -304,6 +305,25 @@ Every handler receives a `SkillContext` object:
 - Access shared state via `ctx.instance_dir` (missions.md, soul.md, memory/, etc.)
 - Use `fcntl.flock()` when reading/writing shared files concurrently
 - Mark `worker: true` in SKILL.md if your handler blocks (API calls, subprocess, etc.)
+
+## Caveman output optimization
+
+Kōan ships with the **caveman** optimization (`optimizations.caveman` in `config.yaml`, default `true`): a "no filler, 3–6 word sentences, direct answers" directive that reduces output tokens.
+
+**Skills are opt-in.** By default a skill does *not* receive the caveman directive — even when the global flag is on. The agent loop (regular missions) is the one place caveman fires by default; for skills, the author must explicitly declare it.
+
+If your skill produces terse, status-style output that benefits from the directive (git plumbing, diagnostics, focused fixes), opt in via SKILL.md frontmatter:
+
+```yaml
+---
+name: my_skill
+caveman: true
+---
+```
+
+Operators can override on a per-instance basis with `optimizations.caveman.include: [my_skill]` in `config.yaml`. The operator's `include:` list overrides a SKILL.md `caveman: false`, giving instance owners final authority. See `docs/user-manual.md` → "Caveman Output Optimization" for the full resolution rules.
+
+Skills that produce rich prose (design exploration, code review, security analysis, conversation, documentation) should leave the flag off entirely, or set `caveman: false` explicitly to document intent.
 
 ## Skill prompts
 

@@ -6,6 +6,7 @@ emoji: 🥊
 description: Start a strategic sparring session
 version: 1.0.0
 audience: bridge
+caveman: false
 commands:
   - name: sparring
     description: Launch a sparring session

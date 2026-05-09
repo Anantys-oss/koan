@@ -994,3 +994,66 @@ def get_review_ignore_config() -> dict:
         regexes = []
 
     return {"glob": [str(p) for p in globs], "regex": [str(p) for p in regexes]}
+
+
+def is_caveman_mode() -> bool:
+    """Check if caveman output optimization is enabled.
+
+    When enabled, the agent prompt includes instructions to minimize
+    output tokens — short sentences, no filler, direct answers only.
+
+    Reads ``optimizations.caveman.enabled`` from ``config.yaml``::
+
+        optimizations:
+          caveman:
+            enabled: true
+            include: [rebase, fix]     # opt these skills in (skills are
+                                       # opt-in by default; the agent loop
+                                       # is governed by ``enabled`` alone)
+
+    Default: True (the agent loop receives caveman; skills only do so when
+    they opt in via SKILL.md ``caveman: true`` or this ``include`` list).
+    """
+    enabled = _get_caveman_dict().get("enabled", True)
+    return bool(enabled) if isinstance(enabled, bool) else True
+
+
+def _get_caveman_dict() -> dict:
+    """Return the ``optimizations.caveman`` mapping (or an empty dict).
+
+    Normalises away every malformed shape — missing parent, non-dict
+    optimizations block, scalar caveman value — so callers can treat the
+    result as a plain dict.  Misshapen config falls back to defaults.
+    """
+    config = _load_config()
+    optimizations = config.get("optimizations", {})
+    if not isinstance(optimizations, dict):
+        return {}
+    caveman = optimizations.get("caveman", {})
+    return caveman if isinstance(caveman, dict) else {}
+
+
+def get_caveman_include_list() -> set:
+    """Return canonical skill names that opt in to caveman via ``config.yaml``.
+
+    Reads ``optimizations.caveman.include``.  Resolves aliases via
+    ``app.skill_dispatch._COMMAND_ALIASES`` so callers can match on the
+    canonical name regardless of which alias the user wrote.
+
+    Skills are opt-in: if neither this list nor the skill's SKILL.md
+    ``caveman: true`` flag mentions a skill, caveman does not fire for it.
+    """
+    raw = _get_caveman_dict().get("include", []) or []
+    if not isinstance(raw, list):
+        return set()
+
+    from app.skill_dispatch import _resolve_canonical
+    result = set()
+    for entry in raw:
+        if not isinstance(entry, str):
+            continue
+        name = entry.strip().lstrip("/")
+        if not name:
+            continue
+        result.add(_resolve_canonical(name))
+    return result

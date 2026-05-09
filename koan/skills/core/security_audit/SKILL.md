@@ -6,6 +6,7 @@ emoji: 🛡️
 description: Security-focused audit of a project codebase — finds up to 5 critical vulnerabilities and creates GitHub issues
 version: 1.0.0
 audience: hybrid
+caveman: false
 github_enabled: true
 github_context_aware: true
 commands:

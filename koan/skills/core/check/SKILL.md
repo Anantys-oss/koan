@@ -6,6 +6,7 @@ emoji: 🔍
 description: Queue a check mission for a GitHub PR or Issue (rebase, review, plan)
 version: 2.0.0
 audience: hybrid
+caveman: true
 commands:
   - name: check
     description: Queue a check on a PR/issue (rebase, review, plan)
