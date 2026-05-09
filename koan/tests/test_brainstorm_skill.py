@@ -243,6 +243,10 @@ from skills.core.brainstorm.brainstorm_runner import (
     _extract_master_title,
     _apply_sub_replacements,
     _replace_sub_placeholders,
+    _resolve_sub_reference,
+    _coerce_top_ranked,
+    _coerce_fast_wins,
+    _coerce_overall_assessment,
 )
 
 
@@ -329,6 +333,58 @@ class TestParseDecomposition:
         }))
         assert data["master_summary"] == ""
 
+    def test_synthesis_keys_default_to_none_when_absent(self):
+        """Old-shape payloads (no synthesis fields) still parse cleanly."""
+        data = _parse_decomposition(json.dumps({
+            "master_summary": "S",
+            "issues": [{"title": "T", "body": "B"}],
+        }))
+        assert data["top_ranked"] is None
+        assert data["fast_wins"] is None
+        assert data["overall_assessment"] is None
+
+    def test_synthesis_keys_passed_through_when_well_formed(self):
+        data = _parse_decomposition(json.dumps({
+            "master_summary": "S",
+            "issues": [
+                {"title": "A", "body": "B"},
+                {"title": "C", "body": "D"},
+                {"title": "E", "body": "F"},
+            ],
+            "top_ranked": [
+                {"position": 2, "rationale": "Highest leverage."},
+                {"position": 1, "rationale": "Foundational."},
+            ],
+            "fast_wins": {
+                "under_1_day": ["SUB-1"],
+                "under_1_week": ["SUB-2", "SUB-3"],
+            },
+            "overall_assessment": "Worth pursuing.",
+        }))
+        assert data["top_ranked"] == [
+            {"position": 2, "rationale": "Highest leverage."},
+            {"position": 1, "rationale": "Foundational."},
+        ]
+        assert data["fast_wins"] == {
+            "under_1_day": ["SUB-1"],
+            "under_1_week": ["SUB-2", "SUB-3"],
+        }
+        assert data["overall_assessment"] == "Worth pursuing."
+
+    def test_malformed_synthesis_dropped_silently(self):
+        """Wrong-typed synthesis values are dropped, not raised — issue
+        creation must never be blocked by a bad synthesis blob."""
+        data = _parse_decomposition(json.dumps({
+            "master_summary": "S",
+            "issues": [{"title": "T", "body": "B"}],
+            "top_ranked": "not a list",
+            "fast_wins": ["not a dict"],
+            "overall_assessment": "",
+        }))
+        assert data["top_ranked"] is None
+        assert data["fast_wins"] is None
+        assert data["overall_assessment"] is None
+
 
 class TestBuildMasterBody:
     def test_contains_task_list(self):
@@ -350,6 +406,91 @@ class TestBuildMasterBody:
     def test_footer(self):
         body = _build_master_body("T", "", [("1", "T", "u")], "o", "r")
         assert "Koan /brainstorm" in body
+
+    def test_no_synthesis_sections_when_keys_absent(self):
+        body = _build_master_body(
+            "T", "S", [("1", "Alpha", "u"), ("2", "Beta", "u")], "o", "r",
+        )
+        assert "## Top Ranked" not in body
+        assert "## Fast Wins" not in body
+        assert "## Overall Assessment" not in body
+
+    def test_renders_top_ranked_with_resolved_numbers_and_titles(self):
+        issues = [("42", "Alpha", "u1"), ("43", "Beta", "u2")]
+        top_ranked = [
+            {"position": 2, "rationale": "Best ROI; unblocks SUB-1."},
+            {"position": 1, "rationale": "Foundational."},
+        ]
+        body = _build_master_body(
+            "T", "", issues, "o", "r", top_ranked=top_ranked,
+        )
+        assert "## Top Ranked" in body
+        assert "1. #43 — Beta" in body
+        assert "2. #42 — Alpha" in body
+        # SUB-1 inside rationale rewritten to #42
+        assert "unblocks #42" in body
+
+    def test_top_ranked_drops_out_of_range_positions(self):
+        issues = [("42", "Alpha", "u")]
+        top_ranked = [
+            {"position": 1, "rationale": "Yes."},
+            {"position": 99, "rationale": "Should not appear."},
+        ]
+        body = _build_master_body(
+            "T", "", issues, "o", "r", top_ranked=top_ranked,
+        )
+        assert "1. #42 — Alpha" in body
+        assert "Should not appear" not in body
+
+    def test_renders_fast_wins_with_horizon_headers(self):
+        issues = [
+            ("10", "Alpha", "u"),
+            ("11", "Beta", "u"),
+            ("12", "Gamma", "u"),
+        ]
+        fast_wins = {
+            "under_1_day": ["SUB-2"],
+            "under_1_week": ["SUB-1", "SUB-3"],
+        }
+        body = _build_master_body(
+            "T", "", issues, "o", "r", fast_wins=fast_wins,
+        )
+        assert "## Fast Wins" in body
+        assert "### < 1 day" in body
+        assert "### < 1 week" in body
+        # under_1_month not provided, header should be absent
+        assert "### < 1 month" not in body
+        assert "- #11 — Beta" in body
+        assert "- #10 — Alpha" in body
+        assert "- #12 — Gamma" in body
+
+    def test_fast_wins_skipped_entirely_when_all_buckets_empty(self):
+        issues = [("10", "Alpha", "u")]
+        body = _build_master_body(
+            "T", "", issues, "o", "r",
+            fast_wins={"under_1_day": [], "under_1_week": []},
+        )
+        # _coerce_fast_wins would have returned None upstream, but
+        # _build_master_body should also skip cleanly if it ever receives
+        # an all-empty dict directly.
+        assert "## Fast Wins" not in body
+
+    def test_renders_overall_assessment_with_sub_replacement(self):
+        issues = [("42", "Alpha", "u"), ("43", "Beta", "u")]
+        body = _build_master_body(
+            "T", "", issues, "o", "r",
+            overall_assessment="Worth doing. Start with SUB-1, then SUB-2.",
+        )
+        assert "## Overall Assessment" in body
+        assert "Start with #42, then #43." in body
+
+    def test_synthesis_sections_appear_before_subissues_list(self):
+        issues = [("42", "Alpha", "u")]
+        body = _build_master_body(
+            "T", "Summary", issues, "o", "r",
+            overall_assessment="Verdict.",
+        )
+        assert body.index("## Overall Assessment") < body.index("## Sub-Issues")
 
 
 class TestApplySubReplacements:
@@ -434,6 +575,111 @@ class TestExtractMasterTitle:
 
     def test_empty_topic(self):
         assert _extract_master_title("") == "Brainstorm"
+
+
+class TestCoerceTopRanked:
+    def test_drops_non_list(self):
+        assert _coerce_top_ranked("oops", num_issues=3) is None
+        assert _coerce_top_ranked(None, num_issues=3) is None
+
+    def test_drops_out_of_range_positions(self):
+        result = _coerce_top_ranked(
+            [{"position": 1, "rationale": "ok"},
+             {"position": 99, "rationale": "out of range"},
+             {"position": 0, "rationale": "below"}],
+            num_issues=2,
+        )
+        assert result == [{"position": 1, "rationale": "ok"}]
+
+    def test_drops_non_int_positions(self):
+        result = _coerce_top_ranked(
+            [{"position": "1", "rationale": "string"}],
+            num_issues=2,
+        )
+        assert result is None
+
+    def test_empty_rationale_replaced_with_blank_string(self):
+        result = _coerce_top_ranked(
+            [{"position": 1}],
+            num_issues=2,
+        )
+        assert result == [{"position": 1, "rationale": ""}]
+
+    def test_returns_none_when_all_entries_invalid(self):
+        result = _coerce_top_ranked(
+            [{"position": 0}, "garbage"], num_issues=2,
+        )
+        assert result is None
+
+
+class TestCoerceFastWins:
+    def test_drops_non_dict(self):
+        assert _coerce_fast_wins("oops") is None
+        assert _coerce_fast_wins(["a", "b"]) is None
+        assert _coerce_fast_wins(None) is None
+
+    def test_keeps_only_recognized_buckets(self):
+        result = _coerce_fast_wins({
+            "under_1_day": ["SUB-1"],
+            "under_1_year": ["SUB-2"],  # not a recognized bucket
+            "random_key": ["junk"],
+        })
+        assert result == {"under_1_day": ["SUB-1"]}
+
+    def test_filters_non_string_items(self):
+        result = _coerce_fast_wins({
+            "under_1_week": ["SUB-1", 42, None, "SUB-3", ""],
+        })
+        assert result == {"under_1_week": ["SUB-1", "SUB-3"]}
+
+    def test_returns_none_when_all_buckets_empty(self):
+        result = _coerce_fast_wins({
+            "under_1_day": [],
+            "under_1_week": [None, ""],
+        })
+        assert result is None
+
+
+class TestCoerceOverallAssessment:
+    def test_strips_and_returns_string(self):
+        assert _coerce_overall_assessment("  worth doing  ") == "worth doing"
+
+    def test_drops_non_string(self):
+        assert _coerce_overall_assessment(42) is None
+        assert _coerce_overall_assessment(None) is None
+        assert _coerce_overall_assessment(["list"]) is None
+
+    def test_drops_empty_or_whitespace(self):
+        assert _coerce_overall_assessment("") is None
+        assert _coerce_overall_assessment("   \n  ") is None
+
+
+class TestResolveSubReference:
+    def test_resolves_exact_sub_token_to_number_and_title(self):
+        result = _resolve_sub_reference(
+            "SUB-1", {1: "42"}, {1: "Alpha"},
+        )
+        assert result == "#42 — Alpha"
+
+    def test_falls_back_to_number_only_when_title_missing(self):
+        result = _resolve_sub_reference("SUB-1", {1: "42"}, {})
+        assert result == "#42"
+
+    def test_unknown_sub_token_left_unresolved(self):
+        result = _resolve_sub_reference("SUB-9", {1: "42"}, {1: "Alpha"})
+        # Unknown SUB-N is left as-is by _apply_sub_replacements.
+        assert "SUB-9" in result
+
+    def test_freeform_string_has_embedded_subs_rewritten(self):
+        result = _resolve_sub_reference(
+            "After SUB-1 lands", {1: "42"}, {1: "Alpha"},
+        )
+        # Not an exact SUB-N match → falls through to the rewrite path.
+        assert result == "After #42 lands"
+
+    def test_non_string_returns_empty(self):
+        assert _resolve_sub_reference(None, {}, {}) == ""
+        assert _resolve_sub_reference(42, {}, {}) == ""
 
 
 # ---------------------------------------------------------------------------

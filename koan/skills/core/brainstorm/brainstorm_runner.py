@@ -74,6 +74,9 @@ def run_brainstorm(
 
     master_summary = data["master_summary"]
     issues = data["issues"]
+    top_ranked = data.get("top_ranked")
+    fast_wins = data.get("fast_wins")
+    overall_assessment = data.get("overall_assessment")
 
     # Ensure label exists
     _ensure_label(tag, project_path)
@@ -113,7 +116,10 @@ def run_brainstorm(
     # Build master issue
     master_title = f"[{tag}] {_extract_master_title(topic)}"
     master_body = _build_master_body(
-        topic, master_summary, created_issues, owner, repo
+        topic, master_summary, created_issues, owner, repo,
+        top_ranked=top_ranked,
+        fast_wins=fast_wins,
+        overall_assessment=overall_assessment,
     )
 
     try:
@@ -251,7 +257,69 @@ def _parse_decomposition(raw_output: str) -> dict:
     if "master_summary" not in data:
         data["master_summary"] = ""
 
+    # Normalize optional synthesis keys — drop them silently if malformed so a
+    # bad synthesis blob never blocks issue creation.
+    data["top_ranked"] = _coerce_top_ranked(
+        data.get("top_ranked"), num_issues=len(data["issues"]),
+    )
+    data["fast_wins"] = _coerce_fast_wins(data.get("fast_wins"))
+    data["overall_assessment"] = _coerce_overall_assessment(
+        data.get("overall_assessment"),
+    )
+
     return data
+
+
+def _coerce_top_ranked(value, num_issues):
+    """Return a list of ``{position, rationale}`` dicts or ``None``.
+
+    Drops entries whose position is out of range or non-int. Returns ``None``
+    if the input is missing, wrong-typed, or yields no usable entries.
+    """
+    if not isinstance(value, list):
+        return None
+    cleaned = []
+    for entry in value:
+        if not isinstance(entry, dict):
+            continue
+        position = entry.get("position")
+        if not isinstance(position, int):
+            continue
+        if position < 1 or position > num_issues:
+            continue
+        rationale = entry.get("rationale")
+        cleaned.append({
+            "position": position,
+            "rationale": rationale if isinstance(rationale, str) else "",
+        })
+    return cleaned or None
+
+
+def _coerce_fast_wins(value):
+    """Return a dict of bucket → list[str], or ``None``.
+
+    Recognized buckets: ``under_1_day``, ``under_1_week``, ``under_1_month``.
+    Any other key is dropped.
+    """
+    if not isinstance(value, dict):
+        return None
+    allowed = ("under_1_day", "under_1_week", "under_1_month")
+    cleaned = {}
+    for key in allowed:
+        items = value.get(key)
+        if not isinstance(items, list):
+            continue
+        bucket = [s for s in items if isinstance(s, str) and s.strip()]
+        if bucket:
+            cleaned[key] = bucket
+    return cleaned or None
+
+
+def _coerce_overall_assessment(value):
+    """Return a non-empty string or ``None``."""
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
 
 
 def _ensure_label(tag, project_path):
@@ -277,8 +345,25 @@ def _extract_master_title(topic: str) -> str:
     return first_sentence or "Brainstorm"
 
 
-def _build_master_body(topic, master_summary, created_issues, owner, repo):
-    """Build the master tracking issue body."""
+def _build_master_body(
+    topic, master_summary, created_issues, owner, repo,
+    top_ranked=None, fast_wins=None, overall_assessment=None,
+):
+    """Build the master tracking issue body.
+
+    The Top Ranked / Fast Wins / Overall Assessment sections are rendered
+    only when their corresponding keys are present and non-empty, so older
+    decompositions without synthesis data still produce a clean master.
+    """
+    ordinal_to_number = {
+        idx: number
+        for idx, (number, _title, _url) in enumerate(created_issues, 1)
+    }
+    ordinal_to_title = {
+        idx: title
+        for idx, (_number, title, _url) in enumerate(created_issues, 1)
+    }
+
     parts = []
 
     # Original topic
@@ -290,6 +375,56 @@ def _build_master_body(topic, master_summary, created_issues, owner, repo):
     if master_summary:
         parts.append("## Summary\n")
         parts.append(master_summary)
+        parts.append("")
+
+    # Top Ranked
+    if top_ranked:
+        parts.append("## Top Ranked\n")
+        for rank, entry in enumerate(top_ranked, 1):
+            position = entry["position"]
+            number = ordinal_to_number.get(position)
+            title = ordinal_to_title.get(position, "")
+            if number is None:
+                continue
+            rationale = _apply_sub_replacements(
+                entry.get("rationale", ""), ordinal_to_number,
+            ).strip()
+            line = f"{rank}. #{number} — {title}"
+            if rationale:
+                line += f": {rationale}"
+            parts.append(line)
+        parts.append("")
+
+    # Fast Wins
+    if fast_wins:
+        bucket_labels = [
+            ("under_1_day", "### < 1 day"),
+            ("under_1_week", "### < 1 week"),
+            ("under_1_month", "### < 1 month"),
+        ]
+        rendered_buckets = []
+        for key, header in bucket_labels:
+            items = fast_wins.get(key)
+            if not items:
+                continue
+            bucket_lines = [header, ""]
+            for item in items:
+                resolved = _resolve_sub_reference(
+                    item, ordinal_to_number, ordinal_to_title,
+                )
+                bucket_lines.append(f"- {resolved}")
+            rendered_buckets.append("\n".join(bucket_lines))
+        if rendered_buckets:
+            parts.append("## Fast Wins\n")
+            parts.append("\n\n".join(rendered_buckets))
+            parts.append("")
+
+    # Overall Assessment
+    if overall_assessment:
+        parts.append("## Overall Assessment\n")
+        parts.append(
+            _apply_sub_replacements(overall_assessment, ordinal_to_number)
+        )
         parts.append("")
 
     # Task list with links to sub-issues
@@ -306,6 +441,26 @@ def _build_master_body(topic, master_summary, created_issues, owner, repo):
     )
 
     return "\n".join(parts)
+
+
+def _resolve_sub_reference(value, ordinal_to_number, ordinal_to_title):
+    """Resolve a ``SUB-N`` token (or freeform string) to ``#N — Title``.
+
+    If ``value`` is exactly ``SUB-N`` and N maps to a known issue, return
+    ``#<number> — <title>``. Otherwise rewrite any embedded SUB-N tokens via
+    :func:`_apply_sub_replacements` and return the result as-is.
+    """
+    if not isinstance(value, str):
+        return ""
+    stripped = value.strip()
+    match = re.fullmatch(r'SUB-(\d+)', stripped)
+    if match:
+        idx = int(match.group(1))
+        number = ordinal_to_number.get(idx)
+        title = ordinal_to_title.get(idx, "")
+        if number is not None:
+            return f"#{number} — {title}" if title else f"#{number}"
+    return _apply_sub_replacements(stripped, ordinal_to_number)
 
 
 def _get_repo_info(project_path):
