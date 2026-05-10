@@ -14,6 +14,7 @@ Functions here call it via import to ensure mocks propagate correctly.
 
 import os
 import sys
+from pathlib import Path
 from typing import List, Optional
 
 
@@ -1073,3 +1074,127 @@ def get_caveman_include_list() -> set:
             continue
         result.add(_resolve_canonical(name))
     return result
+
+
+def _get_rtk_dict() -> dict:
+    """Return the ``optimizations.rtk`` mapping (or an empty dict).
+
+    Mirrors :func:`_get_caveman_dict` — normalises away missing parents,
+    non-dict optimizations blocks, and scalar rtk values so callers can treat
+    the result as a plain dict.
+    """
+    config = _load_config()
+    optimizations = config.get("optimizations", {})
+    if not isinstance(optimizations, dict):
+        return {}
+    rtk = optimizations.get("rtk", {})
+    return rtk if isinstance(rtk, dict) else {}
+
+
+# Canonical accepted values for ``optimizations.rtk.enabled`` and the
+# per-project ``rtk:`` knob.  Single source of truth — :mod:`app.config_validator`
+# imports these so the doc-time validation and runtime parsing never drift.
+RTK_ENABLED_TRUE = frozenset({"true", "yes", "1", "on"})
+RTK_ENABLED_FALSE = frozenset({"false", "no", "0", "off"})
+RTK_ENABLED_AUTO = frozenset({"auto", ""})
+RTK_ENABLED_VALID = RTK_ENABLED_TRUE | RTK_ENABLED_FALSE | RTK_ENABLED_AUTO
+
+
+def coerce_rtk_enabled(raw: object) -> Optional[bool]:
+    """Coerce a config value into ``True`` / ``False`` / ``None`` (= auto).
+
+    Used by both :func:`is_rtk_mode` and
+    :func:`app.projects_config.get_project_rtk_enabled` so the global and
+    per-project knobs accept exactly the same shapes.
+
+    Returns:
+        ``True`` / ``False`` for explicit values, ``None`` to defer to the
+        next layer (binary detection for the global knob, global resolution
+        for the per-project knob).
+    """
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        value = raw.strip().lower()
+        if value in RTK_ENABLED_TRUE:
+            return True
+        if value in RTK_ENABLED_FALSE:
+            return False
+    return None
+
+
+def _rtk_runtime_override() -> Optional[bool]:
+    """Read the runtime override written by ``/rtk on`` / ``/rtk off``.
+
+    Returns ``True`` for any truthy value, ``False`` for any falsy value, or
+    ``None`` when no override file is present or its content is unrecognised
+    (i.e. defer to ``config.yaml``).  The override lives at
+    ``instance/.koan-rtk-override`` so users can flip rtk awareness on the
+    fly without editing config files.
+
+    Accepts the same vocabulary as ``optimizations.rtk.enabled`` —
+    :func:`coerce_rtk_enabled` is the single source of truth.  ``/rtk on``
+    and ``/rtk off`` write ``"on"`` / ``"off"``, but a user who hand-writes
+    ``true`` / ``false`` / ``yes`` / ``no`` gets the same behaviour.
+    """
+    koan_root = os.environ.get("KOAN_ROOT")
+    if not koan_root:
+        return None
+    path = Path(koan_root) / "instance" / ".koan-rtk-override"
+    try:
+        value = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    return coerce_rtk_enabled(value)
+
+
+def is_rtk_mode() -> bool:
+    """Check whether the rtk awareness section should be injected.
+
+    Resolution order (highest priority first):
+
+    1.  ``instance/.koan-rtk-override`` (written by ``/rtk on`` / ``/rtk off``).
+    2.  ``optimizations.rtk.enabled`` in ``config.yaml``::
+
+            optimizations:
+              rtk:
+                enabled: auto    # auto | true | false
+
+        - ``auto`` (default): on iff the rtk binary is detected on the host.
+          When the tool is installed the user almost certainly wants Claude
+          to prefer it; when it's missing, the awareness blurb would just
+          be dead context.
+        - ``true``: always on (forces injection even if the binary is
+          missing — useful when the user installs rtk after Kōan boots).
+        - ``false``: always off.
+
+    The detection probe is cached per-process by :mod:`app.rtk_detector`, so
+    this function is safe to call from per-prompt code paths.
+    """
+    override = _rtk_runtime_override()
+    if override is not None:
+        return override
+    explicit = coerce_rtk_enabled(_get_rtk_dict().get("enabled", "auto"))
+    if explicit is not None:
+        return explicit
+    # "auto" (and any unrecognised value) → defer to binary detection.
+    try:
+        from app.rtk_detector import detect_rtk
+        return detect_rtk().installed
+    except Exception as e:
+        print(f"[config] rtk detection failed: {e}", file=sys.stderr)
+        return False
+
+
+def is_rtk_awareness_enabled() -> bool:
+    """Return ``True`` when the awareness section should ship in prompts.
+
+    Two-stage gate: ``optimizations.rtk.enabled`` controls overall rtk
+    integration; ``optimizations.rtk.awareness`` toggles the prompt-injection
+    layer specifically.  Default: ``True`` — if rtk mode is on at all,
+    awareness is part of it unless explicitly disabled.
+    """
+    if not is_rtk_mode():
+        return False
+    raw = _get_rtk_dict().get("awareness", True)
+    return bool(raw) if isinstance(raw, bool) else True

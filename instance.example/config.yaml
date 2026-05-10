@@ -513,3 +513,39 @@ usage:
 #   caveman:
 #     enabled: true
 #     include: [my_custom_skill]   # canonical names; aliases auto-resolved
+
+# RTK (Rust Token Killer — https://github.com/rtk-ai/rtk)
+#
+# Optional CLI proxy that compresses common dev-command output (git, ls,
+# cat/read, grep/find, pytest, jest, cargo, gh, docker, kubectl, aws, …) by
+# 60-90 % before it reaches Claude.  Strictly complementary to caveman:
+#   - caveman trims what Claude WRITES.
+#   - rtk     trims what Claude READS.
+#
+# rtk is **not** a Kōan dependency.  Kōan only:
+#   1. Detects the binary at boot (logged once).
+#   2. Optionally injects an awareness section into Claude's system prompt
+#      so Claude prefers ``rtk <cmd>`` over the raw command.
+#   3. Exposes a ``/rtk`` skill for status/setup/uninstall/gain.
+#
+# Hook installation (``rtk init -g``) only ever happens via explicit
+# ``/rtk setup`` from Telegram — Kōan never silently mutates
+# ``~/.claude/settings.json``.
+#
+# optimizations:
+#   rtk:
+#     enabled: auto         # auto | true | false
+#                           #   auto = on iff `rtk` is on PATH (default)
+#                           #   true = on regardless of detection
+#                           #   false = off everywhere
+#     awareness: true       # inject RTK awareness into the system prompt
+#     require_jq: true      # warn at boot if `jq` is missing (rtk's
+#                           # auto-rewrite hook requires jq)
+#
+# Per-project opt-out lives in ``projects.yaml``:
+#
+#   projects:
+#     myproject:
+#       rtk: false          # never inject awareness for this project
+#                           # (e.g. its test runner emits JSON that rtk's
+#                           #  filter would clobber)
