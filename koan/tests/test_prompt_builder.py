@@ -268,6 +268,7 @@ class TestBuildAgentPrompt:
         # Merge policy appended
         assert "Git Merge" in result
 
+    @patch("app.prompt_builder._get_rtk_section", return_value="")
     @patch("app.prompt_builder._get_caveman_section", return_value="")
     @patch("app.prompt_builder._get_verbose_section", return_value="")
     @patch("app.prompt_builder._get_security_flagging_section", return_value="")
@@ -278,7 +279,7 @@ class TestBuildAgentPrompt:
     @patch("app.prompts.load_prompt")
     def test_autonomous_mode_instruction(
         self, mock_load, mock_prefix, mock_merge, mock_deep, mock_submit_pr,
-        mock_security, mock_verbose, mock_caveman,
+        mock_security, mock_verbose, mock_caveman, mock_rtk,
         prompt_env,
     ):
         mock_load.return_value = "Template"
@@ -1686,6 +1687,163 @@ class TestIsCavemanMode:
 
         with patch("app.config._load_config", return_value={"optimizations": "invalid"}):
             assert is_caveman_mode() is True
+
+
+# --- Tests for _get_rtk_section ---
+
+
+class TestGetRtkSection:
+    """Tests for the RTK awareness section in agent prompts."""
+
+    def test_disabled_returns_empty(self):
+        from app.prompt_builder import _get_rtk_section
+
+        with patch("app.config.is_rtk_awareness_enabled", return_value=False):
+            assert _get_rtk_section() == ""
+
+    def test_enabled_returns_prompt(self):
+        from app.prompt_builder import _get_rtk_section
+
+        with patch("app.config.is_rtk_awareness_enabled", return_value=True), \
+             patch("app.prompts.load_prompt", return_value="# RTK\nUse rtk.") as mock_lp:
+            result = _get_rtk_section()
+            mock_lp.assert_called_once_with("rtk-awareness")
+            assert "RTK" in result
+
+    def test_per_project_opt_out(self):
+        """When the project sets rtk: false, the section is suppressed."""
+        from app.prompt_builder import _get_rtk_section
+
+        with patch("app.config.is_rtk_awareness_enabled", return_value=True), \
+             patch("app.projects_config.get_project_rtk_enabled", return_value=False), \
+             patch("app.utils.load_config", return_value={}), \
+             patch("app.prompts.load_prompt", return_value="# RTK\nUse rtk."):
+            assert _get_rtk_section(project_name="myproject") == ""
+
+    def test_load_prompt_failure_returns_empty(self):
+        from app.prompt_builder import _get_rtk_section
+
+        with patch("app.config.is_rtk_awareness_enabled", return_value=True), \
+             patch(
+                 "app.prompts.load_prompt",
+                 side_effect=FileNotFoundError("missing"),
+             ):
+            assert _get_rtk_section() == ""
+
+
+# --- Tests for is_rtk_mode ---
+
+
+class TestIsRtkMode:
+    """Tests for config.is_rtk_mode()."""
+
+    def test_default_auto_with_binary_returns_true(self, tmp_path, monkeypatch):
+        from app.config import is_rtk_mode
+        from app.rtk_detector import RtkStatus, reset_cache
+        reset_cache()
+
+        # No KOAN_ROOT override file.
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        with patch("app.config._load_config", return_value={}), \
+             patch("app.rtk_detector.detect_rtk", return_value=RtkStatus(installed=True)):
+            assert is_rtk_mode() is True
+
+    def test_default_auto_without_binary_returns_false(self, tmp_path, monkeypatch):
+        from app.config import is_rtk_mode
+        from app.rtk_detector import RtkStatus, reset_cache
+        reset_cache()
+
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        with patch("app.config._load_config", return_value={}), \
+             patch("app.rtk_detector.detect_rtk", return_value=RtkStatus(installed=False)):
+            assert is_rtk_mode() is False
+
+    def test_explicit_true_overrides_detection(self, tmp_path, monkeypatch):
+        from app.config import is_rtk_mode
+        from app.rtk_detector import RtkStatus, reset_cache
+        reset_cache()
+
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        with patch("app.config._load_config", return_value={
+            "optimizations": {"rtk": {"enabled": True}}
+        }), patch("app.rtk_detector.detect_rtk", return_value=RtkStatus(installed=False)):
+            assert is_rtk_mode() is True
+
+    def test_explicit_false(self, tmp_path, monkeypatch):
+        from app.config import is_rtk_mode
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        with patch("app.config._load_config", return_value={
+            "optimizations": {"rtk": {"enabled": False}}
+        }):
+            assert is_rtk_mode() is False
+
+    def test_runtime_override_off_wins(self, tmp_path, monkeypatch):
+        """``/rtk off`` writes an override that beats config.yaml."""
+        from app.config import is_rtk_mode
+        from app.rtk_detector import RtkStatus, reset_cache
+        reset_cache()
+
+        instance = tmp_path / "instance"
+        instance.mkdir()
+        (instance / ".koan-rtk-override").write_text("off")
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+
+        with patch("app.config._load_config", return_value={
+            "optimizations": {"rtk": {"enabled": True}}
+        }), patch("app.rtk_detector.detect_rtk", return_value=RtkStatus(installed=True)):
+            assert is_rtk_mode() is False
+
+    def test_runtime_override_on_wins(self, tmp_path, monkeypatch):
+        from app.config import is_rtk_mode
+        instance = tmp_path / "instance"
+        instance.mkdir()
+        (instance / ".koan-rtk-override").write_text("on")
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+
+        with patch("app.config._load_config", return_value={
+            "optimizations": {"rtk": {"enabled": False}}
+        }):
+            assert is_rtk_mode() is True
+
+    @pytest.mark.parametrize("content,expected", [
+        ("true", True), ("True\n", True), ("yes", True), ("1", True), ("on", True),
+        ("false", False), ("FALSE", False), ("no", False), ("0", False), ("off", False),
+    ])
+    def test_runtime_override_accepts_full_vocabulary(
+        self, content, expected, tmp_path, monkeypatch,
+    ):
+        """Override file must accept the same vocabulary as ``optimizations.rtk.enabled``.
+
+        Without parity, a user mirroring config syntax (``echo true > .koan-rtk-override``)
+        gets a silent no-op.
+        """
+        from app.config import is_rtk_mode
+        from app.rtk_detector import RtkStatus, reset_cache
+        reset_cache()
+
+        instance = tmp_path / "instance"
+        instance.mkdir()
+        (instance / ".koan-rtk-override").write_text(content)
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+
+        # Set config to the *opposite* state so we know the override won.
+        config_state = {"optimizations": {"rtk": {"enabled": not expected}}}
+        with patch("app.config._load_config", return_value=config_state), \
+             patch("app.rtk_detector.detect_rtk", return_value=RtkStatus(installed=False)):
+            assert is_rtk_mode() is expected
+
+    def test_runtime_override_unrecognised_falls_through(self, tmp_path, monkeypatch):
+        """A garbage override file must not silently force a state — defer to config."""
+        from app.config import is_rtk_mode
+        instance = tmp_path / "instance"
+        instance.mkdir()
+        (instance / ".koan-rtk-override").write_text("maybe\n")
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+
+        with patch("app.config._load_config", return_value={
+            "optimizations": {"rtk": {"enabled": False}}
+        }):
+            assert is_rtk_mode() is False
 
 
 # --- Tests for _get_language_section ---
