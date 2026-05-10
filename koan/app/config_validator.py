@@ -222,6 +222,12 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
         # validation of that mapping lives in
         # :func:`_validate_caveman_nested` below.
         "caveman": "dict",
+        # RTK (https://github.com/rtk-ai/rtk) — optional CLI proxy that
+        # compresses common dev-command output before Claude reads it.
+        # Configured via ``rtk: {enabled: auto|true|false, awareness: bool,
+        # require_jq: bool}``.  Validation lives in
+        # :func:`_validate_rtk_nested` below.
+        "rtk": "dict",
     },
 }
 
@@ -347,6 +353,9 @@ def validate_config(config: dict) -> List[Tuple[str, str]]:
         caveman = optimizations.get("caveman")
         if isinstance(caveman, dict):
             warnings.extend(_validate_caveman_nested(caveman))
+        rtk = optimizations.get("rtk")
+        if isinstance(rtk, dict):
+            warnings.extend(_validate_rtk_nested(rtk))
 
     # Semantic check: warn on overlapping deep_hours and work_hours
     schedule = config.get("schedule")
@@ -370,6 +379,58 @@ _CAVEMAN_NESTED_SCHEMA: Dict[str, Any] = {
     "enabled": "bool",
     "include": "list",
 }
+
+
+# RTK accepts ``enabled: auto`` (string) in addition to bool, so the schema
+# uses a tuple of accepted types.  ``_check_type`` already handles tuples.
+_RTK_NESTED_SCHEMA: Dict[str, Any] = {
+    "enabled": ("bool", "str"),
+    "awareness": "bool",
+    "require_jq": "bool",
+}
+
+
+def _validate_rtk_nested(rtk: dict) -> List[Tuple[str, str]]:
+    """Validate the nested ``optimizations.rtk`` dict.
+
+    Mirrors :func:`_validate_caveman_nested` with one extra check: when
+    ``enabled`` is a string we constrain it to the documented set
+    (``auto``, ``true``, ``false``, …) — same set
+    :func:`app.config.coerce_rtk_enabled` accepts at runtime, so a typo
+    like ``enabld: yse`` surfaces clearly here instead of silently
+    falling through to ``auto``.
+    """
+    from app.config import RTK_ENABLED_VALID
+
+    warnings: List[Tuple[str, str]] = []
+    known = list(_RTK_NESTED_SCHEMA.keys())
+    for key, value in rtk.items():
+        path = f"optimizations.rtk.{key}"
+        if key not in _RTK_NESTED_SCHEMA:
+            suggestion = _suggest_typo(key, known)
+            msg = f"unrecognized key '{path}'"
+            if suggestion:
+                msg += f" (did you mean 'optimizations.rtk.{suggestion}'?)"
+            warnings.append((path, msg))
+            continue
+        if value is None:
+            continue
+        expected = _RTK_NESTED_SCHEMA[key]
+        if not _check_type(value, expected):
+            exp_label = expected if isinstance(expected, str) else "/".join(expected)
+            warnings.append((
+                path,
+                f"'{path}' should be {exp_label}, got {type(value).__name__}",
+            ))
+            continue
+        if key == "enabled" and isinstance(value, str):
+            if value.strip().lower() not in RTK_ENABLED_VALID:
+                warnings.append((
+                    path,
+                    f"'{path}' should be one of "
+                    f"{sorted(RTK_ENABLED_VALID - {''})}, got {value!r}",
+                ))
+    return warnings
 
 
 def _validate_caveman_nested(caveman: dict) -> List[Tuple[str, str]]:

@@ -805,6 +805,16 @@ def main_loop():
         # Startup sequence
         max_runs, interval, branch_prefix = run_startup(koan_root, instance, projects)
 
+        # Probe for optional rtk binary (https://github.com/rtk-ai/rtk).
+        # When present, the prompt builder injects an awareness section so
+        # Claude prefers ``rtk <cmd>`` over the raw command for 60-90 % less
+        # tool output.  Detection is cheap, cached, and never mutates state.
+        try:
+            from app.rtk_detector import detect_rtk
+            log("init", detect_rtk().summary_line())
+        except Exception as e:
+            log("error", f"rtk detection failed: {e}")
+
         git_sync_interval = int(os.environ.get("KOAN_GIT_SYNC_INTERVAL", "5"))
 
         # --- Startup delay (#1039) ---

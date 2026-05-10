@@ -78,6 +78,42 @@ def _get_language_section() -> str:
     return ""
 
 
+def _get_rtk_section(project_name: str = "") -> str:
+    """Return the RTK awareness section when rtk is enabled for this context.
+
+    Mirrors :func:`_get_caveman_section` but with one extra gate: a project
+    can opt out via ``projects.yaml`` even when the global config has rtk
+    enabled (``get_project_rtk_enabled``).  The dual gate keeps two
+    legitimate concerns separate — "do I want rtk on this Kōan instance"
+    and "does this project's tooling tolerate rtk's filters".
+
+    Failures are non-fatal — like caveman, rtk is an optimization, not a
+    correctness feature — but are logged so silent regressions stay
+    visible.
+    """
+    try:
+        from app.config import is_rtk_awareness_enabled
+        if not is_rtk_awareness_enabled():
+            return ""
+        if project_name:
+            from app.projects_config import get_project_rtk_enabled
+            from app.utils import load_config
+            try:
+                if not get_project_rtk_enabled(load_config(), project_name):
+                    return ""
+            except (OSError, ValueError, KeyError):
+                # Project resolution failed — fall through to global decision
+                # rather than silently dropping the section.
+                pass
+        from app.prompts import load_prompt
+        return "\n\n" + load_prompt("rtk-awareness")
+    except (OSError, FileNotFoundError):
+        return ""
+    except Exception as e:
+        logger.warning("rtk awareness section unavailable: %s", e)
+        return ""
+
+
 def _load_config_safe() -> dict:
     """Load config.yaml, returning empty dict on failure."""
     try:
@@ -632,8 +668,11 @@ def build_agent_prompt(
     # Append verbose mode section if active
     prompt += _get_verbose_section(instance)
 
-    # Append caveman output optimization (token reduction)
+    # Append caveman output optimization (token reduction in Claude's output)
     prompt += _get_caveman_section()
+
+    # Append RTK awareness (token reduction in Claude's tool input)
+    prompt += _get_rtk_section(project_name)
 
     # Append language preference (overrides soul.md default)
     prompt += _get_language_section()
@@ -727,6 +766,10 @@ def build_agent_prompt_parts(
     caveman = _get_caveman_section()
     if caveman:
         sys_parts.append(caveman)
+
+    rtk = _get_rtk_section(project_name)
+    if rtk:
+        sys_parts.append(rtk)
 
     security = _get_security_flagging_section(mission_title, autonomous_mode)
     if security:

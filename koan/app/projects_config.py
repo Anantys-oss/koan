@@ -294,6 +294,38 @@ def get_project_tools(config: dict, project_name: str) -> dict:
     return tools
 
 
+def get_project_rtk_enabled(config: dict, project_name: str) -> bool:
+    """Return whether the rtk awareness section should fire for a project.
+
+    Reads ``rtk`` from the per-project config (with defaults merged in).
+    Accepts the same shapes as the global ``optimizations.rtk.enabled``
+    knob — bool, ``"auto"``, ``"true"``, ``"false"``, etc.
+
+    Resolution:
+      1. If the project sets ``rtk: false`` (or any false-y value) →
+         hard opt-out, returns ``False`` regardless of global state.
+      2. If the project sets ``rtk: true`` → opts in even when the global
+         knob would say no.
+      3. If the project sets ``rtk: auto`` (or omits it entirely, or sets
+         it to anything else) → defer to the global resolution in
+         :func:`app.config.is_rtk_mode`.
+
+    The intent: the global config tracks "do I want rtk on this Kōan
+    instance"; the per-project field tracks "does this project's tooling
+    play nicely with rtk's filters".  A project can opt out (e.g. its test
+    runner emits unusual JSON that rtk's filter would clobber) without
+    affecting the rest of the instance.
+    """
+    project_cfg = get_project_config(config, project_name)
+    from app.config import coerce_rtk_enabled, is_rtk_mode
+    if "rtk" in project_cfg:
+        explicit = coerce_rtk_enabled(project_cfg["rtk"])
+        if explicit is not None:
+            return explicit
+        # "auto" or unrecognised → fall through to global.
+    return is_rtk_mode()
+
+
 def get_project_mcp(config: dict, project_name: str) -> list:
     """Get MCP config file paths for a project from projects.yaml.
 
