@@ -1438,6 +1438,14 @@ def _maybe_retry_mission(
         log("koan", "Skipping retry — mission was aborted by user")
         return claude_exit, stdout_file, stderr_file
 
+    # Stagnated sessions have their own retry logic in _finalize_mission
+    # (requeue with counter tracking).  Retrying here would clear the
+    # _last_mission_stagnated flag, causing _finalize_mission to miss
+    # the stagnation event entirely.
+    if _last_mission_stagnated.is_set():
+        log("koan", "Skipping retry — mission was killed by stagnation monitor")
+        return claude_exit, stdout_file, stderr_file
+
     # Read output for classification
     try:
         stdout_text = Path(stdout_file).read_text()
@@ -2862,7 +2870,8 @@ def main():
 
             if crash_count >= MAX_MAIN_CRASHES:
                 print(f"[koan] Too many crashes ({MAX_MAIN_CRASHES}). Giving up.", file=sys.stderr)
-                break
+                _reset_terminal()
+                sys.exit(1)
 
             backoff = _calculate_backoff(crash_count, MAX_BACKOFF_MAIN)
             print(f"[koan] Restarting in {backoff}s...", file=sys.stderr)

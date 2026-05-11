@@ -1176,6 +1176,38 @@ class TestWatchdogTimeoutGuard:
 
             assert mock_task.called
 
+    def test_retry_skipped_on_stagnation(self, tmp_path, monkeypatch):
+        """_maybe_retry_mission returns immediately when stagnation monitor aborted."""
+        import app.run as run_mod
+
+        run_mod._last_mission_timed_out = False
+        run_mod._last_mission_aborted = False
+        run_mod._last_mission_stagnated.set()
+
+        stdout_f = str(tmp_path / "out.txt")
+        stderr_f = str(tmp_path / "err.txt")
+        Path(stdout_f).write_text("500 Internal Server Error")
+        Path(stderr_f).write_text("")
+
+        result = run_mod._maybe_retry_mission(
+            claude_exit=1,
+            stdout_file=stdout_f,
+            stderr_file=stderr_f,
+            cmd=["echo", "test"],
+            project_path=str(tmp_path),
+            pre_head="abc123",
+            instance=str(tmp_path),
+            project_name="test",
+            run_num=1,
+            has_mission=True,
+        )
+
+        # Should return the same exit code — no retry; stagnation has its
+        # own retry logic in _finalize_mission.
+        assert result[0] == 1
+        # Stagnation flag must still be set so _finalize_mission can read it
+        assert run_mod._last_mission_stagnated.is_set()
+
 
 class TestJsonOverrideGuard:
     """JSON success override must be skipped after watchdog/abort kills (#1254)."""
@@ -2569,11 +2601,13 @@ class TestMainCrashRecovery:
     @patch("app.run.main_loop")
     @patch("app.run.time.sleep")
     def test_gives_up_after_max_crashes(self, mock_sleep, mock_loop):
-        """main() stops retrying after MAX_MAIN_CRASHES consecutive crashes."""
+        """main() exits with code 1 after MAX_MAIN_CRASHES consecutive crashes."""
         from app.run import main, MAX_MAIN_CRASHES
 
         mock_loop.side_effect = RuntimeError("always crashing")
-        main()
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 1
         assert mock_loop.call_count == MAX_MAIN_CRASHES
 
     @patch("app.run.main_loop")
