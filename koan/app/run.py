@@ -1835,6 +1835,14 @@ def _run_iteration(
     if mission_title:
         _start_mission_in_file(instance, mission_title)
 
+    # --- Create structured checkpoint for recovery ---
+    if mission_title:
+        try:
+            from app.checkpoint_manager import create_checkpoint
+            create_checkpoint(instance, mission_title, project_name, run_num)
+        except Exception as e:
+            log("error", f"Checkpoint creation failed (non-blocking): {e}")
+
     # --- Check for skill-dispatched mission ---
     if mission_title:
         handled, mission_title = _handle_skill_dispatch(
@@ -2109,12 +2117,39 @@ def _run_iteration(
                 ))
                 return True  # consumed API budget before quota hit
 
+        # --- Update checkpoint with branch/progress before finalizing ---
+        if original_mission_title:
+            try:
+                from app.checkpoint_manager import (
+                    update_checkpoint, update_from_pending, update_from_stdout,
+                )
+                from app.git_sync import run_git as _cp_run_git
+                _cp_branch = _cp_run_git(project_path, "rev-parse", "--abbrev-ref", "HEAD")
+                if _cp_branch:
+                    update_checkpoint(instance, original_mission_title, branch=_cp_branch)
+                update_from_pending(instance, original_mission_title)
+                try:
+                    _cp_stdout = Path(stdout_file).read_text(errors="replace")
+                    update_from_stdout(instance, original_mission_title, _cp_stdout)
+                except OSError:
+                    pass
+            except Exception as e:
+                log("error", f"Checkpoint update failed (non-blocking): {e}")
+
         # Complete/fail mission in missions.md (safety net — idempotent if Claude already did it)
         # Done BEFORE post-mission pipeline so quota exhaustion can't skip it.
         # Use original_mission_title because that's the needle in "In Progress".
         # cli_skill translation may have changed mission_title to a different string.
         if original_mission_title:
             _finalize_mission(instance, original_mission_title, project_name, claude_exit)
+
+        # --- Clean up checkpoint on successful completion ---
+        if original_mission_title and claude_exit == 0:
+            try:
+                from app.checkpoint_manager import delete_checkpoint
+                delete_checkpoint(instance, original_mission_title)
+            except Exception as e:
+                log("error", f"Checkpoint cleanup failed (non-blocking): {e}")
 
         # If mission was aborted, notify and skip heavy post-mission pipeline
         if _last_mission_aborted and original_mission_title:
