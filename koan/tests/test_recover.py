@@ -581,6 +581,21 @@ class TestClassifyMissionState:
         line = f"- Fix the bug [r:{MAX_RECOVERY_ATTEMPTS - 1}]"
         assert classify_mission_state(line) == "dead"
 
+    def test_partial_state_with_checkpoint(self):
+        """Mission with a checkpoint is classified as partial."""
+        assert classify_mission_state("- Fix the bug", has_checkpoint=True) == "partial"
+
+    def test_partial_state_checkpoint_and_pending(self):
+        """Both checkpoint and pending → still partial (not double-counted)."""
+        assert classify_mission_state(
+            "- Fix the bug", has_pending_journal=True, has_checkpoint=True
+        ) == "partial"
+
+    def test_unrecoverable_overrides_checkpoint(self):
+        """Even with a checkpoint, too many attempts → unrecoverable."""
+        line = f"- Fix the bug [r:{MAX_RECOVERY_ATTEMPTS}]"
+        assert classify_mission_state(line, has_checkpoint=True) == "unrecoverable"
+
 
 # ---------------------------------------------------------------------------
 # Recovery counter integration
@@ -869,3 +884,68 @@ class TestDryRun:
         if log_path.exists():
             events = [json.loads(l) for l in log_path.read_text().splitlines() if l.strip()]
             assert any(e.get("action") == "dry_run" for e in events)
+
+
+# ---------------------------------------------------------------------------
+# Checkpoint-aware recovery
+# ---------------------------------------------------------------------------
+
+
+class TestCheckpointAwareRecovery:
+    """Tests for checkpoint integration in recovery."""
+
+    def test_recovery_with_checkpoint_injects_context(self, instance_dir):
+        """When a checkpoint exists, recovery injects context into pending.md."""
+        from app.checkpoint_manager import create_checkpoint, update_checkpoint
+
+        mission_text = "[project:test] Fix the auth bug"
+        create_checkpoint(str(instance_dir), mission_text, "test", 5)
+        update_checkpoint(
+            str(instance_dir), mission_text,
+            branch="koan.atoomic/fix-auth",
+            steps_done=["read auth module", "identified root cause"],
+        )
+
+        missions = instance_dir / "missions.md"
+        missions.write_text(_missions(in_progress=f"- {mission_text}"))
+
+        count, _ = recover_missions(str(instance_dir))
+        assert count == 1
+
+        pending_path = instance_dir / "journal" / "pending.md"
+        assert pending_path.exists()
+        content = pending_path.read_text()
+        assert "Recovery Context" in content
+        assert "koan.atoomic/fix-auth" in content
+        assert "read auth module" in content
+
+    def test_recovery_without_checkpoint_no_context(self, instance_dir):
+        """Without a checkpoint, no recovery context is injected."""
+        missions = instance_dir / "missions.md"
+        missions.write_text(_missions(in_progress="- Fix the bug"))
+
+        count, _ = recover_missions(str(instance_dir))
+        assert count == 1
+
+        pending_path = instance_dir / "journal" / "pending.md"
+        # pending.md should not exist or should not contain checkpoint context
+        if pending_path.exists():
+            assert "Recovery Context" not in pending_path.read_text()
+
+    def test_recovery_logs_checkpoint_flag(self, instance_dir):
+        """Recovery JSONL log includes has_checkpoint field."""
+        from app.checkpoint_manager import create_checkpoint
+
+        mission_text = "Fix something"
+        create_checkpoint(str(instance_dir), mission_text, "test")
+
+        missions = instance_dir / "missions.md"
+        missions.write_text(_missions(in_progress=f"- {mission_text}"))
+
+        recover_missions(str(instance_dir))
+
+        log_path = instance_dir / "recovery.jsonl"
+        assert log_path.exists()
+        events = [json.loads(l) for l in log_path.read_text().splitlines() if l.strip()]
+        assert len(events) >= 1
+        assert events[0]["has_checkpoint"] is True

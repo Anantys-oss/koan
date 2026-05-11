@@ -72,17 +72,22 @@ def _strip_recovery_counter(mission_line: str) -> str:
 # State classification
 # ---------------------------------------------------------------------------
 
-def classify_mission_state(mission_line: str, has_pending_journal: bool = False) -> str:
+def classify_mission_state(
+    mission_line: str,
+    has_pending_journal: bool = False,
+    has_checkpoint: bool = False,
+) -> str:
     """Classify a stale in-progress mission's recovery state.
 
     States:
         "unrecoverable" — Too many attempts. Escalate to Failed, notify human.
-        "partial"       — Has pending.md context from an interrupted run. Recover.
+        "partial"       — Has checkpoint or pending.md context. Recover with context.
         "dead"          — Standard crash, no special context. Simple recovery.
 
     Args:
         mission_line: The raw mission text line.
         has_pending_journal: True if a pending.md exists from an interrupted run.
+        has_checkpoint: True if a structured checkpoint file exists for this mission.
 
     Returns:
         One of "unrecoverable", "partial", or "dead".
@@ -90,7 +95,7 @@ def classify_mission_state(mission_line: str, has_pending_journal: bool = False)
     attempts = _get_recovery_attempts(mission_line)
     if attempts >= MAX_RECOVERY_ATTEMPTS:
         return "unrecoverable"
-    if has_pending_journal:
+    if has_checkpoint or has_pending_journal:
         return "partial"
     return "dead"
 
@@ -105,6 +110,7 @@ def _log_recovery_event(
     state: str,
     action: str,
     attempts: int,
+    has_checkpoint: bool = False,
 ) -> None:
     """Append a recovery event to recovery.jsonl for audit trail.
 
@@ -114,6 +120,7 @@ def _log_recovery_event(
         state: Classified state ("dead", "partial", "unrecoverable").
         action: Action taken ("recovered", "escalated", "skipped").
         attempts: Recovery attempt count at the time of this event.
+        has_checkpoint: Whether a structured checkpoint file was found.
     """
     event = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
@@ -121,6 +128,7 @@ def _log_recovery_event(
         "state": state,
         "action": action,
         "attempts": attempts,
+        "has_checkpoint": has_checkpoint,
     }
     log_path = Path(instance_dir) / "recovery.jsonl"
     try:
@@ -204,11 +212,18 @@ def recover_missions(instance_dir: str, dry_run: bool = False) -> tuple:
     except FileNotFoundError:
         has_pending_journal = False
 
+    # Import checkpoint manager for per-mission checkpoint lookup
+    try:
+        from app.checkpoint_manager import read_checkpoint as _read_cp
+    except ImportError:
+        _read_cp = None
+
     recovered_count = 0
     escalated_missions: list = []
+    recovered_mission_texts: list = []  # clean mission texts for checkpoint lookup
 
     def _recover_transform(content: str) -> str:
-        nonlocal recovered_count, escalated_missions
+        nonlocal recovered_count, escalated_missions, recovered_mission_texts
         lines = content.splitlines()
 
         boundaries = find_section_boundaries(lines)
@@ -246,24 +261,41 @@ def recover_missions(instance_dir: str, dry_run: bool = False) -> tuple:
                 continue
 
             if stripped.startswith("- ") and "~~" not in stripped:
+                # Check for a structured checkpoint for this mission
+                has_checkpoint = False
+                if _read_cp is not None:
+                    # Extract clean mission text (no "- " prefix, no [r:N])
+                    clean_text = _strip_recovery_counter(stripped).removeprefix("- ").strip()
+                    cp = _read_cp(instance_dir, clean_text)
+                    has_checkpoint = cp is not None
+
                 # Classify this mission
-                state = classify_mission_state(line, has_pending_journal=has_pending_journal)
+                state = classify_mission_state(
+                    line,
+                    has_pending_journal=has_pending_journal,
+                    has_checkpoint=has_checkpoint,
+                )
                 attempts = _get_recovery_attempts(line)
 
                 if dry_run:
-                    print(f"[recover] [dry-run] mission={stripped!r:.60} state={state} attempts={attempts}")
-                    _log_recovery_event(instance_dir, line, state, "dry_run", attempts)
+                    print(f"[recover] [dry-run] mission={stripped!r:.60} state={state} "
+                          f"attempts={attempts} checkpoint={has_checkpoint}")
+                    _log_recovery_event(instance_dir, line, state, "dry_run", attempts,
+                                        has_checkpoint=has_checkpoint)
                     remaining_in_progress.append(line)
                     continue
 
                 if state == "unrecoverable":
                     escalated.append(line)
-                    _log_recovery_event(instance_dir, line, state, "escalated", attempts)
+                    _log_recovery_event(instance_dir, line, state, "escalated", attempts,
+                                        has_checkpoint=has_checkpoint)
                 else:
                     # Increment counter and move to Pending
                     updated_line = _set_recovery_attempts(line, attempts + 1)
                     recovered.append(updated_line)
-                    _log_recovery_event(instance_dir, line, state, "recovered", attempts + 1)
+                    recovered_mission_texts.append(clean_text)
+                    _log_recovery_event(instance_dir, line, state, "recovered", attempts + 1,
+                                        has_checkpoint=has_checkpoint)
 
             elif stripped == "(aucune)" or stripped == "(none)":
                 remaining_in_progress.append(line)
@@ -328,7 +360,55 @@ def recover_missions(instance_dir: str, dry_run: bool = False) -> tuple:
         return normalize_content("\n".join(new_lines) + "\n")
 
     modify_missions_file(missions_path, _recover_transform)
+
+    # Write checkpoint recovery context to pending.md if available.
+    # This makes structured checkpoint data visible to the agent's normal
+    # recovery flow (which reads pending.md at session start).
+    if recovered_count > 0 and _read_cp is not None and not dry_run:
+        _inject_checkpoint_context(instance_dir, recovered_mission_texts)
+
     return recovered_count, escalated_missions
+
+
+# ---------------------------------------------------------------------------
+# Checkpoint context injection
+# ---------------------------------------------------------------------------
+
+def _inject_checkpoint_context(instance_dir: str, mission_texts: list) -> None:
+    """Write checkpoint recovery context to pending.md for recovered missions.
+
+    When a mission has a structured checkpoint, appends formatted recovery
+    context to pending.md so the agent reads it on restart.
+    Only processes the first mission with a checkpoint (FIFO queue means
+    only one mission runs at a time).
+    """
+    try:
+        from app.checkpoint_manager import read_checkpoint, format_recovery_context
+    except ImportError:
+        return
+
+    for mission_text in mission_texts:
+        cp = read_checkpoint(instance_dir, mission_text)
+        if cp is None:
+            continue
+
+        context = format_recovery_context(cp)
+        pending_path = Path(instance_dir) / "journal" / "pending.md"
+        try:
+            existing = ""
+            try:
+                existing = pending_path.read_text()
+            except FileNotFoundError:
+                pass
+            # Append checkpoint context after existing content
+            with open(pending_path, "w") as f:
+                if existing.strip():
+                    f.write(existing.rstrip() + "\n\n")
+                f.write(context + "\n")
+            print(f"[recover] Injected checkpoint context for: {mission_text[:60]}")
+        except OSError as e:
+            print(f"[recover] Failed to inject checkpoint context: {e}", file=sys.stderr)
+        break  # Only inject for the first mission with a checkpoint
 
 
 # ---------------------------------------------------------------------------
