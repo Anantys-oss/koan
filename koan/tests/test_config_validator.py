@@ -673,3 +673,79 @@ class TestFindExtraConfigKeys:
         user = {"max_runs_per_day": 20, "totally_unknown": 1}
         extras = find_extra_config_keys(str(tmp_path), user_config=user)
         assert extras == ["totally_unknown"]
+
+
+# ---------------------------------------------------------------------------
+# Config schema drift prevention — scan codebase for config.get() calls
+# ---------------------------------------------------------------------------
+
+class TestConfigSchemaDriftPrevention:
+    """Scan koan/app/ for config.get() calls and verify each key is
+    registered in CONFIG_SCHEMA.
+
+    This test catches the recurring issue where new features add
+    config.get() calls but nobody updates CONFIG_SCHEMA. When a key
+    is missing, the startup validator can't warn on typos or type
+    mismatches for that key.
+
+    Keys from non-config.yaml sources (projects.yaml sub-keys, nested
+    section sub-keys accessed on an already-extracted sub-dict) should
+    be added to _NON_INSTANCE_CONFIG_KEYS.
+    """
+
+    # Keys that appear in config.get() but come from projects.yaml or
+    # other non-instance-config sources.  Add new exclusions here with
+    # a comment explaining why.
+    _NON_INSTANCE_CONFIG_KEYS = {
+        # projects.yaml structure
+        "defaults", "projects", "github_url", "path", "name",
+        # projects.yaml per-project overrides (accessed on project dict)
+        "cli_provider", "pr_quality", "blocking",
+        # Accessed on already-extracted sub-dicts where the local
+        # variable happens to be named 'config' (not top-level config)
+        "bot_username", "max_age", "notify", "block_mode",
+        "max_per_day", "rules", "base_branch", "strategy",
+        "command", "timeout", "nickname",
+        # Generic dict access patterns (key comes from a variable)
+        "enabled",
+    }
+
+    def test_all_config_get_keys_in_schema(self):
+        """Every config.get('key') call in koan/app/ should have a
+        corresponding entry in CONFIG_SCHEMA or be explicitly excluded."""
+        import re
+        from pathlib import Path
+        from app.config_validator import CONFIG_SCHEMA
+
+        app_dir = Path(__file__).resolve().parent.parent / "app"
+        assert app_dir.is_dir(), f"Expected app dir at {app_dir}"
+
+        # Match patterns: config.get("key" or config.get('key'
+        # Also match config["key"] direct access
+        pattern = re.compile(
+            r'''config\.get\(\s*['"]([\w]+)['"]'''
+            r'''|config\[\s*['"]([\w]+)['"]\s*\]'''
+        )
+
+        missing = []
+        for py_file in sorted(app_dir.rglob("*.py")):
+            # Skip test files and __pycache__
+            if "__pycache__" in str(py_file):
+                continue
+            text = py_file.read_text(encoding="utf-8", errors="replace")
+            for match in pattern.finditer(text):
+                key = match.group(1) or match.group(2)
+                if key in CONFIG_SCHEMA:
+                    continue
+                if key in self._NON_INSTANCE_CONFIG_KEYS:
+                    continue
+                rel = py_file.relative_to(app_dir.parent)
+                missing.append(f"{rel}: config.get('{key}')")
+
+        assert missing == [], (
+            f"config.get() keys not in CONFIG_SCHEMA or exclusion list:\n"
+            + "\n".join(f"  - {m}" for m in missing)
+            + "\n\nFix: add them to CONFIG_SCHEMA in config_validator.py, "
+            "or to _NON_INSTANCE_CONFIG_KEYS if they come from a "
+            "different source."
+        )

@@ -79,6 +79,11 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "effort": _NESTED,
     "stagnation": _NESTED,
     "optimizations": _NESTED,
+    "complexity_routing": _NESTED,
+    "max_parallel_sessions": "int",
+    "audit": _NESTED,
+    "memory": _NESTED,
+    "focus": "bool",
 }
 
 # Sub-schemas for nested sections
@@ -222,6 +227,22 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
         # validation of that mapping lives in
         # :func:`_validate_caveman_nested` below.
         "caveman": "dict",
+    },
+    "complexity_routing": {
+        "enabled": "bool",
+        "tiers": "dict",
+    },
+    "audit": {
+        "enabled": "bool",
+        "max_size_mb": "int",
+        "redact_patterns": "list",
+    },
+    "memory": {
+        "learnings_max_lines": "int",
+        "learnings_hard_cap": "int",
+        "global_personality_max": "int",
+        "global_emotional_max": "int",
+        "compaction_interval_hours": "int",
     },
 }
 
