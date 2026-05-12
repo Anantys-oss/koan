@@ -130,8 +130,14 @@ def _write_pipeline_summary(
     mission_title: str = "",
     stdout_file: str = "",
     mission_tier: Optional[str] = None,
+    tokens: Optional[dict] = None,
 ) -> None:
-    """Append a pipeline outcome summary to today's journal."""
+    """Append a pipeline outcome summary to today's journal.
+
+    Args:
+        tokens: Pre-extracted token details (from extract_tokens_detailed).
+            When provided, skips redundant file read + JSON parse for cache line.
+    """
     try:
         from app.journal import append_to_journal
 
@@ -140,8 +146,8 @@ def _write_pipeline_summary(
             return
 
         # Append cache metrics from this mission's output
-        if stdout_file:
-            cache_line = _extract_cache_line(stdout_file)
+        if stdout_file or tokens:
+            cache_line = _extract_cache_line(stdout_file, tokens=tokens)
             if cache_line:
                 lines.append(f"  📊 {cache_line}")
 
@@ -157,19 +163,26 @@ def _write_pipeline_summary(
         _log_runner("error", f"Pipeline summary write failed: {e}")
 
 
-def _extract_cache_line(stdout_file: str) -> str:
-    """Extract a compact cache performance line from Claude JSON output."""
+def _extract_cache_line(stdout_file: str, tokens: Optional[dict] = None) -> str:
+    """Extract a compact cache performance line from Claude JSON output.
+
+    Args:
+        stdout_file: Path to Claude stdout capture file.
+        tokens: Pre-extracted token details (from extract_tokens_detailed).
+            When provided, skips redundant file read + JSON parse.
+    """
     try:
-        from app.usage_estimator import extract_tokens_detailed
         from app.cost_tracker import format_mission_cache_line
 
-        detailed = extract_tokens_detailed(Path(stdout_file))
-        if detailed is None:
+        if tokens is None:
+            from app.usage_estimator import extract_tokens_detailed
+            tokens = extract_tokens_detailed(Path(stdout_file))
+        if tokens is None:
             return ""
         return format_mission_cache_line(
-            cache_read=detailed.get("cache_read_input_tokens", 0),
-            cache_create=detailed.get("cache_creation_input_tokens", 0),
-            input_tokens=detailed.get("input_tokens", 0),
+            cache_read=tokens.get("cache_read_input_tokens", 0),
+            cache_create=tokens.get("cache_creation_input_tokens", 0),
+            input_tokens=tokens.get("input_tokens", 0),
         )
     except Exception as e:
         _log_runner("error", f"Cache line extraction failed: {e}")
@@ -408,27 +421,34 @@ def _record_cost_event(
     autonomous_mode: str,
     mission_title: str,
     mission_type: str = "",
+    tokens: Optional[dict] = None,
 ) -> None:
-    """Record structured usage event to JSONL cost tracker (fire-and-forget)."""
+    """Record structured usage event to JSONL cost tracker (fire-and-forget).
+
+    Args:
+        tokens: Pre-extracted token details (from extract_tokens_detailed).
+            When provided, skips redundant file read + JSON parse.
+    """
     try:
-        from app.usage_estimator import extract_tokens_detailed
         from app.cost_tracker import record_usage
 
-        detailed = extract_tokens_detailed(Path(stdout_file))
-        if detailed is None:
+        if tokens is None:
+            from app.usage_estimator import extract_tokens_detailed
+            tokens = extract_tokens_detailed(Path(stdout_file))
+        if tokens is None:
             return
 
         record_usage(
             instance_dir=Path(instance_dir),
             project=project_name or "_global",
-            model=detailed["model"],
-            input_tokens=detailed["input_tokens"],
-            output_tokens=detailed["output_tokens"],
+            model=tokens["model"],
+            input_tokens=tokens["input_tokens"],
+            output_tokens=tokens["output_tokens"],
             mode=autonomous_mode,
             mission=mission_title,
-            cache_creation_input_tokens=detailed.get("cache_creation_input_tokens", 0),
-            cache_read_input_tokens=detailed.get("cache_read_input_tokens", 0),
-            cost_usd=detailed.get("cost_usd", 0.0),
+            cache_creation_input_tokens=tokens.get("cache_creation_input_tokens", 0),
+            cache_read_input_tokens=tokens.get("cache_read_input_tokens", 0),
+            cost_usd=tokens.get("cost_usd", 0.0),
             mission_type=mission_type,
         )
     except Exception as e:
@@ -442,14 +462,21 @@ def _log_activity_usage(
     autonomous_mode: str,
     mission_title: str,
     duration_seconds: int = 0,
+    tokens: Optional[dict] = None,
 ) -> None:
-    """Log activity usage to logs/usage.log (fire-and-forget)."""
+    """Log activity usage to logs/usage.log (fire-and-forget).
+
+    Args:
+        tokens: Pre-extracted token details (from extract_tokens_detailed).
+            When provided, skips redundant file read + JSON parse.
+    """
     try:
-        from app.usage_estimator import extract_tokens_detailed
         from app.activity_usage_logger import log_activity_usage
 
-        detailed = extract_tokens_detailed(Path(stdout_file))
-        if detailed is None:
+        if tokens is None:
+            from app.usage_estimator import extract_tokens_detailed
+            tokens = extract_tokens_detailed(Path(stdout_file))
+        if tokens is None:
             return
 
         activity_type = "mission" if mission_title else autonomous_mode or "autonomous"
@@ -460,12 +487,12 @@ def _log_activity_usage(
             activity_type=activity_type,
             description=description,
             duration_seconds=duration_seconds,
-            input_tokens=detailed["input_tokens"],
-            output_tokens=detailed["output_tokens"],
-            cache_read_tokens=detailed.get("cache_read_input_tokens", 0),
-            cache_creation_tokens=detailed.get("cache_creation_input_tokens", 0),
-            cost_usd=detailed.get("cost_usd", 0.0),
-            model=detailed.get("model", ""),
+            input_tokens=tokens["input_tokens"],
+            output_tokens=tokens["output_tokens"],
+            cache_read_tokens=tokens.get("cache_read_input_tokens", 0),
+            cache_creation_tokens=tokens.get("cache_creation_input_tokens", 0),
+            cost_usd=tokens.get("cost_usd", 0.0),
+            model=tokens.get("model", ""),
         )
     except Exception as e:
         print(f"[mission_runner] Activity usage logging failed: {e}", file=sys.stderr)
@@ -564,15 +591,26 @@ def trigger_reflection(
     return False
 
 
-def _get_quality_gate_mode(instance_dir: str, project_name: str) -> str:
+def _get_quality_gate_mode(
+    instance_dir: str,
+    project_name: str,
+    projects_config: Optional[dict] = None,
+) -> str:
     """Get the quality gate mode for a project.
+
+    Args:
+        projects_config: Pre-loaded projects config dict. When provided,
+            skips redundant load_projects_config() call.
 
     Returns one of: "strict", "warn", "off". Default: "warn".
     """
     try:
-        from app.projects_config import load_projects_config, get_project_config
-        koan_root = _get_koan_root(instance_dir)
-        config = load_projects_config(koan_root)
+        from app.projects_config import get_project_config
+        config = projects_config
+        if config is None:
+            from app.projects_config import load_projects_config
+            koan_root = _get_koan_root(instance_dir)
+            config = load_projects_config(koan_root)
         if config:
             project_config = get_project_config(config, project_name)
             pr_quality = project_config.get("pr_quality", {})
@@ -589,17 +627,23 @@ def _run_quality_pipeline(
     project_name: str,
     project_path: str,
     report_fn,
+    projects_config: Optional[dict] = None,
 ) -> dict:
     """Run the post-mission quality pipeline.
 
     Wraps pr_quality.run_quality_pipeline with project config resolution.
     Raises on error — caller (_PipelineTracker.run_step) handles recording.
+
+    Args:
+        projects_config: Pre-loaded projects config dict to avoid redundant I/O.
     """
     from app.config import get_branch_prefix
     from app.pr_quality import run_quality_pipeline
 
     branch_prefix = get_branch_prefix()
-    gate_mode = _get_quality_gate_mode(instance_dir, project_name)
+    gate_mode = _get_quality_gate_mode(
+        instance_dir, project_name, projects_config=projects_config,
+    )
 
     return run_quality_pipeline(
         project_path=project_path,
@@ -622,13 +666,23 @@ def _run_lint_gate(
     return run_lint_gate(project_path, project_name, instance_dir)
 
 
-def _is_lint_blocking(instance_dir: str, project_name: str) -> bool:
-    """Check if lint gate is configured as blocking for a project."""
+def _is_lint_blocking(
+    instance_dir: str,
+    project_name: str,
+    projects_config: Optional[dict] = None,
+) -> bool:
+    """Check if lint gate is configured as blocking for a project.
+
+    Args:
+        projects_config: Pre-loaded projects config dict to avoid redundant I/O.
+    """
     try:
         from app.lint_gate import get_project_lint_config
-        from app.projects_config import load_projects_config
-        koan_root = _get_koan_root(instance_dir)
-        config = load_projects_config(koan_root)
+        config = projects_config
+        if config is None:
+            from app.projects_config import load_projects_config
+            koan_root = _get_koan_root(instance_dir)
+            config = load_projects_config(koan_root)
         if not config:
             return False
         lint_config = get_project_lint_config(config, project_name)
@@ -670,6 +724,7 @@ def check_auto_merge(
     quality_report: Optional[dict] = None,
     lint_blocked: bool = False,
     verify_blocked: bool = False,
+    projects_config: Optional[dict] = None,
 ) -> Optional[str]:
     """Check if current branch should be auto-merged.
 
@@ -680,6 +735,7 @@ def check_auto_merge(
         quality_report: Optional quality pipeline results for gating.
         lint_blocked: Whether lint gate is blocking auto-merge.
         verify_blocked: Whether verification failure is blocking auto-merge.
+        projects_config: Pre-loaded projects config dict to avoid redundant I/O.
 
     Returns:
         Branch name if auto-merge was attempted, None otherwise.
@@ -705,18 +761,23 @@ def check_auto_merge(
 
         # Check if auto-merge is configured for this project
         from app.git_auto_merge import auto_merge_branch
-        from app.projects_config import load_projects_config, get_project_auto_merge
+        from app.projects_config import get_project_auto_merge
 
-        koan_root = _get_koan_root(instance_dir)
-        projects_config = load_projects_config(koan_root)
-        auto_merge_cfg = get_project_auto_merge(projects_config, project_name) if projects_config else {}
+        config = projects_config
+        if config is None:
+            from app.projects_config import load_projects_config
+            koan_root = _get_koan_root(instance_dir)
+            config = load_projects_config(koan_root)
+        auto_merge_cfg = get_project_auto_merge(config, project_name) if config else {}
         auto_merge_enabled = auto_merge_cfg.get("enabled", False)
 
         # Quality gate check — only post comments when auto-merge is configured.
         # Without auto-merge, quality info is already in the PR description.
         if quality_report and auto_merge_enabled:
             from app.pr_quality import should_block_auto_merge, post_quality_comment
-            gate_mode = _get_quality_gate_mode(instance_dir, project_name)
+            gate_mode = _get_quality_gate_mode(
+                instance_dir, project_name, projects_config=config,
+            )
             if should_block_auto_merge(quality_report, gate_mode):
                 _log_runner("mission", f"Auto-merge blocked by quality gate ({gate_mode})")
                 try:
@@ -880,6 +941,26 @@ def run_post_mission(
             if status_callback:
                 status_callback(step)
 
+        # Pre-extract token details once — reused by cost tracking, activity
+        # logging, and cache line extraction instead of parsing the same JSON
+        # file 3 times.
+        _tokens = None
+        try:
+            from app.usage_estimator import extract_tokens_detailed
+            _tokens = extract_tokens_detailed(Path(stdout_file))
+        except Exception as e:
+            _log_runner("error", f"Token extraction failed: {e}")
+
+        # Pre-load projects config once — reused by quality gate, lint gate,
+        # and auto-merge instead of loading projects.yaml 3 times.
+        _projects_config = None
+        _koan_root = _get_koan_root(instance_dir)
+        try:
+            from app.projects_config import load_projects_config
+            _projects_config = load_projects_config(_koan_root)
+        except Exception as e:
+            _log_runner("error", f"Projects config load failed: {e}")
+
         # 1. Update token usage from JSON output
         _report("updating usage stats")
         usage_state = os.path.join(instance_dir, "usage_state.json")
@@ -893,6 +974,7 @@ def run_post_mission(
         _record_cost_event(
             instance_dir, project_name, stdout_file,
             autonomous_mode, mission_title, mission_type=_mission_type,
+            tokens=_tokens,
         )
 
         # 2. Compute duration (needed for quota early-return, reflection, and outcome tracking)
@@ -907,15 +989,15 @@ def run_post_mission(
         _log_activity_usage(
             instance_dir, project_name, stdout_file,
             autonomous_mode, mission_title, duration_seconds,
+            tokens=_tokens,
         )
 
         # 3. Check for quota exhaustion
         _report("checking quota")
         from app.quota_handler import handle_quota_exhaustion, QUOTA_CHECK_UNRELIABLE
 
-        koan_root = _get_koan_root(instance_dir)
         quota_result = handle_quota_exhaustion(
-            koan_root=koan_root,
+            koan_root=_koan_root,
             instance_dir=instance_dir,
             project_name=project_name,
             run_count=run_num,
@@ -949,7 +1031,7 @@ def run_post_mission(
             result["pipeline_steps"] = tracker.to_dict()
             _write_pipeline_summary(
                 instance_dir, project_name, tracker, mission_title,
-                mission_tier=mission_tier,
+                mission_tier=mission_tier, tokens=_tokens,
             )
             return result  # Early return — no further processing on quota exhaustion
         tracker.record("quota_check", "success", "no exhaustion")
@@ -997,6 +1079,7 @@ def run_post_mission(
                 "quality_pipeline",
                 _run_quality_pipeline,
                 instance_dir, project_name, project_path, _report,
+                projects_config=_projects_config,
                 pipeline_expired=_pipeline_expired,
             )
             if quality_report is None:
@@ -1029,7 +1112,7 @@ def run_post_mission(
 
             # Auto-merge check (respects quality gate + lint gate + verification)
             _report("checking auto-merge")
-            lint_blocking = lint_result is not None and not lint_result.passed and _is_lint_blocking(instance_dir, project_name)
+            lint_blocking = lint_result is not None and not lint_result.passed and _is_lint_blocking(instance_dir, project_name, projects_config=_projects_config)
             verify_blocking = verify_result is not None and not verify_result.passed
             merge_result = tracker.run_step(
                 "auto_merge",
@@ -1038,6 +1121,7 @@ def run_post_mission(
                 quality_report=quality_report,
                 lint_blocked=lint_blocking,
                 verify_blocked=verify_blocking,
+                projects_config=_projects_config,
                 pipeline_expired=_pipeline_expired,
             )
             result["auto_merge_branch"] = merge_result
@@ -1084,6 +1168,7 @@ def run_post_mission(
             instance_dir, project_name, tracker, mission_title,
             stdout_file=stdout_file,
             mission_tier=mission_tier,
+            tokens=_tokens,
         )
 
         # Notify user of pipeline failures via outbox (retried by bridge)
