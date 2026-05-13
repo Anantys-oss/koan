@@ -208,6 +208,7 @@ class TestClassifyRequest:
 class TestGhRequestRouting:
     """Tests for /gh_request routing in github_command_handler.py."""
 
+    @patch("app.github_command_handler._is_subject_closed", return_value=None)
     @patch("app.github_command_handler.mark_notification_read")
     @patch("app.github_command_handler.add_reaction", return_value=True)
     @patch("app.github_command_handler.check_user_permission", return_value=True)
@@ -221,7 +222,7 @@ class TestGhRequestRouting:
     def test_nlp_enabled_routes_to_gh_request(
         self, mock_extract, mock_insert, mock_resolve, mock_get_comment,
         mock_stale, mock_self, mock_processed, mock_perm,
-        mock_react, mock_read, registry_with_gh_request, tmp_path,
+        mock_react, mock_read, mock_closed, registry_with_gh_request, tmp_path,
     ):
         """When natural_language=true, unrecognized commands route to /gh_request."""
         from app.github_command_handler import process_single_notification
@@ -264,6 +265,7 @@ class TestGhRequestRouting:
         assert "/gh_request" in mission
         assert "can you take a look at this PR?" in mission
 
+    @patch("app.github_command_handler._is_subject_closed", return_value=None)
     @patch("app.github_command_handler.mark_notification_read")
     @patch("app.github_command_handler.check_already_processed", return_value=False)
     @patch("app.github_command_handler.is_self_mention", return_value=False)
@@ -273,7 +275,7 @@ class TestGhRequestRouting:
     @patch("app.github_command_handler._try_nlp_classification", return_value=None)
     def test_nlp_disabled_uses_legacy_path(
         self, mock_nlp, mock_resolve, mock_get_comment,
-        mock_stale, mock_self, mock_processed, mock_read,
+        mock_stale, mock_self, mock_processed, mock_read, mock_closed,
         registry_with_gh_request,
     ):
         """Without natural_language=true, uses legacy NLP classification."""
@@ -305,6 +307,7 @@ class TestGhRequestRouting:
         mock_nlp.assert_called_once()
         assert "`blahblah`" in error
 
+    @patch("app.github_command_handler._is_subject_closed", return_value=None)
     @patch("app.github_command_handler.mark_notification_read")
     @patch("app.github_command_handler.add_reaction", return_value=True)
     @patch("app.github_command_handler.check_user_permission", return_value=True)
@@ -317,7 +320,7 @@ class TestGhRequestRouting:
     def test_recognized_command_still_works_with_nlp_enabled(
         self, mock_insert, mock_resolve, mock_get_comment,
         mock_stale, mock_self, mock_processed, mock_perm,
-        mock_react, mock_read, registry_with_gh_request, tmp_path,
+        mock_react, mock_read, mock_closed, registry_with_gh_request, tmp_path,
     ):
         """Recognized commands bypass NLP even when natural_language=true."""
         from app.github_command_handler import process_single_notification

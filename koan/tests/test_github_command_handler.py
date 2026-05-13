@@ -13,6 +13,8 @@ from app.github_command_handler import (
     _extract_url_from_context,
     _fetch_and_filter_comment,
     _handle_help_command,
+    _is_subject_closed,
+    _notify_closed_subject_skipped,
     _notify_github_question,
     _notify_github_reply,
     _post_help_reply,
@@ -3446,3 +3448,210 @@ class TestTryAssignmentNotification:
         assert error is None
         content = missions_path.read_text()
         assert "/implement" in content
+
+
+class TestIsSubjectClosed:
+    """Tests for _is_subject_closed helper."""
+
+    def test_returns_merged_for_merged_pr(self):
+        notification = {
+            "subject": {
+                "url": "https://api.github.com/repos/owner/repo/pulls/1",
+            },
+        }
+        with patch("app.github.api",
+                    return_value='{"state": "closed", "merged": true}'):
+            assert _is_subject_closed(notification) == "merged"
+
+    def test_returns_closed_for_closed_issue(self):
+        notification = {
+            "subject": {
+                "url": "https://api.github.com/repos/owner/repo/issues/1",
+            },
+        }
+        with patch("app.github.api",
+                    return_value='{"state": "closed", "merged": null}'):
+            assert _is_subject_closed(notification) == "closed"
+
+    def test_returns_none_for_open_pr(self):
+        notification = {
+            "subject": {
+                "url": "https://api.github.com/repos/owner/repo/pulls/1",
+            },
+        }
+        with patch("app.github.api",
+                    return_value='{"state": "open", "merged": false}'):
+            assert _is_subject_closed(notification) is None
+
+    def test_returns_none_on_api_failure(self):
+        notification = {
+            "subject": {
+                "url": "https://api.github.com/repos/owner/repo/pulls/1",
+            },
+        }
+        with patch("app.github.api",
+                    side_effect=RuntimeError("network")):
+            assert _is_subject_closed(notification) is None
+
+    def test_returns_none_when_no_subject_url(self):
+        assert _is_subject_closed({"subject": {}}) is None
+        assert _is_subject_closed({}) is None
+
+
+class TestNotifyClosedSubjectSkipped:
+    """Tests for _notify_closed_subject_skipped helper."""
+
+    def test_sends_telegram_notification(self):
+        notification = {
+            "subject": {
+                "type": "PullRequest",
+                "url": "https://api.github.com/repos/owner/repo/pulls/42",
+            },
+        }
+        with patch("app.notify.send_telegram") as mock_send:
+            _notify_closed_subject_skipped(
+                "owner", "repo", "Fix bug", "merged", notification,
+            )
+            mock_send.assert_called_once()
+            msg = mock_send.call_args[0][0]
+            assert "merged" in msg
+            assert "owner/repo" in msg
+            assert "Fix bug" in msg
+            assert "pullrequest" in msg.lower()
+
+    def test_handles_send_failure_gracefully(self):
+        notification = {"subject": {"type": "Issue", "url": ""}}
+        with patch("app.notify.send_telegram",
+                    side_effect=Exception("boom")):
+            # Should not raise
+            _notify_closed_subject_skipped(
+                "owner", "repo", "Title", "closed", notification,
+            )
+
+
+class TestProcessSingleNotificationClosedSubject:
+    """Tests for closed/merged subject detection in process_single_notification."""
+
+    @pytest.fixture
+    def closed_pr_notification(self):
+        return {
+            "id": "99999",
+            "reason": "mention",
+            "updated_at": "2026-05-13T12:00:00Z",
+            "repository": {"full_name": "owner/repo"},
+            "subject": {
+                "type": "PullRequest",
+                "title": "Some closed PR",
+                "url": "https://api.github.com/repos/owner/repo/pulls/10",
+                "latest_comment_url": "https://api.github.com/repos/owner/repo/issues/comments/555",
+            },
+        }
+
+    def test_skips_closed_pr_and_notifies(
+        self, closed_pr_notification, registry, monkeypatch,
+    ):
+        """Notifications on closed PRs are skipped with Telegram notification."""
+        monkeypatch.setenv("KOAN_ROOT", "/tmp/test-koan")
+
+        comment = {
+            "id": "555",
+            "url": "https://api.github.com/repos/owner/repo/issues/comments/555",
+            "body": "@bot rebase",
+            "user": {"login": "someone"},
+        }
+
+        with patch("app.github_command_handler._fetch_and_filter_comment",
+                    return_value=comment), \
+             patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=("myproject", "owner", "repo")), \
+             patch("app.github_command_handler._is_subject_closed",
+                   return_value="merged") as mock_closed, \
+             patch("app.github_command_handler._notify_closed_subject_skipped") as mock_notify, \
+             patch("app.github_command_handler.add_reaction") as mock_react, \
+             patch("app.github_command_handler.mark_notification_read") as mock_read:
+
+            success, error = process_single_notification(
+                closed_pr_notification, registry, {}, None, "bot",
+            )
+
+        assert success is False
+        assert error is None
+        mock_closed.assert_called_once()
+        mock_notify.assert_called_once_with(
+            "owner", "repo", "Some closed PR", "merged", closed_pr_notification,
+        )
+        mock_react.assert_called_once_with(
+            "owner", "repo", "555", emoji="eyes",
+            comment_api_url="https://api.github.com/repos/owner/repo/issues/comments/555",
+        )
+        mock_read.assert_called_once()
+
+    def test_does_not_skip_open_pr(
+        self, closed_pr_notification, registry, monkeypatch,
+    ):
+        """Notifications on open PRs proceed normally."""
+        monkeypatch.setenv("KOAN_ROOT", "/tmp/test-koan")
+
+        comment = {
+            "id": "555",
+            "url": "https://api.github.com/repos/owner/repo/issues/comments/555",
+            "body": "@bot rebase",
+            "user": {"login": "someone"},
+        }
+
+        with patch("app.github_command_handler._fetch_and_filter_comment",
+                    return_value=comment), \
+             patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=("myproject", "owner", "repo")), \
+             patch("app.github_command_handler._is_subject_closed",
+                   return_value=None), \
+             patch("app.github_command_handler._validate_and_parse_command",
+                   return_value=(None, None, "")), \
+             patch("app.github_command_handler._notify_closed_subject_skipped") as mock_notify:
+
+            success, error = process_single_notification(
+                closed_pr_notification, registry, {}, None, "bot",
+            )
+
+        # Should NOT have called the skip notification
+        mock_notify.assert_not_called()
+
+
+class TestTryAssignmentNotificationClosedSubject:
+    """Tests for closed subject detection in _try_assignment_notification."""
+
+    def test_skips_review_request_on_merged_pr(self, monkeypatch):
+        monkeypatch.setenv("KOAN_ROOT", "/tmp/test-koan")
+        notification = {
+            "id": "77777",
+            "reason": "review_requested",
+            "updated_at": "2026-05-13T12:00:00Z",
+            "repository": {"full_name": "owner/repo"},
+            "subject": {
+                "type": "PullRequest",
+                "title": "Merged PR",
+                "url": "https://api.github.com/repos/owner/repo/pulls/5",
+            },
+        }
+        registry = SkillRegistry()
+        skill = Skill(
+            name="review", scope="core", description="Review",
+            commands=[SkillCommand(name="review")],
+            github_enabled=True,
+        )
+        registry._register(skill)
+
+        with patch("app.github_command_handler.is_notification_stale",
+                    return_value=False), \
+             patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=("myproject", "owner", "repo")), \
+             patch("app.github_command_handler._is_subject_closed",
+                   return_value="merged"), \
+             patch("app.github_command_handler._notify_closed_subject_skipped") as mock_notify, \
+             patch("app.github_command_handler.mark_notification_read"):
+
+            result = _try_assignment_notification(notification, registry, {})
+
+        assert result is False
+        mock_notify.assert_called_once()
+        assert mock_notify.call_args[0][3] == "merged"  # subject_state
