@@ -21,6 +21,7 @@ Reply flow (when reply_enabled=true and command not recognized):
 
 import logging
 import re
+import subprocess
 import time
 from typing import Dict, List, Optional, Tuple
 
@@ -922,6 +923,20 @@ def _try_assignment_notification(
 
     project_name, owner, repo = project_info
 
+    # Skip closed/merged subjects
+    subject_state = _is_subject_closed(notification)
+    if subject_state:
+        subject_title = notification.get("subject", {}).get("title", "?")
+        log.info(
+            "GitHub assign: skipping %s notification on %s subject: %s/%s — %s",
+            reason, subject_state, owner, repo, subject_title,
+        )
+        _notify_closed_subject_skipped(
+            owner, repo, subject_title, subject_state, notification,
+        )
+        mark_notification_read(str(notification.get("id", "")))
+        return False
+
     # Build web URL from subject
     subject_url = notification.get("subject", {}).get("url", "")
     web_url = api_url_to_web_url(subject_url) if subject_url else ""
@@ -1035,6 +1050,27 @@ def process_single_notification(
         project_name = repo.lower()
         log.info("GitHub: repo %s/%s not in projects.yaml — using '%s' as project name", owner, repo, project_name)
     log.debug("GitHub: resolved project=%s from %s/%s", project_name, owner, repo)
+
+    # Skip notifications on closed/merged PRs and issues — commands like
+    # /rebase or /review are meaningless on closed subjects. Notify the
+    # user via Telegram so they know why the notification was ignored.
+    subject_state = _is_subject_closed(notification)
+    if subject_state:
+        subject_title = notification.get("subject", {}).get("title", "?")
+        log.info(
+            "GitHub: skipping notification on %s subject: %s/%s — %s",
+            subject_state, owner, repo, subject_title,
+        )
+        _notify_closed_subject_skipped(
+            owner, repo, subject_title, subject_state, notification,
+        )
+        # React to acknowledge we saw it, then mark as read
+        comment_id = str(comment.get("id", ""))
+        comment_api_url = comment.get("url", "")
+        add_reaction(owner, repo, comment_id, emoji="eyes",
+                     comment_api_url=comment_api_url)
+        mark_notification_read(str(notification.get("id", "")))
+        return False, None
 
     # Validate and parse command
     skill, command_name, context = _validate_and_parse_command(
@@ -1422,6 +1458,77 @@ def _try_subscription_notification(
     # Mark as pending to prevent duplicate missions
     set_pending_mission(instance_dir, thread_key, True)
     return True
+
+
+def _is_subject_closed(notification: dict) -> Optional[str]:
+    """Check if the notification's subject (PR or issue) is closed or merged.
+
+    Fetches the subject state from the GitHub API.
+
+    Args:
+        notification: A notification dict from GitHub API.
+
+    Returns:
+        A human-readable reason string if the subject is closed/merged,
+        or None if it's still open (or state cannot be determined).
+    """
+    import json as _json
+
+    from app.github import SSOAuthRequired, api as gh_api
+
+    subject_url = notification.get("subject", {}).get("url", "")
+    if not subject_url:
+        return None
+
+    # Convert full URL to API endpoint
+    api_prefix = "https://api.github.com/"
+    if not subject_url.startswith(api_prefix):
+        return None
+    endpoint = subject_url[len(api_prefix):]
+    if not endpoint:
+        return None
+
+    try:
+        raw = gh_api(endpoint, jq="{state: .state, merged: .merged}", timeout=15)
+        data = _json.loads(raw) if raw else {}
+    except (SSOAuthRequired, RuntimeError, _json.JSONDecodeError, subprocess.TimeoutExpired):
+        # Can't determine state — don't block the notification
+        return None
+
+    state = data.get("state", "")
+    merged = data.get("merged", False)
+
+    if merged:
+        return "merged"
+    if state == "closed":
+        return "closed"
+    return None
+
+
+def _notify_closed_subject_skipped(
+    owner: str,
+    repo: str,
+    subject_title: str,
+    subject_state: str,
+    notification: dict,
+) -> None:
+    """Send Telegram notification when skipping a closed/merged PR or issue."""
+    try:
+        from app.github_notifications import api_url_to_web_url
+        from app.notify import NotificationPriority, send_telegram
+
+        subject_url = notification.get("subject", {}).get("url", "")
+        web_url = api_url_to_web_url(subject_url) if subject_url else ""
+        subject_type = notification.get("subject", {}).get("type", "item")
+
+        url_part = f"\n{web_url}" if web_url else ""
+        send_telegram(
+            f"⏭️ Skipped GitHub notification on {subject_state} {subject_type.lower()}: "
+            f"{owner}/{repo} — {subject_title}{url_part}",
+            priority=NotificationPriority.INFO,
+        )
+    except Exception as e:
+        log.warning("Failed to send closed-subject skip notification: %s", e)
 
 
 def _notify_github_question(
