@@ -312,6 +312,10 @@ def _handle_skill_command(args: str):
             _handle_skill_remove(sub_args)
             return
 
+        if sub_cmd == "approve":
+            _handle_skill_approve(sub_args)
+            return
+
         if sub_cmd == "sources":
             _handle_skill_sources()
             return
@@ -334,7 +338,7 @@ def _handle_skill_command(args: str):
             parts.append("")
 
         parts.append("Use: /<scope>.<name> [args]")
-        parts.append("Manage: /skill install|update|remove|sources")
+        parts.append("Manage: /skill install|approve|update|remove|sources")
         send_telegram("\n".join(parts))
         return
 
@@ -384,7 +388,9 @@ def _handle_skill_install(args: str):
             "Examples:\n"
             "  /skill install myorg/koan-skills-ops\n"
             "  /skill install https://github.com/team/skills.git ops\n"
-            "  /skill install myorg/skills ops --ref=v1.0.0"
+            "  /skill install myorg/skills ops --ref=v1.0.0\n\n"
+            "Newly installed skills are pending until you run "
+            "/skill approve <scope> <fingerprint>."
         )
         return
 
@@ -440,6 +446,60 @@ def _handle_skill_sources():
     from app.skill_manager import list_sources
 
     send_telegram(list_sources(INSTANCE_DIR))
+
+
+def _handle_skill_approve(args: str):
+    """Handle /skill approve <scope>[/<name>] <fingerprint>.
+
+    Clears the .koan-pending marker for a freshly installed or scaffolded
+    skill once the operator confirms the on-disk fingerprint.
+    """
+    import hmac
+
+    from app.skill_approval import (
+        clear_pending,
+        read_pending_fingerprint,
+        resolve_pending_dir,
+    )
+
+    parts = args.split()
+    if len(parts) != 2:
+        send_telegram(
+            "Usage: /skill approve <scope>[/<name>] <fingerprint>\n\n"
+            "The fingerprint is shown in the bot reply from /skill install "
+            "or /scaffold_skill."
+        )
+        return
+
+    ref, supplied = parts[0], parts[1].strip().lower()
+    if not supplied or not all(c in "0123456789abcdef" for c in supplied):
+        send_telegram("❌ Fingerprint must be hex.")
+        return
+
+    target = resolve_pending_dir(INSTANCE_DIR, ref)
+    if target is None:
+        send_telegram(f"❌ Nothing pending for '{ref}'.")
+        return
+
+    stored = read_pending_fingerprint(target)
+    if not stored:
+        send_telegram(f"❌ Nothing pending for '{ref}'.")
+        return
+
+    # Allow the operator to paste either the short (12-char) form shown in
+    # the bot reply or the full 64-char hash. Compare in constant time.
+    stored_lc = stored.lower()
+    comparable = stored_lc[: len(supplied)] if len(supplied) <= len(stored_lc) else stored_lc
+    if not hmac.compare_digest(comparable, supplied):
+        send_telegram(
+            f"❌ Fingerprint does not match for '{ref}'. Inspect "
+            f"instance/skills/{ref}/ and try again, or /skill remove {ref.split('/', 1)[0]}."
+        )
+        return
+
+    clear_pending(target)
+    _reset_registry()
+    send_telegram(f"✅ Approved '{ref}'. Skill(s) now loaded.")
 
 
 # Group display metadata: emoji + short description for /help L1

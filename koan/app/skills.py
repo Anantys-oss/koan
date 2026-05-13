@@ -589,15 +589,24 @@ def build_registry(extra_dirs: Optional[List[Path]] = None) -> SkillRegistry:
 
     Args:
         extra_dirs: Additional directories to scan (e.g., instance/skills/).
+
+    Skills under ``extra_dirs`` are filtered through the approval gate:
+    any SKILL.md whose own directory or an ancestor up to the extra dir
+    carries a ``.koan-pending`` marker is silently skipped so the bridge
+    cannot exec a handler that has not been approved.
     """
     registry = SkillRegistry(get_default_skills_dir())
 
     if extra_dirs:
+        from app.skill_approval import find_pending_ancestor
         for d in extra_dirs:
-            if d.is_dir():
-                for skill_md in sorted(d.rglob("SKILL.md")):
-                    skill = parse_skill_md(skill_md)
-                    if skill:
-                        registry._register(skill)
+            if not d.is_dir():
+                continue
+            for skill_md in sorted(d.rglob("SKILL.md")):
+                if find_pending_ancestor(skill_md, d) is not None:
+                    continue
+                skill = parse_skill_md(skill_md)
+                if skill:
+                    registry._register(skill)
 
     return registry

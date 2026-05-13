@@ -738,6 +738,22 @@ def get_plan_review_config() -> dict:
     }
 
 
+def get_skill_allowed_hosts() -> List[str]:
+    """Return the optional Git-host allow-list for /skill install.
+
+    Read from ``skills.allowed_hosts`` in config.yaml. Each entry is a
+    ``host`` or ``host/path-prefix`` (e.g. ``github.com/myorg``). An empty
+    or missing list means no host restriction — the approval gate still
+    applies.
+    """
+    config = _load_config()
+    skills_cfg = config.get("skills", {}) or {}
+    hosts = skills_cfg.get("allowed_hosts", []) or []
+    if not isinstance(hosts, list):
+        return []
+    return [str(h).strip() for h in hosts if str(h).strip()]
+
+
 def get_contemplative_chance() -> int:
     """Get probability (0-100) of triggering contemplative mode on autonomous runs.
 

@@ -23,7 +23,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
+from app.config import get_skill_allowed_hosts
 from app.git_utils import run_git as _run_git
+from app.skill_approval import compute_fingerprint, mark_pending
 from app.utils import atomic_write
 
 
@@ -234,6 +236,49 @@ def _now_iso() -> str:
 _RESERVED_SCOPES = frozenset({"core"})
 
 
+def _canonical_url(url: str) -> str:
+    """Reduce a Git URL to a ``host/path`` token for allow-list matching.
+
+    Examples:
+        https://github.com/org/repo.git -> github.com/org/repo.git
+        git@github.com:org/repo.git     -> github.com/org/repo.git
+        ssh://git@github.com/org/repo   -> github.com/org/repo
+    """
+    s = url.strip()
+    for prefix in ("https://", "http://", "ssh://", "git://"):
+        if s.startswith(prefix):
+            s = s[len(prefix):]
+            break
+    if "@" in s and "/" not in s.split("@", 1)[0]:
+        s = s.split("@", 1)[1]
+    # git@host:path -> host/path
+    if ":" in s and "/" not in s.split(":", 1)[0]:
+        s = s.replace(":", "/", 1)
+    return s.lstrip("/")
+
+
+def _validate_allowed_host(url: str, allowed_hosts: list) -> Optional[str]:
+    """Return an error message if ``url`` is not covered by ``allowed_hosts``.
+
+    Empty allow-list means no restriction. Each entry matches if the canonical
+    ``host/path`` form of the URL equals it or has it as a slash-bounded prefix
+    (so ``github.com/myorg`` does not match ``github.com/myorg-evil``).
+    """
+    if not allowed_hosts:
+        return None
+    canonical = _canonical_url(url)
+    for entry in allowed_hosts:
+        entry = entry.strip().rstrip("/")
+        if not entry:
+            continue
+        if canonical == entry or canonical.startswith(entry + "/"):
+            return None
+    return (
+        f"Host not in skills.allowed_hosts: {url}. "
+        f"Allowed: {', '.join(allowed_hosts)}"
+    )
+
+
 def validate_scope(scope: str) -> Optional[str]:
     """Validate a scope name. Returns error message or None."""
     if not scope:
@@ -271,6 +316,12 @@ def install_skill_source(
     err = validate_scope(scope)
     if err:
         return False, err
+
+    # Defense-in-depth: enforce optional skills.allowed_hosts allow-list
+    # *before* cloning, so attacker-controlled URLs never touch the disk.
+    host_err = _validate_allowed_host(url, get_skill_allowed_hosts())
+    if host_err:
+        return False, host_err
 
     # Check if scope already exists
     sources = load_manifest(instance_dir)
@@ -332,10 +383,20 @@ def install_skill_source(
     )
     save_manifest(instance_dir, sources)
 
+    # Gate the freshly cloned scope behind operator approval: write a
+    # .koan-pending marker containing the directory fingerprint. The
+    # registry will refuse to load handlers from this scope until the
+    # operator runs /skill approve <scope> <fingerprint>.
+    fingerprint = compute_fingerprint(target_dir)
+    mark_pending(target_dir, fingerprint)
+    short_fp = fingerprint[:12]
+
     plural = "s" if skill_count != 1 else ""
     return True, (
-        f"Installed {skill_count} skill{plural} from {url} "
-        f"as scope '{scope}'."
+        f"Installed {skill_count} skill{plural} from {url} as scope "
+        f"'{scope}' (pending approval).\n"
+        f"Fingerprint: {short_fp}\n"
+        f"Approve with: /skill approve {scope} {short_fp}"
     )
 
 

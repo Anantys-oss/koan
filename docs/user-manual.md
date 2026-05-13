@@ -1081,8 +1081,24 @@ Kōan's skill system is fully extensible. Install skills from Git repos or creat
 **Install from Git:**
 ```
 /skill install https://github.com/your-org/koan-skills.git
+/skill approve <scope> <fingerprint>
 /skill update <scope>
 /skill remove <scope>
+```
+
+Freshly installed and scaffolded skills are **quarantined** until you approve
+them. Kōan replies with a short hex fingerprint of the on-disk files; loaded
+handlers are skipped by the registry until you run `/skill approve` with that
+fingerprint. This blocks blind / prompt-injected installs from running code in
+the bridge process. Inspect the files in `instance/skills/<scope>/` first.
+
+Optional `config.yaml` allow-list to refuse clones outside trusted hosts
+(defense-in-depth; the approval gate still applies if you do not set it):
+
+```yaml
+skills:
+  allowed_hosts:
+    - github.com/your-org
 ```
 
 **Create your own:** Add a `SKILL.md` file in `instance/skills/<scope>/<name>/`:

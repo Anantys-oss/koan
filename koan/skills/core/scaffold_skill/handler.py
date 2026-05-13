@@ -91,12 +91,22 @@ def handle(ctx) -> Optional[str]:
     if handler_content:
         (target_dir / "handler.py").write_text(handler_content)
 
+    # Gate the scaffolded skill behind operator approval. The Claude-generated
+    # handler.py is untrusted (prompt-injection can produce arbitrary Python);
+    # the registry skips this skill until /skill approve clears the marker.
+    from app.skill_approval import compute_fingerprint, mark_pending
+    fingerprint = compute_fingerprint(target_dir)
+    mark_pending(target_dir, fingerprint)
+    short_fp = fingerprint[:12]
+
     # Build response
     has_handler = " + handler.py" if handler_content else ""
     return (
-        f"Skill scaffolded: instance/skills/{scope}/{name}/\n\n"
-        f"Files: SKILL.md{has_handler}\n\n"
-        f"Restart the bridge to load the new skill."
+        f"Skill scaffolded: instance/skills/{scope}/{name}/ (pending approval)\n\n"
+        f"Files: SKILL.md{has_handler}\n"
+        f"Fingerprint: {short_fp}\n\n"
+        f"Inspect the files, then approve with:\n"
+        f"  /skill approve {scope}/{name} {short_fp}"
     )
 
 

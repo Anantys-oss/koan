@@ -420,6 +420,151 @@ class TestInstallSkillSource:
         assert not ok
         assert "already exists" in msg
 
+    @patch("app.skill_manager._run_git")
+    def test_install_writes_pending_marker(self, mock_git, tmp_path):
+        """Successful install writes .koan-pending in the scope dir and surfaces
+        the fingerprint + /skill approve instruction (audit finding §3)."""
+        from app.skill_approval import MARKER_NAME, compute_fingerprint
+
+        def fake_clone(*args, cwd=None, timeout=60):
+            target = Path(args[-1])
+            target.mkdir(parents=True, exist_ok=True)
+            self._make_skill_dir(target, "deploy")
+            return 0, "", ""
+
+        mock_git.side_effect = fake_clone
+        ok, msg = install_skill_source(
+            tmp_path, "https://github.com/myorg/ops.git", scope="ops"
+        )
+        assert ok
+
+        scope_dir = tmp_path / "skills" / "ops"
+        marker = scope_dir / MARKER_NAME
+        assert marker.is_file()
+        stored = marker.read_text().strip()
+        assert stored == compute_fingerprint(scope_dir)
+
+        # Reply must echo the short fingerprint + exact approve command
+        short_fp = stored[:12]
+        assert "pending approval" in msg
+        assert short_fp in msg
+        assert f"/skill approve ops {short_fp}" in msg
+
+    @patch("app.skill_manager._run_git")
+    def test_install_still_writes_manifest_when_pending(self, mock_git, tmp_path):
+        """Manifest is updated even though approval is required, so /skill
+        sources reflects the pending install."""
+        def fake_clone(*args, cwd=None, timeout=60):
+            target = Path(args[-1])
+            target.mkdir(parents=True, exist_ok=True)
+            self._make_skill_dir(target, "deploy")
+            return 0, "", ""
+
+        mock_git.side_effect = fake_clone
+        ok, _ = install_skill_source(
+            tmp_path, "https://github.com/myorg/ops.git", scope="ops"
+        )
+        assert ok
+        sources = load_manifest(tmp_path)
+        assert "ops" in sources
+
+
+# ---------------------------------------------------------------------------
+# skills.allowed_hosts allow-list (defense-in-depth for /skill install)
+# ---------------------------------------------------------------------------
+
+class TestAllowedHosts:
+    @patch("app.skill_manager._run_git")
+    @patch("app.skill_manager.get_skill_allowed_hosts")
+    def test_install_blocked_when_host_not_listed(self, mock_hosts, mock_git, tmp_path):
+        mock_hosts.return_value = ["github.com/koan-official"]
+        ok, msg = install_skill_source(
+            tmp_path, "https://github.com/attacker/evil.git", scope="evil"
+        )
+        assert not ok
+        assert "allowed_hosts" in msg
+        # Critically: no clone happened, so no on-disk artifact
+        assert not mock_git.called
+        assert not (tmp_path / "skills" / "evil").exists()
+
+    @patch("app.skill_manager._run_git")
+    @patch("app.skill_manager.get_skill_allowed_hosts")
+    def test_install_allowed_when_host_matches(self, mock_hosts, mock_git, tmp_path):
+        mock_hosts.return_value = ["github.com/myorg"]
+
+        def fake_clone(*args, cwd=None, timeout=60):
+            target = Path(args[-1])
+            target.mkdir(parents=True, exist_ok=True)
+            (target / "deploy").mkdir()
+            (target / "deploy" / "SKILL.md").write_text(
+                "---\nname: deploy\ndescription: x\nversion: 1.0.0\n"
+                "commands:\n  - name: deploy\n    description: x\n---\n"
+            )
+            return 0, "", ""
+
+        mock_git.side_effect = fake_clone
+        ok, _ = install_skill_source(
+            tmp_path, "https://github.com/myorg/ops.git", scope="ops"
+        )
+        assert ok
+
+    @patch("app.skill_manager._run_git")
+    @patch("app.skill_manager.get_skill_allowed_hosts")
+    def test_empty_allow_list_is_no_restriction(self, mock_hosts, mock_git, tmp_path):
+        """Empty allow-list MUST behave like the feature is off — the approval
+        gate still applies, but the host check is skipped."""
+        mock_hosts.return_value = []
+
+        def fake_clone(*args, cwd=None, timeout=60):
+            target = Path(args[-1])
+            target.mkdir(parents=True, exist_ok=True)
+            (target / "deploy").mkdir()
+            (target / "deploy" / "SKILL.md").write_text(
+                "---\nname: deploy\ndescription: x\nversion: 1.0.0\n"
+                "commands:\n  - name: deploy\n    description: x\n---\n"
+            )
+            return 0, "", ""
+
+        mock_git.side_effect = fake_clone
+        ok, _ = install_skill_source(
+            tmp_path, "https://github.com/anyone/foo.git", scope="foo"
+        )
+        assert ok
+
+    @patch("app.skill_manager._run_git")
+    @patch("app.skill_manager.get_skill_allowed_hosts")
+    def test_prefix_match_is_slash_bounded(self, mock_hosts, mock_git, tmp_path):
+        """github.com/myorg MUST NOT match github.com/myorg-evil."""
+        mock_hosts.return_value = ["github.com/myorg"]
+        ok, msg = install_skill_source(
+            tmp_path, "https://github.com/myorg-evil/foo.git", scope="foo"
+        )
+        assert not ok
+        assert "allowed_hosts" in msg
+        assert not mock_git.called
+
+    @patch("app.skill_manager._run_git")
+    @patch("app.skill_manager.get_skill_allowed_hosts")
+    def test_matches_ssh_form(self, mock_hosts, mock_git, tmp_path):
+        """git@host:org/repo.git canonicalises to host/org/repo.git."""
+        mock_hosts.return_value = ["github.com/myorg"]
+
+        def fake_clone(*args, cwd=None, timeout=60):
+            target = Path(args[-1])
+            target.mkdir(parents=True, exist_ok=True)
+            (target / "deploy").mkdir()
+            (target / "deploy" / "SKILL.md").write_text(
+                "---\nname: deploy\ndescription: x\nversion: 1.0.0\n"
+                "commands:\n  - name: deploy\n    description: x\n---\n"
+            )
+            return 0, "", ""
+
+        mock_git.side_effect = fake_clone
+        ok, _ = install_skill_source(
+            tmp_path, "git@github.com:myorg/ops.git", scope="ops"
+        )
+        assert ok
+
 
 # ---------------------------------------------------------------------------
 # update_skill_source

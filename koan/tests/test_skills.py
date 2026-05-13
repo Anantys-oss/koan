@@ -760,6 +760,55 @@ class TestBuildRegistry:
         assert len(registry) > 0  # Still has defaults
 
 
+class TestBuildRegistryPendingGate:
+    """Audit finding §3 regression: skills under instance/skills/ whose
+    directory (or ancestor) carries .koan-pending MUST NOT register, so
+    the bridge never exec_module()s an unapproved handler."""
+
+    @staticmethod
+    def _write_skill(parent, scope, name):
+        skill_dir = parent / scope / name
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(textwrap.dedent(f"""\
+            ---
+            name: {name}
+            scope: {scope}
+            description: x
+            commands:
+              - name: {name}
+                description: x
+            ---
+        """))
+        return skill_dir
+
+    def test_pending_marker_at_scope_hides_all_skills(self, tmp_path):
+        self._write_skill(tmp_path, "blocked", "alpha")
+        self._write_skill(tmp_path, "blocked", "beta")
+        self._write_skill(tmp_path, "ok", "gamma")
+        (tmp_path / "blocked" / ".koan-pending").write_text("fp")
+
+        registry = build_registry(extra_dirs=[tmp_path])
+        assert "blocked.alpha" not in registry
+        assert "blocked.beta" not in registry
+        assert "ok.gamma" in registry
+
+    def test_pending_marker_at_single_skill_hides_only_that_one(self, tmp_path):
+        self._write_skill(tmp_path, "myteam", "deploy")
+        self._write_skill(tmp_path, "myteam", "rollback")
+        (tmp_path / "myteam" / "deploy" / ".koan-pending").write_text("fp")
+
+        registry = build_registry(extra_dirs=[tmp_path])
+        assert "myteam.deploy" not in registry
+        assert "myteam.rollback" in registry
+
+    def test_existing_skills_without_marker_load_normally(self, tmp_path):
+        """Grandfathering regression: pre-fix skills with no marker MUST keep
+        loading so this change does not break running deployments."""
+        self._write_skill(tmp_path, "legacy", "preexisting")
+        registry = build_registry(extra_dirs=[tmp_path])
+        assert "legacy.preexisting" in registry
+
+
 # ---------------------------------------------------------------------------
 # SkillContext
 # ---------------------------------------------------------------------------

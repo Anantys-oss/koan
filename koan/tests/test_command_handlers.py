@@ -1889,3 +1889,127 @@ class TestHandleCommandGroupChat:
         from app.command_handlers import handle_command
         handle_command("/resume@MyKoanBot")
         mock_resume.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# /skill approve — audit finding §3 regression
+# ---------------------------------------------------------------------------
+
+class TestSkillApproveCommand:
+    """The /skill approve <ref> <fingerprint> path must:
+      * accept the correct fingerprint and reload the registry
+      * reject mismatched fingerprints without clearing the marker
+      * report 'nothing pending' for unknown refs
+    """
+
+    @staticmethod
+    def _make_pending(instance, scope, name=None, body=None):
+        """Create a pending skill under instance/skills/<scope>[/<name>]."""
+        from app.skill_approval import compute_fingerprint, mark_pending
+
+        skill_root = instance / "skills" / scope
+        if name:
+            skill_dir = skill_root / name
+        else:
+            # /skill install style: a single skill nested inside the scope dir
+            skill_dir = skill_root / "deploy"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: deploy\ndescription: x\nversion: 1.0.0\n"
+            "commands:\n  - name: deploy\n    description: x\n---\n"
+        )
+        (skill_dir / "handler.py").write_text(
+            body or "def handle(ctx):\n    return 'ok'\n"
+        )
+        marker_dir = skill_dir if name else skill_root
+        fp = compute_fingerprint(marker_dir)
+        mark_pending(marker_dir, fp)
+        return marker_dir, fp
+
+    def test_approve_with_matching_short_fp_clears_marker(
+        self, patch_bridge_state, mock_send
+    ):
+        from app.command_handlers import handle_command
+        instance = patch_bridge_state / "instance"
+        marker_dir, fp = self._make_pending(instance, "ops")
+
+        with patch("app.command_handlers._reset_registry") as mock_reset:
+            handle_command(f"/skill approve ops {fp[:12]}")
+
+        assert not (marker_dir / ".koan-pending").exists()
+        mock_reset.assert_called_once()
+        reply = mock_send.call_args[0][0]
+        assert "✅" in reply and "Approved" in reply
+
+    def test_approve_with_full_fp_also_works(self, patch_bridge_state, mock_send):
+        from app.command_handlers import handle_command
+        instance = patch_bridge_state / "instance"
+        marker_dir, fp = self._make_pending(instance, "ops")
+
+        with patch("app.command_handlers._reset_registry"):
+            handle_command(f"/skill approve ops {fp}")
+        assert not (marker_dir / ".koan-pending").exists()
+
+    def test_approve_scope_slash_name_form(self, patch_bridge_state, mock_send):
+        from app.command_handlers import handle_command
+        instance = patch_bridge_state / "instance"
+        marker_dir, fp = self._make_pending(instance, "myteam", name="haiku")
+
+        with patch("app.command_handlers._reset_registry") as mock_reset:
+            handle_command(f"/skill approve myteam/haiku {fp[:12]}")
+
+        assert not (marker_dir / ".koan-pending").exists()
+        mock_reset.assert_called_once()
+
+    def test_approve_with_wrong_fp_leaves_marker(self, patch_bridge_state, mock_send):
+        from app.command_handlers import handle_command
+        instance = patch_bridge_state / "instance"
+        marker_dir, fp = self._make_pending(instance, "ops")
+
+        with patch("app.command_handlers._reset_registry") as mock_reset:
+            handle_command("/skill approve ops deadbeefcafe")
+
+        assert (marker_dir / ".koan-pending").exists()
+        mock_reset.assert_not_called()
+        reply = mock_send.call_args[0][0]
+        assert "❌" in reply
+        assert "does not match" in reply
+
+    def test_approve_unknown_ref_reports_nothing_pending(
+        self, patch_bridge_state, mock_send
+    ):
+        from app.command_handlers import handle_command
+        with patch("app.command_handlers._reset_registry") as mock_reset:
+            handle_command("/skill approve ghost abcdef123456")
+        mock_reset.assert_not_called()
+        reply = mock_send.call_args[0][0]
+        assert "❌" in reply and "Nothing pending" in reply
+
+    def test_approve_rejects_path_traversal_ref(
+        self, patch_bridge_state, mock_send
+    ):
+        """A '..' in the ref must not let the attacker target a marker file
+        outside instance/skills/."""
+        from app.command_handlers import handle_command
+        with patch("app.command_handlers._reset_registry") as mock_reset:
+            handle_command("/skill approve ../etc deadbeef")
+        mock_reset.assert_not_called()
+        reply = mock_send.call_args[0][0]
+        assert "❌" in reply
+
+    def test_approve_missing_args_returns_usage(
+        self, patch_bridge_state, mock_send
+    ):
+        from app.command_handlers import handle_command
+        handle_command("/skill approve")
+        reply = mock_send.call_args[0][0]
+        assert "Usage:" in reply
+        assert "fingerprint" in reply
+
+    def test_approve_non_hex_fp_rejected(self, patch_bridge_state, mock_send):
+        from app.command_handlers import handle_command
+        with patch("app.command_handlers._reset_registry") as mock_reset:
+            handle_command("/skill approve ops not-a-hash!")
+        mock_reset.assert_not_called()
+        reply = mock_send.call_args[0][0]
+        assert "❌" in reply
