@@ -3739,7 +3739,7 @@ class TestRunSkillMissionEnv:
             )
 
         mock_kill.assert_called_once_with(mock_proc)
-        assert result == 1  # exit code should be failure
+        assert result["exit_code"] == 1  # exit code should be failure
 
     def test_restores_branch_even_on_popen_exception(self, tmp_path):
         """Branch is restored even when Popen raises an exception."""
@@ -4171,7 +4171,7 @@ class TestRunSkillMissionEnv:
 
             mock_proc.wait.side_effect = wait_side_effect
 
-            exit_code = _run_skill_mission(
+            result = _run_skill_mission(
                 skill_cmd=["python3", "--help"],
                 koan_root=koan_root,
                 instance=instance,
@@ -4185,7 +4185,7 @@ class TestRunSkillMissionEnv:
         # Watchdog should have killed the process group
         mock_killpg.assert_any_call(99999, signal.SIGTERM)
         # Exit code should be 1 (timeout = failure)
-        assert exit_code == 1
+        assert result["exit_code"] == 1
         # First Timer call is the watchdog with configured timeout
         assert mock_timer_cls.call_args_list[0][0][0] == 60
 
@@ -4207,7 +4207,7 @@ class TestRunSkillMissionEnv:
              patch("app.run._reset_terminal"), \
              patch("app.run.threading.Timer", return_value=mock_timer), \
              patch("app.mission_runner.run_post_mission"):
-            exit_code = _run_skill_mission(
+            result = _run_skill_mission(
                 skill_cmd=["python3", "--help"],
                 koan_root=koan_root,
                 instance=instance,
@@ -4224,7 +4224,7 @@ class TestRunSkillMissionEnv:
         # Timer must be set as daemon
         assert mock_timer.daemon is True
         # Normal exit
-        assert exit_code == 0
+        assert result["exit_code"] == 0
 
     def test_stdout_closed_on_success(self, tmp_path):
         """proc.stdout is closed in the finally block after normal completion."""
@@ -4409,7 +4409,7 @@ class TestRunSkillMissionEnv:
             )
 
         # Should return failure exit code
-        assert result == 1
+        assert result["exit_code"] == 1
 
     def test_threading_imported_for_watchdog(self):
         """Verify run.py imports threading (needed for watchdog timer)."""
@@ -4671,6 +4671,287 @@ class TestSkillDispatchExceptionFinalization(TestRunSkillMissionEnv):
 
 
 # ---------------------------------------------------------------------------
+# Skill dispatch auth/quota classification (mirrors regular mission path)
+# ---------------------------------------------------------------------------
+
+
+class TestSkillDispatchAuthQuota(TestRunSkillMissionEnv):
+    """Verify skill dispatch handles auth/quota errors like regular missions."""
+
+    def test_quota_error_requeues_and_pauses(self, tmp_path):
+        """Quota error during skill should requeue mission and create pause."""
+        from app.run import _handle_skill_dispatch
+
+        koan_root = str(tmp_path)
+        instance = str(tmp_path / "instance")
+        (tmp_path / "instance").mkdir()
+        (tmp_path / "instance" / "journal").mkdir(parents=True)
+        (tmp_path / "koan").mkdir()
+
+        # Skill exits with error and quota pattern in stderr
+        mock_proc = self._make_mock_popen(
+            returncode=1,
+            stdout_lines=[""],
+            stderr_content="Error: You've hit your limit. Resets at 6pm (UTC)\n",
+        )
+
+        with patch("app.run.subprocess.Popen", side_effect=mock_proc._side_effect), \
+             patch("app.run._get_koan_branch", return_value="main"), \
+             patch("app.run._restore_koan_branch"), \
+             patch("app.run._reset_terminal"), \
+             patch("app.run.protected_phase", return_value=MagicMock(
+                 __enter__=MagicMock(), __exit__=MagicMock(return_value=False)
+             )), \
+             patch("app.run._notify") as mock_notify, \
+             patch("app.run._notify_mission_end"), \
+             patch("app.run._finalize_mission") as mock_finalize, \
+             patch("app.run._requeue_mission_in_file") as mock_requeue, \
+             patch("app.run._commit_instance"), \
+             patch("app.run._sleep_between_runs"), \
+             patch("app.run.set_status"), \
+             patch("app.run.log"), \
+             patch("app.skill_dispatch.dispatch_skill_mission",
+                   return_value=["python3", "-m", "app.plan_runner"]), \
+             patch("app.mission_runner.run_post_mission"), \
+             patch("app.quota_handler.handle_quota_exhaustion", return_value=("Resets in 5h", "Auto-resume")), \
+             patch("app.pause_manager.create_pause"):
+            handled, _ = _handle_skill_dispatch(
+                mission_title="/plan test",
+                project_name="test",
+                project_path=str(tmp_path),
+                koan_root=koan_root,
+                instance=instance,
+                run_num=1,
+                max_runs=20,
+                autonomous_mode="implement",
+                interval=30,
+            )
+
+        assert handled is True
+        # Mission should be requeued, not finalized
+        mock_requeue.assert_called_once()
+        mock_finalize.assert_not_called()
+        # Notification should mention quota
+        notify_text = mock_notify.call_args_list[-1][0][1]
+        assert "quota" in notify_text.lower()
+
+    def test_auth_error_requeues_and_pauses(self, tmp_path):
+        """Auth error during skill should requeue mission and create auth pause."""
+        from app.run import _handle_skill_dispatch
+
+        koan_root = str(tmp_path)
+        instance = str(tmp_path / "instance")
+        (tmp_path / "instance").mkdir()
+        (tmp_path / "instance" / "journal").mkdir(parents=True)
+        (tmp_path / "koan").mkdir()
+
+        mock_proc = self._make_mock_popen(
+            returncode=1,
+            stdout_lines=[""],
+            stderr_content="Error: OAuth token has expired. Please run /login.\n",
+        )
+
+        with patch("app.run.subprocess.Popen", side_effect=mock_proc._side_effect), \
+             patch("app.run._get_koan_branch", return_value="main"), \
+             patch("app.run._restore_koan_branch"), \
+             patch("app.run._reset_terminal"), \
+             patch("app.run.protected_phase", return_value=MagicMock(
+                 __enter__=MagicMock(), __exit__=MagicMock(return_value=False)
+             )), \
+             patch("app.run._notify") as mock_notify, \
+             patch("app.run._notify_mission_end"), \
+             patch("app.run._finalize_mission") as mock_finalize, \
+             patch("app.run._requeue_mission_in_file") as mock_requeue, \
+             patch("app.run._commit_instance"), \
+             patch("app.run._sleep_between_runs"), \
+             patch("app.run.set_status"), \
+             patch("app.run.log"), \
+             patch("app.skill_dispatch.dispatch_skill_mission",
+                   return_value=["python3", "-m", "app.plan_runner"]), \
+             patch("app.mission_runner.run_post_mission"), \
+             patch("app.pause_manager.create_pause") as mock_pause:
+            handled, _ = _handle_skill_dispatch(
+                mission_title="/plan test",
+                project_name="test",
+                project_path=str(tmp_path),
+                koan_root=koan_root,
+                instance=instance,
+                run_num=1,
+                max_runs=20,
+                autonomous_mode="implement",
+                interval=30,
+            )
+
+        assert handled is True
+        mock_requeue.assert_called_once()
+        mock_finalize.assert_not_called()
+        mock_pause.assert_called_once_with(koan_root, "auth")
+
+    def test_post_mission_quota_requeues_and_pauses(self, tmp_path):
+        """Quota detected in post-mission pipeline should requeue and pause."""
+        from app.run import _handle_skill_dispatch
+
+        koan_root = str(tmp_path)
+        instance = str(tmp_path / "instance")
+        (tmp_path / "instance").mkdir()
+        (tmp_path / "instance" / "journal").mkdir(parents=True)
+        (tmp_path / "koan").mkdir()
+
+        mock_proc = self._make_mock_popen(returncode=0, stdout_lines=["ok\n"])
+
+        # run_post_mission returns quota_exhausted signal
+        mock_post_result = {
+            "success": True,
+            "quota_exhausted": True,
+            "quota_info": ("Resets at 15:00", "Auto-resume in 5h"),
+        }
+
+        with patch("app.run.subprocess.Popen", side_effect=mock_proc._side_effect), \
+             patch("app.run._get_koan_branch", return_value="main"), \
+             patch("app.run._restore_koan_branch"), \
+             patch("app.run._reset_terminal"), \
+             patch("app.run.protected_phase", return_value=MagicMock(
+                 __enter__=MagicMock(), __exit__=MagicMock(return_value=False)
+             )), \
+             patch("app.run._notify") as mock_notify, \
+             patch("app.run._notify_mission_end"), \
+             patch("app.run._finalize_mission") as mock_finalize, \
+             patch("app.run._requeue_mission_in_file") as mock_requeue, \
+             patch("app.run._commit_instance"), \
+             patch("app.run._compute_quota_reset_ts", return_value=(0, "soon")), \
+             patch("app.run._sleep_between_runs"), \
+             patch("app.run.set_status"), \
+             patch("app.run.log"), \
+             patch("app.skill_dispatch.dispatch_skill_mission",
+                   return_value=["python3", "-m", "app.plan_runner"]), \
+             patch("app.mission_runner.run_post_mission", return_value=mock_post_result), \
+             patch("app.pause_manager.create_pause") as mock_pause:
+            handled, _ = _handle_skill_dispatch(
+                mission_title="/plan test",
+                project_name="test",
+                project_path=str(tmp_path),
+                koan_root=koan_root,
+                instance=instance,
+                run_num=1,
+                max_runs=20,
+                autonomous_mode="implement",
+                interval=30,
+            )
+
+        assert handled is True
+        # Finalize then requeue (same pattern as regular mission path)
+        mock_finalize.assert_called_once()
+        mock_requeue.assert_called_once()
+        mock_pause.assert_called_once()
+
+    def test_mission_tier_passed_to_post_mission(self, tmp_path):
+        """mission_tier is forwarded from _handle_skill_dispatch to run_post_mission."""
+        from app.run import _handle_skill_dispatch
+
+        koan_root = str(tmp_path)
+        instance = str(tmp_path / "instance")
+        (tmp_path / "instance").mkdir()
+        (tmp_path / "instance" / "journal").mkdir(parents=True)
+        (tmp_path / "koan").mkdir()
+
+        mock_proc = self._make_mock_popen(returncode=0, stdout_lines=["ok\n"])
+
+        with patch("app.run.subprocess.Popen", side_effect=mock_proc._side_effect), \
+             patch("app.run._get_koan_branch", return_value="main"), \
+             patch("app.run._restore_koan_branch"), \
+             patch("app.run._reset_terminal"), \
+             patch("app.run.protected_phase", return_value=MagicMock(
+                 __enter__=MagicMock(), __exit__=MagicMock(return_value=False)
+             )), \
+             patch("app.run._notify"), \
+             patch("app.run._notify_mission_end"), \
+             patch("app.run._finalize_mission"), \
+             patch("app.run._commit_instance"), \
+             patch("app.run._sleep_between_runs"), \
+             patch("app.run.set_status"), \
+             patch("app.run.log"), \
+             patch("app.skill_dispatch.dispatch_skill_mission",
+                   return_value=["python3", "-m", "app.plan_runner"]), \
+             patch("app.mission_runner.run_post_mission") as mock_post:
+            _handle_skill_dispatch(
+                mission_title="/plan test",
+                project_name="test",
+                project_path=str(tmp_path),
+                koan_root=koan_root,
+                instance=instance,
+                run_num=1,
+                max_runs=20,
+                autonomous_mode="implement",
+                interval=30,
+                mission_tier="complex",
+            )
+
+        # run_post_mission should receive mission_tier
+        assert mock_post.call_count == 1
+        call_kwargs = mock_post.call_args[1] if mock_post.call_args[1] else {}
+        # mission_tier can be in kwargs or positional — check kwargs
+        assert call_kwargs.get("mission_tier") == "complex"
+
+    def test_normal_failure_still_finalizes(self, tmp_path):
+        """Non-auth/non-quota failures still go through normal finalization."""
+        from app.run import _handle_skill_dispatch
+
+        koan_root = str(tmp_path)
+        instance = str(tmp_path / "instance")
+        (tmp_path / "instance").mkdir()
+        (tmp_path / "instance" / "journal").mkdir(parents=True)
+        (tmp_path / "koan").mkdir()
+
+        mock_proc = self._make_mock_popen(
+            returncode=1,
+            stdout_lines=["some error\n"],
+        )
+
+        # run_post_mission must return a real dict (not MagicMock)
+        # so .get("quota_exhausted") returns None (falsy), not a MagicMock (truthy)
+        mock_post_result = {
+            "success": False,
+            "quota_exhausted": False,
+            "quota_info": None,
+        }
+
+        with patch("app.run.subprocess.Popen", side_effect=mock_proc._side_effect), \
+             patch("app.run._get_koan_branch", return_value="main"), \
+             patch("app.run._restore_koan_branch"), \
+             patch("app.run._reset_terminal"), \
+             patch("app.run.protected_phase", return_value=MagicMock(
+                 __enter__=MagicMock(), __exit__=MagicMock(return_value=False)
+             )), \
+             patch("app.run._notify"), \
+             patch("app.run._notify_mission_end"), \
+             patch("app.run._finalize_mission") as mock_finalize, \
+             patch("app.run._requeue_mission_in_file") as mock_requeue, \
+             patch("app.run._commit_instance"), \
+             patch("app.run._sleep_between_runs"), \
+             patch("app.run.set_status"), \
+             patch("app.run.log"), \
+             patch("app.skill_dispatch.dispatch_skill_mission",
+                   return_value=["python3", "-m", "app.plan_runner"]), \
+             patch("app.mission_runner.run_post_mission", return_value=mock_post_result):
+            handled, _ = _handle_skill_dispatch(
+                mission_title="/plan test",
+                project_name="test",
+                project_path=str(tmp_path),
+                koan_root=koan_root,
+                instance=instance,
+                run_num=1,
+                max_runs=20,
+                autonomous_mode="implement",
+                interval=30,
+            )
+
+        assert handled is True
+        # Normal failure: finalize called, no requeue
+        mock_finalize.assert_called_once()
+        mock_requeue.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # Bug fix: _run_skill_mission temp file cleanup must use try/finally
 # ---------------------------------------------------------------------------
 
@@ -4776,7 +5057,7 @@ class TestRunSkillMissionCleanup(TestRunSkillMissionEnv):
              patch("app.run._reset_terminal"), \
              patch("app.mission_runner.run_post_mission"), \
              patch("app.run._cleanup_temp") as mock_cleanup:
-            exit_code = _run_skill_mission(
+            result = _run_skill_mission(
                 skill_cmd=["python3", "--help"],
                 koan_root=koan_root,
                 instance=instance,
@@ -4787,7 +5068,7 @@ class TestRunSkillMissionCleanup(TestRunSkillMissionEnv):
                 autonomous_mode="implement",
             )
 
-        assert exit_code == 0
+        assert result["exit_code"] == 0
         mock_cleanup.assert_called_once()
 
     def test_temp_files_cleaned_on_timeout(self, tmp_path):
@@ -4810,7 +5091,7 @@ class TestRunSkillMissionCleanup(TestRunSkillMissionEnv):
              patch("app.run._kill_process_group"), \
              patch("app.mission_runner.run_post_mission"), \
              patch("app.run._cleanup_temp") as mock_cleanup:
-            exit_code = _run_skill_mission(
+            result = _run_skill_mission(
                 skill_cmd=["python3", "--help"],
                 koan_root=koan_root,
                 instance=instance,
@@ -4821,7 +5102,7 @@ class TestRunSkillMissionCleanup(TestRunSkillMissionEnv):
                 autonomous_mode="implement",
             )
 
-        assert exit_code == 1
+        assert result["exit_code"] == 1
         mock_cleanup.assert_called_once()
 
 
