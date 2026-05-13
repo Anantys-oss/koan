@@ -138,7 +138,10 @@ def run_brainstorm(
     # Ensure label exists
     _ensure_label(tag, project_path)
 
-    # Create sub-issues
+    # Create sub-issues — each entry is (number, title, url, original_pos)
+    # where original_pos is the 1-based index from the decomposition, so
+    # SUB-N cross-references and master body mappings stay correct even
+    # when some issues fail to create.
     created_issues = []
     for i, issue in enumerate(issues, 1):
         try:
@@ -150,7 +153,7 @@ def run_brainstorm(
             )
             # Extract issue number from URL
             number = url.strip().rstrip("/").split("/")[-1]
-            created_issues.append((number, issue["title"], url.strip()))
+            created_issues.append((number, issue["title"], url.strip(), i))
             notify_fn(f"  \u2705 #{number}: {issue['title'][:60]}")
         except (RuntimeError, OSError) as e:
             # Retry without label if label creation failed silently
@@ -159,7 +162,7 @@ def run_brainstorm(
                     issue["title"], issue["body"], cwd=project_path,
                 )
                 number = url.strip().rstrip("/").split("/")[-1]
-                created_issues.append((number, issue["title"], url.strip()))
+                created_issues.append((number, issue["title"], url.strip(), i))
                 notify_fn(f"  \u2705 #{number}: {issue['title'][:60]} (no label)")
             except (RuntimeError, OSError) as e2:
                 notify_fn(f"  \u274c Failed to create issue {i}: {e2}")
@@ -208,14 +211,17 @@ def _replace_sub_placeholders(created_issues, original_issues, project_path):
     After all sub-issues are created on GitHub, we know each ordinal position's
     real issue number. This function patches each issue body to replace
     ``SUB-1``, ``SUB-2``, etc. with ``#42``, ``#43``, etc.
-    """
-    # Build ordinal → real number mapping
-    ordinal_to_number = {}
-    for idx, (number, _title, _url) in enumerate(created_issues, 1):
-        ordinal_to_number[idx] = number
 
-    for idx, (number, _title, _url) in enumerate(created_issues, 1):
-        body = original_issues[idx - 1]["body"]
+    Uses ``original_pos`` from each created_issues entry to map back to the
+    correct original issue body and to build the SUB-N → #number mapping.
+    """
+    # Build original_pos → real number mapping (preserves original positions)
+    ordinal_to_number = {}
+    for number, _title, _url, original_pos in created_issues:
+        ordinal_to_number[original_pos] = number
+
+    for number, _title, _url, original_pos in created_issues:
+        body = original_issues[original_pos - 1]["body"]
         updated = _apply_sub_replacements(body, ordinal_to_number)
         if updated != body:
             try:
@@ -508,12 +514,12 @@ def _build_master_body(
     decompositions without synthesis data still produce a clean master.
     """
     ordinal_to_number = {
-        idx: number
-        for idx, (number, _title, _url) in enumerate(created_issues, 1)
+        original_pos: number
+        for number, _title, _url, original_pos in created_issues
     }
     ordinal_to_title = {
-        idx: title
-        for idx, (_number, title, _url) in enumerate(created_issues, 1)
+        original_pos: title
+        for _number, title, _url, original_pos in created_issues
     }
 
     parts = []
@@ -581,7 +587,7 @@ def _build_master_body(
 
     # Task list with links to sub-issues
     parts.append("## Sub-Issues\n")
-    for number, title, _url in created_issues:
+    for number, title, _url, _pos in created_issues:
         parts.append(f"- [ ] #{number} — {title}")
     parts.append("")
 
