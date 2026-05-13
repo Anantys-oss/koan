@@ -1500,6 +1500,10 @@ def _run_iteration(
     github_enabled = get_github_commands_enabled(_boot_config)
     jira_enabled = get_jira_enabled(_boot_config)
 
+    # Check if /check_notifications was requested
+    from app.loop_manager import _consume_check_notifications_signal
+    force_notif_check = _consume_check_notifications_signal(koan_root)
+
     # Check GitHub notifications before planning (converts @mentions to missions
     # so plan_iteration() sees them immediately instead of waiting for sleep)
     gh_missions = 0
@@ -1509,7 +1513,7 @@ def _run_iteration(
             _notify_raw(instance, "🔍 Scanning GitHub notifications (cold start, may take ~1 min)...")
         from app.loop_manager import process_github_notifications
         try:
-            gh_missions = process_github_notifications(koan_root, instance)
+            gh_missions = process_github_notifications(koan_root, instance, force=force_notif_check)
             if gh_missions > 0:
                 log("github", f"Pre-iteration: {gh_missions} mission(s) created from GitHub notifications")
             else:
@@ -1534,7 +1538,7 @@ def _run_iteration(
                     _notify_raw(instance, "📋 Scanning Jira notifications...")
         from app.loop_manager import process_jira_notifications
         try:
-            jira_missions = process_jira_notifications(koan_root, instance)
+            jira_missions = process_jira_notifications(koan_root, instance, force=force_notif_check)
             if jira_missions > 0:
                 log("jira", f"Pre-iteration: {jira_missions} mission(s) created from Jira notifications")
             else:

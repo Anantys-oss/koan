@@ -2764,7 +2764,7 @@ class TestRunIterationGitHubPreCheck:
                 git_sync_interval=5,
             )
 
-        mock_gh_notif.assert_called_once_with(str(koan_root), instance)
+        mock_gh_notif.assert_called_once_with(str(koan_root), instance, force=False)
 
     @patch("app.run.plan_iteration")
     @patch("app.run._notify")
