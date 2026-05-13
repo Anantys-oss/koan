@@ -646,6 +646,7 @@ def _retry_failed_replies() -> None:
 def process_github_notifications(
     koan_root: str,
     instance_dir: str,
+    force: bool = False,
 ) -> int:
     """Check GitHub notifications and create missions from @mentions.
 
@@ -656,6 +657,7 @@ def process_github_notifications(
     Args:
         koan_root: Path to koan root directory.
         instance_dir: Path to instance directory.
+        force: When True, bypass throttle and reset backoff (from /check_notifications).
 
     Returns:
         Number of missions created.
@@ -681,10 +683,15 @@ def process_github_notifications(
     now = time.time()
     # Atomic check-then-act: verify throttle and claim the timeslot under lock.
     with _github_state_lock:
+        if force:
+            _consecutive_empty_checks = 0
         effective_interval = _get_effective_check_interval_locked()
-        if now - _last_github_check < effective_interval:
+        if not force and now - _last_github_check < effective_interval:
             return 0
         _last_github_check = now
+
+    if force:
+        _github_log("Forced notification check (via /check_notifications)")
 
     # Retry any previously failed error replies before processing new ones.
     _retry_failed_replies()
@@ -999,6 +1006,7 @@ def _load_processed_jira_tracker(instance_dir: str):
 def process_jira_notifications(
     koan_root: str,
     instance_dir: str,
+    force: bool = False,
 ) -> int:
     """Check Jira comments for @mentions and create missions.
 
@@ -1009,6 +1017,7 @@ def process_jira_notifications(
     Args:
         koan_root: Path to koan root directory.
         instance_dir: Path to instance directory.
+        force: When True, bypass throttle and reset backoff (from /check_notifications).
 
     Returns:
         Number of missions created.
@@ -1036,10 +1045,15 @@ def process_jira_notifications(
 
     now = time.time()
     with _jira_state_lock:
+        if force:
+            _consecutive_jira_empty = 0
         effective_interval = _get_effective_jira_interval_locked()
-        if now - _last_jira_check < effective_interval:
+        if not force and now - _last_jira_check < effective_interval:
             return 0
         _last_jira_check = now
+
+    if force:
+        _jira_log("Forced notification check (via /check_notifications)")
 
     try:
         from app.jira_config import (
@@ -1169,6 +1183,23 @@ def _check_signal_file(koan_root: str, filename: str) -> bool:
     return os.path.isfile(os.path.join(koan_root, filename))
 
 
+def _consume_check_notifications_signal(koan_root: str) -> bool:
+    """Check and consume the check-notifications signal file.
+
+    Returns True if the signal was present (and removes it).
+    Used by process_github_notifications / process_jira_notifications
+    to bypass throttle when the user requested /check_notifications.
+    """
+    from app.signals import CHECK_NOTIFICATIONS_FILE
+
+    path = os.path.join(koan_root, CHECK_NOTIFICATIONS_FILE)
+    try:
+        os.remove(path)
+        return True
+    except FileNotFoundError:
+        return False
+
+
 def check_pending_missions(instance_dir: str) -> bool:
     """Check if there are pending missions in missions.md."""
     try:
@@ -1239,17 +1270,21 @@ def interruptible_sleep(
         # than waiting for the next full iteration.
         _drain_ci_queue_during_sleep(instance_dir, elapsed)
 
+        # Check if /check_notifications was requested (consume signal once,
+        # pass force=True to both GitHub and Jira checks).
+        force_check = _consume_check_notifications_signal(koan_root)
+
         # Check GitHub notifications (throttled to once per 60s).
         # Track wall time: API calls can be slow and should count toward elapsed.
         t0 = time.monotonic()
-        gh_new = process_github_notifications(koan_root, instance_dir)
+        gh_new = process_github_notifications(koan_root, instance_dir, force=force_check)
         if wake_on_mission and gh_new > 0:
             return "mission"
         elapsed += time.monotonic() - t0
 
         # Check Jira notifications (throttled to once per 60s).
         t0 = time.monotonic()
-        jira_new = process_jira_notifications(koan_root, instance_dir)
+        jira_new = process_jira_notifications(koan_root, instance_dir, force=force_check)
         if wake_on_mission and jira_new > 0:
             return "mission"
         elapsed += time.monotonic() - t0
