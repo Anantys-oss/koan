@@ -1560,9 +1560,13 @@ def _run_iteration(
     github_enabled = get_github_commands_enabled(_boot_config)
     jira_enabled = get_jira_enabled(_boot_config)
 
-    # Check if /check_notifications was requested
+    # Check if /check_notifications was requested — only consume the signal
+    # if at least one provider is enabled, otherwise leave it for the next
+    # iteration where config may have changed (avoids silently dropping it).
     from app.loop_manager import _consume_check_notifications_signal
-    force_notif_check = _consume_check_notifications_signal(koan_root)
+    force_notif_check = False
+    if github_enabled or jira_enabled:
+        force_notif_check = _consume_check_notifications_signal(koan_root)
 
     # Check GitHub notifications before planning (converts @mentions to missions
     # so plan_iteration() sees them immediately instead of waiting for sleep)
