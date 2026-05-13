@@ -393,7 +393,7 @@ class TestParseDecomposition:
 
 class TestBuildMasterBody:
     def test_contains_task_list(self):
-        issues = [("1", "Title One", "url1"), ("2", "Title Two", "url2")]
+        issues = [("1", "Title One", "url1", 1), ("2", "Title Two", "url2", 2)]
         body = _build_master_body("Topic", "Summary", issues, "owner", "repo")
         assert "- [ ] #1" in body
         assert "- [ ] #2" in body
@@ -401,27 +401,27 @@ class TestBuildMasterBody:
         assert "Title Two" in body
 
     def test_contains_topic(self):
-        body = _build_master_body("My topic", "", [("1", "T", "u")], "o", "r")
+        body = _build_master_body("My topic", "", [("1", "T", "u", 1)], "o", "r")
         assert "My topic" in body
 
     def test_contains_summary(self):
-        body = _build_master_body("T", "My summary", [("1", "T", "u")], "o", "r")
+        body = _build_master_body("T", "My summary", [("1", "T", "u", 1)], "o", "r")
         assert "My summary" in body
 
     def test_footer(self):
-        body = _build_master_body("T", "", [("1", "T", "u")], "o", "r")
+        body = _build_master_body("T", "", [("1", "T", "u", 1)], "o", "r")
         assert "Koan /brainstorm" in body
 
     def test_no_synthesis_sections_when_keys_absent(self):
         body = _build_master_body(
-            "T", "S", [("1", "Alpha", "u"), ("2", "Beta", "u")], "o", "r",
+            "T", "S", [("1", "Alpha", "u", 1), ("2", "Beta", "u", 2)], "o", "r",
         )
         assert "## Top Ranked" not in body
         assert "## Fast Wins" not in body
         assert "## Overall Assessment" not in body
 
     def test_renders_top_ranked_with_resolved_numbers_and_titles(self):
-        issues = [("42", "Alpha", "u1"), ("43", "Beta", "u2")]
+        issues = [("42", "Alpha", "u1", 1), ("43", "Beta", "u2", 2)]
         top_ranked = [
             {"position": 2, "rationale": "Best ROI; unblocks SUB-1."},
             {"position": 1, "rationale": "Foundational."},
@@ -436,7 +436,7 @@ class TestBuildMasterBody:
         assert "unblocks #42" in body
 
     def test_top_ranked_drops_out_of_range_positions(self):
-        issues = [("42", "Alpha", "u")]
+        issues = [("42", "Alpha", "u", 1)]
         top_ranked = [
             {"position": 1, "rationale": "Yes."},
             {"position": 99, "rationale": "Should not appear."},
@@ -449,9 +449,9 @@ class TestBuildMasterBody:
 
     def test_renders_fast_wins_with_horizon_headers(self):
         issues = [
-            ("10", "Alpha", "u"),
-            ("11", "Beta", "u"),
-            ("12", "Gamma", "u"),
+            ("10", "Alpha", "u", 1),
+            ("11", "Beta", "u", 2),
+            ("12", "Gamma", "u", 3),
         ]
         fast_wins = {
             "under_1_day": ["SUB-2"],
@@ -470,7 +470,7 @@ class TestBuildMasterBody:
         assert "- #12 — Gamma" in body
 
     def test_fast_wins_skipped_entirely_when_all_buckets_empty(self):
-        issues = [("10", "Alpha", "u")]
+        issues = [("10", "Alpha", "u", 1)]
         body = _build_master_body(
             "T", "", issues, "o", "r",
             fast_wins={"under_1_day": [], "under_1_week": []},
@@ -481,7 +481,7 @@ class TestBuildMasterBody:
         assert "## Fast Wins" not in body
 
     def test_renders_overall_assessment_with_sub_replacement(self):
-        issues = [("42", "Alpha", "u"), ("43", "Beta", "u")]
+        issues = [("42", "Alpha", "u", 1), ("43", "Beta", "u", 2)]
         body = _build_master_body(
             "T", "", issues, "o", "r",
             overall_assessment="Worth doing. Start with SUB-1, then SUB-2.",
@@ -490,12 +490,26 @@ class TestBuildMasterBody:
         assert "Start with #42, then #43." in body
 
     def test_synthesis_sections_appear_before_subissues_list(self):
-        issues = [("42", "Alpha", "u")]
+        issues = [("42", "Alpha", "u", 1)]
         body = _build_master_body(
             "T", "Summary", issues, "o", "r",
             overall_assessment="Verdict.",
         )
         assert body.index("## Overall Assessment") < body.index("## Sub-Issues")
+
+    def test_gap_in_positions_maps_correctly(self):
+        """When issue 2 failed to create, positions 1 and 3 should map to
+        original positions, not sequential 1-2."""
+        issues = [("42", "Alpha", "u", 1), ("44", "Gamma", "u", 3)]
+        top_ranked = [
+            {"position": 3, "rationale": "Best."},
+            {"position": 1, "rationale": "Second."},
+        ]
+        body = _build_master_body(
+            "T", "", issues, "o", "r", top_ranked=top_ranked,
+        )
+        assert "1. #44 — Gamma" in body
+        assert "2. #42 — Alpha" in body
 
 
 class TestApplySubReplacements:
@@ -535,7 +549,7 @@ class TestApplySubReplacements:
 
 class TestReplaceSubPlaceholders:
     def test_calls_issue_edit_for_changed_bodies(self):
-        created = [("42", "Title A", "url1"), ("43", "Title B", "url2")]
+        created = [("42", "Title A", "url1", 1), ("43", "Title B", "url2", 2)]
         original = [
             {"title": "Title A", "body": "Depends on SUB-2."},
             {"title": "Title B", "body": "No deps."},
@@ -546,14 +560,14 @@ class TestReplaceSubPlaceholders:
             mock_edit.assert_called_once_with("42", "Depends on #43.", cwd="/fake")
 
     def test_skips_edit_when_no_placeholders(self):
-        created = [("10", "T", "u")]
+        created = [("10", "T", "u", 1)]
         original = [{"title": "T", "body": "No placeholders here."}]
         with patch("skills.core.brainstorm.brainstorm_runner.issue_edit") as mock_edit:
             _replace_sub_placeholders(created, original, "/fake")
             mock_edit.assert_not_called()
 
     def test_handles_edit_failure_gracefully(self):
-        created = [("42", "T", "u"), ("43", "T2", "u2")]
+        created = [("42", "T", "u", 1), ("43", "T2", "u2", 2)]
         original = [
             {"title": "T", "body": "See SUB-2"},
             {"title": "T2", "body": "See SUB-1"},
@@ -562,6 +576,22 @@ class TestReplaceSubPlaceholders:
                     side_effect=RuntimeError("API error")):
             # Should not raise — errors are caught and logged
             _replace_sub_placeholders(created, original, "/fake")
+
+    def test_gap_in_positions_uses_correct_original_body(self):
+        """When issue 2 failed to create, issue 3's body should still be
+        fetched from original_issues[2], not original_issues[1]."""
+        created = [("42", "A", "u", 1), ("44", "C", "u", 3)]
+        original = [
+            {"title": "A", "body": "See SUB-3"},
+            {"title": "B", "body": "See SUB-1"},  # this one failed
+            {"title": "C", "body": "See SUB-1"},
+        ]
+        with patch("skills.core.brainstorm.brainstorm_runner.issue_edit") as mock_edit:
+            _replace_sub_placeholders(created, original, "/fake")
+            # Both issues reference existing ones, so both get edited
+            calls = {c.args[0]: c.args[1] for c in mock_edit.call_args_list}
+            assert calls["42"] == "See #44"  # SUB-3 → #44
+            assert calls["44"] == "See #42"  # SUB-1 → #42
 
 
 class TestExtractMasterTitle:
