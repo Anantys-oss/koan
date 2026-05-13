@@ -206,6 +206,17 @@ If Kōan misclassifies your message, use `/chat` to force chat mode:
 - If Kōan is paused due to quota but the API is actually available, `/quota 50` will correct the estimate and clear the pause
 </details>
 
+**`/check_notifications`** — Force an immediate check of GitHub and Jira notifications, bypassing the exponential backoff timer.
+
+- **Aliases:** `/read`
+
+<details>
+<summary>Use cases</summary>
+
+- `/read` — When the queue is empty and you know there are pending notifications
+- `/check_notifications` — After posting a GitHub comment that should trigger a mission
+</details>
+
 **`/verbose`** / **`/silent`** — Toggle real-time progress updates. When verbose is on, Kōan sends progress messages as it works.
 
 <details>
@@ -1485,6 +1496,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/metrics` | — | B | Mission success rates and reliability stats |
 | `/live` | `/progress` | B | Show live progress of current mission |
 | `/logs [run\|awake\|all]` | — | B | Show last 20 lines from logs (default: run) |
+| `/check_notifications` | `/read` | B | Force immediate GitHub + Jira notification check |
 | `/quota [N]` | `/q` | B | Check LLM quota (live), or override remaining % |
 | `/chat <msg>` | — | B | Force chat mode (bypass mission detection) |
 | `/verbose` | — | B | Enable real-time progress updates |

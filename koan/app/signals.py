@@ -43,6 +43,10 @@ PROJECT_FILE = ".koan-project"
 DAILY_REPORT_FILE = ".koan-daily-report"
 DEBUG_LOG_FILE = ".koan-debug.log"
 
+# -- Notification signals ------------------------------------------------------
+
+CHECK_NOTIFICATIONS_FILE = ".koan-check-notifications"
+
 # -- Misc ----------------------------------------------------------------------
 
 ONBOARDING_FILE = ".koan-onboarding.json"
