@@ -6,13 +6,15 @@ from app.review_markers import (
     SUMMARY_TAG,
     COMMIT_IDS_START,
     COMMIT_IDS_END,
-    IN_PROGRESS_START,
-    IN_PROGRESS_END,
     extract_between_markers,
     remove_section,
     wrap_section,
     replace_section,
 )
+
+# Test-only markers for remove_section tests (no longer used in production)
+_TEST_START = "<!-- test-start -->"
+_TEST_END = "<!-- test-end -->"
 
 
 # ---------------------------------------------------------------------------
@@ -58,30 +60,30 @@ class TestExtractBetweenMarkers:
 
 class TestRemoveSection:
     def test_removes_tagged_block(self):
-        body = f"before\n{IN_PROGRESS_START}⏳ in progress{IN_PROGRESS_END}\nafter"
-        result = remove_section(body, IN_PROGRESS_START, IN_PROGRESS_END)
-        assert IN_PROGRESS_START not in result
-        assert IN_PROGRESS_END not in result
-        assert "⏳ in progress" not in result
+        body = f"before\n{_TEST_START}temp content{_TEST_END}\nafter"
+        result = remove_section(body, _TEST_START, _TEST_END)
+        assert _TEST_START not in result
+        assert _TEST_END not in result
+        assert "temp content" not in result
         assert "before" in result
         assert "after" in result
 
     def test_returns_unchanged_when_start_absent(self):
         body = "no markers"
-        assert remove_section(body, IN_PROGRESS_START, IN_PROGRESS_END) == body
+        assert remove_section(body, _TEST_START, _TEST_END) == body
 
     def test_returns_unchanged_when_end_absent(self):
-        body = f"{IN_PROGRESS_START}content without end"
-        assert remove_section(body, IN_PROGRESS_START, IN_PROGRESS_END) == body
+        body = f"{_TEST_START}content without end"
+        assert remove_section(body, _TEST_START, _TEST_END) == body
 
     def test_removes_only_the_tagged_block(self):
-        body = f"header\n{IN_PROGRESS_START}temp{IN_PROGRESS_END}\nfooter"
-        result = remove_section(body, IN_PROGRESS_START, IN_PROGRESS_END)
+        body = f"header\n{_TEST_START}temp{_TEST_END}\nfooter"
+        result = remove_section(body, _TEST_START, _TEST_END)
         assert result == "header\n\nfooter"
 
     def test_empty_content_block(self):
-        body = f"{IN_PROGRESS_START}{IN_PROGRESS_END}"
-        assert remove_section(body, IN_PROGRESS_START, IN_PROGRESS_END) == ""
+        body = f"{_TEST_START}{_TEST_END}"
+        assert remove_section(body, _TEST_START, _TEST_END) == ""
 
 
 # ---------------------------------------------------------------------------

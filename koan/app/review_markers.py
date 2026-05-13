@@ -37,9 +37,6 @@ RELEASE_NOTES_START = "<!-- koan-release-notes-start -->"
 RELEASE_NOTES_END = "<!-- koan-release-notes-end -->"
 """Auto-generated release notes block in the PR description."""
 
-IN_PROGRESS_START = "<!-- koan-in-progress-start -->"
-IN_PROGRESS_END = "<!-- koan-in-progress-end -->"
-"""Temporary placeholder inserted while a review is actively running."""
 
 
 # ---------------------------------------------------------------------------

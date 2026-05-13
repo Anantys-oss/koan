@@ -547,13 +547,13 @@ class TestPostReviewComment:
 
 class TestRunReview:
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
-    @patch("app.review_runner._set_in_progress_marker", return_value=None)
+
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
     @patch("app.review_runner.run_gh")
     @patch("app.review_runner._run_claude_review")
     @patch("app.review_runner.fetch_pr_context")
     def test_full_pipeline_with_json(
-        self, mock_fetch, mock_claude, mock_gh, mock_repliable, _mock_ip, _mock_shas,
+        self, mock_fetch, mock_claude, mock_gh, mock_repliable, _mock_shas,
         pr_context, review_skill_dir,
     ):
         """Full review pipeline with JSON output: fetch -> claude -> parse -> post."""
@@ -577,13 +577,13 @@ class TestRunReview:
         assert mock_notify.call_count >= 2
 
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
-    @patch("app.review_runner._set_in_progress_marker", return_value=None)
+
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
     @patch("app.review_runner.run_gh")
     @patch("app.review_runner._run_claude_review")
     @patch("app.review_runner.fetch_pr_context")
     def test_fallback_to_markdown_on_invalid_json(
-        self, mock_fetch, mock_claude, mock_gh, mock_repliable, _mock_ip, _mock_shas,
+        self, mock_fetch, mock_claude, mock_gh, mock_repliable, _mock_shas,
         pr_context, review_skill_dir,
     ):
         """Falls back to regex extraction when JSON parsing fails twice."""
@@ -935,13 +935,13 @@ class TestArchitectureFlag:
         assert "{TITLE}" not in prompt
 
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
-    @patch("app.review_runner._set_in_progress_marker", return_value=None)
+
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
     @patch("app.review_runner.run_gh")
     @patch("app.review_runner._run_claude_review")
     @patch("app.review_runner.fetch_pr_context")
     def test_run_review_passes_architecture_to_prompt(
-        self, mock_fetch, mock_claude, mock_gh, mock_repliable, _mock_ip, _mock_shas,
+        self, mock_fetch, mock_claude, mock_gh, mock_repliable, _mock_shas,
         pr_context, tmp_path,
     ):
         """run_review with architecture=True uses architecture prompt."""
@@ -1246,13 +1246,13 @@ class TestPostCommentReplies:
 
 class TestRunReviewWithReplies:
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
-    @patch("app.review_runner._set_in_progress_marker", return_value=None)
+
     @patch("app.review_runner.fetch_repliable_comments")
     @patch("app.review_runner.run_gh")
     @patch("app.review_runner._run_claude_review")
     @patch("app.review_runner.fetch_pr_context")
     def test_posts_replies_when_present(
-        self, mock_fetch, mock_claude, mock_gh, mock_repliable, _mock_ip, _mock_shas,
+        self, mock_fetch, mock_claude, mock_gh, mock_repliable, _mock_shas,
         pr_context, review_skill_dir,
     ):
         """Posts replies to user comments when review includes comment_replies."""
@@ -1281,13 +1281,13 @@ class TestRunReviewWithReplies:
         assert mock_gh.call_count == 2
 
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
-    @patch("app.review_runner._set_in_progress_marker", return_value=None)
+
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
     @patch("app.review_runner.run_gh")
     @patch("app.review_runner._run_claude_review")
     @patch("app.review_runner.fetch_pr_context")
     def test_no_replies_when_no_repliable_comments(
-        self, mock_fetch, mock_claude, mock_gh, mock_repliable, _mock_ip, _mock_shas,
+        self, mock_fetch, mock_claude, mock_gh, mock_repliable, _mock_shas,
         pr_context, review_skill_dir,
     ):
         """No reply posting when there are no repliable comments."""
@@ -1581,13 +1581,13 @@ class TestFormatReviewWithPlanAlignment:
 
 class TestRunReviewPlanAlignment:
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
-    @patch("app.review_runner._set_in_progress_marker", return_value=None)
+
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
     @patch("app.review_runner.run_gh")
     @patch("app.review_runner._run_claude_review")
     @patch("app.review_runner.fetch_pr_context")
     def test_auto_detects_plan_from_pr_body(
-        self, mock_fetch, mock_claude, mock_gh, mock_repliable, _mock_ip, _mock_shas,
+        self, mock_fetch, mock_claude, mock_gh, mock_repliable, _mock_shas,
         plan_review_skill_dir,
     ):
         """Auto-detects plan URL from PR body and includes plan in prompt."""
@@ -1629,13 +1629,13 @@ class TestRunReviewPlanAlignment:
         assert mock_gh.call_count >= 2
 
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
-    @patch("app.review_runner._set_in_progress_marker", return_value=None)
+
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
     @patch("app.review_runner.run_gh")
     @patch("app.review_runner._run_claude_review")
     @patch("app.review_runner.fetch_pr_context")
     def test_no_plan_when_no_issue_in_body(
-        self, mock_fetch, mock_claude, mock_gh, mock_repliable, _mock_ip, _mock_shas,
+        self, mock_fetch, mock_claude, mock_gh, mock_repliable, _mock_shas,
         pr_context, review_skill_dir,
     ):
         """No plan alignment when PR body has no linked issue URL."""
@@ -1653,13 +1653,13 @@ class TestRunReviewPlanAlignment:
         assert mock_gh.call_count == 1
 
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
-    @patch("app.review_runner._set_in_progress_marker", return_value=None)
+
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
     @patch("app.review_runner.run_gh")
     @patch("app.review_runner._run_claude_review")
     @patch("app.review_runner.fetch_pr_context")
     def test_explicit_plan_url_overrides_auto_detection(
-        self, mock_fetch, mock_claude, mock_gh, mock_repliable, _mock_ip, _mock_shas,
+        self, mock_fetch, mock_claude, mock_gh, mock_repliable, _mock_shas,
         pr_context, plan_review_skill_dir,
     ):
         """Explicit --plan-url fetches the specified issue, skipping auto-detect."""
@@ -1977,92 +1977,6 @@ class TestPostReviewCommentIdempotent:
         assert COMMIT_IDS_START in body_arg
 
 
-# ---------------------------------------------------------------------------
-# Phase 4: In-progress marker (_set_in_progress_marker, run_review finally)
-# ---------------------------------------------------------------------------
-
-class TestInProgressMarker:
-    """Phase 4 — in-progress marker is present in first PATCH, absent in final."""
-
-    @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
-    @patch("app.review_runner.find_bot_comment", return_value=None)
-    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
-    @patch("app.review_runner.run_gh")
-    @patch("app.review_runner._run_claude_review")
-    @patch("app.review_runner.fetch_pr_context")
-    def test_in_progress_marker_posted_then_removed(
-        self, mock_fetch, mock_claude, mock_gh, mock_repliable,
-        mock_find_bot, _mock_shas, pr_context, review_skill_dir,
-    ):
-        """In-progress marker appears in the first comment body, gone from the final."""
-        from app.review_markers import IN_PROGRESS_START, IN_PROGRESS_END, SUMMARY_TAG
-
-        mock_fetch.return_value = pr_context
-        mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
-
-        # Simulate find_bot_comment returning None (no prior comment) then the
-        # newly-created in-progress comment with an ID for subsequent PATCHes.
-        in_progress_body = f"{SUMMARY_TAG}\n{IN_PROGRESS_START}\n⏳ in progress\n{IN_PROGRESS_END}"
-        created_comment = {"id": 77, "body": in_progress_body, "user": "koan-bot"}
-
-        # _set_in_progress_marker calls: run_gh ("pr comment" POST) then find_bot_comment
-        # We simulate by having find_bot_comment return None first (no existing),
-        # then the created comment on the second call (after in-progress post).
-        mock_find_bot.side_effect = [None, created_comment, created_comment]
-
-        # run_gh calls: 1st = in-progress post, 2nd = final review PATCH, 3rd = SHA PATCH (none)
-        mock_gh.return_value = ""
-
-        success, summary, _ = run_review(
-            "owner", "repo", "42", "/tmp/project",
-            notify_fn=MagicMock(),
-            skill_dir=review_skill_dir,
-        )
-
-        assert success is True
-        # At least the in-progress post and the final review PATCH happened
-        assert mock_gh.call_count >= 2
-
-        # The first run_gh body (in-progress post) should contain the in-progress marker
-        first_body_args = [a for calls in [c[0] for c in mock_gh.call_args_list]
-                           for a in calls if isinstance(a, str) and IN_PROGRESS_START in a]
-        assert len(first_body_args) >= 1
-
-    @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
-    @patch("app.review_runner.find_bot_comment", return_value=None)
-    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
-    @patch("app.review_runner.run_gh")
-    @patch("app.review_runner._run_claude_review")
-    @patch("app.review_runner.fetch_pr_context")
-    def test_in_progress_removed_on_claude_failure(
-        self, mock_fetch, mock_claude, mock_gh, mock_repliable,
-        mock_find_bot, _mock_shas, pr_context, review_skill_dir,
-    ):
-        """In-progress marker is cleaned up even when Claude fails (finally block)."""
-        from app.review_markers import IN_PROGRESS_START, SUMMARY_TAG
-
-        mock_fetch.return_value = pr_context
-        mock_claude.return_value = ("", "Timeout")
-
-        in_progress_body = f"{SUMMARY_TAG}\n{IN_PROGRESS_START}⏳{IN_PROGRESS_START}"
-        created_comment = {"id": 88, "body": in_progress_body, "user": "koan-bot"}
-        mock_find_bot.side_effect = [None, created_comment]
-        mock_gh.return_value = ""
-
-        success, summary, _ = run_review(
-            "owner", "repo", "42", "/tmp/project",
-            notify_fn=MagicMock(),
-            skill_dir=review_skill_dir,
-        )
-
-        assert success is False
-        # The finally block should have PATCHed the comment to remove the marker
-        patch_calls = [
-            c for c in mock_gh.call_args_list
-            if "PATCH" in c[0]
-        ]
-        assert len(patch_calls) >= 1
-
 
 # ---------------------------------------------------------------------------
 # Phase 5: Reviewed-commit SHAs (_fetch_pr_commit_shas, run_review)
@@ -2094,7 +2008,7 @@ class TestIncrementalReview:
     """Phase 5 — commit SHAs embedded in comment; second run skips known commits."""
 
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=["abc", "def"])
-    @patch("app.review_runner._set_in_progress_marker", return_value=None)
+
     @patch("app.review_runner.find_bot_comment")
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
     @patch("app.review_runner.run_gh")
@@ -2102,7 +2016,7 @@ class TestIncrementalReview:
     @patch("app.review_runner.fetch_pr_context")
     def test_skips_review_when_all_shas_already_reviewed(
         self, mock_fetch, mock_claude, mock_gh, mock_repliable,
-        mock_find_bot, _mock_ip, _mock_shas, pr_context, review_skill_dir,
+        mock_find_bot, _mock_shas, pr_context, review_skill_dir,
     ):
         """When prior SHA block matches current commits exactly, review is skipped."""
         from app.review_markers import SUMMARY_TAG, COMMIT_IDS_START, COMMIT_IDS_END
@@ -2128,7 +2042,7 @@ class TestIncrementalReview:
         mock_claude.assert_not_called()
 
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=["abc", "def", "ghi"])
-    @patch("app.review_runner._set_in_progress_marker", return_value=None)
+
     @patch("app.review_runner.find_bot_comment")
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
     @patch("app.review_runner.run_gh")
@@ -2136,7 +2050,7 @@ class TestIncrementalReview:
     @patch("app.review_runner.fetch_pr_context")
     def test_proceeds_when_new_commits_present(
         self, mock_fetch, mock_claude, mock_gh, mock_repliable,
-        mock_find_bot, _mock_ip, _mock_shas, pr_context, review_skill_dir,
+        mock_find_bot, _mock_shas, pr_context, review_skill_dir,
     ):
         """When there are new commits beyond prior SHAs, review proceeds."""
         from app.review_markers import SUMMARY_TAG, COMMIT_IDS_START, COMMIT_IDS_END
@@ -2163,7 +2077,7 @@ class TestIncrementalReview:
         mock_claude.assert_called_once()
 
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=["abc", "def"])
-    @patch("app.review_runner._set_in_progress_marker", return_value=None)
+
     @patch("app.review_runner.find_bot_comment")
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
     @patch("app.review_runner.run_gh")
@@ -2171,7 +2085,7 @@ class TestIncrementalReview:
     @patch("app.review_runner.fetch_pr_context")
     def test_sha_block_written_to_comment_after_review(
         self, mock_fetch, mock_claude, mock_gh, mock_repliable,
-        mock_find_bot, _mock_ip, _mock_shas, pr_context, review_skill_dir,
+        mock_find_bot, _mock_shas, pr_context, review_skill_dir,
     ):
         """After a completed review, the hidden SHA block is PATCHed into the comment."""
         from app.review_markers import SUMMARY_TAG, COMMIT_IDS_START
@@ -2340,7 +2254,7 @@ class TestRunReviewWithIgnoreFilter:
         }
 
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
-    @patch("app.review_runner._set_in_progress_marker", return_value=None)
+
     @patch("app.review_runner.find_bot_comment", return_value=None)
     @patch("app.config.get_review_ignore_config", return_value={"glob": ["vendor/**", "*.json"], "regex": []})
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
@@ -2349,7 +2263,7 @@ class TestRunReviewWithIgnoreFilter:
     @patch("app.review_runner.fetch_pr_context")
     def test_review_ignore_glob_filters_diff_before_prompt(
         self, mock_fetch, mock_claude, mock_gh, mock_repliable, mock_ignore,
-        mock_find_bot, _mock_ip, _mock_shas, review_skill_dir,
+        mock_find_bot, _mock_shas, review_skill_dir,
     ):
         """Files matching review_ignore.glob are stripped from the diff before Claude."""
         mock_fetch.return_value = self._make_pr_context()
@@ -2392,7 +2306,7 @@ class TestRunReviewWithIgnoreFilter:
         mock_claude.assert_not_called()
 
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
-    @patch("app.review_runner._set_in_progress_marker", return_value=None)
+
     @patch("app.review_runner.find_bot_comment", return_value=None)
     @patch("app.config.get_review_ignore_config", return_value={"glob": [], "regex": []})
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
@@ -2401,7 +2315,7 @@ class TestRunReviewWithIgnoreFilter:
     @patch("app.review_runner.fetch_pr_context")
     def test_no_ignore_config_no_filtering(
         self, mock_fetch, mock_claude, mock_gh, mock_repliable, mock_ignore,
-        mock_find_bot, _mock_ip, _mock_shas, review_skill_dir,
+        mock_find_bot, _mock_shas, review_skill_dir,
     ):
         """Without review_ignore patterns, the full diff reaches Claude unchanged."""
         mock_fetch.return_value = self._make_pr_context()
@@ -2418,7 +2332,7 @@ class TestRunReviewWithIgnoreFilter:
         assert "package-lock.json" in prompt_sent
 
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
-    @patch("app.review_runner._set_in_progress_marker", return_value=None)
+
     @patch("app.review_runner.find_bot_comment", return_value=None)
     @patch("app.config.get_review_ignore_config", return_value={"glob": [], "regex": []})
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
@@ -2427,7 +2341,7 @@ class TestRunReviewWithIgnoreFilter:
     @patch("app.review_runner.fetch_pr_context")
     def test_empty_ignore_patterns_no_filtering(
         self, mock_fetch, mock_claude, mock_gh, mock_repliable, mock_ignore,
-        mock_find_bot, _mock_ip, _mock_shas, review_skill_dir,
+        mock_find_bot, _mock_shas, review_skill_dir,
     ):
         """Empty review_ignore lists leaves diff unchanged."""
         mock_fetch.return_value = self._make_pr_context()
