@@ -1129,6 +1129,7 @@ def _handle_skill_dispatch(
     max_runs: int,
     autonomous_mode: str,
     interval: int,
+    mission_tier: str = "",
 ) -> tuple:
     """Try to dispatch a mission as a skill command.
 
@@ -1175,13 +1176,15 @@ def _handle_skill_dispatch(
             log("error", f"Failed to create pending.md for skill dispatch: {e}")
 
         exit_code = 1
+        skill_result = {"exit_code": 1, "stdout": "", "stderr": "",
+                        "quota_exhausted": False, "quota_info": None}
         # Snapshot core files before skill execution
         from app.core_files import snapshot_core_files, check_core_files, log_integrity_warnings
         skill_core_snapshot = snapshot_core_files(koan_root, project_path)
 
         try:
             with protected_phase(f"Skill: {mission_title[:50]}"):
-                exit_code = _run_skill_mission(
+                skill_result = _run_skill_mission(
                     skill_cmd=skill_cmd,
                     koan_root=koan_root,
                     instance=instance,
@@ -1190,7 +1193,9 @@ def _handle_skill_dispatch(
                     run_num=run_num,
                     mission_title=mission_title,
                     autonomous_mode=autonomous_mode,
+                    mission_tier=mission_tier,
                 )
+            exit_code = skill_result["exit_code"]
             if exit_code == 0:
                 log("mission", f"Run {run_num}/{max_runs} — [{project_name}] skill completed")
 
@@ -1216,6 +1221,74 @@ def _handle_skill_dispatch(
             # Clean up temp files created by skill command builders
             from app.skill_dispatch import cleanup_skill_temp_files
             cleanup_skill_temp_files(skill_cmd)
+
+        # --- Auth / quota classification (mirrors regular mission path) ---
+        if exit_code != 0:
+            from app.cli_errors import ErrorCategory, classify_cli_error
+            _err_cat = classify_cli_error(
+                exit_code,
+                skill_result.get("stdout", ""),
+                skill_result.get("stderr", ""),
+            )
+            if _err_cat == ErrorCategory.AUTH:
+                log("error", "Claude is logged out — requeueing skill mission to Pending")
+                _requeue_mission_in_file(instance, mission_title)
+                from app.pause_manager import create_pause
+                create_pause(koan_root, "auth")
+                _notify(instance, (
+                    "🔐 Claude is logged out. Please run `claude /login` to re-authenticate.\n\n"
+                    "The current mission has been moved back to Pending. "
+                    "Use /resume after logging in."
+                ))
+                return True, mission_title
+            elif _err_cat == ErrorCategory.QUOTA:
+                log("quota", "API quota exhausted during skill — requeueing mission to Pending")
+                _requeue_mission_in_file(instance, mission_title)
+                from app.quota_handler import handle_quota_exhaustion, QUOTA_CHECK_UNRELIABLE
+                quota_result = handle_quota_exhaustion(
+                    koan_root=koan_root,
+                    instance_dir=instance,
+                    project_name=project_name,
+                    run_count=run_num,
+                    stdout_file="",
+                    stderr_file="",
+                )
+                reset_display = ""
+                if quota_result and quota_result is not QUOTA_CHECK_UNRELIABLE:
+                    reset_display = quota_result[0]
+                else:
+                    reset_ts, reset_display = _compute_quota_reset_ts(instance)
+                    from app.pause_manager import create_pause
+                    create_pause(koan_root, "quota", reset_ts, reset_display)
+                _notify(instance, (
+                    f"⏸️ API quota exhausted.{(' ' + reset_display) if reset_display else ''}\n"
+                    f"Skill mission '{mission_title[:60]}' moved back to Pending.\n"
+                    f"Use /resume after quota resets."
+                ))
+                return True, mission_title
+
+        # --- Post-mission quota exhaustion (detected during pipeline) ---
+        if skill_result.get("quota_exhausted"):
+            quota_info = skill_result.get("quota_info")
+            if quota_info and isinstance(quota_info, (list, tuple)) and len(quota_info) >= 2:
+                reset_display, resume_msg = quota_info[0], quota_info[1]
+            else:
+                reset_display, resume_msg = "", "Auto-resume in ~5h"
+            log("quota", f"Quota reached during skill post-mission. {reset_display}")
+
+            _finalize_mission(instance, mission_title, project_name, exit_code)
+            _requeue_mission_in_file(instance, mission_title)
+
+            reset_ts, _disp = _compute_quota_reset_ts(instance)
+            from app.pause_manager import create_pause
+            create_pause(koan_root, "quota", reset_ts, reset_display or _disp)
+            _commit_instance(instance, f"koan: quota exhausted {time.strftime('%Y-%m-%d-%H:%M')}")
+            _notify(instance, (
+                f"⚠️ Claude quota exhausted. {reset_display}\n\n"
+                f"Skill mission '{mission_title[:60]}' moved back to Pending.\n"
+                f"{resume_msg} or use /resume to restart manually."
+            ))
+            return True, mission_title
 
         _notify_mission_end(
             instance, project_name, run_num, max_runs,
@@ -1741,6 +1814,7 @@ def _run_iteration(
         handled, mission_title = _handle_skill_dispatch(
             mission_title, project_name, project_path, koan_root,
             instance, run_num, max_runs, autonomous_mode, interval,
+            mission_tier=mission_tier or "",
         )
         if handled:
             return True  # skill dispatch — productive
@@ -2493,13 +2567,20 @@ def _run_skill_mission(
     run_num: int,
     mission_title: str,
     autonomous_mode: str,
-) -> int:
+    mission_tier: str = "",
+) -> dict:
     """Execute a skill-dispatched mission directly via subprocess.
 
     Streams stdout/stderr line-by-line to pending.md so /live can show
     real-time progress during skill dispatch.
 
-    Returns the process exit code (0 = success).
+    Returns a dict with:
+        exit_code (int): Process exit code (0 = success).
+        stdout (str): Captured stdout text.
+        stderr (str): Captured stderr text.
+        quota_exhausted (bool): Whether quota exhaustion was detected in
+            the post-mission pipeline.
+        quota_info (tuple|None): (reset_display, resume_message) if exhausted.
     """
     from app.debug import debug_log
 
@@ -2700,6 +2781,13 @@ def _run_skill_mission(
     # Wrap in try/finally so temp files are cleaned up even if the write
     # or post-mission processing raises an unexpected exception (consistent
     # with the contemplative and regular mission paths).
+    skill_result = {
+        "exit_code": exit_code,
+        "stdout": skill_stdout,
+        "stderr": skill_stderr,
+        "quota_exhausted": False,
+        "quota_info": None,
+    }
     try:
         with open(stdout_file, 'wb') as f:
             f.write(skill_stdout.encode('utf-8'))
@@ -2707,7 +2795,7 @@ def _run_skill_mission(
         _skill_prefix = f"Run {run_num}"
         set_status(koan_root, f"{_skill_prefix} — finalizing")
         from app.mission_runner import run_post_mission
-        run_post_mission(
+        post_result = run_post_mission(
             instance_dir=instance,
             project_name=project_name,
             project_path=project_path,
@@ -2721,14 +2809,18 @@ def _run_skill_mission(
             status_callback=lambda step: set_status(
                 koan_root, f"{_skill_prefix} — {step}"
             ),
+            mission_tier=mission_tier,
         )
+        if isinstance(post_result, dict) and post_result.get("quota_exhausted"):
+            skill_result["quota_exhausted"] = True
+            skill_result["quota_info"] = post_result.get("quota_info")
     except Exception as e:
         log("error", f"Post-mission error: {e}")
     finally:
         _cleanup_temp(stdout_file, stderr_file)
     duration = int(time.time()) - mission_start
     debug_log(f"[run] skill exec: done in {duration}s, exit_code={exit_code}")
-    return exit_code
+    return skill_result
 
 
 def _cleanup_temp(*files):
