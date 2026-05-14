@@ -915,6 +915,18 @@ def _remove_item_by_text(
 
     Returns ``(updated_content, removed_text)`` or ``None`` when no match.
     """
+    # When the picker returned a multi-line block (mission + continuation
+    # lines absorbed from a corrupted Pending section), the raw needle
+    # contains \n and can never substring-match a single stripped line.
+    # Reduce to the first non-empty line so lookup still works.
+    line_needle = needle
+    if "\n" in needle:
+        for ln in needle.splitlines():
+            stripped_ln = ln.strip()
+            if stripped_ln:
+                line_needle = stripped_ln
+                break
+
     lines = content.splitlines()
     boundaries = find_section_boundaries(lines)
     if section_key not in boundaries:
@@ -924,7 +936,7 @@ def _remove_item_by_text(
 
     for i in range(start + 1, end):
         stripped = lines[i].strip()
-        if stripped.startswith("- ") and needle in stripped:
+        if stripped.startswith("- ") and line_needle in stripped:
             return _splice_pending_item(lines, i, _find_item_extent(lines, i, end))
 
     return None
