@@ -576,6 +576,11 @@ _module_mtimes: Dict[str, float] = {}
 _requirements_satisfied: Set[str] = set()
 
 
+def _reset_requirements_cache() -> None:
+    """Clear the per-session requirements cache (used by tests)."""
+    _requirements_satisfied.clear()
+
+
 def ensure_requirements(skill: Skill) -> Optional[str]:
     """Check and install missing Python packages declared in a skill's requirements.
 
@@ -588,10 +593,16 @@ def ensure_requirements(skill: Skill) -> Optional[str]:
     if skill.qualified_name in _requirements_satisfied:
         return None
 
+    # Reject entries that look like pip CLI flags (e.g. --index-url)
+    for pkg in skill.requirements:
+        if pkg.startswith("-"):
+            return f"Invalid requirement '{pkg}' for skill {skill.qualified_name}: flags not allowed"
+
     missing = []
     for pkg in skill.requirements:
         # Normalize: pip package names use hyphens, but import names use underscores
-        import_name = pkg.replace("-", "_").split(">=")[0].split("==")[0].split("<")[0].strip()
+        # Split on any PEP 440 version operator (~=, >=, <=, !=, ===, ==, >, <)
+        import_name = re.split(r'[><=!~]', pkg)[0].replace("-", "_").strip()
         try:
             importlib.import_module(import_name)
         except ImportError:
