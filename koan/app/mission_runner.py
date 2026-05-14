@@ -163,6 +163,14 @@ def _write_pipeline_summary(
         _log_runner("error", f"Pipeline summary write failed: {e}")
 
 
+def _ensure_tokens(stdout_file: str, tokens: Optional[dict] = None) -> Optional[dict]:
+    """Resolve token details, reading from file only if not pre-extracted."""
+    if tokens is not None:
+        return tokens
+    from app.usage_estimator import extract_tokens_detailed
+    return extract_tokens_detailed(Path(stdout_file))
+
+
 def _extract_cache_line(stdout_file: str, tokens: Optional[dict] = None) -> str:
     """Extract a compact cache performance line from Claude JSON output.
 
@@ -174,9 +182,7 @@ def _extract_cache_line(stdout_file: str, tokens: Optional[dict] = None) -> str:
     try:
         from app.cost_tracker import format_mission_cache_line
 
-        if tokens is None:
-            from app.usage_estimator import extract_tokens_detailed
-            tokens = extract_tokens_detailed(Path(stdout_file))
+        tokens = _ensure_tokens(stdout_file, tokens)
         if tokens is None:
             return ""
         return format_mission_cache_line(
@@ -432,9 +438,7 @@ def _record_cost_event(
     try:
         from app.cost_tracker import record_usage
 
-        if tokens is None:
-            from app.usage_estimator import extract_tokens_detailed
-            tokens = extract_tokens_detailed(Path(stdout_file))
+        tokens = _ensure_tokens(stdout_file, tokens)
         if tokens is None:
             return
 
@@ -473,9 +477,7 @@ def _log_activity_usage(
     try:
         from app.activity_usage_logger import log_activity_usage
 
-        if tokens is None:
-            from app.usage_estimator import extract_tokens_detailed
-            tokens = extract_tokens_detailed(Path(stdout_file))
+        tokens = _ensure_tokens(stdout_file, tokens)
         if tokens is None:
             return
 
