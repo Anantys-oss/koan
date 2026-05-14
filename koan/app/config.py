@@ -851,7 +851,6 @@ def get_cli_provider_name() -> str:
     return get_provider_name()
 
 
-
 def get_auto_merge_config(config: dict, project_name: str) -> dict:
     """Get auto-merge config with per-project override support.
 
