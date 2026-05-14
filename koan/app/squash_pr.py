@@ -27,6 +27,7 @@ from app.claude_step import (
     _get_current_branch,
     _run_git,
     _safe_checkout,
+    resolve_pr_location,
     run_claude,
     strip_cli_noise,
 )
@@ -196,8 +197,15 @@ def run_squash(
         from app.notify import send_telegram
         notify_fn = send_telegram
 
-    full_repo = f"{owner}/{repo}"
     actions_log: List[str] = []
+
+    # -- Step 0: Resolve actual PR location (cross-owner support) --
+    try:
+        owner, repo = resolve_pr_location(owner, repo, pr_number, project_path)
+    except RuntimeError as e:
+        return False, str(e)
+
+    full_repo = f"{owner}/{repo}"
 
     # -- Step 1: Fetch PR context --
     notify_fn(f"Reading PR #{pr_number}...")
