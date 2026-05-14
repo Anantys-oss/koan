@@ -1244,22 +1244,9 @@ def _handle_skill_dispatch(
             elif _err_cat == ErrorCategory.QUOTA:
                 log("quota", "API quota exhausted during skill — requeueing mission to Pending")
                 _requeue_mission_in_file(instance, mission_title)
-                from app.quota_handler import handle_quota_exhaustion, QUOTA_CHECK_UNRELIABLE
-                quota_result = handle_quota_exhaustion(
-                    koan_root=koan_root,
-                    instance_dir=instance,
-                    project_name=project_name,
-                    run_count=run_num,
-                    stdout_file="",
-                    stderr_file="",
-                )
-                reset_display = ""
-                if quota_result and quota_result is not QUOTA_CHECK_UNRELIABLE:
-                    reset_display = quota_result[0]
-                else:
-                    reset_ts, reset_display = _compute_quota_reset_ts(instance)
-                    from app.pause_manager import create_pause
-                    create_pause(koan_root, "quota", reset_ts, reset_display)
+                reset_ts, reset_display = _compute_quota_reset_ts(instance)
+                from app.pause_manager import create_pause
+                create_pause(koan_root, "quota", reset_ts, reset_display)
                 _notify(instance, (
                     f"⏸️ API quota exhausted.{(' ' + reset_display) if reset_display else ''}\n"
                     f"Skill mission '{mission_title[:60]}' moved back to Pending.\n"

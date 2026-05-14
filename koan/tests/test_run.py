@@ -4713,7 +4713,7 @@ class TestSkillDispatchAuthQuota(TestRunSkillMissionEnv):
              patch("app.skill_dispatch.dispatch_skill_mission",
                    return_value=["python3", "-m", "app.plan_runner"]), \
              patch("app.mission_runner.run_post_mission"), \
-             patch("app.quota_handler.handle_quota_exhaustion", return_value=("Resets in 5h", "Auto-resume")), \
+             patch("app.run._compute_quota_reset_ts", return_value=(0, "Resets in 5h")), \
              patch("app.pause_manager.create_pause"):
             handled, _ = _handle_skill_dispatch(
                 mission_title="/plan test",
