@@ -343,7 +343,6 @@ def _resolve_project_path(
     return None
 
 
-
 def _get_known_project_names(projects: List[Tuple[str, str]]) -> list:
     """Extract sorted list of project names."""
     return sorted(name for name, _ in projects)
