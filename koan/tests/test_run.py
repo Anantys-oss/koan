@@ -5566,7 +5566,7 @@ class TestIdleTimeoutAutoPause:
 
         mock_iteration.side_effect = iteration_side_effect
 
-        with patch("app.run._notify"):
+        with patch("app.run._notify"), patch("app.run.time.sleep"):
             main_loop()
 
         # Should NOT have created pause (False doesn't count as idle)
