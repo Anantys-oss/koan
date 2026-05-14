@@ -11,6 +11,7 @@ do not produce these files.
 """
 
 import json
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -42,7 +43,8 @@ def find_session_jsonl(project_path: str) -> Optional[Path]:
 
         # Most recently modified file is the active session
         return max(jsonl_files, key=lambda p: p.stat().st_mtime)
-    except Exception:
+    except Exception as e:
+        print(f"[claude-session] find error: {e}", file=sys.stderr)
         return None
 
 
@@ -140,5 +142,6 @@ def collect_jsonl_tokens(project_path: str) -> Optional[dict]:
 
         data = parse_session_tail(path)
         return data if data else None
-    except Exception:
+    except Exception as e:
+        print(f"[claude-session] collect error: {e}", file=sys.stderr)
         return None

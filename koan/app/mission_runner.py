@@ -903,8 +903,8 @@ def run_post_mission(
             if get_provider_name() == "claude" and project_path:
                 from app.provider.claude_session import collect_jsonl_tokens
                 _jsonl_data = collect_jsonl_tokens(project_path)
-        except Exception:
-            pass  # JSONL enrichment is best-effort
+        except Exception as e:
+            _log_runner("warning", f"JSONL enrichment failed: {e}")
 
         # 1c. Record structured usage to JSONL cost tracker
         from app.session_tracker import classify_mission_type as _classify_type
