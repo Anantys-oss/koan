@@ -55,6 +55,3 @@ projects.docker.yaml
 docker-compose.override.yml
 .env.docker
 claude-auth/
-
-# Local implementation tracking (ant-implement / Claude Code plan files)
-.spec/

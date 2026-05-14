@@ -96,10 +96,11 @@ def _get_rtk_section(project_name: str = "") -> str:
         if not is_rtk_awareness_enabled():
             return ""
         if project_name:
-            from app.projects_config import get_project_rtk_enabled
-            from app.utils import load_config
+            from app.projects_config import get_project_rtk_enabled, load_projects_config
             try:
-                if not get_project_rtk_enabled(load_config(), project_name):
+                koan_root = os.environ.get("KOAN_ROOT", "")
+                projects_cfg = load_projects_config(koan_root) if koan_root else None
+                if projects_cfg and not get_project_rtk_enabled(projects_cfg, project_name):
                     return ""
             except (OSError, ValueError, KeyError):
                 # Project resolution failed — fall through to global decision

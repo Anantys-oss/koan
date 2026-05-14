@@ -1710,13 +1710,14 @@ class TestGetRtkSection:
             mock_lp.assert_called_once_with("rtk-awareness")
             assert "RTK" in result
 
-    def test_per_project_opt_out(self):
+    def test_per_project_opt_out(self, monkeypatch):
         """When the project sets rtk: false, the section is suppressed."""
         from app.prompt_builder import _get_rtk_section
 
+        monkeypatch.setenv("KOAN_ROOT", "/tmp/test-koan")
         with patch("app.config.is_rtk_awareness_enabled", return_value=True), \
+             patch("app.projects_config.load_projects_config", return_value={"projects": {"myproject": {"rtk": False}}}), \
              patch("app.projects_config.get_project_rtk_enabled", return_value=False), \
-             patch("app.utils.load_config", return_value={}), \
              patch("app.prompts.load_prompt", return_value="# RTK\nUse rtk."):
             assert _get_rtk_section(project_name="myproject") == ""
 
