@@ -1,5 +1,6 @@
 """Tests for app/skills.py — SKILL.md parsing, registry, and skill execution."""
 
+import sys
 import textwrap
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -1958,3 +1959,152 @@ class TestAliasCollisionDetection:
             f"Core skills have command/alias collisions:\n"
             + "\n".join(collisions)
         )
+
+
+# ---------------------------------------------------------------------------
+# _refresh_stale_app_modules — mtime-based reload
+# ---------------------------------------------------------------------------
+
+
+class TestRefreshStaleAppModules:
+    """Tests for the mtime-based app.* module refresh mechanism."""
+
+    def test_no_reload_when_mtime_unchanged(self, monkeypatch, tmp_path):
+        """Modules with unchanged mtime are not reloaded."""
+        import importlib as _importlib
+
+        from app.skills import _module_mtimes, _refresh_stale_app_modules
+
+        # Create a fake module with a source file
+        fake_file = tmp_path / "fake_module.py"
+        fake_file.write_text("X = 1")
+        fake_mod = MagicMock()
+        fake_mod.__file__ = str(fake_file)
+
+        monkeypatch.setitem(sys.modules, "app.fake_test_mod", fake_mod)
+        # Pre-populate mtime cache with current mtime
+        mtime = fake_file.stat().st_mtime
+        monkeypatch.setitem(_module_mtimes, "app.fake_test_mod", mtime)
+
+        reload_calls = []
+        original_reload = _importlib.reload
+        monkeypatch.setattr(
+            _importlib, "reload",
+            lambda m: reload_calls.append(m) or original_reload(m),
+        )
+
+        _refresh_stale_app_modules()
+
+        assert not reload_calls, "Should not reload when mtime is unchanged"
+
+        # Cleanup
+        sys.modules.pop("app.fake_test_mod", None)
+        _module_mtimes.pop("app.fake_test_mod", None)
+
+    def test_reload_when_mtime_changes(self, monkeypatch, tmp_path):
+        """Modules with changed mtime trigger a reload attempt."""
+        import importlib as _importlib
+        import os as _os
+
+        from app.skills import _module_mtimes, _refresh_stale_app_modules
+
+        fake_file = tmp_path / "refreshable.py"
+        fake_file.write_text("X = 1")
+        fake_mod = MagicMock()
+        fake_mod.__file__ = str(fake_file)
+
+        monkeypatch.setitem(sys.modules, "app.refreshable_test", fake_mod)
+        # Cache an old mtime so the change is detected
+        old_mtime = _os.path.getmtime(str(fake_file)) - 10
+        monkeypatch.setitem(_module_mtimes, "app.refreshable_test", old_mtime)
+
+        reload_calls = []
+        monkeypatch.setattr(
+            _importlib, "reload",
+            lambda m: reload_calls.append(m),
+        )
+
+        _refresh_stale_app_modules()
+
+        assert fake_mod in reload_calls, "Should reload when mtime has changed"
+
+        # Cleanup
+        sys.modules.pop("app.refreshable_test", None)
+        _module_mtimes.pop("app.refreshable_test", None)
+
+    def test_first_encounter_caches_mtime_without_reload(self, monkeypatch, tmp_path):
+        """First time seeing a module just caches mtime, does not reload."""
+        import importlib as _importlib
+
+        from app.skills import _module_mtimes, _refresh_stale_app_modules
+
+        fake_file = tmp_path / "first_seen.py"
+        fake_file.write_text("X = 1")
+        fake_mod = MagicMock()
+        fake_mod.__file__ = str(fake_file)
+
+        monkeypatch.setitem(sys.modules, "app.first_seen_test", fake_mod)
+        # Ensure not in mtime cache
+        _module_mtimes.pop("app.first_seen_test", None)
+
+        reload_calls = []
+        original_reload = _importlib.reload
+        monkeypatch.setattr(
+            _importlib, "reload",
+            lambda m: reload_calls.append(m) or original_reload(m),
+        )
+
+        _refresh_stale_app_modules()
+
+        assert not reload_calls, "First encounter should not trigger reload"
+        assert "app.first_seen_test" in _module_mtimes
+
+        # Cleanup
+        sys.modules.pop("app.first_seen_test", None)
+        _module_mtimes.pop("app.first_seen_test", None)
+
+    def test_failed_reload_evicts_module(self, monkeypatch, tmp_path):
+        """If reload fails, the module is evicted from sys.modules."""
+        import importlib as _importlib
+
+        from app.skills import _module_mtimes, _refresh_stale_app_modules
+
+        fake_file = tmp_path / "broken.py"
+        fake_file.write_text("X = 1")
+        fake_mod = MagicMock()
+        fake_mod.__file__ = str(fake_file)
+
+        monkeypatch.setitem(sys.modules, "app.broken_test", fake_mod)
+        # Set old mtime so reload is triggered
+        old_mtime = fake_file.stat().st_mtime - 10
+        monkeypatch.setitem(_module_mtimes, "app.broken_test", old_mtime)
+
+        # Make reload raise
+        monkeypatch.setattr(
+            _importlib, "reload",
+            lambda m: (_ for _ in ()).throw(ImportError("broken")),
+        )
+
+        _refresh_stale_app_modules()
+
+        assert "app.broken_test" not in sys.modules
+        assert "app.broken_test" not in _module_mtimes
+
+    def test_ignores_non_app_modules(self, monkeypatch, tmp_path):
+        """Modules not starting with 'app.' are never touched."""
+        import importlib as _importlib
+
+        from app.skills import _refresh_stale_app_modules
+
+        reload_calls = []
+        original_reload = _importlib.reload
+        monkeypatch.setattr(
+            _importlib, "reload",
+            lambda m: reload_calls.append(m.__name__) or original_reload(m),
+        )
+
+        _refresh_stale_app_modules()
+
+        # No non-app modules should be reloaded
+        for name in reload_calls:
+            assert name.startswith("app."), f"Non-app module touched: {name}"

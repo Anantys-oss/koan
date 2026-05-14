@@ -29,6 +29,7 @@ SKILL.md format:
 import importlib
 import importlib.util
 import logging
+import os
 import re
 import sys
 from collections import namedtuple
@@ -506,33 +507,54 @@ def execute_skill(skill: Skill, ctx: SkillContext) -> Optional[Union[str, SkillE
     return None
 
 
-_MODULES_TO_REFRESH = (
-    "app.github_skill_helpers",
-    "app.github_url_parser",
-    "app.missions",
-)
+# mtime cache: module_name -> last-seen mtime (float)
+_module_mtimes: Dict[str, float] = {}
 
 
 def _refresh_stale_app_modules() -> None:
-    """Reload app.* modules cached in sys.modules before handler execution.
+    """Reload app.* modules whose source files changed on disk.
 
     Skill handlers are loaded fresh via exec_module() each invocation, but
     their ``import app.foo`` statements resolve from sys.modules.  After an
     auto-update the cached entry may be stale (missing new functions/args),
-    causing TypeErrors at call sites.  Reloading here fixes all handlers at
-    once — current and future — without per-handler boilerplate.
+    causing TypeErrors at call sites.
+
+    Instead of maintaining a hardcoded list of modules to refresh, this
+    checks the mtime of every loaded ``app.*`` module's source file.  Only
+    modules whose file actually changed are reloaded — typically zero on
+    most invocations, making this cheap in the common case.
 
     If reload fails (e.g. partial write during update), the stale entry is
     evicted so the handler's own ``import`` fetches a fresh copy from disk.
     """
-    for name in _MODULES_TO_REFRESH:
+    for name in list(sys.modules):
+        if not name.startswith("app."):
+            continue
         mod = sys.modules.get(name)
-        if mod is not None:
+        if mod is None:
+            continue
+        source = getattr(mod, "__file__", None)
+        if source is None:
+            continue
+        try:
+            current_mtime = os.path.getmtime(source)
+        except OSError:
+            continue
+        cached_mtime = _module_mtimes.get(name)
+        if cached_mtime is not None and current_mtime == cached_mtime:
+            continue
+        # First time we see this module, or mtime changed
+        if cached_mtime is not None:
+            # mtime actually changed — reload
             try:
                 importlib.reload(mod)
+                _log.debug("Reloaded stale module %s", name)
             except Exception as e:
                 _log.debug("Failed to reload %s, evicting: %s", name, e)
                 sys.modules.pop(name, None)
+                _module_mtimes.pop(name, None)
+                continue
+        _module_mtimes[name] = current_mtime
 
 
 def _execute_handler(skill: Skill, ctx: SkillContext) -> Optional[Union[str, SkillError]]:
