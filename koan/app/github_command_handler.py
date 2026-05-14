@@ -19,6 +19,7 @@ Reply flow (when reply_enabled=true and command not recognized):
 4. Post reply as GitHub comment
 """
 
+import json
 import logging
 import re
 import subprocess
@@ -1343,7 +1344,7 @@ def _fetch_new_comments_since(
     Returns:
         List of comment dicts from other users, newest last.
     """
-    import json as _json
+    import json as json
 
     from app.github import api as gh_api
 
@@ -1352,7 +1353,7 @@ def _fetch_new_comments_since(
             f"repos/{owner}/{repo}/issues/{issue_number}/comments",
             jq='[.[] | {id: .id, body: .body, user_login: .user.login}]',
         )
-        comments = _json.loads(raw) if raw else []
+        comments = json.loads(raw) if raw else []
     except (RuntimeError, ValueError):
         return []
 
@@ -1472,8 +1473,6 @@ def _is_subject_closed(notification: dict) -> Optional[str]:
         A human-readable reason string if the subject is closed/merged,
         or None if it's still open (or state cannot be determined).
     """
-    import json as _json
-
     from app.github import SSOAuthRequired, api as gh_api
 
     subject_url = notification.get("subject", {}).get("url", "")
@@ -1490,8 +1489,8 @@ def _is_subject_closed(notification: dict) -> Optional[str]:
 
     try:
         raw = gh_api(endpoint, jq="{state: .state, merged: .merged}", timeout=15)
-        data = _json.loads(raw) if raw else {}
-    except (SSOAuthRequired, RuntimeError, _json.JSONDecodeError, subprocess.TimeoutExpired):
+        data = json.loads(raw) if raw else {}
+    except (SSOAuthRequired, RuntimeError, json.JSONDecodeError, subprocess.TimeoutExpired):
         # Can't determine state — don't block the notification
         return None
 
