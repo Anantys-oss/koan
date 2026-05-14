@@ -283,14 +283,19 @@ class TestStaleModuleReload:
     """Verify _execute_handler refreshes stale app modules before loading."""
 
     def test_execute_handler_reloads_stale_modules(self):
-        """_refresh_stale_app_modules reloads the module in-place so
-        stale sys.modules entries are refreshed after auto-update."""
+        """_refresh_stale_app_modules reloads the module in-place when
+        its source file mtime has changed."""
+        import os
         import app.github_skill_helpers as gh_mod
-        from app.skills import _refresh_stale_app_modules
+        from app.skills import _module_mtimes, _refresh_stale_app_modules
 
         original = gh_mod.queue_github_mission
         del gh_mod.queue_github_mission
         assert not hasattr(gh_mod, "queue_github_mission")
+
+        # Force mtime cache to show a stale value so reload is triggered
+        source = gh_mod.__file__
+        _module_mtimes["app.github_skill_helpers"] = os.path.getmtime(source) - 10
 
         try:
             _refresh_stale_app_modules()
@@ -298,15 +303,17 @@ class TestStaleModuleReload:
         finally:
             if not hasattr(gh_mod, "queue_github_mission"):
                 gh_mod.queue_github_mission = original
+            # Restore mtime cache
+            _module_mtimes["app.github_skill_helpers"] = os.path.getmtime(source)
 
     def test_stale_urgent_param_restored_after_reload(self):
         """The exact scenario from #1235: queue_github_mission exists but
         lacks the 'urgent' keyword argument.  After reload, the correct
         signature is available."""
         import inspect
-        import sys as _sys
+        import os
         import app.github_skill_helpers as gh_mod
-        from app.skills import _refresh_stale_app_modules
+        from app.skills import _module_mtimes, _refresh_stale_app_modules
 
         original = gh_mod.queue_github_mission
 
@@ -315,6 +322,10 @@ class TestStaleModuleReload:
 
         gh_mod.queue_github_mission = stale
 
+        # Force mtime cache to show a stale value
+        source = gh_mod.__file__
+        _module_mtimes["app.github_skill_helpers"] = os.path.getmtime(source) - 10
+
         try:
             _refresh_stale_app_modules()
             sig = inspect.signature(gh_mod.queue_github_mission)
@@ -322,30 +333,45 @@ class TestStaleModuleReload:
         finally:
             if gh_mod.queue_github_mission is stale:
                 gh_mod.queue_github_mission = original
+            _module_mtimes["app.github_skill_helpers"] = os.path.getmtime(source)
 
     def test_evicts_module_on_reload_failure(self):
         """If importlib.reload raises, the stale entry is removed from
         sys.modules so the handler's own import loads a fresh copy."""
+        import os
         import sys as _sys
         from unittest.mock import patch as _patch
 
-        from app.skills import _refresh_stale_app_modules, _MODULES_TO_REFRESH
+        from app.skills import _module_mtimes, _refresh_stale_app_modules
 
-        target = _MODULES_TO_REFRESH[0]
-        saved = {name: _sys.modules.get(name) for name in _MODULES_TO_REFRESH}
-        sentinel = type("StaleModule", (), {"__name__": target, "__spec__": None})()
+        target = "app.github_skill_helpers"
+        saved_mod = _sys.modules.get(target)
+        saved_mtime = _module_mtimes.get(target)
+        sentinel = type("StaleModule", (), {
+            "__name__": target, "__spec__": None,
+            "__file__": saved_mod.__file__ if saved_mod else "/dev/null",
+        })()
         _sys.modules[target] = sentinel
+        # Force stale mtime
+        source = saved_mod.__file__ if saved_mod else "/dev/null"
+        try:
+            _module_mtimes[target] = os.path.getmtime(source) - 10
+        except OSError:
+            _module_mtimes[target] = 0
 
         try:
             with _patch("importlib.reload", side_effect=ImportError("boom")):
                 _refresh_stale_app_modules()
             assert target not in _sys.modules or _sys.modules[target] is not sentinel
         finally:
-            for name, orig in saved.items():
-                if orig is not None:
-                    _sys.modules[name] = orig
-                else:
-                    _sys.modules.pop(name, None)
+            if saved_mod is not None:
+                _sys.modules[target] = saved_mod
+            else:
+                _sys.modules.pop(target, None)
+            if saved_mtime is not None:
+                _module_mtimes[target] = saved_mtime
+            else:
+                _module_mtimes.pop(target, None)
 
 
 # ---------------------------------------------------------------------------
