@@ -18,7 +18,7 @@ from app.skills import (
     _parse_bool_flag,
     _parse_inline_list,
     _parse_yaml_lite,
-    _requirements_satisfied,
+    _reset_requirements_cache,
     build_registry,
     ensure_requirements,
     execute_skill,
@@ -2334,6 +2334,13 @@ class TestRefreshStaleAppModules:
 class TestSkillRequirements:
     """Tests for requirements: field parsing and auto-install."""
 
+    @pytest.fixture(autouse=True)
+    def _clear_requirements_cache(self):
+        """Reset the per-session requirements cache before each test."""
+        _reset_requirements_cache()
+        yield
+        _reset_requirements_cache()
+
     def test_requirements_parsed_from_skill_md(self, tmp_path):
         skill_md = tmp_path / "SKILL.md"
         skill_md.write_text(textwrap.dedent("""\
@@ -2390,33 +2397,25 @@ class TestSkillRequirements:
     def test_ensure_requirements_skips_already_satisfied(self):
         skill = Skill(name="cached", scope="test", requirements=["os"])
         # Force the cache to think it's already satisfied
+        from app.skills import _requirements_satisfied
         _requirements_satisfied.add("test.cached")
-        try:
-            result = ensure_requirements(skill)
-            assert result is None
-        finally:
-            _requirements_satisfied.discard("test.cached")
+        result = ensure_requirements(skill)
+        assert result is None
 
     def test_ensure_requirements_succeeds_for_stdlib(self):
         """stdlib modules like 'json' should be found without install."""
         skill = Skill(name="stdlib_test", scope="test", requirements=["json"])
-        _requirements_satisfied.discard("test.stdlib_test")
-        try:
-            result = ensure_requirements(skill)
-            assert result is None
-            assert "test.stdlib_test" in _requirements_satisfied
-        finally:
-            _requirements_satisfied.discard("test.stdlib_test")
+        result = ensure_requirements(skill)
+        assert result is None
+        from app.skills import _requirements_satisfied
+        assert "test.stdlib_test" in _requirements_satisfied
 
     def test_ensure_requirements_installs_missing(self, monkeypatch):
         """Missing packages trigger pip install."""
-        import subprocess as sp
-
         skill = Skill(
             name="missing_pkg", scope="test",
             requirements=["nonexistent_pkg_xyz123"],
         )
-        _requirements_satisfied.discard("test.missing_pkg")
 
         # Mock subprocess.run to simulate successful install
         mock_result = MagicMock()
@@ -2432,24 +2431,19 @@ class TestSkillRequirements:
 
         monkeypatch.setattr("app.skills.subprocess.run", fake_run)
 
-        try:
-            result = ensure_requirements(skill)
-            assert result is None
-            assert len(calls) == 1
-            assert "nonexistent_pkg_xyz123" in calls[0]
-            assert "test.missing_pkg" in _requirements_satisfied
-        finally:
-            _requirements_satisfied.discard("test.missing_pkg")
+        result = ensure_requirements(skill)
+        assert result is None
+        assert len(calls) == 1
+        assert "nonexistent_pkg_xyz123" in calls[0]
+        from app.skills import _requirements_satisfied
+        assert "test.missing_pkg" in _requirements_satisfied
 
     def test_ensure_requirements_returns_error_on_failure(self, monkeypatch):
         """Failed pip install returns error message."""
-        import subprocess as sp
-
         skill = Skill(
             name="fail_pkg", scope="test",
             requirements=["bad_package_xyz"],
         )
-        _requirements_satisfied.discard("test.fail_pkg")
 
         mock_result = MagicMock()
         mock_result.returncode = 1
@@ -2458,28 +2452,41 @@ class TestSkillRequirements:
 
         monkeypatch.setattr("app.skills.subprocess.run", lambda cmd, **kw: mock_result)
 
-        try:
-            result = ensure_requirements(skill)
-            assert result is not None
-            assert "No matching distribution" in result
-            assert "test.fail_pkg" not in _requirements_satisfied
-        finally:
-            _requirements_satisfied.discard("test.fail_pkg")
+        result = ensure_requirements(skill)
+        assert result is not None
+        assert "No matching distribution" in result
+        from app.skills import _requirements_satisfied
+        assert "test.fail_pkg" not in _requirements_satisfied
 
-    def test_ensure_requirements_handles_version_specifiers(self, monkeypatch):
-        """Version specifiers (>=, ==) are stripped for import check."""
+    def test_ensure_requirements_handles_version_specifiers(self):
+        """Version specifiers (>=, ==, ~=, etc.) are stripped for import check."""
         skill = Skill(
             name="versioned", scope="test",
             requirements=["json>=1.0"],  # json is stdlib, should import fine
         )
-        _requirements_satisfied.discard("test.versioned")
+        result = ensure_requirements(skill)
+        assert result is None
+        from app.skills import _requirements_satisfied
+        assert "test.versioned" in _requirements_satisfied
 
-        try:
-            result = ensure_requirements(skill)
-            assert result is None
-            assert "test.versioned" in _requirements_satisfied
-        finally:
-            _requirements_satisfied.discard("test.versioned")
+    def test_ensure_requirements_handles_tilde_specifier(self):
+        """~= specifier is properly stripped for import check."""
+        skill = Skill(
+            name="tilde_ver", scope="test",
+            requirements=["json~=1.0"],  # json is stdlib
+        )
+        result = ensure_requirements(skill)
+        assert result is None
+
+    def test_ensure_requirements_rejects_flag_injection(self):
+        """Requirement entries starting with '-' are rejected."""
+        skill = Skill(
+            name="evil", scope="test",
+            requirements=["--index-url=https://evil.example.com/simple/"],
+        )
+        result = ensure_requirements(skill)
+        assert result is not None
+        assert "flags not allowed" in result
 
     def test_execute_handler_fails_on_missing_requirements(self, tmp_path, monkeypatch):
         """Handler execution returns SkillError when requirements can't be installed."""
@@ -2492,7 +2499,6 @@ class TestSkillRequirements:
             handler_path=handler,
             skill_dir=tmp_path,
         )
-        _requirements_satisfied.discard("test.broken_deps")
 
         mock_result = MagicMock()
         mock_result.returncode = 1
@@ -2507,9 +2513,6 @@ class TestSkillRequirements:
             command_name="broken_deps",
         )
 
-        try:
-            result = execute_skill(skill, ctx)
-            assert isinstance(result, SkillError)
-            assert "Could not find package" in result.message
-        finally:
-            _requirements_satisfied.discard("test.broken_deps")
+        result = execute_skill(skill, ctx)
+        assert isinstance(result, SkillError)
+        assert "Could not find package" in result.message
