@@ -385,6 +385,7 @@ def _record_session_outcome(
     duration_minutes: int,
     journal_content: str,
     mission_title: str = "",
+    last_action: str = "",
 ) -> None:
     """Record session outcome for staleness tracking (fire-and-forget)."""
     try:
@@ -396,6 +397,7 @@ def _record_session_outcome(
             duration_minutes=duration_minutes,
             journal_content=journal_content,
             mission_title=mission_title,
+            last_action=last_action,
         )
     except Exception as e:
         _log_runner("error", f"Session outcome recording failed: {e}")
@@ -408,6 +410,7 @@ def _record_cost_event(
     autonomous_mode: str,
     mission_title: str,
     mission_type: str = "",
+    jsonl_data: "Optional[dict]" = None,
 ) -> None:
     """Record structured usage event to JSONL cost tracker (fire-and-forget)."""
     try:
@@ -417,6 +420,11 @@ def _record_cost_event(
         detailed = extract_tokens_detailed(Path(stdout_file))
         if detailed is None:
             return
+
+        # Enrich with pre-collected JSONL session data when available
+        if jsonl_data and not detailed.get("cost_usd"):
+            if jsonl_data.get("cost_usd"):
+                detailed["cost_usd"] = jsonl_data["cost_usd"]
 
         record_usage(
             instance_dir=Path(instance_dir),
@@ -887,12 +895,24 @@ def run_post_mission(
         result["usage_updated"] = update_usage(stdout_file, usage_state, usage_md)
         tracker.record("usage_update", "success" if result["usage_updated"] else "fail")
 
-        # 1b. Record structured usage to JSONL cost tracker
+        # 1b. Collect JSONL session data once (Claude provider only)
+        # Used for both cost enrichment and last_action extraction below.
+        _jsonl_data = None
+        try:
+            from app.provider import get_provider_name
+            if get_provider_name() == "claude" and project_path:
+                from app.provider.claude_session import collect_jsonl_tokens
+                _jsonl_data = collect_jsonl_tokens(project_path)
+        except Exception as e:
+            _log_runner("warning", f"JSONL enrichment failed: {e}")
+
+        # 1c. Record structured usage to JSONL cost tracker
         from app.session_tracker import classify_mission_type as _classify_type
         _mission_type = _classify_type(mission_title)
         _record_cost_event(
             instance_dir, project_name, stdout_file,
-            autonomous_mode, mission_title, mission_type=_mission_type,
+            autonomous_mode, mission_title,
+            mission_type=_mission_type, jsonl_data=_jsonl_data,
         )
 
         # 2. Compute duration (needed for quota early-return, reflection, and outcome tracking)
@@ -940,6 +960,7 @@ def run_post_mission(
                 instance_dir, project_name, autonomous_mode,
                 duration_minutes, pending_content,
                 mission_title=mission_title,
+                last_action=_jsonl_data.get("last_action", "") if _jsonl_data else "",
             )
             # Fire post_mission hooks before early return so hooks see quota events
             _fire_post_mission_hook(
@@ -1049,10 +1070,12 @@ def run_post_mission(
         # 7. Record session outcome for staleness tracking
         # Always runs — even after deadline — since it's a fast local write.
         _report("recording session outcome")
+
         _record_session_outcome(
             instance_dir, project_name, autonomous_mode,
             duration_minutes, pending_content,
             mission_title=mission_title,
+            last_action=_jsonl_data.get("last_action", "") if _jsonl_data else "",
         )
         tracker.record("session_outcome", "success")
 
