@@ -1310,6 +1310,34 @@ class TestFailMission:
         assert "Old failed task" in failed_text
         assert "New task" in failed_text
 
+    def test_multiline_needle_matches_first_line(self):
+        """Picker returns multi-line block when continuation lines exist.
+
+        The dedup-skip path passes that block as the needle. Match must
+        succeed on the first line so the mission actually moves out of
+        Pending (otherwise the agent loop tight-loops on the same item).
+        """
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- /ci_check https://example.com/pr/297 ⏳(2026-05-14T21:24)\n"
+            "stray comment text from a broken template\n"
+            "more stray text\n"
+            "-->\n\n"
+            "## In Progress\n\n"
+            "## Done\n"
+        )
+        multiline_needle = (
+            "/ci_check https://example.com/pr/297 ⏳(2026-05-14T21:24)\n"
+            "stray comment text from a broken template\n"
+            "more stray text\n"
+            "-->"
+        )
+        result = fail_mission(content, multiline_needle)
+        sections = parse_sections(result)
+        assert len(sections["pending"]) == 0
+        assert "/ci_check https://example.com/pr/297" in "\n".join(sections["failed"])
+
     def test_project_tagged_mission(self):
         content = (
             "# Missions\n\n"
