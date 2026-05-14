@@ -7,6 +7,7 @@ pipeline modules.
 """
 
 import json
+import logging
 import re
 import shlex
 import subprocess
@@ -600,9 +601,10 @@ def resolve_pr_location(
     tried = {f"{owner}/{repo}".lower()}
 
     for remote_slug in remotes:
-        if remote_slug in tried:
+        slug_lower = remote_slug.lower()
+        if slug_lower in tried:
             continue
-        tried.add(remote_slug)
+        tried.add(slug_lower)
         try:
             run_gh(
                 "pr", "view", str(pr_number),
@@ -610,10 +612,9 @@ def resolve_pr_location(
                 "--json", "number",
             )
             parts = remote_slug.split("/", 1)
-            print(
-                f"[claude_step] PR #{pr_number} not found at {owner}/{repo}, "
-                f"resolved to {remote_slug}",
-                file=sys.stderr,
+            logging.info(
+                "PR #%s not found at %s/%s, resolved to %s",
+                pr_number, owner, repo, remote_slug,
             )
             return parts[0], parts[1]
         except RuntimeError:
