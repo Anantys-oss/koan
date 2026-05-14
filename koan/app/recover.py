@@ -387,6 +387,8 @@ def _inject_checkpoint_context(instance_dir: str, mission_texts: list) -> None:
     except ImportError:
         return
 
+    from app.utils import atomic_write
+
     for mission_text in mission_texts:
         cp = read_checkpoint(instance_dir, mission_text)
         if cp is None:
