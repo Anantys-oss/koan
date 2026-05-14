@@ -914,8 +914,10 @@ def main_loop():
                             consecutive_idle = 0  # Reset so we don't log every iteration
                 else:
                     # Non-productive but not idle (error recovery, dedup, etc.)
-                    # Don't count toward idle timeout
-                    pass
+                    # Don't count toward idle timeout, but throttle so a
+                    # persistent failure (e.g. dedup skipping a stuck mission)
+                    # cannot tight-loop and flood Telegram with notifications.
+                    time.sleep(1)
             except KeyboardInterrupt:
                 raise
             except SystemExit:
