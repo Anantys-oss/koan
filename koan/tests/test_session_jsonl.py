@@ -1,10 +1,10 @@
-"""Tests for koan/app/session_jsonl.py — JSONL session file parsing."""
+"""Tests for koan/app/provider/claude_session.py — JSONL session file parsing."""
 
 import json
 
 import pytest
 
-from app.session_jsonl import (
+from app.provider.claude_session import (
     _encode_project_path,
     collect_jsonl_tokens,
     find_session_jsonl,
@@ -172,5 +172,5 @@ class TestCollectJsonlTokens:
         # Force an exception inside find_session_jsonl
         def boom(*a, **kw):
             raise RuntimeError("boom")
-        monkeypatch.setattr("app.session_jsonl.find_session_jsonl", boom)
+        monkeypatch.setattr("app.provider.claude_session.find_session_jsonl", boom)
         assert collect_jsonl_tokens("/any/path") is None

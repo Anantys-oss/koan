@@ -1,16 +1,16 @@
 """JSONL session file reader for Claude Code internal session data.
 
-Reads the tail of Claude Code's JSONL session files to extract cost,
-token, and activity data after mission execution. Session files live
-at ~/.claude/projects/{encoded-path}/*.jsonl.
+Claude provider-specific module that reads the tail of Claude Code's
+JSONL session files to extract cost, token, and activity data after
+mission execution. Session files live at
+``~/.claude/projects/{encoded-path}/*.jsonl``.
 
-This module is **Claude provider-specific**. Callers must guard invocations
-with a ``get_provider_name() == "claude"`` check so it is never called
-when running under other providers (e.g. Copilot).
+Lives inside ``provider/`` because it is tightly coupled to the Claude
+Code CLI's internal file layout. Other providers (Copilot, Codex, etc.)
+do not produce these files.
 """
 
 import json
-import sys
 from pathlib import Path
 from typing import Optional
 
@@ -42,8 +42,7 @@ def find_session_jsonl(project_path: str) -> Optional[Path]:
 
         # Most recently modified file is the active session
         return max(jsonl_files, key=lambda p: p.stat().st_mtime)
-    except Exception as e:
-        print(f"[session_jsonl] find_session_jsonl failed: {e}", file=sys.stderr)
+    except Exception:
         return None
 
 
@@ -55,8 +54,7 @@ def read_tail_bytes(path: Path, max_bytes: int = 131072) -> bytes:
             if size > max_bytes:
                 f.seek(size - max_bytes)
             return f.read()
-    except (FileNotFoundError, IOError) as e:
-        print(f"[session_jsonl] read_tail_bytes failed: {e}", file=sys.stderr)
+    except (FileNotFoundError, IOError):
         return b""
 
 
@@ -142,6 +140,5 @@ def collect_jsonl_tokens(project_path: str) -> Optional[dict]:
 
         data = parse_session_tail(path)
         return data if data else None
-    except Exception as e:
-        print(f"[session_jsonl] collect_jsonl_tokens failed: {e}", file=sys.stderr)
+    except Exception:
         return None

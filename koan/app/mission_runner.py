@@ -901,10 +901,10 @@ def run_post_mission(
         try:
             from app.provider import get_provider_name
             if get_provider_name() == "claude" and project_path:
-                from app.session_jsonl import collect_jsonl_tokens
+                from app.provider.claude_session import collect_jsonl_tokens
                 _jsonl_data = collect_jsonl_tokens(project_path)
-        except Exception as e:
-            print(f"[mission_runner] JSONL session data collection failed: {e}", file=sys.stderr)
+        except Exception:
+            pass  # JSONL enrichment is best-effort
 
         # 1c. Record structured usage to JSONL cost tracker
         from app.session_tracker import classify_mission_type as _classify_type
@@ -960,6 +960,7 @@ def run_post_mission(
                 instance_dir, project_name, autonomous_mode,
                 duration_minutes, pending_content,
                 mission_title=mission_title,
+                last_action=_jsonl_data.get("last_action", "") if _jsonl_data else "",
             )
             # Fire post_mission hooks before early return so hooks see quota events
             _fire_post_mission_hook(
