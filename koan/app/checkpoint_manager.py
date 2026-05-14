@@ -27,14 +27,14 @@ See GitHub issue #1247 for full design context.
 
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import json
 import re
-import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
+
+from app.utils import atomic_write
 
 
 # Regex matching ``CHECKPOINT: { ... }`` lines in Claude output.
@@ -289,30 +289,17 @@ def _extract_steps_from_pending(content: str) -> List[str]:
 
 
 def _write_checkpoint(path: Path, data: Dict) -> None:
-    """Atomically write a checkpoint JSON file with file locking."""
-    tmp = path.with_suffix(".tmp")
-    try:
-        with open(tmp, "w") as f:
-            fcntl.flock(f, fcntl.LOCK_EX)
-            json.dump(data, f, indent=2)
-            f.write("\n")
-            f.flush()
-            fcntl.flock(f, fcntl.LOCK_UN)
-        tmp.rename(path)
-    except OSError as e:
-        print(f"[checkpoint] Write failed: {e}", file=sys.stderr)
-        tmp.unlink(missing_ok=True)
+    """Atomically write a checkpoint JSON file using the project's atomic_write."""
+    content = json.dumps(data, indent=2) + "\n"
+    atomic_write(path, content)
 
 
 def _read_checkpoint(path: Path) -> Optional[Dict]:
     """Read and parse a checkpoint JSON file. Returns None on any error."""
     try:
-        with open(path) as f:
-            fcntl.flock(f, fcntl.LOCK_SH)
-            data = json.load(f)
-            fcntl.flock(f, fcntl.LOCK_UN)
+        data = json.loads(path.read_text())
         if isinstance(data, dict):
             return data
         return None
-    except (OSError, json.JSONDecodeError, FileNotFoundError):
+    except (OSError, json.JSONDecodeError, ValueError):
         return None

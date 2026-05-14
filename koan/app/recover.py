@@ -202,7 +202,7 @@ def recover_missions(instance_dir: str, dry_run: bool = False) -> tuple:
         return 0, []
 
     from app.missions import find_section_boundaries, normalize_content
-    from app.utils import modify_missions_file
+    from app.utils import atomic_write, modify_missions_file
 
     # Check pending.md once for the partial state detection
     # Use try/except to avoid TOCTOU race (file deleted between check and read)
@@ -261,11 +261,11 @@ def recover_missions(instance_dir: str, dry_run: bool = False) -> tuple:
                 continue
 
             if stripped.startswith("- ") and "~~" not in stripped:
+                # Extract clean mission text (no "- " prefix, no [r:N])
+                clean_text = _strip_recovery_counter(stripped).removeprefix("- ").strip()
                 # Check for a structured checkpoint for this mission
                 has_checkpoint = False
                 if _read_cp is not None:
-                    # Extract clean mission text (no "- " prefix, no [r:N])
-                    clean_text = _strip_recovery_counter(stripped).removeprefix("- ").strip()
                     cp = _read_cp(instance_dir, clean_text)
                     has_checkpoint = cp is not None
 
@@ -401,13 +401,13 @@ def _inject_checkpoint_context(instance_dir: str, mission_texts: list) -> None:
             except FileNotFoundError:
                 pass
             # Append checkpoint context after existing content
-            with open(pending_path, "w") as f:
-                if existing.strip():
-                    f.write(existing.rstrip() + "\n\n")
-                f.write(context + "\n")
-            print(f"[recover] Injected checkpoint context for: {mission_text[:60]}")
-        except OSError as e:
-            print(f"[recover] Failed to inject checkpoint context: {e}", file=sys.stderr)
+            new_content = ""
+            if existing.strip():
+                new_content = existing.rstrip() + "\n\n"
+            new_content += context + "\n"
+            atomic_write(pending_path, new_content)
+        except OSError:
+            pass
         break  # Only inject for the first mission with a checkpoint
 
 
