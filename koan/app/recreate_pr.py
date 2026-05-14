@@ -26,6 +26,7 @@ from app.claude_step import (
     _push_with_pr_fallback,
     _run_git,
     _safe_checkout,
+    resolve_pr_location,
     run_claude_step,
     run_project_tests,
 )
@@ -66,8 +67,15 @@ def run_recreate(
         from app.notify import send_telegram
         notify_fn = send_telegram
 
-    full_repo = f"{owner}/{repo}"
     actions_log: List[str] = []
+
+    # -- Step 0: Resolve actual PR location (cross-owner support) ---------------
+    try:
+        owner, repo = resolve_pr_location(owner, repo, pr_number, project_path)
+    except RuntimeError as e:
+        return False, str(e)
+
+    full_repo = f"{owner}/{repo}"
 
     # -- Step 1: Fetch PR context ------------------------------------------------
     notify_fn(f"Reading PR #{pr_number} to understand original intent...")

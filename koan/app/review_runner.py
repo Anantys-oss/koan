@@ -23,6 +23,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+from app.claude_step import resolve_pr_location
 from app.github import run_gh, sanitize_github_comment, find_bot_comment
 from app.github_url_parser import ISSUE_URL_PATTERN
 from app.prompts import load_prompt_or_skill
@@ -889,6 +890,12 @@ def run_review(
     if notify_fn is None:
         from app.notify import send_telegram
         notify_fn = send_telegram
+
+    # ── Step 0: Resolve actual PR location (cross-owner support) ──────
+    try:
+        owner, repo = resolve_pr_location(owner, repo, pr_number, project_path)
+    except RuntimeError as e:
+        return False, str(e), None
 
     from app.config import get_review_concurrency_config
     concurrency_cfg = get_review_concurrency_config()

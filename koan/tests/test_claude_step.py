@@ -14,6 +14,7 @@ from app.claude_step import (
     _rebase_onto_target,
     _run_git,
     commit_if_changes,
+    resolve_pr_location,
     run_claude,
     run_claude_step,
     run_project_tests,
@@ -1136,3 +1137,64 @@ class TestRunProjectTests:
         run_project_tests("/project")
         assert mock_run.call_args[1].get("stdin") == subprocess.DEVNULL or \
                mock_run.call_args[0][0] is not None  # just verify call was made
+
+
+# ---------- resolve_pr_location ----------
+
+
+class TestResolvePrLocation:
+    """Tests for resolve_pr_location — cross-owner PR URL resolution."""
+
+    @patch("app.claude_step.run_gh")
+    def test_fast_path_pr_exists_at_given_owner(self, mock_run_gh):
+        """When the PR exists at the given owner/repo, return immediately."""
+        mock_run_gh.return_value = '{"number": 42}'
+        owner, repo = resolve_pr_location("sukria", "koan", "42", "/project")
+        assert owner == "sukria"
+        assert repo == "koan"
+        # Should only call once (fast path)
+        mock_run_gh.assert_called_once()
+
+    @patch("app.utils.get_all_github_remotes")
+    @patch("app.claude_step.run_gh")
+    def test_fallback_to_git_remote(self, mock_run_gh, mock_remotes):
+        """When the PR doesn't exist at given owner, try git remotes."""
+        call_count = 0
+
+        def side_effect(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            # First call: PR not found at sukria/koan
+            if call_count == 1:
+                raise RuntimeError("Could not resolve to a pull request")
+            # Second call: found at anantys-oss/koan
+            return '{"number": 42}'
+
+        mock_run_gh.side_effect = side_effect
+        mock_remotes.return_value = ["sukria/koan", "anantys-oss/koan"]
+        owner, repo = resolve_pr_location("sukria", "koan", "42", "/project")
+
+        assert owner == "anantys-oss"
+        assert repo == "koan"
+
+    @patch("app.utils.get_all_github_remotes")
+    @patch("app.claude_step.run_gh")
+    def test_raises_when_pr_not_found_anywhere(self, mock_run_gh, mock_remotes):
+        """When no remote has the PR, raise RuntimeError."""
+        mock_run_gh.side_effect = RuntimeError("not found")
+        mock_remotes.return_value = ["origin/koan"]
+        with pytest.raises(RuntimeError, match="not found at sukria/koan"):
+            resolve_pr_location("sukria", "koan", "42", "/project")
+
+    @patch("app.utils.get_all_github_remotes")
+    @patch("app.claude_step.run_gh")
+    def test_skips_already_tried_remote(self, mock_run_gh, mock_remotes):
+        """Don't re-check the original owner/repo if it appears in remotes."""
+        mock_run_gh.side_effect = RuntimeError("not found")
+        # sukria/koan appears in remotes — should not be tried twice
+        mock_remotes.return_value = ["sukria/koan"]
+        with pytest.raises(RuntimeError):
+            resolve_pr_location("sukria", "koan", "42", "/project")
+
+        # Original check + no duplicates = 1 call total
+        assert mock_run_gh.call_count == 1

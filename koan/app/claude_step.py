@@ -556,6 +556,75 @@ def _is_permission_error(error_msg: str) -> bool:
     return any(ind in lower for ind in indicators)
 
 
+def resolve_pr_location(
+    owner: str,
+    repo: str,
+    pr_number: str,
+    project_path: str,
+) -> Tuple[str, str]:
+    """Resolve the actual GitHub owner/repo where a PR lives.
+
+    When a user provides a PR URL from a different fork (e.g.,
+    ``sukria/koan/pull/171`` instead of ``Anantys-oss/koan/pull/171``),
+    the PR may not exist at the given owner/repo.  This helper verifies
+    the PR exists, and if not, tries all git remotes of the local project
+    to find the repository that actually hosts the PR.
+
+    Args:
+        owner: Owner from the URL
+        repo: Repo name from the URL
+        pr_number: PR number as string
+        project_path: Local path to the project (for git remote discovery)
+
+    Returns:
+        Tuple of (resolved_owner, resolved_repo) where the PR exists.
+
+    Raises:
+        RuntimeError: If the PR cannot be found at any known remote.
+    """
+    # Fast path: check if PR exists at the given owner/repo
+    try:
+        run_gh(
+            "pr", "view", str(pr_number),
+            "--repo", f"{owner}/{repo}",
+            "--json", "number",
+        )
+        return owner, repo
+    except RuntimeError:
+        pass
+
+    # Fallback: try all git remotes from the local project
+    from app.utils import get_all_github_remotes
+
+    remotes = get_all_github_remotes(project_path)
+    tried = {f"{owner}/{repo}".lower()}
+
+    for remote_slug in remotes:
+        if remote_slug in tried:
+            continue
+        tried.add(remote_slug)
+        try:
+            run_gh(
+                "pr", "view", str(pr_number),
+                "--repo", remote_slug,
+                "--json", "number",
+            )
+            parts = remote_slug.split("/", 1)
+            print(
+                f"[claude_step] PR #{pr_number} not found at {owner}/{repo}, "
+                f"resolved to {remote_slug}",
+                file=sys.stderr,
+            )
+            return parts[0], parts[1]
+        except RuntimeError:
+            continue
+
+    raise RuntimeError(
+        f"PR #{pr_number} not found at {owner}/{repo} "
+        f"or any known remote ({', '.join(sorted(tried))})"
+    )
+
+
 def _build_pr_prompt(
     prompt_name: str,
     context: dict,
