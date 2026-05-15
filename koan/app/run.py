@@ -2063,6 +2063,26 @@ def _run_iteration(
                 log("error", f"Failed to read CLI output: {e}, {e2}")
         _reset_terminal()
 
+        # --- Update checkpoint with branch/progress as early as possible ---
+        # Done before auth/quota checks so progress is captured even on early returns.
+        if original_mission_title:
+            try:
+                from app.checkpoint_manager import (
+                    update_checkpoint, update_from_pending, update_from_stdout,
+                )
+                from app.git_sync import run_git as _cp_run_git
+                _cp_branch = _cp_run_git(project_path, "rev-parse", "--abbrev-ref", "HEAD")
+                if _cp_branch:
+                    update_checkpoint(instance, original_mission_title, branch=_cp_branch)
+                update_from_pending(instance, original_mission_title)
+                try:
+                    _cp_stdout = Path(stdout_file).read_text(errors="replace")
+                    update_from_stdout(instance, original_mission_title, _cp_stdout)
+                except OSError:
+                    pass
+            except Exception as e:
+                log("error", f"Checkpoint update failed (non-blocking): {e}")
+
         # --- Auth / Quota error detection (before finalizing mission) ---
         # Both require requeueing the mission so it isn't permanently lost:
         # - AUTH: Claude is logged out, needs human re-login
@@ -2117,25 +2137,6 @@ def _run_iteration(
                 ))
                 return True  # consumed API budget before quota hit
 
-        # --- Update checkpoint with branch/progress before finalizing ---
-        if original_mission_title:
-            try:
-                from app.checkpoint_manager import (
-                    update_checkpoint, update_from_pending, update_from_stdout,
-                )
-                from app.git_sync import run_git as _cp_run_git
-                _cp_branch = _cp_run_git(project_path, "rev-parse", "--abbrev-ref", "HEAD")
-                if _cp_branch:
-                    update_checkpoint(instance, original_mission_title, branch=_cp_branch)
-                update_from_pending(instance, original_mission_title)
-                try:
-                    _cp_stdout = Path(stdout_file).read_text(errors="replace")
-                    update_from_stdout(instance, original_mission_title, _cp_stdout)
-                except OSError:
-                    pass
-            except Exception as e:
-                log("error", f"Checkpoint update failed (non-blocking): {e}")
-
         # Complete/fail mission in missions.md (safety net — idempotent if Claude already did it)
         # Done BEFORE post-mission pipeline so quota exhaustion can't skip it.
         # Use original_mission_title because that's the needle in "In Progress".
@@ -2143,8 +2144,11 @@ def _run_iteration(
         if original_mission_title:
             _finalize_mission(instance, original_mission_title, project_name, claude_exit)
 
-        # --- Clean up checkpoint on successful completion ---
-        if original_mission_title and claude_exit == 0:
+        # --- Clean up checkpoint after mission finalization ---
+        # Delete on both success and failure to prevent orphaned checkpoint files.
+        # Recovery only matters for in-progress missions (crash); once finalized,
+        # the checkpoint is no longer needed.
+        if original_mission_title:
             try:
                 from app.checkpoint_manager import delete_checkpoint
                 delete_checkpoint(instance, original_mission_title)
