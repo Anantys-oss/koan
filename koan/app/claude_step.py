@@ -103,13 +103,12 @@ _ordered_remotes = ordered_remotes
 def _is_ancestor(maybe_ancestor: str, descendant: str, cwd: str) -> bool:
     """Return True if *maybe_ancestor* is an ancestor of (or equal to) *descendant*."""
     try:
-        result = subprocess.run(
+        _run_git(
             ["git", "merge-base", "--is-ancestor", maybe_ancestor, descendant],
-            stdin=subprocess.DEVNULL,
-            capture_output=True, cwd=cwd, timeout=10,
+            cwd=cwd, timeout=10,
         )
-        return result.returncode == 0
-    except (subprocess.TimeoutExpired, OSError):
+        return True
+    except (RuntimeError, subprocess.TimeoutExpired, OSError):
         return False
 
 

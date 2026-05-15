@@ -260,22 +260,22 @@ class TestRebaseOntoTarget:
 class TestIsAncestor:
     """Tests for _is_ancestor helper."""
 
-    @patch("app.claude_step.subprocess.run")
-    def test_returns_true_when_ancestor(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0)
+    @patch("app.claude_step._run_git")
+    def test_returns_true_when_ancestor(self, mock_git):
+        mock_git.return_value = ""
         assert _is_ancestor("origin/main", "upstream/main", "/project") is True
-        mock_run.assert_called_once()
-        cmd = mock_run.call_args[0][0]
+        mock_git.assert_called_once()
+        cmd = mock_git.call_args[0][0]
         assert cmd == ["git", "merge-base", "--is-ancestor", "origin/main", "upstream/main"]
 
-    @patch("app.claude_step.subprocess.run")
-    def test_returns_false_when_not_ancestor(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=1)
+    @patch("app.claude_step._run_git")
+    def test_returns_false_when_not_ancestor(self, mock_git):
+        mock_git.side_effect = RuntimeError("exit 1")
         assert _is_ancestor("origin/main", "upstream/main", "/project") is False
 
-    @patch("app.claude_step.subprocess.run")
-    def test_returns_false_on_timeout(self, mock_run):
-        mock_run.side_effect = subprocess.TimeoutExpired("git", 10)
+    @patch("app.claude_step._run_git")
+    def test_returns_false_on_timeout(self, mock_git):
+        mock_git.side_effect = subprocess.TimeoutExpired("git", 10)
         assert _is_ancestor("origin/main", "upstream/main", "/project") is False
 
 
