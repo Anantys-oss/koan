@@ -3103,7 +3103,7 @@ class TestRunIterationFirstIterationNotifications:
         # send_telegram (raw path) received them verbatim, including emojis.
         send_msgs = " | ".join(c.args[0] for c in mock_send.call_args_list)
         assert "🔍 Scanning GitHub notifications" in send_msgs
-        assert "📋 GitHub: scanned, no new missions. Scanning Jira..." in send_msgs
+        assert "📋 GitHub: scanned, no new missions. Scanning Jira" in send_msgs
         assert "🎯 Notifications clear" in send_msgs
 
     @patch("app.jira_config.get_jira_enabled", return_value=True)
