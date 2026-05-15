@@ -112,6 +112,30 @@ def _is_ancestor(maybe_ancestor: str, descendant: str, cwd: str) -> bool:
         return False
 
 
+def _prefetch_all_remotes(
+    base: str,
+    project_path: str,
+    preferred_remote: Optional[str] = None,
+    head_remote: Optional[str] = None,
+) -> None:
+    """Eagerly fetch the base branch from all relevant remotes.
+
+    Ensures every remote tracking ref is current before the rebase loop
+    starts, so that ancestry checks and --onto calculations use fresh data.
+    Failures are logged but never prevent the rebase attempt.
+    """
+    remotes_to_fetch: List[str] = list(_ordered_remotes(preferred_remote))
+    if head_remote and head_remote not in remotes_to_fetch:
+        remotes_to_fetch.append(head_remote)
+    for remote in remotes_to_fetch:
+        try:
+            _fetch_branch(remote, base, cwd=project_path)
+        except _REBASE_EXCEPTIONS as e:
+            print(f"[claude_step] Pre-fetch {remote}/{base} failed (non-fatal): {e}",
+                  file=sys.stderr)
+
+
+
 def _rebase_onto_target(
     base: str,
     project_path: str,
@@ -126,6 +150,9 @@ def _rebase_onto_target(
     ``upstream`` fallbacks.  When *head_remote* is known and differs from
     the target remote, uses ``--onto`` to replay only the PR's commits.
 
+    All relevant remotes are pre-fetched before the rebase loop so that
+    tracking refs are guaranteed fresh for ancestry checks and --onto.
+
     Args:
         on_conflict: Optional callback invoked when a rebase fails and a
             rebase-in-progress is detected (i.e. conflicts exist).
@@ -137,6 +164,8 @@ def _rebase_onto_target(
     Returns:
         Remote name used (e.g. "origin" or "upstream") on success, None on failure.
     """
+    _prefetch_all_remotes(base, project_path, preferred_remote, head_remote)
+
     for remote in _ordered_remotes(preferred_remote):
         try:
             _fetch_branch(remote, base, cwd=project_path)
