@@ -56,6 +56,7 @@ test: setup
 
 test-skills: setup
 	@if [ -d instance/skills ] && find -L instance/skills -path '*/tests/test_*.py' -print -quit 2>/dev/null | grep -q .; then \
+		$(VENV)/bin/pip install -q pytest pytest-cov 2>/dev/null; \
 		echo "→ running skill-local tests (instance/skills/**/tests)"; \
 		KOAN_REPO=$(PWD) KOAN_ROOT=/tmp/test-koan PYTHONPATH=koan $(PYTHON) -m pytest instance/skills/ -v; \
 	else \
