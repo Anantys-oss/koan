@@ -168,8 +168,9 @@ def _ensure_tokens(stdout_file: str, tokens: Optional[dict] = None) -> Optional[
     """Resolve token details, reading from file only if not pre-extracted."""
     if tokens is not None:
         return tokens
-    from app.usage_estimator import extract_tokens_detailed
-    return extract_tokens_detailed(Path(stdout_file))
+    from app.token_parser import extract_tokens
+    result = extract_tokens(Path(stdout_file))
+    return result.to_dict() if result is not None else None
 
 
 def _extract_cache_line(stdout_file: str, tokens: Optional[dict] = None) -> str:
@@ -1115,8 +1116,9 @@ def run_post_mission(
         # file 3 times.
         _tokens = None
         try:
-            from app.usage_estimator import extract_tokens_detailed
-            _tokens = extract_tokens_detailed(Path(stdout_file))
+            from app.token_parser import extract_tokens
+            _result = extract_tokens(Path(stdout_file))
+            _tokens = _result.to_dict() if _result is not None else None
         except Exception as e:
             _log_runner("error", f"Token extraction failed: {e}")
 
