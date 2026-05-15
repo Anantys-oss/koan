@@ -266,31 +266,39 @@ def truncate_diff(diff: str, max_chars: int) -> str:
     Files that don't fit are listed as a summary at the end so the
     reviewer knows they exist.
     """
-    import re as _re
-
     if not diff or len(diff) <= max_chars:
         return diff
 
     # Split into per-file blocks at 'diff --git' boundaries.
-    raw_blocks = _re.split(r'(?=^diff --git )', diff, flags=_re.MULTILINE)
+    raw_blocks = re.split(r'(?=^diff --git )', diff, flags=re.MULTILINE)
     blocks = [b for b in raw_blocks if b.strip()]
 
     if not blocks:
         # Can't parse structure — fall back to character truncation.
         return truncate_text(diff, max_chars)
 
+    # Pre-scan filenames so we can estimate the worst-case footer size
+    # and reserve budget for it, ensuring output stays within max_chars.
+    filenames: list[str] = []
+    for block in blocks:
+        m = re.match(r'diff --git a/\S+ b/(\S+)', block)
+        filenames.append(m.group(1) if m else "(unknown file)")
+
     kept: list[str] = []
     skipped: list[str] = []
     used = 0
 
-    for block in blocks:
-        if used + len(block) <= max_chars:
+    for idx, (block, name) in enumerate(zip(blocks, filenames)):
+        # Reserve budget for a footer that lists all subsequent blocks
+        # (worst case: every block after this one gets skipped).
+        subsequent = filenames[idx + 1:]
+        footer_size = _estimate_footer_size(len(subsequent), subsequent)
+        budget = max_chars - footer_size
+
+        if used + len(block) <= budget:
             kept.append(block)
             used += len(block)
         else:
-            # Extract filename from the 'diff --git a/... b/...' header.
-            m = _re.match(r'diff --git a/\S+ b/(\S+)', block)
-            name = m.group(1) if m else "(unknown file)"
             skipped.append(name)
 
     result = "".join(kept)
@@ -302,6 +310,15 @@ def truncate_diff(diff: str, max_chars: int) -> str:
             f"Omitted files:\n{listing}\n"
         )
     return result
+
+
+def _estimate_footer_size(count: int, names: list[str]) -> int:
+    """Return estimated byte size of the omitted-files footer."""
+    if count == 0:
+        return 0
+    listing = sum(len(f"  - {n}\n") for n in names)
+    header = len(f"\n\n...(diff truncated — {count} file(s) omitted, 0 file(s) shown)\nOmitted files:\n")
+    return header + listing
 
 
 def _locked_missions_rw(missions_path: Path, transform):
