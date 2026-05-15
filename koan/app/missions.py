@@ -1755,6 +1755,7 @@ def quarantine_mission(
 def _enforce_quarantine_cap(path: "Path") -> None:
     """If the quarantine file exceeds QUARANTINE_MAX_BYTES, prune oldest half."""
     from pathlib import Path
+    from app.utils import atomic_write
 
     path = Path(path)
     if not path.exists():
@@ -1765,7 +1766,7 @@ def _enforce_quarantine_cap(path: "Path") -> None:
     lines = path.read_text().splitlines(keepends=True)
     # Keep the newer half
     half = len(lines) // 2
-    path.write_text("".join(lines[half:]))
+    atomic_write(path, "".join(lines[half:]))
 
 
 # ── CI section helpers ────────────────────────────────────────────────────────

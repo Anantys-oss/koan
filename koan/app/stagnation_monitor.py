@@ -246,8 +246,8 @@ def _save_retry_tracker(instance_dir: str, data: dict) -> None:
     path = _retry_tracker_path(instance_dir)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f)
+        from app.utils import atomic_write_json
+        atomic_write_json(path, data)
     except OSError as e:
         # Stderr diagnostic — losing the counter just means an extra retry,
         # not a correctness bug.
