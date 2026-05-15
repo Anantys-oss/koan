@@ -101,7 +101,8 @@ def _get_usage_decision(usage_md: Path, count: int, projects_str: str):
         budget_mode = _get_budget_mode()
         warn_pct, stop_pct = _get_budget_thresholds()
         tracker = UsageTracker(usage_md, count, budget_mode=budget_mode,
-                               warn_pct=warn_pct, stop_pct=stop_pct)
+                               warn_pct=warn_pct, stop_pct=stop_pct,
+                               instance_dir=usage_md.parent)
         mode = tracker.decide_mode()
 
         # Verify the chosen mode is affordable; downgrade if not
@@ -141,6 +142,127 @@ def _get_usage_decision(usage_md: Path, count: int, projects_str: str):
             "display_lines": [],
             "tracker_error": str(e),
         }
+
+
+BURN_RATE_WARNING_THRESHOLD_MIN = 60.0
+BURN_RATE_WARNING_MIN_RESET_GAP_MIN = 120.0
+
+
+def _read_session_pct_and_reset(usage_state_path: Path):
+    """Return (session_pct, minutes_until_session_reset) or (None, None).
+
+    Reads usage_state.json directly so the warning logic does not depend on
+    the freshness of usage.md.
+    """
+    try:
+        import json
+        from datetime import datetime
+        from app.usage_estimator import (
+            SESSION_DURATION_HOURS,
+            _get_limits,
+        )
+        from app.utils import load_config
+    except (ImportError, OSError, ValueError):
+        return None, None
+
+    if not usage_state_path.exists():
+        return None, None
+
+    try:
+        state = json.loads(usage_state_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None, None
+
+    try:
+        session_limit, _ = _get_limits(load_config())
+    except (OSError, ValueError, TypeError):
+        return None, None
+    if session_limit <= 0:
+        return None, None
+
+    tokens = state.get("session_tokens", 0) or 0
+    session_pct = min(100.0, tokens / session_limit * 100.0)
+
+    try:
+        session_start = datetime.fromisoformat(state["session_start"])
+    except (KeyError, ValueError, TypeError):
+        return session_pct, None
+
+    elapsed = (datetime.now() - session_start).total_seconds() / 60.0
+    minutes_remaining = max(0.0, SESSION_DURATION_HOURS * 60.0 - elapsed)
+    return session_pct, minutes_remaining
+
+
+def _maybe_warn_burn_rate(instance_dir: Path, usage_state_path: Path) -> None:
+    """Fire a Telegram warning when projected exhaustion is imminent.
+
+    Conditions (all must hold):
+      - rolling burn rate has enough history to estimate
+      - time-to-exhaustion < 60 minutes
+      - session reset is still > 2 hours away (otherwise quota will reset
+        before the user could meaningfully react)
+      - no warning has been fired since the start of the current session
+    """
+    try:
+        from app.burn_rate import (
+            time_to_exhaustion,
+            burn_rate_pct_per_minute,
+            get_last_warned_at,
+            mark_warned,
+            clear_warning,
+        )
+    except ImportError:
+        return
+
+    session_pct, minutes_until_reset = _read_session_pct_and_reset(
+        usage_state_path
+    )
+    if session_pct is None or minutes_until_reset is None:
+        return
+
+    last_warned = get_last_warned_at(instance_dir)
+    if last_warned is not None:
+        try:
+            import json
+            from datetime import datetime, timezone
+            state = json.loads(usage_state_path.read_text())
+            session_start = datetime.fromisoformat(state["session_start"])
+            if session_start.tzinfo is None:
+                session_start = session_start.replace(tzinfo=timezone.utc)
+            if last_warned < session_start:
+                clear_warning(instance_dir)
+                last_warned = None
+        except (json.JSONDecodeError, OSError, KeyError, ValueError, TypeError):
+            pass
+
+    if last_warned is not None:
+        return  # Already warned for this session cycle
+
+    if minutes_until_reset <= BURN_RATE_WARNING_MIN_RESET_GAP_MIN:
+        return  # Quota will reset soon anyway — no point alerting
+
+    tte = time_to_exhaustion(instance_dir, session_pct)
+    if tte is None or tte >= BURN_RATE_WARNING_THRESHOLD_MIN:
+        return
+
+    rate = burn_rate_pct_per_minute(instance_dir) or 0.0
+    msg = (
+        "⚠️ Burn-rate alert: at "
+        f"{rate * 60:.1f}%/h the session quota will be exhausted in "
+        f"~{tte:.0f} min, but resets in "
+        f"~{minutes_until_reset / 60:.1f}h. Consider pausing or switching to "
+        "lighter missions."
+    )
+
+    try:
+        from app.utils import append_to_outbox
+        outbox = Path(instance_dir) / "outbox.md"
+        append_to_outbox(outbox, msg)
+    except (ImportError, OSError) as exc:
+        _log_iteration("error", f"Burn-rate warning send failed: {exc}")
+        return
+
+    mark_warned(instance_dir)
 
 
 def _get_cost_today(instance_dir: Path) -> float:
@@ -892,6 +1014,10 @@ def plan_iteration(
 
     # Step 1: Refresh usage
     _refresh_usage(usage_state, usage_md, count)
+
+    # Step 1b: Warn the human when the rolling burn rate predicts a near-future
+    # quota wipeout. Fires at most once per quota cycle.
+    _maybe_warn_burn_rate(instance, usage_state)
 
     # Step 2: Get usage decision (mode, available%, reason, project idx)
     decision = _get_usage_decision(usage_md, count, projects_str)

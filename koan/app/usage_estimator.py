@@ -194,20 +194,31 @@ def _get_today_cache_line(instance_dir: Path) -> str:
         return ""
 
 
-def cmd_update(claude_json_path: Path, state_file: Path, usage_md: Path):
-    """Update state with tokens from a Claude run, then refresh usage.md."""
+def cmd_update(claude_json_path: Path, state_file: Path,
+               usage_md: Path) -> Optional[float]:
+    """Update state with tokens from a Claude run, then refresh usage.md.
+
+    Returns:
+        The percentage of the session token limit consumed by this run
+        (0-100), or ``None`` when no usable token count was extracted.
+    """
     config = load_config()
     state = _load_state(state_file)
     state = _maybe_reset(state)
 
     tokens = _extract_tokens(claude_json_path)
+    cost_pct: Optional[float] = None
     if tokens is not None and tokens > 0:
         state["session_tokens"] = state.get("session_tokens", 0) + tokens
         state["weekly_tokens"] = state.get("weekly_tokens", 0) + tokens
         state["runs"] = state.get("runs", 0) + 1
+        session_limit, _ = _get_limits(config)
+        if session_limit > 0:
+            cost_pct = tokens / session_limit * 100.0
 
     _save_state(state_file, state)
     _write_usage_md(state, usage_md, config)
+    return cost_pct
 
 
 def cmd_refresh(state_file: Path, usage_md: Path):

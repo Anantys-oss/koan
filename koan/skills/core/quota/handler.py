@@ -79,7 +79,8 @@ def _handle_display(ctx):
 
     if state:
         state = _apply_resets(state)
-        parts.append(_format_koan_usage(state, session_limit, weekly_limit))
+        parts.append(_format_koan_usage(state, session_limit, weekly_limit,
+                                        instance_dir=instance_dir))
     else:
         parts.append("No internal usage data yet (first run?).")
 
@@ -189,7 +190,7 @@ def _time_remaining(start_iso, duration_hours):
     return f"{minutes}m"
 
 
-def _format_koan_usage(state, session_limit, weekly_limit):
+def _format_koan_usage(state, session_limit, weekly_limit, instance_dir=None):
     """Format Koan's internal usage tracking."""
     session_tokens = state.get("session_tokens", 0)
     weekly_tokens = state.get("weekly_tokens", 0)
@@ -210,6 +211,13 @@ def _format_koan_usage(state, session_limit, weekly_limit):
         f"  {_progress_bar(session_pct)} ~{session_pct}%",
         f"  {_format_tokens(session_tokens)} / {_format_tokens(session_limit)} tokens",
         f"  Resets in {session_reset} | {runs} run(s) this session",
+    ]
+
+    burn_lines = _format_burn_rate(instance_dir, session_pct)
+    if burn_lines:
+        lines.extend(burn_lines)
+
+    lines.extend([
         "",
         "Weekly quota (token estimate)",
         f"  {_progress_bar(weekly_pct)} ~{weekly_pct}%",
@@ -218,9 +226,48 @@ def _format_koan_usage(state, session_limit, weekly_limit):
         "",
         "⚠️ These are estimates based on token counting.",
         "Real API quota may differ — use /quota <N> to correct.",
-    ]
+    ])
 
     return "\n".join(lines)
+
+
+def _format_burn_rate(instance_dir, session_pct):
+    """Build the burn-rate summary lines for /quota output.
+
+    Returns an empty list when there is not enough history to estimate.
+    """
+    if instance_dir is None:
+        return []
+
+    try:
+        from app.burn_rate import (
+            burn_rate_pct_per_minute,
+            time_to_exhaustion,
+        )
+    except ImportError:
+        return []
+
+    rate = burn_rate_pct_per_minute(instance_dir)
+    if rate is None:
+        return []
+
+    tte = time_to_exhaustion(instance_dir, session_pct)
+    tte_str = "—" if tte is None else _format_minutes(tte)
+    return [
+        f"  Burn rate: ~{rate * 60:.1f}%/h ({rate:.2f}%/min)",
+        f"  Est. time to exhaustion: {tte_str}",
+    ]
+
+
+def _format_minutes(minutes):
+    """Format a positive minute count as a friendly duration string."""
+    if minutes <= 0:
+        return "0m"
+    if minutes >= 60:
+        hours = int(minutes // 60)
+        mins = int(minutes % 60)
+        return f"{hours}h{mins:02d}m"
+    return f"{int(minutes)}m"
 
 
 def _format_cost_breakdown(instance_dir):
