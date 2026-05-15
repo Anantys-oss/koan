@@ -1,9 +1,12 @@
 """Tests for usage_tracker.py — Usage parsing and autonomous mode decisions."""
 
 import logging
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from pathlib import Path
 from unittest.mock import patch
+from app import burn_rate
 from app.usage_tracker import UsageTracker, _get_budget_mode, MALFORMED_DEFAULT_PCT
 
 
@@ -435,6 +438,85 @@ class TestBudgetMode:
         tracker = UsageTracker(usage, runs_completed=5, budget_mode="session_only")
         # available = min(60, 90) = 60
         assert tracker.can_afford_run("deep") is True
+
+
+class TestBurnRateDowngrade:
+    """decide_mode should drop one tier when projected exhaustion is near."""
+
+    @staticmethod
+    def _seed_burn_rate(tmp_path, pct_per_min):
+        """Seed the rolling buffer to produce a desired burn rate.
+
+        Records 6 samples spaced 1 minute apart so the first/last span is 5
+        minutes; the consumed cost (excluding the first) is `5 * pct_per_min`.
+        """
+        base = datetime(2026, 5, 15, 12, 0, tzinfo=timezone.utc)
+        burn_rate.record_run(tmp_path, cost_pct=0.0, timestamp=base)
+        for i in range(1, 6):
+            burn_rate.record_run(
+                tmp_path,
+                cost_pct=pct_per_min,
+                timestamp=base + timedelta(minutes=i),
+            )
+
+    def test_downgrades_deep_to_implement_when_exhaustion_imminent(self, tmp_path):
+        usage = tmp_path / "usage.md"
+        usage.write_text(
+            "Session (5hr) : 50% (reset in 4h)\nWeekly (7 day) : 20% (Resets in 5d)"
+        )
+        # 50% remaining at 5%/min → ~10 min to exhaustion → downgrade
+        self._seed_burn_rate(tmp_path, pct_per_min=5.0)
+        tracker = UsageTracker(usage, budget_mode="session_only",
+                               instance_dir=tmp_path)
+        mode = tracker.decide_mode()
+        assert mode == "implement"
+        assert tracker.last_burn_rate_downgrade == "deep"
+
+    def test_no_downgrade_with_slow_burn(self, tmp_path):
+        usage = tmp_path / "usage.md"
+        usage.write_text(
+            "Session (5hr) : 10% (reset in 4h)\nWeekly (7 day) : 15% (Resets in 5d)"
+        )
+        # 90% remaining at 0.1%/min → 900 min to exhaustion → keep deep
+        self._seed_burn_rate(tmp_path, pct_per_min=0.1)
+        tracker = UsageTracker(usage, budget_mode="session_only",
+                               instance_dir=tmp_path)
+        assert tracker.decide_mode() == "deep"
+        assert tracker.last_burn_rate_downgrade is None
+
+    def test_no_downgrade_when_no_instance_dir(self, tmp_path):
+        usage = tmp_path / "usage.md"
+        usage.write_text(
+            "Session (5hr) : 10% (reset in 4h)\nWeekly (7 day) : 15% (Resets in 5d)"
+        )
+        self._seed_burn_rate(tmp_path, pct_per_min=5.0)
+        # Without instance_dir, decide_mode falls back to plain budget logic
+        tracker = UsageTracker(usage, budget_mode="session_only")
+        assert tracker.decide_mode() == "deep"
+
+    def test_no_downgrade_when_history_too_short(self, tmp_path):
+        usage = tmp_path / "usage.md"
+        usage.write_text(
+            "Session (5hr) : 50% (reset in 1h)\nWeekly (7 day) : 20% (Resets in 5d)"
+        )
+        burn_rate.record_run(tmp_path, cost_pct=10.0)
+        tracker = UsageTracker(usage, budget_mode="session_only",
+                               instance_dir=tmp_path)
+        # 50% remaining → deep mode normally. No burn data → no downgrade.
+        assert tracker.decide_mode() == "deep"
+
+    def test_reason_mentions_burn_rate_downgrade(self, tmp_path):
+        usage = tmp_path / "usage.md"
+        usage.write_text(
+            "Session (5hr) : 50% (reset in 4h)\nWeekly (7 day) : 20% (Resets in 5d)"
+        )
+        self._seed_burn_rate(tmp_path, pct_per_min=5.0)
+        tracker = UsageTracker(usage, budget_mode="session_only",
+                               instance_dir=tmp_path)
+        mode = tracker.decide_mode()
+        reason = tracker.get_decision_reason(mode)
+        assert "burn-rate" in reason.lower()
+        assert "deep" in reason
 
 
 class TestGetBudgetMode:
