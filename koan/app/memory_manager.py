@@ -993,7 +993,7 @@ class MemoryManager:
         result = run_cli_with_retry(
             cmd,
             capture_output=True, text=True,
-            timeout=120, cwd=cwd,
+            timeout=180, cwd=cwd,
         )
         if result.returncode != 0:
             raise RuntimeError(f"CLI returned {result.returncode}: {result.stderr[:200]}")
@@ -1406,8 +1406,9 @@ class MemoryManager:
                     try:
                         compact_stats = self.compact_learnings(name, compact_learnings_lines)
                         if not compact_stats.get("skipped"):
+                            method = " (fallback)" if compact_stats.get("fallback") else ""
                             stats[f"learnings_compacted_{name}"] = (
-                                f"{compact_stats['original_lines']}->{compact_stats['compacted_lines']}"
+                                f"{compact_stats['original_lines']}->{compact_stats['compacted_lines']}{method}"
                             )
                     except Exception as e:
                         print(f"[memory_manager] Compaction failed for {name}: {e}", file=sys.stderr)
