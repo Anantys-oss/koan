@@ -284,41 +284,44 @@ def truncate_diff(diff: str, max_chars: int) -> str:
         m = re.match(r'diff --git a/\S+ b/(\S+)', block)
         filenames.append(m.group(1) if m else "(unknown file)")
 
+    # Greedy first pass: keep blocks that fit without any footer.
     kept: list[str] = []
     skipped: list[str] = []
     used = 0
 
-    for idx, (block, name) in enumerate(zip(blocks, filenames)):
-        # Reserve budget for a footer that lists all subsequent blocks
-        # (worst case: every block after this one gets skipped).
-        subsequent = filenames[idx + 1:]
-        footer_size = _estimate_footer_size(len(subsequent), subsequent)
-        budget = max_chars - footer_size
-
-        if used + len(block) <= budget:
-            kept.append(block)
+    for block, name in zip(blocks, filenames):
+        if used + len(block) <= max_chars:
+            kept.append((block, name))
             used += len(block)
         else:
             skipped.append(name)
 
-    result = "".join(kept)
+    # If we skipped files, we need a footer — trim kept blocks until
+    # the footer fits too.
+    while skipped and kept:
+        footer = _build_footer(skipped, len(kept))
+        if used + len(footer) <= max_chars:
+            break
+        # Drop the last kept block to make room for the footer.
+        dropped_block, dropped_name = kept.pop()
+        used -= len(dropped_block)
+        skipped.insert(0, dropped_name)
+
+    result = "".join(b for b, _ in kept)
     if skipped:
-        listing = "\n".join(f"  - {f}" for f in skipped)
-        result += (
-            f"\n\n...(diff truncated — {len(skipped)} file(s) omitted, "
-            f"{len(kept)} file(s) shown)\n"
-            f"Omitted files:\n{listing}\n"
-        )
+        result += _build_footer(skipped, len(kept))
     return result
 
 
-def _estimate_footer_size(count: int, names: list[str]) -> int:
-    """Return estimated byte size of the omitted-files footer."""
-    if count == 0:
-        return 0
-    listing = sum(len(f"  - {n}\n") for n in names)
-    header = len(f"\n\n...(diff truncated — {count} file(s) omitted, 0 file(s) shown)\nOmitted files:\n")
-    return header + listing
+def _build_footer(skipped: list[str], kept_count: int) -> str:
+    """Build the omitted-files footer string."""
+    listing = "\n".join(f"  - {f}" for f in skipped)
+    return (
+        f"\n\n...(diff truncated — {len(skipped)} file(s) omitted, "
+        f"{kept_count} file(s) shown)\n"
+        f"Omitted files:\n{listing}\n"
+    )
+
 
 
 def _locked_missions_rw(missions_path: Path, transform):

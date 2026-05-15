@@ -817,11 +817,15 @@ class TestTruncateDiff:
 
     def test_preserves_whole_file_blocks(self):
         from app.utils import truncate_diff
-        block_a = self._make_file_block("a.py", lines=5)
-        block_b = self._make_file_block("b.py", lines=5)
+        # Use a small first block and a large second block so the budget
+        # comfortably fits block_a + footer but not block_b.
+        block_a = self._make_file_block("a.py", lines=3)
+        block_b = self._make_file_block("b.py", lines=50)
         diff = block_a + block_b
-        # Budget fits only the first block
-        result = truncate_diff(diff, len(block_a) + 50)
+        # Budget: block_a (~87) + 120 for footer, well under block_b (~387)
+        budget = len(block_a) + 120
+        assert budget < len(diff), "budget must be less than full diff"
+        result = truncate_diff(diff, budget)
         assert "a.py" in result
         assert "b.py" in result  # listed in omitted summary
         assert "omitted" in result
@@ -831,11 +835,13 @@ class TestTruncateDiff:
     def test_lists_omitted_files(self):
         from app.utils import truncate_diff
         block_a = self._make_file_block("src/a.py", lines=3)
-        block_b = self._make_file_block("src/b.py", lines=3)
-        block_c = self._make_file_block("src/c.py", lines=3)
+        block_b = self._make_file_block("src/b.py", lines=50)
+        block_c = self._make_file_block("src/c.py", lines=50)
         diff = block_a + block_b + block_c
-        # Budget fits only first block
-        result = truncate_diff(diff, len(block_a) + 50)
+        # Budget fits first block + footer, but not second/third blocks
+        budget = len(block_a) + 150
+        assert budget < len(block_a) + len(block_b), "budget must exclude block_b"
+        result = truncate_diff(diff, budget)
         assert "2 file(s) omitted" in result
         assert "src/b.py" in result
         assert "src/c.py" in result
