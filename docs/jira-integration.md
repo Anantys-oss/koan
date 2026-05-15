@@ -94,6 +94,7 @@ All settings live under the `jira:` key in `instance/config.yaml`.
 | `max_age_hours` | int | `24` | Ignore comments older than this (stale protection) |
 | `check_interval_seconds` | int | `60` | Base polling interval in seconds (min: 10) |
 | `max_check_interval_seconds` | int | `180` | Maximum backoff interval when idle (min: 30) |
+| `max_issues_per_cycle` | int | `200` | Per-cycle cap on issues inspected for @mentions (min: 1). Each inspected issue triggers a separate `/comment` API call, so this directly bounds cold-start API consumption. A WARNING logs when the cap fires |
 | `projects` | dict | `{}` | Jira project key mapping. Simple: `FOO: myproject`. Extended: `FOO: {project: myproject, branch: "11.126"}` |
 
 ### Environment variables

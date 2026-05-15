@@ -3398,6 +3398,104 @@ class TestTryAssignmentNotification:
         result = _try_assignment_notification(notif, reg, {})
         assert result is False
 
+    def test_persistent_dedup_blocks_duplicate_across_restart(
+        self, review_notification, review_registry, tmp_path, monkeypatch,
+    ):
+        """After a /review mission has been queued once, a second call with
+        the same (id, updated_at) MUST NOT insert a duplicate — even when the
+        in-memory _notif_cache is cold (simulating a restart) AND the mission
+        has moved out of Pending (so the missions.md dedup at line 962 cannot
+        fire). The persistent thread tracker is the only thing protecting us.
+        """
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        missions_path = tmp_path / "instance" / "missions.md"
+        missions_path.parent.mkdir(parents=True)
+        missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        with patch("app.github_command_handler.resolve_project_from_notification",
+                    return_value=("koan", "sukria", "koan")), \
+             patch("app.github_command_handler.is_notification_stale", return_value=False), \
+             patch("app.github_command_handler._is_subject_closed", return_value=None), \
+             patch("app.github_command_handler.mark_notification_read"):
+            first = _try_assignment_notification(
+                review_notification, review_registry, {},
+            )
+            # Simulate the runner picking up the mission: move it out of Pending
+            # so the in-process missions.md dedup can no longer catch a dup.
+            missions_path.write_text(
+                "# Pending\n\n# In Progress\n\n"
+                "- [project:koan] /review https://github.com/sukria/koan/pull/99 \U0001f4ec\n"
+                "\n# Done\n"
+            )
+            second = _try_assignment_notification(
+                review_notification, review_registry, {},
+            )
+
+        assert first is True
+        assert second is True  # idempotent — handled, not failed
+        content = missions_path.read_text()
+        # Exactly one mission line for this URL across the whole file
+        assert content.count("/review https://github.com/sukria/koan/pull/99") == 1
+
+    def test_bumped_updated_at_queues_new_mission(
+        self, review_notification, review_registry, tmp_path, monkeypatch,
+    ):
+        """A new updated_at (re-requested review or new commits pushed) MUST
+        queue a fresh mission — the composite key is the renew signal."""
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        missions_path = tmp_path / "instance" / "missions.md"
+        missions_path.parent.mkdir(parents=True)
+        missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        with patch("app.github_command_handler.resolve_project_from_notification",
+                    return_value=("koan", "sukria", "koan")), \
+             patch("app.github_command_handler.is_notification_stale", return_value=False), \
+             patch("app.github_command_handler._is_subject_closed", return_value=None), \
+             patch("app.github_command_handler.mark_notification_read"):
+            _try_assignment_notification(review_notification, review_registry, {})
+            # Move first mission out of Pending so the in-flight dedup
+            # doesn't fire — only the thread tracker decides here.
+            missions_path.write_text(
+                "# Pending\n\n# In Progress\n\n"
+                "- [project:koan] /review https://github.com/sukria/koan/pull/99 \U0001f4ec\n"
+                "\n# Done\n"
+            )
+            renewed = dict(review_notification)
+            renewed["updated_at"] = "2026-03-22T05:00:00Z"
+            result = _try_assignment_notification(renewed, review_registry, {})
+
+        assert result is True
+        content = missions_path.read_text()
+        assert content.count("/review https://github.com/sukria/koan/pull/99") == 2
+
+    def test_empty_notif_id_skips_tracker_to_avoid_useless_key(
+        self, review_notification, review_registry, tmp_path, monkeypatch,
+    ):
+        """If notification.id is missing, the composite key would be useless
+        (a ':<updated_at>' record never matches future polls). The mission
+        must still queue, but track_thread MUST NOT be called with a junk key.
+        """
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        missions_path = tmp_path / "instance" / "missions.md"
+        missions_path.parent.mkdir(parents=True)
+        missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        notif = dict(review_notification)
+        notif["id"] = ""  # malformed: no id
+
+        with patch("app.github_command_handler.resolve_project_from_notification",
+                    return_value=("koan", "sukria", "koan")), \
+             patch("app.github_command_handler.is_notification_stale", return_value=False), \
+             patch("app.github_command_handler._is_subject_closed", return_value=None), \
+             patch("app.github_command_handler.mark_notification_read"), \
+             patch("app.github_notification_tracker.track_thread") as mock_track:
+            result = _try_assignment_notification(notif, review_registry, {})
+
+        assert result is True
+        content = missions_path.read_text()
+        assert "/review https://github.com/sukria/koan/pull/99" in content
+        mock_track.assert_not_called()
+
     def test_assignment_reason_mapping(self):
         """Verify the reason-to-command mapping."""
         assert _ASSIGNMENT_REASON_TO_COMMAND["review_requested"] == "review"

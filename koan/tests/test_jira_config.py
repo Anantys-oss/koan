@@ -14,6 +14,7 @@ from app.jira_config import (
     get_jira_enabled,
     get_jira_max_age_hours,
     get_jira_max_check_interval,
+    get_jira_max_issues_per_cycle,
     get_jira_nickname,
     get_jira_project_map,
     validate_jira_config,
@@ -154,6 +155,30 @@ class TestGetJiraMaxCheckInterval:
     def test_floor_at_30(self):
         cfg = {"jira": {"max_check_interval_seconds": 10}}
         assert get_jira_max_check_interval(cfg) == 30
+
+
+class TestGetJiraMaxIssuesPerCycle:
+    def test_default(self):
+        assert get_jira_max_issues_per_cycle({}) == 200
+
+    def test_custom(self):
+        cfg = {"jira": {"max_issues_per_cycle": 500}}
+        assert get_jira_max_issues_per_cycle(cfg) == 500
+
+    def test_floor_at_1(self):
+        cfg = {"jira": {"max_issues_per_cycle": 0}}
+        assert get_jira_max_issues_per_cycle(cfg) == 1
+
+    def test_negative_clamped(self):
+        cfg = {"jira": {"max_issues_per_cycle": -50}}
+        assert get_jira_max_issues_per_cycle(cfg) == 1
+
+    def test_invalid_returns_default(self):
+        cfg = {"jira": {"max_issues_per_cycle": "lots"}}
+        assert get_jira_max_issues_per_cycle(cfg) == 200
+
+    def test_missing_jira_key(self):
+        assert get_jira_max_issues_per_cycle({"github": {}}) == 200
 
 
 class TestGetJiraProjectMap:

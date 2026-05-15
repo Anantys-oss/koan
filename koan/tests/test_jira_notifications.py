@@ -451,3 +451,43 @@ class TestFetchJiraMentions:
 
         assert len(result.mentions) == 1
         assert result.mentions[0]["issue_key"] == "FOO-046"
+
+    @patch("app.jira_notifications._get_issue_comments")
+    @patch("app.jira_notifications._search_issues_with_comments")
+    def test_max_issues_per_cycle_override_narrows_inspection(
+        self, mock_search, mock_comments,
+    ):
+        """jira.max_issues_per_cycle overrides the default cap. With a 5-cap
+        and a mention at rank 10, the deeper mention is silently dropped —
+        and only the first 5 issues should trigger comment fetches.
+        """
+        issues = [{"key": f"FOO-{i:03}", "fields": {"summary": f"i{i}"}} for i in range(20)]
+
+        def search_side_effect(base_url, auth_header, project_keys, since, max_issues=None):
+            return issues[:max_issues] if max_issues else issues
+
+        mock_search.side_effect = search_side_effect
+
+        from datetime import datetime, timezone
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000+0000")
+
+        def comments_side_effect(base_url, auth_header, issue_key, since):
+            if issue_key == "FOO-010":  # past the 5-cap
+                return [{
+                    "id": "999",
+                    "body": "@koan-bot plan",
+                    "author": {"emailAddress": "u@example.com", "displayName": "U"},
+                    "updated": now_iso,
+                }]
+            return []
+
+        mock_comments.side_effect = comments_side_effect
+
+        config = self._make_config()
+        config["jira"]["max_issues_per_cycle"] = 5
+        result = fetch_jira_mentions(config, {"FOO": "myproject"})
+
+        # Cap takes effect: deeper mention dropped, only first 5 inspected.
+        assert result.mentions == []
+        inspected_keys = [call.args[2] for call in mock_comments.call_args_list]
+        assert inspected_keys == [f"FOO-{i:03}" for i in range(5)]
