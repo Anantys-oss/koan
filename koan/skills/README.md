@@ -61,6 +61,8 @@ handler: handler.py
 | `github_enabled` | no | Set to `true` to allow triggering via GitHub @mentions (default: `false`) |
 | `github_context_aware` | no | Set to `true` if the skill accepts additional context after the command (default: `false`) |
 | `caveman` | no | Set to `true` to opt this skill into the [caveman](#caveman-output-optimization) output optimization. Defaults to `false` (caveman does not apply unless explicitly opted in). |
+| `forward_result` | no | Set to `true` to forward Claude's final result text to outbox.md when a mission for this skill completes. See [Result forwarding](#result-forwarding). Defaults to `false`. |
+| `title_markers` | no | Optional list of additional mission-title substrings to match against this skill (case-insensitive). Used when a handler emits a plain-text mission title without the slash command. Defaults to `[]`. |
 
 ### Audience
 
@@ -116,27 +118,55 @@ Custom skills under `instance/skills/<scope>/` opt in the same way — add `gith
 ```yaml
 ---
 name: fix
-scope: cp
+scope: my_team
 group: integrations
 emoji: 🐛
 github_enabled: true
 github_context_aware: true
 handler: handler.py
 commands:
-  - name: cp_fix
-    aliases: [cpfix]
+  - name: my_fix
+    aliases: [myfix]
 ---
 ```
 
-When the skill has a `handler.py`, the GitHub / Jira bridge invokes the handler **in-process** at notification time (the same path Telegram uses) instead of queueing a `/cp_fix …` slash mission. The handler is expected to queue whatever mission it needs via `insert_pending_mission` — mirroring `instance/skills/cp/fix/handler.py`.
+When the skill has a `handler.py`, the GitHub / Jira bridge invokes the handler **in-process** at notification time (the same path Telegram uses) instead of queueing a `/my_fix …` slash mission. The handler is expected to queue whatever mission it needs via `insert_pending_mission` — mirroring `instance/skills/<scope>/<name>/handler.py`.
 
 **Auto-feeding the source issue.** When the author doesn't include a Jira key in the command text, the bridge appends one automatically:
 
 - **Jira source**: the issue the comment was posted on.
 - **GitHub source**: the first Jira key found in the issue/PR title, then body.
-- **Author override**: if the author already typed a key (e.g. `@bot cpfix CPANEL-1`), that key is used verbatim and no auto-feed happens.
+- **Author override**: if the author already typed a key (e.g. `@bot myfix PROJ-1`), that key is used verbatim and no auto-feed happens.
 
 This keeps the handler logic untouched — the detection lives at the dispatch boundary (`app.external_skill_dispatch.augment_args_with_issue_key`).
+
+### Result forwarding
+
+Skills with `forward_result: true` opt into post-mission **result forwarding** — when the mission completes, the Claude session's final result text is appended to `instance/outbox.md` (and from there relayed to Telegram) so the user sees the response to their slash command / @mention even when the Claude session's sandbox blocked direct writes to `instance/`.
+
+The runtime auto-derives mission-title markers for every opted-in skill:
+
+- `/{cmd.name}` and `/{alias}` for every command + alias in `commands:`,
+- `/{scope}.{name}` (the scoped form Telegram queues when a `[project:…]` tag is present).
+
+If the skill's handler composes a plain-text mission title without the slash command, list any extra substrings under `title_markers:` so the runtime can still recognise the result as belonging to the skill.
+
+Forwarding is also triggered, regardless of `forward_result`, when the result body contains alert markers (`**SKIP**` / `**FAIL**` / `**ERROR**` / `**BLOCKED**`, `permission deadlock`, `no PR opened`, etc.) — those always reach Telegram.
+
+```yaml
+---
+name: fix
+scope: my_team
+forward_result: true
+title_markers:
+  - "my-custom-workflow"          # matches handler-composed long-form titles
+commands:
+  - name: my_fix
+    aliases: [myfix]
+---
+```
+
+The global on/off switch is `notify_mission_results:` in `instance/config.yaml` (default: `true`).
 
 ### Commands
 
