@@ -751,9 +751,11 @@ def run_rebase(
     # ── Step 3: Rebase onto target branch ─────────────────────────────
     print(f"[rebase] Rebasing `{branch}` onto `{base}`", flush=True)
     notify_fn(f"Rebasing `{branch}` onto `{base}`...")
+    from app.config import get_rebase_max_conflict_rounds
     rebase_remote = _rebase_with_conflict_resolution(
         base, project_path, context, actions_log,
         notify_fn=notify_fn, skill_dir=skill_dir,
+        max_conflict_rounds=get_rebase_max_conflict_rounds(),
         preferred_remote=base_remote,
         head_remote=effective_head_remote,
     )
