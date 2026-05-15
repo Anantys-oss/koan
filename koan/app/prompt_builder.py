@@ -288,16 +288,7 @@ def _get_learnings_section(
     if not selected:
         return ""
 
-    # Single-line operator-visible journal trail. Goes to stderr so the
-    # log() pipeline picks it up alongside the rest of the prompt builder
-    # diagnostics; we deliberately don't write to journal/ here because
-    # the prompt builder runs as a subprocess and writing journal entries
-    # from inside the build is the agent's job.
-    print(
-        f"[prompt_builder] learnings recall: kept {len(selected)}/{total} "
-        f"(dropped {dropped}, max_k={max_k}, hedge={hedge})",
-        file=sys.stderr,
-    )
+    print(f"[prompt_builder] learnings recall: kept {len(selected)}/{total} (dropped {dropped}, max_k={max_k}, hedge={hedge})", file=sys.stderr)
 
     header = (
         "# Project Learnings (filtered)\n\n"
