@@ -624,10 +624,21 @@ class MemoryManager:
         try:
             compacted = self._run_compaction_cli(learnings_input, file_tree, max_lines, project_path)
         except Exception as e:
-            print(f"[memory_manager] Compaction CLI failed for {project_name}: {e}", file=sys.stderr)
+            print(
+                f"[memory_manager] Compaction CLI failed for {project_name}, "
+                f"falling back to cap_learnings: {type(e).__name__}: {e}",
+                file=sys.stderr,
+            )
             # Fallback: just cap learnings
             self.cap_learnings(project_name, max_lines)
-            return {"original_lines": original_count, "compacted_lines": max_lines, "skipped": False, "fallback": True}
+            return {
+                "original_lines": original_count,
+                "compacted_lines": max_lines,
+                "skipped": False,
+                "fallback": True,
+                "method": "fallback",
+                "error": str(e),
+            }
 
         if not compacted or not compacted.strip():
             print(f"[memory_manager] Compaction returned empty for {project_name}, skipping", file=sys.stderr)
@@ -654,7 +665,7 @@ class MemoryManager:
         except OSError:
             pass
 
-        return {"original_lines": original_count, "compacted_lines": compacted_count, "skipped": False}
+        return {"original_lines": original_count, "compacted_lines": compacted_count, "skipped": False, "method": "semantic"}
 
     def _resolve_project_path(self, project_name: str) -> Optional[str]:
         """Resolve a project's filesystem path from projects.yaml."""
@@ -686,8 +697,10 @@ class MemoryManager:
             )
             if result.returncode == 0 and result.stdout.strip():
                 return result.stdout.strip()
-        except (subprocess.TimeoutExpired, OSError):
-            pass
+        except subprocess.TimeoutExpired:
+            print(f"[memory_manager] git ls-files timed out for {project_path}", file=sys.stderr)
+        except OSError as e:
+            print(f"[memory_manager] git ls-files failed for {project_path}: {e}", file=sys.stderr)
         return "(file tree not available)"
 
     def _run_compaction_cli(
