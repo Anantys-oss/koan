@@ -126,7 +126,11 @@ def score_and_select(
 
     # Score every line with its original index so we can recover ordering.
     # Tie-break on index (later = higher = more recent) by negating the
-    # secondary key in the sort.
+    # secondary key in the sort. When ``mission_tokens`` is empty, every
+    # line scores 0.0 and the index tie-break alone drives selection — so
+    # ``scored[:effective_k]`` ends up picking the most recent K lines.
+    # That implicit recency fallback is intentional (autonomous mode with
+    # a vague focus area should still get *some* learnings).
     scored: List[Tuple[float, int, str]] = []
     for idx, line in enumerate(lines):
         score = jaccard_score(mission_tokens, tokenize(line)) if mission_tokens else 0.0
