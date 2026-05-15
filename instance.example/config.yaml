@@ -485,6 +485,13 @@ usage:
 #   global_personality_max: 150     # Max lines for personality-evolution.md (default: 150)
 #   global_emotional_max: 100       # Max lines for emotional-memory.md (default: 100)
 #   compaction_interval_hours: 24   # How often to run cleanup (default: 24)
+#   max_relevant_learnings: 40      # Top-K learnings injected per mission (default: 40).
+#                                   # Lines are ranked by Jaccard word-overlap against
+#                                   # the mission text. Set to 0 to keep only the
+#                                   # recency hedge below. Bypass with [recall:full]
+#                                   # in mission text to load the full file.
+#   recall_recent_hedge: 5          # Most recent N lines always included regardless
+#                                   # of relevance score (default: 5).
 
 # Automation rules — loop guard
 # Limits how many times a single automation rule can fire within a 60-second

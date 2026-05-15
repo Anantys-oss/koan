@@ -1884,3 +1884,155 @@ class TestWarnUnresolvedPlaceholders:
         assert "{BOGUS_PLACEHOLDER}" in result
         assert len(caplog.records) == 1
         assert "BOGUS_PLACEHOLDER" in caplog.records[0].message
+
+
+# --- Tests for _get_learnings_section (issue #1306) ---
+
+
+class TestGetLearningsSection:
+    """Filtered learnings injection."""
+
+    def _write_learnings(self, prompt_env, content):
+        path = (
+            Path(prompt_env["instance"])
+            / "memory"
+            / "projects"
+            / prompt_env["project_name"]
+            / "learnings.md"
+        )
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    def test_returns_empty_when_file_missing(self, prompt_env):
+        from app.prompt_builder import _get_learnings_section
+
+        result = _get_learnings_section(
+            prompt_env["instance"], prompt_env["project_name"], "fix bug", "",
+        )
+        assert result == ""
+
+    def test_returns_empty_when_file_blank(self, prompt_env):
+        from app.prompt_builder import _get_learnings_section
+
+        self._write_learnings(prompt_env, "   \n\n")
+        result = _get_learnings_section(
+            prompt_env["instance"], prompt_env["project_name"], "fix bug", "",
+        )
+        assert result == ""
+
+    def test_filters_irrelevant_lines(self, prompt_env):
+        from app.prompt_builder import _get_learnings_section
+
+        content = "\n".join(
+            [
+                "- database migration needs backfill plans",
+                "- CSS grid wraps better than flexbox",
+                "- database migration tooling failed during release",
+                "- React hook ordering matters for components",
+            ]
+            + [f"- recent line {i} padding text" for i in range(10)]
+        )
+        self._write_learnings(prompt_env, content)
+        with patch("app.prompt_builder._load_recall_config", return_value=(2, 1)):
+            section = _get_learnings_section(
+                prompt_env["instance"],
+                prompt_env["project_name"],
+                "fix the database migration error",
+                "",
+            )
+        assert "Project Learnings (filtered)" in section
+        # Both top-scoring lines share the mission's key terms.
+        assert "database migration needs backfill" in section
+        assert "database migration tooling failed" in section
+        # Recency hedge keeps the most recent line.
+        assert "recent line 9" in section
+        # Unrelated lines should be dropped.
+        assert "CSS grid wraps" not in section
+        assert "React hook ordering" not in section
+
+    def test_recall_full_tag_bypasses_filter(self, prompt_env):
+        from app.prompt_builder import _get_learnings_section
+
+        content = "\n".join(f"- learning {i}" for i in range(20))
+        self._write_learnings(prompt_env, content)
+        with patch("app.prompt_builder._load_recall_config", return_value=(2, 0)):
+            section = _get_learnings_section(
+                prompt_env["instance"],
+                prompt_env["project_name"],
+                "do something [recall:full]",
+                "",
+            )
+        assert "[recall:full] override" in section
+        assert "learning 0" in section
+        assert "learning 19" in section
+
+    def test_uses_focus_area_when_no_mission_title(self, prompt_env):
+        from app.prompt_builder import _get_learnings_section
+
+        content = (
+            "- alpha beta\n"
+            "- gamma delta\n"
+            "- unrelated stuff\n"
+            "- recency padding\n"
+        )
+        self._write_learnings(prompt_env, content)
+        with patch("app.prompt_builder._load_recall_config", return_value=(1, 0)):
+            section = _get_learnings_section(
+                prompt_env["instance"],
+                prompt_env["project_name"],
+                "",
+                "alpha beta optimization",
+            )
+        assert "alpha beta" in section
+        assert "unrelated stuff" not in section
+
+    def test_corrupt_file_returns_empty(self, prompt_env):
+        from app.prompt_builder import _get_learnings_section
+
+        path = (
+            Path(prompt_env["instance"])
+            / "memory"
+            / "projects"
+            / prompt_env["project_name"]
+            / "learnings.md"
+        )
+        # Make path a directory so read_text raises OSError.
+        path.mkdir()
+        result = _get_learnings_section(
+            prompt_env["instance"], prompt_env["project_name"], "x", "",
+        )
+        assert result == ""
+
+
+# --- Tests for _load_recall_config ---
+
+
+class TestLoadRecallConfig:
+    """Config wiring for memory recall."""
+
+    def test_defaults_when_no_config(self):
+        from app.prompt_builder import _load_recall_config
+
+        with patch("app.prompt_builder._load_config_safe", return_value={}):
+            assert _load_recall_config() == (40, 5)
+
+    def test_reads_max_relevant_learnings(self):
+        from app.prompt_builder import _load_recall_config
+
+        cfg = {"memory": {"max_relevant_learnings": 12, "recall_recent_hedge": 3}}
+        with patch("app.prompt_builder._load_config_safe", return_value=cfg):
+            assert _load_recall_config() == (12, 3)
+
+    def test_invalid_values_fall_back_to_defaults(self):
+        from app.prompt_builder import _load_recall_config
+
+        cfg = {"memory": {"max_relevant_learnings": "nope", "recall_recent_hedge": None}}
+        with patch("app.prompt_builder._load_config_safe", return_value=cfg):
+            assert _load_recall_config() == (40, 5)
+
+    def test_negative_values_clamped_to_zero(self):
+        from app.prompt_builder import _load_recall_config
+
+        cfg = {"memory": {"max_relevant_learnings": -5, "recall_recent_hedge": -1}}
+        with patch("app.prompt_builder._load_config_safe", return_value=cfg):
+            assert _load_recall_config() == (0, 0)
