@@ -212,6 +212,103 @@ def _get_drift_section(instance: str, project_name: str, project_path: str) -> s
     return ""
 
 
+def _load_recall_config() -> Tuple[int, int]:
+    """Return ``(max_relevant_learnings, recent_hedge)`` from config.yaml.
+
+    Defaults to ``(40, 5)`` per issue #1306. ``recent_hedge`` is currently
+    config-only (no UI surface) and can be tuned via the same ``memory:``
+    block as the other learnings caps.
+    """
+    cfg = _load_config_safe()
+    mem = cfg.get("memory", {}) or {}
+    try:
+        max_k = int(mem.get("max_relevant_learnings", 40))
+    except (TypeError, ValueError):
+        max_k = 40
+    try:
+        hedge = int(mem.get("recall_recent_hedge", 5))
+    except (TypeError, ValueError):
+        hedge = 5
+    return max(0, max_k), max(0, hedge)
+
+
+def _get_learnings_section(
+    instance: str,
+    project_name: str,
+    mission_title: str,
+    focus_area: str,
+) -> str:
+    """Return a pre-filtered learnings section for the agent prompt.
+
+    Reads ``{instance}/memory/projects/{project_name}/learnings.md`` and
+    runs Jaccard similarity against the mission text (or ``focus_area`` in
+    autonomous mode) to keep only the most relevant lines plus a small
+    recency hedge. The ``[recall:full]`` tag in the mission title bypasses
+    filtering entirely.
+
+    Returns an empty string when the file is missing, empty, or cannot be
+    read — the agent will still fall back to reading the file directly via
+    the agent.md instructions, so this is purely an enrichment hook.
+
+    Issue #1306.
+    """
+    try:
+        path = Path(instance) / "memory" / "projects" / project_name / "learnings.md"
+        if not path.is_file():
+            return ""
+        content = path.read_text(encoding="utf-8")
+    except OSError as e:
+        logger.warning("[prompt_builder] learnings load failed: %s", e)
+        return ""
+
+    if not content.strip():
+        return ""
+
+    from app.memory_recall import has_recall_full_tag, score_and_select
+
+    # Mission text drives scoring. In autonomous mode (no title) fall back
+    # to the focus area so the filter still does *something* useful.
+    scoring_text = mission_title or focus_area or ""
+
+    if has_recall_full_tag(mission_title):
+        # Operator explicitly asked for everything — preserve the file as-is.
+        body = content.rstrip()
+        kept = body.count("\n") + 1 if body else 0
+        header = (
+            "# Project Learnings (full, [recall:full] override)\n\n"
+            f"Loaded {kept} lines verbatim from learnings.md.\n\n"
+        )
+        return f"\n\n{header}{body}\n"
+
+    max_k, hedge = _load_recall_config()
+    selected, total, dropped = score_and_select(
+        content, scoring_text, max_k=max_k, recent_hedge=hedge,
+    )
+
+    if not selected:
+        return ""
+
+    # Single-line operator-visible journal trail. Goes to stderr so the
+    # log() pipeline picks it up alongside the rest of the prompt builder
+    # diagnostics; we deliberately don't write to journal/ here because
+    # the prompt builder runs as a subprocess and writing journal entries
+    # from inside the build is the agent's job.
+    print(
+        f"[prompt_builder] learnings recall: kept {len(selected)}/{total} "
+        f"(dropped {dropped}, max_k={max_k}, hedge={hedge})",
+        file=sys.stderr,
+    )
+
+    header = (
+        "# Project Learnings (filtered)\n\n"
+        f"Showing {len(selected)} of {total} learnings ranked by relevance to "
+        "the current task. Use the `[recall:full]` tag in your mission text "
+        "to bypass filtering and load the full file.\n\n"
+    )
+    body = "\n".join(selected)
+    return f"\n\n{header}{body}\n"
+
+
 def _get_mission_type_section(mission_title: str) -> str:
     """Return type-specific guidance based on mission classification.
 
@@ -501,6 +598,9 @@ def build_agent_prompt(
     # Append mission type guidance (mission-driven runs only)
     prompt += _get_mission_type_section(mission_title)
 
+    # Append task-aware filtered learnings (issue #1306)
+    prompt += _get_learnings_section(instance, project_name, mission_title, focus_area)
+
     # Append merge policy
     prompt += _get_merge_policy(project_name)
 
@@ -583,6 +683,11 @@ def build_agent_prompt_parts(
 
     # Append mission type guidance (mission-driven runs only)
     user_prompt += _get_mission_type_section(mission_title)
+
+    # Append task-aware filtered learnings (issue #1306).
+    # Lives in the user prompt because its content varies with each mission
+    # — putting it in the system prompt would defeat prompt caching.
+    user_prompt += _get_learnings_section(instance, project_name, mission_title, focus_area)
 
     # Append staleness warning (all autonomous modes — cheap local read)
     if not mission_title:
