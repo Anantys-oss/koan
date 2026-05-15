@@ -795,6 +795,68 @@ class TestTruncateText:
         assert truncate_text("", 100) == ""
 
 
+class TestTruncateDiff:
+    """Tests for truncate_diff() — file-aware diff truncation."""
+
+    def _make_file_block(self, filename, lines=10):
+        """Build a realistic unified diff block for one file."""
+        header = f"diff --git a/{filename} b/{filename}\n"
+        header += f"--- a/{filename}\n+++ b/{filename}\n"
+        header += "@@ -1,5 +1,5 @@\n"
+        body = "".join(f"+line {i}\n" for i in range(lines))
+        return header + body
+
+    def test_small_diff_unchanged(self):
+        from app.utils import truncate_diff
+        diff = self._make_file_block("a.py", lines=3)
+        assert truncate_diff(diff, 10000) == diff
+
+    def test_empty_diff(self):
+        from app.utils import truncate_diff
+        assert truncate_diff("", 100) == ""
+
+    def test_preserves_whole_file_blocks(self):
+        from app.utils import truncate_diff
+        block_a = self._make_file_block("a.py", lines=5)
+        block_b = self._make_file_block("b.py", lines=5)
+        diff = block_a + block_b
+        # Budget fits only the first block
+        result = truncate_diff(diff, len(block_a) + 50)
+        assert "a.py" in result
+        assert "b.py" in result  # listed in omitted summary
+        assert "omitted" in result
+        # The actual diff content of b.py should NOT be present
+        assert "+line 4" not in result.split("Omitted files")[0] or "a.py" in result
+
+    def test_lists_omitted_files(self):
+        from app.utils import truncate_diff
+        block_a = self._make_file_block("src/a.py", lines=3)
+        block_b = self._make_file_block("src/b.py", lines=3)
+        block_c = self._make_file_block("src/c.py", lines=3)
+        diff = block_a + block_b + block_c
+        # Budget fits only first block
+        result = truncate_diff(diff, len(block_a) + 50)
+        assert "2 file(s) omitted" in result
+        assert "src/b.py" in result
+        assert "src/c.py" in result
+
+    def test_all_files_fit(self):
+        from app.utils import truncate_diff
+        block_a = self._make_file_block("a.py", lines=3)
+        block_b = self._make_file_block("b.py", lines=3)
+        diff = block_a + block_b
+        result = truncate_diff(diff, len(diff) + 100)
+        assert result == diff
+        assert "omitted" not in result
+
+    def test_falls_back_on_unparseable_diff(self):
+        from app.utils import truncate_diff
+        weird = "not a real diff " * 100
+        result = truncate_diff(weird, 50)
+        assert len(result) < 100
+        assert "truncated" in result
+
+
 class TestIsKnownProject:
     """Tests for is_known_project() shared utility."""
 

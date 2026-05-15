@@ -41,7 +41,7 @@ from app.git_utils import ordered_remotes as _ordered_remotes
 from app.github import run_gh, sanitize_github_comment
 from app.prompts import load_prompt, load_prompt_or_skill, load_skill_prompt  # noqa: F401 — safety import
 from app.retry import retry_with_backoff
-from app.utils import _GITHUB_REMOTE_RE, truncate_text
+from app.utils import _GITHUB_REMOTE_RE, truncate_diff, truncate_text
 
 
 def fetch_pr_context(owner: str, repo: str, pr_number: str) -> dict:
@@ -137,7 +137,7 @@ def fetch_pr_context(owner: str, repo: str, pr_number: str) -> dict:
         "author": metadata.get("author", {}).get("login", ""),
         "head_owner": metadata.get("headRepositoryOwner", {}).get("login", ""),
         "url": metadata.get("url", ""),
-        "diff": truncate_text(diff, 8000),
+        "diff": truncate_diff(diff, 32000),
         "review_comments": truncate_text(comments_json, 4000),
         "reviews": truncate_text(reviews_json, 3000),
         "issue_comments": truncate_text(issue_comments, 3000),
@@ -908,7 +908,7 @@ def _fix_existing_ci_failures(
         )
     except Exception as e:
         print(f"[rebase_pr] diff fetch for CI fix failed: {e}", file=sys.stderr)
-    diff = truncate_text(diff, 8000)
+    diff = truncate_diff(diff, 32000)
 
     ci_fix_prompt = _build_ci_fix_prompt(
         context, ci_logs, diff, skill_dir=skill_dir,
@@ -1036,7 +1036,7 @@ def _run_ci_check_and_fix(
             )
         except Exception as e:
             print(f"[rebase] diff fetch failed: {e}", file=sys.stderr)
-        diff = truncate_text(diff, 8000)
+        diff = truncate_diff(diff, 32000)
 
         ci_fix_prompt = _build_ci_fix_prompt(
             context, ci_logs, diff, skill_dir=skill_dir,
@@ -1109,7 +1109,7 @@ def _build_ci_fix_prompt(
         BRANCH=context.get("branch", ""),
         BASE=context.get("base", ""),
         CI_LOGS=truncate_text(ci_logs, 6000),
-        DIFF=truncate_text(diff, 8000),
+        DIFF=truncate_diff(diff, 32000),
         COMMIT_CONVENTIONS=commit_conventions,
         COMMIT_SUBJECT_INSTRUCTION=commit_subject_instruction,
     )
