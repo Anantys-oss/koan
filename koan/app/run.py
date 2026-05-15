@@ -795,7 +795,12 @@ def main_loop():
     count = 0
     consecutive_errors = 0
     consecutive_idle = 0
+    consecutive_nonproductive = 0
     MAX_CONSECUTIVE_IDLE = 30  # ~30 min at 60s interval → auto-pause
+    # Throttle kicks in only after several back-to-back non-productive
+    # iterations so that one-off dedup skips / transient errors don't eat
+    # an extra second each.
+    NONPRODUCTIVE_THROTTLE_THRESHOLD = 3
     try:
         # Startup sequence
         max_runs, interval, branch_prefix = run_startup(koan_root, instance, projects)
@@ -847,6 +852,7 @@ def main_loop():
                     count = 0
                     consecutive_errors = 0
                     consecutive_idle = 0
+                    consecutive_nonproductive = 0
                     global _startup_notified
                     _startup_notified = False
                 continue
@@ -866,8 +872,10 @@ def main_loop():
                 if productive is True:
                     count += 1
                     consecutive_idle = 0
+                    consecutive_nonproductive = 0
                 elif productive == "idle":
                     consecutive_idle += 1
+                    consecutive_nonproductive = 0
                     if consecutive_idle == 1:
                         try:
                             from app.schedule_manager import is_scheduled_active
@@ -914,10 +922,13 @@ def main_loop():
                             consecutive_idle = 0  # Reset so we don't log every iteration
                 else:
                     # Non-productive but not idle (error recovery, dedup, etc.)
-                    # Don't count toward idle timeout, but throttle so a
-                    # persistent failure (e.g. dedup skipping a stuck mission)
-                    # cannot tight-loop and flood Telegram with notifications.
-                    time.sleep(1)
+                    # Don't count toward idle timeout. Throttle only after
+                    # several back-to-back occurrences so one-off skips aren't
+                    # penalized, but a persistent failure (e.g. dedup skipping
+                    # a stuck mission) can't tight-loop and flood Telegram.
+                    consecutive_nonproductive += 1
+                    if consecutive_nonproductive >= NONPRODUCTIVE_THROTTLE_THRESHOLD:
+                        time.sleep(1)
             except KeyboardInterrupt:
                 raise
             except SystemExit:

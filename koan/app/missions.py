@@ -918,14 +918,13 @@ def _remove_item_by_text(
     # When the picker returned a multi-line block (mission + continuation
     # lines absorbed from a corrupted Pending section), the raw needle
     # contains \n and can never substring-match a single stripped line.
-    # Reduce to the first non-empty line so lookup still works.
-    line_needle = needle
-    if "\n" in needle:
-        for ln in needle.splitlines():
-            stripped_ln = ln.strip()
-            if stripped_ln:
-                line_needle = stripped_ln
-                break
+    # Reduce to the first non-empty line so lookup still works; fall back
+    # to the original needle if every line is blank (caller's match will
+    # then naturally miss and return None).
+    line_needle = next(
+        (ln.strip() for ln in needle.splitlines() if ln.strip()),
+        needle,
+    )
 
     lines = content.splitlines()
     boundaries = find_section_boundaries(lines)
