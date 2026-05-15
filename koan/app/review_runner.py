@@ -638,12 +638,18 @@ def _format_review_as_markdown(review_data: dict, title: str = "") -> str:
 def _post_review_comment(
     owner: str, repo: str, pr_number: str, review_text: str,
     existing_comment: Optional[dict] = None,
+    commit_shas: Optional[List[str]] = None,
 ) -> bool:
     """Post (or update) the review as a comment on the PR.
 
     Prepends ``SUMMARY_TAG`` so future runs can locate the comment via
     ``find_bot_comment``.  When ``existing_comment`` is provided the
     comment is updated via PATCH instead of creating a new one.
+
+    When ``commit_shas`` is provided, embeds them in the body so the
+    incremental-review check can skip already-reviewed commits.  When
+    absent, preserves any COMMIT_IDS block from ``existing_comment`` so
+    a re-review without SHA info doesn't clobber prior state.
 
     Returns True on success.
     """
@@ -658,9 +664,13 @@ def _post_review_comment(
     else:
         body = f"{SUMMARY_TAG}\n## Code Review\n\n{review_text}\n\n---\n_Automated review by Kōan_"
 
-    # Preserve any hidden marker sections from the existing comment
-    # (e.g. COMMIT_IDS block written by a previous run).
-    if existing_comment:
+    # Embed commit SHAs when provided; otherwise preserve from existing
+    # comment so a re-review doesn't clobber prior incremental state.
+    if commit_shas:
+        body = replace_section(
+            body, COMMIT_IDS_START, COMMIT_IDS_END, "\n".join(commit_shas),
+        )
+    elif existing_comment:
         existing_body = existing_comment.get("body", "")
         commits_block = extract_between_markers(
             existing_body, COMMIT_IDS_START, COMMIT_IDS_END,
@@ -843,23 +853,6 @@ def _fetch_pr_commit_shas(owner: str, repo: str, pr_number: str) -> List[str]:
 
 
 
-def _patch_comment_body(
-    owner: str, repo: str, comment_id: int, body: str,
-) -> bool:
-    """PATCH a GitHub issue comment body. Returns True on success."""
-    try:
-        run_gh(
-            "api",
-            f"repos/{owner}/{repo}/issues/comments/{comment_id}",
-            "-X", "PATCH",
-            "-f", f"body={body}",
-        )
-        return True
-    except Exception as e:
-        print(f"[review_runner] failed to patch comment {comment_id}: {e}", file=sys.stderr)
-        return False
-
-
 def run_review(
     owner: str,
     repo: str,
@@ -1021,22 +1014,12 @@ def run_review(
         review_body = _extract_review_body(raw_output)
 
     # Step 6: Post (or update) review comment (Phase 3 — idempotent upsert)
+    # Commit SHAs are embedded in the body upfront to avoid extra API calls.
     notify_fn(f"Posting review on PR #{pr_number}...")
-    posted = _post_review_comment(owner, repo, pr_number, review_body, existing_comment)
-
-    # Step 6b: Embed reviewed commit SHAs (Phase 5)
-    # Runs whether we updated an existing comment or created a new one.
-    if posted and current_shas:
-        # Fetch the updated comment body to avoid clobbering the review text
-        updated_comment = find_bot_comment(owner, repo, pr_number, SUMMARY_TAG)
-        if updated_comment:
-            new_body = replace_section(
-                updated_comment["body"],
-                COMMIT_IDS_START,
-                COMMIT_IDS_END,
-                "\n".join(current_shas),
-            )
-            _patch_comment_body(owner, repo, updated_comment["id"], new_body)
+    posted = _post_review_comment(
+        owner, repo, pr_number, review_body, existing_comment,
+        commit_shas=current_shas or None,
+    )
 
     # Step 7: Post replies to user comments
     reply_count = 0

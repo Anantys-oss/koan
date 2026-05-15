@@ -2087,16 +2087,11 @@ class TestIncrementalReview:
         self, mock_fetch, mock_claude, mock_gh, mock_repliable,
         mock_find_bot, _mock_shas, pr_context, review_skill_dir,
     ):
-        """After a completed review, the hidden SHA block is PATCHed into the comment."""
-        from app.review_markers import SUMMARY_TAG, COMMIT_IDS_START
+        """Commit SHAs are embedded in the initial comment body (no extra PATCH)."""
+        from app.review_markers import COMMIT_IDS_START, COMMIT_IDS_END
 
         mock_fetch.return_value = pr_context
         mock_find_bot.return_value = None  # No prior comment
-
-        # After _post_review_comment creates the comment, find_bot_comment is
-        # called to fetch the ID for the SHA PATCH.
-        posted_comment = {"id": 77, "body": f"{SUMMARY_TAG}\n## Review\n\nLGTM", "user": "koan-bot"}
-        mock_find_bot.side_effect = [None, posted_comment]
         mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
 
         success, summary, _ = run_review(
@@ -2106,15 +2101,23 @@ class TestIncrementalReview:
         )
 
         assert success is True
-        # Find the PATCH call that embeds the SHA block
+        # SHAs are now embedded in the initial post — find the body arg
+        # from the `pr comment` call (new comment creation).
+        comment_calls = [
+            c for c in mock_gh.call_args_list
+            if "comment" in c[0]
+        ]
+        assert len(comment_calls) >= 1
+        body_arg = " ".join(str(a) for a in comment_calls[0][0])
+        assert COMMIT_IDS_START in body_arg
+        assert "abc" in body_arg
+        assert "def" in body_arg
+        # No separate PATCH call should exist for SHA embedding
         patch_calls = [
             c for c in mock_gh.call_args_list
-            if "PATCH" in c[0] and any(COMMIT_IDS_START in str(a) for a in c[0])
+            if len(c[0]) > 1 and "PATCH" in c[0]
         ]
-        assert len(patch_calls) >= 1
-        sha_body = " ".join(str(a) for a in patch_calls[0][0])
-        assert "abc" in sha_body
-        assert "def" in sha_body
+        assert len(patch_calls) == 0
 
 
 # ---------------------------------------------------------------------------
