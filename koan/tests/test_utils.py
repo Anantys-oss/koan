@@ -825,8 +825,8 @@ class TestTruncateDiff:
         assert "a.py" in result
         assert "b.py" in result  # listed in omitted summary
         assert "omitted" in result
-        # The actual diff content of b.py should NOT be present
-        assert "+line 4" not in result.split("Omitted files")[0] or "a.py" in result
+        # b.py's diff block must not be in result (only in omitted summary)
+        assert "diff --git a/b.py" not in result
 
     def test_lists_omitted_files(self):
         from app.utils import truncate_diff
