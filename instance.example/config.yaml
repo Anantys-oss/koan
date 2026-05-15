@@ -440,6 +440,11 @@ usage:
 #   max_age_hours: 24                    # Ignore comments older than this (default: 24)
 #   check_interval_seconds: 60           # Base polling interval (default: 60, min: 10)
 #   max_check_interval_seconds: 180      # Backoff cap when idle (default: 180, min: 30)
+#   max_issues_per_cycle: 200            # Cap on issues inspected per check (default: 200, min: 1).
+#                                        # Each inspected issue triggers a separate /comment API call,
+#                                        # so this directly bounds cold-start API consumption.
+#                                        # Tighten on small instances; raise if mentions on busy
+#                                        # backlogs get dropped (a WARNING logs when the cap fires).
 #   projects:                            # Jira project key → Kōan project name mapping
 #     FOO: myproject                     # Simple: FOO-123 → project "myproject"
 #     BAR:                               # Extended: with optional target branch

@@ -899,6 +899,37 @@ def _try_assignment_notification(
     if not command_name:
         return False
 
+    # Composite key for persistent dedup. Bumping updated_at (re-requested
+    # review, new commits pushed) yields a fresh key so renewed requests
+    # still queue a new mission. Falls back to id-only if updated_at is
+    # missing — that loses re-request detection for the malformed
+    # notification but never produces a duplicate. An empty notif_id makes
+    # the key useless (a ":<updated_at>" record would never match future
+    # polls), so skip tracking entirely in that case.
+    notif_id = str(notification.get("id", ""))
+    updated_at = str(notification.get("updated_at", ""))
+    if notif_id:
+        thread_key = f"{notif_id}:{updated_at}" if updated_at else notif_id
+    else:
+        thread_key = ""
+
+    koan_root = os.environ.get("KOAN_ROOT", "")
+    instance_dir = str(Path(koan_root) / "instance") if koan_root else ""
+
+    from app.github_notification_tracker import is_thread_tracked, track_thread
+
+    # Persistent dedup — survives restart, unlike the in-memory loop cache.
+    # Sits above staleness/closed/repo checks so a previously-handled
+    # notification short-circuits without re-running them.
+    if instance_dir and thread_key:
+        if is_thread_tracked(instance_dir, thread_key):
+            log.debug(
+                "GitHub assign: %s notification %s already tracked, skipping",
+                reason, thread_key,
+            )
+            mark_notification_read(notif_id)
+            return True
+
     # Validate the command is registered and github_enabled
     skill = validate_command(command_name, registry)
     if not skill:
@@ -911,7 +942,7 @@ def _try_assignment_notification(
     # Check staleness
     if is_notification_stale(notification):
         log.debug("GitHub assign: skipping stale %s notification", reason)
-        mark_notification_read(str(notification.get("id", "")))
+        mark_notification_read(notif_id)
         return False
 
     # Resolve project
@@ -919,7 +950,7 @@ def _try_assignment_notification(
     if not project_info:
         repo_name = notification.get("repository", {}).get("full_name", "?")
         log.debug("GitHub assign: repo %s not in projects.yaml", repo_name)
-        mark_notification_read(str(notification.get("id", "")))
+        mark_notification_read(notif_id)
         return False
 
     project_name, owner, repo = project_info
@@ -935,7 +966,7 @@ def _try_assignment_notification(
         _notify_closed_subject_skipped(
             owner, repo, subject_title, subject_state, notification,
         )
-        mark_notification_read(str(notification.get("id", "")))
+        mark_notification_read(notif_id)
         return False
 
     # Build web URL from subject
@@ -943,10 +974,9 @@ def _try_assignment_notification(
     web_url = api_url_to_web_url(subject_url) if subject_url else ""
     if not web_url:
         log.debug("GitHub assign: no subject URL in %s notification", reason)
-        mark_notification_read(str(notification.get("id", "")))
+        mark_notification_read(notif_id)
         return False
 
-    koan_root = os.environ.get("KOAN_ROOT", "")
     if not koan_root:
         log.error("GitHub assign: KOAN_ROOT not set")
         return False
@@ -969,7 +999,9 @@ def _try_assignment_notification(
                     "GitHub assign: mission for %s already pending, skipping",
                     web_url,
                 )
-                mark_notification_read(str(notification.get("id", "")))
+                mark_notification_read(notif_id)
+                if instance_dir and thread_key:
+                    track_thread(instance_dir, thread_key)
                 return True  # Already handled — not an error
     except OSError:
         pass  # If we can't read, proceed with insertion (worst case: a dup)
@@ -985,10 +1017,12 @@ def _try_assignment_notification(
         insert_pending_mission(missions_path, mission_entry)
     except OSError as e:
         log.warning("GitHub assign: failed to insert mission: %s", e)
-        mark_notification_read(str(notification.get("id", "")))
+        mark_notification_read(notif_id)
         return False
 
-    mark_notification_read(str(notification.get("id", "")))
+    mark_notification_read(notif_id)
+    if instance_dir and thread_key:
+        track_thread(instance_dir, thread_key)
     return True
 
 

@@ -1,10 +1,17 @@
-"""Persistent tracker for processed GitHub notification comments.
+"""Persistent trackers for processed GitHub notifications.
 
-Survives process restarts — prevents duplicate mission queueing when
-GitHub reaction API fails (SSO, rate limits, network errors).
+Two parallel trackers live here:
 
-File location: ``instance/.koan-github-processed.json``
-Format: ``{"<comment_id>": <epoch_timestamp>, ...}``
+- **Comment tracker** (``instance/.koan-github-processed.json``):
+  records comment IDs for @mention notifications. Used as a fallback when
+  the reactions API fails to confirm a 👍/👀 was placed.
+- **Thread tracker** (``instance/.koan-github-processed-threads.json``):
+  records ``"<notification_id>:<updated_at>"`` keys for assignment
+  notifications (``review_requested`` / ``assign``). These have no comment
+  to react to, so without persistent tracking the same notification gets
+  re-processed on every restart.
+
+Both survive process restarts and use the same TTL/cap/locking pattern.
 """
 
 import fcntl
@@ -15,6 +22,8 @@ from pathlib import Path
 
 _TRACKER_FILE = ".koan-github-processed.json"
 _LOCK_FILE = ".koan-github-processed.lock"
+_TRACKER_FILE_THREADS = ".koan-github-processed-threads.json"
+_LOCK_FILE_THREADS = ".koan-github-processed-threads.lock"
 _TTL_SECONDS = 7 * 86400  # 7 days
 _MAX_ENTRIES = 5000
 
@@ -74,6 +83,76 @@ def track_comment(instance_dir: str, comment_id: str) -> None:
                     sorted_items = sorted(data.items(), key=lambda x: x[1])
                     data = dict(sorted_items[-_MAX_ENTRIES:])
                 _save(instance_dir, data)
+            finally:
+                fcntl.flock(lf, fcntl.LOCK_UN)
+    except OSError:
+        pass  # Best-effort — don't break notification processing
+
+
+def _threads_path(instance_dir: str) -> Path:
+    return Path(instance_dir) / _TRACKER_FILE_THREADS
+
+
+def _threads_lock_path(instance_dir: str) -> Path:
+    return Path(instance_dir) / _LOCK_FILE_THREADS
+
+
+def _load_threads(instance_dir: str) -> dict:
+    """Load thread-tracker data, pruning expired entries."""
+    path = _threads_path(instance_dir)
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+        if not isinstance(data, dict):
+            return {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+    now = time.time()
+    return {k: v for k, v in data.items() if now - v < _TTL_SECONDS}
+
+
+def _save_threads(instance_dir: str, data: dict) -> None:
+    from app.utils import atomic_write
+
+    path = _threads_path(instance_dir)
+    atomic_write(path, json.dumps(data) + "\n")
+
+
+def is_thread_tracked(instance_dir: str, thread_key: str) -> bool:
+    """Check if an assignment-notification thread key has been recorded.
+
+    ``thread_key`` is a composite ``"<notification_id>:<updated_at>"``.
+    Bumping ``updated_at`` (e.g. a re-requested review or a new commit
+    pushed to the PR) yields a fresh key so the next notification cycle
+    is not deduped — a renewed request still queues a new mission.
+    """
+    if not thread_key:
+        return False
+    data = _load_threads(instance_dir)
+    return thread_key in data
+
+
+def track_thread(instance_dir: str, thread_key: str) -> None:
+    """Record an assignment-notification thread key as processed.
+
+    Uses an exclusive ``fcntl.flock`` for thread/process safety.
+    Best-effort: file errors are swallowed rather than breaking the
+    notification pipeline.
+    """
+    if not thread_key:
+        return
+    lock = _threads_lock_path(instance_dir)
+    try:
+        with open(lock, "a") as lf:
+            fcntl.flock(lf, fcntl.LOCK_EX)
+            try:
+                data = _load_threads(instance_dir)
+                data[thread_key] = time.time()
+                if len(data) > _MAX_ENTRIES:
+                    sorted_items = sorted(data.items(), key=lambda x: x[1])
+                    data = dict(sorted_items[-_MAX_ENTRIES:])
+                _save_threads(instance_dir, data)
             finally:
                 fcntl.flock(lf, fcntl.LOCK_UN)
     except OSError:
