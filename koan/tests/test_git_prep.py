@@ -4,6 +4,8 @@ import pytest
 from unittest.mock import patch, call
 
 from app.git_prep import (
+    _fetch_branch_refspec,
+    _sync_secondary_remotes,
     get_upstream_remote,
     prepare_project_branch,
     PrepResult,
@@ -132,6 +134,125 @@ class TestDetectRemoteDefaultBranch:
             ]
             result = detect_remote_default_branch("origin", "/proj")
         assert result == "main"
+
+
+# --- _fetch_branch_refspec ---
+
+
+class TestFetchBranchRefspec:
+    """Tests for explicit-refspec fetch helper."""
+
+    def test_success_returns_true(self):
+        with patch("app.git_prep.run_git", return_value=(0, "", "")):
+            assert _fetch_branch_refspec("origin", "main", "/proj") is True
+
+    def test_failure_returns_false(self):
+        with patch("app.git_prep.run_git", return_value=(1, "", "error")):
+            assert _fetch_branch_refspec("origin", "main", "/proj") is False
+
+    def test_uses_explicit_refspec(self):
+        with patch("app.git_prep.run_git", return_value=(0, "", "")) as mock_git:
+            _fetch_branch_refspec("upstream", "master", "/proj")
+        mock_git.assert_called_once_with(
+            "fetch", "upstream",
+            "+refs/heads/master:refs/remotes/upstream/master",
+            cwd="/proj", timeout=15,
+        )
+
+    def test_custom_timeout(self):
+        with patch("app.git_prep.run_git", return_value=(0, "", "")) as mock_git:
+            _fetch_branch_refspec("origin", "main", "/proj", timeout=30)
+        assert mock_git.call_args[1]["timeout"] == 30
+
+
+# --- _sync_secondary_remotes ---
+
+
+class TestSyncSecondaryRemotes:
+    """Tests for multi-remote base branch sync."""
+
+    def test_fetches_non_primary_remotes(self):
+        """Fetches base branch from all remotes except the primary."""
+        def side_effect(*args, **kwargs):
+            if args[0] == "remote":
+                return (0, "origin\nupstream\nmyfork", "")
+            if args[0] == "fetch":
+                return (0, "", "")
+            return (1, "", "")
+
+        with patch("app.git_prep.run_git", side_effect=side_effect) as mock_git:
+            _sync_secondary_remotes("main", "upstream", "/proj")
+
+        fetch_calls = [
+            c for c in mock_git.call_args_list
+            if c[0][0] == "fetch"
+        ]
+        fetched_remotes = [c[0][1] for c in fetch_calls]
+        assert "origin" in fetched_remotes
+        assert "myfork" in fetched_remotes
+        assert "upstream" not in fetched_remotes
+
+    def test_skips_primary_remote(self):
+        """Primary remote is excluded from secondary fetch."""
+        def side_effect(*args, **kwargs):
+            if args[0] == "remote":
+                return (0, "origin\nupstream", "")
+            return (0, "", "")
+
+        with patch("app.git_prep.run_git", side_effect=side_effect) as mock_git:
+            _sync_secondary_remotes("main", "origin", "/proj")
+
+        fetch_calls = [c for c in mock_git.call_args_list if c[0][0] == "fetch"]
+        assert len(fetch_calls) == 1
+        assert fetch_calls[0][0][1] == "upstream"
+
+    def test_no_remotes_listed(self):
+        """git remote failure returns early — no fetches attempted."""
+        with patch("app.git_prep.run_git", return_value=(1, "", "err")) as mock_git:
+            _sync_secondary_remotes("main", "origin", "/proj")
+
+        fetch_calls = [c for c in mock_git.call_args_list if c[0][0] == "fetch"]
+        assert len(fetch_calls) == 0
+
+    def test_single_remote_no_secondary(self):
+        """Only one remote (same as primary) — nothing to fetch."""
+        def side_effect(*args, **kwargs):
+            if args[0] == "remote":
+                return (0, "origin", "")
+            return (0, "", "")
+
+        with patch("app.git_prep.run_git", side_effect=side_effect) as mock_git:
+            _sync_secondary_remotes("main", "origin", "/proj")
+
+        fetch_calls = [c for c in mock_git.call_args_list if c[0][0] == "fetch"]
+        assert len(fetch_calls) == 0
+
+    def test_secondary_fetch_failure_nonfatal(self):
+        """Failed secondary fetch is logged, not raised."""
+        def side_effect(*args, **kwargs):
+            if args[0] == "remote":
+                return (0, "origin\nbroken-remote", "")
+            if args[0] == "fetch":
+                return (1, "", "network error")
+            return (0, "", "")
+
+        with patch("app.git_prep.run_git", side_effect=side_effect):
+            _sync_secondary_remotes("main", "origin", "/proj")
+
+    def test_uses_explicit_refspec(self):
+        """Secondary fetches use explicit refspec for reliable ref updates."""
+        def side_effect(*args, **kwargs):
+            if args[0] == "remote":
+                return (0, "origin\nupstream", "")
+            return (0, "", "")
+
+        with patch("app.git_prep.run_git", side_effect=side_effect) as mock_git:
+            _sync_secondary_remotes("main", "origin", "/proj")
+
+        fetch_calls = [c for c in mock_git.call_args_list if c[0][0] == "fetch"]
+        assert len(fetch_calls) == 1
+        refspec = fetch_calls[0][0][2]
+        assert refspec == "+refs/heads/main:refs/remotes/upstream/main"
 
 
 # --- PrepResult ---
@@ -800,6 +921,66 @@ class TestPrepareProjectBranch:
         assert result.success is True
         assert result.stashed is False
         assert "stash" not in calls
+
+
+class TestPrepareProjectBranchSecondarySync:
+    """Verify prepare_project_branch syncs secondary remotes."""
+
+    def test_secondary_sync_called_on_success(self):
+        """_sync_secondary_remotes is called after a successful primary sync."""
+        side_effect = _make_run_git_side_effect()
+        with patch("app.git_prep.run_git", side_effect=side_effect), \
+             patch("app.git_prep.load_projects_config", return_value=None), \
+             patch("app.git_prep.get_project_submit_to_repository", return_value={}), \
+             patch("app.git_prep.get_project_auto_merge", return_value={"base_branch": "main"}), \
+             patch("app.git_prep._sync_secondary_remotes") as mock_sync:
+            result = prepare_project_branch("/proj", "myproj", "/koan")
+
+        assert result.success is True
+        mock_sync.assert_called_once_with("main", "origin", "/proj")
+
+    def test_secondary_sync_not_called_on_failure(self):
+        """_sync_secondary_remotes is NOT called when primary sync fails."""
+        side_effect = _make_run_git_side_effect({
+            "fetch": (1, "", "Could not resolve host"),
+        })
+        with patch("app.git_prep.run_git", side_effect=side_effect), \
+             patch("app.git_prep.load_projects_config", return_value=None), \
+             patch("app.git_prep.get_project_submit_to_repository", return_value={}), \
+             patch("app.git_prep.get_project_auto_merge", return_value={"base_branch": "main"}), \
+             patch("app.git_prep._sync_secondary_remotes") as mock_sync:
+            result = prepare_project_branch("/proj", "myproj", "/koan")
+
+        assert result.success is False
+        mock_sync.assert_not_called()
+
+    def test_secondary_sync_uses_correct_remote(self):
+        """When upstream is primary, secondary sync receives 'upstream'."""
+        def side_effect(*args, **kwargs):
+            cmd = args[0] if args else ""
+            if cmd == "rev-parse":
+                return (0, "feature", "")
+            if cmd == "remote":
+                return (0, "git@github.com:upstream/repo.git", "")
+            if cmd == "fetch":
+                return (0, "", "")
+            if cmd == "status":
+                return (0, "", "")
+            if cmd == "checkout":
+                return (0, "", "")
+            if cmd == "merge":
+                return (0, "", "")
+            return (0, "", "")
+
+        with patch("app.git_prep.run_git", side_effect=side_effect), \
+             patch("app.git_prep.load_projects_config", return_value=None), \
+             patch("app.git_prep.get_project_submit_to_repository", return_value={}), \
+             patch("app.git_prep.get_project_auto_merge", return_value={"base_branch": "main"}), \
+             patch("app.git_prep._sync_secondary_remotes") as mock_sync:
+            result = prepare_project_branch("/proj", "myproj", "/koan")
+
+        assert result.success is True
+        mock_sync.assert_called_once_with("main", "upstream", "/proj")
 
 
 # --- Integration: _run_iteration calls git prep ---

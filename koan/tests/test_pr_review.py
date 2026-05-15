@@ -333,18 +333,13 @@ class TestRebaseOntoTarget:
     def test_success_returns_remote_name(self, mock_subproc, mock_git):
         result = _rebase_onto_target("main", "/tmp/p")
         assert result == "origin"
-        assert mock_git.call_count == 2  # fetch + rebase
 
     @patch("app.claude_step._run_git")
     @patch("app.claude_step.subprocess.run")
     def test_falls_back_to_upstream(self, mock_subproc, mock_git):
         """When origin rebase fails, tries upstream."""
-        call_count = 0
-        def selective_fail(*args, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            # First two calls are origin fetch+rebase — fail the rebase
-            if call_count == 2:
+        def selective_fail(cmd, **kwargs):
+            if "rebase" in cmd and any("origin" in a for a in cmd):
                 raise RuntimeError("conflict on origin")
             return ""
         mock_git.side_effect = selective_fail

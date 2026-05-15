@@ -12,6 +12,7 @@ import pytest
 from app.claude_step import (
     StepResult,
     _is_ancestor,
+    _prefetch_all_remotes,
     _rebase_onto_target,
     _run_git,
     commit_if_changes,
@@ -142,7 +143,6 @@ class TestRebaseOntoTarget:
     def test_origin_success(self, mock_git):
         result = _rebase_onto_target("main", "/project")
         assert result == "origin"
-        assert mock_git.call_count == 2
         mock_git.assert_any_call(
             ["git", "fetch", "origin", "+refs/heads/main:refs/remotes/origin/main"],
             cwd="/project", timeout=60,
@@ -350,6 +350,61 @@ class TestRebaseOntoTargetForkAware:
         assert len(rebase_calls) == 1
         rebase_cmd = rebase_calls[0][0][0]
         assert "--onto" not in rebase_cmd
+
+
+# ---------- _prefetch_all_remotes ----------
+
+
+class TestPrefetchAllRemotes:
+    """Tests for _prefetch_all_remotes — eager base branch sync."""
+
+    @patch("app.claude_step._run_git")
+    def test_fetches_origin_and_upstream(self, mock_git):
+        _prefetch_all_remotes("main", "/project")
+        assert mock_git.call_count == 2
+        mock_git.assert_any_call(
+            ["git", "fetch", "origin", "+refs/heads/main:refs/remotes/origin/main"],
+            cwd="/project", timeout=60,
+        )
+        mock_git.assert_any_call(
+            ["git", "fetch", "upstream", "+refs/heads/main:refs/remotes/upstream/main"],
+            cwd="/project", timeout=60,
+        )
+
+    @patch("app.claude_step._run_git")
+    def test_includes_head_remote(self, mock_git):
+        _prefetch_all_remotes("main", "/project", head_remote="myfork")
+        fetched = [c[0][0][2] for c in mock_git.call_args_list]
+        assert "myfork" in fetched
+        assert "origin" in fetched
+        assert "upstream" in fetched
+
+    @patch("app.claude_step._run_git")
+    def test_preferred_remote_first(self, mock_git):
+        _prefetch_all_remotes("main", "/project", preferred_remote="upstream")
+        first_call_remote = mock_git.call_args_list[0][0][0][2]
+        assert first_call_remote == "upstream"
+
+    @patch("app.claude_step._run_git")
+    def test_no_duplicate_when_head_in_ordered(self, mock_git):
+        _prefetch_all_remotes("main", "/project", head_remote="origin")
+        assert mock_git.call_count == 2
+
+    @patch("app.claude_step._run_git")
+    def test_failure_is_nonfatal(self, mock_git, capsys):
+        mock_git.side_effect = RuntimeError("network down")
+        _prefetch_all_remotes("main", "/project")
+        captured = capsys.readouterr()
+        assert "Pre-fetch" in captured.err
+        assert "non-fatal" in captured.err
+
+    @patch("app.claude_step._run_git")
+    def test_timeout_is_nonfatal(self, mock_git, capsys):
+        mock_git.side_effect = subprocess.TimeoutExpired("git", 60)
+        _prefetch_all_remotes("main", "/project")
+        captured = capsys.readouterr()
+        assert "Pre-fetch" in captured.err
+
 
 
 # ---------- run_claude ----------

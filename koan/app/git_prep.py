@@ -24,6 +24,40 @@ from app.projects_config import (
 logger = logging.getLogger(__name__)
 
 
+def _fetch_branch_refspec(
+    remote: str, branch: str, project_path: str, timeout: int = 15
+) -> bool:
+    """Fetch a branch using an explicit refspec to guarantee tracking ref update.
+
+    Returns True on success.
+    """
+    refspec = f"+refs/heads/{branch}:refs/remotes/{remote}/{branch}"
+    rc, _, _ = run_git("fetch", remote, refspec, cwd=project_path, timeout=timeout)
+    return rc == 0
+
+
+def _sync_secondary_remotes(
+    base_branch: str, primary_remote: str, project_path: str
+) -> None:
+    """Fetch base branch from all remotes besides the primary.
+
+    Ensures remote tracking refs are fresh for fork-aware operations
+    (e.g., --onto rebase needs both origin/ and upstream/ refs current).
+    Non-fatal — failures are logged but never abort the mission.
+    """
+    rc, stdout, _ = run_git("remote", cwd=project_path)
+    if rc != 0 or not stdout:
+        return
+    for remote in stdout.splitlines():
+        remote = remote.strip()
+        if not remote or remote == primary_remote:
+            continue
+        if not _fetch_branch_refspec(remote, base_branch, project_path):
+            logger.debug(
+                "Secondary fetch %s/%s failed (non-fatal)", remote, base_branch
+            )
+
+
 def detect_remote_default_branch(remote: str, project_path: str) -> str:
     """Detect the default branch for a remote.
 
@@ -215,5 +249,9 @@ def prepare_project_branch(
             result.success = False
             result.error = f"reset failed: {stderr}"
             return result
+
+    # Sync secondary remotes so fork-aware operations (--onto rebase,
+    # _is_ancestor checks) see fresh tracking refs for every remote.
+    _sync_secondary_remotes(base_branch, remote, project_path)
 
     return result
