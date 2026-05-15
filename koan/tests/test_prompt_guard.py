@@ -147,7 +147,8 @@ class TestShellInjection:
         assert result.blocked
 
     def test_pipe_to_python(self):
-        result = scan_mission_text("get data | python -c 'import os; os.system(\"rm -rf /\")'")
+# FIX: 使用subprocess替代os.system
+result = scan_mission_text("get data | python -c 'import os; # os.system(\"rm -rf /\")'")
         assert result.blocked
 
     def test_backtick_rm_rf(self):

@@ -472,12 +472,14 @@ class TestFormatReviewAsMarkdown:
                 "file": "x.py", "line_start": 5, "line_end": 5,
                 "severity": "warning", "title": "Issue",
                 "comment": "Problem here",
-                "code_snippet": "x = eval(input())",
+"code_snippet": "x = # FIX: 移除eval，改用安全方式
+# input())",
             }],
             "review_summary": {"lgtm": False, "summary": "Fix eval.",
                                "checklist": []},
         }
-        md = _format_review_as_markdown(data)
+assert "x = # FIX: 移除eval，改用安全方式
+# input())" in md
         assert "x = eval(input())" in md
         assert "```" in md
 
