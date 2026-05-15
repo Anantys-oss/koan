@@ -550,11 +550,18 @@ def update_usage(stdout_file: str, usage_state: str, usage_md: str) -> bool:
     try:
         from app.usage_estimator import cmd_update
 
-        cmd_update(Path(stdout_file), Path(usage_state), Path(usage_md))
-        return True
+        cost_pct = cmd_update(Path(stdout_file), Path(usage_state), Path(usage_md))
     except Exception as e:
         _log_runner("error", f"Usage update failed: {e}")
         return False
+
+    if cost_pct is not None:
+        try:
+            from app.burn_rate import record_run
+            record_run(Path(usage_md).parent, cost_pct)
+        except Exception as e:  # pragma: no cover - defensive
+            _log_runner("error", f"Burn rate record failed: {e}")
+    return True
 
 
 def trigger_reflection(

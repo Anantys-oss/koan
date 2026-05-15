@@ -201,9 +201,10 @@ If Kōan misclassifies your message, use `/chat` to force chat mode:
 <details>
 <summary>Use cases</summary>
 
-- `/quota` — See how much API budget is left before adding heavy missions
+- `/quota` — See how much API budget is left before adding heavy missions, plus the rolling burn rate (%/h) and estimated time to exhaustion
 - `/quota 32` — Tell Kōan it has 32% remaining (fixes drift when internal estimate is wrong)
 - If Kōan is paused due to quota but the API is actually available, `/quota 50` will correct the estimate and clear the pause
+- When the burn rate predicts session exhaustion in less than 30 min, the autonomous mode is automatically downgraded one tier (deep→implement→review). A Telegram alert fires once when projected exhaustion is under 60 min and the next quota reset is still more than 2 h away.
 </details>
 
 **`/check_notifications`** — Force an immediate check of GitHub and Jira notifications, bypassing the exponential backoff timer.
