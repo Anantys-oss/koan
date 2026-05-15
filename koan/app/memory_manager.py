@@ -424,14 +424,15 @@ class MemoryManager:
             month_dir.mkdir(parents=True, exist_ok=True)
             archive_file = month_dir / f"{project}.md"
 
+            existing_content = ""
             existing = set()
             if archive_file.exists():
-                existing = set(archive_file.read_text().splitlines())
+                existing_content = archive_file.read_text(encoding="utf-8")
+                existing = set(existing_content.splitlines())
 
             new_lines = [l for l in lines if l not in existing]
             if new_lines:
-                if existing:
-                    existing_content = archive_file.read_text(encoding="utf-8")
+                if existing_content:
                     full_content = existing_content.rstrip("\n") + "\n" + "\n".join(new_lines) + "\n"
                 else:
                     full_content = f"# Journal archive — {project} — {month}\n\n" + "\n".join(new_lines) + "\n"
