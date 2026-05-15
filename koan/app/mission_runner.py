@@ -20,12 +20,13 @@ CLI interface:
 
 import json
 import os
+import re
 import sys
 import threading
 import time
 from datetime import date, datetime
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 # Maximum wall-clock time for the entire post-mission pipeline (seconds).
 # Individual steps have their own timeouts (tests: 120s, reflection: 60s,
@@ -835,6 +836,159 @@ def _notify_pipeline_failures(
         _log_runner("error", f"Pipeline failure notification failed: {e}")
 
 
+# Alert markers are matched case-insensitively. Word boundaries (\b) keep
+# short fragments like "no PR" from triggering on prose ("no problem",
+# "no projects"). Markdown-bolded markers (**SKIP**, **FAIL**, …) match
+# without word boundaries because the ** delimiters already anchor them.
+_RESULT_ALERT_REGEX = re.compile(
+    r"""
+    \*\*\s*(?:skip|fail(?:ed)?|error|blocked)\s*\*\*    # **SKIP**, **FAIL**, **FAILED**, **ERROR**, **BLOCKED**
+    | \b(?:skip|fail|error|blocked)\s*[—–\-]{1,2}       # SKIP —, FAIL --, ERROR -, etc.
+    | \bmission\s+(?:blocked|aborted)\b
+    | \bpermission\s+deadlock\b
+    | \bhard\s+stop\b
+    | \bno\s+branch,?\s+no\s+commits\b
+    | \bno\s+PR\b                                       # word-bounded — no "no problem"/"no projects"
+    | \bno\s+code\s+changes\b
+    | \bcould(?:\s+not|n[’']?t)\s+execute\b             # could not / couldn't / couldn’t execute
+    | \bnever\s+produced\b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+_RESULT_FORWARD_MAX_CHARS = 4000
+
+# Lazy registry cache — skills rarely change at runtime, so we build the
+# registry once per process. Rebuild requires a restart, matching how skill
+# registration works elsewhere.
+_skill_registry_cache: Optional[Any] = None
+
+
+def _resolve_forward_result_markers() -> list:
+    """Collect mission-title markers from skills with ``forward_result: true``.
+
+    Builds the skill registry lazily from the koan core skills directory plus
+    the operator's ``$KOAN_ROOT/instance/skills/`` tree. Each opted-in skill
+    contributes auto-derived slash-command forms (``/{cmd.name}``,
+    ``/{alias}``, ``/{scope}.{name}``) and any explicit ``title_markers``.
+    """
+    global _skill_registry_cache
+    try:
+        if _skill_registry_cache is None:
+            from app.skills import build_registry
+            extra_dirs = []
+            koan_root = os.environ.get("KOAN_ROOT")
+            if koan_root:
+                instance_skills = Path(koan_root) / "instance" / "skills"
+                if instance_skills.is_dir():
+                    extra_dirs.append(instance_skills)
+            _skill_registry_cache = build_registry(extra_dirs)
+        from app.skills import collect_forward_result_markers
+        return collect_forward_result_markers(_skill_registry_cache)
+    except Exception as e:
+        _log_runner("error", f"Forward-result marker resolution failed: {e}")
+        return []
+
+
+def _should_forward_result(mission_title: str, result_text: str) -> Tuple[bool, bool]:
+    """Decide whether to forward this mission's result to outbox.
+
+    Returns ``(should_forward, is_alert)``. ``is_alert`` only governs the
+    icon (⚠️ for alerts, ℹ️ for customer-facing successes); the caller picks
+    its own notification priority.
+    """
+    body = (result_text or "").strip()
+    if not body:
+        return (False, False)
+
+    is_alert = bool(_RESULT_ALERT_REGEX.search(body))
+
+    lowered_title = (mission_title or "").lower()
+    markers = _resolve_forward_result_markers()
+    is_customer_facing = any(
+        marker in lowered_title for marker in markers if marker
+    )
+
+    return (is_alert or is_customer_facing, is_alert)
+
+
+def _notify_mission_result(
+    mission_title: str,
+    instance_dir: str,
+    stdout_file: str,
+    start_time: int,
+    exit_code: int,
+    outbox_baseline_mtime: Optional[float] = None,
+) -> None:
+    """Forward the Claude session's result text to outbox.md.
+
+    Activates when the result text is either an alert outcome
+    (SKIP/FAIL/ERROR/BLOCKED) or a skill that opted into result forwarding
+    via ``forward_result: true`` in its SKILL.md, on both successful and
+    failed Claude exits — failure exits often carry the most useful error
+    context, so they are forwarded too.
+
+    Idempotency: skipped silently when the Claude session itself wrote to
+    outbox.md during execution. The caller should pass
+    ``outbox_baseline_mtime`` captured **before** any post-mission step ran,
+    so writes from later pipeline steps (failure notifier, reflection,
+    pr_review_learning, …) do not suppress this notification. When
+    ``outbox_baseline_mtime`` is None, the current mtime is read at call
+    time (legacy/test path).
+    """
+    try:
+        from app.config import get_notify_mission_results
+        if not get_notify_mission_results():
+            return
+    except Exception as e:
+        # Fail open: default-True if config check is broken
+        _log_runner("error", f"notify_mission_results config check failed: {e}")
+
+    try:
+        result_text = _read_stdout_summary(stdout_file, max_chars=_RESULT_FORWARD_MAX_CHARS)
+        should_forward, is_alert = _should_forward_result(mission_title, result_text)
+        if not should_forward:
+            return
+
+        outbox_path = Path(instance_dir) / "outbox.md"
+
+        try:
+            mtime: Optional[float]
+            if outbox_baseline_mtime is not None:
+                mtime = outbox_baseline_mtime
+            elif outbox_path.exists():
+                mtime = outbox_path.stat().st_mtime
+            else:
+                mtime = None
+            if start_time > 0 and mtime is not None and mtime > start_time:
+                return
+        except OSError:
+            pass
+
+        title_short = (mission_title or "").strip()
+        if len(title_short) > 120:
+            title_short = title_short[:117] + "…"
+
+        icon = "⚠️" if is_alert else "ℹ️"
+        # Non-zero exits get the alert icon even when the body lacks keyword
+        # markers — the failure itself is the signal.
+        if exit_code != 0:
+            icon = "⚠️"
+        prefix_line = f"{icon} {title_short}" if title_short else icon
+
+        body = result_text.strip()
+        msg = f"{prefix_line}\n\n{body}\n"
+
+        from app.utils import append_to_outbox
+        from app.notify import NotificationPriority
+        # Customer-facing mission completions are responses to user commands —
+        # always send at ACTION priority so they pass the default min_priority
+        # filter. is_alert only affects the visual icon (⚠️ vs ℹ️).
+        append_to_outbox(outbox_path, msg, priority=NotificationPriority.ACTION)
+    except Exception as e:
+        _log_runner("error", f"Mission result notification failed: {e}")
+
+
 def _fire_post_mission_hook(
     instance_dir: str,
     project_name: str,
@@ -919,6 +1073,19 @@ def run_post_mission(
     }
 
     tracker = _PipelineTracker()
+
+    # Snapshot outbox.md mtime BEFORE any post-mission step runs, so the
+    # mission-result notifier can distinguish "Claude wrote during the
+    # session" from "a later pipeline step (failure notifier, reflection,
+    # pr_review_learning, …) wrote to outbox." Without this snapshot, any
+    # downstream outbox write would erroneously suppress the result body.
+    _outbox_baseline_mtime: Optional[float] = None
+    try:
+        _outbox_path = Path(instance_dir) / "outbox.md"
+        if _outbox_path.exists():
+            _outbox_baseline_mtime = _outbox_path.stat().st_mtime
+    except OSError:
+        _outbox_baseline_mtime = None
 
     # Overall pipeline deadline — prevents accumulated steps from blocking
     # the agent loop indefinitely.
@@ -1175,6 +1342,22 @@ def run_post_mission(
 
         # Notify user of pipeline failures via outbox (retried by bridge)
         _notify_pipeline_failures(tracker, mission_title, instance_dir)
+
+        # Forward Claude's result text to outbox so SKIP/ERROR/BLOCKED
+        # outcomes (and customer-facing skill results) reach Telegram even
+        # when the session's sandbox blocked writes to instance/.
+        # The baseline mtime captured at function entry lets the notifier
+        # ignore writes made by later pipeline steps (failure notifier,
+        # reflection, pr_review_learning) when deciding whether the Claude
+        # session itself already informed the user.
+        _notify_mission_result(
+            mission_title=mission_title,
+            instance_dir=instance_dir,
+            stdout_file=stdout_file,
+            start_time=start_time,
+            exit_code=exit_code,
+            outbox_baseline_mtime=_outbox_baseline_mtime,
+        )
 
         return result
     finally:

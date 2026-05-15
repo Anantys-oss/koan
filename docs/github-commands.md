@@ -251,7 +251,7 @@ The helper is `app.external_skill_dispatch.try_dispatch_custom_handler`. It also
 
 - **Jira source**: the issue the comment is on.
 - **GitHub source**: the first `FOO-123`-style key found in the issue title, then body.
-- If the author already typed a key (e.g. `@bot cpfix CPANEL-1`), it's passed through verbatim.
+- If the author already typed a key (e.g. `@bot myfix PROJ-1`), it's passed through verbatim.
 
 ### Help grouping: the `integrations` group
 

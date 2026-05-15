@@ -88,6 +88,18 @@ class Skill:
     # are also free to keep an explicit ``caveman: false`` to document
     # intent, even though it matches the default.
     caveman_enabled: bool = False
+    # ``forward_result_enabled`` follows the SKILL.md frontmatter
+    # ``forward_result:`` flag. When True, the post-mission pipeline forwards
+    # the Claude session's result text to outbox.md so the user sees the
+    # response to their slash command / @mention. Auto-derived markers
+    # (slash-command forms of every command + alias, plus ``/{scope}.{name}``)
+    # are matched against the mission title in addition to any explicit
+    # ``title_markers``.
+    forward_result_enabled: bool = False
+    # ``title_markers`` — optional list of additional mission-title substrings
+    # that should also flag a mission as belonging to this skill, for the case
+    # where a handler emits plain-text titles without the slash command.
+    title_markers: List[str] = field(default_factory=list)
 
     @property
     def qualified_name(self) -> str:
@@ -242,6 +254,16 @@ def parse_skill_md(path: Path) -> Optional[Skill]:
     github_enabled = _parse_bool_flag(meta, "github_enabled")
     github_context_aware = _parse_bool_flag(meta, "github_context_aware")
     caveman_enabled = _parse_bool_flag(meta, "caveman")
+    forward_result_enabled = _parse_bool_flag(meta, "forward_result")
+
+    # Parse title_markers (optional inline list or comma-separated scalar).
+    title_markers_raw = meta.get("title_markers", [])
+    if isinstance(title_markers_raw, list):
+        title_markers = [str(m).strip() for m in title_markers_raw if str(m).strip()]
+    elif isinstance(title_markers_raw, str) and title_markers_raw.strip():
+        title_markers = [s.strip() for s in title_markers_raw.split(",") if s.strip()]
+    else:
+        title_markers = []
 
     # Parse audience (default: "bridge" for backward compatibility)
     audience = meta.get("audience", DEFAULT_AUDIENCE).lower()
@@ -274,6 +296,8 @@ def parse_skill_md(path: Path) -> Optional[Skill]:
         group=group,
         emoji=emoji,
         caveman_enabled=caveman_enabled,
+        forward_result_enabled=forward_result_enabled,
+        title_markers=title_markers,
     )
 
 
@@ -473,6 +497,35 @@ class SkillRegistry:
 
     def __contains__(self, qualified_name: str) -> bool:
         return qualified_name in self._skills
+
+
+def collect_forward_result_markers(registry: "SkillRegistry") -> List[str]:
+    """Return mission-title substrings for every skill that opted into result forwarding.
+
+    For each skill with ``forward_result_enabled``:
+      - emit ``/{cmd.name}`` and ``/{alias}`` for every command + alias,
+      - emit ``/{scope}.{name}`` (the scoped form used when a project tag is
+        present — see ``command_handlers._queue_cli_skill_mission``),
+      - emit every entry from ``title_markers`` (for handler-composed
+        plain-text mission titles).
+
+    All markers are lower-cased and deduplicated so the caller can do a flat
+    case-insensitive substring check against the mission title.
+    """
+    markers: set[str] = set()
+    for skill in registry.list_all():
+        if not skill.forward_result_enabled:
+            continue
+        markers.add(f"/{skill.scope}.{skill.name}".lower())
+        for cmd in skill.commands:
+            markers.add(f"/{cmd.name}".lower())
+            for alias in cmd.aliases:
+                markers.add(f"/{alias}".lower())
+        for raw in skill.title_markers:
+            text = (raw or "").strip().lower()
+            if text:
+                markers.add(text)
+    return sorted(markers)
 
 
 # ---------------------------------------------------------------------------

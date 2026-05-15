@@ -582,6 +582,27 @@ def get_post_mission_timeout() -> int:
     return _safe_int(config.get("post_mission_timeout", 300), 300)
 
 
+def get_notify_mission_results() -> bool:
+    """Whether to forward Claude's mission result text to outbox.md.
+
+    When True, the post-mission pipeline appends the Claude session's final
+    result string to outbox.md whenever it indicates an alert outcome
+    (SKIP/FAIL/ERROR/BLOCKED) or comes from a skill that opted in via
+    ``forward_result: true`` in its SKILL.md. Guarantees the user sees the
+    result on Telegram even when the Claude session's sandbox blocked writes
+    to instance/.
+
+    Config key: notify_mission_results (default: True).
+    """
+    config = _load_config()
+    val = config.get("notify_mission_results", True)
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        return val.strip().lower() not in ("false", "no", "0", "off")
+    return True
+
+
 # Default effort levels per autonomous mode.
 # Keys are autonomous modes, values are Claude CLI --effort levels.
 # "medium" is the provider default when no flag is passed — omitted here

@@ -31,14 +31,14 @@ def _make_custom_skill(tmp_path: Path, handler_src: str) -> Skill:
     handler_path = skill_dir / "handler.py"
     handler_path.write_text(handler_src)
     return Skill(
-        name="cp_fix",
-        scope="cp",
+        name="my_fix",
+        scope="my_team",
         description="Test custom skill",
         handler_path=handler_path,
         skill_dir=skill_dir,
         github_enabled=True,
         github_context_aware=True,
-        commands=[SkillCommand(name="cp_fix", aliases=["cpfix"])],
+        commands=[SkillCommand(name="my_fix", aliases=["myfix"])],
     )
 
 
@@ -60,42 +60,42 @@ def _make_core_skill() -> Skill:
 class TestAugmentArgs:
     def test_returns_context_unchanged_when_jira_key_already_present(self):
         out = augment_args_with_issue_key(
-            "focus on race CPANEL-999",
-            jira_issue_key="CPANEL-1",
+            "focus on race PROJ-999",
+            jira_issue_key="PROJ-1",
         )
-        assert out == "focus on race CPANEL-999"
+        assert out == "focus on race PROJ-999"
 
     def test_appends_jira_source_key_when_missing(self):
         out = augment_args_with_issue_key(
             "focus on the race",
-            jira_issue_key="CPANEL-456",
+            jira_issue_key="PROJ-456",
         )
-        assert out == "focus on the race CPANEL-456"
+        assert out == "focus on the race PROJ-456"
 
     def test_uses_jira_key_even_when_github_sources_also_present(self):
         # Jira source wins over GitHub title/body fallbacks.
         out = augment_args_with_issue_key(
             "",
-            jira_issue_key="CPANEL-10",
-            github_title="references CPANEL-99",
-            github_body="and CPANEL-88",
+            jira_issue_key="PROJ-10",
+            github_title="references PROJ-99",
+            github_body="and PROJ-88",
         )
-        assert out == "CPANEL-10"
+        assert out == "PROJ-10"
 
     def test_falls_back_to_github_title(self):
         out = augment_args_with_issue_key(
             "please fix",
-            github_title="Bug: CPANEL-321 breaks login",
+            github_title="Bug: PROJ-321 breaks login",
         )
-        assert out == "please fix CPANEL-321"
+        assert out == "please fix PROJ-321"
 
     def test_falls_back_to_github_body_when_title_has_none(self):
         out = augment_args_with_issue_key(
             "",
             github_title="just a bug",
-            github_body="tracked as CPANEL-77 in jira",
+            github_body="tracked as PROJ-77 in jira",
         )
-        assert out == "CPANEL-77"
+        assert out == "PROJ-77"
 
     def test_leaves_context_alone_when_nothing_found(self):
         out = augment_args_with_issue_key(
@@ -154,7 +154,7 @@ class TestTryDispatchCustomHandler:
         monkeypatch.delenv("KOAN_ROOT", raising=False)
         skill = _make_custom_skill(tmp_path, "def handle(ctx):\n    return 'ok'\n")
         assert try_dispatch_custom_handler(
-            skill, "cp_fix", "", source="github",
+            skill, "my_fix", "", source="github",
         ) is None
 
     def test_invokes_custom_handler_and_returns_reply(self, tmp_path):
@@ -165,12 +165,12 @@ class TestTryDispatchCustomHandler:
         skill = _make_custom_skill(tmp_path, handler_src)
 
         reply = try_dispatch_custom_handler(
-            skill, "cp_fix", "do the thing",
+            skill, "my_fix", "do the thing",
             source="github",
             github_body="nothing",
         )
 
-        assert reply == "args='do the thing' cmd='cp_fix'"
+        assert reply == "args='do the thing' cmd='my_fix'"
 
     def test_jira_key_auto_fed_from_jira_source(self, tmp_path):
         handler_src = (
@@ -180,12 +180,12 @@ class TestTryDispatchCustomHandler:
         skill = _make_custom_skill(tmp_path, handler_src)
 
         reply = try_dispatch_custom_handler(
-            skill, "cp_fix", "",
+            skill, "my_fix", "",
             source="jira",
-            jira_issue_key="CPANEL-42",
+            jira_issue_key="PROJ-42",
         )
 
-        assert reply == "got:CPANEL-42"
+        assert reply == "got:PROJ-42"
 
     def test_jira_key_auto_fed_from_github_title(self, tmp_path):
         handler_src = (
@@ -195,13 +195,13 @@ class TestTryDispatchCustomHandler:
         skill = _make_custom_skill(tmp_path, handler_src)
 
         reply = try_dispatch_custom_handler(
-            skill, "cp_fix", "",
+            skill, "my_fix", "",
             source="github",
-            github_title="CPANEL-789 breaks",
+            github_title="PROJ-789 breaks",
             github_body="body text",
         )
 
-        assert reply == "got:CPANEL-789"
+        assert reply == "got:PROJ-789"
 
     def test_user_context_with_key_preserved(self, tmp_path):
         handler_src = (
@@ -210,14 +210,14 @@ class TestTryDispatchCustomHandler:
         )
         skill = _make_custom_skill(tmp_path, handler_src)
 
-        # Author typed CPANEL-1; source issue is CPANEL-999. Author wins.
+        # Author typed PROJ-1; source issue is PROJ-999. Author wins.
         reply = try_dispatch_custom_handler(
-            skill, "cp_fix", "CPANEL-1 please",
+            skill, "my_fix", "PROJ-1 please",
             source="jira",
-            jira_issue_key="CPANEL-999",
+            jira_issue_key="PROJ-999",
         )
 
-        assert reply == "got:CPANEL-1 please"
+        assert reply == "got:PROJ-1 please"
 
     def test_returns_empty_string_when_handler_returns_none(self, tmp_path):
         # Handler returning None means "no user-visible reply" — caller should
@@ -226,7 +226,7 @@ class TestTryDispatchCustomHandler:
         skill = _make_custom_skill(tmp_path, handler_src)
 
         reply = try_dispatch_custom_handler(
-            skill, "cp_fix", "context",
+            skill, "my_fix", "context",
             source="github",
         )
 
@@ -240,7 +240,7 @@ class TestTryDispatchCustomHandler:
         skill = _make_custom_skill(tmp_path, handler_src)
 
         reply = try_dispatch_custom_handler(
-            skill, "cp_fix", "ctx", source="github",
+            skill, "my_fix", "ctx", source="github",
         )
 
         # SkillError is surfaced as its message string, not None.
@@ -257,7 +257,7 @@ class TestTryDispatchCustomHandler:
         skill = _make_custom_skill(tmp_path, handler_src)
 
         reply = try_dispatch_custom_handler(
-            skill, "cp_fix", "", source="github",
+            skill, "my_fix", "", source="github",
             jira_issue_key=None,
         )
 

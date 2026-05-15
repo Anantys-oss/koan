@@ -144,6 +144,16 @@ skill_timeout: 7200
 # Default: 300 (5 minutes).
 # post_mission_timeout: 300
 
+# Forward Claude's final result text to outbox.md when a mission's outcome is an
+# alert (SKIP / FAIL / ERROR / BLOCKED, "permission deadlock", "no PR opened",
+# etc.) or when the mission title matches a skill that opted in via SKILL.md
+# (see "Result forwarding" in koan/skills/README.md — set `forward_result: true`
+# on the skill's SKILL.md frontmatter to enable). Guarantees the user sees the
+# result on Telegram even when the Claude session's sandbox blocked writes to
+# instance/.
+# Default: true. Set to false to silence the forwarder entirely.
+# notify_mission_results: true
+
 # Stagnation detection — abort Claude sessions stuck in a loop long before
 # mission_timeout would kill them, saving quota.
 # How it works: a daemon thread samples the subprocess stdout every
