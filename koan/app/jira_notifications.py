@@ -405,20 +405,25 @@ def _search_issues_with_comments(
     auth_header: str,
     project_keys: List[str],
     since: datetime,
+    max_issues: Optional[int] = None,
 ) -> List[dict]:
     """Search for Jira issues updated since a given time using JQL.
 
     Uses JQL to find recently-updated issues in the mapped projects.
-    Paginates to handle large result sets.
+    Paginates to handle large result sets, stopping once ``max_issues`` have
+    been collected so callers can bound the total API cost.
 
     Args:
         base_url: Jira instance base URL.
         auth_header: Basic auth header value.
         project_keys: List of Jira project keys to search.
         since: Minimum updated timestamp.
+        max_issues: Upper bound on the number of issues to return; pagination
+            halts once this many issues have been collected. ``None`` means no
+            cap (return everything).
 
     Returns:
-        List of issue dicts from Jira API.
+        List of issue dicts from Jira API (at most ``max_issues`` when set).
     """
     if not project_keys:
         return []
@@ -457,6 +462,10 @@ def _search_issues_with_comments(
             break
 
         issues.extend(batch)
+
+        if max_issues is not None and len(issues) >= max_issues:
+            issues = issues[:max_issues]
+            break
 
         if data.get("isLast", True):
             break
@@ -679,21 +688,34 @@ def fetch_jira_mentions(
     else:
         since = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
 
-    # Search for recently-updated issues (cap at 20 to limit API calls)
-    _MAX_ISSUES_PER_CYCLE = 20
-    issues = _search_issues_with_comments(base_url, auth_header, project_keys, since)
+    # Search for recently-updated issues. On a multi-project deployment a 24h
+    # cold-start window can produce 50–100 issues; the cap is kept high enough
+    # that legitimate mentions ranked deep in the result list still get
+    # inspected instead of being silently dropped. The cap is pushed into
+    # _search_issues_with_comments so pagination halts as soon as we have
+    # enough issues — both the search and the per-issue comment fetches stay
+    # bounded by _MAX_ISSUES_PER_CYCLE. Steady-state polls narrow the window
+    # via ``since_iso`` so the cap rarely binds there.
+    _MAX_ISSUES_PER_CYCLE = 200
+    issues = _search_issues_with_comments(
+        base_url, auth_header, project_keys, since,
+        max_issues=_MAX_ISSUES_PER_CYCLE,
+    )
+    log.info(
+        "Jira: search since %s returned %d issue(s) (cap=%d)",
+        since.strftime("%Y-%m-%d %H:%M"), len(issues), _MAX_ISSUES_PER_CYCLE,
+    )
     if not issues:
-        log.debug("Jira: no recently-updated issues found")
         return JiraFetchResult([])
 
-    if len(issues) > _MAX_ISSUES_PER_CYCLE:
-        log.debug(
-            "Jira: found %d issues, capping at %d to limit API calls",
-            len(issues), _MAX_ISSUES_PER_CYCLE,
+    if len(issues) >= _MAX_ISSUES_PER_CYCLE:
+        log.warning(
+            "Jira: hit cap of %d issues this cycle; older issues beyond the "
+            "cap were not inspected and any mentions on them will be missed "
+            "until a future poll picks them up — consider tightening "
+            "max_age_hours or shortening check_interval_seconds",
+            _MAX_ISSUES_PER_CYCLE,
         )
-        issues = issues[:_MAX_ISSUES_PER_CYCLE]
-    else:
-        log.debug("Jira: found %d recently-updated issues", len(issues))
 
     # Collect @mention comments from all issues
     mentions = []

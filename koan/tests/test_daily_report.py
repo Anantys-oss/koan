@@ -138,13 +138,13 @@ class TestParseCompletedMissions:
             "# Missions\n\n"
             "## Done\n\n"
             "- [project:koan] fix auth bug ⏳(2026-02-17T16:00) ▶(2026-02-17T16:12) ✅ (2026-02-17 21:16)\n"
-            "- [project:wp-toolkit] plan for case EXTWPTOOLK-11339 ✅ (2026-02-17 16:12)\n"
+            "- [project:my-toolkit] plan for case PROJ-11339 ✅ (2026-02-17 16:12)\n"
         )
         with patch("app.daily_report.MISSIONS_FILE", missions_file):
             result = _parse_completed_missions()
         assert len(result) == 2
         assert "fix auth bug" in result[0]
-        assert "plan for case EXTWPTOOLK-11339" in result[1]
+        assert "plan for case PROJ-11339" in result[1]
 
     def test_legacy_bold_entries(self, tmp_path):
         missions_file = tmp_path / "missions.md"

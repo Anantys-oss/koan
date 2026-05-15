@@ -1621,16 +1621,20 @@ def _run_iteration(
     jira_missions = 0
     if jira_enabled:
         log("koan", "Checking Jira notifications...")
+        # One first-iteration banner that combines the GitHub roll-up (when
+        # applicable) with the cold-start latency hint. Avoids the prior
+        # double-message ("🔍 Scanning Jira..." immediately followed by
+        # "📋 GitHub: ... Scanning Jira...") that said the same thing twice.
         if is_first_iteration:
+            cold = " (cold start, may take ~1 min)"
             if github_enabled and gh_missions > 0:
-                _notify_raw(instance, f"📋 GitHub: {gh_missions} new mission(s) queued. Scanning Jira...")
-            elif is_boot_iteration:
-                # Empty-state message: only surface at actual boot. On resume,
-                # the human doesn't need to be told "nothing new" every cycle.
-                if github_enabled:
-                    _notify_raw(instance, "📋 GitHub: scanned, no new missions. Scanning Jira...")
-                else:
-                    _notify_raw(instance, "📋 Scanning Jira notifications...")
+                _notify_raw(instance, f"📋 GitHub: {gh_missions} new mission(s) queued. Scanning Jira{cold}...")
+            elif is_boot_iteration and github_enabled:
+                _notify_raw(instance, f"📋 GitHub: scanned, no new missions. Scanning Jira{cold}...")
+            else:
+                # Boot without GitHub, or resume from pause: emit a single
+                # cold-start banner so the human sees Jira IS being scanned.
+                _notify_raw(instance, f"🔍 Scanning Jira notifications{cold}...")
         from app.loop_manager import process_jira_notifications
         try:
             jira_missions = process_jira_notifications(koan_root, instance, force=force_notif_check)
