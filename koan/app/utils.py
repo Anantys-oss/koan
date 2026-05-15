@@ -257,6 +257,53 @@ def truncate_text(text: str, max_chars: int) -> str:
     return text[:max_chars] + "\n...(truncated)"
 
 
+def truncate_diff(diff: str, max_chars: int) -> str:
+    """Truncate a unified diff intelligently, preserving whole file blocks.
+
+    Instead of cutting at an arbitrary character offset (which leaves the
+    reviewer guessing what was cut), this splits the diff into per-file
+    blocks and keeps as many complete blocks as fit within *max_chars*.
+    Files that don't fit are listed as a summary at the end so the
+    reviewer knows they exist.
+    """
+    import re as _re
+
+    if not diff or len(diff) <= max_chars:
+        return diff
+
+    # Split into per-file blocks at 'diff --git' boundaries.
+    raw_blocks = _re.split(r'(?=^diff --git )', diff, flags=_re.MULTILINE)
+    blocks = [b for b in raw_blocks if b.strip()]
+
+    if not blocks:
+        # Can't parse structure — fall back to character truncation.
+        return truncate_text(diff, max_chars)
+
+    kept: list[str] = []
+    skipped: list[str] = []
+    used = 0
+
+    for block in blocks:
+        if used + len(block) <= max_chars:
+            kept.append(block)
+            used += len(block)
+        else:
+            # Extract filename from the 'diff --git a/... b/...' header.
+            m = _re.match(r'diff --git a/\S+ b/(\S+)', block)
+            name = m.group(1) if m else "(unknown file)"
+            skipped.append(name)
+
+    result = "".join(kept)
+    if skipped:
+        listing = "\n".join(f"  - {f}" for f in skipped)
+        result += (
+            f"\n\n...(diff truncated — {len(skipped)} file(s) omitted, "
+            f"{len(kept)} file(s) shown)\n"
+            f"Omitted files:\n{listing}\n"
+        )
+    return result
+
+
 def _locked_missions_rw(missions_path: Path, transform):
     """Read-modify-write missions.md with crash-safe atomic writes.
 

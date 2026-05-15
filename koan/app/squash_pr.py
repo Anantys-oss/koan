@@ -37,7 +37,7 @@ from app.git_utils import ordered_remotes as _ordered_remotes
 from app.github import run_gh, sanitize_github_comment
 from app.prompts import load_prompt_or_skill
 from app.rebase_pr import _find_remote_for_repo, fetch_pr_context
-from app.utils import truncate_text
+from app.utils import truncate_diff
 
 
 def _count_commits_since_base(
@@ -92,7 +92,7 @@ def _generate_squash_text(
         BODY=context.get("body", ""),
         BRANCH=context.get("branch", ""),
         BASE=context.get("base", "main"),
-        DIFF=truncate_text(diff, 12000),
+        DIFF=truncate_diff(diff, 32000),
     )
     prompt = load_prompt_or_skill(skill_dir, "squash", **kwargs)
 

@@ -459,8 +459,8 @@ def _attempt_ci_fixes(
     from app.rebase_pr import (
         _build_ci_fix_prompt,
         _force_push,
-        truncate_text,
     )
+    from app.utils import truncate_diff
 
     for attempt in range(1, max_attempts + 1):
         print(f"[ci_check] Fix attempt {attempt}/{max_attempts}", file=sys.stderr)
@@ -475,7 +475,7 @@ def _attempt_ci_fixes(
             )
         except Exception as e:
             print(f"[ci_check] diff fetch failed: {e}", file=sys.stderr)
-        diff = truncate_text(diff, 8000)
+        diff = truncate_diff(diff, 32000)
 
         # Build prompt and run Claude
         ci_fix_prompt = _build_ci_fix_prompt(
