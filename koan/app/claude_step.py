@@ -100,6 +100,19 @@ def has_rebase_in_progress(project_path: str) -> bool:
 _ordered_remotes = ordered_remotes
 
 
+def _is_ancestor(maybe_ancestor: str, descendant: str, cwd: str) -> bool:
+    """Return True if *maybe_ancestor* is an ancestor of (or equal to) *descendant*."""
+    try:
+        result = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", maybe_ancestor, descendant],
+            stdin=subprocess.DEVNULL,
+            capture_output=True, cwd=cwd, timeout=10,
+        )
+        return result.returncode == 0
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+
+
 def _rebase_onto_target(
     base: str,
     project_path: str,
@@ -137,19 +150,35 @@ def _rebase_onto_target(
         if head_remote and head_remote != remote:
             try:
                 _fetch_branch(head_remote, base, cwd=project_path)
-                _run_git(
-                    ["git", "rebase", "--onto", f"{remote}/{base}",
-                     f"{head_remote}/{base}", "--autostash"],
-                    cwd=project_path,
-                )
-                return remote
             except _REBASE_EXCEPTIONS as e:
-                print(f"[claude_step] --onto rebase failed: {e}", file=sys.stderr)
-                if on_conflict and has_rebase_in_progress(project_path):
-                    if on_conflict(project_path):
-                        return remote
-                _abort_rebase_safely(project_path)
-                # Fall through to plain rebase
+                print(f"[claude_step] Fetch {head_remote}/{base} failed: {e}", file=sys.stderr)
+                # Can't determine fork state — fall through to plain rebase
+                head_remote = None
+
+        if head_remote and head_remote != remote:
+            # Only use --onto when the fork has genuinely diverged from
+            # upstream (i.e. has commits that upstream doesn't).  When the
+            # fork is simply behind, --onto replays upstream commits that
+            # already exist on the target, causing spurious conflicts in
+            # files the PR never touched.
+            use_onto = not _is_ancestor(
+                f"{head_remote}/{base}", f"{remote}/{base}", project_path,
+            )
+            if use_onto:
+                try:
+                    _run_git(
+                        ["git", "rebase", "--onto", f"{remote}/{base}",
+                         f"{head_remote}/{base}", "--autostash"],
+                        cwd=project_path,
+                    )
+                    return remote
+                except _REBASE_EXCEPTIONS as e:
+                    print(f"[claude_step] --onto rebase failed: {e}", file=sys.stderr)
+                    if on_conflict and has_rebase_in_progress(project_path):
+                        if on_conflict(project_path):
+                            return remote
+                    _abort_rebase_safely(project_path)
+                    # Fall through to plain rebase
 
         # Fallback: plain rebase
         try:

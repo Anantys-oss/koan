@@ -1557,14 +1557,15 @@ class TestMain:
 class TestRebaseOntoTarget_OntoMode:
     """Tests for --onto rebase when head_remote differs from target remote."""
 
-    def test_uses_onto_when_head_remote_differs(self):
-        """--onto should be used when head_remote != target remote."""
+    def test_uses_onto_when_fork_diverged(self):
+        """--onto should be used when fork has genuinely diverged from upstream."""
         calls = []
         def mock_run(cmd, **kwargs):
             calls.append(cmd)
             return MagicMock(returncode=0, stdout="", stderr="")
 
-        with patch("app.claude_step.subprocess.run", side_effect=mock_run):
+        with patch("app.claude_step.subprocess.run", side_effect=mock_run), \
+             patch("app.claude_step._is_ancestor", return_value=False):
             result = _rebase_onto_target(
                 "main", "/project",
                 preferred_remote="upstream",
@@ -1575,13 +1576,32 @@ class TestRebaseOntoTarget_OntoMode:
         # Should have fetched both remotes' base branches
         fetch_cmds = [c for c in calls if c[:2] == ["git", "fetch"]]
         assert ["git", "fetch", "upstream", "+refs/heads/main:refs/remotes/upstream/main"] in fetch_cmds
-        assert ["git", "fetch", "origin", "+refs/heads/main:refs/remotes/origin/main"] in fetch_cmds
         # Should use --onto
         rebase_cmds = [c for c in calls if "rebase" in c and "--abort" not in c]
         assert len(rebase_cmds) == 1
         assert "--onto" in rebase_cmds[0]
         assert "upstream/main" in rebase_cmds[0]
         assert "origin/main" in rebase_cmds[0]
+
+    def test_skips_onto_when_fork_is_behind(self):
+        """When fork is simply behind upstream, skip --onto and use plain rebase."""
+        calls = []
+        def mock_run(cmd, **kwargs):
+            calls.append(cmd)
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("app.claude_step.subprocess.run", side_effect=mock_run), \
+             patch("app.claude_step._is_ancestor", return_value=True):
+            result = _rebase_onto_target(
+                "main", "/project",
+                preferred_remote="upstream",
+                head_remote="origin",
+            )
+
+        assert result == "upstream"
+        rebase_cmds = [c for c in calls if "rebase" in c and "--abort" not in c]
+        assert len(rebase_cmds) == 1
+        assert "--onto" not in rebase_cmds[0]
 
     def test_plain_rebase_when_head_remote_same_as_target(self):
         """When head_remote == target remote, use plain rebase (same-repo PR)."""
@@ -1626,7 +1646,8 @@ class TestRebaseOntoTarget_OntoMode:
                 raise RuntimeError("onto rebase conflict")
             return MagicMock(returncode=0, stdout="", stderr="")
 
-        with patch("app.claude_step.subprocess.run", side_effect=mock_run):
+        with patch("app.claude_step.subprocess.run", side_effect=mock_run), \
+             patch("app.claude_step._is_ancestor", return_value=False):
             result = _rebase_onto_target(
                 "main", "/project",
                 preferred_remote="upstream",
@@ -1674,14 +1695,15 @@ class TestRebaseWithConflictResolution_OntoMode:
             "reviews": "", "issue_comments": "",
         }
 
-    def test_uses_onto_when_head_remote_differs(self):
-        """--onto should be used when head_remote != preferred_remote."""
+    def test_uses_onto_when_fork_diverged(self):
+        """--onto should be used when fork has genuinely diverged."""
         calls = []
         def mock_run(cmd, **kwargs):
             calls.append(cmd)
             return MagicMock(returncode=0, stdout="", stderr="")
 
-        with patch("app.claude_step.subprocess.run", side_effect=mock_run):
+        with patch("app.claude_step.subprocess.run", side_effect=mock_run), \
+             patch("app.claude_step._is_ancestor", return_value=False):
             result = _rebase_with_conflict_resolution(
                 "main", "/project", self._base_context(), [],
                 preferred_remote="upstream",
@@ -1723,6 +1745,7 @@ class TestRebaseWithConflictResolution_OntoMode:
             return MagicMock(returncode=0, stdout="", stderr="")
 
         with patch("app.claude_step.subprocess.run", side_effect=mock_run), \
+             patch("app.claude_step._is_ancestor", return_value=False), \
              patch("app.claude_step.has_rebase_in_progress", return_value=False):
             result = _rebase_with_conflict_resolution(
                 "main", "/project", self._base_context(), [],

@@ -11,6 +11,7 @@ import pytest
 
 from app.claude_step import (
     StepResult,
+    _is_ancestor,
     _rebase_onto_target,
     _run_git,
     commit_if_changes,
@@ -251,6 +252,104 @@ class TestRebaseOntoTarget:
         mock_git.side_effect = ValueError("unexpected error")
         with pytest.raises(ValueError, match="unexpected"):
             _rebase_onto_target("main", "/project")
+
+
+# ---------- _is_ancestor ----------
+
+
+class TestIsAncestor:
+    """Tests for _is_ancestor helper."""
+
+    @patch("app.claude_step.subprocess.run")
+    def test_returns_true_when_ancestor(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0)
+        assert _is_ancestor("origin/main", "upstream/main", "/project") is True
+        mock_run.assert_called_once()
+        cmd = mock_run.call_args[0][0]
+        assert cmd == ["git", "merge-base", "--is-ancestor", "origin/main", "upstream/main"]
+
+    @patch("app.claude_step.subprocess.run")
+    def test_returns_false_when_not_ancestor(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=1)
+        assert _is_ancestor("origin/main", "upstream/main", "/project") is False
+
+    @patch("app.claude_step.subprocess.run")
+    def test_returns_false_on_timeout(self, mock_run):
+        mock_run.side_effect = subprocess.TimeoutExpired("git", 10)
+        assert _is_ancestor("origin/main", "upstream/main", "/project") is False
+
+
+# ---------- _rebase_onto_target with head_remote ----------
+
+
+class TestRebaseOntoTargetForkAware:
+    """Tests for --onto logic when head_remote (fork) differs from target."""
+
+    @patch("app.claude_step._is_ancestor", return_value=True)
+    @patch("app.claude_step._run_git")
+    def test_stale_fork_skips_onto_uses_plain_rebase(self, mock_git, mock_ancestor):
+        """When fork/main is ancestor of upstream/main, --onto is skipped.
+
+        This is the bug scenario: fork is simply behind upstream. Using
+        --onto would replay upstream commits that already exist, causing
+        spurious conflicts in files the PR never touched.
+        """
+        result = _rebase_onto_target(
+            "main", "/project",
+            preferred_remote="upstream",
+            head_remote="origin",
+        )
+        assert result == "upstream"
+        # Should have fetched upstream/main and origin/main, then plain rebase
+        rebase_calls = [
+            c for c in mock_git.call_args_list
+            if any("rebase" in str(a) for a in c[0][0])
+        ]
+        assert len(rebase_calls) == 1
+        rebase_cmd = rebase_calls[0][0][0]
+        assert "--onto" not in rebase_cmd
+
+    @patch("app.claude_step._is_ancestor", return_value=False)
+    @patch("app.claude_step._run_git")
+    def test_diverged_fork_uses_onto(self, mock_git, mock_ancestor):
+        """When fork/main has diverged from upstream/main, --onto is used."""
+        result = _rebase_onto_target(
+            "main", "/project",
+            preferred_remote="upstream",
+            head_remote="origin",
+        )
+        assert result == "upstream"
+        rebase_calls = [
+            c for c in mock_git.call_args_list
+            if any("rebase" in str(a) for a in c[0][0])
+        ]
+        assert len(rebase_calls) == 1
+        rebase_cmd = rebase_calls[0][0][0]
+        assert "--onto" in rebase_cmd
+        assert "upstream/main" in rebase_cmd
+        assert "origin/main" in rebase_cmd
+
+    @patch("app.claude_step._run_git")
+    def test_head_remote_fetch_fails_falls_through(self, mock_git):
+        """When fetching fork's base branch fails, falls through to plain rebase."""
+        def side_effect(cmd, **kwargs):
+            if "origin" in cmd and "fetch" in cmd[1]:
+                raise RuntimeError("fetch failed")
+            return ""
+        mock_git.side_effect = side_effect
+        result = _rebase_onto_target(
+            "main", "/project",
+            preferred_remote="upstream",
+            head_remote="origin",
+        )
+        assert result == "upstream"
+        rebase_calls = [
+            c for c in mock_git.call_args_list
+            if any("rebase" in str(a) for a in c[0][0])
+        ]
+        assert len(rebase_calls) == 1
+        rebase_cmd = rebase_calls[0][0][0]
+        assert "--onto" not in rebase_cmd
 
 
 # ---------- run_claude ----------
