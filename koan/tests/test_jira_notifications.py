@@ -151,6 +151,23 @@ class TestParseJiraMentionCommand:
         assert result is not None
         assert result[0] == "rebase"
 
+    @pytest.mark.parametrize("text,nick,expected", [
+        # Jira renders multi-word display names with their literal space
+        # in the ADF mention.attrs.text field.
+        ("@My Bot plan", "My Bot", ("plan", "")),
+        ("@My Bot plan FOO-123", "My Bot", ("plan", "FOO-123")),
+        # Case-insensitive — clients render mentions inconsistently.
+        ("@my bot plan", "My Bot", ("plan", "")),
+    ])
+    def test_spaced_nickname(self, text, nick, expected):
+        """Nicknames containing spaces must match.
+
+        Regression guard: re.escape() correctly handles the space; a future
+        refactor that drops re.escape or uses plain f-string interpolation
+        would silently break any nickname that contains a space.
+        """
+        assert parse_jira_mention_command(text, nick) == expected
+
 
 class TestResolveProjectFromJiraKey:
     def test_basic_mapping(self):
