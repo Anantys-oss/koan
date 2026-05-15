@@ -998,12 +998,26 @@ def _fire_post_mission_hook(
     mission_title: str,
     duration_minutes: int,
     result: dict,
+    stdout_file: Optional[str] = None,
 ) -> Dict[str, str]:
     """Fire post_mission hooks with full context.
+
+    When ``stdout_file`` is provided, the truncated stdout summary is
+    pre-read and passed to hooks as ``result_text`` so individual hooks
+    can inspect the mission output without re-implementing file I/O.
 
     Returns a dict mapping failed handler names to error messages.
     Empty dict means all hooks succeeded.
     """
+    result_text = ""
+    if stdout_file:
+        try:
+            result_text = _read_stdout_summary(
+                stdout_file, max_chars=_RESULT_FORWARD_MAX_CHARS,
+            )
+        except Exception as e:
+            _log_runner("error", f"post_mission hook stdout read failed: {e}")
+
     try:
         from app.hooks import fire_hook
         return fire_hook(
@@ -1015,6 +1029,7 @@ def _fire_post_mission_hook(
             mission_title=mission_title,
             duration_minutes=duration_minutes,
             result=dict(result),
+            result_text=result_text,
         )
     except Exception as e:
         _log_runner("error", f"post_mission hook error: {e}")
@@ -1198,6 +1213,7 @@ def run_post_mission(
             _fire_post_mission_hook(
                 instance_dir, project_name, project_path,
                 exit_code, mission_title, duration_minutes, result,
+                stdout_file=stdout_file,
             )
             result["pipeline_steps"] = tracker.to_dict()
             _write_pipeline_summary(
@@ -1324,6 +1340,7 @@ def run_post_mission(
             hook_failures = _fire_post_mission_hook(
                 instance_dir, project_name, project_path,
                 exit_code, mission_title, duration_minutes, result,
+                stdout_file=stdout_file,
             )
             if hook_failures:
                 failed_names = ", ".join(sorted(hook_failures))

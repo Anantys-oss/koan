@@ -2,7 +2,7 @@
 export
 
 .PHONY: install onboard setup start stop status restart
-.PHONY: clean say migrate test test-strict coverage sync-instance rename-project release
+.PHONY: clean say migrate test test-skills test-strict coverage sync-instance rename-project release
 .PHONY: awake run errand-run errand-awake dashboard
 .PHONY: ollama logs ssh-forward
 .PHONY: install-systemctl-service uninstall-systemctl-service
@@ -52,12 +52,25 @@ say: setup
 test: setup
 	$(VENV)/bin/pip install -q pytest pytest-cov 2>/dev/null
 	cd koan && KOAN_ROOT=/tmp/test-koan PYTHONPATH=. ../$(PYTHON) -m pytest tests/ -v --cov=app --cov-report=term-missing --cov-report=html:htmlcov
+	@$(MAKE) --no-print-directory test-skills
+
+test-skills: setup
+	@if [ -d instance/skills ] && find -L instance/skills -path '*/tests/test_*.py' -print -quit 2>/dev/null | grep -q .; then \
+		echo "→ running skill-local tests (instance/skills/**/tests)"; \
+		KOAN_REPO=$(PWD) KOAN_ROOT=/tmp/test-koan PYTHONPATH=koan $(PYTHON) -m pytest instance/skills/ -v; \
+	else \
+		echo "→ no skill-local tests found under instance/skills/**/tests/ — skipping"; \
+	fi
 
 test-strict: setup
 	@echo "→ running full test suite in strict mode (0 failures required)"
 	$(VENV)/bin/pip install -q pytest pytest-cov 2>/dev/null
 	@cd koan && KOAN_ROOT=/tmp/test-koan PYTHONPATH=. ../$(PYTHON) -m pytest tests/ -q --tb=short \
 		|| (echo "✗ tests failed — aborting" && exit 1)
+	@if [ -d instance/skills ] && find -L instance/skills -path '*/tests/test_*.py' -print -quit 2>/dev/null | grep -q .; then \
+		KOAN_REPO=$(PWD) KOAN_ROOT=/tmp/test-koan PYTHONPATH=koan $(PYTHON) -m pytest instance/skills/ -q --tb=short \
+			|| (echo "✗ skill-local tests failed — aborting" && exit 1); \
+	fi
 	@echo "✓ all tests passed"
 
 release: setup

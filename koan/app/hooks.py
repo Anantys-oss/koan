@@ -1,10 +1,20 @@
 """Hook system for extensible pre/post-action events.
 
-Discovers hook modules from instance/hooks/ at startup and provides
-fire-and-forget event dispatching. Hook modules are .py files with a
-HOOKS dict mapping event names to callables.
+Discovers lifecycle hooks from two locations at startup:
 
-Example hook module (instance/hooks/my_hook.py):
+1. Instance-wide hooks: ``instance/hooks/<name>.py`` — any module name; the
+   module exports a ``HOOKS`` dict mapping event names to callables. These
+   run first for every event, across all skills and projects.
+
+2. Skill-bound hooks: ``instance/skills/<scope>/<name>/<event>.py`` — the
+   filename is the event name (e.g. ``post_mission.py``) and the module
+   exports a ``run(ctx)`` function. These run after instance-wide hooks and
+   let a custom skill own its lifecycle behavior without touching Kōan core.
+
+Both flavors are fire-and-forget: errors are logged to stderr but never
+block the agent loop.
+
+Example instance-wide hook (instance/hooks/my_hook.py):
 
     def on_post_mission(ctx):
         print(f"Mission completed: {ctx['mission_title']}")
@@ -12,6 +22,13 @@ Example hook module (instance/hooks/my_hook.py):
     HOOKS = {
         "post_mission": on_post_mission,
     }
+
+Example skill-bound hook (instance/skills/my/fix/post_mission.py):
+
+    def run(ctx):
+        if "myfix" not in ctx.get("mission_title", ""):
+            return
+        # ... skill-owned post-mission work ...
 
 Supported events:
     - session_start: Fired after startup completes
@@ -39,6 +56,14 @@ from typing import Callable, Dict, List, Optional
 from app.automation_rules import AutomationRule, load_rules
 
 
+_VALID_SKILL_HOOK_EVENTS = (
+    "session_start",
+    "session_end",
+    "pre_mission",
+    "post_mission",
+)
+
+
 class HookRegistry:
     """Discovers and manages hook modules from a directory."""
 
@@ -48,6 +73,11 @@ class HookRegistry:
         # Per-rule fire timestamps for the loop guard: {rule_id: [timestamp, ...]}
         self._rule_fire_times: Dict[str, List[float]] = defaultdict(list)
         self._discover(hooks_dir)
+        # Also discover skill-bound hooks under instance/skills/<scope>/<name>/.
+        # Instance-wide hooks above are registered first, so they fire first
+        # for each event; skill-bound hooks run afterward.
+        if instance_dir:
+            self._discover_skill_hooks(Path(instance_dir) / "skills")
 
     def _discover(self, hooks_dir: Path) -> None:
         """Scan hooks_dir for .py files and register their HOOKS dicts."""
@@ -82,6 +112,60 @@ class HookRegistry:
         for event_name, handler in hooks_dict.items():
             if callable(handler):
                 self._handlers.setdefault(event_name, []).append(handler)
+
+    def _discover_skill_hooks(self, skills_root: Path) -> None:
+        """Scan instance/skills/<scope>/<name>/ for <event>.py lifecycle modules.
+
+        Convention: the file name is the event name (e.g. ``post_mission.py``)
+        and the module exports a ``run(ctx)`` function. This lets a custom
+        skill own its lifecycle behavior alongside its handler.py without
+        touching Kōan core.
+        """
+        if not skills_root.is_dir():
+            return
+
+        for scope_dir in sorted(skills_root.iterdir()):
+            if not scope_dir.is_dir() or scope_dir.name.startswith((".", "_")):
+                continue
+            for skill_dir in sorted(scope_dir.iterdir()):
+                if not skill_dir.is_dir() or skill_dir.name.startswith((".", "_")):
+                    continue
+                for event_name in _VALID_SKILL_HOOK_EVENTS:
+                    hook_file = skill_dir / f"{event_name}.py"
+                    if not hook_file.is_file():
+                        continue
+                    try:
+                        self._load_skill_module(
+                            hook_file, event_name, scope_dir.name, skill_dir.name,
+                        )
+                    except Exception as exc:
+                        print(
+                            f"[hooks] Failed to load skill hook "
+                            f"{scope_dir.name}/{skill_dir.name}/{hook_file.name}: {exc}",
+                            file=sys.stderr,
+                        )
+
+    def _load_skill_module(
+        self, path: Path, event_name: str, scope: str, name: str,
+    ) -> None:
+        """Load a skill hook module and register its ``run`` function."""
+        module_name = f"koan_skill_hook_{scope}_{name}_{event_name}"
+        spec = importlib.util.spec_from_file_location(module_name, path)
+        if spec is None or spec.loader is None:
+            return
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
+
+        handler = getattr(module, "run", None)
+        if not callable(handler):
+            print(
+                f"[hooks] Skill hook {scope}/{name}/{event_name}.py has no "
+                f"callable run() — skipping.",
+                file=sys.stderr,
+            )
+            return
+        self._handlers.setdefault(event_name, []).append(handler)
 
     def fire(self, event: str, **kwargs) -> Dict[str, str]:
         """Call all handlers for event, catching exceptions per-handler.
