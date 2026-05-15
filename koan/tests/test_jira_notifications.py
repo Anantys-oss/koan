@@ -362,6 +362,51 @@ class TestFetchJiraMentions:
         assert isinstance(result, JiraFetchResult)
         assert call_count[0] == 3
 
+    def test_pagination_halts_at_cap(self):
+        """_search_issues_with_comments stops paginating once the cap is reached.
+
+        Regression: previously the search paginated through *all* matching
+        issues without bound, even though the caller only inspected the first
+        N. With max_issues plumbed through, an unbounded result set must not
+        cause unbounded API calls.
+        """
+        # Simulate 1000 available issues across 20 pages of 50. With a cap of
+        # 200, pagination should stop after the 4th page (200 issues).
+        page_size = 50
+        cap = 200
+        call_count = [0]
+
+        def post_side_effect(base_url, auth_header, path, body=None):
+            if "/search" in path:
+                call_count[0] += 1
+                page = call_count[0]
+                start = (page - 1) * page_size
+                batch = [
+                    {"key": f"FOO-{i:04}", "fields": {}}
+                    for i in range(start, start + page_size)
+                ]
+                # Server always says "more available"
+                return {
+                    "issues": batch,
+                    "isLast": False,
+                    "nextPageToken": f"token-page-{page + 1}",
+                }
+            return None
+
+        def get_side_effect(base_url, auth_header, path, params=None):
+            if "/comment" in path:
+                return {"comments": [], "total": 0}
+            return None
+
+        config = self._make_config()
+        with patch("app.jira_notifications._jira_post", side_effect=post_side_effect), \
+             patch("app.jira_notifications._jira_get", side_effect=get_side_effect):
+            result = fetch_jira_mentions(config, {"FOO": "myproject"})
+
+        # 4 pages of 50 = 200 issues; pagination must stop there.
+        assert call_count[0] == cap // page_size
+        assert isinstance(result, JiraFetchResult)
+
     @patch("app.jira_notifications._jira_get")
     @patch("app.jira_notifications._jira_post")
     def test_api_failure_returns_empty(self, mock_post, mock_get):
@@ -372,3 +417,37 @@ class TestFetchJiraMentions:
         config = self._make_config()
         result = fetch_jira_mentions(config, {"FOO": "myproject"})
         assert result.mentions == []
+
+    @patch("app.jira_notifications._get_issue_comments")
+    @patch("app.jira_notifications._search_issues_with_comments")
+    def test_mention_deep_in_results_is_found(self, mock_search, mock_comments):
+        """Regression: a mention on an issue ranked deep in the result set
+        (observed at rank 46 of 100 in production) must still be picked up.
+        Previously _MAX_ISSUES_PER_CYCLE = 20 silently dropped it.
+        """
+        # 100 issues; the only one whose comments mention the bot is at index 46
+        issues = [{"key": f"FOO-{i:03}", "fields": {"summary": f"i{i}"}} for i in range(100)]
+        issues[46] = {"key": "FOO-046", "fields": {"summary": "deep target"}}
+        mock_search.return_value = issues
+
+        from datetime import datetime, timezone
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000+0000")
+
+        def comments_side_effect(base_url, auth_header, issue_key, since):
+            # Only the deep-ranked issue has a body that triggers the mention
+            if issue_key == "FOO-046":
+                return [{
+                    "id": "999",
+                    "body": "@koan-bot plan",
+                    "author": {"emailAddress": "u@example.com", "displayName": "U"},
+                    "updated": now_iso,
+                }]
+            return []
+
+        mock_comments.side_effect = comments_side_effect
+
+        config = self._make_config()
+        result = fetch_jira_mentions(config, {"FOO": "myproject"})
+
+        assert len(result.mentions) == 1
+        assert result.mentions[0]["issue_key"] == "FOO-046"
