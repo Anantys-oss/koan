@@ -130,6 +130,9 @@ class HookRegistry:
             for skill_dir in sorted(scope_dir.iterdir()):
                 if not skill_dir.is_dir() or skill_dir.name.startswith((".", "_")):
                     continue
+                # Only probe known event filenames — any other .py file in the
+                # skill directory (handler.py, helpers.py, utils.py, …) is
+                # silently ignored, not registered under a nonsense event.
                 for event_name in _VALID_SKILL_HOOK_EVENTS:
                     hook_file = skill_dir / f"{event_name}.py"
                     if not hook_file.is_file():
