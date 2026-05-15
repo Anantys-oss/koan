@@ -15,6 +15,7 @@ Config schema in config.yaml:
       max_age_hours: 24
       check_interval_seconds: 60
       max_check_interval_seconds: 180
+      max_issues_per_cycle: 200   # Cap on issues inspected per check; floor: 1
       projects: {}                # Jira project key → Kōan project name
 """
 
@@ -115,6 +116,24 @@ def get_jira_max_check_interval(config: dict) -> int:
         return max(30, val)  # Floor at 30s
     except (ValueError, TypeError):
         return 180
+
+
+def get_jira_max_issues_per_cycle(config: dict) -> int:
+    """Get the per-cycle cap on Jira issues inspected for @mentions.
+
+    Each issue inside the cap triggers a separate GET /comment API call,
+    so the value is a direct ceiling on cold-start API consumption. The
+    default (200) is sized for multi-project deployments with 24h max_age;
+    operators on smaller instances can tighten it to reduce quota burn,
+    larger ones can raise it to avoid missing mentions ranked deep in the
+    result list. Default: 200. Floor: 1.
+    """
+    jira = config.get("jira") or {}
+    try:
+        val = int(jira.get("max_issues_per_cycle", 200))
+        return max(1, val)
+    except (ValueError, TypeError):
+        return 200
 
 
 def get_jira_project_map(config: dict) -> Dict[str, str]:

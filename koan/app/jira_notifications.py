@@ -659,6 +659,7 @@ def fetch_jira_mentions(
         get_jira_base_url,
         get_jira_email,
         get_jira_max_age_hours,
+        get_jira_max_issues_per_cycle,
         get_jira_nickname,
     )
 
@@ -688,33 +689,34 @@ def fetch_jira_mentions(
     else:
         since = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
 
-    # Search for recently-updated issues. On a multi-project deployment a 24h
-    # cold-start window can produce 50–100 issues; the cap is kept high enough
-    # that legitimate mentions ranked deep in the result list still get
-    # inspected instead of being silently dropped. The cap is pushed into
-    # _search_issues_with_comments so pagination halts as soon as we have
-    # enough issues — both the search and the per-issue comment fetches stay
-    # bounded by _MAX_ISSUES_PER_CYCLE. Steady-state polls narrow the window
-    # via ``since_iso`` so the cap rarely binds there.
-    _MAX_ISSUES_PER_CYCLE = 200
+    # Search for recently-updated issues. Each issue inside the cap triggers
+    # its own GET /comment API call, so this cap directly bounds cold-start
+    # API consumption. The cap is pushed into _search_issues_with_comments so
+    # pagination halts as soon as we have enough issues — both the search and
+    # the per-issue comment fetches stay bounded. Default (200) suits
+    # multi-project deployments with 24h max_age; configurable via
+    # ``jira.max_issues_per_cycle`` so smaller instances can tighten and
+    # larger ones can loosen. Steady-state polls narrow the window via
+    # ``since_iso`` so the cap rarely binds there.
+    max_issues_per_cycle = get_jira_max_issues_per_cycle(config)
     issues = _search_issues_with_comments(
         base_url, auth_header, project_keys, since,
-        max_issues=_MAX_ISSUES_PER_CYCLE,
+        max_issues=max_issues_per_cycle,
     )
     log.info(
         "Jira: search since %s returned %d issue(s) (cap=%d)",
-        since.strftime("%Y-%m-%d %H:%M"), len(issues), _MAX_ISSUES_PER_CYCLE,
+        since.strftime("%Y-%m-%d %H:%M"), len(issues), max_issues_per_cycle,
     )
     if not issues:
         return JiraFetchResult([])
 
-    if len(issues) >= _MAX_ISSUES_PER_CYCLE:
+    if len(issues) >= max_issues_per_cycle:
         log.warning(
             "Jira: hit cap of %d issues this cycle; older issues beyond the "
             "cap were not inspected and any mentions on them will be missed "
-            "until a future poll picks them up — consider tightening "
-            "max_age_hours or shortening check_interval_seconds",
-            _MAX_ISSUES_PER_CYCLE,
+            "until a future poll picks them up — raise jira.max_issues_per_cycle, "
+            "tighten max_age_hours, or shorten check_interval_seconds",
+            max_issues_per_cycle,
         )
 
     # Collect @mention comments from all issues
