@@ -92,11 +92,6 @@ def _maybe_reset(state: dict) -> dict:
 def _extract_tokens(claude_json_path: Path) -> Optional[int]:
     """Extract total tokens from Claude --output-format json output.
 
-    Tries multiple known field layouts:
-    - Top-level: input_tokens + output_tokens
-    - Nested: usage.input_tokens + usage.output_tokens
-    - Array: sum across multiple turns
-
     Returns:
         Total token count (int) or None if no tokens found.
     """
@@ -109,84 +104,20 @@ def _extract_tokens(claude_json_path: Path) -> Optional[int]:
 def extract_tokens_detailed(claude_json_path: Path) -> Optional[dict]:
     """Extract structured token info from Claude JSON output.
 
+    Delegates to token_parser.extract_tokens() and converts to dict
+    for backward compatibility with existing callers.
+
     Returns:
         Dict with keys: input_tokens, output_tokens, model,
         cache_creation_input_tokens, cache_read_input_tokens, cost_usd.
         None if no tokens found or file unreadable.
     """
-    try:
-        data = json.loads(claude_json_path.read_text())
-    except (json.JSONDecodeError, OSError):
+    from app.token_parser import extract_tokens
+
+    result = extract_tokens(claude_json_path)
+    if result is None:
         return None
-
-    model = data.get("model", "unknown")
-
-    # Try top-level fields
-    inp = data.get("input_tokens", 0)
-    out = data.get("output_tokens", 0)
-    if inp or out:
-        result = {"input_tokens": inp, "output_tokens": out, "model": model}
-        _enrich_cache_fields(result, data)
-        return result
-
-    # Try nested usage object
-    usage = data.get("usage", {})
-    if isinstance(usage, dict):
-        inp = usage.get("input_tokens", 0)
-        out = usage.get("output_tokens", 0)
-        if inp or out:
-            result = {"input_tokens": inp, "output_tokens": out, "model": model}
-            _enrich_cache_fields(result, data)
-            return result
-
-    # Try stats or metadata
-    for key in ("stats", "metadata", "session"):
-        sub = data.get(key, {})
-        if isinstance(sub, dict):
-            inp = sub.get("input_tokens", 0)
-            out = sub.get("output_tokens", 0)
-            if inp or out:
-                result = {"input_tokens": inp, "output_tokens": out, "model": model}
-                _enrich_cache_fields(result, data)
-                return result
-
-    return None
-
-
-def _enrich_cache_fields(result: dict, data: dict) -> None:
-    """Add cache token fields and cost_usd to an extracted token result.
-
-    Searches for cache fields in:
-    - Top-level usage object (snake_case: cache_creation_input_tokens)
-    - modelUsage entries (camelCase: cacheCreationInputTokens)
-    """
-    cache_creation = 0
-    cache_read = 0
-
-    # Try nested usage object (snake_case — Claude CLI JSON format)
-    usage = data.get("usage", {})
-    if isinstance(usage, dict):
-        cache_creation = usage.get("cache_creation_input_tokens", 0) or 0
-        cache_read = usage.get("cache_read_input_tokens", 0) or 0
-
-    # Fallback: modelUsage entries (camelCase — alternate format)
-    if not cache_creation and not cache_read:
-        model_usage = data.get("modelUsage", {})
-        if isinstance(model_usage, dict):
-            for model_data in model_usage.values():
-                if isinstance(model_data, dict):
-                    cache_creation += model_data.get("cacheCreationInputTokens", 0) or 0
-                    cache_read += model_data.get("cacheReadInputTokens", 0) or 0
-
-    result["cache_creation_input_tokens"] = cache_creation
-    result["cache_read_input_tokens"] = cache_read
-
-    # Extract cost_usd from top-level field (reported by Claude CLI)
-    cost_usd = data.get("total_cost_usd")
-    if cost_usd is not None and isinstance(cost_usd, (int, float)):
-        result["cost_usd"] = round(cost_usd, 6)
-    else:
-        result["cost_usd"] = 0.0
+    return result.to_dict()
 
 
 def _get_limits(config: dict) -> tuple:

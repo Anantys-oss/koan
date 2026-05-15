@@ -305,13 +305,14 @@ def _aggregate(entries: list) -> dict:
         result["by_project_and_type"][project][mission_type]["total_cost_usd"] += cost
         result["by_project_and_type"][project][mission_type]["count"] += 1
 
-    # Compute cache hit rate: cache_read / (cache_read + non-cached input)
-    total_cache_input = result["cache_read_input_tokens"] + result["cache_creation_input_tokens"]
-    total_all_input = result["total_input"] + total_cache_input
-    if total_all_input > 0 and total_cache_input > 0:
-        result["cache_hit_rate"] = result["cache_read_input_tokens"] / total_all_input
-    else:
-        result["cache_hit_rate"] = 0.0
+    # Compute cache hit rate using centralized formula
+    from app.token_parser import compute_cache_hit_rate
+
+    result["cache_hit_rate"] = compute_cache_hit_rate(
+        result["total_input"],
+        result["cache_read_input_tokens"],
+        result["cache_creation_input_tokens"],
+    )
 
     return result
 
@@ -488,8 +489,9 @@ def format_mission_cache_line(
     """
     if not cache_read and not cache_create:
         return ""
-    total_input = input_tokens + cache_read + cache_create
-    hit_rate = cache_read / total_input if total_input > 0 else 0.0
+    from app.token_parser import compute_cache_hit_rate
+
+    hit_rate = compute_cache_hit_rate(input_tokens, cache_read, cache_create)
     return (
         f"Cache: {hit_rate:.0%} hit "
         f"({_format_tokens(cache_read)} read / {_format_tokens(cache_create)} created)"
