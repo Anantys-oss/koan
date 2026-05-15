@@ -24,6 +24,7 @@ from app.format_outbox import (
 )
 from app.notify import NotificationPriority, NOTIFICATION_SUPPRESSED, send_telegram
 from app.outbox_scanner import scan_and_log
+from app.utils import atomic_write
 
 
 # Pre-compiled regex for outbox priority header parsing
@@ -144,7 +145,7 @@ class OutboxManager:
                 try:
                     content = f.read().strip()
                     if content:
-                        staging.write_text(content)
+                        atomic_write(staging, content)
                         f.seek(0)
                         f.truncate()
                         f.flush()
