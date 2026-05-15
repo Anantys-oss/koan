@@ -352,18 +352,18 @@ class TestCustomHandlerDispatch:
     of queueing a slash mission that has no runner module."""
 
     def _make_custom_registry(self, handler_path: Path):
-        """Registry where 'cpfix' maps to a custom skill backed by handler_path."""
+        """Registry where 'myfix' maps to a custom skill backed by handler_path."""
         from app.skills import Skill, SkillCommand, SkillRegistry
 
         skill = Skill(
-            name="cp_fix",
-            scope="cp",
-            description="cPanel fix",
+            name="my_fix",
+            scope="my_team",
+            description="Team-specific fix",
             handler_path=handler_path,
             skill_dir=handler_path.parent,
             github_enabled=True,
             github_context_aware=True,
-            commands=[SkillCommand(name="cp_fix", aliases=["cpfix"])],
+            commands=[SkillCommand(name="my_fix", aliases=["myfix"])],
         )
         registry = SkillRegistry()
         registry._register(skill)
@@ -381,7 +381,7 @@ class TestCustomHandlerDispatch:
 
         # Handler writes a marker file so we can assert it actually ran.
         marker = tmp_path / "handler_ran.txt"
-        handler_dir = tmp_path / "skills" / "cp" / "fix"
+        handler_dir = tmp_path / "skills" / "my_team" / "fix"
         handler_dir.mkdir(parents=True)
         handler = handler_dir / "handler.py"
         handler.write_text(
@@ -392,11 +392,11 @@ class TestCustomHandlerDispatch:
         )
 
         registry = self._make_custom_registry(handler)
-        cpfix_mention = dict(
+        myfix_mention = dict(
             mention,
-            body_text="@koan-bot cp_fix",
-            issue_key="CPANEL-555",
-            issue_url="https://test.atlassian.net/browse/CPANEL-555",
+            body_text="@koan-bot my_fix",
+            issue_key="PROJ-555",
+            issue_url="https://test.atlassian.net/browse/PROJ-555",
         )
 
         monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
@@ -408,28 +408,28 @@ class TestCustomHandlerDispatch:
              patch("app.jira_command_handler._notify_mission_from_jira"):
 
             success, error = process_jira_mention(
-                cpfix_mention, registry, basic_config, set(),
+                myfix_mention, registry, basic_config, set(),
             )
 
         assert success is True
         assert error is None
         # Handler actually ran and saw the auto-fed Jira key.
         assert marker.exists()
-        assert marker.read_text() == "CPANEL-555"
-        # The slash-mission path did NOT run — missions.md still empty of cp_fix.
-        assert "/cp_fix" not in missions_path.read_text()
+        assert marker.read_text() == "PROJ-555"
+        # The slash-mission path did NOT run — missions.md still empty of my_fix.
+        assert "/my_fix" not in missions_path.read_text()
 
     def test_user_provided_key_wins_over_source_issue(
         self, tmp_path, monkeypatch, mention, basic_config,
     ):
-        """If the author typed CPANEL-1 but source issue is CPANEL-999, the
+        """If the author typed PROJ-1 but source issue is PROJ-999, the
         author's key is passed through unchanged."""
         instance_dir = tmp_path / "instance"
         instance_dir.mkdir()
         (instance_dir / "missions.md").write_text("# Pending\n\n# In Progress\n\n# Done\n")
 
         marker = tmp_path / "handler_ran.txt"
-        handler_dir = tmp_path / "skills" / "cp" / "fix"
+        handler_dir = tmp_path / "skills" / "my_team" / "fix"
         handler_dir.mkdir(parents=True)
         handler = handler_dir / "handler.py"
         handler.write_text(
@@ -442,8 +442,8 @@ class TestCustomHandlerDispatch:
         registry = self._make_custom_registry(handler)
         author_mention = dict(
             mention,
-            body_text="@koan-bot cp_fix CPANEL-1 please",
-            issue_key="CPANEL-999",
+            body_text="@koan-bot my_fix PROJ-1 please",
+            issue_key="PROJ-999",
         )
 
         monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
@@ -461,5 +461,5 @@ class TestCustomHandlerDispatch:
         assert success is True
         # Author's key is preserved — the source issue is NOT appended.
         content = marker.read_text()
-        assert "CPANEL-1" in content
-        assert "CPANEL-999" not in content
+        assert "PROJ-1" in content
+        assert "PROJ-999" not in content

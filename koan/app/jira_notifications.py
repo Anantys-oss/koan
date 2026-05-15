@@ -323,7 +323,7 @@ def acknowledge_jira_comment(issue_key: str, command_name: str, base_url: str, a
     for the remainder of the ``max_age_hours`` window.
 
     Args:
-        issue_key: Jira issue key (e.g. "CPANEL-52372").
+        issue_key: Jira issue key (e.g. "PROJ-52372").
         command_name: The command being executed (e.g. "fix").
         base_url: Jira instance base URL (e.g. https://myorg.atlassian.net).
         auth_header: Basic auth header value.
@@ -538,7 +538,7 @@ def fetch_jira_issue(
     Uses the Jira config from config.yaml to authenticate.
 
     Args:
-        issue_key: Jira issue key (e.g. "CPANEL-52372").
+        issue_key: Jira issue key (e.g. "PROJ-52372").
 
     Returns:
         Tuple of (title, body, comments) where comments is a list of

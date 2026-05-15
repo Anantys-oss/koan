@@ -350,6 +350,220 @@ class TestParseSkillMd:
         assert skill.cli_skill is None
 
 
+class TestForwardResultFrontmatter:
+    """Tests for forward_result + title_markers SKILL.md fields."""
+
+    def test_forward_result_defaults_to_false(self, tmp_path):
+        skill_dir = tmp_path / "scope" / "neutral"
+        skill_dir.mkdir(parents=True)
+        skill_md = skill_dir / "SKILL.md"
+        skill_md.write_text(textwrap.dedent("""\
+            ---
+            name: neutral
+            scope: scope
+            commands:
+              - name: neutral
+            ---
+        """))
+        skill = parse_skill_md(skill_md)
+        assert skill is not None
+        assert skill.forward_result_enabled is False
+        assert skill.title_markers == []
+
+    def test_forward_result_true_parsed(self, tmp_path):
+        skill_dir = tmp_path / "scope" / "fwd"
+        skill_dir.mkdir(parents=True)
+        skill_md = skill_dir / "SKILL.md"
+        skill_md.write_text(textwrap.dedent("""\
+            ---
+            name: fwd
+            scope: scope
+            forward_result: true
+            commands:
+              - name: fwd
+            ---
+        """))
+        skill = parse_skill_md(skill_md)
+        assert skill is not None
+        assert skill.forward_result_enabled is True
+
+    def test_forward_result_truthy_variants(self, tmp_path):
+        """Accepts 'true', 'yes', '1' via shared _parse_bool_flag helper."""
+        for raw in ("true", "yes", "1"):
+            skill_dir = tmp_path / f"v_{raw}" / "fwd"
+            skill_dir.mkdir(parents=True)
+            skill_md = skill_dir / "SKILL.md"
+            skill_md.write_text(textwrap.dedent(f"""\
+                ---
+                name: fwd
+                scope: scope
+                forward_result: {raw}
+                commands:
+                  - name: fwd
+                ---
+            """))
+            skill = parse_skill_md(skill_md)
+            assert skill is not None
+            assert skill.forward_result_enabled is True, raw
+
+    def test_forward_result_falsy_variants(self, tmp_path):
+        for raw in ("false", "no", "0", ""):
+            skill_dir = tmp_path / f"v_{raw or 'empty'}" / "fwd"
+            skill_dir.mkdir(parents=True)
+            skill_md = skill_dir / "SKILL.md"
+            skill_md.write_text(textwrap.dedent(f"""\
+                ---
+                name: fwd
+                scope: scope
+                forward_result: {raw}
+                commands:
+                  - name: fwd
+                ---
+            """))
+            skill = parse_skill_md(skill_md)
+            assert skill is not None
+            assert skill.forward_result_enabled is False, raw
+
+    def test_title_markers_inline_list(self, tmp_path):
+        skill_dir = tmp_path / "scope" / "fwd"
+        skill_dir.mkdir(parents=True)
+        skill_md = skill_dir / "SKILL.md"
+        skill_md.write_text(textwrap.dedent("""\
+            ---
+            name: fwd
+            scope: scope
+            forward_result: true
+            title_markers: ["my-custom-workflow", "another-marker"]
+            commands:
+              - name: fwd
+            ---
+        """))
+        skill = parse_skill_md(skill_md)
+        assert skill is not None
+        assert skill.title_markers == ["my-custom-workflow", "another-marker"]
+
+    def test_title_markers_default_empty_when_omitted(self, tmp_path):
+        skill_dir = tmp_path / "scope" / "fwd"
+        skill_dir.mkdir(parents=True)
+        skill_md = skill_dir / "SKILL.md"
+        skill_md.write_text(textwrap.dedent("""\
+            ---
+            name: fwd
+            scope: scope
+            forward_result: true
+            commands:
+              - name: fwd
+            ---
+        """))
+        skill = parse_skill_md(skill_md)
+        assert skill is not None
+        assert skill.title_markers == []
+
+
+class TestCollectForwardResultMarkers:
+    """Tests for the collect_forward_result_markers registry helper."""
+
+    def test_empty_for_registry_with_no_opt_in(self):
+        from app.skills import (
+            Skill,
+            SkillCommand,
+            SkillRegistry,
+            collect_forward_result_markers,
+        )
+        reg = SkillRegistry()
+        reg._register(Skill(
+            name="neutral",
+            scope="core",
+            commands=[SkillCommand(name="neutral")],
+        ))
+        assert collect_forward_result_markers(reg) == []
+
+    def test_auto_derives_slash_markers_from_commands_and_aliases(self):
+        from app.skills import (
+            Skill,
+            SkillCommand,
+            SkillRegistry,
+            collect_forward_result_markers,
+        )
+        reg = SkillRegistry()
+        reg._register(Skill(
+            name="fix",
+            scope="my_team",
+            forward_result_enabled=True,
+            commands=[SkillCommand(name="my_fix", aliases=["myfix"])],
+        ))
+        markers = collect_forward_result_markers(reg)
+        # Auto-derived markers cover slash command, alias, and scoped form.
+        assert "/my_fix" in markers
+        assert "/myfix" in markers
+        assert "/my_team.fix" in markers
+
+    def test_includes_explicit_title_markers(self):
+        from app.skills import (
+            Skill,
+            SkillCommand,
+            SkillRegistry,
+            collect_forward_result_markers,
+        )
+        reg = SkillRegistry()
+        reg._register(Skill(
+            name="fix",
+            scope="my_team",
+            forward_result_enabled=True,
+            title_markers=["my-custom-workflow", "Long Phrase With Spaces"],
+            commands=[SkillCommand(name="my_fix")],
+        ))
+        markers = collect_forward_result_markers(reg)
+        assert "my-custom-workflow" in markers
+        assert "long phrase with spaces" in markers  # lower-cased
+
+    def test_skips_skills_without_forward_result(self):
+        from app.skills import (
+            Skill,
+            SkillCommand,
+            SkillRegistry,
+            collect_forward_result_markers,
+        )
+        reg = SkillRegistry()
+        reg._register(Skill(
+            name="opt_in",
+            scope="a",
+            forward_result_enabled=True,
+            commands=[SkillCommand(name="opt_in")],
+        ))
+        reg._register(Skill(
+            name="opt_out",
+            scope="a",
+            forward_result_enabled=False,
+            commands=[SkillCommand(name="opt_out")],
+        ))
+        markers = collect_forward_result_markers(reg)
+        assert "/opt_in" in markers
+        assert "/opt_out" not in markers
+
+    def test_markers_are_distinct_and_lowercased(self):
+        from app.skills import (
+            Skill,
+            SkillCommand,
+            SkillRegistry,
+            collect_forward_result_markers,
+        )
+        reg = SkillRegistry()
+        reg._register(Skill(
+            name="fix",
+            scope="my_team",
+            forward_result_enabled=True,
+            title_markers=["MY-CUSTOM-WORKFLOW", "my-custom-workflow"],
+            commands=[SkillCommand(name="my_fix", aliases=["my_fix"])],  # dup alias
+        ))
+        markers = collect_forward_result_markers(reg)
+        # Lower-cased and deduplicated.
+        assert markers == sorted(set(markers))
+        assert all(m == m.lower() for m in markers)
+        assert "my-custom-workflow" in markers
+        assert "MY-CUSTOM-WORKFLOW" not in markers
+
+
 # ---------------------------------------------------------------------------
 # SkillRegistry
 # ---------------------------------------------------------------------------
@@ -607,16 +821,16 @@ class TestSkillRegistry:
                 description: Plan
             ---
         """))
-        custom_dir = tmp_path / "cp" / "fix"
+        custom_dir = tmp_path / "my_team" / "fix"
         custom_dir.mkdir(parents=True)
         (custom_dir / "SKILL.md").write_text(textwrap.dedent("""\
             ---
             name: fix
-            scope: cp
+            scope: my_team
             group: integrations
             commands:
-              - name: cp_fix
-                description: Fix cPanel bug
+              - name: my_fix
+                description: Fix a team-specific bug
             ---
         """))
         registry = SkillRegistry(tmp_path)

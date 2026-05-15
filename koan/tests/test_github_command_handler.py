@@ -742,14 +742,14 @@ class TestProcessNotificationCustomHandler:
 
     def _registry_with_custom_skill(self, handler_path: Path):
         skill = Skill(
-            name="cp_fix",
-            scope="cp",
-            description="cPanel fix",
+            name="my_fix",
+            scope="my_team",
+            description="Team-specific fix",
             handler_path=handler_path,
             skill_dir=handler_path.parent,
             github_enabled=True,
             github_context_aware=True,
-            commands=[SkillCommand(name="cp_fix", aliases=["cpfix"])],
+            commands=[SkillCommand(name="my_fix", aliases=["myfix"])],
         )
         reg = SkillRegistry()
         reg._register(skill)
@@ -772,7 +772,7 @@ class TestProcessNotificationCustomHandler:
         ``insert_pending_mission`` from the slash-mission branch."""
         # Handler writes a marker file so we can see it ran.
         marker = tmp_path / "ran.txt"
-        handler_dir = tmp_path / "skills" / "cp" / "fix"
+        handler_dir = tmp_path / "skills" / "my_team" / "fix"
         handler_dir.mkdir(parents=True)
         handler = handler_dir / "handler.py"
         handler.write_text(
@@ -784,13 +784,13 @@ class TestProcessNotificationCustomHandler:
 
         # Notification subject title carries a Jira key that should be
         # auto-fed when the user omits one from the command.
-        sample_notification["subject"]["title"] = "Broken login CPANEL-123"
+        sample_notification["subject"]["title"] = "Broken login PROJ-123"
 
         registry = self._registry_with_custom_skill(handler)
-        mock_resolve.return_value = ("cp", "sukria", "koan")
+        mock_resolve.return_value = ("my_team", "alice", "koan")
         mock_get_comment.return_value = {
             "id": 99999,
-            "body": "@testbot cpfix",
+            "body": "@testbot myfix",
             "user": {"login": "alice"},
             "url": "https://api.github.com/x",
         }
@@ -806,22 +806,22 @@ class TestProcessNotificationCustomHandler:
         assert error is None
         # Handler ran inline and saw the auto-fed Jira key from the title.
         assert marker.exists()
-        assert marker.read_text() == "CPANEL-123"
+        assert marker.read_text() == "PROJ-123"
         # The slash-mission path was bypassed — no direct insert_pending_mission
         # call from process_single_notification itself.
         # (The handler may insert its own mission through utils, but that
         # would also hit mock_insert, so assert *either* zero calls or that
         # no GitHub-flavoured slash mission was queued.)
         for call in mock_insert.call_args_list:
-            assert "/cp_fix" not in str(call), (
-                "slash mission /cp_fix should NOT have been queued from GitHub path"
+            assert "/my_fix" not in str(call), (
+                "slash mission /my_fix should NOT have been queued from GitHub path"
             )
             assert "📬" not in str(call), (
                 "📬-marked GitHub mission should NOT have been queued"
             )
         # Notification bookkeeping still happened.
         mock_react.assert_called_once()
-        assert sample_notification["_koan_command"] == "cpfix"
+        assert sample_notification["_koan_command"] == "myfix"
         assert sample_notification["_koan_author"] == "alice"
 
 
@@ -2475,9 +2475,9 @@ class TestFormatHelpListMessage:
     def test_integrations_group_renders(self):
         """Custom skills with group=integrations get a dedicated section."""
         custom = Skill(
-            name="cp_fix", scope="cp", group="integrations", emoji="🐛",
+            name="my_fix", scope="my_team", group="integrations", emoji="🐛",
             github_enabled=True, github_context_aware=True,
-            commands=[SkillCommand(name="cp_fix", description="Fix a cp bug", aliases=["cpfix"])],
+            commands=[SkillCommand(name="my_fix", description="Fix a team bug", aliases=["myfix"])],
         )
         core = Skill(
             name="rebase", scope="core", group="pr", emoji="🔄",
@@ -2489,8 +2489,8 @@ class TestFormatHelpListMessage:
         reg._register(custom)
         msg = format_help_list_message(reg, "koanbot")
         assert "### Integrations" in msg
-        assert "`@koanbot cp_fix`" in msg
-        assert "`cpfix`" in msg
+        assert "`@koanbot my_fix`" in msg
+        assert "`myfix`" in msg
         # Integrations section comes after core groups (placed last in _GROUP_LABELS).
         assert msg.index("### Pull Requests") < msg.index("### Integrations")
 

@@ -1097,7 +1097,7 @@ class TestValidateSkillArgs:
 
     def test_fix_jira_url_accepted(self):
         """Jira URLs are valid for /fix."""
-        assert validate_skill_args("fix", "https://org.atlassian.net/browse/CPANEL-52372") is None
+        assert validate_skill_args("fix", "https://org.atlassian.net/browse/PROJ-52372") is None
 
     def test_fix_pr_url_accepted(self):
         """PR URLs are valid for /fix — same as /implement."""

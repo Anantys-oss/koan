@@ -7,7 +7,7 @@ a ``handler.py`` that is invoked in-process — exactly the path Telegram takes
 via ``command_handlers._dispatch_skill``.
 
 Without this helper, a GitHub/Jira @mention for a custom skill would queue a
-``/cp_fix …`` slash mission that has no registered runner and no ``_runner.py``
+``/my_fix …`` slash mission that has no registered runner and no ``_runner.py``
 file, so ``skill_dispatch.build_skill_command()`` would return None.
 
 What this module does:
@@ -36,7 +36,7 @@ from app.skills import Skill, SkillContext, SkillError, execute_skill
 
 log = logging.getLogger(__name__)
 
-# Matches Jira-style keys like ``CPANEL-123`` or ``FOO-9``.
+# Matches Jira-style keys like ``PROJ-123`` or ``FOO-9``.
 # Kept loose (2+ letters, any uppercase prefix) so it works across projects.
 _JIRA_KEY_RE = re.compile(r"\b[A-Z][A-Z0-9]+-\d+\b")
 
@@ -129,7 +129,7 @@ def try_dispatch_custom_handler(
 
     Args:
         skill: The resolved Skill object (already validated as github_enabled).
-        command_name: The command the user typed (e.g. "cpfix").
+        command_name: The command the user typed (e.g. "myfix").
         context: Free-form text the user appended after the command.
         source: Where the mention came from — ``"github"`` or ``"jira"``.
         jira_issue_key: The Jira issue key for Jira-sourced mentions.
