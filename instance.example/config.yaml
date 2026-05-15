@@ -492,6 +492,9 @@ usage:
 #                                   # in mission text to load the full file.
 #   recall_recent_hedge: 5          # Most recent N lines always included regardless
 #                                   # of relevance score (default: 5).
+#                                   # Note: setting BOTH max_relevant_learnings: 0
+#                                   # and recall_recent_hedge: 0 disables learnings
+#                                   # injection entirely (the section is omitted).
 
 # Automation rules — loop guard
 # Limits how many times a single automation rule can fire within a 60-second
