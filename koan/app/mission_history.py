@@ -8,7 +8,7 @@ import json
 import time
 from pathlib import Path
 
-from app.utils import _PROJECT_TAG_STRIP_RE, atomic_write
+from app.utils import PROJECT_TAG_STRIP_RE, atomic_write
 
 
 _HISTORY_FILE = "mission_history.json"
@@ -28,7 +28,7 @@ def _normalize_key(mission_text: str) -> str:
     """
     line = mission_text.strip().split("\n")[0]
     line = line.removeprefix("- ").strip()
-    line = _PROJECT_TAG_STRIP_RE.sub("", line).strip()
+    line = PROJECT_TAG_STRIP_RE.sub("", line).strip()
     return line
 
 

@@ -53,6 +53,7 @@ from app.missions import (
     reorder_mission,
 )
 from app.utils import (
+    PROJECT_TAG_FULL_RE,
     modify_missions_file,
     parse_project,
     insert_pending_mission,
@@ -91,19 +92,16 @@ app = Flask(
 )
 
 
-_PROJECT_TAG_RE = re.compile(r'\s*\[(?:project|projet):([a-zA-Z0-9_.-]+)\]\s*')
-
-
 @app.template_filter('strip_project_tag')
 def strip_project_tag_filter(text: str) -> str:
     """Remove [project:name] tag from mission text for display."""
-    return _PROJECT_TAG_RE.sub(' ', text).strip()
+    return PROJECT_TAG_FULL_RE.sub(' ', text).strip()
 
 
 @app.template_filter('project_badge')
 def project_badge_filter(text: str) -> str:
     """Extract project tag and return badge HTML, or empty string."""
-    m = _PROJECT_TAG_RE.search(text)
+    m = PROJECT_TAG_FULL_RE.search(text)
     if m:
         name = m.group(1)
         return f'<span class="badge badge-blue">{name}</span> '

@@ -13,9 +13,10 @@ Output (stdout):
     (empty)                       — if autonomous mode (no pending missions)
 """
 
-import re
 import sys
 from pathlib import Path
+
+from app.utils import PROJECT_TAG_RE, PROJECT_TAG_STRIP_RE
 
 
 def fallback_extract(content: str, projects_str: str) -> tuple[str | None, str | None]:
@@ -27,10 +28,10 @@ def fallback_extract(content: str, projects_str: str) -> tuple[str | None, str |
         return (None, None)
 
     # Try to extract project from inline tag
-    tag = re.search(r"\[projec?t:([a-zA-Z0-9_.-]+)\]", line)
+    tag = PROJECT_TAG_RE.search(line)
     if tag:
         project = tag.group(1)
-        title = re.sub(r"\[projec?t:[a-zA-Z0-9_.-]+\]\s*", "", line).removeprefix("- ").strip()
+        title = PROJECT_TAG_STRIP_RE.sub("", line).removeprefix("- ").strip()
     else:
         # Default to first project
         parts = [p for p in projects_str.split(";") if p]
