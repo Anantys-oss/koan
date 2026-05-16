@@ -40,7 +40,7 @@ class TestBuildMissionCommandTierOverride:
                        system_prompt="", effort=""):
             captured["model"] = model
             captured["max_turns"] = max_turns
-            return ["fake", "cmd"]
+            return ["fake", "cmd"], []
 
         from app.mission_runner import build_mission_command
         # Functions are imported locally inside build_mission_command, so patch
@@ -49,7 +49,7 @@ class TestBuildMissionCommandTierOverride:
              patch("app.config.get_mission_tools", return_value="Read,Glob"), \
              patch("app.config.get_mcp_configs", return_value=[]), \
              patch("app.config.get_effort_for_mode", return_value=""), \
-             patch("app.cli_provider.build_full_command", side_effect=fake_build), \
+             patch("app.provider.build_full_command_managed", side_effect=fake_build), \
              patch("app.config.get_complexity_routing_config",
                    return_value=routing_cfg if routing_cfg is not None else _routing_cfg()):
             build_mission_command(
@@ -124,7 +124,7 @@ class TestBuildMissionCommandTierOverride:
                  patch("app.config.get_mission_tools", return_value="Read,Glob"), \
                  patch("app.config.get_mcp_configs", return_value=[]), \
                  patch("app.config.get_effort_for_mode", return_value=""), \
-                 patch("app.cli_provider.build_full_command", side_effect=fake_build), \
+                 patch("app.provider.build_full_command_managed", side_effect=fake_build), \
                  patch("app.config.get_complexity_routing_config", return_value=None):
                 build_mission_command(
                     prompt="test prompt",
@@ -154,7 +154,7 @@ class TestEffortImportFallback:
                        max_turns=0, mcp_configs=None, plugin_dirs=None,
                        system_prompt="", effort=""):
             captured["effort"] = effort
-            return ["fake", "cmd"]
+            return ["fake", "cmd"], []
 
         # Remove get_effort_for_mode from config to simulate version mismatch
         import app.config as config_mod
@@ -170,7 +170,7 @@ class TestEffortImportFallback:
             with patch("app.config.get_model_config", return_value=models), \
                  patch("app.config.get_mission_tools", return_value="Read,Glob"), \
                  patch("app.config.get_mcp_configs", return_value=[]), \
-                 patch("app.cli_provider.build_full_command", side_effect=fake_build):
+                 patch("app.provider.build_full_command_managed", side_effect=fake_build):
                 build_mission_command(
                     prompt="test prompt",
                     autonomous_mode="deep",

@@ -310,7 +310,7 @@ class TestSpawnSessionFileHandleLeak:
             opened_files.append(f)
             return f
 
-        with patch("app.mission_runner.build_mission_command", return_value=["echo"]), \
+        with patch("app.mission_runner.build_mission_command", return_value=(["echo"], [])), \
              patch("builtins.open", side_effect=tracking_open), \
              patch("app.cli_exec.popen_cli", side_effect=RuntimeError("boom")):
             with pytest.raises(RuntimeError, match="boom"):
@@ -349,7 +349,7 @@ class TestSpawnSessionFileHandleLeak:
             opened_files.append(f)
             return f
 
-        with patch("app.mission_runner.build_mission_command", return_value=["echo"]), \
+        with patch("app.mission_runner.build_mission_command", return_value=(["echo"], [])), \
              patch("builtins.open", side_effect=open_fail_second):
             with pytest.raises(OSError, match="disk full"):
                 spawn_session(

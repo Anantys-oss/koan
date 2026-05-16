@@ -235,7 +235,7 @@ def spawn_session(
     inject_worktree_claude_md(wt.path, mission_text)
 
     # Build CLI command
-    cmd = build_mission_command(
+    cmd, cmd_cleanup_paths = build_mission_command(
         prompt=mission_text,
         autonomous_mode=autonomous_mode,
         project_name=project_name,
@@ -284,11 +284,21 @@ def spawn_session(
         raise
     session.pid = proc.pid
 
-    # Wrap cleanup to also close file handles after process exits
+    # Wrap cleanup to also close file handles and unlink temp prompt files
+    # after the process exits.
     def _session_cleanup():
         cli_cleanup()
         out_f.close()
         err_f.close()
+        if cmd_cleanup_paths:
+            try:
+                from app.provider import cleanup_managed_paths
+                cleanup_managed_paths(cmd_cleanup_paths)
+            except Exception as e:
+                print(
+                    f"[session_manager] sysprompt cleanup error: {e}",
+                    file=sys.stderr,
+                )
 
     # Store cleanup and proc as transient state (not persisted)
     session._proc = proc  # type: ignore[attr-defined]

@@ -135,6 +135,7 @@ class OllamaLaunchProvider(CLIProvider):
         plugin_dirs: Optional[List[str]] = None,
         skip_permissions: bool = False,
         system_prompt: str = "",
+        system_prompt_file: str = "",
         effort: str = "",
     ) -> List[str]:
         """Build: ollama launch claude --model X -- <claude-flags>.
@@ -142,6 +143,8 @@ class OllamaLaunchProvider(CLIProvider):
         The ``--`` separator divides Ollama args from Claude Code args.
         """
         # Handle system prompt: prepend to user prompt (no dedicated flag).
+        # system_prompt_file is silently ignored — supports_system_prompt_file()
+        # returns False on this provider.
         if system_prompt:
             prompt = system_prompt + "\n\n" + prompt
 
