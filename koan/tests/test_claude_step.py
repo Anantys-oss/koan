@@ -147,14 +147,18 @@ class TestRebaseOntoTarget:
             ["git", "fetch", "origin", "+refs/heads/main:refs/remotes/origin/main"],
             cwd="/project", timeout=60,
         )
+        mock_git.assert_any_call(
+            ["git", "fetch", "upstream", "+refs/heads/main:refs/remotes/upstream/main"],
+            cwd="/project", timeout=60,
+        )
 
     @patch("app.cli_exec.subprocess.run")
     @patch("app.claude_step._run_git")
     def test_origin_fails_upstream_succeeds(self, mock_git, mock_subprocess):
         def side_effect(cmd, **kwargs):
-            if "origin" in cmd:
-                raise RuntimeError("fetch failed")
-            return MagicMock(returncode=0, stdout="ok")
+            if "rebase" in cmd and any("origin" in a for a in cmd):
+                raise RuntimeError("rebase failed")
+            return ""
 
         mock_git.side_effect = side_effect
         result = _rebase_onto_target("main", "/project")
@@ -170,17 +174,12 @@ class TestRebaseOntoTarget:
     @patch("app.cli_exec.subprocess.run")
     @patch("app.claude_step._run_git")
     def test_rebase_abort_called_on_failure(self, mock_git, mock_subprocess):
-        call_count = 0
-        def selective_fail(*args, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            # Odd calls are fetch (succeed), even calls are rebase (fail)
-            if call_count % 2 == 0:
+        def selective_fail(cmd, **kwargs):
+            if "rebase" in cmd:
                 raise RuntimeError("conflict")
             return ""
         mock_git.side_effect = selective_fail
         _rebase_onto_target("main", "/project")
-        # Should call rebase --abort for each failed remote
         abort_calls = [
             c
             for c in mock_subprocess.call_args_list
@@ -192,11 +191,8 @@ class TestRebaseOntoTarget:
     @patch("app.claude_step._run_git")
     def test_rebase_abort_called_with_timeout(self, mock_git, mock_subprocess):
         """git rebase --abort must have a timeout to prevent hangs in cleanup."""
-        call_count = 0
-        def selective_fail(*args, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            if call_count % 2 == 0:
+        def selective_fail(cmd, **kwargs):
+            if "rebase" in cmd:
                 raise RuntimeError("conflict")
             return ""
         mock_git.side_effect = selective_fail
@@ -214,11 +210,8 @@ class TestRebaseOntoTarget:
     @patch("app.claude_step._run_git")
     def test_timeout_caught_and_logged(self, mock_git, mock_subprocess, capsys):
         """TimeoutExpired should be caught (not just Exception) and logged."""
-        call_count = 0
-        def selective_fail(*args, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            if call_count % 2 == 0:
+        def selective_fail(cmd, **kwargs):
+            if "rebase" in cmd:
                 raise subprocess.TimeoutExpired("git", 60)
             return ""
         mock_git.side_effect = selective_fail
@@ -232,11 +225,8 @@ class TestRebaseOntoTarget:
     @patch("app.claude_step._run_git")
     def test_os_error_caught_and_logged(self, mock_git, mock_subprocess, capsys):
         """OSError (e.g. git not found) should be caught and logged."""
-        call_count = 0
-        def selective_fail(*args, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            if call_count % 2 == 0:
+        def selective_fail(cmd, **kwargs):
+            if "rebase" in cmd:
                 raise OSError("No such file or directory: 'git'")
             return ""
         mock_git.side_effect = selective_fail
