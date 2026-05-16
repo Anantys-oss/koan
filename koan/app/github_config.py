@@ -175,6 +175,28 @@ def get_github_max_check_interval(config: dict) -> int:
         return 180
 
 
+def get_github_parallel_workers(config: dict) -> int:
+    """Max worker threads for concurrent notification processing.
+
+    During cold start the bot may receive many notifications at once
+    (typically 10+ from a 24h lookback). Each notification triggers
+    several sequential ``gh`` API calls (fetch comment, check subject
+    state, mark read, react). Processing them serially adds 5-20s of
+    wall-clock latency during startup.
+
+    Workers >1 process notifications concurrently; the work is I/O bound
+    (subprocess + HTTP) so threads scale linearly. Default: 4.
+    Floor: 1 (effectively disables parallelism). Ceiling: 16 (above
+    that GitHub secondary rate limits become a risk).
+    """
+    github = config.get("github") or {}
+    try:
+        val = int(github.get("parallel_workers", 4))
+        return max(1, min(16, val))
+    except (ValueError, TypeError):
+        return 4
+
+
 def get_github_subscribe_enabled(config: dict) -> bool:
     """Check if thread subscription monitoring is enabled.
 
