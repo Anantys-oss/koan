@@ -1447,6 +1447,21 @@ Each finding becomes a GitHub issue with:
 - **Suggested Fix** — Concrete remediation steps
 - **Details table** — Severity, category, location, and effort estimate
 
+**Private Vulnerability Reporting (PVRS):** When the target repository has GitHub's Private Vulnerability Reporting enabled, critical and high severity findings are automatically submitted as private security advisories instead of public issues. This prevents disclosure of exploitable vulnerabilities before a fix is applied. Lower-severity findings still create public issues.
+
+Configure PVRS behavior per-project in `projects.yaml`:
+
+```yaml
+defaults:
+  security:
+    pvrs: auto          # auto (detect), true (force), false (public only)
+    pvrs_threshold: high # minimum severity for PVRS (critical, high, medium, low)
+projects:
+  myapp:
+    security:
+      pvrs: false  # always use public issues for this project
+```
+
 ### Incident Triage
 
 **`/incident`** — Triage a production error from a stack trace or log snippet. Kōan will parse the error, identify the root cause, propose a fix with tests, and submit a draft PR.

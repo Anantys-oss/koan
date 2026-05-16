@@ -586,6 +586,140 @@ def find_bot_comment(
     return None
 
 
+def check_pvrs_enabled(repo: str, cwd: str = None) -> bool:
+    """Check if Private Vulnerability Reporting is enabled on a repository.
+
+    Calls ``GET /repos/{owner}/{repo}/private-vulnerability-reporting``.
+    Returns ``False`` on any error (safe default — falls back to public issues).
+
+    Args:
+        repo: Repository in ``owner/repo`` format.
+        cwd: Optional working directory.
+
+    Returns:
+        True if PVRS is enabled, False otherwise.
+    """
+    try:
+        output = api(
+            f"repos/{repo}/private-vulnerability-reporting",
+            cwd=cwd, timeout=15,
+        )
+        data = json.loads(output)
+        return data.get("enabled", False) is True
+    except (RuntimeError, subprocess.TimeoutExpired, json.JSONDecodeError,
+            OSError, TypeError, KeyError):
+        return False
+
+
+def security_advisory_report(
+    summary: str,
+    description: str,
+    severity: str,
+    ecosystem: str = "other",
+    package_name: str = "",
+    repo: str = None,
+    cwd: str = None,
+) -> str:
+    """Submit a private vulnerability report via GitHub PVRS.
+
+    Calls ``POST /repos/{owner}/{repo}/security-advisories/reports``.
+
+    Args:
+        summary: Advisory title.
+        description: Markdown body with vulnerability details.
+        severity: One of ``critical``, ``high``, ``medium``, ``low``.
+        ecosystem: Package ecosystem (``pip``, ``npm``, ``go``, etc.).
+        package_name: Package or project name.
+        repo: Repository in ``owner/repo`` format.
+        cwd: Optional working directory.
+
+    Returns:
+        The advisory URL (``html_url``) on success.
+
+    Raises:
+        RuntimeError: If the API call fails.
+    """
+    from app.leak_detector import scan_and_redact
+
+    summary = scan_and_redact(summary, context="PVRS summary")
+    description = scan_and_redact(description, context="PVRS description")
+
+    payload = json.dumps({
+        "summary": summary,
+        "description": description,
+        "severity": severity,
+        "vulnerabilities": [{
+            "package": {
+                "ecosystem": ecosystem,
+                "name": package_name or "unknown",
+            },
+            "vulnerable_version_range": "*",
+            "patched_versions": "*",
+        }],
+    })
+
+    output = api(
+        f"repos/{repo}/security-advisories/reports",
+        method="POST",
+        input_data=payload,
+        cwd=cwd,
+        timeout=30,
+    )
+
+    try:
+        data = json.loads(output)
+        url = data.get("html_url", "")
+        if url:
+            return url
+        ghsa = data.get("ghsa_id", "")
+        if ghsa:
+            return f"GHSA: {ghsa}"
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    return output.strip() if output else ""
+
+
+def detect_ecosystem(project_path: str) -> str:
+    """Infer the package ecosystem from project files.
+
+    Checks for common package manager files and returns the corresponding
+    ecosystem identifier used by GitHub's advisory API.
+
+    Args:
+        project_path: Path to the project root.
+
+    Returns:
+        Ecosystem string: ``pip``, ``npm``, ``go``, ``cargo``, ``maven``,
+        ``nuget``, ``rubygems``, ``composer``, or ``other``.
+    """
+    from pathlib import Path
+
+    root = Path(project_path)
+
+    # Order matters: more specific files first
+    indicators = [
+        (("pyproject.toml", "requirements.txt", "setup.py", "Pipfile"), "pip"),
+        (("package.json",), "npm"),
+        (("go.mod",), "go"),
+        (("Cargo.toml",), "cargo"),
+        (("pom.xml", "build.gradle", "build.gradle.kts"), "maven"),
+        (("*.csproj", "*.sln"), "nuget"),
+        (("Gemfile",), "rubygems"),
+        (("composer.json",), "composer"),
+    ]
+
+    for filenames, ecosystem in indicators:
+        for filename in filenames:
+            if "*" in filename:
+                if list(root.glob(filename)):
+                    return ecosystem
+            elif (root / filename).exists():
+                return ecosystem
+
+    return "other"
+
+
 def count_open_prs(repo: str, author: str, cwd: str = None) -> int:
     """Count open pull requests by a specific author in a repository.
 

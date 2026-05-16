@@ -229,47 +229,198 @@ def _build_issue_body(finding: AuditFinding) -> str:
     return "\n".join(lines)
 
 
+def _build_advisory_description(finding: AuditFinding) -> str:
+    """Build a PVRS advisory description from a finding.
+
+    Similar to ``_build_issue_body()`` but formatted for the PVRS description
+    field (pure markdown, no table metadata — structured fields go in the
+    JSON payload).
+    """
+    lines = [
+        f"## Problem",
+        f"",
+        f"{finding.problem}",
+        f"",
+        f"## Why This Matters",
+        f"",
+        f"{finding.why}",
+        f"",
+        f"## Suggested Fix",
+        f"",
+        f"{finding.suggested_fix}",
+        f"",
+        f"**Location**: `{finding.location}`",
+        f"**Category**: {finding.category}",
+        f"",
+        f"---",
+        f"\U0001f916 Reported by K\u014dan security audit",
+    ]
+    return "\n".join(lines)
+
+
+def _should_use_pvrs(severity: str, threshold: str) -> bool:
+    """Return True if a finding's severity meets the PVRS routing threshold.
+
+    Findings at or above the threshold severity are routed to PVRS.
+    E.g., threshold ``"high"`` routes ``critical`` and ``high`` to PVRS.
+    """
+    finding_rank = _SEVERITY_ORDER.get(severity, 99)
+    threshold_rank = _SEVERITY_ORDER.get(threshold, 1)
+    return finding_rank <= threshold_rank
+
+
 def create_issues(
     findings: List[AuditFinding],
     project_path: str,
     notify_fn=None,
+    pvrs_mode: str = "auto",
+    pvrs_threshold: str = "high",
 ) -> List[str]:
-    """Create GitHub issues for each finding.
+    """Create GitHub issues (or PVRS reports) for each finding.
 
-    Returns a list of issue URLs.
+    When PVRS is available and ``pvrs_mode`` is not ``"false"``, findings
+    at or above ``pvrs_threshold`` severity are submitted as private
+    vulnerability reports.  Lower-severity findings and PVRS failures
+    fall back to public GitHub issues.
+
+    Args:
+        findings: List of validated audit findings.
+        project_path: Local path to the project repository.
+        notify_fn: Optional callback for progress notifications.
+        pvrs_mode: ``"auto"`` (detect at runtime), ``"true"`` (force),
+            or ``"false"`` (always use public issues).
+        pvrs_threshold: Minimum severity for PVRS routing (default ``"high"``).
+
+    Returns:
+        List of issue/advisory URLs.
     """
-    from app.github import issue_create, resolve_target_repo
+    from app.github import (
+        check_pvrs_enabled, detect_ecosystem, issue_create,
+        resolve_target_repo, security_advisory_report,
+    )
 
     target_repo = resolve_target_repo(project_path)
+
+    # Determine PVRS availability
+    pvrs_available = False
+    if pvrs_mode == "true":
+        pvrs_available = True
+    elif pvrs_mode != "false" and target_repo:
+        pvrs_available = check_pvrs_enabled(target_repo, cwd=project_path)
+
+    if pvrs_available and notify_fn:
+        notify_fn(
+            f"  \U0001f512 PVRS enabled — "
+            f"routing {pvrs_threshold}+ findings privately"
+        )
+
+    ecosystem = detect_ecosystem(project_path) if pvrs_available else "other"
+    # Derive a package name from the project directory
+    from pathlib import Path as _Path
+    package_name = _Path(project_path).name
+
     issue_urls = []
 
     for i, finding in enumerate(findings, 1):
         title = finding.title
-        body = _build_issue_body(finding)
+        use_pvrs = pvrs_available and _should_use_pvrs(
+            finding.severity, pvrs_threshold,
+        )
 
         if notify_fn:
+            channel = "\U0001f512 PVRS" if use_pvrs else "\U0001f4dd issue"
             notify_fn(
-                f"  \U0001f4dd Creating issue {i}/{len(findings)}: {title}"
+                f"  {channel} {i}/{len(findings)}: {title}"
             )
 
         try:
-            url = issue_create(
-                title=title,
-                body=body,
-                repo=target_repo,
-                cwd=project_path,
-            )
-            url = url.strip()
-            issue_urls.append(url)
-            if notify_fn and url:
-                notify_fn(f"  \U0001f517 {url}")
+            if use_pvrs:
+                url = _submit_pvrs_report(
+                    finding, ecosystem, package_name,
+                    target_repo, project_path,
+                )
+            else:
+                url = _submit_public_issue(
+                    finding, target_repo, project_path,
+                )
         except Exception as e:
-            print(
-                f"[audit] Failed to create issue '{title}': {e}",
-                file=sys.stderr,
-            )
+            # PVRS fallback: try public issue if PVRS submission failed
+            if use_pvrs:
+                print(
+                    f"[audit] PVRS failed for '{title}', "
+                    f"falling back to public issue: {e}",
+                    file=sys.stderr,
+                )
+                if notify_fn:
+                    notify_fn(
+                        f"  \u26a0\ufe0f PVRS failed for '{title}', "
+                        f"creating public issue instead"
+                    )
+                try:
+                    url = _submit_public_issue(
+                        finding, target_repo, project_path,
+                        title_prefix="[\u26a0\ufe0f PVRS unavailable] ",
+                    )
+                except Exception as e2:
+                    print(
+                        f"[audit] Fallback issue also failed for "
+                        f"'{title}': {e2}",
+                        file=sys.stderr,
+                    )
+                    continue
+            else:
+                print(
+                    f"[audit] Failed to create issue '{title}': {e}",
+                    file=sys.stderr,
+                )
+                continue
+
+        url = url.strip() if url else ""
+        if url:
+            issue_urls.append(url)
+            if notify_fn:
+                notify_fn(f"  \U0001f517 {url}")
 
     return issue_urls
+
+
+def _submit_pvrs_report(
+    finding: AuditFinding,
+    ecosystem: str,
+    package_name: str,
+    target_repo: Optional[str],
+    project_path: str,
+) -> str:
+    """Submit a single finding as a PVRS report. Returns the advisory URL."""
+    from app.github import security_advisory_report
+
+    description = _build_advisory_description(finding)
+    return security_advisory_report(
+        summary=f"Security: {finding.title}",
+        description=description,
+        severity=finding.severity,
+        ecosystem=ecosystem,
+        package_name=package_name,
+        repo=target_repo,
+        cwd=project_path,
+    )
+
+
+def _submit_public_issue(
+    finding: AuditFinding,
+    target_repo: Optional[str],
+    project_path: str,
+    title_prefix: str = "",
+) -> str:
+    """Create a public GitHub issue for a finding. Returns the issue URL."""
+    from app.github import issue_create
+
+    return issue_create(
+        title=f"{title_prefix}{finding.title}",
+        body=_build_issue_body(finding),
+        repo=target_repo,
+        cwd=project_path,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -302,9 +453,15 @@ def _save_audit_report(
 
     for i, finding in enumerate(findings):
         url = issue_urls[i] if i < len(issue_urls) else "no issue created"
+        # Annotate channel: PVRS reports have GHSA IDs or advisory URLs
+        if "/advisories/" in url or url.startswith("GHSA"):
+            channel = "private"
+        else:
+            channel = ""
+        suffix = f" ({channel})" if channel else ""
         lines.append(
             f"- [{finding.severity}] {finding.title} "
-            f"(`{finding.location}`) — {url}"
+            f"(`{finding.location}`) — {url}{suffix}"
         )
 
     lines.append("")
@@ -325,6 +482,8 @@ def run_audit(
     notify_fn=None,
     skill_dir: Optional[Path] = None,
     report_name: str = "audit",
+    pvrs_mode: str = "auto",
+    pvrs_threshold: str = "high",
 ) -> Tuple[bool, str]:
     """Execute a codebase audit on a project.
 
@@ -337,6 +496,8 @@ def run_audit(
         notify_fn: Optional callback for progress notifications.
         skill_dir: Optional path to the audit skill directory for prompts.
         report_name: Base name for the saved report file (default: "audit").
+        pvrs_mode: PVRS routing mode (``"auto"``, ``"true"``, ``"false"``).
+        pvrs_threshold: Minimum severity for PVRS routing (default ``"high"``).
 
     Returns:
         (success, summary) tuple.
@@ -384,8 +545,11 @@ def run_audit(
             f"Creating GitHub issues..."
         )
 
-    # Step 5: Create GitHub issues
-    issue_urls = create_issues(findings, project_path, notify_fn=notify_fn)
+    # Step 5: Create GitHub issues (or PVRS reports for security audits)
+    issue_urls = create_issues(
+        findings, project_path, notify_fn=notify_fn,
+        pvrs_mode=pvrs_mode, pvrs_threshold=pvrs_threshold,
+    )
 
     # Step 6: Save report
     report_path = _save_audit_report(
