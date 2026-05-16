@@ -382,16 +382,22 @@ def step_messaging(state: OnboardingState) -> OnboardingState:
         verify_telegram_token,
     )
 
-    # Check if already configured
+    # Check if already configured (any supported provider)
     token = get_env_var("KOAN_TELEGRAM_TOKEN")
     chat_id = get_env_var("KOAN_TELEGRAM_CHAT_ID")
     if token and "your-bot-token" not in token and chat_id and "your-chat-id" not in chat_id:
         print(f"  {green('✓')} Messaging already configured.")
         return state
+    if get_env_var("KOAN_SLACK_BOT_TOKEN") and get_env_var("KOAN_SLACK_CHANNEL_ID"):
+        print(f"  {green('✓')} Messaging already configured.")
+        return state
+    if get_env_var("KOAN_MATRIX_ACCESS_TOKEN") and get_env_var("KOAN_MATRIX_ROOM_ID"):
+        print(f"  {green('✓')} Messaging already configured.")
+        return state
 
     provider_idx = ask_choice(
         "Which messaging platform?",
-        ["Telegram (default)", "Slack"],
+        ["Telegram (default)", "Slack", "Matrix"],
         default=0,
     )
 
@@ -414,6 +420,27 @@ def step_messaging(state: OnboardingState) -> OnboardingState:
             print(f"\n  {green('✓')} Slack configuration saved.")
         else:
             print(f"\n  {yellow('○')} Incomplete Slack config — skipping for now.")
+    elif provider_idx == 2:
+        # Matrix setup
+        print(f"\n  {bold('Matrix setup')}")
+        print(f"  {dim('See docs/messaging-matrix.md for setup instructions.')}")
+        print()
+
+        homeserver = ask("Matrix Homeserver URL (https://matrix.org)")
+        access_token = ask("Matrix access token (syt_...)")
+        user_id = ask("Bot Matrix user ID (@koan:matrix.org)")
+        room_id = ask("Room ID (!abcdef:matrix.org)")
+
+        if homeserver and access_token and user_id and room_id:
+            update_env_var("KOAN_MATRIX_HOMESERVER", homeserver)
+            update_env_var("KOAN_MATRIX_ACCESS_TOKEN", access_token)
+            update_env_var("KOAN_MATRIX_USER_ID", user_id)
+            update_env_var("KOAN_MATRIX_ROOM_ID", room_id)
+            update_env_var("KOAN_MESSAGING_PROVIDER", "matrix")
+            state.data["messaging_provider"] = "matrix"
+            print(f"\n  {green('✓')} Matrix configuration saved.")
+        else:
+            print(f"\n  {yellow('○')} Incomplete Matrix config — skipping for now.")
     else:
         # Telegram setup
         print(f"\n  {bold('Telegram setup')}")
