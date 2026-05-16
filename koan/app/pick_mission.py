@@ -27,10 +27,10 @@ def fallback_extract(content: str, projects_str: str) -> tuple[str | None, str |
         return (None, None)
 
     # Try to extract project from inline tag
-    tag = re.search(r"\[projec?t:([a-zA-Z0-9_-]+)\]", line)
+    tag = re.search(r"\[projec?t:([a-zA-Z0-9_.-]+)\]", line)
     if tag:
         project = tag.group(1)
-        title = re.sub(r"\[projec?t:[a-zA-Z0-9_-]+\]\s*", "", line).removeprefix("- ").strip()
+        title = re.sub(r"\[projec?t:[a-zA-Z0-9_.-]+\]\s*", "", line).removeprefix("- ").strip()
     else:
         # Default to first project
         parts = [p for p in projects_str.split(";") if p]

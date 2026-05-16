@@ -34,8 +34,9 @@ if "KOAN_ROOT" not in os.environ:
 KOAN_ROOT = Path(os.environ["KOAN_ROOT"])
 
 # Pre-compiled regex for project tag extraction (accepts both [project:X] and [projet:X])
-_PROJECT_TAG_RE = re.compile(r'\[projec?t:([a-zA-Z0-9_-]+)\]')
-_PROJECT_TAG_STRIP_RE = re.compile(r'\[projec?t:[a-zA-Z0-9_-]+\]\s*')
+# Dots are allowed because project names may be domain-like, e.g. developers.esphome.io.
+_PROJECT_TAG_RE = re.compile(r'\[projec?t:([a-zA-Z0-9_.-]+)\]')
+_PROJECT_TAG_STRIP_RE = re.compile(r'\[projec?t:[a-zA-Z0-9_.-]+\]\s*')
 
 _MISSIONS_DEFAULT = "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n"
 _MISSIONS_LOCK = threading.Lock()
