@@ -254,6 +254,49 @@ class TestInsertPendingMission:
         temp_files = list(tmp_path.glob(".missions-*"))
         assert temp_files == [], f"Temp files left behind after error: {temp_files}"
 
+    def test_returns_true_when_inserted(self, tmp_path):
+        from app.utils import insert_pending_mission
+        missions = tmp_path / "missions.md"
+        missions.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
+
+        result = insert_pending_mission(
+            missions, "- [project:koan] /rebase https://github.com/o/r/pull/1"
+        )
+        assert result is True
+        assert "/rebase" in missions.read_text()
+
+    def test_returns_false_on_duplicate(self, tmp_path):
+        from app.utils import insert_pending_mission
+        missions = tmp_path / "missions.md"
+        missions.write_text(
+            "# Missions\n\n## Pending\n\n"
+            "- [project:koan] /rebase https://github.com/o/r/pull/1 ⏳(2026-05-16T10:00)\n\n"
+            "## In Progress\n\n## Done\n"
+        )
+
+        result = insert_pending_mission(
+            missions, "- [project:koan] /rebase https://github.com/o/r/pull/1"
+        )
+        assert result is False
+        # File unchanged — no double entry
+        content = missions.read_text()
+        assert content.count("/rebase https://github.com/o/r/pull/1") == 1
+
+    def test_non_github_mission_always_inserted(self, tmp_path):
+        from app.utils import insert_pending_mission
+        missions = tmp_path / "missions.md"
+        missions.write_text(
+            "# Missions\n\n## Pending\n\n"
+            "- [project:koan] Fix the login bug\n\n"
+            "## In Progress\n\n## Done\n"
+        )
+
+        result = insert_pending_mission(
+            missions, "- [project:koan] Fix the login bug"
+        )
+        # Non-GitHub missions are not deduped (no signature)
+        assert result is True
+
     def test_modify_missions_file_returns_new_content(self, tmp_path):
         """modify_missions_file should return the transformed content."""
         from app.utils import modify_missions_file
