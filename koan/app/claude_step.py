@@ -680,6 +680,7 @@ def _build_pr_prompt(
         ),
         COMMIT_CONVENTIONS=commit_conventions,
         COMMIT_SUBJECT_INSTRUCTION=commit_subject_instruction,
+        CI_FAILURES=context.get("ci_failures", ""),
     )
     return load_prompt_or_skill(skill_dir, prompt_name, **kwargs)
 
