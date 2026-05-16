@@ -409,3 +409,203 @@ class TestAttemptCiFixes:
             )
 
         mock_modify.assert_called_once()
+
+
+class TestAggregateCiRuns:
+    """Aggregation rules for `gh run list` output — especially skip-conclusion handling."""
+
+    def test_empty_input_returns_none(self):
+        from app.claude_step import aggregate_ci_runs
+
+        assert aggregate_ci_runs([]) == ("none", None)
+
+    def test_all_success_returns_success(self):
+        from app.claude_step import aggregate_ci_runs
+
+        runs = [
+            {"databaseId": 1, "status": "completed", "conclusion": "success"},
+            {"databaseId": 2, "status": "completed", "conclusion": "success"},
+        ]
+        assert aggregate_ci_runs(runs) == ("success", 1)
+
+    def test_failure_wins_over_pending(self):
+        """A failed completed run takes priority over an in-progress one."""
+        from app.claude_step import aggregate_ci_runs
+
+        runs = [
+            {"databaseId": 1, "status": "in_progress", "conclusion": ""},
+            {"databaseId": 2, "status": "completed", "conclusion": "failure"},
+            {"databaseId": 3, "status": "completed", "conclusion": "success"},
+        ]
+        status, run_id = aggregate_ci_runs(runs)
+        assert status == "failure"
+        assert run_id == 2
+
+    def test_pending_returned_when_no_completed_failures(self):
+        from app.claude_step import aggregate_ci_runs
+
+        runs = [
+            {"databaseId": 1, "status": "completed", "conclusion": "success"},
+            {"databaseId": 2, "status": "in_progress", "conclusion": ""},
+        ]
+        status, run_id = aggregate_ci_runs(runs)
+        assert status == "pending"
+        assert run_id == 2
+
+    def test_dependabot_auto_merge_skip_is_ignored(self):
+        """Regression: a 'Dependabot auto-merge' workflow that completes with
+        conclusion='skipped' on a non-Dependabot PR must not be reported as a
+        CI failure. See aio-libs/yarl PR #1681 — Kōan kept queueing /ci_check
+        fix missions because `gh run list --limit 1` returned the skipped
+        Dependabot run instead of the actual CI workflows.
+        """
+        from app.claude_step import aggregate_ci_runs
+
+        # This mirrors the actual `gh run list` payload for the yarl PR:
+        # the Dependabot auto-merge run lands first by databaseId order, but
+        # the real CI workflows are all green.
+        runs = [
+            {
+                "databaseId": 25970779376,
+                "status": "completed",
+                "conclusion": "skipped",
+                "workflowName": "Dependabot auto-merge",
+            },
+            {
+                "databaseId": 25970779403,
+                "status": "completed",
+                "conclusion": "success",
+                "workflowName": "CodeQL",
+            },
+            {
+                "databaseId": 25970779406,
+                "status": "completed",
+                "conclusion": "success",
+                "workflowName": "Aiohttp",
+            },
+        ]
+        status, run_id = aggregate_ci_runs(runs)
+        assert status == "success"
+        # The reported run_id must point at a real CI workflow, never the
+        # skipped Dependabot run — otherwise log fetching would target the
+        # wrong run and report no failures.
+        assert run_id != 25970779376
+
+    def test_dependabot_skip_with_pending_real_ci_returns_pending(self):
+        """If only the Dependabot run completed (skipped) and real CI is still
+        running, surface pending — not failure, not success.
+        """
+        from app.claude_step import aggregate_ci_runs
+
+        runs = [
+            {
+                "databaseId": 25970779376,
+                "status": "completed",
+                "conclusion": "skipped",
+                "workflowName": "Dependabot auto-merge",
+            },
+            {
+                "databaseId": 25970779458,
+                "status": "in_progress",
+                "conclusion": "",
+                "workflowName": "CI/CD",
+            },
+        ]
+        status, run_id = aggregate_ci_runs(runs)
+        assert status == "pending"
+        assert run_id == 25970779458
+
+    def test_cancelled_and_neutral_also_ignored(self):
+        """`cancelled`, `neutral`, `action_required` are not real CI failures."""
+        from app.claude_step import aggregate_ci_runs
+
+        runs = [
+            {"databaseId": 1, "status": "completed", "conclusion": "cancelled"},
+            {"databaseId": 2, "status": "completed", "conclusion": "neutral"},
+            {"databaseId": 3, "status": "completed", "conclusion": "action_required"},
+            {"databaseId": 4, "status": "completed", "conclusion": "success"},
+        ]
+        assert aggregate_ci_runs(runs) == ("success", 4)
+
+    def test_all_skipped_returns_none(self):
+        """When every workflow run was filtered out, we have no CI signal."""
+        from app.claude_step import aggregate_ci_runs
+
+        runs = [
+            {"databaseId": 1, "status": "completed", "conclusion": "skipped"},
+            {"databaseId": 2, "status": "completed", "conclusion": "cancelled"},
+        ]
+        assert aggregate_ci_runs(runs) == ("none", None)
+
+    def test_missing_conclusion_field_treated_as_pending(self):
+        from app.claude_step import aggregate_ci_runs
+
+        runs = [
+            {"databaseId": 1, "status": "queued"},
+        ]
+        status, run_id = aggregate_ci_runs(runs)
+        assert status == "pending"
+        assert run_id == 1
+
+
+class TestCheckCiStatusDependabot:
+    """End-to-end: check_ci_status must not treat skipped Dependabot runs as failures."""
+
+    def test_dependabot_skip_does_not_trigger_failure(self):
+        """Regression for aio-libs/yarl PR #1681 — Kōan repeatedly queued
+        /ci_check fix missions because check_ci_status returned ('failure',
+        <dependabot_skip_run_id>) for a healthy PR.
+        """
+        from app.ci_queue_runner import check_ci_status
+
+        gh_payload = json.dumps([
+            {
+                "databaseId": 25970779376,
+                "status": "completed",
+                "conclusion": "skipped",
+                "workflowName": "Dependabot auto-merge",
+            },
+            {
+                "databaseId": 25970779403,
+                "status": "completed",
+                "conclusion": "success",
+                "workflowName": "CodeQL",
+            },
+        ])
+        with patch("app.claude_step.run_gh", return_value=gh_payload):
+            status, run_id = check_ci_status("koan/fix-issue-1680", "aio-libs/yarl")
+
+        assert status == "success"
+        assert run_id == 25970779403
+
+    def test_check_existing_ci_dependabot_skip_does_not_fetch_logs(self):
+        """The other single-shot caller (`check_existing_ci`) must also ignore
+        the skipped Dependabot run, otherwise we'd waste an `_fetch_failed_logs`
+        call on a workflow that produced no logs.
+        """
+        from app.claude_step import check_existing_ci
+
+        gh_payload = json.dumps([
+            {
+                "databaseId": 25970779376,
+                "status": "completed",
+                "conclusion": "skipped",
+                "workflowName": "Dependabot auto-merge",
+            },
+            {
+                "databaseId": 25970779403,
+                "status": "completed",
+                "conclusion": "success",
+                "workflowName": "CodeQL",
+            },
+        ])
+        with (
+            patch("app.claude_step.run_gh", return_value=gh_payload),
+            patch("app.claude_step._fetch_failed_logs") as mock_fetch_logs,
+        ):
+            status, run_id, logs = check_existing_ci("br", "owner/repo")
+
+        assert status == "success"
+        assert run_id == 25970779403
+        assert logs == ""
+        mock_fetch_logs.assert_not_called()

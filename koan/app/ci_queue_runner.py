@@ -26,40 +26,23 @@ from typing import Optional, Tuple
 def check_ci_status(branch: str, full_repo: str) -> Tuple[str, Optional[int]]:
     """Make a single non-blocking CI status check.
 
+    Aggregates all recent workflow runs for the branch, ignoring conclusions
+    that don't represent real CI signal (e.g. a "Dependabot auto-merge"
+    run that completes with conclusion="skipped" on non-Dependabot PRs).
+
     Returns:
         (status, run_id) where status is one of:
         "success", "failure", "pending", "none"
     """
-    from app.github import run_gh
+    from app.claude_step import aggregate_ci_runs, fetch_branch_ci_runs
 
     try:
-        raw = run_gh(
-            "run", "list",
-            "--branch", branch,
-            "--repo", full_repo,
-            "--json", "databaseId,status,conclusion",
-            "--limit", "1",
-        )
-        runs = json.loads(raw) if raw.strip() else []
+        runs = fetch_branch_ci_runs(branch, full_repo)
     except Exception as e:
         print(f"[ci_queue] CI status check error: {e}", file=sys.stderr)
         return ("pending", None)
 
-    if not runs:
-        return ("none", None)
-
-    run = runs[0]
-    run_id = run.get("databaseId")
-    status = run.get("status", "").lower()
-    conclusion = run.get("conclusion", "").lower()
-
-    if status == "completed":
-        if conclusion == "success":
-            return ("success", run_id)
-        return ("failure", run_id)
-
-    # in_progress, queued, waiting, etc.
-    return ("pending", run_id)
+    return aggregate_ci_runs(runs)
 
 
 def drain_one(instance_dir: str) -> Optional[str]:
