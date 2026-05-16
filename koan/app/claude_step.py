@@ -167,22 +167,6 @@ def _rebase_onto_target(
     _prefetch_all_remotes(base, project_path, preferred_remote, head_remote)
 
     for remote in _ordered_remotes(preferred_remote):
-        try:
-            _fetch_branch(remote, base, cwd=project_path)
-        except _REBASE_EXCEPTIONS as e:
-            print(f"[claude_step] Fetch {remote}/{base} failed: {e}", file=sys.stderr)
-            continue
-
-        # When head_remote differs from target, use --onto to limit
-        # replay to only the PR's commits.
-        if head_remote and head_remote != remote:
-            try:
-                _fetch_branch(head_remote, base, cwd=project_path)
-            except _REBASE_EXCEPTIONS as e:
-                print(f"[claude_step] Fetch {head_remote}/{base} failed: {e}", file=sys.stderr)
-                # Can't determine fork state — fall through to plain rebase
-                head_remote = None
-
         if head_remote and head_remote != remote:
             # Only use --onto when the fork has genuinely diverged from
             # upstream (i.e. has commits that upstream doesn't).  When the
