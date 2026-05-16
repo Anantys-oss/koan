@@ -435,6 +435,78 @@ def _safe_checkout(branch: str, project_path: str) -> None:
         print(f"[claude_step] Safe checkout failed for {branch}: {e}", file=sys.stderr)
 
 
+# Conclusions that don't signal a real CI outcome. The classic case is
+# "Dependabot auto-merge", which runs on every PR but only acts on
+# Dependabot-authored PRs — on every other PR it completes with
+# conclusion="skipped". Treating that as a CI failure sends Kōan into a
+# fix loop against a workflow that isn't actually broken.
+_IGNORED_CI_CONCLUSIONS = frozenset(
+    {"skipped", "cancelled", "neutral", "action_required"}
+)
+
+# Upper bound on runs fetched per branch — enough to cover all workflows
+# triggered by a single push (typically <10), small enough to keep the
+# `gh run list` call cheap.
+_CI_RUN_LIMIT = 20
+
+
+def aggregate_ci_runs(runs: list) -> Tuple[str, Optional[int]]:
+    """Reduce a list of workflow runs to a single (status, run_id) tuple.
+
+    Filters out runs whose conclusion is in :data:`_IGNORED_CI_CONCLUSIONS`
+    (notably the "Dependabot auto-merge" skip case) before aggregating, so
+    a benign skipped workflow doesn't masquerade as a CI failure.
+
+    Aggregation rules over the remaining runs:
+    - any failed completed run → ("failure", failed_run_id)
+    - else any non-completed run → ("pending", pending_run_id)
+    - else all completed + success → ("success", first_run_id)
+    - empty input or every run filtered out → ("none", None)
+    """
+    if not runs:
+        return ("none", None)
+
+    relevant = [
+        r for r in runs
+        if (r.get("conclusion") or "").lower() not in _IGNORED_CI_CONCLUSIONS
+    ]
+    if not relevant:
+        return ("none", None)
+
+    failed_run = None
+    pending_run = None
+    for run in relevant:
+        status = (run.get("status") or "").lower()
+        conclusion = (run.get("conclusion") or "").lower()
+        if status == "completed":
+            if conclusion != "success" and failed_run is None:
+                failed_run = run
+        elif pending_run is None:
+            pending_run = run
+
+    if failed_run is not None:
+        return ("failure", failed_run.get("databaseId"))
+    if pending_run is not None:
+        return ("pending", pending_run.get("databaseId"))
+    return ("success", relevant[0].get("databaseId"))
+
+
+def fetch_branch_ci_runs(branch: str, full_repo: str) -> list:
+    """Return raw `gh run list` entries for a branch.
+
+    Raises on `gh` failure so callers can decide between fall-back
+    behaviours (e.g. "treat as pending" vs "treat as none").
+    """
+    raw = run_gh(
+        "run", "list",
+        "--branch", branch,
+        "--repo", full_repo,
+        "--json", "databaseId,status,conclusion,name,workflowName",
+        "--limit", str(_CI_RUN_LIMIT),
+    )
+    return json.loads(raw) if raw.strip() else []
+
+
 def wait_for_ci(
     branch: str,
     full_repo: str,
@@ -463,37 +535,28 @@ def wait_for_ci(
 
     while time.time() < deadline:
         try:
-            raw = run_gh(
-                "run", "list",
-                "--branch", branch,
-                "--repo", full_repo,
-                "--json", "databaseId,status,conclusion",
-                "--limit", "1",
-            )
-            runs = json.loads(raw) if raw.strip() else []
+            runs = fetch_branch_ci_runs(branch, full_repo)
         except Exception as e:
             print(f"[claude_step] CI poll error: {e}", file=sys.stderr)
             time.sleep(poll_interval)
             continue
 
-        if not runs:
-            # No CI runs found for this branch — common for repos without CI
+        status, run_id = aggregate_ci_runs(runs)
+
+        if status == "none":
+            # No CI signal — either no runs, or every run was filtered as
+            # non-CI (e.g. a Dependabot auto-merge skip with nothing else
+            # registered yet). Mirror the original "no runs" exit.
             return ("none", None, "")
 
-        run = runs[0]
-        run_id = run.get("databaseId")
-        status = run.get("status", "").lower()
-        conclusion = run.get("conclusion", "").lower()
+        if status == "success":
+            return ("success", run_id, "")
 
-        if status == "completed":
-            if conclusion == "success":
-                return ("success", run_id, "")
-
-            # CI failed — fetch logs for failed jobs
-            logs = _fetch_failed_logs(run_id, full_repo)
+        if status == "failure":
+            logs = _fetch_failed_logs(run_id, full_repo) if run_id else ""
             return ("failure", run_id, logs)
 
-        # Still running — wait and poll again
+        # status == "pending" — keep polling
         time.sleep(poll_interval)
 
     return ("timeout", None, "")
@@ -544,34 +607,18 @@ def check_existing_ci(
         - logs: Failed job logs (empty unless status is "failure")
     """
     try:
-        raw = run_gh(
-            "run", "list",
-            "--branch", branch,
-            "--repo", full_repo,
-            "--json", "databaseId,status,conclusion",
-            "--limit", "1",
-        )
-        runs = json.loads(raw) if raw.strip() else []
+        runs = fetch_branch_ci_runs(branch, full_repo)
     except Exception as e:
         print(f"[claude_step] CI check error: {e}", file=sys.stderr)
         return ("none", None, "")
 
-    if not runs:
-        return ("none", None, "")
+    status, run_id = aggregate_ci_runs(runs)
 
-    run = runs[0]
-    run_id = run.get("databaseId")
-    status = run.get("status", "").lower()
-    conclusion = run.get("conclusion", "").lower()
-
-    if status == "completed":
-        if conclusion == "success":
-            return ("success", run_id, "")
-        logs = _fetch_failed_logs(run_id, full_repo)
+    if status == "failure":
+        logs = _fetch_failed_logs(run_id, full_repo) if run_id else ""
         return ("failure", run_id, logs)
 
-    # Still running or queued
-    return ("pending", run_id, "")
+    return (status, run_id, "")
 
 
 def _is_permission_error(error_msg: str) -> bool:
