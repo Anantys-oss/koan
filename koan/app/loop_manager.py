@@ -16,6 +16,7 @@ CLI interface:
 """
 
 import argparse
+import contextlib
 import logging
 import os
 import re
@@ -424,16 +425,12 @@ def _skills_dir_mtime(instance_dir: str) -> float:
     """Get the max mtime of core and instance skills directories."""
     best = 0.0
     core_dir = Path(__file__).resolve().parent.parent / "skills" / "core"
-    try:
+    with contextlib.suppress(OSError):
         best = max(best, core_dir.stat().st_mtime)
-    except OSError:
-        pass
     instance_skills = Path(instance_dir) / "skills"
     if instance_skills.is_dir():
-        try:
+        with contextlib.suppress(OSError):
             best = max(best, instance_skills.stat().st_mtime)
-        except OSError:
-            pass
     return best
 
 

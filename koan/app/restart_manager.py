@@ -16,6 +16,7 @@ The restart flow:
 Exit code 42 is the restart sentinel — any other exit is a real stop.
 """
 
+import contextlib
 import os
 import sys
 import time
@@ -64,10 +65,8 @@ def check_restart(koan_root: str, since: float = 0) -> bool:
 def clear_restart(koan_root: str) -> None:
     """Remove the restart signal file."""
     path = os.path.join(koan_root, RESTART_FILE)
-    try:
+    with contextlib.suppress(FileNotFoundError):
         os.remove(path)
-    except FileNotFoundError:
-        pass
 
 
 def reexec_bridge() -> None:

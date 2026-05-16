@@ -1,5 +1,6 @@
 """Koan /branches skill -- list koan branches + open PRs with merge recommendations."""
 
+import contextlib
 import json
 import logging
 from typing import Dict, List, Optional, Tuple
@@ -111,13 +112,11 @@ def _get_branches_info(project_path: str) -> List[Dict]:
             parts = line.strip().split("\t", 2)
             if len(parts) == 3:
                 ts_str, relative, ref_name = parts
-                try:
+                with contextlib.suppress(ValueError):
                     age_data[ref_name] = {
                         "timestamp": int(ts_str),
                         "age": relative,
                     }
-                except ValueError:
-                    pass
 
 
     result = []

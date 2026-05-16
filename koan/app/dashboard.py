@@ -15,6 +15,7 @@ Usage:
     make dashboard
 """
 
+import contextlib
 import json
 import os
 import re
@@ -210,10 +211,8 @@ def get_agent_state() -> dict:
     project_file = KOAN_ROOT / PROJECT_FILE
     project = ""
     if project_file.exists():
-        try:
+        with contextlib.suppress(OSError):
             project = project_file.read_text().strip()
-        except OSError:
-            pass
 
     # Read focus state
     focus = None

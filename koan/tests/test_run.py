@@ -1,5 +1,6 @@
 """Tests for app.run — the full Python main loop."""
 
+import contextlib
 import os
 import signal
 import subprocess
@@ -1032,15 +1033,13 @@ class TestRunClaudeTask:
         stderr_f = str(tmp_path / "err.txt")
 
         with patch("app.cli_exec.popen_cli", side_effect=OSError("exec failed")):
-            try:
+            with contextlib.suppress(OSError):
                 run_claude_task(
                     cmd=["nonexistent"],
                     stdout_file=stdout_f,
                     stderr_file=stderr_f,
                     cwd=str(tmp_path),
                 )
-            except OSError:
-                pass
 
         # Signal state must be cleaned up despite the exception
         assert _sig.task_running is False
@@ -1058,15 +1057,13 @@ class TestRunClaudeTask:
         bad_dir.mkdir()
         stderr_f = str(tmp_path / "err.txt")
 
-        try:
+        with contextlib.suppress(OSError, IsADirectoryError):
             run_claude_task(
                 cmd=["echo", "hello"],
                 stdout_file=str(bad_dir),  # can't open a directory for writing
                 stderr_file=stderr_f,
                 cwd=str(tmp_path),
             )
-        except (OSError, IsADirectoryError):
-            pass
 
         assert _sig.task_running is False
         assert _sig.claude_proc is None

@@ -12,6 +12,7 @@ The registry file (instance/sessions.json) follows Koan's existing pattern
 of file-based state with fcntl locks for cross-process safety.
 """
 
+import contextlib
 import fcntl
 import json
 import os
@@ -394,18 +395,14 @@ def kill_session(
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 os.killpg(pgid, signal.SIGKILL)
-                try:
+                with contextlib.suppress(subprocess.TimeoutExpired):
                     proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    pass
         except (ProcessLookupError, PermissionError, OSError):
             pass
     elif session.pid > 0:
         # No proc reference — try killing by PID
-        try:
+        with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
             os.kill(session.pid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
 
     # Call cleanup
     cleanup = getattr(session, "_cleanup", None)

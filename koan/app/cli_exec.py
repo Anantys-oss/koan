@@ -10,6 +10,7 @@ the agent's own tool calls) skip this mechanism and pass the prompt
 directly as a ``-p`` argument.
 """
 
+import contextlib
 import os
 import subprocess
 import sys
@@ -78,10 +79,8 @@ def prepare_prompt_file(cmd: List[str]) -> Tuple[List[str], Optional[str]]:
 def _cleanup_prompt_file(path: Optional[str]) -> None:
     """Silently remove a temp prompt file if it exists."""
     if path:
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(path)
-        except OSError:
-            pass
 
 
 def run_cli(cmd, **kwargs) -> subprocess.CompletedProcess:

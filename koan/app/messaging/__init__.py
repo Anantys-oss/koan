@@ -9,6 +9,7 @@ Usage:
     provider.send_message("Hello from Kōan")
 """
 
+import contextlib
 import os
 import sys
 import threading
@@ -148,10 +149,8 @@ def _ensure_providers_loaded():
         return
 
     for module_name in _PROVIDER_MODULES:
-        try:
+        with contextlib.suppress(ImportError):
             __import__(module_name)
-        except ImportError:
-            pass
 
 
 __all__ = [

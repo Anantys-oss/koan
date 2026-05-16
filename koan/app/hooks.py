@@ -43,6 +43,7 @@ Automation rules:
     A per-rule loop guard prevents runaway rule execution.
 """
 
+import contextlib
 import importlib.util
 import os
 import sys
@@ -316,10 +317,9 @@ class HookRegistry:
     def _action_resume(self, instance_dir: str) -> None:
         """Remove .koan-pause if it exists."""
         pause_file = Path(instance_dir).parent / ".koan-pause"
-        try:
+        # Already absent — idempotent
+        with contextlib.suppress(FileNotFoundError):
             pause_file.unlink()
-        except FileNotFoundError:
-            pass  # Already absent — idempotent
 
     def _action_auto_merge(self, instance_dir: str, ctx: dict) -> None:
         """Call git_auto_merge.auto_merge_branch() if project context present."""

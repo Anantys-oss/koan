@@ -1,5 +1,6 @@
 """Koan changelog skill — generate release notes from commits and journals."""
 
+import contextlib
 import re
 import subprocess
 from collections import defaultdict
@@ -105,10 +106,8 @@ def _parse_args(args: str) -> Tuple[str, datetime, str]:
     for part in parts:
         if part.startswith("--since="):
             date_str = part[len("--since="):]
-            try:
+            with contextlib.suppress(ValueError):
                 since_date = datetime.strptime(date_str, "%Y-%m-%d")
-            except ValueError:
-                pass
         elif part.startswith("--format="):
             fmt = part[len("--format="):]
             if fmt in ("md", "markdown"):

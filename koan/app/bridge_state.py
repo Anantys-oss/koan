@@ -5,6 +5,7 @@ awake.py (main loop, chat, outbox) and command_handlers.py (slash commands).
 Extracted to avoid circular imports between those two modules.
 """
 
+import contextlib
 import os
 import sys
 from pathlib import Path
@@ -98,17 +99,13 @@ def _skills_dir_mtime() -> float:
     best = 0.0
     # Core skills directory (inside the koan package)
     core_dir = Path(__file__).resolve().parent.parent / "skills" / "core"
-    try:
+    with contextlib.suppress(OSError):
         best = max(best, core_dir.stat().st_mtime)
-    except OSError:
-        pass
     # Instance skills directory (user-installed skills)
     instance_skills = INSTANCE_DIR / "skills"
     if instance_skills.is_dir():
-        try:
+        with contextlib.suppress(OSError):
             best = max(best, instance_skills.stat().st_mtime)
-        except OSError:
-            pass
     return best
 
 

@@ -13,6 +13,7 @@ Severities: critical > warning > info.
 Dismissed items are tracked in instance/.koan-attention-dismissed.json.
 """
 
+import contextlib
 import hashlib
 import json
 import sys
@@ -76,10 +77,8 @@ def save_dismissed(koan_root: str, dismissed: set) -> None:
     """Atomically persist the set of dismissed item IDs."""
     from app.utils import atomic_write_json
     path = _dismissed_file_path(koan_root)
-    try:
+    with contextlib.suppress(OSError):
         atomic_write_json(path, sorted(dismissed))
-    except OSError:
-        pass
 
 
 def dismiss_item(koan_root: str, item_id: str) -> None:

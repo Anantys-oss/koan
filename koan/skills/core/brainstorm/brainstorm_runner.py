@@ -12,6 +12,7 @@ CLI:
         --project-path <path> --topic "Improve caching" --tag prompt-caching
 """
 
+import contextlib
 import hashlib
 import json
 import re
@@ -483,16 +484,14 @@ def _coerce_overall_assessment(value):
 
 def _ensure_label(tag, project_path):
     """Create the GitHub label if it doesn't exist."""
-    try:
+    # Label creation failed — issues will be created without it
+    with contextlib.suppress(RuntimeError, OSError):
         run_gh(
             "label", "create", tag,
             "--description", f"Brainstorm: {tag}",
             "--force",
             cwd=project_path, timeout=15,
         )
-    except (RuntimeError, OSError):
-        # Label creation failed — issues will be created without it
-        pass
 
 
 def _extract_master_title(topic: str) -> str:
