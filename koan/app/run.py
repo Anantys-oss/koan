@@ -28,7 +28,7 @@ import threading
 import time
 import traceback
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from app.iteration_manager import plan_iteration
 from app.loop_manager import check_pending_missions, interruptible_sleep
@@ -1951,6 +1951,7 @@ def _run_iteration(
     os.close(fd_err)
     claude_exit = 1  # default to failure; overwritten on successful execution
     plugin_dir = None  # generated plugin dir for Skill tool (cleaned up in finally)
+    cmd_cleanup_paths: List[str] = []  # temp files created by build_mission_command
     try:
         # Build CLI command (provider-agnostic with per-project overrides)
         from app.mission_runner import build_mission_command
@@ -1980,7 +1981,7 @@ def _run_iteration(
         except Exception as e:
             _debug_log(f"[run] plugin dir generation skipped: {e}")
 
-        cmd = build_mission_command(
+        cmd, cmd_cleanup_paths = build_mission_command(
             prompt=prompt,
             autonomous_mode=autonomous_mode,
             extra_flags="",
@@ -2225,6 +2226,12 @@ def _run_iteration(
             log("error", f"Post-mission processing error: {e}\n{traceback.format_exc()}")
     finally:
         _cleanup_temp(stdout_file, stderr_file)
+        if cmd_cleanup_paths:
+            try:
+                from app.provider import cleanup_managed_paths
+                cleanup_managed_paths(cmd_cleanup_paths)
+            except Exception as e:
+                print(f"[run] sysprompt cleanup error: {e}", file=sys.stderr)
         if plugin_dir:
             try:
                 from app.plugin_generator import cleanup_plugin_dir

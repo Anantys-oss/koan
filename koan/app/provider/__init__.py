@@ -24,7 +24,8 @@ import os
 import re
 import subprocess
 import sys
-from typing import List, Optional
+import tempfile
+from typing import List, Optional, Tuple
 
 # Re-export base class and constants for convenience
 from app.provider.base import (  # noqa: F401
@@ -184,6 +185,7 @@ def build_full_command(
     mcp_configs: Optional[List[str]] = None,
     plugin_dirs: Optional[List[str]] = None,
     system_prompt: str = "",
+    system_prompt_file: str = "",
     effort: str = "",
 ) -> List[str]:
     """Build a complete CLI command for the configured provider.
@@ -216,8 +218,109 @@ def build_full_command(
         plugin_dirs=plugin_dirs,
         skip_permissions=get_skip_permissions(),
         system_prompt=system_prompt,
+        system_prompt_file=system_prompt_file,
         effort=effort,
     )
+
+
+def _write_system_prompt_file(content: str) -> str:
+    """Write a system prompt to a 0600 temp file and return its absolute path.
+
+    The file is intentionally not auto-deleted — the caller is responsible
+    for unlinking it after the subprocess has finished consuming it. Use
+    :func:`build_full_command_managed`, which pairs this with cleanup.
+    """
+    fd, path = tempfile.mkstemp(prefix="koan-sysprompt-", suffix=".txt")
+    try:
+        # mkstemp creates the file with mode 0600 on POSIX, but be explicit
+        # to defend against umask anomalies on weird filesystems.
+        os.chmod(path, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+    except Exception:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        raise
+    return path
+
+
+def build_full_command_managed(
+    prompt: str,
+    allowed_tools: Optional[List[str]] = None,
+    disallowed_tools: Optional[List[str]] = None,
+    model: str = "",
+    fallback: str = "",
+    output_format: str = "",
+    max_turns: int = 0,
+    mcp_configs: Optional[List[str]] = None,
+    plugin_dirs: Optional[List[str]] = None,
+    system_prompt: str = "",
+    effort: str = "",
+) -> Tuple[List[str], List[str]]:
+    """Build a CLI command, routing large system prompts through a temp file.
+
+    Same parameters as :func:`build_full_command`, but when ``system_prompt``
+    is non-empty AND the configured provider supports
+    ``--append-system-prompt-file`` (or its equivalent), the prompt is
+    written to a 0600 temp file and the file path is passed instead of the
+    content.  This keeps the prompt out of ``argv`` so it doesn't show up
+    in ``ps`` listings or process supervisors.
+
+    Returns:
+        ``(cmd, cleanup_paths)`` — the caller MUST unlink each path in
+        ``cleanup_paths`` after the subprocess exits, typically from a
+        ``finally`` block alongside its other temp-file cleanup.
+    """
+    cleanup_paths: List[str] = []
+
+    if system_prompt and get_provider().supports_system_prompt_file():
+        path = _write_system_prompt_file(system_prompt)
+        cleanup_paths.append(path)
+        cmd = build_full_command(
+            prompt=prompt,
+            allowed_tools=allowed_tools,
+            disallowed_tools=disallowed_tools,
+            model=model,
+            fallback=fallback,
+            output_format=output_format,
+            max_turns=max_turns,
+            mcp_configs=mcp_configs,
+            plugin_dirs=plugin_dirs,
+            system_prompt="",
+            system_prompt_file=path,
+            effort=effort,
+        )
+        return cmd, cleanup_paths
+
+    cmd = build_full_command(
+        prompt=prompt,
+        allowed_tools=allowed_tools,
+        disallowed_tools=disallowed_tools,
+        model=model,
+        fallback=fallback,
+        output_format=output_format,
+        max_turns=max_turns,
+        mcp_configs=mcp_configs,
+        plugin_dirs=plugin_dirs,
+        system_prompt=system_prompt,
+        effort=effort,
+    )
+    return cmd, cleanup_paths
+
+
+def cleanup_managed_paths(paths: List[str]) -> None:
+    """Unlink each path in *paths*, ignoring missing files.
+
+    Companion to :func:`build_full_command_managed`. Safe to call from
+    a ``finally`` block; never raises.
+    """
+    for p in paths:
+        try:
+            os.unlink(p)
+        except OSError:
+            pass
 
 
 _MAX_TURNS_RE = re.compile(r"Reached max turns", re.IGNORECASE)

@@ -5879,7 +5879,7 @@ class TestRunIterationPaths:
             ),
             "build_agent_prompt": MagicMock(return_value="test prompt"),
             "create_pending_file": MagicMock(),
-            "build_mission_command": MagicMock(return_value=["echo", "ok"]),
+            "build_mission_command": MagicMock(return_value=(["echo", "ok"], [])),
             "run_post_mission": MagicMock(return_value={}),
             "parse_claude_output": MagicMock(return_value="output text"),
         }

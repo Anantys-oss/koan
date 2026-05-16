@@ -205,7 +205,7 @@ def build_mission_command(
     plugin_dirs: Optional[List[str]] = None,
     system_prompt: str = "",
     tier: Optional[str] = None,
-) -> List[str]:
+) -> Tuple[List[str], List[str]]:
     """Build the CLI command for mission execution (provider-agnostic).
 
     Args:
@@ -215,19 +215,25 @@ def build_mission_command(
         project_name: Optional project name for per-project tool overrides.
         plugin_dirs: Optional list of plugin directory paths to load.
         system_prompt: Optional system prompt for cache-friendly positioning.
+            When the provider supports it, the prompt is written to a 0600
+            temp file and passed via ``--append-system-prompt-file`` so it
+            doesn't leak via ``ps``.
         tier: Optional complexity tier ("trivial"/"simple"/"medium"/"complex")
             from the pre-classifier.  When set, overrides model and max_turns
             per the complexity_routing config (unless REVIEW mode is active).
 
     Returns:
-        Complete command list ready for subprocess.
+        ``(cmd, cleanup_paths)`` — the command list ready for subprocess and
+        a list of temp-file paths the caller MUST unlink after the
+        subprocess exits.  ``cleanup_paths`` is empty when no temp files
+        were created.
     """
     from app.config import get_mission_tools, get_model_config, get_mcp_configs
     try:
         from app.config import get_effort_for_mode
     except ImportError:
         get_effort_for_mode = lambda _mode="": ""  # noqa: E731
-    from app.cli_provider import build_full_command
+    from app.provider import build_full_command_managed
 
     # Get mission tools (comma-separated list)
     # REVIEW mode: enforce read-only at tool level (no Bash/Write/Edit)
@@ -270,8 +276,8 @@ def build_mission_command(
     # Get effort level for the current autonomous mode
     effort = get_effort_for_mode(autonomous_mode)
 
-    # Build provider-specific command
-    cmd = build_full_command(
+    # Build provider-specific command (file-mode system prompt when supported)
+    cmd, cleanup_paths = build_full_command_managed(
         prompt=prompt,
         allowed_tools=tools_list,
         model=model,
@@ -288,7 +294,7 @@ def build_mission_command(
     if extra_flags.strip():
         cmd.extend(extra_flags.strip().split())
 
-    return cmd
+    return cmd, cleanup_paths
 
 
 def get_mission_flags(autonomous_mode: str = "", project_name: str = "") -> str:
@@ -1431,7 +1437,7 @@ def _cli_build_command(args: list) -> None:
     parser.add_argument("--extra-flags", default="")
     parsed = parser.parse_args(args)
 
-    cmd = build_mission_command(
+    cmd, _cleanup_paths = build_mission_command(
         prompt=parsed.prompt,
         autonomous_mode=parsed.autonomous_mode,
         extra_flags=parsed.extra_flags,
@@ -1439,6 +1445,10 @@ def _cli_build_command(args: list) -> None:
     # Output as space-separated for bash consumption
     # (prompt will be handled separately via file)
     print("\n".join(cmd))
+    # NOTE: any temp system-prompt file referenced in cmd is leaked here —
+    # this CLI subcommand is a debug/inspection helper, not the real launch
+    # path. The agent loop uses build_mission_command() directly and cleans
+    # up via cmd_cleanup_paths in run.py / session_manager.py.
 
 
 def _cli_parse_output(args: list) -> None:

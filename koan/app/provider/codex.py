@@ -115,6 +115,7 @@ class CodexProvider(CLIProvider):
         plugin_dirs: Optional[List[str]] = None,
         skip_permissions: bool = False,
         system_prompt: str = "",
+        system_prompt_file: str = "",
         effort: str = "",
     ) -> List[str]:
         """Build a complete Codex CLI command.
@@ -125,8 +126,10 @@ class CodexProvider(CLIProvider):
         Global flags (--model, --yolo, etc.) must come before 'exec'.
         The prompt is a positional argument to exec.
         """
-        # Handle system prompt: Codex has no --append-system-prompt,
-        # so prepend to user prompt (base class fallback behavior).
+        # Handle system prompt: Codex has no --append-system-prompt or
+        # file-mode equivalent, so prepend to user prompt (base class
+        # fallback behavior). system_prompt_file is silently ignored —
+        # supports_system_prompt_file() returns False on this provider.
         if system_prompt:
             prompt = system_prompt + "\n\n" + prompt
 
