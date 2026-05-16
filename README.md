@@ -42,7 +42,7 @@
 
 You pay for AI coding quota. You use it 8 hours a day. The other 16? Wasted quota.
 
-Koan fixes that. It's a background agent that runs on your machine, pulls tasks from a shared mission queue, executes them via your configured CLI provider (Claude Code, Codex, Copilot, or local), and reports back through Telegram or Slack. It writes code in isolated branches, never touches `main`, and waits for your review before anything ships.
+Koan fixes that. It's a background agent that runs on your machine, pulls tasks from a shared mission queue, executes them via your configured CLI provider (Claude Code, Codex, Copilot, or local), and reports back through Telegram, Slack, or Matrix. It writes code in isolated branches, never touches `main`, and waits for your review before anything ships.
 
 **The agent proposes. The human decides.**
 
@@ -98,7 +98,7 @@ But Koan takes a different path entirely.
 | **Getting started** | `npm install -g openclaw` + onboarding wizard | TOML config, pairing codes, allowlists | `make install` — interactive web wizard, ready in minutes |
 | **Safety model** | Pairing codes, sandbox optional — but has shell access, browser control, and can send emails autonomously | Mandatory sandboxing, command allowlists, encrypted keys | Branch isolation, draft PRs only, never touches `main`, human review required |
 | **Memory** | Local Markdown files, session persistence | Hybrid BM25/vector search, multiple backends | Markdown-based — per-project learnings, session journals, personality evolution. No database needed |
-| **Communication** | 21+ channels (WhatsApp, Telegram, Slack, Discord, iMessage, Signal…) | 15+ channels (Telegram, Discord, Slack, iMessage…) | Telegram/Slack with personality-aware formatting, spontaneous messages, and verbose mode |
+| **Communication** | 21+ channels (WhatsApp, Telegram, Slack, Discord, iMessage, Signal…) | 15+ channels (Telegram, Discord, Slack, iMessage…) | Telegram, Slack, or Matrix with personality-aware formatting, spontaneous messages, and verbose mode |
 | **Quota awareness** | No | No | Adapts work depth to remaining API quota (DEEP → IMPLEMENT → REVIEW → WAIT) |
 | **Extensibility** | 100+ AgentSkills, skill marketplace, 50+ integrations | Trait-based plugin system | 44 built-in skills + pluggable skill system (install from Git repos) |
 | **Scope** | Everything — emails, web browsing, car negotiations, legal filings | Everything — any LLM task in any context | One thing, done right — autonomous GitHub collaboration |
@@ -108,7 +108,7 @@ OpenClaw and ZeroClaw are general-purpose autonomous agents that can do *anythin
 ## How It Works
 
 ```
-         You (Telegram/Slack)
+      You (Telegram/Slack/Matrix)
               │
               ▼
     ┌─────────────────┐        ┌──────────────────┐
@@ -168,7 +168,7 @@ Communication happens through shared markdown files in `instance/` — atomic wr
 
 ### Communication
 
-- **Telegram & Slack** — Pluggable messaging with flood protection
+- **Telegram, Slack & Matrix** — Pluggable messaging with flood protection
 - **Email digests** — Optional SMTP email notifications for session summaries (rate-limited, deduplicated)
 - **Personality-aware formatting** — Every outbox message passes through Claude with soul + memory context
 - **Verbose mode** — Real-time progress updates streamed to your phone

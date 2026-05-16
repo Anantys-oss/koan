@@ -360,5 +360,6 @@ Expected behavior. The in-memory processed set is lost on restart, but the persi
 - [GitHub Notification Commands](github-commands.md) — GitHub @mention integration (complementary)
 - [Messaging: Telegram](messaging-telegram.md) — Primary command interface
 - [Messaging: Slack](messaging-slack.md) — Alternative messaging provider
+- [Messaging: Matrix](messaging-matrix.md) — Alternative messaging provider
 - [Skills Reference](skills.md) — Full skill documentation
 - [User Manual](user-manual.md) — Complete usage guide

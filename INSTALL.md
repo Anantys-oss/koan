@@ -87,14 +87,15 @@ The `instance/` directory is your private data — it's gitignored and never pus
 
 ### 2. Set up a messaging platform
 
-Kōan supports **Telegram** (default) and **Slack** for communication. Follow the setup guide for your preferred platform:
+Kōan supports **Telegram** (default), **Slack**, and **Matrix** for communication. Follow the setup guide for your preferred platform:
 
 | Platform | Setup Guide | Best For |
 |----------|-------------|----------|
 | **Telegram** (default) | [docs/messaging-telegram.md](docs/messaging-telegram.md) | Quick setup, works from any network |
 | **Slack** | [docs/messaging-slack.md](docs/messaging-slack.md) | Team collaboration, workspace integration |
+| **Matrix** | [docs/messaging-matrix.md](docs/messaging-matrix.md) | Self-hosted / federated, open protocol |
 
-Both platforms are fully supported with the same feature set. Telegram is recommended for personal use (simpler setup), while Slack is ideal for team environments.
+All three platforms expose the same feature set. Telegram is the simplest for personal use, Slack is best for team environments, and Matrix is ideal if you want a self-hosted or federated option.
 
 ### 3. Set environment variables
 
@@ -116,6 +117,15 @@ KOAN_MESSAGING_PROVIDER=slack
 KOAN_SLACK_BOT_TOKEN=xoxb-your-bot-token
 KOAN_SLACK_APP_TOKEN=xapp-your-app-token
 KOAN_SLACK_CHANNEL_ID=C01234ABCD
+```
+
+**For Matrix:**
+```bash
+KOAN_MESSAGING_PROVIDER=matrix
+KOAN_MATRIX_HOMESERVER=https://matrix.org
+KOAN_MATRIX_ACCESS_TOKEN=syt_your_token_here
+KOAN_MATRIX_USER_ID=@koan:matrix.org
+KOAN_MATRIX_ROOM_ID=!abcdefghijk:matrix.org
 ```
 
 The `.env` file is gitignored — your secrets stay local. See the provider-specific setup guides above for detailed instructions on obtaining these credentials.

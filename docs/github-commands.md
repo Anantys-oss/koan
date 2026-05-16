@@ -325,5 +325,6 @@ See [Jira Integration](jira-integration.md) for full setup instructions and the 
 - [Skills README](../koan/skills/README.md) — Skill authoring guide with `github_enabled` flag documentation
 - [Messaging: Telegram](messaging-telegram.md) — Alternative command interface via Telegram
 - [Messaging: Slack](messaging-slack.md) — Alternative command interface via Slack
+- [Messaging: Matrix](messaging-matrix.md) — Alternative command interface via Matrix
 - [PR #251](https://github.com/sukria/koan/pull/251) — Original implementation
 - [Issue #243](https://github.com/sukria/koan/issues/243) — Feature request and design plan
