@@ -217,10 +217,9 @@ def stream_with_timeout(
                     completed = True
             watchdog.cancel()
 
-        try:
-            stderr_text = proc.stderr.read() if proc.stderr else ""
-        except (OSError, ValueError):
-            stderr_text = ""
+        with contextlib.suppress(OSError, ValueError):
+            if proc.stderr:
+                stderr_text = proc.stderr.read()
 
         try:
             proc.wait(timeout=drain_timeout)
@@ -229,17 +228,13 @@ def stream_with_timeout(
             # force-kill and report a timeout so callers see the hang.
             timed_out = True
             _kill_process_group()
-            try:
+            with contextlib.suppress(subprocess.TimeoutExpired):
                 proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                pass
     finally:
         for stream in (proc.stdout, proc.stderr):
             if stream is not None:
-                try:
+                with contextlib.suppress(OSError):
                     stream.close()
-                except OSError:
-                    pass
 
     return StreamResult(
         stdout="\n".join(stdout_lines).strip(),
