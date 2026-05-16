@@ -230,17 +230,23 @@ def _write_system_prompt_file(content: str) -> str:
     for unlinking it after the subprocess has finished consuming it. Use
     :func:`build_full_command_managed`, which pairs this with cleanup.
     """
-    fd, path = tempfile.mkstemp(prefix="koan-sysprompt-", suffix=".txt")
+    # NamedTemporaryFile creates with 0600 on POSIX (same as mkstemp).
+    # delete=False so the subprocess can open the path after we close it.
     try:
-        # mkstemp creates the file with mode 0600 on POSIX, but be explicit
-        # to defend against umask anomalies on weird filesystems.
-        os.chmod(path, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            prefix="koan-sysprompt-",
+            suffix=".txt",
+            delete=False,
+            encoding="utf-8",
+        ) as f:
+            path = f.name
             f.write(content)
     except Exception:
+        # If NamedTemporaryFile raised after creating the file, unlink it.
         try:
-            os.unlink(path)
-        except OSError:
+            os.unlink(path)  # type: ignore[possibly-undefined]
+        except (OSError, NameError):
             pass
         raise
     return path
@@ -275,26 +281,7 @@ def build_full_command_managed(
     """
     cleanup_paths: List[str] = []
 
-    if system_prompt and get_provider().supports_system_prompt_file():
-        path = _write_system_prompt_file(system_prompt)
-        cleanup_paths.append(path)
-        cmd = build_full_command(
-            prompt=prompt,
-            allowed_tools=allowed_tools,
-            disallowed_tools=disallowed_tools,
-            model=model,
-            fallback=fallback,
-            output_format=output_format,
-            max_turns=max_turns,
-            mcp_configs=mcp_configs,
-            plugin_dirs=plugin_dirs,
-            system_prompt="",
-            system_prompt_file=path,
-            effort=effort,
-        )
-        return cmd, cleanup_paths
-
-    cmd = build_full_command(
+    kwargs = dict(
         prompt=prompt,
         allowed_tools=allowed_tools,
         disallowed_tools=disallowed_tools,
@@ -304,10 +291,15 @@ def build_full_command_managed(
         max_turns=max_turns,
         mcp_configs=mcp_configs,
         plugin_dirs=plugin_dirs,
-        system_prompt=system_prompt,
         effort=effort,
     )
-    return cmd, cleanup_paths
+    if system_prompt and get_provider().supports_system_prompt_file():
+        path = _write_system_prompt_file(system_prompt)
+        cleanup_paths.append(path)
+        kwargs.update(system_prompt="", system_prompt_file=path)
+    else:
+        kwargs["system_prompt"] = system_prompt
+    return build_full_command(**kwargs), cleanup_paths
 
 
 def cleanup_managed_paths(paths: List[str]) -> None:
