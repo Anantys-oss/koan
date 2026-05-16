@@ -36,7 +36,6 @@ def handle(ctx):
 
     if warnings:
         lines.append("")
-        for w in warnings:
-            lines.append(w)
+        lines.extend(warnings)
 
     return "\n".join(lines)

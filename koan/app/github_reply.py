@@ -127,12 +127,11 @@ def fetch_thread_context(
             )
             files = json.loads(raw) if raw else []
             if isinstance(files, list):
-                lines = []
-                for f in files[:30]:  # Cap at 30 files
-                    lines.append(
-                        f"  {f.get('status', '?')} {f.get('filename', '?')} "
-                        f"(+{f.get('additions', 0)}/-{f.get('deletions', 0)})"
-                    )
+                lines = [
+                    f"  {f.get('status', '?')} {f.get('filename', '?')} "
+                    f"(+{f.get('additions', 0)}/-{f.get('deletions', 0)})"
+                    for f in files[:30]
+                ]
                 context["diff_summary"] = "\n".join(lines)
         except (RuntimeError, json.JSONDecodeError):
             pass
@@ -170,9 +169,7 @@ def build_reply_prompt(
     # Format comments for context
     comments_text = ""
     if comments:
-        comment_lines = []
-        for c in comments:
-            comment_lines.append(f"@{c['author']}: {c['body']}")
+        comment_lines = [f"@{c['author']}: {c['body']}" for c in comments]
         comments_text = "\n\n".join(comment_lines)
 
     return load_prompt(

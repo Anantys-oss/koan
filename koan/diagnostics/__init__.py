@@ -31,10 +31,11 @@ class CheckResult(NamedTuple):
 def discover_checks() -> List[str]:
     """Return sorted list of diagnostic check module names in this package."""
     package_dir = Path(__file__).parent
-    modules = []
-    for info in pkgutil.iter_modules([str(package_dir)]):
-        if not info.ispkg:
-            modules.append(info.name)
+    modules = [
+        info.name
+        for info in pkgutil.iter_modules([str(package_dir)])
+        if not info.ispkg
+    ]
     return sorted(modules)
 
 

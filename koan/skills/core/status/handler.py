@@ -188,12 +188,14 @@ def _handle_status(ctx) -> str:
                     parts.append(f"\n{project}")
                     if in_progress:
                         parts.append(f"  In progress: {len(in_progress)}")
-                        for m in in_progress[:2]:
-                            parts.append(f"    {_format_mission_display(m)}")
+                        parts.extend(
+                            f"    {_format_mission_display(m)}" for m in in_progress[:2]
+                        )
                     if pending:
                         parts.append(f"  Pending: {len(pending)}")
-                        for m in pending[:3]:
-                            parts.append(f"    {_format_mission_display(m)}")
+                        parts.extend(
+                            f"    {_format_mission_display(m)}" for m in pending[:3]
+                        )
 
     # Health section
     parts.extend(_build_health_section(koan_root, instance_dir))
@@ -245,8 +247,7 @@ def _build_health_section(koan_root, instance_dir) -> list:
 
         if health_items:
             lines.append("\nHealth")
-            for item in health_items:
-                lines.append(f"  {item}")
+            lines.extend(f"  {item}" for item in health_items)
     except Exception:
         pass
     return lines

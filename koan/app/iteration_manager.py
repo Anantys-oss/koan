@@ -805,7 +805,7 @@ def _filter_exploration_projects(
     if projects_needing_check:
         # Phase 2: Batch-fetch PR counts for all repos in one GraphQL call
         all_repos = []
-        for _, (_, _, urls) in projects_needing_check.items():
+        for (_, _, urls) in projects_needing_check.values():
             all_repos.extend(urls)
         all_repos = list(dict.fromkeys(all_repos))  # deduplicate, preserve order
 

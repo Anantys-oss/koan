@@ -162,8 +162,7 @@ def generate_report(report_type: str = "morning") -> str:
     # Completed missions
     if completed:
         lines.append("Completed missions:")
-        for m in completed[-5:]:  # Last 5 max
-            lines.append(f"  . {m}")
+        lines.extend(f"  . {m}" for m in completed[-5:])
         lines.append("")
 
     # Pending missions
@@ -185,8 +184,7 @@ def generate_report(report_type: str = "morning") -> str:
 
         if activities:
             lines.append("Activity:")
-            for a in activities[-6:]:  # Last 6 max
-                lines.append(f"  . {a}")
+            lines.extend(f"  . {a}" for a in activities[-6:])
             lines.append("")
     else:
         lines.append("No activity recorded.")
@@ -212,8 +210,7 @@ def generate_report(report_type: str = "morning") -> str:
 
         if in_progress:
             lines.append("In Progress:")
-            for ip in in_progress:
-                lines.append(f"  . {ip}")
+            lines.extend(f"  . {ip}" for ip in in_progress)
             lines.append("")
 
     lines.append("-- Kōan")

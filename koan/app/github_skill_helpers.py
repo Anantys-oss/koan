@@ -158,7 +158,7 @@ def _find_repo_name_matches(repo: str) -> list:
         config = load_projects_config(str(KOAN_ROOT))
         if not config:
             return matches
-        for _name, project in config.get("projects", {}).items():
+        for project in config.get("projects", {}).values():
             if not isinstance(project, dict):
                 continue
             gh_url = project.get("github_url", "")

@@ -688,10 +688,11 @@ def _get_conflicted_files(project_path: str) -> List[str]:
             capture_output=True, text=True, cwd=project_path,
             timeout=30,
         )
-        files = []
-        for line in result.stdout.splitlines():
-            if len(line) >= 4 and line[:2] in _UNMERGED_STATUSES:
-                files.append(line[3:].strip())
+        files = [
+            line[3:].strip()
+            for line in result.stdout.splitlines()
+            if len(line) >= 4 and line[:2] in _UNMERGED_STATUSES
+        ]
         return files
     except Exception as e:
         print(f"[rebase_pr] failed to list conflicted files: {e}", file=sys.stderr)
@@ -1355,8 +1356,7 @@ def _build_rebase_comment(
     change_items = _extract_change_items(actions_log, change_summary)
     if change_items:
         parts.append("### Changes applied\n")
-        for item in change_items:
-            parts.append(f"- {item}")
+        parts.extend(f"- {item}" for item in change_items)
         parts.append("")
 
     # ── 3. Stats ────────────────────────────────────────────────────
@@ -1373,8 +1373,7 @@ def _build_rebase_comment(
     ]
     if meaningful_actions:
         parts.append("<details>\n<summary>Actions performed</summary>\n")
-        for a in meaningful_actions:
-            parts.append(f"- {a}")
+        parts.extend(f"- {a}" for a in meaningful_actions)
         parts.append("\n</details>\n")
 
     # ── 5. CI ───────────────────────────────────────────────────────

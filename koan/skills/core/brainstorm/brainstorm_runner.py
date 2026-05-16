@@ -216,9 +216,10 @@ def _replace_sub_placeholders(created_issues, original_issues, project_path):
     correct original issue body and to build the SUB-N → #number mapping.
     """
     # Build original_pos → real number mapping (preserves original positions)
-    ordinal_to_number = {}
-    for number, _title, _url, original_pos in created_issues:
-        ordinal_to_number[original_pos] = number
+    ordinal_to_number = {
+        original_pos: number
+        for number, _title, _url, original_pos in created_issues
+    }
 
     for number, _title, _url, original_pos in created_issues:
         body = original_issues[original_pos - 1]["body"]
@@ -346,11 +347,11 @@ def _validate_issue_bodies(issues):
         body = issue.get("body", "") or ""
         title = (issue.get("title", "") or "").strip()
         title_preview = title[:40] if title else "?"
-        for header in REQUIRED_ISSUE_SECTIONS:
-            if header not in body:
-                diagnostics.append(
-                    f"Issue {idx} ('{title_preview}'): missing '{header}'"
-                )
+        diagnostics.extend(
+            f"Issue {idx} ('{title_preview}'): missing '{header}'"
+            for header in REQUIRED_ISSUE_SECTIONS
+            if header not in body
+        )
     return diagnostics
 
 

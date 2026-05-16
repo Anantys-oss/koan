@@ -326,12 +326,10 @@ def recover_missions(instance_dir: str, dry_run: bool = False) -> tuple:
 
             if i == pending_start:
                 new_lines.append("")
-                for m in recovered:
-                    new_lines.append(m)
+                new_lines.extend(recovered)
 
             if i == in_progress_start:
-                for m in remaining_in_progress:
-                    new_lines.append(m)
+                new_lines.extend(remaining_in_progress)
                 if not any(m.strip() for m in remaining_in_progress):
                     new_lines.append("")
 
@@ -339,8 +337,7 @@ def recover_missions(instance_dir: str, dry_run: bool = False) -> tuple:
             if failed_bounds and i == failed_bounds[0]:
                 # Re-insert original failed content (minus section boundaries we'll re-emit)
                 orig_failed = lines[failed_bounds[0] + 1 : failed_bounds[1]]
-                for fl in orig_failed:
-                    new_lines.append(fl)
+                new_lines.extend(orig_failed)
                 if escalated:
                     for m in escalated:
                         clean = _strip_recovery_counter(m).rstrip()

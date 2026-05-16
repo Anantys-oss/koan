@@ -113,10 +113,10 @@ class GitSync:
     def _get_target_branches(self) -> List[str]:
         """Return remote target branches that exist in this repo."""
         candidates = ["origin/main", "origin/master", "origin/staging", "origin/develop", "origin/production"]
-        existing = []
-        for ref in candidates:
-            if run_git(self.project_path, "rev-parse", "--verify", ref):
-                existing.append(ref)
+        existing = [
+            ref for ref in candidates
+            if run_git(self.project_path, "rev-parse", "--verify", ref)
+        ]
         return existing or ["origin/main"]
 
     def get_merged_branches(self) -> List[str]:
@@ -400,8 +400,7 @@ class GitSync:
         if unmerged:
             recent_branches, stale_branches = self._split_branches_by_recency(unmerged)
             parts.append(f"\nUnmerged {label} branches ({len(unmerged)}):")
-            for b in recent_branches:
-                parts.append(f"  → {b}")
+            parts.extend(f"  → {b}" for b in recent_branches)
             if stale_branches:
                 parts.append(
                     f"  ... and {len(stale_branches)} older branch(es) "
@@ -410,8 +409,7 @@ class GitSync:
 
         if recent:
             parts.append(f"\nRecent main commits ({len(recent)}):")
-            for c in recent[:10]:
-                parts.append(f"  {c}")
+            parts.extend(f"  {c}" for c in recent[:10])
 
         if not all_merged and not unmerged and not recent:
             parts.append("\nNo notable changes since last sync.")

@@ -231,17 +231,16 @@ def parse_skill_md(path: Path) -> Optional[Skill]:
         return None
 
     # Parse commands
-    commands = []
-    for cmd_data in meta.get("commands", []):
-        if isinstance(cmd_data, dict) and "name" in cmd_data:
-            commands.append(
-                SkillCommand(
-                    name=cmd_data["name"],
-                    description=cmd_data.get("description", ""),
-                    aliases=cmd_data.get("aliases", []),
-                    usage=cmd_data.get("usage", ""),
-                )
-            )
+    commands = [
+        SkillCommand(
+            name=cmd_data["name"],
+            description=cmd_data.get("description", ""),
+            aliases=cmd_data.get("aliases", []),
+            usage=cmd_data.get("usage", ""),
+        )
+        for cmd_data in meta.get("commands", [])
+        if isinstance(cmd_data, dict) and "name" in cmd_data
+    ]
 
     # Resolve handler path (always record declared path; has_handler() checks existence)
     handler_path = None

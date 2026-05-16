@@ -650,7 +650,7 @@ def resolve_project_path(repo_name: str, owner: Optional[str] = None) -> Optiona
             config = load_projects_config(str(KOAN_ROOT))
             if config:
                 candidates = []
-                for pname, project in config.get("projects", {}).items():
+                for project in config.get("projects", {}).values():
                     if not isinstance(project, dict):
                         continue
                     all_urls = []
