@@ -53,7 +53,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r koan/requirements.txt
-          pip install pytest pytest-split pytest-cov
+          pip install pytest pytest-split pytest-cov pytest-xdist
 
       - name: Run tests (${{ matrix.group.name }})
         if: ${{ !inputs.group || matrix.group.name == inputs.group }}
@@ -66,9 +66,11 @@ jobs:
         run: |
           if [ -n "${{ matrix.group.split_group }}" ]; then
             pytest tests/ -m "${{ matrix.group.marker }}" --splits 3 --group ${{ matrix.group.split_group }} -v \
+              -n auto --dist loadfile \
               --cov=app --cov-report=term-missing
           else
             pytest tests/ -m "${{ matrix.group.marker }}" -v \
+              -n auto --dist loadfile \
               --cov=app --cov-report=term-missing
           fi
 

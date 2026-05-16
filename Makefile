@@ -14,6 +14,28 @@ PYTHON_BIN ?= python3
 VENV   ?= .venv
 PYTHON ?= $(VENV)/bin/$(PYTHON_BIN)
 
+# --- pytest-xdist worker count ---
+# Auto-pick the worker count for `make test` based on the environment:
+#   * CI / GitHub Actions  → all available cores (`-n auto`)
+#   * Remote SSH session   → 2 workers (be polite on shared hosts)
+#   * Local terminal       → all available cores (`-n auto`)
+# Override anytime with `make test PYTEST_WORKERS=N` (use 0 to disable xdist).
+ifneq ($(CI),)
+  PYTEST_WORKERS ?= auto
+else ifneq ($(GITHUB_ACTIONS),)
+  PYTEST_WORKERS ?= auto
+else ifneq ($(SSH_CONNECTION)$(SSH_CLIENT)$(SSH_TTY),)
+  PYTEST_WORKERS ?= 2
+else
+  PYTEST_WORKERS ?= auto
+endif
+
+ifeq ($(PYTEST_WORKERS),0)
+  PYTEST_XDIST_ARGS :=
+else
+  PYTEST_XDIST_ARGS := -n $(PYTEST_WORKERS) --dist loadfile
+endif
+
 # --- service manager detection ---
 # Default: foreground processes via pid_manager (no service manager)
 # Set KOAN_SERVICE_MANAGER=systemd or KOAN_SERVICE_MANAGER=launchd in .env to opt in
@@ -54,26 +76,27 @@ lint: setup
 	$(VENV)/bin/ruff check koan/
 
 test: setup
-	$(VENV)/bin/pip install -q pytest pytest-cov 2>/dev/null
-	cd koan && KOAN_ROOT=/tmp/test-koan PYTHONPATH=. ../$(PYTHON) -m pytest tests/ -v --cov=app --cov-report=term-missing --cov-report=html:htmlcov
+	@echo "→ pytest workers: $(PYTEST_WORKERS)"
+	$(VENV)/bin/pip install -q pytest pytest-cov pytest-xdist 2>/dev/null
+	cd koan && KOAN_ROOT=/tmp/test-koan PYTHONPATH=. ../$(PYTHON) -m pytest tests/ -v $(PYTEST_XDIST_ARGS) --cov=app --cov-report=term-missing --cov-report=html:htmlcov
 	@$(MAKE) --no-print-directory test-skills
 
 test-skills: setup
 	@if [ -d instance/skills ] && find -L instance/skills -path '*/tests/test_*.py' -print -quit 2>/dev/null | grep -q .; then \
-		$(VENV)/bin/pip install -q pytest pytest-cov 2>/dev/null; \
+		$(VENV)/bin/pip install -q pytest pytest-cov pytest-xdist 2>/dev/null; \
 		echo "→ running skill-local tests (instance/skills/**/tests)"; \
-		KOAN_REPO=$(PWD) KOAN_ROOT=/tmp/test-koan PYTHONPATH=koan $(PYTHON) -m pytest instance/skills/ -v; \
+		KOAN_REPO=$(PWD) KOAN_ROOT=/tmp/test-koan PYTHONPATH=koan $(PYTHON) -m pytest instance/skills/ -v $(PYTEST_XDIST_ARGS); \
 	else \
 		echo "→ no skill-local tests found under instance/skills/**/tests/ — skipping"; \
 	fi
 
 test-strict: setup
-	@echo "→ running full test suite in strict mode (0 failures required)"
-	$(VENV)/bin/pip install -q pytest pytest-cov 2>/dev/null
-	@cd koan && KOAN_ROOT=/tmp/test-koan PYTHONPATH=. ../$(PYTHON) -m pytest tests/ -q --tb=short \
+	@echo "→ running full test suite in strict mode (0 failures required, workers: $(PYTEST_WORKERS))"
+	$(VENV)/bin/pip install -q pytest pytest-cov pytest-xdist 2>/dev/null
+	@cd koan && KOAN_ROOT=/tmp/test-koan PYTHONPATH=. ../$(PYTHON) -m pytest tests/ -q --tb=short $(PYTEST_XDIST_ARGS) \
 		|| (echo "✗ tests failed — aborting" && exit 1)
 	@if [ -d instance/skills ] && find -L instance/skills -path '*/tests/test_*.py' -print -quit 2>/dev/null | grep -q .; then \
-		KOAN_REPO=$(PWD) KOAN_ROOT=/tmp/test-koan PYTHONPATH=koan $(PYTHON) -m pytest instance/skills/ -q --tb=short \
+		KOAN_REPO=$(PWD) KOAN_ROOT=/tmp/test-koan PYTHONPATH=koan $(PYTHON) -m pytest instance/skills/ -q --tb=short $(PYTEST_XDIST_ARGS) \
 			|| (echo "✗ skill-local tests failed — aborting" && exit 1); \
 	fi
 	@echo "✓ all tests passed"
