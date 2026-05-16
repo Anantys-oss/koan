@@ -37,6 +37,7 @@ class StepResult:
     def __repr__(self) -> str:
         return f"StepResult(committed={self.committed!r}, output={self.output[:60]!r}...)"
 
+from app.cli_exec import popen_cli
 from app.cli_provider import build_full_command, run_command
 from app.config import get_model_config
 from app.git_utils import get_current_branch as _git_utils_get_current_branch
@@ -224,59 +225,149 @@ def strip_cli_noise(text: str) -> str:
 
 
 def run_claude(cmd: list, cwd: str, timeout: int = 600) -> dict:
-    """Run a Claude Code CLI command.
+    """Run a Claude Code CLI command, streaming stdout in real time.
+
+    Output is forwarded line-by-line to ``sys.stdout`` while also being
+    captured. Streaming serves two purposes:
+
+    1. Each emitted line resets the parent process's liveness watchdog
+       in ``run.py`` (default 600s), so long but still-progressing
+       Claude calls no longer get killed for "no output".
+    2. ``/live`` and the bridge see Claude's progress in real time
+       instead of a silent wait.
+
+    The subprocess is started with a new POSIX session
+    (``start_new_session=True``) so that on timeout the entire process
+    group can be killed — preventing grandchildren (e.g. tool-call
+    subprocesses) from holding the stdout pipe open and turning a
+    ``TimeoutExpired`` into an indefinite hang during pipe drain.
 
     Returns:
         Dict with keys: success (bool), output (str), error (str).
     """
-    from app.cli_exec import run_cli_with_retry
+    import os
+    import signal as _signal
+    import threading
 
     from app.security_audit import SUBPROCESS_EXEC, _redact_list, log_event
 
+    proc = None
+    cleanup = lambda: None  # noqa: E731 — placeholder until popen returns
+    timed_out = False
+
     try:
-        result = run_cli_with_retry(
+        proc, cleanup = popen_cli(
             cmd,
-            capture_output=True, text=True,
-            timeout=timeout, cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=cwd,
+            start_new_session=True,
         )
-        if result.returncode != 0:
-            stderr_snippet = result.stderr[-500:] if result.stderr else "no stderr"
-            # When stderr is empty, stdout often contains the actual error
-            # (e.g. "Error: context window exceeded").  Include it so callers
-            # get actionable diagnostics instead of just "no stderr".
-            stdout_text = result.stdout.strip()
-            if not result.stderr and stdout_text:
-                stderr_snippet = f"no stderr | stdout: {stdout_text[-500:]}"
-            log_event(SUBPROCESS_EXEC, details={
-                "cmd": _redact_list(cmd),
-                "cwd": cwd,
-                "exit_code": result.returncode,
-            }, result="failure")
-            return {
-                "success": False,
-                "output": stdout_text,
-                "error": f"Exit code {result.returncode}: {stderr_snippet}",
-            }
+    except Exception as e:
         log_event(SUBPROCESS_EXEC, details={
             "cmd": _redact_list(cmd),
             "cwd": cwd,
-            "exit_code": 0,
-        })
+        }, result="failure")
         return {
-            "success": True,
-            "output": result.stdout.strip(),
-            "error": "",
+            "success": False,
+            "output": "",
+            "error": f"Failed to spawn CLI: {e}",
         }
-    except subprocess.TimeoutExpired:
+
+    def _kill_group() -> None:
+        nonlocal timed_out
+        timed_out = True
+        try:
+            pgid = os.getpgid(proc.pid)
+            os.killpg(pgid, _signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            try:
+                proc.kill()
+            except (OSError, ProcessLookupError):
+                pass
+
+    watchdog = threading.Timer(timeout, _kill_group)
+    watchdog.daemon = True
+    watchdog.start()
+
+    stdout_lines: List[str] = []
+    stderr_text = ""
+    try:
+        try:
+            for line in proc.stdout:
+                stripped = line.rstrip("\n")
+                stdout_lines.append(stripped)
+                # Forward to parent stdout so the run.py liveness
+                # watchdog sees output and /live shows progress.
+                print(stripped, flush=True)
+        finally:
+            watchdog.cancel()
+
+        try:
+            stderr_text = proc.stderr.read() if proc.stderr else ""
+        except (OSError, ValueError):
+            stderr_text = ""
+
+        try:
+            proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            _kill_group()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+    finally:
+        for stream in (proc.stdout, proc.stderr):
+            if stream is not None:
+                try:
+                    stream.close()
+                except OSError:
+                    pass
+        cleanup()
+
+    stdout_text = "\n".join(stdout_lines).strip()
+
+    if timed_out:
         log_event(SUBPROCESS_EXEC, details={
             "cmd": _redact_list(cmd),
             "cwd": cwd,
         }, result="timeout")
         return {
             "success": False,
-            "output": "",
+            "output": stdout_text,
             "error": f"Timeout ({timeout}s)",
         }
+
+    returncode = proc.returncode
+    if returncode != 0:
+        stderr_snippet = stderr_text[-500:] if stderr_text else "no stderr"
+        # When stderr is empty, stdout often contains the actual error
+        # (e.g. "Error: context window exceeded").  Include it so callers
+        # get actionable diagnostics instead of just "no stderr".
+        if not stderr_text and stdout_text:
+            stderr_snippet = f"no stderr | stdout: {stdout_text[-500:]}"
+        log_event(SUBPROCESS_EXEC, details={
+            "cmd": _redact_list(cmd),
+            "cwd": cwd,
+            "exit_code": returncode,
+        }, result="failure")
+        return {
+            "success": False,
+            "output": stdout_text,
+            "error": f"Exit code {returncode}: {stderr_snippet}",
+        }
+
+    log_event(SUBPROCESS_EXEC, details={
+        "cmd": _redact_list(cmd),
+        "cwd": cwd,
+        "exit_code": 0,
+    })
+    return {
+        "success": True,
+        "output": stdout_text,
+        "error": "",
+    }
 
 
 def commit_if_changes(project_path: str, message: str) -> bool:
