@@ -10,6 +10,7 @@ Usage:
     make onboard
 """
 
+import contextlib
 import json
 import os
 import platform
@@ -468,10 +469,8 @@ def step_messaging(state: OnboardingState) -> OnboardingState:
         # Try to auto-detect chat ID
         print(f"\n  {dim('Send any message to your bot on Telegram, then press Enter.')}")
         if _is_interactive:
-            try:
+            with contextlib.suppress(EOFError, KeyboardInterrupt):
                 input(f"  {dim('Press Enter when ready...')}")
-            except (EOFError, KeyboardInterrupt):
-                pass
 
         chat_id_detected = get_chat_id_from_updates(bot_token)
         if chat_id_detected:

@@ -1,8 +1,10 @@
 """Tests for memory_manager.py — scoped summary, compaction, learnings dedup, journal archival."""
 
-import pytest
+import contextlib
 from datetime import date, timedelta
 from unittest.mock import patch
+
+import pytest
 
 from app.memory_manager import (
     MemoryManager,
@@ -1263,10 +1265,8 @@ class TestCLIMainBlock:
         out = StringIO()
         with patch.object(sys, "argv", ["memory_manager", str(tmp_path), "scoped-summary", "koan"]):
             with patch("sys.stdout", out):
-                try:
+                with contextlib.suppress(SystemExit):
                     run_module("app.memory_manager", run_name="__main__")
-                except SystemExit:
-                    pass
         assert "koan work" in out.getvalue()
         assert "other work" not in out.getvalue()
 
@@ -1298,10 +1298,8 @@ class TestCLIMainBlock:
         out = StringIO()
         with patch.object(sys, "argv", ["memory_manager", str(tmp_path), "compact", "5"]):
             with patch("sys.stdout", out):
-                try:
+                with contextlib.suppress(SystemExit):
                     run_module("app.memory_manager", run_name="__main__")
-                except SystemExit:
-                    pass
         assert "Compacted: 6 sessions removed" in out.getvalue()
 
     def test_compact_default_max(self, tmp_path):
@@ -1318,10 +1316,8 @@ class TestCLIMainBlock:
         out = StringIO()
         with patch.object(sys, "argv", ["memory_manager", str(tmp_path), "compact"]):
             with patch("sys.stdout", out):
-                try:
+                with contextlib.suppress(SystemExit):
                     run_module("app.memory_manager", run_name="__main__")
-                except SystemExit:
-                    pass
         assert "Compacted: 0 sessions removed" in out.getvalue()
 
     def test_cleanup_learnings_command(self, tmp_path):
@@ -1338,10 +1334,8 @@ class TestCLIMainBlock:
         out = StringIO()
         with patch.object(sys, "argv", ["memory_manager", str(tmp_path), "cleanup-learnings", "koan"]):
             with patch("sys.stdout", out):
-                try:
+                with contextlib.suppress(SystemExit):
                     run_module("app.memory_manager", run_name="__main__")
-                except SystemExit:
-                    pass
         assert "Deduped: 1 lines removed" in out.getvalue()
 
     def test_cleanup_learnings_no_project_exits_1(self, tmp_path):
@@ -1371,10 +1365,8 @@ class TestCLIMainBlock:
         out = StringIO()
         with patch.object(sys, "argv", ["memory_manager", str(tmp_path), "archive-journals"]):
             with patch("sys.stdout", out):
-                try:
+                with contextlib.suppress(SystemExit):
                     run_module("app.memory_manager", run_name="__main__")
-                except SystemExit:
-                    pass
         output = out.getvalue()
         assert "archived_days" in output
 
@@ -1390,10 +1382,8 @@ class TestCLIMainBlock:
         out = StringIO()
         with patch.object(sys, "argv", ["memory_manager", str(tmp_path), "archive-journals", "7"]):
             with patch("sys.stdout", out):
-                try:
+                with contextlib.suppress(SystemExit):
                     run_module("app.memory_manager", run_name="__main__")
-                except SystemExit:
-                    pass
         output = out.getvalue()
         assert "archived_days" in output
 
@@ -1411,10 +1401,8 @@ class TestCLIMainBlock:
         out = StringIO()
         with patch.object(sys, "argv", ["memory_manager", str(tmp_path), "cleanup"]):
             with patch("sys.stdout", out):
-                try:
+                with contextlib.suppress(SystemExit):
                     run_module("app.memory_manager", run_name="__main__")
-                except SystemExit:
-                    pass
         output = out.getvalue()
         assert "summary_compacted" in output
 
@@ -1435,9 +1423,7 @@ class TestCLIMainBlock:
         out = StringIO()
         with patch.object(sys, "argv", ["memory_manager", str(tmp_path), "cleanup", "5"]):
             with patch("sys.stdout", out):
-                try:
+                with contextlib.suppress(SystemExit):
                     run_module("app.memory_manager", run_name="__main__")
-                except SystemExit:
-                    pass
         output = out.getvalue()
         assert "summary_compacted" in output

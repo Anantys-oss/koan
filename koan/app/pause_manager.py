@@ -17,6 +17,7 @@ non-atomic two-step writes.  The single-file design eliminates orphan state
 that could permanently block the agent.
 """
 
+import contextlib
 import json
 import os
 import re
@@ -171,10 +172,8 @@ def create_pause(
 
 def remove_pause(koan_root: str) -> None:
     """Remove the pause file (single atomic delete)."""
-    try:
+    with contextlib.suppress(FileNotFoundError):
         os.remove(os.path.join(koan_root, PAUSE_FILE))
-    except FileNotFoundError:
-        pass
 
 
 def check_and_resume(koan_root: str) -> Optional[str]:

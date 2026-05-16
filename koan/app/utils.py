@@ -17,6 +17,7 @@ extracted to dedicated modules (config.py, journal.py, conversation_history.py).
 Backward-compatible re-exports are provided below.
 """
 
+import contextlib
 import fcntl
 import os
 import re
@@ -248,10 +249,8 @@ def atomic_write(path: Path, content: str):
             os.fsync(f.fileno())
         os.replace(tmp, str(path))
     except BaseException:
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(tmp)
-        except OSError:
-            pass
         raise
 
 
@@ -383,10 +382,8 @@ def _locked_missions_rw(missions_path: Path, transform):
                         os.fsync(f.fileno())
                     os.replace(tmp, str(missions_path))
                 except BaseException:
-                    try:
+                    with contextlib.suppress(OSError):
                         os.unlink(tmp)
-                    except OSError:
-                        pass
                     raise
             finally:
                 fcntl.flock(lock_f, fcntl.LOCK_UN)

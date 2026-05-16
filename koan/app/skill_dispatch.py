@@ -20,6 +20,7 @@ Scoped skills:
     /namespace.skill <args>             -> resolved via skill registry
 """
 
+import contextlib
 import re
 import sys
 import threading
@@ -45,16 +46,12 @@ def _get_skills_dir_mtime(instance_dir: Path) -> float:
     """Get the max mtime of core and instance skills directories."""
     best = 0.0
     core_dir = Path(__file__).resolve().parent.parent / "skills" / "core"
-    try:
+    with contextlib.suppress(OSError):
         best = max(best, core_dir.stat().st_mtime)
-    except OSError:
-        pass
     instance_skills = instance_dir / "skills"
     if instance_skills.is_dir():
-        try:
+        with contextlib.suppress(OSError):
             best = max(best, instance_skills.stat().st_mtime)
-        except OSError:
-            pass
     return best
 
 
@@ -738,10 +735,8 @@ def cleanup_skill_temp_files(skill_cmd: List[str]) -> None:
         if prefix and i + 1 < len(skill_cmd):
             path = skill_cmd[i + 1]
             if prefix in path:
-                try:
+                with contextlib.suppress(OSError):
                     os.unlink(path)
-                except OSError:
-                    pass
 
 
 def validate_skill_args(command: str, args: str) -> Optional[str]:

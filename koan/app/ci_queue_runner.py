@@ -17,6 +17,7 @@ Two roles:
 All status/debug output goes to stderr; stdout is reserved for JSON.
 """
 
+import contextlib
 import json
 import sys
 from pathlib import Path
@@ -187,10 +188,8 @@ def _maybe_migrate_json_queue(instance_dir: str, missions_path: Path):
         entries = []
 
     if not entries:
-        try:
+        with contextlib.suppress(OSError):
             os.remove(json_path)
-        except OSError:
-            pass
         return
 
     from app.missions import add_ci_item

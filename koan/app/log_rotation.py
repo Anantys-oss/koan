@@ -9,6 +9,7 @@ Default: 3 backups, 50MB max per backup, gzip compression for .log.2+.
 Configurable via instance/config.yaml under `logs:` key.
 """
 
+import contextlib
 import fcntl
 import gzip
 import os
@@ -112,14 +113,11 @@ def rotate_log(log_path: Path, max_backups: int = DEFAULT_MAX_BACKUPS,
                     _compress_file(plain)
     finally:
         if lock_fh:
-            try:
-                lock_fh.close()  # close() releases the flock
-            except (OSError, ValueError):
-                pass
-            try:
+            # close() releases the flock
+            with contextlib.suppress(OSError, ValueError):
+                lock_fh.close()
+            with contextlib.suppress(OSError):
                 lock_path.unlink(missing_ok=True)
-            except OSError:
-                pass
 
 
 def _backup_path(log_path: Path, index: int) -> Path:
@@ -134,10 +132,8 @@ def _backup_path(log_path: Path, index: int) -> Path:
 
 def _remove_backup(path: Path) -> None:
     """Remove a backup file (plain or compressed)."""
-    try:
+    with contextlib.suppress(OSError):
         path.unlink(missing_ok=True)
-    except OSError:
-        pass
     
     # Also remove the other form (plain vs compressed)
     try:
@@ -204,10 +200,8 @@ def _compress_file(path: Path) -> None:
     except (OSError, IOError):
         # Compression failed — keep uncompressed file, clean up partial gz
         if temp_gz and temp_gz.exists():
-            try:
+            with contextlib.suppress(OSError):
                 temp_gz.unlink()
-            except OSError:
-                pass
         
         # Also clean up any partial gz file at final location
         try:
@@ -224,10 +218,8 @@ def cleanup_old_backups(log_dir: Path, process_name: str,
     for i in range(max_backups + 1, max_backups + 10):
         path = _backup_path(base, i)
         if path.exists():
-            try:
-                # Also remove compressed form
+            # Also remove compressed form
+            with contextlib.suppress(OSError):
                 _remove_backup(path)
-            except OSError:
-                pass
         else:
             break

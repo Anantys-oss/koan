@@ -19,6 +19,7 @@ Features:
 - Colored log output with TTY detection
 """
 
+import contextlib
 import os
 import signal
 import subprocess
@@ -2841,10 +2842,8 @@ def _run_skill_mission(
         skill_stderr = ""
     finally:
         if proc is not None and proc.stdout is not None:
-            try:
+            with contextlib.suppress(OSError):
                 proc.stdout.close()
-            except OSError:
-                pass
         if stderr_fh is not None:
             stderr_fh.close()
         _sig.claude_proc = None
@@ -2902,10 +2901,8 @@ def _run_skill_mission(
 def _cleanup_temp(*files):
     """Remove temporary files."""
     for f in files:
-        try:
+        with contextlib.suppress(OSError):
             Path(f).unlink(missing_ok=True)
-        except OSError:
-            pass
 
 
 # ---------------------------------------------------------------------------

@@ -13,6 +13,7 @@ Pipeline:
 6. Comment on the original PR with cross-link
 """
 
+import contextlib
 import re
 import sys
 from pathlib import Path
@@ -125,11 +126,10 @@ def run_recreate(
     # Create a fresh working branch from the upstream target
     work_branch = branch  # We'll try to reuse the original branch name
     try:
-        # Delete local branch if it exists (we're recreating from scratch)
-        try:
+        # Delete local branch if it exists (we're recreating from scratch).
+        # Branch doesn't exist locally, that's fine.
+        with contextlib.suppress(RuntimeError, OSError):
             _run_git(["git", "branch", "-D", work_branch], cwd=project_path)
-        except (RuntimeError, OSError):
-            pass  # Branch doesn't exist locally, that's fine
 
         _run_git(
             ["git", "checkout", "-b", work_branch, f"{upstream_remote}/{base}"],

@@ -23,6 +23,7 @@ Returns via stdout:
     Missions file is updated in-place if recovery happens.
 """
 
+import contextlib
 import fcntl
 import json
 import re
@@ -395,10 +396,8 @@ def _inject_checkpoint_context(instance_dir: str, mission_texts: list) -> None:
         pending_path = Path(instance_dir) / "journal" / "pending.md"
         try:
             existing = ""
-            try:
+            with contextlib.suppress(FileNotFoundError):
                 existing = pending_path.read_text()
-            except FileNotFoundError:
-                pass
             # Append checkpoint context after existing content
             new_content = ""
             if existing.strip():

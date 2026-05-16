@@ -5,6 +5,7 @@ history stored as JSONL files. Platform-agnostic — works with
 any messaging provider.
 """
 
+import contextlib
 import fcntl
 import json
 from datetime import datetime
@@ -152,10 +153,8 @@ def prune_topics(entries: list, max_entries: int = 20) -> list:
         return entries
 
     # Sort by compacted_at to ensure we keep the most recent
-    try:
+    with contextlib.suppress(TypeError, AttributeError):
         entries.sort(key=lambda e: e.get("compacted_at", ""))
-    except (TypeError, AttributeError):
-        pass
 
     return entries[-max_entries:]
 
@@ -211,10 +210,8 @@ def compact_history(history_file: Path, topics_file: Path, min_messages: int = 2
 
     if not topics_by_date:
         # No extractable topics, just purge atomically
-        try:
+        with contextlib.suppress(OSError):
             _atomic_write(history_file, "")
-        except OSError:
-            pass
         return len(messages)
 
     # Build compaction entry

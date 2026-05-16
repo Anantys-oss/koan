@@ -24,6 +24,7 @@ Commands:
     cleanup                         Run all cleanup tasks
 """
 
+import contextlib
 import hashlib
 import shutil
 import subprocess
@@ -660,10 +661,8 @@ class MemoryManager:
         # Store hash of the NEW content to avoid re-compacting
         new_content = learnings_path.read_text(encoding="utf-8")
         new_hash = hashlib.sha256(new_content.encode("utf-8")).hexdigest()
-        try:
+        with contextlib.suppress(OSError):
             atomic_write(hash_path, new_hash)
-        except OSError:
-            pass
 
         return {"original_lines": original_count, "compacted_lines": compacted_count, "skipped": False, "method": "semantic"}
 

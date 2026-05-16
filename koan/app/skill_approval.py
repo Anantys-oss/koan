@@ -12,6 +12,7 @@ exact on-disk contents to approve a malicious install — a blind injection
 (prompt injection or message-forwarding attack) cannot guess it.
 """
 
+import contextlib
 import hashlib
 import re
 from pathlib import Path
@@ -57,10 +58,8 @@ def mark_pending(skill_dir: Path, fingerprint: str) -> None:
 def clear_pending(skill_dir: Path) -> None:
     """Remove the pending marker. Idempotent."""
     marker = skill_dir / MARKER_NAME
-    try:
+    with contextlib.suppress(FileNotFoundError):
         marker.unlink()
-    except FileNotFoundError:
-        pass
 
 
 def read_pending_fingerprint(skill_dir: Path) -> Optional[str]:

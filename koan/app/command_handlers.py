@@ -7,6 +7,7 @@ This module uses callback injection for handle_chat and _run_in_worker
 to avoid circular imports with awake.py.
 """
 
+import contextlib
 import time
 from typing import Callable, Optional
 
@@ -712,10 +713,8 @@ def _write_skip_start_pause():
     /resume removes the pause but startup re-creates it.
     """
     from app.signals import SKIP_START_PAUSE_FILE
-    try:
+    with contextlib.suppress(OSError):
         (KOAN_ROOT / SKIP_START_PAUSE_FILE).write_text(str(int(time.time())))
-    except OSError:
-        pass
 
 
 def handle_resume():
@@ -794,10 +793,8 @@ def handle_resume():
         reset_info = lines[0] if lines else "unknown time"
         paused_at = 0
         if len(lines) > 1 and lines[1].strip():
-            try:
+            with contextlib.suppress(ValueError):
                 paused_at = int(lines[1].strip())
-            except ValueError:
-                pass
 
         hours_since_pause = (time.time() - paused_at) / 3600
         likely_reset = hours_since_pause >= 2

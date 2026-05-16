@@ -20,6 +20,7 @@ Package structure:
     provider/__init__.py     — Registry, resolution, convenience functions
 """
 
+import contextlib
 import os
 import re
 import subprocess
@@ -244,10 +245,8 @@ def _write_system_prompt_file(content: str) -> str:
             f.write(content)
     except Exception:
         # If NamedTemporaryFile raised after creating the file, unlink it.
-        try:
+        with contextlib.suppress(OSError, NameError):
             os.unlink(path)  # type: ignore[possibly-undefined]
-        except (OSError, NameError):
-            pass
         raise
     return path
 
@@ -309,10 +308,8 @@ def cleanup_managed_paths(paths: List[str]) -> None:
     a ``finally`` block; never raises.
     """
     for p in paths:
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(p)
-        except OSError:
-            pass
 
 
 _MAX_TURNS_RE = re.compile(r"Reached max turns", re.IGNORECASE)
