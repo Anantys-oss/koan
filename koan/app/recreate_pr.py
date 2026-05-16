@@ -70,6 +70,7 @@ def run_recreate(
     actions_log: List[str] = []
 
     # -- Step 0: Resolve actual PR location (cross-owner support) ---------------
+    print(f"[recreate] Resolving PR #{pr_number} location", flush=True)
     try:
         owner, repo = resolve_pr_location(owner, repo, pr_number, project_path)
     except RuntimeError as e:
@@ -78,6 +79,7 @@ def run_recreate(
     full_repo = f"{owner}/{repo}"
 
     # -- Step 1: Fetch PR context ------------------------------------------------
+    print(f"[recreate] Fetching PR #{pr_number} context", flush=True)
     notify_fn(f"Reading PR #{pr_number} to understand original intent...")
     try:
         context = fetch_pr_context(owner, repo, pr_number)
@@ -110,6 +112,7 @@ def run_recreate(
         actions_log.append("Read PR comments and review feedback")
 
     # -- Step 2: Create fresh branch from upstream target -----------------------
+    print(f"[recreate] Creating fresh branch from upstream `{base}`", flush=True)
     notify_fn(f"Creating fresh branch from upstream `{base}`...")
 
     original_branch = _get_current_branch(project_path)
@@ -138,6 +141,7 @@ def run_recreate(
         return False, f"Failed to create fresh branch: {e}"
 
     # -- Step 3: Reimplement the feature via Claude ----------------------------
+    print(f"[recreate] Reimplementing feature via Claude (PR #{pr_number})", flush=True)
     notify_fn(f"Reimplementing feature from PR #{pr_number}...")
 
     reimpl_ok = _reimpl_feature(
@@ -168,6 +172,7 @@ def run_recreate(
         return False, reason
 
     # -- Step 4: Run tests ----------------------------------------------------
+    print("[recreate] Running tests", flush=True)
     notify_fn("Running tests...")
     test_result = run_project_tests(project_path)
     if test_result["passed"]:
@@ -179,6 +184,7 @@ def run_recreate(
     diffstat = _get_diffstat(f"{upstream_remote}/{base}", project_path)
 
     # -- Step 5: Push the result -----------------------------------------------
+    print(f"[recreate] Pushing `{work_branch}`", flush=True)
     notify_fn(f"Pushing `{work_branch}`...")
     push_result = _push_recreated(
         work_branch, base, full_repo, pr_number, context, project_path

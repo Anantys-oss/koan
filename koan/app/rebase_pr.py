@@ -244,6 +244,7 @@ def run_rebase(
     actions_log: List[str] = []
 
     # ── Step 0: Resolve actual PR location (cross-owner support) ──────
+    print(f"[rebase] Resolving PR #{pr_number} location", flush=True)
     try:
         owner, repo = resolve_pr_location(owner, repo, pr_number, project_path)
     except RuntimeError as e:
@@ -252,6 +253,7 @@ def run_rebase(
     full_repo = f"{owner}/{repo}"
 
     # ── Step 1: Fetch PR context ──────────────────────────────────────
+    print(f"[rebase] Fetching PR #{pr_number} context from {owner}/{repo}", flush=True)
     notify_fn(f"Reading PR #{pr_number}...")
     try:
         context = fetch_pr_context(owner, repo, pr_number)
@@ -271,6 +273,7 @@ def run_rebase(
     # ── Already-solved check ──────────────────────────────────────────
     # Ask Claude whether HEAD already addresses the intent of this PR.
     # Must run before checkout to avoid unnecessary git state mutations.
+    print("[rebase] Running already-solved check (Claude)", flush=True)
     already_solved, resolved_by = _check_if_already_solved(
         actions_log=actions_log,
         pr_context=context,
@@ -322,6 +325,7 @@ def run_rebase(
         actions_log.append("Read PR comments and review feedback")
 
     # ── Step 2: Checkout the PR branch ────────────────────────────────
+    print(f"[rebase] Checking out branch `{branch}`", flush=True)
     notify_fn(f"Checking out `{branch}`...")
 
     # Save current branch to restore later
@@ -341,6 +345,7 @@ def run_rebase(
     effective_head_remote = head_remote or fetch_remote
 
     # ── Step 3: Rebase onto target branch ─────────────────────────────
+    print(f"[rebase] Rebasing `{branch}` onto `{base}`", flush=True)
     notify_fn(f"Rebasing `{branch}` onto `{base}`...")
     rebase_remote = _rebase_with_conflict_resolution(
         base, project_path, context, actions_log,
@@ -357,6 +362,7 @@ def run_rebase(
     # ── Step 4: Analyze review comments and apply changes ──────────────
     change_summary = ""
     if _has_review_feedback(context):
+        print(f"[rebase] Applying review feedback (Claude)", flush=True)
         notify_fn(f"Analyzing review comments on `{branch}`...")
         change_summary = _apply_review_feedback(
             context, pr_number, project_path, actions_log,
@@ -375,6 +381,7 @@ def run_rebase(
             _safe_checkout(branch, project_path)
 
     # ── Step 5: Pre-push CI check — fix existing failures ──────────────
+    print("[rebase] Checking pre-push CI status", flush=True)
     _fix_existing_ci_failures(
         branch=branch,
         base=base,
@@ -392,6 +399,7 @@ def run_rebase(
     diffstat = _get_diffstat(f"{rebase_remote}/{base}", project_path)
 
     # ── Step 7: Push the result ───────────────────────────────────────
+    print(f"[rebase] Pushing `{branch}`", flush=True)
     notify_fn(f"Pushing `{branch}`...")
     push_result = _push_with_fallback(
         branch, base, full_repo, pr_number, context, project_path,
@@ -418,6 +426,7 @@ def run_rebase(
     )
 
     # ── Step 9: Comment on the PR ─────────────────────────────────────
+    print(f"[rebase] Commenting on PR #{pr_number}", flush=True)
     comment_body = _build_rebase_comment(
         pr_number, branch, base, actions_log, context,
         diffstat=diffstat,
@@ -731,6 +740,7 @@ def _resolve_rebase_conflicts(
             )
 
         # Build conflict resolution prompt
+        print(f"[rebase] Resolving conflicts via Claude (round {round_num})", flush=True)
         prompt = _build_conflict_resolution_prompt(
             context, conflicted, base, skill_dir=skill_dir,
         )
@@ -895,6 +905,7 @@ def _fix_existing_ci_failures(
             actions_log.append("Pre-push CI check: no CI runs found")
         return False
 
+    print(f"[rebase] CI failed — invoking Claude to fix (run #{run_id})", flush=True)
     notify_fn(f"Previous CI failed — analyzing logs to fix before push...")
     actions_log.append(f"Pre-push CI check: previous run #{run_id} failed")
 

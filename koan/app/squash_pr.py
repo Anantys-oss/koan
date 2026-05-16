@@ -200,6 +200,7 @@ def run_squash(
     actions_log: List[str] = []
 
     # -- Step 0: Resolve actual PR location (cross-owner support) --
+    print(f"[squash] Starting squash for PR #{pr_number}", flush=True)
     try:
         owner, repo = resolve_pr_location(owner, repo, pr_number, project_path)
     except RuntimeError as e:
@@ -291,6 +292,7 @@ def run_squash(
         diff = ""
 
     # -- Step 5: Generate commit message + PR metadata --
+    print("[squash] Generating commit message via Claude", flush=True)
     notify_fn("Generating commit message and PR description...")
     squash_text = _generate_squash_text(
         context, diff, skill_dir=skill_dir,
