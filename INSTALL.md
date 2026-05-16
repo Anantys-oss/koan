@@ -119,7 +119,21 @@ KOAN_SLACK_APP_TOKEN=xapp-your-app-token
 KOAN_SLACK_CHANNEL_ID=C01234ABCD
 ```
 
-**For Matrix:**
+**For Matrix:** Matrix can be configured via `.env` *or* via `instance/config.yaml` (recommended — see [docs/messaging-matrix.md](docs/messaging-matrix.md) for the full guide):
+
+```yaml
+# instance/config.yaml (recommended)
+messaging:
+  provider: "matrix"
+  matrix:
+    homeserver: "https://matrix.org"
+    user_id: "@koan:matrix.org"
+    room_id: "!abcdefghijk:matrix.org"
+    access_token: "syt_your_token_here"
+```
+
+Or the legacy `.env` form (env vars override `config.yaml` when set):
+
 ```bash
 KOAN_MESSAGING_PROVIDER=matrix
 KOAN_MATRIX_HOMESERVER=https://matrix.org

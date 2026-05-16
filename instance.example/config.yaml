@@ -204,8 +204,21 @@ telegram:
 # Controls which messaging platform Kōan uses for communication.
 # If not specified, defaults to "telegram" (backward compatible).
 # Can also be set via KOAN_MESSAGING_PROVIDER env var (overrides this).
+#
+# Recommended: configure here in config.yaml rather than via env vars.
+# Env vars (KOAN_MATRIX_*, KOAN_SLACK_*, KOAN_TELEGRAM_*) are kept as
+# legacy/override fallbacks but the cleaner setup lives here.
+#
+# Telegram and Slack credentials still come from env vars (see env.example).
+# Matrix supports config.yaml directly:
+#
 # messaging:
-#   provider: "telegram"  # "telegram" (default) or "slack"
+#   provider: "telegram"  # "telegram" (default), "slack", or "matrix"
+#   matrix:
+#     homeserver: "https://matrix.org"
+#     user_id: "@koan:matrix.org"
+#     room_id: "!abcdefghijk:matrix.org"
+#     access_token: "syt_your_token_here"
 
 # Usage thresholds
 budget:
