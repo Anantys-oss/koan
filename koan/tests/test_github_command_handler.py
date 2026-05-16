@@ -43,6 +43,20 @@ pytestmark = pytest.mark.slow
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _stub_is_subject_closed():
+    """Treat every notification subject as open by default.
+
+    `_is_subject_closed` hits the real GitHub API, so tests that don't mock
+    it locally are network-flaky (and parallel-unsafe under pytest-xdist).
+    Tests that need a non-None state still override via their own `@patch`.
+    """
+    with patch(
+        "app.github_command_handler._is_subject_closed", return_value=None,
+    ):
+        yield
+
+
 @pytest.fixture
 def mock_skill():
     """A github-enabled skill."""

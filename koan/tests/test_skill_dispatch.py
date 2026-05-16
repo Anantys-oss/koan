@@ -653,10 +653,6 @@ class TestHandlerCleanFormat:
             "app.utils.resolve_project_path",
             lambda repo, owner=None: "/workspace/koan",
         )
-        monkeypatch.setattr(
-            "app.github_url_parser.parse_pr_url",
-            lambda url: ("sukria", "koan", "42"),
-        )
 
         monkeypatch.setattr(
             "app.github_skill_helpers.is_own_pr",
@@ -664,6 +660,16 @@ class TestHandlerCleanFormat:
         )
 
         from skills.core.rebase.handler import handle
+        # Patch parse_pr_url on the handler module's local binding, NOT on the
+        # source module — the handler does `from app.github_url_parser import
+        # parse_pr_url` at module load and caches that reference. Patching the
+        # source module after the handler is imported would have no effect, and
+        # patching it before the handler import would leak a stale binding into
+        # later tests (the cause of #xdist-pollution).
+        monkeypatch.setattr(
+            "skills.core.rebase.handler.parse_pr_url",
+            lambda url: ("sukria", "koan", "42"),
+        )
         ctx = self._make_ctx(
             args="https://github.com/sukria/koan/pull/42",
             instance_dir=tmp_path,
@@ -748,12 +754,14 @@ class TestHandlerCleanFormat:
             "app.utils.resolve_project_path",
             lambda repo, owner=None: "/workspace/koan",
         )
-        monkeypatch.setattr(
-            "app.github_url_parser.parse_pr_url",
-            lambda url: ("sukria", "koan", "42"),
-        )
 
         from skills.core.recreate.handler import handle
+        # Patch parse_pr_url on the handler module's local binding (see
+        # comment on test_rebase_handler_clean_format above for why).
+        monkeypatch.setattr(
+            "skills.core.recreate.handler.parse_pr_url",
+            lambda url: ("sukria", "koan", "42"),
+        )
         ctx = self._make_ctx(
             args="https://github.com/sukria/koan/pull/42",
             instance_dir=tmp_path,

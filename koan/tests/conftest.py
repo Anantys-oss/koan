@@ -1,9 +1,26 @@
 """Shared fixtures for koan tests."""
 
 import os
+import tempfile
 from pathlib import Path
 
 import pytest
+
+
+# --- per-worker KOAN_ROOT isolation (must run before any app.* import) ---
+# Many app modules (utils.py, awake.py, …) snapshot the KOAN_ROOT env var at
+# import time. When pytest-xdist spins up multiple workers in the same process
+# group, they all inherit the same KOAN_ROOT and start racing on shared files
+# under that directory (missions.md, .koan-* state, journal/, …).
+#
+# Give each xdist worker its own KOAN_ROOT before any koan module is imported.
+# Tests that override KOAN_ROOT via monkeypatch or tmp_path remain unaffected;
+# tests that rely on the ambient KOAN_ROOT now see a worker-private directory.
+_xdist_worker = os.environ.get("PYTEST_XDIST_WORKER")
+if _xdist_worker and _xdist_worker != "master":
+    _per_worker_root = Path(tempfile.gettempdir()) / f"test-koan-{_xdist_worker}"
+    (_per_worker_root / "instance").mkdir(parents=True, exist_ok=True)
+    os.environ["KOAN_ROOT"] = str(_per_worker_root)
 
 
 @pytest.fixture(autouse=True)
