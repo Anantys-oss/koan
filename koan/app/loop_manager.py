@@ -718,14 +718,8 @@ def process_github_notifications(
         projects_config = load_projects_config(koan_root)
 
         # Fetch and process notifications
-        from app.github_notifications import fetch_unread_notifications, mark_notification_read, reset_sso_failure_count
+        from app.github_notifications import fetch_unread_notifications, reset_sso_failure_count
         reset_sso_failure_count()
-        from app.github_command_handler import (
-            process_single_notification,
-            post_error_reply,
-            resolve_project_from_notification,
-            extract_issue_number_from_notification,
-        )
 
         # Pass ``since`` so we also get notifications that were auto-read
         # by the GitHub web UI before we could poll them (race condition
@@ -774,39 +768,17 @@ def process_github_notifications(
                 cached_count, len(uncached),
             )
 
-        missions_created = 0
-        for notif in uncached:
-            _log_notification(notif)
-            success, error = process_single_notification(
-                notif, registry, config, projects_config,
-                github_config.get("bot_username", ""),
-                github_config.get("max_age", 24),
-            )
+        from app.github_config import get_github_parallel_workers
+        workers = get_github_parallel_workers(config)
 
-            # Cache immediately after processing: prevents re-processing on
-            # next cycle. Must happen before the error reply attempt so that
-            # a reply failure doesn't cause the whole notification to be
-            # re-processed (which could create duplicate missions).
-            _cache_notif(notif)
-
-            # Mark as read so subsequent checks (including after restart)
-            # skip this notification. The all=true fetch still returns read
-            # notifications, but they'll be filtered by the persistent
-            # tracker or reaction-based dedup much faster.
-            thread_id = str(notif.get("id", ""))
-            if thread_id:
-                mark_notification_read(thread_id)
-
-            if success:
-                missions_created += 1
-                repo = notif.get("repository", {}).get("full_name", "?")
-                title = notif.get("subject", {}).get("title", "?")
-                _github_log(f"Mission queued from @mention on {repo}: {title}")
-                _notify_mission_from_mention(notif)
-            elif error:
-                repo = notif.get("repository", {}).get("full_name", "?")
-                _github_log(f"Notification error for {repo}: {error[:100]}", "warning")
-                _post_error_for_notification(notif, error)
+        missions_created = _process_notifications_concurrent(
+            uncached,
+            registry,
+            config,
+            projects_config,
+            github_config,
+            workers=workers,
+        )
 
         # Drain non-actionable notifications (ci_activity, state_change,
         # etc.) to prevent accumulation that blocks future @mention detection.
@@ -837,6 +809,107 @@ def process_github_notifications(
     except (ImportError, OSError, ValueError, RuntimeError, subprocess.SubprocessError) as e:
         log.warning("GitHub notification check failed: %s", e)
         return 0
+
+
+def _process_one_notification(
+    notif: dict,
+    registry,
+    config: dict,
+    projects_config,
+    github_config: dict,
+) -> bool:
+    """Process a single notification and return whether a mission was created.
+
+    Runs the full process_single_notification flow, caches the notification,
+    marks it as read, and emits side-effect logs / Telegram notifications.
+    Designed to be safe to run concurrently from a thread pool: all shared
+    state is mutated through thread-safe APIs (lock-guarded caches, atomic
+    file writes for missions).
+    """
+    from app.github_command_handler import process_single_notification
+    from app.github_notifications import mark_notification_read
+
+    try:
+        _log_notification(notif)
+        success, error = process_single_notification(
+            notif, registry, config, projects_config,
+            github_config.get("bot_username", ""),
+            github_config.get("max_age", 24),
+        )
+
+        # Cache immediately after processing: prevents re-processing on
+        # next cycle. Must happen before the error reply attempt so that
+        # a reply failure doesn't cause the whole notification to be
+        # re-processed (which could create duplicate missions).
+        _cache_notif(notif)
+
+        # Mark as read so subsequent checks (including after restart)
+        # skip this notification. The all=true fetch still returns read
+        # notifications, but they'll be filtered by the persistent
+        # tracker or reaction-based dedup much faster.
+        thread_id = str(notif.get("id", ""))
+        if thread_id:
+            mark_notification_read(thread_id)
+
+        if success:
+            repo = notif.get("repository", {}).get("full_name", "?")
+            title = notif.get("subject", {}).get("title", "?")
+            _github_log(f"Mission queued from @mention on {repo}: {title}")
+            _notify_mission_from_mention(notif)
+            return True
+        if error:
+            repo = notif.get("repository", {}).get("full_name", "?")
+            _github_log(f"Notification error for {repo}: {error[:100]}", "warning")
+            _post_error_for_notification(notif, error)
+        return False
+    except Exception as e:
+        # A crash in one worker must not block the others. Log and move on.
+        repo = notif.get("repository", {}).get("full_name", "?")
+        log.warning("GitHub: notification worker for %s failed: %s", repo, e)
+        return False
+
+
+def _process_notifications_concurrent(
+    notifications: list,
+    registry,
+    config: dict,
+    projects_config,
+    github_config: dict,
+    *,
+    workers: int,
+) -> int:
+    """Run _process_one_notification across a thread pool.
+
+    Returns the number of missions successfully created. Falls back to
+    serial processing when workers <= 1 (avoids the ThreadPoolExecutor
+    overhead for the common single-notification case).
+    """
+    if not notifications:
+        return 0
+
+    effective_workers = min(max(1, workers), len(notifications))
+
+    if effective_workers == 1:
+        return sum(
+            1 for n in notifications
+            if _process_one_notification(
+                n, registry, config, projects_config, github_config,
+            )
+        )
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(
+        max_workers=effective_workers,
+        thread_name_prefix="gh-notif",
+    ) as pool:
+        results = list(pool.map(
+            lambda n: _process_one_notification(
+                n, registry, config, projects_config, github_config,
+            ),
+            notifications,
+        ))
+    return sum(1 for r in results if r)
 
 
 # Maximum non-actionable notifications to drain per check cycle.

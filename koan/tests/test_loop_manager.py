@@ -2648,3 +2648,133 @@ class TestDrainCiQueueDuringSleep:
         with patch("app.ci_queue_runner.drain_one", return_value=None):
             # Should not raise
             lm._drain_ci_queue_during_sleep(str(tmp_path), 0)
+
+
+# ---------------------------------------------------------------------------
+# Concurrent notification processing
+# ---------------------------------------------------------------------------
+
+class TestConcurrentNotificationProcessing:
+    """Verify _process_notifications_concurrent parallelizes work and stays correct."""
+
+    def setup_method(self):
+        from app.loop_manager import reset_github_backoff
+        reset_github_backoff()
+
+    def test_returns_zero_for_empty_input(self):
+        from app.loop_manager import _process_notifications_concurrent
+
+        assert _process_notifications_concurrent(
+            [], MagicMock(), {}, {}, {}, workers=4,
+        ) == 0
+
+    def test_serial_path_when_workers_is_one(self):
+        """workers=1 must not spin up a thread pool but still produce correct counts."""
+        import threading
+        from app.loop_manager import _process_notifications_concurrent
+
+        notifs = [{"id": str(i), "subject": {}, "repository": {}} for i in range(3)]
+        seen_threads = set()
+
+        def fake_process(notif, *_, **__):
+            seen_threads.add(threading.get_ident())
+            return True
+
+        with patch("app.loop_manager._process_one_notification", side_effect=fake_process):
+            count = _process_notifications_concurrent(
+                notifs, MagicMock(), {}, {}, {}, workers=1,
+            )
+
+        assert count == 3
+        # Serial path runs on the caller's thread only.
+        assert seen_threads == {threading.get_ident()}
+
+    def test_parallel_path_uses_multiple_threads(self):
+        """workers>1 must dispatch onto distinct threads (verifies real concurrency)."""
+        import threading
+        import time as _time
+        from app.loop_manager import _process_notifications_concurrent
+
+        notifs = [{"id": str(i), "subject": {}, "repository": {}} for i in range(4)]
+        seen_threads = set()
+        barrier = threading.Barrier(4, timeout=5)
+
+        def fake_process(notif, *_, **__):
+            # Wait for all workers to reach this point. If the loop is serial,
+            # the barrier will time out and raise BrokenBarrierError.
+            barrier.wait()
+            seen_threads.add(threading.get_ident())
+            return True
+
+        with patch("app.loop_manager._process_one_notification", side_effect=fake_process):
+            count = _process_notifications_concurrent(
+                notifs, MagicMock(), {}, {}, {}, workers=4,
+            )
+
+        assert count == 4
+        # All 4 notifications ran on distinct worker threads.
+        assert len(seen_threads) == 4
+
+    def test_only_successes_counted(self):
+        from app.loop_manager import _process_notifications_concurrent
+
+        notifs = [{"id": str(i)} for i in range(5)]
+        outcomes = iter([True, False, True, False, True])
+
+        def fake_process(notif, *_, **__):
+            return next(outcomes)
+
+        with patch("app.loop_manager._process_one_notification", side_effect=fake_process):
+            assert _process_notifications_concurrent(
+                notifs, MagicMock(), {}, {}, {}, workers=3,
+            ) == 3
+
+    def test_worker_exception_does_not_cascade(self):
+        """A crash in one notification's worker must not lose the others."""
+        from app.loop_manager import _process_one_notification
+
+        good_notif = {"id": "1", "subject": {"url": ""}}
+        bad_notif = {"id": "2", "subject": {"url": ""}}
+        results = []
+
+        def fake_inner(notif, *_, **__):
+            if notif["id"] == "2":
+                raise RuntimeError("boom")
+            return True, None
+
+        with patch("app.github_command_handler.process_single_notification", side_effect=fake_inner), \
+             patch("app.github_notifications.mark_notification_read"), \
+             patch("app.loop_manager._notify_mission_from_mention"):
+            for notif in (good_notif, bad_notif):
+                results.append(_process_one_notification(
+                    notif, MagicMock(), {}, {}, {"bot_username": "bot", "max_age": 24},
+                ))
+
+        # First notif succeeded; second crashed but returned False instead of raising.
+        assert results == [True, False]
+
+
+class TestGithubParallelWorkersConfig:
+    """get_github_parallel_workers config helper."""
+
+    def test_default_is_four(self):
+        from app.github_config import get_github_parallel_workers
+        assert get_github_parallel_workers({}) == 4
+
+    def test_reads_from_config(self):
+        from app.github_config import get_github_parallel_workers
+        assert get_github_parallel_workers({"github": {"parallel_workers": 8}}) == 8
+
+    def test_floor_one(self):
+        from app.github_config import get_github_parallel_workers
+        assert get_github_parallel_workers({"github": {"parallel_workers": 0}}) == 1
+        assert get_github_parallel_workers({"github": {"parallel_workers": -3}}) == 1
+
+    def test_ceiling_sixteen(self):
+        from app.github_config import get_github_parallel_workers
+        assert get_github_parallel_workers({"github": {"parallel_workers": 999}}) == 16
+
+    def test_invalid_falls_back_to_default(self):
+        from app.github_config import get_github_parallel_workers
+        assert get_github_parallel_workers({"github": {"parallel_workers": "x"}}) == 4
+        assert get_github_parallel_workers({"github": None}) == 4
