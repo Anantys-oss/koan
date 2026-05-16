@@ -307,12 +307,9 @@ def _compute_review_hash(prs: List[dict]) -> str:
     parts = []
     for pr in sorted(prs, key=lambda p: p.get("number", 0)):
         parts.append(str(pr.get("number", "")))
-        for review in pr.get("reviews", []):
-            parts.append(review.get("body") or "")
-        for comment in pr.get("review_comments", []):
-            parts.append(comment.get("body") or "")
-        for comment in pr.get("issue_comments", []):
-            parts.append(comment.get("body") or "")
+        parts.extend(review.get("body") or "" for review in pr.get("reviews", []))
+        parts.extend(comment.get("body") or "" for comment in pr.get("review_comments", []))
+        parts.extend(comment.get("body") or "" for comment in pr.get("issue_comments", []))
     content = "|".join(parts)
     return hashlib.sha256(content.encode()).hexdigest()
 

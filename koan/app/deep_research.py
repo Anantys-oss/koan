@@ -242,8 +242,10 @@ class DeepResearch:
             if journal_file.exists():
                 content = journal_file.read_text()
                 # Extract session headers (## Session N, ## Run N, etc.)
-                for match in re.finditer(r"^##\s*(.+?)$", content, re.MULTILINE):
-                    topics.append(match.group(1).strip())
+                topics.extend(
+                    match.group(1).strip()
+                    for match in re.finditer(r"^##\s*(.+?)$", content, re.MULTILINE)
+                )
 
         return topics
 
@@ -303,13 +305,15 @@ class DeepResearch:
         recent_topics = self.get_recent_journal_topics()
 
         # Priority 1: Current focus items from priorities.md
-        for item in priorities.get("current_focus", []):
-            suggestions.append({
+        suggestions.extend(
+            {
                 "topic": item,
                 "source": "priorities.md (Current Focus)",
                 "reasoning": "Explicitly marked as current priority by human",
                 "priority": 1,
-            })
+            }
+            for item in priorities.get("current_focus", [])
+        )
 
         # Priority 2: Open GitHub issues (if any)
         for issue in issues[:5]:  # Top 5 issues
@@ -348,13 +352,15 @@ class DeepResearch:
             })
 
         # Priority 3: Strategic goals (bigger picture)
-        for item in priorities.get("strategic_goals", []):
-            suggestions.append({
+        suggestions.extend(
+            {
                 "topic": item,
                 "source": "priorities.md (Strategic Goals)",
                 "reasoning": "Contributes to larger project direction",
                 "priority": 3,
-            })
+            }
+            for item in priorities.get("strategic_goals", [])
+        )
 
         # Filter out topics already covered by open PRs
         coverage = self._build_pr_coverage()
@@ -472,8 +478,7 @@ class DeepResearch:
         if do_not_touch:
             lines.append("### Avoid These Areas")
             lines.append("")
-            for item in do_not_touch:
-                lines.append(f"- {item}")
+            lines.extend(f"- {item}" for item in do_not_touch)
             lines.append("")
 
         lines.append("---")

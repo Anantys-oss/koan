@@ -244,15 +244,13 @@ def format_recovery_context(checkpoint: Dict) -> str:
     if steps_done:
         lines.append("")
         lines.append("### Steps already completed:")
-        for step in steps_done:
-            lines.append(f"- {step}")
+        lines.extend(f"- {step}" for step in steps_done)
 
     steps_remaining = checkpoint.get("steps_remaining", [])
     if steps_remaining:
         lines.append("")
         lines.append("### Steps remaining:")
-        for step in steps_remaining:
-            lines.append(f"- {step}")
+        lines.extend(f"- {step}" for step in steps_remaining)
 
     lines.append("")
     lines.append(

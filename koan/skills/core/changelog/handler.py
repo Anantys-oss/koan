@@ -279,8 +279,7 @@ def _format_markdown(
     if journal_entries:
         lines.append("### Context (from journal)")
         lines.append("")
-        for entry in journal_entries[:10]:
-            lines.append(f"- {_truncate(entry, 120)}")
+        lines.extend(f"- {_truncate(entry, 120)}" for entry in journal_entries[:10])
         lines.append("")
 
     total = sum(len(items) for items in sections.values())
@@ -316,7 +315,6 @@ def _format_telegram(
 
     if journal_entries:
         lines.append("Context:")
-        for entry in journal_entries[:5]:
-            lines.append(f"  {_truncate(entry, 80)}")
+        lines.extend(f"  {_truncate(entry, 80)}" for entry in journal_entries[:5])
 
     return "\n".join(lines)

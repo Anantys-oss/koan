@@ -33,7 +33,7 @@ class TestConstants:
         assert set(TOOL_NAME_MAP.keys()) == CLAUDE_TOOLS
 
     def test_tool_name_map_values_are_strings(self):
-        for k, v in TOOL_NAME_MAP.items():
+        for v in TOOL_NAME_MAP.values():
             assert isinstance(v, str)
             assert v  # not empty
 

@@ -548,20 +548,17 @@ def _format_review_as_markdown(review_data: dict, title: str = "") -> str:
         if met:
             lines.append(f"✅ **Met** ({len(met)})")
             lines.append("")
-            for req in met:
-                lines.append(f"- {req}")
+            lines.extend(f"- {req}" for req in met)
             lines.append("")
         if missing:
             lines.append(f"❌ **Missing** ({len(missing)})")
             lines.append("")
-            for req in missing:
-                lines.append(f"- {req}")
+            lines.extend(f"- {req}" for req in missing)
             lines.append("")
         if out_of_scope:
             lines.append(f"📋 **Out of scope** ({len(out_of_scope)})")
             lines.append("")
-            for item in out_of_scope:
-                lines.append(f"- {item}")
+            lines.extend(f"- {item}" for item in out_of_scope)
             lines.append("")
         lines.append("---")
         lines.append("")

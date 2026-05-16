@@ -168,9 +168,7 @@ def _run_issue_plan(
         # Format comments as plain text for the plan prompt
         comments_text = ""
         if jira_comments:
-            parts = []
-            for c in jira_comments:
-                parts.append(f"**{c['author']}**:\n{c['body']}")
+            parts = [f"**{c['author']}**:\n{c['body']}" for c in jira_comments]
             comments_text = "\n\n---\n\n".join(parts)
 
         label = issue_key

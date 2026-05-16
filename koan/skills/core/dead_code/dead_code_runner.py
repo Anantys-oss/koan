@@ -92,8 +92,7 @@ def _prescan_project(project_path: str) -> str:
     source_files.sort()
     if len(source_files) > 200:
         lines.append(f"(showing first 200 of {len(source_files)})")
-    for f in source_files[:200]:
-        lines.append(f"- {f}")
+    lines.extend(f"- {f}" for f in source_files[:200])
 
     return "\n".join(lines)
 

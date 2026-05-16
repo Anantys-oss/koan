@@ -402,7 +402,6 @@ def _format_report(project, findings, file_count):
             continue
         emoji = severity_emoji.get(sev, "")
         lines.append(f"\n{emoji} **{sev}** ({len(items)})")
-        for item in items:
-            lines.append(f"  {item.format()}")
+        lines.extend(f"  {item.format()}" for item in items)
 
     return "\n".join(lines)

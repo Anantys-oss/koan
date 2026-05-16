@@ -137,9 +137,9 @@ def _get_last_journal_activity(instance_dir: str, project_name: str = None) -> f
                         mtimes.append(f.stat().st_mtime)
             # Always include any file if we didn't find the project-specific one
             if not mtimes:
-                for f in today_dir.iterdir():
-                    if f.is_file():
-                        mtimes.append(f.stat().st_mtime)
+                mtimes.extend(
+                    f.stat().st_mtime for f in today_dir.iterdir() if f.is_file()
+                )
         except OSError:
             pass
 

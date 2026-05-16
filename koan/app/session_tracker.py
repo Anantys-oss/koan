@@ -440,9 +440,7 @@ def get_staleness_warning(instance_dir: str, project: str) -> str:
 
     if empty_summaries:
         lines.append("Recent non-productive sessions:")
-        for s in empty_summaries[-3:]:  # Show last 3
-            if s:
-                lines.append(f"  - {s[:100]}")
+        lines.extend(f"  - {s[:100]}" for s in empty_summaries[-3:] if s)
         lines.append("")
 
     return "\n".join(lines)

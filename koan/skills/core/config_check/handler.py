@@ -39,15 +39,13 @@ def handle(ctx):
     if missing:
         lines.append("")
         lines.append(f"▸ Missing from your config ({len(missing)}):")
-        for key in missing:
-            lines.append(f"  ➕ {key}")
+        lines.extend(f"  ➕ {key}" for key in missing)
         lines.append("     ↳ New template keys — see instance.example/config.yaml")
 
     if extra:
         lines.append("")
         lines.append(f"▸ Extra in your config ({len(extra)}):")
-        for key in extra:
-            lines.append(f"  ⚠️ {key}")
+        lines.extend(f"  ⚠️ {key}" for key in extra)
         lines.append("     ↳ May be deprecated or typos")
 
     return "\n".join(lines)

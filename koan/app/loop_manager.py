@@ -509,7 +509,7 @@ def _get_known_repos_from_projects(koan_root: str) -> Optional[set]:
     # 1. projects.yaml — primary source
     projects_config = load_projects_config(koan_root)
     if projects_config:
-        for name, proj in projects_config.get("projects", {}).items():
+        for proj in projects_config.get("projects", {}).values():
             if not isinstance(proj, dict):
                 continue
             gh_url = proj.get("github_url", "")
@@ -525,12 +525,12 @@ def _get_known_repos_from_projects(koan_root: str) -> Optional[set]:
         from app.projects_merged import get_all_github_urls_cache, get_github_url_cache
 
         # Primary URLs (origin remote)
-        for _name, url in get_github_url_cache().items():
+        for url in get_github_url_cache().values():
             if url:
                 known_repos.add(_normalize_github_url(url))
 
         # All remote URLs (origin + upstream + others)
-        for _name, urls in get_all_github_urls_cache().items():
+        for urls in get_all_github_urls_cache().values():
             for url in urls:
                 if url:
                     known_repos.add(_normalize_github_url(url))

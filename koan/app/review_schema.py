@@ -254,9 +254,11 @@ def validate_review(data: object) -> tuple:
         if not isinstance(pa, dict):
             errors.append("'plan_alignment' must be an object")
         else:
-            for key in ("requirements_met", "requirements_missing", "out_of_scope"):
-                if key in pa and not isinstance(pa[key], list):
-                    errors.append(f"plan_alignment.{key}: must be an array")
+            errors.extend(
+                f"plan_alignment.{key}: must be an array"
+                for key in ("requirements_met", "requirements_missing", "out_of_scope")
+                if key in pa and not isinstance(pa[key], list)
+            )
 
     return (len(errors) == 0, errors)
 
