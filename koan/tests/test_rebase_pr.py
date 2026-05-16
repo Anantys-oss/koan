@@ -354,8 +354,8 @@ class TestRebaseOntoTarget:
     def test_falls_back_to_upstream(self):
         def mock_run(cmd, **kwargs):
             result = MagicMock(returncode=0, stdout="", stderr="")
-            if "origin" in cmd and "fetch" in cmd:
-                raise RuntimeError("fetch failed")
+            if "rebase" in cmd and any("origin" in a for a in cmd) and "--abort" not in cmd:
+                raise RuntimeError("rebase failed")
             return result
 
         with patch("app.claude_step.subprocess.run", side_effect=mock_run):
