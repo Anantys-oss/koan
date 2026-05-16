@@ -490,6 +490,41 @@ def get_project_submit_to_repository(config: dict, project_name: str) -> dict:
     return result
 
 
+def get_project_security_config(config: dict, project_name: str) -> dict:
+    """Get security configuration for a project from projects.yaml.
+
+    Returns a dict with keys:
+      - ``pvrs``: ``"auto"`` (default), ``"true"``, or ``"false"``
+      - ``pvrs_threshold``: ``"high"`` (default) — minimum severity routed
+        to PVRS. One of ``"critical"``, ``"high"``, ``"medium"``, ``"low"``.
+
+    Example projects.yaml::
+
+        defaults:
+          security:
+            pvrs: auto
+            pvrs_threshold: high
+        projects:
+          myapp:
+            security:
+              pvrs: false  # force public issues
+    """
+    project_cfg = get_project_config(config, project_name)
+    security = project_cfg.get("security", {})
+    if not isinstance(security, dict):
+        security = {}
+
+    pvrs = str(security.get("pvrs", "auto")).strip().lower()
+    if pvrs not in ("auto", "true", "false"):
+        pvrs = "auto"
+
+    threshold = str(security.get("pvrs_threshold", "high")).strip().lower()
+    if threshold not in ("critical", "high", "medium", "low"):
+        threshold = "high"
+
+    return {"pvrs": pvrs, "pvrs_threshold": threshold}
+
+
 def save_projects_config(koan_root: str, config: dict) -> None:
     """Write config back to projects.yaml atomically, preserving comments.
 

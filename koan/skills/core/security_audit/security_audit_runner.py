@@ -19,6 +19,27 @@ from skills.core.audit.audit_runner import run_audit
 DEFAULT_MAX_ISSUES = 5
 
 
+def _load_pvrs_config(project_name: str) -> dict:
+    """Load PVRS configuration for the project from projects.yaml.
+
+    Returns ``{"pvrs": "auto", "pvrs_threshold": "high"}`` as defaults
+    if config is unavailable.
+    """
+    import os
+    try:
+        koan_root = os.environ.get("KOAN_ROOT", "")
+        if koan_root:
+            from app.projects_config import (
+                get_project_security_config, load_projects_config,
+            )
+            config = load_projects_config(koan_root)
+            if config:
+                return get_project_security_config(config, project_name)
+    except Exception:
+        pass
+    return {"pvrs": "auto", "pvrs_threshold": "high"}
+
+
 def run_security_audit(
     project_path: str,
     project_name: str,
@@ -29,6 +50,10 @@ def run_security_audit(
 ) -> tuple:
     """Execute a security audit by delegating to run_audit with our prompt."""
     skill_dir = Path(__file__).resolve().parent
+
+    # Load PVRS config for this project
+    sec_cfg = _load_pvrs_config(project_name)
+
     return run_audit(
         project_path=project_path,
         project_name=project_name,
@@ -38,6 +63,8 @@ def run_security_audit(
         notify_fn=notify_fn,
         skill_dir=skill_dir,
         report_name="security_audit",
+        pvrs_mode=sec_cfg["pvrs"],
+        pvrs_threshold=sec_cfg["pvrs_threshold"],
     )
 
 

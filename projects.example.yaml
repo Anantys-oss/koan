@@ -117,6 +117,25 @@ defaults:
   # Default: 10
   max_pending_branches: 10
 
+  # Security audit — PVRS (Private Vulnerability Reporting) settings.
+  #
+  # When /security_audit runs, findings at or above the threshold severity
+  # are submitted as private security advisories (PVRS) instead of public
+  # issues, keeping exploit details private until a fix is applied.
+  #
+  # pvrs: auto | true | false
+  #   auto  — detect PVRS at runtime via GitHub API (default)
+  #   true  — always submit high-severity findings via PVRS
+  #   false — always create public issues (opt out of PVRS)
+  #
+  # pvrs_threshold: critical | high | medium | low
+  #   Findings at or above this severity go to PVRS (default: high).
+  #   E.g., "high" routes critical + high to PVRS; medium + low stay public.
+  #
+  # security:
+  #   pvrs: auto
+  #   pvrs_threshold: high
+
 projects:
   # Example: your main project (minimal config — inherits all defaults)
   myapp:
