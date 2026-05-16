@@ -120,7 +120,7 @@ def _collect_failed_missions(koan_root: str) -> list:
             # Strip leading "- " and project tags for display
             display = mission_text.strip().removeprefix("- ")
             import re
-            display = re.sub(r"\[projec?t:[a-zA-Z0-9_-]+\]\s*", "", display).strip()
+            display = re.sub(r"\[projec?t:[a-zA-Z0-9_.-]+\]\s*", "", display).strip()
             items.append({
                 "id": item_id,
                 "severity": "critical",

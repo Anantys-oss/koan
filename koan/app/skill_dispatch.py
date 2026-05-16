@@ -132,8 +132,8 @@ def get_combo_sub_commands(command_name: str) -> list:
     return list(_COMBO_SKILLS.get(command_name, []))
 
 
-_PROJECT_TAG_RE = re.compile(r"^\[projec?t:([a-zA-Z0-9_-]+)\]\s*")
-_PROJECT_WORD_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
+_PROJECT_TAG_RE = re.compile(r"^\[projec?t:([a-zA-Z0-9_.-]+)\]\s*")
+_PROJECT_WORD_RE = re.compile(r"^[a-z][a-z0-9_.-]*$")
 
 # Compiled patterns for URL matching
 _PR_URL_RE = re.compile(PR_URL_PATTERN)

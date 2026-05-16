@@ -91,7 +91,7 @@ app = Flask(
 )
 
 
-_PROJECT_TAG_RE = re.compile(r'\s*\[(?:project|projet):([a-zA-Z0-9_-]+)\]\s*')
+_PROJECT_TAG_RE = re.compile(r'\s*\[(?:project|projet):([a-zA-Z0-9_.-]+)\]\s*')
 
 
 @app.template_filter('strip_project_tag')

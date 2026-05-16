@@ -10,7 +10,7 @@ _GITHUB_ORIGIN_MARKER = "📬"
 
 # Extract slash command from raw mission line (after optional "- " and [project:X]).
 _COMMAND_RE = re.compile(
-    r"^(?:-\s*)?(?:\[projec?t:[a-zA-Z0-9_-]+\]\s*)?/([a-zA-Z0-9_.]+)"
+    r"^(?:-\s*)?(?:\[projec?t:[a-zA-Z0-9_.-]+\]\s*)?/([a-zA-Z0-9_.]+)"
 )
 
 

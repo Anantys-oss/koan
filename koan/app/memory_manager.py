@@ -89,7 +89,7 @@ def _flush_sessions(date_header: str, lines: List[str], sessions: list):
 
 def _extract_project_hint(text: str) -> str:
     """Extract project name from session text like '(projet: koan)' or 'projet:koan'."""
-    m = re.search(r"\(?\s*projec?t\s*:\s*([a-zA-Z0-9_-]+)\s*\)?", text, re.IGNORECASE)
+    m = re.search(r"\(?\s*projec?t\s*:\s*([a-zA-Z0-9_.-]+)\s*\)?", text, re.IGNORECASE)
     if m:
         return m.group(1).lower()
     return ""

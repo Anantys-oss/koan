@@ -72,7 +72,7 @@ def classify_mission(title: str) -> str:
     line = title.split("\n")[0].strip()
     if line.startswith("- "):
         line = line[2:]
-    line = re.sub(r"\[projec?t:[a-zA-Z0-9_-]+\]\s*", "", line)
+    line = re.sub(r"\[projec?t:[a-zA-Z0-9_.-]+\]\s*", "", line)
 
     if not line.strip():
         return "general"
