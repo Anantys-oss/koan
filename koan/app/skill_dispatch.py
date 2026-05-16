@@ -28,7 +28,7 @@ from typing import List, Optional, Tuple
 
 from app.github_url_parser import ISSUE_URL_PATTERN, JIRA_ISSUE_URL_PATTERN, PR_URL_PATTERN
 from app.missions import strip_timestamps
-from app.utils import is_known_project
+from app.utils import PROJECT_TAG_PREFIX_RE, is_known_project
 
 # Module-level registry cache for the run process.
 # bridge_state.py caches via _get_registry(), but translate_cli_skill_mission()
@@ -132,7 +132,9 @@ def get_combo_sub_commands(command_name: str) -> list:
     return list(_COMBO_SKILLS.get(command_name, []))
 
 
-_PROJECT_TAG_RE = re.compile(r"^\[projec?t:([a-zA-Z0-9_.-]+)\]\s*")
+# Raw-word project prefix (e.g. "developers.esphome.io /plan ...").
+# Lowercase-only variant of utils.PROJECT_NAME_CHARS — intentionally narrower
+# than the full set so unrelated tokens don't get mistaken for project ids.
 _PROJECT_WORD_RE = re.compile(r"^[a-z][a-z0-9_.-]*$")
 
 # Compiled patterns for URL matching
@@ -154,7 +156,7 @@ def _strip_project_prefix(text: str) -> Tuple[str, str]:
     stripped = text.strip()
 
     # 1. [project:X] tag prefix
-    tag_match = _PROJECT_TAG_RE.match(stripped)
+    tag_match = PROJECT_TAG_PREFIX_RE.match(stripped)
     if tag_match:
         return tag_match.group(1), stripped[tag_match.end():].strip()
 

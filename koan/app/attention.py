@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Optional
 
 from app.signals import PAUSE_FILE, QUOTA_RESET_FILE
+from app.utils import PROJECT_TAG_STRIP_RE
 
 # Stale PR threshold in seconds (7 days)
 _STALE_PR_SECONDS = 7 * 24 * 3600
@@ -119,8 +120,7 @@ def _collect_failed_missions(koan_root: str) -> list:
             item_id = _make_id("failed-mission", text_hash)
             # Strip leading "- " and project tags for display
             display = mission_text.strip().removeprefix("- ")
-            import re
-            display = re.sub(r"\[projec?t:[a-zA-Z0-9_.-]+\]\s*", "", display).strip()
+            display = PROJECT_TAG_STRIP_RE.sub("", display).strip()
             items.append({
                 "id": item_id,
                 "severity": "critical",

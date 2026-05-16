@@ -3,14 +3,18 @@
 import re
 from datetime import datetime, timedelta
 
+from app.utils import PROJECT_NAME_CHARS
+
 _MISSION_PREFIX = "📋"
 
 # Trailing marker appended by GitHub @mention missions.
 _GITHUB_ORIGIN_MARKER = "📬"
 
 # Extract slash command from raw mission line (after optional "- " and [project:X]).
+# Project character class is sourced from utils.PROJECT_NAME_CHARS so it stays
+# in sync with the precompiled tag regexes there.
 _COMMAND_RE = re.compile(
-    r"^(?:-\s*)?(?:\[projec?t:[a-zA-Z0-9_.-]+\]\s*)?/([a-zA-Z0-9_.]+)"
+    rf"^(?:-\s*)?(?:\[projec?t:[{PROJECT_NAME_CHARS}]+\]\s*)?/([a-zA-Z0-9_.]+)"
 )
 
 

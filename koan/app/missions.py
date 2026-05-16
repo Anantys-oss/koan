@@ -13,6 +13,12 @@ from collections import defaultdict
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
+from app.utils import (
+    PROJECT_SUBHEADER_RE,
+    PROJECT_TAG_RE,
+    PROJECT_TAG_STRIP_RE,
+)
+
 
 # Section name normalization — accepts French and English variants
 _SECTION_MAP = {
@@ -381,9 +387,7 @@ def extract_next_pending(content: str, project_name: str = "") -> str:
 
         # Track ### project:X sub-headers within pending section
         if stripped_lower.startswith("### "):
-            subheader_match = re.search(
-                r"###\s+projec?t\s*:\s*([a-zA-Z0-9_.-]+)", stripped, re.IGNORECASE
-            )
+            subheader_match = PROJECT_SUBHEADER_RE.search(stripped)
             if subheader_match:
                 current_subheader_project = subheader_match.group(1).lower()
             else:
@@ -402,7 +406,7 @@ def extract_next_pending(content: str, project_name: str = "") -> str:
 
         if project_name:
             # 1. Check inline tag first (takes priority)
-            tag_match = re.search(r"\[projec?t:([a-zA-Z0-9_.-]+)\]", line)
+            tag_match = PROJECT_TAG_RE.search(line)
             if tag_match:
                 if tag_match.group(1).lower() != project_name.lower():
                     i += 1
@@ -470,11 +474,11 @@ def extract_project_tag(line: str) -> str:
     2. Sub-header: ### project:name or ### projet:name
     """
     # Inline tag (brackets)
-    match = re.search(r'\[(?:project|projet):([a-zA-Z0-9_.-]+)\]', line)
+    match = PROJECT_TAG_RE.search(line)
     if match:
         return match.group(1)
     # Sub-header format (### project:name)
-    match = re.search(r'###\s+projec?t\s*:\s*([a-zA-Z0-9_.-]+)', line, re.IGNORECASE)
+    match = PROJECT_SUBHEADER_RE.search(line)
     if match:
         return match.group(1)
     return "default"
@@ -1181,10 +1185,10 @@ def clean_mission_display(text: str, max_length: int = 120) -> str:
         text = text[2:]
 
     # Strip project tag but keep project name as prefix
-    tag_match = re.search(r'\[projec?t:([a-zA-Z0-9_.-]+)\]\s*', text)
+    tag_match = PROJECT_TAG_RE.search(text)
     if tag_match:
         project = tag_match.group(1)
-        text = re.sub(r'\[projec?t:[a-zA-Z0-9_.-]+\]\s*', '', text)
+        text = PROJECT_TAG_STRIP_RE.sub('', text)
         text = f"[{project}] {text}"
 
     # Strip trailing GitHub origin marker (displayed by /list as a leading hint)

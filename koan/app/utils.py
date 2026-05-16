@@ -33,10 +33,23 @@ if "KOAN_ROOT" not in os.environ:
     raise SystemExit("KOAN_ROOT environment variable is not set. Run via 'make run' or 'make awake'.")
 KOAN_ROOT = Path(os.environ["KOAN_ROOT"])
 
-# Pre-compiled regex for project tag extraction (accepts both [project:X] and [projet:X])
+# Single source of truth for the project-name character class.
 # Dots are allowed because project names may be domain-like, e.g. developers.esphome.io.
-_PROJECT_TAG_RE = re.compile(r'\[projec?t:([a-zA-Z0-9_.-]+)\]')
-_PROJECT_TAG_STRIP_RE = re.compile(r'\[projec?t:[a-zA-Z0-9_.-]+\]\s*')
+# Extend here (not in scattered call sites) when the allowed character set changes.
+PROJECT_NAME_CHARS = r"a-zA-Z0-9_.-"
+
+# Bracketed inline tag, capturing form: [project:X] / [projet:X]
+PROJECT_TAG_RE = re.compile(rf'\[projec?t:([{PROJECT_NAME_CHARS}]+)\]')
+# Bracketed inline tag, strip form (with trailing whitespace consumed).
+PROJECT_TAG_STRIP_RE = re.compile(rf'\[projec?t:[{PROJECT_NAME_CHARS}]+\]\s*')
+# Anchored prefix form (used to peel a leading tag off a mission line).
+PROJECT_TAG_PREFIX_RE = re.compile(rf'^\[projec?t:([{PROJECT_NAME_CHARS}]+)\]\s*')
+# Full alternation form with surrounding whitespace (dashboard / template-side parity).
+PROJECT_TAG_FULL_RE = re.compile(rf'\s*\[(?:project|projet):([{PROJECT_NAME_CHARS}]+)\]\s*')
+# Markdown sub-header form: "### project:name" / "### projet:name"
+PROJECT_SUBHEADER_RE = re.compile(rf'###\s+projec?t\s*:\s*([{PROJECT_NAME_CHARS}]+)', re.IGNORECASE)
+# Natural-text hint form: "(projet: name)" / "projet:name" (no brackets)
+PROJECT_HINT_RE = re.compile(rf'\(?\s*projec?t\s*:\s*([{PROJECT_NAME_CHARS}]+)\s*\)?', re.IGNORECASE)
 
 _MISSIONS_DEFAULT = "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n"
 _MISSIONS_LOCK = threading.Lock()
@@ -115,10 +128,10 @@ def parse_project(text: str) -> Tuple[Optional[str], str]:
     Returns (project_name, cleaned_text) where cleaned_text has the tag removed.
     Returns (None, text) if no tag found.
     """
-    match = _PROJECT_TAG_RE.search(text)
+    match = PROJECT_TAG_RE.search(text)
     if match:
         project = match.group(1)
-        cleaned = _PROJECT_TAG_STRIP_RE.sub('', text).strip()
+        cleaned = PROJECT_TAG_STRIP_RE.sub('', text).strip()
         return project, cleaned
     return None, text
 

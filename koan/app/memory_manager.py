@@ -25,7 +25,6 @@ Commands:
 """
 
 import hashlib
-import re
 import shutil
 import subprocess
 import sys
@@ -34,7 +33,7 @@ from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from app.utils import atomic_write
+from app.utils import PROJECT_HINT_RE, atomic_write
 
 
 # ---------------------------------------------------------------------------
@@ -89,7 +88,7 @@ def _flush_sessions(date_header: str, lines: List[str], sessions: list):
 
 def _extract_project_hint(text: str) -> str:
     """Extract project name from session text like '(projet: koan)' or 'projet:koan'."""
-    m = re.search(r"\(?\s*projec?t\s*:\s*([a-zA-Z0-9_.-]+)\s*\)?", text, re.IGNORECASE)
+    m = PROJECT_HINT_RE.search(text)
     if m:
         return m.group(1).lower()
     return ""
