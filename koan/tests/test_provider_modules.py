@@ -909,6 +909,84 @@ class TestRunCommandStreaming:
         assert "max turns limit" in capsys.readouterr().err
 
 
+class TestMaxTurnsWarningAttribution:
+    """The warning message must match how max_turns was actually sourced.
+
+    Regression: chat-style callers (ask, github_reply, spec_generator) pass
+    hardcoded max_turns=5 to run_command(), but the warning always told users
+    to bump ``skill_max_turns`` in config — which is set to 200 and has no
+    effect on these callers.
+    """
+
+    def _make_proc(self, stdout_lines, stderr="", returncode=0):
+        proc = MagicMock()
+        stdout = MagicMock()
+        stdout.__iter__ = lambda self: iter(stdout_lines)
+        stdout.close = MagicMock()
+        proc.stdout = stdout
+        proc.stderr = MagicMock()
+        proc.stderr.read.return_value = stderr
+        proc.returncode = returncode
+        proc.wait.return_value = None
+        return proc
+
+    def test_run_command_with_hardcoded_source_omits_config_key(self, capsys):
+        """When max_turns_source=None, warning does not tell user to edit config."""
+        from app.provider import run_command
+        result = MagicMock(
+            returncode=1,
+            stdout="partial result\nError: Reached max turns (5)",
+            stderr="",
+        )
+        with patch("app.config.get_model_config", return_value={"chat": "m", "fallback": "f"}), \
+             patch("app.provider.build_full_command", return_value=["fake"]), \
+             patch("app.cli_exec.run_cli_with_retry", return_value=result), \
+             patch("app.claude_step.strip_cli_noise", side_effect=lambda s: s):
+            run_command("hi", "/tmp", [], max_turns=5, max_turns_source=None)
+        err = capsys.readouterr().err
+        assert "max turns limit (5)" in err
+        assert "skill_max_turns" not in err
+        assert "instance/config.yaml" not in err
+
+    def test_run_command_with_named_source_points_to_correct_key(self, capsys):
+        """When max_turns_source='skill_max_turns', warning mentions that exact key."""
+        from app.provider import run_command
+        result = MagicMock(
+            returncode=1,
+            stdout="partial result\nError: Reached max turns (200)",
+            stderr="",
+        )
+        with patch("app.config.get_model_config", return_value={"chat": "m", "fallback": "f"}), \
+             patch("app.provider.build_full_command", return_value=["fake"]), \
+             patch("app.cli_exec.run_cli_with_retry", return_value=result), \
+             patch("app.claude_step.strip_cli_noise", side_effect=lambda s: s):
+            run_command(
+                "hi", "/tmp", [], max_turns=200,
+                max_turns_source="skill_max_turns",
+            )
+        err = capsys.readouterr().err
+        assert "skill_max_turns" in err
+
+    def test_streaming_with_hardcoded_source_omits_config_key(self, capsys):
+        """run_command_streaming honors max_turns_source=None the same way."""
+        from app.provider import run_command_streaming
+        proc = self._make_proc(
+            ["partial report\n", "Error: Reached max turns (5)\n"],
+            returncode=1,
+        )
+        cleanup = MagicMock()
+        with patch("app.config.get_model_config", return_value={"chat": "m", "fallback": "f"}), \
+             patch("app.provider.build_full_command", return_value=["fake"]), \
+             patch("app.cli_exec.popen_cli", return_value=(proc, cleanup)), \
+             patch("app.claude_step.strip_cli_noise", side_effect=lambda s: s):
+            run_command_streaming(
+                "hi", "/tmp", [], max_turns=5, max_turns_source=None,
+            )
+        err = capsys.readouterr().err
+        assert "max turns limit (5)" in err
+        assert "skill_max_turns" not in err
+
+
 class TestCodexProvider:
     def test_all_build_methods(self):
         from app.provider.codex import CodexProvider

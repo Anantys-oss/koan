@@ -238,6 +238,7 @@ def _generate_reply(
             model_key="chat",
             max_turns=5,
             timeout=300,
+            max_turns_source=None,
         )
     except (RuntimeError, subprocess.TimeoutExpired) as e:
         log.warning("ask: reply generation failed: %s", e)

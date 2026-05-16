@@ -216,6 +216,7 @@ def _review_spec(spec_text, project_path, skill_dir):
             model_key="lightweight",
             max_turns=3,
             timeout=120,
+            max_turns_source=None,
         )
     except Exception as e:
         print(

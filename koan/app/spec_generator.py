@@ -75,6 +75,7 @@ def generate_spec(
             allowed_tools=["Read", "Glob", "Grep"],
             max_turns=5,
             timeout=_get_spec_timeout(),
+            max_turns_source=None,
         )
 
         if not output or not output.strip():
