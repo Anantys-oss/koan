@@ -814,6 +814,26 @@ class TestIsSkillMissionWithPrefix:
         )
         assert is_skill_mission("unknown /plan test") is False
 
+    def test_dotted_project_tag_prefix(self):
+        """Project names containing dots (e.g. developers.esphome.io) must
+        be recognized as a skill mission. Regression: previously dropped to
+        the agent loop with the wrong working directory."""
+        assert is_skill_mission(
+            "[project:developers.esphome.io] /review "
+            "https://github.com/esphome/developers.esphome.io/pull/146",
+        ) is True
+
+    def test_dotted_projet_tag_prefix(self):
+        """French variant also accepts dotted project names."""
+        assert is_skill_mission("[projet:my.site.io] /plan dark mode") is True
+
+    def test_dotted_raw_project_word_prefix(self, monkeypatch):
+        monkeypatch.setattr(
+            "app.utils.get_known_projects",
+            lambda: [("developers.esphome.io", "/ws/developers.esphome.io")],
+        )
+        assert is_skill_mission("developers.esphome.io /plan dark") is True
+
 
 # ---------------------------------------------------------------------------
 # parse_skill_mission — project-id prefix handling
@@ -888,6 +908,36 @@ class TestParseSkillMissionWithPrefix:
         assert pid == ""
         assert cmd == ""
         assert args == "unknown /plan test"
+
+    def test_dotted_project_tag_review(self):
+        """Real-world failure from run 16: dotted project + /review URL."""
+        pid, cmd, args = parse_skill_mission(
+            "[project:developers.esphome.io] /review "
+            "https://github.com/esphome/developers.esphome.io/pull/146",
+        )
+        assert pid == "developers.esphome.io"
+        assert cmd == "review"
+        assert args == "https://github.com/esphome/developers.esphome.io/pull/146"
+
+    def test_dotted_project_tag_scoped_command(self):
+        pid, cmd, args = parse_skill_mission(
+            "[project:my.site.io] /core.plan fix bug",
+        )
+        assert pid == "my.site.io"
+        assert cmd == "plan"
+        assert args == "fix bug"
+
+    def test_dotted_raw_project_word_prefix(self, monkeypatch):
+        monkeypatch.setattr(
+            "app.utils.get_known_projects",
+            lambda: [("developers.esphome.io", "/ws/developers.esphome.io")],
+        )
+        pid, cmd, args = parse_skill_mission(
+            "developers.esphome.io /plan dark mode",
+        )
+        assert pid == "developers.esphome.io"
+        assert cmd == "plan"
+        assert args == "dark mode"
 
 
 # ---------------------------------------------------------------------------
