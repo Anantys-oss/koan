@@ -391,7 +391,9 @@ def _locked_missions_rw(missions_path: Path, transform):
     return new_content
 
 
-def insert_pending_mission(missions_path: Path, entry: str, *, urgent: bool = False):
+def insert_pending_mission(
+    missions_path: Path, entry: str, *, urgent: bool = False,
+) -> bool:
     """Insert a mission entry into the pending section of missions.md.
 
     By default, inserts at the bottom of the pending section (FIFO queue).
@@ -400,13 +402,24 @@ def insert_pending_mission(missions_path: Path, entry: str, *, urgent: bool = Fa
     Uses file locking for the entire read-modify-write cycle to prevent
     TOCTOU race conditions between awake.py and dashboard.py.
     Creates the file with default structure if it doesn't exist.
-    """
-    from app.missions import insert_mission
 
-    _locked_missions_rw(
-        missions_path,
-        lambda content: insert_mission(content, entry, urgent=urgent),
-    )
+    Returns:
+        True if the mission was inserted, False if it was a duplicate
+        (same command + URL already pending or in progress).
+    """
+    from app.missions import insert_mission, is_duplicate_mission
+
+    inserted = True
+
+    def _transform(content: str) -> str:
+        nonlocal inserted
+        if is_duplicate_mission(content, entry):
+            inserted = False
+            return content
+        return insert_mission(content, entry, urgent=urgent)
+
+    _locked_missions_rw(missions_path, _transform)
+    return inserted
 
 
 def modify_missions_file(missions_path: Path, transform):

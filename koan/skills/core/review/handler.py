@@ -119,12 +119,14 @@ def _handle_batch(ctx, args: str, repo_match: Tuple[str, str, str]) -> str:
     if not prs:
         return f"No open PRs found in {owner}/{repo}."
 
-    # Queue a /review mission for each PR
+    # Queue a /review mission for each PR (skip duplicates)
     queued = 0
     for pr in prs:
         pr_url = pr.get("url") or f"https://github.com/{owner}/{repo}/pull/{pr['number']}"
-        queue_github_mission(ctx, "review", pr_url, project_name)
-        queued += 1
+        if queue_github_mission(ctx, "review", pr_url, project_name):
+            queued += 1
 
     limit_note = f" (limited to {limit})" if limit else ""
+    if queued == 0:
+        return f"All PRs from {owner}/{repo} already queued or running{limit_note}."
     return f"Queued {queued} /review missions for {owner}/{repo}{limit_note}."

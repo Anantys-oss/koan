@@ -2906,3 +2906,106 @@ class TestQuarantineSizeCap:
         assert "old entry 0" not in content
         # New entry present
         assert "new entry" in content
+
+
+# --- Duplicate detection ---
+
+from app.missions import is_duplicate_mission, _extract_mission_signature
+
+
+class TestExtractMissionSignature:
+    def test_rebase_url(self):
+        line = "- [project:koan] /rebase https://github.com/owner/repo/pull/123 📬"
+        assert _extract_mission_signature(line) == "rebase:https://github.com/owner/repo/pull/123"
+
+    def test_review_url(self):
+        line = "- [project:koan] /review https://github.com/owner/repo/pull/42"
+        assert _extract_mission_signature(line) == "review:https://github.com/owner/repo/pull/42"
+
+    def test_ci_check_url(self):
+        line = "- [project:foo] /ci_check https://github.com/org/foo/pull/99"
+        assert _extract_mission_signature(line) == "ci_check:https://github.com/org/foo/pull/99"
+
+    def test_recreate_url(self):
+        line = "/recreate https://github.com/owner/repo/pull/7"
+        assert _extract_mission_signature(line) == "recreate:https://github.com/owner/repo/pull/7"
+
+    def test_non_github_mission_returns_none(self):
+        line = "- [project:koan] Fix the login bug"
+        assert _extract_mission_signature(line) is None
+
+    def test_unknown_command_returns_none(self):
+        line = "- /deploy https://github.com/owner/repo/pull/1"
+        assert _extract_mission_signature(line) is None
+
+    def test_strips_trailing_paren(self):
+        line = "/review https://github.com/o/r/pull/5)"
+        assert _extract_mission_signature(line) == "review:https://github.com/o/r/pull/5"
+
+
+class TestIsDuplicateMission:
+    def test_duplicate_in_pending(self):
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- [project:koan] /rebase https://github.com/owner/repo/pull/10 ⏳(2026-05-16T10:00)\n\n"
+            "## In Progress\n\n"
+            "## Done\n"
+        )
+        new_entry = "- [project:koan] /rebase https://github.com/owner/repo/pull/10"
+        assert is_duplicate_mission(content, new_entry) is True
+
+    def test_duplicate_in_progress(self):
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "## In Progress\n\n"
+            "- [project:koan] /review https://github.com/owner/repo/pull/5 ⏳(2026-05-16T09:00) ▶(2026-05-16T09:01)\n\n"
+            "## Done\n"
+        )
+        new_entry = "- [project:koan] /review https://github.com/owner/repo/pull/5"
+        assert is_duplicate_mission(content, new_entry) is True
+
+    def test_not_duplicate_different_pr(self):
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- [project:koan] /rebase https://github.com/owner/repo/pull/10\n\n"
+            "## In Progress\n\n"
+            "## Done\n"
+        )
+        new_entry = "- [project:koan] /rebase https://github.com/owner/repo/pull/11"
+        assert is_duplicate_mission(content, new_entry) is False
+
+    def test_not_duplicate_different_command(self):
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- [project:koan] /review https://github.com/owner/repo/pull/10\n\n"
+            "## In Progress\n\n"
+            "## Done\n"
+        )
+        new_entry = "- [project:koan] /rebase https://github.com/owner/repo/pull/10"
+        assert is_duplicate_mission(content, new_entry) is False
+
+    def test_non_github_mission_never_duplicate(self):
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- [project:koan] Fix the login bug\n\n"
+            "## In Progress\n\n"
+            "## Done\n"
+        )
+        new_entry = "- [project:koan] Fix the login bug"
+        assert is_duplicate_mission(content, new_entry) is False
+
+    def test_done_section_not_checked(self):
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "## In Progress\n\n"
+            "## Done\n\n"
+            "- [project:koan] /rebase https://github.com/owner/repo/pull/10 ✅ (2026-05-16 10:00)\n"
+        )
+        new_entry = "- [project:koan] /rebase https://github.com/owner/repo/pull/10"
+        assert is_duplicate_mission(content, new_entry) is False
