@@ -16,6 +16,14 @@ import time
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
+from app.cli_exec import popen_cli, stream_with_timeout
+from app.cli_provider import build_full_command, run_command
+from app.config import get_model_config
+from app.git_utils import get_current_branch as _git_utils_get_current_branch
+from app.git_utils import ordered_remotes, run_git_strict
+from app.github import pr_create, run_gh, sanitize_github_comment
+from app.prompts import load_prompt_or_skill
+
 
 class StepResult:
     """Result of a :func:`run_claude_step` invocation.
@@ -37,13 +45,6 @@ class StepResult:
     def __repr__(self) -> str:
         return f"StepResult(committed={self.committed!r}, output={self.output[:60]!r}...)"
 
-from app.cli_exec import popen_cli
-from app.cli_provider import build_full_command, run_command
-from app.config import get_model_config
-from app.git_utils import get_current_branch as _git_utils_get_current_branch
-from app.git_utils import ordered_remotes, run_git_strict
-from app.github import pr_create, run_gh, sanitize_github_comment
-from app.prompts import load_prompt_or_skill
 
 # Backward-compatible alias — callers should import from app.cli_provider
 run_claude_command = run_command
@@ -227,7 +228,8 @@ def strip_cli_noise(text: str) -> str:
 def run_claude(cmd: list, cwd: str, timeout: int = 600) -> dict:
     """Run a Claude Code CLI command, streaming stdout in real time.
 
-    Output is forwarded line-by-line to ``sys.stdout`` while also being
+    Thin wrapper around :func:`app.cli_exec.stream_with_timeout`. Each
+    Claude stdout line is forwarded to ``sys.stdout`` while also being
     captured. Streaming serves two purposes:
 
     1. Each emitted line resets the parent process's liveness watchdog
@@ -245,15 +247,7 @@ def run_claude(cmd: list, cwd: str, timeout: int = 600) -> dict:
     Returns:
         Dict with keys: success (bool), output (str), error (str).
     """
-    import os
-    import signal as _signal
-    import threading
-
     from app.security_audit import SUBPROCESS_EXEC, _redact_list, log_event
-
-    proc = None
-    cleanup = lambda: None  # noqa: E731 — placeholder until popen returns
-    timed_out = False
 
     try:
         proc, cleanup = popen_cli(
@@ -275,60 +269,19 @@ def run_claude(cmd: list, cwd: str, timeout: int = 600) -> dict:
             "error": f"Failed to spawn CLI: {e}",
         }
 
-    def _kill_group() -> None:
-        nonlocal timed_out
-        timed_out = True
-        try:
-            pgid = os.getpgid(proc.pid)
-            os.killpg(pgid, _signal.SIGKILL)
-        except (OSError, ProcessLookupError):
-            try:
-                proc.kill()
-            except (OSError, ProcessLookupError):
-                pass
-
-    watchdog = threading.Timer(timeout, _kill_group)
-    watchdog.daemon = True
-    watchdog.start()
-
-    stdout_lines: List[str] = []
-    stderr_text = ""
     try:
-        try:
-            for line in proc.stdout:
-                stripped = line.rstrip("\n")
-                stdout_lines.append(stripped)
-                # Forward to parent stdout so the run.py liveness
-                # watchdog sees output and /live shows progress.
-                print(stripped, flush=True)
-        finally:
-            watchdog.cancel()
-
-        try:
-            stderr_text = proc.stderr.read() if proc.stderr else ""
-        except (OSError, ValueError):
-            stderr_text = ""
-
-        try:
-            proc.wait(timeout=30)
-        except subprocess.TimeoutExpired:
-            _kill_group()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                pass
+        stream_result = stream_with_timeout(
+            proc,
+            timeout=timeout,
+            on_line=lambda line: print(line, flush=True),
+        )
     finally:
-        for stream in (proc.stdout, proc.stderr):
-            if stream is not None:
-                try:
-                    stream.close()
-                except OSError:
-                    pass
         cleanup()
 
-    stdout_text = "\n".join(stdout_lines).strip()
+    stdout_text = stream_result.stdout
+    stderr_text = stream_result.stderr
 
-    if timed_out:
+    if stream_result.timed_out:
         log_event(SUBPROCESS_EXEC, details={
             "cmd": _redact_list(cmd),
             "cwd": cwd,
