@@ -49,27 +49,36 @@ Get the room ID:
 
 Make sure the bot account has joined the room (accept the invite from the bot's session, or call `/_matrix/client/v3/join/{roomId}`).
 
-## Step 4: Configure Environment
+## Step 4: Configure Kōan
 
-Edit your `.env` file:
+The recommended approach is to put Matrix settings in `instance/config.yaml`:
+
+```yaml
+messaging:
+  provider: "matrix"
+  matrix:
+    homeserver: "https://matrix.org"
+    user_id: "@koan:matrix.org"
+    room_id: "!abcdefghijk:matrix.org"
+    access_token: "syt_your_token_here"
+```
+
+> Treat `instance/config.yaml` like a secret file — it's gitignored by default. If you commit your `instance/` directory to a separate private repo, that's fine; never commit the access token to a public repo.
+
+### Legacy: environment variables
+
+The four `KOAN_MATRIX_*` env vars are still supported and override `config.yaml` when set. Use them only if you have a workflow built around `.env`:
 
 ```bash
-# Messaging provider
+# .env (legacy alternative)
 KOAN_MESSAGING_PROVIDER=matrix
-
-# Matrix credentials (all required)
 KOAN_MATRIX_HOMESERVER=https://matrix.org
 KOAN_MATRIX_ACCESS_TOKEN=syt_your_token_here
 KOAN_MATRIX_USER_ID=@koan:matrix.org
 KOAN_MATRIX_ROOM_ID=!abcdefghijk:matrix.org
 ```
 
-Or in `instance/config.yaml`:
-
-```yaml
-messaging:
-  provider: "matrix"
-```
+Precedence: env var > `config.yaml` value > error.
 
 ## Step 5: Start Kōan
 
@@ -91,9 +100,9 @@ You should see in the logs:
 
 ## Troubleshooting
 
-### "Missing required env vars"
+### "Missing required settings"
 
-All four variables (`KOAN_MATRIX_HOMESERVER`, `KOAN_MATRIX_ACCESS_TOKEN`, `KOAN_MATRIX_USER_ID`, `KOAN_MATRIX_ROOM_ID`) must be set.
+All four values (`homeserver`, `access_token`, `user_id`, `room_id`) must be set — either under `messaging.matrix` in `instance/config.yaml` or via the corresponding `KOAN_MATRIX_*` env vars.
 
 ### `[matrix] API error 401` / `403`
 

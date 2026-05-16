@@ -4,7 +4,14 @@ Talks to a Matrix homeserver via the Client-Server HTTP API. Synchronous
 implementation using `requests`, mirroring the Telegram provider's style
 (long-poll via /sync, send via /rooms/{roomId}/send).
 
-Environment variables:
+Configuration is read from instance/config.yaml (recommended) under the
+``messaging.matrix`` section, with environment variables as legacy/override
+fallback.
+
+config.yaml keys (under ``messaging.matrix``):
+    homeserver, access_token, user_id, room_id
+
+Environment variables (override config.yaml when set):
     KOAN_MATRIX_HOMESERVER   — Homeserver URL (e.g. https://matrix.org)
     KOAN_MATRIX_ACCESS_TOKEN — Access token for the bot account
     KOAN_MATRIX_USER_ID      — Bot's Matrix user ID (e.g. @koan:matrix.org)
@@ -54,26 +61,44 @@ class MatrixProvider(MessagingProvider):
     # -- MessagingProvider interface ------------------------------------------
 
     def configure(self) -> bool:
-        from app.utils import load_dotenv
+        from app.utils import load_config, load_dotenv
         load_dotenv()
 
-        self._homeserver = os.environ.get("KOAN_MATRIX_HOMESERVER", "").rstrip("/")
-        self._access_token = os.environ.get("KOAN_MATRIX_ACCESS_TOKEN", "")
-        self._user_id = os.environ.get("KOAN_MATRIX_USER_ID", "")
-        self._room_id = os.environ.get("KOAN_MATRIX_ROOM_ID", "")
+        cfg: dict = {}
+        messaging = load_config().get("messaging", {}) or {}
+        if isinstance(messaging, dict):
+            section = messaging.get("matrix", {}) or {}
+            if isinstance(section, dict):
+                cfg = section
+
+        # env vars override config.yaml for backward compatibility
+        self._homeserver = (
+            os.environ.get("KOAN_MATRIX_HOMESERVER") or cfg.get("homeserver", "")
+        ).rstrip("/")
+        self._access_token = (
+            os.environ.get("KOAN_MATRIX_ACCESS_TOKEN") or cfg.get("access_token", "")
+        )
+        self._user_id = (
+            os.environ.get("KOAN_MATRIX_USER_ID") or cfg.get("user_id", "")
+        )
+        self._room_id = (
+            os.environ.get("KOAN_MATRIX_ROOM_ID") or cfg.get("room_id", "")
+        )
 
         missing = []
         if not self._homeserver:
-            missing.append("KOAN_MATRIX_HOMESERVER")
+            missing.append("homeserver")
         if not self._access_token:
-            missing.append("KOAN_MATRIX_ACCESS_TOKEN")
+            missing.append("access_token")
         if not self._user_id:
-            missing.append("KOAN_MATRIX_USER_ID")
+            missing.append("user_id")
         if not self._room_id:
-            missing.append("KOAN_MATRIX_ROOM_ID")
+            missing.append("room_id")
         if missing:
             print(
-                f"[matrix] Missing required env vars: {', '.join(missing)}.",
+                f"[matrix] Missing required settings: {', '.join(missing)}. "
+                f"Set in instance/config.yaml under messaging.matrix or via the "
+                f"corresponding KOAN_MATRIX_* env vars.",
                 file=sys.stderr,
             )
             return False
