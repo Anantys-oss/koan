@@ -457,6 +457,15 @@ _IGNORED_CI_CONCLUSIONS = frozenset(
     {"skipped", "cancelled", "neutral", "action_required"}
 )
 
+# Workflow run statuses that mean "blocked, awaiting manual action".
+# GitHub sets `status="action_required"` on fork PRs from first-time
+# contributors until a maintainer approves the run, and `status="waiting"`
+# when a job is gated on environment approval. In both cases, polling
+# forever — or, worse, pushing new commits to "fix" CI — never unsticks
+# the run. Kōan must treat these as terminal so the PR drops out of the
+# ## CI queue with a human-readable note.
+_APPROVAL_BLOCKED_STATUSES = frozenset({"action_required", "waiting"})
+
 # Upper bound on runs fetched per branch — enough to cover all workflows
 # triggered by a single push (typically <10), small enough to keep the
 # `gh run list` call cheap.
@@ -472,9 +481,15 @@ def aggregate_ci_runs(runs: list) -> Tuple[str, Optional[int]]:
 
     Aggregation rules over the remaining runs:
     - any failed completed run → ("failure", failed_run_id)
+    - else any run blocked on maintainer/environment approval →
+      ("blocked_approval", blocked_run_id) — Kōan can't unstick it, so
+      callers should stop retrying and surface a notification.
     - else any non-completed run → ("pending", pending_run_id)
     - else all completed + success → ("success", first_run_id)
     - empty input or every run filtered out → ("none", None)
+
+    Failure takes precedence over blocked_approval so a genuinely broken
+    workflow on the same push still gets surfaced for a fix attempt.
     """
     if not runs:
         return ("none", None)
@@ -487,6 +502,7 @@ def aggregate_ci_runs(runs: list) -> Tuple[str, Optional[int]]:
         return ("none", None)
 
     failed_run = None
+    blocked_run = None
     pending_run = None
     for run in relevant:
         status = (run.get("status") or "").lower()
@@ -494,11 +510,16 @@ def aggregate_ci_runs(runs: list) -> Tuple[str, Optional[int]]:
         if status == "completed":
             if conclusion != "success" and failed_run is None:
                 failed_run = run
+        elif status in _APPROVAL_BLOCKED_STATUSES:
+            if blocked_run is None:
+                blocked_run = run
         elif pending_run is None:
             pending_run = run
 
     if failed_run is not None:
         return ("failure", failed_run.get("databaseId"))
+    if blocked_run is not None:
+        return ("blocked_approval", blocked_run.get("databaseId"))
     if pending_run is not None:
         return ("pending", pending_run.get("databaseId"))
     return ("success", relevant[0].get("databaseId"))
@@ -537,7 +558,7 @@ def wait_for_ci(
 
     Returns:
         (status, run_id, logs) where:
-        - status: "success", "failure", "timeout", or "none"
+        - status: "success", "failure", "blocked_approval", "timeout", or "none"
         - run_id: GitHub Actions run ID (None if no runs found)
         - logs: Failed job logs (empty unless status is "failure")
     """
@@ -568,6 +589,12 @@ def wait_for_ci(
         if status == "failure":
             logs = _fetch_failed_logs(run_id, full_repo) if run_id else ""
             return ("failure", run_id, logs)
+
+        if status == "blocked_approval":
+            # A maintainer (or environment reviewer) must click Approve in
+            # the GitHub UI; polling won't change that. Exit so the caller
+            # can surface a notification instead of burning quota.
+            return ("blocked_approval", run_id, "")
 
         # status == "pending" — keep polling
         time.sleep(poll_interval)
@@ -615,7 +642,7 @@ def check_existing_ci(
 
     Returns:
         (status, run_id, logs) where:
-        - status: "success", "failure", "pending", or "none"
+        - status: "success", "failure", "pending", "blocked_approval", or "none"
         - run_id: GitHub Actions run ID (None if no runs found)
         - logs: Failed job logs (empty unless status is "failure")
     """
