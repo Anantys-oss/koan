@@ -126,6 +126,25 @@ def drain_one(instance_dir: str) -> Optional[str]:
         )
         return f"No CI runs found for PR #{pr_number} — removed from ## CI"
 
+    if status == "blocked_approval":
+        # GitHub gates workflow runs on first-time-contributor or
+        # environment approval; nothing Kōan does will unstick them.
+        # Drop the PR from ## CI so retries stop and notify the human
+        # so they can approve in the UI (or politely ping the maintainer).
+        modify_missions_file(
+            missions_path,
+            lambda c: remove_ci_item(c, pr_url),
+        )
+        _write_outbox(
+            instance_dir,
+            f"⏸ CI workflows on PR #{pr_number} are waiting for maintainer "
+            f"approval — Kōan stopped retrying: {pr_url}",
+        )
+        return (
+            f"CI blocked on maintainer approval for PR #{pr_number} — "
+            f"removed from ## CI"
+        )
+
     # status == "pending" — leave in ## CI
     return None
 
@@ -328,6 +347,14 @@ def run_ci_check_and_fix(pr_url: str, project_path: str) -> Tuple[bool, str]:
         # drain_one will re-check on the next iteration when CI completes.
         return False, "CI still pending — will retry when CI completes."
 
+    if status == "blocked_approval":
+        # Pushing more commits won't trigger CI either — the new runs
+        # need the same approval. Bail out so the operator can act.
+        return False, (
+            "CI workflows are waiting for maintainer approval — "
+            "cannot fix without an approve click in the GitHub UI."
+        )
+
     if status not in ("failure",):
         return False, f"CI status is '{status}' — nothing to fix."
 
@@ -505,6 +532,14 @@ def _attempt_ci_fixes(
             _reenqueue_for_monitoring(pr_url, branch, full_repo, pr_number, project_path)
             actions_log.append(f"CI running after fix push (attempt {attempt}) — re-enqueued for monitoring")
             return True
+
+        if new_status == "blocked_approval":
+            # New push triggered runs that also need maintainer approval —
+            # nothing we can do here, bail out instead of re-enqueueing.
+            actions_log.append(
+                f"CI waiting for maintainer approval after fix push (attempt {attempt}) — stopping"
+            )
+            return False
 
         # CI already shows failure (unlikely this fast) — get new logs
         if new_run_id:

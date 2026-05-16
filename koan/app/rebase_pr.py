@@ -902,6 +902,10 @@ def _fix_existing_ci_failures(
             actions_log.append("Pre-push CI check: previous run passed")
         elif ci_status == "pending":
             actions_log.append("Pre-push CI check: previous run still pending")
+        elif ci_status == "blocked_approval":
+            actions_log.append(
+                "Pre-push CI check: previous run waiting for maintainer approval"
+            )
         else:
             actions_log.append("Pre-push CI check: no CI runs found")
         return False
@@ -1022,6 +1026,13 @@ def _run_ci_check_and_fix(
         actions_log.append("CI polling timed out")
         return "CI still running (timed out waiting)."
 
+    if ci_status == "blocked_approval":
+        # Workflow runs are gated on maintainer/environment approval —
+        # pushing more commits won't unstick them. Bail out instead of
+        # burning quota on fix attempts that can't possibly run.
+        actions_log.append("CI waiting for maintainer approval — skipping fixes")
+        return "CI waiting for maintainer approval — fixes skipped."
+
     # CI failed — attempt fixes
     for attempt in range(1, MAX_CI_FIX_ATTEMPTS + 1):
         # Check if PR has been merged or has conflicts before attempting fix
@@ -1091,6 +1102,15 @@ def _run_ci_check_and_fix(
         if ci_status in ("none", "timeout"):
             actions_log.append(f"CI {ci_status} after fix attempt {attempt}")
             return f"CI fix pushed (attempt {attempt}), CI status: {ci_status}."
+
+        if ci_status == "blocked_approval":
+            actions_log.append(
+                f"CI waiting for maintainer approval after fix attempt {attempt} — stopping"
+            )
+            return (
+                f"CI fix pushed (attempt {attempt}), but new run is waiting "
+                "for maintainer approval."
+            )
 
     # Exhausted retries — report failure with log excerpt
     log_excerpt = ci_logs[:2000] if ci_logs else "(no logs available)"

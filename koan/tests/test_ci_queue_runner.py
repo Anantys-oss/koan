@@ -547,6 +547,138 @@ class TestAggregateCiRuns:
         assert status == "pending"
         assert run_id == 1
 
+    def test_action_required_status_returns_blocked_approval(self):
+        """Workflow runs gated on maintainer approval (fork PR from a
+        first-time contributor) come back with status='action_required'
+        and no conclusion. They must surface as blocked_approval so
+        callers stop retrying — pushing more commits won't unstick them.
+        See https://github.com/aio-libs/aiohttp/pull/12553 — Kōan retried
+        the same PR multiple times while every workflow run sat waiting
+        for an approve click.
+        """
+        from app.claude_step import aggregate_ci_runs
+
+        runs = [
+            {"databaseId": 10, "status": "action_required", "conclusion": None},
+        ]
+        status, run_id = aggregate_ci_runs(runs)
+        assert status == "blocked_approval"
+        assert run_id == 10
+
+    def test_waiting_status_returns_blocked_approval(self):
+        """`waiting` status signals an environment-protection gate — also
+        a "human must click" state that Kōan can't move past.
+        """
+        from app.claude_step import aggregate_ci_runs
+
+        runs = [
+            {"databaseId": 11, "status": "waiting", "conclusion": None},
+        ]
+        status, run_id = aggregate_ci_runs(runs)
+        assert status == "blocked_approval"
+        assert run_id == 11
+
+    def test_failure_wins_over_blocked_approval(self):
+        """If one workflow is genuinely failing and another is blocked on
+        approval, prioritise the failure: that one CAN still be fixed by
+        pushing new commits.
+        """
+        from app.claude_step import aggregate_ci_runs
+
+        runs = [
+            {"databaseId": 1, "status": "action_required", "conclusion": None},
+            {"databaseId": 2, "status": "completed", "conclusion": "failure"},
+        ]
+        status, run_id = aggregate_ci_runs(runs)
+        assert status == "failure"
+        assert run_id == 2
+
+    def test_blocked_approval_wins_over_pending(self):
+        """A blocked run alongside an in-progress one should still surface
+        as blocked — the in-progress run is a coincidence, the gate is the
+        actionable state for the human.
+        """
+        from app.claude_step import aggregate_ci_runs
+
+        runs = [
+            {"databaseId": 1, "status": "in_progress", "conclusion": ""},
+            {"databaseId": 2, "status": "action_required", "conclusion": None},
+        ]
+        status, run_id = aggregate_ci_runs(runs)
+        assert status == "blocked_approval"
+        assert run_id == 2
+
+
+class TestDrainOneBlockedApproval:
+    """drain_one must remove a PR from ## CI when its workflows are
+    blocked on maintainer approval, instead of polling forever.
+    """
+
+    PR_URL = "https://github.com/owner/repo/pull/42"
+
+    def _missions_with_ci_entry(self):
+        return (
+            "# Missions\n\n## CI\n\n"
+            f"- [project:proj] {self.PR_URL} branch:fix-branch repo:owner/repo"
+            f" queued:2026-04-01T10:00 (attempt 0/5)\n\n"
+            "## Pending\n\n## Done\n"
+        )
+
+    def test_blocked_approval_removes_entry_and_notifies(self):
+        from app.ci_queue_runner import drain_one
+
+        with (
+            patch("pathlib.Path.exists", return_value=True),
+            patch("pathlib.Path.read_text", return_value=self._missions_with_ci_entry()),
+            patch("app.ci_queue_runner._maybe_migrate_json_queue"),
+            patch("app.utils.modify_missions_file") as mock_modify,
+            patch(
+                "app.ci_queue_runner.check_ci_status",
+                return_value=("blocked_approval", 999),
+            ),
+            patch("app.ci_queue_runner._write_outbox") as mock_outbox,
+            patch("app.ci_queue_runner._inject_ci_fix_mission") as mock_inject,
+        ):
+            result = drain_one("/tmp/instance")
+
+        assert result is not None
+        assert "approval" in result.lower()
+        mock_modify.assert_called()
+        mock_outbox.assert_called_once()
+        # Outbox message should reference the PR so the human can act
+        assert self.PR_URL in mock_outbox.call_args[0][1]
+        assert "approval" in mock_outbox.call_args[0][1].lower()
+        # No fix mission should be queued — Kōan can't unstick it
+        mock_inject.assert_not_called()
+
+
+class TestRunCiCheckBlockedApproval:
+    """run_ci_check_and_fix must bail out, not attempt fixes, when CI is
+    gated on maintainer approval.
+    """
+
+    PR_URL = "https://github.com/owner/repo/pull/42"
+    PROJECT_PATH = "/tmp/test-project"
+
+    def test_blocked_approval_returns_early_without_fix(self):
+        from app.ci_queue_runner import run_ci_check_and_fix
+
+        fake_context = {"branch": "fix-branch", "base": "main"}
+        with (
+            patch("app.rebase_pr.fetch_pr_context", return_value=fake_context),
+            patch(
+                "app.ci_queue_runner.check_ci_status",
+                return_value=("blocked_approval", 123),
+            ),
+            patch("app.ci_queue_runner._attempt_ci_fixes") as mock_fix,
+        ):
+            success, summary = run_ci_check_and_fix(self.PR_URL, self.PROJECT_PATH)
+
+        assert success is False
+        assert "approval" in summary.lower()
+        # The pipeline must not attempt Claude-based fixes
+        mock_fix.assert_not_called()
+
 
 class TestCheckCiStatusDependabot:
     """End-to-end: check_ci_status must not treat skipped Dependabot runs as failures."""
