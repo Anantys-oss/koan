@@ -407,13 +407,18 @@ class TestCreateIssuesPvrsRouting:
             pvrs_threshold="high",
         )
 
-        # PVRS was attempted, then fallback issue created
+        # PVRS was attempted, then redacted fallback issue created
         assert mock_pvrs.call_count == 1
         assert mock_issue.call_count == 1
         assert len(urls) == 1
-        # Fallback issue title includes warning prefix
+        # Fallback issue title is redacted (no finding title leaked)
         title_arg = mock_issue.call_args[1]["title"]
         assert "PVRS unavailable" in title_arg
+        assert "details withheld" in title_arg
+        # Body must NOT contain exploit details
+        body_arg = mock_issue.call_args[1]["body"]
+        assert "RCE via deserialization" not in body_arg
+        assert "withheld" in body_arg
 
     @patch("app.github.resolve_target_repo", return_value="upstream/repo")
     @patch("app.github.check_pvrs_enabled", return_value=True)

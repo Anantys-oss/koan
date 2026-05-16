@@ -295,8 +295,8 @@ def create_issues(
         List of issue/advisory URLs.
     """
     from app.github import (
-        check_pvrs_enabled, detect_ecosystem, issue_create,
-        resolve_target_repo, security_advisory_report,
+        check_pvrs_enabled, detect_ecosystem,
+        resolve_target_repo,
     )
 
     target_repo = resolve_target_repo(project_path)
@@ -316,8 +316,7 @@ def create_issues(
 
     ecosystem = detect_ecosystem(project_path) if pvrs_available else "other"
     # Derive a package name from the project directory
-    from pathlib import Path as _Path
-    package_name = _Path(project_path).name
+    package_name = Path(project_path).name
 
     issue_urls = []
 
@@ -348,18 +347,17 @@ def create_issues(
             if use_pvrs:
                 print(
                     f"[audit] PVRS failed for '{title}', "
-                    f"falling back to public issue: {e}",
+                    f"falling back to redacted public issue: {e}",
                     file=sys.stderr,
                 )
                 if notify_fn:
                     notify_fn(
                         f"  \u26a0\ufe0f PVRS failed for '{title}', "
-                        f"creating public issue instead"
+                        f"creating redacted placeholder issue"
                     )
                 try:
-                    url = _submit_public_issue(
+                    url = _submit_redacted_fallback_issue(
                         finding, target_repo, project_path,
-                        title_prefix="[\u26a0\ufe0f PVRS unavailable] ",
                     )
                 except Exception as e2:
                     print(
@@ -418,6 +416,39 @@ def _submit_public_issue(
     return issue_create(
         title=f"{title_prefix}{finding.title}",
         body=_build_issue_body(finding),
+        repo=target_repo,
+        cwd=project_path,
+    )
+
+
+def _submit_redacted_fallback_issue(
+    finding: AuditFinding,
+    target_repo: Optional[str],
+    project_path: str,
+) -> str:
+    """Create a redacted public issue when PVRS submission fails.
+
+    Omits exploit details to avoid leaking vulnerability information publicly.
+    The issue serves as a placeholder directing maintainers to investigate
+    via private channels.
+    """
+    from app.github import issue_create
+
+    redacted_body = (
+        "A security finding was identified during an automated audit but "
+        "could not be submitted via Private Vulnerability Reporting (PVRS).\n\n"
+        f"**Severity**: {finding.severity}\n"
+        f"**Category**: {finding.category}\n\n"
+        "Details have been withheld from this public issue to prevent "
+        "disclosure of exploitable vulnerabilities. Please review the audit "
+        "logs or contact the security team for full details.\n\n"
+        "---\n"
+        "\U0001f916 Created by K\u014dan from audit session"
+    )
+
+    return issue_create(
+        title=f"[Security] {finding.severity} finding — details withheld (PVRS unavailable)",
+        body=redacted_body,
         repo=target_repo,
         cwd=project_path,
     )
