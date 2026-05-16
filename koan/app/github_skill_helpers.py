@@ -90,7 +90,7 @@ def resolve_project_for_repo(repo: str, owner: Optional[str] = None) -> Tuple[Op
 def queue_github_mission(
     ctx, command: str, url: str, project_name: str,
     context: Optional[str] = None, *, urgent: bool = False,
-) -> None:
+) -> bool:
     """Queue a GitHub-related mission with consistent formatting.
 
     Args:
@@ -100,6 +100,9 @@ def queue_github_mission(
         project_name: Project name for tagging
         context: Optional additional context to append
         urgent: If True, insert at the top of the queue (--now flag)
+
+    Returns:
+        True if the mission was queued, False if it was a duplicate.
     """
     from app.utils import insert_pending_mission
 
@@ -109,7 +112,7 @@ def queue_github_mission(
 
     mission_entry = f"- [project:{project_name}] {mission_text}"
     missions_path = ctx.instance_dir / "missions.md"
-    insert_pending_mission(missions_path, mission_entry, urgent=urgent)
+    return insert_pending_mission(missions_path, mission_entry, urgent=urgent)
 
 
 def format_project_not_found_error(repo: str, owner: Optional[str] = None) -> str:
@@ -251,8 +254,11 @@ def handle_github_skill(
     if not project_path:
         return format_project_not_found_error(repo, owner=owner)
 
-    # Queue mission
-    queue_github_mission(ctx, command, url, project_name, context, urgent=urgent)
+    # Queue mission (with duplicate detection)
+    inserted = queue_github_mission(ctx, command, url, project_name, context, urgent=urgent)
+
+    if not inserted:
+        return f"\u26a0\ufe0f Duplicate ignored — /{command} already queued or running for {type_label} #{number} ({owner}/{repo})."
 
     # Return success message
     priority = " (priority)" if urgent else ""

@@ -48,10 +48,15 @@ def handle(ctx):
         return format_project_not_found_error(repo, owner=owner)
 
     # Queue review first, then rebase — review learnings inform the rebase
-    queue_github_mission(ctx, "review", pr_url, project_name, context)
-    queue_github_mission(ctx, "rebase", pr_url, project_name)
+    review_ok = queue_github_mission(ctx, "review", pr_url, project_name, context)
+    rebase_ok = queue_github_mission(ctx, "rebase", pr_url, project_name)
 
-    return (
-        f"Review + rebase combo queued for "
-        f"{format_success_message('PR', pr_number, owner, repo)}"
-    )
+    target = format_success_message('PR', pr_number, owner, repo)
+    if not review_ok and not rebase_ok:
+        return f"\u26a0\ufe0f Both /review and /rebase already queued or running for {target}."
+    if not review_ok:
+        return f"Rebase queued for {target} (review already queued/running)."
+    if not rebase_ok:
+        return f"Review queued for {target} (rebase already queued/running)."
+
+    return f"Review + rebase combo queued for {target}"
