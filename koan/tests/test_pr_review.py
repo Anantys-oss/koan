@@ -296,29 +296,77 @@ class TestCommitIfChanges:
 # _run_claude
 # ---------------------------------------------------------------------------
 
+class _FakeStream:
+    def __init__(self, lines=None, read_text=""):
+        self._lines = list(lines or [])
+        self._read_text = read_text
+
+    def __iter__(self):
+        return iter(self._lines)
+
+    def read(self):
+        return self._read_text
+
+    def close(self):
+        return None
+
+
+def _fake_proc(stdout_lines, stderr_text="", returncode=0):
+    proc = MagicMock()
+    proc.stdout = _FakeStream(lines=stdout_lines)
+    proc.stderr = _FakeStream(read_text=stderr_text)
+    proc.returncode = returncode
+    proc.pid = 99999
+    proc.wait.return_value = returncode
+    return proc
+
+
 class TestRunClaude:
-    @patch("app.claude_step.subprocess.run")
-    def test_success(self, mock_run):
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout="Done", stderr=""
-        )
+    @patch("app.claude_step.popen_cli")
+    def test_success(self, mock_popen):
+        proc = _fake_proc(["Done\n"], stderr_text="", returncode=0)
+        mock_popen.return_value = (proc, lambda: None)
         result = _run_claude(["claude", "-p", "test"], "/tmp")
         assert result["success"] is True
         assert result["output"] == "Done"
 
-    @patch("app.claude_step.subprocess.run")
-    def test_failure(self, mock_run):
-        mock_run.return_value = MagicMock(
-            returncode=1, stdout="", stderr="error"
-        )
+    @patch("app.claude_step.popen_cli")
+    def test_failure(self, mock_popen):
+        proc = _fake_proc([], stderr_text="error", returncode=1)
+        mock_popen.return_value = (proc, lambda: None)
         result = _run_claude(["claude", "-p", "test"], "/tmp")
         assert result["success"] is False
         assert "Exit code 1" in result["error"]
 
-    @patch("app.claude_step.subprocess.run")
-    def test_timeout(self, mock_run):
-        mock_run.side_effect = subprocess.TimeoutExpired(cmd="claude", timeout=10)
-        result = _run_claude(["claude", "-p", "test"], "/tmp", timeout=10)
+    @patch("os.killpg")
+    @patch("app.claude_step.popen_cli")
+    def test_timeout(self, mock_popen, mock_killpg):
+        """When the watchdog fires the kill, run_claude returns Timeout."""
+        import threading
+
+        killed = threading.Event()
+        mock_killpg.side_effect = lambda *a, **kw: killed.set()
+
+        class _BlockingStream:
+            def __iter__(self):
+                killed.wait(timeout=10)
+                return iter([])
+
+            def read(self):
+                return ""
+
+            def close(self):
+                return None
+
+        proc = MagicMock()
+        proc.stdout = _BlockingStream()
+        proc.stderr = _FakeStream(read_text="")
+        proc.returncode = -9
+        proc.pid = 12345
+        proc.wait.return_value = -9
+        mock_popen.return_value = (proc, lambda: None)
+
+        result = _run_claude(["claude", "-p", "test"], "/tmp", timeout=1)
         assert result["success"] is False
         assert "Timeout" in result["error"]
 
