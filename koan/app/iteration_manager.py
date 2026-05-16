@@ -72,6 +72,10 @@ _MODE_DOWNGRADE = {
     "review": "wait",
 }
 
+# When the rolling burn-rate estimate predicts the session will be exhausted
+# in less than this many minutes, drop the chosen mode one tier.
+BURN_RATE_DOWNGRADE_THRESHOLD_MIN = 30.0
+
 
 def _downgrade_if_unaffordable(tracker, mode: str) -> str:
     """Downgrade mode until can_afford_run() passes or we hit wait.
@@ -90,6 +94,31 @@ def _downgrade_if_unaffordable(tracker, mode: str) -> str:
     return mode
 
 
+def _downgrade_if_burning_fast(instance_dir: Path, session_pct: float,
+                               mode: str):
+    """Drop one tier when projected exhaustion is imminent.
+
+    Returns (mode, downgraded_from) where downgraded_from is the previous
+    mode if a downgrade fired, else None.
+    """
+    if mode == "wait" or mode not in _MODE_DOWNGRADE:
+        return mode, None
+    try:
+        from app.burn_rate import time_to_exhaustion
+        tte = time_to_exhaustion(instance_dir, session_pct, mode=mode)
+    except (ImportError, OSError, ValueError):
+        return mode, None
+    if tte is None or tte >= BURN_RATE_DOWNGRADE_THRESHOLD_MIN:
+        return mode, None
+    downgraded = _MODE_DOWNGRADE.get(mode, mode)
+    if downgraded == mode:
+        return mode, None
+    _log_iteration("koan",
+        f"Burn-rate downgrade: {mode} → {downgraded} "
+        f"(est. {tte:.0f} min to exhaustion)")
+    return downgraded, mode
+
+
 def _get_usage_decision(usage_md: Path, count: int, projects_str: str):
     """Parse usage.md and decide autonomous mode.
 
@@ -101,9 +130,14 @@ def _get_usage_decision(usage_md: Path, count: int, projects_str: str):
         budget_mode = _get_budget_mode()
         warn_pct, stop_pct = _get_budget_thresholds()
         tracker = UsageTracker(usage_md, count, budget_mode=budget_mode,
-                               warn_pct=warn_pct, stop_pct=stop_pct,
-                               instance_dir=usage_md.parent)
+                               warn_pct=warn_pct, stop_pct=stop_pct)
         mode = tracker.decide_mode()
+
+        # Burn-rate downgrade: applied here (not inside UsageTracker) so the
+        # tracker stays a pure parser+threshold class with no I/O coupling.
+        mode, burn_downgrade_from = _downgrade_if_burning_fast(
+            usage_md.parent, tracker.session_pct, mode,
+        )
 
         # Verify the chosen mode is affordable; downgrade if not
         mode = _downgrade_if_unaffordable(tracker, mode)
@@ -111,6 +145,8 @@ def _get_usage_decision(usage_md: Path, count: int, projects_str: str):
         session_rem, weekly_rem = tracker.remaining_budget()
         available_pct = int(min(session_rem, weekly_rem))
         reason = tracker.get_decision_reason(mode)
+        if burn_downgrade_from:
+            reason += f" (burn-rate downgrade from {burn_downgrade_from})"
 
         # Get display lines for console output
         display_lines = []

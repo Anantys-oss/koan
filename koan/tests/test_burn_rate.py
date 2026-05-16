@@ -93,8 +93,8 @@ class TestBurnRateEstimate:
     def test_constant_rate(self, instance_dir):
         # 5 samples, 1% each, spaced 1 minute apart
         _record_series(instance_dir, [(i, 1.0) for i in range(5)])
-        # 4 cost samples consumed (skipping the first) over 4 minutes → 1.0/min
-        assert burn_rate.burn_rate_pct_per_minute(instance_dir) == pytest.approx(1.0)
+        # Total cost 5 over 4 minutes → 1.25/min
+        assert burn_rate.burn_rate_pct_per_minute(instance_dir) == pytest.approx(1.25)
 
     def test_variable_rate(self, instance_dir):
         # Five samples: costs 2, 4, 2, 4, 8 over 10 minutes
@@ -102,8 +102,8 @@ class TestBurnRateEstimate:
             instance_dir,
             [(0, 2.0), (3, 4.0), (5, 2.0), (8, 4.0), (10, 8.0)],
         )
-        # Consumed (excluding first) = 4+2+4+8 = 18 over 10 min = 1.8/min
-        assert burn_rate.burn_rate_pct_per_minute(instance_dir) == pytest.approx(1.8)
+        # Total cost = 2+4+2+4+8 = 20 over 10 min = 2.0/min
+        assert burn_rate.burn_rate_pct_per_minute(instance_dir) == pytest.approx(2.0)
 
 
 class TestTimeToExhaustion:
@@ -111,10 +111,10 @@ class TestTimeToExhaustion:
         assert burn_rate.time_to_exhaustion(instance_dir, 50.0) is None
 
     def test_basic_estimate(self, instance_dir):
-        # 1%/min, 60% remaining → 60 min
+        # 1.25%/min (5/4), 60% remaining → 48 min
         _record_series(instance_dir, [(i, 1.0) for i in range(5)])
         tte = burn_rate.time_to_exhaustion(instance_dir, session_pct=40.0)
-        assert tte == pytest.approx(60.0)
+        assert tte == pytest.approx(48.0)
 
     def test_zero_remaining(self, instance_dir):
         _record_series(instance_dir, [(i, 1.0) for i in range(5)])

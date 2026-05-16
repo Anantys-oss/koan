@@ -21,7 +21,7 @@ import re
 import sys
 import time
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Tuple
 
 # If usage.md is older than this, widen safety margin (data may be stale)
 STALENESS_THRESHOLD_SECONDS = 6 * 3600  # 6 hours
@@ -31,10 +31,6 @@ STALE_SAFETY_MARGIN = 15.0  # vs normal 10%
 # accidentally running in unlimited/DEEP mode on bad data.
 MALFORMED_DEFAULT_PCT = 75.0
 
-# When the rolling burn-rate estimate predicts the session will be exhausted
-# in less than this many minutes, drop the chosen mode one tier.
-BURN_RATE_DOWNGRADE_THRESHOLD_MIN = 30.0
-
 logger = logging.getLogger(__name__)
 
 
@@ -43,8 +39,7 @@ class UsageTracker:
 
     def __init__(self, usage_file: Path, runs_completed: int = 0,
                  budget_mode: str = "full",
-                 warn_pct: int = 70, stop_pct: int = 85,
-                 instance_dir: Optional[Path] = None):
+                 warn_pct: int = 70, stop_pct: int = 85):
         """Initialize tracker by parsing usage.md file.
 
         Args:
@@ -74,10 +69,6 @@ class UsageTracker:
         self.budget_mode = budget_mode
         self.warn_pct = warn_pct
         self.stop_pct = stop_pct
-        # Optional instance dir used to consult the rolling burn-rate buffer.
-        # When None, decide_mode() falls back to the static budget thresholds.
-        self.instance_dir = instance_dir
-        self.last_burn_rate_downgrade: Optional[str] = None
 
         if usage_file.exists():
             self._parse_usage_file(usage_file)
@@ -174,14 +165,10 @@ class UsageTracker:
         Returns:
             True if estimated cost fits within available budget
         """
-        cost_multipliers = {
-            "review": 0.5,      # Low-cost: read-only activities
-            "implement": 1.0,   # Medium-cost: normal development
-            "deep": 2.0,        # High-cost: intensive work
-        }
+        from app.burn_rate import MODE_MULTIPLIERS
 
         base_cost = self.estimate_run_cost()
-        estimated_cost = base_cost * cost_multipliers.get(mode, 1.0)
+        estimated_cost = base_cost * MODE_MULTIPLIERS.get(mode, 1.0)
 
         session_rem, weekly_rem = self.remaining_budget()
         available = min(session_rem, weekly_rem)
@@ -215,50 +202,11 @@ class UsageTracker:
         if available < stop_remaining:
             return "wait"
         elif available < warn_remaining:
-            mode = "review"
+            return "review"
         elif available < 40:
-            mode = "implement"
+            return "implement"
         else:
-            mode = "deep"
-
-        return self._apply_burn_rate_downgrade(mode)
-
-    _DOWNGRADE_TIER = {
-        "deep": "implement",
-        "implement": "review",
-        "review": "wait",
-    }
-
-    def _apply_burn_rate_downgrade(self, mode: str) -> str:
-        """Drop one mode tier when projected exhaustion is imminent.
-
-        Uses the rolling burn-rate buffer (when ``instance_dir`` is set).
-        Records the original mode in ``last_burn_rate_downgrade`` so the
-        decision reason can mention it.
-        """
-        self.last_burn_rate_downgrade = None
-        if self.instance_dir is None or mode == "wait":
-            return mode
-
-        try:
-            from app.burn_rate import time_to_exhaustion
-            tte = time_to_exhaustion(self.instance_dir, self.session_pct, mode=mode)
-        except (ImportError, OSError, ValueError):
-            return mode
-
-        if tte is None:
-            return mode
-        if tte >= BURN_RATE_DOWNGRADE_THRESHOLD_MIN:
-            return mode
-
-        downgraded = self._DOWNGRADE_TIER.get(mode, mode)
-        if downgraded != mode:
-            self.last_burn_rate_downgrade = mode
-            logger.info(
-                "Burn-rate downgrade: %s → %s (est. %.0f min to exhaustion)",
-                mode, downgraded, tte,
-            )
-        return downgraded
+            return "deep"
 
     def get_decision_reason(self, mode: str) -> str:
         """Generate human-readable reason for mode decision.
@@ -273,19 +221,13 @@ class UsageTracker:
         available = min(session_rem, weekly_rem)
 
         if mode == "wait":
-            base = f"Budget exhausted ({available:.0f}% remaining)"
+            return f"Budget exhausted ({available:.0f}% remaining)"
         elif mode == "review":
-            base = f"Low budget ({available:.0f}% remaining) - conservative mode"
+            return f"Low budget ({available:.0f}% remaining) - conservative mode"
         elif mode == "implement":
-            base = f"Normal budget ({available:.0f}% remaining)"
+            return f"Normal budget ({available:.0f}% remaining)"
         else:  # deep
-            base = f"Ample budget ({available:.0f}% remaining) - full capability"
-
-        if self.last_burn_rate_downgrade:
-            base += (
-                f" (burn-rate downgrade from {self.last_burn_rate_downgrade})"
-            )
-        return base
+            return f"Ample budget ({available:.0f}% remaining) - full capability"
 
     def format_output(self, mode: str) -> str:
         """Format decision output for bash consumption.

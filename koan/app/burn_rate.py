@@ -11,6 +11,7 @@ the runtime can avoid notifying every iteration.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 import math
@@ -19,10 +20,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
+from app.utils import atomic_write
+
 BURN_RATE_FILE = ".burn-rate.json"
 MAX_SAMPLES = 20
 MIN_SAMPLES_FOR_ESTIMATE = 5
 
+# Single source of truth for autonomous-mode cost multipliers. Imported by
+# usage_tracker.can_afford_run() so prediction and gating stay aligned.
 MODE_MULTIPLIERS = {
     "review": 0.5,
     "implement": 1.0,
@@ -64,13 +69,28 @@ def _state_path(instance_dir: Path) -> Path:
     return Path(instance_dir) / BURN_RATE_FILE
 
 
+def _read_locked(path: Path) -> str:
+    """Read file contents under a shared (LOCK_SH) flock.
+
+    Consistent with the project's atomic_write writer pattern so concurrent
+    awake/run access cannot observe a partially-written file.
+    """
+    with open(path, "r", encoding="utf-8") as f:
+        fcntl.flock(f, fcntl.LOCK_SH)
+        try:
+            return f.read()
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
 def _load_state(instance_dir: Path) -> BurnRateState:
     """Load burn-rate state, returning an empty state on any failure."""
     path = _state_path(instance_dir)
     if not path.exists():
         return BurnRateState(samples=[])
     try:
-        data = json.loads(path.read_text())
+        raw = _read_locked(path)
+        data = json.loads(raw)
     except (json.JSONDecodeError, OSError) as exc:
         logger.warning("Could not read %s: %s", path, exc)
         return BurnRateState(samples=[])
@@ -104,9 +124,8 @@ def _save_state(instance_dir: Path, state: BurnRateState) -> None:
     if state.last_warned_at is not None:
         payload["last_warned_at"] = state.last_warned_at.isoformat()
     try:
-        from app.utils import atomic_write
         atomic_write(path, json.dumps(payload, indent=2) + "\n")
-    except (ImportError, OSError) as exc:
+    except OSError as exc:
         logger.warning("Could not write %s: %s", path, exc)
 
 
@@ -141,9 +160,10 @@ def get_samples(instance_dir: Path) -> List[Sample]:
 def burn_rate_pct_per_minute(instance_dir: Path) -> Optional[float]:
     """Return rolling burn rate in % session quota per minute.
 
-    Uses the elapsed time between the first and last sample and the cost
-    accumulated over the interval (excluding the first sample, which marks
-    the start of the window).
+    Sums every sample's cost across the window and divides by the elapsed
+    time between the oldest and newest sample. Including the first sample's
+    cost avoids the 1/N under-count that happened when it was treated as a
+    zero-cost "window start" marker.
 
     Returns:
         Burn rate in percentage points per minute, or ``None`` if there is
@@ -158,7 +178,7 @@ def burn_rate_pct_per_minute(instance_dir: Path) -> Optional[float]:
     if span_minutes <= 0:
         return None
 
-    consumed = sum(s.cost_pct for s in samples[1:])
+    consumed = sum(s.cost_pct for s in samples)
     return consumed / span_minutes
 
 
