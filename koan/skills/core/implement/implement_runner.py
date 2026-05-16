@@ -274,6 +274,7 @@ def _generate_pr_summary(
             model_key="lightweight",
             max_turns=1,
             timeout=300,
+            max_turns_source=None,
         )
         return output.strip() if output and output.strip() else fallback
     except Exception as e:

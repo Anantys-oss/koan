@@ -228,13 +228,23 @@ def _is_max_turns_error(stdout: str) -> bool:
     return bool(_MAX_TURNS_RE.search(stdout))
 
 
-def _warn_max_turns(max_turns: int, config_key: str = "skill_max_turns") -> None:
-    """Print a user-visible warning about max turns being hit."""
+def _warn_max_turns(max_turns: int, config_key: Optional[str] = "skill_max_turns") -> None:
+    """Print a user-visible warning about max turns being hit.
+
+    ``config_key`` names the ``instance/config.yaml`` setting that controls
+    this call site's max_turns, when one exists. Pass ``None`` for callers
+    that hardcode max_turns (chat replies, intent classification, spec
+    review subagents) so the user is not pointed at an unrelated config key.
+    """
+    hint = (
+        f"   To increase: set {config_key} in instance/config.yaml "
+        f"(current: {max_turns}).\n"
+        if config_key
+        else "   This call uses a hardcoded limit and is not configurable.\n"
+    )
     print(
         f"\n⚠️  Claude hit the max turns limit ({max_turns}). "
-        f"The output may be incomplete.\n"
-        f"   To increase: set {config_key} in instance/config.yaml "
-        f"(current: {max_turns}).\n",
+        f"The output may be incomplete.\n{hint}",
         file=sys.stderr,
         flush=True,
     )
@@ -247,6 +257,7 @@ def run_command(
     model_key: str = "chat",
     max_turns: int = 10,
     timeout: int = 300,
+    max_turns_source: Optional[str] = "skill_max_turns",
 ) -> str:
     """Build and run a CLI command, returning stripped stdout.
 
@@ -285,7 +296,7 @@ def run_command(
         # Max-turns is a graceful limit, not a hard error — return
         # whatever Claude produced so callers can extract partial results.
         if _is_max_turns_error(result.stdout or ""):
-            _warn_max_turns(max_turns)
+            _warn_max_turns(max_turns, max_turns_source)
             from app.claude_step import strip_cli_noise
             return strip_cli_noise(result.stdout.strip())
         raise RuntimeError(
@@ -303,6 +314,7 @@ def run_command_streaming(
     model_key: str = "chat",
     max_turns: int = 10,
     timeout: int = 300,
+    max_turns_source: Optional[str] = "skill_max_turns",
 ) -> str:
     """Build and run a CLI command, streaming output to stdout in real time.
 
@@ -367,7 +379,7 @@ def run_command_streaming(
         # Max-turns is a graceful limit — return partial output so callers
         # can extract useful results from an incomplete session.
         if _is_max_turns_error(stdout_text):
-            _warn_max_turns(max_turns)
+            _warn_max_turns(max_turns, max_turns_source)
             from app.claude_step import strip_cli_noise
             return strip_cli_noise(stdout_text.strip())
         raise RuntimeError(
@@ -377,7 +389,7 @@ def run_command_streaming(
     # Warn on max-turns even when exit code is 0 (edge case: Claude
     # completed its last allowed turn successfully)
     if _is_max_turns_error(stdout_text):
-        _warn_max_turns(max_turns)
+        _warn_max_turns(max_turns, max_turns_source)
 
     from app.claude_step import strip_cli_noise
     return strip_cli_noise(stdout_text.strip())

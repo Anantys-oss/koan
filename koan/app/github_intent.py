@@ -61,6 +61,7 @@ def classify_intent(
             model_key="lightweight",
             max_turns=1,
             timeout=30,
+            max_turns_source=None,
         )
     except (RuntimeError, OSError) as e:
         log.warning("GitHub intent: Claude CLI failed: %s", e)

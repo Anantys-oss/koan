@@ -224,6 +224,7 @@ def generate_reply(
             model_key="chat",
             max_turns=5,
             timeout=300,
+            max_turns_source=None,
         )
         return clean_reply(reply) if reply else None
     except Exception as e:

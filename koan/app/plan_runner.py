@@ -291,6 +291,7 @@ def _review_plan(plan_text: str, project_path: str, skill_dir) -> Tuple[bool, st
             model_key="lightweight",
             max_turns=3,
             timeout=120,
+            max_turns_source=None,
         )
     except Exception as e:
         print(f"[plan_runner] Review subagent failed: {e} — skipping review", file=sys.stderr)
