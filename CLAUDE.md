@@ -18,6 +18,7 @@ make run            # Start main agent loop (foreground)
 make awake          # Start Telegram bridge (foreground)
 make ollama         # Start full Ollama stack (ollama serve + awake + run)
 make dashboard      # Start Flask web dashboard (port 5001)
+make lint           # Run ruff linter (must pass before committing)
 make test           # Run full test suite (pytest + coverage summary)
 make coverage       # Run tests with detailed coverage report (HTML in htmlcov/)
 make say m="..."    # Send test message as if from Telegram
@@ -141,6 +142,16 @@ Extensible command plugin system. Each skill lives in `skills/<scope>/<skill-nam
 ## Python compatibility
 
 All code must support **Python 3.11+**. Do not use syntax or stdlib features introduced after Python 3.11 (e.g., `type` statements from 3.12, `TypeVar` defaults from 3.13). CI tests against multiple Python versions — if it doesn't run on 3.11, it doesn't ship.
+
+## Linting
+
+All Python code must pass **ruff** (`make lint`) before committing. The ruff configuration lives in `pyproject.toml` under `[tool.ruff]`.
+
+- Run `make lint` to check for violations. Fix all errors before pushing.
+- Currently enforced rule sets: **PERF** (performance anti-patterns). New rule sets will be added incrementally as existing violations are cleaned up.
+- Test files (`koan/tests/*`) are exempt from PERF rules via `per-file-ignores`.
+- When adding new code, avoid introducing violations from rule sets not yet enforced project-wide (E, F, W, I, B are good hygiene even though not yet gated in CI).
+- Do not disable ruff rules with `# noqa` comments unless there is a clear, documented reason. Prefer fixing the violation.
 
 ## Conventions
 

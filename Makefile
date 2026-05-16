@@ -2,7 +2,7 @@
 export
 
 .PHONY: install onboard setup start stop status restart
-.PHONY: clean say migrate test test-skills test-strict coverage sync-instance rename-project release
+.PHONY: clean say migrate test test-skills test-strict coverage lint sync-instance rename-project release
 .PHONY: awake run errand-run errand-awake dashboard
 .PHONY: ollama logs ssh-forward
 .PHONY: install-systemctl-service uninstall-systemctl-service
@@ -48,6 +48,10 @@ run: setup
 say: setup
 	@test -n "$(m)" || (echo "Usage: make say m=\"your message\"" && exit 1)
 	@cd koan && KOAN_ROOT=$(PWD) PYTHONPATH=. ../$(PYTHON) -c "from app.awake import handle_message; handle_message('$(m)')"
+
+lint: setup
+	$(VENV)/bin/pip install -q ruff 2>/dev/null
+	$(VENV)/bin/ruff check koan/
 
 test: setup
 	$(VENV)/bin/pip install -q pytest pytest-cov 2>/dev/null
