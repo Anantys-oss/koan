@@ -130,7 +130,11 @@ Your ENTIRE response must be a single valid JSON object (no markdown, no code fe
       "comment_id": 12345,
       "reply": "Detailed reply explaining why and how."
     }
-  ]
+  ],
+  "close_pr": {
+    "close": false,
+    "reason": ""
+  }
 }
 ```
 
@@ -150,6 +154,7 @@ Field rules:
 - **summary**: Final assessment — what's good, what needs fixing, merge readiness.
 - **checklist**: Review checklist results. Empty array `[]` for trivial changes.
 - **comment_replies**: Optional. Omit or use `[]` if no replies are warranted.
+- **close_pr**: Optional. Object with `close` (bool) and `reason` (string). Set `close=true` only when the comments make closure the clear next step (see "Closing the PR" above). Omit the field entirely otherwise.
 
 All fields in `file_comments` and `review_summary` are required. Use empty strings `""`, empty arrays `[]`, or `false` as sentinel values — never omit a field.
 

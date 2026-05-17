@@ -89,7 +89,11 @@ Your ENTIRE response must be a single valid JSON object (no markdown, no code fe
       "comment_id": 12345,
       "reply": "Detailed reply explaining why and how."
     }
-  ]
+  ],
+  "close_pr": {
+    "close": false,
+    "reason": ""
+  }
 }
 ```
 
@@ -107,6 +111,7 @@ Field rules:
 
 All fields in `file_comments` and `review_summary` are required. Use empty strings `""`, empty arrays `[]`, or `false` as sentinel values — never omit a field.
 - **comment_replies**: Optional. Array of replies to user comments. Omit or use `[]` if no replies are warranted. Each item needs `comment_id` (integer, from the repliable comments list) and `reply` (string, the reply text).
+- **close_pr**: Optional. Object signalling whether to close the PR after the review is posted. `close` (bool) defaults to `false`. `reason` (string) is a short closure rationale, empty when `close=false`. Omit the field entirely if not closing — only include it when `close=true`.
 
 Example of an LGTM review (no issues, no replies):
 
