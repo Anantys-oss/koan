@@ -17,15 +17,28 @@ from app.skills import Skill, SkillCommand, SkillRegistry
 pytestmark = pytest.mark.slow
 
 
-@pytest.fixture(autouse=True)
-def _stub_is_subject_closed():
-    """Treat every notification subject as open by default.
+@pytest.fixture
+def subject_closed_state():
+    """Per-test override hook for `_is_subject_closed`'s stubbed return value.
 
-    `_is_subject_closed` hits the real GitHub API, so tests that don't mock
-    it locally are network-flaky (and parallel-unsafe under pytest-xdist).
+    Defaults to `None` (subject treated as open). Tests exercising the
+    closed-subject branch should override this fixture and return
+    ``"merged"`` or ``"closed"``.
+    """
+    return None
+
+
+@pytest.fixture(autouse=True)
+def _stub_is_subject_closed(subject_closed_state):
+    """Stub the network-hitting `_is_subject_closed` helper.
+
+    Return value is sourced from the `subject_closed_state` fixture so
+    tests that need a non-default answer can override it instead of
+    falling back to manual `@patch` wiring.
     """
     with patch(
-        "app.github_command_handler._is_subject_closed", return_value=None,
+        "app.github_command_handler._is_subject_closed",
+        return_value=subject_closed_state,
     ):
         yield
 

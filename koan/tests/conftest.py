@@ -1,6 +1,7 @@
 """Shared fixtures for koan tests."""
 
 import os
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -14,13 +15,37 @@ import pytest
 # under that directory (missions.md, .koan-* state, journal/, …).
 #
 # Give each xdist worker its own KOAN_ROOT before any koan module is imported.
+# Wipe any leftover state from a prior run on the same worker name — otherwise
+# missions.md fragments, .koan-* state, journal entries etc. carry over and
+# can reintroduce exactly the cross-run pollution this fixture prevents.
 # Tests that override KOAN_ROOT via monkeypatch or tmp_path remain unaffected;
 # tests that rely on the ambient KOAN_ROOT now see a worker-private directory.
 _xdist_worker = os.environ.get("PYTEST_XDIST_WORKER")
 if _xdist_worker and _xdist_worker != "master":
     _per_worker_root = Path(tempfile.gettempdir()) / f"test-koan-{_xdist_worker}"
+    shutil.rmtree(_per_worker_root, ignore_errors=True)
     (_per_worker_root / "instance").mkdir(parents=True, exist_ok=True)
     os.environ["KOAN_ROOT"] = str(_per_worker_root)
+
+
+@pytest.fixture(autouse=True)
+def _reset_run_module_state():
+    """Reset module-level mission flags in `app.run` before each test.
+
+    `_maybe_retry_mission` short-circuits on `_last_mission_timed_out`,
+    `_last_mission_aborted`, or `_last_mission_stagnated`. Several test
+    files (e.g. test_run.py) leave these flags set; under pytest-xdist
+    that pollution leaks into whatever test runs next on the same worker.
+    Resetting globally keeps every test starting from a clean state.
+    """
+    try:
+        import app.run as run_mod
+        run_mod._last_mission_timed_out = False
+        run_mod._last_mission_aborted = False
+        run_mod._last_mission_stagnated.clear()
+    except Exception:
+        pass
+    yield
 
 
 @pytest.fixture(autouse=True)

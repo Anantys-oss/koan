@@ -12,23 +12,6 @@ import pytest
 from app.run import _get_git_head, _maybe_retry_mission
 
 
-@pytest.fixture(autouse=True)
-def _reset_run_module_state():
-    """Reset module-level mission flags before each test.
-
-    `_maybe_retry_mission` short-circuits on `_last_mission_timed_out`,
-    `_last_mission_aborted`, or `_last_mission_stagnated`. Other test files
-    (e.g. test_run.py) leave these flags set, which makes these tests fail
-    under pytest-xdist when they share a worker with the polluting tests.
-    """
-    import app.run as run_mod
-
-    run_mod._last_mission_timed_out = False
-    run_mod._last_mission_aborted = False
-    run_mod._last_mission_stagnated.clear()
-    yield
-
-
 # ---------------------------------------------------------------------------
 # _get_git_head
 # ---------------------------------------------------------------------------

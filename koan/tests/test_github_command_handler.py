@@ -43,16 +43,33 @@ pytestmark = pytest.mark.slow
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(autouse=True)
-def _stub_is_subject_closed():
-    """Treat every notification subject as open by default.
+@pytest.fixture
+def subject_closed_state():
+    """Per-test override hook for `_is_subject_closed`'s stubbed return value.
 
-    `_is_subject_closed` hits the real GitHub API, so tests that don't mock
-    it locally are network-flaky (and parallel-unsafe under pytest-xdist).
-    Tests that need a non-None state still override via their own `@patch`.
+    Defaults to `None` (subject treated as open). Tests that need to
+    exercise the closed-subject branch should override this fixture in
+    their module/class scope and return ``"merged"`` or ``"closed"``.
+    Making the default explicit (rather than hidden inside an autouse
+    stub) lets future test authors see the seam without reading the
+    fixture body.
+    """
+    return None
+
+
+@pytest.fixture(autouse=True)
+def _stub_is_subject_closed(subject_closed_state):
+    """Stub the network-hitting `_is_subject_closed` helper.
+
+    Without this, `_is_subject_closed` calls the real GitHub API, which
+    makes tests network-flaky and unsafe to run in parallel. The return
+    value is sourced from the `subject_closed_state` fixture so tests
+    that need a non-default answer can override it without dropping back
+    to manual `@patch` wiring.
     """
     with patch(
-        "app.github_command_handler._is_subject_closed", return_value=None,
+        "app.github_command_handler._is_subject_closed",
+        return_value=subject_closed_state,
     ):
         yield
 
