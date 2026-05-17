@@ -16,7 +16,7 @@ actionable, constructive feedback that helps the author improve the code.
 
 ## Current Diff
 
-```diff
+{SKIPPED_FILES}```diff
 {DIFF}
 ```
 
