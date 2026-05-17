@@ -2513,7 +2513,7 @@ class TestReflectFindings:
         ])
 
     @patch("app.review_runner._run_claude_review")
-    @patch("app.prompts.load_skill_prompt", return_value="Review: {FINDINGS_JSON}\nDiff: {DIFF}")
+    @patch("app.review_runner.load_skill_prompt", return_value="Review: {FINDINGS_JSON}\nDiff: {DIFF}")
     def test_happy_path_filters_below_threshold(self, _mock_prompt, mock_claude):
         """Findings with score < threshold are dropped."""
         from app.review_runner import _reflect_findings
@@ -2528,7 +2528,7 @@ class TestReflectFindings:
         assert result[1] is findings[2]
 
     @patch("app.review_runner._run_claude_review")
-    @patch("app.prompts.load_skill_prompt", return_value="Review: {FINDINGS_JSON}\nDiff: {DIFF}")
+    @patch("app.review_runner.load_skill_prompt", return_value="Review: {FINDINGS_JSON}\nDiff: {DIFF}")
     def test_parse_failure_returns_original(self, _mock_prompt, mock_claude):
         """When Claude returns invalid JSON, original findings are returned unchanged."""
         from app.review_runner import _reflect_findings
@@ -2541,7 +2541,7 @@ class TestReflectFindings:
         assert result is findings
 
     @patch("app.review_runner._run_claude_review")
-    @patch("app.prompts.load_skill_prompt", return_value="Review: {FINDINGS_JSON}\nDiff: {DIFF}")
+    @patch("app.review_runner.load_skill_prompt", return_value="Review: {FINDINGS_JSON}\nDiff: {DIFF}")
     def test_threshold_zero_all_pass(self, _mock_prompt, mock_claude):
         """threshold=0 keeps all findings regardless of score."""
         from app.review_runner import _reflect_findings
@@ -2554,7 +2554,7 @@ class TestReflectFindings:
         assert len(result) == 2
 
     @patch("app.review_runner._run_claude_review")
-    @patch("app.prompts.load_skill_prompt", return_value="Review: {FINDINGS_JSON}\nDiff: {DIFF}")
+    @patch("app.review_runner.load_skill_prompt", return_value="Review: {FINDINGS_JSON}\nDiff: {DIFF}")
     def test_threshold_ten_all_filtered(self, _mock_prompt, mock_claude):
         """threshold=10 drops all findings unless they score exactly 10."""
         from app.review_runner import _reflect_findings
@@ -2567,7 +2567,7 @@ class TestReflectFindings:
         assert result == []
 
     @patch("app.review_runner._run_claude_review")
-    @patch("app.prompts.load_skill_prompt", return_value="Review: {FINDINGS_JSON}\nDiff: {DIFF}")
+    @patch("app.review_runner.load_skill_prompt", return_value="Review: {FINDINGS_JSON}\nDiff: {DIFF}")
     def test_empty_findings_skips_claude(self, _mock_prompt, mock_claude):
         """Empty findings list returns immediately without calling Claude."""
         from app.review_runner import _reflect_findings
@@ -2578,7 +2578,7 @@ class TestReflectFindings:
         mock_claude.assert_not_called()
 
     @patch("app.review_runner._run_claude_review")
-    @patch("app.prompts.load_skill_prompt", return_value="Review: {FINDINGS_JSON}\nDiff: {DIFF}")
+    @patch("app.review_runner.load_skill_prompt", return_value="Review: {FINDINGS_JSON}\nDiff: {DIFF}")
     def test_claude_error_returns_original(self, _mock_prompt, mock_claude):
         """When Claude call fails, original findings are returned unchanged."""
         from app.review_runner import _reflect_findings
@@ -2591,7 +2591,7 @@ class TestReflectFindings:
         assert result is findings
 
     @patch("app.review_runner._run_claude_review")
-    @patch("app.prompts.load_skill_prompt", return_value="Review: {FINDINGS_JSON}\nDiff: {DIFF}")
+    @patch("app.review_runner.load_skill_prompt", return_value="Review: {FINDINGS_JSON}\nDiff: {DIFF}")
     def test_out_of_range_indices_ignored(self, _mock_prompt, mock_claude):
         """Reflection entries with out-of-range finding_index are silently skipped."""
         from app.review_runner import _reflect_findings
