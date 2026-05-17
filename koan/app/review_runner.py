@@ -1046,6 +1046,23 @@ def _post_comment_replies(
     return posted
 
 
+def _patch_comment_body(
+    owner: str, repo: str, comment_id: int, body: str,
+) -> bool:
+    """PATCH a GitHub issue comment body. Returns True on success."""
+    try:
+        run_gh(
+            "api",
+            f"repos/{owner}/{repo}/issues/comments/{comment_id}",
+            "-X", "PATCH",
+            "-f", f"body={body}",
+        )
+        return True
+    except Exception as e:
+        print(f"[review_runner] failed to patch comment {comment_id}: {e}", file=sys.stderr)
+        return False
+
+
 def _resolve_plan_body(plan_url: Optional[str], pr_body: str) -> str:
     """Fetch the plan body from an explicit URL or auto-detect from the PR body.
 
