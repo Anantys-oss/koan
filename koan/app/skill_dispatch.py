@@ -292,7 +292,7 @@ def build_skill_command(
         "rebase": lambda: _build_rebase_cmd(base_cmd, args, project_path),
         "recreate": lambda: _build_pr_url_cmd(base_cmd, args, project_path),
         "squash": lambda: _build_pr_url_cmd(base_cmd, args, project_path),
-        "review": lambda: _build_review_cmd(base_cmd, args, project_path),
+        "review": lambda: _build_review_cmd(base_cmd, args, project_path, project_name),
         "ai": lambda: _build_ai_cmd(base_cmd, project_name, project_path, instance_dir),
         "check": lambda: _build_check_cmd(base_cmd, args, instance_dir, koan_root),
         "tech_debt": lambda: _build_project_info_cmd(
@@ -534,7 +534,7 @@ def _build_rebase_cmd(
 
 
 def _build_review_cmd(
-    base_cmd: List[str], args: str, project_path: str,
+    base_cmd: List[str], args: str, project_path: str, project_name: str = "",
 ) -> Optional[List[str]]:
     """Build review_runner command, passing --architecture and --plan-url if present."""
     url_match = _PR_URL_RE.search(args)
@@ -546,6 +546,8 @@ def _build_review_cmd(
     plan_url, _ = _extract_flag(args, _PLAN_URL_RE)
     if plan_url:
         cmd.extend(["--plan-url", plan_url])
+    if project_name:
+        cmd.extend(["--project-name", project_name])
     return cmd
 
 

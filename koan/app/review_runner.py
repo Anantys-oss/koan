@@ -40,6 +40,26 @@ from app.review_schema import validate_review
 _ISSUE_URL_RE = re.compile(ISSUE_URL_PATTERN)
 
 
+def load_project_learnings(project_name: Optional[str]) -> str:
+    """Return learnings.md content for the given project as a formatted section.
+
+    Returns an empty string if project_name is None, the file is missing,
+    or the file is empty — so callers can pass the result directly into the
+    prompt template without extra checks.
+    """
+    if not project_name:
+        return ""
+    try:
+        from app.utils import KOAN_ROOT
+        learnings_path = KOAN_ROOT / "instance" / "memory" / "projects" / project_name / "learnings.md"
+        content = learnings_path.read_text().strip()
+        if not content:
+            return ""
+        return f"## Project best practices\n\n{content}\n\n---\n\n"
+    except (FileNotFoundError, OSError):
+        return ""
+
+
 def _resolve_bot_username() -> str:
     """Read the bot's GitHub nickname from config.yaml.
 
@@ -896,6 +916,7 @@ def run_review(
     skill_dir: Optional[Path] = None,
     architecture: bool = False,
     plan_url: Optional[str] = None,
+    project_name: Optional[str] = None,
 ) -> Tuple[bool, str, Optional[dict]]:
     """Execute a read-only code review on a PR.
 
@@ -909,6 +930,8 @@ def run_review(
         architecture: If True, use architecture-focused review prompt.
         plan_url: Optional explicit GitHub issue URL for the plan to check
             alignment against. When None, auto-detection from PR body is used.
+        project_name: Optional project name for injecting project-specific
+            learnings into the review prompt.
 
     Returns:
         (success, summary, review_data) tuple. review_data is the validated
@@ -1110,6 +1133,10 @@ def main(argv=None):
         help="GitHub issue URL for the plan to check alignment against. "
              "When omitted, auto-detects from the PR body.",
     )
+    parser.add_argument(
+        "--project-name",
+        help="Project name for injecting project-specific learnings into the review prompt.",
+    )
     cli_args = parser.parse_args(argv)
 
     try:
@@ -1125,6 +1152,7 @@ def main(argv=None):
         skill_dir=skill_dir,
         architecture=cli_args.architecture,
         plan_url=cli_args.plan_url,
+        project_name=cli_args.project_name,
     )
     print(summary)
     return 0 if success else 1
