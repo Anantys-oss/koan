@@ -1026,7 +1026,7 @@ def _push_with_pr_fallback(
             if desc:
                 pr_body = f"{format_description(desc)}\n\n{boilerplate}"
         except Exception as _desc_err:
-            print(f"[{pr_type}_pr] describe_pr failed, using boilerplate: {_desc_err}", file=sys.stderr)
+            logging.warning("[%s_pr] describe_pr failed, using boilerplate: %s", pr_type, _desc_err)
         new_pr_url = pr_create(
             title=f"{cfg['title_prefix']} {title}",
             body=pr_body,

@@ -13,9 +13,11 @@ format_description(desc) -> str
 
 from __future__ import annotations
 
+import logging
 import subprocess
-import sys
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 # Maximum diff size sent to Claude (characters, not tokens — rough proxy).
@@ -46,7 +48,7 @@ def _get_diff(project_path: str, base_branch: str) -> str:
             cwd=project_path,
         )
     except Exception as e:
-        print(f"[describe_pr] git diff failed: {e}", file=sys.stderr)
+        logger.warning("git diff failed: %s", e)
         return ""
 
     if not full.strip():
@@ -67,7 +69,7 @@ def _get_log(project_path: str, base_branch: str) -> str:
             cwd=project_path,
         ).strip()
     except Exception as e:
-        print(f"[describe_pr] git log failed: {e}", file=sys.stderr)
+        logger.warning("git log failed: %s", e)
         return ""
 
 
@@ -98,7 +100,7 @@ def _parse_description(raw: str) -> dict:
 
     def bullets(key: str) -> list[str]:
         lines = sections.get(key, [])
-        return [l.lstrip("- ").strip() for l in lines if l.startswith("- ")]
+        return [l[2:].strip() for l in lines if l.startswith("- ")]
 
     def prose(key: str) -> str:
         lines = sections.get(key, [])
@@ -188,14 +190,11 @@ def describe_pr(project_path: str, base_branch: str) -> Optional[dict]:
             timeout=90, cwd=project_path,
         )
     except Exception as e:
-        print(f"[describe_pr] CLI call failed: {e}", file=sys.stderr)
+        logger.warning("CLI call failed: %s", e)
         return None
 
     if result.returncode != 0:
-        print(
-            f"[describe_pr] CLI returned {result.returncode}: {result.stderr[:200]}",
-            file=sys.stderr,
-        )
+        logger.warning("CLI returned %d: %s", result.returncode, result.stderr[:200])
         return None
 
     raw = result.stdout.strip()
@@ -206,7 +205,7 @@ def describe_pr(project_path: str, base_branch: str) -> Optional[dict]:
 
     # Validate: at least one section must have data
     if not parsed["summary"] and not parsed["why"] and not parsed["how"]:
-        print("[describe_pr] Warning: all sections empty in parsed output", file=sys.stderr)
+        logger.warning("all sections empty in parsed output")
         return None
 
     return parsed
