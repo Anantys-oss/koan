@@ -28,6 +28,38 @@ _(Optional — omit this section entirely if there are no notable risks.)_
 
 Bullet points noting known limitations, edge cases, or rollback considerations.
 
+# Example output
+
+## Summary
+
+- Replaced ad-hoc PR description strings with a structured generation pipeline
+- Added `describe_pr()` module that diffs branch, sends to Claude, and parses response
+- Integrated auto-description into implement, fix, and rebase PR creation paths
+- Graceful fallback: callers keep existing body when generation fails
+
+## Why
+
+PR descriptions were inconsistent free-form strings that made review harder. A structured format (what/why/how/testing) ensures every PR communicates the same baseline information, reducing reviewer friction.
+
+## How
+
+- Created `describe_pr.py` with `describe_pr()`, `_parse_description()`, and `format_description()`
+- Prompt template in `system-prompts/describe-pr.md` defines section schema
+- Wired into `implement_runner.py` and `fix_runner.py` before `submit_draft_pr()`
+- `claude_step.py` prepends generated description to boilerplate in fallback path
+
+## Testing
+
+- 13 unit tests covering parser (clean output, leading prose, missing sections, empty input)
+- Formatter tested for full rendering, missing optional sections, and empty dict
+- `describe_pr()` tested for success, empty diff, CLI failure, and exception paths
+- Full test suite passes with no regressions
+
+## Limitations & Risk
+
+- Truncates diffs over 32k characters — very large PRs may get incomplete descriptions
+- Depends on Claude availability; fallback body is used when generation fails
+
 # Rules
 
 - Output ONLY the sections above. No preamble, no conclusion, no extra prose.
