@@ -2553,16 +2553,16 @@ class TestReflectFindings:
         assert result is findings
 
     @patch("app.review_runner._run_claude_review")
-    def test_threshold_zero_all_pass(self, mock_claude, skill_dir):
-        """threshold=0 keeps all findings regardless of score."""
+    def test_threshold_zero_short_circuits(self, mock_claude, skill_dir):
+        """threshold=0 returns all findings without calling Claude."""
         from app.review_runner import _reflect_findings
 
         findings = [dict(self.FINDING), dict(self.FINDING)]
-        mock_claude.return_value = (self._make_scores(0, 1), "")
 
         result = _reflect_findings(findings, "diff", "/tmp/p", None, 0, skill_dir=skill_dir)
 
         assert len(result) == 2
+        mock_claude.assert_not_called()
 
     @patch("app.review_runner._run_claude_review")
     def test_threshold_ten_all_filtered(self, mock_claude, skill_dir):

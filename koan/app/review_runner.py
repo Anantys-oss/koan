@@ -443,7 +443,7 @@ def _reflect_findings(
     # Clamp threshold to valid range
     threshold = max(0, min(10, threshold))
 
-    if not findings:
+    if not findings or threshold <= 0:
         return findings
 
     if skill_dir is None:
@@ -456,19 +456,11 @@ def _reflect_findings(
             FINDINGS_JSON=findings_json,
             DIFF=diff or "(diff not available)",
         )
-    except Exception as exc:
-        print(
-            f"[review_runner] reflect: prompt build failed: {exc}",
-            file=sys.stderr,
-        )
+    except Exception:
         return findings
 
     raw_output, error = _run_claude_review(prompt, project_path, model=model)
     if not raw_output:
-        print(
-            f"[review_runner] reflect: Claude call failed: {error}",
-            file=sys.stderr,
-        )
         return findings
 
     # Parse and validate response
@@ -479,18 +471,10 @@ def _reflect_findings(
             lines = text.splitlines()
             text = "\n".join(lines[1:-1]) if lines[-1].strip() == "```" else "\n".join(lines[1:])
         scores = json.loads(text)
-    except json.JSONDecodeError as exc:
-        print(
-            f"[review_runner] reflect: JSON parse failed: {exc} — keeping all findings",
-            file=sys.stderr,
-        )
+    except json.JSONDecodeError:
         return findings
 
     if not isinstance(scores, list):
-        print(
-            "[review_runner] reflect: response is not an array — keeping all findings",
-            file=sys.stderr,
-        )
         return findings
 
     # Build index → score map; skip out-of-range indices
@@ -512,14 +496,6 @@ def _reflect_findings(
         f for i, f in enumerate(findings)
         if score_map.get(i, threshold) >= threshold
     ]
-
-    dropped = len(findings) - len(filtered)
-    if dropped:
-        print(
-            f"[review_runner] reflect: filtered {dropped} low-signal finding(s) "
-            f"(threshold={threshold})",
-            file=sys.stderr,
-        )
 
     return filtered
 
