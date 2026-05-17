@@ -10,6 +10,7 @@ import pytest
 from app.review_runner import (
     build_review_prompt,
     fetch_repliable_comments,
+    load_project_learnings,
     run_review,
     _detect_plan_url,
     _fetch_plan_body,
@@ -132,6 +133,53 @@ class TestBuildReviewPrompt:
         assert "token validation" in task_text  # body
         assert "quota_handler.py" in task_text  # diff signal
         assert "fix-auth" not in task_text     # branch must not be the main signal
+
+
+# ---------------------------------------------------------------------------
+# load_project_learnings
+# ---------------------------------------------------------------------------
+
+class TestLoadProjectLearnings:
+    def test_returns_content_when_file_present(self, tmp_path, monkeypatch):
+        """Returns formatted section when learnings.md exists."""
+        instance_dir = tmp_path / "instance" / "memory" / "projects" / "my-project"
+        instance_dir.mkdir(parents=True)
+        (instance_dir / "learnings.md").write_text("Always use type hints.")
+
+        import app.review_runner as rr_mod
+        monkeypatch.setattr(rr_mod, "KOAN_ROOT", tmp_path)
+
+        result = load_project_learnings("my-project")
+        assert "Project best practices" in result
+        assert "Always use type hints." in result
+
+    def test_returns_empty_when_file_absent(self, tmp_path, monkeypatch):
+        """Returns empty string when learnings.md does not exist."""
+        import app.review_runner as rr_mod
+        monkeypatch.setattr(rr_mod, "KOAN_ROOT", tmp_path)
+
+        result = load_project_learnings("no-such-project")
+        assert result == ""
+
+    def test_returns_empty_when_project_name_none(self, tmp_path, monkeypatch):
+        """Returns empty string when project_name is None."""
+        import app.review_runner as rr_mod
+        monkeypatch.setattr(rr_mod, "KOAN_ROOT", tmp_path)
+
+        result = load_project_learnings(None)
+        assert result == ""
+
+    def test_returns_empty_when_file_empty(self, tmp_path, monkeypatch):
+        """Returns empty string when learnings.md is empty."""
+        instance_dir = tmp_path / "instance" / "memory" / "projects" / "proj"
+        instance_dir.mkdir(parents=True)
+        (instance_dir / "learnings.md").write_text("")
+
+        import app.review_runner as rr_mod
+        monkeypatch.setattr(rr_mod, "KOAN_ROOT", tmp_path)
+
+        result = load_project_learnings("proj")
+        assert result == ""
 
 
 # ---------------------------------------------------------------------------
