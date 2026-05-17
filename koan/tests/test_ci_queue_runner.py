@@ -196,6 +196,7 @@ class TestDrainOneErrorHandling:
             patch("pathlib.Path.read_text", return_value=missions_content),
             patch("app.ci_queue_runner._maybe_migrate_json_queue"),
             patch("app.utils.modify_missions_file") as mock_modify,
+            patch("app.rebase_pr._check_pr_state", return_value=("OPEN", "MERGEABLE")),
             patch("app.ci_queue_runner.check_ci_status", return_value=("success", 123)),
             patch("app.ci_queue_runner._write_outbox"),
         ):
@@ -215,6 +216,7 @@ class TestDrainOneErrorHandling:
             patch("pathlib.Path.read_text", return_value=missions_content),
             patch("app.ci_queue_runner._maybe_migrate_json_queue"),
             patch("app.utils.modify_missions_file"),
+            patch("app.rebase_pr._check_pr_state", return_value=("OPEN", "MERGEABLE")),
             patch("app.ci_queue_runner.check_ci_status", return_value=("failure", 456)),
             patch("app.ci_queue_runner._inject_ci_fix_mission") as mock_inject,
         ):
@@ -234,6 +236,7 @@ class TestDrainOneErrorHandling:
             patch("pathlib.Path.read_text", return_value=missions_content),
             patch("app.ci_queue_runner._maybe_migrate_json_queue"),
             patch("app.utils.modify_missions_file") as mock_modify,
+            patch("app.rebase_pr._check_pr_state", return_value=("OPEN", "MERGEABLE")),
             patch("app.ci_queue_runner.check_ci_status", return_value=("failure", 456)),
             patch("app.ci_queue_runner._write_outbox") as mock_outbox,
         ):
@@ -245,6 +248,75 @@ class TestDrainOneErrorHandling:
         mock_outbox.assert_called_once()
         # Failure notification should mention the PR URL
         assert PR_URL in mock_outbox.call_args[0][1]
+
+    def test_drain_one_merged_pr_removed_without_ci_check(self):
+        """A merged PR is removed from ## CI without injecting /ci_check.
+
+        Regression: a PR merged upstream still had stale "failure" workflow
+        runs on the branch, so drain_one kept injecting /ci_check missions
+        until ci_fix_max_attempts (default 5) was exhausted. See aio-libs/yarl
+        PR #1687 — Kōan burned 5 fix-mission cycles after the merge.
+        """
+        from app.ci_queue_runner import drain_one
+
+        missions_content = self._missions_with_ci_entry()
+        with (
+            patch("pathlib.Path.exists", return_value=True),
+            patch("pathlib.Path.read_text", return_value=missions_content),
+            patch("app.ci_queue_runner._maybe_migrate_json_queue"),
+            patch("app.utils.modify_missions_file") as mock_modify,
+            patch("app.rebase_pr._check_pr_state", return_value=("MERGED", "UNKNOWN")),
+            patch("app.ci_queue_runner.check_ci_status") as mock_status,
+            patch("app.ci_queue_runner._inject_ci_fix_mission") as mock_inject,
+        ):
+            result = drain_one("/tmp/instance")
+
+        assert result is not None
+        assert "merged" in result.lower()
+        mock_modify.assert_called()
+        mock_inject.assert_not_called()
+        mock_status.assert_not_called()
+
+    def test_drain_one_closed_pr_removed_without_ci_check(self):
+        """A closed-not-merged PR is removed from ## CI without injecting /ci_check."""
+        from app.ci_queue_runner import drain_one
+
+        missions_content = self._missions_with_ci_entry()
+        with (
+            patch("pathlib.Path.exists", return_value=True),
+            patch("pathlib.Path.read_text", return_value=missions_content),
+            patch("app.ci_queue_runner._maybe_migrate_json_queue"),
+            patch("app.utils.modify_missions_file") as mock_modify,
+            patch("app.rebase_pr._check_pr_state", return_value=("CLOSED", "UNKNOWN")),
+            patch("app.ci_queue_runner.check_ci_status") as mock_status,
+            patch("app.ci_queue_runner._inject_ci_fix_mission") as mock_inject,
+        ):
+            result = drain_one("/tmp/instance")
+
+        assert result is not None
+        assert "closed" in result.lower()
+        mock_modify.assert_called()
+        mock_inject.assert_not_called()
+        mock_status.assert_not_called()
+
+    def test_drain_one_unknown_pr_state_continues_to_ci_check(self):
+        """A flaky gh call returning UNKNOWN must not drop the entry."""
+        from app.ci_queue_runner import drain_one
+
+        missions_content = self._missions_with_ci_entry()
+        with (
+            patch("pathlib.Path.exists", return_value=True),
+            patch("pathlib.Path.read_text", return_value=missions_content),
+            patch("app.ci_queue_runner._maybe_migrate_json_queue"),
+            patch("app.utils.modify_missions_file"),
+            patch("app.rebase_pr._check_pr_state", return_value=("UNKNOWN", "UNKNOWN")),
+            patch("app.ci_queue_runner.check_ci_status", return_value=("pending", None)) as mock_status,
+        ):
+            result = drain_one("/tmp/instance")
+
+        # pending → no action this iteration, but check_ci_status was still consulted
+        assert result is None
+        mock_status.assert_called_once()
 
 
 class TestAttemptCiFixes:

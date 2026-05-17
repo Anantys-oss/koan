@@ -87,6 +87,22 @@ def drain_one(instance_dir: str) -> Optional[str]:
     attempt = entry["attempt"]
     max_attempts = entry["max_attempts"]
 
+    # Skip merged/closed PRs before checking CI status — stale workflow
+    # runs on a closed PR otherwise drive an infinite /ci_check loop
+    # (drain_one sees old "failure", injects /ci_check, the fix runner
+    # returns "PR merged — skip" but the ## CI entry is never removed).
+    # _check_pr_state returns ("UNKNOWN", "UNKNOWN") on gh failure, so a
+    # flaky network call leaves the entry in place rather than dropping it.
+    from app.rebase_pr import _check_pr_state
+    pr_state, _mergeable = _check_pr_state(pr_number, full_repo)
+    if pr_state in ("MERGED", "CLOSED"):
+        modify_missions_file(
+            missions_path,
+            lambda c: remove_ci_item(c, pr_url),
+        )
+        verb = "merged" if pr_state == "MERGED" else "closed"
+        return f"PR #{pr_number} {verb} — removed from ## CI"
+
     status, _run_id = check_ci_status(branch, full_repo)
 
     if status == "success":
