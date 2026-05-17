@@ -2249,9 +2249,11 @@ class TestRefreshStaleAppModules:
         _module_mtimes.pop("app.refreshable_test", None)
 
     def test_first_encounter_caches_mtime_without_reload(self, monkeypatch, tmp_path):
-        """First time seeing a module just caches mtime, does not reload."""
+        """First time seeing a module just caches mtime, does not reload —
+        provided the file is no newer than the process start time."""
         import importlib as _importlib
 
+        from app import skills as _skills
         from app.skills import _module_mtimes, _refresh_stale_app_modules
 
         fake_file = tmp_path / "first_seen.py"
@@ -2263,6 +2265,12 @@ class TestRefreshStaleAppModules:
         # Ensure not in mtime cache
         _module_mtimes.pop("app.first_seen_test", None)
 
+        # Pretend the process started well after the file's mtime, so the
+        # first-encounter fast path applies (auto-update did not touch it).
+        monkeypatch.setattr(
+            _skills, "_PROCESS_START_TIME", fake_file.stat().st_mtime + 60,
+        )
+
         reload_calls = []
         original_reload = _importlib.reload
         monkeypatch.setattr(
@@ -2272,12 +2280,55 @@ class TestRefreshStaleAppModules:
 
         _refresh_stale_app_modules()
 
-        assert not reload_calls, "First encounter should not trigger reload"
+        assert not reload_calls, "First encounter of an old file should not reload"
         assert "app.first_seen_test" in _module_mtimes
 
         # Cleanup
         sys.modules.pop("app.first_seen_test", None)
         _module_mtimes.pop("app.first_seen_test", None)
+
+    def test_first_encounter_reloads_when_file_newer_than_process_start(
+        self, monkeypatch, tmp_path,
+    ):
+        """If a module's source file was modified after the process started
+        (auto-update path), the very first observation must trigger a reload
+        even though no baseline mtime exists yet. Regression test for the
+        ``cannot import name 'PROJECT_NAME_CHARS' from 'app.utils'`` failure
+        on the first /list after an auto-update added a new symbol."""
+        import importlib as _importlib
+
+        from app import skills as _skills
+        from app.skills import _module_mtimes, _refresh_stale_app_modules
+
+        fake_file = tmp_path / "post_update.py"
+        fake_file.write_text("X = 1")
+        fake_mod = MagicMock()
+        fake_mod.__file__ = str(fake_file)
+
+        monkeypatch.setitem(sys.modules, "app.post_update_test", fake_mod)
+        # No cached mtime: this is the first observation of the module.
+        _module_mtimes.pop("app.post_update_test", None)
+
+        # Pretend the process started before the file was written.
+        file_mtime = fake_file.stat().st_mtime
+        monkeypatch.setattr(_skills, "_PROCESS_START_TIME", file_mtime - 60)
+
+        reload_calls = []
+        monkeypatch.setattr(
+            _importlib, "reload",
+            lambda m: reload_calls.append(m),
+        )
+
+        _refresh_stale_app_modules()
+
+        assert reload_calls == [fake_mod], (
+            "First observation of a file newer than process start must reload"
+        )
+        assert _module_mtimes.get("app.post_update_test") == file_mtime
+
+        # Cleanup
+        sys.modules.pop("app.post_update_test", None)
+        _module_mtimes.pop("app.post_update_test", None)
 
     def test_failed_reload_evicts_module(self, monkeypatch, tmp_path):
         """If reload fails, the module is evicted from sys.modules."""

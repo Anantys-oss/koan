@@ -33,6 +33,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from collections import namedtuple
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -568,6 +569,11 @@ def execute_skill(skill: Skill, ctx: SkillContext) -> Optional[Union[str, SkillE
     return None
 
 
+# Captured at import time so first-time observations in
+# _refresh_stale_app_modules can tell whether a module's source file has been
+# rewritten by auto-update since this process started (Python had no chance to
+# pick up the new content because sys.modules still holds the pre-update copy).
+_PROCESS_START_TIME: float = time.time()
 # mtime cache: module_name -> last-seen mtime (float)
 _module_mtimes: Dict[str, float] = {}
 
@@ -675,9 +681,14 @@ def _refresh_stale_app_modules() -> None:
         cached_mtime = _module_mtimes.get(name)
         if cached_mtime is not None and current_mtime == cached_mtime:
             continue
-        # First time we see this module, or mtime changed
-        if cached_mtime is not None:
-            # mtime actually changed — reload
+        # Reload when either: (a) we have a baseline and the file changed, or
+        # (b) this is the first observation but the file was modified after the
+        # process started — i.e. auto-update rewrote it before we built a baseline.
+        should_reload = (
+            cached_mtime is not None
+            or current_mtime > _PROCESS_START_TIME
+        )
+        if should_reload:
             try:
                 importlib.reload(mod)
                 _log.debug("Reloaded stale module %s", name)
