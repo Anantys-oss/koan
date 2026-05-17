@@ -456,7 +456,8 @@ def _reflect_findings(
             FINDINGS_JSON=findings_json,
             DIFF=diff or "(diff not available)",
         )
-    except Exception:
+    except Exception as e:
+        print(f"[reflect] prompt build failed: {e}", file=sys.stderr)
         return findings
 
     raw_output, error = _run_claude_review(prompt, project_path, model=model)
