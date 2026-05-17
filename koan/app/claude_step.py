@@ -522,12 +522,45 @@ CI_STATUS_BLOCKED_APPROVAL = "blocked_approval"
 _CI_RUN_LIMIT = 20
 
 
+def _filter_runs_to_latest_sha(runs: list) -> list:
+    """Return only the runs whose ``headSha`` matches the latest SHA.
+
+    The latest SHA is the ``headSha`` of the run with the greatest
+    ``createdAt`` value. When ``createdAt`` is missing for the candidate,
+    the run's position in the input list (later = newer, matching
+    ``gh run list`` ordering) breaks the tie.
+
+    Runs without a ``headSha`` field are left untouched (treated as a
+    single anonymous group) — this preserves behaviour for legacy callers
+    and the bulk of existing tests.
+    """
+    has_sha = [r for r in runs if r.get("headSha")]
+    if not has_sha:
+        return runs
+
+    def _sort_key(r):
+        # createdAt is ISO-8601 and lexicographically sortable; fallback
+        # to the run's index in the original list so the most-recently
+        # returned entry still wins when timestamps are missing.
+        return (r.get("createdAt") or "", runs.index(r))
+
+    latest_sha = max(has_sha, key=_sort_key).get("headSha")
+    return [r for r in runs if r.get("headSha") == latest_sha]
+
+
 def aggregate_ci_runs(runs: list) -> Tuple[str, Optional[int]]:
     """Reduce a list of workflow runs to a single (status, run_id) tuple.
 
-    Filters out runs whose conclusion is in :data:`_IGNORED_CI_CONCLUSIONS`
-    (notably the "Dependabot auto-merge" skip case) before aggregating, so
-    a benign skipped workflow doesn't masquerade as a CI failure.
+    Restricts aggregation to runs on the **latest** commit SHA seen in
+    *runs* (by ``createdAt``), so a failed run from a prior commit on the
+    same branch doesn't masquerade as a current failure. Runs whose entry
+    omits ``headSha`` are treated as a single anonymous group — preserving
+    backward compatibility with callers that don't supply the field.
+
+    Then filters out runs whose conclusion is in
+    :data:`_IGNORED_CI_CONCLUSIONS` (notably the "Dependabot auto-merge"
+    skip case) so a benign skipped workflow doesn't masquerade as a CI
+    failure.
 
     Aggregation rules over the remaining runs:
     - any failed completed run → ("failure", failed_run_id)
@@ -543,6 +576,8 @@ def aggregate_ci_runs(runs: list) -> Tuple[str, Optional[int]]:
     """
     if not runs:
         return ("none", None)
+
+    runs = _filter_runs_to_latest_sha(runs)
 
     relevant = [
         r for r in runs
@@ -585,7 +620,7 @@ def fetch_branch_ci_runs(branch: str, full_repo: str) -> list:
         "run", "list",
         "--branch", branch,
         "--repo", full_repo,
-        "--json", "databaseId,status,conclusion,name,workflowName",
+        "--json", "databaseId,status,conclusion,name,workflowName,headSha,createdAt",
         "--limit", str(_CI_RUN_LIMIT),
     )
     return json.loads(raw) if raw.strip() else []
