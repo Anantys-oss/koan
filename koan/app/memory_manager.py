@@ -26,6 +26,7 @@ Commands:
 
 import contextlib
 import hashlib
+import json
 import shutil
 import subprocess
 import sys
@@ -35,6 +36,14 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from app.utils import PROJECT_HINT_RE, atomic_write
+
+# Hermes-inspired anti-thrash threshold. When a compaction pass would save
+# less than this fraction of the file (predicted from current size vs
+# target), the pass is skipped — running it would burn lightweight-model
+# quota for no practical gain. 10% is a sweet spot: large enough that the
+# guard kicks in on already-tight files, small enough that genuinely
+# bloated files still trigger compaction.
+_ANTI_THRASH_MIN_SAVINGS_PCT = 0.10
 
 
 # ---------------------------------------------------------------------------
@@ -231,6 +240,53 @@ def _extract_title(content: str) -> str:
         if line.startswith("# ") and not line.startswith("## "):
             return line
     return ""
+
+
+def _read_compact_state(path: Path) -> Optional[Dict[str, object]]:
+    """Read the per-project compaction state file.
+
+    Returns a dict with at least ``hash`` and (when available)
+    ``compacted_lines``. Returns ``None`` for a missing or unreadable
+    file. Tolerates the legacy plain-string hash format (versions before
+    the anti-thrash guard wrote just the hex digest) by treating it as a
+    dict with only ``hash`` populated — callers can still short-circuit
+    on hash match but get no growth telemetry until the next successful
+    compaction rewrites the state in JSON form.
+
+    Hardening: a state file containing valid JSON that isn't an object
+    (``true``, ``[1,2,3]``, a bare number or string, etc.) is treated
+    the same as legacy — wrapped so callers can safely call ``.get()``.
+    The next successful compaction rewrites the file in canonical form.
+    """
+    if not path.exists():
+        return None
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        # Legacy format: plain hex digest. Wrap it for callers.
+        return {"hash": raw}
+    if not isinstance(parsed, dict):
+        # Valid JSON, wrong shape (bool, list, number, string). Treat as
+        # legacy so the caller's ``.get("hash")`` doesn't crash.
+        return {"hash": raw}
+    return parsed
+
+
+def _write_compact_state(path: Path, content_hash: str, compacted_lines: int) -> None:
+    """Persist the compaction state. Errors are swallowed (state is advisory)."""
+    payload = {
+        "hash": content_hash,
+        "compacted_lines": int(compacted_lines),
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    with contextlib.suppress(OSError):
+        atomic_write(path, json.dumps(payload) + "\n")
 
 
 # ---------------------------------------------------------------------------
@@ -586,16 +642,47 @@ class MemoryManager:
         if original_count <= max_lines:
             return {"original_lines": original_count, "compacted_lines": original_count, "skipped": True}
 
-        # Hash-based skip: don't re-compact if content hasn't changed
+        # Hash-based skip: don't re-compact if content hasn't changed.
         content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
         hash_path = self.instance_dir / f".koan-learnings-compact-hash-{project_name}"
-        if hash_path.exists():
-            try:
-                stored_hash = hash_path.read_text().strip()
-                if stored_hash == content_hash:
-                    return {"original_lines": original_count, "compacted_lines": original_count, "skipped": True}
-            except (OSError, ValueError):
-                pass
+        prior_state = _read_compact_state(hash_path)
+        if prior_state and prior_state.get("hash") == content_hash:
+            return {"original_lines": original_count, "compacted_lines": original_count, "skipped": True}
+
+        # Anti-thrash guard (Hermes-inspired): skip when the value of
+        # running the CLI is marginal. Two flavours, in priority order:
+        #
+        #   1. *Growth-aware* — when prior state knows how many lines the
+        #      file held right after the last successful compaction, skip
+        #      if the file has grown by less than the threshold percentage
+        #      relative to that baseline. This is the most accurate signal
+        #      ("almost nothing has been added since last cycle") and
+        #      strictly preferred when prior telemetry exists.
+        #
+        #   2. *Target-distance fallback* — when there's no prior
+        #      ``compacted_lines`` telemetry (first compaction ever, legacy
+        #      plain-hash state, or non-dict JSON), fall back to the
+        #      original heuristic: skip if compaction wouldn't move the
+        #      file meaningfully closer to ``max_lines``.
+        prior_compacted = prior_state.get("compacted_lines") if prior_state else None
+        if isinstance(prior_compacted, int) and prior_compacted > 0:
+            growth_pct = (original_count - prior_compacted) / prior_compacted
+            if growth_pct < _ANTI_THRASH_MIN_SAVINGS_PCT:
+                return {
+                    "original_lines": original_count,
+                    "compacted_lines": original_count,
+                    "skipped": True,
+                    "reason": "anti_thrash",
+                }
+        else:
+            predicted_savings_pct = (original_count - max_lines) / original_count
+            if predicted_savings_pct < _ANTI_THRASH_MIN_SAVINGS_PCT:
+                return {
+                    "original_lines": original_count,
+                    "compacted_lines": original_count,
+                    "skipped": True,
+                    "reason": "anti_thrash",
+                }
 
         # Resolve project path for file tree
         if project_path is None:
@@ -658,11 +745,12 @@ class MemoryManager:
 
         atomic_write(learnings_path, "\n".join(result_parts))
 
-        # Store hash of the NEW content to avoid re-compacting
+        # Persist state (hash + last-compacted size) so future calls can
+        # both short-circuit on unchanged content AND apply the anti-thrash
+        # guard based on growth since the last successful compaction.
         new_content = learnings_path.read_text(encoding="utf-8")
         new_hash = hashlib.sha256(new_content.encode("utf-8")).hexdigest()
-        with contextlib.suppress(OSError):
-            atomic_write(hash_path, new_hash)
+        _write_compact_state(hash_path, new_hash, compacted_count)
 
         return {"original_lines": original_count, "compacted_lines": compacted_count, "skipped": False, "method": "semantic"}
 

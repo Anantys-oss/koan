@@ -880,6 +880,198 @@ class TestCompactLearnings:
         assert stats["skipped"] is True
         assert path.read_text() == original_content
 
+    def test_anti_thrash_skips_when_savings_below_threshold(self, tmp_path):
+        """Skip CLI when predicted savings are below the 10% threshold.
+
+        With 105 content lines and max_lines=100, predicted savings is
+        ~4.8% — below 10%, so the CLI must NOT be invoked and the file
+        must NOT be rewritten.
+        """
+        lines = ["# Learnings", ""]
+        for i in range(105):
+            lines.append(f"- fact {i}")
+        path = self._write_learnings(tmp_path, "koan", "\n".join(lines))
+        before = path.read_text()
+
+        with patch("app.memory_manager.MemoryManager._run_compaction_cli") as mock_cli:
+            stats = compact_learnings(str(tmp_path), "koan", max_lines=100)
+
+        assert mock_cli.call_count == 0, "anti-thrash should not invoke the CLI"
+        assert stats["skipped"] is True
+        assert stats.get("reason") == "anti_thrash"
+        assert path.read_text() == before
+
+    def test_anti_thrash_does_not_skip_when_savings_above_threshold(self, tmp_path):
+        """Run CLI when predicted savings exceed the 10% threshold.
+
+        With 200 content lines and max_lines=100, predicted savings is
+        50% — well above 10%, so compaction must proceed normally.
+        """
+        lines = ["# Learnings", ""]
+        for i in range(200):
+            lines.append(f"- fact {i}")
+        self._write_learnings(tmp_path, "koan", "\n".join(lines))
+
+        compacted_output = "- merged A\n- merged B\n"
+        with patch(
+            "app.memory_manager.MemoryManager._run_compaction_cli",
+            return_value=compacted_output,
+        ) as mock_cli:
+            stats = compact_learnings(str(tmp_path), "koan", max_lines=100)
+
+        assert mock_cli.call_count == 1
+        assert stats["skipped"] is False
+        assert stats.get("reason") != "anti_thrash"
+
+    def test_anti_thrash_growth_aware_skips_when_growth_below_threshold(
+        self, tmp_path,
+    ):
+        """When prior state shows last compaction left 100 lines and we're
+        now at 105, growth is ~5% — below 10%, skip even though target
+        distance (5/105 ≈ 4.8%) would also skip. The point: when growth
+        telemetry exists, it drives the decision instead of target distance.
+        """
+        import json
+        lines = ["# Learnings", ""]
+        for i in range(105):
+            lines.append(f"- fact {i}")
+        path = self._write_learnings(tmp_path, "koan", "\n".join(lines))
+
+        state_path = tmp_path / ".koan-learnings-compact-hash-koan"
+        state_path.write_text(json.dumps({
+            "hash": "previous-different-hash",
+            "compacted_lines": 100,
+            "updated_at": "2026-05-01T00:00:00",
+        }))
+
+        with patch(
+            "app.memory_manager.MemoryManager._run_compaction_cli",
+        ) as mock_cli:
+            stats = compact_learnings(str(tmp_path), "koan", max_lines=50)
+
+        assert mock_cli.call_count == 0
+        assert stats["skipped"] is True
+        assert stats.get("reason") == "anti_thrash"
+        # File untouched.
+        assert path.read_text().splitlines()[2] == "- fact 0"
+
+    def test_anti_thrash_growth_aware_runs_when_growth_above_threshold(
+        self, tmp_path,
+    ):
+        """Last compaction left 100 lines; we're now at 200 (100% growth).
+        Compaction must run even though target-distance heuristic alone
+        would also run — proves the growth path doesn't accidentally skip.
+        """
+        import json
+        lines = ["# Learnings", ""]
+        for i in range(200):
+            lines.append(f"- fact {i}")
+        self._write_learnings(tmp_path, "koan", "\n".join(lines))
+
+        state_path = tmp_path / ".koan-learnings-compact-hash-koan"
+        state_path.write_text(json.dumps({
+            "hash": "previous-different-hash",
+            "compacted_lines": 100,
+            "updated_at": "2026-05-01T00:00:00",
+        }))
+
+        with patch(
+            "app.memory_manager.MemoryManager._run_compaction_cli",
+            return_value="- merged\n",
+        ) as mock_cli:
+            stats = compact_learnings(str(tmp_path), "koan", max_lines=100)
+
+        assert mock_cli.call_count == 1
+        assert stats["skipped"] is False
+
+    def test_state_file_is_json_with_compacted_lines(self, tmp_path):
+        """After successful compaction, state file persists JSON with the count."""
+        import json
+        lines = ["# Learnings", ""]
+        for i in range(200):
+            lines.append(f"- fact {i}")
+        self._write_learnings(tmp_path, "koan", "\n".join(lines))
+
+        with patch(
+            "app.memory_manager.MemoryManager._run_compaction_cli",
+            return_value="- a\n- b\n- c\n",
+        ):
+            compact_learnings(str(tmp_path), "koan", max_lines=100)
+
+        state_path = tmp_path / ".koan-learnings-compact-hash-koan"
+        assert state_path.exists()
+        payload = json.loads(state_path.read_text())
+        assert "hash" in payload
+        assert payload["compacted_lines"] == 3
+        assert "updated_at" in payload
+
+    def test_non_dict_json_state_is_tolerated(self, tmp_path):
+        """State file with valid-JSON-but-not-an-object must not crash.
+
+        Hand-edited or corrupted files can hold ``true``, ``[1,2,3]``,
+        a bare number, or a JSON string. ``_read_compact_state`` must
+        wrap them as a legacy dict so callers' ``.get("hash")`` is safe.
+        """
+        import json as _json
+
+        from app.memory_manager import _read_compact_state
+
+        for raw in ("true", "[1, 2, 3]", "42", '"some-string"'):
+            state_path = tmp_path / "state-file"
+            state_path.write_text(raw)
+            state = _read_compact_state(state_path)
+            assert isinstance(state, dict), f"{raw!r} produced non-dict {state!r}"
+            # The exact "hash" payload isn't important — what matters is
+            # that callers can safely chain ``.get("hash")``.
+            state.get("hash")  # must not raise
+
+        # And the full compaction path must survive a non-dict state file
+        # without exploding mid-cycle.
+        lines = ["# Learnings", ""] + [f"- fact {i}" for i in range(200)]
+        self._write_learnings(tmp_path, "koan", "\n".join(lines))
+        state_path = tmp_path / ".koan-learnings-compact-hash-koan"
+        state_path.write_text("true")  # valid JSON, wrong shape
+
+        with patch(
+            "app.memory_manager.MemoryManager._run_compaction_cli",
+            return_value="- merged\n",
+        ) as mock_cli:
+            stats = compact_learnings(str(tmp_path), "koan", max_lines=100)
+
+        assert mock_cli.call_count == 1
+        assert stats["skipped"] is False
+        # State file rewritten in canonical JSON form.
+        assert _json.loads(state_path.read_text())["compacted_lines"] == 1
+
+    def test_legacy_plain_hash_state_is_tolerated(self, tmp_path):
+        """Pre-anti-thrash state file (plain hex) must not crash compaction.
+
+        Operators upgrading mid-flight will have a plain-hash file; the
+        loader should treat it as 'hash known, growth telemetry missing'
+        rather than failing.
+        """
+        lines = ["# Learnings", ""]
+        for i in range(200):
+            lines.append(f"- fact {i}")
+        self._write_learnings(tmp_path, "koan", "\n".join(lines))
+
+        # Write a legacy plain-hash state with a DIFFERENT hash so the
+        # compaction proceeds (otherwise it would short-circuit).
+        state_path = tmp_path / ".koan-learnings-compact-hash-koan"
+        state_path.write_text("legacy_plain_hex_that_will_not_match")
+
+        with patch(
+            "app.memory_manager.MemoryManager._run_compaction_cli",
+            return_value="- merged\n",
+        ) as mock_cli:
+            stats = compact_learnings(str(tmp_path), "koan", max_lines=100)
+
+        assert mock_cli.call_count == 1
+        assert stats["skipped"] is False
+        # After successful run, state is rewritten in JSON format.
+        import json
+        assert "compacted_lines" in json.loads(state_path.read_text())
+
 
 # ---------------------------------------------------------------------------
 # cap_global_memory (global memory file rotation)

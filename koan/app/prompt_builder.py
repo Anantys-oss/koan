@@ -252,21 +252,14 @@ def _get_drift_section(instance: str, project_name: str, project_path: str) -> s
 def _load_recall_config() -> Tuple[int, int]:
     """Return ``(max_relevant_learnings, recent_hedge)`` from config.yaml.
 
-    Defaults to ``(40, 5)`` per issue #1306. ``recent_hedge`` is currently
-    config-only (no UI surface) and can be tuned via the same ``memory:``
-    block as the other learnings caps.
+    Agent-loop defaults are ``(40, 5)`` per issue #1306 — looser than the
+    skill-side defaults because the agent loop has more headroom in the
+    prompt budget. Reads the shared ``memory:`` block via
+    :func:`app.skill_memory.load_recall_config` so both call paths parse
+    the same keys with the same coercion rules.
     """
-    cfg = _load_config_safe()
-    mem = cfg.get("memory", {}) or {}
-    try:
-        max_k = int(mem.get("max_relevant_learnings", 40))
-    except (TypeError, ValueError):
-        max_k = 40
-    try:
-        hedge = int(mem.get("recall_recent_hedge", 5))
-    except (TypeError, ValueError):
-        hedge = 5
-    return max(0, max_k), max(0, hedge)
+    from app.skill_memory import load_recall_config
+    return load_recall_config(default_max=40, default_hedge=5)
 
 
 def _get_learnings_section(
@@ -275,66 +268,41 @@ def _get_learnings_section(
     mission_title: str,
     focus_area: str,
 ) -> str:
-    """Return a pre-filtered learnings section for the agent prompt.
+    """Return the project-memory block for the agent prompt.
 
-    Reads ``{instance}/memory/projects/{project_name}/learnings.md`` and
-    runs Jaccard similarity against the mission text (or ``focus_area`` in
-    autonomous mode) to keep only the most relevant lines plus a small
-    recency hedge. The ``[recall:full]`` tag in the mission title bypasses
-    filtering entirely.
+    Delegates to :func:`app.skill_memory.build_memory_block` so the agent
+    loop and mission-driving skills share the same memory-injection logic.
+    The block combines three sources:
 
-    Returns an empty string when the file is missing, empty, or cannot be
-    read — the agent will still fall back to reading the file directly via
-    the agent.md instructions, so this is purely an enrichment hook.
+    * ``memory/projects/{name}/learnings.md`` — Jaccard-filtered against
+      the mission text (or ``focus_area`` in autonomous mode), with
+      ``max_relevant_learnings`` + ``recall_recent_hedge`` honoured.
+    * ``memory/projects/{name}/context.md`` — human-curated, verbatim.
+    * ``memory/projects/{name}/priorities.md`` — human-curated, verbatim.
 
-    Issue #1306.
+    The ``[recall:full]`` tag in the mission title bypasses learnings
+    filtering. Returns an empty string when every source is missing —
+    the agent.md template still tells Claude where to read the files
+    directly, so this is purely an enrichment hook.
+
+    Issue #1306 (learnings recall) + memory-system refactor.
     """
-    try:
-        path = Path(instance) / "memory" / "projects" / project_name / "learnings.md"
-        if not path.is_file():
-            return ""
-        content = path.read_text(encoding="utf-8")
-    except OSError as e:
-        logger.warning("[prompt_builder] learnings load failed: %s", e)
-        return ""
-
-    if not content.strip():
-        return ""
-
-    from app.memory_recall import has_recall_full_tag, score_and_select
-
     # Mission text drives scoring. In autonomous mode (no title) fall back
     # to the focus area so the filter still does *something* useful.
     scoring_text = mission_title or focus_area or ""
 
-    if has_recall_full_tag(mission_title):
-        # Operator explicitly asked for everything — preserve the file as-is.
-        body = content.rstrip()
-        kept = body.count("\n") + 1 if body else 0
-        header = (
-            "# Project Learnings (full, [recall:full] override)\n\n"
-            f"Loaded {kept} lines verbatim from learnings.md.\n\n"
-        )
-        return f"\n\n{header}{body}\n"
+    from app.skill_memory import build_memory_block
 
+    # Agent loop uses the agent-loop defaults from config.yaml (40, 5) by
+    # passing ``None`` overrides; skills override to a tighter budget.
     max_k, hedge = _load_recall_config()
-    selected, total, dropped = score_and_select(
-        content, scoring_text, max_k=max_k, recent_hedge=hedge,
+
+    return build_memory_block(
+        instance, project_name, scoring_text,
+        max_learnings=max_k,
+        recent_hedge=hedge,
+        title="Project Memory",
     )
-
-    if not selected:
-        return ""
-
-    print(f"[prompt_builder] learnings recall: kept {len(selected)}/{total} (dropped {dropped}, max_k={max_k}, hedge={hedge})", file=sys.stderr)
-
-    header = (
-        "# Project Learnings (filtered)\n\n"
-        f"Showing {len(selected)} of {total} learnings ranked by relevance to "
-        "the current task. Use the `[recall:full]` tag in your mission text "
-        "to bypass filtering and load the full file.\n\n"
-    )
-    body = "\n".join(selected)
-    return f"\n\n{header}{body}\n"
 
 
 def _get_mission_type_section(mission_title: str) -> str:

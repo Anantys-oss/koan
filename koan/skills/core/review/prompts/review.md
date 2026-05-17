@@ -11,7 +11,7 @@ actionable, constructive feedback that helps the author improve the code.
 ### PR Description
 
 {BODY}
-
+{PROJECT_MEMORY}
 ---
 
 ## Current Diff

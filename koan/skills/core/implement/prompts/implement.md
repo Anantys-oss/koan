@@ -12,7 +12,7 @@ You are implementing a plan from a GitHub issue. Your job is to read the plan ca
 ## Additional Context
 
 {CONTEXT}
-
+{PROJECT_MEMORY}
 ## Instructions
 
 1. **Read the plan carefully**: Understand the overall goal, the phases, and the acceptance criteria for each phase.

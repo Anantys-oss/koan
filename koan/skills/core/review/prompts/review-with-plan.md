@@ -14,7 +14,7 @@ structured plan. Your task has two parts:
 ### PR Description
 
 {BODY}
-
+{PROJECT_MEMORY}
 ---
 
 ## Original Plan

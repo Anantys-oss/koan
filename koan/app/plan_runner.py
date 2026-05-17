@@ -376,18 +376,23 @@ def _review_loop(
         # Re-generate with reviewer feedback appended
         feedback_context = (context or "") + f"\n\n## Review Feedback\n\n{issues}"
         try:
+            from app.skill_memory import build_memory_block_for_skill
             if is_iteration:
+                project_memory = build_memory_block_for_skill(project_path, issue_context)
                 new_plan = _run_claude_plan(
                     load_prompt_or_skill(
                         skill_dir, "plan-iterate",
                         ISSUE_CONTEXT=issue_context + f"\n\n## Review Feedback\n\n{issues}",
+                        PROJECT_MEMORY=project_memory,
                     ),
                     project_path,
                 )
             else:
+                project_memory = build_memory_block_for_skill(project_path, idea)
                 new_plan = _run_claude_plan(
                     load_prompt_or_skill(
                         skill_dir, "plan", IDEA=idea, CONTEXT=feedback_context,
+                        PROJECT_MEMORY=project_memory,
                     ),
                     project_path,
                 )
@@ -415,8 +420,12 @@ def _review_warning_note(issues: str, max_rounds: int) -> str:
 def _generate_plan(project_path, idea, context="", skill_dir=None):
     """Run Claude to generate a structured plan for a new idea."""
     from app.config import get_plan_review_config
+    from app.skill_memory import build_memory_block_for_skill
 
-    prompt = load_prompt_or_skill(skill_dir, "plan", IDEA=idea, CONTEXT=context)
+    project_memory = build_memory_block_for_skill(project_path, idea)
+    prompt = load_prompt_or_skill(
+        skill_dir, "plan", IDEA=idea, CONTEXT=context, PROJECT_MEMORY=project_memory,
+    )
     plan = _run_claude_plan(prompt, project_path)
 
     review_cfg = get_plan_review_config()
@@ -432,9 +441,13 @@ def _generate_plan(project_path, idea, context="", skill_dir=None):
 def _generate_iteration_plan(project_path, issue_context, skill_dir=None):
     """Run Claude to generate an updated plan based on issue + comments."""
     from app.config import get_plan_review_config
+    from app.skill_memory import build_memory_block_for_skill
 
+    project_memory = build_memory_block_for_skill(project_path, issue_context)
     prompt = load_prompt_or_skill(
-        skill_dir, "plan-iterate", ISSUE_CONTEXT=issue_context
+        skill_dir, "plan-iterate",
+        ISSUE_CONTEXT=issue_context,
+        PROJECT_MEMORY=project_memory,
     )
     plan = _run_claude_plan(prompt, project_path)
 

@@ -2099,7 +2099,11 @@ class TestGetLearningsSection:
                 "fix the database migration error",
                 "",
             )
-        assert "Project Learnings (filtered)" in section
+        # Section is now wrapped in <memory-context> with a "Project Memory"
+        # title and a "Learnings (filtered — N of T)" sub-heading.
+        assert "<memory-context>" in section
+        assert "Project Memory" in section
+        assert "Learnings (filtered" in section
         # Both top-scoring lines share the mission's key terms.
         assert "database migration needs backfill" in section
         assert "database migration tooling failed" in section
@@ -2172,26 +2176,26 @@ class TestLoadRecallConfig:
     def test_defaults_when_no_config(self):
         from app.prompt_builder import _load_recall_config
 
-        with patch("app.prompt_builder._load_config_safe", return_value={}):
+        with patch("app.utils.load_config", return_value={}):
             assert _load_recall_config() == (40, 5)
 
     def test_reads_max_relevant_learnings(self):
         from app.prompt_builder import _load_recall_config
 
         cfg = {"memory": {"max_relevant_learnings": 12, "recall_recent_hedge": 3}}
-        with patch("app.prompt_builder._load_config_safe", return_value=cfg):
+        with patch("app.utils.load_config", return_value=cfg):
             assert _load_recall_config() == (12, 3)
 
     def test_invalid_values_fall_back_to_defaults(self):
         from app.prompt_builder import _load_recall_config
 
         cfg = {"memory": {"max_relevant_learnings": "nope", "recall_recent_hedge": None}}
-        with patch("app.prompt_builder._load_config_safe", return_value=cfg):
+        with patch("app.utils.load_config", return_value=cfg):
             assert _load_recall_config() == (40, 5)
 
     def test_negative_values_clamped_to_zero(self):
         from app.prompt_builder import _load_recall_config
 
         cfg = {"memory": {"max_relevant_learnings": -5, "recall_recent_hedge": -1}}
-        with patch("app.prompt_builder._load_config_safe", return_value=cfg):
+        with patch("app.utils.load_config", return_value=cfg):
             assert _load_recall_config() == (0, 0)

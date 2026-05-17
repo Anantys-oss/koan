@@ -452,7 +452,9 @@ class TestGenerateIterationPlan:
             assert "Updated Plan" in result
             # Verify it loads plan-iterate, not plan
             mock_load.assert_called_once_with(
-                skill_dir, "plan-iterate", ISSUE_CONTEXT="issue context here"
+                skill_dir, "plan-iterate",
+                ISSUE_CONTEXT="issue context here",
+                PROJECT_MEMORY="",
             )
 
     @patch("app.cli_provider.run_command_streaming", return_value="plan")
@@ -460,7 +462,9 @@ class TestGenerateIterationPlan:
         with patch("app.plan_runner.load_prompt_or_skill") as mock_load:
             _generate_iteration_plan("/project", "context")
             mock_load.assert_called_once_with(
-                None, "plan-iterate", ISSUE_CONTEXT="context"
+                None, "plan-iterate",
+                ISSUE_CONTEXT="context",
+                PROJECT_MEMORY="",
             )
 
     @patch("app.cli_provider.run_command_streaming",

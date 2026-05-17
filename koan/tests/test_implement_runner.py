@@ -179,6 +179,7 @@ class TestBuildPrompt:
                 CONTEXT="Context",
                 BRANCH_PREFIX="koan/",
                 ISSUE_NUMBER="",
+                PROJECT_MEMORY="",
             )
             assert result == "prompt"
 
@@ -195,6 +196,7 @@ class TestBuildPrompt:
                 CONTEXT="Context",
                 BRANCH_PREFIX="koan/",
                 ISSUE_NUMBER="",
+                PROJECT_MEMORY="",
             )
             assert result == "prompt"
 

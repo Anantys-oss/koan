@@ -1,11 +1,17 @@
 # Project Priorities
 
 <!--
-This file guides Kōan's DEEP mode autonomous work.
-Without priorities, Kōan defaults to generic work (tests, refactoring).
-With priorities, Kōan focuses on what actually matters to you.
+Kōan auto-injects this file VERBATIM (capped at 40 lines) into the prompt for
+the agent loop AND for the /fix, /plan, /implement, /refactor, /review skills.
+It guides what Kōan focuses on autonomously — without priorities, the agent
+defaults to generic work (tests, refactoring); with them, it works on what
+actually matters to you.
 
-Update this file as priorities shift. Kōan reads it before every DEEP session.
+Update this file as priorities shift. Keep it tight: it's read every mission,
+so brevity beats completeness.
+
+This file is human-only. Kōan never edits it automatically. The semantic
+compaction pipeline ignores it.
 -->
 
 ## Current Focus
