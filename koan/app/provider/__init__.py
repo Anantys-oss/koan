@@ -457,28 +457,62 @@ def _summarize_stream_event(event: Dict[str, Any]) -> str:
     return f"[cli] event: {etype or '?'}"
 
 
+def _extract_assistant_text_chunks(event: Dict[str, Any]) -> List[str]:
+    """Pull raw ``text`` block strings out of an ``assistant`` event.
+
+    Used as a partial-stream fallback: if the CLI dies before emitting a
+    final ``result`` event, accumulated text chunks still surface to the
+    caller instead of an empty string.
+    """
+    if event.get("type") != "assistant":
+        return []
+    msg = event.get("message") or {}
+    blocks = msg.get("content") or []
+    chunks: List[str] = []
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "text":
+            text = block.get("text")
+            if isinstance(text, str) and text:
+                chunks.append(text)
+    return chunks
+
+
 def _extract_result_text(event: Dict[str, Any]) -> Optional[str]:
     """Pull the final assistant text out of a ``stream-json`` ``result`` event.
 
-    Returns ``None`` when *event* is not a result event. The Claude CLI
-    stuffs the same string a plain text-mode run would have printed into
-    ``event["result"]``; we forward it verbatim so callers see the same
-    return value they did before stream-json was on.
+    Returns ``None`` when *event* is not a result event, or when it is a
+    result event whose ``result`` field is missing or not a string — in
+    the malformed case, returning ``None`` lets the caller fall back to
+    accumulated text blocks instead of pinning the return value to ``""``.
+    The Claude CLI stuffs the same string a plain text-mode run would
+    have printed into ``event["result"]``; we forward it verbatim so
+    callers see the same return value they did before stream-json was on.
     """
     if event.get("type") != "result":
         return None
     result = event.get("result")
     if isinstance(result, str):
         return result
-    return ""
+    return None
+
+
+# Known stream-json ``result.subtype`` values that mean "max turns hit".
+# Update when the Claude CLI ships new subtypes; the legacy regex
+# fallback in ``_is_max_turns_error`` covers textual output.
+_STREAM_JSON_MAX_TURNS_SUBTYPES = frozenset({
+    "error_max_turns",
+    "max_turns",
+})
 
 
 def _is_stream_json_max_turns(event: Dict[str, Any]) -> bool:
     """Detect the stream-json equivalent of the legacy 'Reached max turns' line."""
     if event.get("type") != "result":
         return False
-    subtype = str(event.get("subtype", "") or "")
-    return "max" in subtype.lower() and "turn" in subtype.lower()
+    subtype = str(event.get("subtype", "") or "").lower()
+    return subtype in _STREAM_JSON_MAX_TURNS_SUBTYPES
 
 
 def run_command_streaming(
@@ -544,6 +578,10 @@ def run_command_streaming(
     final_result: Optional[str] = None
     saw_max_turns_event = False
     stderr_text = ""
+    # Every print() in this loop is the load-bearing watchdog signal —
+    # run.py's skill-runner liveness watchdog (600s) resets on each line
+    # emitted to stdout. Do not silence these prints; doing so reintroduces
+    # the silent-CLI hang this PR fixes (see PR #1372).
     try:
         for line in proc.stdout:
             stripped = line.rstrip("\n")
@@ -560,6 +598,12 @@ def run_command_streaming(
                     event = None
             if event is not None:
                 print(_summarize_stream_event(event), flush=True)
+                # Accumulate assistant text blocks so a stream that dies
+                # before the final ``result`` event (timeout, watchdog
+                # kill, SIGPIPE) still returns whatever Claude managed
+                # to print, instead of silently returning "".
+                for chunk in _extract_assistant_text_chunks(event):
+                    text_lines.append(chunk)
                 result_text = _extract_result_text(event)
                 if result_text is not None:
                     final_result = result_text
