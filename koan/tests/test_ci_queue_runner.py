@@ -610,6 +610,106 @@ class TestAggregateCiRuns:
         assert status == CI_STATUS_BLOCKED_APPROVAL
         assert run_id == 2
 
+    def test_stale_failure_on_prior_sha_does_not_mask_green_head(self):
+        """Regression: when CI on the current HEAD is green but a prior
+        commit on the same branch had a failed run, aggregate_ci_runs must
+        report success based on HEAD — not resurrect the stale failure.
+
+        Without this, /ci_check enters an unbreakable retry loop: Claude
+        looks at green HEAD, says "no changes needed", the fix step records
+        zero changes and bails, and the next drain cycle re-reads the same
+        stale failure and queues another /ci_check. See PR #264 incident
+        on 2026-05-17.
+        """
+        from app.claude_step import aggregate_ci_runs
+
+        runs = [
+            {
+                "databaseId": 1,
+                "status": "completed",
+                "conclusion": "failure",
+                "headSha": "OLDSHA",
+                "createdAt": "2026-05-17T20:00:00Z",
+            },
+            {
+                "databaseId": 2,
+                "status": "completed",
+                "conclusion": "success",
+                "headSha": "NEWSHA",
+                "createdAt": "2026-05-17T21:00:00Z",
+            },
+        ]
+        status, run_id = aggregate_ci_runs(runs)
+        assert status == "success"
+        assert run_id == 2
+
+    def test_runs_grouped_by_latest_sha(self):
+        """Multiple workflows on the latest SHA aggregate together; runs
+        on older SHAs are ignored entirely (no failure/pending leakage).
+        """
+        from app.claude_step import aggregate_ci_runs
+
+        runs = [
+            {
+                "databaseId": 1,
+                "status": "completed",
+                "conclusion": "failure",
+                "headSha": "OLDSHA",
+                "createdAt": "2026-05-17T20:00:00Z",
+            },
+            {
+                "databaseId": 2,
+                "status": "in_progress",
+                "conclusion": "",
+                "headSha": "OLDSHA",
+                "createdAt": "2026-05-17T20:00:30Z",
+            },
+            {
+                "databaseId": 3,
+                "status": "completed",
+                "conclusion": "success",
+                "headSha": "NEWSHA",
+                "createdAt": "2026-05-17T21:00:00Z",
+            },
+            {
+                "databaseId": 4,
+                "status": "in_progress",
+                "conclusion": "",
+                "headSha": "NEWSHA",
+                "createdAt": "2026-05-17T21:00:30Z",
+            },
+        ]
+        status, run_id = aggregate_ci_runs(runs)
+        # Latest SHA has one success + one in_progress → pending on HEAD.
+        assert status == "pending"
+        assert run_id == 4
+
+    def test_failure_on_latest_sha_still_reported(self):
+        """When HEAD genuinely fails, aggregate must still surface the
+        failure — the SHA filter must not be over-eager.
+        """
+        from app.claude_step import aggregate_ci_runs
+
+        runs = [
+            {
+                "databaseId": 1,
+                "status": "completed",
+                "conclusion": "success",
+                "headSha": "OLDSHA",
+                "createdAt": "2026-05-17T20:00:00Z",
+            },
+            {
+                "databaseId": 2,
+                "status": "completed",
+                "conclusion": "failure",
+                "headSha": "NEWSHA",
+                "createdAt": "2026-05-17T21:00:00Z",
+            },
+        ]
+        status, run_id = aggregate_ci_runs(runs)
+        assert status == "failure"
+        assert run_id == 2
+
 
 class TestDrainOneBlockedApproval:
     """drain_one must remove a PR from ## CI when its workflows are
