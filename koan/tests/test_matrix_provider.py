@@ -299,7 +299,39 @@ class TestSendTyping:
 
 class TestRegistry:
     def test_matrix_registered(self):
-        """Matrix should auto-register when the messaging package loads providers."""
-        from app.messaging import _ensure_providers_loaded, _providers
-        _ensure_providers_loaded()
-        assert "matrix" in _providers
+        """Matrix should auto-register when the messaging package loads providers.
+
+        Runs in a fresh subprocess: ``_providers`` is process-wide module
+        state that other tests (notably ``clean_registry`` in
+        ``test_messaging_provider.py``) can clear *after* the provider
+        modules are already cached in ``sys.modules``.  Once that happens
+        no in-process call to ``_ensure_providers_loaded`` can repopulate
+        the registry — the decorators won't re-run for cached modules.
+        A clean subprocess sidesteps the whole ordering problem.
+        """
+        import os
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        koan_pkg = Path(__file__).resolve().parents[1]  # …/koan
+        script = (
+            "from app.messaging import _ensure_providers_loaded, _providers\n"
+            "_ensure_providers_loaded()\n"
+            "assert 'matrix' in _providers, sorted(_providers)\n"
+        )
+        env = {
+            **os.environ,
+            "PYTHONPATH": str(koan_pkg),
+            "KOAN_ROOT": os.environ.get("KOAN_ROOT", "/tmp/test-koan"),
+        }
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            env=env,
+        )
+        assert result.returncode == 0, (
+            f"subprocess failed:\nstdout={result.stdout}\nstderr={result.stderr}"
+        )

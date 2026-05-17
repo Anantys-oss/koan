@@ -213,6 +213,98 @@ class TestProviderRegistry:
 
 
 # ---------------------------------------------------------------------------
+# _ensure_providers_loaded — order independence & idempotency
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureProvidersLoaded:
+    """Regression: ``_ensure_providers_loaded`` must load every module in
+    ``_PROVIDER_MODULES`` even when ``_providers`` is already populated by
+    a prior partial import.
+
+    Previously the loader short-circuited as soon as ``_providers`` was
+    non-empty.  That was a latent production bug: any process that
+    imported the default ``telegram`` provider at startup (the normal
+    path) could never resolve ``matrix`` or ``slack`` afterwards.  It
+    also caused ``test_matrix_registered`` to flap under xdist depending
+    on which sibling test happened to import ``telegram`` first.
+    """
+
+    def test_loads_matrix_when_telegram_imported_first(self):
+        """Run in a fresh subprocess so Python's import cache cannot
+        bypass the @register_provider decorators (the cache makes this
+        scenario untestable in-process — once telegram is imported in
+        the test runner, re-importing it is a no-op even if _providers
+        was cleared by a fixture)."""
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        koan_pkg = Path(__file__).resolve().parents[1]  # …/koan
+        script = (
+            "import app.messaging.telegram  # noqa: F401\n"
+            "from app.messaging import _ensure_providers_loaded, _providers\n"
+            "assert sorted(_providers) == ['telegram'], sorted(_providers)\n"
+            "_ensure_providers_loaded()\n"
+            "missing = {'telegram', 'slack', 'matrix'} - set(_providers)\n"
+            "assert not missing, f'missing providers after load: {missing}'\n"
+        )
+        env = {
+            **os.environ,
+            "PYTHONPATH": str(koan_pkg),
+            # Provider modules require a writable KOAN_ROOT at import.
+            "KOAN_ROOT": os.environ.get("KOAN_ROOT", "/tmp/test-koan"),
+        }
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            env=env,
+        )
+        assert result.returncode == 0, (
+            f"subprocess failed:\nstdout={result.stdout}\nstderr={result.stderr}"
+        )
+
+    def test_idempotent_when_called_repeatedly(self):
+        """Calling the loader N times must converge to the same registry.
+
+        Runs in a fresh subprocess so the in-process import cache and any
+        ``clean_registry`` mutations from sibling tests cannot mask
+        repeat-call drift.
+        """
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        koan_pkg = Path(__file__).resolve().parents[1]
+        script = (
+            "from app.messaging import _ensure_providers_loaded, _providers\n"
+            "_ensure_providers_loaded()\n"
+            "snapshot = dict(_providers)\n"
+            "_ensure_providers_loaded()\n"
+            "_ensure_providers_loaded()\n"
+            "assert dict(_providers) == snapshot, "
+            "f'registry drifted: {snapshot} -> {dict(_providers)}'\n"
+        )
+        env = {
+            **os.environ,
+            "PYTHONPATH": str(koan_pkg),
+            "KOAN_ROOT": os.environ.get("KOAN_ROOT", "/tmp/test-koan"),
+        }
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            env=env,
+        )
+        assert result.returncode == 0, (
+            f"subprocess failed:\nstdout={result.stdout}\nstderr={result.stderr}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Provider name resolution
 # ---------------------------------------------------------------------------
 
