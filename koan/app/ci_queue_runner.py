@@ -87,6 +87,28 @@ def drain_one(instance_dir: str) -> Optional[str]:
     attempt = entry["attempt"]
     max_attempts = entry["max_attempts"]
 
+    # Short-circuit closed/merged PRs — CI fixes can't help a PR that no
+    # longer accepts commits. Without this, a closed-but-not-merged PR with
+    # past failed CI runs would keep re-queueing /ci_check forever.
+    pr_state = _check_pr_state_safe(pr_number, full_repo)
+    if pr_state == "CLOSED":
+        modify_missions_file(
+            missions_path,
+            lambda c: remove_ci_item(c, pr_url),
+        )
+        _write_outbox(
+            instance_dir,
+            f"🚫 PR #{pr_number} was closed — removed from CI queue: {pr_url}",
+        )
+        return f"PR #{pr_number} closed — removed from ## CI"
+
+    if pr_state == "MERGED":
+        modify_missions_file(
+            missions_path,
+            lambda c: remove_ci_item(c, pr_url),
+        )
+        return f"PR #{pr_number} merged — removed from ## CI"
+
     status, _run_id = check_ci_status(branch, full_repo)
 
     if status == "success":
@@ -149,6 +171,22 @@ def drain_one(instance_dir: str) -> Optional[str]:
 
     # status == "pending" — leave in ## CI
     return None
+
+
+def _check_pr_state_safe(pr_number: str, full_repo: str) -> str:
+    """Return the PR's GitHub state, or "UNKNOWN" on any failure.
+
+    Wraps :func:`app.rebase_pr._check_pr_state` so a flaky `gh` call never
+    breaks the drain loop — callers fall back to the existing CI-status
+    flow when the state can't be determined.
+    """
+    try:
+        from app.rebase_pr import _check_pr_state
+        state, _mergeable = _check_pr_state(pr_number, full_repo)
+        return state
+    except Exception as e:
+        print(f"[ci_queue] PR state check error: {e}", file=sys.stderr)
+        return "UNKNOWN"
 
 
 def _inject_ci_fix_mission(instance_dir: str, pr_url: str, entry: dict):

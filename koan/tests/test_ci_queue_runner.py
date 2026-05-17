@@ -196,6 +196,7 @@ class TestDrainOneErrorHandling:
             patch("pathlib.Path.read_text", return_value=missions_content),
             patch("app.ci_queue_runner._maybe_migrate_json_queue"),
             patch("app.utils.modify_missions_file") as mock_modify,
+            patch("app.ci_queue_runner._check_pr_state_safe", return_value="OPEN"),
             patch("app.ci_queue_runner.check_ci_status", return_value=("success", 123)),
             patch("app.ci_queue_runner._write_outbox"),
         ):
@@ -215,6 +216,7 @@ class TestDrainOneErrorHandling:
             patch("pathlib.Path.read_text", return_value=missions_content),
             patch("app.ci_queue_runner._maybe_migrate_json_queue"),
             patch("app.utils.modify_missions_file"),
+            patch("app.ci_queue_runner._check_pr_state_safe", return_value="OPEN"),
             patch("app.ci_queue_runner.check_ci_status", return_value=("failure", 456)),
             patch("app.ci_queue_runner._inject_ci_fix_mission") as mock_inject,
         ):
@@ -234,6 +236,7 @@ class TestDrainOneErrorHandling:
             patch("pathlib.Path.read_text", return_value=missions_content),
             patch("app.ci_queue_runner._maybe_migrate_json_queue"),
             patch("app.utils.modify_missions_file") as mock_modify,
+            patch("app.ci_queue_runner._check_pr_state_safe", return_value="OPEN"),
             patch("app.ci_queue_runner.check_ci_status", return_value=("failure", 456)),
             patch("app.ci_queue_runner._write_outbox") as mock_outbox,
         ):
@@ -245,6 +248,103 @@ class TestDrainOneErrorHandling:
         mock_outbox.assert_called_once()
         # Failure notification should mention the PR URL
         assert PR_URL in mock_outbox.call_args[0][1]
+
+    def test_drain_one_closed_pr_removed_and_notifies(self):
+        """A PR closed without merging is removed from ## CI and the human is notified.
+
+        Regression: a closed PR with past failed CI runs would keep
+        re-queueing /ci_check forever because drain_one only inspected
+        workflow status, never the PR state.
+        """
+        from app.ci_queue_runner import drain_one
+
+        missions_content = self._missions_with_ci_entry()
+        with (
+            patch("pathlib.Path.exists", return_value=True),
+            patch("pathlib.Path.read_text", return_value=missions_content),
+            patch("app.ci_queue_runner._maybe_migrate_json_queue"),
+            patch("app.utils.modify_missions_file") as mock_modify,
+            patch("app.ci_queue_runner._check_pr_state_safe", return_value="CLOSED"),
+            patch("app.ci_queue_runner.check_ci_status") as mock_status,
+            patch("app.ci_queue_runner._write_outbox") as mock_outbox,
+            patch("app.ci_queue_runner._inject_ci_fix_mission") as mock_inject,
+        ):
+            result = drain_one("/tmp/instance")
+
+        assert result is not None
+        assert "closed" in result.lower()
+        mock_modify.assert_called()
+        mock_outbox.assert_called_once()
+        assert PR_URL in mock_outbox.call_args[0][1]
+        # CI status must not be checked and no fix mission must be injected
+        mock_status.assert_not_called()
+        mock_inject.assert_not_called()
+
+    def test_drain_one_merged_pr_removed_silently(self):
+        """A merged PR is removed from ## CI without an outbox notification.
+
+        Auto-merge already notifies on merge — duplicate noise is unwanted.
+        """
+        from app.ci_queue_runner import drain_one
+
+        missions_content = self._missions_with_ci_entry()
+        with (
+            patch("pathlib.Path.exists", return_value=True),
+            patch("pathlib.Path.read_text", return_value=missions_content),
+            patch("app.ci_queue_runner._maybe_migrate_json_queue"),
+            patch("app.utils.modify_missions_file") as mock_modify,
+            patch("app.ci_queue_runner._check_pr_state_safe", return_value="MERGED"),
+            patch("app.ci_queue_runner.check_ci_status") as mock_status,
+            patch("app.ci_queue_runner._write_outbox") as mock_outbox,
+        ):
+            result = drain_one("/tmp/instance")
+
+        assert result is not None
+        assert "merged" in result.lower()
+        mock_modify.assert_called()
+        mock_outbox.assert_not_called()
+        mock_status.assert_not_called()
+
+    def test_drain_one_unknown_pr_state_falls_through_to_ci_check(self):
+        """If PR state cannot be determined, fall through to existing CI status flow."""
+        from app.ci_queue_runner import drain_one
+
+        missions_content = self._missions_with_ci_entry()
+        with (
+            patch("pathlib.Path.exists", return_value=True),
+            patch("pathlib.Path.read_text", return_value=missions_content),
+            patch("app.ci_queue_runner._maybe_migrate_json_queue"),
+            patch("app.utils.modify_missions_file"),
+            patch("app.ci_queue_runner._check_pr_state_safe", return_value="UNKNOWN"),
+            patch("app.ci_queue_runner.check_ci_status", return_value=("pending", None)) as mock_status,
+        ):
+            result = drain_one("/tmp/instance")
+
+        # pending CI returns None and leaves the entry in place
+        assert result is None
+        mock_status.assert_called_once()
+
+
+class TestCheckPrStateSafe:
+    """Verify _check_pr_state_safe never raises."""
+
+    def test_returns_state_on_success(self):
+        from app.ci_queue_runner import _check_pr_state_safe
+
+        with patch(
+            "app.rebase_pr._check_pr_state",
+            return_value=("CLOSED", "UNKNOWN"),
+        ):
+            assert _check_pr_state_safe("42", "owner/repo") == "CLOSED"
+
+    def test_returns_unknown_on_exception(self):
+        from app.ci_queue_runner import _check_pr_state_safe
+
+        with patch(
+            "app.rebase_pr._check_pr_state",
+            side_effect=RuntimeError("gh exploded"),
+        ):
+            assert _check_pr_state_safe("42", "owner/repo") == "UNKNOWN"
 
 
 class TestAttemptCiFixes:
@@ -734,6 +834,7 @@ class TestDrainOneBlockedApproval:
             patch("pathlib.Path.read_text", return_value=self._missions_with_ci_entry()),
             patch("app.ci_queue_runner._maybe_migrate_json_queue"),
             patch("app.utils.modify_missions_file") as mock_modify,
+            patch("app.ci_queue_runner._check_pr_state_safe", return_value="OPEN"),
             patch(
                 "app.ci_queue_runner.check_ci_status",
                 return_value=(CI_STATUS_BLOCKED_APPROVAL, 999),
