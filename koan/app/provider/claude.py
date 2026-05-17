@@ -58,9 +58,13 @@ class ClaudeProvider(CLIProvider):
         return flags
 
     def build_output_args(self, fmt: str = "") -> List[str]:
-        if fmt:
-            return ["--output-format", fmt]
-        return []
+        if not fmt:
+            return []
+        # Claude CLI requires --verbose alongside --output-format stream-json
+        # in print mode; the events are otherwise suppressed.
+        if fmt == "stream-json":
+            return ["--output-format", fmt, "--verbose"]
+        return ["--output-format", fmt]
 
     def build_max_turns_args(self, max_turns: int = 0) -> List[str]:
         if max_turns > 0:
