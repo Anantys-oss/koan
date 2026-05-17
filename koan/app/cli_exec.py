@@ -184,10 +184,8 @@ def stream_with_timeout(
             pgid = os.getpgid(proc.pid)
             os.killpg(pgid, signal.SIGKILL)
         except (OSError, ProcessLookupError):
-            try:
+            with contextlib.suppress(OSError, ProcessLookupError):
                 proc.kill()
-            except (OSError, ProcessLookupError):
-                pass
 
     def _watchdog_fire() -> None:
         # Race guard: if the stream loop has already finished and is
