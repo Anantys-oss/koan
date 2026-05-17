@@ -14,7 +14,10 @@ from app.git_utils import ordered_remotes
 from app.rebase_pr import (
     fetch_pr_context,
     build_comment_summary,
+    parse_severity,
     run_rebase,
+    severity_at_or_above,
+    SEVERITY_LEVELS,
     _apply_review_feedback,
     _build_ci_fix_prompt,
     _build_rebase_comment,
@@ -2686,3 +2689,117 @@ class TestRunRebaseAlreadySolved:
             success, _ = run_rebase("o", "r", "1", "/project", notify_fn=notify)
         mock_close.assert_not_called()
         mock_checkout.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Severity filter — parse_severity / severity_at_or_above
+# ---------------------------------------------------------------------------
+
+class TestParseSeverity:
+    def test_canonical_names(self):
+        assert parse_severity("critical") == "critical"
+        assert parse_severity("warning") == "warning"
+        assert parse_severity("suggestion") == "suggestion"
+
+    def test_aliases(self):
+        assert parse_severity("important") == "warning"
+        assert parse_severity("blocking") == "critical"
+        assert parse_severity("all") == "suggestion"
+        assert parse_severity("suggestions") == "suggestion"
+
+    def test_case_insensitive(self):
+        assert parse_severity("Critical") == "critical"
+        assert parse_severity("IMPORTANT") == "warning"
+
+    def test_strips_dashes(self):
+        assert parse_severity("-critical") == "critical"
+        assert parse_severity("--important") == "warning"
+        assert parse_severity("---warning") == "warning"
+
+    def test_strips_em_dash(self):
+        assert parse_severity("\u2014critical") == "critical"
+        assert parse_severity("\u2013important") == "warning"
+
+    def test_unknown_returns_none(self):
+        assert parse_severity("unknown") is None
+        assert parse_severity("") is None
+        assert parse_severity("---") is None
+
+
+class TestSeverityAtOrAbove:
+    def test_critical_only(self):
+        assert severity_at_or_above("critical") == ["critical"]
+
+    def test_warning_and_above(self):
+        assert severity_at_or_above("warning") == ["critical", "warning"]
+
+    def test_suggestion_includes_all(self):
+        assert severity_at_or_above("suggestion") == ["critical", "warning", "suggestion"]
+
+    def test_unknown_returns_all(self):
+        assert severity_at_or_above("bogus") == list(SEVERITY_LEVELS)
+
+
+class TestBuildRebasePromptSeverityFilter:
+    def test_no_filter_by_default(self):
+        context = {
+            "title": "T", "body": "", "branch": "br", "base": "main",
+            "diff": "", "review_comments": "", "reviews": "", "issue_comments": "",
+        }
+        prompt = _build_rebase_prompt(context, skill_dir=REBASE_SKILL_DIR)
+        assert "Severity Filter" not in prompt
+
+    def test_critical_filter_appended(self):
+        context = {
+            "title": "T", "body": "", "branch": "br", "base": "main",
+            "diff": "", "review_comments": "", "reviews": "", "issue_comments": "",
+        }
+        prompt = _build_rebase_prompt(
+            context, skill_dir=REBASE_SKILL_DIR, min_severity="critical",
+        )
+        assert "Severity Filter" in prompt
+        assert "critical" in prompt.lower()
+        assert "Skip" in prompt
+
+    def test_warning_filter_includes_critical(self):
+        context = {
+            "title": "T", "body": "", "branch": "br", "base": "main",
+            "diff": "", "review_comments": "", "reviews": "", "issue_comments": "",
+        }
+        prompt = _build_rebase_prompt(
+            context, skill_dir=REBASE_SKILL_DIR, min_severity="warning",
+        )
+        assert "Severity Filter" in prompt
+        assert "critical" in prompt
+        assert "warning" in prompt
+        assert "suggestion" in prompt  # mentioned as skipped
+
+    def test_suggestion_filter_not_appended(self):
+        """suggestion means 'all' — no filter needed."""
+        context = {
+            "title": "T", "body": "", "branch": "br", "base": "main",
+            "diff": "", "review_comments": "", "reviews": "", "issue_comments": "",
+        }
+        prompt = _build_rebase_prompt(
+            context, skill_dir=REBASE_SKILL_DIR, min_severity="suggestion",
+        )
+        assert "Severity Filter" not in prompt
+
+
+class TestMainMinSeverity:
+    def test_passes_min_severity_to_run_rebase(self):
+        with patch("app.rebase_pr.run_rebase", return_value=(True, "OK")) as mock:
+            rebase_main([
+                "https://github.com/sukria/koan/pull/42",
+                "--project-path", "/project",
+                "--min-severity", "warning",
+            ])
+            assert mock.call_args[1]["min_severity"] == "warning"
+
+    def test_no_min_severity_by_default(self):
+        with patch("app.rebase_pr.run_rebase", return_value=(True, "OK")) as mock:
+            rebase_main([
+                "https://github.com/sukria/koan/pull/42",
+                "--project-path", "/project",
+            ])
+            assert mock.call_args[1]["min_severity"] is None

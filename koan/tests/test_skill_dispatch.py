@@ -11,6 +11,7 @@ from app.skill_dispatch import (
     strip_passthrough_command,
     expand_combo_skill,
     validate_skill_args,
+    _build_rebase_cmd,
 )
 
 
@@ -1705,3 +1706,52 @@ class TestRunnerRegistrationConsistency:
             f"Aliases point to unknown canonical commands: "
             f"{', '.join(bad_aliases)}"
         )
+
+
+# ---------------------------------------------------------------------------
+# _build_rebase_cmd — severity filter extraction
+# ---------------------------------------------------------------------------
+
+class TestBuildRebaseCmdSeverity:
+    """Verify the rebase command builder extracts severity keywords."""
+
+    BASE_CMD = ["python3", "-m", "app.rebase_pr"]
+    URL = "https://github.com/sukria/koan/pull/42"
+
+    def test_no_severity_keyword(self):
+        cmd = _build_rebase_cmd(self.BASE_CMD, self.URL, "/project")
+        assert "--min-severity" not in cmd
+
+    def test_critical_keyword(self):
+        cmd = _build_rebase_cmd(self.BASE_CMD, f"{self.URL} critical", "/project")
+        assert "--min-severity" in cmd
+        idx = cmd.index("--min-severity")
+        assert cmd[idx + 1] == "critical"
+
+    def test_important_alias(self):
+        cmd = _build_rebase_cmd(self.BASE_CMD, f"{self.URL} important", "/project")
+        idx = cmd.index("--min-severity")
+        assert cmd[idx + 1] == "warning"
+
+    def test_dashed_keyword(self):
+        cmd = _build_rebase_cmd(self.BASE_CMD, f"{self.URL} --critical", "/project")
+        idx = cmd.index("--min-severity")
+        assert cmd[idx + 1] == "critical"
+
+    def test_single_dash_keyword(self):
+        cmd = _build_rebase_cmd(self.BASE_CMD, f"{self.URL} -important", "/project")
+        idx = cmd.index("--min-severity")
+        assert cmd[idx + 1] == "warning"
+
+    def test_em_dash_keyword(self):
+        cmd = _build_rebase_cmd(self.BASE_CMD, f"{self.URL} \u2014critical", "/project")
+        idx = cmd.index("--min-severity")
+        assert cmd[idx + 1] == "critical"
+
+    def test_no_url_returns_none(self):
+        cmd = _build_rebase_cmd(self.BASE_CMD, "just text critical", "/project")
+        assert cmd is None
+
+    def test_unrelated_text_after_url_ignored(self):
+        cmd = _build_rebase_cmd(self.BASE_CMD, f"{self.URL} thanks", "/project")
+        assert "--min-severity" not in cmd

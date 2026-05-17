@@ -629,6 +629,19 @@ def _format_review_as_markdown(review_data: dict, title: str = "") -> str:
     lines.append("")
     lines.append(summary_data["summary"])
 
+    # Severity filter hint — only show when there are findings at multiple
+    # severity levels so the hint is actually useful.
+    severity_count = sum(1 for s in ("critical", "warning", "suggestion") if by_severity.get(s))
+    if severity_count > 1:
+        lines.append("")
+        lines.append("---")
+        lines.append(
+            "_To rebase addressing only specific severity levels, use: "
+            "`/rebase <url> critical` (only 🔴), "
+            "`/rebase <url> important` (🔴 + 🟡), "
+            "or just `/rebase <url>` for all._"
+        )
+
     return "\n".join(lines)
 
 
