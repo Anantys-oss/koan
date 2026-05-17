@@ -510,6 +510,12 @@ _IGNORED_CI_CONCLUSIONS = frozenset(
 # ## CI queue with a human-readable note.
 _APPROVAL_BLOCKED_STATUSES = frozenset({"action_required", "waiting"})
 
+# Canonical CI status string returned by aggregate_ci_runs() and
+# wait_for_ci() when a workflow run is blocked on maintainer or
+# environment approval.  Use the constant instead of the raw string
+# to avoid typos across modules.
+CI_STATUS_BLOCKED_APPROVAL = "blocked_approval"
+
 # Upper bound on runs fetched per branch — enough to cover all workflows
 # triggered by a single push (typically <10), small enough to keep the
 # `gh run list` call cheap.
@@ -563,7 +569,7 @@ def aggregate_ci_runs(runs: list) -> Tuple[str, Optional[int]]:
     if failed_run is not None:
         return ("failure", failed_run.get("databaseId"))
     if blocked_run is not None:
-        return ("blocked_approval", blocked_run.get("databaseId"))
+        return (CI_STATUS_BLOCKED_APPROVAL, blocked_run.get("databaseId"))
     if pending_run is not None:
         return ("pending", pending_run.get("databaseId"))
     return ("success", relevant[0].get("databaseId"))
@@ -634,11 +640,11 @@ def wait_for_ci(
             logs = _fetch_failed_logs(run_id, full_repo) if run_id else ""
             return ("failure", run_id, logs)
 
-        if status == "blocked_approval":
+        if status == CI_STATUS_BLOCKED_APPROVAL:
             # A maintainer (or environment reviewer) must click Approve in
             # the GitHub UI; polling won't change that. Exit so the caller
             # can surface a notification instead of burning quota.
-            return ("blocked_approval", run_id, "")
+            return (CI_STATUS_BLOCKED_APPROVAL, run_id, "")
 
         # status == "pending" — keep polling
         time.sleep(poll_interval)

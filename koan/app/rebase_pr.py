@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from app.claude_step import (
+    CI_STATUS_BLOCKED_APPROVAL,
     _build_pr_prompt,
     _fetch_branch,
     _fetch_failed_logs,
@@ -902,7 +903,7 @@ def _fix_existing_ci_failures(
             actions_log.append("Pre-push CI check: previous run passed")
         elif ci_status == "pending":
             actions_log.append("Pre-push CI check: previous run still pending")
-        elif ci_status == "blocked_approval":
+        elif ci_status == CI_STATUS_BLOCKED_APPROVAL:
             actions_log.append(
                 "Pre-push CI check: previous run waiting for maintainer approval"
             )
@@ -1026,7 +1027,7 @@ def _run_ci_check_and_fix(
         actions_log.append("CI polling timed out")
         return "CI still running (timed out waiting)."
 
-    if ci_status == "blocked_approval":
+    if ci_status == CI_STATUS_BLOCKED_APPROVAL:
         # Workflow runs are gated on maintainer/environment approval —
         # pushing more commits won't unstick them. Bail out instead of
         # burning quota on fix attempts that can't possibly run.
@@ -1103,7 +1104,7 @@ def _run_ci_check_and_fix(
             actions_log.append(f"CI {ci_status} after fix attempt {attempt}")
             return f"CI fix pushed (attempt {attempt}), CI status: {ci_status}."
 
-        if ci_status == "blocked_approval":
+        if ci_status == CI_STATUS_BLOCKED_APPROVAL:
             actions_log.append(
                 f"CI waiting for maintainer approval after fix attempt {attempt} — stopping"
             )

@@ -23,6 +23,8 @@ import sys
 from pathlib import Path
 from typing import Optional, Tuple
 
+from app.claude_step import CI_STATUS_BLOCKED_APPROVAL
+
 
 def check_ci_status(branch: str, full_repo: str) -> Tuple[str, Optional[int]]:
     """Make a single non-blocking CI status check.
@@ -126,7 +128,7 @@ def drain_one(instance_dir: str) -> Optional[str]:
         )
         return f"No CI runs found for PR #{pr_number} — removed from ## CI"
 
-    if status == "blocked_approval":
+    if status == CI_STATUS_BLOCKED_APPROVAL:
         # GitHub gates workflow runs on first-time-contributor or
         # environment approval; nothing Kōan does will unstick them.
         # Drop the PR from ## CI so retries stop and notify the human
@@ -347,7 +349,7 @@ def run_ci_check_and_fix(pr_url: str, project_path: str) -> Tuple[bool, str]:
         # drain_one will re-check on the next iteration when CI completes.
         return False, "CI still pending — will retry when CI completes."
 
-    if status == "blocked_approval":
+    if status == CI_STATUS_BLOCKED_APPROVAL:
         # Pushing more commits won't trigger CI either — the new runs
         # need the same approval. Bail out so the operator can act.
         return False, (
@@ -533,7 +535,7 @@ def _attempt_ci_fixes(
             actions_log.append(f"CI running after fix push (attempt {attempt}) — re-enqueued for monitoring")
             return True
 
-        if new_status == "blocked_approval":
+        if new_status == CI_STATUS_BLOCKED_APPROVAL:
             # New push triggered runs that also need maintainer approval —
             # nothing we can do here, bail out instead of re-enqueueing.
             actions_log.append(
