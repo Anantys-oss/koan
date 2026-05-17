@@ -696,8 +696,9 @@ def _select_random_exploration_project(
                 best_idx = combined.index(max(combined))
                 selected = candidates[best_idx]
                 _ts_sample = combined[best_idx]
-            except Exception:
+            except Exception as e:
                 # Fallback to weighted random on any bandit error
+                print(f"[iteration] bandit sampling error: {e}", file=sys.stderr)
                 selected = random.choices(candidates, weights=candidate_weights, k=1)[0]
                 _ts_sample = None
 
