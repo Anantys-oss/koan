@@ -28,6 +28,14 @@ STATUS_FILE = ".koan-status"
 HEARTBEAT_FILE = ".koan-heartbeat"
 RUN_HEARTBEAT_FILE = ".koan-run-heartbeat"
 
+# Code version the bridge process was launched against (git HEAD SHA).
+# Written by awake.py at startup, read by the runner's bridge_watchdog
+# to detect "bridge is alive but stuck on stale sys.modules" — a state
+# the heartbeat alone cannot catch.
+BRIDGE_VERSION_FILE = ".koan-bridge-version"
+# Persistent state for the runner-side bridge self-healing tier escalator.
+BRIDGE_HEAL_STATE_FILE = ".koan-bridge-heal-state"
+
 # -- Mode flags ----------------------------------------------------------------
 
 FOCUS_FILE = ".koan-focus"

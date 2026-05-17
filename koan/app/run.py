@@ -524,6 +524,48 @@ def _notify_raw(instance: str, message: str):
         log("error", f"Raw notification failed: {e}")
 
 
+# Iteration counter for throttling watchdog probes.  Most ticks just do
+# the cheap PID/heartbeat read; the git rev-parse SHA check is bounded
+# by the watchdog's own internal cooldown, but we still don't need to
+# probe every single iteration when the loop is hot.
+_BRIDGE_WATCHDOG_INTERVAL = 5
+_bridge_watchdog_tick = 0
+
+
+def _maybe_run_bridge_watchdog(koan_root: Path, instance: str) -> None:
+    """Run the bridge self-heal watchdog on a fraction of iterations.
+
+    Cheap to run (subprocess + a few stat calls), but the watchdog has
+    its own per-tier cooldown, so calling it on every loop tick would
+    just spin the throttle.  Once per ~5 iterations is plenty given the
+    runner's typical 60-300 s loop interval.
+    """
+    global _bridge_watchdog_tick
+    _bridge_watchdog_tick = (_bridge_watchdog_tick + 1) % _BRIDGE_WATCHDOG_INTERVAL
+    if _bridge_watchdog_tick != 0:
+        return
+
+    try:
+        from app.bridge_watchdog import check_and_heal_bridge
+        action = check_and_heal_bridge(koan_root)
+    except Exception as e:
+        log("error", f"bridge_watchdog crashed: {e}")
+        return
+
+    if not action:
+        return
+
+    log("koan", f"bridge_watchdog: {action}")
+    # Tell the operator via Telegram (terse, no Claude reformat) and
+    # leave an audit trail in today's journal.
+    _notify_raw(instance, f"🩹 {action}")
+    try:
+        from app.journal import append_to_journal
+        append_to_journal(Path(instance), "koan", f"\n{action}\n")
+    except Exception as e:
+        log("error", f"journal append failed (watchdog): {e}")
+
+
 def _notify_mission_end(
     instance: str,
     project_name: str,
@@ -855,6 +897,14 @@ def main_loop():
                 log("koan", "Restart requested. Exiting for re-launch...")
                 clear_restart(koan_root, target="run")
                 sys.exit(RESTART_EXIT_CODE)
+
+            # --- Bridge self-heal watchdog ---
+            # The bridge has no wrapper, so a stale-sys.modules after
+            # /update can leave it stuck until the operator intervenes.
+            # The runner is always fresh code (its wrapper relaunches
+            # on every exit), so it's the right place to watch and
+            # recover the bridge.  See koan/docs/bridge-watchdog.md.
+            _maybe_run_bridge_watchdog(Path(koan_root), instance)
 
             # --- Pause mode ---
             if Path(koan_root, PAUSE_FILE).exists():

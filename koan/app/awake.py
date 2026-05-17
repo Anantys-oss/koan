@@ -680,6 +680,15 @@ def main():
     heartbeat_file = KOAN_ROOT / HEARTBEAT_FILE
     heartbeat_file.unlink(missing_ok=True)
     write_heartbeat(str(KOAN_ROOT))
+
+    # Record the code version this bridge incarnation is running.  The
+    # runner's bridge_watchdog reads it to detect "alive but stuck on
+    # stale sys.modules" — a state the heartbeat alone cannot catch.
+    try:
+        from app.bridge_watchdog import write_bridge_version_stamp
+        write_bridge_version_stamp(KOAN_ROOT)
+    except Exception as e:
+        log("error", f"write_bridge_version_stamp failed: {e}")
     log("init", f"Token: ...{BOT_TOKEN[-8:]}")
     log("init", f"Chat ID: {CHAT_ID}")
     log("init", f"Soul: {len(SOUL)} chars loaded")
