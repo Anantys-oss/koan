@@ -3,7 +3,9 @@
 import os
 import shutil
 import tempfile
+from contextlib import ExitStack
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -46,6 +48,46 @@ def _reset_run_module_state():
     except Exception:
         pass
     yield
+
+
+@pytest.fixture(autouse=True)
+def _mock_resolve_pr_location():
+    """Bypass the gh CLI lookup at the start of run_rebase/run_recreate/run_review/run_squash.
+
+    These pipelines call ``resolve_pr_location()`` at Step 0 to verify the
+    PR exists at the given owner/repo (and probe other remotes if not). The
+    helper shells out to ``gh pr view``, which:
+
+    * requires ``gh`` to be installed and authenticated in the test env, and
+    * becomes flaky under pytest-xdist when many workers shell out to ``gh``
+      concurrently (auth contention, rate limiting).
+
+    Tests that pass placeholder owners/repos like ``("o", "r", "1", "/p")``
+    don't care about this resolution step — they only exercise the code
+    *after* the PR location is known. Make the lookup a no-op everywhere so
+    the test outcome doesn't depend on the host ``gh`` install or on xdist
+    scheduling.
+
+    Tests for ``resolve_pr_location()`` itself live in test_claude_step.py
+    and use ``app.claude_step.resolve_pr_location`` directly — patching only
+    the call-site bindings here leaves those unaffected.
+    """
+    targets = (
+        "app.recreate_pr.resolve_pr_location",
+        "app.rebase_pr.resolve_pr_location",
+        "app.review_runner.resolve_pr_location",
+        "app.squash_pr.resolve_pr_location",
+    )
+    passthrough = lambda owner, repo, pr_number, project_path: (owner, repo)  # noqa: E731
+    with ExitStack() as stack:
+        for target in targets:
+            try:
+                stack.enter_context(patch(target, side_effect=passthrough))
+            except (AttributeError, ModuleNotFoundError):
+                # Module not importable in this test run (e.g. minimal sys.path);
+                # nothing to patch.
+                continue
+        yield
 
 
 @pytest.fixture(autouse=True)
