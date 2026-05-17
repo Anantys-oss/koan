@@ -86,7 +86,11 @@ def handle(ctx) -> Optional[str]:
     if classified_context:
         mission_parts.append(classified_context)
 
-    queue_github_mission(ctx, command, url or "", project_name, classified_context)
+    inserted = queue_github_mission(ctx, command, url or "", project_name, classified_context)
+
+    if not inserted:
+        url_info = f" ({url.split('/')[-1]})" if url else ""
+        return f"\u26a0\ufe0f Duplicate ignored — /{command} already queued or running for {project_name}{url_info}."
 
     url_info = f" ({url.split('/')[-1]})" if url else ""
     return f"/{command} queued for {project_name}{url_info}: {classified_context[:60]}" if classified_context else f"/{command} queued for {project_name}{url_info}"
