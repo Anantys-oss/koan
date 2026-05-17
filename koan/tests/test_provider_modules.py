@@ -908,6 +908,63 @@ class TestRunCommandStreaming:
             run_command_streaming("hi", "/tmp", [], max_turns=2)
         assert "max turns limit" in capsys.readouterr().err
 
+    def test_heartbeat_keeps_parent_watchdog_alive(self, capsys, monkeypatch):
+        """While Claude CLI sits silent (no stdout for a long stretch), the
+        streaming helper must still emit periodic heartbeat lines so the
+        skill-runner liveness watchdog in run.py does not kill a healthy but
+        long-running session.
+
+        Reproduces the python-zeroconf #1700 stall: a high-effort fix where
+        Claude does several minutes of tool use before emitting any stdout,
+        and the 600s liveness watchdog killed the session as if it were stuck.
+        """
+        import time
+        from app import provider as provider_mod
+        from app.provider import run_command_streaming
+
+        class SlowIter:
+            def __init__(self, delay, line):
+                self._delay = delay
+                self._line = line
+                self._done = False
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                if self._done:
+                    raise StopIteration
+                time.sleep(self._delay)
+                self._done = True
+                return self._line
+
+        proc = MagicMock()
+        proc.stdout = MagicMock()
+        proc.stdout.__iter__ = lambda self: SlowIter(0.4, "final\n")
+        proc.stdout.close = MagicMock()
+        proc.stderr = MagicMock()
+        proc.stderr.read.return_value = ""
+        proc.returncode = 0
+        proc.wait.return_value = None
+        cleanup = MagicMock()
+
+        # Speed up heartbeat so the test is fast.
+        monkeypatch.setattr(provider_mod, "_HEARTBEAT_INTERVAL_S", 0.05)
+
+        with patch("app.config.get_model_config", return_value={"chat": "m", "fallback": "f"}), \
+             patch("app.provider.build_full_command", return_value=["fake"]), \
+             patch("app.cli_exec.popen_cli", return_value=(proc, cleanup)), \
+             patch("app.claude_step.strip_cli_noise", side_effect=lambda s: s):
+            out = run_command_streaming("hi", "/tmp", [])
+
+        captured = capsys.readouterr().out
+        assert "final" in out
+        # Heartbeat lines must reach stdout so the parent watchdog sees output.
+        assert "still working" in captured
+        # Heartbeat lines must NOT pollute the captured return value — only
+        # lines that came from proc.stdout belong in the result.
+        assert "still working" not in out
+
 
 class TestMaxTurnsWarningAttribution:
     """The warning message must match how max_turns was actually sourced.

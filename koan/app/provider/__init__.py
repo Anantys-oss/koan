@@ -26,6 +26,8 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from typing import List, Optional, Tuple
 
 # Re-export base class and constants for convenience
@@ -399,6 +401,36 @@ def run_command(
     return strip_cli_noise(result.stdout.strip())
 
 
+# Interval (seconds) between heartbeat lines emitted while waiting for the
+# CLI to produce its first / next stdout line. Skill runners are launched as
+# a subprocess by run.py, which has a 600s liveness watchdog over the runner's
+# stdout. Claude CLI in plain `-p` print mode buffers all output until the
+# session ends, so a long-but-healthy fix can produce zero stdout for tens of
+# minutes and trip the watchdog. The heartbeat prints to the runner's stdout
+# so the parent watchdog stays satisfied. Tests monkeypatch this to a small
+# value; ops can raise/lower it indirectly via `first_output_timeout`.
+_HEARTBEAT_INTERVAL_S: float = 60.0
+
+
+def _start_cli_heartbeat() -> threading.Event:
+    """Start a daemon thread that prints periodic heartbeats to stdout.
+
+    Returns the stop event — set it (and the thread will exit on its next
+    wait wake-up) when the CLI starts producing output or finishes.
+    """
+    stop_event = threading.Event()
+    started_at = time.monotonic()
+
+    def _loop():
+        while not stop_event.wait(_HEARTBEAT_INTERVAL_S):
+            elapsed = int(time.monotonic() - started_at)
+            print(f"[cli] still working… ({elapsed}s elapsed)", flush=True)
+
+    t = threading.Thread(target=_loop, daemon=True)
+    t.start()
+    return stop_event
+
+
 def run_command_streaming(
     prompt: str,
     project_path: str,
@@ -448,6 +480,7 @@ def run_command_streaming(
 
     lines = []
     stderr_text = ""
+    heartbeat_stop = _start_cli_heartbeat()
     try:
         for line in proc.stdout:
             stripped = line.rstrip("\n")
@@ -460,6 +493,7 @@ def run_command_streaming(
         proc.wait()
         raise RuntimeError(f"CLI invocation timed out after {timeout}s")
     finally:
+        heartbeat_stop.set()
         if proc.stdout:
             proc.stdout.close()
         if proc.stderr:
