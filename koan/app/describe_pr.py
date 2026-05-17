@@ -3,8 +3,9 @@
 Public API
 ----------
 describe_pr(project_path, base_branch) -> dict | None
-    Returns {"type": str, "summary": list[str], "walkthrough": list[dict]} or
-    None when the diff is empty or generation fails.
+    Returns {"summary": list[str], "why": str, "how": list[str],
+    "testing": list[str], "limitations": list[str]} or None when the diff
+    is empty or generation fails.
 
 format_description(desc) -> str
     Render the parsed dict as a markdown string suitable for a PR body section.
@@ -76,7 +77,8 @@ def _parse_description(raw: str) -> dict:
     Handles leading prose before the first ## header, missing sections,
     and extra whitespace.
 
-    Returns {"type": str, "summary": list[str], "walkthrough": list[dict]}.
+    Returns {"summary": list[str], "why": str, "how": list[str],
+    "testing": list[str], "limitations": list[str]}.
     """
     # Drop everything before the first ## heading
     first_header = raw.find("## ")
@@ -98,43 +100,52 @@ def _parse_description(raw: str) -> dict:
         lines = sections.get(key, [])
         return [l.lstrip("- ").strip() for l in lines if l.startswith("- ")]
 
-    pr_type = " ".join(sections.get("type", [])).strip().lstrip("- ").strip()
+    def prose(key: str) -> str:
+        lines = sections.get(key, [])
+        return " ".join(l for l in lines if l).strip()
+
     summary = bullets("summary")
+    why = prose("why")
+    how = bullets("how")
+    testing = bullets("testing")
+    limitations = bullets("limitations & risk")
 
-    walkthrough_raw = bullets("walkthrough")
-    walkthrough = []
-    for item in walkthrough_raw:
-        if " — " in item:
-            path, desc = item.split(" — ", 1)
-            walkthrough.append({"file": path.strip().strip("`"), "change": desc.strip()})
-        elif " - " in item:
-            path, desc = item.split(" - ", 1)
-            walkthrough.append({"file": path.strip().strip("`"), "change": desc.strip()})
-        else:
-            walkthrough.append({"file": item.strip("`"), "change": ""})
-
-    return {"type": pr_type, "summary": summary, "walkthrough": walkthrough}
+    return {
+        "summary": summary,
+        "why": why,
+        "how": how,
+        "testing": testing,
+        "limitations": limitations,
+    }
 
 
 def format_description(desc: dict) -> str:
     """Render a parsed description dict as a markdown PR body section."""
     parts: list[str] = []
 
-    if desc.get("type"):
-        parts.append(f"**Type:** {desc['type']}\n")
-
     if desc.get("summary"):
         parts.append("## Summary\n")
         parts.extend(f"- {item}" for item in desc["summary"])
         parts.append("")
 
-    if desc.get("walkthrough"):
-        parts.append("## Changes\n")
-        for entry in desc["walkthrough"]:
-            if entry.get("change"):
-                parts.append(f"- `{entry['file']}` — {entry['change']}")
-            else:
-                parts.append(f"- `{entry['file']}`")
+    if desc.get("why"):
+        parts.append("## Why\n")
+        parts.append(desc["why"])
+        parts.append("")
+
+    if desc.get("how"):
+        parts.append("## How\n")
+        parts.extend(f"- {item}" for item in desc["how"])
+        parts.append("")
+
+    if desc.get("testing"):
+        parts.append("## Testing\n")
+        parts.extend(f"- {item}" for item in desc["testing"])
+        parts.append("")
+
+    if desc.get("limitations"):
+        parts.append("## Limitations & Risk\n")
+        parts.extend(f"- {item}" for item in desc["limitations"])
         parts.append("")
 
     return "\n".join(parts).strip()
@@ -143,8 +154,9 @@ def format_description(desc: dict) -> str:
 def describe_pr(project_path: str, base_branch: str) -> Optional[dict]:
     """Generate a structured PR description by diffing branch against base.
 
-    Returns a dict with keys ``type``, ``summary``, ``walkthrough`` on success,
-    or ``None`` if the diff is empty or Claude is unavailable.
+    Returns a dict with keys ``summary``, ``why``, ``how``, ``testing``,
+    ``limitations`` on success, or ``None`` if the diff is empty or Claude
+    is unavailable.
     """
     diff = _get_diff(project_path, base_branch)
     if not diff.strip():
@@ -193,7 +205,7 @@ def describe_pr(project_path: str, base_branch: str) -> Optional[dict]:
     parsed = _parse_description(raw)
 
     # Validate: at least one section must have data
-    if not parsed["type"] and not parsed["summary"] and not parsed["walkthrough"]:
+    if not parsed["summary"] and not parsed["why"] and not parsed["how"]:
         print("[describe_pr] Warning: all sections empty in parsed output", file=sys.stderr)
         return None
 
