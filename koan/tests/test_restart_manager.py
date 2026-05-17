@@ -5,8 +5,12 @@ import time
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
+import pytest
+
 from app.restart_manager import (
     RESTART_FILE,
+    RESTART_BRIDGE_FILE,
+    RESTART_RUN_FILE,
     RESTART_EXIT_CODE,
     request_restart,
     check_restart,
@@ -54,13 +58,14 @@ class TestRequestRestart:
         assert "restart requested at" in content
 
     def test_uses_atomic_write(self, tmp_path):
-        """request_restart should use atomic_write for thread safety."""
+        """request_restart should use atomic_write for thread safety,
+        once per consumer marker plus the legacy single-file marker."""
         with patch("app.utils.atomic_write") as mock_aw:
             request_restart(str(tmp_path))
-            mock_aw.assert_called_once()
-            # First arg should be a Path
-            call_path = mock_aw.call_args[0][0]
-            assert str(call_path).endswith(RESTART_FILE)
+            written = [str(call.args[0]) for call in mock_aw.call_args_list]
+            assert any(p.endswith(RESTART_BRIDGE_FILE) for p in written)
+            assert any(p.endswith(RESTART_RUN_FILE) for p in written)
+            assert any(p.endswith(RESTART_FILE) for p in written)
 
 
 # ---------------------------------------------------------------------------
@@ -236,3 +241,64 @@ class TestRestartWorkflow:
         assert check_restart(root) is True
         clear_restart(root)
         assert check_restart(root) is False
+
+
+# ---------------------------------------------------------------------------
+# Per-process restart markers (race-fix)
+# ---------------------------------------------------------------------------
+
+
+class TestPerProcessRestartMarkers:
+    """Each process polls its own marker so a fast wrapper-restart of one
+    consumer cannot wipe the signal before the other consumer's poll tick.
+
+    Regression for the ``/update`` race: the runner used to write a single
+    ``.koan-restart`` file, exit with code 42, and have its wrapper relaunch
+    it within ~1 s; the fresh runner's startup ``clear_restart`` then
+    wiped the file before the bridge's 3 s poll tick could observe it,
+    leaving the bridge with a stale ``sys.modules`` and ``/list`` broken.
+    """
+
+    def test_request_restart_writes_all_three_markers(self, tmp_path):
+        request_restart(str(tmp_path))
+        assert (tmp_path / RESTART_BRIDGE_FILE).exists()
+        assert (tmp_path / RESTART_RUN_FILE).exists()
+        assert (tmp_path / RESTART_FILE).exists(), (
+            "legacy marker must still be written so a pre-upgrade bridge "
+            "polling .koan-restart can re-exec into the new code"
+        )
+
+    def test_check_restart_target_isolation(self, tmp_path):
+        """Writing only one consumer's marker must not satisfy the other."""
+        (tmp_path / RESTART_BRIDGE_FILE).write_text("restart")
+        assert check_restart(str(tmp_path), target="bridge") is True
+        assert check_restart(str(tmp_path), target="run") is False
+        # And the legacy single-marker check still has its own file.
+        assert check_restart(str(tmp_path), target=None) is False
+
+    def test_clear_restart_target_isolation(self, tmp_path):
+        """clear_restart for one target must leave the other intact."""
+        request_restart(str(tmp_path))
+        clear_restart(str(tmp_path), target="run")
+        assert not (tmp_path / RESTART_RUN_FILE).exists()
+        assert (tmp_path / RESTART_BRIDGE_FILE).exists()
+        # Legacy file is also untouched — only its own consumer clears it.
+        assert (tmp_path / RESTART_FILE).exists()
+
+    def test_runner_wrapper_restart_does_not_silence_bridge(self, tmp_path):
+        """Simulate the /update race directly: a request_restart followed
+        immediately by the runner's wrapper-restart clear leaves the bridge
+        marker fully intact and detectable on a later poll tick."""
+        startup_time = time.time() - 60  # bridge has been up for a while
+        request_restart(str(tmp_path))
+        # Simulate the fresh runner's L785 startup wipe.
+        clear_restart(str(tmp_path), target="run")
+        # Bridge's poll tick now sees its own marker as fresh.
+        assert check_restart(
+            str(tmp_path), since=startup_time, target="bridge"
+        ) is True
+
+    @pytest.mark.parametrize("fn", [check_restart, clear_restart])
+    def test_unknown_target_raises(self, tmp_path, fn):
+        with pytest.raises(ValueError):
+            fn(str(tmp_path), target="runner")  # type: ignore[arg-type]

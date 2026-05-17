@@ -731,7 +731,7 @@ def handle_pause(
             if Path(koan_root, CYCLE_FILE).exists():
                 log("pause", "Update signal detected while paused")
                 break
-            if check_restart(koan_root):
+            if check_restart(koan_root, target="run"):
                 break
             time.sleep(5)
 
@@ -782,7 +782,7 @@ def main_loop():
     Path(koan_root, SHUTDOWN_FILE).unlink(missing_ok=True)
     Path(koan_root, CYCLE_FILE).unlink(missing_ok=True)
     Path(koan_root, ABORT_FILE).unlink(missing_ok=True)
-    clear_restart(koan_root)
+    clear_restart(koan_root, target="run")
 
     # Install SIGINT handler
     signal.signal(signal.SIGINT, _on_sigint)
@@ -851,9 +851,9 @@ def main_loop():
                 break
 
             # --- Restart check ---
-            if check_restart(koan_root, since=start_time):
+            if check_restart(koan_root, since=start_time, target="run"):
                 log("koan", "Restart requested. Exiting for re-launch...")
-                clear_restart(koan_root)
+                clear_restart(koan_root, target="run")
                 sys.exit(RESTART_EXIT_CODE)
 
             # --- Pause mode ---
