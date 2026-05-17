@@ -26,7 +26,7 @@ from typing import List, Optional, Tuple
 from app.claude_step import resolve_pr_location
 from app.github import run_gh, sanitize_github_comment, find_bot_comment
 from app.github_url_parser import ISSUE_URL_PATTERN
-from app.prompts import load_prompt_or_skill
+from app.prompts import load_prompt_or_skill, load_skill_prompt
 from app.rebase_pr import fetch_pr_context
 from app.utils import KOAN_ROOT
 from app.review_markers import (
@@ -439,11 +439,6 @@ def _reflect_findings(
     Returns:
         Filtered list of findings.
     """
-    import json as _json
-
-    from app.prompts import load_skill_prompt
-    from app.review_schema import REFLECT_SCHEMA
-
     # Clamp threshold to valid range
     threshold = max(0, min(10, threshold))
 
@@ -451,7 +446,7 @@ def _reflect_findings(
         return findings
 
     try:
-        findings_json = _json.dumps(findings, indent=2)
+        findings_json = json.dumps(findings, indent=2)
         prompt = load_skill_prompt("review", "reflect").format(
             FINDINGS_JSON=findings_json,
             DIFF=diff or "(diff not available)",
@@ -478,8 +473,8 @@ def _reflect_findings(
         if text.startswith("```"):
             lines = text.splitlines()
             text = "\n".join(lines[1:-1]) if lines[-1].strip() == "```" else "\n".join(lines[1:])
-        scores = _json.loads(text)
-    except _json.JSONDecodeError as exc:
+        scores = json.loads(text)
+    except json.JSONDecodeError as exc:
         print(
             f"[review_runner] reflect: JSON parse failed: {exc} — keeping all findings",
             file=sys.stderr,
