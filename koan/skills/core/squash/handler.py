@@ -47,6 +47,9 @@ def handle(ctx):
     if not project_path:
         return format_project_not_found_error(repo, owner=owner)
 
-    queue_github_mission(ctx, "squash", pr_url, project_name)
+    inserted = queue_github_mission(ctx, "squash", pr_url, project_name)
+
+    if not inserted:
+        return f"\u26a0\ufe0f Duplicate ignored — /squash already queued or running for PR #{pr_number} ({owner}/{repo})."
 
     return f"Squash queued for {format_success_message('PR', pr_number, owner, repo)}"

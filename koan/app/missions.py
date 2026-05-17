@@ -1999,7 +1999,7 @@ def _extract_mission_signature(text: str) -> Optional[str]:
     match = _GITHUB_ACTION_RE.search(text)
     if match:
         command = match.group(1)
-        url = match.group(2).rstrip(")")  # strip trailing paren if any
+        url = match.group(2).rstrip("/)")  # strip trailing paren or slash
         return f"{command}:{url}"
     return None
 

@@ -173,7 +173,10 @@ def _handle_batch(ctx, args: str, repo_match: Tuple[str, str, str]) -> str:
             skipped += 1
             continue
         issue_url = issue.get("url") or f"https://github.com/{owner}/{repo}/issues/{issue['number']}"
-        queue_github_mission(ctx, "fix", issue_url, project_name)
+        inserted = queue_github_mission(ctx, "fix", issue_url, project_name)
+        if not inserted:
+            skipped += 1
+            continue
         queued += 1
 
     limit_note = f" (limited to {limit})" if limit else ""
