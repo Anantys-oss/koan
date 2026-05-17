@@ -3,6 +3,8 @@
 import json
 from unittest.mock import MagicMock, patch
 
+from app.claude_step import CI_STATUS_BLOCKED_APPROVAL
+
 import pytest
 
 
@@ -562,7 +564,7 @@ class TestAggregateCiRuns:
             {"databaseId": 10, "status": "action_required", "conclusion": None},
         ]
         status, run_id = aggregate_ci_runs(runs)
-        assert status == "blocked_approval"
+        assert status == CI_STATUS_BLOCKED_APPROVAL
         assert run_id == 10
 
     def test_waiting_status_returns_blocked_approval(self):
@@ -575,7 +577,7 @@ class TestAggregateCiRuns:
             {"databaseId": 11, "status": "waiting", "conclusion": None},
         ]
         status, run_id = aggregate_ci_runs(runs)
-        assert status == "blocked_approval"
+        assert status == CI_STATUS_BLOCKED_APPROVAL
         assert run_id == 11
 
     def test_failure_wins_over_blocked_approval(self):
@@ -605,7 +607,7 @@ class TestAggregateCiRuns:
             {"databaseId": 2, "status": "action_required", "conclusion": None},
         ]
         status, run_id = aggregate_ci_runs(runs)
-        assert status == "blocked_approval"
+        assert status == CI_STATUS_BLOCKED_APPROVAL
         assert run_id == 2
 
 
@@ -634,7 +636,7 @@ class TestDrainOneBlockedApproval:
             patch("app.utils.modify_missions_file") as mock_modify,
             patch(
                 "app.ci_queue_runner.check_ci_status",
-                return_value=("blocked_approval", 999),
+                return_value=(CI_STATUS_BLOCKED_APPROVAL, 999),
             ),
             patch("app.ci_queue_runner._write_outbox") as mock_outbox,
             patch("app.ci_queue_runner._inject_ci_fix_mission") as mock_inject,
@@ -668,7 +670,7 @@ class TestRunCiCheckBlockedApproval:
             patch("app.rebase_pr.fetch_pr_context", return_value=fake_context),
             patch(
                 "app.ci_queue_runner.check_ci_status",
-                return_value=("blocked_approval", 123),
+                return_value=(CI_STATUS_BLOCKED_APPROVAL, 123),
             ),
             patch("app.ci_queue_runner._attempt_ci_fixes") as mock_fix,
         ):
