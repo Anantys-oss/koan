@@ -69,6 +69,7 @@ def parse_severity(token: str) -> Optional[str]:
     Returns the canonical severity name (``"critical"``, ``"warning"``, or
     ``"suggestion"``), or ``None`` if the token is not recognised.
     """
+    # lstrip strips individual chars, not substrings — handles any mix of -, —, –
     cleaned = token.lstrip("-\u2014\u2013").strip().lower()
     return _SEVERITY_ALIASES.get(cleaned)
 

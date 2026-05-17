@@ -525,7 +525,7 @@ def _build_rebase_cmd(
     remainder = args[url_match.end():]
     sev_match = _SEVERITY_TOKEN_RE.search(remainder)
     if sev_match:
-        from app.rebase_pr import parse_severity
+        from app.rebase_pr import parse_severity  # lazy import to avoid circular dep
         canonical = parse_severity(sev_match.group(1))
         if canonical:
             cmd.extend(["--min-severity", canonical])
