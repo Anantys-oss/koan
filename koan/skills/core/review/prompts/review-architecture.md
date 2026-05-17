@@ -17,7 +17,7 @@ respect boundaries, manage dependencies, and uphold design principles.
 
 ## Current Diff
 
-```diff
+{SKIPPED_FILES}```diff
 {DIFF}
 ```
 

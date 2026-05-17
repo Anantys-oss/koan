@@ -57,7 +57,7 @@ def review_skill_dir(tmp_path):
     prompts_dir.mkdir()
     (prompts_dir / "review.md").write_text(
         "Review PR: {TITLE}\nAuthor: {AUTHOR}\nBranch: {BRANCH} -> {BASE}\n"
-        "Body: {BODY}\nDiff: {DIFF}\n"
+        "Body: {BODY}\n{SKIPPED_FILES}Diff: {DIFF}\n"
         "Reviews: {REVIEWS}\nComments: {REVIEW_COMMENTS}\n"
         "Issue: {ISSUE_COMMENTS}\n"
         "Repliable: {REPLIABLE_COMMENTS}\n"
@@ -74,7 +74,7 @@ def plan_review_skill_dir(tmp_path):
     prompts_dir = tmp_path / "prompts"
     prompts_dir.mkdir()
     base = (
-        "{TITLE}\n{AUTHOR}\n{BRANCH}\n{BASE}\n{BODY}\n{DIFF}\n"
+        "{TITLE}\n{AUTHOR}\n{BRANCH}\n{BASE}\n{BODY}\n{SKIPPED_FILES}{DIFF}\n"
         "{REVIEWS}\n{REVIEW_COMMENTS}\n{ISSUE_COMMENTS}\n{REPLIABLE_COMMENTS}\n"
     )
     (prompts_dir / "review.md").write_text("Review PR: " + base)
@@ -104,6 +104,40 @@ class TestBuildReviewPrompt:
         assert "{BASE}" not in prompt
         assert "{BODY}" not in prompt
         assert "{DIFF}" not in prompt
+        assert "{SKIPPED_FILES}" not in prompt
+
+    def test_compress_diff_called_for_large_diff(self, pr_context, review_skill_dir):
+        """compress_diff is invoked; large diffs produce shorter DIFF in prompt."""
+        # Build a diff large enough that compress_diff trims something.
+        big_hunk = "@@ -1,100 +1,101 @@\n" + "+line\n" * 200
+        pr_context = dict(pr_context)
+        pr_context["diff"] = (
+            "diff --git a/main.py b/main.py\nindex aaa..bbb 100644\n"
+            "--- a/main.py\n+++ b/main.py\n" + big_hunk
+            + "diff --git a/config.yaml b/config.yaml\nindex ccc..ddd 100644\n"
+            "--- a/config.yaml\n+++ b/config.yaml\n"
+            "@@ -1,2 +1,3 @@\n key: value\n+new_key: new_value\n other: other\n"
+        )
+        raw_diff = pr_context["diff"]
+
+        from app.diff_compressor import compress_diff as real_compress
+        call_args = {}
+
+        def spy_compress(diff, token_budget=80_000):
+            result = real_compress(diff, token_budget)
+            call_args["called"] = True
+            call_args["result"] = result
+            return result
+
+        with patch("app.review_runner.compress_diff", side_effect=spy_compress):
+            build_review_prompt(pr_context, skill_dir=review_skill_dir)
+
+        assert call_args.get("called"), "compress_diff was not called"
+
+    def test_skipped_files_note_absent_for_small_diff(self, pr_context, review_skill_dir):
+        """No skipped-files note when diff fits within budget."""
+        prompt = build_review_prompt(pr_context, skill_dir=review_skill_dir)
+        assert "omitted due to size" not in prompt
 
     def test_memory_task_text_includes_title_body_diff_slice(
         self, pr_context, review_skill_dir,

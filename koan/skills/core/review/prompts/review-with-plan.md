@@ -29,7 +29,7 @@ each plan requirement independently against the actual diff.
 
 ## Current Diff
 
-```diff
+{SKIPPED_FILES}```diff
 {DIFF}
 ```
 

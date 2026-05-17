@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from app.claude_step import resolve_pr_location
+from app.diff_compressor import compress_diff
 from app.github import run_gh, sanitize_github_comment, find_bot_comment
 from app.github_url_parser import ISSUE_URL_PATTERN
 from app.prompts import load_prompt_or_skill, load_skill_prompt
@@ -342,18 +343,36 @@ def build_review_prompt(
         )))
         project_memory = build_memory_block_for_skill(project_path, task_text)
 
+    raw_diff = context["diff"]
+    compressed = compress_diff(raw_diff)
+    if compressed.skipped_files:
+        print(
+            f"[review_runner] Diff compressed — {len(compressed.skipped_files)} file(s) skipped: "
+            + ", ".join(compressed.skipped_files),
+            file=sys.stderr,
+        )
+
+    skipped_note = ""
+    if compressed.skipped_files:
+        skipped_list = ", ".join(f"`{f}`" for f in compressed.skipped_files)
+        skipped_note = (
+            f"> ⚠️ Diff compressed — {len(compressed.skipped_files)} file(s) omitted"
+            f" due to size: {skipped_list}\n\n"
+        )
+
     kwargs: dict = dict(
         TITLE=context["title"],
         AUTHOR=context["author"],
         BRANCH=context["branch"],
         BASE=context["base"],
         BODY=context["body"],
-        DIFF=context["diff"],
+        DIFF=compressed.diff_text,
         REVIEW_COMMENTS=context["review_comments"],
         REVIEWS=context["reviews"],
         ISSUE_COMMENTS=context["issue_comments"],
         REPLIABLE_COMMENTS=repliable_text,
         PROJECT_MEMORY=project_memory,
+        SKIPPED_FILES=skipped_note,
     )
 
     if plan_body:
