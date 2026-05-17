@@ -304,3 +304,38 @@ class TestValidateCommentReplies:
         }
         valid, errors = validate_review(data)
         assert valid is True
+
+
+# ---------------------------------------------------------------------------
+# REFLECT_SCHEMA
+# ---------------------------------------------------------------------------
+
+class TestReflectSchema:
+    def test_schema_is_array_type(self):
+        """REFLECT_SCHEMA top-level type is array."""
+        from app.review_schema import REFLECT_SCHEMA
+        assert REFLECT_SCHEMA["type"] == "array"
+
+    def test_schema_items_required_fields(self):
+        """REFLECT_SCHEMA items require finding_index, score, reason."""
+        from app.review_schema import REFLECT_SCHEMA
+        required = set(REFLECT_SCHEMA["items"]["required"])
+        assert required == {"finding_index", "score", "reason"}
+
+    def test_schema_finding_index_is_integer(self):
+        """finding_index property has integer type."""
+        from app.review_schema import REFLECT_SCHEMA
+        props = REFLECT_SCHEMA["items"]["properties"]
+        assert props["finding_index"]["type"] == "integer"
+
+    def test_schema_score_is_integer(self):
+        """score property has integer type."""
+        from app.review_schema import REFLECT_SCHEMA
+        props = REFLECT_SCHEMA["items"]["properties"]
+        assert props["score"]["type"] == "integer"
+
+    def test_schema_reason_is_string(self):
+        """reason property has string type."""
+        from app.review_schema import REFLECT_SCHEMA
+        props = REFLECT_SCHEMA["items"]["properties"]
+        assert props["reason"]["type"] == "string"

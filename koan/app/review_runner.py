@@ -367,7 +367,10 @@ def build_review_prompt(
 
 
 def _run_claude_review(
-    prompt: str, project_path: str, timeout: int = 600,
+    prompt: str,
+    project_path: str,
+    timeout: int = 600,
+    model: Optional[str] = None,
 ) -> Tuple[str, str]:
     """Run Claude CLI with read-only tools and return the output text.
 
@@ -376,6 +379,7 @@ def _run_claude_review(
         project_path: Path to the project for codebase context.
         timeout: Maximum seconds to wait (default 600s — large PRs need
                  more time than the old 300s default).
+        model: Optional model override. When None, uses models["mission"].
 
     Returns:
         (output, error) tuple. output is Claude's review text (empty on
@@ -389,7 +393,7 @@ def _run_claude_review(
     cmd = build_full_command(
         prompt=prompt,
         allowed_tools=["Read", "Glob", "Grep"],
-        model=models["mission"],
+        model=model or models["mission"],
         fallback=models["fallback"],
         max_turns=get_skill_max_turns(),
     )
@@ -410,6 +414,112 @@ def _run_claude_review(
     else:
         print(f"[review_runner] Claude review failed: {error}", file=sys.stderr)
     return "", error
+
+
+def _reflect_findings(
+    findings: list,
+    diff: str,
+    project_path: str,
+    model: Optional[str],
+    threshold: int,
+) -> list:
+    """Run a second-pass reflection on review findings and filter low-signal ones.
+
+    Calls Claude with a lightweight reflection prompt to score each finding
+    0-10. Returns only findings whose score >= threshold. On any parse or
+    validation failure, returns the original findings unchanged (fail-open).
+
+    Args:
+        findings: List of file_comment dicts from the first-pass review.
+        diff: PR diff string for context.
+        project_path: Path to the project for codebase context.
+        model: Model override for the reflection call (uses lightweight default).
+        threshold: Minimum score (0-10) for a finding to be kept.
+
+    Returns:
+        Filtered list of findings.
+    """
+    import json as _json
+
+    from app.prompts import load_skill_prompt
+    from app.review_schema import REFLECT_SCHEMA
+
+    # Clamp threshold to valid range
+    threshold = max(0, min(10, threshold))
+
+    if not findings:
+        return findings
+
+    try:
+        findings_json = _json.dumps(findings, indent=2)
+        prompt = load_skill_prompt("review", "reflect").format(
+            FINDINGS_JSON=findings_json,
+            DIFF=diff or "(diff not available)",
+        )
+    except Exception as exc:
+        print(
+            f"[review_runner] reflect: prompt build failed: {exc}",
+            file=sys.stderr,
+        )
+        return findings
+
+    raw_output, error = _run_claude_review(prompt, project_path, model=model)
+    if not raw_output:
+        print(
+            f"[review_runner] reflect: Claude call failed: {error}",
+            file=sys.stderr,
+        )
+        return findings
+
+    # Parse and validate response
+    try:
+        # Strip markdown fences if present
+        text = raw_output.strip()
+        if text.startswith("```"):
+            lines = text.splitlines()
+            text = "\n".join(lines[1:-1]) if lines[-1].strip() == "```" else "\n".join(lines[1:])
+        scores = _json.loads(text)
+    except _json.JSONDecodeError as exc:
+        print(
+            f"[review_runner] reflect: JSON parse failed: {exc} — keeping all findings",
+            file=sys.stderr,
+        )
+        return findings
+
+    if not isinstance(scores, list):
+        print(
+            "[review_runner] reflect: response is not an array — keeping all findings",
+            file=sys.stderr,
+        )
+        return findings
+
+    # Build index → score map; skip out-of-range indices
+    score_map: dict = {}
+    for entry in scores:
+        if not isinstance(entry, dict):
+            continue
+        idx = entry.get("finding_index")
+        score = entry.get("score")
+        if not isinstance(idx, int) or not isinstance(score, int):
+            continue
+        if 0 <= idx < len(findings):
+            score_map[idx] = score
+
+    # Keep findings whose score meets threshold (or whose index wasn't scored)
+    filtered = [
+        f for i, f in enumerate(findings)
+        if score_map.get(i, threshold) >= threshold
+    ]
+
+    dropped = len(findings) - len(filtered)
+    if dropped:
+        print(
+            f"[review_runner] reflect: filtered {dropped} low-signal finding(s) "
+            f"(threshold={threshold})",
+            file=sys.stderr,
+        )
+
+    return filtered
 
 
 def _extract_review_body(raw_output: str) -> str:
@@ -1066,6 +1176,21 @@ def run_review(
         retry_output, _ = _run_claude_review(retry_prompt, project_path)
         if retry_output:
             review_data = _parse_review_json(retry_output)
+
+    # Step 4b: Reflection pass — filter low-signal findings
+    if review_data is not None and review_data.get("file_comments"):
+        from app.config import get_model_config, get_review_reflect_config
+        _models = get_model_config()
+        reflect_cfg = get_review_reflect_config()
+        reflect_model = _models.get("reflect") or _models.get("lightweight")
+        reflect_threshold = reflect_cfg.get("threshold", 5)
+        review_data["file_comments"] = _reflect_findings(
+            review_data["file_comments"],
+            context.get("diff", ""),
+            project_path,
+            reflect_model,
+            reflect_threshold,
+        )
 
     # Step 5: Convert to markdown for posting
     if review_data is not None:
