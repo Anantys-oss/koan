@@ -137,11 +137,12 @@ class TestEstimateTokens:
     def test_empty(self):
         assert estimate_tokens("") == 0
 
-    def test_four_chars_one_token(self):
-        assert estimate_tokens("abcd") == 1
+    def test_short_string(self):
+        # 7 chars / 3.5 = 2
+        assert estimate_tokens("abcdefg") == 2
 
     def test_approximation(self):
-        text = "x" * 400
+        text = "x" * 350
         assert estimate_tokens(text) == 100
 
 

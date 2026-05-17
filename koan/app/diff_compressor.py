@@ -93,8 +93,14 @@ class FileDiff:
 
 
 def estimate_tokens(text: str) -> int:
-    """Approximate token count using character-based heuristic (chars / 4)."""
-    return len(text) // 4
+    """Approximate token count using character-based heuristic (chars / 3.5).
+
+    Real tokenizers average ~3.5 chars/token for code.  Using 3.5 instead of 4
+    is deliberately conservative: it slightly overestimates token counts, which
+    means we may include fewer files but are less likely to blow the context
+    window by underestimating.
+    """
+    return int(len(text) / 3.5)
 
 
 # ---------------------------------------------------------------------------
@@ -227,8 +233,6 @@ def compress_diff(raw_diff: str, token_budget: int = 80_000) -> CompressedDiff:
                 if hunk_cost <= hunk_budget:
                     partial_hunks.append(hunk)
                     hunk_budget -= hunk_cost
-                else:
-                    break
 
             if partial_hunks:
                 included_blocks.append(fd.header + "".join(partial_hunks))
