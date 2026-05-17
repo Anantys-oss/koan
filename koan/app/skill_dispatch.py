@@ -289,7 +289,7 @@ def build_skill_command(
         "plan": lambda: _build_plan_cmd(base_cmd, args, project_path),
         "implement": lambda: _build_implement_cmd(base_cmd, args, project_path),
         "fix": lambda: _build_implement_cmd(base_cmd, args, project_path),
-        "rebase": lambda: _build_pr_url_cmd(base_cmd, args, project_path),
+        "rebase": lambda: _build_rebase_cmd(base_cmd, args, project_path),
         "recreate": lambda: _build_pr_url_cmd(base_cmd, args, project_path),
         "squash": lambda: _build_pr_url_cmd(base_cmd, args, project_path),
         "review": lambda: _build_review_cmd(base_cmd, args, project_path),
@@ -493,6 +493,44 @@ def _build_pr_url_cmd(
     if not url_match:
         return None
     return base_cmd + [url_match.group(0), "--project-path", project_path]
+
+
+# Regex to extract a severity keyword from rebase args.
+# Matches: "critical", "-critical", "--critical", "—critical" (em-dash),
+# "important", "warning", "suggestion", "blocking", "all".
+_SEVERITY_TOKEN_RE = re.compile(
+    r'(?:^|\s)[-\u2014\u2013]*'
+    r'(critical|blocking|important|warning|suggestion|suggestions|all)'
+    r'(?:\s|$)',
+    re.IGNORECASE,
+)
+
+
+def _build_rebase_cmd(
+    base_cmd: List[str], args: str, project_path: str,
+) -> Optional[List[str]]:
+    """Build rebase command, extracting an optional severity filter.
+
+    Accepts severity keywords after the PR URL:
+        /rebase <url> critical      → --min-severity critical
+        /rebase <url> --important   → --min-severity warning
+        /rebase <url>               → no filter (address everything)
+    """
+    url_match = _PR_URL_RE.search(args)
+    if not url_match:
+        return None
+    cmd = base_cmd + [url_match.group(0), "--project-path", project_path]
+
+    # Look for severity keyword in the text after the URL
+    remainder = args[url_match.end():]
+    sev_match = _SEVERITY_TOKEN_RE.search(remainder)
+    if sev_match:
+        from app.rebase_pr import parse_severity
+        canonical = parse_severity(sev_match.group(1))
+        if canonical:
+            cmd.extend(["--min-severity", canonical])
+
+    return cmd
 
 
 def _build_review_cmd(

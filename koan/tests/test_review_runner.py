@@ -2358,3 +2358,48 @@ class TestRunReviewWithIgnoreFilter:
 
         prompt_sent = mock_claude.call_args[0][0]
         assert "vendor/lodash.js" in prompt_sent
+
+
+# ---------------------------------------------------------------------------
+# Severity filter hint in review output
+# ---------------------------------------------------------------------------
+
+class TestSeverityFilterHint:
+    def test_hint_shown_with_multiple_severities(self):
+        data = {
+            "file_comments": [
+                {"file": "a.py", "line_start": 1, "line_end": 1,
+                 "severity": "critical", "title": "Bug", "comment": "Fix",
+                 "code_snippet": ""},
+                {"file": "b.py", "line_start": 2, "line_end": 2,
+                 "severity": "suggestion", "title": "Style", "comment": "Rename",
+                 "code_snippet": ""},
+            ],
+            "review_summary": {"lgtm": False, "summary": "Needs work.",
+                               "checklist": []},
+        }
+        md = _format_review_as_markdown(data)
+        assert "/rebase" in md
+        assert "critical" in md.split("/rebase")[1]
+
+    def test_hint_hidden_with_single_severity(self):
+        data = {
+            "file_comments": [
+                {"file": "a.py", "line_start": 1, "line_end": 1,
+                 "severity": "critical", "title": "Bug", "comment": "Fix",
+                 "code_snippet": ""},
+            ],
+            "review_summary": {"lgtm": False, "summary": "Needs work.",
+                               "checklist": []},
+        }
+        md = _format_review_as_markdown(data)
+        assert "/rebase" not in md
+
+    def test_hint_hidden_on_lgtm(self):
+        data = {
+            "file_comments": [],
+            "review_summary": {"lgtm": True, "summary": "LGTM",
+                               "checklist": []},
+        }
+        md = _format_review_as_markdown(data)
+        assert "/rebase" not in md
