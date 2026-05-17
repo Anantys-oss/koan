@@ -26,7 +26,7 @@ from typing import List, Optional, Tuple
 from app.claude_step import resolve_pr_location
 from app.github import run_gh, sanitize_github_comment, find_bot_comment
 from app.github_url_parser import ISSUE_URL_PATTERN
-from app.prompts import load_prompt_or_skill
+from app.prompts import load_prompt, load_prompt_or_skill, load_skill_prompt
 from app.rebase_pr import fetch_pr_context
 from app.review_markers import (
     SUMMARY_TAG,
@@ -366,6 +366,111 @@ def _run_claude_review(
     else:
         print(f"[review_runner] Claude review failed: {error}", file=sys.stderr)
     return "", error
+
+
+_ERROR_PATTERN_RE = re.compile(
+    r'try:|except |catch\(|\.catch\(|on_error',
+    re.IGNORECASE,
+)
+
+
+def _should_run_error_hunter(diff: str) -> bool:
+    """Return True if added lines in the diff contain error-handling patterns."""
+    added_lines = '\n'.join(
+        line for line in diff.splitlines() if line.startswith('+')
+    )
+    return bool(_ERROR_PATTERN_RE.search(added_lines))
+
+
+def _run_error_hunter(
+    diff: str, project_path: str, skill_dir: Optional[Path],
+) -> str:
+    """Run the silent-failure-hunter pass and return formatted markdown section.
+
+    Returns an empty string if no findings are produced.
+    """
+    if skill_dir is not None:
+        prompt = load_skill_prompt(skill_dir, "silent-failure-hunter", DIFF=diff)
+    else:
+        prompt = load_prompt("silent-failure-hunter", DIFF=diff)
+
+    raw_output, error = _run_claude_review(prompt, project_path)
+    if not raw_output:
+        print(
+            f"[review_runner] silent-failure-hunter pass failed: {error}",
+            file=sys.stderr,
+        )
+        return ""
+
+    # Parse JSON array of findings
+    findings = _parse_error_hunter_output(raw_output)
+    if not findings:
+        return ""
+
+    return _format_error_hunter_findings(findings)
+
+
+def _parse_error_hunter_output(raw_output: str) -> list:
+    """Parse the JSON array returned by the silent-failure-hunter prompt."""
+    # Try to find a JSON array in the output
+    match = re.search(r'\[\s*\{.*?\}\s*\]', raw_output, re.DOTALL)
+    if match:
+        try:
+            findings = json.loads(match.group(0))
+            if isinstance(findings, list):
+                return findings
+        except json.JSONDecodeError:
+            pass
+
+    # Try parsing the whole output as JSON
+    stripped = raw_output.strip()
+    # Remove markdown code fences if present
+    if stripped.startswith("```"):
+        lines = stripped.split("\n")
+        stripped = "\n".join(lines[1:-1]) if len(lines) > 2 else stripped
+
+    try:
+        findings = json.loads(stripped)
+        if isinstance(findings, list):
+            return findings
+    except json.JSONDecodeError:
+        pass
+
+    print(
+        "[review_runner] silent-failure-hunter: could not parse JSON output",
+        file=sys.stderr,
+    )
+    return []
+
+
+def _format_error_hunter_findings(findings: list) -> str:
+    """Format error-hunter findings as a markdown section."""
+    severity_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2}
+    findings = sorted(findings, key=lambda f: severity_order.get(f.get("severity", "MEDIUM"), 2))
+
+    lines = ["## Silent Failure Analysis", ""]
+    for f in findings:
+        severity = f.get("severity", "?")
+        pattern = f.get("pattern", "unknown pattern")
+        file_path = f.get("file", "")
+        line_hint = f.get("line_hint", "")
+        location = f"{file_path}:{line_hint}" if line_hint else file_path
+        snippet = f.get("snippet", "")
+        explanation = f.get("explanation", "")
+        suggestion = f.get("suggestion", "")
+
+        lines.append(f"### `{severity}` — {pattern}")
+        if location:
+            lines.append(f"**Location**: `{location}`")
+        if snippet:
+            lines.append(f"```\n{snippet}\n```")
+        if explanation:
+            lines.append(f"**Risk**: {explanation}")
+        if suggestion:
+            lines.append(f"**Fix**: {suggestion}")
+        lines.append("")
+
+    return "\n".join(lines).rstrip()
 
 
 def _extract_review_body(raw_output: str) -> str:
@@ -765,6 +870,23 @@ def _post_comment_replies(
     return posted
 
 
+def _patch_comment_body(
+    owner: str, repo: str, comment_id: int, body: str,
+) -> bool:
+    """PATCH a GitHub issue comment body. Returns True on success."""
+    try:
+        run_gh(
+            "api",
+            f"repos/{owner}/{repo}/issues/comments/{comment_id}",
+            "-X", "PATCH",
+            "-f", f"body={body}",
+        )
+        return True
+    except Exception as e:
+        print(f"[review_runner] failed to patch comment {comment_id}: {e}", file=sys.stderr)
+        return False
+
+
 def _resolve_plan_body(plan_url: Optional[str], pr_body: str) -> str:
     """Fetch the plan body from an explicit URL or auto-detect from the PR body.
 
@@ -859,6 +981,7 @@ def run_review(
     skill_dir: Optional[Path] = None,
     architecture: bool = False,
     plan_url: Optional[str] = None,
+    errors: bool = False,
 ) -> Tuple[bool, str, Optional[dict]]:
     """Execute a read-only code review on a PR.
 
@@ -872,6 +995,9 @@ def run_review(
         architecture: If True, use architecture-focused review prompt.
         plan_url: Optional explicit GitHub issue URL for the plan to check
             alignment against. When None, auto-detection from PR body is used.
+        errors: If True, run an additional silent-failure-hunter pass to detect
+            swallowed exceptions and silent error paths. Auto-triggered when
+            the diff contains error-handling patterns.
 
     Returns:
         (success, summary, review_data) tuple. review_data is the validated
@@ -1010,15 +1136,7 @@ def run_review(
         )
         review_body = _extract_review_body(raw_output)
 
-    # Step 6: Post (or update) review comment (Phase 3 — idempotent upsert)
-    # Commit SHAs are embedded in the body upfront to avoid extra API calls.
-    notify_fn(f"Posting review on PR #{pr_number}...")
-    posted = _post_review_comment(
-        owner, repo, pr_number, review_body, existing_comment,
-        commit_shas=current_shas or None,
-    )
-
-    # Step 7: Post replies to user comments
+    # Step 6: Post replies to user comments
     reply_count = 0
     if review_data and review_data.get("comment_replies") and repliable_comments:
         reply_count = _post_comment_replies(
@@ -1032,8 +1150,43 @@ def run_review(
                 file=sys.stderr,
             )
 
+    # Step 6a: Silent-failure-hunter pass (explicit flag or auto-detected)
+    diff = context.get("diff", "")
+    run_error_hunter = errors or _should_run_error_hunter(diff)
+    if run_error_hunter:
+        notify_fn(f"Running silent-failure-hunter on PR #{pr_number}...")
+        error_section = _run_error_hunter(diff, project_path, skill_dir)
+        if error_section:
+            review_body = review_body + "\n\n---\n\n" + error_section
+        else:
+            print(
+                "[review_runner] silent-failure-hunter: no findings",
+                file=sys.stderr,
+            )
+
+    # Step 7: Post (or update) review comment (Phase 3 — idempotent upsert)
+    notify_fn(f"Posting review on PR #{pr_number}...")
+    posted = _post_review_comment(
+        owner, repo, pr_number, review_body, existing_comment,
+        commit_shas=current_shas or None,
+    )
+
+    # Step 7b: Embed reviewed commit SHAs (Phase 5)
+    if posted and current_shas:
+        updated_comment = find_bot_comment(owner, repo, pr_number, SUMMARY_TAG)
+        if updated_comment:
+            new_body = replace_section(
+                updated_comment["body"],
+                COMMIT_IDS_START,
+                COMMIT_IDS_END,
+                "\n".join(current_shas),
+            )
+            _patch_comment_body(owner, repo, updated_comment["id"], new_body)
+
     if posted:
         summary = f"Review posted on PR #{pr_number} ({full_repo})."
+        if run_error_hunter:
+            summary += " Silent-failure-hunter pass included."
         if reply_count:
             summary += f" Replied to {reply_count} comment(s)."
         return True, summary, review_data
@@ -1071,6 +1224,11 @@ def main(argv=None):
         help="GitHub issue URL for the plan to check alignment against. "
              "When omitted, auto-detects from the PR body.",
     )
+    parser.add_argument(
+        "--errors", action="store_true",
+        help="Run an additional silent-failure-hunter pass to detect swallowed "
+             "exceptions and silent error paths.",
+    )
     cli_args = parser.parse_args(argv)
 
     try:
@@ -1086,6 +1244,7 @@ def main(argv=None):
         skill_dir=skill_dir,
         architecture=cli_args.architecture,
         plan_url=cli_args.plan_url,
+        errors=cli_args.errors,
     )
     print(summary)
     return 0 if success else 1
