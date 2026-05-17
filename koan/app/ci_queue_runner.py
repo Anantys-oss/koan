@@ -117,7 +117,7 @@ def drain_one(instance_dir: str) -> Optional[str]:
             )
             _write_outbox(
                 instance_dir,
-                f"❌ CI still failing after {max_attempts} attempts for PR #{pr_number}: {pr_url}",
+                f"🚦 CI still failing after {max_attempts} attempts for PR #{pr_number}: {pr_url}",
             )
             return f"CI failed {max_attempts} times for PR #{pr_number} — giving up"
 
