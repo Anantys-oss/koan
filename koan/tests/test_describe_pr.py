@@ -13,46 +13,61 @@ from app.describe_pr import _parse_description, describe_pr, format_description
 # ---------------------------------------------------------------------------
 
 CLEAN_OUTPUT = """\
-## Type
-
-enhancement
-
 ## Summary
 
 - Added describe_pr module for structured PR descriptions
 - Integrated with implement and fix runners
 - Wired into claude_step fallback path
 
-## Walkthrough
+## Why
 
-- `koan/app/describe_pr.py` — new module with describe_pr and helpers
-- `koan/skills/core/implement/implement_runner.py` — call describe_pr before submit
+The old PR descriptions were ad-hoc strings with no consistent structure,
+making review harder.
+
+## How
+
+- Created describe_pr module with diff parsing and Claude invocation
+- Wired into implement_runner and fix_runner before submit_draft_pr
+- Added fallback path in claude_step
+
+## Testing
+
+- 13 unit tests covering parser, formatter, and describe_pr
+- Full test suite passes with no regressions
 """
 
 LEADING_PROSE_OUTPUT = """\
 Here is the structured PR description you requested:
 
-## Type
-
-bug fix
-
 ## Summary
 
 - Fixed null pointer in mission parser
 
-## Walkthrough
+## Why
 
-- `koan/app/missions.py` — guard against None section header
+Crash when section header is None.
+
+## How
+
+- Added guard against None section header in missions.py
+
+## Testing
+
+- Added regression test for None header case
 """
 
-MISSING_WALKTHROUGH_OUTPUT = """\
-## Type
-
-docs
-
+MISSING_TESTING_OUTPUT = """\
 ## Summary
 
 - Updated README with new installation steps
+
+## Why
+
+Docs were outdated after the config migration.
+
+## How
+
+- Rewrote installation section in README
 """
 
 EMPTY_OUTPUT = ""
@@ -61,36 +76,48 @@ EMPTY_OUTPUT = ""
 class TestParseDescription:
     def test_clean_output(self):
         result = _parse_description(CLEAN_OUTPUT)
-        assert result["type"] == "enhancement"
         assert len(result["summary"]) == 3
         assert "Added describe_pr module" in result["summary"][0]
-        assert len(result["walkthrough"]) == 2
-        assert result["walkthrough"][0]["file"] == "koan/app/describe_pr.py"
-        assert "new module" in result["walkthrough"][0]["change"]
+        assert "ad-hoc" in result["why"]
+        assert len(result["how"]) == 3
+        assert len(result["testing"]) == 2
 
     def test_leading_prose_stripped(self):
         result = _parse_description(LEADING_PROSE_OUTPUT)
-        assert result["type"] == "bug fix"
         assert result["summary"] == ["Fixed null pointer in mission parser"]
-        assert result["walkthrough"][0]["file"] == "koan/app/missions.py"
+        assert "None" in result["why"]
+        assert result["how"][0] == "Added guard against None section header in missions.py"
 
-    def test_missing_walkthrough_returns_empty_list(self):
-        result = _parse_description(MISSING_WALKTHROUGH_OUTPUT)
-        assert result["type"] == "docs"
+    def test_missing_testing_returns_empty_list(self):
+        result = _parse_description(MISSING_TESTING_OUTPUT)
         assert "Updated README" in result["summary"][0]
-        assert result["walkthrough"] == []
+        assert "outdated" in result["why"]
+        assert result["testing"] == []
 
     def test_empty_string_returns_empty_structure(self):
         result = _parse_description(EMPTY_OUTPUT)
-        assert result["type"] == ""
         assert result["summary"] == []
-        assert result["walkthrough"] == []
+        assert result["why"] == ""
+        assert result["how"] == []
+        assert result["testing"] == []
+        assert result["limitations"] == []
 
     def test_extra_whitespace_handled(self):
-        raw = "\n## Type\n\n  enhancement  \n\n## Summary\n\n-  A bullet  \n"
+        raw = "\n## Summary\n\n-  A bullet  \n\n## Why\n\nBecause reasons.\n"
         result = _parse_description(raw)
-        assert result["type"] == "enhancement"
         assert result["summary"] == ["A bullet"]
+        assert result["why"] == "Because reasons."
+
+    def test_limitations_parsed(self):
+        raw = (
+            "## Summary\n\n- Change X\n\n"
+            "## Why\n\nNeeded.\n\n"
+            "## How\n\n- Did Y\n\n"
+            "## Testing\n\n- Tested Z\n\n"
+            "## Limitations & Risk\n\n- May break on large inputs\n"
+        )
+        result = _parse_description(raw)
+        assert result["limitations"] == ["May break on large inputs"]
 
 
 # ---------------------------------------------------------------------------
@@ -100,27 +127,38 @@ class TestParseDescription:
 class TestFormatDescription:
     def test_full_desc_renders_all_sections(self):
         desc = {
-            "type": "enhancement",
             "summary": ["Added feature A", "Fixed edge case B"],
-            "walkthrough": [
-                {"file": "koan/app/foo.py", "change": "added helper"},
-            ],
+            "why": "Users needed feature A for workflow X.",
+            "how": ["Created module foo", "Wired into bar"],
+            "testing": ["Unit tests added", "Manual QA passed"],
+            "limitations": ["Does not handle edge case C"],
         }
         rendered = format_description(desc)
-        assert "**Type:** enhancement" in rendered
         assert "## Summary" in rendered
         assert "- Added feature A" in rendered
-        assert "## Changes" in rendered
-        assert "`koan/app/foo.py` — added helper" in rendered
+        assert "## Why" in rendered
+        assert "Users needed feature A" in rendered
+        assert "## How" in rendered
+        assert "- Created module foo" in rendered
+        assert "## Testing" in rendered
+        assert "- Unit tests added" in rendered
+        assert "## Limitations & Risk" in rendered
+        assert "- Does not handle edge case C" in rendered
 
-    def test_empty_walkthrough_skips_changes_section(self):
-        desc = {"type": "docs", "summary": ["Updated readme"], "walkthrough": []}
+    def test_no_limitations_skips_section(self):
+        desc = {
+            "summary": ["Updated readme"],
+            "why": "Docs outdated.",
+            "how": ["Rewrote section"],
+            "testing": ["Verified locally"],
+            "limitations": [],
+        }
         rendered = format_description(desc)
-        assert "## Changes" not in rendered
+        assert "## Limitations" not in rendered
         assert "Updated readme" in rendered
 
     def test_empty_desc_returns_empty_string(self):
-        desc = {"type": "", "summary": [], "walkthrough": []}
+        desc = {"summary": [], "why": "", "how": [], "testing": [], "limitations": []}
         assert format_description(desc) == ""
 
 
@@ -129,17 +167,21 @@ class TestFormatDescription:
 # ---------------------------------------------------------------------------
 
 FIXTURE_CLI_OUTPUT = """\
-## Type
-
-enhancement
-
 ## Summary
 
 - Adds describe_pr for auto-generated PR descriptions
 
-## Walkthrough
+## Why
 
-- `koan/app/describe_pr.py` — new module
+PR descriptions were inconsistent and manual.
+
+## How
+
+- Created describe_pr module with Claude invocation
+
+## Testing
+
+- Added 13 unit tests
 """
 
 
@@ -171,9 +213,9 @@ class TestDescribePr:
             result = describe_pr(str(tmp_path), "main")
 
         assert result is not None
-        assert result["type"] == "enhancement"
         assert len(result["summary"]) == 1
-        assert result["walkthrough"][0]["file"] == "koan/app/describe_pr.py"
+        assert "inconsistent" in result["why"]
+        assert len(result["how"]) == 1
 
     def test_returns_none_on_empty_diff(self, tmp_path):
         with patch("app.describe_pr._run_git") as mock:
