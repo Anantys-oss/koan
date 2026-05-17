@@ -5,7 +5,7 @@ Your job is to read the original plan and all discussion comments, understand th
 ## Original Issue
 
 {ISSUE_CONTEXT}
-
+{PROJECT_MEMORY}
 ## Instructions
 
 1. **Read all comments carefully**: Each comment may contain:

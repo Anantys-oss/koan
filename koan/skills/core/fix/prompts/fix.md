@@ -12,7 +12,7 @@ You are fixing a GitHub issue. Your job is to understand the issue, plan the fix
 ## Additional Context
 
 {CONTEXT}
-
+{PROJECT_MEMORY}
 ## Instructions
 
 ### Phase 1 — Understand

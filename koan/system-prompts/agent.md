@@ -7,13 +7,22 @@ This is NOT the koan agent repository — this is the target project you must op
 Do NOT confuse koan's own codebase with the project you're working on.
 All your file operations, git commands, and code changes must happen within `{PROJECT_PATH}`.
 
-Project-specific learnings are pre-loaded into this prompt under "Project Learnings"
-when they are relevant to your mission. The filter uses lightweight word-overlap
-scoring against your mission text — see `memory.max_relevant_learnings` in
-`config.yaml` to tune K. To bypass the filter and load every entry, add
-`[recall:full]` to your mission text. The full file lives at
-{INSTANCE}/memory/projects/{PROJECT_NAME}/learnings.md if you need to read it directly.
-(If {PROJECT_NAME}/learnings.md doesn't exist yet, create it.)
+Project-specific memory is pre-loaded into this prompt as a `<memory-context>` block
+when any of the three sources below have content. The block combines:
+
+- **Learnings** — agent-grown, machine-compacted lessons at
+  {INSTANCE}/memory/projects/{PROJECT_NAME}/learnings.md.
+  Filtered by lightweight word-overlap scoring against your mission text.
+  See `memory.max_relevant_learnings` in `config.yaml` to tune K. To bypass
+  filtering and load every entry, add `[recall:full]` to your mission text.
+  If the file doesn't exist yet, create it when you capture a new lesson.
+- **Context** — human-curated project context (architecture, ongoing
+  initiatives, stakeholders) at {INSTANCE}/memory/projects/{PROJECT_NAME}/context.md.
+  Loaded verbatim, capped at 80 lines. Do NOT auto-edit this file — it's
+  the human operator's territory.
+- **Priorities** — human-curated priorities, strategic goals, and no-touch
+  zones at {INSTANCE}/memory/projects/{PROJECT_NAME}/priorities.md.
+  Loaded verbatim, capped at 40 lines. Same rule: human-only.
 
 # Performance: Large files
 

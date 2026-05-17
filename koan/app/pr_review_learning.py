@@ -411,19 +411,123 @@ def _write_cache(instance_dir: str, review_hash: str) -> None:
         print(f"[pr_review_learning] Cache write failed: {e}", file=sys.stderr)
 
 
+def _is_write_time_dedup_enabled() -> bool:
+    """Return ``memory.write_time_dedup`` from ``config.yaml`` (default True).
+
+    Lookup failures default to True — the dedup pass is the safer
+    behaviour, and operators can opt out explicitly via config.
+    """
+    try:
+        from app.utils import load_config
+        cfg = load_config() or {}
+        mem = cfg.get("memory", {}) or {}
+        flag = mem.get("write_time_dedup", True)
+        return bool(flag)
+    except (ImportError, OSError, ValueError, KeyError, TypeError) as e:
+        print(f"[pr_review_learning] dedup config lookup failed: {e}", file=sys.stderr)
+        return True
+
+
+def _dedup_lessons_with_cli(
+    new_lessons_text: str,
+    existing_content: str,
+    project_path: str,
+    timeout: int = 15,
+) -> Optional[str]:
+    """Filter ``new_lessons_text`` against ``existing_content`` via Claude CLI.
+
+    Returns the filtered lesson list on success, or ``None`` on CLI
+    failure / timeout. Callers should fall back to the existing
+    exact-string dedup when this returns ``None``.
+
+    The timeout is intentionally short (15s) — this runs on the write
+    hot path after each agent loop iteration; we'd rather skip the
+    smart dedup than block the loop.
+    """
+    if not existing_content.strip() or not new_lessons_text.strip():
+        return new_lessons_text
+
+    from app.cli_provider import build_full_command
+    from app.config import get_model_config
+    from app.prompts import load_prompt
+
+    try:
+        prompt = load_prompt(
+            "learnings-dedup",
+            EXISTING_CONTENT=existing_content,
+            NEW_LESSONS=new_lessons_text,
+        )
+    except (OSError, FileNotFoundError) as e:
+        print(f"[pr_review_learning] dedup prompt load failed: {e}", file=sys.stderr)
+        return None
+
+    models = get_model_config()
+    cmd = build_full_command(
+        prompt=prompt,
+        allowed_tools=[],
+        model=models.get("lightweight", "haiku"),
+        fallback=models.get("fallback", "sonnet"),
+        max_turns=1,
+    )
+
+    from app.cli_exec import run_cli_with_retry
+
+    try:
+        # max_attempts=1: honor the 15s hot-path budget literally. The
+        # exact-string fallback is good enough when this fails — we'd
+        # rather skip the smart pass than burn 60s+ on retry backoff
+        # (worst case with the default 3 attempts × 15s + 2+5+10s sleep).
+        result = run_cli_with_retry(
+            cmd,
+            capture_output=True, text=True,
+            timeout=timeout, cwd=project_path,
+            max_attempts=1,
+        )
+        if result.returncode != 0:
+            print(
+                f"[pr_review_learning] dedup CLI failed (rc={result.returncode}): "
+                f"{result.stderr[:200]}",
+                file=sys.stderr,
+            )
+            return None
+        return result.stdout.strip()
+    except (subprocess.TimeoutExpired, OSError, RuntimeError) as e:
+        print(f"[pr_review_learning] dedup CLI error: {e}", file=sys.stderr)
+        return None
+
+
 def _append_lessons_to_learnings(
     instance_dir: str,
     project_name: str,
     lessons_text: str,
     section_header: str = "PR review learnings",
+    project_path: Optional[str] = None,
 ) -> int:
     """Append new lessons to the project's learnings.md, skipping duplicates.
+
+    Two dedup passes happen in order:
+
+    1. **Exact-string** dedup against existing lines (cheap, deterministic).
+       Drops any candidate whose stripped line already appears verbatim.
+    2. Optional **semantic** dedup via lightweight Claude CLI when
+       ``memory.write_time_dedup`` is enabled (default), run only on
+       candidates that survived pass 1. Catches paraphrases the
+       exact-string pass would miss. Falls back transparently on CLI
+       failure or timeout. A final exact-string sweep is applied to the
+       CLI output to absorb any echoed existing lines.
+
+    Running exact-string dedup first means the CLI call is skipped
+    entirely when every candidate is an obvious duplicate (the common
+    case in a quiet cycle) — keeps the agent loop hot path lean.
 
     Args:
         instance_dir: Path to the instance directory.
         project_name: Project name for scoping.
         lessons_text: Markdown bullet list from Claude analysis.
         section_header: Section title prefix (date is appended automatically).
+        project_path: Project repo path used as cwd for the dedup CLI call.
+            When ``None`` (or write-time dedup disabled) only exact-string
+            dedup runs.
 
     Returns:
         Number of new lines appended.
@@ -448,12 +552,35 @@ def _append_lessons_to_learnings(
         except (OSError, UnicodeDecodeError) as e:
             print(f"[pr_review_learning] Error reading learnings: {e}", file=sys.stderr)
 
-    # Filter out duplicate lessons
-    new_lines = []
-    for line in lessons_text.splitlines():
-        stripped = line.strip()
-        if stripped and stripped not in existing_lines:
-            new_lines.append(line)
+    # Pass 1: exact-string dedup (cheap, always runs).
+    new_lines = [
+        line for line in lessons_text.splitlines()
+        if line.strip() and line.strip() not in existing_lines
+    ]
+
+    if not new_lines:
+        return 0
+
+    # Pass 2 (optional): semantic dedup via CLI, run only on the survivors.
+    # Skipped when:
+    #   - existing learnings file is empty (nothing to dedup against)
+    #   - operator disabled it via memory.write_time_dedup = false
+    #   - project_path is unknown (no cwd for the CLI call)
+    if (
+        project_path
+        and existing_content.strip()
+        and _is_write_time_dedup_enabled()
+    ):
+        filtered = _dedup_lessons_with_cli(
+            "\n".join(new_lines), existing_content, project_path,
+        )
+        if filtered is not None:
+            # Re-apply exact-string dedup to the CLI output in case the
+            # model echoed an existing line back unchanged.
+            new_lines = [
+                line for line in filtered.splitlines()
+                if line.strip() and line.strip() not in existing_lines
+            ]
 
     if not new_lines:
         return 0
@@ -527,7 +654,8 @@ def learn_from_reviews(
             any_analyzed = True
             if lessons:
                 total_added += _append_lessons_to_learnings(
-                    instance_dir, project_name, lessons)
+                    instance_dir, project_name, lessons,
+                    project_path=project_path)
             else:
                 any_empty = True
 
@@ -540,7 +668,8 @@ def learn_from_reviews(
             if lessons:
                 added = _append_lessons_to_learnings(
                     instance_dir, project_name, lessons,
-                    section_header="Rejected PR learnings")
+                    section_header="Rejected PR learnings",
+                    project_path=project_path)
                 total_added += added
                 _write_rejection_journal_entries(
                     instance_dir, project_name, rejected_prs, lessons)

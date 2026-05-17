@@ -100,6 +100,39 @@ class TestBuildReviewPrompt:
         assert "{BODY}" not in prompt
         assert "{DIFF}" not in prompt
 
+    def test_memory_task_text_includes_title_body_diff_slice(
+        self, pr_context, review_skill_dir,
+    ):
+        """Project-memory scoring should use title + body + diff slice — not
+        title + branch — so learnings recall actually gets useful signal.
+
+        Branch names like ``koan/fix-issue-123`` produce near-zero Jaccard
+        overlap with anything; the diff is where filenames and module names
+        live. Regression guard for the broadened task_text.
+        """
+        from unittest.mock import patch
+
+        # Make the diff content unmistakable so we can assert it reached the
+        # task_text and the branch did not.
+        pr_context["diff"] = (
+            "--- a/koan/app/quota_handler.py\n"
+            "+++ b/koan/app/quota_handler.py\n"
+            "@@ -1,2 +1,3 @@\n"
+            "+def detect_quota_exhaustion(stdout: str) -> bool:\n"
+        )
+        with patch(
+            "app.skill_memory.build_memory_block_for_skill", return_value="",
+        ) as mock_build:
+            build_review_prompt(
+                pr_context, skill_dir=review_skill_dir, project_path="/fake/proj",
+            )
+        assert mock_build.call_count == 1
+        _project_path, task_text = mock_build.call_args.args[:2]
+        assert "Fix auth bypass" in task_text  # title
+        assert "token validation" in task_text  # body
+        assert "quota_handler.py" in task_text  # diff signal
+        assert "fix-auth" not in task_text     # branch must not be the main signal
+
 
 # ---------------------------------------------------------------------------
 # _extract_review_body

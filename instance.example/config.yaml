@@ -523,6 +523,25 @@ usage:
 #                                   # Note: setting BOTH max_relevant_learnings: 0
 #                                   # and recall_recent_hedge: 0 disables learnings
 #                                   # injection entirely (the section is omitted).
+#   write_time_dedup: true          # Run a lightweight Claude pass to drop
+#                                   # paraphrased duplicates BEFORE appending new
+#                                   # PR-review lessons to learnings.md (default: true).
+#                                   # Complements the periodic semantic compaction
+#                                   # by stopping near-duplicates at the write
+#                                   # boundary. Set to false to save quota if you
+#                                   # run on a tight burn budget; the periodic pass
+#                                   # will still dedup, just less often.
+#   max_block_lines: 200            # Hard ceiling on the assembled <memory-context>
+#                                   # block injected into every mission and skill
+#                                   # prompt (default: 200, matching the on-disk
+#                                   # learnings hard cap). When exceeded, parts are
+#                                   # truncated in reverse curation order: learnings
+#                                   # first, then priorities, then context. A WARNING
+#                                   # is logged and a marker is appended so the model
+#                                   # knows content was elided. Tune down if you want
+#                                   # to actively trim well-behaved instances; tune
+#                                   # up only if you've measured the per-mission
+#                                   # token budget you want to spend.
 
 # Automation rules — loop guard
 # Limits how many times a single automation rule can fire within a 60-second

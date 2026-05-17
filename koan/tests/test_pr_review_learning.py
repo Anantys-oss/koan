@@ -244,6 +244,182 @@ class TestAppendLessonsToLearnings:
         assert added == 0
 
 
+class TestWriteTimeSemanticDedup:
+    """Dedup-with-CLI pre-pass on the write path."""
+
+    def _seed_existing(self, tmp_path, content):
+        instance_dir = tmp_path / "instance"
+        learnings_dir = instance_dir / "memory" / "projects" / "myproject"
+        learnings_dir.mkdir(parents=True)
+        (learnings_dir / "learnings.md").write_text(content)
+        return instance_dir, learnings_dir / "learnings.md"
+
+    def test_cli_filters_paraphrases_before_append(self, tmp_path):
+        """The CLI's filtered output is what gets appended (paraphrases dropped)."""
+        instance_dir, learnings_file = self._seed_existing(
+            tmp_path, "# Learnings\n\n- always test PR changes\n",
+        )
+        raw = "- verify changes with tests\n- new: profile boot path on slow machines"
+        # CLI keeps only the genuinely new entry.
+        with patch(
+            "app.pr_review_learning._is_write_time_dedup_enabled", return_value=True,
+        ), patch(
+            "app.pr_review_learning._dedup_lessons_with_cli",
+            return_value="- new: profile boot path on slow machines",
+        ):
+            added = _append_lessons_to_learnings(
+                str(instance_dir), "myproject", raw,
+                project_path="/fake/project",
+            )
+        content = learnings_file.read_text()
+        assert added == 1
+        assert "profile boot path" in content
+        assert "verify changes with tests" not in content
+
+    def test_cli_failure_falls_back_to_exact_string_dedup(self, tmp_path):
+        """When the CLI returns None, the original exact-string dedup must still run."""
+        instance_dir, learnings_file = self._seed_existing(
+            tmp_path, "# Learnings\n\n- always test PR changes\n",
+        )
+        raw = "- always test PR changes\n- profile boot path"
+        with patch(
+            "app.pr_review_learning._is_write_time_dedup_enabled", return_value=True,
+        ), patch(
+            "app.pr_review_learning._dedup_lessons_with_cli", return_value=None,
+        ):
+            added = _append_lessons_to_learnings(
+                str(instance_dir), "myproject", raw,
+                project_path="/fake/project",
+            )
+        content = learnings_file.read_text()
+        # Exact duplicate dropped; new line kept.
+        assert added == 1
+        assert content.count("always test PR changes") == 1
+        assert "profile boot path" in content
+
+    def test_disabled_via_config_skips_cli(self, tmp_path):
+        """When memory.write_time_dedup is false, the CLI must not be called."""
+        instance_dir, _ = self._seed_existing(
+            tmp_path, "# Learnings\n\n- existing\n",
+        )
+        with patch(
+            "app.pr_review_learning._is_write_time_dedup_enabled", return_value=False,
+        ), patch(
+            "app.pr_review_learning._dedup_lessons_with_cli",
+        ) as mock_cli:
+            _append_lessons_to_learnings(
+                str(instance_dir), "myproject", "- brand new",
+                project_path="/fake/project",
+            )
+        assert mock_cli.call_count == 0
+
+    def test_no_project_path_skips_cli(self, tmp_path):
+        """Without a project_path, the CLI has no cwd — must not be called."""
+        instance_dir, _ = self._seed_existing(
+            tmp_path, "# Learnings\n\n- existing\n",
+        )
+        with patch(
+            "app.pr_review_learning._is_write_time_dedup_enabled", return_value=True,
+        ), patch(
+            "app.pr_review_learning._dedup_lessons_with_cli",
+        ) as mock_cli:
+            _append_lessons_to_learnings(
+                str(instance_dir), "myproject", "- brand new",
+            )
+        assert mock_cli.call_count == 0
+
+    def test_empty_existing_skips_cli(self, tmp_path):
+        """Nothing to dedup against = no CLI call (waste of quota)."""
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        with patch(
+            "app.pr_review_learning._is_write_time_dedup_enabled", return_value=True,
+        ), patch(
+            "app.pr_review_learning._dedup_lessons_with_cli",
+        ) as mock_cli:
+            added = _append_lessons_to_learnings(
+                str(instance_dir), "myproject", "- first ever lesson",
+                project_path="/fake/project",
+            )
+        assert mock_cli.call_count == 0
+        assert added == 1
+
+    def test_all_exact_dupes_skip_cli(self, tmp_path):
+        """When every candidate is an exact duplicate, the CLI must not be called.
+
+        Regression guard for the reordered dedup passes (exact-string first,
+        CLI on survivors): a quiet review cycle where the agent extracts the
+        same bullet it already wrote should not burn a 15s CLI call.
+        """
+        instance_dir, _ = self._seed_existing(
+            tmp_path, "# Learnings\n\n- always test PR changes\n- use atomic writes\n",
+        )
+        raw = "- always test PR changes\n- use atomic writes"
+        with patch(
+            "app.pr_review_learning._is_write_time_dedup_enabled", return_value=True,
+        ), patch(
+            "app.pr_review_learning._dedup_lessons_with_cli",
+        ) as mock_cli:
+            added = _append_lessons_to_learnings(
+                str(instance_dir), "myproject", raw,
+                project_path="/fake/project",
+            )
+        assert mock_cli.call_count == 0
+        assert added == 0
+
+    def test_cli_only_sees_survivors_of_exact_pass(self, tmp_path):
+        """The CLI must be called with the post-exact-string survivors, not the raw input.
+
+        Mixed batch: one exact dupe + one paraphrase + one truly new. After
+        pass 1 only the paraphrase + the new line survive — that's what the
+        CLI prompt should see.
+        """
+        instance_dir, _ = self._seed_existing(
+            tmp_path, "# Learnings\n\n- always test PR changes\n",
+        )
+        raw = (
+            "- always test PR changes\n"          # exact dupe → dropped by pass 1
+            "- verify changes with tests\n"       # paraphrase  → reaches CLI
+            "- profile boot path on slow boxes"   # truly new   → reaches CLI
+        )
+        with patch(
+            "app.pr_review_learning._is_write_time_dedup_enabled", return_value=True,
+        ), patch(
+            "app.pr_review_learning._dedup_lessons_with_cli",
+            return_value="- profile boot path on slow boxes",
+        ) as mock_cli:
+            _append_lessons_to_learnings(
+                str(instance_dir), "myproject", raw,
+                project_path="/fake/project",
+            )
+        assert mock_cli.call_count == 1
+        sent_to_cli = mock_cli.call_args.args[0]
+        assert "always test PR changes" not in sent_to_cli
+        assert "verify changes with tests" in sent_to_cli
+        assert "profile boot path" in sent_to_cli
+
+    @patch("app.cli_exec.run_cli_with_retry")
+    @patch("app.cli_provider.build_full_command")
+    @patch("app.config.get_model_config")
+    @patch("app.prompts.load_prompt")
+    def test_dedup_cli_call_caps_attempts_to_one(
+        self, mock_prompt, mock_models, mock_build, mock_run,
+    ):
+        """The hot-path dedup must pass max_attempts=1 so retry backoff
+        cannot stretch the 15s budget into 60s+ on transient errors."""
+        from app.pr_review_learning import _dedup_lessons_with_cli
+
+        mock_prompt.return_value = "dedup prompt"
+        mock_models.return_value = {"lightweight": "haiku", "fallback": "sonnet"}
+        mock_build.return_value = ["claude", "-p", "..."]
+        mock_run.return_value = MagicMock(returncode=0, stdout="- kept\n", stderr="")
+
+        _dedup_lessons_with_cli("- new", "- existing", "/fake/path")
+
+        assert mock_run.call_count == 1
+        assert mock_run.call_args.kwargs.get("max_attempts") == 1
+
+
 # ─── analyze_reviews_with_cli ────────────────────────────────────────────
 
 

@@ -212,12 +212,18 @@ def _execute_fix(
 ) -> str:
     """Execute the fix via Claude CLI."""
     from app.config import get_branch_prefix
+    from app.skill_memory import build_memory_block_for_skill
+
     branch_prefix = get_branch_prefix()
+    project_memory = build_memory_block_for_skill(
+        project_path, f"{issue_title}\n{issue_body}",
+    )
 
     prompt = _build_prompt(
         issue_url, issue_title, issue_body, context, skill_dir,
         branch_prefix=branch_prefix,
         issue_number=issue_number,
+        project_memory=project_memory,
     )
 
     from app.cli_provider import CLAUDE_TOOLS, run_command_streaming
@@ -237,6 +243,7 @@ def _build_prompt(
     skill_dir: Optional[Path] = None,
     branch_prefix: str = "koan/",
     issue_number: str = "",
+    project_memory: str = "",
 ) -> str:
     """Build the fix prompt from the issue content."""
     template_vars = dict(
@@ -246,6 +253,7 @@ def _build_prompt(
         CONTEXT=context,
         BRANCH_PREFIX=branch_prefix,
         ISSUE_NUMBER=issue_number,
+        PROJECT_MEMORY=project_memory,
     )
 
     return load_prompt_or_skill(skill_dir, "fix", **template_vars)
