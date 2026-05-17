@@ -536,7 +536,7 @@ def _build_rebase_cmd(
 def _build_review_cmd(
     base_cmd: List[str], args: str, project_path: str, project_name: str = "",
 ) -> Optional[List[str]]:
-    """Build review_runner command, passing --architecture and --plan-url if present."""
+    """Build review_runner command, passing --architecture, --plan-url, and --project-name if present."""
     url_match = _PR_URL_RE.search(args)
     if not url_match:
         return None
