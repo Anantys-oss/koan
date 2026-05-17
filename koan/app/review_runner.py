@@ -422,6 +422,7 @@ def _reflect_findings(
     project_path: str,
     model: Optional[str],
     threshold: int,
+    skill_dir: Optional[Path] = None,
 ) -> list:
     """Run a second-pass reflection on review findings and filter low-signal ones.
 
@@ -445,9 +446,12 @@ def _reflect_findings(
     if not findings:
         return findings
 
+    if skill_dir is None:
+        skill_dir = Path(__file__).resolve().parent.parent / "skills" / "core" / "review"
+
     try:
         findings_json = json.dumps(findings, indent=2)
-        prompt = load_skill_prompt("review", "reflect").format(
+        prompt = load_skill_prompt(skill_dir, "reflect").format(
             FINDINGS_JSON=findings_json,
             DIFF=diff or "(diff not available)",
         )
@@ -1185,6 +1189,7 @@ def run_review(
             project_path,
             reflect_model,
             reflect_threshold,
+            skill_dir=skill_dir,
         )
 
     # Step 5: Convert to markdown for posting
