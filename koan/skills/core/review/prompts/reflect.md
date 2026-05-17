@@ -34,7 +34,7 @@ Respond with ONLY a JSON array — no prose, no markdown, no explanation outside
 
 ```json
 [
-  {{"finding_index": 0, "score": 7, "reason": "One-sentence justification."}},
+  {"finding_index": 0, "score": 7, "reason": "One-sentence justification."},
   ...
 ]
 ```
