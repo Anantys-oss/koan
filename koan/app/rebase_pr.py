@@ -44,6 +44,47 @@ from app.prompts import load_prompt, load_prompt_or_skill, load_skill_prompt  # 
 from app.retry import retry_with_backoff
 from app.utils import _GITHUB_REMOTE_RE, truncate_diff, truncate_text
 
+# Ordered from highest to lowest severity.  The review prompt emits exactly
+# these three values; user-facing aliases are resolved by parse_severity().
+SEVERITY_LEVELS = ("critical", "warning", "suggestion")
+
+# User-friendly aliases → canonical severity name.
+_SEVERITY_ALIASES = {
+    "critical": "critical",
+    "blocking": "critical",
+    "warning": "warning",
+    "important": "warning",
+    "suggestion": "suggestion",
+    "suggestions": "suggestion",
+    "all": "suggestion",
+}
+
+
+def parse_severity(token: str) -> Optional[str]:
+    """Resolve a user-supplied severity token to a canonical level.
+
+    Strips leading dashes (``-``, ``--``, ``—``) so that all of these
+    are equivalent: ``critical``, ``-critical``, ``--critical``, ``—critical``.
+
+    Returns the canonical severity name (``"critical"``, ``"warning"``, or
+    ``"suggestion"``), or ``None`` if the token is not recognised.
+    """
+    cleaned = token.lstrip("-\u2014\u2013").strip().lower()
+    return _SEVERITY_ALIASES.get(cleaned)
+
+
+def severity_at_or_above(min_severity: str) -> List[str]:
+    """Return the list of severity levels at or above *min_severity*.
+
+    >>> severity_at_or_above("warning")
+    ['critical', 'warning']
+    """
+    try:
+        idx = SEVERITY_LEVELS.index(min_severity)
+    except ValueError:
+        return list(SEVERITY_LEVELS)
+    return list(SEVERITY_LEVELS[: idx + 1])
+
 
 def fetch_pr_context(owner: str, repo: str, pr_number: str) -> dict:
     """Fetch PR details, diff, and all comments via gh CLI.
@@ -215,6 +256,7 @@ def run_rebase(
     project_path: str,
     notify_fn=None,
     skill_dir: Optional[Path] = None,
+    min_severity: Optional[str] = None,
 ) -> Tuple[bool, str]:
     """Execute the rebase pipeline for a pull request.
 
@@ -363,12 +405,17 @@ def run_rebase(
     # ── Step 4: Analyze review comments and apply changes ──────────────
     change_summary = ""
     if _has_review_feedback(context):
-        print(f"[rebase] Applying review feedback (Claude)", flush=True)
-        notify_fn(f"Analyzing review comments on `{branch}`...")
+        severity_hint = ""
+        if min_severity and min_severity != "suggestion":
+            included = severity_at_or_above(min_severity)
+            severity_hint = f" (severity filter: {', '.join(included)})"
+        print(f"[rebase] Applying review feedback (Claude){severity_hint}", flush=True)
+        notify_fn(f"Analyzing review comments on `{branch}`{severity_hint}...")
         change_summary = _apply_review_feedback(
             context, pr_number, project_path, actions_log,
             skill_dir=skill_dir,
             commit_conventions=commit_conventions,
+            min_severity=min_severity,
         )
 
         # Claude may switch branches during feedback — ensure we're still
@@ -1153,12 +1200,35 @@ def _build_rebase_prompt(
     context: dict,
     skill_dir: Optional[Path] = None,
     commit_conventions: str = "",
+    min_severity: Optional[str] = None,
 ) -> str:
     """Build a prompt for Claude to analyze and apply review feedback."""
-    return _build_pr_prompt(
+    prompt = _build_pr_prompt(
         "rebase", context, skill_dir=skill_dir,
         commit_conventions=commit_conventions,
     )
+
+    if min_severity and min_severity != "suggestion":
+        included = severity_at_or_above(min_severity)
+        excluded = [s for s in SEVERITY_LEVELS if s not in included]
+        included_labels = ", ".join(
+            f"**{s}** (🔴)" if s == "critical"
+            else f"**{s}** (🟡)" if s == "warning"
+            else f"**{s}** (🟢)"
+            for s in included
+        )
+        excluded_labels = ", ".join(excluded)
+        prompt += (
+            f"\n\n## Severity Filter\n\n"
+            f"Only address review issues at these severity levels: {included_labels}.\n"
+            f"**Skip** all issues at: {excluded_labels}.\n"
+            f"Look for severity markers in the review comments — sections headed "
+            f"with 🔴 Blocking (critical), 🟡 Important (warning), or 🟢 Suggestions.\n"
+            f"If a comment has no clear severity marker, treat it as actionable "
+            f"only if it reads like a blocking or important concern.\n"
+        )
+
+    return prompt
 
 
 def _apply_review_feedback(
@@ -1168,8 +1238,14 @@ def _apply_review_feedback(
     actions_log: List[str],
     skill_dir: Optional[Path] = None,
     commit_conventions: str = "",
+    min_severity: Optional[str] = None,
 ) -> str:
     """Analyze review comments via Claude and apply requested changes.
+
+    Args:
+        min_severity: When set, only address review issues at this severity
+            level or above.  One of ``"critical"``, ``"warning"``, or
+            ``"suggestion"`` (which means "all").
 
     Returns:
         A change summary string describing what was modified (empty if
@@ -1179,6 +1255,7 @@ def _apply_review_feedback(
     prompt = _build_rebase_prompt(
         context, skill_dir=skill_dir,
         commit_conventions=commit_conventions,
+        min_severity=min_severity,
     )
 
     step = run_claude_step(
@@ -1473,6 +1550,15 @@ def main(argv=None):
         "--project-path", required=True,
         help="Local path to the project repository",
     )
+    parser.add_argument(
+        "--min-severity",
+        choices=list(SEVERITY_LEVELS),
+        default=None,
+        help=(
+            "Only address review issues at this severity level or above. "
+            "E.g. --min-severity warning skips suggestions."
+        ),
+    )
     cli_args = parser.parse_args(argv)
 
     try:
@@ -1486,6 +1572,7 @@ def main(argv=None):
     success, summary = run_rebase(
         owner, repo, pr_number, cli_args.project_path,
         skill_dir=skills_base / "rebase",
+        min_severity=cli_args.min_severity,
     )
 
     if not success and _is_conflict_failure(summary):
