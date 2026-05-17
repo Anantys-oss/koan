@@ -159,6 +159,37 @@ COMMENT_REPLIES_SCHEMA = {
 }
 
 # ---------------------------------------------------------------------------
+# Schema: close_pr (optional)
+# ---------------------------------------------------------------------------
+
+CLOSE_PR_SCHEMA = {
+    "type": "object",
+    "description": (
+        "Optional close-PR decision. Set close=true ONLY when a maintainer "
+        "explicitly asked for closure, or comment consensus is to close the PR "
+        "(e.g. feature rejected, duplicate, won't-fix). When set, Kōan will "
+        "run `gh pr close` after posting the review."
+    ),
+    "required": ["close", "reason"],
+    "properties": {
+        "close": {
+            "type": "boolean",
+            "description": (
+                "True to close the PR after the review is posted. "
+                "False (or omit the whole close_pr object) to leave the PR open."
+            ),
+        },
+        "reason": {
+            "type": "string",
+            "description": (
+                "Short reason for closure (one sentence). Surfaced in the "
+                "post-close notification and journal entry. Empty string if close=false."
+            ),
+        },
+    },
+}
+
+# ---------------------------------------------------------------------------
 # Combined review schema (top-level object)
 # ---------------------------------------------------------------------------
 
@@ -199,6 +230,7 @@ REVIEW_SCHEMA = {
         "review_summary": REVIEW_SUMMARY_SCHEMA,
         "comment_replies": COMMENT_REPLIES_SCHEMA,
         "plan_alignment": PLAN_ALIGNMENT_SCHEMA,
+        "close_pr": CLOSE_PR_SCHEMA,
     },
 }
 
@@ -287,6 +319,14 @@ def validate_review(data: object) -> tuple:
                 if key in pa and not isinstance(pa[key], list)
             )
 
+    # -- close_pr (optional) --
+    if "close_pr" in data:
+        cp = data["close_pr"]
+        if not isinstance(cp, dict):
+            errors.append("'close_pr' must be an object")
+        else:
+            errors.extend(_validate_close_pr(cp))
+
     return (len(errors) == 0, errors)
 
 
@@ -367,6 +407,23 @@ def _validate_comment_reply(item: object, index: int) -> list:
             if expected_type is int and isinstance(item[field], float) and item[field] == int(item[field]):
                 continue
             errors.append(f"{prefix}.{field}: expected {expected_type.__name__}, got {type(item[field]).__name__}")
+
+    return errors
+
+
+def _validate_close_pr(cp: dict) -> list:
+    """Validate the close_pr object."""
+    errors: list = []
+
+    if "close" not in cp:
+        errors.append("close_pr: missing required field 'close'")
+    elif not isinstance(cp["close"], bool):
+        errors.append(f"close_pr.close: expected bool, got {type(cp['close']).__name__}")
+
+    if "reason" not in cp:
+        errors.append("close_pr: missing required field 'reason'")
+    elif not isinstance(cp["reason"], str):
+        errors.append(f"close_pr.reason: expected str, got {type(cp['reason']).__name__}")
 
     return errors
 

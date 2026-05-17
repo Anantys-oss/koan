@@ -1208,14 +1208,73 @@ def run_review(
                 file=sys.stderr,
             )
 
+    # Step 8: Close the PR if the review decided closure is warranted
+    closed = False
+    close_reason = ""
+    if posted and review_data:
+        close_decision = review_data.get("close_pr") or {}
+        if close_decision.get("close") is True:
+            close_reason = (close_decision.get("reason") or "").strip()
+            closed = _close_pr_from_review(
+                owner, repo, pr_number, close_reason, notify_fn=notify_fn,
+            )
+
     if posted:
         summary = f"Review posted on PR #{pr_number} ({full_repo})."
         if reply_count:
             summary += f" Replied to {reply_count} comment(s)."
+        if closed:
+            summary += f" PR closed: {close_reason or 'no reason provided'}."
         return True, summary, review_data
     else:
         detail = f" Error: {post_error}" if post_error else ""
         return False, f"Review generated but failed to post comment on PR #{pr_number}.{detail}", review_data
+
+
+def _close_pr_from_review(
+    owner: str,
+    repo: str,
+    pr_number: str,
+    reason: str,
+    notify_fn=None,
+) -> bool:
+    """Close a PR after the review decided closure is warranted.
+
+    Posts a short follow-up comment explaining the closure (the review body
+    already contains the substantive explanation), then runs ``gh pr close``.
+
+    Returns True on success, False on any failure (caller continues either way).
+    """
+    full_repo = f"{owner}/{repo}"
+    reason_text = reason or "Closure recommended by the latest review."
+    comment_body = (
+        "## PR Closed by Reviewer Recommendation\n\n"
+        f"{reason_text}\n\n"
+        "See the review above for the full rationale. Reopen the PR with a "
+        "comment if this determination is incorrect.\n\n"
+        "---\n_Automated by Kōan_"
+    )
+    try:
+        run_gh(
+            "pr", "comment", pr_number,
+            "--repo", full_repo,
+            "--body", sanitize_github_comment(comment_body),
+        )
+    except Exception as e:
+        print(f"[review_runner] close-comment post failed: {e}", file=sys.stderr)
+
+    try:
+        run_gh("pr", "close", pr_number, "--repo", full_repo)
+    except Exception as e:
+        print(f"[review_runner] PR close failed: {e}", file=sys.stderr)
+        return False
+
+    if notify_fn:
+        msg = f"PR #{pr_number} ({full_repo}) closed by reviewer recommendation."
+        if reason:
+            msg += f" Reason: {reason}"
+        notify_fn(msg)
+    return True
 
 
 # ---------------------------------------------------------------------------

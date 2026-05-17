@@ -2729,3 +2729,210 @@ class TestRunReviewReflectionIntegration:
         )
 
         mock_reflect.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# close_pr field: review-driven PR closure
+# ---------------------------------------------------------------------------
+
+CLOSE_REVIEW_JSON = {
+    "file_comments": [],
+    "review_summary": {
+        "lgtm": False,
+        "summary": "Maintainer requested closure.",
+        "checklist": [],
+    },
+    "close_pr": {
+        "close": True,
+        "reason": "Maintainer asked to close — existing low-level API covers the use case.",
+    },
+}
+
+
+class TestRunReviewClosePr:
+    """run_review() must execute gh pr close when close_pr.close is True.
+
+    Regression: dbus-fast PR #639 — bot posted a comment saying "Closing this..."
+    but never ran `gh pr close`, so the PR stayed open and a queued rebase fired
+    on top of the supposedly-closed PR. The fix wires the structured close_pr
+    field through to an actual `gh pr close` call.
+    """
+
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
+    @patch("app.review_runner.find_bot_comment", return_value=None)
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_close_pr_true_runs_gh_pr_close(
+        self, mock_fetch, mock_claude, mock_gh, mock_repliable,
+        mock_find_bot, _mock_shas,
+        pr_context, review_skill_dir,
+    ):
+        mock_fetch.return_value = pr_context
+        mock_claude.return_value = (json.dumps(CLOSE_REVIEW_JSON), "")
+        mock_notify = MagicMock()
+
+        success, summary, review_data = run_review(
+            "owner", "repo", "639", "/tmp/project",
+            notify_fn=mock_notify,
+            skill_dir=review_skill_dir,
+        )
+
+        assert success is True
+        gh_call_args = [list(call.args) for call in mock_gh.call_args_list]
+        assert any(
+            args[:2] == ["pr", "close"] and "639" in args
+            for args in gh_call_args
+        ), f"Expected `gh pr close 639` in {gh_call_args}"
+        assert any(
+            args[:2] == ["pr", "comment"] and "639" in args
+            for args in gh_call_args
+        ), f"Expected explanatory comment in {gh_call_args}"
+        assert "closed" in summary.lower()
+        assert any(
+            "closed" in str(call.args[0]).lower()
+            for call in mock_notify.call_args_list
+        )
+
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
+    @patch("app.review_runner.find_bot_comment", return_value=None)
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_close_pr_false_does_not_close(
+        self, mock_fetch, mock_claude, mock_gh, mock_repliable,
+        mock_find_bot, _mock_shas,
+        pr_context, review_skill_dir,
+    ):
+        mock_fetch.return_value = pr_context
+        review_no_close = dict(CLOSE_REVIEW_JSON)
+        review_no_close["close_pr"] = {"close": False, "reason": ""}
+        mock_claude.return_value = (json.dumps(review_no_close), "")
+
+        success, summary, _ = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(),
+            skill_dir=review_skill_dir,
+        )
+
+        assert success is True
+        gh_call_args = [list(call.args) for call in mock_gh.call_args_list]
+        assert not any(args[:2] == ["pr", "close"] for args in gh_call_args)
+        assert "closed" not in summary.lower()
+
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
+    @patch("app.review_runner.find_bot_comment", return_value=None)
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_close_pr_field_missing_does_not_close(
+        self, mock_fetch, mock_claude, mock_gh, mock_repliable,
+        mock_find_bot, _mock_shas,
+        pr_context, review_skill_dir,
+    ):
+        """Legacy reviews without close_pr field stay safely open."""
+        mock_fetch.return_value = pr_context
+        mock_claude.return_value = (json.dumps(VALID_REVIEW_JSON), "")
+
+        success, _, _ = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(),
+            skill_dir=review_skill_dir,
+        )
+
+        assert success is True
+        gh_call_args = [list(call.args) for call in mock_gh.call_args_list]
+        assert not any(args[:2] == ["pr", "close"] for args in gh_call_args)
+
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
+    @patch("app.review_runner.find_bot_comment", return_value=None)
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_close_failure_still_reports_review_success(
+        self, mock_fetch, mock_claude, mock_repliable,
+        mock_find_bot, _mock_shas,
+        pr_context, review_skill_dir,
+    ):
+        """If `gh pr close` fails, the review itself still counts as posted."""
+        mock_fetch.return_value = pr_context
+        mock_claude.return_value = (json.dumps(CLOSE_REVIEW_JSON), "")
+
+        def gh_side_effect(*args, **kwargs):
+            if args[:2] == ("pr", "close"):
+                raise RuntimeError("403 forbidden")
+            return ""
+
+        with patch("app.review_runner.run_gh", side_effect=gh_side_effect):
+            success, summary, _ = run_review(
+                "owner", "repo", "42", "/tmp/project",
+                notify_fn=MagicMock(),
+                skill_dir=review_skill_dir,
+            )
+
+        assert success is True
+        assert "PR closed" not in summary
+
+
+# ---------------------------------------------------------------------------
+# review_schema: close_pr field validation
+# ---------------------------------------------------------------------------
+
+
+class TestReviewSchemaClosePr:
+    """validate_review() must accept and validate the optional close_pr field."""
+
+    def _base(self):
+        return {
+            "file_comments": [],
+            "review_summary": {
+                "lgtm": True,
+                "summary": "ok",
+                "checklist": [],
+            },
+        }
+
+    def test_close_pr_omitted_is_valid(self):
+        from app.review_schema import validate_review
+
+        ok, errors = validate_review(self._base())
+        assert ok is True, errors
+
+    def test_close_pr_valid_object_accepted(self):
+        from app.review_schema import validate_review
+
+        data = self._base()
+        data["close_pr"] = {"close": True, "reason": "maintainer asked"}
+        ok, errors = validate_review(data)
+        assert ok is True, errors
+
+    def test_close_pr_missing_close_field_rejected(self):
+        from app.review_schema import validate_review
+
+        data = self._base()
+        data["close_pr"] = {"reason": "x"}
+        ok, errors = validate_review(data)
+        assert ok is False
+        assert any("close" in e for e in errors)
+
+    def test_close_pr_wrong_types_rejected(self):
+        from app.review_schema import validate_review
+
+        data = self._base()
+        data["close_pr"] = {"close": "yes", "reason": 42}
+        ok, errors = validate_review(data)
+        assert ok is False
+        assert any("close_pr.close" in e for e in errors)
+        assert any("close_pr.reason" in e for e in errors)
+
+    def test_close_pr_must_be_object(self):
+        from app.review_schema import validate_review
+
+        data = self._base()
+        data["close_pr"] = True
+        ok, errors = validate_review(data)
+        assert ok is False
+        assert any("close_pr" in e for e in errors)
