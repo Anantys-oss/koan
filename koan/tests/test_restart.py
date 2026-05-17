@@ -258,7 +258,7 @@ class TestMainLoopRestartDetection:
         source = inspect.getsource(main)
         while_idx = source.index("while True:")
         # clear_restart should appear inside the loop (after first poll)
-        clear_idx = source.index("clear_restart(str(KOAN_ROOT))", while_idx)
+        clear_idx = source.index("clear_restart(str(KOAN_ROOT)", while_idx)
         assert clear_idx > while_idx
         # And it should be guarded by first_poll
         assert "first_poll" in source

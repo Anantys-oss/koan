@@ -1586,7 +1586,7 @@ class TestMainLoop:
         # Create restart file AFTER startup (via side_effect) so startup
         # cleanup doesn't remove it before the loop's restart check runs.
         def startup_creates_restart(*args, **kwargs):
-            restart_file = koan_root / ".koan-restart"
+            restart_file = koan_root / ".koan-restart-run"
             restart_file.write_text("restart")
             future = time.time() + 3600
             os.utime(str(restart_file), (future, future))
@@ -1604,16 +1604,16 @@ class TestMainLoop:
     @patch("app.run.acquire_pidfile")
     @patch("app.run.release_pidfile")
     def test_restart_file_cleared_before_exit(self, mock_release, mock_acquire, mock_startup, mock_subproc, koan_root):
-        """Regression: run.py must clear .koan-restart before sys.exit(RESTART_EXIT_CODE)
-        to prevent the restarted process from seeing a stale file and
-        entering a restart loop."""
+        """Regression: run.py must clear its per-process restart marker before
+        sys.exit(RESTART_EXIT_CODE) to prevent the restarted process from
+        seeing a stale file and entering a restart loop."""
         from app.run import main_loop
         from app.restart_manager import RESTART_EXIT_CODE
 
         os.environ["KOAN_ROOT"] = str(koan_root)
         os.environ["KOAN_PROJECTS"] = f"test:{koan_root}"
 
-        restart_file = koan_root / ".koan-restart"
+        restart_file = koan_root / ".koan-restart-run"
 
         def startup_creates_restart(*args, **kwargs):
             restart_file.write_text("restart")
@@ -1627,9 +1627,9 @@ class TestMainLoop:
             with patch("app.run._notify"):
                 main_loop()
         assert exc.value.code == RESTART_EXIT_CODE
-        # The restart file must be deleted BEFORE exit
+        # The runner's per-process marker must be deleted BEFORE exit
         assert not restart_file.exists(), \
-            ".koan-restart was not cleared before exit — restart loop risk"
+            ".koan-restart-run was not cleared before exit — restart loop risk"
 
     @patch("app.run.subprocess.run")
     @patch("app.run.run_startup", return_value=(5, 10, "koan/"))
@@ -1648,8 +1648,8 @@ class TestMainLoop:
         os.environ["KOAN_PROJECTS"] = f"test:{koan_root}"
         (koan_root / ".koan-project").write_text("test")
 
-        # Simulate stale .koan-restart from a previous session
-        (koan_root / ".koan-restart").write_text("stale restart")
+        # Simulate stale .koan-restart-run from a previous session
+        (koan_root / ".koan-restart-run").write_text("stale restart")
 
         # Startup creates a stop file so the loop exits cleanly
         def startup_then_stop(*args, **kwargs):
@@ -1663,8 +1663,8 @@ class TestMainLoop:
 
         # Startup ran (stale restart didn't cause immediate exit)
         mock_startup.assert_called_once()
-        # The restart file was cleared
-        assert not (koan_root / ".koan-restart").exists()
+        # The runner's per-process marker was cleared
+        assert not (koan_root / ".koan-restart-run").exists()
 
     @patch("app.run.subprocess.run")
     @patch("app.run.run_startup", return_value=(5, 10, "koan/"))
@@ -4503,7 +4503,7 @@ class TestRestartManagerIntegration:
              patch("app.run.check_restart", side_effect=[False, True]) as mock_check:
             result = handle_pause(str(koan_root), instance, 5)
             assert result is None  # breaks out of pause loop
-            mock_check.assert_called_with(str(koan_root))
+            mock_check.assert_called_with(str(koan_root), target="run")
 
     @patch("app.run.subprocess.run")
     @patch("app.run.run_startup", return_value=(5, 10, "koan/"))
@@ -4526,7 +4526,7 @@ class TestRestartManagerIntegration:
         with patch("app.run._notify"), \
              patch("app.run.clear_restart") as mock_clear:
             main_loop()
-            mock_clear.assert_called_once_with(str(koan_root))
+            mock_clear.assert_called_once_with(str(koan_root), target="run")
 
     @patch("app.run.subprocess.run")
     @patch("app.run.run_startup", return_value=(5, 10, "koan/"))
