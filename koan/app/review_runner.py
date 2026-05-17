@@ -1316,15 +1316,7 @@ def run_review(
         )
         review_body = _extract_review_body(raw_output)
 
-    # Step 6: Post (or update) review comment (Phase 3 — idempotent upsert)
-    # Commit SHAs are embedded in the body upfront to avoid extra API calls.
-    notify_fn(f"Posting review on PR #{pr_number}...")
-    posted, post_error = _post_review_comment(
-        owner, repo, pr_number, review_body, existing_comment,
-        commit_shas=current_shas or None,
-    )
-
-    # Step 7: Post replies to user comments
+    # Step 6: Post replies to user comments
     reply_count = 0
     if review_data and review_data.get("comment_replies") and repliable_comments:
         reply_count = _post_comment_replies(
@@ -1338,7 +1330,7 @@ def run_review(
                 file=sys.stderr,
             )
 
-    # Step 7a: Silent-failure-hunter pass (explicit flag or auto-detected)
+    # Step 6a: Silent-failure-hunter pass (explicit flag or auto-detected)
     diff = context.get("diff", "")
     run_error_hunter = errors or _should_run_error_hunter(diff)
     if run_error_hunter:
@@ -1351,6 +1343,14 @@ def run_review(
                 "[review_runner] silent-failure-hunter: no findings",
                 file=sys.stderr,
             )
+
+    # Step 7: Post (or update) review comment (Phase 3 — idempotent upsert)
+    # Commit SHAs are embedded in the body upfront to avoid extra API calls.
+    notify_fn(f"Posting review on PR #{pr_number}...")
+    posted, post_error = _post_review_comment(
+        owner, repo, pr_number, review_body, existing_comment,
+        commit_shas=current_shas or None,
+    )
 
     # Step 8: Close the PR if the review decided closure is warranted
     closed = False
