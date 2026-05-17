@@ -1340,6 +1340,18 @@ def run_post_mission(
         )
         tracker.record("session_outcome", "success")
 
+        # 7a. Update Thompson Sampling bandit with mission outcome.
+        # outcome_type: "productive" → success; "empty"/"blocked" → failure.
+        try:
+            from app.bandit import load_bandit_state, update_bandit, save_bandit_state
+            from app.session_tracker import classify_session
+            outcome_type = classify_session(pending_content, mission_title=mission_title)
+            _bandit_state = load_bandit_state(instance_dir)
+            update_bandit(_bandit_state, project_name, success=(outcome_type == "productive"))
+            save_bandit_state(_bandit_state, instance_dir)
+        except Exception as e:
+            _log_runner("error", f"Bandit update failed: {e}")
+
         # 7b. Update daily metrics snapshot (fast local write)
         try:
             from app.daily_snapshot import update_daily_snapshot
