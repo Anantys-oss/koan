@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from app.claude_step import resolve_pr_location
+from app.run_log import log
 from app.diff_compressor import compress_diff
 from app.github import run_gh, sanitize_github_comment, find_bot_comment
 from app.github_url_parser import ISSUE_URL_PATTERN
@@ -346,10 +347,10 @@ def build_review_prompt(
     raw_diff = context["diff"]
     compressed = compress_diff(raw_diff)
     if compressed.skipped_files:
-        print(
-            f"[review_runner] Diff compressed — {len(compressed.skipped_files)} file(s) skipped: "
+        log(
+            "review",
+            f"Diff compressed — {len(compressed.skipped_files)} file(s) skipped: "
             + ", ".join(compressed.skipped_files),
-            file=sys.stderr,
         )
 
     skipped_note = ""
