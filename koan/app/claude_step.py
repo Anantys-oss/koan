@@ -576,7 +576,18 @@ def aggregate_ci_runs(runs: list) -> Tuple[str, Optional[int]]:
 
 
 def fetch_branch_ci_runs(branch: str, full_repo: str) -> list:
-    """Return raw `gh run list` entries for a branch.
+    """Return `gh run list` entries for the branch's *current HEAD*.
+
+    `gh run list --branch X` returns runs from every push ever made to the
+    branch, sorted newest first. If an older push had failures that were
+    later fixed, those stale failed runs would still appear in the result
+    and trip aggregate_ci_runs into reporting "failure" for a green PR
+    (regression: aio-libs/yarl PR #1675 — /ci_check was queued 5× against
+    a clean PR because runs from a previous, since-fixed commit on the
+    same branch were still in the response).
+
+    We filter to runs whose `headSha` matches the most recent run's
+    `headSha` — i.e., the current HEAD of the branch.
 
     Raises on `gh` failure so callers can decide between fall-back
     behaviours (e.g. "treat as pending" vs "treat as none").
@@ -585,10 +596,30 @@ def fetch_branch_ci_runs(branch: str, full_repo: str) -> list:
         "run", "list",
         "--branch", branch,
         "--repo", full_repo,
-        "--json", "databaseId,status,conclusion,name,workflowName",
+        "--json", "databaseId,status,conclusion,name,workflowName,headSha",
         "--limit", str(_CI_RUN_LIMIT),
     )
-    return json.loads(raw) if raw.strip() else []
+    runs = json.loads(raw) if raw.strip() else []
+    return _filter_to_latest_push(runs)
+
+
+def _filter_to_latest_push(runs: list) -> list:
+    """Keep only runs whose ``headSha`` matches the most recent run's SHA.
+
+    `gh run list` returns runs sorted newest-first, so ``runs[0]`` is the
+    most recently triggered run and its ``headSha`` identifies the latest
+    push. Any run with a different SHA belongs to an earlier push and is
+    stale — drop it.
+
+    If the payload omits ``headSha`` (legacy gh output, test fixtures),
+    return the runs unchanged so callers preserve their existing behaviour.
+    """
+    if not runs:
+        return runs
+    latest_sha = runs[0].get("headSha")
+    if not latest_sha:
+        return runs
+    return [r for r in runs if r.get("headSha") == latest_sha]
 
 
 def wait_for_ci(
