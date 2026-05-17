@@ -801,6 +801,31 @@ class TestCompactLearnings:
         stats = compact_learnings(str(tmp_path), "koan", max_lines=100)
         assert stats["skipped"] is True
 
+    def test_no_subprocess_when_below_threshold(self, tmp_path):
+        """_get_file_tree (git subprocess) must not run when below threshold."""
+        self._write_learnings(tmp_path, "koan", "# Learnings\n\n- fact 1\n- fact 2\n")
+        with patch("app.memory_manager.MemoryManager._get_file_tree") as mock_tree:
+            stats = compact_learnings(str(tmp_path), "koan", max_lines=100)
+        assert stats["skipped"] is True
+        mock_tree.assert_not_called()
+
+    def test_no_subprocess_when_hash_unchanged(self, tmp_path):
+        """_get_file_tree must not run on a repeat call with unchanged content."""
+        lines = ["# Learnings", ""]
+        for i in range(150):
+            lines.append(f"- fact {i}")
+        self._write_learnings(tmp_path, "koan", "\n".join(lines))
+
+        compacted_output = "- merged fact A\n- merged fact B\n"
+        with patch("app.memory_manager.MemoryManager._run_compaction_cli", return_value=compacted_output):
+            compact_learnings(str(tmp_path), "koan", max_lines=100)
+
+        # Second call: content now below threshold — subprocess must not run
+        with patch("app.memory_manager.MemoryManager._get_file_tree") as mock_tree:
+            stats2 = compact_learnings(str(tmp_path), "koan", max_lines=100)
+        assert stats2["skipped"] is True
+        mock_tree.assert_not_called()
+
     def test_skips_when_hash_unchanged(self, tmp_path):
         """Second call with same content is skipped via hash check."""
         lines = ["# Learnings", ""]
