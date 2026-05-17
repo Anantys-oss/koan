@@ -743,3 +743,104 @@ class TestCheckCiStatusDependabot:
         assert run_id == 25970779403
         assert logs == ""
         mock_fetch_logs.assert_not_called()
+
+
+class TestFetchBranchCiRunsStalePushFilter:
+    """Regression for aio-libs/yarl PR #1675 — `gh run list --branch X` returns
+    runs from every push ever made to the branch, not just the current HEAD.
+    Stale failed runs from an earlier (since-fixed) push tricked
+    `aggregate_ci_runs` into reporting the PR as failing while CI was green.
+
+    `fetch_branch_ci_runs` must filter to runs from the most recent push only.
+    """
+
+    def test_stale_failed_runs_from_earlier_push_are_dropped(self):
+        """Mixed-SHA payload: HEAD push is all green, an earlier push had
+        failures. Only the HEAD runs should be returned.
+        """
+        from app.claude_step import fetch_branch_ci_runs
+
+        # gh returns newest-push runs first, then older pushes.
+        # HEAD SHA = "aaa..." (4 runs, all green or skipped Dependabot).
+        # Older SHA = "bbb..." (had CI/CD failure since fixed).
+        # Even older SHA = "ccc..." (had Aiohttp + CI/CD failures).
+        gh_payload = json.dumps([
+            {"databaseId": 100, "status": "completed", "conclusion": "success",
+             "workflowName": "CodeQL", "headSha": "aaa"},
+            {"databaseId": 101, "status": "completed", "conclusion": "success",
+             "workflowName": "Aiohttp", "headSha": "aaa"},
+            {"databaseId": 102, "status": "completed", "conclusion": "success",
+             "workflowName": "CI/CD", "headSha": "aaa"},
+            {"databaseId": 99, "status": "completed", "conclusion": "skipped",
+             "workflowName": "Dependabot auto-merge", "headSha": "aaa"},
+            # Stale older push — failures that have since been fixed.
+            {"databaseId": 50, "status": "completed", "conclusion": "failure",
+             "workflowName": "CI/CD", "headSha": "bbb"},
+            {"databaseId": 51, "status": "completed", "conclusion": "success",
+             "workflowName": "CodeQL", "headSha": "bbb"},
+            {"databaseId": 10, "status": "completed", "conclusion": "failure",
+             "workflowName": "Aiohttp", "headSha": "ccc"},
+            {"databaseId": 11, "status": "completed", "conclusion": "failure",
+             "workflowName": "CI/CD", "headSha": "ccc"},
+        ])
+        with patch("app.claude_step.run_gh", return_value=gh_payload):
+            runs = fetch_branch_ci_runs("koan/some-branch", "aio-libs/yarl")
+
+        # Only HEAD's 4 runs should survive the filter.
+        assert len(runs) == 4
+        assert {r["databaseId"] for r in runs} == {100, 101, 102, 99}
+        assert all(r["headSha"] == "aaa" for r in runs)
+
+    def test_missing_head_sha_returns_all_runs(self):
+        """Backward compat: if the payload omits headSha (legacy gh format
+        or test fixtures), don't drop anything — filtering can't apply.
+        """
+        from app.claude_step import fetch_branch_ci_runs
+
+        gh_payload = json.dumps([
+            {"databaseId": 1, "status": "completed", "conclusion": "success",
+             "workflowName": "CI"},
+            {"databaseId": 2, "status": "completed", "conclusion": "failure",
+             "workflowName": "CI"},
+        ])
+        with patch("app.claude_step.run_gh", return_value=gh_payload):
+            runs = fetch_branch_ci_runs("br", "owner/repo")
+
+        assert len(runs) == 2
+
+    def test_yarl_1675_scenario_status_is_success_not_failure(self):
+        """End-to-end: check_ci_status returns 'success' for the real yarl
+        PR #1675 payload pattern (4 green HEAD runs + 4 stale runs from
+        earlier commits, two of which had failures).
+        """
+        from app.ci_queue_runner import check_ci_status
+
+        gh_payload = json.dumps([
+            {"databaseId": 25996726705, "status": "completed",
+             "conclusion": "success", "workflowName": "CodeQL",
+             "headSha": "0a0c1bb4"},
+            {"databaseId": 25996726709, "status": "completed",
+             "conclusion": "success", "workflowName": "Aiohttp",
+             "headSha": "0a0c1bb4"},
+            {"databaseId": 25996726744, "status": "completed",
+             "conclusion": "success", "workflowName": "CI/CD",
+             "headSha": "0a0c1bb4"},
+            {"databaseId": 25996726005, "status": "completed",
+             "conclusion": "skipped", "workflowName": "Dependabot auto-merge",
+             "headSha": "0a0c1bb4"},
+            # Stale older-push failure — bug was reporting this as the status.
+            {"databaseId": 25972218350, "status": "completed",
+             "conclusion": "failure", "workflowName": "CI/CD",
+             "headSha": "60d1aa92"},
+            {"databaseId": 25967698501, "status": "completed",
+             "conclusion": "failure", "workflowName": "Aiohttp",
+             "headSha": "c14d6b95"},
+        ])
+        with patch("app.claude_step.run_gh", return_value=gh_payload):
+            status, run_id = check_ci_status(
+                "koan/distro-friendly-build-flags", "aio-libs/yarl",
+            )
+
+        assert status == "success"
+        # The reported run_id must be one of HEAD's runs, never a stale one.
+        assert run_id in {25996726705, 25996726709, 25996726744}
