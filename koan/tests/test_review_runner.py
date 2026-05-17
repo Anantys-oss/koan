@@ -61,6 +61,9 @@ def review_skill_dir(tmp_path):
         "Issue: {ISSUE_COMMENTS}\n"
         "Repliable: {REPLIABLE_COMMENTS}\n"
     )
+    (prompts_dir / "reflect.md").write_text(
+        "Reflect: {FINDINGS_JSON}\nDiff: {DIFF}"
+    )
     return tmp_path
 
 
@@ -692,12 +695,13 @@ class TestRunReview:
         assert mock_claude.call_count == 2
         mock_gh.assert_called_once()
 
+    @patch("app.review_runner._reflect_findings", side_effect=lambda findings, *a, **kw: findings)
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
     @patch("app.review_runner.run_gh")
     @patch("app.review_runner._run_claude_review")
     @patch("app.review_runner.fetch_pr_context")
     def test_retry_succeeds_on_second_attempt(
-        self, mock_fetch, mock_claude, mock_gh, mock_repliable,
+        self, mock_fetch, mock_claude, mock_gh, mock_repliable, _mock_reflect,
         pr_context, review_skill_dir,
     ):
         """Retry produces valid JSON on second attempt."""
@@ -2505,6 +2509,16 @@ class TestReflectFindings:
         "code_snippet": "",
     }
 
+    @pytest.fixture
+    def skill_dir(self, tmp_path):
+        """Create a minimal skill dir with a reflect prompt."""
+        prompts_dir = tmp_path / "prompts"
+        prompts_dir.mkdir()
+        (prompts_dir / "reflect.md").write_text(
+            "Reflect: {FINDINGS_JSON}\nDiff: {DIFF}"
+        )
+        return tmp_path
+
     def _make_scores(self, *scores):
         """Build a reflect JSON response with given scores for findings 0..N."""
         return json.dumps([
@@ -2513,86 +2527,79 @@ class TestReflectFindings:
         ])
 
     @patch("app.review_runner._run_claude_review")
-    @patch("app.review_runner.load_skill_prompt", return_value="Review: {FINDINGS_JSON}\nDiff: {DIFF}")
-    def test_happy_path_filters_below_threshold(self, _mock_prompt, mock_claude):
+    def test_happy_path_filters_below_threshold(self, mock_claude, skill_dir):
         """Findings with score < threshold are dropped."""
         from app.review_runner import _reflect_findings
 
         findings = [dict(self.FINDING), dict(self.FINDING), dict(self.FINDING)]
         mock_claude.return_value = (self._make_scores(3, 7, 5), "")
 
-        result = _reflect_findings(findings, "diff text", "/tmp/p", "haiku", 5)
+        result = _reflect_findings(findings, "diff text", "/tmp/p", "haiku", 5, skill_dir=skill_dir)
 
         assert len(result) == 2
         assert result[0] is findings[1]
         assert result[1] is findings[2]
 
     @patch("app.review_runner._run_claude_review")
-    @patch("app.review_runner.load_skill_prompt", return_value="Review: {FINDINGS_JSON}\nDiff: {DIFF}")
-    def test_parse_failure_returns_original(self, _mock_prompt, mock_claude):
+    def test_parse_failure_returns_original(self, mock_claude, skill_dir):
         """When Claude returns invalid JSON, original findings are returned unchanged."""
         from app.review_runner import _reflect_findings
 
         findings = [dict(self.FINDING)]
         mock_claude.return_value = ("not json at all", "")
 
-        result = _reflect_findings(findings, "diff", "/tmp/p", None, 5)
+        result = _reflect_findings(findings, "diff", "/tmp/p", None, 5, skill_dir=skill_dir)
 
         assert result is findings
 
     @patch("app.review_runner._run_claude_review")
-    @patch("app.review_runner.load_skill_prompt", return_value="Review: {FINDINGS_JSON}\nDiff: {DIFF}")
-    def test_threshold_zero_all_pass(self, _mock_prompt, mock_claude):
+    def test_threshold_zero_all_pass(self, mock_claude, skill_dir):
         """threshold=0 keeps all findings regardless of score."""
         from app.review_runner import _reflect_findings
 
         findings = [dict(self.FINDING), dict(self.FINDING)]
         mock_claude.return_value = (self._make_scores(0, 1), "")
 
-        result = _reflect_findings(findings, "diff", "/tmp/p", None, 0)
+        result = _reflect_findings(findings, "diff", "/tmp/p", None, 0, skill_dir=skill_dir)
 
         assert len(result) == 2
 
     @patch("app.review_runner._run_claude_review")
-    @patch("app.review_runner.load_skill_prompt", return_value="Review: {FINDINGS_JSON}\nDiff: {DIFF}")
-    def test_threshold_ten_all_filtered(self, _mock_prompt, mock_claude):
+    def test_threshold_ten_all_filtered(self, mock_claude, skill_dir):
         """threshold=10 drops all findings unless they score exactly 10."""
         from app.review_runner import _reflect_findings
 
         findings = [dict(self.FINDING), dict(self.FINDING)]
         mock_claude.return_value = (self._make_scores(8, 9), "")
 
-        result = _reflect_findings(findings, "diff", "/tmp/p", None, 10)
+        result = _reflect_findings(findings, "diff", "/tmp/p", None, 10, skill_dir=skill_dir)
 
         assert result == []
 
     @patch("app.review_runner._run_claude_review")
-    @patch("app.review_runner.load_skill_prompt", return_value="Review: {FINDINGS_JSON}\nDiff: {DIFF}")
-    def test_empty_findings_skips_claude(self, _mock_prompt, mock_claude):
+    def test_empty_findings_skips_claude(self, mock_claude, skill_dir):
         """Empty findings list returns immediately without calling Claude."""
         from app.review_runner import _reflect_findings
 
-        result = _reflect_findings([], "diff", "/tmp/p", None, 5)
+        result = _reflect_findings([], "diff", "/tmp/p", None, 5, skill_dir=skill_dir)
 
         assert result == []
         mock_claude.assert_not_called()
 
     @patch("app.review_runner._run_claude_review")
-    @patch("app.review_runner.load_skill_prompt", return_value="Review: {FINDINGS_JSON}\nDiff: {DIFF}")
-    def test_claude_error_returns_original(self, _mock_prompt, mock_claude):
+    def test_claude_error_returns_original(self, mock_claude, skill_dir):
         """When Claude call fails, original findings are returned unchanged."""
         from app.review_runner import _reflect_findings
 
         findings = [dict(self.FINDING)]
         mock_claude.return_value = ("", "timeout")
 
-        result = _reflect_findings(findings, "diff", "/tmp/p", None, 5)
+        result = _reflect_findings(findings, "diff", "/tmp/p", None, 5, skill_dir=skill_dir)
 
         assert result is findings
 
     @patch("app.review_runner._run_claude_review")
-    @patch("app.review_runner.load_skill_prompt", return_value="Review: {FINDINGS_JSON}\nDiff: {DIFF}")
-    def test_out_of_range_indices_ignored(self, _mock_prompt, mock_claude):
+    def test_out_of_range_indices_ignored(self, mock_claude, skill_dir):
         """Reflection entries with out-of-range finding_index are silently skipped."""
         from app.review_runner import _reflect_findings
 
@@ -2603,7 +2610,7 @@ class TestReflectFindings:
         ])
         mock_claude.return_value = (scores, "")
 
-        result = _reflect_findings(findings, "diff", "/tmp/p", None, 5)
+        result = _reflect_findings(findings, "diff", "/tmp/p", None, 5, skill_dir=skill_dir)
 
         assert len(result) == 1
 
