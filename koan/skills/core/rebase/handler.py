@@ -64,10 +64,12 @@ def handle(ctx):
             f"this instance. I only rebase my own pull requests."
         )
 
-    inserted = _gh_helpers.queue_github_mission(ctx, "rebase", pr_url, project_name, urgent=urgent)
-
-    if not inserted:
-        return f"\u26a0\ufe0f Duplicate ignored — /rebase already queued or running for PR #{pr_number} ({owner}/{repo})."
+    duplicate = _gh_helpers.queue_github_mission_once(
+        ctx, "rebase", pr_url, project_name, urgent=urgent,
+        type_label="PR", number=pr_number, owner=owner, repo=repo,
+    )
+    if duplicate:
+        return duplicate
 
     priority = " (priority)" if urgent else ""
     return f"Rebase queued{priority} for {_gh_helpers.format_success_message('PR', pr_number, owner, repo)}"

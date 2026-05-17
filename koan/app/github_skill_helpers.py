@@ -115,6 +115,28 @@ def queue_github_mission(
     return insert_pending_mission(missions_path, mission_entry, urgent=urgent)
 
 
+def queue_github_mission_once(
+    ctx, command: str, url: str, project_name: str,
+    context: Optional[str] = None, *, urgent: bool = False,
+    type_label: str = "PR", number: int = 0,
+    owner: str = "", repo: str = "",
+) -> Optional[str]:
+    """Queue a GitHub mission, returning a duplicate warning if skipped.
+
+    Combines queue_github_mission + standard duplicate message into one call.
+
+    Returns:
+        A ⚠️ duplicate warning string if skipped, None if successfully queued.
+    """
+    inserted = queue_github_mission(ctx, command, url, project_name, context, urgent=urgent)
+    if not inserted:
+        return (
+            f"\u26a0\ufe0f Duplicate ignored — /{command} already queued or running "
+            f"for {type_label} #{number} ({owner}/{repo})."
+        )
+    return None
+
+
 def format_project_not_found_error(repo: str, owner: Optional[str] = None) -> str:
     """Format a consistent error message when project cannot be resolved.
 
@@ -255,10 +277,12 @@ def handle_github_skill(
         return format_project_not_found_error(repo, owner=owner)
 
     # Queue mission (with duplicate detection)
-    inserted = queue_github_mission(ctx, command, url, project_name, context, urgent=urgent)
-
-    if not inserted:
-        return f"\u26a0\ufe0f Duplicate ignored — /{command} already queued or running for {type_label} #{number} ({owner}/{repo})."
+    duplicate = queue_github_mission_once(
+        ctx, command, url, project_name, context, urgent=urgent,
+        type_label=type_label, number=number, owner=owner, repo=repo,
+    )
+    if duplicate:
+        return duplicate
 
     # Return success message
     priority = " (priority)" if urgent else ""
