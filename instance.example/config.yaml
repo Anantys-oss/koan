@@ -280,6 +280,7 @@ models:
   lightweight: "haiku"     # Low-cost calls: format_outbox, pick_mission, contemplative
   fallback: "sonnet"       # Fallback when primary model is overloaded (print mode only)
   review_mode: ""          # Override model for REVIEW mode (cheaper audits)
+  reflect: ""              # Model for review reflection pass (empty = lightweight)
 
 # Branch cleanup — automatic deletion of merged branches during git sync
 # Every git_sync_interval iterations, Kōan detects merged branches (both
@@ -493,6 +494,14 @@ usage:
 # review_concurrency:
 #   enabled: true           # Enable parallel GitHub API fetches (default: true)
 #   github_workers: 4       # Max concurrent GitHub API calls (default: 4)
+
+# Review reflection pass — second-pass LLM call to score and filter findings
+# After the first-pass review generates file comments, a lightweight model
+# scores each finding 0-10. Findings scoring below the threshold are dropped.
+# Uses the models.reflect model (defaults to models.lightweight = haiku).
+# Set threshold: 0 to disable filtering (all findings pass through).
+# review_reflect:
+#   threshold: 5            # Min score to keep a finding (0-10, default: 5)
 
 # Dashboard attention zone — GitHub @mention notifications
 # When true, the dashboard attention zone also shows unread GitHub @mention

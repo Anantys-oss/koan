@@ -163,6 +163,7 @@ def get_model_config(project_name: str = "") -> dict:
         "lightweight": "haiku",
         "fallback": "sonnet",
         "review_mode": "",
+        "reflect": "",  # Model for second-pass reflection; defaults to lightweight when unset
     }
     # Start with global config
     global_models = config.get("models", {})
@@ -1003,6 +1004,31 @@ def get_review_ignore_config() -> dict:
         regexes = []
 
     return {"glob": [str(p) for p in globs], "regex": [str(p) for p in regexes]}
+
+
+def get_review_reflect_config() -> dict:
+    """Get review reflection pass configuration from config.yaml.
+
+    The reflection pass runs a second lightweight Claude call to score
+    each finding and filter low-signal suggestions before posting.
+
+    Config key: review_reflect
+      - threshold (int, 0-10): Minimum score for a finding to be kept.
+        Default: 5. Set to 0 to disable filtering (all findings pass).
+
+    Returns:
+        Dict with key: threshold (int). Always present; defaults to 5.
+    """
+    config = _load_config()
+    reflect_cfg = config.get("review_reflect", {}) or {}
+    if not isinstance(reflect_cfg, dict):
+        reflect_cfg = {}
+    threshold = reflect_cfg.get("threshold", 5)
+    try:
+        threshold = int(threshold)
+    except (TypeError, ValueError):
+        threshold = 5
+    return {"threshold": max(0, min(10, threshold))}
 
 
 def is_caveman_mode() -> bool:

@@ -202,6 +202,33 @@ REVIEW_SCHEMA = {
     },
 }
 
+# ---------------------------------------------------------------------------
+# Schema: reflect_findings (second-pass reflection output)
+# ---------------------------------------------------------------------------
+
+REFLECT_SCHEMA = {
+    "type": "array",
+    "description": "Array of scored reflection results, one per original finding.",
+    "items": {
+        "type": "object",
+        "required": ["finding_index", "score", "reason"],
+        "properties": {
+            "finding_index": {
+                "type": "integer",
+                "description": "0-based index into the original findings list.",
+            },
+            "score": {
+                "type": "integer",
+                "description": "Quality score 0-10. Higher means more actionable/correct.",
+            },
+            "reason": {
+                "type": "string",
+                "description": "One-sentence justification for the score.",
+            },
+        },
+    },
+}
+
 # Valid severity values
 _VALID_SEVERITIES = {"critical", "warning", "suggestion"}
 
