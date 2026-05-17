@@ -451,7 +451,8 @@ def _reflect_findings(
 
     try:
         findings_json = json.dumps(findings, indent=2)
-        prompt = load_skill_prompt(skill_dir, "reflect").format(
+        prompt = load_skill_prompt(
+            skill_dir, "reflect",
             FINDINGS_JSON=findings_json,
             DIFF=diff or "(diff not available)",
         )
@@ -499,8 +500,10 @@ def _reflect_findings(
             continue
         idx = entry.get("finding_index")
         score = entry.get("score")
-        if not isinstance(idx, int) or not isinstance(score, int):
+        if not isinstance(idx, (int, float)) or not isinstance(score, (int, float)):
             continue
+        idx = int(idx)
+        score = int(score)
         if 0 <= idx < len(findings):
             score_map[idx] = score
 
