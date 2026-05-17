@@ -682,7 +682,25 @@ def _select_random_exploration_project(
 
         total = sum(candidate_weights)
         if total > 0:
-            selected = random.choices(candidates, weights=candidate_weights, k=1)[0]
+            # Thompson Sampling: each candidate gets a Beta sample scaled
+            # by the existing staleness/drift/success score.  The existing
+            # score acts as a prior multiplier so recency bias is preserved.
+            # argmax over combined scores replaces random.choices().
+            try:
+                from app.bandit import load_bandit_state, thompson_sample
+                bandit = load_bandit_state(instance_dir)
+                combined = [
+                    w * thompson_sample(bandit, name)
+                    for (name, _), w in zip(candidates, candidate_weights)
+                ]
+                best_idx = combined.index(max(combined))
+                selected = candidates[best_idx]
+                _ts_sample = combined[best_idx]
+            except Exception:
+                # Fallback to weighted random on any bandit error
+                selected = random.choices(candidates, weights=candidate_weights, k=1)[0]
+                _ts_sample = None
+
             extra_info = []
             if weights:
                 staleness = 10 - weights.get(selected[0], 10)
@@ -698,7 +716,7 @@ def _select_random_exploration_project(
                     extra_info.append(f"success={rate:.0%}")
             suffix = f" ({', '.join(extra_info)})" if extra_info else ""
             _log_iteration("koan",
-                f"Weighted selection: '{selected[0]}'{suffix} "
+                f"Thompson Sampling: '{selected[0]}'{suffix} "
                 f"from {len(candidates)} candidate(s)")
             return selected
 
