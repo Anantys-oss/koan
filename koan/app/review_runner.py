@@ -28,6 +28,7 @@ from app.github import run_gh, sanitize_github_comment, find_bot_comment
 from app.github_url_parser import ISSUE_URL_PATTERN
 from app.prompts import load_prompt_or_skill
 from app.rebase_pr import fetch_pr_context
+from app.utils import KOAN_ROOT
 from app.review_markers import (
     SUMMARY_TAG,
     COMMIT_IDS_START,
@@ -50,7 +51,6 @@ def load_project_learnings(project_name: Optional[str]) -> str:
     if not project_name:
         return ""
     try:
-        from app.utils import KOAN_ROOT
         learnings_path = KOAN_ROOT / "instance" / "memory" / "projects" / project_name / "learnings.md"
         content = learnings_path.read_text().strip()
         if not content:
