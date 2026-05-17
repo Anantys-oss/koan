@@ -908,62 +908,201 @@ class TestRunCommandStreaming:
             run_command_streaming("hi", "/tmp", [], max_turns=2)
         assert "max turns limit" in capsys.readouterr().err
 
-    def test_heartbeat_keeps_parent_watchdog_alive(self, capsys, monkeypatch):
-        """While Claude CLI sits silent (no stdout for a long stretch), the
-        streaming helper must still emit periodic heartbeat lines so the
-        skill-runner liveness watchdog in run.py does not kill a healthy but
-        long-running session.
+    def test_stream_json_requests_event_format_for_claude(self):
+        """When the provider is Claude, the helper asks for stream-json output.
 
-        Reproduces the python-zeroconf #1700 stall: a high-effort fix where
-        Claude does several minutes of tool use before emitting any stdout,
-        and the 600s liveness watchdog killed the session as if it were stuck.
+        This is what keeps the parent watchdog alive on long high-effort
+        sessions: the CLI emits a JSON line per turn/tool-use instead of
+        buffering until the end.
         """
-        import time
-        from app import provider as provider_mod
+        import json
         from app.provider import run_command_streaming
-
-        class SlowIter:
-            def __init__(self, delay, line):
-                self._delay = delay
-                self._line = line
-                self._done = False
-
-            def __iter__(self):
-                return self
-
-            def __next__(self):
-                if self._done:
-                    raise StopIteration
-                time.sleep(self._delay)
-                self._done = True
-                return self._line
-
-        proc = MagicMock()
-        proc.stdout = MagicMock()
-        proc.stdout.__iter__ = lambda self: SlowIter(0.4, "final\n")
-        proc.stdout.close = MagicMock()
-        proc.stderr = MagicMock()
-        proc.stderr.read.return_value = ""
-        proc.returncode = 0
-        proc.wait.return_value = None
+        result_event = json.dumps({
+            "type": "result", "subtype": "success",
+            "result": "the answer",
+        })
+        proc = self._make_proc([result_event + "\n"])
         cleanup = MagicMock()
+        captured_kwargs = {}
 
-        # Speed up heartbeat so the test is fast.
-        monkeypatch.setattr(provider_mod, "_HEARTBEAT_INTERVAL_S", 0.05)
+        def fake_build(**kwargs):
+            captured_kwargs.update(kwargs)
+            return ["fake"]
 
         with patch("app.config.get_model_config", return_value={"chat": "m", "fallback": "f"}), \
+             patch("app.provider.get_provider_name", return_value="claude"), \
+             patch("app.provider.build_full_command", side_effect=fake_build), \
+             patch("app.cli_exec.popen_cli", return_value=(proc, cleanup)), \
+             patch("app.claude_step.strip_cli_noise", side_effect=lambda s: s):
+            run_command_streaming("hi", "/tmp", [])
+        assert captured_kwargs.get("output_format") == "stream-json"
+
+    def test_stream_json_returns_result_event_text(self, capsys):
+        """The ``result`` event's text becomes the function's return value.
+
+        Verifies the contract that callers depend on: even with stream-json
+        on, what comes back is the same final assistant text a plain
+        text-mode run would have produced.
+        """
+        import json
+        from app.provider import run_command_streaming
+        events = [
+            json.dumps({"type": "system", "subtype": "init", "model": "sonnet"}) + "\n",
+            json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Edit", "id": "tu_1"},
+            ]}}) + "\n",
+            json.dumps({"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "tu_1", "content": "ok"},
+            ]}}) + "\n",
+            json.dumps({"type": "result", "subtype": "success",
+                        "result": "## Summary\nDone.", "duration_ms": 12000}) + "\n",
+        ]
+        proc = self._make_proc(events)
+        cleanup = MagicMock()
+        with patch("app.config.get_model_config", return_value={"chat": "m", "fallback": "f"}), \
+             patch("app.provider.get_provider_name", return_value="claude"), \
              patch("app.provider.build_full_command", return_value=["fake"]), \
              patch("app.cli_exec.popen_cli", return_value=(proc, cleanup)), \
              patch("app.claude_step.strip_cli_noise", side_effect=lambda s: s):
             out = run_command_streaming("hi", "/tmp", [])
-
+        assert out == "## Summary\nDone."
+        # The raw JSON should NOT appear in stdout — only human-readable summaries.
         captured = capsys.readouterr().out
-        assert "final" in out
-        # Heartbeat lines must reach stdout so the parent watchdog sees output.
-        assert "still working" in captured
-        # Heartbeat lines must NOT pollute the captured return value — only
-        # lines that came from proc.stdout belong in the result.
-        assert "still working" not in out
+        assert '"type": "result"' not in captured
+        # But the summaries should be there so the watchdog sees activity.
+        assert "tool_use: Edit" in captured
+        assert "tool_result" in captured
+        assert "result: success" in captured
+
+    def test_stream_json_each_event_emits_a_line_for_watchdog(self, capsys):
+        """Per-event summary lines unblock the run.py liveness watchdog.
+
+        This is the whole point of the change: a long-running Claude call
+        emits one stdout line per tool use, so the runner's parent (which
+        resets its 600s watchdog on every line) sees real activity even
+        when no final text has been produced yet.
+        """
+        import json
+        from app.provider import run_command_streaming
+        # Five tool_use events with no result yet — simulates the middle
+        # of a long high-effort run, the exact case that previously
+        # produced ZERO stdout for 10 minutes and got killed.
+        events = []
+        for i in range(5):
+            events.append(
+                json.dumps({"type": "assistant", "message": {"content": [
+                    {"type": "tool_use", "name": "Bash", "id": f"tu_{i}"},
+                ]}}) + "\n"
+            )
+        events.append(
+            json.dumps({"type": "result", "subtype": "success",
+                        "result": "fin"}) + "\n"
+        )
+        proc = self._make_proc(events)
+        cleanup = MagicMock()
+        with patch("app.config.get_model_config", return_value={"chat": "m", "fallback": "f"}), \
+             patch("app.provider.get_provider_name", return_value="claude"), \
+             patch("app.provider.build_full_command", return_value=["fake"]), \
+             patch("app.cli_exec.popen_cli", return_value=(proc, cleanup)), \
+             patch("app.claude_step.strip_cli_noise", side_effect=lambda s: s):
+            run_command_streaming("hi", "/tmp", [])
+        out_lines = capsys.readouterr().out.splitlines()
+        tool_lines = [ln for ln in out_lines if "tool_use: Bash" in ln]
+        assert len(tool_lines) == 5
+
+    def test_stream_json_max_turns_via_result_event(self, capsys):
+        """A ``result`` event with a max-turns subtype is treated like the
+        legacy ``Error: Reached max turns`` regex hit — warn and return
+        partial output instead of raising."""
+        import json
+        from app.provider import run_command_streaming
+        events = [
+            json.dumps({"type": "result", "subtype": "error_max_turns",
+                        "result": "partial answer"}) + "\n",
+        ]
+        proc = self._make_proc(events, returncode=1)
+        cleanup = MagicMock()
+        with patch("app.config.get_model_config", return_value={"chat": "m", "fallback": "f"}), \
+             patch("app.provider.get_provider_name", return_value="claude"), \
+             patch("app.provider.build_full_command", return_value=["fake"]), \
+             patch("app.cli_exec.popen_cli", return_value=(proc, cleanup)), \
+             patch("app.claude_step.strip_cli_noise", side_effect=lambda s: s):
+            out = run_command_streaming("hi", "/tmp", [], max_turns=3)
+        assert "partial answer" in out
+        assert "max turns limit" in capsys.readouterr().err
+
+    def test_non_claude_provider_uses_raw_text(self, capsys):
+        """Codex/copilot/etc. don't speak stream-json; raw stdout is used."""
+        from app.provider import run_command_streaming
+        proc = self._make_proc(["plain text result\n"])
+        cleanup = MagicMock()
+        captured_kwargs = {}
+
+        def fake_build(**kwargs):
+            captured_kwargs.update(kwargs)
+            return ["fake"]
+
+        with patch("app.config.get_model_config", return_value={"chat": "m", "fallback": "f"}), \
+             patch("app.provider.get_provider_name", return_value="codex"), \
+             patch("app.provider.build_full_command", side_effect=fake_build), \
+             patch("app.cli_exec.popen_cli", return_value=(proc, cleanup)), \
+             patch("app.claude_step.strip_cli_noise", side_effect=lambda s: s):
+            out = run_command_streaming("hi", "/tmp", [])
+        # No output_format request for non-Claude providers.
+        assert captured_kwargs.get("output_format") == ""
+        assert "plain text result" in out
+
+
+class TestSummarizeStreamEvent:
+    """Direct coverage for _summarize_stream_event so changes to the
+    rendering don't accidentally silence the watchdog signal."""
+
+    def test_tool_use_renders_name(self):
+        from app.provider import _summarize_stream_event
+        line = _summarize_stream_event({
+            "type": "assistant",
+            "message": {"content": [{"type": "tool_use", "name": "Grep"}]},
+        })
+        assert "tool_use: Grep" in line
+
+    def test_text_block_renders_preview(self):
+        from app.provider import _summarize_stream_event
+        line = _summarize_stream_event({
+            "type": "assistant",
+            "message": {"content": [
+                {"type": "text", "text": "Looking at the failing test"},
+            ]},
+        })
+        assert "Looking at the failing test" in line
+
+    def test_unknown_type_falls_back_to_event_tag(self):
+        from app.provider import _summarize_stream_event
+        line = _summarize_stream_event({"type": "weird"})
+        assert "weird" in line
+
+    def test_result_event_renders_duration(self):
+        from app.provider import _summarize_stream_event
+        line = _summarize_stream_event({
+            "type": "result", "subtype": "success", "duration_ms": 45000,
+        })
+        assert "45s" in line
+
+
+class TestClaudeProviderStreamJsonRequiresVerbose:
+    def test_stream_json_adds_verbose(self):
+        from app.provider.claude import ClaudeProvider
+        flags = ClaudeProvider().build_output_args("stream-json")
+        assert "--output-format" in flags
+        assert "stream-json" in flags
+        # --verbose is mandatory for stream-json print mode.
+        assert "--verbose" in flags
+
+    def test_plain_format_unchanged(self):
+        from app.provider.claude import ClaudeProvider
+        assert ClaudeProvider().build_output_args("json") == [
+            "--output-format", "json",
+        ]
+        assert ClaudeProvider().build_output_args("") == []
 
 
 class TestMaxTurnsWarningAttribution:

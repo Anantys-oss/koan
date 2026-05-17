@@ -21,14 +21,13 @@ Package structure:
 """
 
 import contextlib
+import json
 import os
 import re
 import subprocess
 import sys
 import tempfile
-import threading
-import time
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 # Re-export base class and constants for convenience
 from app.provider.base import (  # noqa: F401
@@ -401,34 +400,85 @@ def run_command(
     return strip_cli_noise(result.stdout.strip())
 
 
-# Interval (seconds) between heartbeat lines emitted while waiting for the
-# CLI to produce its first / next stdout line. Skill runners are launched as
-# a subprocess by run.py, which has a 600s liveness watchdog over the runner's
-# stdout. Claude CLI in plain `-p` print mode buffers all output until the
-# session ends, so a long-but-healthy fix can produce zero stdout for tens of
-# minutes and trip the watchdog. The heartbeat prints to the runner's stdout
-# so the parent watchdog stays satisfied. Tests monkeypatch this to a small
-# value; ops can raise/lower it indirectly via `first_output_timeout`.
-_HEARTBEAT_INTERVAL_S: float = 60.0
+def _summarize_stream_event(event: Dict[str, Any]) -> str:
+    """Render a Claude ``stream-json`` event as a single human-readable line.
 
-
-def _start_cli_heartbeat() -> threading.Event:
-    """Start a daemon thread that prints periodic heartbeats to stdout.
-
-    Returns the stop event — set it (and the thread will exit on its next
-    wait wake-up) when the CLI starts producing output or finishes.
+    Returned strings are short and self-contained so the skill-runner's
+    parent (run.py liveness watchdog) sees per-event activity instead of
+    raw JSON. Unknown event shapes fall back to a generic type tag.
     """
-    stop_event = threading.Event()
-    started_at = time.monotonic()
+    etype = event.get("type", "")
 
-    def _loop():
-        while not stop_event.wait(_HEARTBEAT_INTERVAL_S):
-            elapsed = int(time.monotonic() - started_at)
-            print(f"[cli] still working… ({elapsed}s elapsed)", flush=True)
+    if etype == "system":
+        subtype = event.get("subtype", "")
+        model = event.get("model", "")
+        if subtype == "init" and model:
+            return f"[cli] session init (model={model})"
+        return f"[cli] system: {subtype or '?'}"
 
-    t = threading.Thread(target=_loop, daemon=True)
-    t.start()
-    return stop_event
+    if etype == "assistant":
+        msg = event.get("message") or {}
+        blocks = msg.get("content") or []
+        parts: List[str] = []
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type", "")
+            if btype == "tool_use":
+                parts.append(f"tool_use: {block.get('name', '?')}")
+            elif btype == "text":
+                text = (block.get("text") or "").strip()
+                if text:
+                    preview = text.splitlines()[0][:80]
+                    parts.append(f"text: {preview}")
+                else:
+                    parts.append("text")
+            elif btype == "thinking":
+                parts.append("thinking")
+        return "[cli] assistant — " + (", ".join(parts) if parts else "(empty)")
+
+    if etype == "user":
+        msg = event.get("message") or {}
+        blocks = msg.get("content") or []
+        for block in blocks:
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                tid = str(block.get("tool_use_id") or "")[:12]
+                err = " (error)" if block.get("is_error") else ""
+                return f"[cli] tool_result {tid}{err}"
+        return "[cli] user turn"
+
+    if etype == "result":
+        subtype = event.get("subtype", "")
+        duration_ms = event.get("duration_ms")
+        if isinstance(duration_ms, (int, float)):
+            return f"[cli] result: {subtype or '?'} ({int(duration_ms) // 1000}s)"
+        return f"[cli] result: {subtype or '?'}"
+
+    return f"[cli] event: {etype or '?'}"
+
+
+def _extract_result_text(event: Dict[str, Any]) -> Optional[str]:
+    """Pull the final assistant text out of a ``stream-json`` ``result`` event.
+
+    Returns ``None`` when *event* is not a result event. The Claude CLI
+    stuffs the same string a plain text-mode run would have printed into
+    ``event["result"]``; we forward it verbatim so callers see the same
+    return value they did before stream-json was on.
+    """
+    if event.get("type") != "result":
+        return None
+    result = event.get("result")
+    if isinstance(result, str):
+        return result
+    return ""
+
+
+def _is_stream_json_max_turns(event: Dict[str, Any]) -> bool:
+    """Detect the stream-json equivalent of the legacy 'Reached max turns' line."""
+    if event.get("type") != "result":
+        return False
+    subtype = str(event.get("subtype", "") or "")
+    return "max" in subtype.lower() and "turn" in subtype.lower()
 
 
 def run_command_streaming(
@@ -440,16 +490,25 @@ def run_command_streaming(
     timeout: int = 300,
     max_turns_source: Optional[str] = "skill_max_turns",
 ) -> str:
-    """Build and run a CLI command, streaming output to stdout in real time.
+    """Build and run a CLI command, streaming progress to stdout in real time.
 
-    Like :func:`run_command`, but uses Popen to tee CLI output to
-    ``sys.stdout`` line by line while also capturing the full text.
-    This enables the skill dispatch layer in run.py to pipe the output
-    into ``pending.md``, making it visible via ``/live``.
+    The Claude CLI ``-p`` print mode buffers the rendered text response
+    until the session ends. For high-effort skills (e.g. /fix on
+    python-zeroconf #1700) that can mean tens of minutes of silent tool
+    use, which the skill-runner liveness watchdog in run.py reads as a
+    hang and kills.
 
-    When the CLI hits its max-turns limit, the partial output is returned
-    instead of raising — the caller can still extract useful results from
-    an incomplete session.
+    We avoid that by requesting ``--output-format stream-json --verbose``,
+    which emits one JSON event per turn/tool-use/result. Each event is
+    rendered into a short human-readable line printed to the runner's
+    stdout, so the parent watchdog sees real activity (not a fake
+    heartbeat) and ``/live`` shows what Claude is doing. The final
+    ``result`` event carries the same text a text-mode run would have
+    returned, so callers' return-value contract is unchanged.
+
+    Non-Claude providers that don't support ``stream-json`` fall through
+    to the original raw text path; lines that fail to parse as JSON are
+    still printed and contribute to the return value.
 
     Raises:
         RuntimeError: If the command exits with non-zero code (except
@@ -458,12 +517,14 @@ def run_command_streaming(
     from app.config import get_model_config
 
     models = get_model_config()
+    use_stream_json = get_provider_name() == "claude"
     cmd = build_full_command(
         prompt=prompt,
         allowed_tools=allowed_tools,
         model=models.get(model_key, ""),
         fallback=models.get("fallback", ""),
         max_turns=max_turns,
+        output_format="stream-json" if use_stream_json else "",
     )
 
     print("[cli] Starting Claude CLI session", flush=True)
@@ -478,14 +539,37 @@ def run_command_streaming(
         cwd=project_path,
     )
 
-    lines = []
+    raw_lines: List[str] = []  # for error reporting (full transcript)
+    text_lines: List[str] = []  # fallback return value when no result event
+    final_result: Optional[str] = None
+    saw_max_turns_event = False
     stderr_text = ""
-    heartbeat_stop = _start_cli_heartbeat()
     try:
         for line in proc.stdout:
             stripped = line.rstrip("\n")
-            lines.append(stripped)
-            print(stripped, flush=True)
+            raw_lines.append(stripped)
+            if not stripped:
+                continue
+            event: Optional[Dict[str, Any]] = None
+            if use_stream_json:
+                try:
+                    parsed = json.loads(stripped)
+                    if isinstance(parsed, dict):
+                        event = parsed
+                except (json.JSONDecodeError, ValueError):
+                    event = None
+            if event is not None:
+                print(_summarize_stream_event(event), flush=True)
+                result_text = _extract_result_text(event)
+                if result_text is not None:
+                    final_result = result_text
+                if _is_stream_json_max_turns(event):
+                    saw_max_turns_event = True
+            else:
+                # Non-JSON: provider doesn't speak stream-json or a stray
+                # warning slipped in. Print and remember for the fallback.
+                print(stripped, flush=True)
+                text_lines.append(stripped)
         stderr_text = proc.stderr.read() if proc.stderr else ""
         proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -493,29 +577,32 @@ def run_command_streaming(
         proc.wait()
         raise RuntimeError(f"CLI invocation timed out after {timeout}s")
     finally:
-        heartbeat_stop.set()
         if proc.stdout:
             proc.stdout.close()
         if proc.stderr:
             proc.stderr.close()
         cleanup()
 
-    stdout_text = "\n".join(lines)
+    raw_stdout = "\n".join(raw_lines)
+    # The legacy regex still fires on non-stream-json output (codex,
+    # warnings printed before the stream begins) and on stream-json
+    # results whose subtype encodes the limit.
+    hit_max_turns = saw_max_turns_event or _is_max_turns_error(raw_stdout)
+    return_text = final_result if final_result is not None else "\n".join(text_lines)
+
     if proc.returncode != 0:
         # Max-turns is a graceful limit — return partial output so callers
         # can extract useful results from an incomplete session.
-        if _is_max_turns_error(stdout_text):
+        if hit_max_turns:
             _warn_max_turns(max_turns, max_turns_source)
             from app.claude_step import strip_cli_noise
-            return strip_cli_noise(stdout_text.strip())
+            return strip_cli_noise(return_text.strip())
         raise RuntimeError(
-            _format_cli_error(proc.returncode, stdout_text, stderr_text)
+            _format_cli_error(proc.returncode, raw_stdout, stderr_text)
         )
 
-    # Warn on max-turns even when exit code is 0 (edge case: Claude
-    # completed its last allowed turn successfully)
-    if _is_max_turns_error(stdout_text):
+    if hit_max_turns:
         _warn_max_turns(max_turns, max_turns_source)
 
     from app.claude_step import strip_cli_noise
-    return strip_cli_noise(stdout_text.strip())
+    return strip_cli_noise(return_text.strip())
