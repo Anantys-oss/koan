@@ -1015,10 +1015,18 @@ def _push_with_pr_fallback(
         )
 
         title = context.get("title", f"{cfg['title_prefix'].strip('[]')} of #{pr_number}")
-        pr_body = cfg["pr_body"].format(
+        boilerplate = cfg["pr_body"].format(
             pr_number=pr_number, branch=branch, base=base,
             url=context.get("url", f"#{pr_number}"),
         )
+        pr_body = boilerplate
+        try:
+            from app.describe_pr import describe_pr, format_description
+            desc = describe_pr(project_path, base)
+            if desc:
+                pr_body = f"{format_description(desc)}\n\n{boilerplate}"
+        except Exception as _desc_err:
+            print(f"[{pr_type}_pr] describe_pr failed, using boilerplate: {_desc_err}", file=sys.stderr)
         new_pr_url = pr_create(
             title=f"{cfg['title_prefix']} {title}",
             body=pr_body,
