@@ -95,12 +95,12 @@ def _resolve_includes(
         if skill_dir is not None:
             skill_partial = skill_dir / "prompts" / PARTIALS_DIR_NAME / f"{name}.md"
             if skill_partial.is_file():
-                content = skill_partial.read_text()
+                content = skill_partial.read_text().strip()
                 return _resolve_includes(content, skill_dir, _depth + 1)
         # Fall back to global partials
         global_partial = PROMPT_DIR / PARTIALS_DIR_NAME / f"{name}.md"
         if global_partial.is_file():
-            content = global_partial.read_text()
+            content = global_partial.read_text().strip()
             return _resolve_includes(content, skill_dir, _depth + 1)
         # Partial not found — leave the directive as-is
         return match.group(0)
