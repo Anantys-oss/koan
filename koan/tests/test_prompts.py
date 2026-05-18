@@ -654,6 +654,17 @@ class TestResolveIncludes:
             result = _resolve_includes(template)
         assert result == "Hello {NAME}"
 
+    def test_trailing_newline_stripped_from_partial(self, tmp_path):
+        """Trailing newline in partial file does not produce extra blank lines."""
+        partials = tmp_path / "_partials"
+        partials.mkdir()
+        # Write with trailing newline (as git-committed files normally have)
+        (partials / "note.md").write_text("included content\n")
+        template = "before\n{@include note}\nafter"
+        with patch("app.prompts.PROMPT_DIR", tmp_path):
+            result = _resolve_includes(template)
+        assert result == "before\nincluded content\nafter"
+
 
 class TestLoadPromptWithIncludes:
     """Integration tests: load_prompt and load_skill_prompt resolve includes."""
