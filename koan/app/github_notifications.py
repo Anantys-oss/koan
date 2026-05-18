@@ -242,11 +242,13 @@ class FetchResult:
         drain: Non-actionable notifications from known repos that should
             be marked as read to prevent accumulation.
     """
-    __slots__ = ("actionable", "drain")
+    __slots__ = ("actionable", "drain", "skipped_repos")
 
-    def __init__(self, actionable: List[dict], drain: List[dict]):
+    def __init__(self, actionable: List[dict], drain: List[dict],
+                 skipped_repos: Optional[List[str]] = None):
         self.actionable = actionable
         self.drain = drain
+        self.skipped_repos = skipped_repos or []
 
 
 def fetch_unread_notifications(known_repos: Optional[Set[str]] = None,
@@ -322,6 +324,8 @@ def fetch_unread_notifications(known_repos: Optional[Set[str]] = None,
             repo_lower = repo_name.lower()
             if repo_lower not in known_repos:
                 skipped_repos.append(repo_name)
+                if reason in {"mention", "team_mention"}:
+                    log.debug("GitHub: skipping @mention for unregistered repo %s", repo_name)
                 continue
 
         if reason in _ACTIONABLE_REASONS:
@@ -346,7 +350,7 @@ def fetch_unread_notifications(known_repos: Optional[Set[str]] = None,
         "GitHub: %d actionable + %d drain notification(s) from known repos",
         len(actionable), len(drain),
     )
-    return FetchResult(actionable, drain)
+    return FetchResult(actionable, drain, skipped_repos)
 
 
 def parse_mention_command(comment_body: str, nickname: str) -> Optional[Tuple[str, str]]:
