@@ -1576,7 +1576,7 @@ class TestFetchNotificationsLogging:
         import logging
         from app.github_notifications import fetch_unread_notifications
 
-        # Use a non-mention reason — mentions bypass the repo filter
+        # All reasons are filtered by known_repos (shared GitHub account)
         mock_api.return_value = json.dumps([
             {"reason": "comment", "repository": {"full_name": "unknown/repo"}},
         ])
