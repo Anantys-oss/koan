@@ -2780,15 +2780,24 @@ class TestRunReviewClosePr:
         )
 
         assert success is True
+        # Must include an atomic `gh pr close --comment ...` call that
+        # carries the explanatory comment, so close+comment can't desync.
         gh_call_args = [list(call.args) for call in mock_gh.call_args_list]
+        close_calls = [
+            args for args in gh_call_args
+            if args[:2] == ["pr", "close"] and "639" in args
+        ]
+        assert close_calls, f"Expected `gh pr close 639` in {gh_call_args}"
         assert any(
-            args[:2] == ["pr", "close"] and "639" in args
+            "--comment" in args for args in close_calls
+        ), f"Expected `gh pr close` to carry --comment in {close_calls}"
+        # No separate `pr comment` round-trip for the closure explanation.
+        assert not any(
+            args[:2] == ["pr", "comment"]
+            and "Closed by Reviewer" in " ".join(str(a) for a in args)
             for args in gh_call_args
-        ), f"Expected `gh pr close 639` in {gh_call_args}"
-        assert any(
-            args[:2] == ["pr", "comment"] and "639" in args
-            for args in gh_call_args
-        ), f"Expected explanatory comment in {gh_call_args}"
+        )
+        # Summary should mention closure
         assert "closed" in summary.lower()
         assert any(
             "closed" in str(call.args[0]).lower()
@@ -2857,11 +2866,20 @@ class TestRunReviewClosePr:
         mock_find_bot, _mock_shas,
         pr_context, review_skill_dir,
     ):
-        """If `gh pr close` fails, the review itself still counts as posted."""
+        """If `gh pr close` fails, the review itself still counts as posted.
+
+        Also guards against the original ordering bug: no "PR Closed by
+        Reviewer" comment should ever land on a PR that failed to close.
+        With the atomic `gh pr close --comment` path, the failed close
+        rolls back the comment automatically.
+        """
         mock_fetch.return_value = pr_context
         mock_claude.return_value = (json.dumps(CLOSE_REVIEW_JSON), "")
 
+        captured_calls = []
+
         def gh_side_effect(*args, **kwargs):
+            captured_calls.append(list(args))
             if args[:2] == ("pr", "close"):
                 raise RuntimeError("403 forbidden")
             return ""
@@ -2875,6 +2893,14 @@ class TestRunReviewClosePr:
 
         assert success is True
         assert "PR closed" not in summary
+        # No standalone `pr comment` was used to announce the closure —
+        # the atomic --comment flag means a failed close leaves no
+        # misleading "PR Closed" comment behind.
+        assert not any(
+            args[:2] == ["pr", "comment"]
+            and "Closed by Reviewer" in " ".join(str(a) for a in args)
+            for args in captured_calls
+        )
 
 
 # ---------------------------------------------------------------------------

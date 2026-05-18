@@ -1211,13 +1211,20 @@ def run_review(
     # Step 8: Close the PR if the review decided closure is warranted
     closed = False
     close_reason = ""
-    if posted and review_data:
+    if isinstance(review_data, dict):
         close_decision = review_data.get("close_pr") or {}
         if close_decision.get("close") is True:
-            close_reason = (close_decision.get("reason") or "").strip()
-            closed = _close_pr_from_review(
-                owner, repo, pr_number, close_reason, notify_fn=notify_fn,
-            )
+            if posted:
+                close_reason = (close_decision.get("reason") or "").strip()
+                closed = _close_pr_from_review(
+                    owner, repo, pr_number, close_reason, notify_fn=notify_fn,
+                )
+            else:
+                print(
+                    f"[review_runner] close_pr.close=True observed but review "
+                    f"post failed; skipping close on PR #{pr_number}",
+                    file=sys.stderr,
+                )
 
     if posted:
         summary = f"Review posted on PR #{pr_number} ({full_repo})."
@@ -1240,8 +1247,9 @@ def _close_pr_from_review(
 ) -> bool:
     """Close a PR after the review decided closure is warranted.
 
-    Posts a short follow-up comment explaining the closure (the review body
-    already contains the substantive explanation), then runs ``gh pr close``.
+    Runs ``gh pr close --comment ...`` so the explanatory comment and the
+    close action are atomic: if close fails (403, rate limit, etc.) no
+    misleading "PR Closed" comment is left dangling on an open PR.
 
     Returns True on success, False on any failure (caller continues either way).
     """
@@ -1256,15 +1264,10 @@ def _close_pr_from_review(
     )
     try:
         run_gh(
-            "pr", "comment", pr_number,
+            "pr", "close", pr_number,
             "--repo", full_repo,
-            "--body", sanitize_github_comment(comment_body),
+            "--comment", sanitize_github_comment(comment_body),
         )
-    except Exception as e:
-        print(f"[review_runner] close-comment post failed: {e}", file=sys.stderr)
-
-    try:
-        run_gh("pr", "close", pr_number, "--repo", full_repo)
     except Exception as e:
         print(f"[review_runner] PR close failed: {e}", file=sys.stderr)
         return False

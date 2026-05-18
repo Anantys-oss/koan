@@ -130,13 +130,11 @@ Your ENTIRE response must be a single valid JSON object (no markdown, no code fe
       "comment_id": 12345,
       "reply": "Detailed reply explaining why and how."
     }
-  ],
-  "close_pr": {
-    "close": false,
-    "reason": ""
-  }
+  ]
 }
 ```
+
+(Omit `close_pr` entirely unless you are closing — see Field rules below.)
 
 Field rules:
 - **plan_alignment**: Required in this prompt. List each plan phase/requirement individually.

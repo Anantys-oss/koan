@@ -89,13 +89,11 @@ Your ENTIRE response must be a single valid JSON object (no markdown, no code fe
       "comment_id": 12345,
       "reply": "Detailed reply explaining why and how."
     }
-  ],
-  "close_pr": {
-    "close": false,
-    "reason": ""
-  }
+  ]
 }
 ```
+
+(Omit `close_pr` entirely unless you are closing — see Field rules below.)
 
 Field rules:
 - **file_comments**: Array of per-file inline comments. Empty array `[]` if no issues found.
