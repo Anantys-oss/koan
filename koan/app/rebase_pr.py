@@ -833,7 +833,7 @@ def _build_conflict_resolution_prompt(
 MAX_CI_FIX_ATTEMPTS = 2
 
 
-def _check_pr_state(pr_number: str, full_repo: str) -> tuple:
+def check_pr_state(pr_number: str, full_repo: str) -> tuple:
     """Query current PR state and mergeable status.
 
     Returns:
@@ -1037,7 +1037,7 @@ def _run_ci_check_and_fix(
     # CI failed — attempt fixes
     for attempt in range(1, MAX_CI_FIX_ATTEMPTS + 1):
         # Check if PR has been merged or has conflicts before attempting fix
-        pr_state, mergeable = _check_pr_state(pr_number, full_repo)
+        pr_state, mergeable = check_pr_state(pr_number, full_repo)
 
         if pr_state == "MERGED":
             actions_log.append("PR already merged — skipping CI fix")

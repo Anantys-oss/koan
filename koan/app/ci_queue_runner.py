@@ -91,23 +91,17 @@ def drain_one(instance_dir: str) -> Optional[str]:
     # longer accepts commits. Without this, a closed-but-not-merged PR with
     # past failed CI runs would keep re-queueing /ci_check forever.
     pr_state = _check_pr_state_safe(pr_number, full_repo)
-    if pr_state == "CLOSED":
+    if pr_state in ("CLOSED", "MERGED"):
         modify_missions_file(
             missions_path,
             lambda c: remove_ci_item(c, pr_url),
         )
-        _write_outbox(
-            instance_dir,
-            f"🚫 PR #{pr_number} was closed — removed from CI queue: {pr_url}",
-        )
-        return f"PR #{pr_number} closed — removed from ## CI"
-
-    if pr_state == "MERGED":
-        modify_missions_file(
-            missions_path,
-            lambda c: remove_ci_item(c, pr_url),
-        )
-        return f"PR #{pr_number} merged — removed from ## CI"
+        if pr_state == "CLOSED":
+            _write_outbox(
+                instance_dir,
+                f"🚫 PR #{pr_number} was closed — removed from CI queue: {pr_url}",
+            )
+        return f"PR #{pr_number} {pr_state.lower()} — removed from ## CI"
 
     status, _run_id = check_ci_status(branch, full_repo)
 
@@ -176,13 +170,13 @@ def drain_one(instance_dir: str) -> Optional[str]:
 def _check_pr_state_safe(pr_number: str, full_repo: str) -> str:
     """Return the PR's GitHub state, or "UNKNOWN" on any failure.
 
-    Wraps :func:`app.rebase_pr._check_pr_state` so a flaky `gh` call never
+    Wraps :func:`app.rebase_pr.check_pr_state` so a flaky `gh` call never
     breaks the drain loop — callers fall back to the existing CI-status
     flow when the state can't be determined.
     """
     try:
-        from app.rebase_pr import _check_pr_state
-        state, _mergeable = _check_pr_state(pr_number, full_repo)
+        from app.rebase_pr import check_pr_state
+        state, _mergeable = check_pr_state(pr_number, full_repo)
         return state
     except Exception as e:
         print(f"[ci_queue] PR state check error: {e}", file=sys.stderr)
@@ -409,8 +403,8 @@ def run_ci_check_and_fix(pr_url: str, project_path: str) -> Tuple[bool, str]:
         return False, f"CI failed but no failure logs available{run_info}."
 
     # Check PR state before attempting fix
-    from app.rebase_pr import _check_pr_state
-    pr_state, mergeable = _check_pr_state(pr_number, full_repo)
+    from app.rebase_pr import check_pr_state
+    pr_state, mergeable = check_pr_state(pr_number, full_repo)
 
     if pr_state == "MERGED":
         return True, "PR already merged — CI fix skipped."
