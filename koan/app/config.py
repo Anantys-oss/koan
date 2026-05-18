@@ -664,6 +664,52 @@ def get_effort_for_mode(autonomous_mode: str = "") -> str:
     return ""
 
 
+# -- Thinking / extended reasoning configuration ----------------------------
+
+# Mode hierarchy for the ``min_mode`` gate.  Modes to the right are
+# "higher" — thinking is only enabled when the current mode's rank is
+# >= the configured minimum.
+_MODE_RANK = {"wait": 0, "review": 1, "implement": 2, "deep": 3}
+
+
+def get_thinking_config() -> dict:
+    """Return the ``thinking:`` section from config.yaml.
+
+    Expected shape::
+
+        thinking:
+          enabled: true          # master switch (default false)
+          budget_tokens: 10000   # soft thinking-token cap (default 0 = no cap)
+          min_mode: deep         # minimum autonomous mode (default "deep")
+
+    Returns a dict with keys ``enabled`` (bool), ``budget_tokens`` (int),
+    and ``min_mode`` (str).
+    """
+    config = _load_config()
+    section = config.get("thinking") or {}
+    if not isinstance(section, dict):
+        return {"enabled": False, "budget_tokens": 0, "min_mode": "deep"}
+    return {
+        "enabled": bool(section.get("enabled", False)),
+        "budget_tokens": int(section.get("budget_tokens", 0)),
+        "min_mode": str(section.get("min_mode", "deep")).strip().lower(),
+    }
+
+
+def should_enable_thinking(autonomous_mode: str = "") -> bool:
+    """Return True if thinking should be activated for *autonomous_mode*.
+
+    Checks the ``thinking:`` config section: master switch must be on AND
+    the current mode must be at or above ``min_mode``.
+    """
+    cfg = get_thinking_config()
+    if not cfg["enabled"]:
+        return False
+    current_rank = _MODE_RANK.get(autonomous_mode, -1)
+    min_rank = _MODE_RANK.get(cfg["min_mode"], 3)
+    return current_rank >= min_rank
+
+
 def get_stagnation_config(project_name: str = "") -> dict:
     """Get stagnation-monitor configuration.
 

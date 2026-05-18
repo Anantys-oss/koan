@@ -1219,3 +1219,46 @@ class TestEffortSupport:
              patch("app.config.get_skip_permissions", return_value=True):
             cmd = build_full_command(prompt="test")
             assert "--effort" not in cmd
+
+
+class TestThinkingSupport:
+    """Test build_thinking_args support across providers."""
+
+    def test_claude_provider_thinking_enabled(self):
+        p = ClaudeProvider()
+        result = p.build_thinking_args(enabled=True)
+        assert result == ["--effort", "max"]
+
+    def test_claude_provider_thinking_disabled(self):
+        p = ClaudeProvider()
+        assert p.build_thinking_args(enabled=False) == []
+
+    def test_claude_provider_thinking_with_budget(self):
+        """budget_tokens is accepted but does not change the CLI flags."""
+        p = ClaudeProvider()
+        result = p.build_thinking_args(enabled=True, budget_tokens=10000)
+        assert result == ["--effort", "max"]
+
+    def test_copilot_provider_returns_empty(self):
+        p = CopilotProvider()
+        assert p.build_thinking_args(enabled=True) == []
+
+    def test_local_provider_returns_empty(self):
+        p = LocalLLMProvider()
+        assert p.build_thinking_args(enabled=True) == []
+
+    def test_build_full_command_includes_thinking(self):
+        with patch("app.provider.get_provider", return_value=ClaudeProvider()), \
+             patch("app.config.get_skip_permissions", return_value=True):
+            cmd = build_full_command(prompt="test", thinking=True)
+            assert "--effort" in cmd
+            idx = cmd.index("--effort")
+            assert cmd[idx + 1] == "max"
+
+    def test_build_full_command_no_thinking_by_default(self):
+        with patch("app.provider.get_provider", return_value=ClaudeProvider()), \
+             patch("app.config.get_skip_permissions", return_value=True):
+            cmd = build_full_command(prompt="test")
+            # No thinking args should be added
+            effort_count = cmd.count("--effort")
+            assert effort_count == 0

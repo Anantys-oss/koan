@@ -82,6 +82,16 @@ class ClaudeProvider(CLIProvider):
             return ["--effort", effort]
         return []
 
+    def build_thinking_args(
+        self, enabled: bool = False, budget_tokens: int = 0,
+    ) -> List[str]:
+        if not enabled:
+            return []
+        # Claude Code CLI activates extended thinking via --effort max.
+        # budget_tokens is not directly supported by the CLI — the API-level
+        # token budget is managed by the Claude backend, not the CLI flag.
+        return ["--effort", "max"]
+
     def build_mcp_args(self, configs: Optional[List[str]] = None) -> List[str]:
         if not configs:
             return []

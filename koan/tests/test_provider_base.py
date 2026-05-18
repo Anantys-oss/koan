@@ -367,3 +367,40 @@ class TestEffortArgs:
         p = StubProvider()
         cmd = p.build_command(prompt="go")
         assert "--effort" not in cmd
+
+
+# ---------------------------------------------------------------------------
+# build_thinking_args
+# ---------------------------------------------------------------------------
+
+class TestThinkingArgs:
+    """Test build_thinking_args base implementation and build_command wiring."""
+
+    def test_base_returns_empty_when_disabled(self):
+        p = StubProvider()
+        assert p.build_thinking_args(enabled=False) == []
+
+    def test_base_returns_empty_when_enabled(self):
+        """Base class is a no-op even when enabled — concrete providers override."""
+        p = StubProvider()
+        assert p.build_thinking_args(enabled=True, budget_tokens=5000) == []
+
+    def test_build_command_passes_thinking(self):
+        """build_command should call build_thinking_args with thinking params."""
+
+        class ThinkingProvider(StubProvider):
+            def build_thinking_args(self, enabled=False, budget_tokens=0):
+                if enabled:
+                    return ["--think", str(budget_tokens)]
+                return []
+
+        p = ThinkingProvider()
+        cmd = p.build_command(prompt="go", thinking=True, thinking_budget=8000)
+        assert "--think" in cmd
+        assert "8000" in cmd
+
+    def test_build_command_no_thinking_by_default(self):
+        p = StubProvider()
+        cmd = p.build_command(prompt="go")
+        assert "--think" not in cmd
+        assert "--effort" not in cmd
