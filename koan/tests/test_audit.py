@@ -140,6 +140,7 @@ class TestHandleQueueMission:
 from skills.core.audit.audit_runner import (
     AuditFinding,
     DEFAULT_MAX_ISSUES,
+    IssueCreationResult,
     build_audit_prompt,
     parse_findings,
     prioritize_findings,
@@ -427,9 +428,10 @@ class TestSaveAuditReport:
 
 
 class TestCreateIssues:
+    @patch("app.github.list_open_audit_issues", return_value=[])
     @patch("app.github.resolve_target_repo", return_value="upstream/repo")
     @patch("app.github.issue_create")
-    def test_creates_issues_for_findings(self, mock_create, mock_repo):
+    def test_creates_issues_for_findings(self, mock_create, mock_repo, mock_list):
         mock_create.side_effect = [
             "https://github.com/o/r/issues/1\n",
             "https://github.com/o/r/issues/2\n",
@@ -438,16 +440,19 @@ class TestCreateIssues:
             AuditFinding(title="fix A", severity="high", location="a.py:1", problem="p1"),
             AuditFinding(title="fix B", severity="low", location="b.py:2", problem="p2"),
         ]
-        urls = create_issues(findings, "/path/proj")
+        result = create_issues(findings, "/path/proj")
 
-        assert len(urls) == 2
+        assert len(result.urls) == 2
+        assert result.created == 2
+        assert result.reused == 0
         assert mock_create.call_count == 2
         # Check repo targeting
         assert mock_create.call_args_list[0][1]["repo"] == "upstream/repo"
 
+    @patch("app.github.list_open_audit_issues", return_value=[])
     @patch("app.github.resolve_target_repo", return_value=None)
     @patch("app.github.issue_create")
-    def test_no_upstream_uses_local(self, mock_create, mock_repo):
+    def test_no_upstream_uses_local(self, mock_create, mock_repo, mock_list):
         mock_create.return_value = "https://github.com/o/r/issues/1\n"
         findings = [
             AuditFinding(title="fix A", severity="high", location="a.py:1", problem="p"),
@@ -455,9 +460,10 @@ class TestCreateIssues:
         create_issues(findings, "/path/proj")
         assert mock_create.call_args[1]["repo"] is None
 
+    @patch("app.github.list_open_audit_issues", return_value=[])
     @patch("app.github.resolve_target_repo", return_value="upstream/repo")
     @patch("app.github.issue_create")
-    def test_notify_fn_receives_issue_url(self, mock_create, mock_repo):
+    def test_notify_fn_receives_issue_url(self, mock_create, mock_repo, mock_list):
         mock_create.side_effect = [
             "https://github.com/o/r/issues/1\n",
             "https://github.com/o/r/issues/2\n",
@@ -469,24 +475,176 @@ class TestCreateIssues:
         notify = MagicMock()
         create_issues(findings, "/path/proj", notify_fn=notify)
 
-        # Should get 4 calls: "Creating issue" + URL for each finding
-        assert notify.call_count == 4
-        # Odd calls are "Creating issue ...", even calls are the URL
+        # URLs should appear in the notify stream for each created issue
         url_calls = [c.args[0] for c in notify.call_args_list if "github.com" in c.args[0]]
         assert len(url_calls) == 2
         assert "https://github.com/o/r/issues/1" in url_calls[0]
         assert "https://github.com/o/r/issues/2" in url_calls[1]
 
+    @patch("app.github.list_open_audit_issues", return_value=[])
     @patch("app.github.resolve_target_repo", return_value=None)
     @patch("app.github.issue_create", side_effect=RuntimeError("API error"))
-    def test_continues_on_failure(self, mock_create, mock_repo):
+    def test_continues_on_failure(self, mock_create, mock_repo, mock_list):
         findings = [
             AuditFinding(title="fix A", severity="high", location="a.py:1", problem="p"),
             AuditFinding(title="fix B", severity="low", location="b.py:2", problem="q"),
         ]
-        urls = create_issues(findings, "/path/proj")
-        assert len(urls) == 0
+        result = create_issues(findings, "/path/proj")
+        assert len(result.urls) == 0
+        assert result.created == 0
+        assert result.reused == 0
         assert mock_create.call_count == 2
+
+
+class TestCreateIssuesDedup:
+    """A second audit run must not duplicate issues already open on the repo."""
+
+    @patch("app.github.list_open_audit_issues")
+    @patch("app.github.resolve_target_repo", return_value="upstream/repo")
+    @patch("app.github.issue_create")
+    def test_skips_finding_when_open_issue_with_same_title_exists(
+        self, mock_create, mock_repo, mock_list,
+    ):
+        mock_list.return_value = [
+            {
+                "number": 42,
+                "title": "fix A",
+                "url": "https://github.com/o/r/issues/42",
+                "body": "... Created by Kōan from audit session",
+            },
+        ]
+        findings = [
+            AuditFinding(title="fix A", severity="high", location="a.py:1", problem="p"),
+        ]
+
+        result = create_issues(findings, "/path/proj")
+
+        # No new issue should be created — the existing one is reused.
+        assert mock_create.call_count == 0
+        assert result.created == 0
+        assert result.reused == 1
+        assert result.urls == ["https://github.com/o/r/issues/42"]
+
+    @patch("app.github.list_open_audit_issues")
+    @patch("app.github.resolve_target_repo", return_value="upstream/repo")
+    @patch("app.github.issue_create")
+    def test_dedup_matches_security_prefixed_titles(
+        self, mock_create, mock_repo, mock_list,
+    ):
+        # Earlier run created the issue under the public-fallback path
+        # which prefixes the title with "Security: ". A later
+        # plain-audit rerun must still recognise it as the same finding.
+        mock_list.return_value = [
+            {
+                "number": 7,
+                "title": "Security: fix A",
+                "url": "https://github.com/o/r/issues/7",
+                "body": "... Created by Kōan from audit session",
+            },
+        ]
+        findings = [
+            AuditFinding(title="fix A", severity="high", location="a.py:1", problem="p"),
+        ]
+
+        result = create_issues(findings, "/path/proj")
+
+        assert mock_create.call_count == 0
+        assert result.reused == 1
+        assert result.urls == ["https://github.com/o/r/issues/7"]
+
+    @patch("app.github.list_open_audit_issues")
+    @patch("app.github.resolve_target_repo", return_value="upstream/repo")
+    @patch("app.github.issue_create")
+    def test_dedup_is_case_and_whitespace_insensitive(
+        self, mock_create, mock_repo, mock_list,
+    ):
+        mock_list.return_value = [
+            {
+                "number": 9,
+                "title": "  Fix A  ",
+                "url": "https://github.com/o/r/issues/9",
+                "body": "... Created by Kōan from audit session",
+            },
+        ]
+        findings = [
+            AuditFinding(title="fix a", severity="high", location="a.py:1", problem="p"),
+        ]
+
+        result = create_issues(findings, "/path/proj")
+
+        assert mock_create.call_count == 0
+        assert result.reused == 1
+
+    @patch("app.github.list_open_audit_issues")
+    @patch("app.github.resolve_target_repo", return_value="upstream/repo")
+    @patch("app.github.issue_create")
+    def test_creates_only_genuinely_new_findings(
+        self, mock_create, mock_repo, mock_list,
+    ):
+        mock_list.return_value = [
+            {
+                "number": 1,
+                "title": "fix A",
+                "url": "https://github.com/o/r/issues/1",
+                "body": "... Created by Kōan from audit session",
+            },
+        ]
+        mock_create.return_value = "https://github.com/o/r/issues/2\n"
+        findings = [
+            AuditFinding(title="fix A", severity="high", location="a.py:1", problem="p"),
+            AuditFinding(title="fix B", severity="low", location="b.py:2", problem="q"),
+        ]
+
+        result = create_issues(findings, "/path/proj")
+
+        assert mock_create.call_count == 1
+        # New finding goes through issue_create with its own title.
+        assert mock_create.call_args[1]["title"] == "fix B"
+        assert result.created == 1
+        assert result.reused == 1
+        assert result.urls == [
+            "https://github.com/o/r/issues/1",
+            "https://github.com/o/r/issues/2",
+        ]
+
+    @patch("app.github.list_open_audit_issues", return_value=[])
+    @patch("app.github.resolve_target_repo", return_value="upstream/repo")
+    @patch("app.github.issue_create")
+    def test_no_existing_issues_creates_all(
+        self, mock_create, mock_repo, mock_list,
+    ):
+        mock_create.side_effect = [
+            "https://github.com/o/r/issues/10\n",
+            "https://github.com/o/r/issues/11\n",
+        ]
+        findings = [
+            AuditFinding(title="fix A", severity="high", location="a.py:1", problem="p"),
+            AuditFinding(title="fix B", severity="low", location="b.py:2", problem="q"),
+        ]
+
+        result = create_issues(findings, "/path/proj")
+
+        assert result.created == 2
+        assert result.reused == 0
+        assert mock_create.call_count == 2
+
+    @patch("app.github.list_open_audit_issues", return_value=[])
+    @patch("app.github.resolve_target_repo", return_value="upstream/repo")
+    @patch("app.github.issue_create")
+    def test_gh_listing_failure_falls_back_to_creation(
+        self, mock_create, mock_repo, mock_list,
+    ):
+        # When `gh issue list` itself fails, list_open_audit_issues
+        # returns []; we must not block on dedup — create as before.
+        mock_create.return_value = "https://github.com/o/r/issues/1\n"
+        findings = [
+            AuditFinding(title="fix A", severity="high", location="a.py:1", problem="p"),
+        ]
+
+        result = create_issues(findings, "/path/proj")
+
+        assert result.created == 1
+        assert result.reused == 0
 
 
 class TestRunAudit:
@@ -494,11 +652,15 @@ class TestRunAudit:
     @patch("skills.core.audit.audit_runner._run_claude_audit", return_value=SAMPLE_OUTPUT)
     @patch("skills.core.audit.audit_runner.create_issues")
     def test_full_pipeline_success(self, mock_issues, mock_scan, mock_prompt, tmp_path):
-        mock_issues.return_value = [
-            "https://github.com/o/r/issues/1",
-            "https://github.com/o/r/issues/2",
-            "https://github.com/o/r/issues/3",
-        ]
+        mock_issues.return_value = IssueCreationResult(
+            urls=[
+                "https://github.com/o/r/issues/1",
+                "https://github.com/o/r/issues/2",
+                "https://github.com/o/r/issues/3",
+            ],
+            created=3,
+            reused=0,
+        )
         instance_dir = tmp_path / "instance"
         instance_dir.mkdir()
         notify = MagicMock()
@@ -518,8 +680,37 @@ class TestRunAudit:
     @patch("skills.core.audit.audit_runner.build_audit_prompt", return_value="prompt")
     @patch("skills.core.audit.audit_runner._run_claude_audit", return_value=SAMPLE_OUTPUT)
     @patch("skills.core.audit.audit_runner.create_issues")
+    def test_dedup_reflected_in_summary(self, mock_issues, mock_scan, mock_prompt, tmp_path):
+        # Two existing matches + one new finding: summary should distinguish
+        # newly created issues from those already tracked.
+        mock_issues.return_value = IssueCreationResult(
+            urls=[
+                "https://github.com/o/r/issues/1",
+                "https://github.com/o/r/issues/2",
+                "https://github.com/o/r/issues/3",
+            ],
+            created=1,
+            reused=2,
+        )
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+
+        success, summary = run_audit(
+            project_path="/path/proj",
+            project_name="proj",
+            instance_dir=str(instance_dir),
+            notify_fn=MagicMock(),
+        )
+
+        assert success
+        assert "1 new" in summary
+        assert "2 already tracked" in summary
+
+    @patch("skills.core.audit.audit_runner.build_audit_prompt", return_value="prompt")
+    @patch("skills.core.audit.audit_runner._run_claude_audit", return_value=SAMPLE_OUTPUT)
+    @patch("skills.core.audit.audit_runner.create_issues")
     def test_passes_extra_context(self, mock_issues, mock_scan, mock_prompt, tmp_path):
-        mock_issues.return_value = []
+        mock_issues.return_value = IssueCreationResult(urls=[], created=0, reused=0)
         instance_dir = tmp_path / "instance"
         instance_dir.mkdir()
 
@@ -587,7 +778,11 @@ class TestRunAudit:
     @patch("skills.core.audit.audit_runner._run_claude_audit", return_value=SAMPLE_OUTPUT)
     @patch("skills.core.audit.audit_runner.create_issues")
     def test_max_issues_truncates_findings(self, mock_issues, mock_scan, mock_prompt, tmp_path):
-        mock_issues.return_value = ["https://github.com/o/r/issues/1"]
+        mock_issues.return_value = IssueCreationResult(
+            urls=["https://github.com/o/r/issues/1"],
+            created=1,
+            reused=0,
+        )
         instance_dir = tmp_path / "instance"
         instance_dir.mkdir()
         notify = MagicMock()
@@ -612,7 +807,7 @@ class TestRunAudit:
     @patch("skills.core.audit.audit_runner._run_claude_audit", return_value=SAMPLE_OUTPUT)
     @patch("skills.core.audit.audit_runner.create_issues")
     def test_max_issues_passed_to_prompt(self, mock_issues, mock_scan, mock_prompt, tmp_path):
-        mock_issues.return_value = []
+        mock_issues.return_value = IssueCreationResult(urls=[], created=0, reused=0)
         instance_dir = tmp_path / "instance"
         instance_dir.mkdir()
 
