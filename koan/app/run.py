@@ -1682,6 +1682,14 @@ def _run_iteration(
             # avoid spamming the human after every /pause+/resume or auto-resume.
             _notify_raw(instance, "🎯 Notifications clear. Picking first mission from queue...")
 
+    # Startup update hint: surface upstream commits to the user (48 h throttled)
+    if is_boot_iteration:
+        try:
+            from app.update_hint import maybe_send_update_hint
+            maybe_send_update_hint(instance, koan_root)
+        except Exception as e:
+            log("error", f"Update hint check failed: {e}")
+
     # Plan iteration (delegated to iteration_manager)
     log("koan", "Planning iteration...")
     last_project = _read_current_project(koan_root)

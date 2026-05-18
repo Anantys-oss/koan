@@ -1330,6 +1330,10 @@ def interruptible_sleep(
         from app.feature_tips import maybe_send_feature_tip
         maybe_send_feature_tip(instance_dir)
 
+        # Update hint: surface upstream Koan commits (48 h throttled)
+        from app.update_hint import maybe_send_update_hint
+        maybe_send_update_hint(instance_dir, koan_root)
+
         # Run periodic heartbeat checks (throttled to once per 30 min)
         from app.heartbeat import run_stale_mission_check, run_disk_space_check
         run_stale_mission_check(instance_dir)
