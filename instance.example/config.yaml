@@ -138,6 +138,16 @@ skill_timeout: 7200
 #   implement: medium
 #   deep: high
 
+# Extended thinking / reasoning controls — activates the provider's
+# extended-thinking mode (e.g. Claude's --effort max) for missions at
+# or above the configured minimum autonomous mode.
+# Disabled by default. When enabled, thinking is only activated in DEEP
+# mode unless you lower min_mode.
+# thinking:
+#   enabled: true
+#   budget_tokens: 10000   # soft cap (provider-dependent; 0 = no cap)
+#   min_mode: deep         # one of: wait, review, implement, deep
+
 # Post-mission pipeline timeout — maximum seconds for the steps that run after
 # a mission completes: verification, reflection, PR review learning, auto-merge.
 # Increase if post-mission steps are being cut short; decrease to keep the loop snappy.

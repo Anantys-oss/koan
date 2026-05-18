@@ -117,6 +117,8 @@ class CodexProvider(CLIProvider):
         system_prompt: str = "",
         system_prompt_file: str = "",
         effort: str = "",
+        thinking: bool = False,
+        thinking_budget: int = 0,
     ) -> List[str]:
         """Build a complete Codex CLI command.
 

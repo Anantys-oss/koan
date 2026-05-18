@@ -276,6 +276,18 @@ def build_mission_command(
     # Get effort level for the current autonomous mode
     effort = get_effort_for_mode(autonomous_mode)
 
+    # Extended thinking — only activated when config says so AND the
+    # current autonomous mode is at or above the configured min_mode.
+    thinking_enabled = False
+    thinking_budget = 0
+    try:
+        from app.config import should_enable_thinking, get_thinking_config
+        thinking_enabled = should_enable_thinking(autonomous_mode)
+        if thinking_enabled:
+            thinking_budget = get_thinking_config()["budget_tokens"]
+    except ImportError:
+        pass
+
     # Build provider-specific command (file-mode system prompt when supported)
     cmd, cleanup_paths = build_full_command_managed(
         prompt=prompt,
@@ -288,6 +300,8 @@ def build_mission_command(
         plugin_dirs=plugin_dirs,
         system_prompt=system_prompt,
         effort=effort,
+        thinking=thinking_enabled,
+        thinking_budget=thinking_budget,
     )
 
     # Append any extra flags from config

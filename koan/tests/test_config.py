@@ -907,3 +907,67 @@ class TestGetEffortForMode:
         with _mock_config({"effort": {"deep": "turbo"}}):
             # Invalid value in dict falls back to default
             assert get_effort_for_mode("deep") == "high"
+
+
+# --- get_thinking_config / should_enable_thinking ---
+
+
+class TestThinkingConfig:
+    def test_defaults_no_config(self):
+        from app.config import get_thinking_config
+        with _mock_config({}):
+            cfg = get_thinking_config()
+            assert cfg["enabled"] is False
+            assert cfg["budget_tokens"] == 0
+            assert cfg["min_mode"] == "deep"
+
+    def test_enabled_with_defaults(self):
+        from app.config import get_thinking_config
+        with _mock_config({"thinking": {"enabled": True}}):
+            cfg = get_thinking_config()
+            assert cfg["enabled"] is True
+            assert cfg["budget_tokens"] == 0
+            assert cfg["min_mode"] == "deep"
+
+    def test_full_config(self):
+        from app.config import get_thinking_config
+        with _mock_config({"thinking": {"enabled": True, "budget_tokens": 10000, "min_mode": "implement"}}):
+            cfg = get_thinking_config()
+            assert cfg["enabled"] is True
+            assert cfg["budget_tokens"] == 10000
+            assert cfg["min_mode"] == "implement"
+
+    def test_non_dict_thinking_returns_defaults(self):
+        from app.config import get_thinking_config
+        with _mock_config({"thinking": "yes"}):
+            cfg = get_thinking_config()
+            assert cfg["enabled"] is False
+
+    def test_should_enable_thinking_disabled(self):
+        from app.config import should_enable_thinking
+        with _mock_config({"thinking": {"enabled": False}}):
+            assert should_enable_thinking("deep") is False
+
+    def test_should_enable_thinking_deep_mode(self):
+        from app.config import should_enable_thinking
+        with _mock_config({"thinking": {"enabled": True, "min_mode": "deep"}}):
+            assert should_enable_thinking("deep") is True
+            assert should_enable_thinking("implement") is False
+            assert should_enable_thinking("review") is False
+
+    def test_should_enable_thinking_implement_mode(self):
+        from app.config import should_enable_thinking
+        with _mock_config({"thinking": {"enabled": True, "min_mode": "implement"}}):
+            assert should_enable_thinking("deep") is True
+            assert should_enable_thinking("implement") is True
+            assert should_enable_thinking("review") is False
+
+    def test_should_enable_thinking_no_config(self):
+        from app.config import should_enable_thinking
+        with _mock_config({}):
+            assert should_enable_thinking("deep") is False
+
+    def test_should_enable_thinking_unknown_mode(self):
+        from app.config import should_enable_thinking
+        with _mock_config({"thinking": {"enabled": True, "min_mode": "deep"}}):
+            assert should_enable_thinking("unknown") is False

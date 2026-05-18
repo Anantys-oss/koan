@@ -150,6 +150,20 @@ class CLIProvider:
         """
         return False
 
+    def build_thinking_args(
+        self, enabled: bool = False, budget_tokens: int = 0,
+    ) -> List[str]:
+        """Build args for extended thinking / reasoning controls.
+
+        When *enabled* is True the provider should emit whatever flags
+        activate its extended-thinking mode.  *budget_tokens* is an
+        optional soft cap on thinking tokens (ignored by providers that
+        do not support token budgets).
+
+        Base implementation returns empty (no-op).
+        """
+        return []
+
     def build_permission_args(self, skip_permissions: bool = False) -> List[str]:
         """Build args for permission skipping.
 
@@ -172,6 +186,8 @@ class CLIProvider:
         system_prompt: str = "",
         system_prompt_file: str = "",
         effort: str = "",
+        thinking: bool = False,
+        thinking_budget: int = 0,
     ) -> List[str]:
         """Build a complete CLI command from generic parameters.
 
@@ -189,6 +205,9 @@ class CLIProvider:
                 back to the in-argv path.
             effort: Reasoning effort level (e.g. "low", "medium", "high", "max").
                 Empty string means no override.
+            thinking: Enable extended thinking / reasoning mode.
+            thinking_budget: Optional soft cap on thinking tokens (provider-
+                dependent; ignored when unsupported).
 
         Returns a list of strings suitable for subprocess.run().
         """
@@ -213,6 +232,7 @@ class CLIProvider:
         cmd.extend(self.build_mcp_args(mcp_configs))
         cmd.extend(self.build_plugin_args(plugin_dirs))
         cmd.extend(self.build_effort_args(effort))
+        cmd.extend(self.build_thinking_args(thinking, thinking_budget))
         return cmd
 
     def check_quota_available(self, project_path: str, timeout: int = 15) -> Tuple[bool, str]:
