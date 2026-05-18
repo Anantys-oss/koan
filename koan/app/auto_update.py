@@ -19,7 +19,7 @@ from typing import Optional
 
 from app.run_log import log
 from app.update_manager import (
-    _find_upstream_remote,
+    find_upstream_remote,
     _run_git,
 )
 
@@ -70,7 +70,7 @@ def check_for_updates(koan_root: str) -> Optional[int]:
     _last_check_time = now
 
     koan_path = Path(koan_root)
-    remote = _find_upstream_remote(koan_path)
+    remote = find_upstream_remote(koan_path)
     if remote is None:
         log("update", "No upstream remote found, skipping update check")
         return None

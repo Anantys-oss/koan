@@ -18,7 +18,7 @@ from typing import Optional
 from app.auto_update import check_for_updates
 from app.notify import send_telegram
 from app.run_log import log
-from app.update_manager import _find_upstream_remote
+from app.update_manager import find_upstream_remote
 from app.utils import atomic_write
 
 # Cooldown: one notification every 48 hours.
@@ -67,6 +67,7 @@ def _get_missing_commits(koan_root: Path, remote: str) -> Optional[list]:
     """
     try:
         result = subprocess.run(
+            # Note: hardcodes 'main' — matches check_for_updates() assumption
             ["git", "log", f"HEAD..{remote}/main", "--oneline", "--no-decorate"],
             capture_output=True,
             text=True,
@@ -75,7 +76,7 @@ def _get_missing_commits(koan_root: Path, remote: str) -> Optional[list]:
         )
         if result.returncode != 0:
             return None
-        lines = [l.strip() for l in result.stdout.strip().splitlines() if l.strip()]
+        lines = [line.strip() for line in result.stdout.strip().splitlines() if line.strip()]
         return lines
     except (subprocess.TimeoutExpired, OSError):
         return None
@@ -128,7 +129,7 @@ def maybe_send_update_hint(instance_dir: str, koan_root: str) -> bool:
 
     # 3. Get commit subjects for the message body
     try:
-        remote = _find_upstream_remote(Path(koan_root))
+        remote = find_upstream_remote(Path(koan_root))
     except Exception as e:
         log("update-hint", f"Failed to find upstream remote: {e}")
         remote = None

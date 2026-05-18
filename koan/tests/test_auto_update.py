@@ -93,13 +93,13 @@ class TestCheckForUpdates:
     """Tests for the lightweight update check."""
 
     def test_no_remote_returns_none(self):
-        with patch("app.auto_update._find_upstream_remote", return_value=None):
+        with patch("app.auto_update.find_upstream_remote", return_value=None):
             result = check_for_updates("/fake/root")
         assert result is None
 
     def test_fetch_failure_returns_none(self):
         mock_result = MagicMock(returncode=1, stderr="network error")
-        with patch("app.auto_update._find_upstream_remote", return_value="upstream"), \
+        with patch("app.auto_update.find_upstream_remote", return_value="upstream"), \
              patch("app.auto_update._run_git", return_value=mock_result):
             result = check_for_updates("/fake/root")
         assert result is None
@@ -112,7 +112,7 @@ class TestCheckForUpdates:
                 return MagicMock(returncode=0, stdout="3\n")
             return MagicMock(returncode=1, stderr="")
 
-        with patch("app.auto_update._find_upstream_remote", return_value="upstream"), \
+        with patch("app.auto_update.find_upstream_remote", return_value="upstream"), \
              patch("app.auto_update._run_git", side_effect=mock_git):
             result = check_for_updates("/fake/root")
         assert result == 3
@@ -125,7 +125,7 @@ class TestCheckForUpdates:
                 return MagicMock(returncode=0, stdout="0\n")
             return MagicMock(returncode=1, stderr="")
 
-        with patch("app.auto_update._find_upstream_remote", return_value="upstream"), \
+        with patch("app.auto_update.find_upstream_remote", return_value="upstream"), \
              patch("app.auto_update._run_git", side_effect=mock_git):
             result = check_for_updates("/fake/root")
         assert result == 0
@@ -143,7 +143,7 @@ class TestCheckForUpdates:
                 return MagicMock(returncode=0, stdout="5\n")
             return MagicMock(returncode=1, stderr="")
 
-        with patch("app.auto_update._find_upstream_remote", return_value="upstream"), \
+        with patch("app.auto_update.find_upstream_remote", return_value="upstream"), \
              patch("app.auto_update._run_git", side_effect=mock_git):
             first = check_for_updates("/fake/root")
             second = check_for_updates("/fake/root")
@@ -158,7 +158,7 @@ class TestCheckForUpdates:
                 return MagicMock(returncode=0)
             return MagicMock(returncode=1, stderr="bad ref")
 
-        with patch("app.auto_update._find_upstream_remote", return_value="upstream"), \
+        with patch("app.auto_update.find_upstream_remote", return_value="upstream"), \
              patch("app.auto_update._run_git", side_effect=mock_git):
             result = check_for_updates("/fake/root")
         assert result is None
@@ -169,7 +169,7 @@ class TestCheckForUpdates:
                 return MagicMock(returncode=0)
             return MagicMock(returncode=0, stdout="not-a-number\n")
 
-        with patch("app.auto_update._find_upstream_remote", return_value="upstream"), \
+        with patch("app.auto_update.find_upstream_remote", return_value="upstream"), \
              patch("app.auto_update._run_git", side_effect=mock_git):
             result = check_for_updates("/fake/root")
         assert result is None

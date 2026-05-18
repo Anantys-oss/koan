@@ -94,7 +94,7 @@ class TestMaybeSendUpdateHint:
 
     @patch("app.update_hint.send_telegram", return_value=True)
     @patch("app.update_hint._get_missing_commits", return_value=["abc1 fix: thing"])
-    @patch("app.update_hint._find_upstream_remote", return_value="origin")
+    @patch("app.update_hint.find_upstream_remote", return_value="origin")
     @patch("app.update_hint.check_for_updates", return_value=3)
     def test_sends_when_behind_and_no_cooldown(
         self, mock_check, mock_remote, mock_commits, mock_send,
@@ -131,7 +131,7 @@ class TestMaybeSendUpdateHint:
         result = maybe_send_update_hint(instance_dir, koan_root)
         assert result is False
 
-    @patch("app.update_hint._find_upstream_remote", return_value=None)
+    @patch("app.update_hint.find_upstream_remote", return_value=None)
     @patch("app.update_hint.check_for_updates", return_value=5)
     def test_skips_when_no_remote(self, mock_check, mock_remote, instance_dir, koan_root):
         from app.update_hint import maybe_send_update_hint
@@ -139,7 +139,7 @@ class TestMaybeSendUpdateHint:
         assert result is False
 
     @patch("app.update_hint._get_missing_commits", return_value=[])
-    @patch("app.update_hint._find_upstream_remote", return_value="upstream")
+    @patch("app.update_hint.find_upstream_remote", return_value="upstream")
     @patch("app.update_hint.check_for_updates", return_value=2)
     def test_skips_when_no_commit_subjects(
         self, mock_check, mock_remote, mock_commits,
@@ -151,7 +151,7 @@ class TestMaybeSendUpdateHint:
 
     @patch("app.update_hint.send_telegram", side_effect=RuntimeError("network"))
     @patch("app.update_hint._get_missing_commits", return_value=["abc fix"])
-    @patch("app.update_hint._find_upstream_remote", return_value="origin")
+    @patch("app.update_hint.find_upstream_remote", return_value="origin")
     @patch("app.update_hint.check_for_updates", return_value=1)
     def test_returns_false_on_send_failure(
         self, mock_check, mock_remote, mock_commits, mock_send,
