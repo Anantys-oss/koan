@@ -1275,3 +1275,379 @@ class TestCodexProvider:
                    side_effect=OSError("no binary")):
             ok, _ = CodexProvider().check_quota_available("/tmp")
         assert ok is True
+
+
+# ---------------------------------------------------------------------------
+# _format_cli_error
+# ---------------------------------------------------------------------------
+
+
+class TestFormatCliError:
+    def test_stderr_present(self):
+        from app.provider import _format_cli_error
+        msg = _format_cli_error(1, "", "something broke")
+        assert "exit=1" in msg
+        assert "stderr=something broke" in msg
+        assert "stdout=" not in msg
+
+    def test_stdout_fallback_when_stderr_empty(self):
+        from app.provider import _format_cli_error
+        msg = _format_cli_error(2, "token expired", "")
+        assert "exit=2" in msg
+        assert "stdout=token expired" in msg
+        assert "stderr=" not in msg
+
+    def test_both_empty(self):
+        from app.provider import _format_cli_error
+        msg = _format_cli_error(42, "", "")
+        assert "exit=42" in msg
+        assert "stdout=" not in msg
+        assert "stderr=" not in msg
+
+    def test_stderr_truncated_at_300(self):
+        from app.provider import _format_cli_error
+        long_err = "x" * 500
+        msg = _format_cli_error(1, "", long_err)
+        assert f"stderr={'x' * 300}" in msg
+
+    def test_stdout_truncated_at_300(self):
+        from app.provider import _format_cli_error
+        long_out = "y" * 500
+        msg = _format_cli_error(1, long_out, "")
+        assert f"stdout={'y' * 300}" in msg
+
+
+# ---------------------------------------------------------------------------
+# _write_system_prompt_file / cleanup_managed_paths
+# ---------------------------------------------------------------------------
+
+
+class TestWriteSystemPromptFile:
+    def test_creates_readable_file(self, tmp_path):
+        from app.provider import _write_system_prompt_file
+        path = _write_system_prompt_file("test content")
+        try:
+            assert os.path.isfile(path)
+            with open(path) as f:
+                assert f.read() == "test content"
+        finally:
+            os.unlink(path)
+
+    def test_file_permissions_are_restrictive(self, tmp_path):
+        from app.provider import _write_system_prompt_file
+        path = _write_system_prompt_file("secret prompt")
+        try:
+            import stat
+            mode = os.stat(path).st_mode
+            # Owner read+write should be set; group/other should not have write
+            assert mode & stat.S_IRUSR
+            assert mode & stat.S_IWUSR
+            assert not (mode & stat.S_IWOTH)
+        finally:
+            os.unlink(path)
+
+    def test_file_prefix_and_suffix(self):
+        from app.provider import _write_system_prompt_file
+        path = _write_system_prompt_file("x")
+        try:
+            basename = os.path.basename(path)
+            assert basename.startswith("koan-sysprompt-")
+            assert basename.endswith(".txt")
+        finally:
+            os.unlink(path)
+
+
+class TestCleanupManagedPaths:
+    def test_removes_existing_files(self, tmp_path):
+        from app.provider import cleanup_managed_paths
+        f1 = tmp_path / "a.txt"
+        f2 = tmp_path / "b.txt"
+        f1.write_text("a")
+        f2.write_text("b")
+        cleanup_managed_paths([str(f1), str(f2)])
+        assert not f1.exists()
+        assert not f2.exists()
+
+    def test_ignores_missing_files(self, tmp_path):
+        from app.provider import cleanup_managed_paths
+        # Should not raise
+        cleanup_managed_paths([str(tmp_path / "nonexistent.txt")])
+
+    def test_empty_list_is_noop(self):
+        from app.provider import cleanup_managed_paths
+        cleanup_managed_paths([])
+
+
+# ---------------------------------------------------------------------------
+# build_full_command_managed
+# ---------------------------------------------------------------------------
+
+
+class TestBuildFullCommandManaged:
+    def setup_method(self):
+        from app.provider import reset_provider
+        reset_provider()
+
+    def teardown_method(self):
+        from app.provider import reset_provider
+        reset_provider()
+
+    def test_without_system_prompt_no_temp_file(self):
+        from app.provider import build_full_command_managed
+        fake_prov = MagicMock()
+        fake_prov.supports_system_prompt_file.return_value = True
+        fake_prov.build_command.return_value = ["fake"]
+        with patch("app.provider.get_provider", return_value=fake_prov), \
+             patch("app.config.get_skip_permissions", return_value=False):
+            cmd, cleanup_paths = build_full_command_managed(prompt="hi")
+        assert cleanup_paths == []
+        assert cmd == ["fake"]
+
+    def test_with_system_prompt_creates_temp_file(self):
+        from app.provider import build_full_command_managed, cleanup_managed_paths
+        fake_prov = MagicMock()
+        fake_prov.supports_system_prompt_file.return_value = True
+        captured_kwargs = {}
+
+        def capture_build(**kwargs):
+            captured_kwargs.update(kwargs)
+            return ["fake"]
+
+        fake_prov.build_command.side_effect = capture_build
+        with patch("app.provider.get_provider", return_value=fake_prov), \
+             patch("app.config.get_skip_permissions", return_value=False):
+            cmd, cleanup_paths = build_full_command_managed(
+                prompt="hi", system_prompt="Be helpful.",
+            )
+        try:
+            assert len(cleanup_paths) == 1
+            path = cleanup_paths[0]
+            assert os.path.isfile(path)
+            with open(path) as f:
+                assert f.read() == "Be helpful."
+            # system_prompt should be cleared, system_prompt_file should be set
+            assert captured_kwargs["system_prompt"] == ""
+            assert captured_kwargs["system_prompt_file"] == path
+        finally:
+            cleanup_managed_paths(cleanup_paths)
+
+    def test_provider_without_file_support_passes_inline(self):
+        from app.provider import build_full_command_managed
+        fake_prov = MagicMock()
+        fake_prov.supports_system_prompt_file.return_value = False
+        captured_kwargs = {}
+
+        def capture_build(**kwargs):
+            captured_kwargs.update(kwargs)
+            return ["fake"]
+
+        fake_prov.build_command.side_effect = capture_build
+        with patch("app.provider.get_provider", return_value=fake_prov), \
+             patch("app.config.get_skip_permissions", return_value=False):
+            cmd, cleanup_paths = build_full_command_managed(
+                prompt="hi", system_prompt="Be helpful.",
+            )
+        assert cleanup_paths == []
+        assert captured_kwargs["system_prompt"] == "Be helpful."
+
+
+# ---------------------------------------------------------------------------
+# _extract_assistant_text_chunks
+# ---------------------------------------------------------------------------
+
+
+class TestExtractAssistantTextChunks:
+    def test_extracts_text_blocks(self):
+        from app.provider import _extract_assistant_text_chunks
+        event = {
+            "type": "assistant",
+            "message": {"content": [
+                {"type": "text", "text": "hello"},
+                {"type": "tool_use", "name": "Bash"},
+                {"type": "text", "text": "world"},
+            ]},
+        }
+        assert _extract_assistant_text_chunks(event) == ["hello", "world"]
+
+    def test_ignores_non_assistant_events(self):
+        from app.provider import _extract_assistant_text_chunks
+        assert _extract_assistant_text_chunks({"type": "user"}) == []
+        assert _extract_assistant_text_chunks({"type": "result"}) == []
+
+    def test_skips_empty_text(self):
+        from app.provider import _extract_assistant_text_chunks
+        event = {
+            "type": "assistant",
+            "message": {"content": [
+                {"type": "text", "text": ""},
+                {"type": "text", "text": "real"},
+            ]},
+        }
+        assert _extract_assistant_text_chunks(event) == ["real"]
+
+    def test_handles_missing_message(self):
+        from app.provider import _extract_assistant_text_chunks
+        assert _extract_assistant_text_chunks({"type": "assistant"}) == []
+
+    def test_handles_non_dict_blocks(self):
+        from app.provider import _extract_assistant_text_chunks
+        event = {
+            "type": "assistant",
+            "message": {"content": ["not a dict", {"type": "text", "text": "ok"}]},
+        }
+        assert _extract_assistant_text_chunks(event) == ["ok"]
+
+
+# ---------------------------------------------------------------------------
+# _extract_result_text
+# ---------------------------------------------------------------------------
+
+
+class TestExtractResultText:
+    def test_extracts_result_string(self):
+        from app.provider import _extract_result_text
+        event = {"type": "result", "result": "the answer"}
+        assert _extract_result_text(event) == "the answer"
+
+    def test_returns_none_for_non_result_event(self):
+        from app.provider import _extract_result_text
+        assert _extract_result_text({"type": "assistant"}) is None
+
+    def test_returns_none_for_empty_result(self):
+        from app.provider import _extract_result_text
+        assert _extract_result_text({"type": "result", "result": ""}) is None
+
+    def test_returns_none_for_missing_result_field(self):
+        from app.provider import _extract_result_text
+        assert _extract_result_text({"type": "result"}) is None
+
+    def test_returns_none_for_non_string_result(self):
+        from app.provider import _extract_result_text
+        assert _extract_result_text({"type": "result", "result": 42}) is None
+
+
+# ---------------------------------------------------------------------------
+# _is_stream_json_max_turns
+# ---------------------------------------------------------------------------
+
+
+class TestIsStreamJsonMaxTurns:
+    def test_detects_error_max_turns(self):
+        from app.provider import _is_stream_json_max_turns
+        event = {"type": "result", "subtype": "error_max_turns"}
+        assert _is_stream_json_max_turns(event) is True
+
+    def test_detects_max_turns(self):
+        from app.provider import _is_stream_json_max_turns
+        event = {"type": "result", "subtype": "max_turns"}
+        assert _is_stream_json_max_turns(event) is True
+
+    def test_rejects_success(self):
+        from app.provider import _is_stream_json_max_turns
+        event = {"type": "result", "subtype": "success"}
+        assert _is_stream_json_max_turns(event) is False
+
+    def test_rejects_non_result_event(self):
+        from app.provider import _is_stream_json_max_turns
+        event = {"type": "assistant", "subtype": "error_max_turns"}
+        assert _is_stream_json_max_turns(event) is False
+
+    def test_handles_none_subtype(self):
+        from app.provider import _is_stream_json_max_turns
+        event = {"type": "result", "subtype": None}
+        assert _is_stream_json_max_turns(event) is False
+
+    def test_case_insensitive(self):
+        from app.provider import _is_stream_json_max_turns
+        event = {"type": "result", "subtype": "Error_Max_Turns"}
+        assert _is_stream_json_max_turns(event) is True
+
+
+# ---------------------------------------------------------------------------
+# _summarize_stream_event (additional edge cases)
+# ---------------------------------------------------------------------------
+
+
+class TestSummarizeStreamEventEdgeCases:
+    def test_system_init_with_model(self):
+        from app.provider import _summarize_stream_event
+        line = _summarize_stream_event({
+            "type": "system", "subtype": "init", "model": "sonnet-4",
+        })
+        assert "session init" in line
+        assert "sonnet-4" in line
+
+    def test_system_without_init(self):
+        from app.provider import _summarize_stream_event
+        line = _summarize_stream_event({"type": "system", "subtype": "other"})
+        assert "other" in line
+
+    def test_assistant_thinking_block(self):
+        from app.provider import _summarize_stream_event
+        line = _summarize_stream_event({
+            "type": "assistant",
+            "message": {"content": [{"type": "thinking"}]},
+        })
+        assert "thinking" in line
+
+    def test_assistant_empty_content(self):
+        from app.provider import _summarize_stream_event
+        line = _summarize_stream_event({
+            "type": "assistant",
+            "message": {"content": []},
+        })
+        assert "(empty)" in line
+
+    def test_user_tool_result_with_error(self):
+        from app.provider import _summarize_stream_event
+        line = _summarize_stream_event({
+            "type": "user",
+            "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "tu_abc123xyz", "is_error": True},
+            ]},
+        })
+        assert "tool_result" in line
+        assert "(error)" in line
+
+    def test_user_turn_without_tool_result(self):
+        from app.provider import _summarize_stream_event
+        line = _summarize_stream_event({
+            "type": "user",
+            "message": {"content": [{"type": "text", "text": "ok"}]},
+        })
+        assert "user turn" in line
+
+    def test_result_without_duration(self):
+        from app.provider import _summarize_stream_event
+        line = _summarize_stream_event({
+            "type": "result", "subtype": "success",
+        })
+        assert "success" in line
+        assert "s)" not in line
+
+    def test_empty_type(self):
+        from app.provider import _summarize_stream_event
+        line = _summarize_stream_event({"type": ""})
+        assert "?" in line
+
+    def test_text_block_multiline_takes_first_line(self):
+        from app.provider import _summarize_stream_event
+        line = _summarize_stream_event({
+            "type": "assistant",
+            "message": {"content": [
+                {"type": "text", "text": "first line\nsecond line\nthird"},
+            ]},
+        })
+        assert "first line" in line
+        assert "second line" not in line
+
+    def test_text_block_empty_string(self):
+        from app.provider import _summarize_stream_event
+        line = _summarize_stream_event({
+            "type": "assistant",
+            "message": {"content": [
+                {"type": "text", "text": ""},
+            ]},
+        })
+        # Empty text should render as just "text" without preview
+        assert "text" in line
