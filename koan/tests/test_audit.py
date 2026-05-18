@@ -145,11 +145,17 @@ from skills.core.audit.audit_runner import (
     parse_findings,
     prioritize_findings,
     _build_issue_body,
+    _compute_finding_fingerprint,
     _save_audit_report,
     create_issues,
     run_audit,
     main,
 )
+
+
+def _audit_body(finding: AuditFinding) -> str:
+    """Helper: build an issue body matching one produced by the audit runner."""
+    return _build_issue_body(finding)
 
 
 SAMPLE_OUTPUT = """\
@@ -502,19 +508,26 @@ class TestCreateIssuesDedup:
     @patch("app.github.list_open_audit_issues")
     @patch("app.github.resolve_target_repo", return_value="upstream/repo")
     @patch("app.github.issue_create")
-    def test_skips_finding_when_open_issue_with_same_title_exists(
+    def test_skips_finding_when_fingerprint_already_open(
         self, mock_create, mock_repo, mock_list,
     ):
+        existing = AuditFinding(
+            title="fix A", severity="high",
+            location="a.py:1", category="bug", problem="p",
+        )
         mock_list.return_value = [
             {
                 "number": 42,
                 "title": "fix A",
                 "url": "https://github.com/o/r/issues/42",
-                "body": "... Created by Kōan from audit session",
+                "body": _audit_body(existing),
             },
         ]
         findings = [
-            AuditFinding(title="fix A", severity="high", location="a.py:1", problem="p"),
+            AuditFinding(
+                title="fix A", severity="high",
+                location="a.py:1", category="bug", problem="p",
+            ),
         ]
 
         result = create_issues(findings, "/path/proj")
@@ -528,22 +541,37 @@ class TestCreateIssuesDedup:
     @patch("app.github.list_open_audit_issues")
     @patch("app.github.resolve_target_repo", return_value="upstream/repo")
     @patch("app.github.issue_create")
-    def test_dedup_matches_security_prefixed_titles(
+    def test_dedup_survives_title_drift_for_same_location(
         self, mock_create, mock_repo, mock_list,
     ):
-        # Earlier run created the issue under the public-fallback path
-        # which prefixes the title with "Security: ". A later
-        # plain-audit rerun must still recognise it as the same finding.
+        # Regression: Claude rephrases the title across runs but the
+        # location+category fingerprint stays stable, so the second
+        # run must reuse the existing issue rather than duplicate it.
+        first_run = AuditFinding(
+            title="Race in WS reconnect",
+            severity="high",
+            location="ws_client.py:142",
+            category="concurrency",
+            problem="race condition",
+        )
         mock_list.return_value = [
             {
                 "number": 7,
-                "title": "Security: fix A",
+                "title": "Race in WS reconnect",
                 "url": "https://github.com/o/r/issues/7",
-                "body": "... Created by Kōan from audit session",
+                "body": _audit_body(first_run),
             },
         ]
+        # Second run produces lexically different title but identical
+        # location/category — must still be recognised as the same finding.
         findings = [
-            AuditFinding(title="fix A", severity="high", location="a.py:1", problem="p"),
+            AuditFinding(
+                title="Potential race condition in websocket reconnect handler",
+                severity="high",
+                location="ws_client.py:142",
+                category="concurrency",
+                problem="race condition",
+            ),
         ]
 
         result = create_issues(findings, "/path/proj")
@@ -555,25 +583,33 @@ class TestCreateIssuesDedup:
     @patch("app.github.list_open_audit_issues")
     @patch("app.github.resolve_target_repo", return_value="upstream/repo")
     @patch("app.github.issue_create")
-    def test_dedup_is_case_and_whitespace_insensitive(
+    def test_ignores_issues_without_fingerprint_marker(
         self, mock_create, mock_repo, mock_list,
     ):
+        # Older audit issues (created before the fingerprint marker was
+        # introduced) lack the koan-audit-id comment. They are simply
+        # left alone — a fresh issue is opened.
         mock_list.return_value = [
             {
                 "number": 9,
-                "title": "  Fix A  ",
+                "title": "fix A",
                 "url": "https://github.com/o/r/issues/9",
                 "body": "... Created by Kōan from audit session",
             },
         ]
+        mock_create.return_value = "https://github.com/o/r/issues/20\n"
         findings = [
-            AuditFinding(title="fix a", severity="high", location="a.py:1", problem="p"),
+            AuditFinding(
+                title="fix A", severity="high",
+                location="a.py:1", category="bug", problem="p",
+            ),
         ]
 
         result = create_issues(findings, "/path/proj")
 
-        assert mock_create.call_count == 0
-        assert result.reused == 1
+        assert mock_create.call_count == 1
+        assert result.created == 1
+        assert result.reused == 0
 
     @patch("app.github.list_open_audit_issues")
     @patch("app.github.resolve_target_repo", return_value="upstream/repo")
@@ -581,18 +617,28 @@ class TestCreateIssuesDedup:
     def test_creates_only_genuinely_new_findings(
         self, mock_create, mock_repo, mock_list,
     ):
+        existing = AuditFinding(
+            title="fix A", severity="high",
+            location="a.py:1", category="bug", problem="p",
+        )
         mock_list.return_value = [
             {
                 "number": 1,
                 "title": "fix A",
                 "url": "https://github.com/o/r/issues/1",
-                "body": "... Created by Kōan from audit session",
+                "body": _audit_body(existing),
             },
         ]
         mock_create.return_value = "https://github.com/o/r/issues/2\n"
         findings = [
-            AuditFinding(title="fix A", severity="high", location="a.py:1", problem="p"),
-            AuditFinding(title="fix B", severity="low", location="b.py:2", problem="q"),
+            AuditFinding(
+                title="fix A", severity="high",
+                location="a.py:1", category="bug", problem="p",
+            ),
+            AuditFinding(
+                title="fix B", severity="low",
+                location="b.py:2", category="perf", problem="q",
+            ),
         ]
 
         result = create_issues(findings, "/path/proj")
@@ -645,6 +691,31 @@ class TestCreateIssuesDedup:
 
         assert result.created == 1
         assert result.reused == 0
+
+    def test_fingerprint_embedded_in_issue_body(self):
+        finding = AuditFinding(
+            title="fix A", severity="high",
+            location="a.py:1", category="bug", problem="p",
+        )
+        body = _build_issue_body(finding)
+        fingerprint = _compute_finding_fingerprint(finding)
+        assert f"<!-- koan-audit-id: {fingerprint} -->" in body
+
+    def test_fingerprint_is_stable_across_title_drift(self):
+        a = AuditFinding(
+            title="Race in WS reconnect",
+            location="ws_client.py:142", category="concurrency",
+        )
+        b = AuditFinding(
+            title="Potential race condition in websocket reconnect handler",
+            location="ws_client.py:142", category="concurrency",
+        )
+        assert _compute_finding_fingerprint(a) == _compute_finding_fingerprint(b)
+
+    def test_fingerprint_differs_across_locations(self):
+        a = AuditFinding(location="a.py:1", category="bug")
+        b = AuditFinding(location="b.py:2", category="bug")
+        assert _compute_finding_fingerprint(a) != _compute_finding_fingerprint(b)
 
 
 class TestRunAudit:

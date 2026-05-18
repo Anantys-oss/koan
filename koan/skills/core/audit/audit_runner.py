@@ -18,6 +18,7 @@ CLI:
         [--context "focus on auth module"] [--max-issues 5]
 """
 
+import hashlib
 import re
 import sys
 from pathlib import Path
@@ -196,24 +197,50 @@ class IssueCreationResult(NamedTuple):
     reused: int
 
 
-def _normalize_title(title: str) -> str:
-    """Lowercase + strip + collapse whitespace for title dedup matching."""
-    return " ".join((title or "").lower().split())
+_FINGERPRINT_MARKER_RE = re.compile(
+    r"<!--\s*koan-audit-id:\s*([0-9a-f]{16})\s*-->",
+)
 
 
-def _build_existing_title_index(
+def _compute_finding_fingerprint(finding: AuditFinding) -> str:
+    """Return a stable 16-char fingerprint for *finding*.
+
+    Hashes ``location + ':' + category`` (both normalized to lowercase
+    with whitespace collapsed). The fingerprint is embedded in the
+    issue body when the issue is created and matched on reruns so the
+    audit pipeline dedups on a token immune to LLM-generated title
+    drift (the original title-equality approach missed reruns when
+    Claude rephrased the finding).
+    """
+    location = " ".join((finding.location or "").lower().split())
+    category = " ".join((finding.category or "").lower().split())
+    digest = hashlib.sha256(f"{location}:{category}".encode("utf-8")).hexdigest()
+    return digest[:16]
+
+
+def _build_existing_fingerprint_index(
     existing_issues: List[Dict],
 ) -> Dict[str, str]:
-    """Map normalized title -> issue URL for fast dedup lookup."""
-    index = {}
+    """Map embedded ``koan-audit-id`` fingerprint -> issue URL.
+
+    Walks the bodies of existing audit issues, extracts the
+    ``<!-- koan-audit-id: ... -->`` marker emitted by
+    :func:`_build_issue_body`, and indexes the URL by that fingerprint.
+    Issues without the marker (pre-fingerprint vintage) are skipped —
+    they will not match new findings and will simply be left alone on
+    the repo until manually closed.
+    """
+    index: Dict[str, str] = {}
     for issue in existing_issues:
-        title = issue.get("title") or ""
+        body = issue.get("body") or ""
         url = issue.get("url") or ""
-        if not title or not url:
+        if not body or not url:
             continue
-        key = _normalize_title(title)
-        # First occurrence wins (newest issue listed first by gh)
-        index.setdefault(key, url)
+        match = _FINGERPRINT_MARKER_RE.search(body)
+        if not match:
+            continue
+        # First occurrence wins (newest issue listed first by gh).
+        index.setdefault(match.group(1), url)
     return index
 
 
@@ -223,21 +250,12 @@ def _find_existing_match(
 ) -> Optional[str]:
     """Return the URL of an open audit issue already tracking *finding*.
 
-    Matches on the title that ``_submit_public_issue()`` would produce,
-    plus the ``"Security: "``-prefixed PVRS-fallback variant so reruns
-    of /security_audit also dedup against earlier public-issue runs.
+    Lookup is exact on the fingerprint embedded in the issue body so
+    title rewording between runs does not defeat dedup.
     """
     if not existing_index:
         return None
-    candidates = [
-        finding.title,
-        f"Security: {finding.title}",
-    ]
-    for candidate in candidates:
-        url = existing_index.get(_normalize_title(candidate))
-        if url:
-            return url
-    return None
+    return existing_index.get(_compute_finding_fingerprint(finding))
 
 
 _SEVERITY_LABELS = {
@@ -255,9 +273,15 @@ _EFFORT_LABELS = {
 
 
 def _build_issue_body(finding: AuditFinding) -> str:
-    """Build a GitHub issue body from a finding."""
+    """Build a GitHub issue body from a finding.
+
+    Appends a hidden ``<!-- koan-audit-id: ... -->`` marker so future
+    audit runs can dedup against this issue even if the LLM rewords
+    the title between runs.
+    """
     severity_icon = _SEVERITY_LABELS.get(finding.severity, "\u2753")
     effort_label = _EFFORT_LABELS.get(finding.effort, finding.effort)
+    fingerprint = _compute_finding_fingerprint(finding)
 
     lines = [
         f"## Problem",
@@ -283,6 +307,7 @@ def _build_issue_body(finding: AuditFinding) -> str:
         f"",
         f"---",
         f"\U0001f916 Created by K\u014dan from audit session",
+        f"<!-- koan-audit-id: {fingerprint} -->",
     ]
     return "\n".join(lines)
 
@@ -337,9 +362,10 @@ def create_issues(
     """Create GitHub issues (or PVRS reports) for each finding.
 
     Before opening a new issue, the repo's currently-open audit issues
-    are fetched and findings whose titles already match an open issue
-    are skipped — the existing issue URL is reused so reruns of the
-    audit do not duplicate previously-tracked findings.
+    are fetched and findings whose fingerprint (``location + category``)
+    matches an existing issue body are skipped — the existing URL is
+    reused so reruns of the audit do not duplicate previously-tracked
+    findings even when the LLM rephrases the title.
 
     When PVRS is available and ``pvrs_mode`` is not ``"false"``, findings
     at or above ``pvrs_threshold`` severity are submitted as private
@@ -384,7 +410,7 @@ def create_issues(
     # lookup yields an empty index, which means we fall back to the
     # legacy "create unconditionally" behavior rather than skipping
     # legitimate work.
-    existing_index = _build_existing_title_index(
+    existing_index = _build_existing_fingerprint_index(
         list_open_audit_issues(repo=target_repo, cwd=project_path)
     )
 
@@ -672,8 +698,8 @@ def run_audit(
         )
 
     # Step 5: Create GitHub issues (or PVRS reports for security audits).
-    # Findings whose titles match an already-open audit issue on the
-    # repo are skipped \u2014 the existing URL is reused so a second run
+    # Findings whose fingerprint matches an already-open audit issue on
+    # the repo are skipped \u2014 the existing URL is reused so a second run
     # doesn't pile up duplicate tickets for the same problem.
     result = create_issues(
         findings, project_path, notify_fn=notify_fn,
