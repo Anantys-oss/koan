@@ -29,7 +29,8 @@ You are fixing a GitHub issue. Your job is to understand the issue, plan the fix
 
 ### Phase 3 — Test First (when possible)
 
-7. **Write tests that reproduce the issue** before fixing it. Follow existing test patterns (pytest, `tests/test_*.py`). The tests should FAIL before the fix. Tests should verify observable behavior (return values, exceptions, state changes). Mocking dependencies is fine, but never inspect actual source code to verify code presence or absence.
+7. **Write tests that reproduce the issue** before fixing it. Follow existing test patterns (pytest, `tests/test_*.py`). The tests should FAIL before the fix.
+{@include test-guidance}
 8. If the issue cannot be reproduced in tests (infrastructure, config, etc.), note why and skip this step.
 
 ### Phase 4 — Fix (repeat per phase)
@@ -84,11 +85,7 @@ After each commit:
     )"
     ```
     - The PR title should be concise (under 70 characters), prefixed with `fix:`.
-    - If the local repo is a fork, submit the PR to the upstream repository:
-      ```bash
-      gh pr create --draft --repo <upstream-owner>/<repo> --head <fork-owner>:<branch> --title "..." --body "..."
-      ```
-    - PRs are **always draft**. Never create a non-draft PR.
+{@include pr-submit-fork}
 
 ## Rules
 
