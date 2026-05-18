@@ -42,13 +42,7 @@ This spec will be posted as a GitHub issue — write it as a living document tha
 
 Write your spec in the following structure (use markdown, no code fences around the whole spec).
 
-**CRITICAL**: The VERY FIRST LINE of your output must be a short, descriptive title
-on its own line (no `#` prefix, no formatting). This title will become the GitHub issue
-title, so make it specific and actionable. Good examples:
-- "Design spec: spec-first brainstorming skill with iterative review loop"
-- "Design spec: consolidate project config into projects.yaml with auto-migration"
-
-After the title line, leave a blank line and then write the spec body:
+{@include plan-title-instruction}
 
 ### Summary
 

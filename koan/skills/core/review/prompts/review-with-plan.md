@@ -77,67 +77,9 @@ Analyze the code changes and produce a structured review. Focus on:
 3. **Architecture** — Design issues, coupling, abstraction level, naming
 4. **Maintainability** — Readability, complexity, test coverage gaps
 
-### Review Checklist
+{@include review-checklist}
 
-Use the following checklist to guide your review. Check each item *if applicable* to the
-files in the diff — skip items that don't apply to the changes under review.
-
-**Security**
-- Check for SQL/command injection, shell interpolation of user input
-- Check for hardcoded secrets, API keys, or credentials
-- Check for unsafe deserialization (`pickle.loads`, `yaml.load` without `SafeLoader`)
-- Check for path traversal (unsanitized user input in file paths)
-- Check for missing input validation at system boundaries (API endpoints, CLI args)
-
-**Error Handling**
-- Check for bare `except:` or `except Exception` that swallows errors silently
-- Check for missing cleanup in error paths (unclosed files, unreleased locks)
-- Check for resource leaks (sockets, file handles, database connections)
-- Check for error messages that expose internal details to end users
-
-**Performance**
-- Check for N+1 queries or repeated I/O in loops
-- Check for unbounded collections that grow without limit
-- Check for missing pagination on list endpoints or queries
-- Check for unnecessary copies of large data structures
-
-**Testing**
-- Check for untested code branches introduced by the changes
-- Check for missing edge case coverage (empty input, boundary values, None)
-- Check for test isolation issues (shared state, order-dependent tests)
-
-**Python-specific** (apply only when Python files are in the diff)
-- Check for mutable default arguments (`def f(x=[])`)
-- Check for `is` vs `==` misuse with literals
-- Check for unsafe `eval()`/`exec()` usage
-- Check for missing `with` statement for resource management
-
-### Replying to Comments
-
-If there are repliable comments listed above, review each one and decide whether a reply
-would add value. Reply when:
-
-- A user asks a question (about design decisions, implementation choices, trade-offs)
-- A user raises a concern that you can address with technical detail
-- A comment contains a misconception you can clarify
-- A reviewer requests changes and you can explain the rationale or suggest a path forward
-
-Do NOT reply when:
-- The comment is purely informational with nothing to add
-- A simple acknowledgement ("thanks", "will fix") would suffice
-- The comment is from the PR author to themselves
-- Replying would just repeat what your review already covers
-
-When you do reply, be **complete and detailed** — explain the **why** and **how**, not just
-the what. Reference specific code, line numbers, or documentation to support your argument.
-
-### Rules
-
-- Be specific: reference file names and line ranges from the diff.
-- Prioritize: separate blocking issues from minor suggestions.
-- Skip praise — focus on what needs attention.
-- If the code is solid, say so briefly. Don't invent problems.
-- Do NOT modify any files. This is a read-only review.
+{@include review-reply-rules}
 
 ### Output Format
 
