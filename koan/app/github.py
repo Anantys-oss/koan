@@ -357,8 +357,8 @@ def fetch_issue_with_comments(owner, repo, issue_number):
     )
     try:
         data = json.loads(issue_json)
-        title = data.get("title", "")
-        body = data.get("body", "")
+        title = data.get("title") or ""
+        body = data.get("body") or ""
     except (json.JSONDecodeError, TypeError):
         title = ""
         body = issue_json
