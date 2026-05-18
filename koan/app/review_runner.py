@@ -561,7 +561,7 @@ _SEVERITY_HEADING = {
 }
 
 
-def _format_review_as_markdown(review_data: dict, title: str = "") -> str:
+def _format_review_as_markdown(review_data: dict, title: str = "", bot_username: str = "") -> str:
     """Convert validated review JSON into the markdown format for GitHub.
 
     Produces the standard ## PR Review format with an optional plan alignment
@@ -679,12 +679,21 @@ def _format_review_as_markdown(review_data: dict, title: str = "") -> str:
     if severity_count > 1:
         lines.append("")
         lines.append("---")
-        lines.append(
-            "_To rebase addressing only specific severity levels, use: "
-            "`/rebase <url> critical` (only 🔴), "
-            "`/rebase <url> important` (🔴 + 🟡), "
-            "or just `/rebase <url>` for all._"
-        )
+        if bot_username:
+            mention = f"@{bot_username}"
+            lines.append(
+                f"_To rebase specific severity levels, mention me:_ "
+                f"`{mention} rebase critical` _(fixes 🔴 only)_, "
+                f"`{mention} rebase important` _(fixes 🔴 + 🟡)_, "
+                f"_or just_ `{mention} rebase` _for all._"
+            )
+        else:
+            lines.append(
+                "_To rebase specific severity levels, use:_ "
+                "`/rebase <url> critical` _(fixes 🔴 only)_, "
+                "`/rebase <url> important` _(fixes 🔴 + 🟡)_, "
+                "_or just_ `/rebase <url>` _for all._"
+            )
 
     return "\n".join(lines)
 
@@ -1062,6 +1071,7 @@ def run_review(
     if review_data is not None:
         review_body = _format_review_as_markdown(
             review_data, title=context.get("title", ""),
+            bot_username=bot_username,
         )
     else:
         # Fallback: use regex extraction for non-JSON responses
