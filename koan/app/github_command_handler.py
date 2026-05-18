@@ -1074,7 +1074,8 @@ def process_single_notification(
     if not project_info:
         repo_data = notification.get("repository", {})
         full_name = repo_data.get("full_name", "?")
-        log.debug("GitHub: repo %s not in projects.yaml — ignoring notification", full_name)
+        reason = notification.get("reason", "?")
+        log.debug("GitHub: repo %s (reason=%s) not in projects.yaml — ignoring notification", full_name, reason)
         mark_notification_read(str(notification.get("id", "")))
         return False, None
     project_name, owner, repo = project_info

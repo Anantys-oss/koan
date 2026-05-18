@@ -168,6 +168,8 @@ class TestFetchUnreadNotifications:
         result = fetch_unread_notifications(known_repos={"owner/repo"})
         assert len(result.actionable) == 1
         assert result.actionable[0]["repository"]["full_name"] == "owner/repo"
+        # Verify skipped mentions are tracked in skipped_repos
+        assert "unknown/repo" in result.skipped_repos
 
     @patch("app.github_notifications.api")
     def test_handles_api_error(self, mock_api):
