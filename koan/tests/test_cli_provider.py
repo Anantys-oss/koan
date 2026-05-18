@@ -1262,3 +1262,12 @@ class TestThinkingSupport:
             # No thinking args should be added
             effort_count = cmd.count("--effort")
             assert effort_count == 0
+
+    def test_thinking_overrides_effort_no_duplicates(self):
+        """When thinking=True and effort is also set, only one --effort max appears."""
+        with patch("app.provider.get_provider", return_value=ClaudeProvider()), \
+             patch("app.config.get_skip_permissions", return_value=True):
+            cmd = build_full_command(prompt="test", effort="high", thinking=True)
+            effort_indices = [i for i, v in enumerate(cmd) if v == "--effort"]
+            assert len(effort_indices) == 1, f"Expected exactly one --effort, got {len(effort_indices)}"
+            assert cmd[effort_indices[0] + 1] == "max"

@@ -77,6 +77,7 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "review_ignore": _NESTED,
     "automation_rules": _NESTED,
     "effort": _NESTED,
+    "thinking": _NESTED,
     "stagnation": _NESTED,
     "optimizations": _NESTED,
 }
@@ -215,6 +216,11 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
         "review": "str",
         "implement": "str",
         "deep": "str",
+    },
+    "thinking": {
+        "enabled": "bool",
+        "budget_tokens": "int",
+        "min_mode": "str",
     },
     "optimizations": {
         # Caveman is configured exclusively via the nested mapping

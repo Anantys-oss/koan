@@ -404,3 +404,24 @@ class TestThinkingArgs:
         cmd = p.build_command(prompt="go")
         assert "--think" not in cmd
         assert "--effort" not in cmd
+
+    def test_thinking_skips_effort_args(self):
+        """When thinking=True, build_effort_args is skipped to avoid duplicates."""
+
+        class EffortThinkingProvider(StubProvider):
+            def build_effort_args(self, effort=""):
+                if effort:
+                    return ["--effort", effort]
+                return []
+
+            def build_thinking_args(self, enabled=False, budget_tokens=0):
+                if enabled:
+                    return ["--effort", "max"]
+                return []
+
+        p = EffortThinkingProvider()
+        cmd = p.build_command(prompt="go", effort="high", thinking=True)
+        effort_count = cmd.count("--effort")
+        assert effort_count == 1, f"Expected 1 --effort, got {effort_count}"
+        idx = cmd.index("--effort")
+        assert cmd[idx + 1] == "max"
