@@ -120,6 +120,19 @@ class TestExtractLatestPlan:
         result = _extract_latest_plan(body, [])
         assert "Phase 1" in result
 
+    def test_none_body_no_comments(self):
+        """Issues with empty body (GitHub returns body=null) must not crash."""
+        result = _extract_latest_plan(None, [])
+        assert result == ""
+
+    def test_none_body_with_plan_in_comment(self):
+        """A plan in a comment is returned even when the issue body is None."""
+        comments = [
+            {"body": "### Summary\nPlan from comment", "author": "bot", "date": "2026-01-01"},
+        ]
+        result = _extract_latest_plan(None, comments)
+        assert "Plan from comment" in result
+
 
 # ---------------------------------------------------------------------------
 # fetch_issue_with_comments (now in github.py)
@@ -157,6 +170,13 @@ class TestFetchIssueWithComments:
         with patch("app.github.api", side_effect=[issue_data, "[]"]):
             _, _, comments = fetch_issue_with_comments("o", "r", "1")
             assert comments == []
+
+    def test_null_body_normalized_to_empty_string(self):
+        """GitHub returns body=null for issues with empty body — must coerce to ''."""
+        issue_data = json.dumps({"title": "T", "body": None})
+        with patch("app.github.api", side_effect=[issue_data, "[]"]):
+            _, body, _ = fetch_issue_with_comments("o", "r", "1")
+            assert body == ""
 
 
 # ---------------------------------------------------------------------------

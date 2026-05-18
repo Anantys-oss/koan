@@ -193,7 +193,7 @@ def _is_plan_content(text: str) -> bool:
     return bool(_PLAN_MARKER_RE.search(text))
 
 
-def _extract_latest_plan(body: str, comments: List[dict]) -> str:
+def _extract_latest_plan(body: Optional[str], comments: List[dict]) -> str:
     """Extract the most recent plan from issue body and comments.
 
     Strategy: scan comments from newest to oldest. The first comment
@@ -218,8 +218,9 @@ def _extract_latest_plan(body: str, comments: List[dict]) -> str:
         return body
 
     # If no plan markers found, assume the entire body is the plan
-    # (allows non-standard plan formats)
-    return body.strip()
+    # (allows non-standard plan formats). Body may be None for issues
+    # with an empty body — GitHub returns body=null in that case.
+    return (body or "").strip()
 
 
 def _build_prompt(
