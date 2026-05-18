@@ -490,8 +490,9 @@ class TestPostReviewComment:
     @patch("app.review_runner.run_gh")
     def test_posts_comment(self, mock_gh):
         """Posts review as PR comment via gh CLI."""
-        result = _post_review_comment("owner", "repo", "42", "LGTM")
-        assert result is True
+        success, error = _post_review_comment("owner", "repo", "42", "LGTM")
+        assert success is True
+        assert error == ""
         mock_gh.assert_called_once()
         call_args = mock_gh.call_args
         assert "pr" in call_args[0]
@@ -504,9 +505,10 @@ class TestPostReviewComment:
 
     @patch("app.review_runner.run_gh", side_effect=RuntimeError("API error"))
     def test_returns_false_on_error(self, mock_gh):
-        """Returns False when gh CLI fails."""
-        result = _post_review_comment("owner", "repo", "42", "review")
-        assert result is False
+        """Returns (False, error_detail) when gh CLI fails."""
+        success, error = _post_review_comment("owner", "repo", "42", "review")
+        assert success is False
+        assert "API error" in error
 
     @patch("app.review_runner.run_gh")
     def test_truncates_long_review(self, mock_gh):
