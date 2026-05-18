@@ -138,8 +138,7 @@ When executing a mission, follow this sequence:
    Follow existing patterns and conventions from the project's CLAUDE.md.
 4. **Test**: Run the project's test suite. Fix failures before committing.
    If the module lacks tests, add coverage for what you changed.
-   Tests should validate behavior (inputs → outputs, observable outcomes).
-   Mocking dependencies is fine, but never write tests that read or inspect source code to verify code presence or absence.
+{@include test-guidance}
    **IMPORTANT — redirect test output to avoid token waste:**
    ```bash
    make test > /tmp/test-output.txt 2>&1

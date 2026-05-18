@@ -75,7 +75,8 @@ files in the diff — skip items that don't apply to the changes under review.
 - Check for untested code branches introduced by the changes
 - Check for missing edge case coverage (empty input, boundary values, None)
 - Check for test isolation issues (shared state, order-dependent tests)
-- Check for tests that read or inspect actual source code to verify code presence/absence — tests should validate observable behavior, not implementation text
+- Check for tests that read or inspect actual source code to verify code presence/absence:
+{@include test-guidance}
 
 **Python-specific** (apply only when Python files are in the diff)
 - Check for mutable default arguments (`def f(x=[])`)

@@ -22,7 +22,8 @@ You are triaging a production incident. Your job is to analyze the error, identi
 
 ### Phase 3 — Write Tests
 
-7. **Write tests that reproduce the issue** before fixing it. Follow existing test patterns (pytest, `tests/test_*.py`). The tests should FAIL before the fix is applied. Tests should verify observable behavior (return values, exceptions, state changes). Mocking dependencies is fine, but never inspect actual source code to verify code presence or absence.
+7. **Write tests that reproduce the issue** before fixing it. Follow existing test patterns (pytest, `tests/test_*.py`). The tests should FAIL before the fix is applied.
+{@include test-guidance}
 8. If the issue cannot be reproduced in tests (infrastructure, config, external dependency), note why and skip this step.
 
 ### Phase 4 — Fix
@@ -70,11 +71,7 @@ You are triaging a production incident. Your job is to analyze the error, identi
     EOF
     )"
     ```
-    - If the local repo is a fork, submit to the upstream repository:
-      ```bash
-      gh pr create --draft --repo <upstream-owner>/<repo> --head <fork-owner>:<branch> --title "..." --body "..."
-      ```
-    - PRs are **always draft**. Never create a non-draft PR.
+{@include pr-submit-fork}
 
 ## Output Format
 
