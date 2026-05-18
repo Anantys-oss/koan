@@ -811,8 +811,7 @@ def main_loop():
     # Avoids the up-to-30s wait for the ABORT_FILE poll cycle inside
     # run_claude_task(). The file is still written for durability so a
     # missed signal (runner restarting, etc.) is recovered on next poll.
-    with contextlib.suppress(AttributeError, ValueError, OSError):
-        signal.signal(signal.SIGUSR1, _on_sigusr1)
+    signal.signal(signal.SIGUSR1, _on_sigusr1)
 
     # Initialize project state
     if projects:
