@@ -236,6 +236,26 @@ def _on_sigint(signum, frame):
     log("koan", f"⚠️  Press CTRL-C again within {_sig.timeout}s to abort.{phase_hint}")
 
 
+def _on_sigusr1(signum, frame):
+    """SIGUSR1 handler: instant /abort from the bridge.
+
+    The /abort skill writes ``.koan-abort`` and sends SIGUSR1 so the runner
+    reacts within milliseconds instead of waiting up to ``proc.wait``'s 30 s
+    poll cycle. Idempotent: a no-op when no Claude subprocess is running.
+    """
+    global _last_mission_aborted
+    proc = _sig.claude_proc
+    if proc is None or proc.poll() is not None:
+        return
+
+    _last_mission_aborted = True
+    koan_root_path = os.environ.get("KOAN_ROOT", "")
+    if koan_root_path:
+        Path(koan_root_path, ABORT_FILE).unlink(missing_ok=True)
+    log("koan", "Abort signal received — killing current mission")
+    _kill_process_group(proc)
+
+
 def _start_stagnation_monitor(stdout_file: str, proc, project_name: str):
     """Launch a StagnationMonitor for a running Claude subprocess.
 
@@ -786,6 +806,13 @@ def main_loop():
 
     # Install SIGINT handler
     signal.signal(signal.SIGINT, _on_sigint)
+
+    # Install SIGUSR1 handler — instant /abort from the bridge.
+    # Avoids the up-to-30s wait for the ABORT_FILE poll cycle inside
+    # run_claude_task(). The file is still written for durability so a
+    # missed signal (runner restarting, etc.) is recovered on next poll.
+    with contextlib.suppress(AttributeError, ValueError, OSError):
+        signal.signal(signal.SIGUSR1, _on_sigusr1)
 
     # Initialize project state
     if projects:
