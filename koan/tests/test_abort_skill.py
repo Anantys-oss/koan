@@ -1,5 +1,6 @@
 """Tests for the /abort core skill -- abort current in-progress mission."""
 
+import signal
 from pathlib import Path
 from unittest.mock import patch
 
@@ -46,6 +47,122 @@ class TestAbortHandler:
         ctx = self._make_ctx(tmp_path)
         handle(ctx)
         assert abort_file.exists()
+
+    def test_sends_sigusr1_to_runner_when_pid_known(self, tmp_path):
+        """The handler should signal the runner immediately, not just write a file.
+
+        Without the signal, /abort sits idle for up to 30 s while ``proc.wait``
+        polls the abort file. This test would fail against the original
+        file-only implementation.
+        """
+        from skills.core.abort import handler as abort_handler
+
+        ctx = self._make_ctx(tmp_path)
+        with patch("app.pid_manager.check_pidfile", return_value=4242) as mock_check, \
+             patch("os.kill") as mock_kill:
+            abort_handler.handle(ctx)
+
+        assert mock_check.call_args[0][1] == "run"
+        mock_kill.assert_called_once_with(4242, signal.SIGUSR1)
+
+    def test_skips_signal_when_runner_not_running(self, tmp_path):
+        """No PID file → no os.kill call. File-based fallback still works."""
+        from skills.core.abort import handler as abort_handler
+
+        ctx = self._make_ctx(tmp_path)
+        with patch("app.pid_manager.check_pidfile", return_value=None), \
+             patch("os.kill") as mock_kill:
+            abort_handler.handle(ctx)
+
+        mock_kill.assert_not_called()
+        # Abort file is still written so a runner that starts mid-flight
+        # picks up the abort on its next poll.
+        assert (tmp_path / ".koan-abort").exists()
+
+    def test_signal_failure_does_not_raise(self, tmp_path):
+        """If the runner died between PID lookup and kill, swallow the error.
+
+        The user still gets a confirmation and the file remains as a fallback.
+        """
+        from skills.core.abort import handler as abort_handler
+
+        ctx = self._make_ctx(tmp_path)
+        with patch("app.pid_manager.check_pidfile", return_value=99999), \
+             patch("os.kill", side_effect=ProcessLookupError):
+            # Must not raise
+            result = abort_handler.handle(ctx)
+
+        assert "Abort requested" in result
+        assert (tmp_path / ".koan-abort").exists()
+
+
+class TestRunSigusr1Handler:
+    """Test the SIGUSR1 handler installed by run.main_loop()."""
+
+    def test_handler_kills_running_claude_and_marks_aborted(self, tmp_path, monkeypatch):
+        """SIGUSR1 should kill the active subprocess group and flag the mission as aborted."""
+        from app import run
+
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        (tmp_path / ".koan-abort").write_text("abort")
+
+        # Fake a live Claude subprocess.
+        class FakeProc:
+            def __init__(self):
+                self.killed = False
+
+            def poll(self):
+                return None  # still running
+
+        proc = FakeProc()
+        monkeypatch.setattr(run._sig, "claude_proc", proc)
+        monkeypatch.setattr(run, "_last_mission_aborted", False)
+
+        killed = []
+
+        def fake_kill(p):
+            killed.append(p)
+            proc.killed = True
+
+        monkeypatch.setattr(run, "_kill_process_group", fake_kill)
+
+        run._on_sigusr1(signal.SIGUSR1, None)
+
+        assert killed == [proc]
+        assert run._last_mission_aborted is True
+        # Abort file is consumed by the handler so the file-based fallback
+        # in proc.wait's poll loop doesn't double-fire.
+        assert not (tmp_path / ".koan-abort").exists()
+
+    def test_handler_noop_when_no_subprocess(self, tmp_path, monkeypatch):
+        """SIGUSR1 with no active mission must not crash or touch flags."""
+        from app import run
+
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        monkeypatch.setattr(run._sig, "claude_proc", None)
+        monkeypatch.setattr(run, "_last_mission_aborted", False)
+        monkeypatch.setattr(run, "_kill_process_group", lambda p: pytest.fail("should not kill"))
+
+        run._on_sigusr1(signal.SIGUSR1, None)
+
+        assert run._last_mission_aborted is False
+
+    def test_handler_noop_when_subprocess_already_exited(self, tmp_path, monkeypatch):
+        """A dead subprocess.poll() returning non-None must short-circuit."""
+        from app import run
+
+        class DeadProc:
+            def poll(self):
+                return 0
+
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        monkeypatch.setattr(run._sig, "claude_proc", DeadProc())
+        monkeypatch.setattr(run, "_last_mission_aborted", False)
+        monkeypatch.setattr(run, "_kill_process_group", lambda p: pytest.fail("should not kill"))
+
+        run._on_sigusr1(signal.SIGUSR1, None)
+
+        assert run._last_mission_aborted is False
 
 
 class TestAbortSignalConstant:
