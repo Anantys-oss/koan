@@ -108,9 +108,9 @@ class TestCountCommitsSinceBase:
         assert _count_commits_since_base("origin/main", "/tmp/proj") == 0
 
     @patch("app.squash_pr._run_git")
-    def test_returns_zero_on_error(self, mock_run):
+    def test_returns_negative_on_error(self, mock_run):
         mock_run.side_effect = Exception("git failed")
-        assert _count_commits_since_base("origin/main", "/tmp/proj") == 0
+        assert _count_commits_since_base("origin/main", "/tmp/proj") == -1
 
 
 # ---------------------------------------------------------------------------
@@ -381,6 +381,26 @@ class TestRunSquash:
         success, summary = run_squash("o", "r", "1", "/tmp", notify_fn=notify)
         assert success is False
         assert "API error" in summary
+
+    @patch("app.squash_pr._safe_checkout")
+    @patch("app.squash_pr._count_commits_since_base", return_value=-1)
+    @patch("app.squash_pr._fetch_branch")
+    @patch("app.squash_pr._checkout_pr_branch", return_value="origin")
+    @patch("app.squash_pr._get_current_branch", return_value="main")
+    @patch("app.squash_pr._find_remote_for_repo", return_value="origin")
+    @patch("app.squash_pr.fetch_pr_context")
+    @patch("app.squash_pr.resolve_pr_location", return_value=("o", "r"))
+    def test_commit_count_failure_returns_error(
+        self, mock_resolve, mock_ctx, mock_find, mock_branch,
+        mock_checkout, mock_fetch, mock_count, mock_safe,
+    ):
+        """When merge-base fails, squash should error instead of silently skipping."""
+        mock_ctx.return_value = self._mock_context()
+        notify = MagicMock()
+        success, summary = run_squash("o", "r", "1", "/tmp", notify_fn=notify)
+        assert success is False
+        assert "merge-base failed" in summary.lower()
+        mock_safe.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

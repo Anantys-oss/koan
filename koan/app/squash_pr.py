@@ -43,7 +43,11 @@ from app.utils import truncate_diff
 def _count_commits_since_base(
     base_ref: str, project_path: str,
 ) -> int:
-    """Count commits between merge-base and HEAD."""
+    """Count commits between merge-base and HEAD.
+
+    Returns -1 when the count cannot be determined (git failure).
+    Callers must handle -1 as an error, not as "zero commits".
+    """
     try:
         merge_base = _run_git(
             ["git", "merge-base", base_ref, "HEAD"],
@@ -56,7 +60,7 @@ def _count_commits_since_base(
         return len(log.splitlines()) if log else 0
     except Exception as e:
         print(f"[squash_pr] merge-base count failed: {e}", file=sys.stderr)
-        return 0
+        return -1
 
 
 def _squash_commits(
@@ -269,6 +273,9 @@ def run_squash(
 
     # -- Step 3: Count commits and check if squash is needed --
     commit_count = _count_commits_since_base(base_ref, project_path)
+    if commit_count < 0:
+        _safe_checkout(original_branch, project_path)
+        return False, f"Could not count commits on PR #{pr_number} (merge-base failed)."
     if commit_count <= 1:
         msg = (
             f"PR #{pr_number} already has {commit_count} commit(s) — "
