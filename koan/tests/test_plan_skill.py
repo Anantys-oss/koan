@@ -329,10 +329,11 @@ class TestPlanPrompt:
 
     def test_prompt_has_required_sections(self):
         content = PLAN_PROMPT_PATH.read_text()
-        assert "Implementation Phases" in content
-        assert "Corner Cases" in content
-        assert "Open Questions" in content
-        assert "Testing Strategy" in content
+        # Sections come via partials or inline
+        assert "{@include plan-phases-format}" in content or "Implementation Phases" in content
+        assert "{@include plan-tail-sections}" in content or "Corner Cases" in content
+        assert "{@include plan-tail-sections}" in content or "Open Questions" in content
+        assert "{@include plan-tail-sections}" in content or "Testing Strategy" in content
 
 
 # ---------------------------------------------------------------------------

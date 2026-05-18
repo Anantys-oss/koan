@@ -1038,7 +1038,8 @@ class TestPromptFiles:
         content = (PROMPTS_DIR / "plan-iterate.md").read_text()
         assert "Changes in this iteration" in content
         assert "comments" in content.lower()
-        assert "Implementation Phases" in content
+        # Implementation Phases comes via {@include plan-phases-format}
+        assert "{@include plan-phases-format}" in content or "Implementation Phases" in content
         assert "phase" in content.lower()
 
     def test_plan_iterate_prompt_instructs_feedback_processing(self):
@@ -1047,29 +1048,25 @@ class TestPromptFiles:
         assert "question" in content.lower()
 
     def test_plan_prompt_requires_title_line(self):
-        """Plan prompt instructs Claude to write a descriptive title as first line."""
+        """Plan prompt includes title instruction (via partial or inline)."""
         content = (PROMPTS_DIR / "plan.md").read_text()
-        assert "FIRST LINE" in content
+        assert "{@include plan-title-instruction}" in content or "FIRST LINE" in content
         assert "title" in content.lower()
 
     def test_plan_iterate_prompt_requires_title_line(self):
-        """Iterate prompt also requires a title first line."""
+        """Iterate prompt includes title instruction (via partial or inline)."""
         content = (PROMPTS_DIR / "plan-iterate.md").read_text()
-        assert "FIRST LINE" in content
+        assert "{@include plan-title-instruction}" in content or "FIRST LINE" in content
 
     def test_plan_prompt_has_phase_format(self):
-        """Plan prompt uses #### Phase format with structured fields."""
+        """Plan prompt includes phase format (via partial or inline)."""
         content = (PROMPTS_DIR / "plan.md").read_text()
-        assert "#### Phase" in content
-        assert "**What**" in content
-        assert "**Done when**" in content
+        assert "{@include plan-phases-format}" in content or "#### Phase" in content
 
     def test_plan_iterate_prompt_has_phase_format(self):
-        """Iterate prompt uses same #### Phase format."""
+        """Iterate prompt includes phase format (via partial or inline)."""
         content = (PROMPTS_DIR / "plan-iterate.md").read_text()
-        assert "#### Phase" in content
-        assert "**What**" in content
-        assert "**Done when**" in content
+        assert "{@include plan-phases-format}" in content or "#### Phase" in content
 
 
 # ---------------------------------------------------------------------------
