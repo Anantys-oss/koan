@@ -166,8 +166,10 @@ class OllamaLaunchProvider(CLIProvider):
         cmd.extend(self.build_max_turns_args(max_turns))
         cmd.extend(self.build_mcp_args(mcp_configs))
         cmd.extend(self.build_plugin_args(plugin_dirs))
-        cmd.extend(self.build_effort_args(effort))
-        cmd.extend(self.build_thinking_args(thinking, thinking_budget))
+        if thinking:
+            cmd.extend(self.build_thinking_args(thinking, thinking_budget))
+        else:
+            cmd.extend(self.build_effort_args(effort))
         return cmd
 
     def get_env(self) -> Dict[str, str]:

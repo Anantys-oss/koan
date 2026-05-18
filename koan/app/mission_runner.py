@@ -278,15 +278,9 @@ def build_mission_command(
 
     # Extended thinking — only activated when config says so AND the
     # current autonomous mode is at or above the configured min_mode.
-    thinking_enabled = False
-    thinking_budget = 0
-    try:
-        from app.config import should_enable_thinking, get_thinking_config
-        thinking_enabled = should_enable_thinking(autonomous_mode)
-        if thinking_enabled:
-            thinking_budget = get_thinking_config()["budget_tokens"]
-    except ImportError:
-        pass
+    from app.config import should_enable_thinking, get_thinking_config
+    thinking_enabled = should_enable_thinking(autonomous_mode)
+    thinking_budget = get_thinking_config()["budget_tokens"] if thinking_enabled else 0
 
     # Build provider-specific command (file-mode system prompt when supported)
     cmd, cleanup_paths = build_full_command_managed(
