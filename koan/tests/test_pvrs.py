@@ -291,6 +291,14 @@ class TestBuildAdvisoryDescription:
 class TestCreateIssuesPvrsRouting:
     """Test the routing logic in create_issues with PVRS support."""
 
+    @pytest.fixture(autouse=True)
+    def _stub_existing_issues(self):
+        """PVRS routing tests don't care about dedup — stub the lookup empty."""
+        with patch(
+            "app.github.list_open_audit_issues", return_value=[],
+        ) as m:
+            yield m
+
     def _make_findings(self):
         """Create a mixed-severity set of findings."""
         return [
@@ -328,13 +336,13 @@ class TestCreateIssuesPvrsRouting:
         mock_issue.return_value = "https://github.com/o/r/issues/1\n"
 
         findings = self._make_findings()
-        urls = create_issues(findings, "/path/proj", pvrs_threshold="high")
+        result = create_issues(findings, "/path/proj", pvrs_threshold="high")
 
         # critical + high → PVRS (2 calls)
         assert mock_pvrs.call_count == 2
         # medium + low → public issues (2 calls)
         assert mock_issue.call_count == 2
-        assert len(urls) == 4
+        assert len(result.urls) == 4
 
     @patch("app.github.resolve_target_repo", return_value="upstream/repo")
     @patch("app.github.check_pvrs_enabled", return_value=False)
@@ -344,11 +352,11 @@ class TestCreateIssuesPvrsRouting:
     ):
         mock_issue.return_value = "https://github.com/o/r/issues/1\n"
         findings = self._make_findings()
-        urls = create_issues(findings, "/path/proj")
+        result = create_issues(findings, "/path/proj")
 
         # All go to public issues
         assert mock_issue.call_count == 4
-        assert len(urls) == 4
+        assert len(result.urls) == 4
 
     @patch("app.github.resolve_target_repo", return_value="upstream/repo")
     @patch("app.github.issue_create")
@@ -359,7 +367,7 @@ class TestCreateIssuesPvrsRouting:
 
         # Should NOT call check_pvrs_enabled at all
         with patch("app.github.check_pvrs_enabled") as mock_check:
-            urls = create_issues(
+            create_issues(
                 findings, "/path/proj", pvrs_mode="false",
             )
             mock_check.assert_not_called()
@@ -379,7 +387,7 @@ class TestCreateIssuesPvrsRouting:
         mock_issue.return_value = "https://github.com/o/r/issues/1\n"
 
         findings = self._make_findings()
-        urls = create_issues(
+        create_issues(
             findings, "/path/proj", pvrs_mode="true", pvrs_threshold="high",
         )
 
@@ -402,7 +410,7 @@ class TestCreateIssuesPvrsRouting:
         findings = [self._make_findings()[0]]  # critical only
 
         notify = MagicMock()
-        urls = create_issues(
+        result = create_issues(
             findings, "/path/proj", notify_fn=notify,
             pvrs_threshold="high",
         )
@@ -410,7 +418,7 @@ class TestCreateIssuesPvrsRouting:
         # PVRS was attempted, then redacted fallback issue created
         assert mock_pvrs.call_count == 1
         assert mock_issue.call_count == 1
-        assert len(urls) == 1
+        assert len(result.urls) == 1
         # Fallback issue title is redacted (no finding title leaked)
         title_arg = mock_issue.call_args[1]["title"]
         assert "PVRS unavailable" in title_arg
@@ -433,7 +441,7 @@ class TestCreateIssuesPvrsRouting:
         mock_issue.return_value = "https://github.com/o/r/issues/1\n"
 
         findings = self._make_findings()
-        urls = create_issues(
+        create_issues(
             findings, "/path/proj", pvrs_threshold="critical",
         )
 

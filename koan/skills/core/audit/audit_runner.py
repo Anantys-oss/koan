@@ -21,7 +21,7 @@ CLI:
 import re
 import sys
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, NamedTuple, Optional, Tuple
 
 from app.prompts import load_prompt_or_skill
 
@@ -182,6 +182,64 @@ def prioritize_findings(
 # GitHub issue creation
 # ---------------------------------------------------------------------------
 
+class IssueCreationResult(NamedTuple):
+    """Outcome of ``create_issues()``.
+
+    ``urls`` lists every issue/advisory URL associated with the audit
+    findings — both newly opened and those already tracked. ``created``
+    and ``reused`` distinguish the two so the summary can report
+    accurately.
+    """
+
+    urls: List[str]
+    created: int
+    reused: int
+
+
+def _normalize_title(title: str) -> str:
+    """Lowercase + strip + collapse whitespace for title dedup matching."""
+    return " ".join((title or "").lower().split())
+
+
+def _build_existing_title_index(
+    existing_issues: List[Dict],
+) -> Dict[str, str]:
+    """Map normalized title -> issue URL for fast dedup lookup."""
+    index = {}
+    for issue in existing_issues:
+        title = issue.get("title") or ""
+        url = issue.get("url") or ""
+        if not title or not url:
+            continue
+        key = _normalize_title(title)
+        # First occurrence wins (newest issue listed first by gh)
+        index.setdefault(key, url)
+    return index
+
+
+def _find_existing_match(
+    finding: AuditFinding,
+    existing_index: Dict[str, str],
+) -> Optional[str]:
+    """Return the URL of an open audit issue already tracking *finding*.
+
+    Matches on the title that ``_submit_public_issue()`` would produce,
+    plus the ``"Security: "``-prefixed PVRS-fallback variant so reruns
+    of /security_audit also dedup against earlier public-issue runs.
+    """
+    if not existing_index:
+        return None
+    candidates = [
+        finding.title,
+        f"Security: {finding.title}",
+    ]
+    for candidate in candidates:
+        url = existing_index.get(_normalize_title(candidate))
+        if url:
+            return url
+    return None
+
+
 _SEVERITY_LABELS = {
     "critical": "\U0001f534",  # red circle
     "high": "\U0001f7e0",      # orange circle
@@ -275,13 +333,20 @@ def create_issues(
     notify_fn=None,
     pvrs_mode: str = "auto",
     pvrs_threshold: str = "high",
-) -> List[str]:
+) -> IssueCreationResult:
     """Create GitHub issues (or PVRS reports) for each finding.
+
+    Before opening a new issue, the repo's currently-open audit issues
+    are fetched and findings whose titles already match an open issue
+    are skipped — the existing issue URL is reused so reruns of the
+    audit do not duplicate previously-tracked findings.
 
     When PVRS is available and ``pvrs_mode`` is not ``"false"``, findings
     at or above ``pvrs_threshold`` severity are submitted as private
     vulnerability reports.  Lower-severity findings and PVRS failures
-    fall back to public GitHub issues.
+    fall back to public GitHub issues. Dedup applies only to the
+    public-issue path; PVRS advisories are private and cannot be
+    listed with the same call.
 
     Args:
         findings: List of validated audit findings.
@@ -292,11 +357,11 @@ def create_issues(
         pvrs_threshold: Minimum severity for PVRS routing (default ``"high"``).
 
     Returns:
-        List of issue/advisory URLs.
+        ``IssueCreationResult`` with all URLs plus created/reused counts.
     """
     from app.github import (
         check_pvrs_enabled, detect_ecosystem,
-        resolve_target_repo,
+        list_open_audit_issues, resolve_target_repo,
     )
 
     target_repo = resolve_target_repo(project_path)
@@ -314,17 +379,42 @@ def create_issues(
             f"routing {pvrs_threshold}+ findings privately"
         )
 
+    # Fetch existing audit issues once so we can dedup against them.
+    # Errors are swallowed inside list_open_audit_issues — a failed
+    # lookup yields an empty index, which means we fall back to the
+    # legacy "create unconditionally" behavior rather than skipping
+    # legitimate work.
+    existing_index = _build_existing_title_index(
+        list_open_audit_issues(repo=target_repo, cwd=project_path)
+    )
+
     ecosystem = detect_ecosystem(project_path) if pvrs_available else "other"
     # Derive a package name from the project directory
     package_name = Path(project_path).name
 
     issue_urls = []
+    created_count = 0
+    reused_count = 0
 
     for i, finding in enumerate(findings, 1):
         title = finding.title
         use_pvrs = pvrs_available and _should_use_pvrs(
             finding.severity, pvrs_threshold,
         )
+
+        # Dedup applies to the public-issue path only — PVRS advisories
+        # live in a private endpoint not covered by `gh issue list`.
+        if not use_pvrs:
+            existing_url = _find_existing_match(finding, existing_index)
+            if existing_url:
+                reused_count += 1
+                issue_urls.append(existing_url)
+                if notify_fn:
+                    notify_fn(
+                        f"  ↩️ {i}/{len(findings)}: "
+                        f"already tracked — {existing_url}"
+                    )
+                continue
 
         if notify_fn:
             channel = "\U0001f512 PVRS" if use_pvrs else "\U0001f4dd issue"
@@ -376,10 +466,15 @@ def create_issues(
         url = url.strip() if url else ""
         if url:
             issue_urls.append(url)
+            created_count += 1
             if notify_fn:
                 notify_fn(f"  \U0001f517 {url}")
 
-    return issue_urls
+    return IssueCreationResult(
+        urls=issue_urls,
+        created=created_count,
+        reused=reused_count,
+    )
 
 
 def _submit_pvrs_report(
@@ -576,22 +671,31 @@ def run_audit(
             f"Creating GitHub issues..."
         )
 
-    # Step 5: Create GitHub issues (or PVRS reports for security audits)
-    issue_urls = create_issues(
+    # Step 5: Create GitHub issues (or PVRS reports for security audits).
+    # Findings whose titles match an already-open audit issue on the
+    # repo are skipped \u2014 the existing URL is reused so a second run
+    # doesn't pile up duplicate tickets for the same problem.
+    result = create_issues(
         findings, project_path, notify_fn=notify_fn,
         pvrs_mode=pvrs_mode, pvrs_threshold=pvrs_threshold,
     )
 
     # Step 6: Save report
     report_path = _save_audit_report(
-        instance_path, project_name, findings, issue_urls,
+        instance_path, project_name, findings, result.urls,
         report_name=report_name,
     )
 
     # Build summary
+    if result.reused:
+        issue_summary = (
+            f"{result.created} new, {result.reused} already tracked"
+        )
+    else:
+        issue_summary = f"{result.created} GitHub issues created"
     summary = (
         f"Audit complete: {len(findings)} findings, "
-        f"{len(issue_urls)} GitHub issues created. "
+        f"{issue_summary}. "
         f"Report saved to {report_path.name}."
     )
     notify_fn(f"\u2705 {summary}")

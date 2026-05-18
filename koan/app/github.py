@@ -187,6 +187,93 @@ def issue_create(title, body, labels=None, repo=None, cwd=None):
     return run_gh(*args, cwd=cwd, idempotent=False)
 
 
+AUDIT_ISSUE_MARKER = "Created by Kōan from audit session"
+
+
+def list_open_issues(
+    repo: Optional[str] = None,
+    cwd: Optional[str] = None,
+    body_contains: Optional[str] = None,
+    limit: int = 200,
+) -> List[Dict]:
+    """List currently-open issues on a repository.
+
+    Wraps ``gh issue list --state open --json number,title,url,body``.
+    When ``body_contains`` is provided, only issues whose body contains
+    that substring are returned — useful for filtering down to issues
+    created by a specific tool/marker.
+
+    Returns ``[]`` on any error (safe default for callers performing
+    dedup checks — failing to fetch should not block issue creation).
+
+    Args:
+        repo: Repository in ``owner/repo`` format (omit for local repo).
+        cwd: Working directory (must be inside a git repo when ``repo``
+            is None).
+        body_contains: Optional substring to filter issue bodies.
+        limit: Maximum number of issues to fetch (default 200).
+
+    Returns:
+        List of ``{"number", "title", "url", "body"}`` dicts.
+    """
+    args = [
+        "issue", "list",
+        "--state", "open",
+        "--limit", str(limit),
+        "--json", "number,title,url,body",
+    ]
+    if repo:
+        args.extend(["--repo", repo])
+    try:
+        output = run_gh(*args, cwd=cwd)
+    except (RuntimeError, subprocess.TimeoutExpired, OSError):
+        return []
+    if not output:
+        return []
+    try:
+        issues = json.loads(output)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(issues, list):
+        return []
+
+    result = []
+    for item in issues:
+        if not isinstance(item, dict):
+            continue
+        body = item.get("body") or ""
+        if body_contains and body_contains not in body:
+            continue
+        result.append({
+            "number": item.get("number"),
+            "title": item.get("title") or "",
+            "url": item.get("url") or "",
+            "body": body,
+        })
+    return result
+
+
+def list_open_audit_issues(
+    repo: Optional[str] = None,
+    cwd: Optional[str] = None,
+    limit: int = 200,
+) -> List[Dict]:
+    """List open issues that were created by a previous Kōan audit run.
+
+    Filters ``list_open_issues()`` by the audit marker embedded in
+    every audit-created issue body. Used by the audit pipeline to
+    avoid duplicating findings already tracked on the repo.
+
+    Returns ``[]`` on any failure (callers fall back to creating new
+    issues — duplicates are recoverable, missed audits are not).
+    """
+    return list_open_issues(
+        repo=repo, cwd=cwd,
+        body_contains=AUDIT_ISSUE_MARKER,
+        limit=limit,
+    )
+
+
 def issue_edit(number, body, cwd=None):
     """Update a GitHub issue body via ``gh issue edit``.
 
