@@ -141,6 +141,15 @@ class CLIProvider:
         """
         return []
 
+    def supports_stream_json(self) -> bool:
+        """Return True if the provider supports ``--output-format stream-json``.
+
+        When True, :func:`run_command_streaming` uses structured JSON events
+        for real-time progress and result extraction. When False, it falls
+        back to raw text output.
+        """
+        return False
+
     def build_permission_args(self, skip_permissions: bool = False) -> List[str]:
         """Build args for permission skipping.
 

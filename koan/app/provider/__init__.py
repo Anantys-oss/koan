@@ -551,7 +551,7 @@ def run_command_streaming(
     from app.config import get_model_config
 
     models = get_model_config()
-    use_stream_json = get_provider_name() == "claude"
+    use_stream_json = get_provider().supports_stream_json()
     cmd = build_full_command(
         prompt=prompt,
         allowed_tools=allowed_tools,
@@ -602,8 +602,7 @@ def run_command_streaming(
                 # before the final ``result`` event (timeout, watchdog
                 # kill, SIGPIPE) still returns whatever Claude managed
                 # to print, instead of silently returning "".
-                for chunk in _extract_assistant_text_chunks(event):
-                    text_lines.append(chunk)
+                text_lines.extend(_extract_assistant_text_chunks(event))
                 result_text = _extract_result_text(event)
                 if result_text is not None:
                     final_result = result_text

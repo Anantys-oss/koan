@@ -13,6 +13,9 @@ class ClaudeProvider(CLIProvider):
     def binary(self) -> str:
         return "claude"
 
+    def supports_stream_json(self) -> bool:
+        return True
+
     def build_permission_args(self, skip_permissions: bool = False) -> List[str]:
         if skip_permissions:
             return ["--dangerously-skip-permissions"]
