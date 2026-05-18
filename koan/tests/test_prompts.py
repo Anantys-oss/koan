@@ -8,7 +8,9 @@ import pytest
 
 from app.prompts import (
     PROMPT_DIR,
+    _MAX_INCLUDE_DEPTH,
     _read_prompt_with_git_fallback,
+    _resolve_includes,
     _substitute,
     get_prompt_path,
     load_prompt,
@@ -501,3 +503,207 @@ class TestGitFallback:
             with patch("app.prompts.subprocess.run", side_effect=alternating_se):
                 result = load_skill_prompt(skill_dir, "someprompt")
         assert result == "content from origin"
+
+
+# ---------- _resolve_includes ----------
+
+
+class TestResolveIncludes:
+    """Tests for {@include partial-name} directive resolution."""
+
+    def test_no_includes_passes_through(self):
+        """Template without includes is returned unchanged."""
+        template = "Hello world\nNo includes here"
+        assert _resolve_includes(template) == template
+
+    def test_global_partial_resolved(self, tmp_path):
+        """A global partial in system-prompts/_partials/ is resolved."""
+        partials = tmp_path / "_partials"
+        partials.mkdir()
+        (partials / "greeting.md").write_text("Hello from partial")
+        template = "Before\n{@include greeting}\nAfter"
+        with patch("app.prompts.PROMPT_DIR", tmp_path):
+            result = _resolve_includes(template)
+        assert result == "Before\nHello from partial\nAfter"
+
+    def test_skill_local_partial_overrides_global(self, tmp_path):
+        """Skill-local partial takes priority over global."""
+        # Global partial
+        global_dir = tmp_path / "global"
+        global_partials = global_dir / "_partials"
+        global_partials.mkdir(parents=True)
+        (global_partials / "rules.md").write_text("global rules")
+        # Skill-local partial
+        skill_dir = tmp_path / "skill"
+        skill_partials = skill_dir / "prompts" / "_partials"
+        skill_partials.mkdir(parents=True)
+        (skill_partials / "rules.md").write_text("skill-specific rules")
+
+        template = "Start\n{@include rules}\nEnd"
+        with patch("app.prompts.PROMPT_DIR", global_dir):
+            result = _resolve_includes(template, skill_dir=skill_dir)
+        assert result == "Start\nskill-specific rules\nEnd"
+
+    def test_falls_back_to_global_when_no_skill_partial(self, tmp_path):
+        """When skill has no local override, global partial is used."""
+        global_dir = tmp_path / "global"
+        global_partials = global_dir / "_partials"
+        global_partials.mkdir(parents=True)
+        (global_partials / "rules.md").write_text("global rules")
+        skill_dir = tmp_path / "skill"
+        skill_dir.mkdir()
+
+        template = "{@include rules}"
+        with patch("app.prompts.PROMPT_DIR", global_dir):
+            result = _resolve_includes(template, skill_dir=skill_dir)
+        assert result == "global rules"
+
+    def test_missing_partial_left_as_is(self, tmp_path):
+        """When a partial doesn't exist anywhere, the directive is preserved."""
+        global_dir = tmp_path / "global"
+        global_dir.mkdir()
+        template = "Before\n{@include nonexistent}\nAfter"
+        with patch("app.prompts.PROMPT_DIR", global_dir):
+            result = _resolve_includes(template)
+        assert result == "Before\n{@include nonexistent}\nAfter"
+
+    def test_recursive_includes(self, tmp_path):
+        """Partials can include other partials."""
+        partials = tmp_path / "_partials"
+        partials.mkdir()
+        (partials / "outer.md").write_text("outer-start\n{@include inner}\nouter-end")
+        (partials / "inner.md").write_text("inner-content")
+        template = "{@include outer}"
+        with patch("app.prompts.PROMPT_DIR", tmp_path):
+            result = _resolve_includes(template)
+        assert result == "outer-start\ninner-content\nouter-end"
+
+    def test_depth_limit_prevents_infinite_recursion(self, tmp_path):
+        """Recursive includes stop at _MAX_INCLUDE_DEPTH."""
+        partials = tmp_path / "_partials"
+        partials.mkdir()
+        # Create a self-referencing partial
+        (partials / "loop.md").write_text("level\n{@include loop}")
+        template = "{@include loop}"
+        with patch("app.prompts.PROMPT_DIR", tmp_path):
+            result = _resolve_includes(template)
+        # At depth 0: resolves loop -> "level\n{@include loop}"
+        # At depth 1: resolves inner loop -> "level\n{@include loop}"
+        # At depth 2: resolves inner loop -> "level\n{@include loop}"
+        # At depth 3: max depth reached, returns as-is
+        expected_levels = _MAX_INCLUDE_DEPTH
+        lines = result.split("\n")
+        assert lines.count("level") == expected_levels
+        # The deepest include is left unresolved
+        assert lines[-1] == "{@include loop}"
+
+    def test_multiple_includes_in_one_template(self, tmp_path):
+        """Multiple include directives in a single template are all resolved."""
+        partials = tmp_path / "_partials"
+        partials.mkdir()
+        (partials / "alpha.md").write_text("A-content")
+        (partials / "beta.md").write_text("B-content")
+        template = "start\n{@include alpha}\nmiddle\n{@include beta}\nend"
+        with patch("app.prompts.PROMPT_DIR", tmp_path):
+            result = _resolve_includes(template)
+        assert result == "start\nA-content\nmiddle\nB-content\nend"
+
+    def test_inline_include_not_matched(self):
+        """Include directives must be on their own line."""
+        template = "text {@include foo} more text"
+        # Should not be matched since it's not on its own line
+        assert _resolve_includes(template) == template
+
+    def test_include_with_trailing_whitespace(self, tmp_path):
+        """Trailing whitespace after the directive is tolerated."""
+        partials = tmp_path / "_partials"
+        partials.mkdir()
+        (partials / "ws.md").write_text("whitespace-ok")
+        template = "before\n{@include ws}   \nafter"
+        with patch("app.prompts.PROMPT_DIR", tmp_path):
+            result = _resolve_includes(template)
+        assert result == "before\nwhitespace-ok\nafter"
+
+    def test_include_preserves_surrounding_content(self, tmp_path):
+        """Lines before and after the include directive are preserved."""
+        partials = tmp_path / "_partials"
+        partials.mkdir()
+        (partials / "mid.md").write_text("included")
+        template = "line1\nline2\n{@include mid}\nline4\nline5"
+        with patch("app.prompts.PROMPT_DIR", tmp_path):
+            result = _resolve_includes(template)
+        assert result == "line1\nline2\nincluded\nline4\nline5"
+
+    def test_hyphenated_partial_name(self, tmp_path):
+        """Partial names with hyphens are valid."""
+        partials = tmp_path / "_partials"
+        partials.mkdir()
+        (partials / "pr-submit-fork.md").write_text("fork rules")
+        template = "{@include pr-submit-fork}"
+        with patch("app.prompts.PROMPT_DIR", tmp_path):
+            result = _resolve_includes(template)
+        assert result == "fork rules"
+
+    def test_placeholders_survive_include_resolution(self, tmp_path):
+        """Placeholders in partials are preserved for later _substitute()."""
+        partials = tmp_path / "_partials"
+        partials.mkdir()
+        (partials / "tmpl.md").write_text("Hello {NAME}")
+        template = "{@include tmpl}"
+        with patch("app.prompts.PROMPT_DIR", tmp_path):
+            result = _resolve_includes(template)
+        assert result == "Hello {NAME}"
+
+
+class TestLoadPromptWithIncludes:
+    """Integration tests: load_prompt and load_skill_prompt resolve includes."""
+
+    def test_load_prompt_resolves_global_include(self, tmp_path):
+        """load_prompt resolves {@include} from system-prompts/_partials/."""
+        partials = tmp_path / "_partials"
+        partials.mkdir()
+        (partials / "sig.md").write_text("-- Koan")
+        (tmp_path / "test.md").write_text("Hello\n{@include sig}")
+        with patch("app.prompts.PROMPT_DIR", tmp_path):
+            result = load_prompt("test")
+        assert result == "Hello\n-- Koan"
+
+    def test_load_skill_prompt_resolves_skill_local_include(self, tmp_path):
+        """load_skill_prompt prefers skill-local partials."""
+        # Global
+        global_dir = tmp_path / "global"
+        global_partials = global_dir / "_partials"
+        global_partials.mkdir(parents=True)
+        (global_partials / "footer.md").write_text("global footer")
+        # Skill
+        skill_dir = tmp_path / "skill"
+        skill_prompts = skill_dir / "prompts"
+        skill_partials = skill_prompts / "_partials"
+        skill_partials.mkdir(parents=True)
+        (skill_partials / "footer.md").write_text("skill footer")
+        (skill_prompts / "main.md").write_text("body\n{@include footer}")
+        with patch("app.prompts.PROMPT_DIR", global_dir):
+            result = load_skill_prompt(skill_dir, "main")
+        assert result == "body\nskill footer"
+
+    def test_includes_resolved_before_substitution(self, tmp_path):
+        """Includes are expanded first, then {KEY} placeholders are substituted."""
+        partials = tmp_path / "_partials"
+        partials.mkdir()
+        (partials / "greeting.md").write_text("Hello {USER}")
+        (tmp_path / "test.md").write_text("{@include greeting}\nBye")
+        with patch("app.prompts.PROMPT_DIR", tmp_path):
+            result = load_prompt("test", USER="Alice")
+        assert result == "Hello Alice\nBye"
+
+    def test_real_partials_resolve_in_prompts(self):
+        """Existing {@include} directives in real prompt files resolve correctly."""
+        partials_dir = PROMPT_DIR / "_partials"
+        if not partials_dir.exists():
+            pytest.skip("No _partials directory yet")
+        # Verify that agent.md (which uses includes) loads without leftover directives
+        result = load_prompt("agent")
+        # No unresolved includes should remain (all partials exist)
+        import re
+        unresolved = re.findall(r"\{@include\s+[\w-]+\}", result)
+        assert unresolved == [], f"Unresolved includes in agent.md: {unresolved}"

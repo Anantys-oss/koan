@@ -24,7 +24,8 @@ You are implementing a plan from a GitHub issue. Your job is to read the plan ca
 4. **Implement the changes**: Follow the plan's phases in order. For each phase:
    - Make the code changes described
    - Follow existing patterns and conventions in the codebase
-   - Write tests if the plan calls for them — tests should validate behavior (inputs → outputs, observable outcomes). Mocking dependencies is fine, but never inspect source code to verify code presence or absence
+   - Write tests if the plan calls for them:
+{@include test-guidance}
    - Ensure the phase's acceptance criteria ("Done when") are met
 
 5. **Run existing tests**: After making changes, run the project's test suite to ensure nothing is broken. Fix any regressions.
@@ -74,8 +75,6 @@ You are implementing a plan from a GitHub issue. Your job is to read the plan ca
       )"
       ```
     - Title: concise, under 70 characters.
-    - If the local repo is a fork, submit to the upstream repository:
-      `gh pr create --draft --repo <upstream-owner>/<repo> --head <fork-owner>:<branch> --title "..." --body "..."`
-    - PRs are **always draft**. Never create a non-draft PR.
+{@include pr-submit-fork}
 
 Keep your changes focused, testable, and consistent with the project's existing style.
