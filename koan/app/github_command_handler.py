@@ -1067,23 +1067,17 @@ def process_single_notification(
 
     comment_author = comment.get("user", {}).get("login", "")
 
-    # Resolve project — fall back to repo name when not in projects.yaml.
-    # This lets @mentions work on repos the bot has PRs on but aren't configured.
-    # NOTE: the fallback only works when the repo is already cloned locally
-    # (e.g., in workspace/). If it isn't, the mission will fail at execution
-    # with "Unknown project". Auto-cloning unknown repos is a future enhancement.
+    # Resolve project — silently skip repos not registered to this instance.
+    # When a GitHub account is shared by multiple instances, each instance
+    # must only process notifications for its own projects.
     project_info = resolve_project_from_notification(notification)
-    if project_info:
-        project_name, owner, repo = project_info
-    else:
+    if not project_info:
         repo_data = notification.get("repository", {})
-        full_name = repo_data.get("full_name", "")
-        if not full_name or "/" not in full_name:
-            mark_notification_read(str(notification.get("id", "")))
-            return False, None
-        owner, repo = full_name.split("/", 1)
-        project_name = repo.lower()
-        log.info("GitHub: repo %s/%s not in projects.yaml — using '%s' as project name", owner, repo, project_name)
+        full_name = repo_data.get("full_name", "?")
+        log.debug("GitHub: repo %s not in projects.yaml — ignoring notification", full_name)
+        mark_notification_read(str(notification.get("id", "")))
+        return False, None
+    project_name, owner, repo = project_info
     log.debug("GitHub: resolved project=%s from %s/%s", project_name, owner, repo)
 
     # Skip notifications on closed/merged PRs and issues — commands like
