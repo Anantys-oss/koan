@@ -20,7 +20,7 @@ def _mock_pr_context():
         patch("app.rebase_pr.fetch_pr_context", return_value=fake_context),
         patch("app.ci_queue_runner.check_ci_status", return_value=("failure", 123)),
         patch("app.claude_step._fetch_failed_logs", return_value="Error: test failed"),
-        patch("app.rebase_pr._check_pr_state", return_value=("OPEN", "MERGEABLE")),
+        patch("app.rebase_pr.check_pr_state", return_value=("OPEN", "MERGEABLE")),
         patch("app.claude_step._get_current_branch", return_value="main"),
         patch("app.claude_step._run_git"),
         patch("app.claude_step._safe_checkout"),
@@ -101,7 +101,7 @@ class TestRunCiCheckAndFixErrorHandling:
             patch("app.rebase_pr.fetch_pr_context", return_value=fake_context),
             patch("app.ci_queue_runner.check_ci_status", return_value=("failure", 123)),
             patch("app.claude_step._fetch_failed_logs", return_value="Error: test failed"),
-            patch("app.rebase_pr._check_pr_state", return_value=("MERGED", "UNKNOWN")),
+            patch("app.rebase_pr.check_pr_state", return_value=("MERGED", "UNKNOWN")),
         ):
             success, summary = run_ci_check_and_fix(PR_URL, PROJECT_PATH)
 
@@ -117,7 +117,7 @@ class TestRunCiCheckAndFixErrorHandling:
             patch("app.rebase_pr.fetch_pr_context", return_value=fake_context),
             patch("app.ci_queue_runner.check_ci_status", return_value=("failure", 123)),
             patch("app.claude_step._fetch_failed_logs", return_value="Error: test failed"),
-            patch("app.rebase_pr._check_pr_state", return_value=("OPEN", "CONFLICTING")),
+            patch("app.rebase_pr.check_pr_state", return_value=("OPEN", "CONFLICTING")),
         ):
             success, summary = run_ci_check_and_fix(PR_URL, PROJECT_PATH)
 
@@ -332,7 +332,7 @@ class TestCheckPrStateSafe:
         from app.ci_queue_runner import _check_pr_state_safe
 
         with patch(
-            "app.rebase_pr._check_pr_state",
+            "app.rebase_pr.check_pr_state",
             return_value=("CLOSED", "UNKNOWN"),
         ):
             assert _check_pr_state_safe("42", "owner/repo") == "CLOSED"
@@ -341,7 +341,7 @@ class TestCheckPrStateSafe:
         from app.ci_queue_runner import _check_pr_state_safe
 
         with patch(
-            "app.rebase_pr._check_pr_state",
+            "app.rebase_pr.check_pr_state",
             side_effect=RuntimeError("gh exploded"),
         ):
             assert _check_pr_state_safe("42", "owner/repo") == "UNKNOWN"
