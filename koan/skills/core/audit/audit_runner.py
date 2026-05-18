@@ -579,6 +579,65 @@ def _submit_redacted_fallback_issue(
 # Report saving
 # ---------------------------------------------------------------------------
 
+def _write_findings_to_journal(
+    instance_dir: Path,
+    project_name: str,
+    findings: List[AuditFinding],
+    extra_context: str = "",
+) -> Path:
+    """Append audit findings to today's project journal file.
+
+    Used by ``/private_security_audit`` so vulnerability details never leave
+    the local instance. Writes a structured markdown section so it can be
+    distinguished from regular journal entries.
+    """
+    from datetime import datetime as _dt
+
+    today = _dt.now().strftime("%Y-%m-%d")
+    timestamp = _dt.now().strftime("%H:%M:%S")
+    journal_dir = instance_dir / "journal" / today
+    journal_dir.mkdir(parents=True, exist_ok=True)
+    journal_path = journal_dir / f"{project_name}.md"
+
+    lines = [
+        "",
+        f"## \U0001f512 Private Security Audit — {today} {timestamp}",
+        "",
+        "*Findings recorded locally only — not posted to GitHub.*",
+        "",
+    ]
+    if extra_context:
+        lines.extend([f"**Focus:** {extra_context}", ""])
+
+    for i, finding in enumerate(findings, 1):
+        severity_icon = _SEVERITY_LABELS.get(finding.severity, "❓")
+        lines.extend([
+            f"### {i}. {severity_icon} {finding.severity.capitalize()} — {finding.title}",
+            "",
+            f"- **Location:** `{finding.location}`",
+            f"- **Category:** {finding.category}",
+            f"- **Effort:** {finding.effort}",
+            "",
+            "**Problem**",
+            "",
+            finding.problem,
+            "",
+            "**Why it matters**",
+            "",
+            finding.why,
+            "",
+            "**Suggested fix**",
+            "",
+            finding.suggested_fix,
+            "",
+        ])
+
+    with open(journal_path, "a", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+    return journal_path
+
+
 def _save_audit_report(
     instance_dir: Path,
     project_name: str,
@@ -636,6 +695,7 @@ def run_audit(
     report_name: str = "audit",
     pvrs_mode: str = "auto",
     pvrs_threshold: str = "high",
+    journal_only: bool = False,
 ) -> Tuple[bool, str]:
     """Execute a codebase audit on a project.
 
@@ -650,6 +710,10 @@ def run_audit(
         report_name: Base name for the saved report file (default: "audit").
         pvrs_mode: PVRS routing mode (``"auto"``, ``"true"``, ``"false"``).
         pvrs_threshold: Minimum severity for PVRS routing (default ``"high"``).
+        journal_only: When True, skip GitHub issue / PVRS creation entirely
+            and write findings to today's journal file instead. Used by
+            ``/private_security_audit`` to keep sensitive findings off
+            public GitHub.
 
     Returns:
         (success, summary) tuple.
@@ -697,14 +761,24 @@ def run_audit(
             f"Creating GitHub issues..."
         )
 
-    # Step 5: Create GitHub issues (or PVRS reports for security audits).
-    # Findings whose fingerprint matches an already-open audit issue on
-    # the repo are skipped \u2014 the existing URL is reused so a second run
-    # doesn't pile up duplicate tickets for the same problem.
-    result = create_issues(
-        findings, project_path, notify_fn=notify_fn,
-        pvrs_mode=pvrs_mode, pvrs_threshold=pvrs_threshold,
-    )
+    # Step 5: Output findings -- either GitHub issues or journal-only.
+    # For GitHub: findings whose fingerprint matches an already-open audit
+    # issue on the repo are skipped \u2014 the existing URL is reused so a
+    # second run doesn't pile up duplicate tickets for the same problem.
+    if journal_only:
+        journal_path = _write_findings_to_journal(
+            instance_path, project_name, findings, extra_context,
+        )
+        result = IssueCreationResult(urls=[], created=0, reused=0)
+        notify_fn(
+            f"\U0001f4d3 Wrote {len(findings)} finding(s) to journal: "
+            f"{journal_path.name}"
+        )
+    else:
+        result = create_issues(
+            findings, project_path, notify_fn=notify_fn,
+            pvrs_mode=pvrs_mode, pvrs_threshold=pvrs_threshold,
+        )
 
     # Step 6: Save report
     report_path = _save_audit_report(
@@ -713,17 +787,23 @@ def run_audit(
     )
 
     # Build summary
-    if result.reused:
-        issue_summary = (
-            f"{result.created} new, {result.reused} already tracked"
+    if journal_only:
+        summary = (
+            f"Private audit complete: {len(findings)} findings written to journal. "
+            f"Report saved to {report_path.name} (no GitHub issues created)."
         )
     else:
-        issue_summary = f"{result.created} GitHub issues created"
-    summary = (
-        f"Audit complete: {len(findings)} findings, "
-        f"{issue_summary}. "
-        f"Report saved to {report_path.name}."
-    )
+        if result.reused:
+            issue_summary = (
+                f"{result.created} new, {result.reused} already tracked"
+            )
+        else:
+            issue_summary = f"{result.created} GitHub issues created"
+        summary = (
+            f"Audit complete: {len(findings)} findings, "
+            f"{issue_summary}. "
+            f"Report saved to {report_path.name}."
+        )
     notify_fn(f"\u2705 {summary}")
 
     return True, summary
@@ -764,6 +844,10 @@ def main(argv=None):
         "--max-issues", type=int, default=DEFAULT_MAX_ISSUES,
         help=f"Maximum number of findings to create issues for (default: {DEFAULT_MAX_ISSUES})",
     )
+    parser.add_argument(
+        "--journal-only", action="store_true",
+        help="Skip GitHub issue creation; write findings to journal only",
+    )
     cli_args = parser.parse_args(argv)
 
     # Context from file takes precedence
@@ -783,6 +867,7 @@ def main(argv=None):
         extra_context=context,
         max_issues=cli_args.max_issues,
         skill_dir=skill_dir,
+        journal_only=cli_args.journal_only,
     )
     print(summary)
     return 0 if success else 1
