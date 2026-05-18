@@ -649,7 +649,7 @@ def _post_review_comment(
     owner: str, repo: str, pr_number: str, review_text: str,
     existing_comment: Optional[dict] = None,
     commit_shas: Optional[List[str]] = None,
-) -> bool:
+) -> Tuple[bool, str]:
     """Post (or update) the review as a comment on the PR.
 
     Prepends ``SUMMARY_TAG`` so future runs can locate the comment via
@@ -661,7 +661,7 @@ def _post_review_comment(
     absent, preserves any COMMIT_IDS block from ``existing_comment`` so
     a re-review without SHA info doesn't clobber prior state.
 
-    Returns True on success.
+    Returns (True, "") on success, (False, error_detail) on failure.
     """
     # Truncate if too long for GitHub (max ~65536 chars)
     max_len = 60000
@@ -704,10 +704,10 @@ def _post_review_comment(
                 "--repo", f"{owner}/{repo}",
                 "--body", sanitized,
             )
-        return True
+        return True, ""
     except Exception as e:
         print(f"[review_runner] failed to post comment: {e}", file=sys.stderr)
-        return False
+        return False, str(e)
 
 
 def _post_comment_replies(
@@ -1026,7 +1026,7 @@ def run_review(
     # Step 6: Post (or update) review comment (Phase 3 — idempotent upsert)
     # Commit SHAs are embedded in the body upfront to avoid extra API calls.
     notify_fn(f"Posting review on PR #{pr_number}...")
-    posted = _post_review_comment(
+    posted, post_error = _post_review_comment(
         owner, repo, pr_number, review_body, existing_comment,
         commit_shas=current_shas or None,
     )
@@ -1051,7 +1051,8 @@ def run_review(
             summary += f" Replied to {reply_count} comment(s)."
         return True, summary, review_data
     else:
-        return False, f"Review generated but failed to post comment on PR #{pr_number}.", review_data
+        detail = f" Error: {post_error}" if post_error else ""
+        return False, f"Review generated but failed to post comment on PR #{pr_number}.{detail}", review_data
 
 
 # ---------------------------------------------------------------------------
