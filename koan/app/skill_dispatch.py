@@ -77,6 +77,7 @@ _CANONICAL_RUNNERS = {
     "incident": "skills.core.incident.incident_runner",
     "audit": "skills.core.audit.audit_runner",
     "security_audit": "skills.core.security_audit.security_audit_runner",
+    "private_security_audit": "skills.core.private_security_audit.private_security_audit_runner",
     "ci_check": "app.ci_queue_runner",
 }
 
@@ -90,6 +91,8 @@ _COMMAND_ALIASES = {
     "claude_md": "claudemd",
     "security": "security_audit",
     "secu": "security_audit",
+    "private_security": "private_security_audit",
+    "psecu": "private_security_audit",
 }
 
 # Full mapping including aliases — used for runner module lookup.
@@ -308,6 +311,9 @@ def build_skill_command(
             base_cmd, args, project_name, project_path, instance_dir,
         ),
         "security_audit": lambda: _build_audit_cmd(
+            base_cmd, args, project_name, project_path, instance_dir,
+        ),
+        "private_security_audit": lambda: _build_audit_cmd(
             base_cmd, args, project_name, project_path, instance_dir,
         ),
         "ci_check": lambda: _build_pr_url_cmd(base_cmd, args, project_path),

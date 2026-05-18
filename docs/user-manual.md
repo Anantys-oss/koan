@@ -1041,7 +1041,7 @@ optimizations:
     include: [my_custom_skill, deeplan]   # aliases auto-resolved → deepplan
 ```
 
-Names match **canonical command names**; aliases declared in `koan/app/skill_dispatch.py` (`deeplan` → `deepplan`, `security`/`secu` → `security_audit`, …) resolve automatically. The operator's `include:` list overrides a SKILL.md `caveman: false`, giving instance owners the final say.
+Names match **canonical command names**; aliases declared in `koan/app/skill_dispatch.py` (`deeplan` → `deepplan`, `security`/`secu` → `security_audit`, `private_security`/`psecu` → `private_security_audit`, …) resolve automatically. The operator's `include:` list overrides a SKILL.md `caveman: false`, giving instance owners the final say.
 
 **Switching the global flag off** disables caveman everywhere — agent loop included:
 
@@ -1462,6 +1462,22 @@ projects:
       pvrs: false  # always use public issues for this project
 ```
 
+### Private Security Audit
+
+**`/private_security_audit`** — Same security analysis as `/security_audit`, but findings are written **only** to today's project journal. Nothing is posted to GitHub: no public issues, no Private Vulnerability Reports. Use this when you want a security review without disclosing any details to GitHub — for example, while triaging a sensitive area before deciding what to share.
+
+- **Usage:** `/private_security_audit <project-name> [extra context] [limit=N]`
+- **Aliases:** `/private_security`, `/psecu`
+- Default: top 5 most critical findings. Use `limit=N` to override.
+- **Output:** appended to `instance/journal/<YYYY-MM-DD>/<project>.md` under a `🔒 Private Security Audit` heading, plus a summary file at `instance/memory/projects/<project>/private_security_audit.md`.
+
+<details>
+<summary>Use cases</summary>
+
+- `/private_security_audit koan` — Full audit, findings stay local
+- `/psecu webapp focus on token handling limit=3` — Focused review, kept off GitHub
+</details>
+
 ### Incident Triage
 
 **`/incident`** — Triage a production error from a stack trace or log snippet. Kōan will parse the error, identify the root cause, propose a fix with tests, and submit a draft PR.
@@ -1575,6 +1591,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/profile <project>` | `/perf`, `/benchmark` | P | Performance profiling mission |
 | `/audit <project> [ctx] [limit=N]` | — | P | Audit project, create GitHub issues (top N, default 5) |
 | `/security_audit <project> [ctx] [limit=N]` | `/security`, `/secu` | P | Security audit, find critical vulnerabilities (top N, default 5) |
+| `/private_security_audit <project> [ctx] [limit=N]` | `/private_security`, `/psecu` | P | Security audit, findings to journal only (no GitHub) |
 | `/tech_debt [project]` | `/td`, `/debt` | P | Scan project for tech debt |
 | `/dead_code [project]` | `/dc` | P | Scan for unused code |
 | `/incident <error>` | — | P | Triage a production error |
