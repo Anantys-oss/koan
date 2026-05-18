@@ -482,10 +482,10 @@ def _extract_assistant_text_chunks(event: Dict[str, Any]) -> List[str]:
 def _extract_result_text(event: Dict[str, Any]) -> Optional[str]:
     """Pull the final assistant text out of a ``stream-json`` ``result`` event.
 
-    Returns ``None`` when *event* is not a result event, or when it is a
-    result event whose ``result`` field is missing or not a string — in
-    the malformed case, returning ``None`` lets the caller fall back to
-    accumulated text blocks instead of pinning the return value to ``""``.
+    Returns ``None`` when *event* is not a result event, when its
+    ``result`` field is missing or not a string, or when it is an empty
+    string — in any of these cases the caller falls back to accumulated
+    assistant text blocks instead of pinning the return value to ``""``.
     The Claude CLI stuffs the same string a plain text-mode run would
     have printed into ``event["result"]``; we forward it verbatim so
     callers see the same return value they did before stream-json was on.
@@ -493,7 +493,7 @@ def _extract_result_text(event: Dict[str, Any]) -> Optional[str]:
     if event.get("type") != "result":
         return None
     result = event.get("result")
-    if isinstance(result, str):
+    if isinstance(result, str) and result:
         return result
     return None
 

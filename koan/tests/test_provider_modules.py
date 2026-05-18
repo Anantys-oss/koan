@@ -1031,6 +1031,37 @@ class TestRunCommandStreaming:
         assert "partial answer" in out
         assert "max turns limit" in capsys.readouterr().err
 
+    def test_stream_json_empty_result_falls_back_to_text_blocks(self, capsys):
+        """An empty-string ``result`` field must not pin the return value to ``""``.
+
+        The Claude CLI normally populates ``result`` for successful runs,
+        but if it ever emits an explicitly-empty string we should treat it
+        as "no final text" and surface whatever assistant text blocks the
+        stream produced, rather than discarding them.
+        """
+        import json
+        from app.provider import run_command_streaming
+        events = [
+            json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "text", "text": "first chunk"},
+            ]}}) + "\n",
+            json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "text", "text": "second chunk"},
+            ]}}) + "\n",
+            json.dumps({"type": "result", "subtype": "success",
+                        "result": ""}) + "\n",
+        ]
+        proc = self._make_proc(events)
+        cleanup = MagicMock()
+        with patch("app.config.get_model_config", return_value={"chat": "m", "fallback": "f"}), \
+             patch("app.provider.get_provider_name", return_value="claude"), \
+             patch("app.provider.build_full_command", return_value=["fake"]), \
+             patch("app.cli_exec.popen_cli", return_value=(proc, cleanup)), \
+             patch("app.claude_step.strip_cli_noise", side_effect=lambda s: s):
+            out = run_command_streaming("hi", "/tmp", [])
+        assert "first chunk" in out
+        assert "second chunk" in out
+
     def test_non_claude_provider_uses_raw_text(self, capsys):
         """Codex/copilot/etc. don't speak stream-json; raw stdout is used."""
         from app.provider import run_command_streaming
