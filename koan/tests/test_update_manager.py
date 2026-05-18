@@ -12,7 +12,7 @@ from app.update_manager import (
     _get_current_branch,
     _get_short_sha,
     _is_dirty,
-    _find_upstream_remote,
+    find_upstream_remote,
     _count_commits_between,
 )
 
@@ -108,32 +108,32 @@ class TestIsDirty:
 
 
 class TestFindUpstreamRemote:
-    """Tests for _find_upstream_remote()."""
+    """Tests for find_upstream_remote()."""
 
     @patch("app.update_manager._run_git")
     def test_prefers_upstream(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0, stdout="origin\nupstream\n")
-        assert _find_upstream_remote(Path("/repo")) == "upstream"
+        assert find_upstream_remote(Path("/repo")) == "upstream"
 
     @patch("app.update_manager._run_git")
     def test_falls_back_to_origin(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0, stdout="origin\n")
-        assert _find_upstream_remote(Path("/repo")) == "origin"
+        assert find_upstream_remote(Path("/repo")) == "origin"
 
     @patch("app.update_manager._run_git")
     def test_returns_first_remote(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0, stdout="fork\n")
-        assert _find_upstream_remote(Path("/repo")) == "fork"
+        assert find_upstream_remote(Path("/repo")) == "fork"
 
     @patch("app.update_manager._run_git")
     def test_returns_none_on_failure(self, mock_run):
         mock_run.return_value = MagicMock(returncode=1, stdout="")
-        assert _find_upstream_remote(Path("/repo")) is None
+        assert find_upstream_remote(Path("/repo")) is None
 
     @patch("app.update_manager._run_git")
     def test_returns_none_when_no_remotes(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0, stdout="")
-        assert _find_upstream_remote(Path("/repo")) is None
+        assert find_upstream_remote(Path("/repo")) is None
 
 
 class TestCountCommitsBetween:
@@ -158,7 +158,7 @@ class TestPullUpstream:
         """Happy path: clean repo, on main, upstream exists, pull succeeds."""
         mock_run.side_effect = [
             MagicMock(returncode=0, stdout="abc1234\n"),   # _get_short_sha (old)
-            MagicMock(returncode=0, stdout="origin\nupstream\n"),  # _find_upstream_remote
+            MagicMock(returncode=0, stdout="origin\nupstream\n"),  # find_upstream_remote
             MagicMock(returncode=0, stdout=""),              # _is_dirty (clean)
             MagicMock(returncode=0, stdout="main\n"),        # _get_current_branch
             MagicMock(returncode=0, stdout=""),               # fetch upstream
@@ -178,7 +178,7 @@ class TestPullUpstream:
         """No new commits — same SHA before and after."""
         mock_run.side_effect = [
             MagicMock(returncode=0, stdout="abc1234\n"),   # _get_short_sha (old)
-            MagicMock(returncode=0, stdout="upstream\n"),  # _find_upstream_remote
+            MagicMock(returncode=0, stdout="upstream\n"),  # find_upstream_remote
             MagicMock(returncode=0, stdout=""),              # _is_dirty
             MagicMock(returncode=0, stdout="main\n"),        # _get_current_branch
             MagicMock(returncode=0, stdout=""),               # fetch
@@ -195,7 +195,7 @@ class TestPullUpstream:
     def test_no_remote_found(self, mock_run):
         mock_run.side_effect = [
             MagicMock(returncode=0, stdout="abc1234\n"),   # _get_short_sha
-            MagicMock(returncode=1, stdout=""),              # _find_upstream_remote fails
+            MagicMock(returncode=1, stdout=""),              # find_upstream_remote fails
         ]
 
         result = pull_upstream(Path("/repo"))
@@ -207,7 +207,7 @@ class TestPullUpstream:
         """Dirty working tree gets stashed before checkout."""
         mock_run.side_effect = [
             MagicMock(returncode=0, stdout="abc1234\n"),   # _get_short_sha
-            MagicMock(returncode=0, stdout="upstream\n"),  # _find_upstream_remote
+            MagicMock(returncode=0, stdout="upstream\n"),  # find_upstream_remote
             MagicMock(returncode=0, stdout=" M dirty.py\n"),  # _is_dirty = True
             MagicMock(returncode=0, stdout=""),               # stash push
             MagicMock(returncode=0, stdout="koan/feature\n"), # _get_current_branch (not main)

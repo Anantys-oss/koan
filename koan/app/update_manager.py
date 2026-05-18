@@ -84,7 +84,7 @@ def _is_dirty(koan_root: Path) -> bool:
     return bool(result.stdout.strip())
 
 
-def _find_upstream_remote(koan_root: Path) -> Optional[str]:
+def find_upstream_remote(koan_root: Path) -> Optional[str]:
     """Find the upstream remote name (prefers 'upstream', falls back to 'origin')."""
     result = _run_git(["remote"], koan_root)
     if result.returncode != 0:
@@ -126,7 +126,7 @@ def pull_upstream(koan_root: Path) -> UpdateResult:
     stashed = False
 
     # Find upstream remote
-    remote = _find_upstream_remote(koan_root)
+    remote = find_upstream_remote(koan_root)
     if remote is None:
         return UpdateResult(
             success=False,
