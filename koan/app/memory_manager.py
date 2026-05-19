@@ -46,6 +46,50 @@ from app.utils import PROJECT_HINT_RE, atomic_write
 _ANTI_THRASH_MIN_SAVINGS_PCT = 0.10
 
 
+def _should_skip_compaction(
+    original_count: int,
+    max_lines: int,
+    content_hash: str,
+    prior_state: Optional[Dict[str, object]],
+) -> Optional[Dict[str, int]]:
+    """Decide whether to skip compaction, returning the skip result or None.
+
+    Checks three conditions in order:
+    1. Below threshold — file doesn't need compaction.
+    2. Hash match — content hasn't changed since last compaction.
+    3. Anti-thrash guard — marginal savings don't justify a CLI call.
+       Two flavours: growth-aware (preferred when prior telemetry exists)
+       and target-distance (fallback for first-ever or legacy state).
+
+    Returns a stats dict (with ``skipped=True``) when compaction should be
+    skipped, or ``None`` when compaction should proceed.
+    """
+    base = {"original_lines": original_count, "compacted_lines": original_count, "skipped": True}
+
+    # 1. Below threshold — nothing to compact.
+    if original_count <= max_lines:
+        return base
+
+    # 2. Hash match — content unchanged since last successful compaction.
+    if prior_state and prior_state.get("hash") == content_hash:
+        return base
+
+    # 3. Anti-thrash guard.
+    prior_compacted = prior_state.get("compacted_lines") if prior_state else None
+    if isinstance(prior_compacted, int) and prior_compacted > 0:
+        # Growth-aware: skip if file grew less than threshold since last compaction.
+        growth_pct = (original_count - prior_compacted) / prior_compacted
+        if growth_pct < _ANTI_THRASH_MIN_SAVINGS_PCT:
+            return {**base, "reason": "anti_thrash"}
+    else:
+        # Target-distance fallback: skip if predicted savings are marginal.
+        predicted_savings_pct = (original_count - max_lines) / original_count
+        if predicted_savings_pct < _ANTI_THRASH_MIN_SAVINGS_PCT:
+            return {**base, "reason": "anti_thrash"}
+
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Pure parsing helpers (stateless, no instance_dir needed)
 # ---------------------------------------------------------------------------
@@ -638,51 +682,13 @@ class MemoryManager:
         content_lines = [l for l in lines if l.strip() and not l.startswith("#")]
         original_count = len(content_lines)
 
-        # Skip if below threshold (no compaction needed)
-        if original_count <= max_lines:
-            return {"original_lines": original_count, "compacted_lines": original_count, "skipped": True}
-
-        # Hash-based skip: don't re-compact if content hasn't changed.
         content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
         hash_path = self.instance_dir / f".koan-learnings-compact-hash-{project_name}"
         prior_state = _read_compact_state(hash_path)
-        if prior_state and prior_state.get("hash") == content_hash:
-            return {"original_lines": original_count, "compacted_lines": original_count, "skipped": True}
 
-        # Anti-thrash guard (Hermes-inspired): skip when the value of
-        # running the CLI is marginal. Two flavours, in priority order:
-        #
-        #   1. *Growth-aware* — when prior state knows how many lines the
-        #      file held right after the last successful compaction, skip
-        #      if the file has grown by less than the threshold percentage
-        #      relative to that baseline. This is the most accurate signal
-        #      ("almost nothing has been added since last cycle") and
-        #      strictly preferred when prior telemetry exists.
-        #
-        #   2. *Target-distance fallback* — when there's no prior
-        #      ``compacted_lines`` telemetry (first compaction ever, legacy
-        #      plain-hash state, or non-dict JSON), fall back to the
-        #      original heuristic: skip if compaction wouldn't move the
-        #      file meaningfully closer to ``max_lines``.
-        prior_compacted = prior_state.get("compacted_lines") if prior_state else None
-        if isinstance(prior_compacted, int) and prior_compacted > 0:
-            growth_pct = (original_count - prior_compacted) / prior_compacted
-            if growth_pct < _ANTI_THRASH_MIN_SAVINGS_PCT:
-                return {
-                    "original_lines": original_count,
-                    "compacted_lines": original_count,
-                    "skipped": True,
-                    "reason": "anti_thrash",
-                }
-        else:
-            predicted_savings_pct = (original_count - max_lines) / original_count
-            if predicted_savings_pct < _ANTI_THRASH_MIN_SAVINGS_PCT:
-                return {
-                    "original_lines": original_count,
-                    "compacted_lines": original_count,
-                    "skipped": True,
-                    "reason": "anti_thrash",
-                }
+        skip_result = _should_skip_compaction(original_count, max_lines, content_hash, prior_state)
+        if skip_result is not None:
+            return skip_result
 
         # Resolve project path for file tree
         if project_path is None:
