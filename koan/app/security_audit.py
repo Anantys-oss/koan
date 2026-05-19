@@ -4,11 +4,10 @@ Emits structured events to instance/audit/security.jsonl for
 security-relevant agent actions: mission lifecycle, git/GitHub
 operations, subprocess executions, config changes, and auth events.
 
-Uses append-only writes with fcntl.flock (matching conversation_history.py
+Uses append-only writes with locked_jsonl_append (matching conversation_history.py
 pattern) and reuses log_rotation.py for size-based rotation.
 """
 
-import fcntl
 import json
 import os
 import re
@@ -185,14 +184,9 @@ def log_event(
         max_size_bytes = audit_cfg["max_size_mb"] * 1024 * 1024
         _rotate_if_needed(audit_path, max_size_bytes)
 
-        # Append with flock (same pattern as conversation_history.py)
-        with open(audit_path, "a", encoding="utf-8") as f:
-            fcntl.flock(f, fcntl.LOCK_EX)
-            try:
-                f.write(json.dumps(event, ensure_ascii=False) + "\n")
-                f.flush()
-            finally:
-                fcntl.flock(f, fcntl.LOCK_UN)
+        # Append under lock (same pattern as conversation_history.py)
+        from app.locked_file import locked_jsonl_append
+        locked_jsonl_append(audit_path, event)
 
     except Exception as exc:
         print(f"[security_audit] Failed to log event: {exc}", file=sys.stderr)
@@ -205,14 +199,8 @@ def read_recent_events(count: int = 50) -> list:
     """
     try:
         audit_path = _get_audit_path()
-        if not audit_path.exists():
-            return []
-        with open(audit_path, "r", encoding="utf-8") as f:
-            fcntl.flock(f, fcntl.LOCK_SH)
-            try:
-                lines = f.readlines()
-            finally:
-                fcntl.flock(f, fcntl.LOCK_UN)
+        from app.locked_file import locked_jsonl_read
+        lines = locked_jsonl_read(audit_path)
         events = []
         for line in lines[-count:]:
             line = line.strip()

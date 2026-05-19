@@ -21,7 +21,6 @@ Thread-safe and process-safe via fcntl file locking, following the
 same pattern as ``check_tracker.py``.
 """
 
-import fcntl
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,10 +33,6 @@ _MAX_AGE_HOURS = 24
 
 def _queue_path(instance_dir) -> Path:
     return Path(instance_dir) / ".ci-queue.json"
-
-
-def _lock_path(instance_dir) -> Path:
-    return Path(instance_dir) / ".ci-queue.lock"
 
 
 def _load(instance_dir) -> List[dict]:
@@ -80,55 +75,51 @@ def enqueue(instance_dir, pr_url: str, branch: str, full_repo: str,
     Deduplicates by pr_url — if a check for the same PR is already queued,
     the entry is updated (timestamp refreshed) rather than duplicated.
     """
-    lock = _lock_path(instance_dir)
-    with open(lock, "a") as lf:
-        fcntl.flock(lf, fcntl.LOCK_EX)
-        try:
-            entries = _load(instance_dir)
+    from app.locked_file import locked_json_modify
 
-            # Dedup: update existing entry for the same PR
-            for i, entry in enumerate(entries):
-                if entry.get("pr_url") == pr_url:
-                    entries[i] = {
-                        "pr_url": pr_url,
-                        "branch": branch,
-                        "full_repo": full_repo,
-                        "pr_number": pr_number,
-                        "project_path": project_path,
-                        "queued_at": datetime.now(timezone.utc).isoformat(),
-                    }
-                    _save(instance_dir, entries)
-                    return False  # Updated, not added
+    def _update(entries):
+        # Dedup: update existing entry for the same PR
+        for i, entry in enumerate(entries):
+            if entry.get("pr_url") == pr_url:
+                entries[i] = {
+                    "pr_url": pr_url,
+                    "branch": branch,
+                    "full_repo": full_repo,
+                    "pr_number": pr_number,
+                    "project_path": project_path,
+                    "queued_at": datetime.now(timezone.utc).isoformat(),
+                }
+                return False  # Updated, not added
 
-            entries.append({
-                "pr_url": pr_url,
-                "branch": branch,
-                "full_repo": full_repo,
-                "pr_number": pr_number,
-                "project_path": project_path,
-                "queued_at": datetime.now(timezone.utc).isoformat(),
-            })
-            _save(instance_dir, entries)
-            return True
-        finally:
-            fcntl.flock(lf, fcntl.LOCK_UN)
+        entries.append({
+            "pr_url": pr_url,
+            "branch": branch,
+            "full_repo": full_repo,
+            "pr_number": pr_number,
+            "project_path": project_path,
+            "queued_at": datetime.now(timezone.utc).isoformat(),
+        })
+        return True
+
+    return locked_json_modify(
+        _queue_path(instance_dir), _update,
+        default_factory=list, indent=2,
+    )
 
 
 def remove(instance_dir, pr_url: str) -> bool:
     """Remove a CI check from the queue by PR URL. Returns True if found."""
-    lock = _lock_path(instance_dir)
-    with open(lock, "a") as lf:
-        fcntl.flock(lf, fcntl.LOCK_EX)
-        try:
-            entries = _load(instance_dir)
-            original_len = len(entries)
-            entries = [e for e in entries if e.get("pr_url") != pr_url]
-            if len(entries) < original_len:
-                _save(instance_dir, entries)
-                return True
-            return False
-        finally:
-            fcntl.flock(lf, fcntl.LOCK_UN)
+    from app.locked_file import locked_json_modify
+
+    def _update(entries):
+        original_len = len(entries)
+        entries[:] = [e for e in entries if e.get("pr_url") != pr_url]
+        return len(entries) < original_len
+
+    return locked_json_modify(
+        _queue_path(instance_dir), _update,
+        default_factory=list, indent=2,
+    )
 
 
 def peek(instance_dir) -> Optional[dict]:
@@ -137,17 +128,18 @@ def peek(instance_dir) -> Optional[dict]:
     # Prune expired entries
     valid = [e for e in entries if not _is_expired(e)]
     if len(valid) != len(entries):
-        # Clean up expired entries
-        lock = _lock_path(instance_dir)
-        with open(lock, "a") as lf:
-            fcntl.flock(lf, fcntl.LOCK_EX)
-            try:
-                # Re-read under lock to avoid races
-                entries = _load(instance_dir)
-                valid = [e for e in entries if not _is_expired(e)]
-                _save(instance_dir, valid)
-            finally:
-                fcntl.flock(lf, fcntl.LOCK_UN)
+        # Clean up expired entries under lock
+        from app.locked_file import locked_json_modify
+
+        def _prune(entries):
+            entries[:] = [e for e in entries if not _is_expired(e)]
+
+        locked_json_modify(
+            _queue_path(instance_dir), _prune,
+            default_factory=list, indent=2,
+        )
+        # Re-read pruned result
+        valid = [e for e in _load(instance_dir) if not _is_expired(e)]
     return valid[0] if valid else None
 
 
