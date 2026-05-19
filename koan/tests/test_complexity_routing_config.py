@@ -33,7 +33,7 @@ class TestGetComplexityRoutingConfig:
         assert result is not None
         assert result["enabled"] is True
         tiers = result["tiers"]
-        assert set(tiers.keys()) == {"trivial", "simple", "medium", "complex"}
+        assert set(tiers.keys()) == {"trivial", "simple", "medium", "complex", "critical"}
         assert tiers["trivial"]["model"] == "haiku"
         assert tiers["trivial"]["max_turns"] == 50
         assert tiers["complex"]["max_turns"] == 500
