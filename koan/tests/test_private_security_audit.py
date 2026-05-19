@@ -9,6 +9,7 @@ import pytest
 from app.skills import SkillContext
 from skills.core.audit.audit_runner import (
     AuditFinding,
+    IssueCreationResult,
     _write_findings_to_journal,
     run_audit,
 )
@@ -279,7 +280,11 @@ class TestRunAuditJournalOnly:
     def test_default_mode_still_calls_create_issues(
         self, mock_create, mock_claude, tmp_path,
     ):
-        mock_create.return_value = ["https://github.com/o/r/issues/1"]
+        mock_create.return_value = IssueCreationResult(
+            urls=["https://github.com/o/r/issues/1"],
+            created=1,
+            reused=0,
+        )
         mock_claude.return_value = SAMPLE_OUTPUT
         instance_dir = tmp_path / "instance"
         instance_dir.mkdir()
