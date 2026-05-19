@@ -277,31 +277,31 @@ class TestLimitExtraction:
 
     def test_extract_limit_present(self):
         handler = _load_handler()
-        limit, cleaned = handler._extract_limit("focus on auth limit=10")
+        limit, cleaned = handler.extract_limit("focus on auth limit=10")
         assert limit == 10
         assert cleaned == "focus on auth"
 
     def test_extract_limit_absent(self):
         handler = _load_handler()
-        limit, cleaned = handler._extract_limit("focus on auth")
+        limit, cleaned = handler.extract_limit("focus on auth")
         assert limit == handler.DEFAULT_MAX_ISSUES
         assert cleaned == "focus on auth"
 
     def test_extract_limit_only(self):
         handler = _load_handler()
-        limit, cleaned = handler._extract_limit("limit=3")
+        limit, cleaned = handler.extract_limit("limit=3")
         assert limit == 3
         assert cleaned == ""
 
     def test_extract_limit_case_insensitive(self):
         handler = _load_handler()
-        limit, cleaned = handler._extract_limit("focus LIMIT=7")
+        limit, cleaned = handler.extract_limit("focus LIMIT=7")
         assert limit == 7
         assert cleaned == "focus"
 
     def test_extract_limit_zero_becomes_one(self):
         handler = _load_handler()
-        limit, _ = handler._extract_limit("limit=0")
+        limit, _ = handler.extract_limit("limit=0")
         assert limit == 1
 
 

@@ -1,23 +1,6 @@
 """Koan /audit skill -- queue a codebase audit mission."""
 
-import re
-
-# Matches limit=N anywhere in the args string
-_LIMIT_RE = re.compile(r"\blimit=(\d+)\b", re.IGNORECASE)
-
-DEFAULT_MAX_ISSUES = 5
-
-
-def _extract_limit(text):
-    """Extract limit=N from text, return (limit, cleaned_text)."""
-    m = _LIMIT_RE.search(text)
-    if not m:
-        return DEFAULT_MAX_ISSUES, text
-    limit = int(m.group(1))
-    cleaned = (text[:m.start()] + text[m.end():]).strip()
-    # Collapse double spaces left by removal
-    cleaned = re.sub(r"  +", " ", cleaned)
-    return max(1, limit), cleaned
+from skills.core.audit.audit_runner import DEFAULT_MAX_ISSUES, extract_limit
 
 
 def handle(ctx):
@@ -50,7 +33,7 @@ def handle(ctx):
         )
 
     # Extract limit=N before splitting
-    max_issues, args = _extract_limit(args)
+    max_issues, args = extract_limit(args)
 
     # First word is project name, rest is extra context
     parts = args.split(None, 1)

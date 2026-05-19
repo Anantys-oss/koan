@@ -5,23 +5,7 @@ journal instead of GitHub issues or Private Vulnerability Reports. Use this
 when you want a security review without disclosing details to GitHub.
 """
 
-import re
-
-# Matches limit=N anywhere in the args string
-_LIMIT_RE = re.compile(r"\blimit=(\d+)\b", re.IGNORECASE)
-
-DEFAULT_MAX_ISSUES = 5
-
-
-def _extract_limit(text):
-    """Extract limit=N from text, return (limit, cleaned_text)."""
-    m = _LIMIT_RE.search(text)
-    if not m:
-        return DEFAULT_MAX_ISSUES, text
-    limit = int(m.group(1))
-    cleaned = (text[:m.start()] + text[m.end():]).strip()
-    cleaned = re.sub(r"  +", " ", cleaned)
-    return max(1, limit), cleaned
+from skills.core.audit.audit_runner import DEFAULT_MAX_ISSUES, extract_limit
 
 
 def handle(ctx):
@@ -49,7 +33,7 @@ def handle(ctx):
             "Example: /private_security_audit koan focus on input validation"
         )
 
-    max_issues, args = _extract_limit(args)
+    max_issues, args = extract_limit(args)
 
     parts = args.split(None, 1)
     project_name = parts[0]

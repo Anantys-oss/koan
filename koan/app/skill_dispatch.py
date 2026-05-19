@@ -307,17 +307,14 @@ def build_skill_command(
         "profile": lambda: _build_profile_cmd(base_cmd, args, project_path, instance_dir),
         "claudemd": lambda: _build_claudemd_cmd(base_cmd, project_name, project_path),
         "incident": lambda: _build_incident_cmd(base_cmd, args, project_path, instance_dir),
-        "audit": lambda: _build_audit_cmd(
-            base_cmd, args, project_name, project_path, instance_dir,
-        ),
-        "security_audit": lambda: _build_audit_cmd(
-            base_cmd, args, project_name, project_path, instance_dir,
-        ),
-        "private_security_audit": lambda: _build_audit_cmd(
-            base_cmd, args, project_name, project_path, instance_dir,
-        ),
         "ci_check": lambda: _build_pr_url_cmd(base_cmd, args, project_path),
     }
+    def _audit_builder():
+        return _build_audit_cmd(
+            base_cmd, args, project_name, project_path, instance_dir,
+        )
+    for _audit_cmd in ("audit", "security_audit", "private_security_audit"):
+        _COMMAND_BUILDERS[_audit_cmd] = _audit_builder
 
     builder = _COMMAND_BUILDERS.get(canonical)
     if builder:
