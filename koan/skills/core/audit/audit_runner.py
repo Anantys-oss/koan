@@ -21,6 +21,7 @@ CLI:
 import fcntl
 import hashlib
 import re
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -96,6 +97,7 @@ def build_audit_prompt(
     extra_context: str = "",
     skill_dir: Optional[Path] = None,
     max_issues: int = DEFAULT_MAX_ISSUES,
+    instance_dir: Optional[str] = None,
 ) -> str:
     """Build the audit prompt with optional extra context and issue limit."""
     context_block = ""
@@ -108,11 +110,21 @@ def build_audit_prompt(
             f"ignore other significant issues you discover."
         )
 
+    security_block = ""
+    if instance_dir:
+        try:
+            from skills.core.audit.security_learnings import build_security_memory_block
+            security_block = build_security_memory_block(instance_dir, project_name)
+        except Exception as e:
+            import sys as _sys
+            print(f"[audit_runner] security memory injection failed: {e}", file=_sys.stderr)
+
     return load_prompt_or_skill(
         skill_dir, "audit",
         PROJECT_NAME=project_name,
         EXTRA_CONTEXT=context_block,
         MAX_ISSUES=str(max_issues),
+        SECURITY_INTELLIGENCE=security_block,
     )
 
 
@@ -752,7 +764,7 @@ def run_audit(
     notify_fn(f"\U0001f50e Auditing {project_name}{context_hint}...")
     prompt = build_audit_prompt(
         project_name, extra_context, skill_dir=skill_dir,
-        max_issues=max_issues,
+        max_issues=max_issues, instance_dir=instance_dir,
     )
 
     # Step 2: Run Claude audit (read-only)
@@ -808,6 +820,17 @@ def run_audit(
         instance_path, project_name, findings, result.urls,
         report_name=report_name,
     )
+
+    # Step 7: Extract security learnings (best-effort, never fails the audit)
+    try:
+        from skills.core.audit.security_learnings import extract_security_learnings
+        extract_security_learnings(raw_output, project_name, instance_dir, project_path)
+    except (subprocess.CalledProcessError, RuntimeError) as e:
+        import sys as _sys
+        print(f"[audit_runner] security learning extraction failed: {e}", file=_sys.stderr)
+    except Exception as e:  # noqa: BLE001 — intentional catch-all
+        import sys as _sys
+        print(f"[audit_runner] security learning extraction error: {e}", file=_sys.stderr)
 
     # Build summary
     if journal_only:
