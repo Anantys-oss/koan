@@ -18,9 +18,11 @@ CLI:
         [--context "focus on auth module"] [--max-issues 5]
 """
 
+import fcntl
 import hashlib
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, NamedTuple, Optional, Tuple
 
@@ -29,6 +31,23 @@ from app.prompts import load_prompt_or_skill
 DEFAULT_MAX_ISSUES = 5
 
 _SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+
+_LIMIT_RE = re.compile(r"\blimit=(\d+)\b", re.IGNORECASE)
+
+
+def extract_limit(text: str, default: int = DEFAULT_MAX_ISSUES) -> Tuple[int, str]:
+    """Extract ``limit=N`` from text. Returns ``(limit, cleaned_text)``.
+
+    Shared by all audit-family skill handlers (`/audit`, `/security_audit`,
+    `/private_security_audit`) so the parsing logic cannot drift.
+    """
+    m = _LIMIT_RE.search(text)
+    if not m:
+        return default, text
+    limit = int(m.group(1))
+    cleaned = (text[:m.start()] + text[m.end():]).strip()
+    cleaned = re.sub(r"  +", " ", cleaned)
+    return max(1, limit), cleaned
 
 
 # ---------------------------------------------------------------------------
@@ -591,10 +610,9 @@ def _write_findings_to_journal(
     the local instance. Writes a structured markdown section so it can be
     distinguished from regular journal entries.
     """
-    from datetime import datetime as _dt
-
-    today = _dt.now().strftime("%Y-%m-%d")
-    timestamp = _dt.now().strftime("%H:%M:%S")
+    now = datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    timestamp = now.strftime("%H:%M:%S")
     journal_dir = instance_dir / "journal" / today
     journal_dir.mkdir(parents=True, exist_ok=True)
     journal_path = journal_dir / f"{project_name}.md"
@@ -633,7 +651,12 @@ def _write_findings_to_journal(
         ])
 
     with open(journal_path, "a", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            f.write("\n".join(lines) + "\n")
+            f.flush()
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
 
     return journal_path
 
