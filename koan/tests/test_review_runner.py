@@ -1,5 +1,6 @@
 """Tests for review_runner.py — code review pipeline for PRs."""
 
+import copy
 import json
 import os
 from pathlib import Path
@@ -2735,7 +2736,7 @@ class TestRunReviewReflectionIntegration:
 # close_pr field: review-driven PR closure
 # ---------------------------------------------------------------------------
 
-CLOSE_REVIEW_JSON = {
+_CLOSE_REVIEW_JSON_TEMPLATE = {
     "file_comments": [],
     "review_summary": {
         "lgtm": False,
@@ -2747,6 +2748,11 @@ CLOSE_REVIEW_JSON = {
         "reason": "Maintainer asked to close — existing low-level API covers the use case.",
     },
 }
+
+
+def _make_close_review_json():
+    """Return a fresh deep copy so tests can mutate nested dicts safely."""
+    return copy.deepcopy(_CLOSE_REVIEW_JSON_TEMPLATE)
 
 
 class TestRunReviewClosePr:
@@ -2770,7 +2776,7 @@ class TestRunReviewClosePr:
         pr_context, review_skill_dir,
     ):
         mock_fetch.return_value = pr_context
-        mock_claude.return_value = (json.dumps(CLOSE_REVIEW_JSON), "")
+        mock_claude.return_value = (json.dumps(_make_close_review_json()), "")
         mock_notify = MagicMock()
 
         success, summary, review_data = run_review(
@@ -2816,7 +2822,7 @@ class TestRunReviewClosePr:
         pr_context, review_skill_dir,
     ):
         mock_fetch.return_value = pr_context
-        review_no_close = dict(CLOSE_REVIEW_JSON)
+        review_no_close = _make_close_review_json()
         review_no_close["close_pr"] = {"close": False, "reason": ""}
         mock_claude.return_value = (json.dumps(review_no_close), "")
 
@@ -2874,7 +2880,7 @@ class TestRunReviewClosePr:
         rolls back the comment automatically.
         """
         mock_fetch.return_value = pr_context
-        mock_claude.return_value = (json.dumps(CLOSE_REVIEW_JSON), "")
+        mock_claude.return_value = (json.dumps(_make_close_review_json()), "")
 
         captured_calls = []
 
@@ -2901,6 +2907,37 @@ class TestRunReviewClosePr:
             and "Closed by Reviewer" in " ".join(str(a) for a in args)
             for args in captured_calls
         )
+
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
+    @patch("app.review_runner.find_bot_comment", return_value=None)
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._post_review_comment", return_value=(False, "rate limited"))
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_close_pr_skipped_when_review_post_fails(
+        self, mock_fetch, mock_claude, mock_post, mock_gh, mock_repliable,
+        mock_find_bot, _mock_shas,
+        pr_context, review_skill_dir,
+    ):
+        """When the review post fails, closure is suppressed even if close_pr.close=True.
+
+        Locks in the conservative behavior: never close a PR if the review body
+        explaining the closure never made it onto the PR.
+        """
+        mock_fetch.return_value = pr_context
+        mock_claude.return_value = (json.dumps(_make_close_review_json()), "")
+
+        success, summary, _ = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(),
+            skill_dir=review_skill_dir,
+        )
+
+        assert success is False
+        gh_call_args = [list(call.args) for call in mock_gh.call_args_list]
+        assert not any(args[:2] == ["pr", "close"] for args in gh_call_args)
+        assert "closed" not in summary.lower()
 
 
 # ---------------------------------------------------------------------------
