@@ -760,6 +760,161 @@ class MemoryManager:
 
         return {"original_lines": original_count, "compacted_lines": compacted_count, "skipped": False, "method": "semantic"}
 
+    def compact_security_learnings(
+        self,
+        project_name: str,
+        max_lines: int = 100,
+        project_path: Optional[str] = None,
+    ) -> Dict[str, int]:
+        """Semantically compact a project's security_learnings.md using Claude CLI.
+
+        Mirrors compact_learnings() but targets the security-specific file
+        at instance/memory/projects/{project_name}/security_learnings.md and
+        uses the security-learnings-compaction prompt to preserve category
+        and trust-level metadata during merge.
+
+        Falls back to plain truncation if the Claude call fails.
+
+        Args:
+            project_name: Project whose security learnings to compact.
+            max_lines: Target number of content lines after compaction.
+            project_path: Path to the project's git repo.
+                If None, attempts to resolve from projects.yaml.
+
+        Returns:
+            Dict with stats: original_lines, compacted_lines, skipped (bool).
+        """
+        security_path = (
+            self.projects_dir / project_name / "security_learnings.md"
+        )
+        if not security_path.exists():
+            return {"original_lines": 0, "compacted_lines": 0, "skipped": True}
+
+        try:
+            content = security_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            print(
+                f"[memory_manager] Error reading {security_path}: {e}",
+                file=sys.stderr,
+            )
+            return {"original_lines": 0, "compacted_lines": 0, "skipped": True}
+
+        lines = content.splitlines()
+        content_lines = [l for l in lines if l.strip() and not l.startswith("#")]
+        original_count = len(content_lines)
+
+        content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        hash_path = self.instance_dir / f".koan-security-compact-hash-{project_name}"
+        prior_state = _read_compact_state(hash_path)
+
+        skip_result = _should_skip_compaction(original_count, max_lines, content_hash, prior_state)
+        if skip_result is not None:
+            return skip_result
+
+        if project_path is None:
+            project_path = self._resolve_project_path(project_name)
+
+        try:
+            compacted = self._run_security_compaction_cli(content, max_lines, project_path)
+        except Exception as e:
+            print(
+                f"[memory_manager] Security compaction CLI failed for {project_name}, "
+                f"truncating instead: {type(e).__name__}: {e}",
+                file=sys.stderr,
+            )
+            # Fallback: truncate to last max_lines content lines
+            kept = content_lines[-max_lines:]
+            header_lines = [l for l in lines if l.startswith("#")]
+            result = (header_lines or ["# Security Intelligence", ""]) + [""] + kept + [""]
+            atomic_write(security_path, "\n".join(result))
+            return {
+                "original_lines": original_count,
+                "compacted_lines": min(original_count, max_lines),
+                "skipped": False,
+                "fallback": True,
+                "method": "fallback",
+                "error": str(e),
+            }
+
+        if not compacted or not compacted.strip():
+            print(
+                f"[memory_manager] Security compaction returned empty for {project_name}, skipping",
+                file=sys.stderr,
+            )
+            return {"original_lines": original_count, "compacted_lines": original_count, "skipped": True}
+
+        compacted_lines = [l for l in compacted.splitlines() if l.strip()]
+        compacted_count = len(compacted_lines)
+        today = date.today().isoformat()
+
+        header_lines = []
+        for line in lines:
+            if line.startswith("#") or (not line.strip() and not header_lines):
+                header_lines.append(line)
+            elif line.strip() == "" and header_lines:
+                header_lines.append(line)
+            else:
+                break
+
+        result_parts = header_lines if header_lines else ["# Security Intelligence", ""]
+        result_parts.append(
+            f"_(compacted from {original_count} to {compacted_count} lines on {today})_"
+        )
+        result_parts.append("")
+        result_parts.append(compacted.strip())
+        result_parts.append("")
+
+        atomic_write(security_path, "\n".join(result_parts))
+
+        new_content = security_path.read_text(encoding="utf-8")
+        new_hash = hashlib.sha256(new_content.encode("utf-8")).hexdigest()
+        _write_compact_state(hash_path, new_hash, compacted_count)
+
+        return {
+            "original_lines": original_count,
+            "compacted_lines": compacted_count,
+            "skipped": False,
+            "method": "semantic",
+        }
+
+    def _run_security_compaction_cli(
+        self,
+        security_content: str,
+        max_lines: int,
+        project_path: Optional[str],
+    ) -> str:
+        """Run Claude CLI with the security-learnings-compaction prompt."""
+        from app.cli_provider import build_full_command
+        from app.config import get_model_config
+        from app.prompts import load_prompt
+
+        prompt = load_prompt(
+            "security-learnings-compaction",
+            SECURITY_CONTENT=security_content,
+            MAX_LINES=str(max_lines),
+        )
+        models = get_model_config()
+
+        cmd = build_full_command(
+            prompt=prompt,
+            allowed_tools=[],
+            model=models.get("lightweight", "haiku"),
+            fallback=models.get("fallback", "sonnet"),
+            max_turns=1,
+        )
+
+        from app.cli_exec import run_cli_with_retry
+
+        cwd = project_path or "."
+        result = run_cli_with_retry(
+            cmd,
+            capture_output=True, text=True,
+            timeout=120, cwd=cwd,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"CLI returned {result.returncode}: {result.stderr[:200]}")
+        return result.stdout.strip()
+
     def _resolve_project_path(self, project_name: str) -> Optional[str]:
         """Resolve a project's filesystem path from projects.yaml."""
         try:
@@ -1042,6 +1197,18 @@ class MemoryManager:
                             )
                     except Exception as e:
                         print(f"[memory_manager] Compaction failed for {name}: {e}", file=sys.stderr)
+                    # Step 2b: compact security learnings
+                    try:
+                        sec_stats = self.compact_security_learnings(name, compact_learnings_lines)
+                        if not sec_stats.get("skipped"):
+                            stats[f"security_compacted_{name}"] = (
+                                f"{sec_stats['original_lines']}->{sec_stats['compacted_lines']}"
+                            )
+                    except Exception as e:
+                        print(
+                            f"[memory_manager] Security compaction failed for {name}: {e}",
+                            file=sys.stderr,
+                        )
                     # Step 3: hard cap as safety net
                     capped = self.cap_learnings(name, max_learnings_lines)
                     if capped > 0:

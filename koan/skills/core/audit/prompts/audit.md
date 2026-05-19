@@ -2,6 +2,8 @@ You are performing a codebase audit of the **{PROJECT_NAME}** project. Your goal
 
 {EXTRA_CONTEXT}
 
+{SECURITY_INTELLIGENCE}
+
 ## Instructions
 
 ### Phase 1 — Orientation
