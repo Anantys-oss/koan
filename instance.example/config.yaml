@@ -139,10 +139,11 @@ skill_timeout: 7200
 #   deep: high
 
 # Extended thinking / reasoning controls — activates the provider's
-# extended-thinking mode (e.g. Claude's --effort max) for missions at
-# or above the configured minimum autonomous mode.
-# Disabled by default. When enabled, thinking is only activated in DEEP
-# mode unless you lower min_mode.
+# extended-thinking mode (e.g. Claude's --effort max) for missions
+# classified as "critical" complexity tier AND at or above the
+# configured minimum autonomous mode.
+# Disabled by default. Thinking only triggers for the most complex
+# missions (critical tier) when the mode qualifies.
 # thinking:
 #   enabled: true
 #   budget_tokens: 10000   # soft cap (provider-dependent; 0 = no cap)

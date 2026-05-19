@@ -137,8 +137,6 @@ class OllamaLaunchProvider(CLIProvider):
         system_prompt: str = "",
         system_prompt_file: str = "",
         effort: str = "",
-        thinking: bool = False,
-        thinking_budget: int = 0,
     ) -> List[str]:
         """Build: ollama launch claude --model X -- <claude-flags>.
 
@@ -166,10 +164,7 @@ class OllamaLaunchProvider(CLIProvider):
         cmd.extend(self.build_max_turns_args(max_turns))
         cmd.extend(self.build_mcp_args(mcp_configs))
         cmd.extend(self.build_plugin_args(plugin_dirs))
-        if thinking:
-            cmd.extend(self.build_thinking_args(thinking, thinking_budget))
-        else:
-            cmd.extend(self.build_effort_args(effort))
+        cmd.extend(self.build_effort_args(effort))
         return cmd
 
     def get_env(self) -> Dict[str, str]:

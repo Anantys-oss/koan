@@ -6,6 +6,7 @@ You are a mission complexity classifier. Your job is to assign a complexity tier
 - **simple**: Small, self-contained changes in 1-3 files with clear requirements. Examples: add a config option, fix a well-described bug, write a small utility function, add a unit test for an existing function.
 - **medium**: Moderate changes spanning multiple files or requiring some design decisions. Examples: add a new feature with tests, refactor a module, integrate a small external API, debug a non-trivial issue.
 - **complex**: Large or architectural changes requiring significant design work, many files, or deep domain knowledge. Examples: redesign a subsystem, implement a new pipeline, migrate a database schema, add a new abstraction layer.
+- **critical**: Exceptionally complex missions requiring deep reasoning, multi-system coordination, or novel problem-solving with no clear precedent. Examples: debug a subtle concurrency race across services, design a new distributed protocol, resolve a security vulnerability requiring deep architectural understanding, implement a complex algorithm with correctness constraints.
 
 ## Instructions
 
@@ -15,7 +16,7 @@ Classify the following mission text into exactly one tier. Respond with ONLY a J
 {"tier": "trivial", "rationale": "One sentence explanation."}
 ```
 
-Valid tier values: trivial, simple, medium, complex.
+Valid tier values: trivial, simple, medium, complex, critical.
 Do not include any other text — only the JSON object.
 
 ## Mission text

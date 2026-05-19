@@ -374,7 +374,7 @@ class TestEffortArgs:
 # ---------------------------------------------------------------------------
 
 class TestThinkingArgs:
-    """Test build_thinking_args base implementation and build_command wiring."""
+    """Test build_thinking_args base implementation (called directly, not via build_command)."""
 
     def test_base_returns_empty_when_disabled(self):
         p = StubProvider()
@@ -385,43 +385,10 @@ class TestThinkingArgs:
         p = StubProvider()
         assert p.build_thinking_args(enabled=True, budget_tokens=5000) == []
 
-    def test_build_command_passes_thinking(self):
-        """build_command should call build_thinking_args with thinking params."""
-
-        class ThinkingProvider(StubProvider):
-            def build_thinking_args(self, enabled=False, budget_tokens=0):
-                if enabled:
-                    return ["--think", str(budget_tokens)]
-                return []
-
-        p = ThinkingProvider()
-        cmd = p.build_command(prompt="go", thinking=True, thinking_budget=8000)
-        assert "--think" in cmd
-        assert "8000" in cmd
-
-    def test_build_command_no_thinking_by_default(self):
+    def test_build_command_does_not_include_thinking(self):
+        """build_command no longer accepts thinking params — thinking is
+        appended by mission_runner after command construction."""
         p = StubProvider()
         cmd = p.build_command(prompt="go")
         assert "--think" not in cmd
         assert "--effort" not in cmd
-
-    def test_thinking_skips_effort_args(self):
-        """When thinking=True, build_effort_args is skipped to avoid duplicates."""
-
-        class EffortThinkingProvider(StubProvider):
-            def build_effort_args(self, effort=""):
-                if effort:
-                    return ["--effort", effort]
-                return []
-
-            def build_thinking_args(self, enabled=False, budget_tokens=0):
-                if enabled:
-                    return ["--effort", "max"]
-                return []
-
-        p = EffortThinkingProvider()
-        cmd = p.build_command(prompt="go", effort="high", thinking=True)
-        effort_count = cmd.count("--effort")
-        assert effort_count == 1, f"Expected 1 --effort, got {effort_count}"
-        idx = cmd.index("--effort")
-        assert cmd[idx + 1] == "max"

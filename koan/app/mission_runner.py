@@ -273,14 +273,19 @@ def build_mission_command(
     # Get MCP server configs
     mcp_configs = get_mcp_configs(project_name)
 
-    # Get effort level for the current autonomous mode
-    effort = get_effort_for_mode(autonomous_mode)
-
-    # Extended thinking — only activated when config says so AND the
-    # current autonomous mode is at or above the configured min_mode.
+    # Extended thinking — activated when config enables it, the mission
+    # is classified as "critical" tier, AND the autonomous mode qualifies.
+    # Driven by complexity tier rather than a blanket boolean so only the
+    # most complex missions benefit from extended reasoning.
     from app.config import should_enable_thinking, get_thinking_config
-    thinking_enabled = should_enable_thinking(autonomous_mode)
-    thinking_budget = get_thinking_config()["budget_tokens"] if thinking_enabled else 0
+    thinking_enabled = should_enable_thinking(autonomous_mode, tier=tier or "")
+    thinking_budget = 0
+    if thinking_enabled:
+        thinking_budget = get_thinking_config()["budget_tokens"]
+
+    # When thinking is active it implies max effort — skip regular effort
+    # to avoid duplicate/conflicting --effort flags.
+    effort = "" if thinking_enabled else get_effort_for_mode(autonomous_mode)
 
     # Build provider-specific command (file-mode system prompt when supported)
     cmd, cleanup_paths = build_full_command_managed(
@@ -294,9 +299,15 @@ def build_mission_command(
         plugin_dirs=plugin_dirs,
         system_prompt=system_prompt,
         effort=effort,
-        thinking=thinking_enabled,
-        thinking_budget=thinking_budget,
     )
+
+    # Append thinking args directly — kept outside build_full_command so
+    # the provider stack doesn't need thinking-specific parameters.
+    if thinking_enabled:
+        from app.provider import get_provider
+        cmd.extend(get_provider().build_thinking_args(
+            enabled=True, budget_tokens=thinking_budget,
+        ))
 
     # Append any extra flags from config
     if extra_flags.strip():
