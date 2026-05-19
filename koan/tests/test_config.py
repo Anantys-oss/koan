@@ -946,28 +946,37 @@ class TestThinkingConfig:
     def test_should_enable_thinking_disabled(self):
         from app.config import should_enable_thinking
         with _mock_config({"thinking": {"enabled": False}}):
-            assert should_enable_thinking("deep") is False
+            assert should_enable_thinking("deep", tier="critical") is False
+
+    def test_should_enable_thinking_requires_critical_tier(self):
+        """Thinking only activates for 'critical' tier missions."""
+        from app.config import should_enable_thinking
+        with _mock_config({"thinking": {"enabled": True, "min_mode": "deep"}}):
+            assert should_enable_thinking("deep", tier="critical") is True
+            assert should_enable_thinking("deep", tier="complex") is False
+            assert should_enable_thinking("deep", tier="medium") is False
+            assert should_enable_thinking("deep", tier="") is False
 
     def test_should_enable_thinking_deep_mode(self):
         from app.config import should_enable_thinking
         with _mock_config({"thinking": {"enabled": True, "min_mode": "deep"}}):
-            assert should_enable_thinking("deep") is True
-            assert should_enable_thinking("implement") is False
-            assert should_enable_thinking("review") is False
+            assert should_enable_thinking("deep", tier="critical") is True
+            assert should_enable_thinking("implement", tier="critical") is False
+            assert should_enable_thinking("review", tier="critical") is False
 
     def test_should_enable_thinking_implement_mode(self):
         from app.config import should_enable_thinking
         with _mock_config({"thinking": {"enabled": True, "min_mode": "implement"}}):
-            assert should_enable_thinking("deep") is True
-            assert should_enable_thinking("implement") is True
-            assert should_enable_thinking("review") is False
+            assert should_enable_thinking("deep", tier="critical") is True
+            assert should_enable_thinking("implement", tier="critical") is True
+            assert should_enable_thinking("review", tier="critical") is False
 
     def test_should_enable_thinking_no_config(self):
         from app.config import should_enable_thinking
         with _mock_config({}):
-            assert should_enable_thinking("deep") is False
+            assert should_enable_thinking("deep", tier="critical") is False
 
     def test_should_enable_thinking_unknown_mode(self):
         from app.config import should_enable_thinking
         with _mock_config({"thinking": {"enabled": True, "min_mode": "deep"}}):
-            assert should_enable_thinking("unknown") is False
+            assert should_enable_thinking("unknown", tier="critical") is False

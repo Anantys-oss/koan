@@ -213,7 +213,8 @@ _COMPLEXITY_ROUTING_DEFAULTS: dict = {
     "trivial": {"model": "haiku", "max_turns": 50, "timeout_multiplier": 0.5},
     "simple":  {"model": "sonnet", "max_turns": 100, "timeout_multiplier": 0.75},
     "medium":  {"model": "",       "max_turns": 100, "timeout_multiplier": 1.0},
-    "complex": {"model": "",       "max_turns": 500, "timeout_multiplier": 1.5},
+    "complex":  {"model": "",       "max_turns": 500, "timeout_multiplier": 1.5},
+    "critical": {"model": "",       "max_turns": 500, "timeout_multiplier": 2.0},
 }
 
 
@@ -696,14 +697,21 @@ def get_thinking_config() -> dict:
     }
 
 
-def should_enable_thinking(autonomous_mode: str = "") -> bool:
-    """Return True if thinking should be activated for *autonomous_mode*.
+def should_enable_thinking(autonomous_mode: str = "", tier: str = "") -> bool:
+    """Return True if thinking should be activated.
 
-    Checks the ``thinking:`` config section: master switch must be on AND
-    the current mode must be at or above ``min_mode``.
+    Thinking is only enabled when ALL conditions are met:
+    1. The ``thinking:`` config master switch is on.
+    2. The mission's complexity tier is ``critical``.
+    3. The current autonomous mode is at or above ``min_mode``.
+
+    This ties extended thinking to mission complexity rather than a
+    blanket boolean — only the most complex missions benefit.
     """
     cfg = get_thinking_config()
     if not cfg["enabled"]:
+        return False
+    if tier != "critical":
         return False
     current_rank = _MODE_RANK.get(autonomous_mode, -1)
     min_rank = _MODE_RANK.get(cfg["min_mode"], 3)

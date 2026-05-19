@@ -186,8 +186,6 @@ class CLIProvider:
         system_prompt: str = "",
         system_prompt_file: str = "",
         effort: str = "",
-        thinking: bool = False,
-        thinking_budget: int = 0,
     ) -> List[str]:
         """Build a complete CLI command from generic parameters.
 
@@ -205,9 +203,6 @@ class CLIProvider:
                 back to the in-argv path.
             effort: Reasoning effort level (e.g. "low", "medium", "high", "max").
                 Empty string means no override.
-            thinking: Enable extended thinking / reasoning mode.
-            thinking_budget: Optional soft cap on thinking tokens (provider-
-                dependent; ignored when unsupported).
 
         Returns a list of strings suitable for subprocess.run().
         """
@@ -231,12 +226,7 @@ class CLIProvider:
         cmd.extend(self.build_max_turns_args(max_turns))
         cmd.extend(self.build_mcp_args(mcp_configs))
         cmd.extend(self.build_plugin_args(plugin_dirs))
-        # When thinking is enabled it implies --effort max, so skip the
-        # regular effort args to avoid duplicate/conflicting --effort flags.
-        if thinking:
-            cmd.extend(self.build_thinking_args(thinking, thinking_budget))
-        else:
-            cmd.extend(self.build_effort_args(effort))
+        cmd.extend(self.build_effort_args(effort))
         return cmd
 
     def check_quota_available(self, project_path: str, timeout: int = 15) -> Tuple[bool, str]:

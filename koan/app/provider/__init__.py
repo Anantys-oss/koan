@@ -189,8 +189,6 @@ def build_full_command(
     system_prompt: str = "",
     system_prompt_file: str = "",
     effort: str = "",
-    thinking: bool = False,
-    thinking_budget: int = 0,
 ) -> List[str]:
     """Build a complete CLI command for the configured provider.
 
@@ -204,8 +202,6 @@ def build_full_command(
             Otherwise prepended to the user prompt transparently.
         effort: Reasoning effort level (e.g. "low", "medium", "high", "max").
             Empty string means no override.
-        thinking: Enable extended thinking / reasoning mode.
-        thinking_budget: Optional soft cap on thinking tokens.
 
     Automatically reads ``skip_permissions`` from config.yaml so all
     callers get the flag without needing changes.
@@ -226,8 +222,6 @@ def build_full_command(
         system_prompt=system_prompt,
         system_prompt_file=system_prompt_file,
         effort=effort,
-        thinking=thinking,
-        thinking_budget=thinking_budget,
     )
 
 
@@ -270,8 +264,6 @@ def build_full_command_managed(
     plugin_dirs: Optional[List[str]] = None,
     system_prompt: str = "",
     effort: str = "",
-    thinking: bool = False,
-    thinking_budget: int = 0,
 ) -> Tuple[List[str], List[str]]:
     """Build a CLI command, routing large system prompts through a temp file.
 
@@ -300,8 +292,6 @@ def build_full_command_managed(
         mcp_configs=mcp_configs,
         plugin_dirs=plugin_dirs,
         effort=effort,
-        thinking=thinking,
-        thinking_budget=thinking_budget,
     )
     if system_prompt and get_provider().supports_system_prompt_file():
         path = _write_system_prompt_file(system_prompt)

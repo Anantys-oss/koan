@@ -8,6 +8,7 @@ Tiers:
     SIMPLE   — small self-contained change, 1-3 files
     MEDIUM   — moderate multi-file work (default on failure)
     COMPLEX  — architectural / large-scope work
+    CRITICAL — exceptionally complex, benefits from extended thinking
 
 The tier is determined by a single lightweight-model call (Haiku by
 default).  Any parse or network failure degrades gracefully to MEDIUM.
@@ -28,6 +29,7 @@ class MissionTier(str, Enum):
     SIMPLE = "simple"
     MEDIUM = "medium"
     COMPLEX = "complex"
+    CRITICAL = "critical"
 
 
 # Map of lowercase string → enum value for robust parsing
