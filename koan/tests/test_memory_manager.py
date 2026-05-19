@@ -19,6 +19,7 @@ from app.memory_manager import (
     _extract_project_hint,
     _extract_session_digest,
     _balanced_select,
+    _should_skip_compaction,
 )
 
 
@@ -761,6 +762,56 @@ class TestCapLearnings:
         assert len(marker_lines) == 1
         # The marker should be a clean line, not contain embedded \n
         assert marker_lines[0].strip() == f"_(oldest 15 entries archived)_"
+
+
+# ---------------------------------------------------------------------------
+# _should_skip_compaction (extracted anti-thrash decision logic)
+# ---------------------------------------------------------------------------
+
+class TestShouldSkipCompaction:
+
+    def test_below_threshold_skips(self):
+        result = _should_skip_compaction(50, 100, "abc", None)
+        assert result is not None
+        assert result["skipped"] is True
+
+    def test_above_threshold_no_prior_state_proceeds(self):
+        result = _should_skip_compaction(200, 100, "abc", None)
+        assert result is None
+
+    def test_hash_match_skips(self):
+        prior = {"hash": "same-hash", "compacted_lines": 80}
+        result = _should_skip_compaction(150, 100, "same-hash", prior)
+        assert result is not None
+        assert result["skipped"] is True
+
+    def test_hash_mismatch_proceeds(self):
+        prior = {"hash": "old-hash", "compacted_lines": 80}
+        result = _should_skip_compaction(200, 100, "new-hash", prior)
+        assert result is None
+
+    def test_growth_aware_skips_below_threshold(self):
+        prior = {"hash": "old", "compacted_lines": 100}
+        result = _should_skip_compaction(105, 50, "new", prior)
+        assert result is not None
+        assert result.get("reason") == "anti_thrash"
+
+    def test_growth_aware_proceeds_above_threshold(self):
+        prior = {"hash": "old", "compacted_lines": 100}
+        result = _should_skip_compaction(200, 50, "new", prior)
+        assert result is None
+
+    def test_target_distance_fallback_skips(self):
+        """No prior compacted_lines — uses target-distance heuristic."""
+        prior = {"hash": "old"}
+        result = _should_skip_compaction(105, 100, "new", prior)
+        assert result is not None
+        assert result.get("reason") == "anti_thrash"
+
+    def test_target_distance_fallback_proceeds(self):
+        prior = {"hash": "old"}
+        result = _should_skip_compaction(200, 100, "new", prior)
+        assert result is None
 
 
 # ---------------------------------------------------------------------------
