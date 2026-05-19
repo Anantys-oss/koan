@@ -5,7 +5,6 @@ append-only persistence. Supports loading recent reactions and
 correlating them with conversation history messages.
 """
 
-import fcntl
 import json
 from datetime import datetime
 from pathlib import Path
@@ -25,7 +24,7 @@ def save_reaction(
     Args:
         reactions_file: Path to reactions.jsonl
         message_id: Telegram message_id of the reacted-to message
-        emoji: The emoji string (e.g., "👍", "👎")
+        emoji: The emoji string (e.g., "\U0001f44d", "\U0001f44e")
         is_added: True if reaction was added, False if removed
         original_text_preview: First ~100 chars of the original message
         message_type: Origin context of the message (chat, conclusion, notification)
@@ -42,13 +41,8 @@ def save_reaction(
         entry["message_type"] = message_type
 
     try:
-        with open(reactions_file, "a", encoding="utf-8") as f:
-            fcntl.flock(f, fcntl.LOCK_EX)
-            try:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-                f.flush()
-            finally:
-                fcntl.flock(f, fcntl.LOCK_UN)
+        from app.locked_file import locked_jsonl_append
+        locked_jsonl_append(reactions_file, entry)
     except OSError as e:
         print(f"[reaction_store] Error saving reaction: {e}")
 
@@ -70,12 +64,8 @@ def load_recent_reactions(
         return []
 
     try:
-        with open(reactions_file, "r", encoding="utf-8") as f:
-            fcntl.flock(f, fcntl.LOCK_SH)
-            try:
-                lines = f.readlines()
-            finally:
-                fcntl.flock(f, fcntl.LOCK_UN)
+        from app.locked_file import locked_jsonl_read
+        lines = locked_jsonl_read(reactions_file)
     except OSError:
         return []
 
@@ -108,12 +98,8 @@ def lookup_message_context(
         return None
 
     try:
-        with open(history_file, "r", encoding="utf-8") as f:
-            fcntl.flock(f, fcntl.LOCK_SH)
-            try:
-                lines = f.readlines()
-            finally:
-                fcntl.flock(f, fcntl.LOCK_UN)
+        from app.locked_file import locked_jsonl_read
+        lines = locked_jsonl_read(history_file)
     except OSError:
         return None
 

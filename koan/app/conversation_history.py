@@ -6,7 +6,6 @@ any messaging provider.
 """
 
 import contextlib
-import fcntl
 import json
 from datetime import datetime
 from pathlib import Path
@@ -65,13 +64,8 @@ def save_conversation_message(
     if message_type:
         message["message_type"] = message_type
     try:
-        with open(history_file, "a", encoding="utf-8") as f:
-            fcntl.flock(f, fcntl.LOCK_EX)
-            try:
-                f.write(json.dumps(message, ensure_ascii=False) + "\n")
-                f.flush()
-            finally:
-                fcntl.flock(f, fcntl.LOCK_UN)
+        from app.locked_file import locked_jsonl_append
+        locked_jsonl_append(history_file, message)
     except OSError as e:
         print(f"[conversation_history] Error saving message to history: {e}")
 
@@ -90,12 +84,8 @@ def load_recent_history(history_file: Path, max_messages: int = 10) -> List[Dict
         return []
 
     try:
-        with open(history_file, "r", encoding="utf-8") as f:
-            fcntl.flock(f, fcntl.LOCK_SH)
-            try:
-                lines = f.readlines()
-            finally:
-                fcntl.flock(f, fcntl.LOCK_UN)
+        from app.locked_file import locked_jsonl_read
+        lines = locked_jsonl_read(history_file)
 
         messages = _parse_jsonl_lines(lines)
         return messages[-max_messages:] if len(messages) > max_messages else messages
@@ -179,12 +169,8 @@ def compact_history(history_file: Path, topics_file: Path, min_messages: int = 2
     # Read all messages
     messages = []
     try:
-        with open(history_file, "r", encoding="utf-8") as f:
-            fcntl.flock(f, fcntl.LOCK_SH)
-            try:
-                lines = f.readlines()
-            finally:
-                fcntl.flock(f, fcntl.LOCK_UN)
+        from app.locked_file import locked_jsonl_read
+        lines = locked_jsonl_read(history_file)
     except OSError:
         return 0
 

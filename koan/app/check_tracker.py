@@ -7,7 +7,6 @@ changed since the previous run — no GitHub noise, no wasted API calls.
 File location: ``instance/.check-tracker.json``
 """
 
-import fcntl
 import json
 from pathlib import Path
 
@@ -58,19 +57,15 @@ def mark_checked(instance_dir, url, updated_at):
         updated_at: ISO-8601 timestamp from the GitHub API.
     """
     from datetime import datetime, timezone
+    from app.locked_file import locked_json_modify
 
-    lock_path = Path(instance_dir) / ".check-tracker.lock"
-    with open(lock_path, "a") as lf:
-        fcntl.flock(lf, fcntl.LOCK_EX)
-        try:
-            data = _load(instance_dir)
-            data[url] = {
-                "updated_at": updated_at,
-                "checked_at": datetime.now(timezone.utc).isoformat(),
-            }
-            _save(instance_dir, data)
-        finally:
-            fcntl.flock(lf, fcntl.LOCK_UN)
+    def _update(data):
+        data[url] = {
+            "updated_at": updated_at,
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    locked_json_modify(_tracker_path(instance_dir), _update, indent=2)
 
 
 def has_changed(instance_dir, url, current_updated_at):
