@@ -151,6 +151,61 @@ class TestWarningTracking:
         assert burn_rate.get_last_warned_at(instance_dir) is None
 
 
+class TestBurnRateSnapshot:
+    """Tests for the read-once BurnRateSnapshot class."""
+
+    def test_snapshot_loads_samples_once(self, instance_dir):
+        _record_series(instance_dir, [(i, 1.0) for i in range(5)])
+        snapshot = burn_rate.BurnRateSnapshot(instance_dir)
+        assert len(snapshot.samples) == 5
+        assert snapshot.samples[0].cost_pct == pytest.approx(1.0)
+
+    def test_snapshot_burn_rate(self, instance_dir):
+        _record_series(instance_dir, [(i, 1.0) for i in range(5)])
+        snapshot = burn_rate.BurnRateSnapshot(instance_dir)
+        # Same result as the free function
+        assert snapshot.burn_rate_pct_per_minute() == pytest.approx(1.25)
+
+    def test_snapshot_time_to_exhaustion(self, instance_dir):
+        _record_series(instance_dir, [(i, 1.0) for i in range(5)])
+        snapshot = burn_rate.BurnRateSnapshot(instance_dir)
+        tte = snapshot.time_to_exhaustion(session_pct=40.0)
+        assert tte == pytest.approx(48.0)
+
+    def test_snapshot_time_to_exhaustion_with_mode(self, instance_dir):
+        _record_series(instance_dir, [(i, 1.0) for i in range(5)])
+        snapshot = burn_rate.BurnRateSnapshot(instance_dir)
+        deep = snapshot.time_to_exhaustion(50.0, mode="deep")
+        impl = snapshot.time_to_exhaustion(50.0, mode="implement")
+        assert deep == pytest.approx(impl / 2.0)
+
+    def test_snapshot_last_warned_at(self, instance_dir):
+        snapshot = burn_rate.BurnRateSnapshot(instance_dir)
+        assert snapshot.last_warned_at is None
+
+        burn_rate.mark_warned(instance_dir)
+        snapshot = burn_rate.BurnRateSnapshot(instance_dir)
+        assert snapshot.last_warned_at is not None
+
+    def test_snapshot_is_frozen(self, instance_dir):
+        """Snapshot is not affected by writes after construction."""
+        _record_series(instance_dir, [(i, 1.0) for i in range(5)])
+        snapshot = burn_rate.BurnRateSnapshot(instance_dir)
+        assert len(snapshot.samples) == 5
+
+        # Write more samples after snapshot was taken
+        burn_rate.record_run(instance_dir, cost_pct=99.0)
+        # Snapshot still sees the old state
+        assert len(snapshot.samples) == 5
+
+    def test_snapshot_empty_state(self, instance_dir):
+        snapshot = burn_rate.BurnRateSnapshot(instance_dir)
+        assert snapshot.samples == []
+        assert snapshot.last_warned_at is None
+        assert snapshot.burn_rate_pct_per_minute() is None
+        assert snapshot.time_to_exhaustion(50.0) is None
+
+
 class TestStateFile:
     def test_file_layout(self, instance_dir):
         burn_rate.record_run(instance_dir, cost_pct=2.5)

@@ -152,9 +152,76 @@ def record_run(instance_dir: Path, cost_pct: float,
     ))
 
 
+class BurnRateSnapshot:
+    """Read-once view of burn-rate state.
+
+    Loads ``.burn-rate.json`` once at construction. All read methods operate
+    on the cached state, eliminating redundant file I/O when multiple metrics
+    are needed in the same call site (e.g. per-iteration warning checks in
+    ``iteration_manager._maybe_warn_burn_rate``).
+    """
+
+    def __init__(self, instance_dir: Path):
+        self._state = _load_state(Path(instance_dir))
+
+    @property
+    def samples(self) -> List[Sample]:
+        """Rolling sample buffer (oldest → newest)."""
+        return self._state.samples
+
+    @property
+    def last_warned_at(self) -> Optional[datetime]:
+        """Timestamp of the most recent exhaustion warning, if any."""
+        return self._state.last_warned_at
+
+    def burn_rate_pct_per_minute(self) -> Optional[float]:
+        """Rolling burn rate in % session quota per minute.
+
+        Returns ``None`` if insufficient history (< 5 samples) or zero span.
+        """
+        samples = self._state.samples
+        if len(samples) < MIN_SAMPLES_FOR_ESTIMATE:
+            return None
+
+        first, last = samples[0], samples[-1]
+        span_minutes = (last.timestamp - first.timestamp).total_seconds() / 60.0
+        if span_minutes <= 0:
+            return None
+
+        consumed = sum(s.cost_pct for s in samples)
+        return consumed / span_minutes
+
+    def time_to_exhaustion(self, session_pct: float,
+                           mode: Optional[str] = None) -> Optional[float]:
+        """Estimate minutes until session quota is exhausted.
+
+        Args:
+            session_pct: Current session usage (0-100).
+            mode: Optional autonomous mode whose cost multiplier is applied.
+
+        Returns:
+            Minutes until exhaustion, or ``None`` when no estimate is possible.
+        """
+        rate = self.burn_rate_pct_per_minute()
+        if rate is None or rate <= 0:
+            return None
+
+        if mode is not None:
+            rate *= MODE_MULTIPLIERS.get(mode, 1.0)
+            if rate <= 0:
+                return None
+
+        remaining = max(0.0, 100.0 - float(session_pct))
+        if remaining <= 0:
+            return 0.0
+        return remaining / rate
+
+
+# --- Convenience free functions (backward-compatible, single-use wrappers) ---
+
 def get_samples(instance_dir: Path) -> List[Sample]:
     """Return the rolling sample buffer (oldest → newest)."""
-    return _load_state(Path(instance_dir)).samples
+    return BurnRateSnapshot(instance_dir).samples
 
 
 def burn_rate_pct_per_minute(instance_dir: Path) -> Optional[float]:
@@ -169,17 +236,7 @@ def burn_rate_pct_per_minute(instance_dir: Path) -> Optional[float]:
         Burn rate in percentage points per minute, or ``None`` if there is
         not enough history (< 5 samples) or zero elapsed time.
     """
-    samples = get_samples(Path(instance_dir))
-    if len(samples) < MIN_SAMPLES_FOR_ESTIMATE:
-        return None
-
-    first, last = samples[0], samples[-1]
-    span_minutes = (last.timestamp - first.timestamp).total_seconds() / 60.0
-    if span_minutes <= 0:
-        return None
-
-    consumed = sum(s.cost_pct for s in samples)
-    return consumed / span_minutes
+    return BurnRateSnapshot(instance_dir).burn_rate_pct_per_minute()
 
 
 def time_to_exhaustion(instance_dir: Path, session_pct: float,
@@ -197,24 +254,12 @@ def time_to_exhaustion(instance_dir: Path, session_pct: float,
         Minutes until exhaustion, or ``None`` when no estimate is possible
         (insufficient history, zero rate, or quota already exhausted).
     """
-    rate = burn_rate_pct_per_minute(Path(instance_dir))
-    if rate is None or rate <= 0:
-        return None
-
-    if mode is not None:
-        rate *= MODE_MULTIPLIERS.get(mode, 1.0)
-        if rate <= 0:
-            return None
-
-    remaining = max(0.0, 100.0 - float(session_pct))
-    if remaining <= 0:
-        return 0.0
-    return remaining / rate
+    return BurnRateSnapshot(instance_dir).time_to_exhaustion(session_pct, mode)
 
 
 def get_last_warned_at(instance_dir: Path) -> Optional[datetime]:
     """Return the timestamp of the most recent exhaustion warning, if any."""
-    return _load_state(Path(instance_dir)).last_warned_at
+    return BurnRateSnapshot(instance_dir).last_warned_at
 
 
 def mark_warned(instance_dir: Path,

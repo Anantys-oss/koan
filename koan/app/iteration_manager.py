@@ -104,8 +104,9 @@ def _downgrade_if_burning_fast(instance_dir: Path, session_pct: float,
     if mode == "wait" or mode not in _MODE_DOWNGRADE:
         return mode, None
     try:
-        from app.burn_rate import time_to_exhaustion
-        tte = time_to_exhaustion(instance_dir, session_pct, mode=mode)
+        from app.burn_rate import BurnRateSnapshot
+        snapshot = BurnRateSnapshot(instance_dir)
+        tte = snapshot.time_to_exhaustion(session_pct, mode=mode)
     except (ImportError, OSError, ValueError):
         return mode, None
     if tte is None or tte >= BURN_RATE_DOWNGRADE_THRESHOLD_MIN:
@@ -241,9 +242,7 @@ def _maybe_warn_burn_rate(instance_dir: Path, usage_state_path: Path) -> None:
     """
     try:
         from app.burn_rate import (
-            time_to_exhaustion,
-            burn_rate_pct_per_minute,
-            get_last_warned_at,
+            BurnRateSnapshot,
             mark_warned,
             clear_warning,
         )
@@ -256,7 +255,10 @@ def _maybe_warn_burn_rate(instance_dir: Path, usage_state_path: Path) -> None:
     if session_pct is None or minutes_until_reset is None:
         return
 
-    last_warned = get_last_warned_at(instance_dir)
+    # Single load for all read operations (was 4 separate file reads).
+    snapshot = BurnRateSnapshot(instance_dir)
+
+    last_warned = snapshot.last_warned_at
     if last_warned is not None:
         try:
             import json
@@ -277,11 +279,11 @@ def _maybe_warn_burn_rate(instance_dir: Path, usage_state_path: Path) -> None:
     if minutes_until_reset <= BURN_RATE_WARNING_MIN_RESET_GAP_MIN:
         return  # Quota will reset soon anyway — no point alerting
 
-    tte = time_to_exhaustion(instance_dir, session_pct)
+    tte = snapshot.time_to_exhaustion(session_pct)
     if tte is None or tte >= BURN_RATE_WARNING_THRESHOLD_MIN:
         return
 
-    rate = burn_rate_pct_per_minute(instance_dir) or 0.0
+    rate = snapshot.burn_rate_pct_per_minute() or 0.0
     msg = (
         "⚠️ Burn-rate alert: at "
         f"{rate * 60:.1f}%/h the session quota will be exhausted in "
