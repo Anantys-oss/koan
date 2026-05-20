@@ -95,6 +95,10 @@ def _skills_dir_mtime() -> float:
     When a new skill directory is added or removed, the parent directory's
     mtime changes.  This single stat() call detects structural changes
     without scanning individual SKILL.md files.
+
+    Also includes skills.py itself — if the Skill dataclass gains new
+    fields after an auto-update, cached instances in the registry would
+    lack them unless the registry is rebuilt.
     """
     best = 0.0
     # Core skills directory (inside the koan package)
@@ -106,6 +110,10 @@ def _skills_dir_mtime() -> float:
     if instance_skills.is_dir():
         with contextlib.suppress(OSError):
             best = max(best, instance_skills.stat().st_mtime)
+    # skills.py module — rebuild registry when Skill dataclass changes
+    skills_module = Path(__file__).resolve().parent / "skills.py"
+    with contextlib.suppress(OSError):
+        best = max(best, skills_module.stat().st_mtime)
     return best
 
 
