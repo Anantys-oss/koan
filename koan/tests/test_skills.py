@@ -2567,3 +2567,12 @@ class TestSkillRequirements:
         result = execute_skill(skill, ctx)
         assert isinstance(result, SkillError)
         assert "Could not find package" in result.message
+
+    def test_ensure_requirements_handles_stale_skill_instance(self):
+        """Skill instances from before 'requirements' field was added should not crash."""
+        skill = Skill(name="stale", scope="test")
+        # Simulate a stale instance created before the requirements field existed
+        del skill.__dict__["requirements"]
+        assert not hasattr(skill, "requirements")
+        result = ensure_requirements(skill)
+        assert result is None

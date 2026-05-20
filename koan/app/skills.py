@@ -591,7 +591,8 @@ def ensure_requirements(skill: Skill) -> Optional[str]:
 
     Returns None on success, or an error message string on failure.
     """
-    if not skill.requirements:
+    reqs = getattr(skill, "requirements", [])
+    if not reqs:
         return None
 
     # Skip if already checked this session
@@ -599,12 +600,12 @@ def ensure_requirements(skill: Skill) -> Optional[str]:
         return None
 
     # Reject entries that look like pip CLI flags (e.g. --index-url)
-    for pkg in skill.requirements:
+    for pkg in reqs:
         if pkg.startswith("-"):
             return f"Invalid requirement '{pkg}' for skill {skill.qualified_name}: flags not allowed"
 
     missing = []
-    for pkg in skill.requirements:
+    for pkg in reqs:
         # Normalize: pip package names use hyphens, but import names use underscores
         # Split on any PEP 440 version operator (~=, >=, <=, !=, ===, ==, >, <)
         import_name = re.split(r'[><=!~]', pkg)[0].replace("-", "_").strip()
