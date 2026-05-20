@@ -189,15 +189,15 @@ class TestGetForkOwner:
 # ---------------------------------------------------------------------------
 
 class TestResolveSubmitTarget:
-    @patch(f"{_PR_MODULE}.detect_parent_repo", return_value=None)
+    @patch(f"{_PR_MODULE}.resolve_target_repo", return_value=None)
     @patch.dict("os.environ", {"KOAN_ROOT": ""}, clear=False)
-    def test_fallback_to_issue_repo(self, mock_detect):
-        result = resolve_submit_target("/path", "proj", "Anantys", "investmindr")
-        assert result == {"repo": "Anantys/investmindr", "is_fork": False}
+    def test_fallback_to_issue_repo(self, mock_resolve):
+        result = resolve_submit_target("/path", "proj", "my-org", "my-toolkit")
+        assert result == {"repo": "my-org/my-toolkit", "is_fork": False}
 
-    @patch(f"{_PR_MODULE}.detect_parent_repo", return_value="upstream/repo")
+    @patch(f"{_PR_MODULE}.resolve_target_repo", return_value="upstream/repo")
     @patch.dict("os.environ", {"KOAN_ROOT": ""}, clear=False)
-    def test_fork_detected(self, mock_detect):
+    def test_fork_detected(self, mock_resolve):
         result = resolve_submit_target("/path", "proj", "o", "r")
         assert result == {"repo": "upstream/repo", "is_fork": True}
 

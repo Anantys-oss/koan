@@ -16,7 +16,7 @@ from app.git_utils import (
     get_current_branch as _git_get_current_branch,
     run_git_strict,
 )
-from app.github import detect_parent_repo, run_gh, pr_create
+from app.github import origin_repo, resolve_target_repo, run_gh, pr_create
 from app.projects_config import resolve_base_branch
 
 logger = logging.getLogger(__name__)
@@ -44,7 +44,19 @@ def get_commit_subjects(project_path: str, base_branch: str = "main") -> List[st
 
 
 def get_fork_owner(project_path: str) -> str:
-    """Return the GitHub owner login of the current repo."""
+    """Return the GitHub owner login of the PR head (the push target).
+
+    Derived from the ``origin`` git remote — the branch is pushed there, so
+    the cross-fork ``--head <owner>:<branch>`` must name the same owner.
+    ``gh repo view`` is NOT used as the primary source: when an ``upstream``
+    remote exists it resolves to the upstream/base repo and reports the
+    *upstream* owner, which would point ``--head`` at a branch that doesn't
+    exist on upstream and silently land the PR on the fork instead.
+    """
+    slug = origin_repo(project_path)
+    if slug:
+        return slug.split("/", 1)[0]
+    # Fallback for setups without a parseable origin URL (e.g. gh-only auth).
     try:
         return run_gh(
             "repo", "view", "--json", "owner", "--jq", ".owner.login",
@@ -65,7 +77,7 @@ def resolve_submit_target(
 
     Resolution order:
     1. submit_to_repository in projects.yaml config
-    2. Auto-detect fork parent via gh
+    2. Auto-detect upstream (gh fork parent, then ``upstream`` git remote)
     3. Fall back to issue's owner/repo
 
     Returns dict with 'repo' (owner/repo) and 'is_fork' (bool).
@@ -80,9 +92,12 @@ def resolve_submit_target(
             if submit_cfg.get("repo"):
                 return {"repo": submit_cfg["repo"], "is_fork": True}
 
-    parent = detect_parent_repo(project_path)
-    if parent:
-        return {"repo": parent, "is_fork": True}
+    # resolve_target_repo falls back to the `upstream` git remote when the
+    # GitHub fork-parent lookup comes back empty (e.g. gh resolved the local
+    # repo to the upstream itself, which reports no parent).
+    upstream = resolve_target_repo(project_path)
+    if upstream:
+        return {"repo": upstream, "is_fork": True}
 
     return {"repo": f"{owner}/{repo}", "is_fork": False}
 
