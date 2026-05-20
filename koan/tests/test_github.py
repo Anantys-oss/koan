@@ -12,7 +12,7 @@ from app.github import (
     get_gh_username, count_open_prs, cached_count_open_prs,
     batch_count_open_prs, fetch_issue_state, fetch_issue_with_comments,
     detect_parent_repo, resolve_target_repo, _upstream_remote_repo,
-    _parse_remote_url,
+    origin_repo, _parse_remote_url,
     sanitize_github_comment,
     find_bot_comment,
 )
@@ -776,10 +776,10 @@ class TestUpstreamRemoteRepo:
     @patch("app.github._get_remote_url")
     def test_returns_upstream_when_different_from_origin(self, mock_url):
         mock_url.side_effect = lambda path, remote: {
-            "upstream": "git@github.com:Anantys-oss/koan.git",
-            "origin": "https://github.com/Koan-Bot/koan.git",
+            "upstream": "git@github.com:upstream-org/my-toolkit.git",
+            "origin": "https://github.com/fork-owner/my-toolkit.git",
         }.get(remote)
-        assert _upstream_remote_repo("/proj") == "Anantys-oss/koan"
+        assert _upstream_remote_repo("/proj") == "upstream-org/my-toolkit"
 
     @patch("app.github._get_remote_url")
     def test_returns_none_when_same_as_origin(self, mock_url):
@@ -802,6 +802,22 @@ class TestUpstreamRemoteRepo:
             "upstream": "git@github.com:org/repo.git",
         }.get(remote)
         assert _upstream_remote_repo("/proj") == "org/repo"
+
+
+class TestOriginRepo:
+
+    @patch("app.github._get_remote_url",
+            return_value="https://github.com/fork-owner/my-toolkit.git")
+    def test_returns_origin_slug(self, mock_url):
+        assert origin_repo("/proj") == "fork-owner/my-toolkit"
+
+    @patch("app.github._get_remote_url", return_value=None)
+    def test_returns_none_when_no_origin(self, mock_url):
+        assert origin_repo("/proj") is None
+
+    @patch("app.github._get_remote_url", return_value="git@gitlab.com:o/r.git")
+    def test_returns_none_for_non_github(self, mock_url):
+        assert origin_repo("/proj") is None
 
 
 class TestParseRemoteUrl:

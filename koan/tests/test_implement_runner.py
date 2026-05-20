@@ -489,7 +489,7 @@ class TestResolveSubmitTarget:
     def test_auto_detect_fork(self):
         with patch("app.projects_config.load_projects_config",
                     return_value=None), \
-             patch(f"{_PR_MODULE}.detect_parent_repo",
+             patch(f"{_PR_MODULE}.resolve_target_repo",
                     return_value="parent-owner/repo"), \
              patch.dict("os.environ", {"KOAN_ROOT": "/koan"}):
             target = resolve_submit_target("/project", "myapp", "o", "r")
@@ -498,14 +498,14 @@ class TestResolveSubmitTarget:
     def test_fallback_to_issue_repo(self):
         with patch("app.projects_config.load_projects_config",
                     return_value=None), \
-             patch(f"{_PR_MODULE}.detect_parent_repo",
+             patch(f"{_PR_MODULE}.resolve_target_repo",
                     return_value=None), \
              patch.dict("os.environ", {"KOAN_ROOT": "/koan"}):
             target = resolve_submit_target("/project", "myapp", "owner", "repo")
             assert target == {"repo": "owner/repo", "is_fork": False}
 
     def test_no_koan_root(self):
-        with patch(f"{_PR_MODULE}.detect_parent_repo",
+        with patch(f"{_PR_MODULE}.resolve_target_repo",
                     return_value=None), \
              patch.dict("os.environ", {}, clear=True):
             target = resolve_submit_target("/project", "myapp", "o", "r")

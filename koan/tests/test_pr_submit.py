@@ -74,13 +74,31 @@ class TestGetCommitSubjects:
 # ---------------------------------------------------------------------------
 
 class TestGetForkOwner:
-    @patch(f"{_M}.run_gh", return_value="myuser\n")
-    def test_returns_stripped(self, mock):
+    @patch(f"{_M}.origin_repo", return_value="myuser/myrepo")
+    def test_returns_origin_owner(self, mock):
         assert get_fork_owner("/p") == "myuser"
 
+    @patch(f"{_M}.origin_repo", return_value=None)
+    @patch(f"{_M}.run_gh", return_value="ghuser\n")
+    def test_falls_back_to_gh_when_no_origin(self, mock_gh, mock_origin):
+        assert get_fork_owner("/p") == "ghuser"
+
+    @patch(f"{_M}.origin_repo", return_value=None)
     @patch(f"{_M}.run_gh", side_effect=RuntimeError("gh not found"))
-    def test_error_returns_empty(self, mock):
+    def test_error_returns_empty(self, mock_gh, mock_origin):
         assert get_fork_owner("/p") == ""
+
+    @patch(f"{_M}.origin_repo", return_value="aiolibsbot/aiohappyeyeballs")
+    @patch(f"{_M}.run_gh", return_value="aio-libs\n")
+    def test_prefers_origin_over_gh_resolved_upstream(self, mock_gh, mock_origin):
+        """Regression: when an `upstream` remote exists, `gh repo view`
+        resolves to the upstream repo and reports the *upstream* owner
+        (`aio-libs`). The PR head was pushed to origin (the fork), so the
+        head owner must be the fork owner (`aiolibsbot`) — not the upstream.
+        Returning the wrong owner made `--head aio-libs:branch` point at a
+        non-existent branch and silently landed the PR on the fork.
+        """
+        assert get_fork_owner("/p") == "aiolibsbot"
 
 
 # ---------------------------------------------------------------------------
@@ -88,17 +106,29 @@ class TestGetForkOwner:
 # ---------------------------------------------------------------------------
 
 class TestResolveSubmitTarget:
-    @patch(f"{_M}.detect_parent_repo", return_value=None)
+    @patch(f"{_M}.resolve_target_repo", return_value=None)
     @patch.dict("os.environ", {"KOAN_ROOT": ""})
     def test_fallback_to_owner_repo(self, mock):
         result = resolve_submit_target("/p", "proj", "owner", "repo")
         assert result == {"repo": "owner/repo", "is_fork": False}
 
-    @patch(f"{_M}.detect_parent_repo", return_value="upstream/repo")
+    @patch(f"{_M}.resolve_target_repo", return_value="upstream/repo")
     @patch.dict("os.environ", {"KOAN_ROOT": ""})
     def test_fork_detected(self, mock):
         result = resolve_submit_target("/p", "proj", "o", "r")
         assert result == {"repo": "upstream/repo", "is_fork": True}
+
+    @patch(f"{_M}.resolve_target_repo", return_value="aio-libs/aiohappyeyeballs")
+    @patch.dict("os.environ", {"KOAN_ROOT": ""})
+    def test_fork_detected_via_upstream_remote_when_gh_parent_null(self, mock):
+        """Regression: gh repo view reports no parent (it resolved to the
+        upstream repo, which is not itself a fork), but an `upstream` git
+        remote exists. resolve_target_repo's remote fallback must still
+        identify this as a fork so the PR targets upstream with --head, rather
+        than landing on the fork via gh's ambiguous base resolution.
+        """
+        result = resolve_submit_target("/p", "proj", "aio-libs", "aiohappyeyeballs")
+        assert result == {"repo": "aio-libs/aiohappyeyeballs", "is_fork": True}
 
     def test_config_override(self):
         config = {
