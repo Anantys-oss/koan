@@ -364,10 +364,10 @@ class TestSquashHelpers:
             mock_git.side_effect = ["abc\n", "\n"]
             assert _count_commits_since_base("origin/main", "/tmp") == 0
 
-    def test_count_commits_since_base_error_returns_zero(self):
+    def test_count_commits_since_base_error_returns_negative(self):
         from app.squash_pr import _count_commits_since_base
         with patch("app.squash_pr._run_git", side_effect=RuntimeError("boom")):
-            assert _count_commits_since_base("origin/main", "/tmp") == 0
+            assert _count_commits_since_base("origin/main", "/tmp") == -1
 
     def test_squash_commits_runs_reset_and_commit(self):
         from app.squash_pr import _squash_commits
