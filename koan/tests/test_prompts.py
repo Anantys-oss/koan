@@ -718,3 +718,24 @@ class TestLoadPromptWithIncludes:
         import re
         unresolved = re.findall(r"\{@include\s+[\w-]+\}", result)
         assert unresolved == [], f"Unresolved includes in agent.md: {unresolved}"
+
+    def test_all_skill_prompts_resolve_includes(self):
+        """Every skill prompt with {@include} directives must resolve completely."""
+        import re
+        skills_dir = Path(__file__).parent.parent / "skills" / "core"
+        if not skills_dir.exists():
+            pytest.skip("skills/core not found")
+        failures = []
+        for skill_dir in sorted(skills_dir.iterdir()):
+            prompts = skill_dir / "prompts"
+            if not prompts.exists():
+                continue
+            for md_file in sorted(prompts.glob("*.md")):
+                result = load_skill_prompt(skill_dir, md_file.stem)
+                unresolved = re.findall(r"\{@include\s+[\w-]+\}", result)
+                if unresolved:
+                    failures.append(f"{skill_dir.name}/{md_file.stem}: {unresolved}")
+        assert failures == [], (
+            "Unresolved {@include} directives in skill prompts:\n"
+            + "\n".join(failures)
+        )
