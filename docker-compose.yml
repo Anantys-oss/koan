@@ -33,8 +33,6 @@ services:
     volumes:
       # Instance state — persisted across restarts
       - ./instance:/app/instance
-      # Isolated mission queue for Docker (overlays instance/ mount)
-      - ./instance/missions.docker.md:/app/instance/missions.md
       # Logs
       - ./logs:/app/logs
     restart: unless-stopped

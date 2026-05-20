@@ -184,19 +184,19 @@ class TestCodexBuildCommand:
         idx = cmd.index("--model")
         assert cmd[idx + 1] == "gpt-5.4"
 
-    def test_model_before_exec(self):
-        """Global flags (--model) must appear before 'exec' subcommand."""
+    def test_model_after_exec(self):
+        """Exec-level flags (--model) must appear after 'exec' subcommand."""
         cmd = self.provider.build_command(prompt="do stuff", model="gpt-5.4")
         model_idx = cmd.index("--model")
         exec_idx = cmd.index("exec")
-        assert model_idx < exec_idx
+        assert model_idx > exec_idx
 
-    def test_yolo_before_exec(self):
-        """Permission flags must appear before 'exec'."""
+    def test_yolo_after_exec(self):
+        """Permission flags must appear after 'exec'."""
         cmd = self.provider.build_command(prompt="hello", skip_permissions=True)
         yolo_idx = cmd.index("--yolo")
         exec_idx = cmd.index("exec")
-        assert yolo_idx < exec_idx
+        assert yolo_idx > exec_idx
 
     def test_system_prompt_prepended(self):
         """System prompt is prepended to user prompt (no native flag)."""
@@ -204,9 +204,8 @@ class TestCodexBuildCommand:
             prompt="do the thing",
             system_prompt="You are helpful.",
         )
-        # Find the prompt argument (after 'exec')
-        exec_idx = cmd.index("exec")
-        prompt_text = cmd[exec_idx + 1]
+        # Prompt is the last element (after exec + flags)
+        prompt_text = cmd[-1]
         assert prompt_text.startswith("You are helpful.")
         assert "do the thing" in prompt_text
 
@@ -258,12 +257,11 @@ class TestCodexBuildCommand:
             system_prompt="Be concise.",
         )
         assert cmd[0] == "codex"
+        assert cmd[1] == "exec"
         assert "--yolo" in cmd
         assert "--model" in cmd
-        assert "exec" in cmd
-        # Prompt should contain both system prompt and user prompt
-        exec_idx = cmd.index("exec")
-        prompt_text = cmd[exec_idx + 1]
+        # Prompt is the last element and contains both system + user prompt
+        prompt_text = cmd[-1]
         assert "Be concise." in prompt_text
         assert "implement feature X" in prompt_text
 

@@ -63,6 +63,13 @@ verify_binaries() {
                 success "claude $(claude --version 2>/dev/null | head -1 || echo '(unknown version)')"
             fi
             ;;
+        codex)
+            if ! command -v codex &>/dev/null; then
+                missing+=("codex (OpenAI Codex CLI) — npm install -g @openai/codex may have failed")
+            else
+                success "codex $(codex --version 2>/dev/null | head -1 || echo '(unknown version)')"
+            fi
+            ;;
         copilot)
             if ! command -v github-copilot-cli &>/dev/null && ! command -v copilot &>/dev/null; then
                 missing+=("github-copilot-cli or copilot (GitHub Copilot CLI)")
@@ -70,7 +77,7 @@ verify_binaries() {
                 success "copilot CLI"
             fi
             ;;
-        local|ollama)
+        local|ollama|ollama-launch)
             if ! command -v ollama &>/dev/null; then
                 missing+=("ollama")
             else
@@ -123,6 +130,39 @@ check_claude_auth() {
     log "  Option 1: Run 'make docker-auth' on the HOST (subscription — generates OAuth token)"
     log "  Option 2: Set ANTHROPIC_API_KEY in .env (API billing)"
     return 1
+}
+
+# Check Codex authentication via a minimal probe.
+# Returns 0 if authenticated, 1 if not.
+check_codex_auth() {
+    # Option 1: OpenAI API key
+    if [ -n "${OPENAI_API_KEY:-}" ]; then
+        success "Codex auth: OPENAI_API_KEY"
+        return 0
+    fi
+
+    # Option 2: Device auth / interactive login — probe with a tiny prompt
+    if timeout 15 codex exec --full-auto "ok" >/dev/null 2>&1; then
+        success "Codex auth: interactive login"
+        return 0
+    fi
+
+    error "Codex CLI is not authenticated"
+    log "  Option 1: Set OPENAI_API_KEY in .env"
+    log "  Option 2: Run 'codex login --device-auth' inside the container"
+    return 1
+}
+
+# Dispatch to the correct auth check based on configured provider.
+check_provider_auth() {
+    local provider="${KOAN_CLI_PROVIDER:-claude}"
+    case "$provider" in
+        claude)  check_claude_auth ;;
+        codex)   check_codex_auth ;;
+        # Other providers (copilot, local, ollama) don't have a standard
+        # auth check — verify_auth() handles their warnings.
+        *)       return 0 ;;
+    esac
 }
 
 verify_auth() {
@@ -227,7 +267,7 @@ case "$COMMAND" in
     start)
         printf "${BOLD}${CYAN}Kōan Docker — initializing${RESET}\n"
         verify_binaries || exit 1
-        check_claude_auth || exit 1
+        check_provider_auth || exit 1
         verify_auth
         setup_ssh
         setup_instance
@@ -243,7 +283,7 @@ case "$COMMAND" in
     agent)
         log "Kōan Docker — agent only"
         verify_binaries || exit 1
-        check_claude_auth || exit 1
+        check_provider_auth || exit 1
         verify_auth
         setup_ssh
         setup_instance
