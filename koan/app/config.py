@@ -798,12 +798,14 @@ def get_plan_review_config() -> dict:
     Controls whether a lightweight subagent reviews generated plans before
     they are posted to GitHub, and how many re-generation rounds are allowed.
 
-    Config key: plan_review (default: enabled=True, max_rounds=3)
+    Config key: plan_review (default: enabled=True, max_rounds=3, implement_gate=True)
 
     Returns:
         Dict with keys:
           - enabled (bool): Whether the review loop runs (default: True)
           - max_rounds (int): Maximum re-generation rounds (default: 3)
+          - implement_gate (bool): Whether /implement runs a plan-review
+            gate before execution (default: True)
     """
     config = _load_config()
     plan_review = config.get("plan_review", {})
@@ -812,6 +814,7 @@ def get_plan_review_config() -> dict:
     return {
         "enabled": bool(plan_review.get("enabled", True)),
         "max_rounds": _safe_int(plan_review.get("max_rounds", 3), 3),
+        "implement_gate": bool(plan_review.get("implement_gate", True)),
     }
 
 

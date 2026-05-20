@@ -247,7 +247,7 @@ _REVIEW_SKIP_PHASES = 2   # skip if fewer than this many phases
 _REVIEW_SKIP_LINES = 20   # skip if plan body is shorter than this
 
 
-def _is_simple_plan(plan_text: str) -> bool:
+def is_simple_plan(plan_text: str) -> bool:
     """Return True if the plan is trivially simple and doesn't need review.
 
     Skips review for single-phase plans with fewer than _REVIEW_SKIP_LINES
@@ -260,7 +260,7 @@ def _is_simple_plan(plan_text: str) -> bool:
     return line_count < _REVIEW_SKIP_LINES
 
 
-def _review_plan(plan_text: str, project_path: str, skill_dir) -> Tuple[bool, str]:
+def review_plan(plan_text: str, project_path: str, skill_dir) -> Tuple[bool, str]:
     """Run a lightweight subagent to review plan quality.
 
     Args:
@@ -346,7 +346,7 @@ def _review_loop(
     prev_issues: Optional[str] = None
 
     for round_num in range(1, max_rounds + 1):
-        approved, issues = _review_plan(current_plan, project_path, skill_dir)
+        approved, issues = review_plan(current_plan, project_path, skill_dir)
 
         if approved:
             print(f"[plan_runner] Review round {round_num}: APPROVED", file=sys.stderr)
@@ -429,7 +429,7 @@ def _generate_plan(project_path, idea, context="", skill_dir=None):
     plan = _run_claude_plan(prompt, project_path)
 
     review_cfg = get_plan_review_config()
-    if review_cfg["enabled"] and not _is_simple_plan(plan):
+    if review_cfg["enabled"] and not is_simple_plan(plan):
         plan = _review_loop(
             plan, project_path, idea=idea, context=context, skill_dir=skill_dir,
             max_rounds=review_cfg["max_rounds"],
@@ -452,7 +452,7 @@ def _generate_iteration_plan(project_path, issue_context, skill_dir=None):
     plan = _run_claude_plan(prompt, project_path)
 
     review_cfg = get_plan_review_config()
-    if review_cfg["enabled"] and not _is_simple_plan(plan):
+    if review_cfg["enabled"] and not is_simple_plan(plan):
         plan = _review_loop(
             plan, project_path, idea="", context="", skill_dir=skill_dir,
             max_rounds=review_cfg["max_rounds"],

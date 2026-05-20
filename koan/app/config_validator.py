@@ -189,6 +189,7 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
     "plan_review": {
         "enabled": "bool",
         "max_rounds": "int",
+        "implement_gate": "bool",
     },
     "stagnation": {
         "enabled": "bool",
