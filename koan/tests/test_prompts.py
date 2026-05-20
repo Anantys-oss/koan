@@ -739,3 +739,34 @@ class TestLoadPromptWithIncludes:
             "Unresolved {@include} directives in skill prompts:\n"
             + "\n".join(failures)
         )
+
+    def test_implementation_workflow_partial_resolves(self):
+        """implementation-workflow partial resolves in both fix and implement prompts."""
+        import re
+
+        include_re = re.compile(r"\{@include\s+[\w-]+\}")
+        skills_root = PROMPT_DIR.parent / "skills" / "core"
+
+        fix_dir = skills_root / "fix"
+        impl_dir = skills_root / "implement"
+
+        fix_out = load_skill_prompt(fix_dir, "fix")
+        impl_out = load_skill_prompt(impl_dir, "implement")
+
+        # The partial itself must have been resolved (no raw directive remaining)
+        assert "{@include implementation-workflow}" not in fix_out, (
+            "implementation-workflow partial not resolved in fix.md"
+        )
+        assert "{@include implementation-workflow}" not in impl_out, (
+            "implementation-workflow partial not resolved in implement.md"
+        )
+
+        # The partial's content must be present in both rendered outputs
+        assert "Phase 3" in fix_out, "Phase 3 missing from rendered fix.md"
+        assert "Phase 3" in impl_out, "Phase 3 missing from rendered implement.md"
+
+        # No unresolved {@include ...} directives should remain in either output
+        fix_unresolved = include_re.findall(fix_out)
+        impl_unresolved = include_re.findall(impl_out)
+        assert fix_unresolved == [], f"Unresolved includes in fix.md: {fix_unresolved}"
+        assert impl_unresolved == [], f"Unresolved includes in implement.md: {impl_unresolved}"
