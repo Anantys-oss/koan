@@ -487,6 +487,20 @@ def _upstream_remote_repo(project_path: str) -> Optional[str]:
     return upstream_repo
 
 
+def origin_repo(project_path: str) -> Optional[str]:
+    """Return ``owner/repo`` parsed from the ``origin`` git remote URL.
+
+    Reflects the actual push target (the fork, in a fork workflow), unlike
+    ``gh repo view`` which resolves to the upstream/base repo when an
+    ``upstream`` remote is present. Returns ``None`` when there's no origin
+    remote or its URL can't be parsed as a GitHub slug.
+    """
+    url = _get_remote_url(project_path, "origin")
+    if url:
+        return _parse_remote_url(url)
+    return None
+
+
 def resolve_target_repo(project_path: str) -> Optional[str]:
     """Return the upstream ``owner/repo`` if working in a fork, else ``None``.
 
