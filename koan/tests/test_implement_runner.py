@@ -13,6 +13,7 @@ from skills.core.implement.implement_runner import (
     _build_prompt,
     _execute_implementation,
     _generate_pr_summary,
+    _run_plan_review_gate,
     _submit_implement_pr,
     main,
 )
@@ -180,6 +181,83 @@ class TestFetchIssueWithComments:
 
 
 # ---------------------------------------------------------------------------
+# _run_plan_review_gate
+# ---------------------------------------------------------------------------
+
+class TestPlanReviewGate:
+    """Tests for the plan-review quality gate in implement_runner."""
+
+    def test_approved_plan_proceeds(self):
+        """When review_plan returns APPROVED, gate returns None (proceed)."""
+        with patch("app.config.get_plan_review_config",
+                    return_value={"implement_gate": True}), \
+             patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan", return_value=(True, "")):
+            result = _run_plan_review_gate("## Phase 1\nDo stuff\n" * 10, "/project")
+            assert result is None
+
+    def test_issues_found_aborts(self):
+        """When review_plan returns ISSUES_FOUND, gate returns (False, msg)."""
+        issues = "- Phase 1: missing file paths"
+        with patch("app.config.get_plan_review_config",
+                    return_value={"implement_gate": True}), \
+             patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan", return_value=(False, issues)):
+            result = _run_plan_review_gate("## Phase 1\nDo stuff\n" * 10, "/project")
+            assert result is not None
+            ok, msg = result
+            assert not ok
+            assert "missing file paths" in msg
+            assert "Plan review failed" in msg
+
+    def test_simple_plan_skips_review(self):
+        """Simple plans bypass the review gate entirely."""
+        with patch("app.config.get_plan_review_config",
+                    return_value={"implement_gate": True}), \
+             patch("app.plan_runner.is_simple_plan", return_value=True), \
+             patch("app.plan_runner.review_plan") as mock_review:
+            result = _run_plan_review_gate("Rename X to Y", "/project")
+            assert result is None
+            mock_review.assert_not_called()
+
+    def test_config_disabled_skips_review(self):
+        """When implement_gate is False, gate is skipped."""
+        with patch("app.config.get_plan_review_config",
+                    return_value={"implement_gate": False}), \
+             patch("app.plan_runner.review_plan") as mock_review:
+            result = _run_plan_review_gate("## Phase 1\nBig plan", "/project")
+            assert result is None
+            mock_review.assert_not_called()
+
+    def test_reviewer_error_fails_open(self):
+        """When review_plan fails open (returns approved=True on error), proceed."""
+        with patch("app.config.get_plan_review_config",
+                    return_value={"implement_gate": True}), \
+             patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan", return_value=(True, "")):
+            result = _run_plan_review_gate("## Phase 1\nDo stuff\n" * 10, "/project")
+            assert result is None
+
+    def test_gate_blocks_run_implement(self):
+        """Integration: run_implement returns failure when gate rejects the plan."""
+        notify = MagicMock()
+        body = "### Summary\nPlan\n#### Phase 1: Do it"
+        with patch(f"{_IMPL_MODULE}.fetch_issue_with_comments",
+                    return_value=("Title", body, [])), \
+             patch(f"{_IMPL_MODULE}._run_plan_review_gate",
+                    return_value=(False, "Plan review failed — fix these")), \
+             patch(f"{_IMPL_MODULE}._execute_implementation") as mock_exec:
+            ok, msg = run_implement(
+                "/project",
+                "https://github.com/o/r/issues/42",
+                notify_fn=notify,
+            )
+            assert not ok
+            assert "Plan review failed" in msg
+            mock_exec.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # _build_prompt + _execute_implementation
 # ---------------------------------------------------------------------------
 
@@ -293,6 +371,7 @@ class TestRunImplement:
         body = "### Summary\nPlan\n#### Phase 1: Do it"
         with patch(f"{_IMPL_MODULE}.fetch_issue_with_comments",
                     return_value=("Title", body, [])), \
+             patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
              patch(f"{_IMPL_MODULE}._execute_implementation",
                     return_value="Done"):
             ok, msg = run_implement(
@@ -308,6 +387,7 @@ class TestRunImplement:
         body = "### Summary\nPlan\n#### Phase 1: Do it"
         with patch(f"{_IMPL_MODULE}.fetch_issue_with_comments",
                     return_value=("Title", body, [])), \
+             patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
              patch(f"{_IMPL_MODULE}._execute_implementation",
                     return_value="Done") as mock_run:
             ok, msg = run_implement(
@@ -339,6 +419,7 @@ class TestRunImplement:
         body = "### Summary\nPlan\n#### Phase 1: Do it"
         with patch(f"{_IMPL_MODULE}.fetch_issue_with_comments",
                     return_value=("Title", body, [])), \
+             patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
              patch(f"{_IMPL_MODULE}._execute_implementation",
                     side_effect=RuntimeError("Timeout")):
             ok, msg = run_implement(
@@ -354,6 +435,7 @@ class TestRunImplement:
         body = "### Summary\nPlan\n#### Phase 1: Do it"
         with patch(f"{_IMPL_MODULE}.fetch_issue_with_comments",
                     return_value=("Title", body, [])), \
+             patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
              patch(f"{_IMPL_MODULE}._execute_implementation",
                     return_value=""):
             ok, msg = run_implement(
@@ -369,6 +451,7 @@ class TestRunImplement:
         body = "### Summary\nPlan\n#### Phase 1: Do it"
         with patch(f"{_IMPL_MODULE}.fetch_issue_with_comments",
                     return_value=("Title", body, [])), \
+             patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
              patch(f"{_IMPL_MODULE}._execute_implementation",
                     return_value="Done") as mock_run:
             run_implement(
@@ -384,6 +467,7 @@ class TestRunImplement:
         body = "### Summary\nPlan\n#### Phase 1: Do it"
         with patch(f"{_IMPL_MODULE}.fetch_issue_with_comments",
                     return_value=("Title", body, [])), \
+             patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
              patch(f"{_IMPL_MODULE}._execute_implementation",
                     return_value="Done"):
             run_implement(
@@ -773,6 +857,7 @@ class TestRunImplementWithPR:
         body = "### Summary\nPlan\n#### Phase 1: Do it"
         with patch(f"{_IMPL_MODULE}.fetch_issue_with_comments",
                     return_value=("Title", body, [])), \
+             patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
              patch(f"{_IMPL_MODULE}._execute_implementation", return_value="Done"), \
              patch(f"{_IMPL_MODULE}._submit_implement_pr",
                     return_value="https://github.com/o/r/pull/99"), \
@@ -790,6 +875,7 @@ class TestRunImplementWithPR:
         body = "### Summary\nPlan\n#### Phase 1: Do it"
         with patch(f"{_IMPL_MODULE}.fetch_issue_with_comments",
                     return_value=("Title", body, [])), \
+             patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
              patch(f"{_IMPL_MODULE}._execute_implementation", return_value="Done"), \
              patch(f"{_IMPL_MODULE}._submit_implement_pr", return_value=None), \
              patch(f"{_IMPL_MODULE}.get_current_branch", return_value="koan/impl-42"):
@@ -806,6 +892,7 @@ class TestRunImplementWithPR:
         body = "### Summary\nPlan\n#### Phase 1: Do it"
         with patch(f"{_IMPL_MODULE}.fetch_issue_with_comments",
                     return_value=("Title", body, [])), \
+             patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
              patch(f"{_IMPL_MODULE}._execute_implementation", return_value="Done"), \
              patch(f"{_IMPL_MODULE}._submit_implement_pr", return_value=None), \
              patch(f"{_IMPL_MODULE}.get_current_branch", return_value="main"):
@@ -822,6 +909,7 @@ class TestRunImplementWithPR:
         body = "### Summary\nPlan\n#### Phase 1: Do it"
         with patch(f"{_IMPL_MODULE}.fetch_issue_with_comments",
                     return_value=("Title", body, [])), \
+             patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
              patch(f"{_IMPL_MODULE}._execute_implementation", return_value="Done"), \
              patch(f"{_IMPL_MODULE}._submit_implement_pr",
                     side_effect=RuntimeError("unexpected")), \

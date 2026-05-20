@@ -390,6 +390,7 @@ usage:
 # plan_review:
 #   enabled: true       # Run review loop after plan generation (default: true)
 #   max_rounds: 3       # Maximum re-generation rounds per plan (default: 3)
+#   implement_gate: true  # Run plan-review gate before /implement execution (default: true)
 
 # Prompt injection guard — scans incoming missions for suspicious patterns
 # Detects instruction overrides, role confusion, secret extraction, shell injection.

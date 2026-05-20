@@ -27,6 +27,9 @@ from app.prompts import load_prompt_or_skill
 
 logger = logging.getLogger(__name__)
 
+# Path to the plan skill directory (used for loading the plan-review prompt)
+_PLAN_SKILL_DIR = Path(__file__).resolve().parent.parent / "plan"
+
 
 # Regex pattern matching plan structure markers
 _PLAN_MARKER_RE = re.compile(
@@ -110,6 +113,11 @@ def run_implement(
             f"No plan found in issue {label}. "
             "The issue should contain implementation phases."
         )
+
+    # Plan-review quality gate — cheap subagent check before expensive execution
+    gate_result = _run_plan_review_gate(plan, project_path)
+    if gate_result is not None:
+        return gate_result
 
     # Invoke Claude with the plan
     try:
@@ -221,6 +229,41 @@ def _extract_latest_plan(body: Optional[str], comments: List[dict]) -> str:
     # (allows non-standard plan formats). Body may be None for issues
     # with an empty body — GitHub returns body=null in that case.
     return (body or "").strip()
+
+
+def _run_plan_review_gate(
+    plan: str,
+    project_path: str,
+) -> Optional[Tuple[bool, str]]:
+    """Run lightweight plan-review gate before expensive implementation.
+
+    Returns None to proceed, or (False, message) to abort.
+    Fails open on reviewer errors — implementation proceeds.
+    """
+    from app.config import get_plan_review_config
+    from app.plan_runner import is_simple_plan, review_plan
+
+    review_cfg = get_plan_review_config()
+    if not review_cfg.get("implement_gate", True):
+        return None
+
+    if is_simple_plan(plan):
+        logger.debug("Plan is simple — skipping review gate")
+        return None
+
+    # Always use the plan skill directory for the review prompt
+    logger.info("Running plan-review quality gate...")
+    approved, issues = review_plan(plan, project_path, _PLAN_SKILL_DIR)
+
+    if approved:
+        logger.info("Plan-review gate: APPROVED")
+        return None
+
+    logger.warning("Plan-review gate: ISSUES_FOUND")
+    msg = (
+        f"Plan review failed — fix these before re-running /implement:\n{issues}"
+    )
+    return False, msg
 
 
 def _build_prompt(
