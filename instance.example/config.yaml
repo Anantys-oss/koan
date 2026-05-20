@@ -438,6 +438,19 @@ usage:
 #                                    # When enabled, unrecognized commands are sent to Claude
 #                                    # for intent classification before falling back to error.
 #                                    # Per-project override available in projects.yaml.
+#   webhook:                          # Push-based triggering (opt-in, default: off)
+#     enabled: false                  # Start a local HTTP receiver in the bridge process.
+#                                     # On a relevant GitHub event it triggers an IMMEDIATE
+#                                     # notification poll (~10s) instead of waiting out the
+#                                     # 60-180s polling backoff. Polling stays on as the
+#                                     # reliability fallback for missed deliveries.
+#     port: 8474                      # Bind port (default: 8474)
+#     host: "127.0.0.1"               # Bind host (default: loopback — front with a tunnel
+#                                     # like smee.io/cloudflared; use 0.0.0.0 only for direct
+#                                     # exposure behind your own TLS terminator)
+#   # Secret is read from the KOAN_GITHUB_WEBHOOK_SECRET env var, NOT this file.
+#   # Configure the same secret in the GitHub repo webhook settings (content
+#   # type application/json). See docs/github-webhooks.md.
 
 # Jira notification-driven commands
 # Enable Kōan to respond to @mentions in Jira issue comments.

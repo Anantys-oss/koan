@@ -220,6 +220,51 @@ def get_github_subscribe_max_per_cycle(config: dict) -> int:
         return 5
 
 
+def get_github_webhook_enabled(config: dict) -> bool:
+    """Check if the push-based webhook receiver is enabled.
+
+    When enabled (and KOAN_GITHUB_WEBHOOK_SECRET is set), the bridge starts a
+    local HTTP receiver. Incoming GitHub events trigger an immediate
+    notification poll instead of waiting out the polling backoff. Default: off.
+    """
+    github = config.get("github") or {}
+    webhook = github.get("webhook") or {}
+    return bool(webhook.get("enabled", False))
+
+
+def get_github_webhook_port(config: dict) -> int:
+    """Port the webhook receiver binds to. Default: 8474."""
+    from app.github_webhook import DEFAULT_WEBHOOK_PORT
+
+    github = config.get("github") or {}
+    webhook = github.get("webhook") or {}
+    try:
+        val = int(webhook.get("port", DEFAULT_WEBHOOK_PORT))
+        if 1 <= val <= 65535:
+            return val
+        return DEFAULT_WEBHOOK_PORT
+    except (ValueError, TypeError):
+        return DEFAULT_WEBHOOK_PORT
+
+
+def get_github_webhook_host(config: dict) -> str:
+    """Host the webhook receiver binds to. Default: 127.0.0.1.
+
+    The default is loopback-only because tunnels (smee/cloudflared) run on the
+    same host and forward to localhost — the receiver should not be directly
+    internet-exposed. Set to "0.0.0.0" only for direct exposure behind your own
+    TLS terminator.
+    """
+    from app.github_webhook import DEFAULT_WEBHOOK_HOST
+
+    github = config.get("github") or {}
+    webhook = github.get("webhook") or {}
+    host = webhook.get("host", DEFAULT_WEBHOOK_HOST)
+    if isinstance(host, str) and host.strip():
+        return host.strip()
+    return DEFAULT_WEBHOOK_HOST
+
+
 def validate_github_config(config: dict) -> Optional[str]:
     """Validate GitHub configuration at startup.
 

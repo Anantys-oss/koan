@@ -204,6 +204,8 @@ Notifications are checked during the agent's interruptible sleep cycle, with exp
 
 Backoff resets immediately when any notification is found. This reduces unnecessary API calls during quiet periods while maintaining fast response when activity resumes.
 
+> **Want faster responses?** The polling delay can be collapsed to a few seconds with the opt-in **push-based webhook receiver** — see [docs/github-webhooks.md](github-webhooks.md). Webhooks trigger an immediate poll; polling stays on as the reliability fallback.
+
 ### Error handling
 
 When a command fails validation (unknown command, permission denied), Kōan:
