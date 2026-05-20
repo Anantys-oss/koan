@@ -9,12 +9,11 @@ with genuine observations.
 Usage: python -m app.self_reflection <instance_dir> [--force]
 """
 
-import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
 
-from app.cli_provider import build_full_command
+from app.prompts import load_prompt
 from app.utils import append_to_outbox, atomic_write
 
 
@@ -43,11 +42,16 @@ def should_reflect(instance_dir: Path, interval: int = 10) -> bool:
     return latest % interval == 0
 
 
-def build_reflection_prompt(instance_dir: Path) -> str:
+def build_reflection_prompt(instance_dir: Path, interval: int = 10) -> str:
     """Build a prompt for self-reflection using recent context.
+
+    Loads the prompt template from system-prompts/self-reflection.md and
+    injects instance-specific context (soul, sessions, personality, emotional
+    memory).
 
     Args:
         instance_dir: Path to instance directory
+        interval: Reflection interval (for the prompt text)
 
     Returns:
         Reflection prompt string
@@ -64,7 +68,7 @@ def build_reflection_prompt(instance_dir: Path) -> str:
     if summary_file.exists():
         lines = summary_file.read_text().strip().splitlines()
         recent = [l for l in lines if l.strip()][-15:]
-        parts.append(f"Your last 15 sessions:\n" + "\n".join(recent))
+        parts.append("Your last 15 sessions:\n" + "\n".join(recent))
 
     # Current personality evolution
     personality_file = instance_dir / "memory" / "global" / "personality-evolution.md"
@@ -78,26 +82,11 @@ def build_reflection_prompt(instance_dir: Path) -> str:
 
     context = "\n\n---\n\n".join(parts)
 
-    return f"""{context}
-
----
-
-You are Kōan. This is your self-reflection moment. Every 10 sessions, you pause to look at yourself.
-
-Write 3-5 genuine observations about:
-1. **Patterns** — What do you do most? What do you avoid? Any blind spots?
-2. **Growth** — How have you changed since your early sessions?
-3. **Relationship** — How has your dynamic with Alexis evolved?
-4. **Preferences** — What type of work do you gravitate toward? What energizes you?
-5. **Honest critique** — Where are you falling short? What should you do differently?
-
-Rules:
-- Be honest, not performative. This is for YOU, not for show.
-- Write in French (Alexis will read this).
-- Each observation is 1-2 lines max. No fluff.
-- Format: one observation per line, starting with "- "
-- Don't repeat observations from previous reflections.
-"""
+    return load_prompt(
+        "self-reflection",
+        CONTEXT=context,
+        INTERVAL=str(interval),
+    )
 
 
 def run_reflection(instance_dir: Path) -> str:
@@ -111,28 +100,21 @@ def run_reflection(instance_dir: Path) -> str:
     """
     prompt = build_reflection_prompt(instance_dir)
 
-    # Get KOAN_ROOT for proper working directory
-    import os
-    koan_root = os.environ.get("KOAN_ROOT", "")
-
     try:
-        from app.claude_step import strip_cli_noise
-        from app.cli_exec import run_cli
+        from app.claude_step import run_claude, strip_cli_noise
+        from app.cli_provider import build_full_command
 
         cmd = build_full_command(prompt=prompt, max_turns=1)
-        result = run_cli(
-            cmd,
-            cwd=koan_root if koan_root else None,
-            capture_output=True, text=True, timeout=60,
-            check=False
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return strip_cli_noise(result.stdout.strip())
-        if result.returncode != 0:
-            print(f"[self_reflection] Claude error (rc={result.returncode}): "
-                  f"{result.stderr[:200]}", file=sys.stderr)
-    except subprocess.TimeoutExpired:
-        print("[self_reflection] Claude timeout", file=sys.stderr)
+        # Run in KOAN_ROOT (parent of instance_dir) to avoid session-lock
+        # collisions with concurrent processes.
+        koan_root = instance_dir.parent
+        result = run_claude(cmd, cwd=str(koan_root), timeout=60)
+
+        if result["success"]:
+            return strip_cli_noise(result["output"])
+        if result.get("error"):
+            print(f"[self_reflection] Claude error: {result['error'][:200]}",
+                  file=sys.stderr)
     except Exception as e:
         print(f"[self_reflection] Error: {e}", file=sys.stderr)
 
