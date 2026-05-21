@@ -615,10 +615,10 @@ def run_command_streaming(
                 text_lines.append(stripped)
         stderr_text = proc.stderr.read() if proc.stderr else ""
         proc.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as e:
         proc.kill()
         proc.wait()
-        raise RuntimeError(f"CLI invocation timed out after {timeout}s")
+        raise RuntimeError(f"CLI invocation timed out after {timeout}s") from e
     finally:
         if proc.stdout:
             proc.stdout.close()

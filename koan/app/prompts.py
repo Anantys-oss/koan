@@ -51,8 +51,8 @@ def _read_prompt_with_git_fallback(path: Path) -> str:
             raise FileNotFoundError(path)
         root = Path(result.stdout.strip())
         rel_path = path.relative_to(root)
-    except (subprocess.TimeoutExpired, ValueError):
-        raise FileNotFoundError(path)
+    except (subprocess.TimeoutExpired, ValueError) as e:
+        raise FileNotFoundError(path) from e
 
     for remote in ("upstream/main", "origin/main"):
         try:

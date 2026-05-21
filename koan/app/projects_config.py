@@ -37,7 +37,7 @@ def load_projects_config(koan_root: str) -> Optional[dict]:
         with open(config_path, "r") as f:
             data = yaml.safe_load(f)
     except yaml.YAMLError as e:
-        raise ValueError(f"Invalid YAML in projects.yaml: {e}")
+        raise ValueError(f"Invalid YAML in projects.yaml: {e}") from e
 
     if data is None:
         return None

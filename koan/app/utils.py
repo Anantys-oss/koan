@@ -302,7 +302,7 @@ def truncate_diff(diff: str, max_chars: int) -> str:
     skipped: list[str] = []
     used = 0
 
-    for block, name in zip(blocks, filenames):
+    for block, name in zip(blocks, filenames, strict=True):
         if used + len(block) <= max_chars:
             kept.append((block, name))
             used += len(block)
@@ -579,7 +579,7 @@ def resolve_project_path(repo_name: str, owner: Optional[str] = None) -> Optiona
             from app.projects_config import load_projects_config
             config = load_projects_config(str(KOAN_ROOT))
             if config:
-                for name, project in config.get("projects", {}).items():
+                for project in config.get("projects", {}).values():
                     if isinstance(project, dict):
                         # Check primary github_url
                         gh_url = project.get("github_url", "")
@@ -619,7 +619,7 @@ def resolve_project_path(repo_name: str, owner: Optional[str] = None) -> Optiona
             return path
 
     # 3. Match on directory basename
-    for name, path in projects:
+    for _name, path in projects:
         if Path(path).name.lower() == repo_name.lower():
             return path
 

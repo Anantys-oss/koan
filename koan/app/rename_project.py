@@ -177,7 +177,7 @@ def run_rename(koan_root: Path, old_name: str, new_name: str, dry_run: bool = Tr
         if changes:
             rel = path.relative_to(instance_dir)
             print(f"  {rel} ({len(changes)} replacement{'s' if len(changes) > 1 else ''})")
-            for line_num, old_line, new_line in changes[:3]:
+            for line_num, old_line, _new_line in changes[:3]:
                 print(f"    L{line_num}: {old_line[:80]}")
             if len(changes) > 3:
                 print(f"    ... and {len(changes) - 3} more")
