@@ -121,7 +121,7 @@ class TestBuildPrompt:
         assert "Submit Pull Request" in prompt
         assert "gh pr create --draft" in prompt
         assert "git push" in prompt
-        assert "Fixes https://github.com/o/r/issues/42" in prompt
+        assert "Closes https://github.com/o/r/issues/42" in prompt
 
 
 # ---------------------------------------------------------------------------
