@@ -82,12 +82,32 @@ class TestParseMentionCommand:
     def test_mention_with_surrounding_text(self):
         body = "Hey can you please @bot rebase this PR? Thanks!"
         result = parse_mention_command(body, "bot")
-        assert result == ("rebase", "this PR? Thanks!")
+        assert result is not None
+        assert result[0] == "rebase"
+        # Surrounding text from the comment is captured as context
+        assert "this PR? Thanks!" in result[1]
+        assert "Hey can you please" in result[1]
 
     def test_multiple_mentions_first_wins(self):
         body = "@bot rebase\n@bot review"
         result = parse_mention_command(body, "bot")
-        assert result == ("rebase", "")
+        assert result is not None
+        assert result[0] == "rebase"
+        # Second mention becomes part of the context
+        assert "@bot review" in result[1]
+
+    def test_context_from_text_before_mention(self):
+        """Text before the @mention should be captured as context."""
+        body = (
+            "Let's add a config option for this.\n"
+            "It should be enabled by default.\n\n"
+            "@bot rebase"
+        )
+        result = parse_mention_command(body, "bot")
+        assert result is not None
+        assert result[0] == "rebase"
+        assert "config option" in result[1]
+        assert "enabled by default" in result[1]
 
     def test_command_with_slash_prefix(self):
         """Users often type @bot /command (Telegram habit) — slash must be stripped."""

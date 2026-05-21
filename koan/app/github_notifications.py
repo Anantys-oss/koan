@@ -359,13 +359,19 @@ def parse_mention_command(comment_body: str, nickname: str) -> Optional[Tuple[st
     Ignores mentions inside code blocks (``` or `).
     Only processes the first @mention found.
 
+    Context includes text from the rest of the comment — both the
+    remainder of the @mention line and any surrounding paragraphs.
+    This allows users to write multi-paragraph comments where the
+    instructions appear before or after the ``@bot rebase`` line.
+
     Args:
         comment_body: The full comment text.
         nickname: The bot's GitHub username (without @).
 
     Returns:
         Tuple of (command, context) or None if no valid mention found.
-        Command is lowercase. Context is the remaining text after command.
+        Command is lowercase. Context is the surrounding text from the
+        same comment.
     """
     if not comment_body or not nickname:
         return None
@@ -380,10 +386,22 @@ def parse_mention_command(comment_body: str, nickname: str) -> Optional[Tuple[st
         return None
 
     command = match.group(1).strip().lower()
-    context = match.group(2).strip()
 
     if not command:
         return None
+
+    # Build context from the entire comment, not just the same line.
+    # Remove the @mention line itself, keep everything else.
+    mention_line = match.group(0)
+    remaining = clean_body.replace(mention_line, "", 1).strip()
+    # Also include any inline args on the same line (e.g. @bot rebase --critical)
+    inline_args = match.group(2).strip()
+    if inline_args and remaining:
+        context = f"{inline_args}\n{remaining}"
+    elif inline_args:
+        context = inline_args
+    else:
+        context = remaining
 
     return command, context
 

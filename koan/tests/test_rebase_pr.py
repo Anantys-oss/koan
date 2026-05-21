@@ -25,9 +25,11 @@ from app.rebase_pr import (
     _checkout_pr_branch,
     _check_if_already_solved,
     _close_pr_as_duplicate,
+    _filter_bot_issue_comments,
     _find_remote_for_repo,
     _fix_existing_ci_failures,
     _get_conflicted_files,
+    _truncate_recent,
     _get_current_branch,
     _is_conflict_failure,
     _push_with_fallback,
@@ -2803,3 +2805,59 @@ class TestMainMinSeverity:
                 "--project-path", "/project",
             ])
             assert mock.call_args[1]["min_severity"] is None
+
+
+class TestFilterBotIssueComments:
+    """Tests for _filter_bot_issue_comments."""
+
+    def test_removes_bot_comments(self):
+        raw = (
+            "@human: Please fix this bug\n"
+            "@koan-bot: ## Rebase with requested adjustments\n"
+            "Branch was rebased onto main.\n"
+            "### Stats\n"
+            "7 files changed\n"
+            "@human: Now add config option\n"
+            "@human: @koan-bot rebase"
+        )
+        with patch("app.rebase_pr._resolve_bot_login", return_value="koan-bot"):
+            result = _filter_bot_issue_comments(raw)
+        assert "@human: Please fix this bug" in result
+        assert "@human: Now add config option" in result
+        assert "@koan-bot:" not in result
+        assert "Branch was rebased" not in result
+
+    def test_no_bot_login_returns_original(self):
+        raw = "@bot: some text\n@human: other text"
+        with patch("app.rebase_pr._resolve_bot_login", return_value=""):
+            result = _filter_bot_issue_comments(raw)
+        assert result == raw
+
+    def test_empty_input(self):
+        with patch("app.rebase_pr._resolve_bot_login", return_value="bot"):
+            assert _filter_bot_issue_comments("") == ""
+
+
+class TestTruncateRecent:
+    """Tests for _truncate_recent — tail-prioritized truncation."""
+
+    def test_short_text_unchanged(self):
+        assert _truncate_recent("short text", 1000) == "short text"
+
+    def test_long_text_keeps_tail(self):
+        early = "A" * 5000
+        late = "RECENT_FEEDBACK"
+        text = early + "\n" + late
+        result = _truncate_recent(text, 200)
+        assert "RECENT_FEEDBACK" in result
+        assert result.startswith("(earlier comments truncated)")
+        assert len(result) <= 200
+
+    def test_recent_user_comment_preserved(self):
+        """Simulates the real bug: bot comments bloat early text, user
+        comment at the end gets truncated by head-based truncation."""
+        bot_noise = "Bot rebase summary " * 200  # ~3800 chars
+        user_request = "@human: Add config option for review_compressor"
+        text = bot_noise + "\n" + user_request
+        result = _truncate_recent(text, 3000)
+        assert "review_compressor" in result
