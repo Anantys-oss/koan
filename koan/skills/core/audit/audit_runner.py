@@ -116,8 +116,7 @@ def build_audit_prompt(
             from skills.core.audit.security_learnings import build_security_memory_block
             security_block = build_security_memory_block(instance_dir, project_name)
         except Exception as e:
-            import sys as _sys
-            print(f"[audit_runner] security memory injection failed: {e}", file=_sys.stderr)
+            print(f"[audit_runner] security memory injection failed: {e}", file=sys.stderr)
 
     return load_prompt_or_skill(
         skill_dir, "audit",
@@ -826,11 +825,9 @@ def run_audit(
         from skills.core.audit.security_learnings import extract_security_learnings
         extract_security_learnings(raw_output, project_name, instance_dir, project_path)
     except (subprocess.CalledProcessError, RuntimeError) as e:
-        import sys as _sys
-        print(f"[audit_runner] security learning extraction failed: {e}", file=_sys.stderr)
+        print(f"[audit_runner] security learning extraction failed: {e}", file=sys.stderr)
     except Exception as e:  # noqa: BLE001 — intentional catch-all
-        import sys as _sys
-        print(f"[audit_runner] security learning extraction error: {e}", file=_sys.stderr)
+        print(f"[audit_runner] security learning extraction error: {e}", file=sys.stderr)
 
     # Build summary
     if journal_only:

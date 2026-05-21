@@ -197,7 +197,7 @@ class TestTrustEscalation:
         result = escalate_trust(instance, "proj-a", [sl])
         assert result[0].trust_level == "ephemeral"
 
-    def test_escalates_to_verified_after_two_sessions(self, tmp_path):
+    def test_escalates_to_trusted_after_two_distinct_projects(self, tmp_path):
         from skills.core.audit.security_learnings import (
             SecurityLearning,
             escalate_trust,
@@ -206,19 +206,43 @@ class TestTrustEscalation:
         sl = SecurityLearning(
             category="detection_pattern",
             trust_level="ephemeral",
-            content="Repeated learning across sessions",
+            content="Repeated learning across projects",
             source="audit-session",
         )
-        # First session
+        # First session (proj-a)
         escalate_trust(instance, "proj-a", [sl])
-        # Second session (same project, same content)
+        # Second session (proj-b) — 2 sessions + 2 projects → trusted
         sl2 = SecurityLearning(
             category="detection_pattern",
             trust_level="ephemeral",
-            content="Repeated learning across sessions",
+            content="Repeated learning across projects",
             source="audit-session",
         )
         result = escalate_trust(instance, "proj-b", [sl2])
+        assert result[0].trust_level == "trusted"
+
+    def test_escalates_same_project_recurrence(self, tmp_path):
+        """Same-project repeated sessions must escalate ephemeral→verified."""
+        from skills.core.audit.security_learnings import (
+            SecurityLearning,
+            escalate_trust,
+        )
+        instance = _make_instance(tmp_path)
+        content = "Same project repeated learning"
+        sl1 = SecurityLearning(
+            category="detection_pattern",
+            trust_level="ephemeral",
+            content=content,
+            source="audit-session",
+        )
+        escalate_trust(instance, "proj-a", [sl1])
+        sl2 = SecurityLearning(
+            category="detection_pattern",
+            trust_level="ephemeral",
+            content=content,
+            source="audit-session",
+        )
+        result = escalate_trust(instance, "proj-a", [sl2])
         assert result[0].trust_level == "verified"
 
     def test_trust_tracker_persists_across_calls(self, tmp_path):
@@ -237,7 +261,7 @@ class TestTrustEscalation:
         )
         escalate_trust(instance, "proj-a", [sl])
         tracker = _read_trust_tracker(instance)
-        assert "project_sessions" in tracker
+        assert "session_counts" in tracker
 
     def test_tracker_corruption_handled_gracefully(self, tmp_path):
         from skills.core.audit.security_learnings import (
