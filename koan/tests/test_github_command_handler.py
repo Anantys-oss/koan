@@ -486,7 +486,14 @@ class TestProcessSingleNotification:
         self, mock_resolve, mock_comment, mock_stale, mock_self,
         mock_processed, mock_read, registry, sample_notification,
     ):
-        """When repo is not in projects.yaml, silently skip (shared GitHub account)."""
+        """When repo is not in projects.yaml, leave it untouched.
+
+        Marking the notification as read is a write to shared GitHub state.
+        With a shared bot identity across multiple Kōan instances, this
+        instance must not clear notifications belonging to a sibling
+        instance — leaving the notification unread lets the owning
+        instance process it on its next poll.
+        """
         mock_comment.return_value = {
             "id": 99999, "body": "@bot rebase", "user": {"login": "alice"},
         }
@@ -497,7 +504,7 @@ class TestProcessSingleNotification:
         )
         assert success is False
         assert error is None
-        mock_read.assert_called_once()
+        mock_read.assert_not_called()
 
     @patch("app.github_command_handler.mark_notification_read")
     @patch("app.github_command_handler.check_already_processed", return_value=False)
@@ -509,7 +516,11 @@ class TestProcessSingleNotification:
         self, mock_resolve, mock_comment, mock_stale, mock_self,
         mock_processed, mock_read, registry,
     ):
-        """Notification with no valid full_name is silently skipped."""
+        """Notification with no valid full_name is silently skipped.
+
+        Same contract as ``test_unknown_repo_silently_skipped``: no write to
+        shared GitHub state — the notification is left unread.
+        """
         notif = {
             "id": "12345", "reason": "mention",
             "updated_at": "2026-02-11T20:00:00Z",
@@ -529,7 +540,7 @@ class TestProcessSingleNotification:
         )
         assert success is False
         assert error is None
-        mock_read.assert_called_once_with("12345")
+        mock_read.assert_not_called()
 
     @patch("app.github_command_handler.mark_notification_read")
     @patch("app.github_command_handler.check_already_processed", return_value=False)
@@ -3373,7 +3384,13 @@ class TestTryAssignmentNotification:
     def test_unknown_repo_skipped(
         self, review_notification, review_registry,
     ):
-        """Notifications from unknown repos are skipped."""
+        """Notifications from unknown repos are skipped without side effects.
+
+        Marking the notification as read is a write to shared GitHub state.
+        With a shared bot identity, this instance must leave foreign repos
+        untouched so the sibling instance that owns the repo can process
+        them on its next poll.
+        """
         with patch("app.github_command_handler.is_notification_stale", return_value=False), \
              patch("app.github_command_handler.resolve_project_from_notification",
                    return_value=None), \
@@ -3383,7 +3400,7 @@ class TestTryAssignmentNotification:
             )
 
         assert result is False
-        mock_mark.assert_called_once()
+        mock_mark.assert_not_called()
 
     def test_no_subject_url_skipped(self, review_registry):
         """Notifications without a subject URL are skipped."""
@@ -3780,3 +3797,38 @@ class TestTryAssignmentNotificationClosedSubject:
         assert result is False
         mock_notify.assert_called_once()
         assert mock_notify.call_args[0][3] == "merged"  # subject_state
+
+
+class TestSkipIfForeignRepo:
+    """_skip_if_foreign_repo centralizes the resolve-or-log boilerplate."""
+
+    def test_returns_project_info_for_owned_repo(self):
+        from app.github_command_handler import _skip_if_foreign_repo
+
+        notif = {"repository": {"full_name": "owner/repo"}}
+        with patch(
+            "app.github_command_handler.resolve_project_from_notification",
+            return_value=("repo", "owner", "repo"),
+        ):
+            result = _skip_if_foreign_repo(notif, "GitHub")
+
+        assert result == ("repo", "owner", "repo")
+
+    def test_logs_and_returns_none_for_foreign_repo(self, caplog):
+        import logging
+        from app.github_command_handler import _skip_if_foreign_repo
+
+        notif = {
+            "repository": {"full_name": "stranger/repo"},
+            "reason": "mention",
+        }
+        with patch(
+            "app.github_command_handler.resolve_project_from_notification",
+            return_value=None,
+        ), caplog.at_level(logging.DEBUG, logger="app.github_command_handler"):
+            result = _skip_if_foreign_repo(notif, "GitHub assign")
+
+        assert result is None
+        assert "GitHub assign" in caplog.text
+        assert "stranger/repo" in caplog.text
+        assert "reason=mention" in caplog.text

@@ -816,6 +816,8 @@ class TestGitHubNotificationBackoff:
         fake_notif = {"id": "1", "subject": {"url": "https://api.github.com/repos/o/r/issues/1"}}
         with patch("app.projects_config.load_projects_config", return_value={}), \
              patch("app.github_notifications.fetch_unread_notifications", return_value=FetchResult([fake_notif], [])), \
+             patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=("proj", "o", "r")), \
              patch("app.github_command_handler.process_single_notification", return_value=(True, None)):
             result = process_github_notifications(str(tmp_path), str(tmp_path))
 
@@ -1139,6 +1141,8 @@ class TestDrainNotifications:
         with patch("app.projects_config.load_projects_config", return_value={}), \
              patch("app.github_notifications.fetch_unread_notifications",
                    return_value=FetchResult(actionable, drain)), \
+             patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=("proj", "o", "r")), \
              patch("app.github_command_handler.process_single_notification", return_value=(True, None)), \
              patch("app.loop_manager._notify_mission_from_mention"):
             result = process_github_notifications(str(tmp_path), str(tmp_path))
@@ -1500,6 +1504,8 @@ class TestProcessNotificationsConsoleOutput:
         }
         with patch("app.projects_config.load_projects_config", return_value={}), \
              patch("app.github_notifications.fetch_unread_notifications", return_value=FetchResult([fake_notif], [])), \
+             patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=("koan", "sukria", "koan")), \
              patch("app.github_command_handler.process_single_notification", return_value=(True, None)), \
              patch("app.loop_manager._notify_mission_from_mention"):
             result = process_github_notifications(str(tmp_path), str(tmp_path))
@@ -1534,6 +1540,8 @@ class TestProcessNotificationsConsoleOutput:
         }
         with patch("app.projects_config.load_projects_config", return_value={}), \
              patch("app.github_notifications.fetch_unread_notifications", return_value=FetchResult([fake_notif], [])), \
+             patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=("koan", "sukria", "koan")), \
              patch("app.github_command_handler.process_single_notification", return_value=(False, "Permission denied")), \
              patch("app.loop_manager._post_error_for_notification"):
             result = process_github_notifications(str(tmp_path), str(tmp_path))
@@ -2181,6 +2189,8 @@ class TestNotificationCache:
         with patch("app.projects_config.load_projects_config", return_value={}), \
              patch("app.github_notifications.fetch_unread_notifications",
                    return_value=FetchResult([notif1, notif2], [])), \
+             patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=("proj", "o", "r")), \
              patch("app.github_command_handler.process_single_notification",
                    return_value=(True, None)) as mock_process:
             process_github_notifications(str(tmp_path), str(tmp_path))
@@ -2458,6 +2468,8 @@ class TestErrorReplyRetryQueue:
         with patch("app.projects_config.load_projects_config", return_value={}), \
              patch("app.github_notifications.fetch_unread_notifications",
                    return_value=FetchResult([notif], [])), \
+             patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=("proj", "o", "r")), \
              patch("app.github_command_handler.process_single_notification",
                    side_effect=mock_process), \
              patch("app.loop_manager._post_error_for_notification",
@@ -2742,7 +2754,11 @@ class TestConcurrentNotificationProcessing:
                 raise RuntimeError("boom")
             return True, None
 
+        # Pretend both notifications belong to this instance so the
+        # ownership gate in _process_one_notification lets them through.
         with patch("app.github_command_handler.process_single_notification", side_effect=fake_inner), \
+             patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=("proj", "owner", "repo")), \
              patch("app.github_notifications.mark_notification_read"), \
              patch("app.loop_manager._notify_mission_from_mention"):
             for notif in (good_notif, bad_notif):
@@ -2752,6 +2768,195 @@ class TestConcurrentNotificationProcessing:
 
         # First notif succeeded; second crashed but returned False instead of raising.
         assert results == [True, False]
+
+
+class TestForeignRepoOwnershipGate:
+    """Verify _process_one_notification leaves foreign repos completely untouched.
+
+    When a GitHub identity is shared by multiple Kōan instances, this
+    instance must not call ``process_single_notification`` (which writes to
+    missions.md) nor ``mark_notification_read`` (which writes to shared
+    GitHub state) for repos it does not own. Leaving the notification
+    unread is what lets a sibling instance process it on its next poll.
+
+    The notification IS, however, cached in-process so we don't re-run the
+    project resolution on every poll cycle.
+    """
+
+    def test_foreign_repo_skipped_with_no_shared_state_writes(self):
+        from app.loop_manager import _process_one_notification
+
+        notif = {
+            "id": "42",
+            "subject": {"url": ""},
+            "repository": {"full_name": "someone-else/their-repo"},
+        }
+
+        with patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=None) as mock_resolve, \
+             patch("app.github_command_handler.process_single_notification") as mock_process, \
+             patch("app.github_notifications.mark_notification_read") as mock_read, \
+             patch("app.loop_manager._cache_notif") as mock_cache:
+            result = _process_one_notification(
+                notif, MagicMock(), {}, {}, {"bot_username": "bot", "max_age": 24},
+            )
+
+        # Gate must short-circuit before any side effects on shared state.
+        assert result is False
+        mock_resolve.assert_called_once_with(notif)
+        mock_process.assert_not_called()
+        mock_read.assert_not_called()
+        # In-process cache IS written so subsequent polls skip the resolve walk.
+        mock_cache.assert_called_once_with(notif)
+
+    def test_worker_survives_exception_in_resolve(self, caplog):
+        """A crash inside resolve_project_from_notification must not kill
+        the worker thread. The gate sits inside the existing try/except so
+        any exception (corrupt projects.yaml, subprocess failure during
+        remote discovery, etc.) is logged and the worker returns False.
+        """
+        import logging
+        from app.loop_manager import _process_one_notification
+
+        notif = {
+            "id": "999",
+            "subject": {"url": ""},
+            "repository": {"full_name": "owner/repo"},
+        }
+
+        with patch(
+            "app.github_command_handler.resolve_project_from_notification",
+            side_effect=RuntimeError("corrupt projects.yaml"),
+        ), patch("app.github_command_handler.process_single_notification") as mock_process, \
+             patch("app.github_notifications.mark_notification_read") as mock_read, \
+             caplog.at_level(logging.WARNING, logger="app.loop_manager"):
+            result = _process_one_notification(
+                notif, MagicMock(), {}, {}, {"bot_username": "bot", "max_age": 24},
+            )
+
+        assert result is False
+        # Crash was contained — no downstream side effects ran.
+        mock_process.assert_not_called()
+        mock_read.assert_not_called()
+        assert "corrupt projects.yaml" in caplog.text
+
+    def test_foreign_repo_cache_prevents_repeated_resolution(self):
+        """After the gate trips once, _is_notif_cached must return True so the
+        notification is filtered out before reaching _process_one_notification
+        on the next poll."""
+        from app.loop_manager import (
+            _cache_notif,
+            _is_notif_cached,
+            _notif_cache,
+            _notif_cache_lock,
+        )
+
+        notif = {
+            "id": "777",
+            "updated_at": "2026-05-21T10:00:00Z",
+            "repository": {"full_name": "someone-else/their-repo"},
+        }
+        # Clean slate
+        with _notif_cache_lock:
+            _notif_cache.clear()
+
+        assert _is_notif_cached(notif) is False
+        _cache_notif(notif)
+        assert _is_notif_cached(notif) is True
+
+        # Activity on the thread (new updated_at) re-opens the gate
+        notif_updated = dict(notif, updated_at="2026-05-21T11:00:00Z")
+        assert _is_notif_cached(notif_updated) is False
+
+
+class TestForcePollClearsNotifCache:
+    """A forced poll (``force=True``) is the user's "look again, fresh"
+    lever — typically invoked after editing projects.yaml. It must clear
+    the in-process notification cache so previously-cached foreign-repo
+    skips are re-evaluated against the current project list.
+    """
+
+    def setup_method(self):
+        from app.loop_manager import reset_github_backoff
+        reset_github_backoff()
+
+    @patch("app.loop_manager._load_github_config")
+    @patch("app.loop_manager._build_skill_registry")
+    @patch("app.loop_manager._get_known_repos_from_projects")
+    @patch("app.utils.load_config")
+    def test_force_clears_cache(
+        self, mock_config, mock_repos, mock_registry, mock_gh_config, tmp_path
+    ):
+        from app.github_notifications import FetchResult
+        from app.loop_manager import (
+            _cache_notif,
+            _is_notif_cached,
+            process_github_notifications,
+        )
+
+        mock_config.return_value = {}
+        mock_gh_config.return_value = {"bot_username": "bot", "max_age": 24}
+        mock_registry.return_value = MagicMock()
+        mock_repos.return_value = set()
+
+        # Seed the cache with a previously-cached foreign-repo notification.
+        stale = {"id": "stale-1", "updated_at": "2026-05-21T09:00:00Z",
+                 "repository": {"full_name": "stranger/repo"}}
+        _cache_notif(stale)
+        assert _is_notif_cached(stale) is True
+
+        with patch("app.projects_config.load_projects_config", return_value={}), \
+             patch("app.github_notifications.fetch_unread_notifications",
+                   return_value=FetchResult([], [])):
+            process_github_notifications(
+                str(tmp_path), str(tmp_path), force=True,
+            )
+
+        # Forced poll cleared the cache — the stale entry is gone, so the
+        # bot would re-evaluate that notification on a future fetch.
+        assert _is_notif_cached(stale) is False
+
+    @patch("app.loop_manager._load_github_config")
+    @patch("app.loop_manager._build_skill_registry")
+    @patch("app.loop_manager._get_known_repos_from_projects")
+    @patch("app.utils.load_config")
+    def test_non_forced_poll_preserves_cache(
+        self, mock_config, mock_repos, mock_registry, mock_gh_config, tmp_path
+    ):
+        from app.github_notifications import FetchResult
+        from app.loop_manager import (
+            _cache_notif,
+            _is_notif_cached,
+            process_github_notifications,
+        )
+
+        mock_config.return_value = {}
+        mock_gh_config.return_value = {"bot_username": "bot", "max_age": 24}
+        mock_registry.return_value = MagicMock()
+        mock_repos.return_value = set()
+
+        notif = {"id": "keep-1", "updated_at": "2026-05-21T09:00:00Z",
+                 "repository": {"full_name": "stranger/repo"}}
+        _cache_notif(notif)
+        assert _is_notif_cached(notif) is True
+
+        with patch("app.projects_config.load_projects_config", return_value={}), \
+             patch("app.github_notifications.fetch_unread_notifications",
+                   return_value=FetchResult([], [])):
+            process_github_notifications(
+                str(tmp_path), str(tmp_path), force=True,  # force needed to bypass throttle
+            )
+        # Re-seed for the non-force run (the previous force-call cleared it).
+        _cache_notif(notif)
+        assert _is_notif_cached(notif) is True
+
+        # A non-forced poll must leave the cache alone.
+        with patch("app.projects_config.load_projects_config", return_value={}), \
+             patch("app.github_notifications.fetch_unread_notifications",
+                   return_value=FetchResult([], [])):
+            process_github_notifications(str(tmp_path), str(tmp_path))
+
+        assert _is_notif_cached(notif) is True
 
 
 class TestGithubParallelWorkersConfig:
