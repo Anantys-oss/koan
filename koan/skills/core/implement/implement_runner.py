@@ -115,7 +115,9 @@ def run_implement(
         )
 
     # Plan-review quality gate — cheap subagent check before expensive execution
-    gate_result = _run_plan_review_gate(plan, project_path)
+    gate_result = _run_plan_review_gate(
+        plan, project_path, notify_fn=notify_fn, issue_url=issue_url,
+    )
     if gate_result is not None:
         return gate_result
 
@@ -234,21 +236,25 @@ def _extract_latest_plan(body: Optional[str], comments: List[dict]) -> str:
 def _run_plan_review_gate(
     plan: str,
     project_path: str,
+    notify_fn=None,
+    issue_url: str = "",
 ) -> Optional[Tuple[bool, str]]:
     """Run lightweight plan-review gate before expensive implementation.
 
     Returns None to proceed, or (False, message) to abort.
     Fails open on reviewer errors — implementation proceeds.
     """
-    from app.config import get_plan_review_config
     from app.plan_runner import is_simple_plan, review_plan
+
+    # Pure string check first — avoids config I/O for trivial plans
+    if is_simple_plan(plan):
+        logger.debug("Plan is simple — skipping review gate")
+        return None
+
+    from app.config import get_plan_review_config
 
     review_cfg = get_plan_review_config()
     if not review_cfg.get("implement_gate", True):
-        return None
-
-    if is_simple_plan(plan):
-        logger.debug("Plan is simple — skipping review gate")
         return None
 
     # Always use the plan skill directory for the review prompt
@@ -263,6 +269,29 @@ def _run_plan_review_gate(
     msg = (
         f"Plan review failed — fix these before re-running /implement:\n{issues}"
     )
+
+    # Notify user via Telegram with specific issues
+    if notify_fn:
+        try:
+            notify_fn(f"⚠️ Plan review gate blocked /implement:\n{issues}")
+        except Exception:
+            logger.debug("Failed to send plan-review gate notification", exc_info=True)
+
+    # Post issues as a comment on the GitHub issue for in-context visibility
+    if issue_url:
+        try:
+            from app.github import run_gh
+            comment_body = (
+                "### ⚠️ Plan Review — Issues Found\n\n"
+                "The plan-review quality gate found issues that should be "
+                "fixed before implementation:\n\n"
+                f"{issues}\n\n"
+                "_Fix these in the plan above, then re-run `/implement`._"
+            )
+            run_gh("issue", "comment", issue_url, "--body", comment_body)
+        except Exception:
+            logger.debug("Failed to post plan-review issues to GitHub", exc_info=True)
+
     return False, msg
 
 
