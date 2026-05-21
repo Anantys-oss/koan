@@ -202,7 +202,10 @@ def _read_trust_tracker(instance_dir: str) -> dict:
     try:
         with open(path, "r", encoding="utf-8") as f:
             fcntl.flock(f, fcntl.LOCK_SH)
-            return json.load(f)
+            try:
+                return json.load(f)
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
     except (OSError, json.JSONDecodeError, ValueError) as e:
         log.warning("[security_learnings] Trust tracker read error, resetting: %s", e)
         return {}
@@ -230,41 +233,40 @@ def escalate_trust(
     """Update trust levels based on session recurrence.
 
     Rules:
-    - ephemeral → verified: same content key seen for ≥ 2 distinct projects
-      (or ≥ 2 sessions for the same project, tracked as repeated project entries)
+    - ephemeral → verified: same content key seen in ≥ 2 sessions
+      (same project counts — each call increments the session counter)
     - verified → trusted: same content key seen across ≥ 2 different projects
-      in the global tracker
 
     Updates the tracker on disk and returns the learnings with updated
     trust_level fields.  Tracker corruption is handled gracefully.
     """
     tracker = _read_trust_tracker(instance_dir)
 
-    # project_sessions: {key: [project_name, ...]} — list of projects that saw this key
-    project_sessions: dict = tracker.get("project_sessions", {})
+    # session_counts: {key: int} — total sessions that produced this key
+    session_counts: dict = tracker.get("session_counts", {})
+    # global_projects: {key: [project_name, ...]} — distinct projects that saw this key
     global_projects: dict = tracker.get("global_projects", {})
 
     updated = []
     for learning in learnings:
         key = _learning_key(learning.content)
 
-        sessions = project_sessions.get(key, [])
-        if project_name not in sessions:
-            sessions = sessions + [project_name]
-        project_sessions[key] = sessions
+        session_counts[key] = session_counts.get(key, 0) + 1
 
-        all_projects = set(sessions)
-        global_projects[key] = list(all_projects)
+        projects_seen = global_projects.get(key, [])
+        if project_name not in projects_seen:
+            projects_seen = projects_seen + [project_name]
+        global_projects[key] = projects_seen
 
         # Escalate
-        if learning.trust_level == "ephemeral" and len(sessions) >= 2:
+        if learning.trust_level == "ephemeral" and session_counts[key] >= 2:
             learning.trust_level = "verified"
-        elif learning.trust_level == "verified" and len(all_projects) >= 2:
+        if learning.trust_level == "verified" and len(projects_seen) >= 2:
             learning.trust_level = "trusted"
 
         updated.append(learning)
 
-    tracker["project_sessions"] = project_sessions
+    tracker["session_counts"] = session_counts
     tracker["global_projects"] = global_projects
     _write_trust_tracker(instance_dir, tracker)
 
