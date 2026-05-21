@@ -45,6 +45,13 @@ from app.utils import PROJECT_HINT_RE, atomic_write
 # bloated files still trigger compaction.
 _ANTI_THRASH_MIN_SAVINGS_PCT = 0.10
 
+# Files in memory/projects/{name}/ that must NEVER be compacted or
+# semantically merged. These contain quantitative signals (e.g. markdown
+# table rows) where LLM rewriting would destroy the data.
+PROTECTED_PROJECT_FILES = frozenset({
+    "skill-metrics.md",
+})
+
 
 def _should_skip_compaction(
     original_count: int,
@@ -1056,6 +1063,19 @@ class MemoryManager:
                     content = "\n".join(lines).strip()
                     if content:
                         sections.append(f"## Projects / {project_name} / learnings\n")
+                        sections.append(content)
+                        sections.append("")
+                except (OSError, UnicodeDecodeError):
+                    pass
+
+        # Per-project skill metrics (quantitative, never compacted)
+        for project_name in project_names:
+            metrics_path = self.projects_dir / project_name / "skill-metrics.md"
+            if metrics_path.exists():
+                try:
+                    content = metrics_path.read_text(encoding="utf-8").strip()
+                    if content:
+                        sections.append(f"## Projects / {project_name} / skill-metrics\n")
                         sections.append(content)
                         sections.append("")
                 except (OSError, UnicodeDecodeError):

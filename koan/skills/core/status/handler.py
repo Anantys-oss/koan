@@ -197,10 +197,42 @@ def _handle_status(ctx) -> str:
                             f"    {_format_mission_display(m)}" for m in pending[:3]
                         )
 
+    # Skill metrics section (per-project plan approval + CI pass rates)
+    skill_metrics_lines = _build_skill_metrics_section(instance_dir)
+    if skill_metrics_lines:
+        parts.extend(skill_metrics_lines)
+
     # Health section
     parts.extend(_build_health_section(koan_root, instance_dir))
 
     return "\n".join(parts)
+
+
+def _build_skill_metrics_section(instance_dir) -> list:
+    """Build skill metrics summary lines for /status output."""
+    try:
+        from pathlib import Path
+        from app.skill_metrics import format_skill_metrics_summary
+
+        projects_dir = Path(instance_dir) / "memory" / "projects"
+        if not projects_dir.exists():
+            return []
+
+        lines = []
+        for project_dir in sorted(projects_dir.iterdir()):
+            if not project_dir.is_dir():
+                continue
+            summary = format_skill_metrics_summary(
+                instance_dir, project_dir.name, days=30,
+            )
+            if summary:
+                if not lines:
+                    lines.append("\nSkill Metrics (30d)")
+                lines.append(f"  {project_dir.name}:")
+                lines.extend(f"  {line}" for line in summary.splitlines())
+        return lines
+    except Exception:
+        return []
 
 
 def _build_health_section(koan_root, instance_dir) -> list:
