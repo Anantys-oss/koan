@@ -723,6 +723,42 @@ class TestLearnFromReviews:
         assert result["lessons_added"] == 1
         mock_reset.assert_called_once_with("/instance")
 
+    @patch("app.pr_review_learning._reset_failure_count")
+    @patch("app.pr_review_learning._write_rejection_journal_entries")
+    @patch("app.pr_review_learning._append_lessons_to_learnings")
+    @patch("app.pr_review_learning._write_cache")
+    @patch("app.pr_review_learning._is_cache_fresh")
+    @patch("app.pr_review_learning._analyze_rejection_with_cli")
+    @patch("app.pr_review_learning.analyze_reviews_with_cli")
+    @patch("app.pr_review_learning.fetch_pr_reviews")
+    def test_mixed_result_resets_failure_counter_when_some_lessons_added(
+        self, mock_fetch, mock_analyze_merged, mock_analyze_rejected,
+        mock_cache_check, mock_cache_write, mock_append,
+        mock_journal, mock_reset,
+    ):
+        """When merged PRs produce lessons but rejected PRs return empty,
+        the failure counter should still reset because useful work was done."""
+        mock_fetch.return_value = [
+            {
+                "number": 1, "title": "feat: A", "was_merged": True,
+                "reviews": [{"state": "APPROVED", "body": "good", "user": "r"}],
+                "review_comments": [],
+            },
+            {
+                "number": 2, "title": "feat: B", "was_merged": False,
+                "reviews": [{"state": "CHANGES_REQUESTED", "body": "nope", "user": "r"}],
+                "review_comments": [],
+            },
+        ]
+        mock_cache_check.return_value = False
+        mock_analyze_merged.return_value = "- Lesson from merged PR"
+        mock_analyze_rejected.return_value = ""  # empty — rejected analysis failed
+        mock_append.return_value = 1
+
+        result = learn_from_reviews("/instance", "proj", "/path")
+        assert result["lessons_added"] == 1
+        mock_reset.assert_called_once_with("/instance")
+
 
 # ─── Consecutive failure tracking ───────────────────────────────────────
 

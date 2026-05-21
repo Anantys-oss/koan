@@ -689,7 +689,7 @@ def learn_from_reviews(
         return result
 
     # At least some analysis succeeded — reset failure counter
-    if any_analyzed and not any_empty:
+    if total_added > 0:
         _reset_failure_count(instance_dir)
 
     result["lessons_added"] = total_added
