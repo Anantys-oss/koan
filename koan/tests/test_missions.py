@@ -30,6 +30,7 @@ from app.missions import (
     quarantine_mission,
     QUARANTINE_MAX_BYTES,
     reorder_mission,
+    reorder_missions_bulk,
     requeue_mission,
     sanitize_mission_text,
     stamp_queued,
@@ -890,6 +891,107 @@ class TestReorderMission:
         # clean_mission_display should convert [project:koan] to [koan]
         assert "[koan]" in moved
         assert "[project:koan]" not in moved
+
+
+# ---------------------------------------------------------------------------
+# reorder_missions_bulk
+# ---------------------------------------------------------------------------
+
+class TestReorderMissionsBulk:
+    SAMPLE = (
+        "## Pending\n\n"
+        "- first task\n"
+        "- second task\n"
+        "- third task\n"
+        "- fourth task\n"
+        "- fifth task\n\n"
+        "## In Progress\n\n"
+        "## Done\n"
+    )
+
+    def test_reorder_three(self):
+        new_content, displays = reorder_missions_bulk(self.SAMPLE, [4, 2, 5])
+        lines = [l for l in new_content.splitlines() if l.startswith("- ")]
+        assert lines[0] == "- fourth task"
+        assert lines[1] == "- second task"
+        assert lines[2] == "- fifth task"
+        # Remaining keep relative order
+        assert lines[3] == "- first task"
+        assert lines[4] == "- third task"
+        assert len(displays) == 3
+        assert "fourth" in displays[0]
+        assert "second" in displays[1]
+        assert "fifth" in displays[2]
+
+    def test_reorder_two(self):
+        new_content, displays = reorder_missions_bulk(self.SAMPLE, [3, 1])
+        lines = [l for l in new_content.splitlines() if l.startswith("- ")]
+        assert lines[0] == "- third task"
+        assert lines[1] == "- first task"
+        assert lines[2] == "- second task"
+        assert lines[3] == "- fourth task"
+        assert lines[4] == "- fifth task"
+        assert len(displays) == 2
+
+    def test_reorder_all(self):
+        new_content, displays = reorder_missions_bulk(self.SAMPLE, [5, 4, 3, 2, 1])
+        lines = [l for l in new_content.splitlines() if l.startswith("- ")]
+        assert lines[0] == "- fifth task"
+        assert lines[1] == "- fourth task"
+        assert lines[2] == "- third task"
+        assert lines[3] == "- second task"
+        assert lines[4] == "- first task"
+
+    def test_invalid_position(self):
+        with pytest.raises(ValueError, match="Invalid position: 9"):
+            reorder_missions_bulk(self.SAMPLE, [1, 9])
+
+    def test_zero_position(self):
+        with pytest.raises(ValueError, match="Invalid position: 0"):
+            reorder_missions_bulk(self.SAMPLE, [0, 1])
+
+    def test_duplicate_position(self):
+        with pytest.raises(ValueError, match="Duplicate position: 3"):
+            reorder_missions_bulk(self.SAMPLE, [3, 1, 3])
+
+    def test_no_pending(self):
+        content = "## Pending\n\n## In Progress\n\n## Done\n"
+        with pytest.raises(ValueError, match="No pending missions"):
+            reorder_missions_bulk(content, [1])
+
+    def test_preserves_project_tags(self):
+        content = (
+            "## Pending\n\n"
+            "- [project:koan] first\n"
+            "- [project:web] second\n"
+            "- third\n\n"
+            "## In Progress\n\n"
+            "## Done\n"
+        )
+        new_content, displays = reorder_missions_bulk(content, [3, 1])
+        assert "[project:koan]" in new_content
+        assert "[project:web]" in new_content
+        lines = [l for l in new_content.splitlines() if l.startswith("- ")]
+        assert lines[0] == "- third"
+        assert lines[1] == "- [project:koan] first"
+
+    def test_preserves_multiline_missions(self):
+        content = (
+            "## Pending\n\n"
+            "- first task\n"
+            "  continuation line\n"
+            "- second task\n"
+            "- third task\n\n"
+            "## In Progress\n\n"
+            "## Done\n"
+        )
+        new_content, displays = reorder_missions_bulk(content, [2, 1])
+        lines = new_content.splitlines()
+        pending_items = [l for l in lines if l.startswith("- ")]
+        assert pending_items[0] == "- second task"
+        assert pending_items[1] == "- first task"
+        # Continuation line should still be present
+        assert "  continuation line" in new_content
 
 
 # ---------------------------------------------------------------------------
