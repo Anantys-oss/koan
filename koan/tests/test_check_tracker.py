@@ -11,9 +11,15 @@ from app.check_tracker import (
     has_changed,
     mark_checked,
     _load,
-    _save,
     _tracker_path,
 )
+
+
+def _save(instance_dir, data):
+    """Write tracker data directly (replaces removed check_tracker._save)."""
+    import json
+    path = _tracker_path(instance_dir)
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
 
 @pytest.fixture
