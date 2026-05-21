@@ -11,8 +11,10 @@ CLI:
     python3 -m skills.core.implement.implement_runner --project-path <path> --issue-url <url> --context "Phase 1 to 3"
 """
 
+import hashlib
 import logging
 import re
+import sys
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -233,6 +235,41 @@ def _extract_latest_plan(body: Optional[str], comments: List[dict]) -> str:
     return (body or "").strip()
 
 
+def _plan_hash(plan: str) -> str:
+    """SHA-256 hex digest of the plan text (stripped)."""
+    return hashlib.sha256(plan.strip().encode()).hexdigest()
+
+
+def _plan_review_cache_path(project_path: str) -> Path:
+    """Per-project cache file for the plan-review gate hash."""
+    project_name = guess_project_name(project_path)
+    from app.utils import KOAN_ROOT
+    return KOAN_ROOT / "instance" / f".plan-review-hash-{project_name}"
+
+
+def _is_plan_cache_fresh(project_path: str, current_hash: str) -> bool:
+    """Return True if the cached plan hash matches — review can be skipped."""
+    cache_path = _plan_review_cache_path(project_path)
+    if not cache_path.exists():
+        return False
+    try:
+        return cache_path.read_text().strip() == current_hash
+    except OSError:
+        return False
+
+
+def _write_plan_cache(project_path: str, plan_hash_hex: str) -> None:
+    """Persist the reviewed plan hash so identical re-runs skip review."""
+    try:
+        cache_path = _plan_review_cache_path(project_path)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        from app.utils import atomic_write
+        atomic_write(cache_path, plan_hash_hex + "\n")
+    except OSError as e:
+        print(f"[implement_runner] Plan-review cache write failed: {e}",
+              file=sys.stderr)
+
+
 def _run_plan_review_gate(
     plan: str,
     project_path: str,
@@ -257,12 +294,19 @@ def _run_plan_review_gate(
     if not review_cfg.get("implement_gate", True):
         return None
 
+    # Content-hash cache — skip review when plan hasn't changed
+    current_hash = _plan_hash(plan)
+    if _is_plan_cache_fresh(project_path, current_hash):
+        logger.info("Plan-review gate: cache hit — skipping review")
+        return None
+
     # Always use the plan skill directory for the review prompt
     logger.info("Running plan-review quality gate...")
     approved, issues = review_plan(plan, project_path, _PLAN_SKILL_DIR)
 
     if approved:
         logger.info("Plan-review gate: APPROVED")
+        _write_plan_cache(project_path, current_hash)
         return None
 
     logger.warning("Plan-review gate: ISSUES_FOUND")

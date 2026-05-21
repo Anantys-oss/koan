@@ -13,8 +13,12 @@ from skills.core.implement.implement_runner import (
     _build_prompt,
     _execute_implementation,
     _generate_pr_summary,
+    _is_plan_cache_fresh,
+    _plan_hash,
+    _plan_review_cache_path,
     _run_plan_review_gate,
     _submit_implement_pr,
+    _write_plan_cache,
     main,
 )
 
@@ -192,7 +196,9 @@ class TestPlanReviewGate:
         with patch("app.config.get_plan_review_config",
                     return_value={"implement_gate": True}), \
              patch("app.plan_runner.is_simple_plan", return_value=False), \
-             patch("app.plan_runner.review_plan", return_value=(True, "")):
+             patch("app.plan_runner.review_plan", return_value=(True, "")), \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
+             patch(f"{_IMPL_MODULE}._write_plan_cache"):
             result = _run_plan_review_gate("## Phase 1\nDo stuff\n" * 10, "/project")
             assert result is None
 
@@ -202,7 +208,8 @@ class TestPlanReviewGate:
         with patch("app.config.get_plan_review_config",
                     return_value={"implement_gate": True}), \
              patch("app.plan_runner.is_simple_plan", return_value=False), \
-             patch("app.plan_runner.review_plan", return_value=(False, issues)):
+             patch("app.plan_runner.review_plan", return_value=(False, issues)), \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False):
             result = _run_plan_review_gate("## Phase 1\nDo stuff\n" * 10, "/project")
             assert result is not None
             ok, msg = result
@@ -217,7 +224,8 @@ class TestPlanReviewGate:
         with patch("app.config.get_plan_review_config",
                     return_value={"implement_gate": True}), \
              patch("app.plan_runner.is_simple_plan", return_value=False), \
-             patch("app.plan_runner.review_plan", return_value=(False, issues)):
+             patch("app.plan_runner.review_plan", return_value=(False, issues)), \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False):
             _run_plan_review_gate(
                 "## Phase 1\nDo stuff\n" * 10, "/project", notify_fn=notify,
             )
@@ -231,6 +239,7 @@ class TestPlanReviewGate:
                     return_value={"implement_gate": True}), \
              patch("app.plan_runner.is_simple_plan", return_value=False), \
              patch("app.plan_runner.review_plan", return_value=(False, issues)), \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
              patch("app.github.run_gh") as mock_gh:
             _run_plan_review_gate(
                 "## Phase 1\nDo stuff\n" * 10, "/project",
@@ -249,7 +258,8 @@ class TestPlanReviewGate:
         with patch("app.config.get_plan_review_config",
                     return_value={"implement_gate": True}), \
              patch("app.plan_runner.is_simple_plan", return_value=False), \
-             patch("app.plan_runner.review_plan", return_value=(False, "issues")):
+             patch("app.plan_runner.review_plan", return_value=(False, "issues")), \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False):
             result = _run_plan_review_gate(
                 "## Phase 1\nDo stuff\n" * 10, "/project", notify_fn=notify,
             )
@@ -262,6 +272,7 @@ class TestPlanReviewGate:
                     return_value={"implement_gate": True}), \
              patch("app.plan_runner.is_simple_plan", return_value=False), \
              patch("app.plan_runner.review_plan", return_value=(False, "issues")), \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
              patch("app.github.run_gh", side_effect=RuntimeError("gh failed")):
             result = _run_plan_review_gate(
                 "## Phase 1\nDo stuff\n" * 10, "/project",
@@ -295,7 +306,9 @@ class TestPlanReviewGate:
         with patch("app.config.get_plan_review_config",
                     return_value={"implement_gate": True}), \
              patch("app.plan_runner.is_simple_plan", return_value=False), \
-             patch("app.plan_runner.review_plan", return_value=(True, "")):
+             patch("app.plan_runner.review_plan", return_value=(True, "")), \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
+             patch(f"{_IMPL_MODULE}._write_plan_cache"):
             result = _run_plan_review_gate("## Phase 1\nDo stuff\n" * 10, "/project")
             assert result is None
 
@@ -316,6 +329,96 @@ class TestPlanReviewGate:
             assert not ok
             assert "Plan review failed" in msg
             mock_exec.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Plan review cache
+# ---------------------------------------------------------------------------
+
+class TestPlanReviewCache:
+    """Tests for content-hash caching in the plan-review gate."""
+
+    def test_plan_hash_deterministic(self):
+        """Same plan text always produces the same hash."""
+        plan = "## Phase 1\nDo stuff\n## Phase 2\nMore stuff"
+        assert _plan_hash(plan) == _plan_hash(plan)
+
+    def test_plan_hash_strips_whitespace(self):
+        """Leading/trailing whitespace doesn't affect hash."""
+        assert _plan_hash("  plan  ") == _plan_hash("plan")
+
+    def test_plan_hash_differs_for_different_plans(self):
+        """Different plan text produces different hashes."""
+        assert _plan_hash("plan A") != _plan_hash("plan B")
+
+    def test_cache_path_is_project_specific(self):
+        """Cache path includes the project name."""
+        with patch(f"{_IMPL_MODULE}.guess_project_name", return_value="myproj"):
+            path = _plan_review_cache_path("/some/project")
+            assert "myproj" in path.name
+
+    def test_is_plan_cache_fresh_no_file(self, tmp_path):
+        """Returns False when no cache file exists."""
+        with patch(f"{_IMPL_MODULE}._plan_review_cache_path",
+                    return_value=tmp_path / "nonexistent"):
+            assert not _is_plan_cache_fresh("/project", "abc123")
+
+    def test_is_plan_cache_fresh_match(self, tmp_path):
+        """Returns True when cached hash matches."""
+        cache_file = tmp_path / ".plan-review-hash-myproj"
+        cache_file.write_text("abc123\n")
+        with patch(f"{_IMPL_MODULE}._plan_review_cache_path",
+                    return_value=cache_file):
+            assert _is_plan_cache_fresh("/project", "abc123")
+
+    def test_is_plan_cache_fresh_mismatch(self, tmp_path):
+        """Returns False when cached hash differs."""
+        cache_file = tmp_path / ".plan-review-hash-myproj"
+        cache_file.write_text("old_hash\n")
+        with patch(f"{_IMPL_MODULE}._plan_review_cache_path",
+                    return_value=cache_file):
+            assert not _is_plan_cache_fresh("/project", "new_hash")
+
+    def test_write_plan_cache(self, tmp_path):
+        """write_plan_cache persists the hash to disk."""
+        cache_file = tmp_path / ".plan-review-hash-myproj"
+        with patch(f"{_IMPL_MODULE}._plan_review_cache_path",
+                    return_value=cache_file):
+            _write_plan_cache("/project", "deadbeef")
+            assert cache_file.read_text().strip() == "deadbeef"
+
+    def test_cache_hit_skips_review(self):
+        """When cache is fresh, review_plan is never called."""
+        with patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.config.get_plan_review_config",
+                    return_value={"implement_gate": True}), \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=True), \
+             patch("app.plan_runner.review_plan") as mock_review:
+            result = _run_plan_review_gate("## Phase 1\nBig plan", "/project")
+            assert result is None
+            mock_review.assert_not_called()
+
+    def test_approved_writes_cache(self):
+        """When review approves, cache is written."""
+        with patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.config.get_plan_review_config",
+                    return_value={"implement_gate": True}), \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
+             patch("app.plan_runner.review_plan", return_value=(True, "")), \
+             patch(f"{_IMPL_MODULE}._write_plan_cache") as mock_write:
+            _run_plan_review_gate("## Phase 1\nDo stuff", "/project")
+            mock_write.assert_called_once()
+
+    def test_rejected_does_not_write_cache(self):
+        """When review rejects, cache is NOT written."""
+        with patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.config.get_plan_review_config",
+                    return_value={"implement_gate": True}), \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
+             patch("app.plan_runner.review_plan", return_value=(False, "issues")), \
+             patch(f"{_IMPL_MODULE}._write_plan_cache") as mock_write:
+            _run_plan_review_gate("## Phase 1\nDo stuff", "/project")
+            mock_write.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
