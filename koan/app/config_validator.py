@@ -235,6 +235,7 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
         # require_jq: bool}``.  Validation lives in
         # :func:`_validate_rtk_nested` below.
         "rtk": "dict",
+        "review_compressor": "dict",
     },
 }
 
@@ -363,6 +364,9 @@ def validate_config(config: dict) -> List[Tuple[str, str]]:
         rtk = optimizations.get("rtk")
         if isinstance(rtk, dict):
             warnings.extend(_validate_rtk_nested(rtk))
+        review_compressor = optimizations.get("review_compressor")
+        if isinstance(review_compressor, dict):
+            warnings.extend(_validate_review_compressor_nested(review_compressor))
 
     # Semantic check: warn on overlapping deep_hours and work_hours
     schedule = config.get("schedule")
@@ -470,6 +474,36 @@ def _validate_caveman_nested(caveman: dict) -> List[Tuple[str, str]]:
                         f"{path}[{idx}]",
                         f"'{path}[{idx}]' should be str, got {type(entry).__name__}",
                     ))
+    return warnings
+
+
+_REVIEW_COMPRESSOR_NESTED_SCHEMA: Dict[str, Any] = {
+    "enabled": "bool",
+}
+
+
+def _validate_review_compressor_nested(rc: dict) -> List[Tuple[str, str]]:
+    """Validate the nested ``optimizations.review_compressor`` dict."""
+    warnings: List[Tuple[str, str]] = []
+    known = list(_REVIEW_COMPRESSOR_NESTED_SCHEMA.keys())
+    for key, value in rc.items():
+        path = f"optimizations.review_compressor.{key}"
+        if key not in _REVIEW_COMPRESSOR_NESTED_SCHEMA:
+            suggestion = _suggest_typo(key, known)
+            msg = f"unrecognized key '{path}'"
+            if suggestion:
+                msg += f" (did you mean 'optimizations.review_compressor.{suggestion}'?)"
+            warnings.append((path, msg))
+            continue
+        if value is None:
+            continue
+        expected = _REVIEW_COMPRESSOR_NESTED_SCHEMA[key]
+        if not _check_type(value, expected):
+            exp_label = expected if isinstance(expected, str) else "/".join(expected)
+            warnings.append((
+                path,
+                f"'{path}' should be {exp_label}, got {type(value).__name__}",
+            ))
     return warnings
 
 

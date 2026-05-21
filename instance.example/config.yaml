@@ -592,6 +592,15 @@ usage:
 #     enabled: true
 #     include: [my_custom_skill]   # canonical names; aliases auto-resolved
 
+# Review compressor — compress large PR diffs before sending to Claude
+# Sorts files by language priority (source code first, lockfiles last) and
+# fits as many hunks as possible within an 80k-token budget. Skipped files
+# are surfaced in the review comment so reviewers know analysis is partial.
+# Enabled by default.
+# optimizations:
+#   review_compressor:
+#     enabled: true
+
 # RTK (Rust Token Killer — https://github.com/rtk-ai/rtk)
 #
 # Optional CLI proxy that compresses common dev-command output (git, ls,
