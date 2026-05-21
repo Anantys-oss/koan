@@ -8,9 +8,8 @@ def handle(ctx):
 
     /priority              — show queue with usage hint
     /priority 3            — move mission #3 to top of queue
-    /priority 5 2          — move mission #5 to position 2
     /priority 4,6,5        — reorder: #4 first, #6 second, #5 third
-    /priority 4 6 5        — same (3+ numbers = bulk reorder)
+    /priority 4 6 5        — same (spaces work too)
     /priority 4 , 6, 5     — same (commas with spaces)
     """
     args = ctx.args.strip()
@@ -24,11 +23,7 @@ def handle(ctx):
         return "⚠️ Could not parse positions.\nUsage: /prio 3 or /prio 4,6,5"
 
     if len(positions) == 1:
-        return _reorder_single(missions_file, positions[0], target=1)
-
-    # Two numbers without commas → legacy "move N to position M"
-    if len(positions) == 2 and "," not in args:
-        return _reorder_single(missions_file, positions[0], target=positions[1])
+        return _reorder_single(missions_file, positions[0])
 
     return _reorder_bulk(missions_file, positions)
 
@@ -68,21 +63,20 @@ def _show_queue_with_hint(missions_file):
 
     parts.append("\nUsage:")
     parts.append("  /prio <n>       — bump mission #n to the top")
-    parts.append("  /prio <n> <m>   — move mission #n to position m")
     parts.append("  /prio 4,6,5     — reorder: #4 first, #6 second, #5 third")
     return "\n".join(parts)
 
 
-def _reorder_single(missions_file, position, target):
-    """Reorder a single pending mission."""
-    from app.missions import reorder_mission, clean_mission_display
+def _reorder_single(missions_file, position):
+    """Move a single pending mission to top of queue."""
+    from app.missions import reorder_mission
     from app.utils import modify_missions_file
 
     moved_display = None
 
     def _transform(content):
         nonlocal moved_display
-        updated, moved_display = reorder_mission(content, position, target)
+        updated, moved_display = reorder_mission(content, position, 1)
         return updated
 
     try:
@@ -93,9 +87,7 @@ def _reorder_single(missions_file, position, target):
     if moved_display is None:
         return "⚠️ Error during reorder."
 
-    if target == 1:
-        return f"⬆️ Bumped to top: {moved_display}"
-    return f"🔀 Moved to position {target}: {moved_display}"
+    return f"⬆️ Bumped to top: {moved_display}"
 
 
 def _reorder_bulk(missions_file, positions):
