@@ -392,8 +392,7 @@ def parse_mention_command(comment_body: str, nickname: str) -> Optional[Tuple[st
 
     # Build context from the entire comment, not just the same line.
     # Remove the @mention line itself, keep everything else.
-    mention_line = match.group(0)
-    remaining = clean_body.replace(mention_line, "", 1).strip()
+    remaining = (clean_body[:match.start()] + clean_body[match.end():]).strip()
     # Also include any inline args on the same line (e.g. @bot rebase --critical)
     inline_args = match.group(2).strip()
     if inline_args and remaining:
