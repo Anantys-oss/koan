@@ -2644,3 +2644,75 @@ class TestExecuteHandlerSkillsImport:
             for k in stale_keys:
                 sys.modules.pop(k, None)
             sys.modules.update(saved_modules)
+
+    def test_handler_import_survives_shadowing_skills_module(self, tmp_path, monkeypatch):
+        """The actual production failure: a ``python app/run.py`` launch puts
+        koan/app/ at sys.path[0], and that directory holds app/skills.py — a
+        *module* that shadows the koan/skills/ *package*.  Even though koan/ is
+        already on sys.path (via PYTHONPATH=.), it sits behind koan/app/, so
+        ``from skills.core.X import Y`` resolves to the module and fails with
+        "No module named 'skills.core'; 'skills' is not a package".
+
+        _execute_handler must (a) move the package parent ahead of the shadowing
+        dir and (b) evict a bare ``skills`` cached as the wrong module.
+        """
+        import importlib.util as _ilu
+
+        from app.skills import _execute_handler
+
+        # Real skills package tree under tmp_path/skills/
+        skill_root = tmp_path / "skills" / "core" / "myskill"
+        skill_root.mkdir(parents=True)
+        (tmp_path / "skills" / "__init__.py").touch()
+        (tmp_path / "skills" / "core" / "__init__.py").touch()
+        (skill_root / "__init__.py").touch()
+        (skill_root / "helper.py").write_text("MAGIC = 99\n")
+        (skill_root / "handler.py").write_text(textwrap.dedent("""\
+            from skills.core.myskill.helper import MAGIC
+
+            def handle(ctx):
+                return str(MAGIC)
+        """))
+
+        # A separate directory holding a shadowing skills.py *module*, mirroring
+        # koan/app/ holding app/skills.py.
+        shadow_dir = tmp_path / "app"
+        shadow_dir.mkdir()
+        shadow_py = shadow_dir / "skills.py"
+        shadow_py.write_text("SHADOW = True\n")
+
+        skill = Skill(
+            name="myskill", scope="core",
+            handler_path=skill_root / "handler.py",
+            skill_dir=skill_root,
+        )
+        ctx = SkillContext(
+            koan_root=tmp_path, instance_dir=tmp_path, command_name="myskill",
+        )
+
+        monkeypatch.setattr(
+            "app.skills.get_default_skills_dir", lambda: tmp_path / "skills",
+        )
+
+        # Launch shape: shadow dir at sys.path[0], package parent present but
+        # BEHIND it (the condition the old guard failed to repair).
+        base = [p for p in sys.path if p not in (str(tmp_path), str(shadow_dir))]
+        monkeypatch.setattr("sys.path", [str(shadow_dir), *base, str(tmp_path)])
+
+        # Pre-poison sys.modules: bare ``skills`` cached as the shadow module.
+        spec = _ilu.spec_from_file_location("skills", str(shadow_py))
+        shadow_mod = _ilu.module_from_spec(spec)
+        spec.loader.exec_module(shadow_mod)
+        assert not hasattr(shadow_mod, "__path__")  # it's a module, not a package
+
+        stale_keys = [k for k in sys.modules if k == "skills" or k.startswith("skills.")]
+        saved_modules = {k: sys.modules.pop(k) for k in stale_keys}
+        sys.modules["skills"] = shadow_mod
+
+        try:
+            result = _execute_handler(skill, ctx)
+            assert result == "99", f"expected handler import to succeed, got: {result!r}"
+        finally:
+            for k in [k for k in sys.modules if k == "skills" or k.startswith("skills.")]:
+                sys.modules.pop(k, None)
+            sys.modules.update(saved_modules)
