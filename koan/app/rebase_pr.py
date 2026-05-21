@@ -44,6 +44,57 @@ from app.prompts import load_prompt, load_prompt_or_skill, load_skill_prompt  # 
 from app.retry import retry_with_backoff
 from app.utils import _GITHUB_REMOTE_RE, truncate_diff, truncate_text
 
+def _resolve_bot_login() -> str:
+    """Resolve the bot's GitHub login from config.
+
+    Returns empty string if not configured.
+    """
+    try:
+        from app.utils import load_config
+        config = load_config()
+        github = config.get("github") or {}
+        return str(github.get("nickname", "")).strip()
+    except Exception as e:
+        print(f"[rebase_pr] could not resolve bot login: {e}", file=sys.stderr)
+        return ""
+
+
+def _filter_bot_issue_comments(raw: str) -> str:
+    """Remove bot-authored comments from the issue_comments string.
+
+    Each comment starts with ``@<login>: `` on its own conceptual line.
+    Bot comments (rebase summaries, review results) are verbose and push
+    human feedback out of the truncation window.
+    """
+    bot_login = _resolve_bot_login()
+    if not bot_login or not raw:
+        return raw
+
+    bot_prefix = f"@{bot_login}:"
+    lines = raw.split("\n")
+    filtered: list = []
+    skip = False
+    for line in lines:
+        if line.startswith("@") and ": " in line:
+            # New comment block — check if it's from the bot
+            skip = line.startswith(bot_prefix)
+        if not skip:
+            filtered.append(line)
+    return "\n".join(filtered)
+
+
+def _truncate_recent(text: str, max_chars: int) -> str:
+    """Truncate text keeping the most recent content (tail).
+
+    For conversation threads, the most recent comments are the most
+    relevant — they contain the latest feedback that triggered the
+    current rebase.
+    """
+    if len(text) <= max_chars:
+        return text
+    return "(earlier comments truncated)...\n" + text[-(max_chars - 40):]
+
+
 # Ordered from highest to lowest severity.  The review prompt emits exactly
 # these three values; user-facing aliases are resolved by parse_severity().
 SEVERITY_LEVELS = ("critical", "warning", "suggestion")
@@ -159,6 +210,11 @@ def fetch_pr_context(owner: str, repo: str, pr_number: str) -> dict:
     except RuntimeError:
         issue_comments = ""
 
+    # Filter out bot's own comments to preserve budget for human feedback.
+    # Bot replies (rebase summaries, review results) are verbose and push
+    # human comments out of the truncation window.
+    issue_comments = _filter_bot_issue_comments(issue_comments)
+
     try:
         metadata = json.loads(pr_json)
     except (json.JSONDecodeError, TypeError):
@@ -183,7 +239,7 @@ def fetch_pr_context(owner: str, repo: str, pr_number: str) -> dict:
         "diff": truncate_diff(diff, 32000),
         "review_comments": truncate_text(comments_json, 4000),
         "reviews": truncate_text(reviews_json, 3000),
-        "issue_comments": truncate_text(issue_comments, 3000),
+        "issue_comments": _truncate_recent(issue_comments, 4000),
         "has_pending_reviews": has_pending_reviews,
     }
 
