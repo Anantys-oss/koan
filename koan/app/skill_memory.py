@@ -350,7 +350,7 @@ def build_memory_block(
             original_total, kept_total, project_name,
         )
 
-    per_source = dict(zip(sources_present, (len(p.splitlines()) for p in parts)))
+    per_source = dict(zip(sources_present, (len(p.splitlines()) for p in parts), strict=True))
     logger.info(
         "[skill_memory] block built: lines=%d (ctx=%d prio=%d learn=%d) project=%s",
         kept_total,

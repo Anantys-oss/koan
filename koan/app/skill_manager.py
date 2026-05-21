@@ -569,7 +569,7 @@ def compare_versions(a: str, b: str) -> int:
         return 0
 
     # Compare major.minor.patch
-    for va, vb in zip(pa[:3], pb[:3]):
+    for va, vb in zip(pa[:3], pb[:3], strict=True):
         if va < vb:
             return -1
         if va > vb:

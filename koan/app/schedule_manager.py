@@ -102,10 +102,10 @@ def parse_time_ranges(spec: str) -> List[TimeRange]:
         try:
             start = int(pieces[0].strip())
             end = int(pieces[1].strip())
-        except ValueError:
+        except ValueError as e:
             raise ValueError(
                 f"Invalid time range '{part}': hours must be integers"
-            )
+            ) from e
 
         if not (0 <= start <= 23):
             raise ValueError(
