@@ -344,12 +344,15 @@ def _review_loop(
     """
     current_plan = plan_text
     prev_issues: Optional[str] = None
+    final_round = 0
 
     for round_num in range(1, max_rounds + 1):
         approved, issues = review_plan(current_plan, project_path, skill_dir)
+        final_round = round_num
 
         if approved:
             print(f"[plan_runner] Review round {round_num}: APPROVED", file=sys.stderr)
+            _record_plan_metric(project_path, True, round_num, "")
             return current_plan
 
         print(f"[plan_runner] Review round {round_num}: ISSUES_FOUND", file=sys.stderr)
@@ -362,6 +365,7 @@ def _review_loop(
                 "posting best version with warning",
                 file=sys.stderr,
             )
+            _record_plan_metric(project_path, False, round_num, issues or "")
             return current_plan + _review_warning_note(issues, max_rounds)
 
         # Note if the same issues recur
@@ -398,6 +402,7 @@ def _review_loop(
                 )
         except Exception as e:
             print(f"[plan_runner] Re-generation failed: {e} — keeping previous plan", file=sys.stderr)
+            _record_plan_metric(project_path, False, final_round, "re-generation failed")
             return current_plan
 
         if new_plan:
@@ -405,7 +410,25 @@ def _review_loop(
         else:
             print("[plan_runner] Re-generation returned empty — keeping previous plan", file=sys.stderr)
 
+    _record_plan_metric(project_path, False, final_round, "loop exhausted")
     return current_plan
+
+
+def _record_plan_metric(
+    project_path: str,
+    approved: bool,
+    rounds: int,
+    issues_summary: str,
+) -> None:
+    """Record a plan-review metric (fire-and-forget)."""
+    try:
+        import os
+        instance_dir = os.path.join(os.environ.get("KOAN_ROOT", ""), "instance")
+        project_name = Path(project_path).name
+        from app.skill_metrics import record_plan_metric
+        record_plan_metric(instance_dir, project_name, approved, rounds, issues_summary)
+    except Exception as e:
+        print(f"[plan_runner] Failed to record plan metric: {e}", file=sys.stderr)
 
 
 def _review_warning_note(issues: str, max_rounds: int) -> str:
