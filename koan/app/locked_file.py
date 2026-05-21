@@ -31,7 +31,8 @@ def _default_lock_path(path: Path) -> Path:
 
     Example: ``/instance/.check-tracker.json`` → ``/instance/.check-tracker.lock``
     """
-    return path.parent / f".{path.stem}.lock"
+    stem = path.stem.lstrip(".")
+    return path.parent / f".{stem}.lock"
 
 
 # ---------------------------------------------------------------------------
@@ -45,6 +46,7 @@ def locked_json_modify(
     default_factory: Optional[Callable[[], Any]] = None,
     lock_path: Optional[Path] = None,
     indent: Optional[int] = None,
+    validator: Optional[Callable[[Any], Any]] = None,
 ) -> T:
     """Acquire exclusive lock, load JSON, apply *fn*, save atomically.
 
@@ -64,6 +66,9 @@ def locked_json_modify(
             via :func:`_default_lock_path`.
         indent: JSON indentation level for pretty-printing.  *None*
             produces compact output.
+        validator: Optional callable to validate/transform loaded data
+            before passing to *fn*.  If the loaded data has the wrong
+            type, return *default_factory()* to reset gracefully.
 
     Returns:
         Whatever *fn* returns.
@@ -85,6 +90,10 @@ def locked_json_modify(
                     data = default_factory()
             else:
                 data = default_factory()
+
+            # Validate/transform if needed
+            if validator is not None:
+                data = validator(data)
 
             # Modify
             result = fn(data)

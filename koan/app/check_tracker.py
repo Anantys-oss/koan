@@ -31,14 +31,6 @@ def _load(instance_dir):
         return {}
 
 
-def _save(instance_dir, data):
-    """Persist tracker data to disk (atomic write)."""
-    from app.utils import atomic_write
-
-    path = _tracker_path(instance_dir)
-    atomic_write(path, json.dumps(data, indent=2) + "\n")
-
-
 def get_last_checked(instance_dir, url):
     """Return the ``updated_at`` value we last recorded for *url*, or None."""
     data = _load(instance_dir)
