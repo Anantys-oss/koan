@@ -960,7 +960,7 @@ def _fix_existing_ci_failures(
         return False
 
     print(f"[rebase] CI failed — invoking Claude to fix (run #{run_id})", flush=True)
-    notify_fn(f"Previous CI failed — analyzing logs to fix before push...")
+    notify_fn("Previous CI failed — analyzing logs to fix before push...")
     actions_log.append(f"Pre-push CI check: previous run #{run_id} failed")
 
     # Build CI fix prompt with current diff
@@ -1460,7 +1460,7 @@ def _build_rebase_comment(
 
     # ── 3. Stats ────────────────────────────────────────────────────
     if diffstat:
-        parts.append(f"### Stats\n")
+        parts.append("### Stats\n")
         parts.append(f"```\n{diffstat}\n```\n")
 
     # ── 4. Actions ──────────────────────────────────────────────────
@@ -1477,7 +1477,7 @@ def _build_rebase_comment(
 
     # ── 5. CI ───────────────────────────────────────────────────────
     if ci_section:
-        parts.append(f"### CI status\n")
+        parts.append("### CI status\n")
         parts.append(f"{ci_section}\n")
 
     parts.append("---\n_Automated by Kōan_")

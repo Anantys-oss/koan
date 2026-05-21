@@ -371,8 +371,8 @@ def install_skill_source(
     if skill_count == 0:
         _remove_dir(target_dir)
         return False, (
-            f"No SKILL.md files found in repository. "
-            f"Expected structure: <repo>/<skill-name>/SKILL.md"
+            "No SKILL.md files found in repository. "
+            "Expected structure: <repo>/<skill-name>/SKILL.md"
         )
 
     # Update manifest

@@ -273,7 +273,7 @@ def _queue_cli_skill_mission(skill: Skill, args: str):
 
     insert_pending_mission(MISSIONS_FILE, entry)
 
-    ack = f"✅ Mission queued"
+    ack = "✅ Mission queued"
     if project:
         ack += f" (project: {project})"
     ack += f":\n\n{koan_cmd[:500]}"
@@ -589,7 +589,7 @@ def _handle_help_group(group: str, registry):
             alias_str = f" (alias: /{', /'.join(aliases)})" if aliases else ""
             parts.append(f"/{cmd_name} — {desc}{alias_str}")
 
-    parts.append(f"\n/help <command> — detailed usage")
+    parts.append("\n/help <command> — detailed usage")
     send_telegram("\n".join(parts))
 
 

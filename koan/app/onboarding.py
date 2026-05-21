@@ -301,7 +301,7 @@ def step_instance_init(state: OnboardingState) -> OnboardingState:
         pause()
         return state
 
-    print(f"  Creating instance directory and .env file...")
+    print("  Creating instance directory and .env file...")
 
     if not instance_dir.exists():
         ok = create_instance_dir()
@@ -456,7 +456,7 @@ def step_messaging(state: OnboardingState) -> OnboardingState:
             return state
 
         # Verify token
-        print(f"  Verifying token...", end="", flush=True)
+        print("  Verifying token...", end="", flush=True)
         result = verify_telegram_token(bot_token)
         if result.get("valid"):
             print(f" {green('✓')} Bot: @{result.get('username', '?')}")
@@ -865,7 +865,7 @@ def step_deployment(state: OnboardingState) -> OnboardingState:
     if method == "docker":
         docker_script = KOAN_ROOT / "setup-docker.sh"
         if docker_script.exists():
-            print(f"\n  Running Docker setup...")
+            print("\n  Running Docker setup...")
             subprocess.run(["bash", str(docker_script)], cwd=str(KOAN_ROOT))
         else:
             print(f"  {yellow('○')} setup-docker.sh not found.")
@@ -960,7 +960,7 @@ def step_final(state: OnboardingState) -> OnboardingState:
 
     # Offer to start
     if ask_yes_no("Start Kōan now?", default=False):
-        print(f"\n  Starting Kōan...")
+        print("\n  Starting Kōan...")
         subprocess.run(["make", "start"], cwd=str(KOAN_ROOT))
     else:
         print(f"\n  {bold('Next steps:')}")
@@ -1022,7 +1022,7 @@ def run_onboarding(force: bool = False) -> None:
     # Welcome page — explain what's about to happen
     if not state.completed_steps:
         print(f"  {bold('Welcome!')} This wizard will walk you through setting up Kōan.")
-        print(f"  It takes about 5 minutes. Progress is saved after each step.")
+        print("  It takes about 5 minutes. Progress is saved after each step.")
         print()
         print(f"  {dim('Navigation: follow the prompts at each step.')}")
         print(f"  {dim('You can press Ctrl-C at any time to save and quit.')}")

@@ -58,10 +58,10 @@ def migrate():
     # summary.md stays at root
     summary_path = MEMORY / "summary.md"
     if summary_path.exists():
-        print(f"✓ Keeping summary.md at root")
+        print("✓ Keeping summary.md at root")
     else:
         summary_path.write_text("# Session Summary\n\nRolling summary of past sessions. Updated by Kōan after each run.\n")
-        print(f"📝 Created summary.md at root")
+        print("📝 Created summary.md at root")
 
     print()
     print("✅ Migration complete!")

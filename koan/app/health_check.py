@@ -139,7 +139,7 @@ if __name__ == "__main__":
     if run_age >= 0:
         print(f"[health] Run loop: {run_status} (age: {run_age:.0f}s)")
     else:
-        print(f"[health] Run loop: no heartbeat file")
+        print("[health] Run loop: no heartbeat file")
 
     all_healthy = bridge_healthy and run_healthy
     sys.exit(0 if all_healthy else 1)

@@ -198,7 +198,7 @@ def run_rename(koan_root: Path, old_name: str, new_name: str, dry_run: bool = Tr
     print(f"\n--- Total: {total_changes} content replacement{'s' if total_changes != 1 else ''} across instance/ ---")
 
     if dry_run:
-        print(f"\nThis was a dry run. To apply, re-run with --apply")
+        print("\nThis was a dry run. To apply, re-run with --apply")
 
 
 def main():

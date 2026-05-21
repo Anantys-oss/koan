@@ -1083,7 +1083,7 @@ class TestFindBotComment:
     @patch("app.github.run_gh")
     def test_skips_malformed_json_lines(self, mock_gh):
         """Malformed JSON lines are skipped; valid ones are still searched."""
-        good = self._make_comment(55, f"no marker here")
+        good = self._make_comment(55, "no marker here")
         marked = self._make_comment(66, f"{self.MARKER} found it")
         mock_gh.return_value = f"{{not valid json}}\n{good}\n{marked}"
         result = find_bot_comment("owner", "repo", 42, self.MARKER)

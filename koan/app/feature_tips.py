@@ -69,8 +69,8 @@ def _format_tip(skill) -> str:
     description = skill.description or cmd.description or skill.name
 
     lines = [
-        f"💡 Did you know?",
-        f"",
+        "💡 Did you know?",
+        "",
         f"/{cmd_name} — {description}",
     ]
 
