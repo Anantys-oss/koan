@@ -84,6 +84,25 @@
 </div>
 {% endif %}
 
+{% if skill_metrics %}
+<h2>Skill Metrics <span style="font-size:0.75rem;color:var(--text-muted);font-weight:normal;">(30d)</span></h2>
+<div class="grid">
+{% for pname, sm in skill_metrics.items() %}
+    <div class="card">
+        <div style="font-weight:600;margin-bottom:0.5rem;">{{ pname }}</div>
+        <div style="font-size:0.85rem;color:var(--text-muted);">
+            {% if sm.plan_total > 0 %}
+            <div>Plan approval: <strong>{{ "%.0f"|format(sm.plan_approval_rate * 100) }}%</strong> ({{ sm.plan_approved }}/{{ sm.plan_total }}), avg {{ "%.1f"|format(sm.plan_avg_rounds) }} rounds</div>
+            {% endif %}
+            {% if sm.pr_total > 0 %}
+            <div>PR CI pass: <strong>{{ "%.0f"|format(sm.pr_ci_pass_rate * 100) }}%</strong> ({{ sm.pr_ci_pass }}/{{ sm.pr_total }})</div>
+            {% endif %}
+        </div>
+    </div>
+{% endfor %}
+</div>
+{% endif %}
+
 {% if missions.in_progress %}
 <h2>In Progress</h2>
 {% for m in missions.in_progress %}

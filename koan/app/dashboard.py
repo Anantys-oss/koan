@@ -413,6 +413,34 @@ def _build_dashboard_prompt(text: str, *, lite: bool = False) -> str:
     )
 
 
+def _compute_dashboard_skill_metrics(selected_project: str = "") -> dict:
+    """Compute skill metrics summaries for dashboard display.
+
+    Returns dict mapping project names to their summary dicts.
+    If selected_project is set, only returns that project.
+    """
+    from app.skill_metrics import compute_summary
+
+    projects_dir = INSTANCE_DIR / "memory" / "projects"
+    if not projects_dir.exists():
+        return {}
+
+    result = {}
+    for project_dir in sorted(projects_dir.iterdir()):
+        if not project_dir.is_dir():
+            continue
+        pname = project_dir.name
+        if selected_project and pname != selected_project:
+            continue
+        metrics_file = project_dir / "skill-metrics.md"
+        if not metrics_file.exists():
+            continue
+        summary = compute_summary(str(INSTANCE_DIR), pname, days=30)
+        if summary["plan_total"] > 0 or summary["pr_total"] > 0:
+            result[pname] = summary
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -443,6 +471,9 @@ def index():
     elif tpl_state == "sleeping":
         tpl_state = "running"
 
+    # Per-project skill metrics (plan approval + CI pass rates)
+    skill_metrics = _compute_dashboard_skill_metrics(selected_project)
+
     return render_template("dashboard.html",
         state=tpl_state,
         state_label=agent_state["label"],
@@ -454,6 +485,7 @@ def index():
         done_count=len(filtered["done"]),
         selected_project=selected_project,
         project_stats=project_stats,
+        skill_metrics=skill_metrics,
     )
 
 
@@ -835,6 +867,13 @@ def api_metrics():
             str(INSTANCE_DIR), proj, days=days
         )
     return jsonify(metrics)
+
+
+@app.route("/api/skill-metrics")
+def api_skill_metrics():
+    """JSON skill metrics (plan approval + CI pass rates) per project."""
+    selected_project = request.args.get("project", "")
+    return jsonify(_compute_dashboard_skill_metrics(selected_project))
 
 
 @app.route("/journal")
