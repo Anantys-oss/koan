@@ -16,6 +16,10 @@ from app.memory_manager import (
     compact_learnings,
     archive_journals,
     run_cleanup,
+    append_memory_entry,
+    read_memory_window,
+    prune_memory_log,
+    migrate_markdown_to_jsonl,
     _extract_project_hint,
     _extract_session_digest,
     _balanced_select,
@@ -1644,3 +1648,176 @@ class TestCLIMainBlock:
                     run_module("app.memory_manager", run_name="__main__")
         output = out.getvalue()
         assert "summary_compacted" in output
+
+
+# ---------------------------------------------------------------------------
+# JSONL truth log: append_memory_entry, read_memory_window, prune_memory_log
+# ---------------------------------------------------------------------------
+
+class TestAppendMemoryEntry:
+
+    def test_creates_log_file(self, tmp_path):
+        instance = str(tmp_path)
+        append_memory_entry(instance, "session", "myproject", "did some work")
+        log_path = tmp_path / "memory" / "log.jsonl"
+        assert log_path.exists()
+
+    def test_valid_jsonl(self, tmp_path):
+        import json
+        instance = str(tmp_path)
+        append_memory_entry(instance, "session", "myproject", "did some work")
+        append_memory_entry(instance, "learning", "myproject", "use async")
+        lines = (tmp_path / "memory" / "log.jsonl").read_text().splitlines()
+        assert len(lines) == 2
+        for line in lines:
+            obj = json.loads(line)
+            assert "ts" in obj
+            assert "type" in obj
+            assert "project" in obj
+            assert "content" in obj
+
+    def test_content_capped_at_2000_chars(self, tmp_path):
+        import json
+        instance = str(tmp_path)
+        long_content = "x" * 5000
+        append_memory_entry(instance, "session", None, long_content)
+        lines = (tmp_path / "memory" / "log.jsonl").read_text().splitlines()
+        obj = json.loads(lines[0])
+        assert len(obj["content"]) == 2000
+
+    def test_null_project(self, tmp_path):
+        import json
+        instance = str(tmp_path)
+        append_memory_entry(instance, "session", None, "global entry")
+        lines = (tmp_path / "memory" / "log.jsonl").read_text().splitlines()
+        obj = json.loads(lines[0])
+        assert obj["project"] is None
+
+    def test_custom_ts(self, tmp_path):
+        import json
+        instance = str(tmp_path)
+        append_memory_entry(instance, "session", "proj", "work", ts="2024-01-01T00:00:00Z")
+        lines = (tmp_path / "memory" / "log.jsonl").read_text().splitlines()
+        obj = json.loads(lines[0])
+        assert obj["ts"] == "2024-01-01T00:00:00Z"
+
+
+class TestReadMemoryWindow:
+
+    def test_filters_by_project(self, tmp_path):
+        instance = str(tmp_path)
+        append_memory_entry(instance, "session", "alpha", "alpha work")
+        append_memory_entry(instance, "session", "beta", "beta work")
+        append_memory_entry(instance, "session", "alpha", "more alpha")
+        results = read_memory_window(instance, "alpha")
+        assert len(results) == 2
+        assert all(e["project"] == "alpha" for e in results)
+
+    def test_includes_global_entries(self, tmp_path):
+        instance = str(tmp_path)
+        append_memory_entry(instance, "session", None, "global entry")
+        append_memory_entry(instance, "session", "myproject", "project entry")
+        results = read_memory_window(instance, "myproject")
+        assert len(results) == 2
+
+    def test_respects_max_entries(self, tmp_path):
+        instance = str(tmp_path)
+        for i in range(10):
+            append_memory_entry(instance, "session", "proj", f"entry {i}")
+        results = read_memory_window(instance, "proj", max_entries=3)
+        assert len(results) == 3
+
+    def test_returns_empty_on_missing_file(self, tmp_path):
+        results = read_memory_window(str(tmp_path), "proj")
+        assert results == []
+
+    def test_skips_malformed_lines(self, tmp_path):
+        import json
+        log_path = tmp_path / "memory" / "log.jsonl"
+        log_path.parent.mkdir(parents=True)
+        good = json.dumps({"ts": "2024-01-01T00:00:00Z", "type": "session", "project": "p", "content": "ok"})
+        log_path.write_text("not-json\n" + good + "\n")
+        results = read_memory_window(str(tmp_path), "p")
+        assert len(results) == 1
+        assert results[0]["content"] == "ok"
+
+    def test_case_insensitive_project_filter(self, tmp_path):
+        instance = str(tmp_path)
+        append_memory_entry(instance, "session", "MyProject", "work")
+        results = read_memory_window(instance, "myproject")
+        assert len(results) == 1
+
+    def test_returns_oldest_first(self, tmp_path):
+        instance = str(tmp_path)
+        for i in range(5):
+            append_memory_entry(instance, "session", "proj", f"entry {i}",
+                                ts=f"2024-01-0{i+1}T00:00:00Z")
+        results = read_memory_window(instance, "proj", max_entries=5)
+        contents = [e["content"] for e in results]
+        assert contents == ["entry 0", "entry 1", "entry 2", "entry 3", "entry 4"]
+
+
+class TestPruneMemoryLog:
+
+    def test_removes_old_entries(self, tmp_path):
+        instance = str(tmp_path)
+        append_memory_entry(instance, "session", "proj", "old", ts="2020-01-01T00:00:00Z")
+        append_memory_entry(instance, "session", "proj", "new", ts="2099-01-01T00:00:00Z")
+        removed = prune_memory_log(instance, horizon_days=1)
+        assert removed == 1
+        remaining = read_memory_window(instance, "proj", max_entries=100)
+        assert len(remaining) == 1
+        assert remaining[0]["content"] == "new"
+
+    def test_no_op_on_missing_file(self, tmp_path):
+        removed = prune_memory_log(str(tmp_path), horizon_days=365)
+        assert removed == 0
+
+    def test_keeps_recent_entries(self, tmp_path):
+        instance = str(tmp_path)
+        append_memory_entry(instance, "session", "proj", "recent", ts="2099-12-31T00:00:00Z")
+        removed = prune_memory_log(instance, horizon_days=365)
+        assert removed == 0
+
+
+class TestMigrateMarkdownToJsonl:
+
+    def test_migrates_summary_sessions(self, tmp_path):
+        mem = tmp_path / "memory"
+        mem.mkdir()
+        (mem / "summary.md").write_text(
+            "# Summary\n\n"
+            "## 2026-01-15\n\nWorked on feature (project: myproject)\n\n"
+            "## 2026-02-10\n\nFixed a bug\n"
+        )
+        stats = migrate_markdown_to_jsonl(str(tmp_path))
+        assert stats["sessions"] == 2
+        entries = read_memory_window(str(tmp_path), "myproject")
+        assert len(entries) >= 1
+
+    def test_migrates_learnings(self, tmp_path):
+        mem = tmp_path / "memory"
+        proj_dir = mem / "projects" / "testproj"
+        proj_dir.mkdir(parents=True)
+        (proj_dir / "learnings.md").write_text(
+            "# Learnings\n\n- Use async\n- Test behavior\n"
+        )
+        stats = migrate_markdown_to_jsonl(str(tmp_path))
+        assert stats["learnings"] == 2
+
+    def test_idempotent_via_sentinel(self, tmp_path):
+        mem = tmp_path / "memory"
+        mem.mkdir()
+        (mem / "summary.md").write_text("## 2026-01-01\n\nSession A\n")
+        migrate_markdown_to_jsonl(str(tmp_path))
+        stats2 = migrate_markdown_to_jsonl(str(tmp_path))
+        assert stats2.get("skipped") is True
+
+    def test_graceful_on_empty_instance(self, tmp_path):
+        # No summary.md, no learnings — should not crash
+        stats = migrate_markdown_to_jsonl(str(tmp_path))
+        assert stats.get("skipped") is not True
+        assert stats["sessions"] == 0
+        assert stats["learnings"] == 0
+        sentinel = tmp_path / "memory" / ".migration_done"
+        assert sentinel.exists()

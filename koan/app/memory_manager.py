@@ -25,8 +25,10 @@ Commands:
 """
 
 import contextlib
+import fcntl
 import hashlib
 import json
+import logging
 import shutil
 import subprocess
 import sys
@@ -36,6 +38,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from app.utils import PROJECT_HINT_RE, atomic_write
+
+logger = logging.getLogger(__name__)
 
 # Hermes-inspired anti-thrash threshold. When a compaction pass would save
 # less than this fraction of the file (predicted from current size vs
@@ -1005,6 +1009,190 @@ class MemoryManager:
 
         return restored
 
+    # -----------------------------------------------------------------------
+    # One-shot migration from markdown to JSONL
+    # -----------------------------------------------------------------------
+
+    def migrate_markdown_to_jsonl(self) -> dict:
+        """Populate memory/log.jsonl from existing summary.md and learnings.md files.
+
+        Runs once, gated by the presence of memory/.migration_done sentinel.
+        Idempotent: subsequent calls return immediately if sentinel exists.
+
+        Returns a dict with counts of migrated entries by type.
+        """
+        sentinel = self.memory_dir / ".migration_done"
+        if sentinel.exists():
+            return {"skipped": True}
+
+        self.memory_dir.mkdir(parents=True, exist_ok=True)
+
+        stats: Dict[str, int] = {"sessions": 0, "learnings": 0}
+
+        # Migrate summary.md → type=session entries
+        if self.summary_path.exists():
+            try:
+                content = self.summary_path.read_text(encoding="utf-8")
+                sessions = parse_summary_sessions(content)
+                for date_header, text, project_hint in sessions:
+                    # Derive a rough timestamp from the date header (## YYYY-MM-DD)
+                    ts = None
+                    parts = date_header.lstrip("#").strip().split()
+                    for part in parts:
+                        try:
+                            datetime.strptime(part, "%Y-%m-%d")
+                            ts = part + "T00:00:00Z"
+                            break
+                        except ValueError:
+                            continue
+                    project = project_hint or None
+                    self.append_memory_entry("session", project, text, ts=ts)
+                    stats["sessions"] += 1
+            except Exception as e:
+                logger.warning("Migration of summary.md failed: %s", e)
+
+        # Migrate learnings.md files → type=learning entries
+        if self.projects_dir.exists():
+            for project_dir in self.projects_dir.iterdir():
+                if not project_dir.is_dir():
+                    continue
+                learnings_path = project_dir / "learnings.md"
+                if not learnings_path.exists():
+                    continue
+                try:
+                    mtime = learnings_path.stat().st_mtime
+                    ts = datetime.utcfromtimestamp(mtime).strftime("%Y-%m-%dT%H:%M:%SZ")
+                    content = learnings_path.read_text(encoding="utf-8")
+                    for line in content.splitlines():
+                        stripped = line.strip()
+                        if not stripped or stripped.startswith("#"):
+                            continue
+                        self.append_memory_entry("learning", project_dir.name, stripped, ts=ts)
+                        stats["learnings"] += 1
+                except Exception as e:
+                    logger.warning("Migration of %s/learnings.md failed: %s", project_dir.name, e)
+
+        # Write sentinel to prevent re-migration
+        atomic_write(sentinel, "done\n")
+        return stats
+
+    # -----------------------------------------------------------------------
+    # JSONL truth log
+    # -----------------------------------------------------------------------
+
+    @property
+    def _log_path(self) -> Path:
+        return self.memory_dir / "log.jsonl"
+
+    def append_memory_entry(
+        self,
+        type_: str,
+        project: Optional[str],
+        content: str,
+        ts: Optional[str] = None,
+    ) -> None:
+        """Append one entry to memory/log.jsonl (append-only truth log).
+
+        Uses O(1) file append with ``fcntl.flock(LOCK_EX)`` so concurrent
+        callers never lose entries.  Content is capped at 2000 chars to
+        prevent runaway diffs from inflating the log.
+        """
+        entry = {
+            "ts": ts or datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "type": type_,
+            "project": project,
+            "content": content[:2000],
+        }
+        self.memory_dir.mkdir(parents=True, exist_ok=True)
+        new_line = json.dumps(entry, ensure_ascii=False) + "\n"
+        with open(self._log_path, "a", encoding="utf-8") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            f.write(new_line)
+
+    def read_memory_window(
+        self,
+        project: Optional[str],
+        max_entries: int = 20,
+    ) -> List[dict]:
+        """Return the most recent ``max_entries`` log entries for a project.
+
+        Includes entries where ``project`` matches (case-insensitive) OR where
+        ``project`` is null/absent (global entries).  Malformed lines are
+        silently skipped.  Returns entries in chronological order (oldest first).
+        """
+        if not self._log_path.exists():
+            return []
+        try:
+            raw = self._log_path.read_text(encoding="utf-8")
+        except OSError:
+            return []
+
+        project_lower = project.lower() if project else None
+        entries = []
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            entry_project = obj.get("project")
+            if entry_project is None:
+                entries.append(obj)
+            elif project_lower and entry_project.lower() == project_lower:
+                entries.append(obj)
+
+        # Return the max_entries most recent (tail), oldest-first order
+        return entries[-max_entries:]
+
+    def prune_memory_log(self, horizon_days: int = 365) -> int:
+        """Remove log entries older than ``horizon_days``. Returns removed count.
+
+        The full read-filter-write cycle holds ``flock(LOCK_EX)`` on the log
+        file so a concurrent ``append_memory_entry`` cannot lose data.
+        """
+        if not self._log_path.exists():
+            return 0
+        try:
+            f = open(self._log_path, "r+", encoding="utf-8")
+        except OSError:
+            return 0
+
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            raw = f.read()
+
+            cutoff = datetime.utcnow() - timedelta(days=horizon_days)
+            kept = []
+            removed = 0
+            for line in raw.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                    ts_str = obj.get("ts", "")
+                    # Parse ISO8601 timestamp; keep entries with unparseable ts
+                    try:
+                        ts_dt = datetime.strptime(ts_str, "%Y-%m-%dT%H:%M:%SZ")
+                        if ts_dt < cutoff:
+                            removed += 1
+                            continue
+                    except ValueError:
+                        pass
+                    kept.append(line)
+                except json.JSONDecodeError:
+                    kept.append(line)  # preserve malformed lines rather than lose them
+
+            if removed > 0:
+                f.seek(0)
+                f.truncate()
+                f.write("\n".join(kept) + "\n" if kept else "")
+        finally:
+            f.close()
+        return removed
+
     def run_cleanup(
         self,
         max_sessions: int = 15,
@@ -1014,6 +1202,7 @@ class MemoryManager:
         compact_learnings_lines: int = 100,
         global_personality_max: int = 150,
         global_emotional_max: int = 100,
+        log_horizon_days: int = 365,
     ) -> dict:
         """Run all cleanup tasks. Returns stats dict."""
         stats = {}
@@ -1054,6 +1243,14 @@ class MemoryManager:
 
         journal_stats = self.archive_journals(archive_after_days, delete_after_days)
         stats.update(journal_stats)
+
+        # Prune JSONL truth log
+        try:
+            pruned = self.prune_memory_log(log_horizon_days)
+            if pruned > 0:
+                stats["log_pruned"] = pruned
+        except Exception as e:
+            logger.warning("Log pruning failed: %s", e)
 
         # Export snapshot after cleanup (reflects clean state)
         try:
@@ -1117,13 +1314,45 @@ def run_cleanup(
     compact_learnings_lines: int = 100,
     global_personality_max: int = 150,
     global_emotional_max: int = 100,
+    log_horizon_days: int = 365,
 ) -> dict:
     """Run all cleanup tasks. Returns stats dict."""
     return MemoryManager(instance_dir).run_cleanup(
         max_sessions, archive_after_days, delete_after_days,
         max_learnings_lines, compact_learnings_lines,
         global_personality_max, global_emotional_max,
+        log_horizon_days=log_horizon_days,
     )
+
+
+def append_memory_entry(
+    instance_dir: str,
+    type_: str,
+    project: Optional[str],
+    content: str,
+    ts: Optional[str] = None,
+) -> None:
+    """Append one entry to memory/log.jsonl."""
+    MemoryManager(instance_dir).append_memory_entry(type_, project, content, ts)
+
+
+def read_memory_window(
+    instance_dir: str,
+    project: Optional[str],
+    max_entries: int = 20,
+) -> List[dict]:
+    """Return the most recent log entries for a project."""
+    return MemoryManager(instance_dir).read_memory_window(project, max_entries)
+
+
+def prune_memory_log(instance_dir: str, horizon_days: int = 365) -> int:
+    """Remove log entries older than horizon_days. Returns removed count."""
+    return MemoryManager(instance_dir).prune_memory_log(horizon_days)
+
+
+def migrate_markdown_to_jsonl(instance_dir: str) -> dict:
+    """One-shot migration from markdown memory to JSONL truth log."""
+    return MemoryManager(instance_dir).migrate_markdown_to_jsonl()
 
 
 # ---------------------------------------------------------------------------

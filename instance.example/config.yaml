@@ -411,6 +411,8 @@ usage:
 #  global_personality_max: 150     # Max lines for personality-evolution.md
 #  global_emotional_max: 100       # Max lines for emotional-memory.md
 #  compaction_interval_hours: 24   # How often cleanup runs
+#  log_horizon_days: 365           # Retain JSONL truth log entries for this many days (default: 365)
+#  context_window_entries: 20      # Number of recent JSONL entries injected into the agent prompt (default: 20)
 
 # GitHub notification-driven commands
 # Enable Kōan to respond to @mentions in GitHub PR/issue comments.

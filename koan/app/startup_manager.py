@@ -18,6 +18,20 @@ from app.run_log import log
 # Individual startup steps
 # ---------------------------------------------------------------------------
 
+def migrate_memory_to_jsonl(instance: str):
+    """One-shot migration from markdown memory to JSONL truth log.
+
+    Gated by a sentinel file — subsequent calls are no-ops.
+    """
+    from app.memory_manager import MemoryManager
+    mgr = MemoryManager(instance)
+    result = mgr.migrate_markdown_to_jsonl()
+    if not result.get("skipped"):
+        sessions = result.get("sessions", 0)
+        learnings = result.get("learnings", 0)
+        log("init", f"[memory] Migrated to JSONL: {sessions} sessions, {learnings} learnings")
+
+
 def recover_crashed_missions(instance: str):
     """Check for and recover missions left in-progress by a crash."""
     log("health", "Checking for interrupted missions...")
@@ -145,6 +159,7 @@ def _load_memory_config() -> dict:
         "global_personality_max": mem_cfg.get("global_personality_max", 150),
         "global_emotional_max": mem_cfg.get("global_emotional_max", 100),
         "compaction_interval_hours": mem_cfg.get("compaction_interval_hours", 24),
+        "log_horizon_days": mem_cfg.get("log_horizon_days", 365),
     }
 
 
@@ -189,6 +204,7 @@ def cleanup_memory(instance: str):
         compact_learnings_lines=mem_cfg["learnings_max_lines"],
         global_personality_max=mem_cfg["global_personality_max"],
         global_emotional_max=mem_cfg["global_emotional_max"],
+        log_horizon_days=mem_cfg["log_horizon_days"],
     )
     _write_cleanup_marker()
 
@@ -438,6 +454,7 @@ def run_startup(koan_root: str, instance: str, projects: list):
         _safe_run("Config validation", validate_config, koan_root)
         _safe_run("Crash recovery", recover_crashed_missions, instance)
         _safe_run("Projects migration", run_migrations, koan_root)
+        _safe_run("Memory JSONL migration", migrate_memory_to_jsonl, instance)
         _safe_run("GitHub URL population", populate_github_urls, koan_root)
 
         result = _safe_run("Workspace discovery", discover_workspace, koan_root, projects)

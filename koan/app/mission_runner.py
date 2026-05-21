@@ -427,6 +427,23 @@ def _record_session_outcome(
     except Exception as e:
         _log_runner("error", f"Session outcome recording failed: {e}")
 
+    # Append to JSONL truth log so this session is never lost to compaction
+    try:
+        from app.memory_manager import append_memory_entry
+        summary_parts = []
+        if mission_title:
+            summary_parts.append(f"Mission: {mission_title}")
+        if autonomous_mode:
+            summary_parts.append(f"Mode: {autonomous_mode}")
+        if duration_minutes:
+            summary_parts.append(f"Duration: {duration_minutes}min")
+        if journal_content:
+            summary_parts.append(journal_content[:500])
+        content = " | ".join(summary_parts) if summary_parts else mission_title or "session"
+        append_memory_entry(instance_dir, "session", project_name or None, content)
+    except Exception as e:
+        _log_runner("error", f"JSONL session log failed: {e}")
+
 
 def _record_cost_event(
     instance_dir: str,
