@@ -8,6 +8,7 @@ Provides summary helpers consumed by ``/status`` and deep-research prompts.
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -67,6 +68,7 @@ def record_plan_metric(
     row = f"| {iso} | plan | {outcome} | {rounds} | {detail} |"
     try:
         with open(path, "a", encoding="utf-8") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
             f.write(row + "\n")
     except OSError as e:
         print(f"[skill_metrics] Failed to write plan metric: {e}", file=sys.stderr)
@@ -98,6 +100,7 @@ def record_pr_metric(
     row = f"| {iso} | {skill_type} | {outcome} | - | {detail} |"
     try:
         with open(path, "a", encoding="utf-8") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
             f.write(row + "\n")
     except OSError as e:
         print(f"[skill_metrics] Failed to write PR metric: {e}", file=sys.stderr)

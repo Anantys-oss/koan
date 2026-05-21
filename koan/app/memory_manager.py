@@ -1068,18 +1068,20 @@ class MemoryManager:
                 except (OSError, UnicodeDecodeError):
                     pass
 
-        # Per-project skill metrics (quantitative, never compacted)
+        # Per-project protected files (quantitative, never compacted)
         for project_name in project_names:
-            metrics_path = self.projects_dir / project_name / "skill-metrics.md"
-            if metrics_path.exists():
-                try:
-                    content = metrics_path.read_text(encoding="utf-8").strip()
-                    if content:
-                        sections.append(f"## Projects / {project_name} / skill-metrics\n")
-                        sections.append(content)
-                        sections.append("")
-                except (OSError, UnicodeDecodeError):
-                    pass
+            for protected_file in sorted(PROTECTED_PROJECT_FILES):
+                pf_path = self.projects_dir / project_name / protected_file
+                if pf_path.exists():
+                    try:
+                        content = pf_path.read_text(encoding="utf-8").strip()
+                        if content:
+                            stem = pf_path.stem
+                            sections.append(f"## Projects / {project_name} / {stem}\n")
+                            sections.append(content)
+                            sections.append("")
+                    except (OSError, UnicodeDecodeError):
+                        pass
 
         # Soul
         soul_path = self.instance_dir / "soul.md"

@@ -457,13 +457,13 @@ def _record_skill_metric(
 ) -> None:
     """Record per-project skill metric for fix/implement missions (fire-and-forget)."""
     try:
-        from app.session_tracker import classify_mission_type, _detect_pr_created
+        from app.session_tracker import classify_mission_type, detect_pr_created
         mission_type = classify_mission_type(mission_title)
         if mission_type != "implement":
             return
 
         # Only record when a PR was produced (the interesting signal)
-        if not _detect_pr_created(pending_content):
+        if not detect_pr_created(pending_content):
             return
 
         # Determine CI status from quality pipeline test results
