@@ -703,6 +703,15 @@ def main():
         log("error", "Failed to initialize messaging provider")
         sys.exit(1)
 
+    # Optional GitHub webhook receiver — push-based notification triggering.
+    # Defaults off; only starts when github.webhook.enabled and a secret are set.
+    try:
+        from app.github_webhook import maybe_start_from_config
+        if maybe_start_from_config(str(KOAN_ROOT)) is not None:
+            log("init", "GitHub webhook receiver started (push-based triggering)")
+    except Exception as e:
+        log("error", f"GitHub webhook receiver failed to start: {e}")
+
     log("init", f"Polling every {POLL_INTERVAL}s (chat mode: fast reply)")
     offset = None
     first_poll = True
