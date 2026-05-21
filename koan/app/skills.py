@@ -719,13 +719,26 @@ def _execute_handler(skill: Skill, ctx: SkillContext) -> Optional[Union[str, Ski
     try:
         _refresh_stale_app_modules()
 
-        # Ensure the parent of the skills/ package directory is on sys.path
-        # so that handler imports like ``from skills.core.X import Y`` resolve
-        # regardless of how the process was launched.  The skills root is
-        # typically ``koan/skills/``; its parent (``koan/``) must be importable.
+        # Ensure the parent of the skills/ package directory resolves BEFORE
+        # every other sys.path entry so handler imports like
+        # ``from skills.core.X import Y`` resolve to the koan/skills/ *package*.
+        # A ``python app/run.py`` launch puts koan/app/ at sys.path[0], and that
+        # directory contains app/skills.py — a module that shadows the package
+        # and makes such imports fail with "'skills' is not a package".  Merely
+        # appending koan/ (it is usually already present via PYTHONPATH=.) is not
+        # enough; it must come first.
         _skills_pkg_parent = str(get_default_skills_dir().resolve().parent)
-        if _skills_pkg_parent not in sys.path:
+        if not sys.path or sys.path[0] != _skills_pkg_parent:
+            while _skills_pkg_parent in sys.path:
+                sys.path.remove(_skills_pkg_parent)
             sys.path.insert(0, _skills_pkg_parent)
+
+        # If a prior import already resolved bare ``skills`` to app/skills.py (a
+        # module, not the package), evict it so the corrected sys.path order
+        # re-imports the real koan/skills/ package on the handler's first import.
+        _cached_skills = sys.modules.get("skills")
+        if _cached_skills is not None and not hasattr(_cached_skills, "__path__"):
+            sys.modules.pop("skills", None)
 
         spec = importlib.util.spec_from_file_location(
             f"skill_handler_{skill.qualified_name}",
