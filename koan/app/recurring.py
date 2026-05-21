@@ -224,7 +224,10 @@ def _locked_modify(recurring_path: Path, fn: Callable[[List[Dict]], T]) -> T:
     Returns whatever *fn* returns.
     """
     from app.locked_file import locked_json_modify
-    return locked_json_modify(recurring_path, fn, default_factory=list, indent=2)
+    return locked_json_modify(
+        recurring_path, fn, default_factory=list, indent=2,
+        validator=lambda d: d if isinstance(d, list) else [],
+    )
 
 
 def parse_at_time(text: str) -> tuple:
