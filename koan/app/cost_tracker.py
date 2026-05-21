@@ -18,13 +18,13 @@ Usage:
     )
 """
 
-import fcntl
 import json
-import os
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
+
+from app.locked_file import locked_jsonl_append
 
 
 def record_usage(
@@ -86,14 +86,8 @@ def record_usage(
     if cost_usd:
         entry["cost_usd"] = round(cost_usd, 6)
 
-    line = json.dumps(entry, separators=(",", ":")) + "\n"
-
     try:
-        with open(jsonl_path, "a", encoding="utf-8") as f:
-            fcntl.flock(f, fcntl.LOCK_EX)
-            f.write(line)
-            f.flush()
-            os.fsync(f.fileno())
+        locked_jsonl_append(jsonl_path, entry, fsync=True)
         return True
     except OSError:
         return False

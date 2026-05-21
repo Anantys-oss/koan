@@ -79,16 +79,16 @@ class TestCiQueue:
         assert size(inst) == 0
 
     def test_load_handles_corrupt_json(self, tmp_path):
-        from app.ci_queue import _load, _queue_path
+        from app.ci_queue import _queue_path, list_entries
         inst = self._instance(tmp_path)
         _queue_path(inst).write_text("not json")
-        assert _load(inst) == []
+        assert list_entries(inst) == []
 
     def test_load_handles_non_list(self, tmp_path):
-        from app.ci_queue import _load, _queue_path
+        from app.ci_queue import _queue_path, list_entries
         inst = self._instance(tmp_path)
         _queue_path(inst).write_text(json.dumps({"not": "list"}))
-        assert _load(inst) == []
+        assert list_entries(inst) == []
 
     def test_is_expired_missing_timestamp(self):
         from app.ci_queue import _is_expired

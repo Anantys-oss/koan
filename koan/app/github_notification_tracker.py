@@ -11,19 +11,19 @@ Two parallel trackers live here:
   to react to, so without persistent tracking the same notification gets
   re-processed on every restart.
 
-Both survive process restarts and use the same TTL/cap/locking pattern.
+Both survive process restarts and use the same TTL/cap/locking pattern
+via :func:`~app.locked_file.locked_json_modify`.
 """
 
-import fcntl
-import json
+import contextlib
 import time
 from pathlib import Path
 
+from app.locked_file import locked_json_modify, locked_json_read
+
 
 _TRACKER_FILE = ".koan-github-processed.json"
-_LOCK_FILE = ".koan-github-processed.lock"
 _TRACKER_FILE_THREADS = ".koan-github-processed-threads.json"
-_LOCK_FILE_THREADS = ".koan-github-processed-threads.lock"
 _TTL_SECONDS = 7 * 86400  # 7 days
 _MAX_ENTRIES = 5000
 
@@ -32,38 +32,28 @@ def _tracker_path(instance_dir: str) -> Path:
     return Path(instance_dir) / _TRACKER_FILE
 
 
-def _lock_path(instance_dir: str) -> Path:
-    return Path(instance_dir) / _LOCK_FILE
-
-
-def _load(instance_dir: str) -> dict:
-    """Load tracker data, pruning expired entries."""
-    path = _tracker_path(instance_dir)
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text())
-        if not isinstance(data, dict):
-            return {}
-    except (json.JSONDecodeError, OSError):
-        return {}
-    # Prune expired
+def _prune_expired(data: dict) -> dict:
+    """Remove entries older than TTL."""
     now = time.time()
     return {k: v for k, v in data.items() if now - v < _TTL_SECONDS}
 
 
-def _save(instance_dir: str, data: dict) -> None:
-    from app.utils import atomic_write
-
-    path = _tracker_path(instance_dir)
-    atomic_write(path, json.dumps(data) + "\n")
+def _cap_entries(data: dict) -> None:
+    """Evict oldest entries beyond MAX_ENTRIES (mutates in place)."""
+    if len(data) > _MAX_ENTRIES:
+        sorted_items = sorted(data.items(), key=lambda x: x[1])
+        keep = dict(sorted_items[-_MAX_ENTRIES:])
+        data.clear()
+        data.update(keep)
 
 
 def is_comment_tracked(instance_dir: str, comment_id: str) -> bool:
     """Check if a comment ID has been persistently recorded."""
     if not comment_id:
         return False
-    data = _load(instance_dir)
+    data = _prune_expired(
+        locked_json_read(_tracker_path(instance_dir))
+    )
     return comment_id in data
 
 
@@ -71,52 +61,21 @@ def track_comment(instance_dir: str, comment_id: str) -> None:
     """Record a comment ID as processed (with file lock for thread safety)."""
     if not comment_id:
         return
-    lock = _lock_path(instance_dir)
-    try:
-        with open(lock, "a") as lf:
-            fcntl.flock(lf, fcntl.LOCK_EX)
-            try:
-                data = _load(instance_dir)
-                data[comment_id] = time.time()
-                # Cap entries — evict oldest beyond limit
-                if len(data) > _MAX_ENTRIES:
-                    sorted_items = sorted(data.items(), key=lambda x: x[1])
-                    data = dict(sorted_items[-_MAX_ENTRIES:])
-                _save(instance_dir, data)
-            finally:
-                fcntl.flock(lf, fcntl.LOCK_UN)
-    except OSError:
-        pass  # Best-effort — don't break notification processing
+
+    def _track(data):
+        # Prune expired before adding
+        expired = [k for k, v in data.items() if time.time() - v >= _TTL_SECONDS]
+        for k in expired:
+            del data[k]
+        data[comment_id] = time.time()
+        _cap_entries(data)
+
+    with contextlib.suppress(OSError):
+        locked_json_modify(_tracker_path(instance_dir), _track)
 
 
 def _threads_path(instance_dir: str) -> Path:
     return Path(instance_dir) / _TRACKER_FILE_THREADS
-
-
-def _threads_lock_path(instance_dir: str) -> Path:
-    return Path(instance_dir) / _LOCK_FILE_THREADS
-
-
-def _load_threads(instance_dir: str) -> dict:
-    """Load thread-tracker data, pruning expired entries."""
-    path = _threads_path(instance_dir)
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text())
-        if not isinstance(data, dict):
-            return {}
-    except (json.JSONDecodeError, OSError):
-        return {}
-    now = time.time()
-    return {k: v for k, v in data.items() if now - v < _TTL_SECONDS}
-
-
-def _save_threads(instance_dir: str, data: dict) -> None:
-    from app.utils import atomic_write
-
-    path = _threads_path(instance_dir)
-    atomic_write(path, json.dumps(data) + "\n")
 
 
 def is_thread_tracked(instance_dir: str, thread_key: str) -> bool:
@@ -129,31 +88,27 @@ def is_thread_tracked(instance_dir: str, thread_key: str) -> bool:
     """
     if not thread_key:
         return False
-    data = _load_threads(instance_dir)
+    data = _prune_expired(
+        locked_json_read(_threads_path(instance_dir))
+    )
     return thread_key in data
 
 
 def track_thread(instance_dir: str, thread_key: str) -> None:
     """Record an assignment-notification thread key as processed.
 
-    Uses an exclusive ``fcntl.flock`` for thread/process safety.
     Best-effort: file errors are swallowed rather than breaking the
     notification pipeline.
     """
     if not thread_key:
         return
-    lock = _threads_lock_path(instance_dir)
-    try:
-        with open(lock, "a") as lf:
-            fcntl.flock(lf, fcntl.LOCK_EX)
-            try:
-                data = _load_threads(instance_dir)
-                data[thread_key] = time.time()
-                if len(data) > _MAX_ENTRIES:
-                    sorted_items = sorted(data.items(), key=lambda x: x[1])
-                    data = dict(sorted_items[-_MAX_ENTRIES:])
-                _save_threads(instance_dir, data)
-            finally:
-                fcntl.flock(lf, fcntl.LOCK_UN)
-    except OSError:
-        pass  # Best-effort — don't break notification processing
+
+    def _track(data):
+        expired = [k for k, v in data.items() if time.time() - v >= _TTL_SECONDS]
+        for k in expired:
+            del data[k]
+        data[thread_key] = time.time()
+        _cap_entries(data)
+
+    with contextlib.suppress(OSError):
+        locked_json_modify(_threads_path(instance_dir), _track)

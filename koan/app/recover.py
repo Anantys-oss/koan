@@ -24,13 +24,13 @@ Returns via stdout:
 """
 
 import contextlib
-import fcntl
 import json
 import re
 import sys
 from datetime import datetime
 from pathlib import Path
 
+from app.locked_file import locked_jsonl_append
 from app.notify import format_and_send
 
 
@@ -133,11 +133,7 @@ def _log_recovery_event(
     }
     log_path = Path(instance_dir) / "recovery.jsonl"
     try:
-        with open(log_path, "a") as f:
-            fcntl.flock(f, fcntl.LOCK_EX)
-            f.write(json.dumps(event) + "\n")
-            f.flush()
-            fcntl.flock(f, fcntl.LOCK_UN)
+        locked_jsonl_append(log_path, event)
     except OSError as e:
         print(f"[recover] Warning: could not write recovery log: {e}", file=sys.stderr)
 

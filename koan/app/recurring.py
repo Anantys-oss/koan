@@ -33,7 +33,7 @@ The optional "days" field restricts which days the mission fires:
   - null/absent — fires every day (default)
 """
 
-import fcntl
+from app.locked_file import locked_json_modify as _locked_json_modify
 import json
 import os
 import time
@@ -224,16 +224,10 @@ def _locked_modify(recurring_path: Path, fn: Callable[[List[Dict]], T]) -> T:
 
     Returns whatever *fn* returns.
     """
-    lock_path = recurring_path.parent / ".recurring.lock"
-    with open(lock_path, "a") as lf:
-        fcntl.flock(lf, fcntl.LOCK_EX)
-        try:
-            missions = load_recurring(recurring_path)
-            result = fn(missions)
-            save_recurring(recurring_path, missions)
-            return result
-        finally:
-            fcntl.flock(lf, fcntl.LOCK_UN)
+    return _locked_json_modify(
+        recurring_path, fn,
+        default_factory=list, indent=2,
+    )
 
 
 def parse_at_time(text: str) -> tuple:

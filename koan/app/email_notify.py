@@ -19,7 +19,6 @@ Usage from shell:
     python3 -m app.email_notify "Subject" "Body text"
 """
 
-import fcntl
 import hashlib
 import json
 import os
@@ -31,6 +30,7 @@ from email.mime.text import MIMEText
 from pathlib import Path
 from typing import Tuple
 
+from app.locked_file import locked_json_modify
 from app.utils import load_config, load_dotenv
 
 
@@ -77,7 +77,6 @@ def _get_smtp_config() -> dict:
 def _locked_cooldown_append(new_record: dict) -> None:
     """Atomically load, prune, append, and save cooldown records.
 
-    Uses file locking to prevent concurrent writers from corrupting the file.
     Rate limiting is enforced by can_send_email() before the email is sent;
     this function only persists the record after a successful send.
 
@@ -87,25 +86,11 @@ def _locked_cooldown_append(new_record: dict) -> None:
     path = _get_cooldown_path()
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    with open(path, "a+") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
-        try:
-            f.seek(0)
-            raw = f.read()
-            try:
-                data = json.loads(raw) if raw.strip() else []
-                records = data if isinstance(data, list) else []
-            except json.JSONDecodeError:
-                records = []
+    def _append(records):
+        records[:] = _prune_old_records(records)
+        records.append(new_record)
 
-            records = _prune_old_records(records)
-            records.append(new_record)
-            f.seek(0)
-            f.truncate()
-            f.write(json.dumps(records, indent=2))
-            f.flush()
-        finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
+    locked_json_modify(path, _append, default_factory=list, indent=2)
 
 
 def _prune_old_records(records: list) -> list:
