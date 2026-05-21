@@ -12,6 +12,7 @@ You are a technical documentation specialist. Your job is to update (or create) 
 ## Recent Git Activity
 
 {GIT_CONTEXT}
+{PROJECT_MEMORY}
 
 ## Instructions
 
@@ -32,6 +33,15 @@ CLAUDE.md is a concise reference that helps AI assistants understand:
 - Feature roadmaps or TODOs
 - Copy of README.md content (unless relevant to development)
 - Minor refactors, renames, or cosmetic changes
+
+### Using project learnings
+
+If a **Project Memory** block is provided above, it contains lessons learned from working on this project. Use these to:
+- Identify conventions or gotchas that should be documented in CLAUDE.md but aren't yet
+- Verify that existing CLAUDE.md sections still match reality (learnings may reveal drift)
+- Add testing rules, anti-patterns, or architecture notes that the team has discovered through practice
+
+Learnings are a signal of what real developers stumble on — if a lesson keeps recurring, it probably belongs in CLAUDE.md as a permanent convention.
 
 ### Selection criteria (UPDATE mode)
 
