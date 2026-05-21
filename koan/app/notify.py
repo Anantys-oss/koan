@@ -464,7 +464,7 @@ def format_and_send(raw_message: str, instance_dir: str = None,
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print(f"Usage: {sys.argv[0]} [--format] <message>", file=sys.stderr)
-        print(f"  --format: Format through Claude before sending", file=sys.stderr)
+        print("  --format: Format through Claude before sending", file=sys.stderr)
         sys.exit(1)
 
     args = sys.argv[1:]

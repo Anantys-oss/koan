@@ -154,7 +154,7 @@ def _handle_status(ctx) -> str:
         if ollama_pid:
             parts.append(f"  🦙 Ollama: running (PID {ollama_pid})")
         else:
-            parts.append(f"  🦙 Ollama: not running")
+            parts.append("  🦙 Ollama: not running")
 
     status_file = koan_root / ".koan-status"
     if status_file.exists():

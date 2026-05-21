@@ -650,7 +650,7 @@ def get_drift_summary(
         pass
 
     summary_lines = [
-        f"### Project Drift Detected",
+        "### Project Drift Detected",
         "",
         f"**{count} commits** landed on main since your last session ({time_desc}).",
         "Review recent changes before starting work to avoid conflicts or duplication.",

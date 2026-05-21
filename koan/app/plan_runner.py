@@ -189,7 +189,7 @@ def _run_issue_plan(
 
         label = f"#{issue_number}"
 
-    print(f"[plan] Issue fetched, building prompt", flush=True)
+    print("[plan] Issue fetched, building prompt", flush=True)
     # Build full issue context for the iteration prompt
     context_parts = [f"## Original Issue {label}: {title}\n\n{body}"]
     if comments_text:

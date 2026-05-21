@@ -335,7 +335,7 @@ def run_squash(
                 "--repo", full_repo,
                 "--title", new_title,
             )
-            actions_log.append(f"Updated PR title")
+            actions_log.append("Updated PR title")
         except Exception as e:
             actions_log.append(f"Title update failed (non-fatal): {str(e)[:100]}")
 
@@ -346,7 +346,7 @@ def run_squash(
                 "--repo", full_repo,
                 "--body", new_desc,
             )
-            actions_log.append(f"Updated PR description")
+            actions_log.append("Updated PR description")
         except Exception as e:
             actions_log.append(
                 f"Description update failed (non-fatal): {str(e)[:100]}"

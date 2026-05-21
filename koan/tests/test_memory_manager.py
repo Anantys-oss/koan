@@ -761,7 +761,7 @@ class TestCapLearnings:
         marker_lines = [l for l in content_lines if "oldest" in l and "archived" in l]
         assert len(marker_lines) == 1
         # The marker should be a clean line, not contain embedded \n
-        assert marker_lines[0].strip() == f"_(oldest 15 entries archived)_"
+        assert marker_lines[0].strip() == "_(oldest 15 entries archived)_"
 
 
 # ---------------------------------------------------------------------------

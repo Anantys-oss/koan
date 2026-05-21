@@ -284,29 +284,29 @@ def _build_issue_body(finding: AuditFinding) -> str:
     fingerprint = _compute_finding_fingerprint(finding)
 
     lines = [
-        f"## Problem",
-        f"",
+        "## Problem",
+        "",
         f"{finding.problem}",
-        f"",
-        f"## Why This Matters",
-        f"",
+        "",
+        "## Why This Matters",
+        "",
         f"{finding.why}",
-        f"",
-        f"## Suggested Fix",
-        f"",
+        "",
+        "## Suggested Fix",
+        "",
         f"{finding.suggested_fix}",
-        f"",
-        f"## Details",
-        f"",
-        f"| | |",
-        f"|---|---|",
+        "",
+        "## Details",
+        "",
+        "| | |",
+        "|---|---|",
         f"| **Severity** | {severity_icon} {finding.severity.capitalize()} |",
         f"| **Category** | {finding.category} |",
         f"| **Location** | `{finding.location}` |",
         f"| **Effort** | {effort_label} |",
-        f"",
-        f"---",
-        f"\U0001f916 Created by K\u014dan from audit session",
+        "",
+        "---",
+        "\U0001f916 Created by K\u014dan from audit session",
         f"<!-- koan-audit-id: {fingerprint} -->",
     ]
     return "\n".join(lines)
@@ -320,23 +320,23 @@ def _build_advisory_description(finding: AuditFinding) -> str:
     JSON payload).
     """
     lines = [
-        f"## Problem",
-        f"",
+        "## Problem",
+        "",
         f"{finding.problem}",
-        f"",
-        f"## Why This Matters",
-        f"",
+        "",
+        "## Why This Matters",
+        "",
         f"{finding.why}",
-        f"",
-        f"## Suggested Fix",
-        f"",
+        "",
+        "## Suggested Fix",
+        "",
         f"{finding.suggested_fix}",
-        f"",
+        "",
         f"**Location**: `{finding.location}`",
         f"**Category**: {finding.category}",
-        f"",
-        f"---",
-        f"\U0001f916 Reported by K\u014dan security audit",
+        "",
+        "---",
+        "\U0001f916 Reported by K\u014dan security audit",
     ]
     return "\n".join(lines)
 
@@ -598,9 +598,9 @@ def _save_audit_report(
     lines = [
         f"<!-- Last audit: {timestamp} -->",
         f"<!-- Findings: {len(findings)} -->",
-        f"",
+        "",
         f"# Audit Report — {project_name}",
-        f"",
+        "",
     ]
 
     for i, finding in enumerate(findings):

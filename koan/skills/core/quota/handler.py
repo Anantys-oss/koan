@@ -34,7 +34,7 @@ def _handle_override(ctx, args):
     try:
         used_pct = int(args)
     except ValueError:
-        return f"Usage: /quota <used_%>\nExample: /quota 5 (= 5% used, 95% remaining)"
+        return "Usage: /quota <used_%>\nExample: /quota 5 (= 5% used, 95% remaining)"
 
     if used_pct < 0 or used_pct > 100:
         return "Used percentage must be between 0 and 100."

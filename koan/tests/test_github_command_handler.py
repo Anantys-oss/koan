@@ -3079,7 +3079,7 @@ class TestContextAwareCoreSkills:
         skill = core_registry.find_by_command(command_name)
         assert skill is not None
 
-        notif = {"subject": {"url": f"https://api.github.com/repos/o/r/pulls/42"}}
+        notif = {"subject": {"url": "https://api.github.com/repos/o/r/pulls/42"}}
         context = "please squash into one commit"
         mission = build_mission_from_command(skill, command_name, context, notif, "myproject")
 
@@ -3094,7 +3094,7 @@ class TestContextAwareCoreSkills:
         skill = core_registry.find_by_command(command_name)
         assert skill is not None
 
-        notif = {"subject": {"url": f"https://api.github.com/repos/o/r/pulls/42"}}
+        notif = {"subject": {"url": "https://api.github.com/repos/o/r/pulls/42"}}
         mission = build_mission_from_command(skill, command_name, "", notif, "myproject")
 
         assert mission == f"- [project:myproject] /{command_name} https://github.com/o/r/pull/42 📬"

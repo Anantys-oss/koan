@@ -775,7 +775,7 @@ class TestToolEdgeCases:
     def test_shell_output_truncation(self):
         """Shell output >30K chars is truncated."""
         result = _tool_shell(
-            {"command": f"python3 -c \"print('x' * 35000)\""},
+            {"command": "python3 -c \"print('x' * 35000)\""},
             self.tmpdir,
         )
         assert len(result) <= 31000

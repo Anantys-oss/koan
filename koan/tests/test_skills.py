@@ -2172,7 +2172,7 @@ class TestAliasCollisionDetection:
             rec.message for rec in caplog.records if "collides" in rec.message
         ]
         assert not collisions, (
-            f"Core skills have command/alias collisions:\n"
+            "Core skills have command/alias collisions:\n"
             + "\n".join(collisions)
         )
 

@@ -43,7 +43,7 @@ def run(koan_root: str, instance_dir: str) -> List[CheckResult]:
                     name=f"process_{process_name}",
                     severity="warn",
                     message=f"{process_name} is not running",
-                    hint=f"Run 'make start' to launch all processes",
+                    hint="Run 'make start' to launch all processes",
                 ))
 
     # --- Ollama (only if provider needs it) ---

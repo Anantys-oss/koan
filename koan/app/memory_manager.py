@@ -855,7 +855,7 @@ class MemoryManager:
                 d.name for d in self.projects_dir.iterdir()
                 if d.is_dir() and d.name != "_template"
             )
-        sections.append(f"# Kōan Memory Snapshot\n")
+        sections.append("# Kōan Memory Snapshot\n")
         sections.append(f"Exported: {now}")
         sections.append(f"Projects: {', '.join(project_names) if project_names else 'none'}")
         sections.append("")

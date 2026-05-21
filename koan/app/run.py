@@ -1929,7 +1929,7 @@ def _run_iteration(
         try:
             from app.mission_complexity import is_complex_mission
             if is_complex_mission(mission_title):
-                log("spec", f"Complex mission detected — generating spec")
+                log("spec", "Complex mission detected — generating spec")
                 from app.spec_generator import generate_spec, save_spec
                 spec_content = generate_spec(project_path, mission_title, instance) or ""
                 if spec_content:

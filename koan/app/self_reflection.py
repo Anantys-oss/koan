@@ -64,7 +64,7 @@ def build_reflection_prompt(instance_dir: Path) -> str:
     if summary_file.exists():
         lines = summary_file.read_text().strip().splitlines()
         recent = [l for l in lines if l.strip()][-15:]
-        parts.append(f"Your last 15 sessions:\n" + "\n".join(recent))
+        parts.append("Your last 15 sessions:\n" + "\n".join(recent))
 
     # Current personality evolution
     personality_file = instance_dir / "memory" / "global" / "personality-evolution.md"
@@ -200,7 +200,7 @@ def main():
     observations = run_reflection(instance_dir)
     if observations:
         save_reflection(instance_dir, observations)
-        print(f"[self_reflection] Reflection saved to personality-evolution.md")
+        print("[self_reflection] Reflection saved to personality-evolution.md")
         # Also output for potential outbox use
         print(observations)
         # Send to outbox if requested
