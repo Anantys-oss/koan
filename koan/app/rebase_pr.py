@@ -70,14 +70,14 @@ def _filter_bot_issue_comments(raw: str) -> str:
     if not bot_login or not raw:
         return raw
 
-    bot_prefix = f"@{bot_login}:"
+    bot_prefix = f"@{bot_login.lower()}:"
     lines = raw.split("\n")
     filtered: list = []
     skip = False
     for line in lines:
         if line.startswith("@") and ": " in line:
             # New comment block — check if it's from the bot
-            skip = line.startswith(bot_prefix)
+            skip = line.lower().startswith(bot_prefix)
         if not skip:
             filtered.append(line)
     return "\n".join(filtered)
