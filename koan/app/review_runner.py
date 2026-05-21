@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from app.claude_step import resolve_pr_location
+from app.config import is_review_compressor_enabled
 from app.run_log import log
 from app.diff_compressor import compress_diff
 from app.github import run_gh, sanitize_github_comment, find_bot_comment
@@ -345,21 +346,21 @@ def build_review_prompt(
         project_memory = build_memory_block_for_skill(project_path, task_text)
 
     raw_diff = context["diff"]
-    compressed = compress_diff(raw_diff)
-    if compressed.skipped_files:
-        log(
-            "review",
-            f"Diff compressed — {len(compressed.skipped_files)} file(s) skipped: "
-            + ", ".join(compressed.skipped_files),
-        )
-
     skipped_note = ""
-    if compressed.skipped_files:
-        skipped_list = ", ".join(f"`{f}`" for f in compressed.skipped_files)
-        skipped_note = (
-            f"> ⚠️ Diff compressed — {len(compressed.skipped_files)} file(s) omitted"
-            f" due to size: {skipped_list}\n\n"
-        )
+    if is_review_compressor_enabled():
+        compressed = compress_diff(raw_diff)
+        raw_diff = compressed.diff_text
+        if compressed.skipped_files:
+            log(
+                "review",
+                f"Diff compressed — {len(compressed.skipped_files)} file(s) skipped: "
+                + ", ".join(compressed.skipped_files),
+            )
+            skipped_list = ", ".join(f"`{f}`" for f in compressed.skipped_files)
+            skipped_note = (
+                f"> ⚠️ Diff compressed — {len(compressed.skipped_files)} file(s) omitted"
+                f" due to size: {skipped_list}\n\n"
+            )
 
     kwargs: dict = dict(
         TITLE=context["title"],
@@ -367,7 +368,7 @@ def build_review_prompt(
         BRANCH=context["branch"],
         BASE=context["base"],
         BODY=context["body"],
-        DIFF=compressed.diff_text,
+        DIFF=raw_diff,
         REVIEW_COMMENTS=context["review_comments"],
         REVIEWS=context["reviews"],
         ISSUE_COMMENTS=context["issue_comments"],

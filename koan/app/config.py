@@ -1151,6 +1151,39 @@ def get_caveman_include_list() -> set:
     return result
 
 
+def _get_review_compressor_dict() -> dict:
+    """Return the ``optimizations.review_compressor`` mapping (or empty dict).
+
+    Mirrors :func:`_get_caveman_dict` — normalises away missing parents,
+    non-dict optimizations blocks, and scalar values.
+    """
+    config = _load_config()
+    optimizations = config.get("optimizations", {})
+    if not isinstance(optimizations, dict):
+        return {}
+    rc = optimizations.get("review_compressor", {})
+    return rc if isinstance(rc, dict) else {}
+
+
+def is_review_compressor_enabled() -> bool:
+    """Check if review diff compression optimization is enabled.
+
+    When enabled, large PR diffs are compressed before being sent to Claude
+    for review — files are sorted by language priority and fitted within a
+    token budget.
+
+    Reads ``optimizations.review_compressor.enabled`` from ``config.yaml``::
+
+        optimizations:
+          review_compressor:
+            enabled: true
+
+    Default: True.
+    """
+    enabled = _get_review_compressor_dict().get("enabled", True)
+    return bool(enabled) if isinstance(enabled, bool) else True
+
+
 def _get_rtk_dict() -> dict:
     """Return the ``optimizations.rtk`` mapping (or an empty dict).
 
