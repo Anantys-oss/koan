@@ -465,3 +465,203 @@ class TestCancelCommandRouting:
         mock_send.assert_called_once()
         help_text = mock_send.call_args[0][0]
         assert "/cancel" in help_text
+
+
+# ---------------------------------------------------------------------------
+# missions.py: cancel_pending_missions_bulk
+# ---------------------------------------------------------------------------
+
+BULK_CONTENT = (
+    "# Missions\n\n"
+    "## Pending\n\n"
+    "- first task\n"
+    "- second task\n"
+    "- third task\n"
+    "- fourth task\n"
+    "- fifth task\n\n"
+    "## In Progress\n\n"
+    "## Done\n"
+)
+
+
+class TestCancelPendingMissionsBulk:
+    def test_cancel_two(self):
+        from app.missions import cancel_pending_missions_bulk
+
+        new_content, displays = cancel_pending_missions_bulk(BULK_CONTENT, [2, 4])
+        assert len(displays) == 2
+        assert "second" in displays[0]
+        assert "fourth" in displays[1]
+        assert "- second task" not in new_content
+        assert "- fourth task" not in new_content
+        assert "- first task" in new_content
+        assert "- third task" in new_content
+        assert "- fifth task" in new_content
+
+    def test_cancel_all(self):
+        from app.missions import cancel_pending_missions_bulk
+
+        new_content, displays = cancel_pending_missions_bulk(
+            BULK_CONTENT, [1, 2, 3, 4, 5]
+        )
+        assert len(displays) == 5
+        lines = [l for l in new_content.splitlines() if l.startswith("- ")]
+        assert lines == []
+
+    def test_cancel_first_and_last(self):
+        from app.missions import cancel_pending_missions_bulk
+
+        new_content, displays = cancel_pending_missions_bulk(BULK_CONTENT, [1, 5])
+        assert len(displays) == 2
+        assert "first" in displays[0]
+        assert "fifth" in displays[1]
+        remaining = [l for l in new_content.splitlines() if l.startswith("- ")]
+        assert len(remaining) == 3
+        assert remaining[0] == "- second task"
+
+    def test_invalid_position(self):
+        from app.missions import cancel_pending_missions_bulk
+
+        with pytest.raises(ValueError, match="Invalid position: 9"):
+            cancel_pending_missions_bulk(BULK_CONTENT, [1, 9])
+
+    def test_zero_position(self):
+        from app.missions import cancel_pending_missions_bulk
+
+        with pytest.raises(ValueError, match="Invalid position: 0"):
+            cancel_pending_missions_bulk(BULK_CONTENT, [0, 1])
+
+    def test_duplicate_position(self):
+        from app.missions import cancel_pending_missions_bulk
+
+        with pytest.raises(ValueError, match="Duplicate position: 3"):
+            cancel_pending_missions_bulk(BULK_CONTENT, [3, 1, 3])
+
+    def test_no_pending(self):
+        from app.missions import cancel_pending_missions_bulk
+
+        content = "## Pending\n\n## In Progress\n\n## Done\n"
+        with pytest.raises(ValueError, match="No pending missions"):
+            cancel_pending_missions_bulk(content, [1])
+
+    def test_preserves_other_sections(self):
+        from app.missions import cancel_pending_missions_bulk
+
+        new_content, _ = cancel_pending_missions_bulk(BULK_CONTENT, [2, 4])
+        assert "## In Progress" in new_content
+        assert "## Done" in new_content
+
+    def test_preserves_project_tags(self):
+        from app.missions import cancel_pending_missions_bulk
+
+        content = (
+            "## Pending\n\n"
+            "- [project:koan] first\n"
+            "- [project:web] second\n"
+            "- third\n\n"
+            "## In Progress\n\n"
+            "## Done\n"
+        )
+        new_content, displays = cancel_pending_missions_bulk(content, [2])
+        assert "[koan]" in new_content or "[project:koan]" in new_content
+        assert "- third" in new_content
+        assert "second" in displays[0]
+
+    def test_displays_order_matches_positions(self):
+        from app.missions import cancel_pending_missions_bulk
+
+        _, displays = cancel_pending_missions_bulk(BULK_CONTENT, [5, 2, 3])
+        assert "fifth" in displays[0]
+        assert "second" in displays[1]
+        assert "third" in displays[2]
+
+
+# ---------------------------------------------------------------------------
+# Handler tests: bulk cancel
+# ---------------------------------------------------------------------------
+
+class TestCancelHandlerBulk:
+    """Test the cancel skill handler with multi-position input."""
+
+    def _make_ctx(self, tmp_path, missions_content=None, args=""):
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir(exist_ok=True)
+        if missions_content is not None:
+            (instance_dir / "missions.md").write_text(missions_content)
+        return SkillContext(
+            koan_root=tmp_path,
+            instance_dir=instance_dir,
+            command_name="cancel",
+            args=args,
+        )
+
+    MISSIONS = (
+        "# Missions\n\n"
+        "## Pending\n\n"
+        "- fix auth bug\n"
+        "- add dark mode\n"
+        "- refactor tests\n"
+        "- update docs\n\n"
+        "## In Progress\n\n"
+        "## Done\n"
+    )
+
+    def test_cancel_multiple_comma_separated(self, tmp_path):
+        from skills.core.cancel.handler import handle
+
+        ctx = self._make_ctx(tmp_path, self.MISSIONS, args="1,3")
+        result = handle(ctx)
+        assert "auth" in result.lower()
+        assert "refactor" in result.lower()
+        assert "Cancelled" in result
+        content = (tmp_path / "instance" / "missions.md").read_text()
+        assert "fix auth bug" not in content
+        assert "refactor tests" not in content
+        assert "add dark mode" in content
+        assert "update docs" in content
+
+    def test_cancel_multiple_space_separated(self, tmp_path):
+        from skills.core.cancel.handler import handle
+
+        ctx = self._make_ctx(tmp_path, self.MISSIONS, args="2 4")
+        result = handle(ctx)
+        assert "dark mode" in result.lower()
+        assert "update docs" in result.lower()
+        content = (tmp_path / "instance" / "missions.md").read_text()
+        assert "add dark mode" not in content
+        assert "update docs" not in content
+        assert "fix auth bug" in content
+
+    def test_cancel_multiple_mixed_format(self, tmp_path):
+        from skills.core.cancel.handler import handle
+
+        ctx = self._make_ctx(tmp_path, self.MISSIONS, args="1, 3, 4")
+        result = handle(ctx)
+        assert "Cancelled" in result
+        content = (tmp_path / "instance" / "missions.md").read_text()
+        assert "add dark mode" in content  # only #2 remains
+        remaining = [l for l in content.splitlines() if l.startswith("- ")]
+        assert len(remaining) == 1
+
+    def test_cancel_multiple_invalid_position(self, tmp_path):
+        from skills.core.cancel.handler import handle
+
+        ctx = self._make_ctx(tmp_path, self.MISSIONS, args="1,99")
+        result = handle(ctx)
+        assert "⚠️" in result
+
+    def test_single_number_still_works(self, tmp_path):
+        from skills.core.cancel.handler import handle
+
+        ctx = self._make_ctx(tmp_path, self.MISSIONS, args="2")
+        result = handle(ctx)
+        assert "dark mode" in result
+        assert "cancelled" in result.lower()
+
+    def test_keyword_still_works_with_multi_parser(self, tmp_path):
+        from skills.core.cancel.handler import handle
+
+        ctx = self._make_ctx(tmp_path, self.MISSIONS, args="auth")
+        result = handle(ctx)
+        assert "auth" in result.lower()
+        assert "cancelled" in result.lower()

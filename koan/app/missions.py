@@ -898,6 +898,93 @@ def cancel_pending_mission(content: str, identifier: str) -> Tuple[str, str]:
     return result[0], target_text
 
 
+def cancel_pending_missions_bulk(
+    content: str, positions: List[int]
+) -> Tuple[str, List[str]]:
+    """Cancel multiple pending missions by 1-indexed positions.
+
+    Args:
+        content: Full missions.md content.
+        positions: 1-indexed positions of missions to cancel.
+
+    Returns:
+        (updated_content, list_of_cancelled_display_texts) tuple.
+
+    Raises:
+        ValueError: If any position is invalid, duplicated, or no pending missions.
+    """
+    lines = content.splitlines()
+    boundaries = find_section_boundaries(lines)
+
+    if "pending" not in boundaries:
+        raise ValueError("No pending section found.")
+
+    start, end = boundaries["pending"]
+
+    # Collect pending items as (start_line_idx, end_line_idx) tuples
+    items: List[Tuple[int, int]] = []
+    i = start + 1
+    while i < end:
+        stripped = lines[i].strip()
+        if stripped.startswith("- "):
+            item_start = i
+            i += 1
+            while i < end:
+                next_stripped = lines[i].strip()
+                if (next_stripped.startswith("- ") or
+                        next_stripped.startswith("## ") or
+                        next_stripped.startswith("### ") or
+                        next_stripped == ""):
+                    break
+                i += 1
+            items.append((item_start, i))
+        else:
+            i += 1
+
+    if not items:
+        raise ValueError("No pending missions to cancel.")
+
+    # Validate positions
+    seen: set = set()
+    for pos in positions:
+        if pos < 1 or pos > len(items):
+            raise ValueError(
+                f"Invalid position: {pos}. "
+                f"Queue has {len(items)} pending mission(s)."
+            )
+        if pos in seen:
+            raise ValueError(f"Duplicate position: {pos}")
+        seen.add(pos)
+
+    # Collect display texts in the order positions were given
+    remove_set = {p - 1 for p in positions}
+    displays = [
+        clean_mission_display("\n".join(lines[items[p - 1][0]:items[p - 1][1]]))
+        for p in positions
+    ]
+
+    # Keep only non-cancelled items
+    remaining = [item for idx, item in enumerate(items) if idx not in remove_set]
+
+    # Build the pending section header (preserve blank lines after header)
+    header_lines = lines[start : start + 1]
+    blank_after_header = []
+    j = start + 1
+    while j < end and lines[j].strip() == "":
+        blank_after_header.append(lines[j])
+        j += 1
+
+    # Rebuild pending section
+    pending_block = header_lines + blank_after_header
+    for item_start, item_end in remaining:
+        pending_block.extend(lines[item_start:item_end])
+
+    # Reassemble full content
+    result_lines = lines[:start] + pending_block + lines[end:]
+
+    return normalize_content("\n".join(result_lines)), displays
+
+
 def _remove_pending_by_text(
     content: str, needle: str,
 ) -> Optional[Tuple[str, str]]:

@@ -1,12 +1,16 @@
 """Kōan cancel skill -- cancel pending missions from the queue."""
 
+import re
+
 
 def handle(ctx):
     """Handle /cancel command.
 
-    /cancel        — show numbered list of pending missions
-    /cancel 3      — cancel mission #3
-    /cancel auth   — cancel first mission matching keyword "auth"
+    /cancel            — show numbered list of pending missions
+    /cancel 3          — cancel mission #3
+    /cancel 3,5,7      — cancel missions #3, #5, #7
+    /cancel 3 5 7      — same (spaces work too)
+    /cancel auth       — cancel first mission matching keyword "auth"
     """
     args = ctx.args.strip()
     missions_file = ctx.instance_dir / "missions.md"
@@ -14,7 +18,30 @@ def handle(ctx):
     if not args:
         return _list_pending(missions_file)
 
+    positions = _parse_positions(args)
+    if positions is not None:
+        if len(positions) == 1:
+            return _cancel_mission(missions_file, str(positions[0]))
+        return _cancel_bulk(missions_file, positions)
+
+    # Keyword match
     return _cancel_mission(missions_file, args)
+
+
+def _parse_positions(args):
+    """Parse position numbers from flexible input formats.
+
+    Supports: "3", "3 5 7", "3,5,7", "3, 5, 7"
+    Returns list of ints or None if input contains non-numeric tokens.
+    """
+    tokens = re.split(r"[,\s]+", args.strip())
+    tokens = [t for t in tokens if t]
+    if not tokens:
+        return None
+    try:
+        return [int(t) for t in tokens]
+    except ValueError:
+        return None
 
 
 def _list_pending(missions_file):
@@ -34,7 +61,7 @@ def _list_pending(missions_file):
         display = clean_mission_display(m)
         parts.append(f"  {i}. {display}")
 
-    parts.append("\nReply /cancel <number> to cancel a mission.")
+    parts.append("\nReply /cancel <number> or /cancel 3,5,7 to cancel.")
     return "\n".join(parts)
 
 
@@ -60,3 +87,28 @@ def _cancel_mission(missions_file, identifier):
 
     display = clean_mission_display(cancelled_text)
     return f"🗑 Mission cancelled: {display}"
+
+
+def _cancel_bulk(missions_file, positions):
+    """Cancel multiple pending missions by position."""
+    from app.missions import cancel_pending_missions_bulk
+    from app.utils import modify_missions_file
+
+    displays = None
+
+    def _transform(content):
+        nonlocal displays
+        updated, displays = cancel_pending_missions_bulk(content, positions)
+        return updated
+
+    try:
+        modify_missions_file(missions_file, _transform)
+    except ValueError as e:
+        return f"⚠️ {e}"
+
+    if displays is None:
+        return "⚠️ Error during cancellation."
+
+    parts = ["🗑 Cancelled missions:"]
+    parts.extend(f"  • {d}" for d in displays)
+    return "\n".join(parts)
