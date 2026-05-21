@@ -598,6 +598,17 @@ def _append_lessons_to_learnings(
         new_content = f"# Learnings — {project_name}\n" + section
 
     atomic_write(learnings_path, new_content)
+
+    # Mirror each lesson to the JSONL truth log (one entry per lesson line)
+    try:
+        from app.memory_manager import append_memory_entry
+        for line in new_lines:
+            stripped = line.strip()
+            if stripped:
+                append_memory_entry(instance_dir, "learning", project_name, stripped)
+    except Exception as e:
+        log.warning("JSONL append failed: %s", e)
+
     return len(new_lines)
 
 

@@ -186,7 +186,7 @@ class TestCleanupMemory:
     @patch("app.startup_manager._load_memory_config", return_value={
         "learnings_max_lines": 100, "learnings_hard_cap": 200,
         "global_personality_max": 150, "global_emotional_max": 100,
-        "compaction_interval_hours": 24,
+        "compaction_interval_hours": 24, "log_horizon_days": 365,
     })
     @patch("app.startup_manager._should_run_cleanup", return_value=True)
     @patch("app.startup_manager._write_cleanup_marker")
@@ -203,6 +203,7 @@ class TestCleanupMemory:
             compact_learnings_lines=100,
             global_personality_max=150,
             global_emotional_max=100,
+            log_horizon_days=365,
         )
         mock_write.assert_called_once()
         out = capsys.readouterr().out
@@ -211,7 +212,7 @@ class TestCleanupMemory:
     @patch("app.startup_manager._load_memory_config", return_value={
         "learnings_max_lines": 100, "learnings_hard_cap": 200,
         "global_personality_max": 150, "global_emotional_max": 100,
-        "compaction_interval_hours": 24,
+        "compaction_interval_hours": 24, "log_horizon_days": 365,
     })
     @patch("app.startup_manager._should_run_cleanup", return_value=True)
     @patch("app.startup_manager._write_cleanup_marker")
@@ -235,7 +236,7 @@ class TestCleanupMemory:
     @patch("app.startup_manager._load_memory_config", return_value={
         "learnings_max_lines": 100, "learnings_hard_cap": 200,
         "global_personality_max": 150, "global_emotional_max": 100,
-        "compaction_interval_hours": 24,
+        "compaction_interval_hours": 24, "log_horizon_days": 365,
     })
     @patch("app.startup_manager._should_run_cleanup", return_value=False)
     @patch("app.startup_manager._cleanup_marker_path")

@@ -305,6 +305,49 @@ def _get_learnings_section(
     )
 
 
+def _get_memory_log_section(instance: str, project_name: str) -> str:
+    """Return recent session/learning history from JSONL truth log.
+
+    Replaces ``scoped_summary()`` as the source of recent project history in
+    the agent prompt.  Falls back to ``scoped_summary()`` when the log is
+    empty (fresh install before migration runs).
+
+    The window size defaults to 20; configurable via
+    ``config.yaml`` ``memory.context_window_entries``.
+    """
+    cfg = _load_config_safe()
+    mem = cfg.get("memory", {}) or {}
+    try:
+        max_entries = int(mem.get("context_window_entries", 20))
+    except (TypeError, ValueError):
+        max_entries = 20
+
+    try:
+        from app.memory_manager import read_memory_window, scoped_summary
+        entries = read_memory_window(instance, project_name, max_entries=max_entries)
+        # Filter out learning entries — _get_learnings_section() already
+        # injects task-aware filtered learnings; including them here would
+        # duplicate content and waste prompt tokens.
+        entries = [e for e in entries if e.get("type") != "learning"]
+        if not entries:
+            # Fallback: log is empty (fresh install or pre-migration)
+            summary = scoped_summary(instance, project_name)
+            if summary.strip():
+                return f"\n\n# Recent Project History\n\n{summary}\n"
+            return ""
+        lines = []
+        for e in entries:
+            ts = e.get("ts", "?")
+            etype = e.get("type", "?")
+            content = e.get("content", "").strip()
+            lines.append(f"[{ts}] {etype}: {content}")
+        body = "\n".join(lines)
+        return f"\n\n# Recent Project History (last {len(entries)} entries)\n\n{body}\n"
+    except Exception as e:
+        logger.warning("[prompt_builder] memory log section failed: %s", e)
+        return ""
+
+
 def _get_mission_type_section(mission_title: str) -> str:
     """Return type-specific guidance based on mission classification.
 
@@ -597,6 +640,9 @@ def build_agent_prompt(
     # Append task-aware filtered learnings (issue #1306)
     prompt += _get_learnings_section(instance, project_name, mission_title, focus_area)
 
+    # Append JSONL memory window (recent sessions + learnings from truth log)
+    prompt += _get_memory_log_section(instance, project_name)
+
     # Append merge policy
     prompt += _get_merge_policy(project_name)
 
@@ -687,6 +733,9 @@ def build_agent_prompt_parts(
     # Lives in the user prompt because its content varies with each mission
     # — putting it in the system prompt would defeat prompt caching.
     user_prompt += _get_learnings_section(instance, project_name, mission_title, focus_area)
+
+    # Append JSONL memory window (recent sessions + learnings from truth log)
+    user_prompt += _get_memory_log_section(instance, project_name)
 
     # Append staleness warning (all autonomous modes — cheap local read)
     if not mission_title:
