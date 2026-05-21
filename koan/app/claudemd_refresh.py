@@ -24,6 +24,7 @@ from pathlib import Path
 from app.git_sync import run_git
 from app.git_utils import run_git_strict
 from app.prompts import load_skill_prompt
+from app.skill_memory import build_memory_block_for_skill
 
 
 def _git_last_modified(project_path: str, filepath: str) -> str:
@@ -232,6 +233,10 @@ def run_refresh(project_path: str, project_name: str) -> int:
         print(f"Failed to create branch {branch_name}: {e}", file=sys.stderr)
         return 1
 
+    # Build project memory block (learnings, context, priorities)
+    task_text = f"CLAUDE.md refresh for {project_name}\n{git_context}"
+    project_memory = build_memory_block_for_skill(project_path, task_text)
+
     # Build prompt
     skill_dir = Path(__file__).parent.parent / "skills" / "core" / "claudemd"
     prompt = load_skill_prompt(
@@ -241,6 +246,7 @@ def run_refresh(project_path: str, project_name: str) -> int:
         PROJECT_PATH=project_path,
         PROJECT_NAME=project_name,
         GIT_CONTEXT=git_context,
+        PROJECT_MEMORY=project_memory,
     )
 
     # Build CLI command
