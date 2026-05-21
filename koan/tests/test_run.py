@@ -2994,10 +2994,11 @@ class TestRunIterationFirstIterationNotifications:
     @patch("app.github_config.get_github_commands_enabled", return_value=True)
     @patch("app.run.plan_iteration")
     @patch("app.run._notify_raw")
+    @patch("app.run._notify")
     @patch("app.loop_manager.process_jira_notifications", return_value=0)
     @patch("app.loop_manager.process_github_notifications", return_value=0)
     def test_resume_without_missions_suppresses_empty_state_pings(
-        self, mock_gh, mock_jira, mock_notify_raw, mock_plan, mock_gh_enabled, mock_jira_enabled, koan_root,
+        self, mock_gh, mock_jira, mock_notify, mock_notify_raw, mock_plan, mock_gh_enabled, mock_jira_enabled, koan_root,
     ):
         """After resume (simulated by resetting _startup_notified only), the
         empty-state "scanned, no new missions" and "Notifications clear" pings
@@ -3037,10 +3038,11 @@ class TestRunIterationFirstIterationNotifications:
     @patch("app.github_config.get_github_commands_enabled", return_value=True)
     @patch("app.run.plan_iteration")
     @patch("app.run._notify_raw")
+    @patch("app.run._notify")
     @patch("app.loop_manager.process_jira_notifications", return_value=1)
     @patch("app.loop_manager.process_github_notifications", return_value=2)
     def test_resume_with_missions_still_reports_counts(
-        self, mock_gh, mock_jira, mock_notify_raw, mock_plan, mock_gh_enabled, mock_jira_enabled, koan_root,
+        self, mock_gh, mock_jira, mock_notify, mock_notify_raw, mock_plan, mock_gh_enabled, mock_jira_enabled, koan_root,
     ):
         """When resume brings new missions, count-bearing pings must still
         fire — those carry real signal, unlike the empty-state variants.
