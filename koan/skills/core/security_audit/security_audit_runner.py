@@ -47,6 +47,7 @@ def run_security_audit(
     extra_context: str = "",
     max_issues: int = DEFAULT_MAX_ISSUES,
     notify_fn=None,
+    auto_fix_severity=None,
 ) -> tuple:
     """Execute a security audit by delegating to run_audit with our prompt."""
     skill_dir = Path(__file__).resolve().parent
@@ -65,6 +66,7 @@ def run_security_audit(
         report_name="security_audit",
         pvrs_mode=sec_cfg["pvrs"],
         pvrs_threshold=sec_cfg["pvrs_threshold"],
+        auto_fix_severity=auto_fix_severity,
     )
 
 
@@ -99,6 +101,14 @@ def main(argv=None):
         "--max-issues", type=int, default=DEFAULT_MAX_ISSUES,
         help=f"Maximum number of findings (default: {DEFAULT_MAX_ISSUES})",
     )
+    parser.add_argument(
+        "--auto-fix", nargs="?", const="high",
+        default=None, metavar="SEVERITY",
+        help=(
+            "Queue /fix missions for newly-created issues at or above "
+            "SEVERITY (default: high). Omit SEVERITY for critical+high."
+        ),
+    )
     cli_args = parser.parse_args(argv)
 
     # Context from file takes precedence
@@ -115,6 +125,7 @@ def main(argv=None):
         instance_dir=cli_args.instance_dir,
         extra_context=context,
         max_issues=cli_args.max_issues,
+        auto_fix_severity=cli_args.auto_fix,
     )
     print(summary)
     return 0 if success else 1
