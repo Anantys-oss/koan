@@ -215,6 +215,11 @@ def compress_diff(raw_diff: str, token_budget: int = 80_000) -> CompressedDiff:
             included_blocks.append(fd.header)
             continue
 
+        if not fd.hunks:
+            # Mode-only change (e.g. chmod) — no content diff, include header.
+            included_blocks.append(fd.header)
+            continue
+
         file_tokens = fd.token_estimate()
 
         if file_tokens <= remaining_budget:
