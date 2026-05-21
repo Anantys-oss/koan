@@ -142,7 +142,7 @@ def score_and_select(
 
     selected_indices: Set[int] = set()
     if effective_k > 0:
-        for score, idx, _ in scored[:effective_k]:
+        for _score, idx, _ in scored[:effective_k]:
             selected_indices.add(idx)
 
     # Always include the trailing ``recent_hedge`` lines.

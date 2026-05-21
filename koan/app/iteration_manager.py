@@ -691,7 +691,7 @@ def _select_random_exploration_project(
                 bandit = load_bandit_state(instance_dir)
                 combined = [
                     w * thompson_sample(bandit, name)
-                    for (name, _), w in zip(candidates, candidate_weights)
+                    for (name, _), w in zip(candidates, candidate_weights, strict=True)
                 ]
                 best_idx = combined.index(max(combined))
                 selected = candidates[best_idx]

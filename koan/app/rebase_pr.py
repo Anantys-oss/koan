@@ -1345,11 +1345,11 @@ def _checkout_pr_branch(
             try:
                 _fetch_branch(fork_remote, branch, cwd=project_path)
                 fetch_remote = fork_remote
-            except Exception:
+            except Exception as e:
                 raise RuntimeError(
                     f"Branch `{branch}` not found on any remote "
                     f"(tried {', '.join(remotes)} and {fork_remote})"
-                )
+                ) from e
         else:
             raise RuntimeError(
                 f"Branch `{branch}` not found on {' or '.join(remotes)}"
