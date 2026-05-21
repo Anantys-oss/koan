@@ -719,6 +719,14 @@ def _execute_handler(skill: Skill, ctx: SkillContext) -> Optional[Union[str, Ski
     try:
         _refresh_stale_app_modules()
 
+        # Ensure the parent of the skills/ package directory is on sys.path
+        # so that handler imports like ``from skills.core.X import Y`` resolve
+        # regardless of how the process was launched.  The skills root is
+        # typically ``koan/skills/``; its parent (``koan/``) must be importable.
+        _skills_pkg_parent = str(get_default_skills_dir().resolve().parent)
+        if _skills_pkg_parent not in sys.path:
+            sys.path.insert(0, _skills_pkg_parent)
+
         spec = importlib.util.spec_from_file_location(
             f"skill_handler_{skill.qualified_name}",
             str(handler_path),
