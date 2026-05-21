@@ -1,7 +1,7 @@
 """Tests for forge/github.py — GitHubForge thin delegation wrapper."""
 
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -141,78 +141,64 @@ class TestSearchIssueUrl:
 # ---------------------------------------------------------------------------
 
 class TestPrCreate:
-    @patch("app.github.subprocess.run")
-    def test_delegates_to_github_pr_create(self, mock_run):
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout="https://github.com/owner/repo/pull/1\n"
-        )
+    @patch("app.github.pr_create", return_value="https://github.com/owner/repo/pull/1")
+    def test_delegates_to_github_pr_create(self, mock_pr_create):
         forge = _make_forge()
         url = forge.pr_create(title="My PR", body="body text", draft=True)
         assert "pull" in url
-
-    @patch("app.github.subprocess.run")
-    def test_passes_optional_args(self, mock_run):
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout="https://github.com/owner/repo/pull/2\n"
+        mock_pr_create.assert_called_once_with(
+            title="My PR", body="body text", draft=True,
+            base=None, repo=None, head=None, cwd=None,
         )
+
+    @patch("app.github.pr_create", return_value="https://github.com/owner/repo/pull/2")
+    def test_passes_optional_args(self, mock_pr_create):
         forge = _make_forge()
         forge.pr_create(
             title="T", body="B", draft=False,
             base="main", repo="owner/repo", head="feature",
         )
-        cmd = mock_run.call_args[0][0]
-        assert "--base" in cmd
-        assert "main" in cmd
-        assert "--repo" in cmd
-        # draft=False means no --draft flag
-        assert "--draft" not in cmd
+        mock_pr_create.assert_called_once_with(
+            title="T", body="B", draft=False,
+            base="main", repo="owner/repo", head="feature", cwd=None,
+        )
 
 
 class TestPrView:
-    @patch("app.github.subprocess.run")
-    def test_returns_parsed_json(self, mock_run):
+    @patch("app.github.run_gh")
+    def test_returns_parsed_json(self, mock_run_gh):
         payload = {"number": 42, "title": "My PR", "state": "open"}
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout=json.dumps(payload) + "\n"
-        )
+        mock_run_gh.return_value = json.dumps(payload)
         forge = _make_forge()
         result = forge.pr_view(repo="owner/repo", number=42)
         assert result["number"] == 42
         assert result["title"] == "My PR"
 
-    @patch("app.github.subprocess.run")
-    def test_raises_on_json_error(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="not-json")
+    @patch("app.github.run_gh", return_value="not-json")
+    def test_raises_on_json_error(self, _mock_run_gh):
         forge = _make_forge()
         with pytest.raises(RuntimeError, match="Failed to parse PR view output"):
             forge.pr_view(repo="owner/repo", number=1)
 
 
 class TestPrDiff:
-    @patch("app.github.subprocess.run")
-    def test_returns_diff_text(self, mock_run):
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout="diff --git a/foo b/foo\n"
-        )
+    @patch("app.github.run_gh", return_value="diff --git a/foo b/foo\n")
+    def test_returns_diff_text(self, _mock_run_gh):
         forge = _make_forge()
         diff = forge.pr_diff(repo="owner/repo", number=5)
         assert "diff" in diff
 
 
 class TestListMergedPrs:
-    @patch("app.github.subprocess.run")
-    def test_returns_branch_list(self, mock_run):
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout="feature/branch-a\nfeature/branch-b\n"
-        )
+    @patch("app.github.run_gh", return_value="feature/branch-a\nfeature/branch-b\n")
+    def test_returns_branch_list(self, _mock_run_gh):
         forge = _make_forge()
         branches = forge.list_merged_prs(repo="owner/repo")
         assert "feature/branch-a" in branches
         assert "feature/branch-b" in branches
 
-    @patch("app.github.subprocess.run")
-    def test_empty_output_returns_empty_list(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="")
+    @patch("app.github.run_gh", return_value="")
+    def test_empty_output_returns_empty_list(self, _mock_run_gh):
         forge = _make_forge()
         assert forge.list_merged_prs(repo="owner/repo") == []
 
@@ -222,24 +208,22 @@ class TestListMergedPrs:
 # ---------------------------------------------------------------------------
 
 class TestIssueCreate:
-    @patch("app.github.subprocess.run")
-    def test_delegates_to_github_issue_create(self, mock_run):
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout="https://github.com/owner/repo/issues/1\n"
-        )
+    @patch("app.github.issue_create", return_value="https://github.com/owner/repo/issues/1")
+    def test_delegates_to_github_issue_create(self, mock_issue_create):
         forge = _make_forge()
         url = forge.issue_create(title="Bug", body="description")
         assert "issues" in url
-
-    @patch("app.github.subprocess.run")
-    def test_passes_labels(self, mock_run):
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout="https://github.com/owner/repo/issues/2\n"
+        mock_issue_create.assert_called_once_with(
+            title="Bug", body="description", labels=None, cwd=None,
         )
+
+    @patch("app.github.issue_create", return_value="https://github.com/owner/repo/issues/2")
+    def test_passes_labels(self, mock_issue_create):
         forge = _make_forge()
         forge.issue_create(title="T", body="B", labels=["bug", "help wanted"])
-        cmd = mock_run.call_args[0][0]
-        assert "--label" in cmd
+        mock_issue_create.assert_called_once_with(
+            title="T", body="B", labels=["bug", "help wanted"], cwd=None,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -247,12 +231,15 @@ class TestIssueCreate:
 # ---------------------------------------------------------------------------
 
 class TestRunApi:
-    @patch("app.github.subprocess.run")
-    def test_delegates_to_github_api(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout='{"id": 1}')
+    @patch("app.github.api", return_value='{"id": 1}')
+    def test_delegates_to_github_api(self, mock_api):
         forge = _make_forge()
         result = forge.run_api("repos/owner/repo")
         assert result == '{"id": 1}'
+        mock_api.assert_called_once_with(
+            endpoint="repos/owner/repo", method="GET",
+            input_data=None, cwd=None,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -260,20 +247,14 @@ class TestRunApi:
 # ---------------------------------------------------------------------------
 
 class TestGetCiStatus:
-    @patch("app.github.subprocess.run")
-    def test_returns_status_dict(self, mock_run):
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout='{"status": "success", "total": 3}'
-        )
+    @patch("app.github.run_gh", return_value='{"status": "success", "total": 3}')
+    def test_returns_status_dict(self, _mock_run_gh):
         forge = _make_forge()
         status = forge.get_ci_status(repo="owner/repo", branch="main")
         assert status["status"] == "success"
 
-    @patch("app.github.subprocess.run")
-    def test_returns_unknown_on_failure(self, mock_run):
-        mock_run.return_value = MagicMock(
-            returncode=1, stderr="not found", stdout=""
-        )
+    @patch("app.github.run_gh", side_effect=RuntimeError("not found"))
+    def test_returns_unknown_on_failure(self, _mock_run_gh):
         forge = _make_forge()
         status = forge.get_ci_status(repo="owner/repo", branch="missing")
         assert status["status"] == "unknown"
@@ -310,16 +291,14 @@ class TestGetWebUrl:
 # ---------------------------------------------------------------------------
 
 class TestDetectFork:
-    @patch("app.github.subprocess.run")
-    def test_returns_parent_slug_for_fork(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="upstream/repo\n")
+    @patch("app.github.detect_parent_repo", return_value="upstream/repo")
+    def test_returns_parent_slug_for_fork(self, _mock):
         forge = _make_forge()
         result = forge.detect_fork("/path/to/project")
         assert result == "upstream/repo"
 
-    @patch("app.github.subprocess.run")
-    def test_returns_none_when_not_fork(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="null/null\n")
+    @patch("app.github.detect_parent_repo", return_value=None)
+    def test_returns_none_when_not_fork(self, _mock):
         forge = _make_forge()
         result = forge.detect_fork("/path/to/project")
         assert result is None
