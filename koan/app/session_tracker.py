@@ -232,7 +232,7 @@ def classify_mission_type(mission_title: str) -> str:
     return "freetext"
 
 
-def _detect_pr_created(content: str) -> bool:
+def detect_pr_created(content: str) -> bool:
     """Detect whether a PR was created from journal/summary content."""
     if not content:
         return False
@@ -284,7 +284,7 @@ def record_outcome(
         "outcome": outcome_type,
         "summary": summary,
         "mission_type": classify_mission_type(mission_title),
-        "has_pr": _detect_pr_created(journal_content),
+        "has_pr": detect_pr_created(journal_content),
         "has_branch": _detect_branch_pushed(journal_content),
     }
 

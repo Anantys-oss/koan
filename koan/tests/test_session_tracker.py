@@ -21,7 +21,7 @@ from app.session_tracker import (
     _count_commits_since,
     _commits_cache,
     _COMMITS_CACHE_TTL,
-    _detect_pr_created,
+    detect_pr_created,
     _detect_branch_pushed,
     _extract_summary,
     load_outcomes,
@@ -925,27 +925,27 @@ class TestClassifyMissionType:
         assert classify_mission_type("/PLAN issue") == "plan"
 
 
-# --- _detect_pr_created ---
+# --- detect_pr_created ---
 
 class TestDetectPrCreated:
 
     def test_empty(self):
-        assert _detect_pr_created("") is False
+        assert detect_pr_created("") is False
 
     def test_pr_number(self):
-        assert _detect_pr_created("Opened PR #42") is True
+        assert detect_pr_created("Opened PR #42") is True
 
     def test_pr_created(self):
-        assert _detect_pr_created("PR created for the fix") is True
+        assert detect_pr_created("PR created for the fix") is True
 
     def test_draft_pr(self):
-        assert _detect_pr_created("Draft PR submitted") is True
+        assert detect_pr_created("Draft PR submitted") is True
 
     def test_pull_request(self):
-        assert _detect_pr_created("Created a pull request") is True
+        assert detect_pr_created("Created a pull request") is True
 
     def test_no_pr(self):
-        assert _detect_pr_created("Fixed the bug, pushed branch") is False
+        assert detect_pr_created("Fixed the bug, pushed branch") is False
 
 
 # --- _detect_branch_pushed ---
