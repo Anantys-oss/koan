@@ -210,19 +210,80 @@ class TestPlanReviewGate:
             assert "missing file paths" in msg
             assert "Plan review failed" in msg
 
-    def test_simple_plan_skips_review(self):
-        """Simple plans bypass the review gate entirely."""
+    def test_issues_found_notifies_telegram(self):
+        """When gate rejects, notify_fn is called with specific issues."""
+        issues = "- Phase 1: missing file paths"
+        notify = MagicMock()
         with patch("app.config.get_plan_review_config",
                     return_value={"implement_gate": True}), \
-             patch("app.plan_runner.is_simple_plan", return_value=True), \
+             patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan", return_value=(False, issues)):
+            _run_plan_review_gate(
+                "## Phase 1\nDo stuff\n" * 10, "/project", notify_fn=notify,
+            )
+            notify.assert_called_once()
+            assert "missing file paths" in notify.call_args[0][0]
+
+    def test_issues_found_posts_github_comment(self):
+        """When gate rejects and issue_url provided, posts comment to GitHub."""
+        issues = "- Phase 1: missing file paths"
+        with patch("app.config.get_plan_review_config",
+                    return_value={"implement_gate": True}), \
+             patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan", return_value=(False, issues)), \
+             patch("app.github.run_gh") as mock_gh:
+            _run_plan_review_gate(
+                "## Phase 1\nDo stuff\n" * 10, "/project",
+                issue_url="https://github.com/o/r/issues/42",
+            )
+            mock_gh.assert_called_once()
+            args = mock_gh.call_args[0]
+            assert args[0] == "issue"
+            assert args[1] == "comment"
+            assert "https://github.com/o/r/issues/42" in args
+            assert "missing file paths" in args[-1]
+
+    def test_notify_failure_does_not_block_gate(self):
+        """notify_fn exception doesn't prevent gate from returning result."""
+        notify = MagicMock(side_effect=RuntimeError("send failed"))
+        with patch("app.config.get_plan_review_config",
+                    return_value={"implement_gate": True}), \
+             patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan", return_value=(False, "issues")):
+            result = _run_plan_review_gate(
+                "## Phase 1\nDo stuff\n" * 10, "/project", notify_fn=notify,
+            )
+            assert result is not None
+            assert not result[0]
+
+    def test_github_comment_failure_does_not_block_gate(self):
+        """GitHub comment exception doesn't prevent gate from returning result."""
+        with patch("app.config.get_plan_review_config",
+                    return_value={"implement_gate": True}), \
+             patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan", return_value=(False, "issues")), \
+             patch("app.github.run_gh", side_effect=RuntimeError("gh failed")):
+            result = _run_plan_review_gate(
+                "## Phase 1\nDo stuff\n" * 10, "/project",
+                issue_url="https://github.com/o/r/issues/42",
+            )
+            assert result is not None
+            assert not result[0]
+
+    def test_simple_plan_skips_review(self):
+        """Simple plans bypass the review gate entirely — no config read needed."""
+        with patch("app.plan_runner.is_simple_plan", return_value=True), \
+             patch("app.config.get_plan_review_config") as mock_cfg, \
              patch("app.plan_runner.review_plan") as mock_review:
             result = _run_plan_review_gate("Rename X to Y", "/project")
             assert result is None
+            mock_cfg.assert_not_called()
             mock_review.assert_not_called()
 
     def test_config_disabled_skips_review(self):
         """When implement_gate is False, gate is skipped."""
-        with patch("app.config.get_plan_review_config",
+        with patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.config.get_plan_review_config",
                     return_value={"implement_gate": False}), \
              patch("app.plan_runner.review_plan") as mock_review:
             result = _run_plan_review_gate("## Phase 1\nBig plan", "/project")
