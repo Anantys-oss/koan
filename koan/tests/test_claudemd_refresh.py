@@ -222,6 +222,7 @@ class TestRunRefresh:
         self._mock_pr_create = MagicMock(
             return_value="https://github.com/o/r/pull/42",
         )
+        self._mock_memory = MagicMock(return_value="")
 
         with patch("app.claude_step.run_claude", self._mock_run_claude), \
              patch("app.cli_provider.build_full_command", self._mock_build_cmd), \
@@ -230,7 +231,8 @@ class TestRunRefresh:
              patch("app.config.get_branch_prefix", self._mock_branch_prefix), \
              patch("app.claudemd_refresh.run_git_strict", self._mock_git_strict), \
              patch("app.claudemd_refresh._has_changes", self._mock_has_changes), \
-             patch("app.github.pr_create", self._mock_pr_create):
+             patch("app.github.pr_create", self._mock_pr_create), \
+             patch("app.claudemd_refresh.build_memory_block_for_skill", self._mock_memory):
             yield
 
     def test_success_creates_branch_and_pr(self, tmp_path):
@@ -386,6 +388,45 @@ class TestRunRefresh:
 
         pr_kwargs = self._mock_pr_create.call_args[1]
         assert "update" in pr_kwargs["title"].lower()
+
+    def test_project_memory_passed_to_prompt(self, tmp_path):
+        """build_memory_block_for_skill output is forwarded as PROJECT_MEMORY."""
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "CLAUDE.md").write_text("# Project\n")
+        self._mock_memory.return_value = "<memory-context>\n## Learnings\n- lesson\n</memory-context>"
+
+        with patch("app.claudemd_refresh.build_git_context", return_value="abc Commit"):
+            run_refresh(str(project), "test")
+
+        prompt_kwargs = self._mock_prompt.call_args[1]
+        assert "PROJECT_MEMORY" in prompt_kwargs
+        assert "Learnings" in prompt_kwargs["PROJECT_MEMORY"]
+
+    def test_empty_memory_passes_empty_string(self, tmp_path):
+        """When no learnings exist, PROJECT_MEMORY is empty string."""
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "CLAUDE.md").write_text("# Project\n")
+        self._mock_memory.return_value = ""
+
+        with patch("app.claudemd_refresh.build_git_context", return_value="abc Commit"):
+            run_refresh(str(project), "test")
+
+        prompt_kwargs = self._mock_prompt.call_args[1]
+        assert prompt_kwargs["PROJECT_MEMORY"] == ""
+
+    def test_memory_task_text_includes_project_name(self, tmp_path):
+        """Task text passed to build_memory_block_for_skill includes project name."""
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "CLAUDE.md").write_text("# Project\n")
+
+        with patch("app.claudemd_refresh.build_git_context", return_value="abc Commit"):
+            run_refresh(str(project), "myproj")
+
+        task_text = self._mock_memory.call_args[0][1]
+        assert "myproj" in task_text
 
     def test_returns_to_base_branch_after_success(self, tmp_path):
         project = tmp_path / "project"
