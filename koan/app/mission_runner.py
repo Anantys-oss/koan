@@ -447,6 +447,50 @@ def _record_session_outcome(
         _log_runner("error", f"Session outcome recording failed: {e}")
 
 
+def _record_skill_metric(
+    instance_dir: str,
+    project_name: str,
+    mission_title: str,
+    exit_code: int,
+    pending_content: str,
+    quality_report: Optional[dict],
+) -> None:
+    """Record per-project skill metric for fix/implement missions (fire-and-forget)."""
+    try:
+        from app.session_tracker import classify_mission_type, _detect_pr_created
+        mission_type = classify_mission_type(mission_title)
+        if mission_type != "implement":
+            return
+
+        # Only record when a PR was produced (the interesting signal)
+        if not _detect_pr_created(pending_content):
+            return
+
+        # Determine CI status from quality pipeline test results
+        ci_status = "none"
+        if quality_report and isinstance(quality_report.get("tests"), dict):
+            tests = quality_report["tests"]
+            if tests.get("skipped"):
+                ci_status = "none"
+            elif tests.get("passed"):
+                ci_status = "pass"
+            else:
+                ci_status = "fail"
+
+        # Extract PR URL from pending content (best-effort)
+        import re
+        pr_match = re.search(r'(https://github\.com/[^\s)]+/pull/\d+)', pending_content)
+        pr_url = pr_match.group(1) if pr_match else ""
+
+        # Derive skill type from mission title
+        skill_type = "fix" if "/fix " in mission_title.lower() else "implement"
+
+        from app.skill_metrics import record_pr_metric
+        record_pr_metric(instance_dir, project_name, skill_type, pr_url, ci_status)
+    except Exception as e:
+        _log_runner("error", f"Skill metric recording failed: {e}")
+
+
 def _record_cost_event(
     instance_dir: str,
     project_name: str,
@@ -1268,6 +1312,7 @@ def run_post_mission(
                         "archived" if result["pending_archived"] else "nothing to archive")
 
         # 5. Post-mission processing (only on success)
+        quality_report = None
         if exit_code == 0:
             verify_result = None
             quality_report = {}
@@ -1358,6 +1403,12 @@ def run_post_mission(
             mission_title=mission_title,
         )
         tracker.record("session_outcome", "success")
+
+        # 7a-bis. Record skill-level metrics for fix/implement missions.
+        _record_skill_metric(
+            instance_dir, project_name, mission_title,
+            exit_code, pending_content, quality_report,
+        )
 
         # 7a. Update Thompson Sampling bandit with mission outcome.
         # Non-zero exit is always a failure; for zero-exit, classify via
