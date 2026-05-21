@@ -449,6 +449,7 @@ _BRANCH_TOKEN_RE = re.compile(r'\bbranch:(\S+)', re.IGNORECASE)
 _TAG_RE = re.compile(r'--tag\s+(\S+)')
 _PLAN_URL_RE = re.compile(r'--plan-url\s+(https://github\.com/[^\s]+)')
 _LIMIT_RE = re.compile(r'\blimit=(\d+)\b', re.IGNORECASE)
+_AUTO_FIX_RE = re.compile(r'--auto-fix(?:=(\w+))?\b', re.IGNORECASE)
 
 
 def _extract_flag(
@@ -676,6 +677,13 @@ def _build_audit_cmd(
     limit, args = _extract_flag(args, _LIMIT_RE)
     if limit:
         cmd.extend(["--max-issues", limit])
+
+    auto_fix_raw, args = _extract_flag(args, _AUTO_FIX_RE, group=0)
+    if auto_fix_raw is not None:
+        # Parse severity from the raw match (e.g. "--auto-fix=critical")
+        m = re.search(r"=(\w+)", auto_fix_raw)
+        severity = m.group(1) if m else "high"
+        cmd.extend(["--auto-fix", severity])
 
     # Write extra context to a temp file to avoid shell escaping issues
     if args.strip():

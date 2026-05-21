@@ -220,11 +220,15 @@ class IssueCreationResult(NamedTuple):
     findings — both newly opened and those already tracked. ``created``
     and ``reused`` distinguish the two so the summary can report
     accurately.
+
+    ``created_entries`` pairs each newly-created issue with its
+    originating finding so callers can filter by severity for auto-fix.
     """
 
     urls: List[str]
     created: int
     reused: int
+    created_entries: Tuple = ()
 
 
 _FINGERPRINT_MARKER_RE = re.compile(
@@ -451,6 +455,7 @@ def create_issues(
     issue_urls = []
     created_count = 0
     reused_count = 0
+    created_entries: List[Tuple[AuditFinding, str]] = []
 
     for i, finding in enumerate(findings, 1):
         title = finding.title
@@ -523,6 +528,7 @@ def create_issues(
         if url:
             issue_urls.append(url)
             created_count += 1
+            created_entries.append((finding, url))
             if notify_fn:
                 notify_fn(f"  \U0001f517 {url}")
 
@@ -530,6 +536,7 @@ def create_issues(
         urls=issue_urls,
         created=created_count,
         reused=reused_count,
+        created_entries=tuple(created_entries),
     )
 
 
@@ -603,6 +610,72 @@ def _submit_redacted_fallback_issue(
         repo=target_repo,
         cwd=project_path,
     )
+
+
+# ---------------------------------------------------------------------------
+# Auto-fix mission queueing
+# ---------------------------------------------------------------------------
+
+AUTO_FIX_CAP = 3
+AUTO_FIX_DEFAULT_THRESHOLD = "high"  # critical + high
+
+
+def severity_at_or_above(severity: str, threshold: str) -> bool:
+    """Return True if *severity* is at or above *threshold*.
+
+    Uses the same ``_SEVERITY_ORDER`` as finding prioritization.
+    """
+    finding_rank = _SEVERITY_ORDER.get(severity, 99)
+    threshold_rank = _SEVERITY_ORDER.get(threshold, 99)
+    return finding_rank <= threshold_rank
+
+
+def queue_auto_fix_missions(
+    created_entries: Tuple,
+    project_name: str,
+    instance_dir: str,
+    threshold: str = AUTO_FIX_DEFAULT_THRESHOLD,
+    notify_fn=None,
+) -> int:
+    """Queue ``/fix`` missions for newly-created audit issues.
+
+    Filters *created_entries* (finding, url) pairs by severity and
+    queues at most :data:`AUTO_FIX_CAP` missions.
+
+    PVRS-routed findings (advisory URLs containing ``/advisories/``)
+    are skipped — they cannot be linked as public fix targets.
+
+    Returns the number of missions queued.
+    """
+    from app.utils import insert_pending_mission
+
+    missions_path = Path(instance_dir) / "missions.md"
+    queued = 0
+
+    for finding, url in created_entries:
+        if queued >= AUTO_FIX_CAP:
+            break
+
+        if not severity_at_or_above(finding.severity, threshold):
+            continue
+
+        # Skip PVRS advisories — they can't be fixed via /fix <url>
+        if "/advisories/" in url:
+            continue
+
+        mission_entry = f"- [project:{project_name}] /fix {url}"
+        inserted = insert_pending_mission(missions_path, mission_entry)
+        if inserted:
+            queued += 1
+
+    if queued and notify_fn:
+        cap_note = f" (cap: {AUTO_FIX_CAP})" if queued >= AUTO_FIX_CAP else ""
+        notify_fn(
+            f"  \U0001f527 Auto-fix: queued {queued} /fix mission(s) "
+            f"for {threshold}+ severity{cap_note}"
+        )
+
+    return queued
 
 
 # ---------------------------------------------------------------------------
@@ -730,6 +803,7 @@ def run_audit(
     pvrs_mode: str = "auto",
     pvrs_threshold: str = "high",
     journal_only: bool = False,
+    auto_fix_severity: Optional[str] = None,
 ) -> Tuple[bool, str]:
     """Execute a codebase audit on a project.
 
@@ -748,6 +822,9 @@ def run_audit(
             and write findings to today's journal file instead. Used by
             ``/private_security_audit`` to keep sensitive findings off
             public GitHub.
+        auto_fix_severity: When set, queue ``/fix`` missions for newly-created
+            issues at or above this severity (e.g. ``"high"`` queues critical
+            and high). ``None`` disables auto-fix (default).
 
     Returns:
         (success, summary) tuple.
@@ -814,7 +891,18 @@ def run_audit(
             pvrs_mode=pvrs_mode, pvrs_threshold=pvrs_threshold,
         )
 
-    # Step 6: Save report
+    # Step 6: Auto-fix — queue /fix missions for high-severity new issues
+    auto_fix_count = 0
+    if auto_fix_severity and result.created_entries:
+        auto_fix_count = queue_auto_fix_missions(
+            result.created_entries,
+            project_name,
+            instance_dir,
+            threshold=auto_fix_severity,
+            notify_fn=notify_fn,
+        )
+
+    # Step 7: Save report
     report_path = _save_audit_report(
         instance_path, project_name, findings, result.urls,
         report_name=report_name,
@@ -842,9 +930,10 @@ def run_audit(
             )
         else:
             issue_summary = f"{result.created} GitHub issues created"
+        fix_summary = f", {auto_fix_count} auto-fix queued" if auto_fix_count else ""
         summary = (
             f"Audit complete: {len(findings)} findings, "
-            f"{issue_summary}. "
+            f"{issue_summary}{fix_summary}. "
             f"Report saved to {report_path.name}."
         )
     notify_fn(f"\u2705 {summary}")
@@ -891,6 +980,14 @@ def main(argv=None):
         "--journal-only", action="store_true",
         help="Skip GitHub issue creation; write findings to journal only",
     )
+    parser.add_argument(
+        "--auto-fix", nargs="?", const=AUTO_FIX_DEFAULT_THRESHOLD,
+        default=None, metavar="SEVERITY",
+        help=(
+            "Queue /fix missions for newly-created issues at or above "
+            "SEVERITY (default: high). Omit SEVERITY for critical+high."
+        ),
+    )
     cli_args = parser.parse_args(argv)
 
     # Context from file takes precedence
@@ -911,6 +1008,7 @@ def main(argv=None):
         max_issues=cli_args.max_issues,
         skill_dir=skill_dir,
         journal_only=cli_args.journal_only,
+        auto_fix_severity=cli_args.auto_fix,
     )
     print(summary)
     return 0 if success else 1
