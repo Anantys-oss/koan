@@ -65,6 +65,20 @@ index aaa..bbb 100644
 +new = True
 """
 
+DIFF_MODE_ONLY = """\
+diff --git a/script.sh b/script.sh
+old mode 100644
+new mode 100755
+diff --git a/main.py b/main.py
+index aaa..bbb 100644
+--- a/main.py
++++ b/main.py
+@@ -1,2 +1,3 @@
+ x = 1
++y = 2
+ z = 3
+"""
+
 
 # ---------------------------------------------------------------------------
 # parse_diff_hunks
@@ -231,3 +245,32 @@ class TestCompressDiff:
         compressed = compress_diff(DIFF_TWO_FILES, token_budget=tight_budget)
         assert len(compressed.skipped_files) == 1
         assert compressed.skipped_files[0] == "config.yaml"
+
+
+class TestParseModeOnlyFiles:
+    def test_mode_only_has_no_hunks(self):
+        result = parse_diff_hunks(DIFF_MODE_ONLY)
+        sh = next(fd for fd in result if fd.path == "script.sh")
+        assert sh.hunks == []
+        assert sh.is_binary is False
+
+    def test_mode_only_header_preserved(self):
+        result = parse_diff_hunks(DIFF_MODE_ONLY)
+        sh = next(fd for fd in result if fd.path == "script.sh")
+        assert "old mode 100644" in sh.header
+        assert "new mode 100755" in sh.header
+
+
+class TestCompressDiffModeOnly:
+    def test_mode_only_file_included_header_only(self):
+        """Mode-only files (no hunks) should be included as header-only."""
+        compressed = compress_diff(DIFF_MODE_ONLY, token_budget=100_000)
+        assert "script.sh" in compressed.diff_text
+        assert "old mode 100644" in compressed.diff_text
+        assert compressed.skipped_files == []
+
+    def test_mode_only_file_not_skipped_on_tight_budget(self):
+        """Mode-only files should never appear in skipped_files."""
+        compressed = compress_diff(DIFF_MODE_ONLY, token_budget=1)
+        assert "script.sh" in compressed.diff_text
+        assert not any("script.sh" in s for s in compressed.skipped_files)
