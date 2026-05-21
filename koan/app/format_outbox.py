@@ -201,13 +201,13 @@ def format_message(raw_content: str, soul: str, prefs: str,
 
             return formatted
         else:
-            # Fallback: if Claude fails, return truncated raw content
+            # Fallback: if CLI fails, return truncated raw content
             # Don't cache fallback results
-            print(f"[format_outbox] Claude formatting failed: {result.stderr[:200]}", file=sys.stderr)
+            print(f"[format_outbox] CLI formatting failed: {result.stderr[:200]}", file=sys.stderr)
             return fallback_format(raw_content)
 
     except subprocess.TimeoutExpired:
-        print("[format_outbox] Claude timeout (30s) - using fallback", file=sys.stderr)
+        print("[format_outbox] CLI timeout (30s) - using fallback", file=sys.stderr)
         return fallback_format(raw_content)
     except Exception as e:
         print(f"[format_outbox] Error: {e} - using fallback", file=sys.stderr)
@@ -215,7 +215,7 @@ def format_message(raw_content: str, soul: str, prefs: str,
 
 
 def fallback_format(raw_content: str) -> str:
-    """Fallback formatting when Claude is unavailable.
+    """Fallback formatting when the CLI provider is unavailable.
 
     Args:
         raw_content: Raw message text

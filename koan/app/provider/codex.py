@@ -120,11 +120,14 @@ class CodexProvider(CLIProvider):
     ) -> List[str]:
         """Build a complete Codex CLI command.
 
-        Codex exec command structure:
-            codex [global-flags] exec [exec-flags] "prompt"
+        Codex exec command structure::
 
-        Global flags (--model, --yolo, etc.) must come before 'exec'.
-        The prompt is a positional argument to exec.
+            codex exec [exec-flags] "prompt"
+
+        Permission flags (``--full-auto``, ``--yolo``) and ``--model``
+        are ``exec`` subcommand flags in current Codex CLI (>= 0.1),
+        so they must come *after* the ``exec`` keyword.  The prompt is
+        the final positional argument.
         """
         # Handle system prompt: Codex has no --append-system-prompt or
         # file-mode equivalent, so prepend to user prompt (base class
@@ -133,17 +136,14 @@ class CodexProvider(CLIProvider):
         if system_prompt:
             prompt = system_prompt + "\n\n" + prompt
 
-        cmd = [self.binary()]
+        cmd = [self.binary(), "exec"]
 
-        # Global flags go before 'exec'
+        # Exec-level flags (permission, model) come after 'exec'
         cmd.extend(self.build_permission_args(skip_permissions))
         cmd.extend(self.build_model_args(model, fallback))
 
-        # 'exec' subcommand + prompt (positional) — delegate to
-        # build_prompt_args() so standalone callers get the same shape.
-        cmd.extend(self.build_prompt_args(prompt))
-
-        # Exec-specific flags go after prompt if needed in future
+        # Prompt is the final positional argument
+        cmd.append(prompt)
 
         return cmd
 
@@ -158,7 +158,7 @@ class CodexProvider(CLIProvider):
         loop calls this before every mission, so the cost is real but
         negligible compared to the mission itself.
         """
-        cmd = [self.binary(), "--full-auto", "exec", "ok"]
+        cmd = [self.binary(), "exec", "--full-auto", "ok"]
 
         try:
             result = subprocess.run(
