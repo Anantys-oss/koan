@@ -2576,3 +2576,71 @@ class TestSkillRequirements:
         assert not hasattr(skill, "requirements")
         result = ensure_requirements(skill)
         assert result is None
+
+
+class TestExecuteHandlerSkillsImport:
+    """Regression: handler.py files that use ``from skills.core.X import Y``
+    must work even when the skills package parent is not already on sys.path.
+
+    This was the root cause of 'No module named skills.core; skills is not a
+    package' when running /audit.
+    """
+
+    def test_handler_importing_sibling_module_works(self, tmp_path, monkeypatch):
+        """A handler that imports from skills.core.* succeeds when
+        _execute_handler ensures the skills root parent is on sys.path."""
+        from app.skills import _execute_handler
+
+        # Build a minimal skill tree: skills/core/myskill/{__init__.py, helper.py, handler.py}
+        skill_root = tmp_path / "skills" / "core" / "myskill"
+        skill_root.mkdir(parents=True)
+        # Package markers
+        (tmp_path / "skills" / "__init__.py").touch()
+        (tmp_path / "skills" / "core" / "__init__.py").touch()
+        (skill_root / "__init__.py").touch()
+        # Helper module with a constant
+        (skill_root / "helper.py").write_text("MAGIC = 42\n")
+        # Handler that imports from the sibling via fully-qualified path
+        (skill_root / "handler.py").write_text(textwrap.dedent("""\
+            from skills.core.myskill.helper import MAGIC
+
+            def handle(ctx):
+                return str(MAGIC)
+        """))
+
+        skill = Skill(
+            name="myskill", scope="core",
+            handler_path=skill_root / "handler.py",
+            skill_dir=skill_root,
+        )
+        ctx = SkillContext(
+            koan_root=tmp_path,
+            instance_dir=tmp_path,
+            command_name="myskill",
+        )
+
+        # Point get_default_skills_dir to our tmp tree so the sys.path fix
+        # adds tmp_path (the parent of skills/) to sys.path.
+        monkeypatch.setattr(
+            "app.skills.get_default_skills_dir",
+            lambda: tmp_path / "skills",
+        )
+
+        # Remove tmp_path from sys.path if present, to simulate an
+        # environment where the skills root parent isn't on the path.
+        monkeypatch.setattr("sys.path", [p for p in sys.path if p != str(tmp_path)])
+
+        # Clear any cached skills.* entries from sys.modules so our tmp
+        # tree is discovered fresh (earlier tests may have imported the
+        # real skills package).
+        stale_keys = [k for k in sys.modules if k == "skills" or k.startswith("skills.")]
+        saved_modules = {k: sys.modules.pop(k) for k in stale_keys}
+
+        try:
+            result = _execute_handler(skill, ctx)
+            assert result == "42"
+        finally:
+            # Restore original sys.modules entries
+            for k in stale_keys:
+                sys.modules.pop(k, None)
+            sys.modules.update(saved_modules)
