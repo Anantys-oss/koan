@@ -1348,6 +1348,97 @@ def reorder_mission(content: str, position: int, target: int = 1) -> Tuple[str, 
     return normalize_content("\n".join(result_lines)), display
 
 
+def reorder_missions_bulk(
+    content: str, positions: List[int]
+) -> Tuple[str, List[str]]:
+    """Reorder multiple pending missions to the top of the queue.
+
+    The missions at the given positions are placed at the top in the
+    order specified.  Remaining missions keep their relative order below.
+
+    Args:
+        content: Full missions.md content.
+        positions: 1-indexed positions of missions to promote, in desired order.
+
+    Returns:
+        (new_content, list_of_display_texts) tuple.
+
+    Raises:
+        ValueError: If any position is invalid, duplicated, or no pending missions.
+    """
+    lines = content.splitlines()
+    boundaries = find_section_boundaries(lines)
+
+    if "pending" not in boundaries:
+        raise ValueError("No pending section found.")
+
+    start, end = boundaries["pending"]
+
+    # Collect pending items as (start_line_idx, end_line_idx) tuples
+    items: List[Tuple[int, int]] = []
+    i = start + 1
+    while i < end:
+        stripped = lines[i].strip()
+        if stripped.startswith("- "):
+            item_start = i
+            i += 1
+            while i < end:
+                next_stripped = lines[i].strip()
+                if (next_stripped.startswith("- ") or
+                        next_stripped.startswith("## ") or
+                        next_stripped.startswith("### ") or
+                        next_stripped == ""):
+                    break
+                i += 1
+            items.append((item_start, i))
+        else:
+            i += 1
+
+    if not items:
+        raise ValueError("No pending missions to reorder.")
+
+    # Validate positions
+    seen: set = set()
+    for pos in positions:
+        if pos < 1 or pos > len(items):
+            raise ValueError(
+                f"Invalid position: {pos}. "
+                f"Queue has {len(items)} pending mission(s)."
+            )
+        if pos in seen:
+            raise ValueError(f"Duplicate position: {pos}")
+        seen.add(pos)
+
+    # Extract item line blocks in the requested order
+    promoted = [items[p - 1] for p in positions]
+    promoted_set = {p - 1 for p in positions}
+    remaining = [item for idx, item in enumerate(items) if idx not in promoted_set]
+
+    new_order = promoted + remaining
+
+    # Build the pending section header (preserve blank lines after header)
+    header_lines = lines[start : start + 1]
+    blank_after_header = []
+    j = start + 1
+    while j < end and lines[j].strip() == "":
+        blank_after_header.append(lines[j])
+        j += 1
+
+    # Rebuild pending section
+    pending_block = header_lines + blank_after_header
+    for item_start, item_end in new_order:
+        pending_block.extend(lines[item_start:item_end])
+
+    # Reassemble full content
+    result_lines = lines[:start] + pending_block + lines[end:]
+
+    displays = [
+        clean_mission_display("\n".join(lines[s:e]))
+        for s, e in promoted
+    ]
+    return normalize_content("\n".join(result_lines)), displays
+
+
 def edit_pending_mission(content: str, position: int, new_text: str) -> Tuple[str, str]:
     """Replace the text of a pending mission at the given 1-indexed position.
 

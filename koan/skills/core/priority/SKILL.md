@@ -9,7 +9,7 @@ audience: bridge
 commands:
   - name: priority
     description: Move a pending mission to a new position
-    usage: /priority <n>, /priority <n> <position>
+    usage: /prio <n>, /prio <n> <pos>, /prio 4,6,5
     aliases: [prio]
 handler: handler.py
 ---

@@ -96,14 +96,14 @@ class TestPriorityHandler:
 
         ctx = self._make_ctx(tmp_path, self.SAMPLE, args="abc")
         result = handle(ctx)
-        assert "Invalid" in result
+        assert "Could not parse" in result
 
     def test_invalid_target(self, tmp_path):
         from skills.core.priority.handler import handle
 
         ctx = self._make_ctx(tmp_path, self.SAMPLE, args="1 xyz")
         result = handle(ctx)
-        assert "Invalid" in result
+        assert "Could not parse" in result
 
     def test_out_of_range(self, tmp_path):
         from skills.core.priority.handler import handle
@@ -118,6 +118,137 @@ class TestPriorityHandler:
         ctx = self._make_ctx(tmp_path, self.SAMPLE, args="2 2")
         result = handle(ctx)
         assert "already at" in result
+
+    def test_bulk_reorder_comma_separated(self, tmp_path):
+        from skills.core.priority.handler import handle
+
+        missions = textwrap.dedent("""\
+            # Missions
+
+            ## Pending
+
+            - first task
+            - second task
+            - third task
+            - fourth task
+
+            ## In Progress
+
+            ## Done
+        """)
+        ctx = self._make_ctx(tmp_path, missions, args="3,1,4")
+        result = handle(ctx)
+        assert "🔀" in result
+        assert "Reordered" in result
+
+        content = (tmp_path / "instance" / "missions.md").read_text()
+        lines = [l for l in content.splitlines() if l.startswith("- ")]
+        assert lines[0] == "- third task"
+        assert lines[1] == "- first task"
+        assert lines[2] == "- fourth task"
+        assert lines[3] == "- second task"
+
+    def test_bulk_reorder_spaces(self, tmp_path):
+        from skills.core.priority.handler import handle
+
+        missions = textwrap.dedent("""\
+            # Missions
+
+            ## Pending
+
+            - first task
+            - second task
+            - third task
+            - fourth task
+
+            ## In Progress
+
+            ## Done
+        """)
+        ctx = self._make_ctx(tmp_path, missions, args="4 2 1")
+        result = handle(ctx)
+        assert "🔀" in result
+        assert "Reordered" in result
+
+        content = (tmp_path / "instance" / "missions.md").read_text()
+        lines = [l for l in content.splitlines() if l.startswith("- ")]
+        assert lines[0] == "- fourth task"
+        assert lines[1] == "- second task"
+        assert lines[2] == "- first task"
+        assert lines[3] == "- third task"
+
+    def test_bulk_reorder_comma_space_mix(self, tmp_path):
+        from skills.core.priority.handler import handle
+
+        missions = textwrap.dedent("""\
+            # Missions
+
+            ## Pending
+
+            - first task
+            - second task
+            - third task
+
+            ## In Progress
+
+            ## Done
+        """)
+        ctx = self._make_ctx(tmp_path, missions, args="3 , 1, 2")
+        result = handle(ctx)
+        assert "🔀" in result
+
+        content = (tmp_path / "instance" / "missions.md").read_text()
+        lines = [l for l in content.splitlines() if l.startswith("- ")]
+        assert lines[0] == "- third task"
+        assert lines[1] == "- first task"
+        assert lines[2] == "- second task"
+
+    def test_two_numbers_no_comma_legacy_behavior(self, tmp_path):
+        """Two space-separated numbers without commas keeps legacy move-to-position."""
+        from skills.core.priority.handler import handle
+
+        ctx = self._make_ctx(tmp_path, self.SAMPLE, args="3 2")
+        result = handle(ctx)
+        # Legacy: move #3 to position 2
+        assert "third task" in result
+        assert "🔀" in result
+        assert "position 2" in result
+
+    def test_two_numbers_with_comma_bulk(self, tmp_path):
+        """Two comma-separated numbers triggers bulk reorder."""
+        from skills.core.priority.handler import handle
+
+        ctx = self._make_ctx(tmp_path, self.SAMPLE, args="3,2")
+        result = handle(ctx)
+        assert "🔀" in result
+        assert "Reordered" in result
+
+        content = (tmp_path / "instance" / "missions.md").read_text()
+        lines = [l for l in content.splitlines() if l.startswith("- ")]
+        assert lines[0] == "- third task"
+        assert lines[1] == "- second task"
+        assert lines[2] == "- first task"
+
+    def test_bulk_invalid_position(self, tmp_path):
+        from skills.core.priority.handler import handle
+
+        ctx = self._make_ctx(tmp_path, self.SAMPLE, args="1,5,2")
+        result = handle(ctx)
+        assert "Invalid position" in result
+
+    def test_bulk_duplicate_position(self, tmp_path):
+        from skills.core.priority.handler import handle
+
+        ctx = self._make_ctx(tmp_path, self.SAMPLE, args="1,1,2")
+        result = handle(ctx)
+        assert "Duplicate" in result
+
+    def test_invalid_non_numeric(self, tmp_path):
+        from skills.core.priority.handler import handle
+
+        ctx = self._make_ctx(tmp_path, self.SAMPLE, args="abc,def")
+        result = handle(ctx)
+        assert "Could not parse" in result
 
     def test_project_tags_preserved(self, tmp_path):
         from skills.core.priority.handler import handle
