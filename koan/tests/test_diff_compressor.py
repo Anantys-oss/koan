@@ -246,6 +246,42 @@ class TestCompressDiff:
         assert len(compressed.skipped_files) == 1
         assert compressed.skipped_files[0] == "config.yaml"
 
+    def test_safety_fallback_preserves_unrelated_skipped_files(self):
+        """Safety fallback must not drop skipped files whose path is a prefix
+        match of the force-included file.
+
+        Regression: ``not s.startswith(fd.path)`` would drop 'src/foobar.py'
+        when force-including 'src/foo.py' because the former starts with the
+        latter.  The fix uses exact match instead of prefix match.
+        """
+        # Two files with one path being a prefix of the other.
+        # Give a budget of 0 so both get skipped, triggering the safety
+        # fallback which force-includes the first hunk of the first file.
+        hunk_a = "@@ -1,2 +1,3 @@\n+a1\n+a2\n"
+        hunk_b = "@@ -5,2 +5,3 @@\n+b1\n"
+        diff = (
+            "diff --git a/src/foo.py b/src/foo.py\n"
+            "index aaa..bbb 100644\n"
+            "--- a/src/foo.py\n"
+            "+++ b/src/foo.py\n"
+            + hunk_a
+            + hunk_b
+            + "diff --git a/src/foo.pyc b/src/foo.pyc\n"
+            "index ccc..ddd 100644\n"
+            "--- a/src/foo.pyc\n"
+            "+++ b/src/foo.pyc\n"
+            "@@ -1,1 +1,2 @@\n+c1\n"
+        )
+
+        compressed = compress_diff(diff, token_budget=0)
+
+        # Safety fallback includes first hunk of src/foo.py.
+        assert "src/foo.py" in compressed.diff_text
+        # src/foo.py has 2 hunks but only first included → listed as partial.
+        assert "src/foo.py (partial)" in compressed.skipped_files
+        # src/foo.pyc must NOT be silently dropped — it's an unrelated file.
+        assert "src/foo.pyc" in compressed.skipped_files
+
 
 class TestParseModeOnlyFiles:
     def test_mode_only_has_no_hunks(self):
