@@ -238,10 +238,13 @@ class TestProcessSingleNotificationLogging:
                 notif, MagicMock(), {}, None, "bot", 24,
             )
 
-        # Unknown repos are silently skipped (shared GitHub account support)
+        # Unknown repos are silently skipped (shared GitHub account support).
+        # The notification must NOT be marked as read — that would clear it
+        # from the inbox of the sibling Kōan instance that owns the repo.
         assert "not in projects.yaml" in caplog.text
         assert "ignoring notification" in caplog.text
         assert success is False
+        mock_read.assert_not_called()
 
     @patch("app.github_command_handler.mark_notification_read")
     @patch("app.github_command_handler.check_user_permission", return_value=False)
@@ -421,6 +424,8 @@ class TestProcessNotificationsIntegration:
         }
         with patch("app.projects_config.load_projects_config", return_value={}), \
              patch("app.github_notifications.fetch_unread_notifications", return_value=self._make_fetch_result([fake_notif])), \
+             patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=("proj", "o", "r")), \
              patch("app.github_command_handler.process_single_notification", return_value=(True, None)):
             result = process_github_notifications(str(tmp_path), str(tmp_path))
 
@@ -480,6 +485,8 @@ class TestProcessNotificationsIntegration:
         side_effects = [(True, None), (True, None), (False, None)]
         with patch("app.projects_config.load_projects_config", return_value={}), \
              patch("app.github_notifications.fetch_unread_notifications", return_value=self._make_fetch_result(notifs)), \
+             patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=("proj", "o", "r")), \
              patch("app.github_command_handler.process_single_notification", side_effect=side_effects):
             result = process_github_notifications(str(tmp_path), str(tmp_path))
 

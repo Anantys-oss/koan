@@ -689,6 +689,14 @@ def process_github_notifications(
 
     if force:
         _github_log("Forced notification check (via /check_notifications)")
+        # A forced poll is the user's "look again, fresh" lever — typically
+        # invoked after editing projects.yaml. Clear the in-process
+        # notification cache so previously-cached foreign-repo skips are
+        # re-evaluated against the current project list. Already-processed
+        # owned notifications stay protected by GitHub reactions and the
+        # persistent comment tracker, so clearing is safe.
+        with _notif_cache_lock:
+            _notif_cache.clear()
 
     # Retry any previously failed error replies before processing new ones.
     _retry_failed_replies()
@@ -823,10 +831,33 @@ def _process_one_notification(
     state is mutated through thread-safe APIs (lock-guarded caches, atomic
     file writes for missions).
     """
-    from app.github_command_handler import process_single_notification
+    from app.github_command_handler import (
+        process_single_notification,
+        resolve_project_from_notification,
+    )
     from app.github_notifications import mark_notification_read
 
     try:
+        # Ownership gate: when a GitHub identity is shared by multiple Kōan
+        # instances, each instance must leave foreign repos completely
+        # untouched. Marking the notification as read here would clear it
+        # from the shared bot inbox, hiding it from the instance that does
+        # own the repo.
+        #
+        # Cache foreign notifications in-process so we don't re-run the
+        # (potentially subprocess-heavy) project resolution on every poll
+        # cycle. The cache key includes ``updated_at`` so any new activity
+        # on the thread naturally invalidates the entry and we re-evaluate
+        # ownership. Kept inside the try/except so a crash in
+        # resolve_project_from_notification (e.g. corrupt projects.yaml,
+        # subprocess failure during remote discovery) is contained to this
+        # worker rather than propagating to the thread pool.
+        if resolve_project_from_notification(notif) is None:
+            repo = notif.get("repository", {}).get("full_name", "?")
+            log.debug("GitHub: skipping notification for foreign repo %s", repo)
+            _cache_notif(notif)
+            return False
+
         _log_notification(notif)
         success, error = process_single_notification(
             notif, registry, config, projects_config,

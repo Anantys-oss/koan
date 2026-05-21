@@ -530,6 +530,40 @@ def resolve_project_from_notification(notification: dict) -> Optional[Tuple[str,
     return project_name, owner, repo
 
 
+def _skip_if_foreign_repo(
+    notification: dict, log_prefix: str,
+) -> Optional[Tuple[str, str, str]]:
+    """Resolve the project for ``notification`` or log a foreign-repo skip.
+
+    Centralizes the resolve-or-log boilerplate that previously lived in
+    ``process_single_notification``, ``_try_assignment_notification`` and
+    ``_try_subscription_notification``. Callers decide what to return on
+    a miss (``False``, ``(False, None)``, etc.) — this helper only does
+    the resolution and the debug log.
+
+    Args:
+        notification: A notification dict.
+        log_prefix: Short label included in the debug log so the source of
+            the skip is visible in ``/logs`` (e.g. ``"GitHub"`` for the
+            command path, ``"GitHub assign"`` for the assignment path).
+
+    Returns:
+        ``(project_name, owner, repo)`` when the repo is registered to
+        this instance, ``None`` otherwise.
+    """
+    project_info = resolve_project_from_notification(notification)
+    if project_info:
+        return project_info
+    repo_data = notification.get("repository", {})
+    full_name = repo_data.get("full_name", "?")
+    reason = notification.get("reason", "?")
+    log.debug(
+        "%s: repo %s (reason=%s) not in projects.yaml — ignoring notification",
+        log_prefix, full_name, reason,
+    )
+    return None
+
+
 def _fetch_and_filter_comment(notification: dict, bot_username: str, max_age_hours: int) -> Optional[dict]:
     """Fetch the triggering comment and check if notification should be skipped.
 
@@ -945,12 +979,12 @@ def _try_assignment_notification(
         mark_notification_read(notif_id)
         return False
 
-    # Resolve project
-    project_info = resolve_project_from_notification(notification)
+    # Foreign-repo skip: never write to shared GitHub state for a repo this
+    # instance doesn't own (would clear the notification from a sibling
+    # Kōan instance's inbox). The outer ownership gate already filters most
+    # of these out — this is defense in depth.
+    project_info = _skip_if_foreign_repo(notification, "GitHub assign")
     if not project_info:
-        repo_name = notification.get("repository", {}).get("full_name", "?")
-        log.debug("GitHub assign: repo %s not in projects.yaml", repo_name)
-        mark_notification_read(notif_id)
         return False
 
     project_name, owner, repo = project_info
@@ -1067,16 +1101,12 @@ def process_single_notification(
 
     comment_author = comment.get("user", {}).get("login", "")
 
-    # Resolve project — silently skip repos not registered to this instance.
-    # When a GitHub account is shared by multiple instances, each instance
-    # must only process notifications for its own projects.
-    project_info = resolve_project_from_notification(notification)
+    # Foreign-repo skip: never write to shared GitHub state for a repo this
+    # instance doesn't own (would clear the notification from a sibling
+    # Kōan instance's inbox). The outer ownership gate already filters most
+    # of these out — this is defense in depth.
+    project_info = _skip_if_foreign_repo(notification, "GitHub")
     if not project_info:
-        repo_data = notification.get("repository", {})
-        full_name = repo_data.get("full_name", "?")
-        reason = notification.get("reason", "?")
-        log.debug("GitHub: repo %s (reason=%s) not in projects.yaml — ignoring notification", full_name, reason)
-        mark_notification_read(str(notification.get("id", "")))
         return False, None
     project_name, owner, repo = project_info
     log.debug("GitHub: resolved project=%s from %s/%s", project_name, owner, repo)
@@ -1428,8 +1458,8 @@ def _try_subscription_notification(
     if not get_github_subscribe_enabled(config):
         return False
 
-    # Resolve project
-    project_info = resolve_project_from_notification(notification)
+    # Foreign-repo skip (defense in depth — outer gate filters most of these).
+    project_info = _skip_if_foreign_repo(notification, "GitHub subscribe")
     if not project_info:
         return False
 
