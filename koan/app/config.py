@@ -803,6 +803,70 @@ def get_stagnation_config(project_name: str = "") -> dict:
     }
 
 
+def get_autonomous_health_config() -> dict:
+    """Get autonomous health diagnostic configuration.
+
+    When a project's recent success rate falls below a threshold and it
+    has accumulated enough stagnation/empty sessions, the iteration
+    manager can autonomously inject a diagnostic mission (tech_debt,
+    dead_code, or audit) instead of regular exploration.
+
+    Config keys (under ``autonomous_health:`` in ``config.yaml``):
+        enabled (bool): master switch (default False — opt-in).
+        success_rate_floor (float): success rate below which diagnostics
+            trigger. Default 0.25.
+        staleness_floor (int): consecutive non-productive sessions
+            required (from get_staleness_score). Default 3.
+        cooldown_days (int): minimum days between diagnostic missions
+            for the same project. Default 21.
+        min_mode (str): minimum autonomous mode required. Default
+            "implement" (also allows "deep").
+
+    Returns:
+        Dict with resolved values — always contains all keys.
+    """
+    defaults = {
+        "enabled": False,
+        "success_rate_floor": 0.25,
+        "staleness_floor": 3,
+        "cooldown_days": 21,
+        "min_mode": "implement",
+    }
+    config = _load_config()
+    section = config.get("autonomous_health", {})
+    if section is False:
+        section = {"enabled": False}
+    elif not isinstance(section, dict):
+        section = {}
+
+    merged = {**defaults, **section}
+
+    staleness_floor = _safe_int(merged.get("staleness_floor"), defaults["staleness_floor"])
+    if staleness_floor < 1:
+        staleness_floor = 1
+    cooldown_days = _safe_int(merged.get("cooldown_days"), defaults["cooldown_days"])
+    if cooldown_days < 1:
+        cooldown_days = 1
+
+    try:
+        success_rate_floor = float(merged.get("success_rate_floor", defaults["success_rate_floor"]))
+    except (ValueError, TypeError):
+        success_rate_floor = defaults["success_rate_floor"]
+    success_rate_floor = max(0.0, min(1.0, success_rate_floor))
+
+    min_mode = str(merged.get("min_mode", defaults["min_mode"]))
+    if min_mode not in ("review", "implement", "deep"):
+        min_mode = defaults["min_mode"]
+
+    return {
+        "enabled": bool(merged.get("enabled", defaults["enabled"])),
+        "success_rate_floor": success_rate_floor,
+        "staleness_floor": staleness_floor,
+        "cooldown_days": cooldown_days,
+        "min_mode": min_mode,
+    }
+
+
 def get_plan_review_config() -> dict:
     """Get plan review loop configuration from config.yaml.
 

@@ -794,6 +794,179 @@ def _select_random_exploration_project(
     return random.choice(candidates)
 
 
+_DIAGNOSTIC_COOLDOWN_FILE = ".diagnostic-cooldowns.json"
+
+# Mode hierarchy for min_mode gating (higher index = more permissive)
+_MODE_RANK = {"wait": 0, "review": 1, "implement": 2, "deep": 3}
+
+
+def _select_diagnostic_type(
+    instance_dir: str,
+    project_name: str,
+) -> str:
+    """Choose which diagnostic skill to run for a sick project.
+
+    Selection logic:
+      - "declining" trend → tech_debt (structural issues causing failures)
+      - Majority "empty" outcomes → dead_code (cleanup to unblock exploration)
+      - Otherwise (blocked/stagnated) → audit (deeper investigation)
+    """
+    try:
+        from app.mission_metrics import compute_project_metrics, compute_project_trend
+
+        trend = compute_project_trend(instance_dir, project_name, days=30)
+        if trend == "declining":
+            return "tech_debt"
+
+        metrics = compute_project_metrics(instance_dir, project_name, days=30)
+        total = metrics.get("total_sessions", 0)
+        empty = metrics.get("empty", 0)
+        if total > 0 and empty / total > 0.5:
+            return "dead_code"
+    except (ImportError, OSError, ValueError):
+        pass
+
+    return "audit"
+
+
+def _load_diagnostic_cooldowns(instance_dir: str) -> dict:
+    """Load per-project diagnostic cooldown timestamps."""
+    cooldown_path = Path(instance_dir) / _DIAGNOSTIC_COOLDOWN_FILE
+    if not cooldown_path.exists():
+        return {}
+    try:
+        return json.loads(cooldown_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _save_diagnostic_cooldown(instance_dir: str, project_name: str):
+    """Record that a diagnostic mission was injected for a project."""
+    from datetime import datetime
+
+    cooldowns = _load_diagnostic_cooldowns(instance_dir)
+    cooldowns[project_name] = datetime.now().isoformat()
+
+    cooldown_path = Path(instance_dir) / _DIAGNOSTIC_COOLDOWN_FILE
+    try:
+        from app.utils import atomic_write
+        atomic_write(cooldown_path, json.dumps(cooldowns, indent=2) + "\n")
+    except (ImportError, OSError) as e:
+        _log_iteration("error", f"Failed to write diagnostic cooldown: {e}")
+
+
+def _is_diagnostic_on_cooldown(
+    instance_dir: str, project_name: str, cooldown_days: int,
+) -> bool:
+    """Check whether a project is still within the diagnostic cooldown window."""
+    from datetime import datetime, timedelta
+
+    cooldowns = _load_diagnostic_cooldowns(instance_dir)
+    last_ts = cooldowns.get(project_name)
+    if not last_ts:
+        return False
+    try:
+        last_dt = datetime.fromisoformat(last_ts)
+        return datetime.now() - last_dt < timedelta(days=cooldown_days)
+    except (ValueError, TypeError):
+        return False
+
+
+def _maybe_inject_diagnostic_mission(
+    project_name: str,
+    instance_dir: str,
+    autonomous_mode: str,
+) -> Optional[str]:
+    """Check if a project needs a diagnostic mission and inject it.
+
+    Called after project selection in plan_iteration().  If the project's
+    success rate is below the configured floor AND it has enough
+    consecutive non-productive sessions, injects a diagnostic mission
+    (tech_debt, dead_code, or audit) into the Pending section of
+    missions.md.  A per-project cooldown prevents flooding.
+
+    Args:
+        project_name: Selected project name.
+        instance_dir: Path to instance directory.
+        autonomous_mode: Current autonomous mode (wait/review/implement/deep).
+
+    Returns:
+        The injected mission text if a diagnostic was queued, None otherwise.
+    """
+    try:
+        from app.config import get_autonomous_health_config
+        health_cfg = get_autonomous_health_config()
+    except (ImportError, OSError) as e:
+        _log_iteration("error", f"Autonomous health config load failed: {e}")
+        return None
+
+    if not health_cfg["enabled"]:
+        return None
+
+    # Mode gate: current mode must be >= configured minimum
+    min_rank = _MODE_RANK.get(health_cfg["min_mode"], 2)
+    current_rank = _MODE_RANK.get(autonomous_mode, 0)
+    if current_rank < min_rank:
+        return None
+
+    # Cooldown gate
+    if _is_diagnostic_on_cooldown(
+        instance_dir, project_name, health_cfg["cooldown_days"],
+    ):
+        return None
+
+    # Success rate gate
+    try:
+        from app.mission_metrics import get_project_success_rates
+        rates = get_project_success_rates(instance_dir, [project_name], days=30)
+        rate = rates.get(project_name, 0.5)
+    except (ImportError, OSError) as e:
+        _log_iteration("error", f"Health check success rate lookup failed: {e}")
+        return None
+
+    # Neutral rate (0.5) means insufficient data — skip
+    if rate >= health_cfg["success_rate_floor"] or rate == 0.5:
+        return None
+
+    # Staleness gate
+    try:
+        from app.session_tracker import get_staleness_score
+        staleness = get_staleness_score(instance_dir, project_name)
+    except (ImportError, OSError) as e:
+        _log_iteration("error", f"Health check staleness lookup failed: {e}")
+        return None
+
+    if staleness < health_cfg["staleness_floor"]:
+        return None
+
+    # All gates passed — select diagnostic type and inject
+    diag_type = _select_diagnostic_type(instance_dir, project_name)
+    mission_entry = (
+        f"- [autonomous:health] [project:{project_name}] /{diag_type}"
+    )
+
+    try:
+        from app.utils import insert_pending_mission
+        missions_path = Path(instance_dir) / "missions.md"
+        inserted = insert_pending_mission(missions_path, mission_entry)
+    except (ImportError, OSError) as e:
+        _log_iteration("error", f"Failed to inject diagnostic mission: {e}")
+        return None
+
+    if not inserted:
+        _log_iteration("koan",
+            f"Diagnostic mission for '{project_name}' already pending — skipped")
+        return None
+
+    _save_diagnostic_cooldown(instance_dir, project_name)
+    _log_iteration("koan",
+        f"Health diagnostic: injected /{diag_type} for '{project_name}' "
+        f"(success_rate={rate:.0%}, staleness={staleness}, "
+        f"cooldown={health_cfg['cooldown_days']}d)")
+
+    return mission_entry
+
+
 FilterResult = namedtuple("FilterResult", ["projects", "pr_limited", "branch_saturated", "focus_gated"],
                          defaults=[[]])
 AutonomousDecision = namedtuple("AutonomousDecision", ["action", "focus_remaining"])
@@ -1374,6 +1547,13 @@ def plan_iteration(
             f"Exploration: selected '{project_name}' "
             f"from {len(exploration_projects)} eligible project(s)"
             f"{' (avoiding last: ' + last_project + ')' if last_project and last_project != project_name else ''}")
+
+        # Step 5c: Health diagnostic gate — inject a diagnostic mission
+        # for projects with persistently low success rates.
+        if instance_dir:
+            _maybe_inject_diagnostic_mission(
+                project_name, instance_dir, autonomous_mode,
+            )
 
     # Step 6: Determine action for autonomous mode
     if mission_title:

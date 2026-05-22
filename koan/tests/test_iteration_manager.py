@@ -15,6 +15,7 @@ from app.iteration_manager import (
     AutonomousDecision,
     FilterResult,
     _MODE_DOWNGRADE,
+    _MODE_RANK,
     _check_focus,
     _check_schedule,
     _decide_autonomous_action,
@@ -24,11 +25,16 @@ from app.iteration_manager import (
     _get_known_project_names,
     _get_usage_decision,
     _inject_recurring,
+    _is_diagnostic_on_cooldown,
+    _load_diagnostic_cooldowns,
     _log_selection_audit,
     _make_result,
+    _maybe_inject_diagnostic_mission,
     _pick_mission,
     _refresh_usage,
     _resolve_project_path,
+    _save_diagnostic_cooldown,
+    _select_diagnostic_type,
     _select_random_exploration_project,
     _should_contemplate,
     plan_iteration,
@@ -3143,3 +3149,321 @@ class TestSelectionNoDoubleCountingSuccessRate:
                 assert weights_arg == [10, 10], (
                     f"Weights should be equal (freshness only), got {weights_arg}"
                 )
+
+
+
+# === Tests: autonomous health config ===
+
+
+class TestAutonomousHealthConfig:
+    """Tests for get_autonomous_health_config()."""
+
+    @patch("app.config._load_config", return_value={})
+    def test_defaults(self, _mock):
+        from app.config import get_autonomous_health_config
+        cfg = get_autonomous_health_config()
+        assert cfg["enabled"] is False
+        assert cfg["success_rate_floor"] == 0.25
+        assert cfg["staleness_floor"] == 3
+        assert cfg["cooldown_days"] == 21
+        assert cfg["min_mode"] == "implement"
+
+    @patch("app.config._load_config", return_value={
+        "autonomous_health": {
+            "enabled": True,
+            "success_rate_floor": 0.4,
+            "staleness_floor": 5,
+            "cooldown_days": 14,
+            "min_mode": "deep",
+        }
+    })
+    def test_custom_values(self, _mock):
+        from app.config import get_autonomous_health_config
+        cfg = get_autonomous_health_config()
+        assert cfg["enabled"] is True
+        assert cfg["success_rate_floor"] == 0.4
+        assert cfg["staleness_floor"] == 5
+        assert cfg["cooldown_days"] == 14
+        assert cfg["min_mode"] == "deep"
+
+    @patch("app.config._load_config", return_value={
+        "autonomous_health": False
+    })
+    def test_false_disables(self, _mock):
+        from app.config import get_autonomous_health_config
+        cfg = get_autonomous_health_config()
+        assert cfg["enabled"] is False
+
+    @patch("app.config._load_config", return_value={
+        "autonomous_health": {
+            "staleness_floor": -1,
+            "cooldown_days": 0,
+            "success_rate_floor": 2.0,
+            "min_mode": "invalid",
+        }
+    })
+    def test_clamping_and_validation(self, _mock):
+        from app.config import get_autonomous_health_config
+        cfg = get_autonomous_health_config()
+        assert cfg["staleness_floor"] == 1  # clamped to 1
+        assert cfg["cooldown_days"] == 1  # clamped to 1
+        assert cfg["success_rate_floor"] == 1.0  # clamped to [0, 1]
+        assert cfg["min_mode"] == "implement"  # fallback to default
+
+
+# === Tests: diagnostic type selection ===
+
+
+class TestSelectDiagnosticType:
+    """Tests for _select_diagnostic_type()."""
+
+    @patch("app.mission_metrics.compute_project_trend", return_value="declining")
+    def test_declining_trend_selects_tech_debt(self, _mock_trend):
+        result = _select_diagnostic_type("/fake/instance", "koan")
+        assert result == "tech_debt"
+
+    @patch("app.mission_metrics.compute_project_trend", return_value="stable")
+    @patch("app.mission_metrics.compute_project_metrics", return_value={
+        "total_sessions": 10, "empty": 7, "blocked": 1, "productive": 2,
+    })
+    def test_majority_empty_selects_dead_code(self, _mock_metrics, _mock_trend):
+        result = _select_diagnostic_type("/fake/instance", "koan")
+        assert result == "dead_code"
+
+    @patch("app.mission_metrics.compute_project_trend", return_value="stable")
+    @patch("app.mission_metrics.compute_project_metrics", return_value={
+        "total_sessions": 10, "empty": 3, "blocked": 5, "productive": 2,
+    })
+    def test_blocked_heavy_selects_audit(self, _mock_metrics, _mock_trend):
+        result = _select_diagnostic_type("/fake/instance", "koan")
+        assert result == "audit"
+
+    @patch("app.mission_metrics.compute_project_trend", side_effect=ImportError)
+    def test_import_error_falls_back_to_audit(self, _mock_trend):
+        result = _select_diagnostic_type("/fake/instance", "koan")
+        assert result == "audit"
+
+
+# === Tests: diagnostic cooldown helpers ===
+
+
+class TestDiagnosticCooldown:
+    """Tests for cooldown load/save/check helpers."""
+
+    def test_load_empty(self, instance_dir):
+        assert _load_diagnostic_cooldowns(str(instance_dir)) == {}
+
+    def test_save_and_load(self, instance_dir):
+        _save_diagnostic_cooldown(str(instance_dir), "koan")
+        cooldowns = _load_diagnostic_cooldowns(str(instance_dir))
+        assert "koan" in cooldowns
+
+    def test_cooldown_active(self, instance_dir):
+        _save_diagnostic_cooldown(str(instance_dir), "koan")
+        assert _is_diagnostic_on_cooldown(str(instance_dir), "koan", 21) is True
+
+    def test_cooldown_not_active_for_other_project(self, instance_dir):
+        _save_diagnostic_cooldown(str(instance_dir), "koan")
+        assert _is_diagnostic_on_cooldown(str(instance_dir), "backend", 21) is False
+
+    def test_expired_cooldown(self, instance_dir):
+        """Cooldown of 0 days should make any past timestamp expired."""
+        from datetime import datetime, timedelta
+        cooldown_path = instance_dir / ".diagnostic-cooldowns.json"
+        old_ts = (datetime.now() - timedelta(days=2)).isoformat()
+        cooldown_path.write_text(json.dumps({"koan": old_ts}))
+        assert _is_diagnostic_on_cooldown(str(instance_dir), "koan", 1) is False
+
+
+# === Tests: _maybe_inject_diagnostic_mission ===
+
+
+class TestMaybeInjectDiagnosticMission:
+    """Tests for the diagnostic injection gate."""
+
+    def _make_missions_file(self, instance_dir):
+        """Create a minimal missions.md."""
+        missions = instance_dir / "missions.md"
+        missions.write_text(
+            "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n"
+        )
+        return missions
+
+    @patch("app.config._load_config", return_value={
+        "autonomous_health": {"enabled": False}
+    })
+    def test_disabled_returns_none(self, _mock_cfg, instance_dir):
+        result = _maybe_inject_diagnostic_mission(
+            "koan", str(instance_dir), "deep",
+        )
+        assert result is None
+
+    @patch("app.config._load_config", return_value={
+        "autonomous_health": {"enabled": True, "min_mode": "deep"}
+    })
+    def test_mode_gate_blocks_low_mode(self, _mock_cfg, instance_dir):
+        """implement mode should be blocked when min_mode is deep."""
+        result = _maybe_inject_diagnostic_mission(
+            "koan", str(instance_dir), "implement",
+        )
+        assert result is None
+
+    @patch("app.config._load_config", return_value={
+        "autonomous_health": {"enabled": True, "min_mode": "implement"}
+    })
+    @patch("app.mission_metrics.get_project_success_rates",
+           return_value={"koan": 0.7})
+    def test_high_success_rate_skips(self, _mock_rates, _mock_cfg, instance_dir):
+        result = _maybe_inject_diagnostic_mission(
+            "koan", str(instance_dir), "deep",
+        )
+        assert result is None
+
+    @patch("app.config._load_config", return_value={
+        "autonomous_health": {"enabled": True, "min_mode": "implement"}
+    })
+    @patch("app.mission_metrics.get_project_success_rates",
+           return_value={"koan": 0.5})
+    def test_neutral_rate_skips(self, _mock_rates, _mock_cfg, instance_dir):
+        """Neutral 0.5 (insufficient data) should not trigger diagnostics."""
+        result = _maybe_inject_diagnostic_mission(
+            "koan", str(instance_dir), "deep",
+        )
+        assert result is None
+
+    @patch("app.config._load_config", return_value={
+        "autonomous_health": {
+            "enabled": True, "min_mode": "implement",
+            "success_rate_floor": 0.25, "staleness_floor": 3,
+            "cooldown_days": 21,
+        }
+    })
+    @patch("app.mission_metrics.get_project_success_rates",
+           return_value={"koan": 0.15})
+    @patch("app.session_tracker.get_staleness_score", return_value=1)
+    def test_low_staleness_skips(self, _mock_stale, _mock_rates, _mock_cfg,
+                                  instance_dir):
+        """Staleness below floor should not trigger diagnostics."""
+        result = _maybe_inject_diagnostic_mission(
+            "koan", str(instance_dir), "deep",
+        )
+        assert result is None
+
+    @patch("app.config._load_config", return_value={
+        "autonomous_health": {
+            "enabled": True, "min_mode": "implement",
+            "success_rate_floor": 0.25, "staleness_floor": 3,
+            "cooldown_days": 21,
+        }
+    })
+    @patch("app.mission_metrics.get_project_success_rates",
+           return_value={"koan": 0.15})
+    @patch("app.session_tracker.get_staleness_score", return_value=5)
+    @patch("app.mission_metrics.compute_project_trend", return_value="declining")
+    def test_all_gates_pass_injects_mission(
+        self, _mock_trend, _mock_stale, _mock_rates, _mock_cfg, instance_dir,
+    ):
+        self._make_missions_file(instance_dir)
+        result = _maybe_inject_diagnostic_mission(
+            "koan", str(instance_dir), "deep",
+        )
+        assert result is not None
+        assert "[autonomous:health]" in result
+        assert "[project:koan]" in result
+        assert "/tech_debt" in result
+
+        # Verify mission was written to missions.md
+        content = (instance_dir / "missions.md").read_text()
+        assert "[autonomous:health]" in content
+
+        # Verify cooldown was set
+        assert _is_diagnostic_on_cooldown(str(instance_dir), "koan", 21) is True
+
+    @patch("app.config._load_config", return_value={
+        "autonomous_health": {
+            "enabled": True, "min_mode": "implement",
+            "success_rate_floor": 0.25, "staleness_floor": 3,
+            "cooldown_days": 21,
+        }
+    })
+    @patch("app.mission_metrics.get_project_success_rates",
+           return_value={"koan": 0.15})
+    @patch("app.session_tracker.get_staleness_score", return_value=5)
+    @patch("app.mission_metrics.compute_project_trend", return_value="stable")
+    @patch("app.mission_metrics.compute_project_metrics", return_value={
+        "total_sessions": 10, "empty": 8, "blocked": 1, "productive": 1,
+    })
+    def test_empty_heavy_injects_dead_code(
+        self, _mock_metrics, _mock_trend, _mock_stale, _mock_rates,
+        _mock_cfg, instance_dir,
+    ):
+        self._make_missions_file(instance_dir)
+        result = _maybe_inject_diagnostic_mission(
+            "koan", str(instance_dir), "deep",
+        )
+        assert result is not None
+        assert "/dead_code" in result
+
+    @patch("app.config._load_config", return_value={
+        "autonomous_health": {
+            "enabled": True, "min_mode": "implement",
+            "success_rate_floor": 0.25, "staleness_floor": 3,
+            "cooldown_days": 21,
+        }
+    })
+    @patch("app.mission_metrics.get_project_success_rates",
+           return_value={"koan": 0.15})
+    @patch("app.session_tracker.get_staleness_score", return_value=5)
+    @patch("app.mission_metrics.compute_project_trend", return_value="declining")
+    def test_cooldown_prevents_second_injection(
+        self, _mock_trend, _mock_stale, _mock_rates, _mock_cfg, instance_dir,
+    ):
+        self._make_missions_file(instance_dir)
+
+        # First injection should succeed
+        result1 = _maybe_inject_diagnostic_mission(
+            "koan", str(instance_dir), "deep",
+        )
+        assert result1 is not None
+
+        # Second injection should be blocked by cooldown
+        result2 = _maybe_inject_diagnostic_mission(
+            "koan", str(instance_dir), "deep",
+        )
+        assert result2 is None
+
+    @patch("app.config._load_config", return_value={
+        "autonomous_health": {
+            "enabled": True, "min_mode": "implement",
+            "success_rate_floor": 0.25, "staleness_floor": 3,
+            "cooldown_days": 21,
+        }
+    })
+    @patch("app.mission_metrics.get_project_success_rates",
+           return_value={"koan": 0.15})
+    @patch("app.session_tracker.get_staleness_score", return_value=5)
+    @patch("app.mission_metrics.compute_project_trend", return_value="declining")
+    def test_different_project_not_blocked_by_cooldown(
+        self, _mock_trend, _mock_stale, _mock_rates, _mock_cfg, instance_dir,
+    ):
+        """Cooldown for project A should not block project B."""
+        self._make_missions_file(instance_dir)
+        _save_diagnostic_cooldown(str(instance_dir), "backend")
+
+        result = _maybe_inject_diagnostic_mission(
+            "koan", str(instance_dir), "deep",
+        )
+        assert result is not None
+        assert "[project:koan]" in result
+
+
+# === Tests: _MODE_RANK ===
+
+
+class TestModeRank:
+    """Validate the mode rank hierarchy."""
+
+    def test_hierarchy(self):
+        assert _MODE_RANK["wait"] < _MODE_RANK["review"]
+        assert _MODE_RANK["review"] < _MODE_RANK["implement"]
+        assert _MODE_RANK["implement"] < _MODE_RANK["deep"]
