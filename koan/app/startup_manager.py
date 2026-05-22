@@ -41,6 +41,14 @@ def populate_github_urls(koan_root: str):
         log("init", f"[github-urls] {msg}")
 
 
+def detect_renamed_remotes(koan_root: str, projects: list):
+    """Detect GitHub repos that were renamed and fix stale origin URLs."""
+    from app.remote_rename_detector import detect_and_fix_renamed_remotes
+    msgs = detect_and_fix_renamed_remotes(projects, koan_root)
+    for msg in msgs:
+        log("init", f"[remote-rename] {msg}")
+
+
 def discover_workspace(koan_root: str, projects: list) -> list:
     """Initialize workspace + yaml merged project registry.
 
@@ -443,6 +451,8 @@ def run_startup(koan_root: str, instance: str, projects: list):
         result = _safe_run("Workspace discovery", discover_workspace, koan_root, projects)
         if result is not None:
             projects = result
+
+        _safe_run("Renamed remote detection", detect_renamed_remotes, koan_root, projects)
 
         _safe_run("Sanity checks", run_sanity_checks, instance)
         _safe_run("Memory cleanup", cleanup_memory, instance)
