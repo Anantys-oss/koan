@@ -34,6 +34,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sys
 import threading
 from pathlib import Path
@@ -45,6 +46,7 @@ _DEFAULT_CHECK_INTERVAL = 60       # seconds between stdout samples
 _DEFAULT_ABORT_AFTER_CYCLES = 3    # identical hashes required to abort
 _DEFAULT_SAMPLE_LINES = 50         # trailing lines hashed
 _DEFAULT_MIN_BYTES = 512           # ignore tiny outputs (not enough signal)
+_CLASSIFY_TAIL_LINES = 100        # lines to read for pattern classification
 
 # Filename of the per-mission stagnation retry tracker (lives under
 # instance/). Persists across restarts so a stagnated mission requeued
@@ -89,6 +91,114 @@ def _tail_hash(stdout_file: str, sample_lines: int) -> Optional[str]:
         lines = lines[-sample_lines:]
     joined = b"\n".join(lines)
     return hashlib.sha256(joined).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# Root-cause pattern classification
+# ---------------------------------------------------------------------------
+#
+# When the monitor aborts a session, we classify the stdout tail to give
+# operators a hint about *why* Claude was stuck.  The patterns are ordered
+# by specificity — first match wins.  The ``unknown`` fallback catches
+# everything else.
+
+# Compiled once at import time for performance.
+_TOOL_NAME_RE = re.compile(
+    r"\b(?:Bash|Read|Glob|Grep|Edit|Write|WebFetch|WebSearch|Agent)\b"
+)
+_ERROR_KW_RE = re.compile(
+    r"\b(?:Error|Exception|Traceback|failed|retry|FAILED)\b", re.IGNORECASE,
+)
+_INTERACTIVE_RE = re.compile(
+    r"(?:\[y/n\]|Continue\?|Enter |Press |Confirm |proceed\?)", re.IGNORECASE,
+)
+_QUOTA_RE = re.compile(
+    r"(?:quota[_ ]exhausted|rate[_ ]limit|429|capacity|over[_ ]?limit"
+    r"|usage[_ ]limit|max_tokens_exceeded)", re.IGNORECASE,
+)
+
+
+def classify_stagnation(stdout_file: str, tail_lines: int = _CLASSIFY_TAIL_LINES) -> tuple:
+    """Classify the likely root cause of a stagnation event.
+
+    Reads the last *tail_lines* lines of *stdout_file* and applies an ordered
+    pattern set.  Returns ``(pattern_type, excerpt)`` where *excerpt* is at
+    most 200 chars of representative text.
+
+    Pattern types (in match order):
+    - ``tool_loop``: same tool name appears in >= 5 of the sampled lines
+    - ``infinite_retry``: error keywords appear in >= 3 lines
+    - ``interactive_wait``: stdin prompt detected
+    - ``quota_mid_session``: quota / rate-limit markers in output
+    - ``silent``: file exists but has no content (or below threshold)
+    - ``unknown``: none of the above
+    """
+    try:
+        size = os.path.getsize(stdout_file)
+    except OSError:
+        return ("silent", "")
+
+    if size < _DEFAULT_MIN_BYTES:
+        return ("silent", "")
+
+    try:
+        with open(stdout_file, "rb") as f:
+            window = min(size, tail_lines * 200)
+            f.seek(max(0, size - window))
+            raw = f.read(window)
+    except OSError:
+        return ("silent", "")
+
+    text = raw.decode("utf-8", errors="replace")
+    lines = text.splitlines()
+    if len(lines) > tail_lines:
+        lines = lines[-tail_lines:]
+
+    if not lines:
+        return ("silent", "")
+
+    # --- tool_loop: same tool name dominates the tail ---
+    tool_counts: dict[str, int] = {}
+    for line in lines:
+        for m in _TOOL_NAME_RE.finditer(line):
+            tool_counts[m.group()] = tool_counts.get(m.group(), 0) + 1
+    if tool_counts:
+        top_tool, top_count = max(tool_counts.items(), key=lambda kv: kv[1])
+        if top_count >= 5:
+            excerpt = _build_excerpt(lines, top_tool)
+            return ("tool_loop", excerpt)
+
+    # --- infinite_retry: error keywords repeated ---
+    error_lines = [l for l in lines if _ERROR_KW_RE.search(l)]
+    if len(error_lines) >= 3:
+        excerpt = _build_excerpt(error_lines, None)
+        return ("infinite_retry", excerpt)
+
+    # --- interactive_wait: prompt for stdin ---
+    for line in reversed(lines):
+        if _INTERACTIVE_RE.search(line):
+            return ("interactive_wait", line.strip()[:200])
+
+    # --- quota_mid_session ---
+    for line in reversed(lines):
+        if _QUOTA_RE.search(line):
+            return ("quota_mid_session", line.strip()[:200])
+
+    return ("unknown", _build_excerpt(lines, None))
+
+
+def _build_excerpt(lines: list, keyword: Optional[str]) -> str:
+    """Build a <= 200 char excerpt from representative lines.
+
+    If *keyword* is given, prefer lines containing it.
+    """
+    if keyword:
+        matching = [l for l in lines if keyword in l]
+        source = matching[-3:] if matching else lines[-3:]
+    else:
+        source = lines[-3:]
+    text = " | ".join(l.strip() for l in source)
+    return text[:200]
 
 
 class StagnationMonitor:
@@ -141,6 +251,8 @@ class StagnationMonitor:
         self._consecutive = 0
         self._warned = False
         self.stagnated: bool = False
+        self.pattern_type: str = ""
+        self.pattern_excerpt: str = ""
 
     def start(self) -> None:
         """Launch the monitor daemon thread. Idempotent."""
@@ -199,6 +311,16 @@ class StagnationMonitor:
 
         if self._consecutive >= self._abort_after and not self.stagnated:
             self.stagnated = True
+            # Classify *before* aborting — the stdout file is still being
+            # written to by the subprocess, so we get the freshest snapshot.
+            try:
+                self.pattern_type, self.pattern_excerpt = classify_stagnation(
+                    self._stdout_file,
+                )
+            except Exception as e:
+                print(f"[stagnation_monitor] classify error: {e}", file=sys.stderr)
+                self.pattern_type = "unknown"
+                self.pattern_excerpt = ""
             try:
                 self._on_abort()
             except Exception as e:
@@ -254,30 +376,62 @@ def _save_retry_tracker(instance_dir: str, data: dict) -> None:
         print(f"[stagnation_monitor] retry tracker save error: {e}", file=sys.stderr)
 
 
-def get_retry_count(instance_dir: str, mission_title: str) -> int:
-    """Return how many times *mission_title* has been stagnation-requeued."""
-    data = _load_retry_tracker(instance_dir)
-    raw = data.get(_mission_key(mission_title), 0)
+def _extract_count(raw) -> int:
+    """Extract retry count from a tracker entry (int or dict with 'count')."""
+    if isinstance(raw, dict):
+        raw = raw.get("count", 0)
     try:
         return max(0, int(raw))
     except (TypeError, ValueError):
         return 0
 
 
-def increment_retry_count(instance_dir: str, mission_title: str) -> int:
+def get_retry_count(instance_dir: str, mission_title: str) -> int:
+    """Return how many times *mission_title* has been stagnation-requeued."""
+    data = _load_retry_tracker(instance_dir)
+    return _extract_count(data.get(_mission_key(mission_title), 0))
+
+
+def get_retry_info(instance_dir: str, mission_title: str) -> dict:
+    """Return full retry info for *mission_title* including pattern classification.
+
+    Returns a dict with keys ``count``, ``pattern_type``, ``sample_lines``.
+    """
+    data = _load_retry_tracker(instance_dir)
+    raw = data.get(_mission_key(mission_title), {})
+    if isinstance(raw, int):
+        return {"count": max(0, raw), "pattern_type": "", "sample_lines": ""}
+    if isinstance(raw, dict):
+        return {
+            "count": _extract_count(raw),
+            "pattern_type": raw.get("pattern_type", ""),
+            "sample_lines": raw.get("sample_lines", ""),
+        }
+    return {"count": 0, "pattern_type": "", "sample_lines": ""}
+
+
+def increment_retry_count(
+    instance_dir: str,
+    mission_title: str,
+    pattern_type: str = "",
+    pattern_excerpt: str = "",
+) -> int:
     """Increment and persist the stagnation retry counter for *mission_title*.
+
+    When *pattern_type* is provided, the tracker entry is upgraded to a dict
+    with ``count``, ``pattern_type``, and ``sample_lines`` fields.
 
     Returns the new count.
     """
     data = _load_retry_tracker(instance_dir)
     key = _mission_key(mission_title)
-    current = data.get(key, 0)
-    try:
-        current = int(current)
-    except (TypeError, ValueError):
-        current = 0
-    new_count = max(0, current) + 1
-    data[key] = new_count
+    current = _extract_count(data.get(key, 0))
+    new_count = current + 1
+    data[key] = {
+        "count": new_count,
+        "pattern_type": pattern_type,
+        "sample_lines": pattern_excerpt[:500],
+    }
     _save_retry_tracker(instance_dir, data)
     return new_count
 
