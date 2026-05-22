@@ -79,6 +79,7 @@ _CANONICAL_RUNNERS = {
     "security_audit": "skills.core.security_audit.security_audit_runner",
     "private_security_audit": "skills.core.private_security_audit.private_security_audit_runner",
     "ci_check": "app.ci_queue_runner",
+    "doc": "skills.core.doc.doc_runner",
 }
 
 # Alias -> canonical command name. Declared once, expanded into
@@ -93,6 +94,7 @@ _COMMAND_ALIASES = {
     "secu": "security_audit",
     "private_security": "private_security_audit",
     "psecu": "private_security_audit",
+    "docs": "doc",
 }
 
 # Full mapping including aliases — used for runner module lookup.
@@ -308,6 +310,9 @@ def build_skill_command(
         "claudemd": lambda: _build_claudemd_cmd(base_cmd, project_name, project_path),
         "incident": lambda: _build_incident_cmd(base_cmd, args, project_path, instance_dir),
         "ci_check": lambda: _build_pr_url_cmd(base_cmd, args, project_path),
+        "doc": lambda: _build_doc_cmd(
+            base_cmd, args, project_name, project_path, instance_dir,
+        ),
     }
     def _audit_builder():
         return _build_audit_cmd(
@@ -599,6 +604,36 @@ def _build_project_info_cmd(
         "--project-name", project_name,
         "--instance-dir", instance_dir,
     ]
+
+
+def _build_doc_cmd(
+    base_cmd: List[str],
+    args: str,
+    project_name: str,
+    project_path: str,
+    instance_dir: str,
+) -> List[str]:
+    """Build doc_runner command.
+
+    Parses optional categories (comma-separated) and --mode flag from args.
+    """
+    cmd = base_cmd + [
+        "--project-path", project_path,
+        "--project-name", project_name,
+        "--instance-dir", instance_dir,
+    ]
+
+    # Extract --mode flag
+    mode_match = re.search(r"--mode=(\w+)", args)
+    if mode_match:
+        cmd.extend(["--mode", mode_match.group(1)])
+        args = re.sub(r"--mode=\w+", "", args).strip()
+
+    # Remaining args are categories (comma-separated)
+    if args.strip():
+        cmd.extend(["--categories", args.strip()])
+
+    return cmd
 
 
 def _build_profile_cmd(
