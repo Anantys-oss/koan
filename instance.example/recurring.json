@@ -1,0 +1,14 @@
+[
+    {
+        "id": "rec_example_spec_audit",
+        "frequency": "every",
+        "interval_seconds": 2592000,
+        "interval_display": "30d",
+        "text": "/spec_audit",
+        "project": null,
+        "created": "2026-05-22T00:00:00",
+        "last_run": null,
+        "enabled": true,
+        "at": null
+    }
+]
