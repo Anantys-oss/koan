@@ -10,6 +10,7 @@ restarting, PID file stale), the poll loop still picks it up.
 import contextlib
 import os
 import signal as sig_mod
+import subprocess
 from pathlib import Path
 
 from app.skills import SkillContext
@@ -19,17 +20,28 @@ def _verify_is_runner(pid: int) -> bool:
     """Best-effort check that *pid* belongs to the koan runner.
 
     Mitigates the PID-reuse race between :func:`check_pidfile` and
-    :func:`os.kill`: if Linux recycled the runner's PID for an unrelated
-    process, SIGUSR1's default disposition would terminate it. Reads
-    ``/proc/<pid>/cmdline`` and confirms it references ``run.py``.
-    Returns False when ``/proc`` is unavailable (non-Linux) or unreadable
-    — the file-based fallback still aborts on the next poll cycle.
+    :func:`os.kill`: if the OS recycled the runner's PID for an unrelated
+    process, SIGUSR1's default disposition would terminate it.
+
+    On Linux, reads ``/proc/<pid>/cmdline``. On macOS/BSD (where /proc is
+    unavailable), falls back to ``ps -p <pid> -o command=``. Both paths
+    confirm the process references ``run.py``.
     """
+    # Linux: /proc/<pid>/cmdline
     try:
         cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
+        return b"run.py" in cmdline
     except OSError:
+        pass
+    # macOS/BSD fallback: ps
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True, text=True, timeout=2,
+        )
+        return "run.py" in result.stdout
+    except (OSError, subprocess.TimeoutExpired):
         return False
-    return b"run.py" in cmdline
 
 
 def handle(ctx: SkillContext) -> str:
