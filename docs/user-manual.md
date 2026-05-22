@@ -1409,6 +1409,24 @@ See [docs/auto-update.md](auto-update.md) for details.
 - `/debt` — Scan the default project
 </details>
 
+### Documentation Extraction
+
+**`/doc`** — Investigate a project codebase and produce structured documentation files under docs/. Extracts architecture, code style, test patterns, anti-patterns, and recommended modules.
+
+- **Usage:** `/doc <project-name> [categories] [--mode=create|update|replace]`
+- **Aliases:** `/docs`
+- **GitHub @mention:** `@koan-bot /doc` on an issue or PR
+- Categories: architecture, code-style, test-style, anti-patterns, modules (comma-separated, default: all)
+
+<details>
+<summary>Use cases</summary>
+
+- `/doc koan` — Extract all documentation categories for koan
+- `/docs koan architecture,test-style` — Extract specific categories only
+- `/doc webapp --mode=update` — Merge new findings into existing docs
+- `/doc mylib --mode=replace` — Overwrite existing documentation
+</details>
+
 ### Dead Code Scan
 
 **`/dead_code`** — Scan a project for unused imports, functions, classes, variables, and dead branches. Produces a certainty-classified report saved to project memory, and optionally queues the top removal missions.
@@ -1616,14 +1634,15 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/audit <project> [ctx] [limit=N]` | — | P | Audit project, create GitHub issues (top N, default 5) |
 | `/security_audit <project> [ctx] [limit=N]` | `/security`, `/secu` | P | Security audit, find critical vulnerabilities (top N, default 5) |
 | `/private_security_audit <project> [ctx] [limit=N]` | `/private_security`, `/psecu` | P | Security audit, findings to journal only (no GitHub) |
+| `/doc <project> [categories]` | `/docs` | P | Extract structured documentation to docs/ |
 | `/tech_debt [project]` | `/td`, `/debt` | P | Scan project for tech debt |
 | `/dead_code [project]` | `/dc` | P | Scan for unused code |
 | `/incident <error>` | — | P | Triage a production error |
 | `/scaffold_skill <scope> <name> <desc>` | `/scaffold`, `/new_skill` | P | Generate SKILL.md + handler.py for a new custom skill |
 | `/rtk [setup\|uninstall\|gain\|on\|off]` | — | P | Manage optional [rtk](https://github.com/rtk-ai/rtk) integration for compressed tool output (60-90 % token savings on Bash commands). See [docs/rtk.md](rtk.md). |
 
-Skills marked with GitHub @mention support: `/audit`, `/security_audit`, `/brainstorm`, `/plan`, `/implement`, `/fix`, `/review`, `/rebase`, `/recreate`, `/refactor`, `/profile`, `/gh_request`. See [GitHub Commands](github-commands.md) for details.
+Skills marked with GitHub @mention support: `/audit`, `/doc`, `/security_audit`, `/brainstorm`, `/plan`, `/implement`, `/fix`, `/review`, `/rebase`, `/recreate`, `/refactor`, `/profile`, `/gh_request`. See [GitHub Commands](github-commands.md) for details.
 
 ---
 
-*This manual covers all 43 core skills. For the full command reference with tabular format, see [docs/skills.md](skills.md). For skill authoring, see [koan/skills/README.md](../koan/skills/README.md).*
+*This manual covers all 44 core skills. For the full command reference with tabular format, see [docs/skills.md](skills.md). For skill authoring, see [koan/skills/README.md](../koan/skills/README.md).*

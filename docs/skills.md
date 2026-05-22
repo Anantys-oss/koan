@@ -43,6 +43,7 @@ Complete reference for all Koan slash commands. Use these via Telegram, Slack, o
 | `/check <project>` | `/inspect` | Run project health checks (rebase, review, plan) | — |
 | `/pr <PR>` | — | Review and update a GitHub pull request | — |
 | `/claudemd [project]` | `/claude`, `/claude.md` | Refresh or create a project's CLAUDE.md | — |
+| `/doc <project> [cats]` | `/docs` | Extract structured documentation to docs/ | Yes |
 
 Skills marked **GitHub @mention** can be triggered by commenting `@koan-bot <command>` on a PR or issue. See [github-commands.md](github-commands.md).
 
