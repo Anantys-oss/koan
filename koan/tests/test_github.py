@@ -11,7 +11,8 @@ from app.github import (
     run_gh, pr_create, issue_create, api,
     get_gh_username, count_open_prs, cached_count_open_prs,
     batch_count_open_prs, fetch_issue_state, fetch_issue_with_comments,
-    detect_parent_repo, resolve_target_repo, _upstream_remote_repo,
+    detect_parent_repo, resolve_target_repo, _config_target_repo,
+    _upstream_remote_repo,
     origin_repo, _parse_remote_url,
     sanitize_github_comment,
     find_bot_comment,
@@ -769,6 +770,73 @@ class TestResolveTargetRepo:
     @patch("app.github._upstream_remote_repo", return_value=None)
     def test_returns_none_when_no_upstream(self, mock_remote, mock_detect):
         assert resolve_target_repo("/proj") is None
+
+    @patch("app.github._config_target_repo")
+    @patch("app.github.detect_parent_repo")
+    def test_config_override_skips_fork_detection(self, mock_detect, mock_cfg):
+        from app.github import _UNSET
+        mock_cfg.return_value = None  # origin IS canonical
+        result = resolve_target_repo("/proj", project_name="XML-Parser")
+        assert result is None
+        mock_detect.assert_not_called()
+
+    @patch("app.github._config_target_repo")
+    @patch("app.github.detect_parent_repo")
+    def test_config_override_returns_different_repo(self, mock_detect, mock_cfg):
+        mock_cfg.return_value = "other-owner/repo"
+        result = resolve_target_repo("/proj", project_name="my-fork")
+        assert result == "other-owner/repo"
+        mock_detect.assert_not_called()
+
+    @patch("app.github._config_target_repo")
+    @patch("app.github.detect_parent_repo", return_value="parent/repo")
+    def test_no_config_falls_through_to_fork_detection(self, mock_detect, mock_cfg):
+        from app.github import _UNSET
+        mock_cfg.return_value = _UNSET
+        result = resolve_target_repo("/proj", project_name="unconfigured")
+        assert result == "parent/repo"
+
+
+class TestConfigTargetRepo:
+
+    @patch("app.github._get_remote_url", return_value="https://github.com/cpan-authors/XML-Parser.git")
+    @patch("app.projects_config.load_projects_config", return_value={"projects": {}})
+    @patch("app.projects_config.get_project_submit_to_repository",
+           return_value={"repo": "cpan-authors/XML-Parser"})
+    def test_origin_matches_config_returns_none(self, mock_submit, mock_cfg, mock_url):
+        with patch.dict("os.environ", {"KOAN_ROOT": "/tmp/koan"}):
+            result = _config_target_repo("/proj", "XML-Parser")
+            assert result is None
+
+    @patch("app.github._get_remote_url", return_value="https://github.com/my-fork/repo.git")
+    @patch("app.projects_config.load_projects_config", return_value={"projects": {}})
+    @patch("app.projects_config.get_project_submit_to_repository",
+           return_value={"repo": "upstream/repo"})
+    def test_origin_differs_from_config_returns_config(self, mock_submit, mock_cfg, mock_url):
+        with patch.dict("os.environ", {"KOAN_ROOT": "/tmp/koan"}):
+            result = _config_target_repo("/proj", "my-fork")
+            assert result == "upstream/repo"
+
+    def test_no_koan_root_returns_unset(self):
+        from app.github import _UNSET
+        with patch.dict("os.environ", {}, clear=True):
+            result = _config_target_repo("/proj", "test")
+            assert result is _UNSET
+
+    @patch("app.projects_config.load_projects_config", return_value=None)
+    def test_no_config_returns_unset(self, mock_cfg):
+        from app.github import _UNSET
+        with patch.dict("os.environ", {"KOAN_ROOT": "/tmp/koan"}):
+            result = _config_target_repo("/proj", "test")
+            assert result is _UNSET
+
+    @patch("app.projects_config.load_projects_config", return_value={"projects": {}})
+    @patch("app.projects_config.get_project_submit_to_repository", return_value={})
+    def test_no_submit_repo_returns_unset(self, mock_submit, mock_cfg):
+        from app.github import _UNSET
+        with patch.dict("os.environ", {"KOAN_ROOT": "/tmp/koan"}):
+            result = _config_target_repo("/proj", "test")
+            assert result is _UNSET
 
 
 class TestUpstreamRemoteRepo:
