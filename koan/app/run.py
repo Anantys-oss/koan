@@ -1046,6 +1046,7 @@ def _handle_contemplative(
     _notify(instance, f"🪷 Run {run_num}/{max_runs} — Contemplative mode on {project_name}")
 
     log("pause", "Running contemplative session...")
+    contemp_start = int(time.time())
     try:
         from app.contemplative_runner import build_contemplative_command
         cmd = build_contemplative_command(
@@ -1057,24 +1058,51 @@ def _handle_contemplative(
         os.close(fd_out)
         fd_err, stderr_file = tempfile.mkstemp(prefix="koan-contemp-err-")
         os.close(fd_err)
-        contemp_start = int(time.time())
+        cli_error = None
         try:
             run_claude_task(
                 cmd, stdout_file, stderr_file, cwd=koan_root,
                 instance_dir=instance, project_name=project_name, run_num=run_num,
             )
-            # Log contemplative usage before temp files are cleaned up
-            try:
-                from app.mission_runner import _log_activity_usage
-                _log_activity_usage(
-                    instance, project_name, stdout_file,
-                    "contemplative", "",
-                    duration_seconds=int(time.time()) - contemp_start,
-                )
-            except Exception as e:
-                log("warn", f"Failed to log contemplative usage: {e}")
-        finally:
-            _cleanup_temp(stdout_file, stderr_file)
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            cli_error = traceback.format_exc()
+            log("warn", f"Contemplative CLI failed: {e}")
+        duration_seconds = int(time.time()) - contemp_start
+        # Log contemplative usage before temp files are cleaned up
+        try:
+            from app.mission_runner import _log_activity_usage
+            _log_activity_usage(
+                instance, project_name, stdout_file,
+                "contemplative", "",
+                duration_seconds=duration_seconds,
+            )
+        except Exception as e:
+            log("warn", f"Failed to log contemplative usage: {e}")
+        # Record session outcome so contemplative sessions feed into
+        # staleness detection, Thompson Sampling, and success-rate metrics.
+        try:
+            from app.mission_runner import (
+                _read_pending_content,
+                _read_stdout_summary,
+                _record_session_outcome,
+            )
+            pending_content = _read_pending_content(instance)
+            if not pending_content.strip():
+                pending_content = _read_stdout_summary(stdout_file)
+            _record_session_outcome(
+                instance, project_name,
+                plan.get("autonomous_mode", "unknown"),
+                max(1, duration_seconds // 60),
+                pending_content,
+                mission_type="contemplative",
+            )
+        except Exception as e:
+            log("warn", f"Failed to record contemplative outcome: {e}")
+        _cleanup_temp(stdout_file, stderr_file)
+        if cli_error:
+            log("error", f"Contemplative error:\n{cli_error}")
     except KeyboardInterrupt:
         raise
     except Exception as e:

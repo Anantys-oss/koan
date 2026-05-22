@@ -5736,6 +5736,121 @@ class TestHandleContemplativeCommit:
 
 
 # ---------------------------------------------------------------------------
+# Contemplative session outcome recording
+# ---------------------------------------------------------------------------
+
+class TestContemplativeOutcomeRecording:
+    """Tests that _handle_contemplative records session outcomes."""
+
+    @patch("app.run._commit_instance")
+    @patch("app.run.interruptible_sleep", return_value=None)
+    @patch("app.run.check_pending_missions", return_value=False)
+    @patch("app.run.run_claude_task", return_value=0)
+    @patch("app.run._notify")
+    @patch("app.run.log")
+    @patch("app.run.set_status")
+    def test_records_outcome_on_success(
+        self, mock_status, mock_log, mock_notify, mock_task,
+        mock_pending, mock_sleep, mock_commit,
+    ):
+        """Session outcome is recorded after successful contemplative session."""
+        from app.run import _handle_contemplative
+
+        plan = {"project_name": "test-proj", "autonomous_mode": "deep"}
+        with (
+            patch("app.contemplative_runner.build_contemplative_command", return_value=["echo", "ok"]),
+            patch("app.mission_runner._record_session_outcome") as mock_record,
+            patch("app.mission_runner._read_pending_content", return_value="explored codebase"),
+        ):
+            _handle_contemplative(plan, 1, 5, "/tmp/koan", "/tmp/koan/instance", 60)
+
+        mock_record.assert_called_once()
+        call_kwargs = mock_record.call_args
+        assert call_kwargs[0][1] == "test-proj"  # project_name
+        assert call_kwargs.kwargs.get("mission_type") or call_kwargs[0][-1] == "contemplative"
+
+    @patch("app.run._commit_instance")
+    @patch("app.run.check_pending_missions", return_value=True)
+    @patch("app.run.run_claude_task", side_effect=RuntimeError("stagnation kill"))
+    @patch("app.run._notify")
+    @patch("app.run.log")
+    @patch("app.run.set_status")
+    def test_records_outcome_on_cli_error(
+        self, mock_status, mock_log, mock_notify, mock_task,
+        mock_pending, mock_commit,
+    ):
+        """Session outcome is recorded even when CLI throws."""
+        from app.run import _handle_contemplative
+
+        plan = {"project_name": "test-proj", "autonomous_mode": "deep"}
+        with (
+            patch("app.contemplative_runner.build_contemplative_command", return_value=["echo", "ok"]),
+            patch("app.mission_runner._record_session_outcome") as mock_record,
+            patch("app.mission_runner._read_pending_content", return_value=""),
+            patch("app.mission_runner._read_stdout_summary", return_value=""),
+        ):
+            _handle_contemplative(plan, 1, 5, "/tmp/koan", "/tmp/koan/instance", 60)
+
+        mock_record.assert_called_once()
+
+    @patch("app.run._commit_instance")
+    @patch("app.run.interruptible_sleep", return_value=None)
+    @patch("app.run.check_pending_missions", return_value=False)
+    @patch("app.run.run_claude_task", return_value=0)
+    @patch("app.run._notify")
+    @patch("app.run.log")
+    @patch("app.run.set_status")
+    def test_outcome_uses_contemplative_mission_type(
+        self, mock_status, mock_log, mock_notify, mock_task,
+        mock_pending, mock_sleep, mock_commit,
+    ):
+        """Outcome is recorded with mission_type='contemplative'."""
+        from app.run import _handle_contemplative
+
+        plan = {"project_name": "test-proj", "autonomous_mode": "implement"}
+        with (
+            patch("app.contemplative_runner.build_contemplative_command", return_value=["echo", "ok"]),
+            patch("app.mission_runner._record_session_outcome") as mock_record,
+            patch("app.mission_runner._read_pending_content", return_value="branch pushed"),
+        ):
+            _handle_contemplative(plan, 3, 10, "/tmp/koan", "/tmp/koan/instance", 60)
+
+        mock_record.assert_called_once()
+        # Check mission_type kwarg
+        kwargs = mock_record.call_args
+        # _record_session_outcome(instance, project_name, mode, duration, content, mission_type=...)
+        assert kwargs.kwargs["mission_type"] == "contemplative"
+
+    @patch("app.run._commit_instance")
+    @patch("app.run.interruptible_sleep", return_value=None)
+    @patch("app.run.check_pending_missions", return_value=False)
+    @patch("app.run.run_claude_task", return_value=0)
+    @patch("app.run._notify")
+    @patch("app.run.log")
+    @patch("app.run.set_status")
+    def test_outcome_falls_back_to_stdout_summary(
+        self, mock_status, mock_log, mock_notify, mock_task,
+        mock_pending, mock_sleep, mock_commit,
+    ):
+        """When pending.md is empty, stdout summary is used for classification."""
+        from app.run import _handle_contemplative
+
+        plan = {"project_name": "test-proj", "autonomous_mode": "deep"}
+        with (
+            patch("app.contemplative_runner.build_contemplative_command", return_value=["echo", "ok"]),
+            patch("app.mission_runner._record_session_outcome") as mock_record,
+            patch("app.mission_runner._read_pending_content", return_value=""),
+            patch("app.mission_runner._read_stdout_summary", return_value="explored code") as mock_stdout,
+        ):
+            _handle_contemplative(plan, 1, 5, "/tmp/koan", "/tmp/koan/instance", 60)
+
+        mock_stdout.assert_called_once()
+        mock_record.assert_called_once()
+        # The pending_content arg (4th positional) should be the stdout summary
+        assert mock_record.call_args[0][4] == "explored code"
+
+
+# ---------------------------------------------------------------------------
 # Wait/pause commit gap fix
 # ---------------------------------------------------------------------------
 
