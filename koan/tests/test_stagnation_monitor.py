@@ -12,8 +12,10 @@ from app.stagnation_monitor import (
     StagnationMonitor,
     _mission_key,
     _tail_hash,
+    classify_stagnation,
     clear_retry_count,
     get_retry_count,
+    get_retry_info,
     increment_retry_count,
 )
 
@@ -268,6 +270,13 @@ class TestFailMissionCauseTag:
         assert "[stagnation]" not in updated
         assert "\u274c" in updated
 
+    def test_typed_stagnation_tag(self):
+        from app.missions import fail_mission
+        content = "## Pending\n\n- /fix https://github.com/x/y/issues/2\n\n## Failed\n\n"
+        updated = fail_mission(content, "/fix https://github.com/x/y/issues/2",
+                               cause_tag="stagnation:tool_loop")
+        assert "[stagnation:tool_loop]" in updated
+
 
 class TestTailHashEdgeCases:
     """Cover remaining _tail_hash branches — OSError on read, binary content."""
@@ -488,3 +497,190 @@ class TestRetryTracker:
                    side_effect=OSError("disk full")):
             # Should not raise — the OSError is caught and printed to stderr.
             increment_retry_count(d, "test mission")
+
+
+class TestClassifyStagnation:
+    """Tests for classify_stagnation() — one per pattern type + unknown."""
+
+    def test_tool_loop_detected(self, tmp_path):
+        """Repeated tool names in >= 5 lines → tool_loop."""
+        f = tmp_path / "stdout.log"
+        lines = []
+        # Add enough filler to pass min-bytes threshold
+        for i in range(20):
+            lines.append(f"filler line {i:04d} .............")
+        # 6 lines with Bash tool name
+        for i in range(6):
+            lines.append(f"Calling Bash tool: ls -la iteration {i}")
+        f.write_text("\n".join(lines) + "\n")
+        pattern, excerpt = classify_stagnation(str(f))
+        assert pattern == "tool_loop"
+        assert "Bash" in excerpt
+
+    def test_infinite_retry_detected(self, tmp_path):
+        """Error keywords in >= 3 lines → infinite_retry."""
+        f = tmp_path / "stdout.log"
+        lines = []
+        for i in range(20):
+            lines.append(f"filler line {i:04d} .............")
+        lines.append("Error: connection refused to database")
+        lines.append("Exception raised in handler")
+        lines.append("Traceback (most recent call last):")
+        f.write_text("\n".join(lines) + "\n")
+        pattern, excerpt = classify_stagnation(str(f))
+        assert pattern == "infinite_retry"
+
+    def test_interactive_wait_detected(self, tmp_path):
+        """Stdin prompt in output → interactive_wait."""
+        f = tmp_path / "stdout.log"
+        lines = []
+        for i in range(30):
+            lines.append(f"filler line {i:04d} .............")
+        lines.append("Do you want to continue? [y/n]")
+        f.write_text("\n".join(lines) + "\n")
+        pattern, excerpt = classify_stagnation(str(f))
+        assert pattern == "interactive_wait"
+        assert "[y/n]" in excerpt
+
+    def test_quota_mid_session_detected(self, tmp_path):
+        """Quota exhaustion markers → quota_mid_session."""
+        f = tmp_path / "stdout.log"
+        lines = []
+        for i in range(30):
+            lines.append(f"filler line {i:04d} .............")
+        lines.append('{"error": "rate_limit exceeded, please try again later"}')
+        f.write_text("\n".join(lines) + "\n")
+        pattern, excerpt = classify_stagnation(str(f))
+        assert pattern == "quota_mid_session"
+
+    def test_silent_for_missing_file(self, tmp_path):
+        """Missing stdout file → silent."""
+        pattern, excerpt = classify_stagnation(str(tmp_path / "nope.log"))
+        assert pattern == "silent"
+        assert excerpt == ""
+
+    def test_silent_for_tiny_file(self, tmp_path):
+        """File below min-bytes threshold → silent."""
+        f = tmp_path / "stdout.log"
+        f.write_text("tiny\n")
+        pattern, excerpt = classify_stagnation(str(f))
+        assert pattern == "silent"
+
+    def test_unknown_fallback(self, tmp_path):
+        """Normal output with no patterns → unknown."""
+        f = tmp_path / "stdout.log"
+        lines = []
+        for i in range(40):
+            lines.append(f"normal progress output line {i:04d} with some padding text here")
+        f.write_text("\n".join(lines) + "\n")
+        pattern, excerpt = classify_stagnation(str(f))
+        assert pattern == "unknown"
+        assert len(excerpt) <= 200
+
+    def test_excerpt_capped_at_200_chars(self, tmp_path):
+        """Excerpt must never exceed 200 characters."""
+        f = tmp_path / "stdout.log"
+        lines = []
+        for i in range(40):
+            lines.append("x" * 300)
+        f.write_text("\n".join(lines) + "\n")
+        _, excerpt = classify_stagnation(str(f))
+        assert len(excerpt) <= 200
+
+    def test_tool_loop_takes_priority_over_errors(self, tmp_path):
+        """tool_loop is checked before infinite_retry — first match wins."""
+        f = tmp_path / "stdout.log"
+        lines = []
+        for i in range(20):
+            lines.append(f"filler line {i:04d} .............")
+        # 5 tool references + 3 error lines
+        for i in range(5):
+            lines.append(f"Read tool call {i}: reading file.py")
+        lines.append("Error: something went wrong")
+        lines.append("Exception in handler")
+        lines.append("Traceback occurred")
+        f.write_text("\n".join(lines) + "\n")
+        pattern, _ = classify_stagnation(str(f))
+        assert pattern == "tool_loop"
+
+
+class TestMonitorCapturesPattern:
+    """StagnationMonitor populates pattern_type/pattern_excerpt on abort."""
+
+    def test_pattern_set_on_stagnation(self, tmp_path):
+        f = tmp_path / "stdout.log"
+        # Write tool-loop content
+        lines = []
+        for i in range(30):
+            lines.append(f"filler {i:04d} .............")
+        for i in range(6):
+            lines.append(f"Calling Bash tool iteration {i}")
+        f.write_text("\n".join(lines) + "\n")
+
+        monitor = StagnationMonitor(
+            stdout_file=str(f),
+            on_abort=lambda: None,
+            check_interval_seconds=1,
+            abort_after_cycles=2,
+        )
+        monitor._sample_once()
+        monitor._sample_once()
+        assert monitor.stagnated
+        assert monitor.pattern_type == "tool_loop"
+        assert "Bash" in monitor.pattern_excerpt
+
+    def test_pattern_defaults_on_no_stagnation(self, tmp_path):
+        f = tmp_path / "stdout.log"
+        _make_stdout(f, 60)
+
+        monitor = StagnationMonitor(
+            stdout_file=str(f),
+            on_abort=lambda: None,
+            check_interval_seconds=1,
+            abort_after_cycles=5,
+        )
+        # Only one sample — not stagnated
+        monitor._sample_once()
+        assert not monitor.stagnated
+        assert monitor.pattern_type == ""
+        assert monitor.pattern_excerpt == ""
+
+
+class TestRetryTrackerWithPattern:
+    """Retry tracker stores and retrieves pattern classification."""
+
+    def test_increment_stores_pattern(self, tmp_path):
+        instance = str(tmp_path)
+        increment_retry_count(
+            instance, "test mission",
+            pattern_type="tool_loop", pattern_excerpt="Bash Bash Bash",
+        )
+        info = get_retry_info(instance, "test mission")
+        assert info["count"] == 1
+        assert info["pattern_type"] == "tool_loop"
+        assert info["sample_lines"] == "Bash Bash Bash"
+
+    def test_backward_compat_with_int_format(self, tmp_path):
+        """Old tracker format (bare int) still works."""
+        from app.stagnation_monitor import _mission_key, _retry_tracker_path
+        instance = str(tmp_path)
+        path = _retry_tracker_path(instance)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        key = _mission_key("old mission")
+        path.write_text(json.dumps({key: 3}))
+
+        info = get_retry_info(instance, "old mission")
+        assert info["count"] == 3
+        assert info["pattern_type"] == ""
+
+    def test_increment_preserves_latest_pattern(self, tmp_path):
+        instance = str(tmp_path)
+        increment_retry_count(
+            instance, "flaky", pattern_type="tool_loop", pattern_excerpt="Read x5",
+        )
+        increment_retry_count(
+            instance, "flaky", pattern_type="infinite_retry", pattern_excerpt="Error x3",
+        )
+        info = get_retry_info(instance, "flaky")
+        assert info["count"] == 2
+        assert info["pattern_type"] == "infinite_retry"

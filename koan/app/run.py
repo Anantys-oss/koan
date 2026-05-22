@@ -332,9 +332,12 @@ def run_claude_task(
     Returns the child exit code.
     """
     global _last_mission_timed_out, _last_mission_aborted
+    global _stagnation_pattern_type, _stagnation_pattern_excerpt
     _last_mission_timed_out = False
     _last_mission_aborted = False
     _last_mission_stagnated.clear()
+    _stagnation_pattern_type = ""
+    _stagnation_pattern_excerpt = ""
 
     _sig.task_running = True
     _sig.first_ctrl_c = 0
@@ -434,6 +437,8 @@ def run_claude_task(
                     stagnation_monitor.stop()
                     if stagnation_monitor.stagnated:
                         _last_mission_stagnated.set()
+                        _stagnation_pattern_type = stagnation_monitor.pattern_type
+                        _stagnation_pattern_excerpt = stagnation_monitor.pattern_excerpt
                 cleanup()
 
         exit_code = proc.returncode
@@ -1419,6 +1424,9 @@ _last_mission_aborted = False
 # Uses threading.Event for explicit cross-thread signaling between the
 # stagnation daemon (writer) and the main loop's _finalize_mission (reader).
 _last_mission_stagnated = threading.Event()
+# Classification of the stagnation root cause (set alongside the Event).
+_stagnation_pattern_type = ""
+_stagnation_pattern_excerpt = ""
 
 # Tracks whether the cold-start Telegram burst (GH scan / Jira scan / first
 # mission pick) has already fired since process start or /resume. Decoupled
@@ -2547,17 +2555,26 @@ def _finalize_mission(instance: str, mission_title: str, project_name: str, exit
             increment_retry_count,
         )
 
+        pattern = _stagnation_pattern_type or "unknown"
+        excerpt = _stagnation_pattern_excerpt or ""
+
         cfg = get_stagnation_config(project_name)
         max_retry = int(cfg.get("max_retry_on_stagnation", 0))
         already = get_retry_count(instance, mission_title)
         if max_retry > 0 and already < max_retry:
-            new_count = increment_retry_count(instance, mission_title)
+            new_count = increment_retry_count(
+                instance, mission_title,
+                pattern_type=pattern, pattern_excerpt=excerpt,
+            )
             log("koan", (
-                f"Stagnation retry {new_count}/{max_retry} — "
+                f"Stagnation retry {new_count}/{max_retry} ({pattern}) — "
                 f"requeueing mission: {mission_title[:60]}"
             ))
             _requeue_mission_in_file(instance, mission_title)
-            _notify_stagnation_retry(mission_title, project_name, new_count, max_retry)
+            _notify_stagnation_retry(
+                mission_title, project_name, new_count, max_retry,
+                pattern_type=pattern, pattern_excerpt=excerpt,
+            )
             try:
                 from app.mission_history import record_execution
                 record_execution(instance, mission_title, project_name, exit_code)
@@ -2566,9 +2583,9 @@ def _finalize_mission(instance: str, mission_title: str, project_name: str, exit
             return
 
         # Retry cap reached (or retries disabled): mark Failed with cause tag.
-        cause_tag = "stagnation"
+        cause_tag = f"stagnation:{pattern}"
         clear_retry_count(instance, mission_title)
-        _notify_stagnation(mission_title, project_name)
+        _notify_stagnation(mission_title, project_name, pattern, excerpt)
     else:
         # A non-stagnation outcome resets any prior retry counter so a
         # mission that completes (or fails for a different reason) does
@@ -2589,35 +2606,51 @@ def _finalize_mission(instance: str, mission_title: str, project_name: str, exit
         log("error", f"Mission history recording error: {e}")
 
 
-def _notify_stagnation(mission_title: str, project_name: str) -> None:
+def _notify_stagnation(
+    mission_title: str,
+    project_name: str,
+    pattern_type: str = "",
+    pattern_excerpt: str = "",
+) -> None:
     """Send a Telegram message announcing a stagnation abort."""
     try:
         from app.notify import NotificationPriority, send_telegram
         short_title = mission_title[:120]
         project_prefix = f"[{project_name}] " if project_name else ""
+        cause = f" ({pattern_type})" if pattern_type else ""
         message = (
-            f"🛑 {project_prefix}Mission stopped — Claude was stuck in a loop "
-            f"(stagnation). Marked as Failed in missions.md.\n\n"
+            f"🛑 {project_prefix}Mission stopped — Claude was stuck in a loop"
+            f"{cause}. Marked as Failed in missions.md.\n\n"
             f"Mission: {short_title}"
         )
+        if pattern_excerpt:
+            message += f"\n\nContext: {pattern_excerpt[:200]}"
         send_telegram(message, priority=NotificationPriority.WARNING)
     except Exception as e:
         log("error", f"Stagnation notification failed: {e}")
 
 
 def _notify_stagnation_retry(
-    mission_title: str, project_name: str, attempt: int, max_attempts: int,
+    mission_title: str,
+    project_name: str,
+    attempt: int,
+    max_attempts: int,
+    pattern_type: str = "",
+    pattern_excerpt: str = "",
 ) -> None:
     """Send a Telegram message announcing a stagnation-triggered requeue."""
     try:
         from app.notify import NotificationPriority, send_telegram
         short_title = mission_title[:120]
         project_prefix = f"[{project_name}] " if project_name else ""
+        cause = f" ({pattern_type})" if pattern_type else ""
         message = (
-            f"🔁 {project_prefix}Mission stagnated (Claude stuck in a loop) — "
+            f"🔁 {project_prefix}Mission stagnated{cause} — "
             f"requeueing for retry {attempt}/{max_attempts}.\n\n"
             f"Mission: {short_title}"
         )
+        if pattern_excerpt:
+            message += f"\n\nContext: {pattern_excerpt[:200]}"
         send_telegram(message, priority=NotificationPriority.WARNING)
     except Exception as e:
         log("error", f"Stagnation retry notification failed: {e}")
