@@ -184,6 +184,21 @@ skill_timeout: 7200
 #   sample_lines: 50
 #   max_retry_on_stagnation: 3
 
+# Autonomous health diagnostics — automatically inject diagnostic missions
+# (tech_debt, dead_code, or audit) when a project's success rate falls below
+# a threshold and it has accumulated consecutive non-productive sessions.
+# Diagnostic type selection:
+#   - "declining" trend  → tech_debt (structural issues causing failures)
+#   - many "empty" sessions → dead_code (cleanup to unblock exploration)
+#   - many "blocked"/stagnated sessions → audit (deeper investigation)
+# Disabled by default — opt in when you want self-healing behavior.
+# autonomous_health:
+#   enabled: false              # Master switch (default: false)
+#   success_rate_floor: 0.25    # Trigger below this success rate (default: 0.25)
+#   staleness_floor: 3          # Consecutive non-productive sessions required (default: 3)
+#   cooldown_days: 21           # Min days between diagnostics per project (default: 21)
+#   min_mode: implement         # Minimum autonomous mode required (default: implement)
+
 # Contemplative mode trigger chance (0-100%)
 # When no mission is pending, this is the probability of running a reflective
 # session instead of autonomous work. Allows regular moments of introspection
