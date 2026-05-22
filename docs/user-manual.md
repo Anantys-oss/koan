@@ -1402,6 +1402,21 @@ See [docs/auto-update.md](auto-update.md) for details.
 - `/dead_code` — Scan the default project
 </details>
 
+### Spec-Drift Audit
+
+**`/spec_audit`** — Check that documentation (user-manual.md, github-commands.md, CLAUDE.md) stays in sync with the actual codebase. Produces a divergence report saved to project learnings, and queues fix missions for each finding.
+
+- **Usage:** `/spec_audit [project-name]`
+- **Aliases:** `/sa`, `/drift`
+
+<details>
+<summary>Use cases</summary>
+
+- `/spec_audit koan` — Audit docs alignment for the koan project
+- `/sa` — Audit the default project
+- Set up as a recurring mission: `/weekly /spec_audit` for continuous drift detection
+</details>
+
 ### Codebase Audit
 
 **`/audit`** — Audit a project for optimizations, simplifications, and potential issues. Creates a GitHub issue for each finding with detailed problem description, impact analysis, suggested fix, and severity/effort classification.
@@ -1594,6 +1609,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/private_security_audit <project> [ctx] [limit=N]` | `/private_security`, `/psecu` | P | Security audit, findings to journal only (no GitHub) |
 | `/tech_debt [project]` | `/td`, `/debt` | P | Scan project for tech debt |
 | `/dead_code [project]` | `/dc` | P | Scan for unused code |
+| `/spec_audit [project]` | `/sa`, `/drift` | P | Audit docs/code alignment, queue fix missions |
 | `/incident <error>` | — | P | Triage a production error |
 | `/scaffold_skill <scope> <name> <desc>` | `/scaffold`, `/new_skill` | P | Generate SKILL.md + handler.py for a new custom skill |
 | `/rtk [setup\|uninstall\|gain\|on\|off]` | — | P | Manage optional [rtk](https://github.com/rtk-ai/rtk) integration for compressed tool output (60-90 % token savings on Bash commands). See [docs/rtk.md](rtk.md). |
@@ -1602,4 +1618,4 @@ Skills marked with GitHub @mention support: `/audit`, `/security_audit`, `/brain
 
 ---
 
-*This manual covers all 43 core skills. For the full command reference with tabular format, see [docs/skills.md](skills.md). For skill authoring, see [koan/skills/README.md](../koan/skills/README.md).*
+*This manual covers all 44 core skills. For the full command reference with tabular format, see [docs/skills.md](skills.md). For skill authoring, see [koan/skills/README.md](../koan/skills/README.md).*

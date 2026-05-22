@@ -79,6 +79,7 @@ _CANONICAL_RUNNERS = {
     "security_audit": "skills.core.security_audit.security_audit_runner",
     "private_security_audit": "skills.core.private_security_audit.private_security_audit_runner",
     "ci_check": "app.ci_queue_runner",
+    "spec_audit": "skills.core.spec_audit.spec_audit_runner",
 }
 
 # Alias -> canonical command name. Declared once, expanded into
@@ -93,6 +94,8 @@ _COMMAND_ALIASES = {
     "secu": "security_audit",
     "private_security": "private_security_audit",
     "psecu": "private_security_audit",
+    "sa": "spec_audit",
+    "drift": "spec_audit",
 }
 
 # Full mapping including aliases — used for runner module lookup.
@@ -308,6 +311,9 @@ def build_skill_command(
         "claudemd": lambda: _build_claudemd_cmd(base_cmd, project_name, project_path),
         "incident": lambda: _build_incident_cmd(base_cmd, args, project_path, instance_dir),
         "ci_check": lambda: _build_pr_url_cmd(base_cmd, args, project_path),
+        "spec_audit": lambda: _build_project_info_cmd(
+            base_cmd, project_name, project_path, instance_dir,
+        ),
     }
     def _audit_builder():
         return _build_audit_cmd(
