@@ -260,7 +260,7 @@ def compress_diff(raw_diff: str, token_budget: int = 80_000) -> CompressedDiff:
         included_blocks = [fd.header + fd.hunks[0]]
         if len(fd.hunks) > 1:
             skipped = [f"{fd.path} (partial)"] + [
-                s for s in skipped if not s.startswith(fd.path)
+                s for s in skipped if s not in (fd.path, f"{fd.path} (partial)")
             ]
 
     return CompressedDiff(diff_text="".join(included_blocks), skipped_files=skipped)
