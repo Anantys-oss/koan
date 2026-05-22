@@ -485,6 +485,17 @@ Use this before `/plan` when the idea is architecturally complex, when you want 
 - `/rf https://github.com/org/repo/issues/70` — Refactor based on an issue description
 </details>
 
+**`/checkup`** — Run a health check on all open PRs across projects. Scans for stale PRs, CI failures, and unresolved review comments, then reports a summary.
+
+- **Usage:** `/checkup`
+- **Aliases:** `/checkprs`
+
+<details>
+<summary>Use cases</summary>
+
+- `/checkup` — "Are any of my open PRs stuck or failing?"
+</details>
+
 ### PR Management
 
 **`/ask`** — Ask a question about a GitHub PR or issue and get an AI-generated reply posted directly to the thread.
@@ -1017,6 +1028,18 @@ Run it after every Kōan update to stay in sync:
 
 The same check runs automatically as part of `/doctor` — use `/config_check` when you only want the config slice without the rest of the diagnostic report.
 
+**`/doctor`** — Run diagnostic self-checks on Kōan's configuration and health. Checks config drift, project reachability, GitHub auth, process status, and more.
+
+- **Usage:** `/doctor [--full]`
+- **Aliases:** `/diag`
+
+<details>
+<summary>Use cases</summary>
+
+- `/doctor` — "Is everything configured correctly?"
+- `/diag` — Quick diagnostic check after a fresh install or update
+</details>
+
 ### Caveman Output Optimization
 
 Caveman appends a "no filler, 3–6 word sentences, direct answers" directive to Claude prompts to reduce output tokens.
@@ -1163,20 +1186,26 @@ See [koan/skills/README.md](../koan/skills/README.md) for the full authoring gui
 
 ### GitHub @mention Integration
 
-Ten skills can be triggered by commenting `@koan-bot <command>` on GitHub issues and PRs:
+Sixteen skills can be triggered by commenting `@koan-bot <command>` on GitHub issues and PRs:
 
 | Skill | GitHub trigger |
 |-------|---------------|
+| `/ask` | `@koan-bot ask <question>` on a PR or issue |
+| `/audit` | `@koan-bot /audit` on an issue or PR |
 | `/brainstorm` | `@koan-bot /brainstorm <topic>` on an issue |
-| `/implement` | `@koan-bot /implement` on an issue |
+| `/deepplan` | `@koan-bot /deepplan <idea>` on an issue |
 | `/fix` | `@koan-bot /fix` on an issue |
-| `/review` | `@koan-bot /review` on a PR |
-| `/rebase` | `@koan-bot /rebase` on a PR |
-| `/reviewrebase` | `@koan-bot /rr` on a PR |
-| `/recreate` | `@koan-bot /recreate` on a PR |
-| `/refactor` | `@koan-bot /refactor` on a PR or issue |
+| `/gh_request` | `@koan-bot <natural language>` (when `natural_language: true`) |
+| `/implement` | `@koan-bot /implement` on an issue |
 | `/plan` | `@koan-bot /plan <idea>` on an issue |
 | `/profile` | `@koan-bot /profile` on a PR or issue |
+| `/rebase` | `@koan-bot /rebase` on a PR |
+| `/recreate` | `@koan-bot /recreate` on a PR |
+| `/refactor` | `@koan-bot /refactor` on a PR or issue |
+| `/review` | `@koan-bot /review` on a PR |
+| `/reviewrebase` | `@koan-bot /rr` on a PR |
+| `/security_audit` | `@koan-bot /security_audit` on an issue or PR |
+| `/squash` | `@koan-bot /squash` on a PR |
 
 Setup requires configuring `github_nickname` and `github_commands_enabled` in `config.yaml`. See [docs/github-commands.md](github-commands.md) for full setup and configuration details.
 
@@ -1554,6 +1583,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/fix <issue>` | — | I | Full bug-fix pipeline (understand → plan → test → fix → PR) |
 | `/review <PR> [--architecture]` | `/rv` | I | Review a pull request |
 | `/refactor <desc>` | `/rf` | I | Targeted refactoring mission |
+| `/checkup` | `/checkprs` | I | Health check on all open PRs across projects |
 | `/ask <comment-url>` | — | I | Ask a question about a PR/issue — posts AI reply to GitHub |
 | `/rebase <PR>` | `/rb` | I | Rebase a PR onto its base branch |
 | `/reviewrebase <PR>` | `/rr` | I | Review then rebase a PR (combo) |
@@ -1566,6 +1596,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/gh_request <url> <text>` | — | I | Route natural-language GitHub request to the right skill |
 | `/claudemd [project]` | `/claude`, `/claude.md`, `/claude_md` | I | Refresh a project's CLAUDE.md |
 | `/config_check` | `/cfgcheck`, `/configcheck` | P | Detect config.yaml drift against instance.example template |
+| `/doctor` | `/diag` | P | Run diagnostic self-checks on config and health |
 | `/gha_audit [project]` | `/gha` | I | Audit GitHub Actions for security issues |
 | `/changelog [project]` | `/changes` | I | Generate changelog from commits/journal |
 | `/daily <text>` | — | I | Schedule a daily recurring mission |
@@ -1607,8 +1638,8 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/scaffold_skill <scope> <name> <desc>` | `/scaffold`, `/new_skill` | P | Generate SKILL.md + handler.py for a new custom skill |
 | `/rtk [setup\|uninstall\|gain\|on\|off]` | — | P | Manage optional [rtk](https://github.com/rtk-ai/rtk) integration for compressed tool output (60-90 % token savings on Bash commands). See [docs/rtk.md](rtk.md). |
 
-Skills marked with GitHub @mention support: `/audit`, `/security_audit`, `/brainstorm`, `/plan`, `/implement`, `/fix`, `/review`, `/rebase`, `/recreate`, `/refactor`, `/profile`, `/gh_request`. See [GitHub Commands](github-commands.md) for details.
+Skills marked with GitHub @mention support: `/ask`, `/audit`, `/brainstorm`, `/deepplan`, `/fix`, `/gh_request`, `/implement`, `/plan`, `/profile`, `/rebase`, `/recreate`, `/refactor`, `/review`, `/reviewrebase`, `/security_audit`, `/squash`. See [GitHub Commands](github-commands.md) for details.
 
 ---
 
-*This manual covers all 43 core skills. For the full command reference with tabular format, see [docs/skills.md](skills.md). For skill authoring, see [koan/skills/README.md](../koan/skills/README.md).*
+*This manual covers all 65 core skills. For the full command reference with tabular format, see [docs/skills.md](skills.md). For skill authoring, see [koan/skills/README.md](../koan/skills/README.md).*
