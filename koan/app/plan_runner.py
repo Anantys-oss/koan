@@ -578,14 +578,16 @@ def _extract_search_keywords(idea):
     return " ".join(keywords[:4])
 
 
-def _get_repo_info(project_path):
+def _get_repo_info(project_path, project_name=""):
     """Get GitHub owner/repo from a local git repo.
 
     If the local repo is a fork, returns the upstream (parent) owner/repo
     so that issues are created in the upstream repository.
     """
     # Prefer upstream parent when working in a fork
-    upstream = resolve_target_repo(project_path)
+    upstream = resolve_target_repo(
+        project_path, project_name=project_name,
+    )
     if upstream:
         parts = upstream.split("/", 1)
         if len(parts) == 2 and all(parts):

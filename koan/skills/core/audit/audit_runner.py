@@ -358,6 +358,7 @@ def create_issues(
     notify_fn=None,
     pvrs_mode: str = "auto",
     pvrs_threshold: str = "high",
+    project_name: str = "",
 ) -> IssueCreationResult:
     """Create GitHub issues (or PVRS reports) for each finding.
 
@@ -390,7 +391,9 @@ def create_issues(
         list_open_audit_issues, resolve_target_repo,
     )
 
-    target_repo = resolve_target_repo(project_path)
+    target_repo = resolve_target_repo(
+        project_path, project_name=project_name,
+    )
 
     # Determine PVRS availability
     pvrs_available = False
@@ -704,6 +707,7 @@ def run_audit(
     result = create_issues(
         findings, project_path, notify_fn=notify_fn,
         pvrs_mode=pvrs_mode, pvrs_threshold=pvrs_threshold,
+        project_name=project_name,
     )
 
     # Step 6: Save report
