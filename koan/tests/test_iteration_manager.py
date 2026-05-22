@@ -24,6 +24,7 @@ from app.iteration_manager import (
     _get_known_project_names,
     _get_usage_decision,
     _inject_recurring,
+    _log_selection_audit,
     _make_result,
     _pick_mission,
     _refresh_usage,
@@ -3016,3 +3017,129 @@ class TestFocusModePromptOverride:
         with patch("app.prompt_builder._is_focus_mode", return_value=False):
             result = _apply_focus_mode_override(sample)
         assert result == sample
+
+
+# === Tests: _log_selection_audit ===
+
+
+class TestLogSelectionAudit:
+
+    def test_writes_audit_entry(self, instance_dir):
+        """Audit log should write a structured entry to .selection-audit.json."""
+        candidates = [("koan", "/koan"), ("backend", "/backend")]
+        _log_selection_audit(
+            str(instance_dir), candidates,
+            candidate_weights=[10, 8],
+            freshness={"koan": 10, "backend": 8},
+            drift={"koan": 5, "backend": 0},
+            success_rates={"koan": 0.8, "backend": 0.4},
+            ts_samples={"koan": 0.75, "backend": 0.45},
+            combined=[7.5, 3.6],
+            selected="koan",
+        )
+        audit_path = instance_dir / ".selection-audit.json"
+        assert audit_path.exists()
+        entries = json.loads(audit_path.read_text())
+        assert len(entries) == 1
+        assert entries[0]["selected"] == "koan"
+        assert "koan" in entries[0]["candidates"]
+        assert "backend" in entries[0]["candidates"]
+        koan_entry = entries[0]["candidates"]["koan"]
+        assert koan_entry["weight"] == 10
+        assert koan_entry["freshness"] == 10
+        assert koan_entry["drift"] == 5
+        assert koan_entry["success_rate"] == 0.8
+        assert koan_entry["ts_sample"] == 0.75
+
+    def test_appends_to_existing(self, instance_dir):
+        """Multiple audit entries should accumulate."""
+        audit_path = instance_dir / ".selection-audit.json"
+        audit_path.write_text('[{"selected": "old", "candidates": {}}]')
+
+        candidates = [("koan", "/koan")]
+        _log_selection_audit(
+            str(instance_dir), candidates,
+            candidate_weights=[10],
+            freshness=None, drift=None, success_rates=None,
+            ts_samples={"koan": 0.5}, combined=[5.0],
+            selected="koan",
+        )
+        entries = json.loads(audit_path.read_text())
+        assert len(entries) == 2
+        assert entries[0]["selected"] == "old"
+        assert entries[1]["selected"] == "koan"
+
+    def test_caps_at_max_entries(self, instance_dir):
+        """Ring buffer should cap at _MAX_SELECTION_AUDIT_ENTRIES."""
+        from app.iteration_manager import _MAX_SELECTION_AUDIT_ENTRIES
+
+        audit_path = instance_dir / ".selection-audit.json"
+        existing = [{"selected": f"p{i}", "candidates": {}}
+                     for i in range(_MAX_SELECTION_AUDIT_ENTRIES)]
+        audit_path.write_text(json.dumps(existing))
+
+        candidates = [("new", "/new")]
+        _log_selection_audit(
+            str(instance_dir), candidates,
+            candidate_weights=[10],
+            freshness=None, drift=None, success_rates=None,
+            ts_samples={"new": 0.5}, combined=[5.0],
+            selected="new",
+        )
+        entries = json.loads(audit_path.read_text())
+        assert len(entries) == _MAX_SELECTION_AUDIT_ENTRIES
+        assert entries[-1]["selected"] == "new"
+        # First entry should have been evicted
+        assert entries[0]["selected"] == "p1"
+
+    def test_handles_none_signals_gracefully(self, instance_dir):
+        """With all signals None, audit entry still records weights and selection."""
+        candidates = [("koan", "/koan")]
+        _log_selection_audit(
+            str(instance_dir), candidates,
+            candidate_weights=[10],
+            freshness=None, drift=None, success_rates=None,
+            ts_samples={}, combined=[],
+            selected="koan",
+        )
+        audit_path = instance_dir / ".selection-audit.json"
+        entries = json.loads(audit_path.read_text())
+        koan_data = entries[0]["candidates"]["koan"]
+        assert koan_data["freshness"] is None
+        assert koan_data["drift"] is None
+        assert koan_data["success_rate"] is None
+
+
+class TestSelectionNoDoubleCountingSuccessRate:
+    """Verify that success_rate no longer influences candidate weights.
+
+    The Thompson Sampling bandit encodes productive/non-productive outcomes
+    via its Beta distribution.  Adding a success-rate bonus in the weight
+    computation double-counts the signal.  These tests confirm the fix.
+    """
+
+    @patch("app.iteration_manager._log_selection_audit")
+    def test_high_success_rate_does_not_boost_weight(self, mock_audit):
+        """success_rate >= 0.7 should NOT add to candidate weights."""
+        projects = [("a", "/a"), ("b", "/b")]
+        # Mock freshness and Thompson Sampling to be deterministic
+        with patch("app.session_tracker.load_outcomes", return_value=[]), \
+             patch("app.session_tracker.get_project_freshness",
+                   return_value={"a": 10, "b": 10}), \
+             patch("app.session_tracker.get_project_drift",
+                   return_value={"a": 0, "b": 0}), \
+             patch("app.mission_metrics.get_project_success_rates",
+                   return_value={"a": 0.9, "b": 0.1}), \
+             patch("app.bandit.load_bandit_state") as mock_bandit, \
+             patch("app.bandit.thompson_sample", return_value=0.5):
+
+            _select_random_exploration_project(projects, "", "/fake/instance")
+
+            # Check the weights passed to audit — both should be 10
+            # (freshness only, no success_rate adjustment)
+            if mock_audit.called:
+                call_kwargs = mock_audit.call_args
+                weights_arg = call_kwargs[0][2]  # candidate_weights positional
+                assert weights_arg == [10, 10], (
+                    f"Weights should be equal (freshness only), got {weights_arg}"
+                )

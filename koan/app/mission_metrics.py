@@ -170,6 +170,7 @@ def get_project_success_rates(
     instance_dir: str,
     projects: List[str],
     days: int = 30,
+    _all_outcomes: Optional[list] = None,
 ) -> Dict[str, float]:
     """Get success rates for multiple projects (for iteration_manager weighting).
 
@@ -177,12 +178,13 @@ def get_project_success_rates(
         instance_dir: Path to instance directory.
         projects: List of project names.
         days: Number of days to look back.
+        _all_outcomes: Pre-loaded outcomes list to avoid redundant file reads.
 
     Returns:
         Dict mapping project name to success rate (0.0-1.0).
         Projects with no data get 0.5 (neutral).
     """
-    outcomes = _load_outcomes(instance_dir)
+    outcomes = _all_outcomes if _all_outcomes is not None else _load_outcomes(instance_dir)
     filtered = _filter_by_window(outcomes, days)
 
     by_project = defaultdict(lambda: {"total": 0, "productive": 0})

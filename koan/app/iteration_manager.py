@@ -572,6 +572,65 @@ def _check_passive(koan_root: str):
         return None
 
 
+_MAX_SELECTION_AUDIT_ENTRIES = 200
+
+
+def _log_selection_audit(
+    instance_dir: str,
+    candidates: List[Tuple[str, str]],
+    candidate_weights: List[float],
+    freshness: Optional[dict],
+    drift: Optional[dict],
+    success_rates: Optional[dict],
+    ts_samples: dict,
+    combined: list,
+    selected: str,
+) -> None:
+    """Append a structured entry to .selection-audit.json for debugging.
+
+    Captures all signals that contributed to the project selection decision
+    so post-hoc analysis can identify selection biases or misconfigured weights.
+    Ring-buffered to _MAX_SELECTION_AUDIT_ENTRIES entries.
+    """
+    from datetime import datetime
+
+    entry = {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "selected": selected,
+        "candidates": {},
+    }
+    for i, (name, _) in enumerate(candidates):
+        entry["candidates"][name] = {
+            "weight": candidate_weights[i] if i < len(candidate_weights) else None,
+            "freshness": freshness.get(name) if freshness else None,
+            "drift": drift.get(name, 0) if drift else None,
+            "success_rate": (
+                round(success_rates.get(name, 0.5), 3)
+                if success_rates else None
+            ),
+            "ts_sample": (
+                round(ts_samples[name], 4)
+                if name in ts_samples else None
+            ),
+            "combined": round(combined[i], 4) if i < len(combined) else None,
+        }
+
+    audit_path = Path(instance_dir) / ".selection-audit.json"
+    try:
+        from app.utils import atomic_write
+        existing = []
+        if audit_path.exists():
+            raw = json.loads(audit_path.read_text(encoding="utf-8"))
+            if isinstance(raw, list):
+                existing = raw
+        existing.append(entry)
+        if len(existing) > _MAX_SELECTION_AUDIT_ENTRIES:
+            existing = existing[-_MAX_SELECTION_AUDIT_ENTRIES:]
+        atomic_write(audit_path, json.dumps(existing, indent=2))
+    except (OSError, json.JSONDecodeError, TypeError) as e:
+        _log_iteration("error", f"Selection audit write failed: {e}")
+
+
 def _select_random_exploration_project(
     projects: List[Tuple[str, str]],
     last_project: str = "",
@@ -645,6 +704,7 @@ def _select_random_exploration_project(
             project_names = [n for n, _ in projects]
             success_rates = get_project_success_rates(
                 instance_dir, project_names, days=30,
+                _all_outcomes=all_outcomes,
             )
         except (ImportError, OSError, ValueError) as e:
             _log_iteration("error", f"Success rate lookup failed: {e}")
@@ -656,8 +716,13 @@ def _select_random_exploration_project(
         if filtered:
             candidates = filtered
 
-    # Weighted random selection combining freshness, drift, and success rate
-    if (weights or drift or success_rates) and len(candidates) > 1:
+    # Weighted random selection combining freshness and drift.
+    # NOTE: success_rate is NOT included in the weight computation because
+    # the Thompson Sampling bandit already encodes productive/non-productive
+    # outcomes via its Beta distribution.  Adding success_rate here would
+    # double-count the signal (bandit alpha/beta AND explicit weight bonus).
+    # Success rate is still logged for observability.
+    if (weights or drift) and len(candidates) > 1:
         candidate_weights = []
         for name, _ in candidates:
             base = weights.get(name, 10) if weights else 10
@@ -670,37 +735,40 @@ def _select_random_exploration_project(
                     base += 3  # Moderate drift
                 elif d >= 3:
                     base += 1  # Minor drift
-            # Success rate adjustment: deprioritize projects with low success
-            # Only applies when we have enough data (rate != 0.5 neutral)
-            if success_rates:
-                rate = success_rates.get(name, 0.5)
-                if rate < 0.3:
-                    base = max(1, base - 3)  # Low success — reduce weight
-                elif rate >= 0.7:
-                    base += 2  # High success — boost
             candidate_weights.append(base)
 
         total = sum(candidate_weights)
         if total > 0:
             # Thompson Sampling: each candidate gets a Beta sample scaled
-            # by the existing staleness/drift/success score.  The existing
-            # score acts as a prior multiplier so recency bias is preserved.
+            # by the staleness/drift score.  The existing score acts as a
+            # context multiplier (signals the bandit cannot observe),
+            # while the bandit handles exploitation vs exploration.
             # argmax over combined scores replaces random.choices().
             try:
                 from app.bandit import load_bandit_state, thompson_sample
                 bandit = load_bandit_state(instance_dir)
-                combined = [
-                    w * thompson_sample(bandit, name)
-                    for (name, _), w in zip(candidates, candidate_weights, strict=True)
-                ]
+                ts_samples = {}
+                combined = []
+                for (name, _), w in zip(candidates, candidate_weights, strict=True):
+                    sample = thompson_sample(bandit, name)
+                    ts_samples[name] = sample
+                    combined.append(w * sample)
                 best_idx = combined.index(max(combined))
                 selected = candidates[best_idx]
-                _ts_sample = combined[best_idx]
             except Exception as e:
                 # Fallback to weighted random on any bandit error
                 print(f"[iteration] bandit sampling error: {e}", file=sys.stderr)
                 selected = random.choices(candidates, weights=candidate_weights, k=1)[0]
-                _ts_sample = None
+                ts_samples = {}
+                combined = []
+
+            # Audit trail: log all signals for every candidate so selection
+            # decisions can be debugged after the fact.
+            _log_selection_audit(
+                instance_dir, candidates, candidate_weights,
+                weights, drift, success_rates, ts_samples, combined,
+                selected[0],
+            )
 
             extra_info = []
             if weights:
@@ -715,6 +783,8 @@ def _select_random_exploration_project(
                 rate = success_rates.get(selected[0], 0.5)
                 if rate != 0.5:
                     extra_info.append(f"success={rate:.0%}")
+            if ts_samples:
+                extra_info.append(f"ts={ts_samples.get(selected[0], 0):.3f}")
             suffix = f" ({', '.join(extra_info)})" if extra_info else ""
             _log_iteration("koan",
                 f"Thompson Sampling: '{selected[0]}'{suffix} "
