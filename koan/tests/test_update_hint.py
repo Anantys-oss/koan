@@ -1,9 +1,10 @@
 """Tests for app.update_hint — upstream update notification with 48 h cooldown."""
 
 import json
+import subprocess
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 import pytest
 
@@ -163,3 +164,88 @@ class TestMaybeSendUpdateHint:
         # State file NOT written on failure
         state = Path(instance_dir) / ".update-hint.json"
         assert not state.exists()
+
+    @patch("app.update_hint.check_for_updates", side_effect=Exception("fetch failed"))
+    def test_returns_false_on_check_exception(self, mock_check, instance_dir, koan_root):
+        from app.update_hint import maybe_send_update_hint
+        result = maybe_send_update_hint(instance_dir, koan_root)
+        assert result is False
+
+    @patch("app.update_hint.find_upstream_remote", side_effect=Exception("git broken"))
+    @patch("app.update_hint.check_for_updates", return_value=5)
+    def test_returns_false_on_remote_exception(
+        self, mock_check, mock_remote, instance_dir, koan_root,
+    ):
+        from app.update_hint import maybe_send_update_hint
+        result = maybe_send_update_hint(instance_dir, koan_root)
+        assert result is False
+
+
+class TestNaiveDatetimeCooldown:
+    """Cover the naive-datetime branch in _is_within_cooldown (line 58)."""
+
+    def test_naive_timestamp_treated_as_utc(self, tmp_path):
+        from app.update_hint import _is_within_cooldown
+        state = tmp_path / ".update-hint.json"
+        # Write a naive (no timezone) ISO timestamp — should be treated as UTC.
+        recent = datetime.now(timezone.utc).replace(tzinfo=None)
+        state.write_text(json.dumps({"last_notified_at": recent.isoformat()}))
+        assert _is_within_cooldown(state) is True
+
+    def test_naive_old_timestamp_not_in_cooldown(self, tmp_path):
+        from app.update_hint import _is_within_cooldown, _HINT_INTERVAL_SECONDS
+        state = tmp_path / ".update-hint.json"
+        old = datetime.now(timezone.utc) - timedelta(seconds=_HINT_INTERVAL_SECONDS + 100)
+        old_naive = old.replace(tzinfo=None)
+        state.write_text(json.dumps({"last_notified_at": old_naive.isoformat()}))
+        assert _is_within_cooldown(state) is False
+
+
+class TestGetMissingCommits:
+    """Cover _get_missing_commits (lines 68-82)."""
+
+    @patch("app.update_hint.subprocess.run")
+    def test_returns_commit_list(self, mock_run, tmp_path):
+        from app.update_hint import _get_missing_commits
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="abc123 fix: first\ndef456 feat: second\n",
+        )
+        result = _get_missing_commits(tmp_path, "upstream")
+        assert result == ["abc123 fix: first", "def456 feat: second"]
+
+    @patch("app.update_hint.subprocess.run")
+    def test_returns_empty_when_up_to_date(self, mock_run, tmp_path):
+        from app.update_hint import _get_missing_commits
+        mock_run.return_value = MagicMock(returncode=0, stdout="")
+        result = _get_missing_commits(tmp_path, "origin")
+        assert result == []
+
+    @patch("app.update_hint.subprocess.run")
+    def test_returns_none_on_nonzero_exit(self, mock_run, tmp_path):
+        from app.update_hint import _get_missing_commits
+        mock_run.return_value = MagicMock(returncode=128, stdout="")
+        result = _get_missing_commits(tmp_path, "origin")
+        assert result is None
+
+    @patch("app.update_hint.subprocess.run", side_effect=subprocess.TimeoutExpired("git", 15))
+    def test_returns_none_on_timeout(self, mock_run, tmp_path):
+        from app.update_hint import _get_missing_commits
+        result = _get_missing_commits(tmp_path, "origin")
+        assert result is None
+
+    @patch("app.update_hint.subprocess.run", side_effect=OSError("no git"))
+    def test_returns_none_on_oserror(self, mock_run, tmp_path):
+        from app.update_hint import _get_missing_commits
+        result = _get_missing_commits(tmp_path, "origin")
+        assert result is None
+
+    @patch("app.update_hint.subprocess.run")
+    def test_strips_blank_lines(self, mock_run, tmp_path):
+        from app.update_hint import _get_missing_commits
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="\n  abc123 fix: thing  \n\n  def456 feat: other \n\n",
+        )
+        result = _get_missing_commits(tmp_path, "upstream")
+        assert result == ["abc123 fix: thing", "def456 feat: other"]
