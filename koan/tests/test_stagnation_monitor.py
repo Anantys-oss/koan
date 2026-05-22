@@ -1,5 +1,6 @@
-"""Tests for stagnation_monitor — hash logic, escalation, config integration."""
+"""Tests for stagnation_monitor — hash logic, escalation, config integration, retry tracking."""
 
+import json
 import threading
 import time
 from pathlib import Path
@@ -7,7 +8,14 @@ from unittest.mock import patch
 
 import pytest
 
-from app.stagnation_monitor import StagnationMonitor, _tail_hash
+from app.stagnation_monitor import (
+    StagnationMonitor,
+    _mission_key,
+    _tail_hash,
+    clear_retry_count,
+    get_retry_count,
+    increment_retry_count,
+)
 
 
 def _make_stdout(path: Path, lines: int, prefix: str = "line") -> None:
@@ -259,3 +267,224 @@ class TestFailMissionCauseTag:
         updated = fail_mission(content, "/fix issue 1")
         assert "[stagnation]" not in updated
         assert "\u274c" in updated
+
+
+class TestTailHashEdgeCases:
+    """Cover remaining _tail_hash branches — OSError on read, binary content."""
+
+    def test_returns_none_when_file_unreadable_during_read(self, tmp_path):
+        """OSError during open/read returns None (lines 84-85)."""
+        f = tmp_path / "out.log"
+        _make_stdout(f, 60)
+        # Make file unreadable — getsize succeeds but open fails.
+        f.chmod(0o000)
+        try:
+            assert _tail_hash(str(f), 50) is None
+        finally:
+            f.chmod(0o644)
+
+    def test_hash_stable_with_binary_content(self, tmp_path):
+        """Binary content (non-UTF-8) still hashes deterministically."""
+        f = tmp_path / "out.log"
+        f.write_bytes(b"\x80\xff" * 300 + b"\n" * 60)
+        h1 = _tail_hash(str(f), 50)
+        h2 = _tail_hash(str(f), 50)
+        assert h1 is not None
+        assert h1 == h2
+
+
+class TestSampleOnceNoneHash:
+    """Cover _sample_once reset when hash returns None (lines 175-177)."""
+
+    def test_none_hash_resets_consecutive_counter(self, tmp_path):
+        f = tmp_path / "stdout.log"
+        _make_stdout(f, 60)
+
+        aborts = []
+        monitor = StagnationMonitor(
+            stdout_file=str(f),
+            on_abort=lambda: aborts.append(True),
+            check_interval_seconds=1,
+            abort_after_cycles=3,
+        )
+        # Build up consecutive identical hashes.
+        monitor._sample_once()  # consecutive=1
+        monitor._sample_once()  # consecutive=2
+
+        # Truncate the file so _tail_hash returns None.
+        f.write_text("tiny")
+        monitor._sample_once()  # None → reset to 0
+        assert monitor._consecutive == 0
+
+        # Restore output; count must start over from 1.
+        _make_stdout(f, 60)
+        monitor._sample_once()  # consecutive=1
+        monitor._sample_once()  # consecutive=2
+        assert not monitor.stagnated  # would need 3
+
+    def test_none_hash_does_not_count_toward_stagnation(self, tmp_path):
+        """Consecutive None returns must never trigger abort."""
+        f = tmp_path / "stdout.log"
+        f.write_text("tiny")  # below _DEFAULT_MIN_BYTES
+
+        aborts = []
+        monitor = StagnationMonitor(
+            stdout_file=str(f),
+            on_abort=lambda: aborts.append(True),
+            check_interval_seconds=1,
+            abort_after_cycles=2,
+        )
+        for _ in range(10):
+            monitor._sample_once()
+        assert not monitor.stagnated
+        assert aborts == []
+
+
+class TestAbortCallbackException:
+    """Cover on_abort exception handling (lines 204-207)."""
+
+    def test_abort_exception_does_not_prevent_stagnated_flag(self, tmp_path):
+        f = tmp_path / "stdout.log"
+        _make_stdout(f, 60)
+
+        def _bad_abort():
+            raise RuntimeError("kill failed")
+
+        monitor = StagnationMonitor(
+            stdout_file=str(f),
+            on_abort=_bad_abort,
+            check_interval_seconds=1,
+            abort_after_cycles=2,
+        )
+        monitor._sample_once()
+        monitor._sample_once()
+        assert monitor.stagnated is True
+
+
+class TestStagnationResetAndRestagnation:
+    """Cover the warned-reset path when fresh output appears mid-stagnation."""
+
+    def test_fresh_output_resets_warn_flag(self, tmp_path):
+        f = tmp_path / "stdout.log"
+        _make_stdout(f, 60)
+
+        warns = []
+        monitor = StagnationMonitor(
+            stdout_file=str(f),
+            on_abort=lambda: None,
+            on_warn=lambda n: warns.append(n),
+            check_interval_seconds=1,
+            abort_after_cycles=5,
+        )
+        monitor._sample_once()
+        monitor._sample_once()  # warn fires
+        assert warns == [2]
+
+        # Fresh output resets.
+        with open(f, "a") as fh:
+            fh.write("new progress that changes the tail hash\n")
+        monitor._sample_once()  # consecutive=1, warned=False
+
+        # Stagnate again — warn fires a second time.
+        monitor._sample_once()  # consecutive=2, warn fires
+        assert warns == [2, 2]
+
+
+# ---------------------------------------------------------------------------
+# Retry Tracker Tests
+# ---------------------------------------------------------------------------
+
+
+class TestMissionKey:
+    def test_deterministic(self):
+        a = _mission_key("fix the bug")
+        b = _mission_key("fix the bug")
+        assert a == b
+
+    def test_different_titles_produce_different_keys(self):
+        a = _mission_key("fix the bug")
+        b = _mission_key("add a feature")
+        assert a != b
+
+    def test_returns_hex_string(self):
+        key = _mission_key("hello")
+        assert len(key) == 64  # SHA-256 hex
+        assert all(c in "0123456789abcdef" for c in key)
+
+
+class TestRetryTracker:
+    """Cover get_retry_count, increment_retry_count, clear_retry_count."""
+
+    def test_get_returns_zero_for_unknown_mission(self, tmp_path):
+        assert get_retry_count(str(tmp_path), "never-seen") == 0
+
+    def test_increment_returns_new_count(self, tmp_path):
+        d = str(tmp_path)
+        assert increment_retry_count(d, "mission A") == 1
+        assert increment_retry_count(d, "mission A") == 2
+        assert increment_retry_count(d, "mission A") == 3
+
+    def test_get_reads_persisted_count(self, tmp_path):
+        d = str(tmp_path)
+        increment_retry_count(d, "mission B")
+        increment_retry_count(d, "mission B")
+        assert get_retry_count(d, "mission B") == 2
+
+    def test_clear_removes_counter(self, tmp_path):
+        d = str(tmp_path)
+        increment_retry_count(d, "mission C")
+        increment_retry_count(d, "mission C")
+        clear_retry_count(d, "mission C")
+        assert get_retry_count(d, "mission C") == 0
+
+    def test_clear_noop_for_unknown_mission(self, tmp_path):
+        """Clearing a non-existent key must not raise."""
+        clear_retry_count(str(tmp_path), "ghost mission")
+
+    def test_independent_missions_do_not_interfere(self, tmp_path):
+        d = str(tmp_path)
+        increment_retry_count(d, "alpha")
+        increment_retry_count(d, "alpha")
+        increment_retry_count(d, "beta")
+        assert get_retry_count(d, "alpha") == 2
+        assert get_retry_count(d, "beta") == 1
+        clear_retry_count(d, "alpha")
+        assert get_retry_count(d, "alpha") == 0
+        assert get_retry_count(d, "beta") == 1
+
+    def test_handles_corrupt_json_file(self, tmp_path):
+        """Corrupt tracker file should be treated as empty."""
+        tracker = tmp_path / ".stagnation-retries.json"
+        tracker.write_text("not valid json {{{")
+        assert get_retry_count(str(tmp_path), "mission X") == 0
+        # Increment should overwrite the corrupt file.
+        assert increment_retry_count(str(tmp_path), "mission X") == 1
+
+    def test_handles_non_dict_json(self, tmp_path):
+        """JSON that is a list (not a dict) should be treated as empty."""
+        tracker = tmp_path / ".stagnation-retries.json"
+        tracker.write_text("[1, 2, 3]")
+        assert get_retry_count(str(tmp_path), "any") == 0
+
+    def test_handles_non_integer_value(self, tmp_path):
+        """A stored value that isn't an int should default to 0."""
+        key = _mission_key("broken")
+        tracker = tmp_path / ".stagnation-retries.json"
+        tracker.write_text(json.dumps({key: "not-a-number"}))
+        assert get_retry_count(str(tmp_path), "broken") == 0
+
+    def test_increment_handles_non_integer_stored_value(self, tmp_path):
+        """increment on a corrupt stored value should treat it as 0 and return 1."""
+        key = _mission_key("corrupt-entry")
+        tracker = tmp_path / ".stagnation-retries.json"
+        tracker.write_text(json.dumps({key: [1, 2]}))
+        assert increment_retry_count(str(tmp_path), "corrupt-entry") == 1
+
+    def test_save_handles_oserror(self, tmp_path):
+        """OSError during save is logged to stderr, not raised."""
+        d = str(tmp_path)
+        # atomic_write_json is imported locally inside _save_retry_tracker.
+        with patch("app.utils.atomic_write_json",
+                   side_effect=OSError("disk full")):
+            # Should not raise — the OSError is caught and printed to stderr.
+            increment_retry_count(d, "test mission")
