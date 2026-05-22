@@ -1017,6 +1017,16 @@ Run it after every Kōan update to stay in sync:
 
 The same check runs automatically as part of `/doctor` — use `/config_check` when you only want the config slice without the rest of the diagnostic report.
 
+### Remote HEAD Rescan
+
+**`/rescan`** — Re-check all project workspaces for remote default branch changes (e.g. when a repository renames its default branch from `master` to `main`).
+
+```
+/rescan
+```
+
+Kōan also checks for remote HEAD changes automatically at startup (throttled to once every 12 hours). Use `/rescan` to force an immediate check across all projects. When a change is detected, the local workspace is updated: the symbolic ref is set, the new branch is fetched and created locally, and if the workspace was on the old branch, it's switched to the new one.
+
 ### Caveman Output Optimization
 
 Caveman appends a "no filler, 3–6 word sentences, direct answers" directive to Claude prompts to reduce output tokens.
@@ -1566,6 +1576,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/gh_request <url> <text>` | — | I | Route natural-language GitHub request to the right skill |
 | `/claudemd [project]` | `/claude`, `/claude.md`, `/claude_md` | I | Refresh a project's CLAUDE.md |
 | `/config_check` | `/cfgcheck`, `/configcheck` | P | Detect config.yaml drift against instance.example template |
+| `/rescan` | `/rescan_heads` | P | Re-check all projects for remote HEAD branch changes |
 | `/gha_audit [project]` | `/gha` | I | Audit GitHub Actions for security issues |
 | `/changelog [project]` | `/changes` | I | Generate changelog from commits/journal |
 | `/daily <text>` | — | I | Schedule a daily recurring mission |

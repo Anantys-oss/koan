@@ -381,6 +381,17 @@ def run_git_sync(instance: str, projects: list):
             log("error", f"Git sync failed for {name}: {e}")
 
 
+def check_remote_heads(koan_root: str, instance: str, projects: list):
+    """Detect remote HEAD branch changes (e.g. master → main) and update."""
+    from app.head_tracker import check_all_projects, format_changes_report
+    changes = check_all_projects(projects, instance, koan_root)
+    if changes:
+        report = format_changes_report(changes)
+        log("git", report)
+        from app.run import _notify
+        _notify(instance, f"🔀 {report}")
+
+
 def run_daily_report():
     """Send daily report if due."""
     from app.daily_report import send_daily_report
@@ -497,6 +508,7 @@ def run_startup(koan_root: str, instance: str, projects: list):
 
     with protected_phase("Git sync"):
         run_git_sync(instance, projects)
+        _safe_run("Remote HEAD check", check_remote_heads, koan_root, instance, projects)
 
     # Auto-update check (before daily report / morning ritual)
     updated = _safe_run("Auto-update check", check_auto_update, koan_root, instance)

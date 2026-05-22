@@ -102,6 +102,7 @@ Communication between processes happens through shared files in `instance/` with
 - **`rebase_pr.py`** — PR rebase workflow
 - **`recreate_pr.py`** — PR recreation: fetch metadata/diff, create fresh branch, reimplement from scratch
 - **`claude_step.py`** — Shared helpers for git operations and Claude CLI invocation (used by pr_review, rebase_pr, recreate_pr)
+- **`head_tracker.py`** — Detects remote HEAD branch changes (e.g. master → main) and updates local workspace. State persisted in `instance/.head-tracker.json`, throttled to once per 12h. Integrated into startup, manual trigger via `/rescan`.
 
 **Other:**
 - **`memory_manager.py`** — Per-project memory isolation, compaction, and cleanup. Includes semantic learnings compaction (Claude-powered dedup/merge), global memory file rotation, and configurable thresholds via `config.yaml` `memory:` section
@@ -120,7 +121,7 @@ Communication between processes happens through shared files in `instance/` with
 Extensible command plugin system. Each skill lives in `skills/<scope>/<skill-name>/` with a `SKILL.md` (YAML frontmatter defining commands, aliases, metadata) and an optional `handler.py`.
 
 - **`skills.py`** — Registry that discovers SKILL.md files, parses frontmatter (custom lite YAML parser, no PyYAML), maps commands/aliases to skills, and dispatches execution.
-- **Core skills** live in `koan/skills/core/` (audit, cancel, chat, check, check_notifications, claudemd, config_check, delete_project, focus, idea, implement, inbox, journal, language, list, live, magic, mission, passive, plan, pr, priority, private_security_audit, projects, quota, rebase, recreate, recurring, refactor, reflect, review, rtk, security_audit, shutdown, sparring, start, status, update, verbose)
+- **Core skills** live in `koan/skills/core/` (audit, cancel, chat, check, check_notifications, claudemd, config_check, delete_project, focus, idea, implement, inbox, journal, language, list, live, magic, mission, passive, plan, pr, priority, private_security_audit, projects, quota, rebase, recreate, recurring, refactor, reflect, rescan, review, rtk, security_audit, shutdown, sparring, start, status, update, verbose)
 - **Custom skills** loaded from `instance/skills/<scope>/` — each scope directory can be a cloned Git repo for team sharing.
 - **Handler pattern**: `def handle(ctx: SkillContext) -> Optional[str]` — return string for Telegram reply, empty string for "already handled", None for no message.
 - **`worker: true`** flag in SKILL.md marks blocking skills (Claude calls, API requests) that run in a background thread.
