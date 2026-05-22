@@ -431,8 +431,14 @@ def _record_session_outcome(
     duration_minutes: int,
     journal_content: str,
     mission_title: str = "",
+    mission_type: Optional[str] = None,
 ) -> None:
-    """Record session outcome for staleness tracking (fire-and-forget)."""
+    """Record session outcome for staleness tracking (fire-and-forget).
+
+    Args:
+        mission_type: Explicit mission type override (e.g. "contemplative").
+            When provided, bypasses classify_mission_type().
+    """
     try:
         from app.session_tracker import record_outcome
         record_outcome(
@@ -442,6 +448,7 @@ def _record_session_outcome(
             duration_minutes=duration_minutes,
             journal_content=journal_content,
             mission_title=mission_title,
+            mission_type=mission_type,
         )
     except Exception as e:
         _log_runner("error", f"Session outcome recording failed: {e}")

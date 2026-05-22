@@ -1107,6 +1107,7 @@ class TestRecordSessionOutcome:
             duration_minutes=15,
             journal_content="journal content",
             mission_title="",
+            mission_type=None,
         )
 
     @patch("app.session_tracker.record_outcome")
@@ -1136,6 +1137,25 @@ class TestRecordSessionOutcome:
         _record_session_outcome(str(tmp_path), "koan", "deep", 30, "text")
         captured = capsys.readouterr()
         assert "Session outcome recording failed" in (captured.err + captured.out)
+
+    @patch("app.session_tracker.record_outcome")
+    def test_forwards_mission_type_override(self, mock_record, tmp_path):
+        from app.mission_runner import _record_session_outcome
+
+        _record_session_outcome(
+            str(tmp_path), "koan", "deep", 10, "content",
+            mission_type="contemplative",
+        )
+        mock_record.assert_called_once()
+        assert mock_record.call_args.kwargs["mission_type"] == "contemplative"
+
+    @patch("app.session_tracker.record_outcome")
+    def test_mission_type_none_by_default(self, mock_record, tmp_path):
+        from app.mission_runner import _record_session_outcome
+
+        _record_session_outcome(str(tmp_path), "koan", "deep", 10, "content")
+        mock_record.assert_called_once()
+        assert mock_record.call_args.kwargs["mission_type"] is None
 
 
 class TestRunPostMissionDuration:

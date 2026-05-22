@@ -1001,3 +1001,26 @@ class TestRecordOutcomeEnrichedFields:
         assert entry["mission_type"] == "freetext"
         assert entry["has_branch"] is True
         assert entry["has_pr"] is False
+
+    def test_mission_type_override(self, tracker_env):
+        """Explicit mission_type bypasses classify_mission_type."""
+        entry = record_outcome(
+            tracker_env, "koan", "deep", 10,
+            "Explored codebase. Branch pushed.",
+            mission_title="",
+            mission_type="contemplative",
+        )
+        assert entry["mission_type"] == "contemplative"
+        # Other fields still classified normally
+        assert entry["has_branch"] is True
+        assert entry["outcome"] == "productive"
+
+    def test_mission_type_none_uses_classifier(self, tracker_env):
+        """When mission_type is None, classify_mission_type is used."""
+        entry = record_outcome(
+            tracker_env, "koan", "deep", 10,
+            "Explored codebase.",
+            mission_title="/review https://github.com/o/r/pull/1",
+            mission_type=None,
+        )
+        assert entry["mission_type"] == "review"
