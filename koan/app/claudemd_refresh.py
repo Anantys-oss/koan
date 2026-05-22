@@ -163,7 +163,9 @@ def _create_pr(
     }
 
     # Target upstream repo when working in a fork
-    upstream = resolve_target_repo(project_path)
+    upstream = resolve_target_repo(
+        project_path, project_name=project_name,
+    )
     if upstream:
         pr_kwargs["repo"] = upstream
         try:

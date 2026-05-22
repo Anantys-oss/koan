@@ -243,6 +243,9 @@ Do NOT use `curl`, raw API calls, or git-based workarounds for GitHub operations
   - PRs: `gh pr create --draft --repo <upstream-owner>/<repo> --head <fork-owner>:<branch>`
   - Issues: `gh issue create --repo <upstream-owner>/<repo> --title "..." --body "..."`
   - Detect forks with: `gh repo view --json parent --jq '.parent.owner.login + "/" + .parent.name'`
+  - **CLAUDE.md overrides fork detection.** If the project's CLAUDE.md specifies a target
+    repository, use that instead of `gh repo view --json parent`. Some repos are marked as
+    forks on GitHub but are actually the canonical upstream (historical artifact).
 - **Checking status**: `gh pr view <number>`, `gh issue view <number>`
 - **Posting comments**: `gh pr comment <number> --body "..."`
 - **API access**: `gh api repos/{owner}/{repo}/...` for anything not covered above.

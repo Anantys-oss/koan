@@ -501,10 +501,51 @@ def origin_repo(project_path: str) -> Optional[str]:
     return None
 
 
-def resolve_target_repo(project_path: str) -> Optional[str]:
+_UNSET = object()
+
+
+def _config_target_repo(
+    project_path: str, project_name: str,
+) -> object:
+    """Check ``submit_to_repository.repo`` in projects.yaml.
+
+    Returns the configured target repo, ``None`` when origin already IS
+    the canonical repo, or the ``_UNSET`` sentinel when no config exists.
+    """
+    import os
+    koan_root = os.environ.get("KOAN_ROOT", "")
+    if not koan_root:
+        return _UNSET
+    try:
+        from app.projects_config import (
+            load_projects_config, get_project_submit_to_repository,
+        )
+        config = load_projects_config(koan_root)
+        if not config:
+            return _UNSET
+        submit_cfg = get_project_submit_to_repository(config, project_name)
+        configured_repo = submit_cfg.get("repo")
+        if not configured_repo:
+            return _UNSET
+        origin_url = _get_remote_url(project_path, "origin")
+        if origin_url:
+            origin_slug = _parse_remote_url(origin_url)
+            if origin_slug and origin_slug.lower() == configured_repo.lower():
+                return None
+        return configured_repo
+    except Exception:
+        return _UNSET
+
+
+def resolve_target_repo(
+    project_path: str, *, project_name: str = "",
+) -> Optional[str]:
     """Return the upstream ``owner/repo`` if working in a fork, else ``None``.
 
     Resolution order:
+    0. ``submit_to_repository.repo`` from projects.yaml (when *project_name*
+       is provided).  If the configured repo matches ``origin``, returns
+       ``None`` — origin IS the canonical repo, not a fork.
     1. GitHub fork parent (via ``gh repo view --json parent``)
     2. Git ``upstream`` remote (if it differs from ``origin``)
 
@@ -512,6 +553,11 @@ def resolve_target_repo(project_path: str) -> Optional[str]:
     the ``--repo`` argument for ``gh pr create`` / ``gh issue create``
     so that operations target the upstream repository instead of the fork.
     """
+    if project_name:
+        configured = _config_target_repo(project_path, project_name)
+        if configured is not _UNSET:
+            return configured
+
     parent = detect_parent_repo(project_path)
     if parent:
         return parent
