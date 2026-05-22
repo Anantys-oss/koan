@@ -84,6 +84,9 @@ class TelegramProvider(MessagingProvider):
         # Message ID tracking — populated by _send_chunk(), cleared by _send_raw()
         self._last_message_ids: List[int] = []
 
+        # Consecutive poll failure tracking for exponential backoff
+        self._consecutive_poll_failures: int = 0
+
     # -- MessagingProvider interface ------------------------------------------
 
     def configure(self) -> bool:
@@ -173,8 +176,14 @@ class TelegramProvider(MessagingProvider):
             data = resp.json()
             raw_updates = data.get("result", [])
         except (requests.RequestException, ValueError) as e:
-            print(f"[telegram] poll_updates error: {e}", file=sys.stderr)
+            self._consecutive_poll_failures += 1
+            backoff = min(2 ** self._consecutive_poll_failures, 60)
+            safe_msg = self._redact_token(str(e))
+            print(f"[telegram] poll_updates error: {safe_msg}", file=sys.stderr)
+            time.sleep(backoff)
             return []
+
+        self._consecutive_poll_failures = 0
 
         updates: List[Update] = []
         for raw in raw_updates:
@@ -240,6 +249,12 @@ class TelegramProvider(MessagingProvider):
         return None
 
     # -- Internal helpers -----------------------------------------------------
+
+    def _redact_token(self, msg: str) -> str:
+        """Redact bot token from error messages to prevent leaking credentials."""
+        if self._bot_token:
+            msg = msg.replace(self._bot_token, "***")
+        return msg
 
     def _send_raw(self, text: str) -> bool:
         """Send text to the Telegram API (no flood check).
