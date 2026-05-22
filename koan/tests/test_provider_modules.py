@@ -601,9 +601,9 @@ class TestOllamaLaunchProvider:
         assert available is True
         assert detail == ""
 
-    def test_get_env_empty(self):
+    def test_get_env_default_no_cloud(self):
         p = OllamaLaunchProvider()
-        assert p.get_env() == {}
+        assert p.get_env() == {"OLLAMA_NO_CLOUD": "1"}
 
     @patch("shutil.which", return_value="/usr/bin/ollama")
     def test_is_available(self, mock_which):
