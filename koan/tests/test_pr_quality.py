@@ -871,7 +871,7 @@ class TestGetQualityGateMode:
 
         with patch("app.projects_config.load_projects_config", side_effect=Exception("fail")):
             result = _get_quality_gate_mode("/tmp/instance", "test")
-        assert result == "warn"
+        assert result == "strict"
 
     @patch("app.projects_config.get_project_config")
     @patch("app.projects_config.load_projects_config")
