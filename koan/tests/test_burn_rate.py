@@ -74,6 +74,40 @@ class TestSampleBuffer:
         burn_rate.record_run(instance_dir, cost_pct=1.0)
         assert len(burn_rate.get_samples(instance_dir)) == 1
 
+    def test_corrupt_state_writes_outbox_alert(self, instance_dir):
+        """Corruption triggers a WARNING outbox message."""
+        outbox = instance_dir / "outbox.md"
+        (instance_dir / burn_rate.BURN_RATE_FILE).write_text("{bad json")
+        burn_rate.get_samples(instance_dir)
+        assert outbox.exists()
+        content = outbox.read_text()
+        assert "priority:warning" in content
+        assert "corrupted" in content.lower()
+
+    def test_corrupt_state_resets_file(self, instance_dir):
+        """Corruption overwrites the file so the alert fires only once."""
+        outbox = instance_dir / "outbox.md"
+        (instance_dir / burn_rate.BURN_RATE_FILE).write_text("not json")
+        burn_rate.get_samples(instance_dir)  # first load — triggers alert
+        first_alert = outbox.read_text()
+
+        # Second load reads the now-valid empty state — no new alert
+        burn_rate.get_samples(instance_dir)
+        assert outbox.read_text() == first_alert
+
+    def test_corrupt_state_does_not_break_on_outbox_failure(self, instance_dir):
+        """Alert failure must not prevent _load_state from returning."""
+        (instance_dir / burn_rate.BURN_RATE_FILE).write_text("corrupt")
+        # Make outbox dir unwritable to force append_to_outbox to fail
+        outbox = instance_dir / "outbox.md"
+        outbox.touch()
+        outbox.chmod(0o000)
+        try:
+            # Must still return empty state without raising
+            assert burn_rate.get_samples(instance_dir) == []
+        finally:
+            outbox.chmod(0o644)
+
 
 class TestBurnRateEstimate:
     def test_no_history_returns_none(self, instance_dir):

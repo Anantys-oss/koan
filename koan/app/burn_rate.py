@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, List, Optional
 
-from app.utils import atomic_write
+from app.utils import append_to_outbox, atomic_write
 
 BURN_RATE_FILE = ".burn-rate.json"
 LOCK_FILE = ".burn-rate.lock"
@@ -84,6 +84,29 @@ def _read_locked(path: Path) -> str:
             fcntl.flock(f, fcntl.LOCK_UN)
 
 
+def _alert_corruption(instance_dir: Path, path: Path,
+                      exc: Exception) -> None:
+    """Overwrite a corrupt state file and send an outbox alert.
+
+    Replaces the unreadable file with a valid empty state so the alert
+    fires only once, then appends a WARNING-priority message to the
+    outbox so the operator knows quota protection is degraded.
+    """
+    _save_state(instance_dir, BurnRateState(samples=[]))
+    try:
+        from app.notify import NotificationPriority
+        outbox = Path(instance_dir) / "outbox.md"
+        append_to_outbox(
+            outbox,
+            f"⚠️ Burn-rate state corrupted ({path.name}: {exc}). "
+            "File reset — quota-protection downgrade disabled until "
+            "enough new samples accumulate.\n",
+            priority=NotificationPriority.WARNING,
+        )
+    except Exception:
+        pass  # Best-effort — don't break state loading
+
+
 def _load_state(instance_dir: Path) -> BurnRateState:
     """Load burn-rate state, returning an empty state on any failure."""
     path = _state_path(instance_dir)
@@ -94,6 +117,7 @@ def _load_state(instance_dir: Path) -> BurnRateState:
         data = json.loads(raw)
     except (json.JSONDecodeError, OSError) as exc:
         logger.warning("Could not read %s: %s", path, exc)
+        _alert_corruption(instance_dir, path, exc)
         return BurnRateState(samples=[])
 
     samples: List[Sample] = []
