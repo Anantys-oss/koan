@@ -1,5 +1,7 @@
 You are exploring the project **{PROJECT_NAME}** to suggest creative, high-impact improvements.
 
+{FOCUS_CONTEXT}
+
 ## Recent activity
 
 {GIT_ACTIVITY}

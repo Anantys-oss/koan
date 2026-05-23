@@ -298,7 +298,7 @@ def build_skill_command(
         "recreate": lambda: _build_pr_url_cmd(base_cmd, args, project_path),
         "squash": lambda: _build_pr_url_cmd(base_cmd, args, project_path),
         "review": lambda: _build_review_cmd(base_cmd, args, project_path, project_name),
-        "ai": lambda: _build_ai_cmd(base_cmd, project_name, project_path, instance_dir),
+        "ai": lambda: _build_ai_cmd(base_cmd, args, project_name, project_path, instance_dir),
         "check": lambda: _build_check_cmd(base_cmd, args, instance_dir, koan_root),
         "tech_debt": lambda: _build_project_info_cmd(
             base_cmd, project_name, project_path, instance_dir,
@@ -562,16 +562,31 @@ def _build_review_cmd(
 
 def _build_ai_cmd(
     base_cmd: List[str],
+    args: str,
     project_name: str,
     project_path: str,
     instance_dir: str,
 ) -> List[str]:
-    """Build ai_runner command."""
-    return base_cmd + [
+    """Build ai_runner command.
+
+    Args contains the project name (first word) followed by optional
+    focus context. Strip the project name to extract the context.
+    """
+    # args = "koan explore the notification pipeline" -> context = "explore the notification pipeline"
+    focus_context = ""
+    if args:
+        parts = args.split(None, 1)
+        if len(parts) > 1:
+            focus_context = parts[1]
+
+    cmd = base_cmd + [
         "--project-path", project_path,
         "--project-name", project_name,
         "--instance-dir", instance_dir,
     ]
+    if focus_context:
+        cmd += ["--focus-context", focus_context]
+    return cmd
 
 
 def _build_check_cmd(

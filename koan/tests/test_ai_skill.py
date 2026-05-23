@@ -307,6 +307,45 @@ class TestHandle:
         assert "Dive deep into the codebase" not in entry
         assert "3-5 concrete" not in entry
 
+    @patch("app.utils.get_known_projects")
+    @patch("app.utils.insert_pending_mission")
+    def test_focus_context_included_in_mission(
+        self, mock_insert, mock_get, handler, ctx, tmp_path
+    ):
+        """Focus context should be included in the queued mission entry."""
+        mock_get.return_value = [("koan", str(tmp_path))]
+        ctx.args = "koan explore the notification pipeline"
+        result = handler.handle(ctx)
+        entry = mock_insert.call_args[0][1]
+        assert "[project:koan]" in entry
+        assert "/ai koan explore the notification pipeline" in entry
+        assert "focus: explore the notification pipeline" in result
+
+    @patch("app.utils.get_known_projects")
+    @patch("app.utils.insert_pending_mission")
+    def test_no_focus_context_no_suffix(
+        self, mock_insert, mock_get, handler, ctx, tmp_path
+    ):
+        """Without focus context, mission entry has no extra text."""
+        mock_get.return_value = [("koan", str(tmp_path))]
+        ctx.args = "koan"
+        result = handler.handle(ctx)
+        entry = mock_insert.call_args[0][1]
+        assert entry == "- [project:koan] /ai koan"
+        assert "focus:" not in result
+
+    @patch("app.utils.get_known_projects")
+    @patch("app.utils.insert_pending_mission")
+    def test_focus_context_preserves_case(
+        self, mock_insert, mock_get, handler, ctx, tmp_path
+    ):
+        """Focus context should preserve original casing."""
+        mock_get.return_value = [("koan", str(tmp_path))]
+        ctx.args = "koan Look at ConnectionError handling"
+        handler.handle(ctx)
+        entry = mock_insert.call_args[0][1]
+        assert "Look at ConnectionError handling" in entry
+
 
 # ---------------------------------------------------------------------------
 # Dispatch behavior via command_handlers

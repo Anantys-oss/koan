@@ -251,6 +251,46 @@ class TestRunExploration:
         assert "GIT_ACTIVITY" in kwargs
         assert "PROJECT_STRUCTURE" in kwargs
         assert "MISSIONS_CONTEXT" in kwargs
+        assert kwargs["FOCUS_CONTEXT"] == ""
+
+    @patch("app.cli_provider.run_command_streaming", return_value="Found 3 issues")
+    @patch("app.ai_runner.get_missions_context", return_value="No active missions.")
+    @patch("app.ai_runner.gather_project_structure", return_value="Directories: src/")
+    @patch("app.ai_runner.gather_git_activity", return_value="Recent commits: abc")
+    @patch("app.ai_runner.load_skill_prompt", return_value="Explore myapp")
+    def test_focus_context_injected_into_prompt(
+        self, mock_prompt, mock_git, mock_struct, mock_missions, mock_claude,
+        tmp_path
+    ):
+        """When focus_context is provided, FOCUS_CONTEXT should contain the block."""
+        notify = MagicMock()
+        run_exploration(
+            str(tmp_path), "myapp", str(tmp_path),
+            notify_fn=notify,
+            focus_context="explore the notification pipeline",
+        )
+        kwargs = mock_prompt.call_args[1]
+        assert "Exploration Focus" in kwargs["FOCUS_CONTEXT"]
+        assert "explore the notification pipeline" in kwargs["FOCUS_CONTEXT"]
+
+    @patch("app.cli_provider.run_command_streaming", return_value="Found 3 issues")
+    @patch("app.ai_runner.get_missions_context", return_value="No active missions.")
+    @patch("app.ai_runner.gather_project_structure", return_value="Directories: src/")
+    @patch("app.ai_runner.gather_git_activity", return_value="Recent commits: abc")
+    @patch("app.ai_runner.load_skill_prompt", return_value="Explore myapp")
+    def test_focus_context_in_notify_message(
+        self, mock_prompt, mock_git, mock_struct, mock_missions, mock_claude,
+        tmp_path
+    ):
+        """Start notification should include focus hint."""
+        notify = MagicMock()
+        run_exploration(
+            str(tmp_path), "myapp", str(tmp_path),
+            notify_fn=notify,
+            focus_context="error handling",
+        )
+        start_msg = notify.call_args_list[0][0][0]
+        assert "focus: error handling" in start_msg
 
     @patch("app.cli_provider.run_command_streaming", return_value="x" * 3000)
     @patch("app.ai_runner.get_missions_context", return_value="No active missions.")
@@ -535,3 +575,24 @@ class TestCLI:
     def test_main_requires_instance_dir(self):
         with pytest.raises(SystemExit):
             main(["--project-path", "/tmp", "--project-name", "myapp"])
+
+    @patch("app.ai_runner.run_exploration", return_value=(True, "Done"))
+    def test_main_passes_focus_context(self, mock_run):
+        main([
+            "--project-path", "/tmp/myapp",
+            "--project-name", "myapp",
+            "--instance-dir", "/tmp/instance",
+            "--focus-context", "explore the notification pipeline",
+        ])
+        kwargs = mock_run.call_args[1]
+        assert kwargs["focus_context"] == "explore the notification pipeline"
+
+    @patch("app.ai_runner.run_exploration", return_value=(True, "Done"))
+    def test_main_default_focus_context_empty(self, mock_run):
+        main([
+            "--project-path", "/tmp/myapp",
+            "--project-name", "myapp",
+            "--instance-dir", "/tmp/instance",
+        ])
+        kwargs = mock_run.call_args[1]
+        assert kwargs["focus_context"] == ""

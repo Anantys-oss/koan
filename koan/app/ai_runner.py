@@ -27,11 +27,16 @@ def run_exploration(
     instance_dir: str,
     notify_fn=None,
     skill_dir: Optional[Path] = None,
+    focus_context: str = "",
 ) -> Tuple[bool, str]:
     """Execute an AI exploration of a project.
 
     Gathers git activity, project structure, and missions context, then
     runs Claude to suggest creative improvements.
+
+    Args:
+        focus_context: Optional free-text guidance to steer the exploration
+            (e.g. "explore the notification pipeline").
 
     Returns:
         (success, summary) tuple.
@@ -40,12 +45,24 @@ def run_exploration(
         from app.notify import send_telegram
         notify_fn = send_telegram
 
-    notify_fn(f"Exploring {project_name}...")
+    focus_hint = f" (focus: {focus_context})" if focus_context else ""
+    notify_fn(f"Exploring {project_name}{focus_hint}...")
 
     # Gather context
     git_activity = gather_git_activity(project_path)
     project_structure = gather_project_structure(project_path)
     missions_context = get_missions_context(Path(instance_dir))
+
+    # Build focus block (mirrors audit's EXTRA_CONTEXT pattern)
+    focus_block = ""
+    if focus_context:
+        focus_block = (
+            f"## Exploration Focus\n\n"
+            f"The human has asked you to focus on:\n"
+            f"> {focus_context}\n\n"
+            f"Prioritize ideas related to this guidance, but don't "
+            f"ignore other significant opportunities you discover."
+        )
 
     # Build prompt from skill template
     if skill_dir is None:
@@ -60,6 +77,7 @@ def run_exploration(
         GIT_ACTIVITY=git_activity,
         PROJECT_STRUCTURE=project_structure,
         MISSIONS_CONTEXT=missions_context,
+        FOCUS_CONTEXT=focus_block,
     )
 
     # Run Claude
@@ -173,6 +191,10 @@ def main(argv=None):
         "--instance-dir", required=True,
         help="Path to the instance directory",
     )
+    parser.add_argument(
+        "--focus-context", default="",
+        help="Optional free-text guidance to steer the exploration",
+    )
     cli_args = parser.parse_args(argv)
 
     skill_dir = (
@@ -184,6 +206,7 @@ def main(argv=None):
         project_name=cli_args.project_name,
         instance_dir=cli_args.instance_dir,
         skill_dir=skill_dir,
+        focus_context=cli_args.focus_context,
     )
     print(summary)
     return 0 if success else 1
