@@ -1,4 +1,4 @@
-name: Release
+name: 🚀 Release
 
 on:
   workflow_dispatch:
@@ -20,27 +20,28 @@ jobs:
   release:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    name: 🚀 release
 
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
-      - name: Validate version format
+      - name: 🔍 Validate version format
         run: |
           if ! echo "${{ inputs.version }}" | grep -qE '^v[0-9]+(\.[0-9]+){1,2}$'; then
             echo "::error::Version must match vMAJOR.MINOR or vMAJOR.MINOR.PATCH (e.g. v0.5, v1.0.0)"
             exit 1
           fi
 
-      - name: Check tag does not already exist
+      - name: 🔍 Check tag does not already exist
         run: |
           if git rev-parse "${{ inputs.version }}" >/dev/null 2>&1; then
             echo "::error::Tag ${{ inputs.version }} already exists"
             exit 1
           fi
 
-      - name: Check for commits since last tag
+      - name: 📝 Check for commits since last tag
         id: changelog
         run: |
           LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
@@ -60,21 +61,21 @@ jobs:
           echo "$NOTES" > /tmp/release-notes.md
           echo "last_tag=${LAST_TAG:-none}" >> "$GITHUB_OUTPUT"
 
-      - name: Create and push tag
+      - name: 🏷️ Create and push tag
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag -a "${{ inputs.version }}" -m "Release ${{ inputs.version }}"
           git push origin "${{ inputs.version }}"
 
-      - name: Update stable tag
+      - name: 🏷️ Update stable tag
         if: inputs.update_stable
         run: |
           echo "Updating stable tag → ${{ inputs.version }}"
           git tag -f stable "${{ inputs.version }}"
           git push origin stable --force
 
-      - name: Create GitHub release
+      - name: 🚀 Create GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

@@ -1,4 +1,4 @@
-name: Tests
+name: 🧪 Tests
 
 on:
   push:
@@ -37,12 +37,12 @@ jobs:
             marker: "slow"
             split_group: 3
 
-    name: test (py${{ matrix.python-version }}, ${{ matrix.group.name }})
+    name: 🧪 test (py${{ matrix.python-version }}, ${{ matrix.group.name }})
 
     steps:
       - uses: actions/checkout@v6
 
-      - name: Set up Python ${{ matrix.python-version }}
+      - name: ⚙️ Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v6
         with:
           python-version: "${{ matrix.python-version }}"
@@ -50,12 +50,12 @@ jobs:
           cache: 'pip'
           cache-dependency-path: koan/requirements.txt
 
-      - name: Install dependencies
+      - name: 📦 Install dependencies
         run: |
           pip install -r koan/requirements.txt
           pip install pytest pytest-split pytest-cov pytest-xdist
 
-      - name: Run tests (${{ matrix.group.name }})
+      - name: ▶️ Run tests (${{ matrix.group.name }})
         if: ${{ !inputs.group || matrix.group.name == inputs.group }}
         working-directory: koan
         env:
@@ -74,7 +74,7 @@ jobs:
               --cov=app --cov-report=term-missing
           fi
 
-      - name: Upload coverage data
+      - name: ⬆️ Upload coverage data
         if: ${{ !inputs.group || matrix.group.name == inputs.group }}
         uses: actions/upload-artifact@v4
         with:
@@ -86,27 +86,27 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    name: check-coverage
+    name: 📊 check-coverage
 
     steps:
       - uses: actions/checkout@v6
 
-      - name: Set up Python 3.14
+      - name: ⚙️ Set up Python 3.14
         uses: actions/setup-python@v6
         with:
           python-version: "3.14"
           allow-prereleases: true
 
-      - name: Install coverage
+      - name: 📦 Install coverage
         run: pip install coverage
 
-      - name: Download all coverage artifacts
+      - name: ⬇️ Download all coverage artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: coverage-py*
           path: coverage-parts
 
-      - name: Combine coverage and check baselines
+      - name: 🔍 Combine coverage and check baselines
         working-directory: koan
         env:
           KOAN_ROOT: ${{ github.workspace }}/koan
@@ -138,7 +138,7 @@ jobs:
           print(f'OK: Coverage {actual}% meets baseline {baseline}% (tolerance {tolerance}%)')
           "
 
-      - name: Check test count baseline
+      - name: ✅ Check test count baseline
         run: |
           BASELINE_COUNT=$(cat test-count-baseline.txt | tr -d '[:space:]')
           echo "Test count baseline: ${BASELINE_COUNT}"
