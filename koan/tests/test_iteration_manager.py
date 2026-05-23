@@ -20,6 +20,7 @@ from app.iteration_manager import (
     _check_schedule,
     _decide_autonomous_action,
     _downgrade_if_unaffordable,
+    _get_tier_cost_multiplier,
     _fallback_mission_extract,
     _filter_exploration_projects,
     _get_known_project_names,
@@ -234,6 +235,71 @@ class TestDowngradeIfUnaffordable:
             "review": "wait",
         }
 
+    def test_tier_multiplier_triggers_downgrade(self, tmp_path):
+        """A high tier multiplier forces downgrade even when base mode fits."""
+        # 50% used → 40% remaining, 10 runs → avg 5%/run
+        # implement = 5*1.0 = 5% ≤ 40% (affordable without tier)
+        # implement with tier_mult=2.0 = 5*1.0*2.0 = 10% ≤ 40% (still fits)
+        # deep = 5*2.0 = 10% ≤ 40% (affordable without tier)
+        # deep with tier_mult=2.0 = 5*2.0*2.0 = 20% ≤ 40% (still fits)
+        tracker = self._make_tracker(tmp_path, session_pct=50, runs=10)
+        assert _downgrade_if_unaffordable(tracker, "deep") == "deep"
+        assert _downgrade_if_unaffordable(tracker, "deep", tier_multiplier=2.0) == "deep"
+
+        # 80% used → 10% remaining, 10 runs → avg 8%/run
+        # deep = 8*2.0 = 16% > 10% → downgrade
+        # deep with tier_mult=1.5 = 8*2.0*1.5 = 24% > 10% → downgrade
+        # implement = 8*1.0 = 8% ≤ 10% (fits without tier)
+        # implement with tier_mult=1.5 = 8*1.0*1.5 = 12% > 10% → downgrade further
+        tracker2 = self._make_tracker(tmp_path, session_pct=80, runs=10)
+        assert _downgrade_if_unaffordable(tracker2, "deep") == "implement"
+        assert _downgrade_if_unaffordable(tracker2, "deep", tier_multiplier=1.5) == "review"
+
+    def test_tier_multiplier_one_is_noop(self, tmp_path):
+        """tier_multiplier=1.0 behaves identically to no multiplier."""
+        tracker = self._make_tracker(tmp_path, session_pct=80, runs=10)
+        assert (_downgrade_if_unaffordable(tracker, "deep", tier_multiplier=1.0)
+                == _downgrade_if_unaffordable(tracker, "deep"))
+
+
+# === Tests: _get_tier_cost_multiplier ===
+
+
+class TestGetTierCostMultiplier:
+
+    def test_none_tier_returns_one(self):
+        assert _get_tier_cost_multiplier(None) == 1.0
+
+    def test_empty_tier_returns_one(self):
+        assert _get_tier_cost_multiplier("") == 1.0
+
+    def test_returns_timeout_multiplier_from_config(self):
+        routing = {
+            "enabled": True,
+            "tiers": {
+                "complex": {"model": "opus", "max_turns": 500, "timeout_multiplier": 1.5},
+                "critical": {"model": "opus", "max_turns": 500, "timeout_multiplier": 2.0},
+            },
+        }
+        with patch(
+            "app.config.get_complexity_routing_config", return_value=routing,
+        ):
+            assert _get_tier_cost_multiplier("complex", "myproject") == 1.5
+            assert _get_tier_cost_multiplier("critical", "myproject") == 2.0
+
+    def test_missing_tier_falls_back_to_one(self):
+        routing = {"enabled": True, "tiers": {"trivial": {"timeout_multiplier": 0.5}}}
+        with patch(
+            "app.config.get_complexity_routing_config", return_value=routing,
+        ):
+            assert _get_tier_cost_multiplier("unknown_tier", "myproject") == 1.0
+
+    def test_routing_disabled_returns_one(self):
+        with patch(
+            "app.config.get_complexity_routing_config", return_value=None,
+        ):
+            assert _get_tier_cost_multiplier("complex", "myproject") == 1.0
+
 
 # === Tests: _get_usage_decision ===
 
@@ -259,6 +325,23 @@ class TestGetUsageDecision:
         assert "Session" in result["display_lines"][0]
         assert "Weekly" in result["display_lines"][1]
         assert result.get("tracker_error") is None
+
+    def test_returns_tracker_for_tier_recheck(self, tmp_path):
+        """Decision dict includes tracker for post-tier affordability recheck."""
+        usage_md = tmp_path / "usage.md"
+        usage_md.write_text(
+            "Session (5hr) : 30% (reset in 2h30m)\n"
+            "Weekly (7 day) : 20% (Resets in 5d)\n"
+        )
+        result = _get_usage_decision(usage_md, 3, PROJECTS_STR)
+        assert result.get("tracker") is not None
+        assert hasattr(result["tracker"], "can_afford_run")
+
+    def test_tracker_error_has_no_tracker(self, tmp_path):
+        """On tracker error, no tracker is returned."""
+        with patch("app.usage_tracker.UsageTracker", side_effect=ValueError("boom")):
+            result = _get_usage_decision(tmp_path / "x.md", 0, PROJECTS_STR)
+        assert result.get("tracker") is None
 
     def test_high_usage_returns_wait(self, tmp_path):
         usage_md = tmp_path / "usage.md"

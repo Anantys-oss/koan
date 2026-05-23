@@ -77,20 +77,32 @@ _MODE_DOWNGRADE = {
 BURN_RATE_DOWNGRADE_THRESHOLD_MIN = 30.0
 
 
-def _downgrade_if_unaffordable(tracker, mode: str) -> str:
+def _downgrade_if_unaffordable(tracker, mode: str,
+                               tier_multiplier: float = 1.0) -> str:
     """Downgrade mode until can_afford_run() passes or we hit wait.
 
     Called after decide_mode() to ensure the estimated run cost
     actually fits within remaining budget. Prevents launching a deep
     session when budget can only cover a review.
+
+    Args:
+        tracker: UsageTracker instance.
+        mode: Current autonomous mode.
+        tier_multiplier: Additional cost multiplier from complexity tier
+            (e.g. 1.5 for complex missions). Applied on top of the mode
+            multiplier so tier-based model upgrades don't silently bypass
+            the budget guard.
     """
     original = mode
-    while mode in _MODE_DOWNGRADE and not tracker.can_afford_run(mode):
+    while mode in _MODE_DOWNGRADE and not tracker.can_afford_run(
+        mode, tier_multiplier=tier_multiplier,
+    ):
         mode = _MODE_DOWNGRADE[mode]
     if mode != original:
+        tier_info = f", tier_mult={tier_multiplier:.1f}" if tier_multiplier != 1.0 else ""
         _log_iteration("koan",
             f"Budget check: downgraded {original} → {mode} "
-            f"(estimated cost {tracker.estimate_run_cost():.1f}%)")
+            f"(estimated cost {tracker.estimate_run_cost():.1f}%{tier_info})")
     return mode
 
 
@@ -169,6 +181,7 @@ def _get_usage_decision(usage_md: Path, count: int, projects_str: str):
             "reason": reason,
             "display_lines": display_lines,
             "cost_today": cost_today,
+            "tracker": tracker,
         }
     except (ImportError, OSError, ValueError) as e:
         _log_iteration("error", f"Usage tracker error: {e}")
@@ -477,6 +490,28 @@ def _classify_mission(
         _log_iteration("error", f"Complexity tag write error: {e}")
 
     return tier
+
+
+def _get_tier_cost_multiplier(tier: Optional[str],
+                              project_name: str = "") -> float:
+    """Look up the cost multiplier for a complexity tier.
+
+    Uses ``timeout_multiplier`` from the complexity routing config as a
+    proxy for cost — longer timeouts and more turns correlate with higher
+    token spend.  Falls back to 1.0 when routing is disabled or the tier
+    has no explicit multiplier.
+    """
+    if not tier:
+        return 1.0
+    try:
+        from app.config import get_complexity_routing_config
+        routing = get_complexity_routing_config(project_name)
+        if routing is None:
+            return 1.0
+        tier_cfg = routing.get("tiers", {}).get(tier, {})
+        return float(tier_cfg.get("timeout_multiplier", 1.0))
+    except (ImportError, OSError, ValueError, TypeError):
+        return 1.0
 
 
 def _projects_to_str(projects: List[Tuple[str, str]]) -> str:
@@ -1335,6 +1370,7 @@ def plan_iteration(
     decision_reason = decision["reason"]
     display_lines = decision["display_lines"]
     tracker_error = decision.get("tracker_error")
+    usage_tracker = decision.get("tracker")  # None on tracker error path
     cost_today = decision.get("cost_today", 0.0)
     _log_iteration("koan", f"Usage decision: mode={autonomous_mode}, available={available_pct}%")
 
@@ -1448,6 +1484,24 @@ def plan_iteration(
         mission_tier = _classify_mission(
             mission_title, project_name, instance / "missions.md"
         )
+
+        # Step 5c: Re-check affordability now that tier is known.
+        # Tier-based model upgrades (e.g. complex → opus) can increase
+        # cost 2-3x.  The initial budget guard (Step 2) ran before tier
+        # classification, so it used the base mode multiplier only.
+        if mission_tier and usage_tracker is not None:
+            tier_mult = _get_tier_cost_multiplier(mission_tier, project_name)
+            if tier_mult > 1.0:
+                prev_mode = autonomous_mode
+                autonomous_mode = _downgrade_if_unaffordable(
+                    usage_tracker, autonomous_mode,
+                    tier_multiplier=tier_mult,
+                )
+                if autonomous_mode != prev_mode:
+                    decision_reason = (
+                        f"{decision_reason} (tier '{mission_tier}' "
+                        f"recheck: {prev_mode} → {autonomous_mode})"
+                    )
 
     else:
         # No mission — autonomous mode

@@ -362,6 +362,37 @@ class TestCanAffordRun:
         # deep = 16.0 → 16.0 > 10
         assert tracker.can_afford_run("deep") is False
 
+    def test_tier_multiplier_increases_cost(self, tmp_path):
+        """tier_multiplier scales cost on top of mode multiplier."""
+        usage = tmp_path / "usage.md"
+        usage.write_text("Session (5hr) : 50% (reset in 2h)\nWeekly (7 day) : 10% (Resets in 5d)")
+        tracker = UsageTracker(usage, runs_completed=10)
+        # base_cost = 50/10 = 5.0, available = min(40, 80) = 40
+        # implement = 5*1.0 = 5.0 ≤ 40 → affordable
+        assert tracker.can_afford_run("implement") is True
+        # implement with tier_mult=2.0 = 5*1.0*2.0 = 10.0 ≤ 40 → still OK
+        assert tracker.can_afford_run("implement", tier_multiplier=2.0) is True
+        # deep = 5*2.0 = 10.0 ≤ 40 → affordable
+        assert tracker.can_afford_run("deep") is True
+        # deep with tier_mult=2.0 = 5*2.0*2.0 = 20.0 ≤ 40 → still fits
+        assert tracker.can_afford_run("deep", tier_multiplier=2.0) is True
+
+    def test_tier_multiplier_causes_rejection(self, tmp_path):
+        """High tier multiplier can push an otherwise affordable mode over budget."""
+        usage = tmp_path / "usage.md"
+        usage.write_text("Session (5hr) : 80% (reset in 1h)\nWeekly (7 day) : 80% (Resets in 2d)")
+        tracker = UsageTracker(usage, runs_completed=10)
+        # base_cost = 80/10 = 8.0, available = min(10, 10) = 10
+        # implement = 8*1.0 = 8.0 ≤ 10 → affordable
+        assert tracker.can_afford_run("implement") is True
+        # implement with tier_mult=1.5 = 8*1.0*1.5 = 12.0 > 10 → rejected
+        assert tracker.can_afford_run("implement", tier_multiplier=1.5) is False
+
+    def test_tier_multiplier_default_is_noop(self, usage_file_standard):
+        """Default tier_multiplier=1.0 doesn't change behavior."""
+        tracker = UsageTracker(usage_file_standard, runs_completed=5)
+        assert tracker.can_afford_run("deep") == tracker.can_afford_run("deep", tier_multiplier=1.0)
+
 
 class TestBudgetMode:
     """Test budget_mode parameter for controlling which limits are active."""

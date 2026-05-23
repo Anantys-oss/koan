@@ -156,11 +156,15 @@ class UsageTracker:
             return self.session_pct / self.runs_this_session
         return 5.0  # Conservative default for first run
 
-    def can_afford_run(self, mode: str) -> bool:
+    def can_afford_run(self, mode: str, tier_multiplier: float = 1.0) -> bool:
         """Check if budget allows a run in the given mode.
 
         Args:
             mode: One of "review", "implement", "deep"
+            tier_multiplier: Additional cost multiplier from complexity tier
+                (e.g. 1.5 for complex, 2.0 for critical). Applied on top of
+                the mode multiplier so tier-based model upgrades are reflected
+                in the budget check.
 
         Returns:
             True if estimated cost fits within available budget
@@ -168,7 +172,7 @@ class UsageTracker:
         from app.burn_rate import MODE_MULTIPLIERS
 
         base_cost = self.estimate_run_cost()
-        estimated_cost = base_cost * MODE_MULTIPLIERS.get(mode, 1.0)
+        estimated_cost = base_cost * MODE_MULTIPLIERS.get(mode, 1.0) * tier_multiplier
 
         session_rem, weekly_rem = self.remaining_budget()
         available = min(session_rem, weekly_rem)
