@@ -2735,6 +2735,22 @@ class TestDrainCiQueueDuringSleep:
             # Should not raise
             lm._drain_ci_queue_during_sleep(str(tmp_path), 0)
 
+    def test_drain_error_logs_warning(self, tmp_path, caplog):
+        """OSError/ImportError/ValueError during drain logs at WARNING level."""
+        import logging
+        import app.loop_manager as lm
+
+        lm._last_ci_queue_sleep_check = 0
+
+        with patch("app.ci_queue_runner.drain_one", side_effect=OSError("disk full")):
+            with caplog.at_level(logging.WARNING, logger="app.loop_manager"):
+                lm._drain_ci_queue_during_sleep(str(tmp_path), 0)
+
+        assert any(
+            "CI queue drain error during sleep" in r.message and r.levelno == logging.WARNING
+            for r in caplog.records
+        )
+
 
 # ---------------------------------------------------------------------------
 # Concurrent notification processing

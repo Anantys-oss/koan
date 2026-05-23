@@ -177,7 +177,7 @@ def _drain_ci_queue_during_sleep(instance_dir: str, elapsed: float):
         if msg:
             log.info("CI queue (sleep): %s", msg)
     except (ImportError, OSError, ValueError) as e:
-        log.debug("CI queue drain error during sleep: %s", e)
+        log.warning("CI queue drain error during sleep: %s", e)
 
 
 # --- Pending.md creation ---
