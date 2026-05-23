@@ -1,26 +1,7 @@
 """Koan /audit skill -- queue a codebase audit mission."""
 
-import re
-
+from skills.core.audit.audit_helpers import extract_auto_fix, queue_audit_mission
 from skills.core.audit.audit_runner import DEFAULT_MAX_ISSUES, extract_limit
-
-# Matches --auto-fix or --auto-fix=<severity>
-_AUTO_FIX_RE = re.compile(r"--auto-fix(?:=(\w+))?\b", re.IGNORECASE)
-
-
-def _extract_auto_fix(text):
-    """Extract --auto-fix[=severity] from text.
-
-    Returns (severity_or_None, cleaned_text). When ``--auto-fix`` is
-    present without ``=severity``, returns ``"high"`` (critical + high).
-    """
-    m = _AUTO_FIX_RE.search(text)
-    if not m:
-        return None, text
-    severity = m.group(1) or "high"
-    cleaned = (text[:m.start()] + text[m.end():]).strip()
-    cleaned = re.sub(r"  +", " ", cleaned)
-    return severity.lower(), cleaned
 
 
 def handle(ctx):
@@ -59,40 +40,14 @@ def handle(ctx):
 
     # Extract flags before splitting
     max_issues, args = extract_limit(args)
-    auto_fix, args = _extract_auto_fix(args)
+    auto_fix, args = extract_auto_fix(args)
 
     # First word is project name, rest is extra context
     parts = args.split(None, 1)
     project_name = parts[0]
     extra_context = parts[1] if len(parts) > 1 else ""
 
-    return _queue_audit(ctx, project_name, extra_context, max_issues, auto_fix)
-
-
-def _queue_audit(ctx, project_name, extra_context, max_issues=DEFAULT_MAX_ISSUES, auto_fix=None):
-    """Queue an audit mission."""
-    from app.utils import insert_pending_mission, resolve_project_path
-
-    path = resolve_project_path(project_name)
-    if not path:
-        from app.utils import get_known_projects
-
-        known = ", ".join(n for n, _ in get_known_projects()) or "none"
-        return (
-            f"\u274c Unknown project '{project_name}'.\n"
-            f"Known projects: {known}"
-        )
-
-    suffix = f" {extra_context}" if extra_context else ""
-    limit_suffix = f" limit={max_issues}" if max_issues != DEFAULT_MAX_ISSUES else ""
-    fix_suffix = ""
-    if auto_fix:
-        fix_suffix = f" --auto-fix={auto_fix}" if auto_fix != "high" else " --auto-fix"
-    mission_entry = f"- [project:{project_name}] /audit{suffix}{limit_suffix}{fix_suffix}"
-    missions_path = ctx.instance_dir / "missions.md"
-    insert_pending_mission(missions_path, mission_entry)
-
-    context_hint = f" (focus: {extra_context})" if extra_context else ""
-    limit_hint = f", limit={max_issues}" if max_issues != DEFAULT_MAX_ISSUES else ""
-    fix_hint = f", auto-fix={auto_fix}" if auto_fix else ""
-    return f"\U0001f50e Audit queued for {project_name}{context_hint}{limit_hint}{fix_hint}"
+    return queue_audit_mission(
+        ctx, project_name, extra_context, max_issues, auto_fix,
+        command="audit", emoji="\U0001f50e",
+    )

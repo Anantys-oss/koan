@@ -1113,31 +1113,31 @@ class TestAutoFixExtraction:
 
     def test_extract_auto_fix_present_no_severity(self):
         handler = _load_handler()
-        severity, cleaned = handler._extract_auto_fix("koan --auto-fix")
+        severity, cleaned = handler.extract_auto_fix("koan --auto-fix")
         assert severity == "high"
         assert cleaned == "koan"
 
     def test_extract_auto_fix_with_severity(self):
         handler = _load_handler()
-        severity, cleaned = handler._extract_auto_fix("koan --auto-fix=critical")
+        severity, cleaned = handler.extract_auto_fix("koan --auto-fix=critical")
         assert severity == "critical"
         assert cleaned == "koan"
 
     def test_extract_auto_fix_absent(self):
         handler = _load_handler()
-        severity, cleaned = handler._extract_auto_fix("koan focus on auth")
+        severity, cleaned = handler.extract_auto_fix("koan focus on auth")
         assert severity is None
         assert cleaned == "koan focus on auth"
 
     def test_extract_auto_fix_case_insensitive(self):
         handler = _load_handler()
-        severity, cleaned = handler._extract_auto_fix("koan --AUTO-FIX=HIGH")
+        severity, cleaned = handler.extract_auto_fix("koan --AUTO-FIX=HIGH")
         assert severity == "high"
         assert cleaned == "koan"
 
     def test_extract_auto_fix_with_limit(self):
         handler = _load_handler()
-        severity, cleaned = handler._extract_auto_fix("koan limit=3 --auto-fix")
+        severity, cleaned = handler.extract_auto_fix("koan limit=3 --auto-fix")
         assert severity == "high"
         assert "limit=3" in cleaned
         assert "--auto-fix" not in cleaned
