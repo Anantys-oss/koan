@@ -31,8 +31,10 @@ Think about:
 - Security or reliability concerns
 
 Use the project memory and health data above to avoid suggesting improvements that have
-already been explored, already failed, or are already known pain points. Focus on fresh
-opportunities — ideas the project hasn't tried yet.
+already been explored, already failed, or are already known pain points. Your output uses
+structured `---IDEA---` blocks (see format below) — cross-reference each idea against
+the learnings and failure patterns to ensure you're proposing fresh opportunities the
+project hasn't tried yet.
 
 Suggest **3-5 concrete, actionable ideas**, ranked by impact. For each:
 - A clear one-line description of the change
