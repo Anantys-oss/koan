@@ -45,6 +45,12 @@
 # Env override: KOAN_FOCUS=1 (truthy values)
 # focus: false
 
+# Multiple instances — acknowledge that several Kōan instances share
+# the same GitHub account, each watching a different set of repos.
+# When true, Kōan suppresses warnings about @mentions on repos not in
+# this instance's projects.yaml (another instance likely handles them).
+# enable_multiple_instances: false
+
 # Startup reflection — run self-reflection check on startup
 # When true, Kōan checks whether periodic self-reflection is due (every N
 # sessions) and, if so, invokes Claude to generate observations. Disabled by

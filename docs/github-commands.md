@@ -122,6 +122,16 @@ github:
 - **`reply_authorized_users`**: Separate from command `authorized_users` — allows a broader audience for read-only replies without granting command execution. `["*"]` means anyone can trigger replies (no permission check at all, unlike command wildcard which still checks GitHub write access). Omit to fall back to `authorized_users`. Set `[]` to disable replies entirely.
 - **`reply_rate_limit`**: Prevents API quota abuse when replies are open broadly. Tracks per-user reply counts over a rolling 1-hour window. Default: 5, minimum: 1.
 
+#### Multiple instances
+
+When several Kōan instances share the same GitHub account (each watching a different set of repos), @mentions on repos not in this instance's `projects.yaml` trigger warnings by default. Suppress them with:
+
+```yaml
+enable_multiple_instances: true
+```
+
+This is a top-level config key (not nested under `github:`). When enabled, Kōan silently skips @mentions from unregistered repos instead of logging warnings and sending Telegram alerts — the assumption is that another instance handles them.
+
 ### Per-project overrides (`projects.yaml`)
 
 Override `authorized_users` and `reply_authorized_users` for specific repositories:

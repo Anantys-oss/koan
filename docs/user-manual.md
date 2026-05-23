@@ -960,6 +960,10 @@ tools:
 # the stack running but idle until you explicitly /resume.
 start_on_pause: false
 
+# Multiple instances sharing one GitHub account — suppresses
+# warnings about @mentions on repos not in this instance's projects.yaml.
+enable_multiple_instances: false
+
 # Schedule (when Kōan is allowed to work)
 schedule:
   timezone: UTC

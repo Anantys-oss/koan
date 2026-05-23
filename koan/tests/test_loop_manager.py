@@ -1849,6 +1849,80 @@ class TestNotifyMissionFromMention:
         assert "mission queued" in msg
 
 
+class TestWarnUnregisteredMentionRepos:
+    """Tests for _warn_unregistered_mention_repos Telegram warning."""
+
+    def setup_method(self):
+        import app.loop_manager as lm
+        with lm._warned_unregistered_repos_lock:
+            lm._warned_unregistered_repos.clear()
+
+    @patch("app.notify.send_telegram", return_value=True)
+    def test_warns_on_first_occurrence(self, mock_send, tmp_path):
+        from app.loop_manager import _warn_unregistered_mention_repos
+
+        _warn_unregistered_mention_repos(
+            {"owner/unregistered-repo": 5}, str(tmp_path)
+        )
+        mock_send.assert_called_once()
+        msg = mock_send.call_args[0][0]
+        assert "owner/unregistered-repo" in msg
+        assert "5 mention(s)" in msg
+        assert "projects.yaml" in msg
+
+    @patch("app.notify.send_telegram", return_value=True)
+    def test_no_duplicate_warning_same_session(self, mock_send, tmp_path):
+        from app.loop_manager import _warn_unregistered_mention_repos
+
+        _warn_unregistered_mention_repos(
+            {"owner/repo": 3}, str(tmp_path)
+        )
+        mock_send.reset_mock()
+        _warn_unregistered_mention_repos(
+            {"owner/repo": 7}, str(tmp_path)
+        )
+        mock_send.assert_not_called()
+
+    @patch("app.notify.send_telegram", return_value=True)
+    def test_warns_for_new_repo_only(self, mock_send, tmp_path):
+        from app.loop_manager import _warn_unregistered_mention_repos
+
+        _warn_unregistered_mention_repos(
+            {"owner/repo": 2}, str(tmp_path)
+        )
+        mock_send.reset_mock()
+        _warn_unregistered_mention_repos(
+            {"owner/repo": 2, "other/repo": 1}, str(tmp_path)
+        )
+        mock_send.assert_called_once()
+        msg = mock_send.call_args[0][0]
+        assert "other/repo" in msg
+        assert "owner/repo" not in msg
+
+    def test_noop_on_empty_dict(self, tmp_path):
+        from app.loop_manager import _warn_unregistered_mention_repos
+
+        _warn_unregistered_mention_repos({}, str(tmp_path))
+
+    @patch("app.notify.send_telegram", side_effect=OSError("network error"))
+    def test_handles_send_failure_gracefully(self, mock_send, tmp_path):
+        from app.loop_manager import _warn_unregistered_mention_repos
+
+        _warn_unregistered_mention_repos(
+            {"owner/repo": 1}, str(tmp_path)
+        )
+
+    @patch("app.config.get_enable_multiple_instances", return_value=True)
+    @patch("app.notify.send_telegram", return_value=True)
+    def test_suppressed_when_multiple_instances(self, mock_send, _mock_multi, tmp_path):
+        from app.loop_manager import _warn_unregistered_mention_repos
+
+        _warn_unregistered_mention_repos(
+            {"owner/repo": 3}, str(tmp_path)
+        )
+        mock_send.assert_not_called()
+
+
 # --- Test configurable check interval ---
 
 

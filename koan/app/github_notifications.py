@@ -242,13 +242,15 @@ class FetchResult:
         drain: Non-actionable notifications from known repos that should
             be marked as read to prevent accumulation.
     """
-    __slots__ = ("actionable", "drain", "skipped_repos")
+    __slots__ = ("actionable", "drain", "skipped_repos", "skipped_mention_repos")
 
     def __init__(self, actionable: List[dict], drain: List[dict],
-                 skipped_repos: Optional[List[str]] = None):
+                 skipped_repos: Optional[List[str]] = None,
+                 skipped_mention_repos: Optional[Dict[str, int]] = None):
         self.actionable = actionable
         self.drain = drain
         self.skipped_repos = skipped_repos or []
+        self.skipped_mention_repos = skipped_mention_repos or {}
 
 
 def fetch_unread_notifications(known_repos: Optional[Set[str]] = None,
@@ -311,6 +313,7 @@ def fetch_unread_notifications(known_repos: Optional[Set[str]] = None,
 
     skipped_reasons: Dict[str, int] = {}
     skipped_repos: List[str] = []
+    skipped_mention_repos: Dict[str, int] = {}
     actionable = []
     drain = []
     for notif in notifications:
@@ -325,7 +328,7 @@ def fetch_unread_notifications(known_repos: Optional[Set[str]] = None,
             if repo_lower not in known_repos:
                 skipped_repos.append(repo_name)
                 if reason in {"mention", "team_mention"}:
-                    log.debug("GitHub: skipping @mention for unregistered repo %s", repo_name)
+                    skipped_mention_repos[repo_name] = skipped_mention_repos.get(repo_name, 0) + 1
                 continue
 
         if reason in _ACTIONABLE_REASONS:
@@ -345,12 +348,24 @@ def fetch_unread_notifications(known_repos: Optional[Set[str]] = None,
             "GitHub: skipped %d notifications from unknown repos: %s",
             len(skipped_repos), ", ".join(skipped_repos),
         )
+    if skipped_mention_repos:
+        try:
+            from app.config import get_enable_multiple_instances
+            _multi = get_enable_multiple_instances()
+        except (ImportError, OSError):
+            _multi = False
+        _log = log.debug if _multi else log.warning
+        _log(
+            "GitHub: %d @mention(s) dropped from unregistered repo(s): %s",
+            sum(skipped_mention_repos.values()),
+            ", ".join(f"{r} ({c})" for r, c in sorted(skipped_mention_repos.items())),
+        )
 
     log.debug(
         "GitHub: %d actionable + %d drain notification(s) from known repos",
         len(actionable), len(drain),
     )
-    return FetchResult(actionable, drain, skipped_repos)
+    return FetchResult(actionable, drain, skipped_repos, skipped_mention_repos)
 
 
 def parse_mention_command(comment_body: str, nickname: str) -> Optional[Tuple[str, str]]:

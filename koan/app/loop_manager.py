@@ -272,6 +272,10 @@ _MAX_PENDING_REPLIES = 50
 _pending_error_replies: list = []
 _pending_error_replies_lock = threading.Lock()
 
+# Repos we've already warned about for dropped @mentions (one alert per session).
+_warned_unregistered_repos: set = set()
+_warned_unregistered_repos_lock = threading.Lock()
+
 # Lock protecting all module-level mutable GitHub state above.
 # Acquired for short state reads/writes only — never held during API calls.
 _github_state_lock = threading.Lock()
@@ -540,6 +544,53 @@ def _get_known_repos_from_projects(koan_root: str) -> Optional[set]:
     return known_repos or None
 
 
+def _warn_unregistered_mention_repos(
+    skipped_mention_repos: dict,
+    instance_dir: str,
+) -> None:
+    """Alert the user when @mentions are dropped from repos not in projects.yaml."""
+    if not skipped_mention_repos:
+        return
+
+    try:
+        from app.config import get_enable_multiple_instances
+        if get_enable_multiple_instances():
+            return
+    except (ImportError, OSError):
+        pass
+
+    with _warned_unregistered_repos_lock:
+        new_repos = {
+            repo for repo in skipped_mention_repos
+            if repo not in _warned_unregistered_repos
+        }
+        if not new_repos:
+            return
+        _warned_unregistered_repos.update(new_repos)
+
+    summary_parts = []
+    for repo in sorted(new_repos):
+        count = skipped_mention_repos[repo]
+        summary_parts.append(f"{repo} ({count})")
+
+    _github_log(
+        f"⚠️  Dropping @mentions from unregistered repos: {', '.join(summary_parts)}. "
+        "Add them to projects.yaml to receive these notifications.",
+        "warning",
+    )
+
+    try:
+        from app.notify import send_telegram, NotificationPriority
+        msg = (
+            "⚠️ GitHub @mentions dropped — repo not in projects.yaml:\n"
+            + "\n".join(f"  • {r} ({skipped_mention_repos[r]} mention(s))" for r in sorted(new_repos))
+            + "\n\nAdd to projects.yaml to start receiving these."
+        )
+        send_telegram(msg, priority=NotificationPriority.WARNING)
+    except (ImportError, OSError) as e:
+        log.debug("Failed to send unregistered-repo warning: %s", e)
+
+
 def _get_effective_check_interval_locked() -> int:
     """Compute check interval with backoff. Caller must hold _github_state_lock."""
     if _consecutive_empty_checks <= 0:
@@ -751,6 +802,9 @@ def process_github_notifications(
 
         result = fetch_unread_notifications(known_repos, since=since_value)
         notifications = result.actionable
+
+        # Warn about @mentions dropped from unregistered repos (once per repo per session).
+        _warn_unregistered_mention_repos(result.skipped_mention_repos, instance_dir)
 
         # Record the check timestamp for the next ``since`` window.
         new_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

@@ -190,6 +190,24 @@ class TestFetchUnreadNotifications:
         assert result.actionable[0]["repository"]["full_name"] == "owner/repo"
         # Verify skipped mentions are tracked in skipped_repos
         assert "unknown/repo" in result.skipped_repos
+        # Verify skipped_mention_repos tracks mention-specific skips with counts
+        assert "unknown/repo" in result.skipped_mention_repos
+        assert result.skipped_mention_repos["unknown/repo"] == 1
+
+    @patch("app.github_notifications.api")
+    def test_skipped_mention_repos_counts_multiple(self, mock_api):
+        """Multiple @mentions from the same unregistered repo are counted."""
+        notifications = [
+            {"reason": "mention", "repository": {"full_name": "other/repo"}},
+            {"reason": "mention", "repository": {"full_name": "other/repo"}},
+            {"reason": "comment", "repository": {"full_name": "other/repo"}},
+            {"reason": "team_mention", "repository": {"full_name": "third/repo"}},
+        ]
+        mock_api.return_value = json.dumps(notifications)
+
+        result = fetch_unread_notifications(known_repos={"owner/repo"})
+        assert result.skipped_mention_repos == {"other/repo": 2, "third/repo": 1}
+        assert len(result.skipped_repos) == 4
 
     @patch("app.github_notifications.api")
     def test_handles_api_error(self, mock_api):

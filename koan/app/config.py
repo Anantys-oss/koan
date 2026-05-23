@@ -358,6 +358,17 @@ def get_auto_pause() -> bool:
     return bool(value)
 
 
+def get_enable_multiple_instances() -> bool:
+    """Check if multiple-instance mode is enabled in config.yaml.
+
+    When True, suppresses warnings about @mentions from repos not in
+    projects.yaml — expected when several Kōan instances share one
+    GitHub account, each watching a different set of repos.
+    """
+    config = _load_config()
+    return bool(config.get("enable_multiple_instances", False))
+
+
 def get_skip_permissions() -> bool:
     """Check if skip_permissions is enabled in config.yaml.
 
