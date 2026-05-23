@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from app.projects_config import (
     load_projects_config,
+    invalidate_projects_config_cache,
     get_projects_from_config,
     get_project_config,
     get_project_auto_merge,
@@ -25,6 +26,14 @@ from app.projects_config import (
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _clear_config_cache():
+    """Reset load_projects_config() mtime cache between tests."""
+    invalidate_projects_config_cache()
+    yield
+    invalidate_projects_config_cache()
 
 
 @pytest.fixture

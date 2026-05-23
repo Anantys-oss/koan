@@ -17,10 +17,17 @@ File location: projects.yaml at KOAN_ROOT (next to .env).
 """
 
 import sys
+import threading
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 import yaml
+
+# Thread-safe mtime-keyed cache for load_projects_config().
+# Avoids repeated YAML file I/O when multiple config getters call
+# load_projects_config() within the same pipeline pass.
+_cache_lock = threading.Lock()
+_cache: dict = {}  # (koan_root, yaml_path) -> (mtime, result)
 
 
 def load_projects_config(koan_root: str) -> Optional[dict]:
@@ -28,10 +35,24 @@ def load_projects_config(koan_root: str) -> Optional[dict]:
 
     Returns the parsed config dict, or None if file doesn't exist.
     Raises ValueError on invalid YAML or schema violations.
+
+    Results are cached by file mtime — repeated calls with an unchanged
+    file return the cached dict without re-reading the YAML.
     """
     config_path = Path(koan_root) / "projects.yaml"
     if not config_path.exists():
         return None
+
+    try:
+        current_mtime = config_path.stat().st_mtime
+    except OSError:
+        return None
+
+    cache_key = (koan_root, str(config_path))
+    with _cache_lock:
+        cached = _cache.get(cache_key)
+        if cached is not None and cached[0] == current_mtime:
+            return cached[1]
 
     try:
         with open(config_path, "r") as f:
@@ -46,7 +67,20 @@ def load_projects_config(koan_root: str) -> Optional[dict]:
         raise ValueError("projects.yaml must be a YAML mapping (dict)")
 
     _validate_config(data)
+
+    with _cache_lock:
+        _cache[cache_key] = (current_mtime, data)
+
     return data
+
+
+def invalidate_projects_config_cache() -> None:
+    """Clear the load_projects_config() mtime cache.
+
+    Call from test teardown to prevent cross-test contamination.
+    """
+    with _cache_lock:
+        _cache.clear()
 
 
 def _validate_config(config: dict) -> None:
