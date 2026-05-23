@@ -11,7 +11,6 @@ both .git/config and projects.yaml when a rename is detected.
 """
 
 import re
-import sys
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -41,7 +40,7 @@ def _build_new_url(old_url: str, new_owner: str, new_repo: str) -> str:
     """Build a new remote URL preserving the original format (SSH vs HTTPS)."""
     if old_url.startswith("git@"):
         return f"git@github.com:{new_owner}/{new_repo}.git"
-    if ".git" in old_url:
+    if old_url.rstrip("/").endswith(".git"):
         return f"https://github.com/{new_owner}/{new_repo}.git"
     return f"https://github.com/{new_owner}/{new_repo}"
 
@@ -52,15 +51,15 @@ def _query_canonical_name(slug: str) -> Optional[str]:
     GitHub follows redirects for renamed repos, so querying the old
     owner/repo returns the repo object with the new full_name.
 
-    Returns lowercase 'owner/repo' or None on failure.
+    Returns 'owner/repo' (preserving API casing) or None on failure.
     """
     try:
         from app.github import api
         result = api(f"repos/{slug}", jq=".full_name")
         if result:
-            return result.strip().strip('"').lower()
-    except Exception as e:
-        print(f"[remote-rename] API query failed for {slug}: {e}", file=sys.stderr)
+            return result.strip().strip('"')
+    except (OSError, RuntimeError, ValueError) as e:
+        log("git", f"API query failed for {slug}: {e}")
     return None
 
 
@@ -68,7 +67,7 @@ def _update_git_remote(project_path: str, new_url: str) -> bool:
     """Update origin remote URL in .git/config."""
     rc, _, stderr = run_git("remote", "set-url", "origin", new_url, cwd=project_path, timeout=5)
     if rc != 0:
-        print(f"[remote-rename] git remote set-url failed: {stderr}", file=sys.stderr)
+        log("git", f"git remote set-url failed: {stderr}")
         return False
     return True
 
@@ -89,26 +88,31 @@ def detect_and_fix_renamed_remotes(
     messages: List[str] = []
     fixed_projects: dict = {}
 
+    github_projects = []
     for name, path in projects:
         if not Path(path).is_dir() or not (Path(path) / ".git").exists():
             continue
-
         origin_url = _get_origin_url(path)
         if not origin_url:
             continue
-
         old_slug = _extract_slug(origin_url)
         if not old_slug:
             continue
+        github_projects.append((name, path, origin_url, old_slug))
 
+    if not github_projects:
+        return messages
+
+    log("git", f"Checking {len(github_projects)} project(s) for renamed remotes")
+
+    for name, path, origin_url, old_slug in github_projects:
         canonical = _query_canonical_name(old_slug)
         if canonical is None:
             continue
 
-        if canonical == old_slug:
+        if canonical.lower() == old_slug:
             continue
 
-        # Rename detected
         new_owner, new_repo = canonical.split("/", 1)
         new_url = _build_new_url(origin_url, new_owner, new_repo)
 
@@ -150,7 +154,7 @@ def _update_projects_config(koan_root: str, fixed: dict):
                 continue
 
             old_url = project.get("github_url", "")
-            if old_url and old_url.lower() != new_slug:
+            if old_url and old_url.lower() != new_slug.lower():
                 project["github_url"] = new_slug
                 modified = True
 
@@ -163,5 +167,5 @@ def _update_projects_config(koan_root: str, fixed: dict):
 
         if modified:
             save_projects_config(koan_root, config)
-    except Exception as e:
-        print(f"[remote-rename] projects.yaml update failed: {e}", file=sys.stderr)
+    except (OSError, RuntimeError, ValueError) as e:
+        log("git", f"projects.yaml update failed: {e}")
