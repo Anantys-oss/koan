@@ -7,10 +7,15 @@ import pytest
 
 from app.ai_runner import (
     AIFinding,
+    ISSUES_CAP,
     parse_findings,
     prioritize_findings,
     run_exploration,
+    _build_ai_fingerprint_index,
+    _build_ai_issue_body,
     _clean_response,
+    _compute_ai_fingerprint,
+    _create_issues_for_findings,
     _extract_missions,
     _extract_missions_legacy,
     _findings_to_missions,
@@ -957,3 +962,268 @@ class TestCLI:
         ])
         kwargs = mock_run.call_args[1]
         assert kwargs["focus_context"] == ""
+
+    @patch("app.ai_runner.run_exploration", return_value=(True, "Done"))
+    def test_main_passes_issues_flag(self, mock_run):
+        main([
+            "--project-path", "/tmp/myapp",
+            "--project-name", "myapp",
+            "--instance-dir", "/tmp/instance",
+            "--issues",
+        ])
+        kwargs = mock_run.call_args[1]
+        assert kwargs["create_issues"] is True
+
+    @patch("app.ai_runner.run_exploration", return_value=(True, "Done"))
+    def test_main_default_no_issues(self, mock_run):
+        main([
+            "--project-path", "/tmp/myapp",
+            "--project-name", "myapp",
+            "--instance-dir", "/tmp/instance",
+        ])
+        kwargs = mock_run.call_args[1]
+        assert kwargs["create_issues"] is False
+
+
+# ---------------------------------------------------------------------------
+# GitHub issue creation — fingerprinting and body building
+# ---------------------------------------------------------------------------
+
+class TestAIFingerprint:
+    def test_stable_fingerprint(self):
+        f = AIFinding(title="Fix bug", location="src/a.py:10", category="quality", description="d")
+        fp1 = _compute_ai_fingerprint(f)
+        fp2 = _compute_ai_fingerprint(f)
+        assert fp1 == fp2
+        assert len(fp1) == 16
+
+    def test_different_findings_different_fingerprints(self):
+        f1 = AIFinding(title="Fix bug A", location="src/a.py:10", category="quality", description="d")
+        f2 = AIFinding(title="Fix bug B", location="src/b.py:20", category="perf", description="d")
+        assert _compute_ai_fingerprint(f1) != _compute_ai_fingerprint(f2)
+
+    def test_case_insensitive(self):
+        f1 = AIFinding(title="Fix Bug", location="SRC/A.py:10", category="Quality", description="d")
+        f2 = AIFinding(title="fix bug", location="src/a.py:10", category="quality", description="d")
+        assert _compute_ai_fingerprint(f1) == _compute_ai_fingerprint(f2)
+
+
+class TestBuildAIIssueBody:
+    def test_contains_description(self):
+        f = AIFinding(title="Fix bug", description="The retry logic is broken.", impact="high",
+                      category="quality", location="src/a.py:10", effort="small")
+        body = _build_ai_issue_body(f)
+        assert "The retry logic is broken." in body
+        assert "## Description" in body
+
+    def test_contains_fingerprint_marker(self):
+        f = AIFinding(title="Fix bug", description="Broken", impact="high",
+                      category="quality", location="src/a.py:10")
+        body = _build_ai_issue_body(f)
+        assert "<!-- koan-ai-id:" in body
+
+    def test_contains_details_table(self):
+        f = AIFinding(title="Fix bug", description="Broken", impact="high",
+                      category="quality", location="src/a.py:10", effort="medium")
+        body = _build_ai_issue_body(f)
+        assert "High" in body
+        assert "quality" in body
+        assert "src/a.py:10" in body
+
+
+class TestBuildAIFingerprintIndex:
+    def test_builds_index_from_issues(self):
+        issues = [
+            {
+                "url": "https://github.com/owner/repo/issues/1",
+                "body": "Some text\n<!-- koan-ai-id: abc123def456789a -->",
+            },
+        ]
+        index = _build_ai_fingerprint_index(issues)
+        assert "abc123def456789a" in index
+        assert index["abc123def456789a"] == "https://github.com/owner/repo/issues/1"
+
+    def test_skips_issues_without_marker(self):
+        issues = [
+            {"url": "https://github.com/owner/repo/issues/1", "body": "No marker here"},
+        ]
+        index = _build_ai_fingerprint_index(issues)
+        assert len(index) == 0
+
+    def test_skips_issues_without_body(self):
+        issues = [
+            {"url": "https://github.com/owner/repo/issues/1", "body": ""},
+            {"url": "https://github.com/owner/repo/issues/2", "body": None},
+        ]
+        index = _build_ai_fingerprint_index(issues)
+        assert len(index) == 0
+
+
+class TestCreateIssuesForFindings:
+    @patch("app.ai_runner._list_open_ai_issues", return_value=[])
+    @patch("app.github.resolve_target_repo", return_value=None)
+    @patch("app.github.issue_create", return_value="https://github.com/o/r/issues/42")
+    def test_creates_issues_for_high_impact(self, mock_create, mock_repo, mock_list):
+        findings = [
+            AIFinding(title="High impact bug", impact="high", description="Broken",
+                      category="quality", location="src/a.py:10"),
+        ]
+        count = _create_issues_for_findings(findings, "/tmp/proj", "myapp")
+        assert count == 1
+        mock_create.assert_called_once()
+        assert mock_create.call_args[1]["title"] == "High impact bug"
+
+    @patch("app.ai_runner._list_open_ai_issues", return_value=[])
+    @patch("app.github.resolve_target_repo", return_value=None)
+    @patch("app.github.issue_create", return_value="https://github.com/o/r/issues/42")
+    def test_creates_issues_for_medium_impact(self, mock_create, mock_repo, mock_list):
+        findings = [
+            AIFinding(title="Medium bug", impact="medium", description="Needs fix",
+                      category="quality", location="src/b.py:5"),
+        ]
+        count = _create_issues_for_findings(findings, "/tmp/proj", "myapp")
+        assert count == 1
+
+    @patch("app.ai_runner._list_open_ai_issues", return_value=[])
+    @patch("app.github.resolve_target_repo", return_value=None)
+    @patch("app.github.issue_create")
+    def test_skips_low_impact(self, mock_create, mock_repo, mock_list):
+        findings = [
+            AIFinding(title="Low impact", impact="low", description="Minor thing",
+                      category="cleanup", location="src/c.py:1"),
+        ]
+        count = _create_issues_for_findings(findings, "/tmp/proj", "myapp")
+        assert count == 0
+        mock_create.assert_not_called()
+
+    @patch("app.ai_runner._list_open_ai_issues", return_value=[])
+    @patch("app.github.resolve_target_repo", return_value=None)
+    @patch("app.github.issue_create", return_value="https://github.com/o/r/issues/1")
+    def test_caps_at_issues_cap(self, mock_create, mock_repo, mock_list):
+        findings = [
+            AIFinding(title=f"Bug {i}", impact="high", description=f"Issue {i}",
+                      category="quality", location=f"src/{i}.py:1")
+            for i in range(10)
+        ]
+        count = _create_issues_for_findings(findings, "/tmp/proj", "myapp")
+        assert count == ISSUES_CAP
+        assert mock_create.call_count == ISSUES_CAP
+
+    @patch("app.ai_runner._list_open_ai_issues")
+    @patch("app.github.resolve_target_repo", return_value=None)
+    @patch("app.github.issue_create")
+    def test_deduplicates_against_existing(self, mock_create, mock_repo, mock_list):
+        finding = AIFinding(title="Existing bug", impact="high", description="Already tracked",
+                            category="quality", location="src/x.py:5")
+        fp = _compute_ai_fingerprint(finding)
+        mock_list.return_value = [
+            {"url": "https://github.com/o/r/issues/99", "body": f"<!-- koan-ai-id: {fp} -->"},
+        ]
+        count = _create_issues_for_findings([finding], "/tmp/proj", "myapp")
+        assert count == 0
+        mock_create.assert_not_called()
+
+    @patch("app.ai_runner._list_open_ai_issues", return_value=[])
+    @patch("app.github.resolve_target_repo", return_value=None)
+    @patch("app.github.issue_create", side_effect=Exception("API error"))
+    def test_continues_on_error(self, mock_create, mock_repo, mock_list):
+        findings = [
+            AIFinding(title="Bug A", impact="high", description="Broken A",
+                      category="quality", location="src/a.py:1"),
+            AIFinding(title="Bug B", impact="high", description="Broken B",
+                      category="quality", location="src/b.py:1"),
+        ]
+        count = _create_issues_for_findings(findings, "/tmp/proj", "myapp")
+        assert count == 0
+        assert mock_create.call_count == 2
+
+    @patch("app.ai_runner._list_open_ai_issues", return_value=[])
+    @patch("app.github.resolve_target_repo", return_value="upstream/repo")
+    @patch("app.github.issue_create", return_value="https://github.com/upstream/repo/issues/1")
+    def test_uses_target_repo(self, mock_create, mock_repo, mock_list):
+        findings = [
+            AIFinding(title="Fork bug", impact="high", description="Fix in upstream",
+                      category="quality", location="src/a.py:1"),
+        ]
+        _create_issues_for_findings(findings, "/tmp/proj", "myapp")
+        assert mock_create.call_args[1]["repo"] == "upstream/repo"
+
+    @patch("app.ai_runner._list_open_ai_issues", return_value=[])
+    @patch("app.github.resolve_target_repo", return_value=None)
+    @patch("app.github.issue_create", return_value="https://github.com/o/r/issues/1")
+    def test_notifies_progress(self, mock_create, mock_repo, mock_list):
+        findings = [
+            AIFinding(title="Notifiable bug", impact="high", description="Fix this",
+                      category="quality", location="src/a.py:1"),
+        ]
+        notify = MagicMock()
+        _create_issues_for_findings(findings, "/tmp/proj", "myapp", notify_fn=notify)
+        assert notify.call_count >= 2  # "Creating issue" + URL + summary
+
+
+# ---------------------------------------------------------------------------
+# run_exploration with --issues flag
+# ---------------------------------------------------------------------------
+
+class TestRunExplorationWithIssues:
+    @patch("app.ai_runner._create_issues_for_findings", return_value=2)
+    @patch("app.utils.insert_pending_mission")
+    @patch("app.cli_provider.run_command_streaming",
+           return_value=_STRUCTURED_OUTPUT)
+    @patch("app.ai_runner.get_missions_context", return_value="No active missions.")
+    @patch("app.ai_runner.gather_project_structure", return_value="Directories: src/")
+    @patch("app.ai_runner.gather_git_activity", return_value="Recent commits: abc")
+    @patch("app.ai_runner.load_skill_prompt", return_value="Explore myapp")
+    def test_creates_issues_when_flag_set(
+        self, mock_prompt, mock_git, mock_struct, mock_missions,
+        mock_claude, mock_insert, mock_create_issues, tmp_path
+    ):
+        notify = MagicMock()
+        success, summary = run_exploration(
+            str(tmp_path), "myapp", str(tmp_path),
+            notify_fn=notify, create_issues=True,
+        )
+        assert success is True
+        assert "2 issues created" in summary
+        mock_create_issues.assert_called_once()
+
+    @patch("app.ai_runner._create_issues_for_findings")
+    @patch("app.utils.insert_pending_mission")
+    @patch("app.cli_provider.run_command_streaming",
+           return_value=_STRUCTURED_OUTPUT)
+    @patch("app.ai_runner.get_missions_context", return_value="No active missions.")
+    @patch("app.ai_runner.gather_project_structure", return_value="Directories: src/")
+    @patch("app.ai_runner.gather_git_activity", return_value="Recent commits: abc")
+    @patch("app.ai_runner.load_skill_prompt", return_value="Explore myapp")
+    def test_no_issues_without_flag(
+        self, mock_prompt, mock_git, mock_struct, mock_missions,
+        mock_claude, mock_insert, mock_create_issues, tmp_path
+    ):
+        notify = MagicMock()
+        success, summary = run_exploration(
+            str(tmp_path), "myapp", str(tmp_path),
+            notify_fn=notify, create_issues=False,
+        )
+        assert success is True
+        mock_create_issues.assert_not_called()
+        assert "issues created" not in summary
+
+    @patch("app.ai_runner._create_issues_for_findings", return_value=3)
+    @patch("app.utils.insert_pending_mission")
+    @patch("app.cli_provider.run_command_streaming",
+           return_value=_STRUCTURED_OUTPUT)
+    @patch("app.ai_runner.get_missions_context", return_value="No active missions.")
+    @patch("app.ai_runner.gather_project_structure", return_value="Directories: src/")
+    @patch("app.ai_runner.gather_git_activity", return_value="Recent commits: abc")
+    @patch("app.ai_runner.load_skill_prompt", return_value="Explore myapp")
+    def test_telegram_includes_issue_count(
+        self, mock_prompt, mock_git, mock_struct, mock_missions,
+        mock_claude, mock_insert, mock_create_issues, tmp_path
+    ):
+        notify = MagicMock()
+        run_exploration(
+            str(tmp_path), "myapp", str(tmp_path),
+            notify_fn=notify, create_issues=True,
+        )
+        result_msg = notify.call_args_list[-1][0][0]
+        assert "3 GitHub issue(s) created" in result_msg

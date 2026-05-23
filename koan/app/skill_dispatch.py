@@ -562,6 +562,9 @@ def _build_review_cmd(
     return cmd
 
 
+_ISSUES_RE = re.compile(r'--issues\b', re.IGNORECASE)
+
+
 def _build_ai_cmd(
     base_cmd: List[str],
     args: str,
@@ -573,7 +576,11 @@ def _build_ai_cmd(
 
     Args contains the project name (first word) followed by optional
     focus context. Strip the project name to extract the context.
+    ``--issues`` flag is forwarded to the runner for GitHub issue creation.
     """
+    # Extract --issues flag before parsing context
+    issues_flag, args = _extract_flag(args, _ISSUES_RE, group=0)
+
     # args = "koan explore the notification pipeline" -> context = "explore the notification pipeline"
     focus_context = ""
     if args:
@@ -588,6 +595,8 @@ def _build_ai_cmd(
     ]
     if focus_context:
         cmd += ["--focus-context", focus_context]
+    if issues_flag is not None:
+        cmd.append("--issues")
     return cmd
 
 

@@ -346,6 +346,48 @@ class TestHandle:
         entry = mock_insert.call_args[0][1]
         assert "Look at ConnectionError handling" in entry
 
+    @patch("app.utils.get_known_projects")
+    @patch("app.utils.insert_pending_mission")
+    def test_issues_flag_included_in_mission(
+        self, mock_insert, mock_get, handler, ctx, tmp_path
+    ):
+        """--issues flag should be included in queued mission entry."""
+        mock_get.return_value = [("koan", str(tmp_path))]
+        ctx.args = "koan --issues"
+        result = handler.handle(ctx)
+        entry = mock_insert.call_args[0][1]
+        assert "--issues" in entry
+        assert "[project:koan]" in entry
+        assert "GitHub issues" in result
+
+    @patch("app.utils.get_known_projects")
+    @patch("app.utils.insert_pending_mission")
+    def test_issues_flag_with_focus_context(
+        self, mock_insert, mock_get, handler, ctx, tmp_path
+    ):
+        """--issues flag works alongside focus context."""
+        mock_get.return_value = [("koan", str(tmp_path))]
+        ctx.args = "koan explore error handling --issues"
+        result = handler.handle(ctx)
+        entry = mock_insert.call_args[0][1]
+        assert "--issues" in entry
+        assert "explore error handling" in entry
+        assert "focus:" in result
+        assert "GitHub issues" in result
+
+    @patch("app.utils.get_known_projects")
+    @patch("app.utils.insert_pending_mission")
+    def test_no_issues_flag_by_default(
+        self, mock_insert, mock_get, handler, ctx, tmp_path
+    ):
+        """Without --issues, mission entry should not contain the flag."""
+        mock_get.return_value = [("koan", str(tmp_path))]
+        ctx.args = "koan"
+        result = handler.handle(ctx)
+        entry = mock_insert.call_args[0][1]
+        assert "--issues" not in entry
+        assert "GitHub issues" not in result
+
 
 # ---------------------------------------------------------------------------
 # Dispatch behavior via command_handlers
