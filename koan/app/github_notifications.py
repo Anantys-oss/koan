@@ -102,27 +102,32 @@ def _record_fetch_failure(reason: str) -> None:
 
     # Send a one-time outbox alert so the user gets a Telegram notification
     if not _fetch_failure_alerted:
-        _fetch_failure_alerted = True
-        _send_fetch_failure_alert(_consecutive_fetch_failures, reason)
+        if _send_fetch_failure_alert(_consecutive_fetch_failures, reason):
+            _fetch_failure_alerted = True
 
 
-def _send_fetch_failure_alert(count: int, reason: str) -> None:
-    """Write a fetch-failure alert to outbox.md."""
+def _send_fetch_failure_alert(count: int, reason: str) -> bool:
+    """Write a fetch-failure alert to outbox.md.
+
+    Returns True if the alert was written successfully, False otherwise.
+    """
     try:
         koan_root = os.environ.get("KOAN_ROOT", "")
         if not koan_root:
-            return
+            return False
         outbox_path = Path(koan_root) / "instance" / "outbox.md"
         if not outbox_path.parent.is_dir():
-            return
+            return False
         from app.utils import append_to_outbox
         msg = (
             f"⚠️ GitHub notification polling has failed {count} times in a row "
             f"({reason}). @mentions may be missed until connectivity is restored.\n"
         )
         append_to_outbox(outbox_path, msg)
+        return True
     except Exception as exc:
         log.debug("Failed to write fetch-failure alert to outbox: %s", exc)
+        return False
 
 
 def _clear_fetch_failures() -> None:

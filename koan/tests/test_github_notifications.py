@@ -1195,11 +1195,42 @@ class TestConsecutiveFetchFailures:
 
         with patch.dict(os.environ, {"KOAN_ROOT": str(tmp_path)}):
             from app.github_notifications import _send_fetch_failure_alert
-            _send_fetch_failure_alert(3, "network error")
+            result = _send_fetch_failure_alert(3, "network error")
 
+        assert result is True
         content = outbox.read_text()
         assert "failed 3 times" in content
         assert "network error" in content
+
+    @patch("app.github_notifications.api")
+    def test_send_fetch_failure_alert_returns_false_on_error(self, mock_api, tmp_path):
+        """_send_fetch_failure_alert returns False when outbox write fails."""
+        with patch.dict(os.environ, {"KOAN_ROOT": str(tmp_path)}):
+            from app.github_notifications import _send_fetch_failure_alert
+            # instance/ dir doesn't exist — early return False
+            result = _send_fetch_failure_alert(3, "network error")
+        assert result is False
+
+    @patch("app.github_notifications.api")
+    def test_alert_retries_after_outbox_write_failure(self, mock_api):
+        """If outbox write fails, flag should NOT be stuck True — next
+        threshold hit must retry the alert."""
+        mock_api.side_effect = RuntimeError("down")
+
+        # Patch _send_fetch_failure_alert to simulate outbox write failure
+        # then success on second call
+        with patch(
+            "app.github_notifications._send_fetch_failure_alert",
+            side_effect=[False, True],
+        ) as mock_alert:
+            # First streak hits threshold — alert "fails" (returns False)
+            for _ in range(_FETCH_FAILURE_THRESHOLD):
+                fetch_unread_notifications()
+            assert mock_alert.call_count == 1
+
+            # Next failure should retry alert since previous one failed
+            fetch_unread_notifications()
+            assert mock_alert.call_count == 2
 
 
 # ---------------------------------------------------------------------------
