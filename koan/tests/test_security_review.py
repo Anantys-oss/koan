@@ -281,7 +281,7 @@ class TestAssessRiskLevel:
         assert risk == "low"
 
     def test_medium_risk_several_files(self):
-        br = {"file_count": 8, "sensitive_file_count": 1,
+        br = {"file_count": 8, "sensitive_file_count": 2,
               "has_infra_changes": False, "has_dependency_changes": False,
               "modules_affected": ["src", "tests"]}
         risk, score = assess_risk_level(br, [])
@@ -418,7 +418,7 @@ class TestGitHelpers:
 class TestWriteJournalEntry:
     """Tests for _write_journal_entry()."""
 
-    @patch("app.utils.write_to_journal")
+    @patch("app.post_mission_reflection.write_to_journal")
     def test_writes_entry(self, mock_write):
         _write_journal_entry(
             "/instance", "myapp", "high", 15,
@@ -433,7 +433,7 @@ class TestWriteJournalEntry:
         assert "high" in entry
         assert "eval() usage" in entry
 
-    @patch("app.utils.write_to_journal")
+    @patch("app.post_mission_reflection.write_to_journal")
     def test_blocked_entry(self, mock_write):
         _write_journal_entry(
             "/instance", "myapp", "critical", 25,
@@ -445,7 +445,7 @@ class TestWriteJournalEntry:
         entry = mock_write.call_args[0][1]
         assert "blocked" in entry.lower()
 
-    @patch("app.utils.write_to_journal")
+    @patch("app.post_mission_reflection.write_to_journal")
     def test_truncates_many_findings(self, mock_write):
         findings = [(f"finding_{i}", f"m_{i}", f"ctx_{i}") for i in range(15)]
         _write_journal_entry(
@@ -458,7 +458,7 @@ class TestWriteJournalEntry:
         entry = mock_write.call_args[0][1]
         assert "5 more" in entry
 
-    @patch("app.utils.write_to_journal", side_effect=Exception("fail"))
+    @patch("app.post_mission_reflection.write_to_journal", side_effect=Exception("fail"))
     def test_handles_write_failure(self, mock_write):
         # Should not raise
         _write_journal_entry(
@@ -478,7 +478,7 @@ class TestWriteJournalEntry:
 class TestCheckSecurityReview:
     """Integration tests for check_security_review()."""
 
-    @patch("app.utils.write_to_journal")
+    @patch("app.post_mission_reflection.write_to_journal")
     @patch("app.security_review.get_changed_files")
     @patch("app.security_review.get_diff_against_base")
     @patch("app.projects_config.load_projects_config")
@@ -491,7 +491,7 @@ class TestCheckSecurityReview:
         assert result is True
         mock_diff.assert_not_called()
 
-    @patch("app.utils.write_to_journal")
+    @patch("app.post_mission_reflection.write_to_journal")
     @patch("app.security_review.get_changed_files")
     @patch("app.security_review.get_diff_against_base")
     @patch("app.projects_config.load_projects_config")
@@ -500,7 +500,7 @@ class TestCheckSecurityReview:
         result = check_security_review("/instance", "myapp", "/tmp/myapp")
         assert result is True
 
-    @patch("app.utils.write_to_journal")
+    @patch("app.post_mission_reflection.write_to_journal")
     @patch("app.security_review.get_changed_files")
     @patch("app.security_review.get_diff_against_base")
     @patch("app.projects_config.load_projects_config")
@@ -513,7 +513,7 @@ class TestCheckSecurityReview:
         result = check_security_review("/instance", "myapp", "/tmp/myapp")
         assert result is True
 
-    @patch("app.utils.write_to_journal")
+    @patch("app.post_mission_reflection.write_to_journal")
     @patch("app.security_review.get_changed_files")
     @patch("app.security_review.get_diff_against_base")
     @patch("app.projects_config.load_projects_config")
@@ -527,7 +527,7 @@ class TestCheckSecurityReview:
         result = check_security_review("/instance", "myapp", "/tmp/myapp")
         assert result is True
 
-    @patch("app.utils.write_to_journal")
+    @patch("app.post_mission_reflection.write_to_journal")
     @patch("app.security_review.get_changed_files")
     @patch("app.security_review.get_diff_against_base")
     @patch("app.projects_config.load_projects_config")
@@ -544,7 +544,7 @@ class TestCheckSecurityReview:
         result = check_security_review("/instance", "myapp", "/tmp/myapp")
         assert result is True  # Non-blocking mode
 
-    @patch("app.utils.write_to_journal")
+    @patch("app.post_mission_reflection.write_to_journal")
     @patch("app.security_review.get_changed_files")
     @patch("app.security_review.get_diff_against_base")
     @patch("app.projects_config.load_projects_config")
@@ -563,7 +563,7 @@ class TestCheckSecurityReview:
         result = check_security_review("/instance", "myapp", "/tmp/myapp")
         assert result is False  # Blocking mode, high risk
 
-    @patch("app.utils.write_to_journal")
+    @patch("app.post_mission_reflection.write_to_journal")
     @patch("app.security_review.get_changed_files")
     @patch("app.security_review.get_diff_against_base")
     @patch("app.projects_config.load_projects_config")
@@ -583,7 +583,7 @@ class TestCheckSecurityReview:
         result = check_security_review("/instance", "myapp", "/tmp/myapp")
         assert result is False  # Medium risk meets medium threshold
 
-    @patch("app.utils.write_to_journal")
+    @patch("app.post_mission_reflection.write_to_journal")
     @patch("app.security_review.get_changed_files")
     @patch("app.security_review.get_diff_against_base")
     @patch("app.projects_config.load_projects_config")
@@ -600,7 +600,7 @@ class TestCheckSecurityReview:
         check_security_review("/instance", "myapp", "/tmp/myapp")
         mock_files.assert_called_with("/tmp/myapp", "develop")
 
-    @patch("app.utils.write_to_journal")
+    @patch("app.post_mission_reflection.write_to_journal")
     @patch("app.security_review.get_changed_files")
     @patch("app.security_review.get_diff_against_base")
     @patch("app.projects_config.load_projects_config")

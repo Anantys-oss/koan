@@ -240,7 +240,7 @@ def _write_journal_entry(
 ) -> None:
     """Write security review results to the project journal."""
     try:
-        from app.utils import write_to_journal
+        from app.post_mission_reflection import write_to_journal
 
         lines = [f"## Security Review — risk: {risk_level} (score: {score})"]
 
