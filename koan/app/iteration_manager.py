@@ -1139,6 +1139,15 @@ def plan_iteration(
         _log_iteration("error", f"Focus mode config lookup failed: {e}")
         focus_mode = False
 
+    # Step 0b: Process overdue one-shot event triggers.
+    try:
+        from app.event_scheduler import tick as _event_tick
+        _enqueued = _event_tick(instance_dir)
+        for _m in _enqueued:
+            _log_iteration("koan", f"[event] Enqueued scheduled mission: {_m[:80]}")
+    except (ImportError, OSError) as e:
+        _log_iteration("error", f"Event scheduler tick failed: {e}")
+
     # Step 1: Refresh usage
     _refresh_usage(usage_state, usage_md, count)
 

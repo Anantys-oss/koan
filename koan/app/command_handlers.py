@@ -50,6 +50,7 @@ def set_callbacks(
 CORE_COMMANDS = frozenset({
     "help", "stop", "update", "upgrade", "sleep", "resume", "skill",
     "pause", "work", "awake", "start", "run",  # aliases for sleep/resume
+    "at",  # one-shot scheduled mission trigger
 })
 
 
@@ -128,6 +129,10 @@ def handle_command(text: str):
 
     if cmd in ("/resume", "/work", "/awake", "/run"):
         handle_resume()
+        return
+
+    if cmd.startswith(("/at ", "/at")):
+        _handle_at_command(text)
         return
 
     if cmd == "/start":
@@ -852,6 +857,52 @@ def _handle_start():
         send_telegram(f"✅ {msg}")
     else:
         send_telegram(f"❌ {msg}")
+
+
+def _handle_at_command(text: str):
+    """Handle /at <time> <mission> — schedule a one-shot mission trigger.
+
+    Examples::
+
+        /at 09:00 Check CI status
+        /at 2h Retry failed deployment
+        /at 30m Run smoke tests
+        /at 2026-05-24T09:00:00 Weekly review
+    """
+    from app.event_scheduler import parse_at_arg, write_event_file
+
+    parts = text.strip().split(None, 2)
+    # parts[0] = "/at", parts[1] = time_arg, parts[2] = mission
+    if len(parts) < 3:
+        send_telegram(
+            "Usage: /at <time> <mission>\n"
+            "Examples:\n"
+            "  /at 09:00 Check CI status\n"
+            "  /at 2h Retry failed deployment\n"
+            "  /at 30m Run smoke tests"
+        )
+        return
+
+    time_arg = parts[1]
+    mission_text = parts[2].strip()
+
+    if not mission_text:
+        send_telegram("❌ Mission text cannot be empty.")
+        return
+
+    run_at = parse_at_arg(time_arg)
+    if run_at is None:
+        send_telegram(
+            f"❌ Could not parse time: `{time_arg}`\n"
+            "Supported formats: HH:MM, ISO datetime, 30m, 2h, 1h30m"
+        )
+        return
+
+    events_dir = INSTANCE_DIR / "events"
+    write_event_file(events_dir, run_at, mission_text)
+
+    formatted = run_at.strftime("%Y-%m-%d %H:%M")
+    send_telegram(f"⏰ Scheduled for {formatted}:\n{mission_text}")
 
 
 def quarantine_mission(text: str, reason: str, source: str = "unknown"):
