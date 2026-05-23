@@ -954,7 +954,7 @@ def commit_instance(instance_dir: str, message: str = "") -> bool:
     # Push to the current branch — skip if HEAD is detached
     branch = run_git(instance_dir, "rev-parse", "--abbrev-ref", "HEAD")
     if not branch or branch == "HEAD":
-        print("[commit_instance] Skipping push: detached HEAD", file=sys.stderr)
+        sys.stderr.write("[commit_instance] Skipping push: detached HEAD\n")
         return True
     run_git(instance_dir, "push", "origin", branch)
     return True

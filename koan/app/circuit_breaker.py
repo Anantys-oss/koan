@@ -34,7 +34,7 @@ import sys
 import time
 from copy import copy
 from functools import wraps
-from typing import Any, Callable, Dict, Optional, Union
+from typing import Any, Callable, Dict, Optional
 
 # Sentinel for "no default provided" (distinct from None)
 _SENTINEL = object()
