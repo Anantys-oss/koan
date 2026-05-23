@@ -506,6 +506,78 @@ class TestInterruptibleSleep:
         )
         assert result == "timeout"
 
+    def test_wake_on_mission_false_skips_notification_dispatch(self, tmp_path):
+        """With wake_on_mission=False, notification fetchers must NOT run.
+
+        In branch-saturated state, dispatching notifications creates missions
+        that immediately fail because no branch slot is available.
+        """
+        from app.loop_manager import interruptible_sleep
+
+        koan_root = str(tmp_path / "root")
+        instance = str(tmp_path / "instance")
+        os.makedirs(koan_root, exist_ok=True)
+        os.makedirs(instance, exist_ok=True)
+
+        gh_calls = []
+        jira_calls = []
+
+        def track_gh(*a, **kw):
+            gh_calls.append(1)
+            return 0
+
+        def track_jira(*a, **kw):
+            jira_calls.append(1)
+            return 0
+
+        with patch("app.loop_manager.process_github_notifications", side_effect=track_gh), \
+             patch("app.loop_manager.process_jira_notifications", side_effect=track_jira):
+            result = interruptible_sleep(
+                interval=1,
+                koan_root=koan_root,
+                instance_dir=instance,
+                check_interval=1,
+                wake_on_mission=False,
+            )
+
+        assert result == "timeout"
+        assert gh_calls == [], "GitHub notifications should not be fetched when wake_on_mission=False"
+        assert jira_calls == [], "Jira notifications should not be fetched when wake_on_mission=False"
+
+    def test_force_check_overrides_wake_on_mission_false(self, tmp_path):
+        """When /check_notifications is requested, notifications are fetched
+        even with wake_on_mission=False (explicit user action)."""
+        from app.loop_manager import interruptible_sleep
+
+        koan_root = str(tmp_path / "root")
+        instance = str(tmp_path / "instance")
+        os.makedirs(koan_root, exist_ok=True)
+        os.makedirs(instance, exist_ok=True)
+
+        # Create the check-notifications signal file
+        Path(os.path.join(koan_root, ".koan-check-notifications")).touch()
+
+        gh_calls = []
+
+        def track_gh(*a, **kw):
+            gh_calls.append(1)
+            # Create stop file to break out of loop after one iteration
+            Path(os.path.join(koan_root, ".koan-stop")).touch()
+            return 0
+
+        with patch("app.loop_manager.process_github_notifications", side_effect=track_gh), \
+             patch("app.loop_manager.process_jira_notifications", return_value=0):
+            result = interruptible_sleep(
+                interval=60,
+                koan_root=koan_root,
+                instance_dir=instance,
+                check_interval=1,
+                wake_on_mission=False,
+            )
+
+        assert result == "stop"
+        assert len(gh_calls) == 1, "force_check should override wake_on_mission=False"
+
     def test_priority_stop_over_pause(self, tmp_path):
         from app.loop_manager import interruptible_sleep
 

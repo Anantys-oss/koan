@@ -1433,20 +1433,29 @@ def interruptible_sleep(
         # pass force=True to both GitHub and Jira checks).
         force_check = _consume_check_notifications_signal(koan_root)
 
-        # Check GitHub notifications (throttled to once per 60s).
-        # Track wall time: API calls can be slow and should count toward elapsed.
-        t0 = time.monotonic()
-        gh_new = process_github_notifications(koan_root, instance_dir, force=force_check)
-        if wake_on_mission and gh_new > 0:
-            return "mission"
-        elapsed += time.monotonic() - t0
+        # Skip notification fetch/dispatch when wake_on_mission is False
+        # (e.g. branch-saturated wait).  Dispatching would create missions
+        # that immediately fail because no branch slot is available.
+        if wake_on_mission or force_check:
+            # Check GitHub notifications (throttled to once per 60s).
+            # Track wall time: API calls can be slow and should count
+            # toward elapsed.
+            t0 = time.monotonic()
+            gh_new = process_github_notifications(
+                koan_root, instance_dir, force=force_check,
+            )
+            if wake_on_mission and gh_new > 0:
+                return "mission"
+            elapsed += time.monotonic() - t0
 
-        # Check Jira notifications (throttled to once per 60s).
-        t0 = time.monotonic()
-        jira_new = process_jira_notifications(koan_root, instance_dir, force=force_check)
-        if wake_on_mission and jira_new > 0:
-            return "mission"
-        elapsed += time.monotonic() - t0
+            # Check Jira notifications (throttled to once per 60s).
+            t0 = time.monotonic()
+            jira_new = process_jira_notifications(
+                koan_root, instance_dir, force=force_check,
+            )
+            if wake_on_mission and jira_new > 0:
+                return "mission"
+            elapsed += time.monotonic() - t0
 
         # Sleep for the smaller of check_interval and remaining time
         # to avoid overshooting the requested interval.
