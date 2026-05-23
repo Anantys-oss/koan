@@ -80,6 +80,7 @@ _CANONICAL_RUNNERS = {
     "private_security_audit": "skills.core.private_security_audit.private_security_audit_runner",
     "ci_check": "app.ci_queue_runner",
     "doc": "skills.core.doc.doc_runner",
+    "check_need": "skills.core.check_need.check_need_runner",
 }
 
 # Alias -> canonical command name. Declared once, expanded into
@@ -95,6 +96,8 @@ _COMMAND_ALIASES = {
     "private_security": "private_security_audit",
     "psecu": "private_security_audit",
     "docs": "doc",
+    "need": "check_need",
+    "needs": "check_need",
 }
 
 # Full mapping including aliases — used for runner module lookup.
@@ -875,6 +878,12 @@ def validate_skill_args(command: str, args: str) -> Optional[str]:
         if not (_PR_URL_RE.search(args) or _ISSUE_URL_RE.search(args)
                 or _JIRA_URL_RE.search(args)):
             return "/check requires a GitHub URL (PR or issue) or Jira URL"
+    elif canonical == "check_need":
+        if not (_PR_URL_RE.search(args) or _ISSUE_URL_RE.search(args)):
+            return (
+                f"/{command} requires a GitHub PR or issue URL "
+                f"(e.g. https://github.com/owner/repo/pull/42)"
+            )
 
     return None
 

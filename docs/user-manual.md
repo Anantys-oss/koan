@@ -603,6 +603,21 @@ review_dispatch:
 - Reviewer leaves comments on a PR → next `/check` run creates a mission to address them
 </details>
 
+**`/check_need`** — Analyze whether a PR or issue is still needed given the current state of the repository.
+
+- **Usage:** `/check_need <pr-or-issue-url>`
+- **Aliases:** `/need`, `/needs`
+
+Fetches the PR diff or issue description, compares it against the current main branch, and posts a detailed relevance analysis as a GitHub comment. The analysis covers whether changes have been superseded, are partially addressed, or remain fully valuable — with specific file-level evidence and a clear recommendation.
+
+<details>
+<summary>Use cases</summary>
+
+- `/check_need https://github.com/org/repo/pull/42` — Check if a PR is still relevant after recent main branch changes
+- `/need https://github.com/org/repo/issues/99` — Verify an issue hasn't been addressed already
+- `@koan-bot need` on a PR — Trigger relevance check via GitHub @mention
+</details>
+
 **`/ci_check`** — Check and fix CI failures on a GitHub PR using Claude.
 
 - **Usage:** `/ci_check <pr-url>`
@@ -1614,6 +1629,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/pr <PR>` | — | I | Review and update a GitHub PR |
 | `/branches [project]` | `/br`, `/prs` | B | List koan branches + PRs with merge order |
 | `/check <url>` | `/inspect` | I | Run project health checks on a PR/issue |
+| `/check_need <url>` | `/need`, `/needs` | I | Analyze if a PR/issue is still needed |
 | `/ci_check <PR>` | — | I | Check and fix CI failures on a PR |
 | `/gh_request <url> <text>` | — | I | Route natural-language GitHub request to the right skill |
 | `/claudemd [project]` | `/claude`, `/claude.md`, `/claude_md` | I | Refresh a project's CLAUDE.md |
