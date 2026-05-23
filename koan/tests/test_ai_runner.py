@@ -9,6 +9,10 @@ from app.ai_runner import (
     run_exploration,
     _clean_response,
     _extract_missions,
+    _has_similar_mission,
+    _is_similar_mission,
+    _mission_words,
+    _normalize_mission_text,
     _strip_mission_lines,
     _queue_missions,
     main,
@@ -393,22 +397,211 @@ class TestStripMissionLines:
 # ---------------------------------------------------------------------------
 
 class TestQueueMissions:
-    @patch("app.utils.insert_pending_mission")
-    def test_inserts_each_mission(self, mock_insert):
-        missions_path = Path("/tmp/missions.md")
+    def test_inserts_each_mission(self, tmp_path):
+        missions_path = tmp_path / "missions.md"
+        missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
         missions = [
             "- [project:myapp] Fix bug A",
             "- [project:myapp] Fix bug B",
         ]
-        _queue_missions(missions_path, missions)
-        assert mock_insert.call_count == 2
-        mock_insert.assert_any_call(missions_path, "- [project:myapp] Fix bug A")
-        mock_insert.assert_any_call(missions_path, "- [project:myapp] Fix bug B")
+        queued = _queue_missions(missions_path, missions)
+        assert queued == 2
+        content = missions_path.read_text()
+        assert "Fix bug A" in content
+        assert "Fix bug B" in content
 
-    @patch("app.utils.insert_pending_mission")
-    def test_no_missions_no_calls(self, mock_insert):
-        _queue_missions(Path("/tmp/missions.md"), [])
-        mock_insert.assert_not_called()
+    def test_no_missions_returns_zero(self, tmp_path):
+        missions_path = tmp_path / "missions.md"
+        queued = _queue_missions(missions_path, [])
+        assert queued == 0
+
+    def test_skips_duplicate_in_pending(self, tmp_path):
+        missions_path = tmp_path / "missions.md"
+        missions_path.write_text(
+            "## Pending\n"
+            "- [project:myapp] Refactor the authentication module to use dependency injection\n\n"
+            "# In Progress\n\n# Done\n"
+        )
+        missions = [
+            "- [project:myapp] Refactor the authentication module to use dependency injection",
+        ]
+        queued = _queue_missions(missions_path, missions)
+        assert queued == 0
+
+    def test_skips_similar_in_pending(self, tmp_path):
+        missions_path = tmp_path / "missions.md"
+        missions_path.write_text(
+            "## Pending\n"
+            "- [project:myapp] Refactor the auth module to use dependency injection\n\n"
+            "# In Progress\n\n# Done\n"
+        )
+        missions = [
+            # Similar but rephrased
+            "- [project:myapp] Refactor auth module for dependency injection pattern",
+        ]
+        queued = _queue_missions(missions_path, missions)
+        assert queued == 0
+
+    def test_allows_distinct_missions(self, tmp_path):
+        missions_path = tmp_path / "missions.md"
+        missions_path.write_text(
+            "## Pending\n"
+            "- [project:myapp] Fix the login page CSS alignment\n\n"
+            "# In Progress\n\n# Done\n"
+        )
+        missions = [
+            "- [project:myapp] Add unit tests for the payment processing module",
+        ]
+        queued = _queue_missions(missions_path, missions)
+        assert queued == 1
+
+    def test_intra_batch_dedup(self, tmp_path):
+        """Identical missions within the same batch should not all be queued."""
+        missions_path = tmp_path / "missions.md"
+        missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+        missions = [
+            "- [project:myapp] Fix the retry logic in fetch_data()",
+            "- [project:myapp] Fix the retry logic in fetch_data()",
+        ]
+        queued = _queue_missions(missions_path, missions)
+        assert queued == 1
+
+    def test_skips_similar_in_progress(self, tmp_path):
+        missions_path = tmp_path / "missions.md"
+        missions_path.write_text(
+            "# Pending\n\n"
+            "## In Progress\n"
+            "- [project:myapp] Add input validation for the user email field\n\n"
+            "## Done\n"
+        )
+        missions = [
+            "- [project:myapp] Add input validation for user email field",
+        ]
+        queued = _queue_missions(missions_path, missions)
+        assert queued == 0
+
+    def test_returns_correct_count_mixed(self, tmp_path):
+        missions_path = tmp_path / "missions.md"
+        missions_path.write_text(
+            "## Pending\n"
+            "- [project:myapp] Fix the retry logic in fetch_data()\n\n"
+            "# In Progress\n\n# Done\n"
+        )
+        missions = [
+            "- [project:myapp] Fix the retry logic in fetch_data()",  # dup
+            "- [project:myapp] Add caching to the search endpoint",  # new
+        ]
+        queued = _queue_missions(missions_path, missions)
+        assert queued == 1
+
+    def test_creates_file_if_missing(self, tmp_path):
+        missions_path = tmp_path / "missions.md"
+        missions = ["- [project:myapp] Fix bug A"]
+        queued = _queue_missions(missions_path, missions)
+        assert queued == 1
+        assert missions_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# _normalize_mission_text / _mission_words / _is_similar_mission
+# ---------------------------------------------------------------------------
+
+class TestNormalizeMissionText:
+    def test_strips_project_tag(self):
+        result = _normalize_mission_text("- [project:myapp] Fix the bug")
+        assert result == "fix the bug"
+
+    def test_strips_timestamp(self):
+        result = _normalize_mission_text("Fix the bug ⏳(2026-05-23T04:24)")
+        assert result == "fix the bug"
+
+    def test_strips_slash_command(self):
+        result = _normalize_mission_text("/fix https://github.com/o/r/issues/1")
+        assert result == "https://github.com/o/r/issues/1"
+
+    def test_normalizes_whitespace(self):
+        result = _normalize_mission_text("  Fix   the    bug  ")
+        assert result == "fix the bug"
+
+    def test_combined_metadata(self):
+        result = _normalize_mission_text(
+            "- [project:myapp] Refactor auth module ⏳(2026-05-23T04:24)"
+        )
+        assert result == "refactor auth module"
+
+
+class TestMissionWords:
+    def test_extracts_significant_words(self):
+        words = _mission_words("- [project:myapp] Fix the retry logic")
+        assert "retry" in words
+        assert "logic" in words
+        # Short words (< 4 chars) filtered out
+        assert "fix" not in words
+        assert "the" not in words
+
+    def test_includes_underscored_identifiers(self):
+        words = _mission_words("Refactor fetch_data function")
+        assert "fetch_data" in words
+        assert "refactor" in words
+
+    def test_empty_returns_empty(self):
+        assert _mission_words("") == set()
+
+
+class TestIsSimilarMission:
+    def test_identical_missions(self):
+        a = "- [project:myapp] Fix the retry logic in fetch_data()"
+        b = "- [project:myapp] Fix the retry logic in fetch_data()"
+        assert _is_similar_mission(a, b) is True
+
+    def test_different_project_tag_same_text(self):
+        a = "- [project:myapp] Refactor the authentication module for better testing"
+        b = "- [project:other] Refactor the authentication module for better testing"
+        assert _is_similar_mission(a, b) is True
+
+    def test_completely_different(self):
+        a = "- [project:myapp] Fix CSS alignment on login page"
+        b = "- [project:myapp] Add unit tests for payment processing"
+        assert _is_similar_mission(a, b) is False
+
+    def test_minor_rephrasing(self):
+        a = "- [project:myapp] Refactor the auth module to use dependency injection"
+        b = "- [project:myapp] Refactor auth module for dependency injection pattern"
+        assert _is_similar_mission(a, b) is True
+
+    def test_short_missions_not_falsely_matched(self):
+        """Short missions with few overlapping words should not match."""
+        a = "- [project:myapp] Fix the bug"
+        b = "- [project:myapp] Fix the test"
+        assert _is_similar_mission(a, b) is False
+
+    def test_empty_text_returns_false(self):
+        assert _is_similar_mission("", "something") is False
+        assert _is_similar_mission("something", "") is False
+
+
+class TestHasSimilarMission:
+    def test_finds_match(self):
+        existing = [
+            "- [project:myapp] Add caching to the search endpoint",
+            "- [project:myapp] Fix the retry logic in fetch_data()",
+        ]
+        assert _has_similar_mission(
+            "- [project:myapp] Fix the retry logic in fetch_data()", existing
+        ) is True
+
+    def test_no_match(self):
+        existing = [
+            "- [project:myapp] Add caching to the search endpoint",
+        ]
+        assert _has_similar_mission(
+            "- [project:myapp] Fix the retry logic in fetch_data()", existing
+        ) is False
+
+    def test_empty_existing(self):
+        assert _has_similar_mission(
+            "- [project:myapp] Fix the bug", []
+        ) is False
 
 
 # ---------------------------------------------------------------------------
@@ -416,7 +609,6 @@ class TestQueueMissions:
 # ---------------------------------------------------------------------------
 
 class TestRunExplorationWithMissions:
-    @patch("app.utils.insert_pending_mission")
     @patch("app.cli_provider.run_command_streaming",
            return_value="Found issues\nMISSION: Fix bug A\nMISSION: Fix bug B")
     @patch("app.ai_runner.get_missions_context", return_value="No active missions.")
@@ -425,8 +617,12 @@ class TestRunExplorationWithMissions:
     @patch("app.ai_runner.load_skill_prompt", return_value="Explore myapp")
     def test_queues_missions_from_output(
         self, mock_prompt, mock_git, mock_struct, mock_missions,
-        mock_claude, mock_insert, tmp_path
+        mock_claude, tmp_path
     ):
+        # Create missions.md so _queue_missions can read it
+        missions_path = tmp_path / "missions.md"
+        missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
         notify = MagicMock()
         success, summary = run_exploration(
             str(tmp_path), "myapp", str(tmp_path),
@@ -434,9 +630,7 @@ class TestRunExplorationWithMissions:
         )
         assert success is True
         assert "2 missions queued" in summary
-        assert mock_insert.call_count == 2
 
-    @patch("app.utils.insert_pending_mission")
     @patch("app.cli_provider.run_command_streaming",
            return_value="Found issues\nMISSION: Fix bug A\nMISSION: Fix bug B")
     @patch("app.ai_runner.get_missions_context", return_value="No active missions.")
@@ -445,8 +639,11 @@ class TestRunExplorationWithMissions:
     @patch("app.ai_runner.load_skill_prompt", return_value="Explore myapp")
     def test_telegram_shows_mission_count(
         self, mock_prompt, mock_git, mock_struct, mock_missions,
-        mock_claude, mock_insert, tmp_path
+        mock_claude, tmp_path
     ):
+        missions_path = tmp_path / "missions.md"
+        missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
         notify = MagicMock()
         run_exploration(
             str(tmp_path), "myapp", str(tmp_path),
@@ -455,6 +652,37 @@ class TestRunExplorationWithMissions:
         result_msg = notify.call_args_list[1][0][0]
         assert "2 mission(s) queued" in result_msg
         assert "MISSION:" not in result_msg
+
+    @patch("app.cli_provider.run_command_streaming",
+           return_value=(
+               "Found issues\n"
+               "MISSION: Refactor authentication module for better error handling\n"
+               "MISSION: Add caching layer to search endpoint\n"
+           ))
+    @patch("app.ai_runner.get_missions_context", return_value="No active missions.")
+    @patch("app.ai_runner.gather_project_structure", return_value="Directories: src/")
+    @patch("app.ai_runner.gather_git_activity", return_value="Recent commits: abc")
+    @patch("app.ai_runner.load_skill_prompt", return_value="Explore myapp")
+    def test_telegram_shows_skipped_count(
+        self, mock_prompt, mock_git, mock_struct, mock_missions,
+        mock_claude, tmp_path
+    ):
+        # Pre-populate with one existing mission that matches (same words)
+        missions_path = tmp_path / "missions.md"
+        missions_path.write_text(
+            "## Pending\n"
+            "- [project:myapp] Refactor authentication module for better error handling\n\n"
+            "## In Progress\n\n## Done\n"
+        )
+
+        notify = MagicMock()
+        run_exploration(
+            str(tmp_path), "myapp", str(tmp_path),
+            notify_fn=notify,
+        )
+        result_msg = notify.call_args_list[1][0][0]
+        assert "1 mission(s) queued" in result_msg
+        assert "1 duplicate(s) skipped" in result_msg
 
     @patch("app.cli_provider.run_command_streaming", return_value="No issues found")
     @patch("app.ai_runner.get_missions_context", return_value="No active missions.")

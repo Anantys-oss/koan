@@ -80,17 +80,25 @@ def run_exploration(
 
     # Extract MISSION: lines and queue them as pending missions
     missions = _extract_missions(result, project_name)
+    queued = 0
     if missions:
         missions_path = Path(instance_dir) / "missions.md"
-        _queue_missions(missions_path, missions)
+        queued = _queue_missions(missions_path, missions)
 
     # Send result to Telegram (truncated, without MISSION: lines)
     cleaned = _clean_response(result)
     report = _strip_mission_lines(cleaned)
-    suffix = f"\n\n({len(missions)} mission(s) queued)" if missions else ""
+    if queued:
+        skipped = len(missions) - queued
+        suffix = f"\n\n({queued} mission(s) queued"
+        if skipped:
+            suffix += f", {skipped} duplicate(s) skipped"
+        suffix += ")"
+    else:
+        suffix = ""
     notify_fn(f"AI exploration of {project_name}:\n\n{report}{suffix}")
 
-    return True, f"Exploration of {project_name} completed ({len(missions)} missions queued)."
+    return True, f"Exploration of {project_name} completed ({queued} missions queued)."
 
 
 def _extract_missions(text: str, project_name: str) -> list:
@@ -122,12 +130,98 @@ def _extract_missions(text: str, project_name: str) -> list:
     return missions
 
 
-def _queue_missions(missions_path: Path, missions: list):
-    """Insert extracted missions into the Pending section of missions.md."""
+def _queue_missions(missions_path: Path, missions: list) -> int:
+    """Insert extracted missions, skipping duplicates.
+
+    Checks each new mission against existing Pending/In Progress entries
+    using word-overlap similarity to catch both exact duplicates and
+    minor rephrasing across repeated /ai runs.
+
+    Returns:
+        Number of missions actually queued (after dedup).
+    """
+    from app.missions import parse_sections
     from app.utils import insert_pending_mission
 
+    # Read existing missions once for similarity checking
+    existing_texts = []
+    if missions_path.exists():
+        content = missions_path.read_text(encoding="utf-8")
+        sections = parse_sections(content)
+        existing_texts = (
+            sections.get("pending", []) + sections.get("in_progress", [])
+        )
+
+    queued = 0
     for entry in missions:
-        insert_pending_mission(missions_path, entry)
+        # Check fuzzy similarity against existing missions
+        if _has_similar_mission(entry, existing_texts):
+            continue
+
+        if insert_pending_mission(missions_path, entry):
+            # Track newly inserted missions for intra-batch dedup
+            existing_texts.append(entry)
+            queued += 1
+
+    return queued
+
+
+def _normalize_mission_text(text: str) -> str:
+    """Strip mission metadata, leaving only the core intent.
+
+    Removes leading bullet, ``[project:X]`` tag, timestamps, and
+    normalizes whitespace + case for comparison.
+    """
+    import re
+
+    # Strip leading bullet and project tag
+    text = re.sub(r"^\s*-\s*(\[project:[^\]]+\]\s*)?", "", text)
+    # Strip timestamps like ⏳(2026-05-23T04:24)
+    text = re.sub(r"⏳\([^)]+\)", "", text)
+    # Strip leading slash-commands (e.g. /fix, /review)
+    text = re.sub(r"^/\w+\s+", "", text)
+    # Normalize whitespace and case
+    return " ".join(text.lower().split())
+
+
+def _mission_words(text: str) -> set:
+    """Extract significant words from mission text for similarity.
+
+    Keeps words with 4+ alphanumeric chars to filter noise words
+    (the, for, use, add) that inflate Jaccard overlap.
+    """
+    import re
+
+    normalized = _normalize_mission_text(text)
+    return set(re.findall(r"[a-z0-9_]{4,}", normalized))
+
+
+# Minimum Jaccard similarity to consider two missions as duplicates.
+_SIMILARITY_THRESHOLD = 0.6
+# Minimum number of shared words required — avoids false positives on
+# short missions where a single shared word would exceed the threshold.
+_MIN_SHARED_WORDS = 3
+
+
+def _is_similar_mission(
+    new_text: str, existing_text: str,
+    threshold: float = _SIMILARITY_THRESHOLD,
+) -> bool:
+    """Check if two missions share the same core intent via word overlap."""
+    new_words = _mission_words(new_text)
+    existing_words = _mission_words(existing_text)
+    if not new_words or not existing_words:
+        return False
+    shared = new_words & existing_words
+    if len(shared) < _MIN_SHARED_WORDS:
+        return False
+    union = new_words | existing_words
+    return len(shared) / len(union) >= threshold
+
+
+def _has_similar_mission(entry: str, existing: list) -> bool:
+    """Return True if *entry* is similar to any mission in *existing*."""
+    return any(_is_similar_mission(entry, ex) for ex in existing)
 
 
 def _strip_mission_lines(text: str) -> str:
