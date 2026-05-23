@@ -1215,6 +1215,7 @@ def run_post_mission(
         "auto_merge_branch": None,
         "quota_exhausted": False,
         "quota_info": None,
+        "cost_tracking_failed": False,
     }
 
     tracker = _PipelineTracker()
@@ -1265,6 +1266,15 @@ def run_post_mission(
             _tokens = _result.to_dict() if _result is not None else None
         except Exception as e:
             _log_runner("error", f"Token extraction failed: {e}")
+
+        # Flag silent cost-tracking gaps so operators can detect them
+        if _tokens is None and exit_code == 0:
+            result["cost_tracking_failed"] = True
+            print(
+                "[mission_runner] WARNING: cost tracking failed — "
+                "token extraction returned None after successful run",
+                file=sys.stderr,
+            )
 
         # Pre-load projects config once — reused by quality gate, lint gate,
         # and auto-merge instead of loading projects.yaml 3 times.
@@ -1668,6 +1678,8 @@ def _cli_post_mission(args: list) -> None:
         print(f"QUOTA_EXHAUSTED|{reset_display}|{resume_msg}")
         sys.exit(2)  # Special exit code for quota exhaustion
 
+    if result.get("cost_tracking_failed"):
+        print("COST_TRACKING_FAILED", file=sys.stderr)
     if result["pending_archived"]:
         print("PENDING_ARCHIVED", file=sys.stderr)
     if result["auto_merge_branch"]:

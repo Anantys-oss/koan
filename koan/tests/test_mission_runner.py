@@ -2808,3 +2808,101 @@ class TestExtractCacheLine:
 
         result = _extract_cache_line("/nonexistent/file.json")
         assert result == ""
+
+
+class TestCostTrackingFailedFlag:
+    """Test cost_tracking_failed flag in run_post_mission result."""
+
+    @patch("app.mission_runner.commit_instance")
+    @patch("app.mission_runner.check_auto_merge", return_value=None)
+    @patch("app.mission_runner.trigger_reflection", return_value=False)
+    @patch("app.mission_runner.archive_pending", return_value=False)
+    @patch("app.quota_handler.handle_quota_exhaustion", return_value=None)
+    @patch("app.mission_runner.update_usage", return_value=True)
+    @patch("app.token_parser.extract_tokens", return_value=None)
+    def test_set_when_tokens_none_and_exit_zero(
+        self, mock_tokens, mock_usage, mock_quota, mock_archive,
+        mock_reflect, mock_merge, mock_commit, tmp_path, capsys,
+    ):
+        """cost_tracking_failed=True when token extraction returns None on success."""
+        from app.mission_runner import run_post_mission
+
+        instance_dir = str(tmp_path / "instance")
+        os.makedirs(instance_dir, exist_ok=True)
+
+        result = run_post_mission(
+            instance_dir=instance_dir,
+            project_name="koan",
+            project_path=str(tmp_path),
+            run_num=1,
+            exit_code=0,
+            stdout_file="/tmp/out.json",
+            stderr_file="/tmp/err.txt",
+        )
+
+        assert result["cost_tracking_failed"] is True
+        captured = capsys.readouterr()
+        assert "cost tracking failed" in captured.err
+
+    @patch("app.mission_runner.commit_instance")
+    @patch("app.mission_runner.check_auto_merge", return_value=None)
+    @patch("app.mission_runner.trigger_reflection", return_value=False)
+    @patch("app.mission_runner.archive_pending", return_value=False)
+    @patch("app.quota_handler.handle_quota_exhaustion", return_value=None)
+    @patch("app.mission_runner.update_usage", return_value=True)
+    @patch("app.token_parser.extract_tokens", return_value=None)
+    def test_not_set_when_exit_nonzero(
+        self, mock_tokens, mock_usage, mock_quota, mock_archive,
+        mock_reflect, mock_merge, mock_commit, tmp_path, capsys,
+    ):
+        """cost_tracking_failed stays False when exit_code != 0 (expected no tokens)."""
+        from app.mission_runner import run_post_mission
+
+        instance_dir = str(tmp_path / "instance")
+        os.makedirs(instance_dir, exist_ok=True)
+
+        result = run_post_mission(
+            instance_dir=instance_dir,
+            project_name="koan",
+            project_path=str(tmp_path),
+            run_num=1,
+            exit_code=1,
+            stdout_file="/tmp/out.json",
+            stderr_file="/tmp/err.txt",
+        )
+
+        assert result["cost_tracking_failed"] is False
+        captured = capsys.readouterr()
+        assert "cost tracking failed" not in captured.err
+
+    @patch("app.mission_runner.run_post_mission")
+    def test_cli_emits_cost_tracking_failed_signal(self, mock_run, tmp_path, capsys):
+        """COST_TRACKING_FAILED emitted to stderr in CLI mode."""
+        from app.mission_runner import _cli_post_mission
+
+        mock_run.return_value = {
+            "success": True,
+            "usage_updated": True,
+            "pending_archived": False,
+            "reflection_written": False,
+            "auto_merge_branch": None,
+            "quota_exhausted": False,
+            "quota_info": None,
+            "cost_tracking_failed": True,
+            "pipeline_steps": {},
+        }
+
+        with pytest.raises(SystemExit) as exc_info:
+            _cli_post_mission([
+                "--instance", str(tmp_path),
+                "--project-name", "koan",
+                "--project-path", str(tmp_path),
+                "--run-num", "1",
+                "--exit-code", "0",
+                "--stdout-file", "/tmp/out",
+                "--stderr-file", "/tmp/err",
+            ])
+        assert exc_info.value.code == 0
+
+        captured = capsys.readouterr()
+        assert "COST_TRACKING_FAILED" in captured.err
