@@ -809,7 +809,7 @@ def run_ci_fix_loop(
     from app.utils import truncate_diff
 
     for attempt in range(1, max_attempts + 1):
-        print(f"[ci_fix_loop] Fix attempt {attempt}/{max_attempts}", file=sys.stderr)
+        print(f"[claude_step] CI fix attempt {attempt}/{max_attempts}", file=sys.stderr)
         actions_log.append(f"CI fix attempt {attempt}/{max_attempts}")
 
         # Fetch diff for context
@@ -820,7 +820,7 @@ def run_ci_fix_loop(
                 cwd=project_path, timeout=30,
             )
         except Exception as e:
-            print(f"[ci_fix_loop] diff fetch failed: {e}", file=sys.stderr)
+            print(f"[claude_step] diff fetch failed: {e}", file=sys.stderr)
         diff = truncate_diff(diff, 32000)
 
         # Build prompt and run Claude
