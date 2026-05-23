@@ -1,7 +1,8 @@
 """Koan /security_audit skill -- queue a security-focused audit mission."""
 
-from skills.core.audit.audit_helpers import extract_auto_fix, queue_audit_mission
+from skills.core.audit.audit_helpers import queue_audit_mission
 from skills.core.audit.audit_runner import DEFAULT_MAX_ISSUES, extract_limit
+from app.github_skill_helpers import extract_auto_fix
 
 
 def handle(ctx):

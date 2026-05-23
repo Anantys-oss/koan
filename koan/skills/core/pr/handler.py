@@ -1,7 +1,8 @@
 """Kōan PR review skill — review and update GitHub pull requests."""
 
-import re
 from pathlib import Path
+
+from app.github_skill_helpers import extract_github_url
 
 
 def handle(ctx):
@@ -25,14 +26,14 @@ def handle(ctx):
         )
 
     # Extract URL from args
-    url_match = re.search(r'https?://github\.com/[^\s]+/pull/\d+', args)
-    if not url_match:
+    result = extract_github_url(args, url_type="pr")
+    if not result:
         return (
             "❌ No valid GitHub PR URL found.\n"
             "Ex: /pr https://github.com/owner/repo/pull/123"
         )
 
-    pr_url = url_match.group(0).split("#")[0]
+    pr_url = result[0]
 
     from app.github_url_parser import parse_pr_url
     from app.utils import resolve_project_path

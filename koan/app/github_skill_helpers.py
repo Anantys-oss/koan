@@ -6,12 +6,66 @@ Common utilities for skills that interact with GitHub PRs and issues:
 - Mission queuing
 - Response formatting
 - Unified skill handling
+- Repo URL / limit / auto-fix flag parsing (shared by fix, review, audit handlers)
 """
 
 import re
 from typing import Callable, Optional, Tuple
 
 
+_LIMIT_PATTERN = re.compile(r'--limit[=\s]+(\d+)', re.IGNORECASE)
+_AUTO_FIX_RE = re.compile(r"--auto-fix(?:=(\w+))?\b", re.IGNORECASE)
+_GITHUB_SUBPATH_NAMES = frozenset(("issues", "pull", "pulls", "actions", "settings", "wiki"))
+
+
+
+
+def parse_repo_url(args: str) -> Optional[Tuple[str, str, str]]:
+    """Extract a repo-only URL (no issue/PR number) from args.
+
+    Returns (url, owner, repo) or None if args contain an issue/PR URL
+    or no valid repo URL.
+    """
+    # If there's already an issue or PR URL, don't treat as batch
+    if re.search(r'github\.com/[^/\s]+/[^/\s]+/(?:issues|pull)/\d+', args):
+        return None
+
+    match = re.search(r'https?://github\.com/([^/\s]+)/([^/\s]+?)(?:\.git)?(?=/|\s|$)', args)
+    if not match:
+        return None
+
+    owner = match.group(1)
+    repo = match.group(2)
+    url = f"https://github.com/{owner}/{repo}"
+
+    # Reject if the "repo" part looks like a sub-path (issues, pull, etc.)
+    if repo in _GITHUB_SUBPATH_NAMES:
+        return None
+
+    return url, owner, repo
+
+
+def parse_limit(args: str) -> Optional[int]:
+    """Extract --limit=N from args. Returns None if not specified."""
+    match = _LIMIT_PATTERN.search(args)
+    if match:
+        return int(match.group(1))
+    return None
+
+
+def extract_auto_fix(text: str) -> Tuple[Optional[str], str]:
+    """Extract --auto-fix[=severity] from text.
+
+    Returns (severity_or_None, cleaned_text). When ``--auto-fix`` is
+    present without ``=severity``, returns ``"high"`` (critical + high).
+    """
+    m = _AUTO_FIX_RE.search(text)
+    if not m:
+        return None, text
+    severity = m.group(1) or "high"
+    cleaned = (text[:m.start()] + text[m.end():]).strip()
+    cleaned = re.sub(r"  +", " ", cleaned)
+    return severity.lower(), cleaned
 
 
 def is_own_pr(owner: str, repo: str, pr_number: str) -> Tuple[bool, str]:

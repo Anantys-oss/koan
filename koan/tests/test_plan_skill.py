@@ -72,7 +72,7 @@ class TestHandleRouting:
         ctx.args = "https://github.com/sukria/koan/issues/64"
         with patch.object(handler, "_queue_issue_plan", return_value="queued") as mock:
             handler.handle(ctx)
-            mock.assert_called_once()
+            mock.assert_called_once_with(ctx, "sukria", "koan", "64")
 
     def test_routes_project_prefixed_idea(self, handler, ctx):
         ctx.args = "koan Add dark mode"
@@ -97,7 +97,7 @@ class TestHandleRouting:
         ctx.args = "https://github.com/sukria/koan/issues/64#issuecomment-123"
         with patch.object(handler, "_queue_issue_plan", return_value="queued") as mock:
             handler.handle(ctx)
-            mock.assert_called_once()
+            mock.assert_called_once_with(ctx, "sukria", "koan", "64")
 
     def test_empty_idea_returns_error(self, handler, ctx):
         ctx.args = "   "
@@ -243,31 +243,22 @@ class TestQueueNewPlan:
 
 class TestQueueIssuePlan:
     def test_queues_mission_for_issue(self, handler, ctx):
-        match = handler._ISSUE_URL_RE.search(
-            "https://github.com/sukria/koan/issues/64"
-        )
         with patch("app.utils.get_known_projects", return_value=[("koan", "/p/koan")]):
-            result = handler._queue_issue_plan(ctx, match)
+            result = handler._queue_issue_plan(ctx, "sukria", "koan", "64")
             assert "#64" in result
             assert "queued" in result.lower()
             missions = (ctx.instance_dir / "missions.md").read_text()
             assert "/plan https://github.com/sukria/koan/issues/64" in missions
 
     def test_mission_contains_url(self, handler, ctx):
-        match = handler._ISSUE_URL_RE.search(
-            "https://github.com/sukria/koan/issues/42"
-        )
         with patch("app.utils.get_known_projects", return_value=[("koan", "/p")]):
-            handler._queue_issue_plan(ctx, match)
+            handler._queue_issue_plan(ctx, "sukria", "koan", "42")
             missions = (ctx.instance_dir / "missions.md").read_text()
             assert "github.com/sukria/koan/issues/42" in missions
 
     def test_fallback_project_resolution(self, handler, ctx):
-        match = handler._ISSUE_URL_RE.search(
-            "https://github.com/other/repo/issues/1"
-        )
         with patch("app.utils.get_known_projects", return_value=[("koan", "/p")]):
-            result = handler._queue_issue_plan(ctx, match)
+            result = handler._queue_issue_plan(ctx, "other", "repo", "1")
             assert "queued" in result.lower()
 
 
@@ -337,41 +328,44 @@ class TestPlanPrompt:
 
 
 # ---------------------------------------------------------------------------
-# Issue URL regex
+# Issue URL parsing (via centralized search_issue_url)
 # ---------------------------------------------------------------------------
 
-class TestIssueUrlRegex:
-    def test_standard_url(self, handler):
-        m = handler._ISSUE_URL_RE.search(
+class TestIssueUrlParsing:
+    def test_standard_url(self):
+        from app.github_url_parser import search_issue_url
+        owner, repo, number = search_issue_url(
             "https://github.com/sukria/koan/issues/64"
         )
-        assert m is not None
-        assert m.group("owner") == "sukria"
-        assert m.group("repo") == "koan"
-        assert m.group("number") == "64"
+        assert owner == "sukria"
+        assert repo == "koan"
+        assert number == "64"
 
-    def test_http_url(self, handler):
-        m = handler._ISSUE_URL_RE.search("http://github.com/a/b/issues/1")
-        assert m is not None
+    def test_http_url(self):
+        from app.github_url_parser import search_issue_url
+        owner, repo, number = search_issue_url("http://github.com/a/b/issues/1")
+        assert owner == "a"
 
-    def test_url_with_fragment(self, handler):
-        m = handler._ISSUE_URL_RE.search(
+    def test_url_with_fragment(self):
+        from app.github_url_parser import search_issue_url
+        owner, repo, number = search_issue_url(
             "https://github.com/owner/repo/issues/42#comment-123"
         )
-        assert m is not None
-        assert m.group("number") == "42"
+        assert number == "42"
 
-    def test_url_in_text(self, handler):
-        m = handler._ISSUE_URL_RE.search(
+    def test_url_in_text(self):
+        from app.github_url_parser import search_issue_url
+        owner, repo, number = search_issue_url(
             "Check https://github.com/o/r/issues/5 please"
         )
-        assert m is not None
-        assert m.group("number") == "5"
+        assert number == "5"
 
-    def test_pr_url_does_not_match(self, handler):
-        m = handler._ISSUE_URL_RE.search("https://github.com/o/r/pull/5")
-        assert m is None
+    def test_pr_url_does_not_match(self):
+        from app.github_url_parser import search_issue_url
+        with pytest.raises(ValueError):
+            search_issue_url("https://github.com/o/r/pull/5")
 
-    def test_no_url_returns_none(self, handler):
-        m = handler._ISSUE_URL_RE.search("just some text")
-        assert m is None
+    def test_no_url_raises(self):
+        from app.github_url_parser import search_issue_url
+        with pytest.raises(ValueError):
+            search_issue_url("just some text")

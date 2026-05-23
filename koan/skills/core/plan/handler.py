@@ -1,12 +1,6 @@
 """Kōan plan skill -- queue a plan mission."""
 
-import re
-
-
-# GitHub issue URL pattern
-_ISSUE_URL_RE = re.compile(
-    r"https?://github\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+)/issues/(?P<number>\d+)"
-)
+from app.github_url_parser import search_issue_url
 
 
 def handle(ctx):
@@ -35,9 +29,11 @@ def handle(ctx):
         )
 
     # Mode 1: existing GitHub issue URL
-    issue_match = _ISSUE_URL_RE.search(args)
-    if issue_match:
-        return _queue_issue_plan(ctx, issue_match)
+    try:
+        owner, repo, issue_number = search_issue_url(args)
+        return _queue_issue_plan(ctx, owner, repo, issue_number)
+    except ValueError:
+        pass
 
     # Mode 2: new idea (optionally project-prefixed)
     project, idea = _parse_project_arg(args)
@@ -126,13 +122,10 @@ def _queue_new_plan(ctx, project_name, idea):
     return f"\U0001f9e0 Plan queued: {idea[:100]}{'...' if len(idea) > 100 else ''} (project: {project_label})"
 
 
-def _queue_issue_plan(ctx, match):
+def _queue_issue_plan(ctx, owner, repo, issue_number):
     """Queue a mission to iterate on an existing GitHub issue."""
     from app.utils import insert_pending_mission
 
-    owner = match.group("owner")
-    repo = match.group("repo")
-    issue_number = match.group("number")
     issue_url = f"https://github.com/{owner}/{repo}/issues/{issue_number}"
 
     project_path = _resolve_project_path(repo, fallback=True, owner=owner)
