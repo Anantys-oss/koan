@@ -26,26 +26,19 @@ from typing import Optional, Tuple
 from app.claude_step import CI_STATUS_BLOCKED_APPROVAL
 
 
-def check_ci_status(branch: str, full_repo: str) -> Tuple[str, Optional[int]]:
+def check_ci_status(branch: str, full_repo: str) -> Tuple[str, Optional[int], str]:
     """Make a single non-blocking CI status check.
 
-    Aggregates all recent workflow runs for the branch, ignoring conclusions
-    that don't represent real CI signal (e.g. a "Dependabot auto-merge"
-    run that completes with conclusion="skipped" on non-Dependabot PRs).
+    Delegates to :func:`app.claude_step.check_existing_ci` for consistent
+    return type across all CI status functions.
 
     Returns:
-        (status, run_id) where status is one of:
-        "success", "failure", "pending", "none"
+        (status, run_id, logs) where status is one of:
+        "success", "failure", "pending", "blocked_approval", "none"
     """
-    from app.claude_step import aggregate_ci_runs, fetch_branch_ci_runs
+    from app.claude_step import check_existing_ci
 
-    try:
-        runs = fetch_branch_ci_runs(branch, full_repo)
-    except Exception as e:
-        print(f"[ci_queue] CI status check error: {e}", file=sys.stderr)
-        return ("pending", None)
-
-    return aggregate_ci_runs(runs)
+    return check_existing_ci(branch, full_repo)
 
 
 def drain_one(instance_dir: str) -> Optional[str]:
@@ -103,7 +96,7 @@ def drain_one(instance_dir: str) -> Optional[str]:
             )
         return f"PR #{pr_number} {pr_state.lower()} — removed from ## CI"
 
-    status, _run_id = check_ci_status(branch, full_repo)
+    status, _run_id, _logs = check_ci_status(branch, full_repo)
 
     if status == "success":
         modify_missions_file(
@@ -370,7 +363,7 @@ def run_ci_check_and_fix(pr_url: str, project_path: str) -> Tuple[bool, str]:
 
     # Non-blocking CI status check — skip the 10-minute polling loop.
     # drain_one() already confirmed failure, but we need the run_id for logs.
-    status, run_id = check_ci_status(branch, full_repo)
+    status, run_id, ci_logs = check_ci_status(branch, full_repo)
     print(f"[ci_check] CI status for {branch}: {status}", file=sys.stderr)
 
     if status == "success":
@@ -391,12 +384,6 @@ def run_ci_check_and_fix(pr_url: str, project_path: str) -> Tuple[bool, str]:
 
     if status not in ("failure",):
         return False, f"CI status is '{status}' — nothing to fix."
-
-    # Fetch failure logs (non-blocking)
-    ci_logs = ""
-    if run_id:
-        from app.claude_step import _fetch_failed_logs
-        ci_logs = _fetch_failed_logs(run_id, full_repo)
 
     if not ci_logs:
         run_info = f" (run_id={run_id})" if run_id else " (no run_id)"
@@ -492,95 +479,45 @@ def _attempt_ci_fixes(
     base_remote: str = "origin",
     commit_conventions: str = "",
 ) -> bool:
-    """Attempt to fix CI failures using Claude. Returns True if CI passes."""
-    from app.claude_step import (
-        _fetch_failed_logs,
-        _run_git,
-        run_claude_step,
-    )
-    from app.config import get_skill_max_turns, get_skill_timeout
-    from app.rebase_pr import (
-        _build_ci_fix_prompt,
-        _force_push,
-    )
-    from app.utils import truncate_diff
+    """Attempt to fix CI failures using Claude. Returns True if CI passes.
 
-    for attempt in range(1, max_attempts + 1):
-        print(f"[ci_check] Fix attempt {attempt}/{max_attempts}", file=sys.stderr)
-        actions_log.append(f"CI fix attempt {attempt}/{max_attempts}")
+    Thin wrapper around :func:`app.claude_step.run_ci_fix_loop` with
+    non-blocking CI recheck and re-enqueue on pending.
+    """
+    from app.claude_step import run_ci_fix_loop
+    from app.rebase_pr import _build_ci_fix_prompt
 
-        # Get the current diff for context
-        diff = ""
-        try:
-            diff = _run_git(
-                ["git", "diff", f"{base_remote}/{base}..HEAD"],
-                cwd=project_path, timeout=30,
-            )
-        except Exception as e:
-            print(f"[ci_check] diff fetch failed: {e}", file=sys.stderr)
-        diff = truncate_diff(diff, 32000)
-
-        # Build prompt and run Claude
-        ci_fix_prompt = _build_ci_fix_prompt(
-            context, ci_logs, diff,
+    def _build_prompt(logs: str, diff: str) -> str:
+        return _build_ci_fix_prompt(
+            context, logs, diff,
             commit_conventions=commit_conventions,
         )
 
-        fixed = run_claude_step(
-            prompt=ci_fix_prompt,
-            project_path=project_path,
-            commit_msg=f"fix: resolve CI failures on #{pr_number} (attempt {attempt})",
-            success_label=f"Applied CI fix (attempt {attempt})",
-            failure_label=f"CI fix step failed (attempt {attempt})",
-            actions_log=actions_log,
-            max_turns=get_skill_max_turns(),
-            timeout=get_skill_timeout(),
-            use_convention_subject=bool(commit_conventions),
-        )
+    success, _last_logs = run_ci_fix_loop(
+        branch=branch,
+        base=base,
+        full_repo=full_repo,
+        project_path=project_path,
+        ci_logs=ci_logs,
+        actions_log=actions_log,
+        max_attempts=max_attempts,
+        commit_conventions=commit_conventions,
+        use_polling=False,
+        prompt_builder=_build_prompt,
+        commit_msg_template=f"fix: resolve CI failures on #{pr_number} (attempt {{attempt}})",
+        base_remote=base_remote,
+    )
 
-        if not fixed:
-            actions_log.append("Claude produced no changes — giving up")
-            break
+    # Re-enqueue for monitoring when a fix was pushed and CI is pending
+    if success and any("CI running after fix push" in a for a in actions_log):
+        _reenqueue_for_monitoring(pr_url, branch, full_repo, pr_number, project_path)
+        # Amend the last action to note re-enqueue
+        for i in range(len(actions_log) - 1, -1, -1):
+            if "CI running after fix push" in actions_log[i]:
+                actions_log[i] += " — re-enqueued for monitoring"
+                break
 
-        # Force-push the fix
-        try:
-            _force_push("origin", branch, project_path)
-        except Exception as e:
-            actions_log.append(f"Push failed: {str(e)[:100]}")
-            break
-
-        actions_log.append(f"Pushed CI fix (attempt {attempt})")
-
-        # Re-check CI (non-blocking — just check if the new run started)
-        import time
-        time.sleep(15)  # Brief wait for GitHub to register the push
-        new_status, new_run_id = check_ci_status(branch, full_repo)
-
-        if new_status == "success":
-            actions_log.append(f"CI passed after fix attempt {attempt}")
-            return True
-
-        if new_status == "pending":
-            # CI is running with our fix — re-enqueue so drain_one monitors
-            # the result during interruptible_sleep (~30s checks).
-            _reenqueue_for_monitoring(pr_url, branch, full_repo, pr_number, project_path)
-            actions_log.append(f"CI running after fix push (attempt {attempt}) — re-enqueued for monitoring")
-            return True
-
-        if new_status == CI_STATUS_BLOCKED_APPROVAL:
-            # New push triggered runs that also need maintainer approval —
-            # nothing we can do here, bail out instead of re-enqueueing.
-            actions_log.append(
-                f"CI waiting for maintainer approval after fix push (attempt {attempt}) — stopping"
-            )
-            return False
-
-        # CI already shows failure (unlikely this fast) — get new logs
-        if new_run_id:
-            ci_logs = _fetch_failed_logs(new_run_id, full_repo)
-
-    actions_log.append(f"CI still failing after {max_attempts} fix attempts")
-    return False
+    return success
 
 
 def main(argv=None):

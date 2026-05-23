@@ -1441,3 +1441,130 @@ class TestResolvePrLocation:
 
         # Original check + no duplicates = 1 call total
         assert mock_run_gh.call_count == 1
+
+
+class TestForcePush:
+    """Tests for _force_push() in claude_step."""
+
+    @patch("app.claude_step._run_git")
+    def test_force_with_lease_succeeds(self, mock_git):
+        from app.claude_step import _force_push
+        _force_push("origin", "my-branch", "/project")
+        mock_git.assert_called_once_with(
+            ["git", "push", "origin", "my-branch", "--force-with-lease"],
+            cwd="/project",
+        )
+
+    @patch("app.claude_step._run_git")
+    def test_falls_back_to_plain_force(self, mock_git):
+        from app.claude_step import _force_push
+        mock_git.side_effect = [RuntimeError("lease rejected"), None]
+        _force_push("origin", "my-branch", "/project")
+        assert mock_git.call_count == 2
+        second_call = mock_git.call_args_list[1]
+        assert "--force" in second_call[0][0]
+
+
+class TestRunCiFixLoop:
+    """Tests for run_ci_fix_loop() — the shared CI fix loop."""
+
+    @patch("app.claude_step._run_git", return_value="")
+    @patch("app.claude_step.run_claude_step", return_value=False)
+    def test_no_changes_gives_up(self, mock_step, mock_git):
+        from app.claude_step import run_ci_fix_loop
+        actions = []
+        success, logs = run_ci_fix_loop(
+            "fix-branch", "main", "owner/repo", "/project",
+            "Error: test failed", actions,
+            max_attempts=2,
+            prompt_builder=lambda logs, diff: "fix this",
+        )
+        assert success is False
+        assert any("no changes" in a.lower() for a in actions)
+        mock_step.assert_called_once()
+
+    @patch("app.claude_step.check_existing_ci", return_value=("success", 457, ""))
+    @patch("app.claude_step._force_push")
+    @patch("app.claude_step._run_git", return_value="")
+    @patch("app.claude_step.run_claude_step", return_value=True)
+    @patch("time.sleep")
+    def test_fix_then_ci_passes(self, mock_sleep, mock_step, mock_git, mock_push, mock_ci):
+        from app.claude_step import run_ci_fix_loop
+        actions = []
+        success, logs = run_ci_fix_loop(
+            "fix-branch", "main", "owner/repo", "/project",
+            "Error: test failed", actions,
+            max_attempts=2,
+            use_polling=False,
+            prompt_builder=lambda logs, diff: "fix this",
+        )
+        assert success is True
+        assert any("CI passed" in a for a in actions)
+
+    @patch("app.claude_step.check_existing_ci", return_value=("pending", 789, ""))
+    @patch("app.claude_step._force_push")
+    @patch("app.claude_step._run_git", return_value="")
+    @patch("app.claude_step.run_claude_step", return_value=True)
+    @patch("time.sleep")
+    def test_pending_returns_success(self, mock_sleep, mock_step, mock_git, mock_push, mock_ci):
+        from app.claude_step import run_ci_fix_loop
+        actions = []
+        success, logs = run_ci_fix_loop(
+            "fix-branch", "main", "owner/repo", "/project",
+            "Error: test failed", actions,
+            max_attempts=2,
+            use_polling=False,
+            prompt_builder=lambda logs, diff: "fix this",
+        )
+        assert success is True
+        assert any("CI running" in a for a in actions)
+
+    @patch("app.claude_step._force_push", side_effect=RuntimeError("push rejected"))
+    @patch("app.claude_step._run_git", return_value="")
+    @patch("app.claude_step.run_claude_step", return_value=True)
+    def test_push_failure_stops(self, mock_step, mock_git, mock_push):
+        from app.claude_step import run_ci_fix_loop
+        actions = []
+        success, logs = run_ci_fix_loop(
+            "fix-branch", "main", "owner/repo", "/project",
+            "Error: test failed", actions,
+            max_attempts=2,
+            prompt_builder=lambda logs, diff: "fix this",
+        )
+        assert success is False
+        assert any("Push failed" in a for a in actions)
+
+    @patch("app.claude_step._run_git", return_value="diff content")
+    @patch("app.claude_step.run_claude_step", return_value=False)
+    def test_base_remote_used_for_diff(self, mock_step, mock_git):
+        """The base_remote parameter is used in the git diff command."""
+        from app.claude_step import run_ci_fix_loop
+        run_ci_fix_loop(
+            "fix-branch", "main", "owner/repo", "/project",
+            "Error", [],
+            max_attempts=1,
+            prompt_builder=lambda logs, diff: "fix",
+            base_remote="upstream",
+        )
+        diff_call = mock_git.call_args_list[0]
+        assert "upstream/main" in str(diff_call)
+
+    @patch("app.claude_step._run_git", return_value="")
+    @patch("app.claude_step.run_claude_step", return_value=False)
+    def test_prompt_builder_receives_logs_and_diff(self, mock_step, mock_git):
+        """The prompt_builder callback receives CI logs and truncated diff."""
+        from app.claude_step import run_ci_fix_loop
+        received = []
+
+        def capture_prompt(logs, diff):
+            received.append((logs, diff))
+            return "fix prompt"
+
+        run_ci_fix_loop(
+            "fix-branch", "main", "owner/repo", "/project",
+            "CI error output", [],
+            max_attempts=1,
+            prompt_builder=capture_prompt,
+        )
+        assert len(received) == 1
+        assert received[0][0] == "CI error output"

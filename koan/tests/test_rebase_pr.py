@@ -2065,49 +2065,44 @@ class TestRunCiCheckAndFix:
         assert result == ""
         assert "No CI runs found" in actions
 
-    @patch("app.rebase_pr._run_git")
-    @patch("app.rebase_pr.run_claude_step", return_value=True)
-    @patch("app.rebase_pr.load_prompt_or_skill", return_value="fix prompt")
-    @patch("app.rebase_pr.wait_for_ci")
-    def test_ci_fails_then_fixed(self, mock_wait, mock_prompt, mock_claude, mock_git):
-        mock_wait.side_effect = [
-            ("failure", 456, "test_foo FAILED"),  # initial failure
-            ("success", 457, ""),                  # passes after fix
-        ]
+    @patch("app.rebase_pr.check_pr_state", return_value=("OPEN", "MERGEABLE"))
+    @patch("app.rebase_pr.run_ci_fix_loop")
+    @patch("app.rebase_pr.wait_for_ci", return_value=("failure", 456, "test_foo FAILED"))
+    def test_ci_fails_then_fixed(self, mock_wait, mock_loop, mock_state):
+        def _fix_side_effect(*a, **kw):
+            kw["actions_log"].append("CI passed after fix attempt 1")
+            return (True, "")
+        mock_loop.side_effect = _fix_side_effect
         actions = []
         result = _run_ci_check_and_fix(
             "koan/fix", "main", "owner/repo", "42", "/project",
             self._make_context(), actions, lambda m: None,
         )
         assert "fixed on attempt 1" in result
-        mock_claude.assert_called_once()
+        mock_loop.assert_called_once()
 
-    @patch("app.rebase_pr._run_git")
-    @patch("app.rebase_pr.run_claude_step", return_value=True)
-    @patch("app.rebase_pr.load_prompt_or_skill", return_value="fix prompt")
-    @patch("app.rebase_pr.wait_for_ci")
-    def test_ci_fails_exhausts_retries(self, mock_wait, mock_prompt, mock_claude, mock_git):
-        mock_wait.return_value = ("failure", 456, "persistent error")
+    @patch("app.rebase_pr.check_pr_state", return_value=("OPEN", "MERGEABLE"))
+    @patch("app.rebase_pr.run_ci_fix_loop", return_value=(False, "persistent error"))
+    @patch("app.rebase_pr.wait_for_ci", return_value=("failure", 456, "persistent error"))
+    def test_ci_fails_exhausts_retries(self, mock_wait, mock_loop, mock_state):
         actions = []
         result = _run_ci_check_and_fix(
             "koan/fix", "main", "owner/repo", "42", "/project",
             self._make_context(), actions, lambda m: None,
         )
         assert f"after {MAX_CI_FIX_ATTEMPTS} fix attempts" in result
-        assert mock_claude.call_count == MAX_CI_FIX_ATTEMPTS
 
-    @patch("app.rebase_pr.run_claude_step", return_value=False)
-    @patch("app.rebase_pr.load_prompt_or_skill", return_value="fix prompt")
+    @patch("app.rebase_pr.check_pr_state", return_value=("OPEN", "MERGEABLE"))
+    @patch("app.rebase_pr.run_ci_fix_loop", return_value=(False, "error"))
     @patch("app.rebase_pr.wait_for_ci", return_value=("failure", 456, "error"))
-    def test_ci_fails_claude_no_changes(self, mock_wait, mock_prompt, mock_claude):
-        """When Claude can't produce a fix, stop retrying."""
+    def test_ci_fails_claude_no_changes(self, mock_wait, mock_loop, mock_state):
+        """When run_ci_fix_loop fails, result reflects exhausted retries."""
         actions = []
         result = _run_ci_check_and_fix(
             "koan/fix", "main", "owner/repo", "42", "/project",
             self._make_context(), actions, lambda m: None,
         )
-        # Should stop after first failed attempt since Claude produced no changes
-        mock_claude.assert_called_once()
+        mock_loop.assert_called_once()
 
 
 class TestCiCheckAndFixPrLink:
@@ -2133,23 +2128,18 @@ class TestCiCheckAndFixPrLink:
         assert any("owner/repo/pull/42" in m for m in messages)
 
     @patch("app.rebase_pr.check_pr_state", return_value=("OPEN", "MERGEABLE"))
-    @patch("app.rebase_pr._run_git")
-    @patch("app.rebase_pr.run_claude_step", return_value=True)
-    @patch("app.rebase_pr.load_prompt_or_skill", return_value="fix prompt")
-    @patch("app.rebase_pr.wait_for_ci")
-    def test_fix_attempt_includes_pr_link(self, mock_wait, mock_prompt, mock_claude, mock_git, mock_state):
-        mock_wait.side_effect = [
-            ("failure", 456, "test FAILED"),
-            ("success", 457, ""),
-        ]
+    @patch("app.rebase_pr.run_ci_fix_loop", return_value=(True, ""))
+    @patch("app.rebase_pr.wait_for_ci", return_value=("failure", 456, "test FAILED"))
+    def test_fix_attempt_includes_pr_link(self, mock_wait, mock_loop, mock_state):
         messages = []
         _run_ci_check_and_fix(
             "koan/fix", "main", "owner/repo", "42", "/project",
             self._make_context(), [], lambda m: messages.append(m),
         )
-        fix_msgs = [m for m in messages if "Fix attempt" in m]
-        assert len(fix_msgs) > 0
-        assert all("owner/repo/pull/42" in m for m in fix_msgs)
+        # The "CI failed" notification should include the PR link
+        ci_failed_msgs = [m for m in messages if "failed" in m.lower()]
+        assert len(ci_failed_msgs) > 0
+        assert all("owner/repo/pull/42" in m for m in ci_failed_msgs)
 
 
 class TestCiCheckAndFixAbortOnMerged:
@@ -2188,22 +2178,20 @@ class TestCiCheckAndFixAbortOnMerged:
         assert any("conflict" in a.lower() for a in actions)
 
     @patch("app.rebase_pr.check_pr_state", return_value=("OPEN", "MERGEABLE"))
-    @patch("app.rebase_pr._run_git")
-    @patch("app.rebase_pr.run_claude_step", return_value=True)
-    @patch("app.rebase_pr.load_prompt_or_skill", return_value="fix prompt")
-    @patch("app.rebase_pr.wait_for_ci")
-    def test_proceeds_when_pr_open_and_mergeable(self, mock_wait, mock_prompt, mock_claude, mock_git, mock_state):
-        mock_wait.side_effect = [
-            ("failure", 456, "test FAILED"),
-            ("success", 457, ""),
-        ]
+    @patch("app.rebase_pr.run_ci_fix_loop")
+    @patch("app.rebase_pr.wait_for_ci", return_value=("failure", 456, "test FAILED"))
+    def test_proceeds_when_pr_open_and_mergeable(self, mock_wait, mock_loop, mock_state):
+        def _fix_side_effect(*a, **kw):
+            kw["actions_log"].append("CI passed after fix attempt 1")
+            return (True, "")
+        mock_loop.side_effect = _fix_side_effect
         actions = []
         result = _run_ci_check_and_fix(
             "koan/fix", "main", "owner/repo", "42", "/project",
             self._make_context(), actions, lambda m: None,
         )
         assert "fixed on attempt 1" in result
-        mock_claude.assert_called_once()
+        mock_loop.assert_called_once()
 
 
 class TestCheckPrState:
