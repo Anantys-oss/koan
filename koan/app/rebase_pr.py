@@ -25,6 +25,7 @@ from app.claude_step import (
     _build_pr_prompt,
     _fetch_branch,
     _fetch_failed_logs,
+    _force_push,
     _get_current_branch,
     _get_diffstat,
     _rebase_onto_target,
@@ -33,6 +34,7 @@ from app.claude_step import (
     check_existing_ci,
     has_rebase_in_progress,
     resolve_pr_location,
+    run_ci_fix_loop,
     run_claude,
     run_claude_step,
     wait_for_ci,
@@ -959,24 +961,6 @@ def check_pr_state(pr_number: str, full_repo: str) -> tuple:
         return ("UNKNOWN", "UNKNOWN")
 
 
-def _force_push(remote: str, branch: str, project_path: str) -> None:
-    """Force-push branch, trying --force-with-lease first then --force.
-
-    Raises on total failure.
-    """
-    try:
-        _run_git(
-            ["git", "push", remote, branch, "--force-with-lease"],
-            cwd=project_path,
-        )
-    except Exception as e:
-        print(f"[rebase_pr] --force-with-lease failed, falling back to --force: {e}", file=sys.stderr)
-        _run_git(
-            ["git", "push", remote, branch, "--force"],
-            cwd=project_path,
-        )
-
-
 def _fix_existing_ci_failures(
     branch: str,
     base: str,
@@ -1112,8 +1096,11 @@ def _run_ci_check_and_fix(
     skill_dir: Optional[Path] = None,
     commit_conventions: str = "",
 ) -> str:
-    """Poll CI after push, attempt fixes if failing. Returns CI section for PR comment."""
+    """Poll CI after push, attempt fixes if failing. Returns CI section for PR comment.
 
+    Delegates the fix loop to :func:`app.claude_step.run_ci_fix_loop` with
+    polling-based CI recheck.
+    """
     pr_url = context.get("url") or f"https://github.com/{full_repo}/pull/{pr_number}"
 
     notify_fn(f"Checking CI on [{branch}]({pr_url})...")
@@ -1132,94 +1119,66 @@ def _run_ci_check_and_fix(
         return "CI still running (timed out waiting)."
 
     if ci_status == CI_STATUS_BLOCKED_APPROVAL:
-        # Workflow runs are gated on maintainer/environment approval —
-        # pushing more commits won't unstick them. Bail out instead of
-        # burning quota on fix attempts that can't possibly run.
         actions_log.append("CI waiting for maintainer approval — skipping fixes")
         return "CI waiting for maintainer approval — fixes skipped."
 
-    # CI failed — attempt fixes
-    for attempt in range(1, MAX_CI_FIX_ATTEMPTS + 1):
-        # Check if PR has been merged or has conflicts before attempting fix
-        pr_state, mergeable = check_pr_state(pr_number, full_repo)
+    # CI failed — check PR state before attempting fixes
+    pr_state, mergeable = check_pr_state(pr_number, full_repo)
 
-        if pr_state == "MERGED":
-            actions_log.append("PR already merged — skipping CI fix")
-            return "PR already merged — CI fix skipped."
+    if pr_state == "MERGED":
+        actions_log.append("PR already merged — skipping CI fix")
+        return "PR already merged — CI fix skipped."
 
-        if mergeable == "CONFLICTING":
-            actions_log.append("PR has merge conflicts — skipping CI fix")
-            return "PR has merge conflicts — CI fix skipped (rebase needed)."
+    if mergeable == "CONFLICTING":
+        actions_log.append("PR has merge conflicts — skipping CI fix")
+        return "PR has merge conflicts — CI fix skipped (rebase needed)."
 
-        notify_fn(f"CI failed on [{pr_url}]({pr_url}). Fix attempt {attempt}/{MAX_CI_FIX_ATTEMPTS}...")
-        actions_log.append(f"CI failed (attempt {attempt})")
+    notify_fn(f"CI failed on [{pr_url}]({pr_url}). Attempting fixes...")
 
-        # Build CI fix prompt
-        rebase_remote = "origin"
-        diff = ""
-        try:
-            diff = _run_git(
-                ["git", "diff", f"{rebase_remote}/{base}..HEAD"],
-                cwd=project_path, timeout=30,
-            )
-        except Exception as e:
-            print(f"[rebase] diff fetch failed: {e}", file=sys.stderr)
-        diff = truncate_diff(diff, 32000)
-
-        ci_fix_prompt = _build_ci_fix_prompt(
-            context, ci_logs, diff, skill_dir=skill_dir,
+    def _build_prompt(logs: str, diff: str) -> str:
+        return _build_ci_fix_prompt(
+            context, logs, diff, skill_dir=skill_dir,
             commit_conventions=commit_conventions,
         )
 
-        # Run Claude to fix the CI failures
-        fixed = run_claude_step(
-            prompt=ci_fix_prompt,
-            project_path=project_path,
-            commit_msg=f"fix: resolve CI failures on #{pr_number} (attempt {attempt})",
-            success_label=f"Applied CI fix (attempt {attempt})",
-            failure_label=f"CI fix step failed (attempt {attempt})",
-            actions_log=actions_log,
-            max_turns=get_skill_max_turns(),
-            use_convention_subject=bool(commit_conventions),
-        )
+    success, last_ci_logs = run_ci_fix_loop(
+        branch=branch,
+        base=base,
+        full_repo=full_repo,
+        project_path=project_path,
+        ci_logs=ci_logs,
+        actions_log=actions_log,
+        max_attempts=MAX_CI_FIX_ATTEMPTS,
+        commit_conventions=commit_conventions,
+        use_polling=True,
+        prompt_builder=_build_prompt,
+        commit_msg_template=f"fix: resolve CI failures on #{pr_number} (attempt {{attempt}})",
+    )
 
-        if not fixed:
-            # Claude didn't produce changes — nothing to push
-            break
+    if success:
+        # Find which attempt succeeded
+        for action in reversed(actions_log):
+            if "CI passed after fix attempt" in action:
+                attempt_num = action.split("attempt ")[-1]
+                return f"CI failed initially, fixed on attempt {attempt_num}."
+            if "CI " in action and "after fix attempt" in action:
+                # timeout/none after fix push
+                attempt_match = action.split("attempt ")[-1].rstrip(")")
+                return f"CI fix pushed (attempt {attempt_match}), CI status: check pending."
+        return "CI fix applied."
 
-        # Force-push the fix
-        try:
-            _force_push("origin", branch, project_path)
-        except Exception as e:
-            actions_log.append(f"Push after CI fix failed: {str(e)[:100]}")
-            break
-
-        actions_log.append(f"Pushed CI fix (attempt {attempt})")
-
-        # Re-check CI
-        notify_fn(f"Re-checking CI on [{pr_url}]({pr_url}) after fix attempt {attempt}...")
-        ci_status, run_id, ci_logs = wait_for_ci(branch, full_repo)
-
-        if ci_status == "success":
-            actions_log.append(f"CI passed after fix attempt {attempt}")
-            return f"CI failed initially, fixed on attempt {attempt}."
-
-        if ci_status in ("none", "timeout"):
-            actions_log.append(f"CI {ci_status} after fix attempt {attempt}")
-            return f"CI fix pushed (attempt {attempt}), CI status: {ci_status}."
-
-        if ci_status == CI_STATUS_BLOCKED_APPROVAL:
-            actions_log.append(
-                f"CI waiting for maintainer approval after fix attempt {attempt} — stopping"
-            )
-            return (
-                f"CI fix pushed (attempt {attempt}), but new run is waiting "
-                "for maintainer approval."
-            )
+    # Check for blocked approval
+    if any("approval" in a.lower() and "stopping" in a.lower() for a in actions_log):
+        for action in reversed(actions_log):
+            if "approval" in action.lower() and "stopping" in action.lower():
+                attempt_num = action.split("attempt ")[-1].split(" ")[0]
+                return (
+                    f"CI fix pushed (attempt {attempt_num}), but new run is waiting "
+                    "for maintainer approval."
+                )
 
     # Exhausted retries — report failure with log excerpt
-    log_excerpt = ci_logs[:2000] if ci_logs else "(no logs available)"
-    actions_log.append(f"CI still failing after {MAX_CI_FIX_ATTEMPTS} fix attempts")
+    log_excerpt = last_ci_logs[:2000] if last_ci_logs else "(no logs available)"
     return (
         f"CI still failing after {MAX_CI_FIX_ATTEMPTS} fix attempts.\n\n"
         f"<details><summary>Last failure logs</summary>\n\n"

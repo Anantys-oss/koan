@@ -18,8 +18,7 @@ def _mock_pr_context():
     fake_context = {"branch": "fix-branch", "base": "main", "url": PR_URL}
     with (
         patch("app.rebase_pr.fetch_pr_context", return_value=fake_context),
-        patch("app.ci_queue_runner.check_ci_status", return_value=("failure", 123)),
-        patch("app.claude_step._fetch_failed_logs", return_value="Error: test failed"),
+        patch("app.ci_queue_runner.check_ci_status", return_value=("failure", 123, "Error: test failed")),
         patch("app.rebase_pr.check_pr_state", return_value=("OPEN", "MERGEABLE")),
         patch("app.claude_step._get_current_branch", return_value="main"),
         patch("app.claude_step._run_git"),
@@ -71,7 +70,7 @@ class TestRunCiCheckAndFixErrorHandling:
         fake_context = {"branch": "fix-branch", "base": "main"}
         with (
             patch("app.rebase_pr.fetch_pr_context", return_value=fake_context),
-            patch("app.ci_queue_runner.check_ci_status", return_value=("success", 123)),
+            patch("app.ci_queue_runner.check_ci_status", return_value=("success", 123, "")),
         ):
             success, summary = run_ci_check_and_fix(PR_URL, PROJECT_PATH)
 
@@ -85,7 +84,7 @@ class TestRunCiCheckAndFixErrorHandling:
         fake_context = {"branch": "fix-branch", "base": "main"}
         with (
             patch("app.rebase_pr.fetch_pr_context", return_value=fake_context),
-            patch("app.ci_queue_runner.check_ci_status", return_value=("pending", 123)),
+            patch("app.ci_queue_runner.check_ci_status", return_value=("pending", 123, "")),
         ):
             success, summary = run_ci_check_and_fix(PR_URL, PROJECT_PATH)
 
@@ -99,8 +98,7 @@ class TestRunCiCheckAndFixErrorHandling:
         fake_context = {"branch": "fix-branch", "base": "main"}
         with (
             patch("app.rebase_pr.fetch_pr_context", return_value=fake_context),
-            patch("app.ci_queue_runner.check_ci_status", return_value=("failure", 123)),
-            patch("app.claude_step._fetch_failed_logs", return_value="Error: test failed"),
+            patch("app.ci_queue_runner.check_ci_status", return_value=("failure", 123, "Error: test failed")),
             patch("app.rebase_pr.check_pr_state", return_value=("MERGED", "UNKNOWN")),
         ):
             success, summary = run_ci_check_and_fix(PR_URL, PROJECT_PATH)
@@ -115,8 +113,7 @@ class TestRunCiCheckAndFixErrorHandling:
         fake_context = {"branch": "fix-branch", "base": "main"}
         with (
             patch("app.rebase_pr.fetch_pr_context", return_value=fake_context),
-            patch("app.ci_queue_runner.check_ci_status", return_value=("failure", 123)),
-            patch("app.claude_step._fetch_failed_logs", return_value="Error: test failed"),
+            patch("app.ci_queue_runner.check_ci_status", return_value=("failure", 123, "Error: test failed")),
             patch("app.rebase_pr.check_pr_state", return_value=("OPEN", "CONFLICTING")),
         ):
             success, summary = run_ci_check_and_fix(PR_URL, PROJECT_PATH)
@@ -197,7 +194,7 @@ class TestDrainOneErrorHandling:
             patch("app.ci_queue_runner._maybe_migrate_json_queue"),
             patch("app.utils.modify_missions_file") as mock_modify,
             patch("app.ci_queue_runner._check_pr_state_safe", return_value="OPEN"),
-            patch("app.ci_queue_runner.check_ci_status", return_value=("success", 123)),
+            patch("app.ci_queue_runner.check_ci_status", return_value=("success", 123, "")),
             patch("app.ci_queue_runner._write_outbox"),
         ):
             result = drain_one("/tmp/instance")
@@ -217,7 +214,7 @@ class TestDrainOneErrorHandling:
             patch("app.ci_queue_runner._maybe_migrate_json_queue"),
             patch("app.utils.modify_missions_file"),
             patch("app.ci_queue_runner._check_pr_state_safe", return_value="OPEN"),
-            patch("app.ci_queue_runner.check_ci_status", return_value=("failure", 456)),
+            patch("app.ci_queue_runner.check_ci_status", return_value=("failure", 456, "")),
             patch("app.ci_queue_runner._inject_ci_fix_mission") as mock_inject,
         ):
             result = drain_one("/tmp/instance")
@@ -237,7 +234,7 @@ class TestDrainOneErrorHandling:
             patch("app.ci_queue_runner._maybe_migrate_json_queue"),
             patch("app.utils.modify_missions_file") as mock_modify,
             patch("app.ci_queue_runner._check_pr_state_safe", return_value="OPEN"),
-            patch("app.ci_queue_runner.check_ci_status", return_value=("failure", 456)),
+            patch("app.ci_queue_runner.check_ci_status", return_value=("failure", 456, "")),
             patch("app.ci_queue_runner._write_outbox") as mock_outbox,
         ):
             result = drain_one("/tmp/instance")
@@ -316,7 +313,7 @@ class TestDrainOneErrorHandling:
             patch("app.ci_queue_runner._maybe_migrate_json_queue"),
             patch("app.utils.modify_missions_file"),
             patch("app.ci_queue_runner._check_pr_state_safe", return_value="UNKNOWN"),
-            patch("app.ci_queue_runner.check_ci_status", return_value=("pending", None)) as mock_status,
+            patch("app.ci_queue_runner.check_ci_status", return_value=("pending", None, "")) as mock_status,
         ):
             result = drain_one("/tmp/instance")
 
@@ -356,7 +353,6 @@ class TestAttemptCiFixes:
 
         with (
             patch("app.claude_step._run_git", return_value=""),
-            patch("app.rebase_pr.truncate_text", side_effect=lambda t, n: t),
             patch("app.rebase_pr._build_ci_fix_prompt", return_value="fix this"),
             patch("app.claude_step.run_claude_step", return_value=False),
         ):
@@ -399,11 +395,10 @@ class TestAttemptCiFixes:
 
         with (
             patch("app.claude_step._run_git", return_value=""),
-            patch("app.rebase_pr.truncate_text", side_effect=lambda t, n: t),
             patch("app.rebase_pr._build_ci_fix_prompt", return_value="fix this"),
             patch("app.claude_step.run_claude_step", return_value=True),
-            patch("app.rebase_pr._force_push"),
-            patch("app.ci_queue_runner.check_ci_status", return_value=("pending", 789)),
+            patch("app.claude_step._force_push"),
+            patch("app.claude_step.check_existing_ci", return_value=("pending", 789, "")),
             patch("app.ci_queue_runner._reenqueue_for_monitoring") as mock_reenqueue,
             patch("time.sleep"),
         ):
@@ -441,7 +436,6 @@ class TestAttemptCiFixes:
 
         with (
             patch("app.claude_step._run_git", side_effect=capture_run_git),
-            patch("app.rebase_pr.truncate_text", side_effect=lambda t, n: t),
             patch("app.rebase_pr._build_ci_fix_prompt", return_value="fix this"),
             patch("app.claude_step.run_claude_step", return_value=False),
         ):
@@ -472,7 +466,6 @@ class TestAttemptCiFixes:
 
         with (
             patch("app.claude_step._run_git", return_value=""),
-            patch("app.rebase_pr.truncate_text", side_effect=lambda t, n: t),
             patch("app.rebase_pr._build_ci_fix_prompt", return_value="fix this"),
             patch("app.claude_step.run_claude_step", return_value=False) as mock_step,
             patch("app.config.get_skill_max_turns", return_value=42),
@@ -837,7 +830,7 @@ class TestDrainOneBlockedApproval:
             patch("app.ci_queue_runner._check_pr_state_safe", return_value="OPEN"),
             patch(
                 "app.ci_queue_runner.check_ci_status",
-                return_value=(CI_STATUS_BLOCKED_APPROVAL, 999),
+                return_value=(CI_STATUS_BLOCKED_APPROVAL, 999, ""),
             ),
             patch("app.ci_queue_runner._write_outbox") as mock_outbox,
             patch("app.ci_queue_runner._inject_ci_fix_mission") as mock_inject,
@@ -871,7 +864,7 @@ class TestRunCiCheckBlockedApproval:
             patch("app.rebase_pr.fetch_pr_context", return_value=fake_context),
             patch(
                 "app.ci_queue_runner.check_ci_status",
-                return_value=(CI_STATUS_BLOCKED_APPROVAL, 123),
+                return_value=(CI_STATUS_BLOCKED_APPROVAL, 123, ""),
             ),
             patch("app.ci_queue_runner._attempt_ci_fixes") as mock_fix,
         ):
@@ -908,7 +901,7 @@ class TestCheckCiStatusDependabot:
             },
         ])
         with patch("app.claude_step.run_gh", return_value=gh_payload):
-            status, run_id = check_ci_status("koan/fix-issue-1680", "aio-libs/yarl")
+            status, run_id, _logs = check_ci_status("koan/fix-issue-1680", "aio-libs/yarl")
 
         assert status == "success"
         assert run_id == 25970779403

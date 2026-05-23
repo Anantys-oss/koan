@@ -746,6 +746,148 @@ def check_existing_ci(
     return (status, run_id, "")
 
 
+def _force_push(remote: str, branch: str, project_path: str) -> None:
+    """Force-push branch, trying --force-with-lease first then --force.
+
+    Raises on total failure.
+    """
+    try:
+        _run_git(
+            ["git", "push", remote, branch, "--force-with-lease"],
+            cwd=project_path,
+        )
+    except Exception as e:
+        print(f"[claude_step] --force-with-lease failed, falling back to --force: {e}", file=sys.stderr)
+        _run_git(
+            ["git", "push", remote, branch, "--force"],
+            cwd=project_path,
+        )
+
+
+def run_ci_fix_loop(
+    branch: str,
+    base: str,
+    full_repo: str,
+    project_path: str,
+    ci_logs: str,
+    actions_log: List[str],
+    *,
+    max_attempts: int = 2,
+    commit_conventions: str = "",
+    use_polling: bool = False,
+    prompt_builder: Callable[[str, str], str],
+    commit_msg_template: str = "fix: resolve CI failures (attempt {attempt})",
+    base_remote: str = "origin",
+) -> Tuple[bool, str]:
+    """Core CI fix loop: diff-fetch -> prompt -> Claude step -> push -> recheck.
+
+    Extracts the repeated pattern shared by ``_attempt_ci_fixes`` (ci_queue_runner)
+    and ``_run_ci_check_and_fix`` (rebase_pr) into a single function.
+
+    Args:
+        branch: Git branch to fix.
+        base: Base branch for diff context.
+        full_repo: ``"owner/repo"`` string.
+        project_path: Local path to the project repository.
+        ci_logs: Initial CI failure logs.
+        actions_log: Mutable list for logging actions.
+        max_attempts: Maximum fix attempts.
+        commit_conventions: Project commit convention guidance.
+        use_polling: If True, use ``wait_for_ci`` (blocking poll); else use
+            ``check_existing_ci`` after a brief sleep (non-blocking).
+        prompt_builder: ``(ci_logs, diff) -> prompt`` callable. Keeps
+            caller-specific prompt logic out of this module.
+        commit_msg_template: Template with ``{attempt}`` placeholder.
+        base_remote: Remote name for diff base (default ``"origin"``).
+
+    Returns:
+        ``(success, last_ci_logs)`` — *success* is True if CI passes or a fix
+        was pushed and CI is pending/running. Callers decide what to do with
+        the pending state (e.g. re-enqueue for monitoring).
+    """
+    from app.config import get_skill_max_turns, get_skill_timeout
+    from app.utils import truncate_diff
+
+    for attempt in range(1, max_attempts + 1):
+        print(f"[ci_fix_loop] Fix attempt {attempt}/{max_attempts}", file=sys.stderr)
+        actions_log.append(f"CI fix attempt {attempt}/{max_attempts}")
+
+        # Fetch diff for context
+        diff = ""
+        try:
+            diff = _run_git(
+                ["git", "diff", f"{base_remote}/{base}..HEAD"],
+                cwd=project_path, timeout=30,
+            )
+        except Exception as e:
+            print(f"[ci_fix_loop] diff fetch failed: {e}", file=sys.stderr)
+        diff = truncate_diff(diff, 32000)
+
+        # Build prompt and run Claude
+        prompt = prompt_builder(ci_logs, diff)
+
+        fixed = run_claude_step(
+            prompt=prompt,
+            project_path=project_path,
+            commit_msg=commit_msg_template.format(attempt=attempt),
+            success_label=f"Applied CI fix (attempt {attempt})",
+            failure_label=f"CI fix step failed (attempt {attempt})",
+            actions_log=actions_log,
+            max_turns=get_skill_max_turns(),
+            timeout=get_skill_timeout(),
+            use_convention_subject=bool(commit_conventions),
+        )
+
+        if not fixed:
+            actions_log.append("Claude produced no changes — giving up")
+            break
+
+        # Force-push the fix
+        try:
+            _force_push("origin", branch, project_path)
+        except Exception as e:
+            actions_log.append(f"Push failed: {str(e)[:100]}")
+            break
+
+        actions_log.append(f"Pushed CI fix (attempt {attempt})")
+
+        # Recheck CI
+        if use_polling:
+            status, _run_id, new_logs = wait_for_ci(branch, full_repo)
+        else:
+            time.sleep(15)
+            status, _run_id, new_logs = check_existing_ci(branch, full_repo)
+
+        if status == "success":
+            actions_log.append(f"CI passed after fix attempt {attempt}")
+            return True, new_logs
+
+        if status == CI_STATUS_BLOCKED_APPROVAL:
+            actions_log.append(
+                f"CI waiting for approval after fix attempt {attempt} — stopping"
+            )
+            return False, new_logs
+
+        # Polling path: timeout/none are terminal — fix was pushed, can't confirm
+        if use_polling and status in ("timeout", "none"):
+            actions_log.append(f"CI {status} after fix attempt {attempt}")
+            return True, new_logs
+
+        # Non-polling path: pending means CI is running with our fix
+        if not use_polling and status == "pending":
+            actions_log.append(
+                f"CI running after fix push (attempt {attempt})"
+            )
+            return True, new_logs
+
+        # Failure — update logs for next attempt
+        if new_logs:
+            ci_logs = new_logs
+
+    actions_log.append(f"CI still failing after {max_attempts} fix attempts")
+    return False, ci_logs
+
+
 def _is_permission_error(error_msg: str) -> bool:
     """Check if an error message indicates a permission/access problem."""
     indicators = [
