@@ -1628,6 +1628,12 @@ def _cli_post_mission(args: list) -> None:
     if result["auto_merge_branch"]:
         print(f"AUTO_MERGE|{result['auto_merge_branch']}", file=sys.stderr)
 
+    # Emit per-step failure signals so run.py / monitoring can identify
+    # which post-mission step caused the exit-code-1 path.
+    for step_name, step_info in result.get("pipeline_steps", {}).items():
+        if step_info["status"] in ("fail", "timeout"):
+            print(f"STEP_FAILED|{step_name}", file=sys.stderr)
+
     sys.exit(0 if result["success"] else 1)
 
 

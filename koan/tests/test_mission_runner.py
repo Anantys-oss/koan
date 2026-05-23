@@ -991,6 +991,80 @@ class TestCLIPostMission:
             ])
         assert exc_info.value.code == 1
 
+    @patch("app.mission_runner.run_post_mission")
+    def test_cli_post_mission_emits_step_failed(self, mock_run, tmp_path, capsys):
+        """STEP_FAILED|<name> emitted to stderr for failed/timed-out steps."""
+        from app.mission_runner import _cli_post_mission
+
+        mock_run.return_value = {
+            "success": False,
+            "usage_updated": True,
+            "pending_archived": False,
+            "reflection_written": False,
+            "auto_merge_branch": None,
+            "quota_exhausted": False,
+            "quota_info": None,
+            "pipeline_steps": {
+                "usage_update": {"status": "success", "detail": "0.1s"},
+                "verification": {"status": "fail", "detail": "failed after 2s: oops"},
+                "reflection": {"status": "timeout", "detail": "pipeline deadline exceeded"},
+                "auto_merge": {"status": "skipped", "detail": "non-zero exit code"},
+            },
+        }
+
+        with pytest.raises(SystemExit) as exc_info:
+            _cli_post_mission([
+                "--instance", str(tmp_path),
+                "--project-name", "koan",
+                "--project-path", str(tmp_path),
+                "--run-num", "4",
+                "--exit-code", "1",
+                "--stdout-file", "/tmp/out",
+                "--stderr-file", "/tmp/err",
+            ])
+        assert exc_info.value.code == 1
+
+        captured = capsys.readouterr()
+        assert "STEP_FAILED|verification" in captured.err
+        assert "STEP_FAILED|reflection" in captured.err
+        # success and skipped steps must NOT appear
+        assert "STEP_FAILED|usage_update" not in captured.err
+        assert "STEP_FAILED|auto_merge" not in captured.err
+
+    @patch("app.mission_runner.run_post_mission")
+    def test_cli_post_mission_no_step_failed_on_success(self, mock_run, tmp_path, capsys):
+        """No STEP_FAILED lines when all steps succeed."""
+        from app.mission_runner import _cli_post_mission
+
+        mock_run.return_value = {
+            "success": True,
+            "usage_updated": True,
+            "pending_archived": True,
+            "reflection_written": True,
+            "auto_merge_branch": None,
+            "quota_exhausted": False,
+            "quota_info": None,
+            "pipeline_steps": {
+                "usage_update": {"status": "success", "detail": "0.1s"},
+                "verification": {"status": "success", "detail": "1.2s"},
+            },
+        }
+
+        with pytest.raises(SystemExit) as exc_info:
+            _cli_post_mission([
+                "--instance", str(tmp_path),
+                "--project-name", "koan",
+                "--project-path", str(tmp_path),
+                "--run-num", "5",
+                "--exit-code", "0",
+                "--stdout-file", "/tmp/out",
+                "--stderr-file", "/tmp/err",
+            ])
+        assert exc_info.value.code == 0
+
+        captured = capsys.readouterr()
+        assert "STEP_FAILED" not in captured.err
+
 
 class TestReadPendingContent:
     """Test _read_pending_content private helper."""
