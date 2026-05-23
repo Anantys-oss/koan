@@ -10,8 +10,9 @@ CLI:
         --instance-dir <dir>
 """
 
+import re
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 from app.project_explorer import (
     gather_git_activity,
@@ -19,6 +20,103 @@ from app.project_explorer import (
     get_missions_context,
 )
 from app.prompts import load_skill_prompt
+
+
+# ---------------------------------------------------------------------------
+# Impact ordering for priority-based queueing
+# ---------------------------------------------------------------------------
+
+_IMPACT_ORDER = {"high": 0, "medium": 1, "low": 2}
+
+
+# ---------------------------------------------------------------------------
+# Data structures
+# ---------------------------------------------------------------------------
+
+class AIFinding:
+    """A single idea from the AI exploration."""
+
+    __slots__ = ("title", "impact", "effort", "category", "location", "description")
+
+    def __init__(
+        self,
+        title: str = "",
+        impact: str = "medium",
+        effort: str = "medium",
+        category: str = "",
+        location: str = "",
+        description: str = "",
+    ):
+        self.title = title
+        self.impact = impact
+        self.effort = effort
+        self.category = category
+        self.location = location
+        self.description = description
+
+    def is_valid(self) -> bool:
+        """Check if the finding has the minimum required fields."""
+        return bool(self.title and self.description)
+
+
+# ---------------------------------------------------------------------------
+# Finding parser
+# ---------------------------------------------------------------------------
+
+_IDEA_FIELD_RE = re.compile(
+    r"^(TITLE|IMPACT|EFFORT|CATEGORY|LOCATION|DESCRIPTION):\s*(.+)",
+    re.MULTILINE,
+)
+
+
+def parse_findings(raw_output: str) -> List[AIFinding]:
+    """Parse ---IDEA--- blocks from Claude's output.
+
+    Modeled on audit_runner.parse_findings but with AI-exploration-specific
+    fields (impact, effort, category, location, description).
+    """
+    blocks = re.split(r"---IDEA---", raw_output)
+
+    findings: List[AIFinding] = []
+    for block in blocks:
+        block = block.strip()
+        if not block:
+            continue
+
+        finding = AIFinding()
+        for match in _IDEA_FIELD_RE.finditer(block):
+            field = match.group(1).lower()
+            value = match.group(2).strip()
+
+            # For multiline fields, capture until the next field
+            end_pos = match.end()
+            next_field = _IDEA_FIELD_RE.search(block[end_pos:])
+            if next_field:
+                full_value = block[match.start(2):end_pos + next_field.start()].strip()
+            else:
+                full_value = block[match.start(2):].strip()
+
+            # Use the full multiline value for description
+            if field == "description":
+                value = full_value
+
+            setattr(finding, field, value)
+
+        if finding.is_valid():
+            findings.append(finding)
+
+    return findings
+
+
+def prioritize_findings(findings: List[AIFinding]) -> List[AIFinding]:
+    """Sort findings by impact level (high first).
+
+    Ties preserve original order from the exploration output.
+    """
+    return sorted(
+        findings,
+        key=lambda f: _IMPACT_ORDER.get(f.impact, 99),
+    )
 
 
 def run_exploration(
@@ -78,33 +176,45 @@ def run_exploration(
     if not result:
         return False, "Claude returned an empty exploration result."
 
-    # Extract MISSION: lines and queue them as pending missions
-    missions = _extract_missions(result, project_name)
+    # Extract structured findings or fall back to MISSION: lines
+    findings = parse_findings(result)
+    if findings:
+        findings = prioritize_findings(findings)
+        missions = _findings_to_missions(findings, project_name)
+    else:
+        missions = _extract_missions_legacy(result, project_name)
+
     if missions:
         missions_path = Path(instance_dir) / "missions.md"
-        _queue_missions(missions_path, missions)
+        _queue_missions(missions_path, missions, findings if findings else None)
 
-    # Send result to Telegram (truncated, without MISSION: lines)
+    # Send result to Telegram (truncated, without structured blocks)
     cleaned = _clean_response(result)
-    report = _strip_mission_lines(cleaned)
+    report = _strip_structured_output(cleaned)
     suffix = f"\n\n({len(missions)} mission(s) queued)" if missions else ""
     notify_fn(f"AI exploration of {project_name}:\n\n{report}{suffix}")
 
     return True, f"Exploration of {project_name} completed ({len(missions)} missions queued)."
 
 
-def _extract_missions(text: str, project_name: str) -> list:
-    """Extract MISSION: lines from Claude output.
+def _findings_to_missions(
+    findings: List[AIFinding], project_name: str,
+) -> list:
+    """Convert structured AIFindings into missions.md entries."""
+    missions = []
+    for f in findings:
+        desc = f.title
+        if f.location:
+            desc = f"{desc} ({f.location})"
+        missions.append(f"- [project:{project_name}] {desc}")
+    return missions
 
-    Sanitizes each description to match the missions.md convention:
-    ``- [project:<name>] <description>``
 
-    Handles common Claude output quirks:
-    - Leading ``- `` bullet prefix
-    - Duplicate ``[project:name]`` tags (prompt says not to, but LLMs…)
+def _extract_missions_legacy(text: str, project_name: str) -> list:
+    """Extract MISSION: lines from Claude output (legacy fallback).
+
+    Used when Claude doesn't output ---IDEA--- blocks.
     """
-    import re
-
     tag_re = re.compile(r"^\[project:[^\]]+\]\s*", re.IGNORECASE)
 
     missions = []
@@ -122,21 +232,46 @@ def _extract_missions(text: str, project_name: str) -> list:
     return missions
 
 
-def _queue_missions(missions_path: Path, missions: list):
-    """Insert extracted missions into the Pending section of missions.md."""
+# Keep old name as alias for backward-compatible imports in tests
+_extract_missions = _extract_missions_legacy
+
+
+def _queue_missions(
+    missions_path: Path,
+    missions: list,
+    findings: Optional[List[AIFinding]] = None,
+):
+    """Insert extracted missions into the Pending section of missions.md.
+
+    When *findings* are provided, high-impact findings get ``urgent=True``
+    so they appear near the top of the pending queue.
+    """
     from app.utils import insert_pending_mission
 
-    for entry in missions:
-        insert_pending_mission(missions_path, entry)
+    for i, entry in enumerate(missions):
+        urgent = False
+        if findings and i < len(findings):
+            urgent = findings[i].impact == "high"
+        insert_pending_mission(missions_path, entry, urgent=urgent)
 
 
-def _strip_mission_lines(text: str) -> str:
-    """Remove MISSION: lines from the report sent to Telegram."""
+def _strip_structured_output(text: str) -> str:
+    """Remove ---IDEA--- blocks and MISSION: lines from Telegram output."""
+    # Remove entire ---IDEA--- blocks (everything from marker to next marker or end)
+    text = re.sub(
+        r"---IDEA---.*?(?=---IDEA---|$)",
+        "",
+        text,
+        flags=re.DOTALL,
+    )
+    # Also strip legacy MISSION: lines
     lines = text.splitlines()
-    filtered = [l for l in lines if not l.strip().startswith("MISSION:")]
-    # Clean up trailing blank lines
-    result = "\n".join(filtered).rstrip()
-    return result
+    filtered = [ln for ln in lines if not ln.strip().startswith("MISSION:")]
+    return "\n".join(filtered).rstrip()
+
+
+# Keep old name for backward compatibility
+_strip_mission_lines = _strip_structured_output
 
 
 def _clean_response(text: str) -> str:

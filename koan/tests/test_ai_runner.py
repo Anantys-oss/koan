@@ -6,10 +6,16 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from app.ai_runner import (
+    AIFinding,
+    parse_findings,
+    prioritize_findings,
     run_exploration,
     _clean_response,
     _extract_missions,
+    _extract_missions_legacy,
+    _findings_to_missions,
     _strip_mission_lines,
+    _strip_structured_output,
     _queue_missions,
     main,
 )
@@ -48,6 +54,221 @@ class TestCleanResponse:
         text = "Short and sweet"
         cleaned = _clean_response(text)
         assert cleaned == "Short and sweet"
+
+
+# ---------------------------------------------------------------------------
+# AIFinding data class
+# ---------------------------------------------------------------------------
+
+class TestAIFinding:
+    def test_defaults(self):
+        f = AIFinding()
+        assert f.title == ""
+        assert f.impact == "medium"
+        assert f.effort == "medium"
+        assert f.category == ""
+        assert f.location == ""
+        assert f.description == ""
+
+    def test_is_valid_requires_title_and_description(self):
+        assert AIFinding(title="Fix bug", description="It breaks").is_valid()
+        assert not AIFinding(title="Fix bug").is_valid()
+        assert not AIFinding(description="It breaks").is_valid()
+        assert not AIFinding().is_valid()
+
+
+# ---------------------------------------------------------------------------
+# parse_findings
+# ---------------------------------------------------------------------------
+
+class TestParseFindings:
+    def test_parses_single_block(self):
+        text = (
+            "---IDEA---\n"
+            "TITLE: Fix retry logic\n"
+            "IMPACT: high\n"
+            "EFFORT: quick_win\n"
+            "CATEGORY: quality\n"
+            "LOCATION: src/client.py:42\n"
+            "DESCRIPTION: The retry wrapper swallows errors silently.\n"
+        )
+        findings = parse_findings(text)
+        assert len(findings) == 1
+        f = findings[0]
+        assert f.title == "Fix retry logic"
+        assert f.impact == "high"
+        assert f.effort == "quick_win"
+        assert f.category == "quality"
+        assert f.location == "src/client.py:42"
+        assert "retry wrapper" in f.description
+
+    def test_parses_multiple_blocks(self):
+        text = (
+            "Some preamble text\n"
+            "---IDEA---\n"
+            "TITLE: First idea\n"
+            "IMPACT: high\n"
+            "EFFORT: medium\n"
+            "CATEGORY: perf\n"
+            "LOCATION: src/a.py:1\n"
+            "DESCRIPTION: First description.\n"
+            "---IDEA---\n"
+            "TITLE: Second idea\n"
+            "IMPACT: low\n"
+            "EFFORT: significant\n"
+            "CATEGORY: feature\n"
+            "LOCATION: src/b.py:2\n"
+            "DESCRIPTION: Second description.\n"
+        )
+        findings = parse_findings(text)
+        assert len(findings) == 2
+        assert findings[0].title == "First idea"
+        assert findings[1].title == "Second idea"
+
+    def test_skips_invalid_blocks(self):
+        text = (
+            "---IDEA---\n"
+            "TITLE: Valid idea\n"
+            "DESCRIPTION: Has both fields.\n"
+            "---IDEA---\n"
+            "TITLE: Missing description\n"
+            "---IDEA---\n"
+            "DESCRIPTION: Missing title.\n"
+        )
+        findings = parse_findings(text)
+        assert len(findings) == 1
+        assert findings[0].title == "Valid idea"
+
+    def test_multiline_description(self):
+        text = (
+            "---IDEA---\n"
+            "TITLE: Complex issue\n"
+            "IMPACT: medium\n"
+            "EFFORT: medium\n"
+            "CATEGORY: quality\n"
+            "LOCATION: src/x.py:10\n"
+            "DESCRIPTION: First line of description.\n"
+            "Second line continues here.\n"
+        )
+        findings = parse_findings(text)
+        assert len(findings) == 1
+        assert "First line" in findings[0].description
+        assert "Second line" in findings[0].description
+
+    def test_no_idea_blocks_returns_empty(self):
+        text = "Just a regular report with no structured blocks."
+        findings = parse_findings(text)
+        assert findings == []
+
+    def test_defaults_for_missing_optional_fields(self):
+        text = (
+            "---IDEA---\n"
+            "TITLE: Minimal idea\n"
+            "DESCRIPTION: Just title and description.\n"
+        )
+        findings = parse_findings(text)
+        assert len(findings) == 1
+        assert findings[0].impact == "medium"
+        assert findings[0].effort == "medium"
+        assert findings[0].category == ""
+        assert findings[0].location == ""
+
+
+# ---------------------------------------------------------------------------
+# prioritize_findings
+# ---------------------------------------------------------------------------
+
+class TestPrioritizeFindings:
+    def test_sorts_by_impact(self):
+        findings = [
+            AIFinding(title="low", impact="low", description="d"),
+            AIFinding(title="high", impact="high", description="d"),
+            AIFinding(title="medium", impact="medium", description="d"),
+        ]
+        result = prioritize_findings(findings)
+        assert [f.title for f in result] == ["high", "medium", "low"]
+
+    def test_preserves_order_for_same_impact(self):
+        findings = [
+            AIFinding(title="first", impact="medium", description="d"),
+            AIFinding(title="second", impact="medium", description="d"),
+        ]
+        result = prioritize_findings(findings)
+        assert [f.title for f in result] == ["first", "second"]
+
+    def test_unknown_impact_sorts_last(self):
+        findings = [
+            AIFinding(title="unknown", impact="critical", description="d"),
+            AIFinding(title="low", impact="low", description="d"),
+        ]
+        result = prioritize_findings(findings)
+        assert result[0].title == "low"
+        assert result[1].title == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# _findings_to_missions
+# ---------------------------------------------------------------------------
+
+class TestFindingsToMissions:
+    def test_converts_findings_to_mission_entries(self):
+        findings = [
+            AIFinding(title="Fix bug A", location="src/a.py:10", description="d"),
+            AIFinding(title="Add feature B", description="d"),
+        ]
+        missions = _findings_to_missions(findings, "myapp")
+        assert len(missions) == 2
+        assert missions[0] == "- [project:myapp] Fix bug A (src/a.py:10)"
+        assert missions[1] == "- [project:myapp] Add feature B"
+
+    def test_omits_location_when_empty(self):
+        findings = [AIFinding(title="Simple fix", description="d")]
+        missions = _findings_to_missions(findings, "myapp")
+        assert missions[0] == "- [project:myapp] Simple fix"
+
+
+# ---------------------------------------------------------------------------
+# _strip_structured_output
+# ---------------------------------------------------------------------------
+
+class TestStripStructuredOutput:
+    def test_removes_idea_blocks(self):
+        text = (
+            "Report here\n"
+            "---IDEA---\n"
+            "TITLE: Something\n"
+            "DESCRIPTION: Details\n"
+            "---IDEA---\n"
+            "TITLE: Another\n"
+            "DESCRIPTION: More details\n"
+        )
+        result = _strip_structured_output(text)
+        assert "---IDEA---" not in result
+        assert "Report here" in result
+
+    def test_removes_legacy_mission_lines(self):
+        text = "Report\nMISSION: Fix something\nMore report"
+        result = _strip_structured_output(text)
+        assert "MISSION:" not in result
+        assert "Report" in result
+        assert "More report" in result
+
+    def test_handles_mixed_format(self):
+        text = (
+            "Report\n"
+            "MISSION: Legacy line\n"
+            "---IDEA---\n"
+            "TITLE: New format\n"
+            "DESCRIPTION: Details\n"
+        )
+        result = _strip_structured_output(text)
+        assert "MISSION:" not in result
+        assert "---IDEA---" not in result
+        assert "Report" in result
+
+    def test_backward_compat_alias(self):
+        """_strip_mission_lines should be the same function."""
+        assert _strip_mission_lines is _strip_structured_output
 
 
 # ---------------------------------------------------------------------------
@@ -302,6 +523,8 @@ class TestRunExploration:
 # ---------------------------------------------------------------------------
 
 class TestExtractMissions:
+    """Tests for legacy MISSION: line extraction (backward compat)."""
+
     def test_extracts_mission_lines(self):
         text = (
             "Found some issues:\n"
@@ -402,17 +625,47 @@ class TestQueueMissions:
         ]
         _queue_missions(missions_path, missions)
         assert mock_insert.call_count == 2
-        mock_insert.assert_any_call(missions_path, "- [project:myapp] Fix bug A")
-        mock_insert.assert_any_call(missions_path, "- [project:myapp] Fix bug B")
+        mock_insert.assert_any_call(
+            missions_path, "- [project:myapp] Fix bug A", urgent=False,
+        )
+        mock_insert.assert_any_call(
+            missions_path, "- [project:myapp] Fix bug B", urgent=False,
+        )
 
     @patch("app.utils.insert_pending_mission")
     def test_no_missions_no_calls(self, mock_insert):
         _queue_missions(Path("/tmp/missions.md"), [])
         mock_insert.assert_not_called()
 
+    @patch("app.utils.insert_pending_mission")
+    def test_high_impact_gets_urgent(self, mock_insert):
+        missions_path = Path("/tmp/missions.md")
+        findings = [
+            AIFinding(title="High impact", impact="high", description="d"),
+            AIFinding(title="Low impact", impact="low", description="d"),
+        ]
+        missions = [
+            "- [project:myapp] High impact",
+            "- [project:myapp] Low impact",
+        ]
+        _queue_missions(missions_path, missions, findings)
+        calls = mock_insert.call_args_list
+        assert calls[0][1]["urgent"] is True
+        assert calls[1][1]["urgent"] is False
+
+    @patch("app.utils.insert_pending_mission")
+    def test_no_findings_all_non_urgent(self, mock_insert):
+        """Legacy path without findings — all non-urgent."""
+        missions_path = Path("/tmp/missions.md")
+        missions = ["- [project:myapp] Fix something"]
+        _queue_missions(missions_path, missions, findings=None)
+        mock_insert.assert_called_once_with(
+            missions_path, "- [project:myapp] Fix something", urgent=False,
+        )
+
 
 # ---------------------------------------------------------------------------
-# run_exploration with missions
+# run_exploration with missions (legacy MISSION: format)
 # ---------------------------------------------------------------------------
 
 class TestRunExplorationWithMissions:
@@ -474,6 +727,114 @@ class TestRunExplorationWithMissions:
         assert "0 missions queued" in summary
         result_msg = notify.call_args_list[1][0][0]
         assert "mission(s) queued" not in result_msg
+
+
+# ---------------------------------------------------------------------------
+# run_exploration with structured ---IDEA--- blocks
+# ---------------------------------------------------------------------------
+
+_STRUCTURED_OUTPUT = (
+    "Here's what I found:\n\n"
+    "---IDEA---\n"
+    "TITLE: Fix retry logic in fetch_data\n"
+    "IMPACT: high\n"
+    "EFFORT: quick_win\n"
+    "CATEGORY: quality\n"
+    "LOCATION: src/client.py:42\n"
+    "DESCRIPTION: Retry wrapper swallows errors silently.\n"
+    "---IDEA---\n"
+    "TITLE: Add input validation\n"
+    "IMPACT: low\n"
+    "EFFORT: medium\n"
+    "CATEGORY: security\n"
+    "LOCATION: src/auth.py:115\n"
+    "DESCRIPTION: Email not validated before DB query.\n"
+)
+
+
+class TestRunExplorationStructured:
+    @patch("app.utils.insert_pending_mission")
+    @patch("app.cli_provider.run_command_streaming",
+           return_value=_STRUCTURED_OUTPUT)
+    @patch("app.ai_runner.get_missions_context", return_value="No active missions.")
+    @patch("app.ai_runner.gather_project_structure", return_value="Directories: src/")
+    @patch("app.ai_runner.gather_git_activity", return_value="Recent commits: abc")
+    @patch("app.ai_runner.load_skill_prompt", return_value="Explore myapp")
+    def test_structured_output_queues_missions(
+        self, mock_prompt, mock_git, mock_struct, mock_missions,
+        mock_claude, mock_insert, tmp_path
+    ):
+        notify = MagicMock()
+        success, summary = run_exploration(
+            str(tmp_path), "myapp", str(tmp_path),
+            notify_fn=notify,
+        )
+        assert success is True
+        assert "2 missions queued" in summary
+        assert mock_insert.call_count == 2
+
+    @patch("app.utils.insert_pending_mission")
+    @patch("app.cli_provider.run_command_streaming",
+           return_value=_STRUCTURED_OUTPUT)
+    @patch("app.ai_runner.get_missions_context", return_value="No active missions.")
+    @patch("app.ai_runner.gather_project_structure", return_value="Directories: src/")
+    @patch("app.ai_runner.gather_git_activity", return_value="Recent commits: abc")
+    @patch("app.ai_runner.load_skill_prompt", return_value="Explore myapp")
+    def test_high_impact_queued_urgent(
+        self, mock_prompt, mock_git, mock_struct, mock_missions,
+        mock_claude, mock_insert, tmp_path
+    ):
+        notify = MagicMock()
+        run_exploration(
+            str(tmp_path), "myapp", str(tmp_path),
+            notify_fn=notify,
+        )
+        calls = mock_insert.call_args_list
+        # High impact finding queued first (sorted), urgent=True
+        assert calls[0][1]["urgent"] is True
+        assert "Fix retry logic" in calls[0][0][1]
+        # Low impact finding queued second, urgent=False
+        assert calls[1][1]["urgent"] is False
+        assert "Add input validation" in calls[1][0][1]
+
+    @patch("app.utils.insert_pending_mission")
+    @patch("app.cli_provider.run_command_streaming",
+           return_value=_STRUCTURED_OUTPUT)
+    @patch("app.ai_runner.get_missions_context", return_value="No active missions.")
+    @patch("app.ai_runner.gather_project_structure", return_value="Directories: src/")
+    @patch("app.ai_runner.gather_git_activity", return_value="Recent commits: abc")
+    @patch("app.ai_runner.load_skill_prompt", return_value="Explore myapp")
+    def test_mission_entries_include_location(
+        self, mock_prompt, mock_git, mock_struct, mock_missions,
+        mock_claude, mock_insert, tmp_path
+    ):
+        notify = MagicMock()
+        run_exploration(
+            str(tmp_path), "myapp", str(tmp_path),
+            notify_fn=notify,
+        )
+        first_mission = mock_insert.call_args_list[0][0][1]
+        assert "(src/client.py:42)" in first_mission
+
+    @patch("app.utils.insert_pending_mission")
+    @patch("app.cli_provider.run_command_streaming",
+           return_value=_STRUCTURED_OUTPUT)
+    @patch("app.ai_runner.get_missions_context", return_value="No active missions.")
+    @patch("app.ai_runner.gather_project_structure", return_value="Directories: src/")
+    @patch("app.ai_runner.gather_git_activity", return_value="Recent commits: abc")
+    @patch("app.ai_runner.load_skill_prompt", return_value="Explore myapp")
+    def test_telegram_strips_idea_blocks(
+        self, mock_prompt, mock_git, mock_struct, mock_missions,
+        mock_claude, mock_insert, tmp_path
+    ):
+        notify = MagicMock()
+        run_exploration(
+            str(tmp_path), "myapp", str(tmp_path),
+            notify_fn=notify,
+        )
+        result_msg = notify.call_args_list[1][0][0]
+        assert "---IDEA---" not in result_msg
+        assert "2 mission(s) queued" in result_msg
 
 
 # ---------------------------------------------------------------------------
