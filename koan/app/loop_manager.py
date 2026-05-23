@@ -847,6 +847,20 @@ def process_github_notifications(
         if drained > 0:
             log.debug("GitHub: drained %d non-actionable notification(s)", drained)
 
+        # Single-instance mode: mark notifications from unregistered repos
+        # as read.  No sibling instance will handle them, so letting them
+        # accumulate just bloats the GitHub inbox.  In multi-instance mode
+        # they must stay untouched — another instance owns those repos.
+        if result.skipped_notifications:
+            from app.config import get_enable_multiple_instances
+            if not get_enable_multiple_instances():
+                foreign_drained = _drain_notifications(result.skipped_notifications)
+                if foreign_drained > 0:
+                    log.debug(
+                        "GitHub: drained %d notification(s) from unregistered repos",
+                        foreign_drained,
+                    )
+
         # Check for SSO failures and alert if needed
         _check_sso_failures()
 
@@ -892,11 +906,10 @@ def _process_one_notification(
     from app.github_notifications import mark_notification_read
 
     try:
-        # Ownership gate: when a GitHub identity is shared by multiple Kōan
-        # instances, each instance must leave foreign repos completely
-        # untouched. Marking the notification as read here would clear it
-        # from the shared bot inbox, hiding it from the instance that does
-        # own the repo.
+        # Ownership gate: when multiple Kōan instances share a GitHub identity,
+        # each must leave foreign repos untouched (multi-instance mode).
+        # In single-instance mode, foreign-repo notifications are marked as
+        # read to prevent inbox accumulation.
         #
         # Cache foreign notifications in-process so we don't re-run the
         # (potentially subprocess-heavy) project resolution on every poll
@@ -910,6 +923,15 @@ def _process_one_notification(
             repo = notif.get("repository", {}).get("full_name", "?")
             log.debug("GitHub: skipping notification for foreign repo %s", repo)
             _cache_notif(notif)
+            # Single-instance: safe to mark as read — no sibling will claim it.
+            try:
+                from app.config import get_enable_multiple_instances
+                if not get_enable_multiple_instances():
+                    thread_id = str(notif.get("id", ""))
+                    if thread_id:
+                        mark_notification_read(thread_id)
+            except (ImportError, OSError):
+                pass
             return False
 
         _log_notification(notif)

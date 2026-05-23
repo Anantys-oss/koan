@@ -241,16 +241,25 @@ class FetchResult:
             (reasons: mention, author, comment).
         drain: Non-actionable notifications from known repos that should
             be marked as read to prevent accumulation.
+        skipped_notifications: Full notification dicts from repos not in
+            projects.yaml.  In single-instance mode these can be drained
+            (marked as read) safely; in multi-instance mode they must be
+            left untouched for sibling instances.
     """
-    __slots__ = ("actionable", "drain", "skipped_repos", "skipped_mention_repos")
+    __slots__ = (
+        "actionable", "drain", "skipped_repos",
+        "skipped_mention_repos", "skipped_notifications",
+    )
 
     def __init__(self, actionable: List[dict], drain: List[dict],
                  skipped_repos: Optional[List[str]] = None,
-                 skipped_mention_repos: Optional[Dict[str, int]] = None):
+                 skipped_mention_repos: Optional[Dict[str, int]] = None,
+                 skipped_notifications: Optional[List[dict]] = None):
         self.actionable = actionable
         self.drain = drain
         self.skipped_repos = skipped_repos or []
         self.skipped_mention_repos = skipped_mention_repos or {}
+        self.skipped_notifications = skipped_notifications or []
 
 
 def fetch_unread_notifications(known_repos: Optional[Set[str]] = None,
@@ -314,6 +323,7 @@ def fetch_unread_notifications(known_repos: Optional[Set[str]] = None,
     skipped_reasons: Dict[str, int] = {}
     skipped_repos: List[str] = []
     skipped_mention_repos: Dict[str, int] = {}
+    skipped_notifications: List[dict] = []
     actionable = []
     drain = []
     for notif in notifications:
@@ -327,6 +337,7 @@ def fetch_unread_notifications(known_repos: Optional[Set[str]] = None,
             repo_lower = repo_name.lower()
             if repo_lower not in known_repos:
                 skipped_repos.append(repo_name)
+                skipped_notifications.append(notif)
                 if reason in {"mention", "team_mention"}:
                     skipped_mention_repos[repo_name] = skipped_mention_repos.get(repo_name, 0) + 1
                 continue
@@ -365,7 +376,10 @@ def fetch_unread_notifications(known_repos: Optional[Set[str]] = None,
         "GitHub: %d actionable + %d drain notification(s) from known repos",
         len(actionable), len(drain),
     )
-    return FetchResult(actionable, drain, skipped_repos, skipped_mention_repos)
+    return FetchResult(
+        actionable, drain, skipped_repos,
+        skipped_mention_repos, skipped_notifications,
+    )
 
 
 def parse_mention_command(comment_body: str, nickname: str) -> Optional[Tuple[str, str]]:

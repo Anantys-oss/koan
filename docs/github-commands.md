@@ -130,7 +130,9 @@ When several Kōan instances share the same GitHub account (each watching a diff
 enable_multiple_instances: true
 ```
 
-This is a top-level config key (not nested under `github:`). When enabled, Kōan silently skips @mentions from unregistered repos instead of logging warnings and sending Telegram alerts — the assumption is that another instance handles them.
+This is a top-level config key (not nested under `github:`). When enabled, Kōan silently skips @mentions from unregistered repos instead of logging warnings and sending Telegram alerts — the assumption is that another instance handles them. Notifications from unregistered repos are left unread so sibling instances can process them.
+
+When `enable_multiple_instances` is **false** (default, single-instance mode), notifications from unregistered repos are automatically marked as read to prevent inbox accumulation — no other instance will claim them.
 
 ### Per-project overrides (`projects.yaml`)
 

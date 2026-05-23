@@ -210,6 +210,35 @@ class TestFetchUnreadNotifications:
         assert len(result.skipped_repos) == 4
 
     @patch("app.github_notifications.api")
+    def test_skipped_notifications_collects_full_objects(self, mock_api):
+        """skipped_notifications contains full notification dicts for draining."""
+        notifs = [
+            {"id": "1", "reason": "mention", "repository": {"full_name": "foreign/repo"}},
+            {"id": "2", "reason": "ci_activity", "repository": {"full_name": "foreign/repo"}},
+            {"id": "3", "reason": "mention", "repository": {"full_name": "owner/repo"}},
+        ]
+        mock_api.return_value = json.dumps(notifs)
+
+        result = fetch_unread_notifications(known_repos={"owner/repo"})
+        assert len(result.skipped_notifications) == 2
+        assert result.skipped_notifications[0]["id"] == "1"
+        assert result.skipped_notifications[1]["id"] == "2"
+        # The known-repo notification should not be skipped
+        assert len(result.actionable) == 1
+
+    @patch("app.github_notifications.api")
+    def test_skipped_notifications_empty_without_known_repos(self, mock_api):
+        """Without known_repos filter, no notifications are skipped."""
+        notifs = [
+            {"id": "1", "reason": "mention", "repository": {"full_name": "any/repo"}},
+        ]
+        mock_api.return_value = json.dumps(notifs)
+
+        result = fetch_unread_notifications(known_repos=None)
+        assert result.skipped_notifications == []
+        assert len(result.actionable) == 1
+
+    @patch("app.github_notifications.api")
     def test_handles_api_error(self, mock_api):
         mock_api.side_effect = RuntimeError("API error")
         result = fetch_unread_notifications()

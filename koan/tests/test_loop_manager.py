@@ -1923,6 +1923,60 @@ class TestWarnUnregisteredMentionRepos:
         mock_send.assert_not_called()
 
 
+class TestSingleInstanceDrainSkipped:
+    """Verify single-instance mode drains notifications from unregistered repos."""
+
+    @patch("app.github_notifications.mark_notification_read", return_value=True)
+    @patch("app.config.get_enable_multiple_instances", return_value=False)
+    def test_process_one_marks_foreign_read_single_instance(
+        self, _mock_multi, mock_mark,
+    ):
+        """Foreign-repo notification is marked as read in single-instance mode."""
+        from app.loop_manager import _process_one_notification
+
+        notif = {
+            "id": "42",
+            "reason": "mention",
+            "repository": {"full_name": "foreign/repo"},
+            "subject": {"title": "test", "type": "PullRequest"},
+            "updated_at": "2026-01-01T00:00:00Z",
+        }
+        with patch(
+            "app.github_command_handler.resolve_project_from_notification",
+            return_value=None,
+        ):
+            result = _process_one_notification(
+                notif, None, {}, None, {},
+            )
+        assert result is False
+        mock_mark.assert_called_once_with("42")
+
+    @patch("app.github_notifications.mark_notification_read", return_value=True)
+    @patch("app.config.get_enable_multiple_instances", return_value=True)
+    def test_process_one_skips_foreign_read_multi_instance(
+        self, _mock_multi, mock_mark,
+    ):
+        """Foreign-repo notification is NOT marked as read in multi-instance mode."""
+        from app.loop_manager import _process_one_notification
+
+        notif = {
+            "id": "42",
+            "reason": "mention",
+            "repository": {"full_name": "foreign/repo"},
+            "subject": {"title": "test", "type": "PullRequest"},
+            "updated_at": "2026-01-01T00:00:00Z",
+        }
+        with patch(
+            "app.github_command_handler.resolve_project_from_notification",
+            return_value=None,
+        ):
+            result = _process_one_notification(
+                notif, None, {}, None, {},
+            )
+        assert result is False
+        mock_mark.assert_not_called()
+
+
 # --- Test configurable check interval ---
 
 
@@ -2845,19 +2899,19 @@ class TestConcurrentNotificationProcessing:
 
 
 class TestForeignRepoOwnershipGate:
-    """Verify _process_one_notification leaves foreign repos completely untouched.
+    """Verify _process_one_notification handles foreign repos correctly.
 
-    When a GitHub identity is shared by multiple Kōan instances, this
-    instance must not call ``process_single_notification`` (which writes to
-    missions.md) nor ``mark_notification_read`` (which writes to shared
-    GitHub state) for repos it does not own. Leaving the notification
-    unread is what lets a sibling instance process it on its next poll.
+    In multi-instance mode (shared GitHub identity), foreign-repo
+    notifications must NOT be marked as read — a sibling instance owns them.
+    In single-instance mode, they are marked as read to prevent inbox bloat.
 
     The notification IS, however, cached in-process so we don't re-run the
     project resolution on every poll cycle.
     """
 
-    def test_foreign_repo_skipped_with_no_shared_state_writes(self):
+    @patch("app.config.get_enable_multiple_instances", return_value=True)
+    def test_foreign_repo_skipped_multi_instance(self, _mock_multi):
+        """Multi-instance: foreign-repo notification is NOT marked as read."""
         from app.loop_manager import _process_one_notification
 
         notif = {
@@ -2875,12 +2929,36 @@ class TestForeignRepoOwnershipGate:
                 notif, MagicMock(), {}, {}, {"bot_username": "bot", "max_age": 24},
             )
 
-        # Gate must short-circuit before any side effects on shared state.
         assert result is False
         mock_resolve.assert_called_once_with(notif)
         mock_process.assert_not_called()
         mock_read.assert_not_called()
-        # In-process cache IS written so subsequent polls skip the resolve walk.
+        mock_cache.assert_called_once_with(notif)
+
+    @patch("app.config.get_enable_multiple_instances", return_value=False)
+    def test_foreign_repo_marked_read_single_instance(self, _mock_multi):
+        """Single-instance: foreign-repo notification IS marked as read."""
+        from app.loop_manager import _process_one_notification
+
+        notif = {
+            "id": "42",
+            "subject": {"url": ""},
+            "repository": {"full_name": "someone-else/their-repo"},
+        }
+
+        with patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=None) as mock_resolve, \
+             patch("app.github_command_handler.process_single_notification") as mock_process, \
+             patch("app.github_notifications.mark_notification_read") as mock_read, \
+             patch("app.loop_manager._cache_notif") as mock_cache:
+            result = _process_one_notification(
+                notif, MagicMock(), {}, {}, {"bot_username": "bot", "max_age": 24},
+            )
+
+        assert result is False
+        mock_resolve.assert_called_once_with(notif)
+        mock_process.assert_not_called()
+        mock_read.assert_called_once_with("42")
         mock_cache.assert_called_once_with(notif)
 
     def test_worker_survives_exception_in_resolve(self, caplog):
