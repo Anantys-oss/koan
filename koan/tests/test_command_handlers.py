@@ -1656,6 +1656,68 @@ class TestDispatchSkillWorkerExceptionHandling:
 
 
 # ---------------------------------------------------------------------------
+# Test: SkillError survives module reload (class identity change)
+# ---------------------------------------------------------------------------
+
+class TestSkillErrorModuleReload:
+    """Regression test for TypeError when module reload changes SkillError class.
+
+    When _refresh_stale_app_modules() reloads app.skills, the SkillError
+    namedtuple class is recreated.  command_handlers.py holds a reference to
+    the OLD class, so isinstance() returns False.  Without the fix, the raw
+    SkillError namedtuple (containing a non-serializable exception object)
+    leaks into send_telegram → requests.post(json=...) → json.dumps, which
+    raises TypeError: Object of type ModuleNotFoundError is not JSON serializable.
+    """
+
+    def test_handle_skill_result_with_reloaded_skillerror(
+        self, patch_bridge_state, mock_send
+    ):
+        """_handle_skill_result should detect SkillError even after class rebuild."""
+        from collections import namedtuple
+        from app.command_handlers import _handle_skill_result
+
+        # Simulate a post-reload SkillError — different class identity
+        FreshSkillError = namedtuple("SkillError", ["skill_name", "exception", "message"])
+        result = FreshSkillError(
+            skill_name="core/audit",
+            exception="ModuleNotFoundError: No module named 'skills.core'",
+            message="Skill error (core/audit): No module named 'skills.core'",
+        )
+
+        _handle_skill_result(result, "audit", "koan")
+
+        # Should send the .message string, not the raw namedtuple
+        mock_send.assert_called_once()
+        sent = mock_send.call_args[0][0]
+        assert isinstance(sent, str)
+        assert "Skill error" in sent
+
+    def test_handle_skill_result_with_raw_exception_object(
+        self, patch_bridge_state, mock_send
+    ):
+        """Even with a raw exception in .exception, message should be sent as string."""
+        from collections import namedtuple
+        from app.command_handlers import _handle_skill_result
+
+        # Worst case: raw exception object (pre-fix SkillError)
+        FreshSkillError = namedtuple("SkillError", ["skill_name", "exception", "message"])
+        result = FreshSkillError(
+            skill_name="core/audit",
+            exception=ModuleNotFoundError("No module named 'skills.core'"),
+            message="Skill error (core/audit): No module named 'skills.core'",
+        )
+
+        _handle_skill_result(result, "audit", "koan")
+
+        # Should still send .message as a string
+        mock_send.assert_called_once()
+        sent = mock_send.call_args[0][0]
+        assert isinstance(sent, str)
+        assert "Skill error" in sent
+
+
+# ---------------------------------------------------------------------------
 # Test: _handle_help_command — detailed help with aliases and usage
 # ---------------------------------------------------------------------------
 

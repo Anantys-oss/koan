@@ -258,12 +258,29 @@ def _dispatch_skill(skill: Skill, command_name: str, command_args: str):
 
 def _handle_skill_result(result, command_name: str, command_args: str):
     """Handle the result of a skill execution, logging errors and sending responses."""
-    if isinstance(result, SkillError):
+    # Use class-name check instead of isinstance() to survive module reloads.
+    # _refresh_stale_app_modules() can reload app.skills, recreating the
+    # SkillError namedtuple class.  The module-level import in this file still
+    # holds the OLD class, so isinstance() returns False and the raw namedtuple
+    # (containing a non-serializable exception object) would leak into
+    # send_telegram → requests.post(json=...) → json.dumps → TypeError.
+    if _is_skill_error(result):
         log("error", f"Skill handler '{command_name}' crashed: {result.exception}")
-        send_telegram(result.message)
+        send_telegram(str(result.message))
     elif result is not None:
         from app.text_utils import expand_github_refs_auto
-        send_telegram(expand_github_refs_auto(result, command_args))
+        send_telegram(expand_github_refs_auto(str(result), command_args))
+
+
+def _is_skill_error(result) -> bool:
+    """Check if result is a SkillError, surviving module reloads."""
+    if isinstance(result, SkillError):
+        return True
+    return (
+        type(result).__name__ == "SkillError"
+        and hasattr(result, "exception")
+        and hasattr(result, "message")
+    )
 
 
 def _queue_cli_skill_mission(skill: Skill, args: str):
