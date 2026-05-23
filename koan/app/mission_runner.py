@@ -28,6 +28,19 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from app.circuit_breaker import CircuitBreaker
+
+
+def _breaker_log(msg: str) -> None:
+    """Log circuit breaker messages via _log_runner for timestamps and color."""
+    _log_runner("error", msg)
+
+
+# Module-level circuit breaker for fire-and-forget subsystems.
+# Threshold=2: a subsystem must fail twice before being skipped.
+# No auto-reset — circuits stay open for the process lifetime.
+_breaker = CircuitBreaker(threshold=2, log_prefix="mission_runner", log_fn=_breaker_log)
+
 # Maximum wall-clock time for the entire post-mission pipeline (seconds).
 # Individual steps have their own timeouts (tests: 120s, reflection: 60s,
 # verification: 10s), but without an overall ceiling, accumulated steps
@@ -154,7 +167,7 @@ def _write_pipeline_summary(
 
         now = datetime.now().strftime("%H:%M")
         header = f"\n### Pipeline summary — {now}"
-        if mission_title:
+    if mission_title:
             header += f"\nMission: {mission_title}"
         if mission_tier:
             header += f"\nComplexity: {mission_tier}"
@@ -424,6 +437,7 @@ def _read_stdout_summary(stdout_file: str, max_chars: int = 2000) -> str:
         return ""
 
 
+@_breaker.guard("session_tracker")
 def _record_session_outcome(
     instance_dir: str,
     project_name: str,
@@ -436,34 +450,30 @@ def _record_session_outcome(
     try:
         from app.session_tracker import record_outcome
         record_outcome(
-            instance_dir=instance_dir,
-            project=project_name,
-            mode=autonomous_mode or "unknown",
-            duration_minutes=duration_minutes,
-            journal_content=journal_content,
-            mission_title=mission_title,
-        )
-    except Exception as e:
-        _log_runner("error", f"Session outcome recording failed: {e}")
+        instance_dir=instance_dir,
+        project=project_name,
+        mode=autonomous_mode or "unknown",
+        duration_minutes=duration_minutes,
+        journal_content=journal_content,
+        mission_title=mission_title,
+    )
 
     # Append to JSONL truth log so this session is never lost to compaction
-    try:
-        from app.memory_manager import append_memory_entry
-        summary_parts = []
+    from app.memory_manager import append_memory_entry
+    summary_parts = []
         if mission_title:
-            summary_parts.append(f"Mission: {mission_title}")
-        if autonomous_mode:
-            summary_parts.append(f"Mode: {autonomous_mode}")
-        if duration_minutes:
-            summary_parts.append(f"Duration: {duration_minutes}min")
-        if journal_content:
-            summary_parts.append(journal_content[:500])
-        content = " | ".join(summary_parts) if summary_parts else mission_title or "session"
-        append_memory_entry(instance_dir, "session", project_name or None, content)
-    except Exception as e:
-        _log_runner("error", f"JSONL session log failed: {e}")
+        summary_parts.append(f"Mission: {mission_title}")
+    if autonomous_mode:
+        summary_parts.append(f"Mode: {autonomous_mode}")
+    if duration_minutes:
+        summary_parts.append(f"Duration: {duration_minutes}min")
+    if journal_content:
+        summary_parts.append(journal_content[:500])
+    content = " | ".join(summary_parts) if summary_parts else mission_title or "session"
+    append_memory_entry(instance_dir, "session", project_name or None, content)
 
 
+@_breaker.guard("skill_metrics")
 def _record_skill_metric(
     instance_dir: str,
     project_name: str,
@@ -473,41 +483,41 @@ def _record_skill_metric(
     quality_report: Optional[dict],
 ) -> None:
     """Record per-project skill metric for fix/implement missions (fire-and-forget)."""
-    try:
-        from app.session_tracker import classify_mission_type, detect_pr_created
-        mission_type = classify_mission_type(mission_title)
-        if mission_type != "implement":
-            return
+    from app.session_tracker import classify_mission_type, detect_pr_created
+    mission_type = classify_mission_type(mission_title)
+    if mission_type != "implement":
+        return
 
-        # Only record when a PR was produced (the interesting signal)
-        if not detect_pr_created(pending_content):
-            return
+    # Only record when a PR was produced (the interesting signal)
+    if not detect_pr_created(pending_content):
+        return
 
-        # Determine CI status from quality pipeline test results
-        ci_status = "none"
-        if quality_report and isinstance(quality_report.get("tests"), dict):
-            tests = quality_report["tests"]
-            if tests.get("skipped"):
-                ci_status = "none"
-            elif tests.get("passed"):
-                ci_status = "pass"
-            else:
-                ci_status = "fail"
+    # Determine CI status from quality pipeline test results
+    ci_status = "none"
+    if quality_report and isinstance(quality_report.get("tests"), dict):
+        tests = quality_report["tests"]
+        if tests.get("skipped"):
+            ci_status = "none"
+        elif tests.get("passed"):
+            ci_status = "pass"
+        else:
+            ci_status = "fail"
 
-        # Extract PR URL from pending content (best-effort)
-        import re
-        pr_match = re.search(r'(https://github\.com/[^\s)]+/pull/\d+)', pending_content)
-        pr_url = pr_match.group(1) if pr_match else ""
+    # Extract PR URL from pending content (best-effort)
+    import re
+    pr_match = re.search(r'(https://github\.com/[^\s)]+/pull/\d+)', pending_content)
+    pr_url = pr_match.group(1) if pr_match else ""
 
-        # Derive skill type from mission title
-        skill_type = "fix" if "/fix " in mission_title.lower() else "implement"
+    # Derive skill type from mission title
+    skill_type = "fix" if "/fix " in mission_title.lower() else "implement"
 
-        from app.skill_metrics import record_pr_metric
-        record_pr_metric(instance_dir, project_name, skill_type, pr_url, ci_status)
+    from app.skill_metrics import record_pr_metric
+    record_pr_metric(instance_dir, project_name, skill_type, pr_url, ci_status)
     except Exception as e:
-        _log_runner("error", f"Skill metric recording failed: {e}")
+    _log_runner("error", f"Skill metric recording failed: {e}")
 
 
+@_breaker.guard("cost_tracker")
 def _record_cost_event(
     instance_dir: str,
     project_name: str,
@@ -520,31 +530,31 @@ def _record_cost_event(
     """Record structured usage event to JSONL cost tracker (fire-and-forget).
 
     Args:
-        tokens: Pre-extracted token details (from extract_tokens_detailed).
-            When provided, skips redundant file read + JSON parse.
+    tokens: Pre-extracted token details (from extract_tokens_detailed).
+        When provided, skips redundant file read + JSON parse.
     """
     try:
-        from app.cost_tracker import record_usage
+    from app.cost_tracker import record_usage
 
-        tokens = _ensure_tokens(stdout_file, tokens)
-        if tokens is None:
-            return
+    tokens = _ensure_tokens(stdout_file, tokens)
+    if tokens is None:
+    return
 
-        record_usage(
-            instance_dir=Path(instance_dir),
-            project=project_name or "_global",
-            model=tokens["model"],
-            input_tokens=tokens["input_tokens"],
-            output_tokens=tokens["output_tokens"],
-            mode=autonomous_mode,
-            mission=mission_title,
-            cache_creation_input_tokens=tokens.get("cache_creation_input_tokens", 0),
-            cache_read_input_tokens=tokens.get("cache_read_input_tokens", 0),
-            cost_usd=tokens.get("cost_usd", 0.0),
-            mission_type=mission_type,
-        )
+    record_usage(
+    instance_dir=Path(instance_dir),
+    project=project_name or "_global",
+    model=tokens["model"],
+    input_tokens=tokens["input_tokens"],
+    output_tokens=tokens["output_tokens"],
+    mode=autonomous_mode,
+    mission=mission_title,
+    cache_creation_input_tokens=tokens.get("cache_creation_input_tokens", 0),
+    cache_read_input_tokens=tokens.get("cache_read_input_tokens", 0),
+    cost_usd=tokens.get("cost_usd", 0.0),
+    mission_type=mission_type,
+    )
     except Exception as e:
-        _log_runner("error", f"Cost tracking failed: {e}")
+    _log_runner("error", f"Cost tracking failed: {e}")
 
 
 def _log_activity_usage(
@@ -559,51 +569,51 @@ def _log_activity_usage(
     """Log activity usage to logs/usage.log (fire-and-forget).
 
     Args:
-        tokens: Pre-extracted token details (from extract_tokens_detailed).
-            When provided, skips redundant file read + JSON parse.
+    tokens: Pre-extracted token details (from extract_tokens_detailed).
+    When provided, skips redundant file read + JSON parse.
     """
     try:
-        from app.activity_usage_logger import log_activity_usage
+    from app.activity_usage_logger import log_activity_usage
 
-        tokens = _ensure_tokens(stdout_file, tokens)
-        if tokens is None:
-            return
+    tokens = _ensure_tokens(stdout_file, tokens)
+    if tokens is None:
+    return
 
-        activity_type = "mission" if mission_title else autonomous_mode or "autonomous"
-        description = mission_title or f"autonomous ({autonomous_mode})"
+    activity_type = "mission" if mission_title else autonomous_mode or "autonomous"
+    description = mission_title or f"autonomous ({autonomous_mode})"
 
-        log_activity_usage(
-            project=project_name or "_global",
-            activity_type=activity_type,
-            description=description,
-            duration_seconds=duration_seconds,
-            input_tokens=tokens["input_tokens"],
-            output_tokens=tokens["output_tokens"],
-            cache_read_tokens=tokens.get("cache_read_input_tokens", 0),
-            cache_creation_tokens=tokens.get("cache_creation_input_tokens", 0),
-            cost_usd=tokens.get("cost_usd", 0.0),
-            model=tokens.get("model", ""),
-        )
+    log_activity_usage(
+    project=project_name or "_global",
+    activity_type=activity_type,
+    description=description,
+    duration_seconds=duration_seconds,
+    input_tokens=tokens["input_tokens"],
+    output_tokens=tokens["output_tokens"],
+    cache_read_tokens=tokens.get("cache_read_input_tokens", 0),
+    cache_creation_tokens=tokens.get("cache_creation_input_tokens", 0),
+    cost_usd=tokens.get("cost_usd", 0.0),
+    model=tokens.get("model", ""),
+    )
     except Exception as e:
-        print(f"[mission_runner] Activity usage logging failed: {e}", file=sys.stderr)
+    print(f"[mission_runner] Activity usage logging failed: {e}", file=sys.stderr)
 
 
 def archive_pending(instance_dir: str, project_name: str, run_num: int) -> bool:
     """Archive pending.md to daily journal if agent didn't clean it up.
 
     Args:
-        instance_dir: Path to instance directory.
-        project_name: Current project name.
-        run_num: Current run number.
+    instance_dir: Path to instance directory.
+    project_name: Current project name.
+    run_num: Current run number.
 
     Returns:
-        True if pending.md was archived, False if it didn't exist.
+    True if pending.md was archived, False if it didn't exist.
     """
     pending_path = Path(instance_dir) / "journal" / "pending.md"
     try:
-        pending_content = pending_path.read_text()
+    pending_content = pending_path.read_text()
     except (OSError, FileNotFoundError):
-        return False
+    return False
 
     # Append pending content to daily journal (with file locking)
     from app.journal import append_to_journal
@@ -620,27 +630,27 @@ def update_usage(stdout_file: str, usage_state: str, usage_md: str) -> bool:
     """Update token usage state from Claude JSON output.
 
     Args:
-        stdout_file: Path to Claude stdout capture file.
-        usage_state: Path to usage_state.json.
-        usage_md: Path to usage.md.
+    stdout_file: Path to Claude stdout capture file.
+    usage_state: Path to usage_state.json.
+    usage_md: Path to usage.md.
 
     Returns:
-        True if update succeeded.
+    True if update succeeded.
     """
     try:
-        from app.usage_estimator import cmd_update
+    from app.usage_estimator import cmd_update
 
-        cost_pct = cmd_update(Path(stdout_file), Path(usage_state), Path(usage_md))
+    cost_pct = cmd_update(Path(stdout_file), Path(usage_state), Path(usage_md))
     except Exception as e:
-        _log_runner("error", f"Usage update failed: {e}")
-        return False
+    _log_runner("error", f"Usage update failed: {e}")
+    return False
 
     if cost_pct is not None:
-        try:
-            from app.burn_rate import record_run
-            record_run(Path(usage_md).parent, cost_pct)
-        except Exception as e:  # pragma: no cover - defensive
-            _log_runner("error", f"Burn rate record failed: {e}")
+    try:
+    from app.burn_rate import record_run
+    record_run(Path(usage_md).parent, cost_pct)
+    except Exception as e:  # pragma: no cover - defensive
+    _log_runner("error", f"Burn rate record failed: {e}")
     return True
 
 
@@ -657,34 +667,34 @@ def trigger_reflection(
     prevents noise from trivial missions.
 
     Args:
-        instance_dir: Path to instance directory.
-        mission_title: Mission description text.
-        duration_minutes: Duration in minutes.
-        project_name: Current project name (for journal file lookup).
+    instance_dir: Path to instance directory.
+    mission_title: Mission description text.
+    duration_minutes: Duration in minutes.
+    project_name: Current project name (for journal file lookup).
 
     Returns:
-        True if reflection was generated.
+    True if reflection was generated.
     """
     try:
-        from app.post_mission_reflection import (
-            _read_journal_file,
-            is_significant_mission,
-            run_reflection,
-            write_to_journal,
-        )
+    from app.post_mission_reflection import (
+    _read_journal_file,
+    is_significant_mission,
+    run_reflection,
+    write_to_journal,
+    )
 
-        inst = Path(instance_dir)
-        journal_content = _read_journal_file(inst, project_name)
+    inst = Path(instance_dir)
+    journal_content = _read_journal_file(inst, project_name)
 
-        if not is_significant_mission(mission_title, duration_minutes, journal_content):
-            return False
+    if not is_significant_mission(mission_title, duration_minutes, journal_content):
+    return False
 
-        reflection = run_reflection(inst, mission_title, journal_content)
-        if reflection:
-            write_to_journal(inst, reflection)
-            return True
+    reflection = run_reflection(inst, mission_title, journal_content)
+    if reflection:
+    write_to_journal(inst, reflection)
+    return True
     except Exception as e:
-        _log_runner("error", f"Reflection failed: {e}")
+    _log_runner("error", f"Reflection failed: {e}")
     return False
 
 
@@ -696,26 +706,28 @@ def _get_quality_gate_mode(
     """Get the quality gate mode for a project.
 
     Args:
-        projects_config: Pre-loaded projects config dict. When provided,
-            skips redundant load_projects_config() call.
+    projects_config: Pre-loaded projects config dict. When provided,
+    skips redundant load_projects_config() call.
 
     Returns one of: "strict", "warn", "off". Default: "warn".
+    On config error, returns "strict" to block auto-merge — a broken
+    config should not silently allow merges.
     """
     try:
-        from app.projects_config import get_project_config
-        config = projects_config
-        if config is None:
-            from app.projects_config import load_projects_config
-            koan_root = _get_koan_root(instance_dir)
-            config = load_projects_config(koan_root)
-        if config:
-            project_config = get_project_config(config, project_name)
-            pr_quality = project_config.get("pr_quality", {})
-            gate = pr_quality.get("gate", "warn")
-            if gate in ("strict", "warn", "off"):
-                return gate
+    from app.projects_config import get_project_config
+    config = projects_config
+    if config is None:
+    from app.projects_config import load_projects_config
+    koan_root = _get_koan_root(instance_dir)
+    config = load_projects_config(koan_root)
+    if config:
+    project_config = get_project_config(config, project_name)
+    pr_quality = project_config.get("pr_quality", {})
+    gate = pr_quality.get("gate", "warn")
+    if gate in ("strict", "warn", "off"):
+        return gate
     except Exception as e:
-        _log_runner("error", f"Quality gate config error: {e}")
+    _log_runner("error", f"Quality gate config error: {e}")
     return "warn"
 
 
@@ -732,23 +744,23 @@ def _run_quality_pipeline(
     Raises on error — caller (_PipelineTracker.run_step) handles recording.
 
     Args:
-        projects_config: Pre-loaded projects config dict to avoid redundant I/O.
+    projects_config: Pre-loaded projects config dict to avoid redundant I/O.
     """
     from app.config import get_branch_prefix
     from app.pr_quality import run_quality_pipeline
 
     branch_prefix = get_branch_prefix()
     gate_mode = _get_quality_gate_mode(
-        instance_dir, project_name, projects_config=projects_config,
+    instance_dir, project_name, projects_config=projects_config,
     )
 
     return run_quality_pipeline(
-        project_path=project_path,
-        branch_prefix=branch_prefix,
-        run_tests=True,
-        test_timeout=120,
-        gate_mode=gate_mode,
-        status_callback=report_fn,
+    project_path=project_path,
+    branch_prefix=branch_prefix,
+    run_tests=True,
+    test_timeout=120,
+    gate_mode=gate_mode,
+    status_callback=report_fn,
     )
 
 
@@ -771,22 +783,22 @@ def _is_lint_blocking(
     """Check if lint gate is configured as blocking for a project.
 
     Args:
-        projects_config: Pre-loaded projects config dict to avoid redundant I/O.
+    projects_config: Pre-loaded projects config dict to avoid redundant I/O.
     """
     try:
-        from app.lint_gate import get_project_lint_config
-        config = projects_config
-        if config is None:
-            from app.projects_config import load_projects_config
-            koan_root = _get_koan_root(instance_dir)
-            config = load_projects_config(koan_root)
-        if not config:
-            return False
-        lint_config = get_project_lint_config(config, project_name)
-        return lint_config.get("blocking", True) and lint_config.get("enabled", False)
+    from app.lint_gate import get_project_lint_config
+    config = projects_config
+    if config is None:
+    from app.projects_config import load_projects_config
+    koan_root = _get_koan_root(instance_dir)
+    config = load_projects_config(koan_root)
+    if not config:
+    return False
+    lint_config = get_project_lint_config(config, project_name)
+    return lint_config.get("blocking", True) and lint_config.get("enabled", False)
     except Exception as e:
-        _log_runner("error", f"Lint config check failed: {e}")
-        return False
+    _log_runner("error", f"Lint config check failed: {e}")
+    return False
 
 
 def _run_mission_verification(
@@ -804,10 +816,10 @@ def _run_mission_verification(
 
     branch_prefix = get_branch_prefix()
     result = verify_mission(
-        project_path=project_path,
-        mission_title=mission_title,
-        exit_code=exit_code,
-        branch_prefix=branch_prefix,
+    project_path=project_path,
+    mission_title=mission_title,
+    exit_code=exit_code,
+    branch_prefix=branch_prefix,
     )
     # Log result to console
     print(f"[mission_runner] {format_verify_result(result)}")
@@ -826,68 +838,68 @@ def check_auto_merge(
     """Check if current branch should be auto-merged.
 
     Args:
-        instance_dir: Path to instance directory.
-        project_name: Current project name.
-        project_path: Path to project directory.
-        quality_report: Optional quality pipeline results for gating.
-        lint_blocked: Whether lint gate is blocking auto-merge.
-        verify_blocked: Whether verification failure is blocking auto-merge.
-        projects_config: Pre-loaded projects config dict to avoid redundant I/O.
+    instance_dir: Path to instance directory.
+    project_name: Current project name.
+    project_path: Path to project directory.
+    quality_report: Optional quality pipeline results for gating.
+    lint_blocked: Whether lint gate is blocking auto-merge.
+    verify_blocked: Whether verification failure is blocking auto-merge.
+    projects_config: Pre-loaded projects config dict to avoid redundant I/O.
 
     Returns:
-        Branch name if auto-merge was attempted, None otherwise.
+    Branch name if auto-merge was attempted, None otherwise.
     """
     try:
-        from app.git_sync import run_git
-        branch = run_git(project_path, "rev-parse", "--abbrev-ref", "HEAD")
-        if not branch:
-            return None
-        from app.config import get_branch_prefix
-        if not branch.startswith(get_branch_prefix()):
-            return None
+    from app.git_sync import run_git
+    branch = run_git(project_path, "rev-parse", "--abbrev-ref", "HEAD")
+    if not branch:
+    return None
+    from app.config import get_branch_prefix
+    if not branch.startswith(get_branch_prefix()):
+    return None
 
-        # Lint gate block
-        if lint_blocked:
-            print("[mission_runner] Auto-merge blocked by lint gate")
-            return None
+    # Lint gate block
+    if lint_blocked:
+    print("[mission_runner] Auto-merge blocked by lint gate")
+    return None
 
-        # Verification block
-        if verify_blocked:
-            print("[mission_runner] Auto-merge blocked by verification failure")
-            return None
+    # Verification block
+    if verify_blocked:
+    print("[mission_runner] Auto-merge blocked by verification failure")
+    return None
 
-        # Check if auto-merge is configured for this project
-        from app.git_auto_merge import auto_merge_branch
-        from app.projects_config import get_project_auto_merge
+    # Check if auto-merge is configured for this project
+    from app.git_auto_merge import auto_merge_branch
+    from app.projects_config import get_project_auto_merge
 
-        config = projects_config
-        if config is None:
-            from app.projects_config import load_projects_config
-            koan_root = _get_koan_root(instance_dir)
-            config = load_projects_config(koan_root)
-        auto_merge_cfg = get_project_auto_merge(config, project_name) if config else {}
-        auto_merge_enabled = auto_merge_cfg.get("enabled", False)
+    config = projects_config
+    if config is None:
+    from app.projects_config import load_projects_config
+    koan_root = _get_koan_root(instance_dir)
+    config = load_projects_config(koan_root)
+    auto_merge_cfg = get_project_auto_merge(config, project_name) if config else {}
+    auto_merge_enabled = auto_merge_cfg.get("enabled", False)
 
-        # Quality gate check — only post comments when auto-merge is configured.
-        # Without auto-merge, quality info is already in the PR description.
-        if quality_report and auto_merge_enabled:
-            from app.pr_quality import should_block_auto_merge, post_quality_comment
-            gate_mode = _get_quality_gate_mode(
-                instance_dir, project_name, projects_config=config,
-            )
-            if should_block_auto_merge(quality_report, gate_mode):
-                _log_runner("mission", f"Auto-merge blocked by quality gate ({gate_mode})")
-                try:
-                    post_quality_comment(project_path, quality_report)
-                except Exception as e:
-                    _log_runner("error", f"Quality comment failed: {e}")
-                return None
-
-        auto_merge_branch(instance_dir, project_name, project_path, branch)
-        return branch
-    except Exception as e:
-        _log_runner("error", f"Auto-merge check failed: {e}")
+    # Quality gate check — only post comments when auto-merge is configured.
+    # Without auto-merge, quality info is already in the PR description.
+    if quality_report and auto_merge_enabled:
+    from app.pr_quality import should_block_auto_merge, post_quality_comment
+    gate_mode = _get_quality_gate_mode(
+        instance_dir, project_name, projects_config=config,
+    )
+    if should_block_auto_merge(quality_report, gate_mode):
+        _log_runner("mission", f"Auto-merge blocked by quality gate ({gate_mode})")
+        try:
+            post_quality_comment(project_path, quality_report)
+        except Exception as e:
+            _log_runner("error", f"Quality comment failed: {e}")
         return None
+
+    auto_merge_branch(instance_dir, project_name, project_path, branch)
+    return branch
+    except Exception as e:
+    _log_runner("error", f"Auto-merge check failed: {e}")
+    return None
 
 
 def _notify_pipeline_failures(
@@ -904,30 +916,30 @@ def _notify_pipeline_failures(
     bridge retries delivery on transient network errors.
     """
     if not tracker.has_issues():
-        return
+    return
     try:
-        from app.utils import append_to_outbox
+    from app.utils import append_to_outbox
 
-        _ISSUE_ICONS = {"fail": "✗", "timeout": "⏱", "skipped": "–"}
-        issues = []
-        for name, info in tracker.steps.items():
-            icon = _ISSUE_ICONS.get(info["status"])
-            if icon is None:
-                continue
-            label = f"{icon} {name}"
-            if info["detail"]:
-                label += f" ({info['detail']})"
-            issues.append(label)
-        if not issues:
-            return
+    _ISSUE_ICONS = {"fail": "✗", "timeout": "⏱", "skipped": "–"}
+    issues = []
+    for name, info in tracker.steps.items():
+    icon = _ISSUE_ICONS.get(info["status"])
+    if icon is None:
+        continue
+    label = f"{icon} {name}"
+    if info["detail"]:
+        label += f" ({info['detail']})"
+    issues.append(label)
+    if not issues:
+    return
 
-        prefix = f"[{mission_title}] " if mission_title else ""
-        msg = f"⚠️ {prefix}Pipeline issues: {', '.join(issues)}"
-        from app.notify import NotificationPriority
-        outbox_path = Path(instance_dir) / "outbox.md"
-        append_to_outbox(outbox_path, msg + "\n", priority=NotificationPriority.WARNING)
+    prefix = f"[{mission_title}] " if mission_title else ""
+    msg = f"⚠️ {prefix}Pipeline issues: {', '.join(issues)}"
+    from app.notify import NotificationPriority
+    outbox_path = Path(instance_dir) / "outbox.md"
+    append_to_outbox(outbox_path, msg + "\n", priority=NotificationPriority.WARNING)
     except Exception as e:
-        _log_runner("error", f"Pipeline failure notification failed: {e}")
+    _log_runner("error", f"Pipeline failure notification failed: {e}")
 
 
 # Alert markers are matched case-insensitively. Word boundaries (\b) keep
@@ -968,20 +980,20 @@ def _resolve_forward_result_markers() -> list:
     """
     global _skill_registry_cache
     try:
-        if _skill_registry_cache is None:
-            from app.skills import build_registry
-            extra_dirs = []
-            koan_root = os.environ.get("KOAN_ROOT")
-            if koan_root:
-                instance_skills = Path(koan_root) / "instance" / "skills"
-                if instance_skills.is_dir():
-                    extra_dirs.append(instance_skills)
-            _skill_registry_cache = build_registry(extra_dirs)
-        from app.skills import collect_forward_result_markers
-        return collect_forward_result_markers(_skill_registry_cache)
+    if _skill_registry_cache is None:
+    from app.skills import build_registry
+    extra_dirs = []
+    koan_root = os.environ.get("KOAN_ROOT")
+    if koan_root:
+        instance_skills = Path(koan_root) / "instance" / "skills"
+        if instance_skills.is_dir():
+            extra_dirs.append(instance_skills)
+    _skill_registry_cache = build_registry(extra_dirs)
+    from app.skills import collect_forward_result_markers
+    return collect_forward_result_markers(_skill_registry_cache)
     except Exception as e:
-        _log_runner("error", f"Forward-result marker resolution failed: {e}")
-        return []
+    _log_runner("error", f"Forward-result marker resolution failed: {e}")
+    return []
 
 
 def _should_forward_result(mission_title: str, result_text: str) -> Tuple[bool, bool]:
@@ -993,14 +1005,14 @@ def _should_forward_result(mission_title: str, result_text: str) -> Tuple[bool, 
     """
     body = (result_text or "").strip()
     if not body:
-        return (False, False)
+    return (False, False)
 
     is_alert = bool(_RESULT_ALERT_REGEX.search(body))
 
     lowered_title = (mission_title or "").lower()
     markers = _resolve_forward_result_markers()
     is_customer_facing = any(
-        marker in lowered_title for marker in markers if marker
+    marker in lowered_title for marker in markers if marker
     )
 
     return (is_alert or is_customer_facing, is_alert)
@@ -1031,56 +1043,56 @@ def _notify_mission_result(
     time (legacy/test path).
     """
     try:
-        from app.config import get_notify_mission_results
-        if not get_notify_mission_results():
-            return
+    from app.config import get_notify_mission_results
+    if not get_notify_mission_results():
+    return
     except Exception as e:
-        # Fail open: default-True if config check is broken
-        _log_runner("error", f"notify_mission_results config check failed: {e}")
+    # Fail open: default-True if config check is broken
+    _log_runner("error", f"notify_mission_results config check failed: {e}")
 
     try:
-        result_text = _read_stdout_summary(stdout_file, max_chars=_RESULT_FORWARD_MAX_CHARS)
-        should_forward, is_alert = _should_forward_result(mission_title, result_text)
-        if not should_forward:
-            return
+    result_text = _read_stdout_summary(stdout_file, max_chars=_RESULT_FORWARD_MAX_CHARS)
+    should_forward, is_alert = _should_forward_result(mission_title, result_text)
+    if not should_forward:
+    return
 
-        outbox_path = Path(instance_dir) / "outbox.md"
+    outbox_path = Path(instance_dir) / "outbox.md"
 
-        try:
-            mtime: Optional[float]
-            if outbox_baseline_mtime is not None:
-                mtime = outbox_baseline_mtime
-            elif outbox_path.exists():
-                mtime = outbox_path.stat().st_mtime
-            else:
-                mtime = None
-            if start_time > 0 and mtime is not None and mtime > start_time:
-                return
-        except OSError:
-            pass
+    try:
+    mtime: Optional[float]
+    if outbox_baseline_mtime is not None:
+        mtime = outbox_baseline_mtime
+    elif outbox_path.exists():
+        mtime = outbox_path.stat().st_mtime
+    else:
+        mtime = None
+    if start_time > 0 and mtime is not None and mtime > start_time:
+        return
+    except OSError:
+    pass
 
-        title_short = (mission_title or "").strip()
-        if len(title_short) > 120:
-            title_short = title_short[:117] + "…"
+    title_short = (mission_title or "").strip()
+    if len(title_short) > 120:
+    title_short = title_short[:117] + "…"
 
-        icon = "⚠️" if is_alert else "ℹ️"
-        # Non-zero exits get the alert icon even when the body lacks keyword
-        # markers — the failure itself is the signal.
-        if exit_code != 0:
-            icon = "⚠️"
-        prefix_line = f"{icon} {title_short}" if title_short else icon
+    icon = "⚠️" if is_alert else "ℹ️"
+    # Non-zero exits get the alert icon even when the body lacks keyword
+    # markers — the failure itself is the signal.
+    if exit_code != 0:
+    icon = "⚠️"
+    prefix_line = f"{icon} {title_short}" if title_short else icon
 
-        body = result_text.strip()
-        msg = f"{prefix_line}\n\n{body}\n"
+    body = result_text.strip()
+    msg = f"{prefix_line}\n\n{body}\n"
 
-        from app.utils import append_to_outbox
-        from app.notify import NotificationPriority
-        # Customer-facing mission completions are responses to user commands —
-        # always send at ACTION priority so they pass the default min_priority
-        # filter. is_alert only affects the visual icon (⚠️ vs ℹ️).
-        append_to_outbox(outbox_path, msg, priority=NotificationPriority.ACTION)
+    from app.utils import append_to_outbox
+    from app.notify import NotificationPriority
+    # Customer-facing mission completions are responses to user commands —
+    # always send at ACTION priority so they pass the default min_priority
+    # filter. is_alert only affects the visual icon (⚠️ vs ℹ️).
+    append_to_outbox(outbox_path, msg, priority=NotificationPriority.ACTION)
     except Exception as e:
-        _log_runner("error", f"Mission result notification failed: {e}")
+    _log_runner("error", f"Mission result notification failed: {e}")
 
 
 def _fire_post_mission_hook(
@@ -1104,29 +1116,29 @@ def _fire_post_mission_hook(
     """
     result_text = ""
     if stdout_file:
-        try:
-            result_text = _read_stdout_summary(
-                stdout_file, max_chars=_RESULT_FORWARD_MAX_CHARS,
-            )
-        except Exception as e:
-            _log_runner("error", f"post_mission hook stdout read failed: {e}")
+    try:
+    result_text = _read_stdout_summary(
+        stdout_file, max_chars=_RESULT_FORWARD_MAX_CHARS,
+    )
+    except Exception as e:
+    _log_runner("error", f"post_mission hook stdout read failed: {e}")
 
     try:
-        from app.hooks import fire_hook
-        return fire_hook(
-            "post_mission",
-            instance_dir=instance_dir,
-            project_name=project_name,
-            project_path=project_path,
-            exit_code=exit_code,
-            mission_title=mission_title,
-            duration_minutes=duration_minutes,
-            result=dict(result),
-            result_text=result_text,
-        )
+    from app.hooks import fire_hook
+    return fire_hook(
+    "post_mission",
+    instance_dir=instance_dir,
+    project_name=project_name,
+    project_path=project_path,
+    exit_code=exit_code,
+    mission_title=mission_title,
+    duration_minutes=duration_minutes,
+    result=dict(result),
+    result_text=result_text,
+    )
     except Exception as e:
-        _log_runner("error", f"post_mission hook error: {e}")
-        return {"_fire_post_mission_hook": str(e)}
+    _log_runner("error", f"post_mission hook error: {e}")
+    return {"_fire_post_mission_hook": str(e)}
 
 
 def run_post_mission(
@@ -1148,37 +1160,37 @@ def run_post_mission(
     This replaces ~50 lines of bash that call 5 different Python scripts.
 
     Args:
-        instance_dir: Path to instance directory.
-        project_name: Current project name.
-        project_path: Path to project directory.
-        run_num: Current run number.
-        exit_code: Claude CLI exit code.
-        stdout_file: Path to Claude stdout capture file.
-        stderr_file: Path to Claude stderr capture file.
-        mission_title: Mission description (empty for autonomous).
-        autonomous_mode: Current mode (review/implement/deep).
-        start_time: Mission start time as unix timestamp.
-        status_callback: Optional callable to report progress during finalization.
-            Called with a short description of the current step.
+    instance_dir: Path to instance directory.
+    project_name: Current project name.
+    project_path: Path to project directory.
+    run_num: Current run number.
+    exit_code: Claude CLI exit code.
+    stdout_file: Path to Claude stdout capture file.
+    stderr_file: Path to Claude stderr capture file.
+    mission_title: Mission description (empty for autonomous).
+    autonomous_mode: Current mode (review/implement/deep).
+    start_time: Mission start time as unix timestamp.
+    status_callback: Optional callable to report progress during finalization.
+    Called with a short description of the current step.
 
     Returns:
-        Dict with keys:
-            success (bool): Whether Claude exited successfully.
-            usage_updated (bool): Whether usage tracking was updated.
-            pending_archived (bool): Whether pending.md was archived.
-            reflection_written (bool): Whether a reflection was generated.
-            auto_merge_branch (str|None): Branch name if auto-merge attempted.
-            quota_exhausted (bool): Whether quota exhaustion was detected.
-            quota_info (tuple|None): (reset_display, resume_message) if exhausted.
+    Dict with keys:
+    success (bool): Whether Claude exited successfully.
+    usage_updated (bool): Whether usage tracking was updated.
+    pending_archived (bool): Whether pending.md was archived.
+    reflection_written (bool): Whether a reflection was generated.
+    auto_merge_branch (str|None): Branch name if auto-merge attempted.
+    quota_exhausted (bool): Whether quota exhaustion was detected.
+    quota_info (tuple|None): (reset_display, resume_message) if exhausted.
     """
     result = {
-        "success": exit_code == 0,
-        "usage_updated": False,
-        "pending_archived": False,
-        "reflection_written": False,
-        "auto_merge_branch": None,
-        "quota_exhausted": False,
-        "quota_info": None,
+    "success": exit_code == 0,
+    "usage_updated": False,
+    "pending_archived": False,
+    "reflection_written": False,
+    "auto_merge_branch": None,
+    "quota_exhausted": False,
+    "quota_info": None,
     }
 
     tracker = _PipelineTracker()
@@ -1190,350 +1202,350 @@ def run_post_mission(
     # downstream outbox write would erroneously suppress the result body.
     _outbox_baseline_mtime: Optional[float] = None
     try:
-        _outbox_path = Path(instance_dir) / "outbox.md"
-        if _outbox_path.exists():
-            _outbox_baseline_mtime = _outbox_path.stat().st_mtime
+    _outbox_path = Path(instance_dir) / "outbox.md"
+    if _outbox_path.exists():
+    _outbox_baseline_mtime = _outbox_path.stat().st_mtime
     except OSError:
-        _outbox_baseline_mtime = None
+    _outbox_baseline_mtime = None
 
     # Overall pipeline deadline — prevents accumulated steps from blocking
     # the agent loop indefinitely.
     _pm_timeout = _resolve_post_mission_timeout()
     _pipeline_expired = threading.Event()
     _deadline_timer = threading.Timer(
-        _pm_timeout,
-        lambda: (
-            _pipeline_expired.set(),
-            print(
-                f"[mission_runner] Post-mission pipeline exceeded {_pm_timeout}s — "
-                "skipping remaining steps",
-                file=sys.stderr,
-            ),
-        ),
+    _pm_timeout,
+    lambda: (
+    _pipeline_expired.set(),
+    print(
+        f"[mission_runner] Post-mission pipeline exceeded {_pm_timeout}s — "
+        "skipping remaining steps",
+        file=sys.stderr,
+    ),
+    ),
     )
     _deadline_timer.daemon = True
     _deadline_timer.start()
 
     try:
-        def _report(step: str) -> None:
-            if status_callback:
-                status_callback(step)
+    def _report(step: str) -> None:
+    if status_callback:
+        status_callback(step)
 
-        # Pre-extract token details once — reused by cost tracking, activity
-        # logging, and cache line extraction instead of parsing the same JSON
-        # file 3 times.
-        _tokens = None
-        try:
-            from app.token_parser import extract_tokens
-            _result = extract_tokens(Path(stdout_file))
-            _tokens = _result.to_dict() if _result is not None else None
-        except Exception as e:
-            _log_runner("error", f"Token extraction failed: {e}")
+    # Pre-extract token details once — reused by cost tracking, activity
+    # logging, and cache line extraction instead of parsing the same JSON
+    # file 3 times.
+    _tokens = None
+    try:
+    from app.token_parser import extract_tokens
+    _result = extract_tokens(Path(stdout_file))
+    _tokens = _result.to_dict() if _result is not None else None
+    except Exception as e:
+    _log_runner("error", f"Token extraction failed: {e}")
 
-        # Pre-load projects config once — reused by quality gate, lint gate,
-        # and auto-merge instead of loading projects.yaml 3 times.
-        _projects_config = None
-        _koan_root = _get_koan_root(instance_dir)
-        try:
-            from app.projects_config import load_projects_config
-            _projects_config = load_projects_config(_koan_root)
-        except Exception as e:
-            _log_runner("error", f"Projects config load failed: {e}")
+    # Pre-load projects config once — reused by quality gate, lint gate,
+    # and auto-merge instead of loading projects.yaml 3 times.
+    _projects_config = None
+    _koan_root = _get_koan_root(instance_dir)
+    try:
+    from app.projects_config import load_projects_config
+    _projects_config = load_projects_config(_koan_root)
+    except Exception as e:
+    _log_runner("error", f"Projects config load failed: {e}")
 
-        # 1. Update token usage from JSON output
-        _report("updating usage stats")
-        usage_state = os.path.join(instance_dir, "usage_state.json")
-        usage_md = os.path.join(instance_dir, "usage.md")
-        result["usage_updated"] = update_usage(stdout_file, usage_state, usage_md)
-        tracker.record("usage_update", "success" if result["usage_updated"] else "fail")
+    # 1. Update token usage from JSON output
+    _report("updating usage stats")
+    usage_state = os.path.join(instance_dir, "usage_state.json")
+    usage_md = os.path.join(instance_dir, "usage.md")
+    result["usage_updated"] = update_usage(stdout_file, usage_state, usage_md)
+    tracker.record("usage_update", "success" if result["usage_updated"] else "fail")
 
-        # 1b. Record structured usage to JSONL cost tracker
-        from app.session_tracker import classify_mission_type as _classify_type
-        _mission_type = _classify_type(mission_title)
-        _record_cost_event(
-            instance_dir, project_name, stdout_file,
-            autonomous_mode, mission_title, mission_type=_mission_type,
-            tokens=_tokens,
-        )
+    # 1b. Record structured usage to JSONL cost tracker
+    from app.session_tracker import classify_mission_type as _classify_type
+    _mission_type = _classify_type(mission_title)
+    _record_cost_event(
+    instance_dir, project_name, stdout_file,
+    autonomous_mode, mission_title, mission_type=_mission_type,
+    tokens=_tokens,
+    )
 
-        # 2. Compute duration (needed for quota early-return, reflection, and outcome tracking)
-        if start_time > 0:
-            duration_seconds = int(datetime.now().timestamp()) - start_time
-            duration_minutes = duration_seconds // 60
-        else:
-            duration_seconds = 0
-            duration_minutes = 0
+    # 2. Compute duration (needed for quota early-return, reflection, and outcome tracking)
+    if start_time > 0:
+    duration_seconds = int(datetime.now().timestamp()) - start_time
+    duration_minutes = duration_seconds // 60
+    else:
+    duration_seconds = 0
+    duration_minutes = 0
 
-        # 2b. Log activity usage to logs/usage.log (human-readable, rotated)
-        _log_activity_usage(
-            instance_dir, project_name, stdout_file,
-            autonomous_mode, mission_title, duration_seconds,
-            tokens=_tokens,
-        )
+    # 2b. Log activity usage to logs/usage.log (human-readable, rotated)
+    _log_activity_usage(
+    instance_dir, project_name, stdout_file,
+    autonomous_mode, mission_title, duration_seconds,
+    tokens=_tokens,
+    )
 
-        # 3. Check for quota exhaustion
-        _report("checking quota")
-        from app.quota_handler import handle_quota_exhaustion, QUOTA_CHECK_UNRELIABLE
+    # 3. Check for quota exhaustion
+    _report("checking quota")
+    from app.quota_handler import handle_quota_exhaustion, QUOTA_CHECK_UNRELIABLE
 
-        quota_result = handle_quota_exhaustion(
-            koan_root=_koan_root,
-            instance_dir=instance_dir,
-            project_name=project_name,
-            run_count=run_num,
-            stdout_file=stdout_file,
-            stderr_file=stderr_file,
-        )
-        if quota_result is QUOTA_CHECK_UNRELIABLE:
-            _log_runner("quota", f"⚠️  Quota check unreliable for {project_name} — "
-                        "could not read log files, skipping quota detection")
-            tracker.record("quota_check", "skipped", "unreliable — log files unreadable")
-        elif quota_result is not None:
-            result["quota_exhausted"] = True
-            result["quota_info"] = quota_result
-            tracker.record("quota_check", "success", "quota exhausted — early return")
-            # Record session outcome BEFORE early return so the session tracker
-            # doesn't lose visibility on quota-limited sessions (which biases
-            # staleness calculations toward "stale" for productive projects).
-            pending_content = _read_pending_content(instance_dir)
-            if not pending_content.strip():
-                pending_content = _read_stdout_summary(stdout_file)
-            _record_session_outcome(
-                instance_dir, project_name, autonomous_mode,
-                duration_minutes, pending_content,
-                mission_title=mission_title,
-            )
-            # Fire post_mission hooks before early return so hooks see quota events
-            _fire_post_mission_hook(
-                instance_dir, project_name, project_path,
-                exit_code, mission_title, duration_minutes, result,
-                stdout_file=stdout_file,
-            )
-            result["pipeline_steps"] = tracker.to_dict()
-            _write_pipeline_summary(
-                instance_dir, project_name, tracker, mission_title,
-                mission_tier=mission_tier, tokens=_tokens,
-            )
-            return result  # Early return — no further processing on quota exhaustion
-        tracker.record("quota_check", "success", "no exhaustion")
+    quota_result = handle_quota_exhaustion(
+    koan_root=_koan_root,
+    instance_dir=instance_dir,
+    project_name=project_name,
+    run_count=run_num,
+    stdout_file=stdout_file,
+    stderr_file=stderr_file,
+    )
+    if quota_result is QUOTA_CHECK_UNRELIABLE:
+    _log_runner("quota", f"⚠️  Quota check unreliable for {project_name} — "
+                "could not read log files, skipping quota detection")
+    tracker.record("quota_check", "skipped", "unreliable — log files unreadable")
+    elif quota_result is not None:
+    result["quota_exhausted"] = True
+    result["quota_info"] = quota_result
+    tracker.record("quota_check", "success", "quota exhausted — early return")
+    # Record session outcome BEFORE early return so the session tracker
+    # doesn't lose visibility on quota-limited sessions (which biases
+    # staleness calculations toward "stale" for productive projects).
+    pending_content = _read_pending_content(instance_dir)
+    if not pending_content.strip():
+        pending_content = _read_stdout_summary(stdout_file)
+    _record_session_outcome(
+        instance_dir, project_name, autonomous_mode,
+        duration_minutes, pending_content,
+        mission_title=mission_title,
+    )
+    # Fire post_mission hooks before early return so hooks see quota events
+    _fire_post_mission_hook(
+        instance_dir, project_name, project_path,
+        exit_code, mission_title, duration_minutes, result,
+        stdout_file=stdout_file,
+    )
+    result["pipeline_steps"] = tracker.to_dict()
+    _write_pipeline_summary(
+        instance_dir, project_name, tracker, mission_title,
+        mission_tier=mission_tier, tokens=_tokens,
+    )
+    return result  # Early return — no further processing on quota exhaustion
+    tracker.record("quota_check", "success", "no exhaustion")
 
-        # 4. Archive pending.md if agent didn't clean up
-        _report("archiving journal")
-        # Read pending content before archival for session outcome tracking.
-        # When the agent follows Mission Completion Checklist, it deletes
-        # pending.md before exiting — so we fall back to stdout content.
-        pending_content = _read_pending_content(instance_dir)
-        if not pending_content.strip():
-            pending_content = _read_stdout_summary(stdout_file)
-        result["pending_archived"] = archive_pending(instance_dir, project_name, run_num)
-        tracker.record("journal_archive", "success" if result["pending_archived"] else "skipped",
-                        "archived" if result["pending_archived"] else "nothing to archive")
+    # 4. Archive pending.md if agent didn't clean up
+    _report("archiving journal")
+    # Read pending content before archival for session outcome tracking.
+    # When the agent follows Mission Completion Checklist, it deletes
+    # pending.md before exiting — so we fall back to stdout content.
+    pending_content = _read_pending_content(instance_dir)
+    if not pending_content.strip():
+    pending_content = _read_stdout_summary(stdout_file)
+    result["pending_archived"] = archive_pending(instance_dir, project_name, run_num)
+    tracker.record("journal_archive", "success" if result["pending_archived"] else "skipped",
+                "archived" if result["pending_archived"] else "nothing to archive")
 
-        # 5. Post-mission processing (only on success)
-        quality_report = None
-        if exit_code == 0:
-            verify_result = None
-            quality_report = {}
-            lint_result = None
+    # 5. Post-mission processing (only on success)
+    quality_report = None
+    if exit_code == 0:
+    verify_result = None
+    quality_report = {}
+    lint_result = None
 
-            # Mission verification (RARV Verify phase — semantic checks)
-            _report("verifying mission output")
-            verify_result = tracker.run_step(
-                "verification",
-                _run_mission_verification,
-                project_path, mission_title, exit_code, instance_dir,
-                pipeline_expired=_pipeline_expired,
-            )
-            if verify_result is not None:
-                if not verify_result.passed:
-                    tracker.record("verification", "fail",
-                                   verify_result.summary or "verification failed")
-                result["verification"] = {
-                    "passed": verify_result.passed,
-                    "summary": verify_result.summary,
-                    "warnings": len(verify_result.warnings),
-                    "failures": len(verify_result.failures),
-                }
+    # Mission verification (RARV Verify phase — semantic checks)
+    _report("verifying mission output")
+    verify_result = tracker.run_step(
+        "verification",
+        _run_mission_verification,
+        project_path, mission_title, exit_code, instance_dir,
+        pipeline_expired=_pipeline_expired,
+    )
+    if verify_result is not None:
+        if not verify_result.passed:
+            tracker.record("verification", "fail",
+                           verify_result.summary or "verification failed")
+        result["verification"] = {
+            "passed": verify_result.passed,
+            "summary": verify_result.summary,
+            "warnings": len(verify_result.warnings),
+            "failures": len(verify_result.failures),
+        }
 
-            # Quality pipeline (scan, tests, branch hygiene, PR enrichment)
-            _report("running quality pipeline")
-            quality_report = tracker.run_step(
-                "quality_pipeline",
-                _run_quality_pipeline,
-                instance_dir, project_name, project_path, _report,
-                projects_config=_projects_config,
-                pipeline_expired=_pipeline_expired,
-            )
-            if quality_report is None:
-                quality_report = {}
-            result["quality"] = quality_report
+    # Quality pipeline (scan, tests, branch hygiene, PR enrichment)
+    _report("running quality pipeline")
+    quality_report = tracker.run_step(
+        "quality_pipeline",
+        _run_quality_pipeline,
+        instance_dir, project_name, project_path, _report,
+        projects_config=_projects_config,
+        pipeline_expired=_pipeline_expired,
+    )
+    if quality_report is None:
+        quality_report = {}
+    result["quality"] = quality_report
 
-            # Lint gate
-            _report("running lint gate")
-            lint_result = tracker.run_step(
-                "lint_gate",
-                _run_lint_gate,
-                instance_dir, project_name, project_path,
-                pipeline_expired=_pipeline_expired,
-            )
-            if lint_result is not None:
-                result["lint_passed"] = lint_result.passed
+    # Lint gate
+    _report("running lint gate")
+    lint_result = tracker.run_step(
+        "lint_gate",
+        _run_lint_gate,
+        instance_dir, project_name, project_path,
+        pipeline_expired=_pipeline_expired,
+    )
+    if lint_result is not None:
+        result["lint_passed"] = lint_result.passed
 
-            # Reflection
-            _report("running reflection")
-            reflection_result = tracker.run_step(
-                "reflection",
-                trigger_reflection,
-                instance_dir,
-                mission_title if mission_title else f"Autonomous {autonomous_mode} on {project_name}",
-                duration_minutes,
-                project_name=project_name,
-                pipeline_expired=_pipeline_expired,
-            )
-            result["reflection_written"] = bool(reflection_result)
+    # Reflection
+    _report("running reflection")
+    reflection_result = tracker.run_step(
+        "reflection",
+        trigger_reflection,
+        instance_dir,
+        mission_title if mission_title else f"Autonomous {autonomous_mode} on {project_name}",
+        duration_minutes,
+        project_name=project_name,
+        pipeline_expired=_pipeline_expired,
+    )
+    result["reflection_written"] = bool(reflection_result)
 
-            # Auto-merge check (respects quality gate + lint gate + verification)
-            _report("checking auto-merge")
-            lint_blocking = lint_result is not None and not lint_result.passed and _is_lint_blocking(instance_dir, project_name, projects_config=_projects_config)
-            verify_blocking = verify_result is not None and not verify_result.passed
-            merge_result = tracker.run_step(
-                "auto_merge",
-                check_auto_merge,
-                instance_dir, project_name, project_path,
-                quality_report=quality_report,
-                lint_blocked=lint_blocking,
-                verify_blocked=verify_blocking,
-                projects_config=_projects_config,
-                pipeline_expired=_pipeline_expired,
-            )
-            result["auto_merge_branch"] = merge_result
-        else:
-            # Non-zero exit — skip success-only steps
-            for step in ("verification", "quality_pipeline", "lint_gate", "reflection", "auto_merge"):
-                tracker.record(step, "skipped", "non-zero exit code")
+    # Auto-merge check (respects quality gate + lint gate + verification)
+    _report("checking auto-merge")
+    lint_blocking = lint_result is not None and not lint_result.passed and _is_lint_blocking(instance_dir, project_name, projects_config=_projects_config)
+    verify_blocking = verify_result is not None and not verify_result.passed
+    merge_result = tracker.run_step(
+        "auto_merge",
+        check_auto_merge,
+        instance_dir, project_name, project_path,
+        quality_report=quality_report,
+        lint_blocked=lint_blocking,
+        verify_blocked=verify_blocking,
+        projects_config=_projects_config,
+        pipeline_expired=_pipeline_expired,
+    )
+    result["auto_merge_branch"] = merge_result
+    else:
+    # Non-zero exit — skip success-only steps
+    for step in ("verification", "quality_pipeline", "lint_gate", "reflection", "auto_merge"):
+        tracker.record(step, "skipped", "non-zero exit code")
 
-        # 7. Record session outcome for staleness tracking
-        # Always runs — even after deadline — since it's a fast local write.
-        _report("recording session outcome")
-        _record_session_outcome(
-            instance_dir, project_name, autonomous_mode,
-            duration_minutes, pending_content,
-            mission_title=mission_title,
-        )
-        tracker.record("session_outcome", "success")
+    # 7. Record session outcome for staleness tracking
+    # Always runs — even after deadline — since it's a fast local write.
+    _report("recording session outcome")
+    _record_session_outcome(
+    instance_dir, project_name, autonomous_mode,
+    duration_minutes, pending_content,
+    mission_title=mission_title,
+    )
+    tracker.record("session_outcome", "success")
 
-        # 7a-bis. Record skill-level metrics for fix/implement missions.
-        _record_skill_metric(
-            instance_dir, project_name, mission_title,
-            exit_code, pending_content, quality_report,
-        )
+    # 7a-bis. Record skill-level metrics for fix/implement missions.
+    _record_skill_metric(
+    instance_dir, project_name, mission_title,
+    exit_code, pending_content, quality_report,
+    )
 
-        # 7a. Update Thompson Sampling bandit with mission outcome.
-        # Non-zero exit is always a failure; for zero-exit, classify via
-        # session content so "empty" sessions also count as failures.
-        try:
-            from app.bandit import load_bandit_state, update_bandit, save_bandit_state
-            if exit_code != 0:
-                bandit_success = False
-            else:
-                from app.session_tracker import classify_session
-                outcome_type = classify_session(pending_content, mission_title=mission_title)
-                bandit_success = outcome_type == "productive"
-            _bandit_state = load_bandit_state(instance_dir)
-            update_bandit(_bandit_state, project_name, success=bandit_success)
-            save_bandit_state(_bandit_state, instance_dir)
-        except Exception as e:
-            _log_runner("error", f"Bandit update failed: {e}")
+    # 7a. Update Thompson Sampling bandit with mission outcome.
+    # Non-zero exit is always a failure; for zero-exit, classify via
+    # session content so "empty" sessions also count as failures.
+    try:
+    from app.bandit import load_bandit_state, update_bandit, save_bandit_state
+    if exit_code != 0:
+        bandit_success = False
+    else:
+        from app.session_tracker import classify_session
+        outcome_type = classify_session(pending_content, mission_title=mission_title)
+        bandit_success = outcome_type == "productive"
+    _bandit_state = load_bandit_state(instance_dir)
+    update_bandit(_bandit_state, project_name, success=bandit_success)
+    save_bandit_state(_bandit_state, instance_dir)
+    except Exception as e:
+    _log_runner("error", f"Bandit update failed: {e}")
 
-        # 7b. Update daily metrics snapshot (fast local write)
-        try:
-            from app.daily_snapshot import update_daily_snapshot
-            update_daily_snapshot(instance_dir)
-        except Exception as e:
-            _report(f"daily snapshot failed: {e}")
+    # 7b. Update daily metrics snapshot (fast local write)
+    try:
+    from app.daily_snapshot import update_daily_snapshot
+    update_daily_snapshot(instance_dir)
+    except Exception as e:
+    _report(f"daily snapshot failed: {e}")
 
-        # 8. Fire post-mission hooks
-        if not _pipeline_expired.is_set():
-            _report("running hooks")
-            hook_failures = _fire_post_mission_hook(
-                instance_dir, project_name, project_path,
-                exit_code, mission_title, duration_minutes, result,
-                stdout_file=stdout_file,
-            )
-            if hook_failures:
-                failed_names = ", ".join(sorted(hook_failures))
-                tracker.record("hooks", "fail", f"failed: {failed_names}")
-            else:
-                tracker.record("hooks", "success")
-        else:
-            tracker.record("hooks", "timeout", "pipeline deadline exceeded")
+    # 8. Fire post-mission hooks
+    if not _pipeline_expired.is_set():
+    _report("running hooks")
+    hook_failures = _fire_post_mission_hook(
+        instance_dir, project_name, project_path,
+        exit_code, mission_title, duration_minutes, result,
+        stdout_file=stdout_file,
+    )
+    if hook_failures:
+        failed_names = ", ".join(sorted(hook_failures))
+        tracker.record("hooks", "fail", f"failed: {failed_names}")
+    else:
+        tracker.record("hooks", "success")
+    else:
+    tracker.record("hooks", "timeout", "pipeline deadline exceeded")
 
-        # Write pipeline summary to journal and include in result
-        result["pipeline_steps"] = tracker.to_dict()
-        _write_pipeline_summary(
-            instance_dir, project_name, tracker, mission_title,
-            stdout_file=stdout_file,
-            mission_tier=mission_tier,
-            tokens=_tokens,
-        )
+    # Write pipeline summary to journal and include in result
+    result["pipeline_steps"] = tracker.to_dict()
+    _write_pipeline_summary(
+    instance_dir, project_name, tracker, mission_title,
+    stdout_file=stdout_file,
+    mission_tier=mission_tier,
+    tokens=_tokens,
+    )
 
-        # Notify user of pipeline failures via outbox (retried by bridge)
-        _notify_pipeline_failures(tracker, mission_title, instance_dir)
+    # Notify user of pipeline failures via outbox (retried by bridge)
+    _notify_pipeline_failures(tracker, mission_title, instance_dir)
 
-        # Forward Claude's result text to outbox so SKIP/ERROR/BLOCKED
-        # outcomes (and customer-facing skill results) reach Telegram even
-        # when the session's sandbox blocked writes to instance/.
-        # The baseline mtime captured at function entry lets the notifier
-        # ignore writes made by later pipeline steps (failure notifier,
-        # reflection, pr_review_learning) when deciding whether the Claude
-        # session itself already informed the user.
-        _notify_mission_result(
-            mission_title=mission_title,
-            instance_dir=instance_dir,
-            stdout_file=stdout_file,
-            start_time=start_time,
-            exit_code=exit_code,
-            outbox_baseline_mtime=_outbox_baseline_mtime,
-        )
+    # Forward Claude's result text to outbox so SKIP/ERROR/BLOCKED
+    # outcomes (and customer-facing skill results) reach Telegram even
+    # when the session's sandbox blocked writes to instance/.
+    # The baseline mtime captured at function entry lets the notifier
+    # ignore writes made by later pipeline steps (failure notifier,
+    # reflection, pr_review_learning) when deciding whether the Claude
+    # session itself already informed the user.
+    _notify_mission_result(
+    mission_title=mission_title,
+    instance_dir=instance_dir,
+    stdout_file=stdout_file,
+    start_time=start_time,
+    exit_code=exit_code,
+    outbox_baseline_mtime=_outbox_baseline_mtime,
+    )
 
-        return result
+    return result
     finally:
-        _deadline_timer.cancel()
+    _deadline_timer.cancel()
 
 
 def commit_instance(instance_dir: str, message: str = "") -> bool:
     """Commit and push instance directory changes.
 
     Args:
-        instance_dir: Path to instance directory.
-        message: Custom commit message.  Falls back to timestamped default.
+    instance_dir: Path to instance directory.
+    message: Custom commit message.  Falls back to timestamped default.
 
     Returns:
-        True if a commit was created.
+    True if a commit was created.
     """
     try:
-        from app.git_sync import run_git
+    from app.git_sync import run_git
 
-        run_git(instance_dir, "add", "-A")
+    run_git(instance_dir, "add", "-A")
 
-        # Check if there are staged changes
-        status = run_git(instance_dir, "diff", "--cached", "--name-only")
-        if not status:
-            return False  # No changes
+    # Check if there are staged changes
+    status = run_git(instance_dir, "diff", "--cached", "--name-only")
+    if not status:
+    return False  # No changes
 
-        if not message:
-            message = f"koan: {datetime.now().strftime('%Y-%m-%d-%H:%M')}"
-        run_git(instance_dir, "commit", "-m", message)
+    if not message:
+    message = f"koan: {datetime.now().strftime('%Y-%m-%d-%H:%M')}"
+    run_git(instance_dir, "commit", "-m", message)
 
-        # Push to the current branch — skip if HEAD is detached
-        branch = run_git(instance_dir, "rev-parse", "--abbrev-ref", "HEAD")
-        if not branch or branch == "HEAD":
-            print("[commit_instance] Skipping push: detached HEAD", file=sys.stderr)
-            return True
-        run_git(instance_dir, "push", "origin", branch)
-        return True
+    # Push to the current branch — skip if HEAD is detached
+    branch = run_git(instance_dir, "rev-parse", "--abbrev-ref", "HEAD")
+    if not branch or branch == "HEAD":
+    _log_runner("info", "Skipping push: detached HEAD")
+    return True
+    run_git(instance_dir, "push", "origin", branch)
+    return True
     except Exception as e:
-        print(f"[commit_instance] Instance commit failed: {e}", file=sys.stderr)
-        return False
+    print(f"[commit_instance] Instance commit failed: {e}", file=sys.stderr)
+    return False
 
 
 # --- CLI interface ---
@@ -1549,9 +1561,9 @@ def _cli_build_command(args: list) -> None:
     parsed = parser.parse_args(args)
 
     cmd, _cleanup_paths = build_mission_command(
-        prompt=parsed.prompt,
-        autonomous_mode=parsed.autonomous_mode,
-        extra_flags=parsed.extra_flags,
+    prompt=parsed.prompt,
+    autonomous_mode=parsed.autonomous_mode,
+    extra_flags=parsed.extra_flags,
     )
     # Output as space-separated for bash consumption
     # (prompt will be handled separately via file)
@@ -1565,19 +1577,19 @@ def _cli_build_command(args: list) -> None:
 def _cli_parse_output(args: list) -> None:
     """CLI: python -m app.mission_runner parse-output <json_file>"""
     if len(args) < 1:
-        print("Usage: mission_runner.py parse-output <json_file>", file=sys.stderr)
-        sys.exit(1)
+    print("Usage: mission_runner.py parse-output <json_file>", file=sys.stderr)
+    sys.exit(1)
 
     filepath = args[0]
     try:
-        raw = Path(filepath).read_text()
+    raw = Path(filepath).read_text()
     except OSError as e:
-        print(f"Error reading {filepath}: {e}", file=sys.stderr)
-        sys.exit(1)
+    print(f"Error reading {filepath}: {e}", file=sys.stderr)
+    sys.exit(1)
 
     text = parse_claude_output(raw)
     if text:
-        print(text)
+    print(text)
 
 
 def _cli_post_mission(args: list) -> None:
@@ -1598,28 +1610,28 @@ def _cli_post_mission(args: list) -> None:
     parsed = parser.parse_args(args)
 
     result = run_post_mission(
-        instance_dir=parsed.instance,
-        project_name=parsed.project_name,
-        project_path=parsed.project_path,
-        run_num=parsed.run_num,
-        exit_code=parsed.exit_code,
-        stdout_file=parsed.stdout_file,
-        stderr_file=parsed.stderr_file,
-        mission_title=parsed.mission_title,
-        autonomous_mode=parsed.autonomous_mode,
-        start_time=parsed.start_time,
+    instance_dir=parsed.instance,
+    project_name=parsed.project_name,
+    project_path=parsed.project_path,
+    run_num=parsed.run_num,
+    exit_code=parsed.exit_code,
+    stdout_file=parsed.stdout_file,
+    stderr_file=parsed.stderr_file,
+    mission_title=parsed.mission_title,
+    autonomous_mode=parsed.autonomous_mode,
+    start_time=parsed.start_time,
     )
 
     # Output key results for bash consumption
     if result["quota_exhausted"] and result["quota_info"]:
-        reset_display, resume_msg = result["quota_info"]
-        print(f"QUOTA_EXHAUSTED|{reset_display}|{resume_msg}")
-        sys.exit(2)  # Special exit code for quota exhaustion
+    reset_display, resume_msg = result["quota_info"]
+    print(f"QUOTA_EXHAUSTED|{reset_display}|{resume_msg}")
+    sys.exit(2)  # Special exit code for quota exhaustion
 
     if result["pending_archived"]:
-        print("PENDING_ARCHIVED", file=sys.stderr)
+    print("PENDING_ARCHIVED", file=sys.stderr)
     if result["auto_merge_branch"]:
-        print(f"AUTO_MERGE|{result['auto_merge_branch']}", file=sys.stderr)
+    print(f"AUTO_MERGE|{result['auto_merge_branch']}", file=sys.stderr)
 
     sys.exit(0 if result["success"] else 1)
 
@@ -1627,24 +1639,24 @@ def _cli_post_mission(args: list) -> None:
 def main() -> None:
     """CLI entry point."""
     if len(sys.argv) < 2:
-        print(
-            "Usage: mission_runner.py <build-command|parse-output|post-mission> [args]",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    print(
+    "Usage: mission_runner.py <build-command|parse-output|post-mission> [args]",
+    file=sys.stderr,
+    )
+    sys.exit(1)
 
     subcommand = sys.argv[1]
     remaining = sys.argv[2:]
 
     if subcommand == "build-command":
-        _cli_build_command(remaining)
+    _cli_build_command(remaining)
     elif subcommand == "parse-output":
-        _cli_parse_output(remaining)
+    _cli_parse_output(remaining)
     elif subcommand == "post-mission":
-        _cli_post_mission(remaining)
+    _cli_post_mission(remaining)
     else:
-        print(f"Unknown subcommand: {subcommand}", file=sys.stderr)
-        sys.exit(1)
+    print(f"Unknown subcommand: {subcommand}", file=sys.stderr)
+    sys.exit(1)
 
 
 if __name__ == "__main__":
