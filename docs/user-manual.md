@@ -707,6 +707,23 @@ Kōan supports recurring missions that automatically re-queue at set intervals.
 - `/cancel_recurring 2` — Stop a recurring mission
 </details>
 
+### Automation Suggestions
+
+When Kōan is idle (no pending missions, not in focus mode), it can proactively suggest recurring tasks tailored to your project. Suggestions are generated using a lightweight model that analyzes project learnings, existing recurring tasks, and patterns from other projects you manage.
+
+Suggestions appear as Telegram messages with copy-pasteable commands — just forward the command back to activate it.
+
+**Configuration** (`config.yaml`):
+
+```yaml
+suggestions:
+  enabled: true              # Master switch (default: true)
+  min_interval_hours: 24     # Cooldown between suggestions per project
+  max_per_day: 2             # Daily cap per project
+```
+
+Suggestions are automatically deduplicated against existing recurring tasks. The feature only triggers in `implement` or `deep` autonomous modes (when there's enough budget to be useful).
+
 ### Ideas Backlog
 
 Not ready to commit to a mission? Save it as an idea.

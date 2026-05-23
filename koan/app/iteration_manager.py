@@ -1384,6 +1384,20 @@ def plan_iteration(
         )
         action = autonomous_decision.action
 
+        # Side effect: maybe suggest automations (non-blocking).
+        # If action is autonomous/contemplative, focus is already inactive
+        # (otherwise _decide_autonomous_action would have returned focus_wait).
+        if action in ("autonomous", "contemplative") and project_name and project_path:
+            try:
+                from app.suggestion_engine import maybe_suggest_automations
+                if maybe_suggest_automations(
+                    instance_dir, project_name, project_path,
+                    autonomous_mode, focus_active=False,
+                ):
+                    _log_iteration("koan", f"Sent automation suggestions for {project_name}")
+            except Exception as e:
+                _log_iteration("error", f"Suggestion engine error: {e}")
+
         if action == "focus_wait":
             focus_area = resolve_focus_area(autonomous_mode, has_mission=False)
             return _make_result(
