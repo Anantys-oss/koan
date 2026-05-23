@@ -318,6 +318,8 @@ class StagnationMonitor:
                     self._stdout_file,
                 )
             except Exception as e:
+                # Intentional stderr diagnostic — keeps the monitor
+                # decoupled from any project-level logging config.
                 print(f"[stagnation_monitor] classify error: {e}", file=sys.stderr)
                 self.pattern_type = "unknown"
                 self.pattern_excerpt = ""
