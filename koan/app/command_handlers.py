@@ -193,12 +193,29 @@ def handle_command(text: str):
     send_telegram(f"❌ Unknown command: /{command_name}{hint}\nUse /help to see available commands.")
 
 
+def _get_command_usage(skill: Skill, command_name: str) -> str:
+    """Find the usage string for a specific command within a skill."""
+    for cmd in getattr(skill, "commands", []):
+        if cmd.name == command_name or command_name in cmd.aliases:
+            return cmd.usage
+    return ""
+
+
 def _dispatch_skill(skill: Skill, command_name: str, command_args: str):
     """Dispatch a skill execution — handles worker threads and standard calls."""
     # cli_skill + audience:agent → queue as mission for the runner, don't execute inline
     if skill.cli_skill and skill.audience == "agent":
         _queue_cli_skill_mission(skill, command_args)
         return
+
+    # Early abort for worker skills: if the command requires args (usage
+    # contains <param>) but none were provided, return the usage message
+    # immediately — avoids spawning a worker thread just to show help.
+    if skill.worker and not command_args.strip():
+        usage = _get_command_usage(skill, command_name)
+        if "<" in usage:
+            send_telegram(f"Usage: {usage}")
+            return
 
     ctx = SkillContext(
         koan_root=KOAN_ROOT,
