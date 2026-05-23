@@ -18,8 +18,6 @@ _AUTO_FIX_RE = re.compile(r"--auto-fix(?:=(\w+))?\b", re.IGNORECASE)
 _GITHUB_SUBPATH_NAMES = frozenset(("issues", "pull", "pulls", "actions", "settings", "wiki"))
 
 
-
-
 def parse_repo_url(args: str) -> Optional[Tuple[str, str, str]]:
     """Extract a repo-only URL (no issue/PR number) from args.
 
