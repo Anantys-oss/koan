@@ -25,6 +25,35 @@ def _needs_ollama() -> bool:
         return False
 
 
+def _get_version() -> str:
+    """Return Kōan version from git tags.
+
+    Format: 'v0.73' (exact tag) or 'v0.73@deadbeef +17' (ahead of tag).
+    """
+    import subprocess
+    from pathlib import Path
+    # koan source root: handler.py is at koan/skills/core/status/handler.py
+    koan_src = Path(__file__).resolve().parents[3]
+    try:
+        result = subprocess.run(
+            ["git", "describe", "--tags"],
+            capture_output=True, text=True, timeout=5,
+            cwd=koan_src,
+        )
+        if result.returncode != 0:
+            return ""
+        desc = result.stdout.strip()
+        # Exact tag: just "v0.73"
+        # Ahead of tag: "v0.73-17-gabcdef12"
+        parts = desc.rsplit("-", 2)
+        if len(parts) == 3 and parts[2].startswith("g"):
+            tag, commits_ahead, sha = parts[0], parts[1], parts[2][1:]
+            return f"{tag}@{sha[:8]} +{commits_ahead}"
+        return desc
+    except Exception:
+        return ""
+
+
 def _truncate(text: str, max_len: int = 60) -> str:
     """Truncate text with ellipsis."""
     if len(text) <= max_len:
@@ -82,7 +111,8 @@ def _handle_status(ctx) -> str:
     instance_dir = ctx.instance_dir
     missions_file = instance_dir / "missions.md"
 
-    parts = ["Kōan Status"]
+    version = _get_version()
+    parts = [f"Kōan Status ({version})" if version else "Kōan Status"]
 
     pause_file = koan_root / ".koan-pause"
     stop_file = koan_root / ".koan-stop"
