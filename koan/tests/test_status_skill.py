@@ -881,3 +881,58 @@ class TestCheckGithubNotifications:
         with patch("app.github.api", return_value=""):
             result = _check_github_notifications()
         assert "0 unread" in result
+
+
+# ---------------------------------------------------------------------------
+# _get_version()
+# ---------------------------------------------------------------------------
+
+class TestGetVersion:
+    """Test the _get_version() helper."""
+
+    def test_exact_tag(self):
+        """On exact tag, returns just the tag name."""
+        from skills.core.status.handler import _get_version
+        mock_result = MagicMock(returncode=0, stdout="v0.73\n")
+        with patch("subprocess.run", return_value=mock_result):
+            assert _get_version() == "v0.73"
+
+    def test_ahead_of_tag(self):
+        """Ahead of tag, returns tag@sha +N format."""
+        from skills.core.status.handler import _get_version
+        mock_result = MagicMock(returncode=0, stdout="v0.73-17-g7754a635\n")
+        with patch("subprocess.run", return_value=mock_result):
+            assert _get_version() == "v0.73@7754a635 +17"
+
+    def test_git_failure_returns_empty(self):
+        """git describe failure returns empty string."""
+        from skills.core.status.handler import _get_version
+        mock_result = MagicMock(returncode=128, stdout="")
+        with patch("subprocess.run", return_value=mock_result):
+            assert _get_version() == ""
+
+    def test_exception_returns_empty(self):
+        """Subprocess exception returns empty string."""
+        from skills.core.status.handler import _get_version
+        with patch("subprocess.run", side_effect=FileNotFoundError):
+            assert _get_version() == ""
+
+    def test_version_in_status_header(self, tmp_path):
+        """Version appears in Kōan Status header."""
+        instance = tmp_path / "instance"
+        instance.mkdir()
+        from skills.core.status.handler import _handle_status
+        ctx = _make_ctx("status", instance, tmp_path)
+        with patch("skills.core.status.handler._get_version", return_value="v0.73"):
+            result = _handle_status(ctx)
+        assert "Kōan Status (v0.73)" in result
+
+    def test_no_version_no_parens(self, tmp_path):
+        """Empty version = no parentheses in header."""
+        instance = tmp_path / "instance"
+        instance.mkdir()
+        from skills.core.status.handler import _handle_status
+        ctx = _make_ctx("status", instance, tmp_path)
+        with patch("skills.core.status.handler._get_version", return_value=""):
+            result = _handle_status(ctx)
+        assert result.startswith("Kōan Status\n") or result == "Kōan Status"
