@@ -25,6 +25,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import yaml
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -59,6 +60,33 @@ _MISSIONS_LOCK = threading.Lock()
 # ---------------------------------------------------------------------------
 # Core utilities (stay here)
 # ---------------------------------------------------------------------------
+
+def read_timestamp_file(path) -> Optional[float]:
+    """Read a file containing a single epoch timestamp.
+
+    Returns the timestamp as float, or None if the file is missing
+    or its content cannot be parsed.
+    """
+    path = Path(path)
+    if not path.exists():
+        return None
+    try:
+        return float(path.read_text().strip())
+    except (ValueError, OSError):
+        return None
+
+
+def get_file_age_seconds(path) -> Optional[float]:
+    """Return how many seconds ago a timestamp stored in *path* was written.
+
+    Combines :func:`read_timestamp_file` with the current wall-clock time.
+    Returns None when the file is missing or unparseable.
+    """
+    ts = read_timestamp_file(path)
+    if ts is None:
+        return None
+    return time.time() - ts
+
 
 def load_dotenv():
     """Load .env file from the project root, stripping quotes from values.

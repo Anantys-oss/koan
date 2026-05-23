@@ -128,16 +128,11 @@ def _should_run_cleanup(max_age_hours: int = 24) -> bool:
     Returns True if cleanup should run (marker missing, corrupt, or older
     than max_age_hours).
     """
-    marker = _cleanup_marker_path()
-    if not marker.exists():
+    from app.utils import get_file_age_seconds
+    age = get_file_age_seconds(_cleanup_marker_path())
+    if age is None:
         return True
-    try:
-        timestamp = float(marker.read_text().strip())
-    except (ValueError, OSError):
-        return True
-    import time
-    elapsed_hours = (time.time() - timestamp) / 3600
-    return elapsed_hours >= max_age_hours
+    return age / 3600 >= max_age_hours
 
 
 def _write_cleanup_marker():
@@ -182,12 +177,11 @@ def cleanup_memory(instance: str):
     interval = mem_cfg["compaction_interval_hours"]
 
     if not _should_run_cleanup(max_age_hours=interval):
-        import time
-        marker = _cleanup_marker_path()
-        try:
-            elapsed = (time.time() - float(marker.read_text().strip())) / 3600
-            log("health", f"Memory cleanup skipped (last run {elapsed:.0f}h ago)")
-        except (ValueError, OSError):
+        from app.utils import get_file_age_seconds
+        age = get_file_age_seconds(_cleanup_marker_path())
+        if age is not None:
+            log("health", f"Memory cleanup skipped (last run {age / 3600:.0f}h ago)")
+        else:
             log("health", "Memory cleanup skipped (recent run)")
         return
 
@@ -302,17 +296,15 @@ def handle_start_on_pause(koan_root: str):
 
     from app.signals import SKIP_START_PAUSE_FILE
 
+    from app.utils import get_file_age_seconds
+
     skip_file = Path(koan_root) / SKIP_START_PAUSE_FILE
     if skip_file.exists():
-        try:
-            ts = int(skip_file.read_text().strip())
-            age = time.time() - ts
-            if age < 300:  # Fresh (< 5 min) — /resume was sent during startup
-                skip_file.unlink(missing_ok=True)
-                log("pause", "start_on_pause skipped (/resume requested during startup)")
-                return
-        except (ValueError, OSError):
-            pass
+        age = get_file_age_seconds(skip_file)
+        if age is not None and age < 300:  # Fresh (< 5 min) — /resume was sent during startup
+            skip_file.unlink(missing_ok=True)
+            log("pause", "start_on_pause skipped (/resume requested during startup)")
+            return
         skip_file.unlink(missing_ok=True)
 
     from app.utils import get_start_on_pause

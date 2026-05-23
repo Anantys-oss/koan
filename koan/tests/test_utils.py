@@ -1135,3 +1135,71 @@ class TestFilterDiffByIgnore:
         result, skipped = fn(binary_diff, ["*.png"], [])
         assert "image.png" in skipped
         assert "src/main.py" in result
+
+
+class TestReadTimestampFile:
+
+    def test_reads_valid_float(self, tmp_path):
+        from app.utils import read_timestamp_file
+        f = tmp_path / "ts"
+        f.write_text("1700000000.123\n")
+        assert read_timestamp_file(f) == pytest.approx(1700000000.123)
+
+    def test_reads_valid_int(self, tmp_path):
+        from app.utils import read_timestamp_file
+        f = tmp_path / "ts"
+        f.write_text("1700000000\n")
+        assert read_timestamp_file(f) == 1700000000.0
+
+    def test_missing_file(self, tmp_path):
+        from app.utils import read_timestamp_file
+        assert read_timestamp_file(tmp_path / "nope") is None
+
+    def test_corrupt_content(self, tmp_path):
+        from app.utils import read_timestamp_file
+        f = tmp_path / "ts"
+        f.write_text("not a number")
+        assert read_timestamp_file(f) is None
+
+    def test_empty_file(self, tmp_path):
+        from app.utils import read_timestamp_file
+        f = tmp_path / "ts"
+        f.write_text("")
+        assert read_timestamp_file(f) is None
+
+    def test_accepts_string_path(self, tmp_path):
+        from app.utils import read_timestamp_file
+        f = tmp_path / "ts"
+        f.write_text("1700000000.0")
+        assert read_timestamp_file(str(f)) == 1700000000.0
+
+
+class TestGetFileAgeSeconds:
+
+    def test_recent_file(self, tmp_path):
+        import time
+        from app.utils import get_file_age_seconds
+        f = tmp_path / "ts"
+        f.write_text(str(time.time()))
+        age = get_file_age_seconds(f)
+        assert age is not None
+        assert 0 <= age < 2
+
+    def test_old_file(self, tmp_path):
+        import time
+        from app.utils import get_file_age_seconds
+        f = tmp_path / "ts"
+        f.write_text(str(time.time() - 300))
+        age = get_file_age_seconds(f)
+        assert age is not None
+        assert 298 <= age <= 302
+
+    def test_missing_file(self, tmp_path):
+        from app.utils import get_file_age_seconds
+        assert get_file_age_seconds(tmp_path / "nope") is None
+
+    def test_corrupt_file(self, tmp_path):
+        from app.utils import get_file_age_seconds
+        f = tmp_path / "ts"
+        f.write_text("garbage")
+        assert get_file_age_seconds(f) is None
