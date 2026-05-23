@@ -287,8 +287,11 @@ def _tool_skill(arguments: Dict[str, Any], cwd: str) -> str:
         args=args,
     )
     result = execute_skill(skill, ctx)
-    if isinstance(result, SkillError):
-        return result.message
+    if isinstance(result, SkillError) or (
+        type(result).__name__ == "SkillError"
+        and hasattr(result, "message")
+    ):
+        return str(result.message)
     return result or f"Skill '{skill_name}' executed (no output)"
 
 

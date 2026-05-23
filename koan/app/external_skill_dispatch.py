@@ -177,12 +177,16 @@ def try_dispatch_custom_handler(
 
     result = execute_skill(skill, ctx)
 
-    if isinstance(result, SkillError):
+    if isinstance(result, SkillError) or (
+        type(result).__name__ == "SkillError"
+        and hasattr(result, "exception")
+        and hasattr(result, "message")
+    ):
         log.error(
             "external_skill_dispatch: %s crashed: %s",
             skill.qualified_name, result.exception,
         )
-        return result.message
+        return str(result.message)
 
     if result is None:
         return ""

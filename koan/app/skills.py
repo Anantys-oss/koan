@@ -712,7 +712,7 @@ def _execute_handler(skill: Skill, ctx: SkillContext) -> Optional[Union[str, Ski
     if req_error:
         return SkillError(
             skill_name=skill.qualified_name,
-            exception=RuntimeError(req_error),
+            exception=str(RuntimeError(req_error)),
             message=req_error,
         )
 
@@ -756,9 +756,12 @@ def _execute_handler(skill: Skill, ctx: SkillContext) -> Optional[Union[str, Ski
         return handle_fn(ctx)
     except Exception as e:
         _log.error("Skill handler %s failed: %s", skill.qualified_name, e, exc_info=True)
+        # Store exception as string — raw exception objects are not JSON-
+        # serializable and leak into requests.post(json=...) if the SkillError
+        # bypasses isinstance() checks after a module reload.
         return SkillError(
             skill_name=skill.qualified_name,
-            exception=e,
+            exception=f"{type(e).__name__}: {e}",
             message=f"Skill error ({skill.qualified_name}): {e}",
         )
 

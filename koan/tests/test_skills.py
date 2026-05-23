@@ -904,7 +904,8 @@ class TestExecuteSkill:
         result = execute_skill(skill, ctx)
         assert isinstance(result, SkillError)
         assert result.skill_name == "koan.broken"
-        assert isinstance(result.exception, ValueError)
+        assert "ValueError" in result.exception
+        assert "boom" in result.exception
         assert "boom" in result.message
 
     def test_no_handler_no_prompt(self, tmp_path):
