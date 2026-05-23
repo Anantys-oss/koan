@@ -533,7 +533,9 @@ def _config_target_repo(
             if origin_slug and origin_slug.lower() == configured_repo.lower():
                 return None
         return configured_repo
-    except Exception:
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).debug("_config_target_repo failed: %s", exc)
         return _UNSET
 
 
