@@ -865,6 +865,134 @@ class TestCliSkillDispatch:
 
 
 # ---------------------------------------------------------------------------
+# Test: _dispatch_skill — early abort when required args missing
+# ---------------------------------------------------------------------------
+
+class TestDispatchSkillEarlyAbort:
+    """Skills with required args (<param> in usage) should abort early with usage."""
+
+    def test_required_args_missing_returns_usage(
+        self, patch_bridge_state, mock_send, mock_registry
+    ):
+        """Skill with <required> arg and no args provided should show usage immediately."""
+        from app.command_handlers import _dispatch_skill
+        from app.skills import Skill, SkillCommand
+
+        skill = Skill(
+            name="add_project",
+            scope="core",
+            worker=True,
+            commands=[SkillCommand(
+                name="add_project",
+                description="Add a project",
+                usage="/add_project <github-url> [name]",
+                aliases=["add"],
+            )],
+        )
+
+        with patch("app.command_handlers.execute_skill") as mock_exec:
+            _dispatch_skill(skill, "add_project", "")
+
+        mock_exec.assert_not_called()
+        msg = mock_send.call_args[0][0]
+        assert "Usage:" in msg
+        assert "<github-url>" in msg
+
+    def test_required_args_missing_via_alias(
+        self, patch_bridge_state, mock_send, mock_registry
+    ):
+        """Early abort also works when invoked via alias."""
+        from app.command_handlers import _dispatch_skill
+        from app.skills import Skill, SkillCommand
+
+        skill = Skill(
+            name="delete_project",
+            scope="core",
+            worker=True,
+            commands=[SkillCommand(
+                name="delete_project",
+                description="Remove a project",
+                usage="/delete_project <project-name>",
+                aliases=["remove_project", "del"],
+            )],
+        )
+
+        with patch("app.command_handlers.execute_skill") as mock_exec:
+            _dispatch_skill(skill, "remove_project", "  ")
+
+        mock_exec.assert_not_called()
+        msg = mock_send.call_args[0][0]
+        assert "Usage:" in msg
+        assert "<project-name>" in msg
+
+    def test_args_provided_proceeds_normally(
+        self, patch_bridge_state, mock_send, mock_registry
+    ):
+        """When args ARE provided, skill should execute normally."""
+        from app.command_handlers import _dispatch_skill
+        from app.skills import Skill, SkillCommand
+
+        skill = Skill(
+            name="add_project",
+            scope="core",
+            worker=False,
+            commands=[SkillCommand(
+                name="add_project",
+                description="Add a project",
+                usage="/add_project <github-url> [name]",
+                aliases=["add"],
+            )],
+        )
+
+        with patch("app.command_handlers.execute_skill", return_value="added") as mock_exec:
+            _dispatch_skill(skill, "add_project", "owner/repo")
+
+        mock_exec.assert_called_once()
+
+    def test_no_usage_defined_proceeds_normally(
+        self, patch_bridge_state, mock_send, mock_registry
+    ):
+        """Skills without usage in their commands should not be affected."""
+        from app.command_handlers import _dispatch_skill
+        from app.skills import Skill, SkillCommand
+
+        skill = Skill(
+            name="status",
+            scope="core",
+            worker=False,
+            commands=[SkillCommand(name="status", description="Show status")],
+        )
+
+        with patch("app.command_handlers.execute_skill", return_value="ok") as mock_exec:
+            _dispatch_skill(skill, "status", "")
+
+        mock_exec.assert_called_once()
+
+    def test_optional_only_args_proceeds_normally(
+        self, patch_bridge_state, mock_send, mock_registry
+    ):
+        """Skills with only [optional] args in usage should NOT abort on empty args."""
+        from app.command_handlers import _dispatch_skill
+        from app.skills import Skill, SkillCommand
+
+        skill = Skill(
+            name="list",
+            scope="core",
+            worker=False,
+            commands=[SkillCommand(
+                name="list",
+                description="List missions",
+                usage="/list [filter]",
+            )],
+        )
+
+        with patch("app.command_handlers.execute_skill", return_value="ok") as mock_exec:
+            _dispatch_skill(skill, "list", "")
+
+        mock_exec.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
 # Test: _handle_help
 # ---------------------------------------------------------------------------
 

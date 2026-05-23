@@ -2415,13 +2415,24 @@ class TestHandlePr:
 
     @patch("app.command_handlers.send_telegram")
     def test_handle_command_routes_pr(self, mock_send, tmp_path):
-        """handle_command dispatches /pr through worker (skill has worker=true)."""
+        """handle_command dispatches /pr through worker when args provided."""
+        with patch("app.command_handlers.KOAN_ROOT", tmp_path), \
+             patch("app.command_handlers.INSTANCE_DIR", tmp_path), \
+             patch("app.command_handlers._run_in_worker_cb") as mock_worker:
+            handle_command("/pr https://github.com/owner/repo/pull/1")
+        # PR is a worker skill — should dispatch via _run_in_worker
+        mock_worker.assert_called_once()
+
+    @patch("app.command_handlers.send_telegram")
+    def test_handle_command_pr_no_args_shows_usage(self, mock_send, tmp_path):
+        """Bare /pr with no args shows usage immediately without spawning worker."""
         with patch("app.command_handlers.KOAN_ROOT", tmp_path), \
              patch("app.command_handlers.INSTANCE_DIR", tmp_path), \
              patch("app.command_handlers._run_in_worker_cb") as mock_worker:
             handle_command("/pr")
-        # PR is a worker skill — should dispatch via _run_in_worker
-        mock_worker.assert_called_once()
+        mock_worker.assert_not_called()
+        msg = mock_send.call_args[0][0]
+        assert "Usage:" in msg
 
     @patch("app.command_handlers.send_telegram")
     def test_help_includes_pr(self, mock_send):
