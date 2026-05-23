@@ -14,7 +14,6 @@ CLI:
 import hashlib
 import logging
 import re
-import sys
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -266,8 +265,7 @@ def _write_plan_cache(project_path: str, plan_hash_hex: str) -> None:
         from app.utils import atomic_write
         atomic_write(cache_path, plan_hash_hex + "\n")
     except OSError as e:
-        print(f"[implement_runner] Plan-review cache write failed: {e}",
-              file=sys.stderr)
+        logger.warning("Plan-review cache write failed: %s", e)
 
 
 def _run_plan_review_gate(
