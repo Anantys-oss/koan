@@ -16,12 +16,15 @@ Integration points:
 """
 
 import json
+import logging
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Optional
 
 from app import cost_tracker, session_tracker
 from app.utils import atomic_write
+
+log = logging.getLogger(__name__)
 
 
 def _metrics_dir(instance_dir: Path) -> Path:
@@ -192,7 +195,7 @@ def read_daily_snapshot(
                 content = json.dumps(snapshot, indent=2, separators=(",", ": "))
                 atomic_write(path, content)
             except OSError:
-                pass
+                log.debug("failed to write snapshot for %s: %s", d, path, exc_info=True)
             return snapshot
 
     return None

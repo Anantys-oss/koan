@@ -1,8 +1,10 @@
 """Tests for app.daily_snapshot — daily metrics snapshot system."""
 
 import json
+import logging
 from datetime import date, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -409,6 +411,42 @@ class TestBackfillSnapshots:
         )
 
         assert count == 0
+
+
+class TestSnapshotWriteFailureLogging:
+    """Verify write failures in get_snapshot_or_recompute log diagnostics."""
+
+    def test_oserror_logs_debug_and_returns_snapshot(self, instance_dir, caplog):
+        """When atomic_write raises OSError, a debug message is logged
+        and the recomputed snapshot is still returned."""
+        _record_usage(instance_dir, input_tokens=500)
+        today = date.today()
+
+        with (
+            patch("app.daily_snapshot.atomic_write", side_effect=OSError("disk full")),
+            caplog.at_level(logging.DEBUG, logger="app.daily_snapshot"),
+        ):
+            result = daily_snapshot.read_daily_snapshot(
+                instance_dir, today, backfill=True
+            )
+
+        # Snapshot is returned despite write failure
+        assert result is not None
+        assert result["tokens"]["total_input"] == 500
+
+        # Diagnostic trace was logged
+        assert any("failed to write snapshot" in r.message for r in caplog.records)
+
+    def test_oserror_does_not_cache_snapshot(self, instance_dir):
+        """When write fails, no cached file is created on disk."""
+        _record_usage(instance_dir, input_tokens=500)
+        today = date.today()
+
+        with patch("app.daily_snapshot.atomic_write", side_effect=OSError("read-only fs")):
+            daily_snapshot.read_daily_snapshot(instance_dir, today, backfill=True)
+
+        snapshot_path = instance_dir / "metrics" / f"{today.isoformat()}.json"
+        assert not snapshot_path.exists()
 
 
 class TestMaxOutcomesRaised:
