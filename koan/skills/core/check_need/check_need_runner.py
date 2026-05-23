@@ -7,7 +7,6 @@ When triggered via the agent loop or GitHub @mention, this runner:
 """
 
 import argparse
-import json
 import logging
 import re
 import subprocess
@@ -150,8 +149,7 @@ def _resolve_bot_username() -> str:
         github = config.get("github") or {}
         return str(github.get("nickname", "")).strip()
     except Exception as e:
-        print(f"[check_need_runner] could not resolve bot username: {e}",
-              file=sys.stderr)
+        log.warning("could not resolve bot username: %s", e)
     return ""
 
 
