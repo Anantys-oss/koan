@@ -260,6 +260,7 @@ def record_outcome(
     journal_content: str,
     mission_title: str = "",
     mission_type: Optional[str] = None,
+    pipeline_timed_out: bool = False,
 ) -> dict:
     """Record a session outcome to session_outcomes.json.
 
@@ -272,6 +273,7 @@ def record_outcome(
         mission_title: The mission title for skill-aware classification.
         mission_type: Explicit mission type override (e.g. "contemplative").
             When provided, bypasses classify_mission_type().
+        pipeline_timed_out: Whether POST_MISSION_TIMEOUT fired during this session.
 
     Returns:
         The recorded outcome dict.
@@ -289,6 +291,7 @@ def record_outcome(
         "mission_type": mission_type or classify_mission_type(mission_title),
         "has_pr": detect_pr_created(journal_content),
         "has_branch": _detect_branch_pushed(journal_content),
+        "pipeline_timed_out": pipeline_timed_out,
     }
 
     outcomes_path = Path(instance_dir) / "session_outcomes.json"

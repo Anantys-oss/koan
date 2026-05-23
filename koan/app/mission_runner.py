@@ -432,12 +432,14 @@ def _record_session_outcome(
     journal_content: str,
     mission_title: str = "",
     mission_type: Optional[str] = None,
+    pipeline_timed_out: bool = False,
 ) -> None:
     """Record session outcome for staleness tracking (fire-and-forget).
 
     Args:
         mission_type: Explicit mission type override (e.g. "contemplative").
             When provided, bypasses classify_mission_type().
+        pipeline_timed_out: Whether POST_MISSION_TIMEOUT fired during this session.
     """
     try:
         from app.session_tracker import record_outcome
@@ -449,6 +451,7 @@ def _record_session_outcome(
             journal_content=journal_content,
             mission_title=mission_title,
             mission_type=mission_type,
+            pipeline_timed_out=pipeline_timed_out,
         )
     except Exception as e:
         _log_runner("error", f"Session outcome recording failed: {e}")
@@ -935,6 +938,70 @@ def _notify_pipeline_failures(
         append_to_outbox(outbox_path, msg + "\n", priority=NotificationPriority.WARNING)
     except Exception as e:
         _log_runner("error", f"Pipeline failure notification failed: {e}")
+
+
+# --- Pipeline timeout rate alert ---
+_TIMEOUT_ALERT_WINDOW = 10  # number of recent outcomes to check
+_TIMEOUT_ALERT_THRESHOLD = 0.5  # fraction that must time out to trigger
+_TIMEOUT_ALERT_COOLDOWN = 3600  # seconds between alerts
+_TIMEOUT_ALERT_STATE_FILE = ".pipeline-timeout-alert.json"
+
+
+def _check_pipeline_timeout_rate(instance_dir: str) -> None:
+    """Alert via outbox when >50% of recent missions hit POST_MISSION_TIMEOUT.
+
+    Reads the last N session outcomes, checks how many have
+    pipeline_timed_out=True, and writes an outbox warning if the rate
+    exceeds the threshold.  Deduplicates alerts with a cooldown file.
+    """
+    try:
+        from app.session_tracker import load_outcomes
+        from app.utils import append_to_outbox
+
+        outcomes_path = Path(instance_dir) / "session_outcomes.json"
+        outcomes = load_outcomes(outcomes_path)
+        recent = outcomes[-_TIMEOUT_ALERT_WINDOW:]
+        if len(recent) < 3:
+            return  # not enough data to judge
+
+        timed_out_count = sum(
+            1 for o in recent if o.get("pipeline_timed_out", False)
+        )
+        rate = timed_out_count / len(recent)
+        if rate <= _TIMEOUT_ALERT_THRESHOLD:
+            return
+
+        # Cooldown check — avoid flooding outbox
+        state_path = Path(instance_dir) / _TIMEOUT_ALERT_STATE_FILE
+        now = time.time()
+        if state_path.exists():
+            try:
+                state = json.loads(state_path.read_text())
+                last_alert = state.get("last_alert_ts", 0)
+                if now - last_alert < _TIMEOUT_ALERT_COOLDOWN:
+                    return
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        # Emit alert
+        msg = (
+            f"⏳ Pipeline timeout rate: {timed_out_count}/{len(recent)} "
+            f"recent missions hit the POST_MISSION_TIMEOUT deadline. "
+            f"Consider raising post_mission_timeout in config.yaml.\n"
+        )
+        outbox_path = Path(instance_dir) / "outbox.md"
+        from app.notify import NotificationPriority
+        append_to_outbox(outbox_path, msg, priority=NotificationPriority.WARNING)
+
+        # Update cooldown state
+        try:
+            from app.utils import atomic_write
+            atomic_write(state_path, json.dumps({"last_alert_ts": now}))
+        except OSError:
+            pass
+
+    except Exception as e:
+        _log_runner("error", f"Pipeline timeout rate check failed: {e}")
 
 
 # Alert markers are matched case-insensitively. Word boundaries (\b) keep
@@ -1466,10 +1533,12 @@ def run_post_mission(
         # 7. Record session outcome for staleness tracking
         # Always runs — even after deadline — since it's a fast local write.
         _report("recording session outcome")
+        _pipeline_timed_out = _pipeline_expired.is_set()
         _record_session_outcome(
             instance_dir, project_name, autonomous_mode,
             duration_minutes, pending_content,
             mission_title=mission_title,
+            pipeline_timed_out=_pipeline_timed_out,
         )
         tracker.record("session_outcome", "success")
 
@@ -1502,6 +1571,9 @@ def run_post_mission(
             update_daily_snapshot(instance_dir)
         except Exception as e:
             _report(f"daily snapshot failed: {e}")
+
+        # 7c. Check pipeline timeout rate and alert if >50% of recent missions
+        _check_pipeline_timeout_rate(instance_dir)
 
         # 8. Fire post-mission hooks
         if not _pipeline_expired.is_set():

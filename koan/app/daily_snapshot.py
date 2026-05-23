@@ -72,6 +72,7 @@ def _build_snapshot(instance_dir: Path, d: date) -> dict:
     by_type = {}
     by_project_missions = {}
     total_duration = 0
+    pipeline_timeouts = 0
     for o in day_outcomes:
         outcome = o.get("outcome", "unknown")
         by_outcome[outcome] = by_outcome.get(outcome, 0) + 1
@@ -91,6 +92,8 @@ def _build_snapshot(instance_dir: Path, d: date) -> dict:
         ptype[mtype] = ptype.get(mtype, 0) + 1
 
         total_duration += o.get("duration_minutes", 0)
+        if o.get("pipeline_timed_out", False):
+            pipeline_timeouts += 1
 
     return {
         "date": date_str,
@@ -100,6 +103,7 @@ def _build_snapshot(instance_dir: Path, d: date) -> dict:
             "by_type": by_type,
             "by_project": by_project_missions,
             "total_duration_minutes": total_duration,
+            "pipeline_timeouts": pipeline_timeouts,
         },
         "tokens": {
             "total_input": usage_summary["total_input"],
@@ -230,6 +234,7 @@ def read_metrics_range(
             "by_type": {},
             "by_project": {},
             "total_duration_minutes": 0,
+            "pipeline_timeouts": 0,
         },
         "tokens": {
             "total_input": 0,
@@ -258,6 +263,9 @@ def read_metrics_range(
         merged["missions"]["total"] += m.get("total", 0)
         merged["missions"]["total_duration_minutes"] += m.get(
             "total_duration_minutes", 0
+        )
+        merged["missions"]["pipeline_timeouts"] += m.get(
+            "pipeline_timeouts", 0
         )
         for k, v in m.get("by_outcome", {}).items():
             merged["missions"]["by_outcome"][k] = (
