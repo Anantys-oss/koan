@@ -56,7 +56,7 @@ class TestQueryCanonicalName:
     def test_returns_canonical_name(self, mock_api):
         mock_api.return_value = '"NewOwner/NewRepo"'
         result = _query_canonical_name("oldowner/oldrepo")
-        assert result == "newowner/newrepo"
+        assert result == "NewOwner/NewRepo"
         mock_api.assert_called_once_with("repos/oldowner/oldrepo", jq=".full_name")
 
     @patch("app.github.api")
