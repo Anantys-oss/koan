@@ -255,8 +255,11 @@ _github_config_cache_mtime: float = 0
 
 # --- Notification processing cache ---
 # Avoid re-processing the same notification repeatedly across loop iterations.
-# Key: (thread_id, updated_at) — naturally invalidates when the notification is
-# updated (e.g. a new comment arrives). Value: epoch timestamp of when cached.
+# Key: (thread_id, comment_id) — uniquely identifies the triggering comment.
+# Using comment_id (extracted from subject.latest_comment_url) instead of
+# updated_at prevents new comments from being silently dropped when they
+# share the same updated_at timestamp as a previously-processed notification.
+# Value: monotonic timestamp of when cached (time.monotonic() for TTL safety).
 # Entries expire after _NOTIF_CACHE_TTL seconds.
 _NOTIF_CACHE_TTL = 86400  # 24 hours
 _NOTIF_CACHE_MAX = 2000
@@ -298,8 +301,29 @@ def _github_log(message: str, level: str = "info") -> None:
         log.info(message)
 
 
+def _extract_comment_id(notif: dict) -> str:
+    """Extract comment ID from a notification's subject.latest_comment_url.
+
+    The URL is typically of the form:
+      https://api.github.com/repos/owner/repo/issues/comments/12345
+      https://api.github.com/repos/owner/repo/pulls/comments/12345
+
+    Returns the trailing numeric segment, or "" if not available.
+    """
+    url = notif.get("subject", {}).get("latest_comment_url") or ""
+    if "/" in url:
+        tail = url.rsplit("/", 1)[-1]
+        if tail.isdigit():
+            return tail
+    return ""
+
+
 def _notif_cache_key(notif: dict) -> Optional[tuple]:
-    """Build a cache key from a notification's thread ID and updated_at.
+    """Build a cache key from a notification's thread ID and comment ID.
+
+    Uses the comment ID extracted from ``subject.latest_comment_url`` to
+    uniquely identify the triggering comment.  Falls back to ``updated_at``
+    when no comment URL is present (e.g. non-comment notifications).
 
     Returns None if the notification has no truthy ``id`` — callers must
     skip caching to avoid all ID-less notifications colliding on the same
@@ -312,7 +336,9 @@ def _notif_cache_key(notif: dict) -> Optional[tuple]:
             notif.get("subject", {}).get("title", "<unknown>"),
         )
         return None
-    return (str(notif_id), notif.get("updated_at", ""))
+    comment_id = _extract_comment_id(notif)
+    discriminator = comment_id if comment_id else notif.get("updated_at", "")
+    return (str(notif_id), discriminator)
 
 
 def _is_notif_cached(notif: dict) -> bool:
@@ -324,7 +350,7 @@ def _is_notif_cached(notif: dict) -> bool:
         cached_at = _notif_cache.get(key)
         if cached_at is None:
             return False
-        if time.time() - cached_at > _NOTIF_CACHE_TTL:
+        if time.monotonic() - cached_at > _NOTIF_CACHE_TTL:
             del _notif_cache[key]
             return False
         return True
@@ -335,7 +361,7 @@ def _cache_notif(notif: dict) -> None:
     key = _notif_cache_key(notif)
     if key is None:
         return  # Warning already emitted by _notif_cache_key
-    now = time.time()
+    now = time.monotonic()
     with _notif_cache_lock:
         _notif_cache[key] = now
         # Always sweep expired entries to prevent stale cache buildup.
@@ -817,8 +843,8 @@ def process_github_notifications(
             log.debug("GitHub: no actionable notifications found")
 
         # Filter out notifications we've already processed and cached.
-        # Cache key is (thread_id, updated_at) so new activity on a thread
-        # naturally invalidates the cache entry.
+        # Cache key is (thread_id, comment_id) so each comment on a thread
+        # gets its own cache entry and won't be silently dropped.
         uncached = [n for n in notifications if not _is_notif_cached(n)]
         cached_count = len(notifications) - len(uncached)
         if cached_count > 0:
@@ -900,9 +926,9 @@ def _process_one_notification(
         #
         # Cache foreign notifications in-process so we don't re-run the
         # (potentially subprocess-heavy) project resolution on every poll
-        # cycle. The cache key includes ``updated_at`` so any new activity
-        # on the thread naturally invalidates the entry and we re-evaluate
-        # ownership. Kept inside the try/except so a crash in
+        # cycle. The cache key includes the comment ID so each distinct
+        # comment triggers re-evaluation of ownership. Kept inside the
+        # try/except so a crash in
         # resolve_project_from_notification (e.g. corrupt projects.yaml,
         # subprocess failure during remote discovery) is contained to this
         # worker rather than propagating to the thread pool.

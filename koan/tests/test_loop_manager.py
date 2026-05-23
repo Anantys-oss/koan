@@ -2169,25 +2169,49 @@ class TestNotificationCache:
 
     def test_cached_notification_is_detected(self):
         from app.loop_manager import _is_notif_cached, _cache_notif
-        notif = {"id": "100", "updated_at": "2026-03-15T10:00:00Z"}
+        notif = {"id": "100", "updated_at": "2026-03-15T10:00:00Z",
+                 "subject": {"latest_comment_url":
+                             "https://api.github.com/repos/o/r/issues/comments/555"}}
         _cache_notif(notif)
         assert _is_notif_cached(notif)
 
-    def test_updated_at_change_invalidates_cache(self):
+    def test_new_comment_not_dropped_as_duplicate(self):
+        """Two comments on the same thread must not deduplicate, even with
+        identical updated_at. This was the original bug: using updated_at as
+        the cache discriminator caused new comments to be silently dropped."""
+        from app.loop_manager import _is_notif_cached, _cache_notif
+        notif_comment_a = {
+            "id": "100", "updated_at": "2026-03-15T10:00:00Z",
+            "subject": {"latest_comment_url":
+                        "https://api.github.com/repos/o/r/issues/comments/555"},
+        }
+        notif_comment_b = {
+            "id": "100", "updated_at": "2026-03-15T10:00:00Z",
+            "subject": {"latest_comment_url":
+                        "https://api.github.com/repos/o/r/issues/comments/556"},
+        }
+        _cache_notif(notif_comment_a)
+        assert _is_notif_cached(notif_comment_a)
+        # Different comment on same thread — must NOT be considered cached
+        assert not _is_notif_cached(notif_comment_b)
+
+    def test_fallback_to_updated_at_when_no_comment_url(self):
+        """Notifications without latest_comment_url fall back to updated_at."""
         from app.loop_manager import _is_notif_cached, _cache_notif
         notif = {"id": "100", "updated_at": "2026-03-15T10:00:00Z"}
         _cache_notif(notif)
-        # Same thread, updated timestamp — should NOT be cached
+        assert _is_notif_cached(notif)
+        # Different updated_at with no comment URL — different key
         updated_notif = {"id": "100", "updated_at": "2026-03-15T11:00:00Z"}
         assert not _is_notif_cached(updated_notif)
 
     def test_expired_entry_is_evicted(self):
         import app.loop_manager as lm
-        from app.loop_manager import _is_notif_cached, _cache_notif, _notif_cache_lock
+        from app.loop_manager import _is_notif_cached, _cache_notif, _notif_cache_key, _notif_cache_lock
         notif = {"id": "100", "updated_at": "2026-03-15T10:00:00Z"}
         _cache_notif(notif)
         # Manually age the entry past TTL
-        key = (str(notif["id"]), notif["updated_at"])
+        key = _notif_cache_key(notif)
         with _notif_cache_lock:
             lm._notif_cache[key] = lm._notif_cache[key] - lm._NOTIF_CACHE_TTL - 1
         assert not _is_notif_cached(notif)
@@ -2219,11 +2243,11 @@ class TestNotificationCache:
         when cache size exceeds _NOTIF_CACHE_MAX. Otherwise stale entries
         accumulate and block re-appearing notifications."""
         import app.loop_manager as lm
-        from app.loop_manager import _cache_notif, _notif_cache_lock
+        from app.loop_manager import _cache_notif, _notif_cache_key, _notif_cache_lock
         # Cache a notification, then manually expire it
         old_notif = {"id": "200", "updated_at": "2026-03-15T10:00:00Z"}
         _cache_notif(old_notif)
-        key = (str(old_notif["id"]), old_notif["updated_at"])
+        key = _notif_cache_key(old_notif)
         with _notif_cache_lock:
             # Age the entry past TTL
             lm._notif_cache[key] = lm._notif_cache[key] - lm._NOTIF_CACHE_TTL - 1
@@ -2301,7 +2325,15 @@ class TestNotificationCacheIdValidation:
         notif = {"id": 0, "updated_at": "2026-03-20T10:00:00Z"}
         assert _notif_cache_key(notif) is None
 
-    def test_truthy_id_returns_valid_key(self):
+    def test_truthy_id_with_comment_url_returns_comment_key(self):
+        from app.loop_manager import _notif_cache_key
+        notif = {"id": "42", "updated_at": "2026-03-20T10:00:00Z",
+                 "subject": {"latest_comment_url":
+                             "https://api.github.com/repos/o/r/issues/comments/789"}}
+        key = _notif_cache_key(notif)
+        assert key == ("42", "789")
+
+    def test_truthy_id_without_comment_url_falls_back_to_updated_at(self):
         from app.loop_manager import _notif_cache_key
         notif = {"id": "42", "updated_at": "2026-03-20T10:00:00Z"}
         key = _notif_cache_key(notif)
@@ -2363,6 +2395,66 @@ class TestNotificationCacheIdValidation:
         finally:
             lm._NOTIF_CACHE_MAX = original_max
             lm._NOTIF_CACHE_TTL = original_ttl
+
+
+class TestExtractCommentId:
+    """Test comment ID extraction from latest_comment_url."""
+
+    def test_issues_comment_url(self):
+        from app.loop_manager import _extract_comment_id
+        notif = {"subject": {"latest_comment_url":
+                             "https://api.github.com/repos/o/r/issues/comments/12345"}}
+        assert _extract_comment_id(notif) == "12345"
+
+    def test_pulls_comment_url(self):
+        from app.loop_manager import _extract_comment_id
+        notif = {"subject": {"latest_comment_url":
+                             "https://api.github.com/repos/o/r/pulls/comments/67890"}}
+        assert _extract_comment_id(notif) == "67890"
+
+    def test_missing_url_returns_empty(self):
+        from app.loop_manager import _extract_comment_id
+        assert _extract_comment_id({}) == ""
+        assert _extract_comment_id({"subject": {}}) == ""
+        assert _extract_comment_id({"subject": {"latest_comment_url": ""}}) == ""
+
+    def test_non_numeric_tail_returns_empty(self):
+        from app.loop_manager import _extract_comment_id
+        notif = {"subject": {"latest_comment_url":
+                             "https://api.github.com/repos/o/r/issues/42"}}
+        # Issue URL tail is the issue number — still numeric, returns it
+        assert _extract_comment_id(notif) == "42"
+
+    def test_url_without_slash_returns_empty(self):
+        from app.loop_manager import _extract_comment_id
+        notif = {"subject": {"latest_comment_url": "no-slashes"}}
+        assert _extract_comment_id(notif) == ""
+
+
+class TestCacheUsesMonotonicTime:
+    """Verify TTL calculations use time.monotonic(), not time.time()."""
+
+    def setup_method(self):
+        from app.loop_manager import reset_github_backoff
+        reset_github_backoff()
+
+    def test_cache_timestamps_are_monotonic(self):
+        """Cached entries must use time.monotonic() so wall-clock jumps
+        (NTP adjustments) don't break TTL eviction."""
+        import app.loop_manager as lm
+        from app.loop_manager import _cache_notif, _notif_cache_key, _notif_cache_lock
+
+        notif = {"id": "300", "updated_at": "2026-03-15T10:00:00Z"}
+        _cache_notif(notif)
+        key = _notif_cache_key(notif)
+        with _notif_cache_lock:
+            cached_at = lm._notif_cache[key]
+        # time.monotonic() values are typically much smaller than
+        # time.time() epoch values (~1.7 billion). A monotonic value
+        # should be well below 1 billion on any sane system.
+        assert cached_at < 1_000_000_000, (
+            f"cached_at={cached_at} looks like epoch time, not monotonic"
+        )
 
 
 class TestErrorReplyRetryQueue:
@@ -2945,6 +3037,8 @@ class TestForeignRepoOwnershipGate:
             "id": "777",
             "updated_at": "2026-05-21T10:00:00Z",
             "repository": {"full_name": "someone-else/their-repo"},
+            "subject": {"latest_comment_url":
+                        "https://api.github.com/repos/o/r/issues/comments/900"},
         }
         # Clean slate
         with _notif_cache_lock:
@@ -2954,9 +3048,13 @@ class TestForeignRepoOwnershipGate:
         _cache_notif(notif)
         assert _is_notif_cached(notif) is True
 
-        # Activity on the thread (new updated_at) re-opens the gate
-        notif_updated = dict(notif, updated_at="2026-05-21T11:00:00Z")
-        assert _is_notif_cached(notif_updated) is False
+        # New comment on the thread re-opens the gate
+        notif_new_comment = dict(notif)
+        notif_new_comment["subject"] = {
+            "latest_comment_url":
+            "https://api.github.com/repos/o/r/issues/comments/901",
+        }
+        assert _is_notif_cached(notif_new_comment) is False
 
 
 class TestForcePollClearsNotifCache:
