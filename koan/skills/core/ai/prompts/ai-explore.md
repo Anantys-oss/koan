@@ -14,6 +14,10 @@ You are exploring the project **{PROJECT_NAME}** to suggest creative, high-impac
 
 {MISSIONS_CONTEXT}
 
+{PROJECT_MEMORY}
+
+{PROJECT_HEALTH}
+
 ## Your mission
 
 Dive deep into the codebase. Read key files, understand patterns, and identify opportunities.
@@ -25,6 +29,10 @@ Think about:
 - Low-effort, high-impact changes ("quick wins")
 - Things that feel inconsistent or could be simplified
 - Security or reliability concerns
+
+Use the project memory and health data above to avoid suggesting improvements that have
+already been explored, already failed, or are already known pain points. Focus on fresh
+opportunities — ideas the project hasn't tried yet.
 
 Suggest **3-5 concrete, actionable ideas**, ranked by impact. For each:
 - A clear one-line description of the change

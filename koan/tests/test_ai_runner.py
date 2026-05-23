@@ -10,6 +10,7 @@ from app.ai_runner import (
     parse_findings,
     prioritize_findings,
     run_exploration,
+    _build_project_health_block,
     _clean_response,
     _extract_missions,
     _extract_missions_legacy,
@@ -272,6 +273,54 @@ class TestStripStructuredOutput:
 
 
 # ---------------------------------------------------------------------------
+# _build_project_health_block
+# ---------------------------------------------------------------------------
+
+class TestBuildProjectHealthBlock:
+    @patch("app.mission_summary.get_failure_context", return_value="")
+    @patch("app.mission_metrics.get_project_success_rates", return_value={"myapp": 0.85})
+    def test_includes_success_rate(self, mock_rates, mock_fail, tmp_path):
+        result = _build_project_health_block(str(tmp_path), "myapp")
+        assert "85%" in result
+        assert "Success rate" in result
+
+    @patch("app.mission_summary.get_failure_context", return_value="fatal: bad ref\nError: build failed")
+    @patch("app.mission_metrics.get_project_success_rates", return_value={"myapp": 0.5})
+    def test_includes_failure_context(self, mock_rates, mock_fail, tmp_path):
+        result = _build_project_health_block(str(tmp_path), "myapp")
+        assert "fatal: bad ref" in result
+        assert "Recent failure patterns" in result
+
+    @patch("app.mission_summary.get_failure_context", return_value="")
+    @patch("app.mission_metrics.get_project_success_rates", return_value={"myapp": 0.5})
+    def test_neutral_rate_still_shown(self, mock_rates, mock_fail, tmp_path):
+        """0.5 (neutral/no data) is still rendered — the explorer should know."""
+        result = _build_project_health_block(str(tmp_path), "myapp")
+        assert "50%" in result
+
+    @patch("app.mission_summary.get_failure_context", side_effect=Exception("broken"))
+    @patch("app.mission_metrics.get_project_success_rates", side_effect=Exception("broken"))
+    def test_resilient_to_errors(self, mock_rates, mock_fail, tmp_path):
+        """Errors in metrics/summary must not crash the runner."""
+        result = _build_project_health_block(str(tmp_path), "myapp")
+        assert result == ""
+
+    @patch("app.mission_summary.get_failure_context", return_value="")
+    @patch("app.mission_metrics.get_project_success_rates", return_value={})
+    def test_empty_when_no_data(self, mock_rates, mock_fail, tmp_path):
+        result = _build_project_health_block(str(tmp_path), "myapp")
+        assert result == ""
+
+    @patch("app.mission_summary.get_failure_context", return_value="stack trace here")
+    @patch("app.mission_metrics.get_project_success_rates", return_value={"proj": 0.3})
+    def test_both_sections_combined(self, mock_rates, mock_fail, tmp_path):
+        result = _build_project_health_block(str(tmp_path), "proj")
+        assert "Project Health" in result
+        assert "30%" in result
+        assert "stack trace here" in result
+
+
+# ---------------------------------------------------------------------------
 # run_command (provider-level helper, tested via ai_runner integration)
 # ---------------------------------------------------------------------------
 
@@ -452,6 +501,8 @@ class TestRunExploration:
         assert mock_prompt.call_args[0][0] == custom_dir
         assert mock_prompt.call_args[0][1] == "ai-explore"
 
+    @patch("app.skill_memory.build_memory_block_for_skill", return_value="<memory>learnings</memory>")
+    @patch("app.ai_runner._build_project_health_block", return_value="## Project Health\n- rate: 85%\n")
     @patch("app.cli_provider.run_command_streaming", return_value="Found 3 issues")
     @patch("app.ai_runner.get_missions_context", return_value="No active missions.")
     @patch("app.ai_runner.gather_project_structure", return_value="Directories: src/")
@@ -459,9 +510,9 @@ class TestRunExploration:
     @patch("app.ai_runner.load_skill_prompt", return_value="Explore myapp")
     def test_prompt_substitutions(
         self, mock_prompt, mock_git, mock_struct, mock_missions, mock_claude,
-        tmp_path
+        mock_health, mock_memory, tmp_path
     ):
-        """Prompt should receive PROJECT_NAME, GIT_ACTIVITY, etc."""
+        """Prompt should receive PROJECT_NAME, GIT_ACTIVITY, memory, and health."""
         notify = MagicMock()
         run_exploration(
             str(tmp_path), "myapp", str(tmp_path),
@@ -473,6 +524,8 @@ class TestRunExploration:
         assert "PROJECT_STRUCTURE" in kwargs
         assert "MISSIONS_CONTEXT" in kwargs
         assert kwargs["FOCUS_CONTEXT"] == ""
+        assert kwargs["PROJECT_MEMORY"] == "<memory>learnings</memory>"
+        assert "85%" in kwargs["PROJECT_HEALTH"]
 
     @patch("app.cli_provider.run_command_streaming", return_value="Found 3 issues")
     @patch("app.ai_runner.get_missions_context", return_value="No active missions.")
@@ -512,6 +565,27 @@ class TestRunExploration:
         )
         start_msg = notify.call_args_list[0][0][0]
         assert "focus: error handling" in start_msg
+
+    @patch("app.skill_memory.build_memory_block_for_skill", side_effect=Exception("boom"))
+    @patch("app.cli_provider.run_command_streaming", return_value="Found issues")
+    @patch("app.ai_runner.get_missions_context", return_value="No active missions.")
+    @patch("app.ai_runner.gather_project_structure", return_value="Directories: src/")
+    @patch("app.ai_runner.gather_git_activity", return_value="Recent commits: abc")
+    @patch("app.ai_runner.load_skill_prompt", return_value="Explore myapp")
+    def test_memory_failure_does_not_crash(
+        self, mock_prompt, mock_git, mock_struct, mock_missions, mock_claude,
+        mock_memory, tmp_path
+    ):
+        """Memory injection failure must not crash the exploration."""
+        notify = MagicMock()
+        success, _ = run_exploration(
+            str(tmp_path), "myapp", str(tmp_path),
+            notify_fn=notify,
+        )
+        assert success is True
+        # Memory should be empty string on failure
+        kwargs = mock_prompt.call_args[1]
+        assert kwargs["PROJECT_MEMORY"] == ""
 
     @patch("app.cli_provider.run_command_streaming", return_value="x" * 3000)
     @patch("app.ai_runner.get_missions_context", return_value="No active missions.")

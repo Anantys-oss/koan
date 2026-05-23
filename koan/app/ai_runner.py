@@ -11,6 +11,7 @@ CLI:
 """
 
 import re
+import sys
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -119,6 +120,46 @@ def prioritize_findings(findings: List[AIFinding]) -> List[AIFinding]:
     )
 
 
+def _build_project_health_block(
+    instance_dir: str,
+    project_name: str,
+) -> str:
+    """Build a project health summary from mission metrics.
+
+    Combines success rates and recent failure context so the AI explorer
+    can avoid suggesting fixes for already-known pain points and focus
+    on areas with persistent failures.
+
+    Returns empty string when no meaningful data is available.
+    """
+    parts: list[str] = []
+
+    # Success rate
+    try:
+        from app.mission_metrics import get_project_success_rates
+        rates = get_project_success_rates(instance_dir, [project_name])
+        rate = rates.get(project_name)
+        if rate is not None:
+            pct = int(rate * 100)
+            parts.append(f"- **Success rate** (30-day): {pct}%")
+    except Exception as e:
+        print(f"[ai_runner] success rate lookup failed: {e}", file=sys.stderr)
+
+    # Recent failure context
+    try:
+        from app.mission_summary import get_failure_context
+        failure_ctx = get_failure_context(instance_dir, project_name, max_chars=500)
+        if failure_ctx:
+            parts.append(f"- **Recent failure patterns**:\n```\n{failure_ctx}\n```")
+    except Exception as e:
+        print(f"[ai_runner] failure context lookup failed: {e}", file=sys.stderr)
+
+    if not parts:
+        return ""
+
+    return "## Project Health\n\n" + "\n".join(parts) + "\n"
+
+
 def run_exploration(
     project_path: str,
     project_name: str,
@@ -162,6 +203,18 @@ def run_exploration(
             f"ignore other significant opportunities you discover."
         )
 
+    # Build memory and health blocks
+    project_memory = ""
+    try:
+        from app.skill_memory import build_memory_block_for_skill
+        project_memory = build_memory_block_for_skill(
+            project_path, f"AI exploration of {project_name}",
+        )
+    except Exception as e:
+        print(f"[ai_runner] memory injection failed: {e}", file=sys.stderr)
+
+    project_health = _build_project_health_block(instance_dir, project_name)
+
     # Build prompt from skill template
     if skill_dir is None:
         skill_dir = (
@@ -176,6 +229,8 @@ def run_exploration(
         PROJECT_STRUCTURE=project_structure,
         MISSIONS_CONTEXT=missions_context,
         FOCUS_CONTEXT=focus_block,
+        PROJECT_MEMORY=project_memory,
+        PROJECT_HEALTH=project_health,
     )
 
     # Run Claude
