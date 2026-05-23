@@ -18,6 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
     procps \
     openssh-client \
+    bubblewrap \
     make \
     nodejs \
     npm \

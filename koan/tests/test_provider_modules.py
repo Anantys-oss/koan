@@ -1224,7 +1224,7 @@ class TestCodexProvider:
         with patch("app.provider.codex.shutil.which", return_value=None):
             assert p.is_available() is False
         assert p.build_permission_args(True) == ["--yolo"]
-        assert p.build_permission_args(False) == ["--full-auto"]
+        assert p.build_permission_args(False) == ["--sandbox", "workspace-write"]
         assert p.build_prompt_args("hi") == ["exec", "hi"]
         assert p.build_tool_args(allowed_tools=["Bash"]) == []
         assert p.build_model_args(model="m") == ["--model", "m"]

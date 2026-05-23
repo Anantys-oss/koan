@@ -76,7 +76,7 @@ Available models (as of March 2026):
 Kōan invokes Codex in **non-interactive mode** via `codex exec`:
 
 ```
-codex --full-auto --model gpt-5.4 exec "Your prompt here"
+codex exec --sandbox workspace-write --model gpt-5.4 "Your prompt here"
 ```
 
 This runs Codex as a scripted agent that reads the project, generates
@@ -86,7 +86,7 @@ a plan, executes it, and streams the result to stdout.
 
 | Kōan Setting          | Codex Flag       | Behavior                        |
 |-----------------------|------------------|---------------------------------|
-| `skip_permissions: false` | `--full-auto`   | Workspace writes + on-request approvals |
+| `skip_permissions: false` | `--sandbox workspace-write` | Workspace writes + on-request approvals |
 | `skip_permissions: true`  | `--yolo`        | No approvals, no sandbox        |
 
 ### Feature Mapping
@@ -159,8 +159,8 @@ Kōan's quota detection will pause and notify you.
 
 Codex does not support per-tool allow/disallow flags. Tool access is
 controlled by sandbox policies. Use `skip_permissions: true` (maps to
-`--yolo`) for full access, or the default `--full-auto` for workspace-
-scoped writes.
+`--yolo`) for full access, or the default `--sandbox workspace-write`
+for workspace-scoped writes.
 
 ### System prompt not taking effect
 
