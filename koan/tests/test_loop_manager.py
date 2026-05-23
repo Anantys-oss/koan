@@ -1226,6 +1226,113 @@ class TestDrainNotifications:
         mock_mark.assert_any_call("400")  # drain
 
 
+# --- Test _drain_stale_foreign_notifications ---
+
+
+class TestDrainStaleForeignNotifications:
+    """Test stale drain for foreign-repo notifications in multi-instance mode."""
+
+    def _make_notif(self, thread_id, hours_ago):
+        """Create a notification dict with a specific age."""
+        from datetime import datetime, timedelta, timezone
+        ts = (datetime.now(timezone.utc) - timedelta(hours=hours_ago)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        return {"id": str(thread_id), "updated_at": ts}
+
+    @patch("app.github_notifications.mark_notification_read")
+    def test_drains_only_stale_notifications(self, mock_mark):
+        from app.loop_manager import _drain_stale_foreign_notifications
+
+        notifications = [
+            self._make_notif("1", hours_ago=72),   # stale (>48h)
+            self._make_notif("2", hours_ago=10),   # fresh (<48h)
+            self._make_notif("3", hours_ago=50),   # stale (>48h)
+        ]
+        config = {"github": {"stale_drain_hours": 48}}
+        result = _drain_stale_foreign_notifications(notifications, config)
+
+        assert result == 2
+        mock_mark.assert_any_call("1")
+        mock_mark.assert_any_call("3")
+        assert mock_mark.call_count == 2
+
+    @patch("app.github_notifications.mark_notification_read")
+    def test_disabled_when_zero(self, mock_mark):
+        from app.loop_manager import _drain_stale_foreign_notifications
+
+        notifications = [self._make_notif("1", hours_ago=72)]
+        config = {"github": {"stale_drain_hours": 0}}
+        result = _drain_stale_foreign_notifications(notifications, config)
+
+        assert result == 0
+        mock_mark.assert_not_called()
+
+    @patch("app.github_notifications.mark_notification_read")
+    def test_uses_default_48h(self, mock_mark):
+        from app.loop_manager import _drain_stale_foreign_notifications
+
+        notifications = [
+            self._make_notif("1", hours_ago=49),  # stale
+            self._make_notif("2", hours_ago=23),  # fresh
+        ]
+        result = _drain_stale_foreign_notifications(notifications, {})
+
+        assert result == 1
+        mock_mark.assert_called_once_with("1")
+
+    @patch("app.github_notifications.mark_notification_read")
+    def test_respects_max_drain_per_cycle(self, mock_mark):
+        from app.loop_manager import _drain_stale_foreign_notifications, _MAX_DRAIN_PER_CYCLE
+
+        notifications = [self._make_notif(str(i), hours_ago=72) for i in range(50)]
+        result = _drain_stale_foreign_notifications(notifications, {})
+
+        assert result == _MAX_DRAIN_PER_CYCLE
+        assert mock_mark.call_count == _MAX_DRAIN_PER_CYCLE
+
+    @patch("app.github_notifications.mark_notification_read")
+    def test_empty_list(self, mock_mark):
+        from app.loop_manager import _drain_stale_foreign_notifications
+
+        result = _drain_stale_foreign_notifications([], {})
+        assert result == 0
+        mock_mark.assert_not_called()
+
+    @patch("app.loop_manager._load_github_config")
+    @patch("app.loop_manager._build_skill_registry")
+    @patch("app.loop_manager._get_known_repos_from_projects")
+    @patch("app.utils.load_config")
+    @patch("app.github_notifications.mark_notification_read")
+    def test_multi_instance_drains_stale_foreign_notifications(
+        self, mock_mark, mock_config, mock_repos, mock_registry, mock_gh_config, tmp_path
+    ):
+        """In multi-instance mode, stale foreign notifications get drained."""
+        from app.github_notifications import FetchResult
+        from app.loop_manager import process_github_notifications, reset_github_backoff
+
+        reset_github_backoff()
+
+        mock_config.return_value = {"enable_multiple_instances": True}
+        mock_gh_config.return_value = {"bot_username": "bot", "max_age": 24}
+        mock_registry.return_value = MagicMock()
+        mock_repos.return_value = set()
+
+        stale_notif = self._make_notif("500", hours_ago=72)
+        fresh_notif = self._make_notif("501", hours_ago=10)
+
+        with patch("app.projects_config.load_projects_config", return_value={}), \
+             patch("app.github_notifications.fetch_unread_notifications",
+                   return_value=FetchResult(
+                       [], [],
+                       skipped_notifications=[stale_notif, fresh_notif],
+                   )):
+            process_github_notifications(str(tmp_path), str(tmp_path))
+
+        # Only the stale notification should be drained
+        mock_mark.assert_called_once_with("500")
+
+
 # --- Test _normalize_github_url ---
 
 

@@ -147,6 +147,24 @@ def get_github_max_age_hours(config: dict) -> int:
         return 24
 
 
+def get_github_stale_drain_hours(config: dict) -> int:
+    """Get the age threshold for draining stale notifications in multi-instance mode.
+
+    In multi-instance mode, notifications from unregistered repos are
+    normally left untouched for sibling instances.  However, notifications
+    older than this threshold are safe to mark as read — no sibling will
+    process them at that point, and leaving them accumulates cruft that
+    can block future @mention detection on the same thread.
+
+    Default: 48 hours.  Set to 0 to disable stale draining entirely.
+    """
+    github = config.get("github") or {}
+    try:
+        return int(github.get("stale_drain_hours", 48))
+    except (ValueError, TypeError):
+        return 48
+
+
 def get_github_check_interval(config: dict) -> int:
     """Get the minimum interval in seconds between notification checks.
 

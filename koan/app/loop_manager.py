@@ -873,10 +873,11 @@ def process_github_notifications(
         if drained > 0:
             log.debug("GitHub: drained %d non-actionable notification(s)", drained)
 
-        # Single-instance mode: mark notifications from unregistered repos
-        # as read.  No sibling instance will handle them, so letting them
-        # accumulate just bloats the GitHub inbox.  In multi-instance mode
-        # they must stay untouched — another instance owns those repos.
+        # Unregistered-repo notifications: drain strategy depends on mode.
+        # Single-instance: drain all (no sibling will claim them).
+        # Multi-instance: drain only stale ones (>stale_drain_hours, default
+        # 48h) — a sibling had its chance, and leaving them accumulates
+        # cruft that can block future @mention detection on the same thread.
         if result.skipped_notifications:
             from app.config import get_enable_multiple_instances
             if not get_enable_multiple_instances():
@@ -884,6 +885,16 @@ def process_github_notifications(
                 if foreign_drained > 0:
                     log.debug(
                         "GitHub: drained %d notification(s) from unregistered repos",
+                        foreign_drained,
+                    )
+            else:
+                foreign_drained = _drain_stale_foreign_notifications(
+                    result.skipped_notifications, config,
+                )
+                if foreign_drained > 0:
+                    log.debug(
+                        "GitHub: drained %d stale notification(s) from unregistered repos "
+                        "(multi-instance cleanup)",
                         foreign_drained,
                     )
 
@@ -1071,6 +1082,42 @@ def _drain_notifications(notifications: list) -> int:
                 drained += 1
             except Exception:
                 log.warning("GitHub: failed to mark notification %s as read", thread_id)
+    return drained
+
+
+def _drain_stale_foreign_notifications(notifications: list, config: dict) -> int:
+    """Drain foreign-repo notifications that are too old for any instance to claim.
+
+    In multi-instance mode, recent notifications from unregistered repos are
+    left untouched — a sibling instance may own them.  But after a
+    configurable threshold (default 48h), no sibling will process them and
+    they just accumulate cruft that can block @mention detection.
+
+    Rate-limited to _MAX_DRAIN_PER_CYCLE per call.
+
+    Returns:
+        Number of notifications drained.
+    """
+    from app.github_config import get_github_stale_drain_hours
+    from app.github_notifications import is_notification_stale, mark_notification_read
+
+    stale_hours = get_github_stale_drain_hours(config)
+    if stale_hours <= 0:
+        return 0
+
+    drained = 0
+    for notif in notifications:
+        if drained >= _MAX_DRAIN_PER_CYCLE:
+            break
+        if not is_notification_stale(notif, max_age_hours=stale_hours):
+            continue
+        thread_id = str(notif.get("id", ""))
+        if thread_id:
+            try:
+                mark_notification_read(thread_id)
+                drained += 1
+            except Exception:
+                log.warning("GitHub: failed to drain stale notification %s", thread_id)
     return drained
 
 
