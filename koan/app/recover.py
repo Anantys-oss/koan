@@ -39,7 +39,7 @@ MAX_RECOVERY_ATTEMPTS = 3
 # Regex to parse and strip the [r:N] recovery counter tag from mission text.
 # Matches any content inside [r:...] (not just digits) so malformed tags
 # are still caught by strip/set operations.
-_RECOVERY_COUNTER_RE = re.compile(r"\s*\[r:([^\]]*)\]")
+_RECOVERY_COUNTER_RE = re.compile(r"\s*\[r:([^\]]*)\]$")
 
 
 # ---------------------------------------------------------------------------
