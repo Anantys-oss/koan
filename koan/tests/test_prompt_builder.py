@@ -500,7 +500,7 @@ class TestBuildAgentPrompt:
             max_runs=20,
             autonomous_mode="review",
             focus_area="Low work",
-            available_pct=10,
+            available_pct=35,  # Above critical threshold so staleness is included
             mission_title="",
         )
 
@@ -2199,3 +2199,259 @@ class TestLoadRecallConfig:
         cfg = {"memory": {"max_relevant_learnings": -5, "recall_recent_hedge": -1}}
         with patch("app.utils.load_config", return_value=cfg):
             assert _load_recall_config() == (0, 0)
+
+
+# --- Tests for _context_budget (issue #1309) ---
+
+
+class TestContextBudget:
+    """Tests for budget-aware context trimming."""
+
+    def test_deep_mode_high_budget_returns_normal(self):
+        from app.prompt_builder import _context_budget, PRESSURE_NORMAL
+
+        with patch("app.prompt_builder._load_config_safe", return_value={}):
+            budget = _context_budget("deep", 50)
+        assert budget["pressure"] == PRESSURE_NORMAL
+        assert budget["memory_entries"] == 20
+        assert budget["learnings_k"] == 40
+        assert budget["learnings_hedge"] == 5
+        assert budget["skip_pr_feedback"] is False
+        assert budget["skip_drift"] is False
+        assert budget["skip_staleness"] is False
+
+    def test_implement_mode_returns_low(self):
+        from app.prompt_builder import _context_budget, PRESSURE_LOW
+
+        with patch("app.prompt_builder._load_config_safe", return_value={}):
+            budget = _context_budget("implement", 50)
+        assert budget["pressure"] == PRESSURE_LOW
+        assert budget["memory_entries"] == 10
+        assert budget["learnings_k"] == 20
+        assert budget["learnings_hedge"] == 3
+        assert budget["skip_pr_feedback"] is True
+        assert budget["skip_drift"] is True
+
+    def test_review_mode_returns_low(self):
+        from app.prompt_builder import _context_budget, PRESSURE_LOW
+
+        with patch("app.prompt_builder._load_config_safe", return_value={}):
+            budget = _context_budget("review", 50)
+        assert budget["pressure"] == PRESSURE_LOW
+
+    def test_deep_mode_low_budget_returns_low(self):
+        from app.prompt_builder import _context_budget, PRESSURE_LOW
+
+        with patch("app.prompt_builder._load_config_safe", return_value={}):
+            budget = _context_budget("deep", 25)
+        assert budget["pressure"] == PRESSURE_LOW
+
+    def test_very_low_budget_returns_critical(self):
+        from app.prompt_builder import _context_budget, PRESSURE_CRITICAL
+
+        with patch("app.prompt_builder._load_config_safe", return_value={}):
+            budget = _context_budget("deep", 10)
+        assert budget["pressure"] == PRESSURE_CRITICAL
+        assert budget["memory_entries"] == 5
+        assert budget["learnings_k"] == 10
+        assert budget["learnings_hedge"] == 2
+        assert budget["skip_pr_feedback"] is True
+        assert budget["skip_drift"] is True
+        assert budget["skip_staleness"] is True
+
+    def test_critical_overrides_mode_check(self):
+        """Even in deep mode, critical budget takes precedence."""
+        from app.prompt_builder import _context_budget, PRESSURE_CRITICAL
+
+        with patch("app.prompt_builder._load_config_safe", return_value={}):
+            budget = _context_budget("deep", 5)
+        assert budget["pressure"] == PRESSURE_CRITICAL
+
+    def test_config_overrides_thresholds(self):
+        """Custom thresholds from config.yaml context: section."""
+        from app.prompt_builder import _context_budget, PRESSURE_LOW
+
+        cfg = {"context": {"low_pressure_pct": 50, "critical_pressure_pct": 20}}
+        with patch("app.prompt_builder._load_config_safe", return_value=cfg):
+            # 40% < 50% threshold -> low
+            budget = _context_budget("deep", 40)
+        assert budget["pressure"] == PRESSURE_LOW
+
+    def test_config_overrides_entries(self):
+        """Custom entry counts from config.yaml."""
+        from app.prompt_builder import _context_budget, PRESSURE_LOW
+
+        cfg = {"context": {"memory_entries_low": 7, "learnings_k_low": 15}}
+        with patch("app.prompt_builder._load_config_safe", return_value=cfg):
+            budget = _context_budget("implement", 50)
+        assert budget["pressure"] == PRESSURE_LOW
+        assert budget["memory_entries"] == 7
+        assert budget["learnings_k"] == 15
+
+    def test_invalid_config_falls_back_to_defaults(self):
+        """Invalid config values use defaults."""
+        from app.prompt_builder import _context_budget, PRESSURE_NORMAL
+
+        cfg = {"context": {"low_pressure_pct": "nope", "memory_entries": "bad"}}
+        with patch("app.prompt_builder._load_config_safe", return_value=cfg):
+            budget = _context_budget("deep", 50)
+        assert budget["pressure"] == PRESSURE_NORMAL
+        assert budget["memory_entries"] == 20
+
+    def test_boundary_at_low_threshold(self):
+        """Budget exactly at low_pressure_pct stays normal."""
+        from app.prompt_builder import _context_budget, PRESSURE_NORMAL
+
+        with patch("app.prompt_builder._load_config_safe", return_value={}):
+            budget = _context_budget("deep", 30)
+        assert budget["pressure"] == PRESSURE_NORMAL
+
+    def test_boundary_below_low_threshold(self):
+        """Budget one below low_pressure_pct goes low."""
+        from app.prompt_builder import _context_budget, PRESSURE_LOW
+
+        with patch("app.prompt_builder._load_config_safe", return_value={}):
+            budget = _context_budget("deep", 29)
+        assert budget["pressure"] == PRESSURE_LOW
+
+
+class TestContextBudgetIntegration:
+    """Integration: verify budget is applied in build_agent_prompt_parts."""
+
+    @patch("app.prompt_builder._get_deep_research", return_value="")
+    @patch("app.prompt_builder._get_pr_feedback_section", return_value="\n\nPR FEEDBACK")
+    @patch("app.prompt_builder._get_drift_section", return_value="\n\nDRIFT")
+    @patch("app.prompt_builder._get_staleness_section", return_value="\n\nSTALE")
+    @patch("app.prompt_builder._get_memory_log_section", return_value="")
+    @patch("app.prompt_builder._get_learnings_section", return_value="")
+    @patch("app.prompt_builder._load_agent_template", return_value="BASE")
+    @patch("app.prompt_builder._get_merge_policy", return_value="MERGE")
+    @patch("app.prompt_builder._get_submit_pr_section", return_value="SUBMIT")
+    @patch("app.prompt_builder._get_caveman_section", return_value="")
+    @patch("app.prompt_builder._get_rtk_section", return_value="")
+    @patch("app.prompt_builder._get_language_section", return_value="")
+    def test_low_pressure_skips_drift_and_pr_feedback(
+        self, _lang, _rtk, _cave, _submit, _merge, _template,
+        _learn, mock_mem, mock_stale, mock_drift, mock_pr, _deep,
+    ):
+        """In low pressure (implement mode), drift and PR feedback are skipped."""
+        with patch("app.prompt_builder._load_config_safe", return_value={}):
+            _, user = build_agent_prompt_parts(
+                instance="/tmp/i", project_name="p", project_path="/tmp/p",
+                run_num=1, max_runs=10, autonomous_mode="implement",
+                focus_area="general", available_pct=50, mission_title="",
+            )
+        # Drift and PR feedback should NOT be called
+        mock_drift.assert_not_called()
+        mock_pr.assert_not_called()
+        # Staleness is still called in low pressure
+        mock_stale.assert_called_once()
+
+    @patch("app.prompt_builder._get_deep_research", return_value="")
+    @patch("app.prompt_builder._get_pr_feedback_section", return_value="\n\nPR FEEDBACK")
+    @patch("app.prompt_builder._get_drift_section", return_value="\n\nDRIFT")
+    @patch("app.prompt_builder._get_staleness_section", return_value="\n\nSTALE")
+    @patch("app.prompt_builder._get_memory_log_section", return_value="")
+    @patch("app.prompt_builder._get_learnings_section", return_value="")
+    @patch("app.prompt_builder._load_agent_template", return_value="BASE")
+    @patch("app.prompt_builder._get_merge_policy", return_value="MERGE")
+    @patch("app.prompt_builder._get_submit_pr_section", return_value="SUBMIT")
+    @patch("app.prompt_builder._get_caveman_section", return_value="")
+    @patch("app.prompt_builder._get_rtk_section", return_value="")
+    @patch("app.prompt_builder._get_language_section", return_value="")
+    def test_critical_pressure_skips_staleness_too(
+        self, _lang, _rtk, _cave, _submit, _merge, _template,
+        _learn, mock_mem, mock_stale, mock_drift, mock_pr, _deep,
+    ):
+        """In critical pressure, staleness is also skipped."""
+        with patch("app.prompt_builder._load_config_safe", return_value={}):
+            _, user = build_agent_prompt_parts(
+                instance="/tmp/i", project_name="p", project_path="/tmp/p",
+                run_num=1, max_runs=10, autonomous_mode="deep",
+                focus_area="general", available_pct=10, mission_title="",
+            )
+        mock_drift.assert_not_called()
+        mock_pr.assert_not_called()
+        mock_stale.assert_not_called()
+
+    @patch("app.prompt_builder._get_deep_research", return_value="")
+    @patch("app.prompt_builder._get_pr_feedback_section", return_value="\n\nPR FEEDBACK")
+    @patch("app.prompt_builder._get_drift_section", return_value="\n\nDRIFT")
+    @patch("app.prompt_builder._get_staleness_section", return_value="\n\nSTALE")
+    @patch("app.prompt_builder._get_memory_log_section", return_value="")
+    @patch("app.prompt_builder._get_learnings_section", return_value="")
+    @patch("app.prompt_builder._load_agent_template", return_value="BASE")
+    @patch("app.prompt_builder._get_merge_policy", return_value="MERGE")
+    @patch("app.prompt_builder._get_submit_pr_section", return_value="SUBMIT")
+    @patch("app.prompt_builder._get_caveman_section", return_value="")
+    @patch("app.prompt_builder._get_rtk_section", return_value="")
+    @patch("app.prompt_builder._get_language_section", return_value="")
+    def test_normal_pressure_includes_all(
+        self, _lang, _rtk, _cave, _submit, _merge, _template,
+        _learn, mock_mem, mock_stale, mock_drift, mock_pr, _deep,
+    ):
+        """In deep mode with high budget, all sections included."""
+        with patch("app.prompt_builder._load_config_safe", return_value={}):
+            _, user = build_agent_prompt_parts(
+                instance="/tmp/i", project_name="p", project_path="/tmp/p",
+                run_num=1, max_runs=10, autonomous_mode="deep",
+                focus_area="general", available_pct=50, mission_title="",
+            )
+        mock_drift.assert_called_once()
+        mock_pr.assert_called_once()
+        mock_stale.assert_called_once()
+
+    @patch("app.prompt_builder._get_deep_research", return_value="")
+    @patch("app.prompt_builder._get_pr_feedback_section", return_value="")
+    @patch("app.prompt_builder._get_drift_section", return_value="")
+    @patch("app.prompt_builder._get_staleness_section", return_value="")
+    @patch("app.prompt_builder._get_memory_log_section", return_value="")
+    @patch("app.prompt_builder._get_learnings_section", return_value="")
+    @patch("app.prompt_builder._load_agent_template", return_value="BASE")
+    @patch("app.prompt_builder._get_merge_policy", return_value="MERGE")
+    @patch("app.prompt_builder._get_submit_pr_section", return_value="SUBMIT")
+    @patch("app.prompt_builder._get_caveman_section", return_value="")
+    @patch("app.prompt_builder._get_rtk_section", return_value="")
+    @patch("app.prompt_builder._get_language_section", return_value="")
+    def test_budget_caps_passed_to_learnings(
+        self, _lang, _rtk, _cave, _submit, _merge, _template,
+        mock_learn, mock_mem, _stale, _drift, _pr, _deep,
+    ):
+        """Budget-derived K and hedge are passed to _get_learnings_section."""
+        with patch("app.prompt_builder._load_config_safe", return_value={}):
+            build_agent_prompt_parts(
+                instance="/tmp/i", project_name="p", project_path="/tmp/p",
+                run_num=1, max_runs=10, autonomous_mode="implement",
+                focus_area="general", available_pct=50, mission_title="task",
+            )
+        # Low pressure: learnings_k=20, hedge=3
+        call_kwargs = mock_learn.call_args[1]
+        assert call_kwargs["max_k_override"] == 20
+        assert call_kwargs["hedge_override"] == 3
+
+    @patch("app.prompt_builder._get_deep_research", return_value="")
+    @patch("app.prompt_builder._get_pr_feedback_section", return_value="")
+    @patch("app.prompt_builder._get_drift_section", return_value="")
+    @patch("app.prompt_builder._get_staleness_section", return_value="")
+    @patch("app.prompt_builder._get_memory_log_section", return_value="")
+    @patch("app.prompt_builder._get_learnings_section", return_value="")
+    @patch("app.prompt_builder._load_agent_template", return_value="BASE")
+    @patch("app.prompt_builder._get_merge_policy", return_value="MERGE")
+    @patch("app.prompt_builder._get_submit_pr_section", return_value="SUBMIT")
+    @patch("app.prompt_builder._get_caveman_section", return_value="")
+    @patch("app.prompt_builder._get_rtk_section", return_value="")
+    @patch("app.prompt_builder._get_language_section", return_value="")
+    def test_budget_caps_passed_to_memory_log(
+        self, _lang, _rtk, _cave, _submit, _merge, _template,
+        _learn, mock_mem, _stale, _drift, _pr, _deep,
+    ):
+        """Budget-derived entry count is passed to _get_memory_log_section."""
+        with patch("app.prompt_builder._load_config_safe", return_value={}):
+            build_agent_prompt_parts(
+                instance="/tmp/i", project_name="p", project_path="/tmp/p",
+                run_num=1, max_runs=10, autonomous_mode="review",
+                focus_area="general", available_pct=50, mission_title="",
+            )
+        # Low pressure: memory_entries=10
+        call_kwargs = mock_mem.call_args[1]
+        assert call_kwargs["max_entries_override"] == 10

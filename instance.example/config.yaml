@@ -600,6 +600,23 @@ usage:
 #                                   # up only if you've measured the per-mission
 #                                   # token budget you want to spend.
 
+# Context trimming — budget-aware prompt reduction (issue #1309)
+# When quota is low, the agent prompt is trimmed to save tokens.
+# Pressure levels: normal (full context), low (reduced), critical (minimal).
+# Pressure is derived from autonomous_mode + available_pct.
+# context:
+#   low_pressure_pct: 30            # Below this %, switch to low pressure (default: 30)
+#   critical_pressure_pct: 15       # Below this %, switch to critical pressure (default: 15)
+#   memory_entries: 20              # Memory log entries at normal pressure (default: 20)
+#   memory_entries_low: 10          # Memory log entries at low pressure (default: 10)
+#   memory_entries_critical: 5      # Memory log entries at critical pressure (default: 5)
+#   learnings_k: 40                 # Learnings top-K at normal pressure (default: 40)
+#   learnings_k_low: 20             # Learnings top-K at low pressure (default: 20)
+#   learnings_k_critical: 10        # Learnings top-K at critical pressure (default: 10)
+#   learnings_hedge: 5              # Recency hedge at normal pressure (default: 5)
+#   learnings_hedge_low: 3          # Recency hedge at low pressure (default: 3)
+#   learnings_hedge_critical: 2     # Recency hedge at critical pressure (default: 2)
+
 # Automation rules — loop guard
 # Limits how many times a single automation rule can fire within a 60-second
 # window. Prevents runaway loops, e.g. a create_mission rule triggered by

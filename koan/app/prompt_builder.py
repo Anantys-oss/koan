@@ -34,9 +34,103 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Tuple
+from typing import Dict, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Budget-aware context trimming (issue #1309)
+# ---------------------------------------------------------------------------
+
+# Pressure levels: control how aggressively prompt sections are trimmed.
+PRESSURE_NORMAL = "normal"      # deep mode, >= threshold — full context
+PRESSURE_LOW = "low"            # review/implement or moderate budget
+PRESSURE_CRITICAL = "critical"  # very low budget — minimal context
+
+# Defaults for each pressure level.
+_BUDGET_DEFAULTS = {
+    PRESSURE_NORMAL: {
+        "memory_entries": 20,
+        "learnings_k": 40,
+        "learnings_hedge": 5,
+        "skip_pr_feedback": False,
+        "skip_drift": False,
+        "skip_staleness": False,
+    },
+    PRESSURE_LOW: {
+        "memory_entries": 10,
+        "learnings_k": 20,
+        "learnings_hedge": 3,
+        "skip_pr_feedback": True,
+        "skip_drift": True,
+        "skip_staleness": False,
+    },
+    PRESSURE_CRITICAL: {
+        "memory_entries": 5,
+        "learnings_k": 10,
+        "learnings_hedge": 2,
+        "skip_pr_feedback": True,
+        "skip_drift": True,
+        "skip_staleness": True,
+    },
+}
+
+# Threshold defaults: budget % below which pressure escalates.
+_DEFAULT_LOW_PCT = 30
+_DEFAULT_CRITICAL_PCT = 15
+
+
+def _read_cfg_int(mapping: dict, key: str, fallback: int) -> int:
+    """Read a non-negative int from ``mapping[key]``, defaulting on failure."""
+    try:
+        value = int(mapping.get(key, fallback))
+    except (TypeError, ValueError):
+        return fallback
+    return max(0, value)
+
+
+def _context_budget(autonomous_mode: str, available_pct: int) -> Dict:
+    """Compute context trimming budget from mode and remaining quota.
+
+    Returns a dict with section-level caps and skip flags.  Config
+    overrides live under ``context:`` in ``config.yaml``.
+    """
+    cfg = _load_config_safe()
+    ctx = cfg.get("context", {}) or {}
+
+    low_pct = _read_cfg_int(ctx, "low_pressure_pct", _DEFAULT_LOW_PCT)
+    critical_pct = _read_cfg_int(ctx, "critical_pressure_pct", _DEFAULT_CRITICAL_PCT)
+
+    # Determine pressure level
+    if available_pct < critical_pct:
+        pressure = PRESSURE_CRITICAL
+    elif autonomous_mode in ("review", "implement") or available_pct < low_pct:
+        pressure = PRESSURE_LOW
+    else:
+        pressure = PRESSURE_NORMAL
+
+    defaults = _BUDGET_DEFAULTS[pressure]
+
+    # Allow per-level config overrides (e.g. context.memory_entries_low: 8)
+    suffix = f"_{pressure}" if pressure != PRESSURE_NORMAL else ""
+    budget = {
+        "pressure": pressure,
+        "memory_entries": _read_cfg_int(
+            ctx, f"memory_entries{suffix}", defaults["memory_entries"],
+        ),
+        "learnings_k": _read_cfg_int(
+            ctx, f"learnings_k{suffix}", defaults["learnings_k"],
+        ),
+        "learnings_hedge": _read_cfg_int(
+            ctx, f"learnings_hedge{suffix}", defaults["learnings_hedge"],
+        ),
+        "skip_pr_feedback": defaults["skip_pr_feedback"],
+        "skip_drift": defaults["skip_drift"],
+        "skip_staleness": defaults["skip_staleness"],
+    }
+
+    return budget
 
 # Matches template placeholders like {INSTANCE}, {PROJECT_NAME}, etc.
 # Only uppercase letters, digits, and underscores — at least 2 chars to avoid
@@ -267,6 +361,8 @@ def _get_learnings_section(
     project_name: str,
     mission_title: str,
     focus_area: str,
+    max_k_override: int = 0,
+    hedge_override: int = 0,
 ) -> str:
     """Return the project-memory block for the agent prompt.
 
@@ -285,6 +381,11 @@ def _get_learnings_section(
     the agent.md template still tells Claude where to read the files
     directly, so this is purely an enrichment hook.
 
+    Args:
+        max_k_override: When > 0, overrides config ``max_relevant_learnings``.
+            Used by budget-aware context trimming (issue #1309).
+        hedge_override: When > 0, overrides config ``recall_recent_hedge``.
+
     Issue #1306 (learnings recall) + memory-system refactor.
     """
     # Mission text drives scoring. In autonomous mode (no title) fall back
@@ -297,6 +398,12 @@ def _get_learnings_section(
     # passing ``None`` overrides; skills override to a tighter budget.
     max_k, hedge = _load_recall_config()
 
+    # Budget-aware override: use tighter caps under low/critical pressure.
+    if max_k_override > 0:
+        max_k = max_k_override
+    if hedge_override > 0:
+        hedge = hedge_override
+
     return build_memory_block(
         instance, project_name, scoring_text,
         max_learnings=max_k,
@@ -305,7 +412,9 @@ def _get_learnings_section(
     )
 
 
-def _get_memory_log_section(instance: str, project_name: str) -> str:
+def _get_memory_log_section(
+    instance: str, project_name: str, max_entries_override: int = 0,
+) -> str:
     """Return recent session/learning history from JSONL truth log.
 
     Replaces ``scoped_summary()`` as the source of recent project history in
@@ -314,6 +423,10 @@ def _get_memory_log_section(instance: str, project_name: str) -> str:
 
     The window size defaults to 20; configurable via
     ``config.yaml`` ``memory.context_window_entries``.
+
+    Args:
+        max_entries_override: When > 0, overrides config value.
+            Used by budget-aware context trimming (issue #1309).
     """
     cfg = _load_config_safe()
     mem = cfg.get("memory", {}) or {}
@@ -321,6 +434,10 @@ def _get_memory_log_section(instance: str, project_name: str) -> str:
         max_entries = int(mem.get("context_window_entries", 20))
     except (TypeError, ValueError):
         max_entries = 20
+
+    # Budget-aware override
+    if max_entries_override > 0:
+        max_entries = max_entries_override
 
     try:
         from app.memory_manager import read_memory_window, scoped_summary
@@ -627,6 +744,15 @@ def build_agent_prompt(
     Returns:
         Complete prompt string ready for Claude CLI
     """
+    # Compute context budget (issue #1309)
+    budget = _context_budget(autonomous_mode, available_pct)
+    if budget["pressure"] != PRESSURE_NORMAL:
+        print(
+            f"[prompt_builder] Context trimming: pressure={budget['pressure']} "
+            f"(mode={autonomous_mode}, pct={available_pct}%)",
+            file=sys.stderr,
+        )
+
     prompt = _load_agent_template(
         instance, project_name, project_path, run_num, max_runs,
         autonomous_mode, focus_area, available_pct, mission_title,
@@ -638,10 +764,17 @@ def build_agent_prompt(
     prompt += _get_mission_type_section(mission_title)
 
     # Append task-aware filtered learnings (issue #1306)
-    prompt += _get_learnings_section(instance, project_name, mission_title, focus_area)
+    prompt += _get_learnings_section(
+        instance, project_name, mission_title, focus_area,
+        max_k_override=budget["learnings_k"],
+        hedge_override=budget["learnings_hedge"],
+    )
 
     # Append JSONL memory window (recent sessions + learnings from truth log)
-    prompt += _get_memory_log_section(instance, project_name)
+    prompt += _get_memory_log_section(
+        instance, project_name,
+        max_entries_override=budget["memory_entries"],
+    )
 
     # Append merge policy
     prompt += _get_merge_policy(project_name)
@@ -653,15 +786,16 @@ def build_agent_prompt(
     prompt += _get_submit_pr_section(project_path)
 
     # Append staleness warning (all autonomous modes — cheap local read)
-    if not mission_title:
+    if not mission_title and not budget["skip_staleness"]:
         prompt += _get_staleness_section(instance, project_name)
 
     # Append drift detection (autonomous only — shows what changed on main)
-    if not mission_title:
+    if not mission_title and not budget["skip_drift"]:
         prompt += _get_drift_section(instance, project_name, project_path)
 
     # Append PR merge feedback (autonomous only — helps topic alignment)
-    if not mission_title and autonomous_mode in ("deep", "implement"):
+    if (not mission_title and autonomous_mode in ("deep", "implement")
+            and not budget["skip_pr_feedback"]):
         prompt += _get_pr_feedback_section(project_path)
 
     # Append deep research suggestions (DEEP mode, autonomous only)
@@ -717,6 +851,15 @@ def build_agent_prompt_parts(
     Callers should pass ``system_prompt`` to ``build_full_command()``
     so it's sent via ``--append-system-prompt`` on supported providers.
     """
+    # --- Compute context budget (issue #1309) ---
+    budget = _context_budget(autonomous_mode, available_pct)
+    if budget["pressure"] != PRESSURE_NORMAL:
+        print(
+            f"[prompt_builder] Context trimming: pressure={budget['pressure']} "
+            f"(mode={autonomous_mode}, pct={available_pct}%)",
+            file=sys.stderr,
+        )
+
     # --- User prompt: agent template + per-mission dynamic content ---
 
     user_prompt = _load_agent_template(
@@ -732,21 +875,29 @@ def build_agent_prompt_parts(
     # Append task-aware filtered learnings (issue #1306).
     # Lives in the user prompt because its content varies with each mission
     # — putting it in the system prompt would defeat prompt caching.
-    user_prompt += _get_learnings_section(instance, project_name, mission_title, focus_area)
+    user_prompt += _get_learnings_section(
+        instance, project_name, mission_title, focus_area,
+        max_k_override=budget["learnings_k"],
+        hedge_override=budget["learnings_hedge"],
+    )
 
     # Append JSONL memory window (recent sessions + learnings from truth log)
-    user_prompt += _get_memory_log_section(instance, project_name)
+    user_prompt += _get_memory_log_section(
+        instance, project_name,
+        max_entries_override=budget["memory_entries"],
+    )
 
     # Append staleness warning (all autonomous modes — cheap local read)
-    if not mission_title:
+    if not mission_title and not budget["skip_staleness"]:
         user_prompt += _get_staleness_section(instance, project_name)
 
     # Append drift detection (autonomous only — shows what changed on main)
-    if not mission_title:
+    if not mission_title and not budget["skip_drift"]:
         user_prompt += _get_drift_section(instance, project_name, project_path)
 
     # Append PR merge feedback (autonomous only — helps topic alignment)
-    if not mission_title and autonomous_mode in ("deep", "implement"):
+    if (not mission_title and autonomous_mode in ("deep", "implement")
+            and not budget["skip_pr_feedback"]):
         user_prompt += _get_pr_feedback_section(project_path)
 
     # Append deep research suggestions (DEEP mode, autonomous only)
