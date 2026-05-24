@@ -766,16 +766,17 @@ class TestClassifyExceptionInSampleOnce:
             check_interval_seconds=1,
             abort_after_cycles=2,
         )
-        # First sample to populate hash
-        monitor._sample_once()
+        monitor._sample_once()  # baseline (consecutive=0)
+        monitor._sample_once()  # 1st duplicate (consecutive=1)
         assert not monitor.stagnated
 
-        # Patch classify_stagnation to raise during the abort path
+        # Patch classify_stagnation to raise on the abort path — this
+        # 2nd duplicate is the one that crosses abort_after_cycles=2.
         with patch(
             "app.stagnation_monitor.classify_stagnation",
             side_effect=RuntimeError("disk error"),
         ):
-            monitor._sample_once()
+            monitor._sample_once()  # 2nd duplicate (consecutive=2) → abort path
 
         assert monitor.stagnated
         assert monitor.pattern_type == "unknown"
