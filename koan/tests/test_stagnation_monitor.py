@@ -499,6 +499,52 @@ class TestRetryTracker:
             increment_retry_count(d, "test mission")
 
 
+class TestClassifyStagnationEdgeCases:
+    """Cover edge cases in classify_stagnation: OSError on read, line trimming, empty decode."""
+
+    def test_oserror_on_file_read_returns_silent(self, tmp_path):
+        """OSError during open (not getsize) → silent. Covers L149-150."""
+        f = tmp_path / "stdout.log"
+        # Write enough content to pass the min-bytes threshold
+        _make_stdout(f, 60)
+        # Make file unreadable after getsize succeeds
+        with patch("builtins.open", side_effect=OSError("permission denied")):
+            pattern, excerpt = classify_stagnation(str(f))
+        assert pattern == "silent"
+        assert excerpt == ""
+
+    def test_lines_trimmed_to_tail_lines(self, tmp_path):
+        """When file has more lines than tail_lines, only tail is kept. Covers L154-155."""
+        f = tmp_path / "stdout.log"
+        # Write 200 lines — well above default tail_lines (100)
+        lines = [f"line {i:04d} with padding text here please" for i in range(200)]
+        # Put a tool_loop signature only in the first 50 lines (should be trimmed away)
+        for i in range(10):
+            lines[i] = f"Calling Bash tool: ls iteration {i}"
+        # Tail 100 lines should have no tool pattern → unknown
+        f.write_text("\n".join(lines) + "\n")
+        pattern, _ = classify_stagnation(str(f), tail_lines=100)
+        # The Bash lines are in lines 0-9, trimmed away — should not be tool_loop
+        assert pattern != "tool_loop"
+
+    def test_empty_lines_after_decode_returns_silent(self, tmp_path):
+        """File truncated between getsize and read → empty splitlines → silent. Covers L157-158."""
+        f = tmp_path / "stdout.log"
+        _make_stdout(f, 60)
+        # Simulate TOCTOU: file passes size check but read returns empty
+        real_open = open
+
+        def mock_open_empty(path, mode="r", **kw):
+            fh = real_open(path, mode, **kw)
+            fh.read = lambda *a, **k: b""
+            fh.seek = lambda *a, **k: None
+            return fh
+
+        with patch("builtins.open", side_effect=mock_open_empty):
+            pattern, excerpt = classify_stagnation(str(f))
+        assert pattern == "silent"
+
+
 class TestClassifyStagnation:
     """Tests for classify_stagnation() — one per pattern type + unknown."""
 
@@ -644,6 +690,90 @@ class TestMonitorCapturesPattern:
         assert not monitor.stagnated
         assert monitor.pattern_type == ""
         assert monitor.pattern_excerpt == ""
+
+
+class TestClassifyExceptionInSampleOnce:
+    """When classify_stagnation raises during _sample_once, monitor still sets stagnated=True. Covers L320-325."""
+
+    def test_classify_exception_sets_unknown(self, tmp_path):
+        f = tmp_path / "stdout.log"
+        _make_stdout(f, 60)
+
+        monitor = StagnationMonitor(
+            stdout_file=str(f),
+            on_abort=lambda: None,
+            check_interval_seconds=1,
+            abort_after_cycles=2,
+        )
+        # First sample to populate hash
+        monitor._sample_once()
+        assert not monitor.stagnated
+
+        # Patch classify_stagnation to raise during the abort path
+        with patch(
+            "app.stagnation_monitor.classify_stagnation",
+            side_effect=RuntimeError("disk error"),
+        ):
+            monitor._sample_once()
+
+        assert monitor.stagnated
+        assert monitor.pattern_type == "unknown"
+        assert monitor.pattern_excerpt == ""
+
+
+class TestMonitorLoopIntegration:
+    """Cover _loop method (L278-280) — starts, samples, and stops on stagnation."""
+
+    def test_loop_stops_on_stagnation(self, tmp_path):
+        f = tmp_path / "stdout.log"
+        _make_stdout(f, 60)
+
+        aborted = threading.Event()
+        monitor = StagnationMonitor(
+            stdout_file=str(f),
+            on_abort=lambda: aborted.set(),
+            check_interval_seconds=0.05,
+            abort_after_cycles=2,
+        )
+        monitor.start()
+        # Wait for stagnation (output never changes)
+        aborted.wait(timeout=5.0)
+        monitor.stop(timeout=2.0)
+        assert monitor.stagnated
+        assert aborted.is_set()
+
+
+class TestGetRetryInfoFallback:
+    """Cover get_retry_info fallback for non-int, non-dict stored values. Covers L412."""
+
+    def test_unexpected_type_returns_zero_defaults(self, tmp_path):
+        """A stored value that is neither int nor dict → zero defaults."""
+        from app.stagnation_monitor import _retry_tracker_path
+        instance = str(tmp_path)
+        path = _retry_tracker_path(instance)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        key = _mission_key("weird mission")
+        # Store a string value (not int or dict)
+        path.write_text(json.dumps({key: "not-a-valid-entry"}))
+
+        info = get_retry_info(instance, "weird mission")
+        assert info["count"] == 0
+        assert info["pattern_type"] == ""
+        assert info["sample_lines"] == ""
+
+    def test_list_value_returns_zero_defaults(self, tmp_path):
+        """A stored list value → zero defaults."""
+        from app.stagnation_monitor import _retry_tracker_path
+        instance = str(tmp_path)
+        path = _retry_tracker_path(instance)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        key = _mission_key("list mission")
+        path.write_text(json.dumps({key: [1, 2, 3]}))
+
+        info = get_retry_info(instance, "list mission")
+        assert info["count"] == 0
+        assert info["pattern_type"] == ""
+        assert info["sample_lines"] == ""
 
 
 class TestRetryTrackerWithPattern:
