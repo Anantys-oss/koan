@@ -13,6 +13,7 @@ from app.github import SSOAuthRequired
 from app.github_notifications import (
     SSO_ESCALATION_THRESHOLD,
     FetchResult,
+    NotificationTracker,
     _FETCH_FAILURE_THRESHOLD,
     _processed_comments,
     _reactions_endpoint,
@@ -828,7 +829,7 @@ class TestFindMentionInThread:
             },
         }
 
-    @patch("app.github_notifications.check_already_processed", return_value=False)
+    @patch.object(NotificationTracker, "check_already_processed", return_value=False)
     @patch("app.github_notifications.api")
     def test_finds_unprocessed_mention(self, mock_api, mock_processed, notification):
         """Should return the first unprocessed @mention by a non-bot user."""
@@ -844,7 +845,7 @@ class TestFindMentionInThread:
         assert result is not None
         assert result["id"] == 200
 
-    @patch("app.github_notifications.check_already_processed", return_value=True)
+    @patch.object(NotificationTracker, "check_already_processed", return_value=True)
     @patch("app.github_notifications.api")
     def test_skips_already_processed_mention(self, mock_api, mock_processed, notification):
         """Should skip mentions that already have a bot reaction."""
@@ -897,7 +898,7 @@ class TestFindMentionInThread:
         result = find_mention_in_thread(notif, "Koan-Bot")
         assert result is None
 
-    @patch("app.github_notifications.check_already_processed", return_value=False)
+    @patch.object(NotificationTracker, "check_already_processed", return_value=False)
     @patch("app.github_notifications.api")
     def test_case_insensitive_mention_matching(self, mock_api, mock_processed, notification):
         """Should match @mentions case-insensitively."""
@@ -935,7 +936,7 @@ class TestFindMentionInThread:
         call_args = mock_api.call_args[0][0]
         assert "repos/owner/repo/issues/42/comments" in call_args
 
-    @patch("app.github_notifications.check_already_processed", return_value=False)
+    @patch.object(NotificationTracker, "check_already_processed", return_value=False)
     @patch("app.github_notifications.api")
     def test_searches_pr_review_comments(self, mock_api, mock_processed, notification):
         """Should search PR review comments when issue comments have no @mention."""
@@ -957,7 +958,7 @@ class TestFindMentionInThread:
         assert "issues/208/comments" in calls[0]
         assert "pulls/208/comments" in calls[1]
 
-    @patch("app.github_notifications.check_already_processed", return_value=False)
+    @patch.object(NotificationTracker, "check_already_processed", return_value=False)
     @patch("app.github_notifications.api")
     def test_issue_comments_checked_before_review_comments(self, mock_api, mock_processed, notification):
         """Should prefer issue comment @mention over PR review comment @mention."""
@@ -999,7 +1000,7 @@ class TestFindMentionInThread:
 class TestSearchCommentsForMention:
     """Tests for _search_comments_for_mention helper."""
 
-    @patch("app.github_notifications.check_already_processed", return_value=False)
+    @patch.object(NotificationTracker, "check_already_processed", return_value=False)
     def test_finds_mention(self, mock_processed):
         comments = [
             {"id": 1, "url": "u/1", "body": "@bot rebase", "user": {"login": "alice"}},
@@ -1015,7 +1016,7 @@ class TestSearchCommentsForMention:
         result = _search_comments_for_mention(comments, "bot", "owner", "repo")
         assert result is None
 
-    @patch("app.github_notifications.check_already_processed", return_value=True)
+    @patch.object(NotificationTracker, "check_already_processed", return_value=True)
     def test_skips_processed_comments(self, mock_processed):
         comments = [
             {"id": 1, "url": "u/1", "body": "@bot rebase", "user": {"login": "alice"}},
@@ -1034,7 +1035,7 @@ class TestSearchCommentsForMention:
         result = _search_comments_for_mention([], "bot", "owner", "repo")
         assert result is None
 
-    @patch("app.github_notifications.check_already_processed", return_value=False)
+    @patch.object(NotificationTracker, "check_already_processed", return_value=False)
     def test_case_insensitive(self, mock_processed):
         comments = [
             {"id": 1, "url": "u/1", "body": "@BOT rebase", "user": {"login": "alice"}},
