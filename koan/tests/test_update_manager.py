@@ -1,5 +1,6 @@
 """Tests for update_manager.py — git operations for code updates."""
 
+import time
 from pathlib import Path
 from unittest.mock import patch, MagicMock, call
 
@@ -285,7 +286,7 @@ class TestPullUpstream:
     def test_skips_checkout_when_already_on_main(self, mock_run):
         """No checkout command issued when already on main."""
         calls = []
-        def track_calls(args, cwd=None):
+        def track_calls(args, cwd=None, **kwargs):
             calls.append(args)
             if args == ["rev-parse", "--short", "HEAD"]:
                 return MagicMock(returncode=0, stdout="abc1234\n")
@@ -312,7 +313,7 @@ class TestPullUpstream:
     def test_restores_branch_on_fetch_failure(self, mock_run):
         """When fetch fails on a non-main branch, checkout back to original."""
         calls = []
-        def track_calls(args, cwd=None):
+        def track_calls(args, cwd=None, **kwargs):
             calls.append(args)
             if args == ["rev-parse", "--short", "HEAD"]:
                 return MagicMock(returncode=0, stdout="abc1234\n")
@@ -337,3 +338,44 @@ class TestPullUpstream:
         # Should have attempted to restore original branch
         checkout_restore = [c for c in calls if c == ["checkout", "koan/feature"]]
         assert len(checkout_restore) == 1
+
+    @patch("app.update_manager._run_git")
+    def test_overall_timeout_aborts_operation(self, mock_run):
+        """When overall timeout expires, operation returns timeout error."""
+        # Mock time.monotonic to simulate deadline expiry before fetch
+        base = time.monotonic()
+        monotonic_calls = [0]
+
+        def fake_monotonic():
+            monotonic_calls[0] += 1
+            # First call: deadline calculation in pull_upstream
+            if monotonic_calls[0] <= 1:
+                return base
+            # All subsequent calls: past deadline
+            return base + 200
+
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="abc1234\n"),   # _get_short_sha
+            MagicMock(returncode=0, stdout="upstream\n"),   # find_upstream_remote
+            MagicMock(returncode=0, stdout=""),              # _is_dirty (clean)
+            MagicMock(returncode=0, stdout="main\n"),        # _get_current_branch
+            # fetch never called — timeout triggers first
+        ]
+
+        with patch("app.update_manager.time") as mock_time:
+            mock_time.monotonic = fake_monotonic
+            result = pull_upstream(Path("/repo"), timeout=5)
+
+        assert result.success is False
+        assert "timed out" in result.error.lower()
+
+    @patch("app.update_manager._run_git")
+    def test_timeout_parameter_is_accepted(self, mock_run):
+        """pull_upstream accepts a timeout parameter without error."""
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="abc1234\n"),
+            MagicMock(returncode=1, stdout=""),  # no remote
+        ]
+
+        result = pull_upstream(Path("/repo"), timeout=30)
+        assert result.success is False
