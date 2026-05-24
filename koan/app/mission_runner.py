@@ -1329,11 +1329,12 @@ def run_post_mission(
             _log_runner("error", f"Token extraction failed: {e}")
 
         # Flag silent cost-tracking gaps so operators can detect them
-        if _tokens is None and exit_code == 0:
+        if _tokens is None:
             result["cost_tracking_failed"] = True
             print(
                 "[mission_runner] WARNING: cost tracking failed — "
-                "token extraction returned None after successful run",
+                "token extraction returned None"
+                f" (exit_code={exit_code})",
                 file=sys.stderr,
             )
 

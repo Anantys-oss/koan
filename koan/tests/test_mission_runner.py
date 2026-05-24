@@ -2888,11 +2888,11 @@ class TestCostTrackingFailedFlag:
     @patch("app.quota_handler.handle_quota_exhaustion", return_value=None)
     @patch("app.mission_runner.update_usage", return_value=True)
     @patch("app.token_parser.extract_tokens", return_value=None)
-    def test_not_set_when_exit_nonzero(
+    def test_also_set_when_exit_nonzero(
         self, mock_tokens, mock_usage, mock_quota, mock_archive,
         mock_reflect, mock_merge, mock_commit, tmp_path, capsys,
     ):
-        """cost_tracking_failed stays False when exit_code != 0 (expected no tokens)."""
+        """cost_tracking_failed=True when token extraction returns None on failure too."""
         from app.mission_runner import run_post_mission
 
         instance_dir = str(tmp_path / "instance")
@@ -2908,9 +2908,10 @@ class TestCostTrackingFailedFlag:
             stderr_file="/tmp/err.txt",
         )
 
-        assert result["cost_tracking_failed"] is False
+        assert result["cost_tracking_failed"] is True
         captured = capsys.readouterr()
-        assert "cost tracking failed" not in captured.err
+        assert "cost tracking failed" in captured.err
+        assert "exit_code=1" in captured.err
 
     @patch("app.mission_runner.run_post_mission")
     def test_cli_emits_cost_tracking_failed_signal(self, mock_run, tmp_path, capsys):
