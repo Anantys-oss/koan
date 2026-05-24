@@ -30,7 +30,14 @@ from collections import namedtuple
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+from app.constants import (
+    BURN_RATE_DOWNGRADE_THRESHOLD_MIN,
+    BURN_RATE_WARNING_MIN_RESET_GAP_MIN,
+    BURN_RATE_WARNING_THRESHOLD_MIN,
+    MAX_SELECTION_AUDIT_ENTRIES as _MAX_SELECTION_AUDIT_ENTRIES,
+)
 from app.loop_manager import resolve_focus_area
+from app.run_log import log_safe
 
 
 # Set to True when running as CLI subprocess (stdout carries JSON).
@@ -38,19 +45,8 @@ _cli_mode = False
 
 
 def _log_iteration(category: str, message: str):
-    """Log iteration events via run_log.log() for timestamp+color support.
-
-    Falls back to stderr when in CLI subprocess mode (stdout carries JSON)
-    or when run_log is not available.
-    """
-    if _cli_mode:
-        print(f"[{category}] {message}", file=sys.stderr)
-        return
-    try:
-        from app.run_log import log as _run_log
-        _run_log(category, message)
-    except ImportError:
-        print(f"[{category}] {message}", file=sys.stderr)
+    """Log iteration events, routing to stderr in CLI subprocess mode."""
+    log_safe(category, message, force_stderr=_cli_mode)
 
 
 def _refresh_usage(usage_state: Path, usage_md: Path, count: int):
@@ -71,11 +67,6 @@ _MODE_DOWNGRADE = {
     "implement": "review",
     "review": "wait",
 }
-
-# When the rolling burn-rate estimate predicts the session will be exhausted
-# in less than this many minutes, drop the chosen mode one tier.
-BURN_RATE_DOWNGRADE_THRESHOLD_MIN = 30.0
-
 
 def _downgrade_if_unaffordable(tracker, mode: str,
                                tier_multiplier: float = 1.0) -> str:
@@ -192,10 +183,6 @@ def _get_usage_decision(usage_md: Path, count: int, projects_str: str):
             "display_lines": [],
             "tracker_error": str(e),
         }
-
-
-BURN_RATE_WARNING_THRESHOLD_MIN = 60.0
-BURN_RATE_WARNING_MIN_RESET_GAP_MIN = 120.0
 
 
 def _read_session_pct_and_reset(usage_state_path: Path):
@@ -605,9 +592,6 @@ def _check_passive(koan_root: str):
     except (ImportError, OSError, ValueError) as e:
         _log_iteration("error", f"Passive check failed: {e}")
         return None
-
-
-_MAX_SELECTION_AUDIT_ENTRIES = 200
 
 
 def _log_selection_audit(

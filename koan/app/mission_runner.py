@@ -28,22 +28,14 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-# Maximum wall-clock time for the entire post-mission pipeline (seconds).
-# Individual steps have their own timeouts (tests: 120s, reflection: 60s,
-# verification: 10s), but without an overall ceiling, accumulated steps
-# can block the agent loop for too long.  5 minutes is generous — typical
-# runs finish in 30-60s.
-# Configurable via post_mission_timeout in config.yaml.
-POST_MISSION_TIMEOUT = 300  # default; overridden by config at runtime
-
-
-def _log_runner(category: str, message: str):
-    """Log mission runner events via run_log.log() for timestamps and color."""
-    try:
-        from app.run_log import log as _run_log
-        _run_log(category, message)
-    except ImportError:
-        print(f"[{category}] {message}", file=sys.stderr)
+from app.constants import (
+    POST_MISSION_TIMEOUT_DEFAULT as POST_MISSION_TIMEOUT,
+    RESULT_FORWARD_MAX_CHARS as _RESULT_FORWARD_MAX_CHARS,
+    TIMEOUT_ALERT_COOLDOWN as _TIMEOUT_ALERT_COOLDOWN,
+    TIMEOUT_ALERT_THRESHOLD as _TIMEOUT_ALERT_THRESHOLD,
+    TIMEOUT_ALERT_WINDOW as _TIMEOUT_ALERT_WINDOW,
+)
+from app.run_log import log_safe as _log_runner
 
 
 def _resolve_post_mission_timeout() -> int:
@@ -941,9 +933,6 @@ def _notify_pipeline_failures(
 
 
 # --- Pipeline timeout rate alert ---
-_TIMEOUT_ALERT_WINDOW = 10  # number of recent outcomes to check
-_TIMEOUT_ALERT_THRESHOLD = 0.5  # fraction that must time out to trigger
-_TIMEOUT_ALERT_COOLDOWN = 3600  # seconds between alerts
 _TIMEOUT_ALERT_STATE_FILE = ".pipeline-timeout-alert.json"
 
 
@@ -1023,8 +1012,6 @@ _RESULT_ALERT_REGEX = re.compile(
     """,
     re.IGNORECASE | re.VERBOSE,
 )
-
-_RESULT_FORWARD_MAX_CHARS = 4000
 
 # Lazy registry cache — skills rarely change at runtime, so we build the
 # registry once per process. Rebuild requires a restart, matching how skill
