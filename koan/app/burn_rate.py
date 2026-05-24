@@ -18,11 +18,12 @@ import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from app.utils import atomic_write
 
 BURN_RATE_FILE = ".burn-rate.json"
+LOCK_FILE = ".burn-rate.lock"
 MAX_SAMPLES = 20
 MIN_SAMPLES_FOR_ESTIMATE = 5
 
@@ -129,6 +130,25 @@ def _save_state(instance_dir: Path, state: BurnRateState) -> None:
         logger.warning("Could not write %s: %s", path, exc)
 
 
+def _mutate_state(instance_dir: Path,
+                  fn: Callable[[BurnRateState], BurnRateState]) -> None:
+    """Load state under exclusive lock, apply *fn*, save atomically.
+
+    Prevents TOCTOU races where concurrent callers read the same state
+    and the second writer silently overwrites the first's changes.
+    Uses the same lock-file pattern as :func:`app.locked_file.locked_json_modify`.
+    """
+    lock_path = Path(instance_dir) / LOCK_FILE
+    with open(lock_path, "a") as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        try:
+            state = _load_state(instance_dir)
+            new_state = fn(state)
+            _save_state(instance_dir, new_state)
+        finally:
+            fcntl.flock(lf, fcntl.LOCK_UN)
+
+
 def record_run(instance_dir: Path, cost_pct: float,
                timestamp: Optional[datetime] = None) -> None:
     """Append a sample (and trim to MAX_SAMPLES).
@@ -142,14 +162,13 @@ def record_run(instance_dir: Path, cost_pct: float,
     if not math.isfinite(cost_pct) or cost_pct < 0:
         return
 
-    state = _load_state(Path(instance_dir))
     sample = Sample(timestamp=timestamp or _now_utc(), cost_pct=float(cost_pct))
-    samples = state.samples + [sample]
-    samples = samples[-MAX_SAMPLES:]
-    _save_state(Path(instance_dir), BurnRateState(
-        samples=samples,
-        last_warned_at=state.last_warned_at,
-    ))
+
+    def _append(state: BurnRateState) -> BurnRateState:
+        samples = (state.samples + [sample])[-MAX_SAMPLES:]
+        return BurnRateState(samples=samples, last_warned_at=state.last_warned_at)
+
+    _mutate_state(Path(instance_dir), _append)
 
 
 class BurnRateSnapshot:
@@ -265,19 +284,17 @@ def get_last_warned_at(instance_dir: Path) -> Optional[datetime]:
 def mark_warned(instance_dir: Path,
                 timestamp: Optional[datetime] = None) -> None:
     """Record that an exhaustion warning has just been fired."""
-    state = _load_state(Path(instance_dir))
-    _save_state(Path(instance_dir), BurnRateState(
-        samples=state.samples,
-        last_warned_at=timestamp or _now_utc(),
-    ))
+    ts = timestamp or _now_utc()
+
+    def _mark(state: BurnRateState) -> BurnRateState:
+        return BurnRateState(samples=state.samples, last_warned_at=ts)
+
+    _mutate_state(Path(instance_dir), _mark)
 
 
 def clear_warning(instance_dir: Path) -> None:
     """Clear the last-warned timestamp (e.g. after a quota reset)."""
-    state = _load_state(Path(instance_dir))
-    if state.last_warned_at is None:
-        return
-    _save_state(Path(instance_dir), BurnRateState(
-        samples=state.samples,
-        last_warned_at=None,
-    ))
+    def _clear(state: BurnRateState) -> BurnRateState:
+        return BurnRateState(samples=state.samples, last_warned_at=None)
+
+    _mutate_state(Path(instance_dir), _clear)

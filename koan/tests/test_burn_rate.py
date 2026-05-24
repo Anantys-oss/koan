@@ -206,6 +206,106 @@ class TestBurnRateSnapshot:
         assert snapshot.time_to_exhaustion(50.0) is None
 
 
+class TestTOCTOURace:
+    """Verify that concurrent mutations don't silently lose data."""
+
+    def test_concurrent_record_run_preserves_all_samples(self, instance_dir):
+        """Concurrent record_run calls must not silently drop samples.
+
+        Before the fix, record_run() did load -> modify -> save without
+        holding a lock across the cycle.  Two concurrent writers could both
+        read the same state, each append their sample, and the second write
+        would silently overwrite the first's sample.
+        """
+        import threading
+
+        n_writers = 10
+        barrier = threading.Barrier(n_writers, timeout=5)
+        errors = []
+
+        base = datetime(2026, 5, 24, 12, 0, tzinfo=timezone.utc)
+
+        def writer(idx):
+            try:
+                barrier.wait()
+                burn_rate.record_run(
+                    instance_dir,
+                    cost_pct=float(idx + 1),  # 1.0 .. 10.0
+                    timestamp=base + timedelta(minutes=idx),
+                )
+            except Exception as e:
+                errors.append(str(e))
+
+        threads = [
+            threading.Thread(target=writer, args=(i,))
+            for i in range(n_writers)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        assert not errors
+        samples = burn_rate.get_samples(instance_dir)
+        assert len(samples) == n_writers, (
+            f"Expected {n_writers} samples but got {len(samples)} — "
+            f"TOCTOU race lost {n_writers - len(samples)} samples"
+        )
+
+    def test_concurrent_mark_warned_preserves_samples(self, instance_dir):
+        """mark_warned() must not clobber samples written concurrently."""
+        import threading
+
+        # Seed with samples
+        base = datetime(2026, 5, 24, 12, 0, tzinfo=timezone.utc)
+        for i in range(5):
+            burn_rate.record_run(
+                instance_dir, cost_pct=float(i + 1),
+                timestamp=base + timedelta(minutes=i),
+            )
+
+        barrier = threading.Barrier(2, timeout=5)
+        errors = []
+
+        def do_record():
+            try:
+                barrier.wait()
+                burn_rate.record_run(
+                    instance_dir, cost_pct=99.0,
+                    timestamp=base + timedelta(minutes=99),
+                )
+            except Exception as e:
+                errors.append(str(e))
+
+        def do_warn():
+            try:
+                barrier.wait()
+                burn_rate.mark_warned(instance_dir)
+            except Exception as e:
+                errors.append(str(e))
+
+        t1 = threading.Thread(target=do_record)
+        t2 = threading.Thread(target=do_warn)
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+
+        assert not errors
+        samples = burn_rate.get_samples(instance_dir)
+        assert len(samples) == 6, (
+            f"Expected 6 samples but got {len(samples)} — "
+            f"concurrent mark_warned lost samples"
+        )
+        assert burn_rate.get_last_warned_at(instance_dir) is not None
+
+    def test_lock_file_created(self, instance_dir):
+        """_mutate_state creates a lock file next to the state file."""
+        burn_rate.record_run(instance_dir, cost_pct=1.0)
+        lock_path = instance_dir / burn_rate.LOCK_FILE
+        assert lock_path.exists()
+
+
 class TestStateFile:
     def test_file_layout(self, instance_dir):
         burn_rate.record_run(instance_dir, cost_pct=2.5)
