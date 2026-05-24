@@ -541,9 +541,25 @@ def _get_known_repos_from_projects(koan_root: str) -> Optional[set]:
                 if url:
                     known_repos.add(_normalize_github_url(url))
 
-    # 2. Workspace projects — in-memory cache populated at startup
+    # 2. Workspace projects — in-memory cache.
     try:
-        from app.projects_merged import get_all_github_urls_cache, get_github_url_cache
+        from app.projects_merged import (
+            get_all_github_urls_cache,
+            get_github_url_cache,
+            populate_workspace_github_urls,
+        )
+
+        # Refresh the cache so repos cloned under ANY alias directory name are
+        # recognized without a restart. The startup populate is a one-time
+        # snapshot; a repo cloned into workspace/ after the process started
+        # would otherwise have its @mentions dropped as "unregistered repo".
+        # Idempotent and cheap: skips already-cached projects and relies on
+        # get_all_projects()'s mtime cache, so it only shells to git when a new
+        # workspace project appears.
+        try:
+            populate_workspace_github_urls(koan_root)
+        except Exception as e:
+            log.debug("workspace github-url refresh skipped: %s", e)
 
         # Primary URLs (origin remote)
         for url in get_github_url_cache().values():
