@@ -1026,7 +1026,12 @@ def _remove_item_by_text(
 
     for i in range(start + 1, end):
         stripped = lines[i].strip()
-        if stripped.startswith("- ") and line_needle in stripped:
+        if not stripped.startswith("- "):
+            continue
+        # Strip [complexity:X] tags before comparing — these may have been
+        # inserted after the needle was captured by the mission picker.
+        comparable = re.sub(r"\s+", " ", _COMPLEXITY_TAG_RE.sub("", stripped))
+        if line_needle in comparable:
             return _splice_pending_item(lines, i, _find_item_extent(lines, i, end))
 
     return None

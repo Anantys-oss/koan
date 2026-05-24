@@ -140,3 +140,70 @@ class TestTagComplexityInPending:
             assert "[project:koan]" in updated
         finally:
             path.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Complexity tag must not break mission lifecycle transitions.
+# Regression: tag_complexity_in_pending inserts [complexity:X] between the
+# mission text and the ⏳ timestamp. The needle used by start_mission /
+# complete_mission / fail_mission was captured before the tag was added,
+# so the substring match fails and mission transitions silently do nothing.
+# ---------------------------------------------------------------------------
+
+class TestComplexityTagLifecycleInteraction:
+    """Verify lifecycle functions still find missions after complexity tagging."""
+
+    SKELETON = (
+        "# Missions\n\n## CI\n\n## Pending\n\n"
+        "- [project:myapp] Fix the login bug ⏳(2026-05-24T16:01)\n\n"
+        "## In Progress\n\n## Done\n\n## Failed\n"
+    )
+
+    NEEDLE = "Fix the login bug ⏳(2026-05-24T16:01)"
+
+    def _tag_content(self, content: str) -> str:
+        """Simulate what tag_complexity_in_pending does, inline."""
+        return content.replace(
+            "Fix the login bug ⏳",
+            "Fix the login bug [complexity:medium] ⏳",
+        )
+
+    def test_start_mission_after_complexity_tag(self):
+        tagged = self._tag_content(self.SKELETON)
+        from app.missions import start_mission, parse_sections
+        result = start_mission(tagged, self.NEEDLE)
+        sections = parse_sections(result)
+        assert len(sections["in_progress"]) == 1, "Mission must move to In Progress"
+        assert sections["pending"] == [] or all(
+            "Fix the login bug" not in p for p in sections["pending"]
+        ), "Mission must be removed from Pending"
+
+    def test_complete_mission_after_complexity_tag(self):
+        tagged = self._tag_content(self.SKELETON)
+        from app.missions import complete_mission, parse_sections
+        result = complete_mission(tagged, self.NEEDLE)
+        sections = parse_sections(result)
+        assert len(sections["done"]) == 1, "Mission must move to Done"
+        assert all(
+            "Fix the login bug" not in p for p in sections["pending"]
+        ), "Mission must be removed from Pending"
+
+    def test_fail_mission_after_complexity_tag(self):
+        tagged = self._tag_content(self.SKELETON)
+        from app.missions import fail_mission, parse_sections
+        result = fail_mission(tagged, self.NEEDLE)
+        sections = parse_sections(result)
+        assert len(sections["failed"]) == 1, "Mission must move to Failed"
+        assert all(
+            "Fix the login bug" not in p for p in sections["pending"]
+        ), "Mission must be removed from Pending"
+
+    def test_no_complexity_tag_still_works(self):
+        """Verify the fix doesn't regress the normal (no-tag) path."""
+        from app.missions import start_mission, parse_sections
+        result = start_mission(self.SKELETON, self.NEEDLE)
+        sections = parse_sections(result)
+        assert len(sections["in_progress"]) == 1
+        assert all(
+            "Fix the login bug" not in p for p in sections["pending"]
+        )
