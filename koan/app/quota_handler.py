@@ -246,14 +246,23 @@ def handle_quota_exhaustion(
     instance_dir: str,
     project_name: str,
     run_count: int,
-    stdout_file: str,
-    stderr_file: str,
+    stdout_file: str = "",
+    stderr_file: str = "",
+    *,
+    stdout_text: str = "",
+    stderr_text: str = "",
 ) -> Optional[Tuple[str, str]]:
     """Full quota exhaustion handler.
 
     Checks CLI output for quota signals, parses reset time,
     writes journal, and creates pause state.  Works for any
     provider (Claude, Copilot, etc.).
+
+    Output can be provided as file paths (``stdout_file``/``stderr_file``)
+    or as pre-read strings (``stdout_text``/``stderr_text``).  When text
+    params are supplied the corresponding file is not read, which allows
+    callers that already have the content in memory (e.g. skill dispatch)
+    to skip the filesystem round-trip.
 
     Args:
         koan_root: Path to koan root directory
@@ -262,6 +271,8 @@ def handle_quota_exhaustion(
         run_count: Number of completed runs
         stdout_file: Path to CLI stdout capture file
         stderr_file: Path to CLI stderr capture file
+        stdout_text: Pre-read stdout content (skips file read when non-empty)
+        stderr_text: Pre-read stderr content (skips file read when non-empty)
 
     Returns:
         (reset_display, resume_message) if quota exhausted, None otherwise
@@ -269,18 +280,19 @@ def handle_quota_exhaustion(
     # Read output files separately — stderr is trusted (CLI error messages),
     # stdout may contain Claude's response text which can mention "rate limit"
     # etc. in normal discussion (e.g., a plan about API rate limiting).
-    stderr_text = ""
-    stdout_text = ""
+    # When callers provide text directly, skip the file read.
     read_failures = 0
-    try:
-        stderr_text = Path(stderr_file).read_text()
-    except OSError:
-        read_failures += 1
-    try:
-        stdout_text = Path(stdout_file).read_text()
-    except OSError:
-        read_failures += 1
-    if read_failures == 2:
+    if not stderr_text and stderr_file:
+        try:
+            stderr_text = Path(stderr_file).read_text()
+        except OSError:
+            read_failures += 1
+    if not stdout_text and stdout_file:
+        try:
+            stdout_text = Path(stdout_file).read_text()
+        except OSError:
+            read_failures += 1
+    if not stderr_text and not stdout_text and read_failures == 2:
         print(
             f"[quota_handler] WARNING: could not read stdout ({stdout_file}) "
             f"or stderr ({stderr_file}) — quota check unreliable",

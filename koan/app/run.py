@@ -1327,9 +1327,22 @@ def _handle_skill_dispatch(
             elif _err_cat == ErrorCategory.QUOTA:
                 log("quota", "API quota exhausted during skill — requeueing mission to Pending")
                 _requeue_mission_in_file(instance, mission_title)
-                reset_ts, reset_display = _compute_quota_reset_ts(instance)
-                from app.pause_manager import create_pause
-                create_pause(koan_root, "quota", reset_ts, reset_display)
+                from app.quota_handler import handle_quota_exhaustion, QUOTA_CHECK_UNRELIABLE
+                quota_result = handle_quota_exhaustion(
+                    koan_root=koan_root,
+                    instance_dir=instance,
+                    project_name=project_name,
+                    run_count=run_num,
+                    stdout_text=skill_result.get("stdout", ""),
+                    stderr_text=skill_result.get("stderr", ""),
+                )
+                reset_display = ""
+                if quota_result and quota_result is not QUOTA_CHECK_UNRELIABLE:
+                    reset_display = quota_result[0]
+                else:
+                    reset_ts, reset_display = _compute_quota_reset_ts(instance)
+                    from app.pause_manager import create_pause
+                    create_pause(koan_root, "quota", reset_ts, reset_display)
                 _notify(instance, (
                     f"⏸️ API quota exhausted.{(' ' + reset_display) if reset_display else ''}\n"
                     f"Skill mission '{mission_title[:60]}' moved back to Pending.\n"
@@ -1338,20 +1351,22 @@ def _handle_skill_dispatch(
                 return True, mission_title
 
         # --- Post-mission quota exhaustion (detected during pipeline) ---
+        # handle_quota_exhaustion() inside run_post_mission already wrote the
+        # journal entry and created the pause state with accurate reset timing.
+        # Only create a fallback pause when quota_info is missing.
         if skill_result.get("quota_exhausted"):
             quota_info = skill_result.get("quota_info")
             if quota_info and isinstance(quota_info, (list, tuple)) and len(quota_info) >= 2:
                 reset_display, resume_msg = quota_info[0], quota_info[1]
             else:
                 reset_display, resume_msg = "", "Auto-resume in ~5h"
+                reset_ts, _disp = _compute_quota_reset_ts(instance)
+                from app.pause_manager import create_pause
+                create_pause(koan_root, "quota", reset_ts, reset_display or _disp)
             log("quota", f"Quota reached during skill post-mission. {reset_display}")
 
             _finalize_mission(instance, mission_title, project_name, exit_code)
             _requeue_mission_in_file(instance, mission_title)
-
-            reset_ts, _disp = _compute_quota_reset_ts(instance)
-            from app.pause_manager import create_pause
-            create_pause(koan_root, "quota", reset_ts, reset_display or _disp)
             _commit_instance(instance, f"koan: quota exhausted {time.strftime('%Y-%m-%d-%H:%M')}")
             _notify(instance, (
                 f"⚠️ Claude quota exhausted. {reset_display}\n\n"
@@ -2267,11 +2282,18 @@ def _run_iteration(
 
             if post_result.get("quota_exhausted"):
                 # quota_info is a (reset_display, resume_message) tuple
+                # populated by handle_quota_exhaustion() inside run_post_mission,
+                # which already wrote the journal entry and created the pause state.
                 quota_info = post_result.get("quota_info")
                 if quota_info and isinstance(quota_info, (list, tuple)) and len(quota_info) >= 2:
                     reset_display, resume_msg = quota_info[0], quota_info[1]
                 else:
                     reset_display, resume_msg = "", "Auto-resume in ~5h"
+                    # No quota_info means handle_quota_exhaustion didn't fire
+                    # (unreliable output or no quota signal) — create pause as fallback.
+                    reset_ts, _disp = _compute_quota_reset_ts(instance)
+                    from app.pause_manager import create_pause
+                    create_pause(koan_root, "quota", reset_ts, reset_display or _disp)
                 log("quota", f"Quota reached. {reset_display}")
 
                 # Requeue mission: _finalize_mission already moved it to Failed,
@@ -2280,11 +2302,6 @@ def _run_iteration(
                 if original_mission_title:
                     log("quota", "Requeueing mission to Pending (quota is transient)")
                     _requeue_mission_in_file(instance, original_mission_title)
-
-                # Create pause state so the main loop actually stops
-                reset_ts, _disp = _compute_quota_reset_ts(instance)
-                from app.pause_manager import create_pause
-                create_pause(koan_root, "quota", reset_ts, reset_display or _disp)
 
                 _commit_instance(instance, f"koan: quota exhausted {time.strftime('%Y-%m-%d-%H:%M')}")
                 _notify(instance, (

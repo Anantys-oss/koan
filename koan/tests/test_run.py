@@ -4821,7 +4821,12 @@ class TestSkillDispatchAuthQuota(TestRunSkillMissionEnv):
         mock_pause.assert_called_once_with(koan_root, "auth")
 
     def test_post_mission_quota_requeues_and_pauses(self, tmp_path):
-        """Quota detected in post-mission pipeline should requeue and pause."""
+        """Quota detected in post-mission pipeline should requeue.
+
+        When quota_info is present, handle_quota_exhaustion inside
+        run_post_mission already created the pause — the outer layer
+        should NOT overwrite it with a less accurate fallback.
+        """
         from app.run import _handle_skill_dispatch
 
         koan_root = str(tmp_path)
@@ -4832,7 +4837,8 @@ class TestSkillDispatchAuthQuota(TestRunSkillMissionEnv):
 
         mock_proc = self._make_mock_popen(returncode=0, stdout_lines=["ok\n"])
 
-        # run_post_mission returns quota_exhausted signal
+        # run_post_mission returns quota_exhausted signal with quota_info
+        # (meaning handle_quota_exhaustion already created the pause)
         mock_post_result = {
             "success": True,
             "quota_exhausted": True,
@@ -4872,9 +4878,66 @@ class TestSkillDispatchAuthQuota(TestRunSkillMissionEnv):
             )
 
         assert handled is True
-        # Finalize then requeue (same pattern as regular mission path)
         mock_finalize.assert_called_once()
         mock_requeue.assert_called_once()
+        # Pause already created by handle_quota_exhaustion inside
+        # run_post_mission — outer layer should not overwrite
+        mock_pause.assert_not_called()
+
+    def test_post_mission_quota_fallback_creates_pause(self, tmp_path):
+        """When quota_info is missing, outer layer creates fallback pause."""
+        from app.run import _handle_skill_dispatch
+
+        koan_root = str(tmp_path)
+        instance = str(tmp_path / "instance")
+        (tmp_path / "instance").mkdir()
+        (tmp_path / "instance" / "journal").mkdir(parents=True)
+        (tmp_path / "koan").mkdir()
+
+        mock_proc = self._make_mock_popen(returncode=0, stdout_lines=["ok\n"])
+
+        # quota_exhausted but no quota_info — handle_quota_exhaustion
+        # returned unreliable or None inside run_post_mission
+        mock_post_result = {
+            "success": True,
+            "quota_exhausted": True,
+            "quota_info": None,
+        }
+
+        with patch("app.run.subprocess.Popen", side_effect=mock_proc._side_effect), \
+             patch("app.run._get_koan_branch", return_value="main"), \
+             patch("app.run._restore_koan_branch"), \
+             patch("app.run._reset_terminal"), \
+             patch("app.run.protected_phase", return_value=MagicMock(
+                 __enter__=MagicMock(), __exit__=MagicMock(return_value=False)
+             )), \
+             patch("app.run._notify"), \
+             patch("app.run._notify_mission_end"), \
+             patch("app.run._finalize_mission"), \
+             patch("app.run._requeue_mission_in_file"), \
+             patch("app.run._commit_instance"), \
+             patch("app.run._compute_quota_reset_ts", return_value=(0, "soon")), \
+             patch("app.run._sleep_between_runs"), \
+             patch("app.run.set_status"), \
+             patch("app.run.log"), \
+             patch("app.skill_dispatch.dispatch_skill_mission",
+                   return_value=["python3", "-m", "app.plan_runner"]), \
+             patch("app.mission_runner.run_post_mission", return_value=mock_post_result), \
+             patch("app.pause_manager.create_pause") as mock_pause:
+            handled, _ = _handle_skill_dispatch(
+                mission_title="/plan test",
+                project_name="test",
+                project_path=str(tmp_path),
+                koan_root=koan_root,
+                instance=instance,
+                run_num=1,
+                max_runs=20,
+                autonomous_mode="implement",
+                interval=30,
+            )
+
+        assert handled is True
+        # No quota_info → fallback pause should be created
         mock_pause.assert_called_once()
 
     def test_mission_tier_passed_to_post_mission(self, tmp_path):

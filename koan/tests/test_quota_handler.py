@@ -788,6 +788,131 @@ class TestHandleQuotaExhaustion:
         assert state.is_quota is True
 
 
+class TestHandleQuotaExhaustionTextParams:
+    """Test handle_quota_exhaustion with pre-read text params (no files)."""
+
+    def test_detects_quota_from_stderr_text(self, tmp_path):
+        from app.quota_handler import handle_quota_exhaustion
+
+        instance = str(tmp_path / "instance")
+        os.makedirs(instance)
+
+        result = handle_quota_exhaustion(
+            str(tmp_path), instance, "koan", 5,
+            stderr_text="Error: out of extra usage. resets 10am (Europe/Paris)",
+        )
+        assert result is not None
+        reset_display, resume_msg = result
+        assert "10am" in reset_display
+
+    def test_detects_quota_from_stdout_text(self, tmp_path):
+        from app.quota_handler import handle_quota_exhaustion
+
+        instance = str(tmp_path / "instance")
+        os.makedirs(instance)
+
+        result = handle_quota_exhaustion(
+            str(tmp_path), instance, "koan", 3,
+            stdout_text="Your quota has been reached",
+        )
+        assert result is not None
+
+    def test_returns_none_when_no_quota_in_text(self, tmp_path):
+        from app.quota_handler import handle_quota_exhaustion
+
+        instance = str(tmp_path / "instance")
+        os.makedirs(instance)
+
+        result = handle_quota_exhaustion(
+            str(tmp_path), instance, "koan", 5,
+            stdout_text="Mission completed successfully.",
+            stderr_text="",
+        )
+        assert result is None
+
+    def test_text_params_skip_file_reading(self, tmp_path):
+        """When text params are provided, files should not be read."""
+        from app.quota_handler import handle_quota_exhaustion
+
+        instance = str(tmp_path / "instance")
+        os.makedirs(instance)
+
+        # Pass non-existent file paths — should not raise because text is provided
+        result = handle_quota_exhaustion(
+            str(tmp_path), instance, "koan", 5,
+            stdout_file="/nonexistent/stdout",
+            stderr_file="/nonexistent/stderr",
+            stdout_text="Some output",
+            stderr_text="out of extra usage resets 10am (Europe/Paris)",
+        )
+        assert result is not None
+
+    def test_creates_pause_from_text(self, tmp_path):
+        from app.quota_handler import handle_quota_exhaustion
+        from app.pause_manager import get_pause_state
+
+        instance = str(tmp_path / "instance")
+        os.makedirs(instance)
+
+        handle_quota_exhaustion(
+            str(tmp_path), instance, "koan", 5,
+            stderr_text="out of extra usage resets 10am (Europe/Paris)",
+        )
+
+        state = get_pause_state(str(tmp_path))
+        assert state is not None
+        assert state.reason == "quota"
+
+    def test_writes_journal_from_text(self, tmp_path):
+        from app.quota_handler import handle_quota_exhaustion
+
+        instance = str(tmp_path / "instance")
+        os.makedirs(instance)
+
+        handle_quota_exhaustion(
+            str(tmp_path), instance, "koan", 5,
+            stderr_text="out of extra usage resets 10am (Europe/Paris)",
+        )
+
+        # Verify journal was written
+        journal_dir = tmp_path / "instance" / "journal"
+        journal_files = list(journal_dir.rglob("*.md")) if journal_dir.exists() else []
+        assert len(journal_files) > 0
+        content = journal_files[0].read_text()
+        assert "quota" in content.lower()
+
+    def test_unreliable_when_no_text_and_no_files(self, tmp_path, capsys):
+        from app.quota_handler import handle_quota_exhaustion, QUOTA_CHECK_UNRELIABLE
+
+        instance = str(tmp_path / "instance")
+        os.makedirs(instance)
+
+        result = handle_quota_exhaustion(
+            str(tmp_path), instance, "koan", 5,
+            stdout_file="/nonexistent/stdout",
+            stderr_file="/nonexistent/stderr",
+        )
+        assert result is QUOTA_CHECK_UNRELIABLE
+
+    def test_mixed_text_and_file(self, tmp_path):
+        """Text param provided for stderr, file for stdout."""
+        from app.quota_handler import handle_quota_exhaustion
+
+        instance = str(tmp_path / "instance")
+        os.makedirs(instance)
+
+        stdout_file = str(tmp_path / "stdout")
+        with open(stdout_file, "w") as f:
+            f.write("Normal output")
+
+        result = handle_quota_exhaustion(
+            str(tmp_path), instance, "koan", 5,
+            stdout_file=stdout_file,
+            stderr_text="out of extra usage resets 10am (Europe/Paris)",
+        )
+        assert result is not None
+
+
 class TestStdoutFalsePositives:
     """Test that loose quota patterns in stdout don't trigger false positives.
 
