@@ -19,6 +19,7 @@ Pipeline:
 import argparse
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from app.git_sync import run_git
@@ -226,9 +227,10 @@ def run_refresh(project_path: str, project_name: str) -> int:
         "rev-parse", "--abbrev-ref", "HEAD", cwd=project_path,
     ).strip()
 
-    # Create a feature branch
+    # Create a feature branch (timestamp avoids collision with stale branches)
     prefix = get_branch_prefix()
-    branch_name = f"{prefix}update-claudemd-{project_name}"
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
+    branch_name = f"{prefix}update-claudemd-{project_name}.{ts}"
     try:
         _create_branch(project_path, branch_name)
     except (RuntimeError, subprocess.SubprocessError) as e:

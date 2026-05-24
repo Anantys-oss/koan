@@ -244,11 +244,12 @@ class TestRunRefresh:
             result = run_refresh(str(project), "test")
 
         assert result == 0
-        # Branch was created
+        # Branch was created with timestamp suffix
         branch_calls = [c for c in self._mock_git_strict.call_args_list
                         if c[0][0] == "checkout" and "-b" in c[0]]
         assert len(branch_calls) == 1
-        assert "koan/update-claudemd-test" in branch_calls[0][0]
+        branch_arg = " ".join(branch_calls[0][0])
+        assert "koan/update-claudemd-test." in branch_arg
         # PR was created
         self._mock_pr_create.assert_called_once()
 
@@ -440,6 +441,23 @@ class TestRunRefresh:
         checkout_main = [c for c in self._mock_git_strict.call_args_list
                          if c[0] == ("checkout", "main")]
         assert len(checkout_main) >= 1
+
+    def test_branch_name_includes_timestamp(self, tmp_path):
+        """Branch name must include a timestamp to avoid collisions."""
+        import re
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "CLAUDE.md").write_text("# Project\n")
+
+        with patch("app.claudemd_refresh.build_git_context", return_value="abc Commit"):
+            run_refresh(str(project), "myproj")
+
+        branch_calls = [c for c in self._mock_git_strict.call_args_list
+                        if c[0][0] == "checkout" and "-b" in c[0]]
+        assert len(branch_calls) == 1
+        branch_name = branch_calls[0][0][2]  # ("checkout", "-b", "<name>")
+        # Pattern: prefix/update-claudemd-project.YYYYMMDDHHmm
+        assert re.match(r"koan/update-claudemd-myproj\.\d{12}$", branch_name)
 
 
 # ---------------------------------------------------------------------------
