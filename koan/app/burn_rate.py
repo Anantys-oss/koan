@@ -103,8 +103,8 @@ def _alert_corruption(instance_dir: Path, path: Path,
             "enough new samples accumulate.\n",
             priority=NotificationPriority.WARNING,
         )
-    except Exception:
-        pass  # Best-effort — don't break state loading
+    except Exception as alert_exc:
+        logger.debug("Outbox alert failed: %s", alert_exc)
 
 
 def _load_state(instance_dir: Path) -> BurnRateState:
