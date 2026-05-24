@@ -61,6 +61,16 @@ class TestSampleBuffer:
         burn_rate.record_run(instance_dir, cost_pct=float("inf"))
         assert burn_rate.get_samples(instance_dir) == []
 
+    def test_invalid_values_log_warning(self, instance_dir, caplog):
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="app.burn_rate"):
+            burn_rate.record_run(instance_dir, cost_pct=-1.0)
+            burn_rate.record_run(instance_dir, cost_pct=float("nan"))
+            burn_rate.record_run(instance_dir, cost_pct=float("inf"))
+        assert len(caplog.records) == 3
+        assert all("Dropped invalid" in r.message for r in caplog.records)
+
     def test_persistence_across_calls(self, instance_dir):
         burn_rate.record_run(instance_dir, cost_pct=2.0)
         burn_rate.record_run(instance_dir, cost_pct=3.0)
