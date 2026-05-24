@@ -377,8 +377,12 @@ class NotificationTracker:
             self.record_sso_failure(
                 f"check_already_processed comment={comment_id}",
             )
-        except (RuntimeError, json.JSONDecodeError):
-            pass
+        except (RuntimeError, json.JSONDecodeError, OSError,
+                subprocess.TimeoutExpired) as exc:
+            log.warning(
+                "GitHub: reactions check failed for comment %s: %s",
+                comment_id, exc,
+            )
 
         return False
 
@@ -402,10 +406,11 @@ class NotificationTracker:
                 extra_args=["-f", f"content={emoji}"],
                 timeout=30,
             )
-            self.processed_comments.add(comment_id)
             return True
         except RuntimeError:
             return False
+        finally:
+            self.processed_comments.add(comment_id)
 
     def search_comments_for_mention(
         self,

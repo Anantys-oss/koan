@@ -506,6 +506,28 @@ class TestCheckAlreadyProcessed:
         mock_api.side_effect = RuntimeError("fail")
         assert check_already_processed("999", "bot", "owner", "repo") is False
 
+    @patch("app.github_notifications.api")
+    def test_api_error_logs_warning(self, mock_api, caplog):
+        """API errors must be logged so dedup failures are visible."""
+        mock_api.side_effect = RuntimeError("connection reset")
+        with caplog.at_level(logging.WARNING, logger="app.github_notifications"):
+            check_already_processed("999", "bot", "owner", "repo")
+        assert any("999" in r.message for r in caplog.records
+                    if r.levelno >= logging.WARNING)
+
+    @patch("app.github_notifications.api")
+    def test_timeout_caught_not_raised(self, mock_api):
+        """TimeoutExpired must be caught, not propagate to caller."""
+        mock_api.side_effect = subprocess.TimeoutExpired(cmd="gh", timeout=30)
+        # Must not raise — should return False
+        assert check_already_processed("timeout1", "bot", "owner", "repo") is False
+
+    @patch("app.github_notifications.api")
+    def test_os_error_caught_not_raised(self, mock_api):
+        """OSError must be caught, not propagate to caller."""
+        mock_api.side_effect = OSError("network unreachable")
+        assert check_already_processed("os1", "bot", "owner", "repo") is False
+
 
 class TestAddReaction:
     def setup_method(self):
@@ -521,6 +543,18 @@ class TestAddReaction:
     def test_failure(self, mock_api):
         mock_api.side_effect = RuntimeError("fail")
         assert add_reaction("owner", "repo", "123") is False
+
+    @patch("app.github_notifications.api")
+    def test_failure_still_marks_processed(self, mock_api):
+        """Even when reaction API fails, comment must be in _processed_comments.
+
+        The caller has already persisted the mission — the reaction is just
+        an acknowledgment. Without in-memory marking, the next poll cycle
+        treats the comment as unprocessed and creates a duplicate mission.
+        """
+        mock_api.side_effect = RuntimeError("API error")
+        add_reaction("owner", "repo", "dup1")
+        assert "dup1" in _processed_comments
 
 
 class TestCheckUserPermission:
