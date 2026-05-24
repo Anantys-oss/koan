@@ -235,6 +235,9 @@ def _handle_status(ctx) -> str:
     # Health section
     parts.extend(_build_health_section(koan_root, instance_dir))
 
+    # Contemplative adaptation rates
+    parts.extend(_build_contemplative_section(instance_dir))
+
     return "\n".join(parts)
 
 
@@ -263,6 +266,40 @@ def _build_skill_metrics_section(instance_dir) -> list:
         return lines
     except Exception:
         return []
+
+
+def _build_contemplative_section(instance_dir) -> list:
+    """Build contemplative adaptation rates for /status output."""
+    try:
+        from app.session_tracker import get_contemplative_productivity
+        from app.utils import get_contemplative_chance, get_known_projects
+
+        base_chance = get_contemplative_chance()
+        projects = get_known_projects()
+        items = []
+
+        for name, _ in projects:
+            ratio = get_contemplative_productivity(str(instance_dir), name)
+            if ratio is None:
+                continue
+            # Compute adapted chance
+            if ratio < 0.2:
+                adapted = int(base_chance * 0.4)
+            elif ratio >= 0.5:
+                adapted = min(int(base_chance * 1.5), 25)
+            else:
+                adapted = base_chance
+            pct_label = f"{ratio:.0%}"
+            if adapted != base_chance:
+                items.append(f"  {name}: {pct_label} productive → {adapted}%")
+            else:
+                items.append(f"  {name}: {pct_label} productive (unchanged)")
+
+        if items:
+            return [f"\nContemplative (base {base_chance}%)"] + items
+    except Exception:
+        pass
+    return []
 
 
 def _build_health_section(koan_root, instance_dir) -> list:

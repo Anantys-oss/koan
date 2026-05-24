@@ -1621,11 +1621,32 @@ def plan_iteration(
             _log_iteration("error", f"Contemplative chance load error: {e}")
             contemplative_chance = 10
 
+        # Adapt chance based on historical contemplative productivity
+        adapted_chance = contemplative_chance
+        if project_name and instance_dir:
+            try:
+                from app.session_tracker import adapt_contemplative_chance
+                adapted_chance = adapt_contemplative_chance(
+                    contemplative_chance, instance_dir, project_name
+                )
+                if adapted_chance != contemplative_chance:
+                    _log_iteration("koan",
+                        f"Contemplative chance adapted: "
+                        f"{contemplative_chance}% → {adapted_chance}% "
+                        f"(project={project_name})")
+            except (ImportError, OSError, ValueError):
+                pass
+
         autonomous_decision = _decide_autonomous_action(
-            autonomous_mode, koan_root, schedule_state, contemplative_chance,
+            autonomous_mode, koan_root, schedule_state, adapted_chance,
             focus_mode=focus_mode,
         )
         action = autonomous_decision.action
+
+        if action == "contemplative" and adapted_chance != contemplative_chance:
+            decision_reason = (
+                f"contemplative (adapted {contemplative_chance}%→{adapted_chance}%)"
+            )
 
         # Side effect: maybe suggest automations (non-blocking).
         # If action is autonomous/contemplative, focus is already inactive

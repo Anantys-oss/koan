@@ -14,6 +14,8 @@ from app.session_tracker import (
     get_recent_outcomes,
     get_staleness_score,
     get_staleness_warning,
+    get_contemplative_productivity,
+    adapt_contemplative_chance,
     get_project_freshness,
     get_last_session_timestamp,
     get_project_drift,
@@ -1024,3 +1026,151 @@ class TestRecordOutcomeEnrichedFields:
             mission_type=None,
         )
         assert entry["mission_type"] == "review"
+
+
+# --- get_contemplative_productivity & adapt_contemplative_chance ---
+
+class TestContemplativeProductivity:
+    """Tests for adaptive contemplative probability."""
+
+    def _write_outcomes(self, instance_dir, outcomes):
+        """Helper to write outcomes to session_outcomes.json."""
+        path = Path(instance_dir) / "session_outcomes.json"
+        path.write_text(json.dumps(outcomes))
+
+    def _make_contemplative(self, project, outcome="productive"):
+        return {
+            "timestamp": "2026-05-24T10:00:00",
+            "project": project,
+            "mode": "deep",
+            "duration_minutes": 3,
+            "outcome": outcome,
+            "summary": "Test session",
+            "mission_type": "contemplative",
+            "has_pr": False,
+            "has_branch": False,
+            "pipeline_timed_out": False,
+        }
+
+    def test_insufficient_data_returns_none(self, tracker_env):
+        """Fewer than 5 contemplative sessions → None."""
+        outcomes = [self._make_contemplative("proj") for _ in range(4)]
+        self._write_outcomes(tracker_env, outcomes)
+        assert get_contemplative_productivity(tracker_env, "proj") is None
+
+    def test_exactly_five_samples(self, tracker_env):
+        """Exactly 5 contemplative sessions → returns ratio."""
+        outcomes = [self._make_contemplative("proj", "productive") for _ in range(3)]
+        outcomes += [self._make_contemplative("proj", "empty") for _ in range(2)]
+        self._write_outcomes(tracker_env, outcomes)
+        ratio = get_contemplative_productivity(tracker_env, "proj")
+        assert ratio == pytest.approx(0.6)
+
+    def test_filters_by_project(self, tracker_env):
+        """Only counts contemplative sessions for the specified project."""
+        outcomes = [self._make_contemplative("other", "productive") for _ in range(10)]
+        outcomes += [self._make_contemplative("proj", "productive") for _ in range(3)]
+        self._write_outcomes(tracker_env, outcomes)
+        # proj has only 3 samples → insufficient
+        assert get_contemplative_productivity(tracker_env, "proj") is None
+
+    def test_filters_by_mission_type(self, tracker_env):
+        """Only counts sessions with mission_type='contemplative'."""
+        outcomes = [self._make_contemplative("proj") for _ in range(5)]
+        # Add non-contemplative sessions
+        for _ in range(5):
+            o = self._make_contemplative("proj")
+            o["mission_type"] = "autonomous"
+            outcomes.append(o)
+        self._write_outcomes(tracker_env, outcomes)
+        # Should only count the 5 contemplative ones (all productive)
+        assert get_contemplative_productivity(tracker_env, "proj") == 1.0
+
+    def test_uses_last_n_sessions(self, tracker_env):
+        """Only the last `limit` contemplative sessions are considered."""
+        # 10 old empty sessions + 10 new productive ones
+        outcomes = [self._make_contemplative("proj", "empty") for _ in range(10)]
+        outcomes += [self._make_contemplative("proj", "productive") for _ in range(10)]
+        self._write_outcomes(tracker_env, outcomes)
+        # Default limit=10, last 10 are all productive
+        assert get_contemplative_productivity(tracker_env, "proj") == 1.0
+
+    def test_all_empty(self, tracker_env):
+        """All empty → ratio 0.0."""
+        outcomes = [self._make_contemplative("proj", "empty") for _ in range(6)]
+        self._write_outcomes(tracker_env, outcomes)
+        assert get_contemplative_productivity(tracker_env, "proj") == 0.0
+
+    def test_preloaded_outcomes(self, tracker_env):
+        """Accepts _all_outcomes parameter to skip file I/O."""
+        outcomes = [self._make_contemplative("proj") for _ in range(5)]
+        ratio = get_contemplative_productivity(
+            tracker_env, "proj", _all_outcomes=outcomes
+        )
+        assert ratio == 1.0
+
+
+class TestAdaptContemplativeChance:
+    """Tests for adapt_contemplative_chance multiplier logic."""
+
+    def _write_outcomes(self, instance_dir, outcomes):
+        path = Path(instance_dir) / "session_outcomes.json"
+        path.write_text(json.dumps(outcomes))
+
+    def _make_contemplative(self, project, outcome="productive"):
+        return {
+            "timestamp": "2026-05-24T10:00:00",
+            "project": project,
+            "mode": "deep",
+            "duration_minutes": 3,
+            "outcome": outcome,
+            "summary": "Test",
+            "mission_type": "contemplative",
+            "has_pr": False,
+            "has_branch": False,
+            "pipeline_timed_out": False,
+        }
+
+    def test_low_productivity_reduces_chance(self, tracker_env):
+        """ratio < 0.2 → multiply by 0.4."""
+        # 1/10 productive = 0.1
+        outcomes = [self._make_contemplative("proj", "empty") for _ in range(9)]
+        outcomes.append(self._make_contemplative("proj", "productive"))
+        self._write_outcomes(tracker_env, outcomes)
+        # base 10% * 0.4 = 4%
+        assert adapt_contemplative_chance(10, tracker_env, "proj") == 4
+
+    def test_mid_productivity_unchanged(self, tracker_env):
+        """0.2 <= ratio < 0.5 → no change."""
+        # 3/10 productive = 0.3
+        outcomes = [self._make_contemplative("proj", "empty") for _ in range(7)]
+        outcomes += [self._make_contemplative("proj", "productive") for _ in range(3)]
+        self._write_outcomes(tracker_env, outcomes)
+        assert adapt_contemplative_chance(10, tracker_env, "proj") == 10
+
+    def test_high_productivity_increases_chance(self, tracker_env):
+        """ratio >= 0.5 → multiply by 1.5."""
+        # 6/10 productive = 0.6
+        outcomes = [self._make_contemplative("proj", "empty") for _ in range(4)]
+        outcomes += [self._make_contemplative("proj", "productive") for _ in range(6)]
+        self._write_outcomes(tracker_env, outcomes)
+        # base 10% * 1.5 = 15%
+        assert adapt_contemplative_chance(10, tracker_env, "proj") == 15
+
+    def test_cap_at_25_percent(self, tracker_env):
+        """Adapted chance is capped at 25% even with high base."""
+        # All productive
+        outcomes = [self._make_contemplative("proj") for _ in range(10)]
+        self._write_outcomes(tracker_env, outcomes)
+        # base 20% * 1.5 = 30% → capped to 25%
+        assert adapt_contemplative_chance(20, tracker_env, "proj") == 25
+
+    def test_insufficient_data_returns_base(self, tracker_env):
+        """Fewer than 5 samples → return base chance unchanged."""
+        outcomes = [self._make_contemplative("proj") for _ in range(3)]
+        self._write_outcomes(tracker_env, outcomes)
+        assert adapt_contemplative_chance(10, tracker_env, "proj") == 10
+
+    def test_no_outcomes_file(self, tracker_env):
+        """Missing outcomes file → return base chance."""
+        assert adapt_contemplative_chance(10, tracker_env, "proj") == 10

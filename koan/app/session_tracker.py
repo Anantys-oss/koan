@@ -390,6 +390,74 @@ def get_staleness_score(
     return count
 
 
+def get_contemplative_productivity(
+    instance_dir: str,
+    project: str,
+    limit: int = 10,
+    _all_outcomes: Optional[list] = None,
+) -> Optional[float]:
+    """Compute productivity ratio for recent contemplative sessions.
+
+    Args:
+        instance_dir: Path to instance directory.
+        project: Project name to filter by.
+        limit: Maximum contemplative sessions to consider.
+        _all_outcomes: Pre-loaded outcomes list (avoids re-reading the file).
+
+    Returns:
+        Ratio of productive/total contemplative sessions (0.0-1.0),
+        or None if fewer than 5 contemplative samples exist.
+    """
+    if _all_outcomes is None:
+        outcomes_path = Path(instance_dir) / "session_outcomes.json"
+        _all_outcomes = load_outcomes(outcomes_path)
+
+    contemplative = [
+        o for o in _all_outcomes
+        if o.get("project") == project and o.get("mission_type") == "contemplative"
+    ]
+
+    # Take last N contemplative sessions
+    recent = contemplative[-limit:]
+
+    if len(recent) < 5:
+        return None  # Insufficient data
+
+    productive = sum(1 for o in recent if o.get("outcome") == "productive")
+    return productive / len(recent)
+
+
+def adapt_contemplative_chance(
+    base_chance: int,
+    instance_dir: str,
+    project: str,
+) -> int:
+    """Apply adaptive multiplier to contemplative probability.
+
+    Uses historical productivity of contemplative sessions to scale
+    the base chance up or down:
+    - ratio < 0.2: multiply by 0.4 (reduce waste)
+    - 0.2 <= ratio < 0.5: no change
+    - ratio >= 0.5: multiply by 1.5 (reward productive contemplation)
+    - Insufficient data: no change
+
+    Returns adapted chance, capped at 25%.
+    """
+    ratio = get_contemplative_productivity(instance_dir, project)
+    if ratio is None:
+        return base_chance
+
+    if ratio < 0.2:
+        multiplier = 0.4
+    elif ratio >= 0.5:
+        multiplier = 1.5
+    else:
+        multiplier = 1.0
+
+    adapted = int(base_chance * multiplier)
+    return min(adapted, 25)  # Cap at 25%
+
+
 def get_staleness_warning(instance_dir: str, project: str) -> str:
     """Generate a human-readable staleness warning if appropriate.
 
