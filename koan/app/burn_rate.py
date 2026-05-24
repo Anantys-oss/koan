@@ -184,6 +184,7 @@ def record_run(instance_dir: Path, cost_pct: float,
         timestamp: Override for the sample timestamp (defaults to now UTC).
     """
     if not math.isfinite(cost_pct) or cost_pct < 0:
+        logger.warning("Dropped invalid burn-rate sample: cost_pct=%s", cost_pct)
         return
 
     sample = Sample(timestamp=timestamp or _now_utc(), cost_pct=float(cost_pct))
