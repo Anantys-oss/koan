@@ -747,10 +747,9 @@ def build_agent_prompt(
     # Compute context budget (issue #1309)
     budget = _context_budget(autonomous_mode, available_pct)
     if budget["pressure"] != PRESSURE_NORMAL:
-        print(
-            f"[prompt_builder] Context trimming: pressure={budget['pressure']} "
-            f"(mode={autonomous_mode}, pct={available_pct}%)",
-            file=sys.stderr,
+        logger.info(
+            "Context trimming: pressure=%s (mode=%s, pct=%d%%)",
+            budget["pressure"], autonomous_mode, available_pct,
         )
 
     prompt = _load_agent_template(
@@ -854,10 +853,9 @@ def build_agent_prompt_parts(
     # --- Compute context budget (issue #1309) ---
     budget = _context_budget(autonomous_mode, available_pct)
     if budget["pressure"] != PRESSURE_NORMAL:
-        print(
-            f"[prompt_builder] Context trimming: pressure={budget['pressure']} "
-            f"(mode={autonomous_mode}, pct={available_pct}%)",
-            file=sys.stderr,
+        logger.info(
+            "Context trimming: pressure=%s (mode=%s, pct=%d%%)",
+            budget["pressure"], autonomous_mode, available_pct,
         )
 
     # --- User prompt: agent template + per-mission dynamic content ---
