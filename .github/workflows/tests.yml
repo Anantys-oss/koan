@@ -37,7 +37,7 @@ jobs:
             marker: "slow"
             split_group: 3
 
-    name: 🧪 test (py${{ matrix.python-version }}, ${{ matrix.group.name }})
+    name: test (py${{ matrix.python-version }}, ${{ matrix.group.name }})
 
     steps:
       - uses: actions/checkout@v6
@@ -86,7 +86,7 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    name: 📊 check-coverage
+    name: check-coverage
 
     steps:
       - uses: actions/checkout@v6

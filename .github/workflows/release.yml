@@ -20,7 +20,7 @@ jobs:
   release:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    name: 🚀 release
+    name: release
 
     steps:
       - uses: actions/checkout@v6
