@@ -1430,7 +1430,9 @@ def reorder_mission(content: str, position: int, target: int = 1) -> Tuple[str, 
     # Remove the moved item's lines
     new_lines = lines[:moved_start] + lines[moved_end:]
 
-    # Adjust boundaries arithmetically — removal was within pending section
+    # Adjust cached boundary indices — removing lines inside the section shifts
+    # the section end by the number of removed lines; start is unaffected because
+    # the removed item always falls after the section header (start).
     removed_count = moved_end - moved_start
     new_start = start
     new_end = end - removed_count
