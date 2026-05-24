@@ -64,6 +64,7 @@ handler: handler.py
 | `forward_result` | no | Set to `true` to forward Claude's final result text to outbox.md when a mission for this skill completes. See [Result forwarding](#result-forwarding). Defaults to `false`. |
 | `title_markers` | no | Optional list of additional mission-title substrings to match against this skill (case-insensitive). Used when a handler emits a plain-text mission title without the slash command. Defaults to `[]`. |
 | `requirements` | no | Python packages to auto-install before first execution (e.g. `[requests, boto3]`) |
+| `sub_commands` | no | List of skill commands to expand into when triggered. Defines a combo skill — see [Combo skills](#combo-skills). Defaults to `[]`. |
 
 ### Audience
 
@@ -196,6 +197,31 @@ commands:
 - Version specifiers are supported: `requests>=2.28`, `boto3==1.26.0`.
 - Install failures are reported as a `SkillError` (surfaced to Telegram), not silently swallowed.
 - The check runs once per skill per session — subsequent invocations skip directly.
+
+### Combo skills
+
+A **combo skill** queues multiple sub-commands when triggered — useful for workflows that chain two or more skills together (e.g. review then rebase). Declare the expansion in SKILL.md via `sub_commands`:
+
+```yaml
+---
+name: review_rebase
+scope: core
+sub_commands: [review, rebase]
+commands:
+  - name: reviewrebase
+    description: "Queue /review then /rebase for a PR"
+    aliases: [rr]
+---
+```
+
+When a combo skill is triggered (via Telegram, GitHub @mention, or agent loop), Kōan expands it into separate missions for each sub-command. The sub-commands run sequentially in the order listed.
+
+**Key points:**
+
+- Each entry in `sub_commands` must be a valid skill command name
+- All command names and aliases of the combo skill map to the same expansion
+- No `handler.py` is needed — the expansion is handled by the skill dispatch infrastructure
+- Adding a new combo skill requires only a SKILL.md with `sub_commands` — zero changes to Python code
 
 ### Prompt-only skills (no handler)
 
