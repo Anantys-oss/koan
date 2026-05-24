@@ -29,16 +29,8 @@ from pathlib import Path
 from typing import Optional
 
 from app.missions import count_pending
+from app.run_log import log as _run_log
 from app.utils import atomic_write
-
-
-def _log_loop(category: str, message: str):
-    """Log loop manager events via run_log.log() for timestamps and color."""
-    try:
-        from app.run_log import log as _run_log
-        _run_log(category, message)
-    except ImportError:
-        print(f"[{category}] {message}", file=sys.stderr)
 
 
 # --- Focus area resolution ---
@@ -95,8 +87,8 @@ def validate_projects(
     valid_count = 0
     for name, path in projects:
         if not os.path.isdir(path):
-            _log_loop("health", f"Project '{name}' path does not exist: {path} — skipping. "
-                      f"Remove it from projects.yaml to silence this warning.")
+            _run_log("health", f"Project '{name}' path does not exist: {path} — skipping. "
+                     f"Remove it from projects.yaml to silence this warning.")
             continue
 
         # Verify the project path is a git repository
@@ -108,10 +100,10 @@ def validate_projects(
                 timeout=5,
             )
             if result.returncode != 0:
-                _log_loop("health", f"Project '{name}' is not a git repository: {path} — skipping.")
+                _run_log("health", f"Project '{name}' is not a git repository: {path} — skipping.")
                 continue
         except (OSError, subprocess.TimeoutExpired):
-            _log_loop("health", f"Project '{name}' is not a git repository: {path} — skipping.")
+            _run_log("health", f"Project '{name}' is not a git repository: {path} — skipping.")
             continue
 
         valid_count += 1
@@ -1458,7 +1450,7 @@ def check_pending_missions(instance_dir: str) -> bool:
     except FileNotFoundError:
         return False
     except (OSError, ValueError) as e:
-        _log_loop("error", f"Error reading missions.md: {e}")
+        _run_log("error", f"Error reading missions.md: {e}")
         return False
 
 
