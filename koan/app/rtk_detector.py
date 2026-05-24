@@ -40,12 +40,13 @@ logger = logging.getLogger(__name__)
 # --- Constants --------------------------------------------------------------
 
 # Marker substrings we look for inside ~/.claude/settings.json to decide whether
-# rtk's PreToolUse hook is already installed.  We accept either:
-#   - "rtk-rewrite.sh" — the hook script shipped by rtk init -g
-#   - "rtk rewrite"    — the inline command form some rtk versions use
-# Either match is sufficient; this is a hint for diagnostics, not a security
-# check.
-_HOOK_MARKERS = ("rtk-rewrite.sh", "rtk rewrite")
+# rtk's PreToolUse hook is already installed.  We accept any of:
+#   - "rtk-rewrite.sh" — the hook script shipped by older rtk init -g
+#   - "rtk rewrite"    — the inline command form some intermediate rtk versions used
+#   - "rtk hook"       — the current form (rtk >= 0.41 ships "rtk hook claude",
+#                        "rtk hook cursor", "rtk hook gemini", "rtk hook copilot")
+# Any match is sufficient; this is a hint for diagnostics, not a security check.
+_HOOK_MARKERS = ("rtk-rewrite.sh", "rtk rewrite", "rtk hook")
 
 # Bound the version probe so a hung binary can't stall startup.
 _VERSION_PROBE_TIMEOUT = 2.0  # seconds

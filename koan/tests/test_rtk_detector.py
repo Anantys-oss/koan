@@ -163,6 +163,27 @@ class TestHookProbe:
         }))
         assert _probe_hook(settings) is True
 
+    def test_rtk_hook_claude_marker_returns_true(self, tmp_path):
+        """Regression: rtk >= 0.41 installs the hook as ``rtk hook claude``.
+
+        Older marker scan (``rtk-rewrite.sh`` / ``rtk rewrite``) missed this
+        form and reported the hook as not installed even when it was wired
+        up correctly.
+        """
+        from app.rtk_detector import _probe_hook
+
+        settings = tmp_path / "settings.json"
+        settings.write_text(json.dumps({
+            "hooks": {
+                "PreToolUse": [
+                    {"matcher": "Bash", "hooks": [
+                        {"type": "command", "command": "rtk hook claude"}
+                    ]}
+                ]
+            }
+        }))
+        assert _probe_hook(settings) is True
+
     def test_invalid_json_returns_none(self, tmp_path):
         from app.rtk_detector import _probe_hook
 
