@@ -597,3 +597,37 @@ class TestGetKnownReposFromProjects:
         # Should not crash, just use github_url
         assert repos is not None
         assert "owner/repo" in repos
+
+    def test_resolves_aliased_workspace_repo_without_restart(self, tmp_path):
+        """A repo cloned under an alias dir name (git remote != dir name) must be
+        recognized even when the cache was warm/empty from a prior poll —
+        simulating a clone made after the process already started."""
+        import subprocess
+
+        from app.loop_manager import _get_known_repos_from_projects
+        from app.projects_merged import clear_github_url_cache, invalidate_cache
+
+        # Workspace project cloned under alias "yarn" but whose remote is a
+        # completely different repo name.
+        alias_dir = tmp_path / "workspace" / "yarn"
+        alias_dir.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q"], cwd=alias_dir, check=True)
+        subprocess.run(
+            ["git", "remote", "add", "origin",
+             "https://github.com/some-org/real-repo.git"],
+            cwd=alias_dir, check=True,
+        )
+
+        # No projects.yaml entry; caches cold (as if the bot was already
+        # running and this repo was cloned afterward).
+        clear_github_url_cache()
+        invalidate_cache()
+        try:
+            repos = _get_known_repos_from_projects(str(tmp_path))
+        finally:
+            clear_github_url_cache()
+            invalidate_cache()
+
+        assert repos is not None
+        # Matched by git remote, not by the "yarn" directory name.
+        assert "some-org/real-repo" in repos
