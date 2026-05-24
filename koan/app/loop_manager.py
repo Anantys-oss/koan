@@ -550,16 +550,14 @@ def _get_known_repos_from_projects(koan_root: str) -> Optional[set]:
         )
 
         # Refresh the cache so repos cloned under ANY alias directory name are
-        # recognized without a restart. The startup populate is a one-time
-        # snapshot; a repo cloned into workspace/ after the process started
-        # would otherwise have its @mentions dropped as "unregistered repo".
-        # Idempotent and cheap: skips already-cached projects and relies on
-        # get_all_projects()'s mtime cache, so it only shells to git when a new
-        # workspace project appears.
+        # recognized without a restart (startup populate is a one-time snapshot).
         try:
             populate_workspace_github_urls(koan_root)
         except Exception as e:
-            log.debug("workspace github-url refresh skipped: %s", e)
+            # Fallback is the pre-existing stale-cache behavior, but a persistent
+            # failure here silently stops recognizing new repos — warn so it's
+            # visible without debug logging enabled.
+            log.warning("workspace github-url refresh failed: %s", e)
 
         # Primary URLs (origin remote)
         for url in get_github_url_cache().values():

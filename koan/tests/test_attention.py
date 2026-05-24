@@ -323,6 +323,35 @@ class TestGetAttentionItems:
                     items = attention.get_attention_items(koan_root)
         assert isinstance(items, list)
 
+    def test_github_mentions_use_workspace_aware_known_repos(self, tmp_path):
+        """Attention @mention collection must match workspace projects by git
+        remote (alias-safe), not just projects.yaml — same coverage as the
+        agent-loop poll. Verifies it routes through the shared builder."""
+        koan_root = _make_koan_root(tmp_path)
+        missions_file = Path(koan_root) / "instance" / "missions.md"
+        missions_file.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n\n## Failed\n")
+
+        captured = {}
+
+        def _fake_fetch(known_repos=None, since=None):
+            captured["known_repos"] = known_repos
+            from app.github_notifications import FetchResult
+            return FetchResult([], [])
+
+        with patch("app.pr_tracker.fetch_all_prs", return_value={"prs": []}):
+            with patch("app.utils.load_config",
+                       return_value={"attention_github_notifications": True}):
+                with patch("app.loop_manager._get_known_repos_from_projects",
+                           return_value={"some-org/real-repo"}) as mock_known:
+                    with patch("app.github_notifications.fetch_unread_notifications",
+                               side_effect=_fake_fetch):
+                        attention.get_attention_items(koan_root)
+
+        # The shared, workspace-aware builder was used and its result was the
+        # filter passed to the notification fetch.
+        mock_known.assert_called_once_with(koan_root)
+        assert captured["known_repos"] == {"some-org/real-repo"}
+
 
 # ---------------------------------------------------------------------------
 # Dashboard API routes (integration)

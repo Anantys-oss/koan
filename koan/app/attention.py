@@ -256,19 +256,14 @@ def _collect_github_mention_items(koan_root: str) -> list:
             return []
 
         from app.github_notifications import fetch_unread_notifications
-        from app.projects_config import load_projects_config, get_projects_from_config
+        from app.loop_manager import _get_known_repos_from_projects
 
-        proj_cfg = load_projects_config(koan_root)
-        known_repos: set = set()
-        if proj_cfg:
-            for name, _path in get_projects_from_config(proj_cfg):
-                from app.projects_config import get_project_config
-                pc = get_project_config(proj_cfg, name)
-                url = pc.get("github_url", "")
-                if url:
-                    known_repos.add(url.lower())
+        # Reuse the shared builder so workspace projects (cloned under any
+        # alias directory name) are matched by git remote, and full URLs are
+        # normalized to owner/repo — same coverage as the agent-loop poll.
+        known_repos = _get_known_repos_from_projects(koan_root)
 
-        result = fetch_unread_notifications(known_repos=known_repos or None)
+        result = fetch_unread_notifications(known_repos=known_repos)
         for notif in result.actionable:
             reason = notif.get("reason", "")
             if reason not in ("mention", "review_requested"):
