@@ -567,6 +567,106 @@ class TestCollectForwardResultMarkers:
 
 
 # ---------------------------------------------------------------------------
+# collect_combo_skills
+# ---------------------------------------------------------------------------
+
+class TestCollectComboSkills:
+    """Tests for the collect_combo_skills registry helper."""
+
+    def test_empty_for_registry_without_combo_skills(self):
+        from app.skills import (
+            Skill,
+            SkillCommand,
+            SkillRegistry,
+            collect_combo_skills,
+        )
+        reg = SkillRegistry()
+        reg._register(Skill(
+            name="review",
+            scope="core",
+            commands=[SkillCommand(name="review")],
+        ))
+        assert collect_combo_skills(reg) == {}
+
+    def test_maps_command_and_aliases_to_sub_commands(self):
+        from app.skills import (
+            Skill,
+            SkillCommand,
+            SkillRegistry,
+            collect_combo_skills,
+        )
+        reg = SkillRegistry()
+        reg._register(Skill(
+            name="review_rebase",
+            scope="core",
+            sub_commands=["review", "rebase"],
+            commands=[SkillCommand(name="reviewrebase", aliases=["rr"])],
+        ))
+        mapping = collect_combo_skills(reg)
+        assert mapping == {
+            "reviewrebase": ["review", "rebase"],
+            "rr": ["review", "rebase"],
+        }
+
+    def test_skips_skills_without_sub_commands(self):
+        from app.skills import (
+            Skill,
+            SkillCommand,
+            SkillRegistry,
+            collect_combo_skills,
+        )
+        reg = SkillRegistry()
+        reg._register(Skill(
+            name="review_rebase",
+            scope="core",
+            sub_commands=["review", "rebase"],
+            commands=[SkillCommand(name="reviewrebase", aliases=["rr"])],
+        ))
+        reg._register(Skill(
+            name="plan",
+            scope="core",
+            commands=[SkillCommand(name="plan")],
+        ))
+        mapping = collect_combo_skills(reg)
+        assert "plan" not in mapping
+        assert "rr" in mapping
+
+    def test_sub_commands_parsed_from_skill_md(self, tmp_path):
+        from app.skills import parse_skill_md
+
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text(
+            "---\n"
+            "name: review_rebase\n"
+            "scope: core\n"
+            "sub_commands: [review, rebase]\n"
+            "commands:\n"
+            "  - name: reviewrebase\n"
+            "    aliases: [rr]\n"
+            "---\n"
+        )
+        skill = parse_skill_md(skill_md)
+        assert skill is not None
+        assert skill.sub_commands == ["review", "rebase"]
+
+    def test_sub_commands_defaults_to_empty(self, tmp_path):
+        from app.skills import parse_skill_md
+
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text(
+            "---\n"
+            "name: simple\n"
+            "scope: core\n"
+            "commands:\n"
+            "  - name: simple\n"
+            "---\n"
+        )
+        skill = parse_skill_md(skill_md)
+        assert skill is not None
+        assert skill.sub_commands == []
+
+
+# ---------------------------------------------------------------------------
 # SkillRegistry
 # ---------------------------------------------------------------------------
 

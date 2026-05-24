@@ -102,6 +102,10 @@ class Skill:
     # that should also flag a mission as belonging to this skill, for the case
     # where a handler emits plain-text titles without the slash command.
     title_markers: List[str] = field(default_factory=list)
+    # ``sub_commands`` — optional list of skill commands to queue when this
+    # skill is triggered.  Combo skills (e.g. /rr → /review + /rebase) declare
+    # their expansion in SKILL.md frontmatter rather than in a hardcoded dict.
+    sub_commands: List[str] = field(default_factory=list)
     requirements: List[str] = field(default_factory=list)
 
     @property
@@ -287,6 +291,12 @@ def parse_skill_md(path: Path) -> Optional[Skill]:
         requirements_raw = [requirements_raw] if requirements_raw else []
     requirements = [r for r in requirements_raw if r]
 
+    # Parse sub_commands (for combo skill expansion)
+    sub_commands_raw = meta.get("sub_commands", [])
+    if isinstance(sub_commands_raw, str):
+        sub_commands_raw = [sub_commands_raw] if sub_commands_raw else []
+    sub_commands = [s for s in sub_commands_raw if s]
+
     return Skill(
         name=meta["name"],
         scope=meta.get("scope", skill_dir.parent.name),
@@ -306,6 +316,7 @@ def parse_skill_md(path: Path) -> Optional[Skill]:
         caveman_enabled=caveman_enabled,
         forward_result_enabled=forward_result_enabled,
         title_markers=title_markers,
+        sub_commands=sub_commands,
         requirements=requirements,
     )
 
@@ -535,6 +546,27 @@ def collect_forward_result_markers(registry: "SkillRegistry") -> List[str]:
             if text:
                 markers.add(text)
     return sorted(markers)
+
+
+def collect_combo_skills(registry: "SkillRegistry") -> Dict[str, List[str]]:
+    """Build a mapping of command names/aliases to sub-command lists for combo skills.
+
+    Iterates all skills with ``sub_commands`` defined in their SKILL.md
+    frontmatter and maps every command name + alias to the expansion list.
+
+    Returns:
+        Dict mapping command name or alias to the ordered list of sub-commands.
+        Example: {"rr": ["review", "rebase"], "reviewrebase": ["review", "rebase"]}
+    """
+    mapping: Dict[str, List[str]] = {}
+    for skill in registry.list_all():
+        if not skill.sub_commands:
+            continue
+        for cmd in skill.commands:
+            mapping[cmd.name] = skill.sub_commands
+            for alias in cmd.aliases:
+                mapping[alias] = skill.sub_commands
+    return mapping
 
 
 # ---------------------------------------------------------------------------

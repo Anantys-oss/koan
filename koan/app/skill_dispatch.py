@@ -126,18 +126,43 @@ def _resolve_canonical(command: str) -> str:
 # via GitHub notifications.
 _PASSTHROUGH_TO_CLAUDE = {"gh_request"}
 
-# Combo skills: bridge-side handlers that queue multiple sub-missions.
-# When these arrive in the agent loop (e.g. from a GitHub @mention),
-# we expand them into their constituent sub-commands instead of failing.
-# Each entry maps command_name -> list of sub-commands to queue.
-_COMBO_SKILLS = {
-    "rr": ["review", "rebase"],
-    "reviewrebase": ["review", "rebase"],
-}
+# Combo skills cache — lazily built from the skill registry by reading
+# ``sub_commands`` from SKILL.md frontmatter.  Replaces the former hardcoded
+# dict, following the "mechanism, not enumeration" convention.
+_combo_cache: Optional[dict] = None
+_combo_cache_mtime: float = 0.0
+
+
+def _build_combo_cache(instance_dir: Optional[Path] = None) -> dict:
+    """Build (or return cached) combo skills mapping from registry."""
+    global _combo_cache, _combo_cache_mtime
+
+    # Determine instance dir — use provided path, or derive from KOAN_ROOT.
+    if instance_dir is None:
+        import os
+        koan_root = os.environ.get("KOAN_ROOT", "")
+        if not koan_root:
+            return {}
+        instance_dir = Path(koan_root) / "instance"
+
+    current_mtime = _get_skills_dir_mtime(instance_dir)
+    if _combo_cache is not None and current_mtime <= _combo_cache_mtime:
+        return _combo_cache
+
+    from app.skills import build_registry, collect_combo_skills
+
+    instance_skills_dir = instance_dir / "skills"
+    extra = [instance_skills_dir] if instance_skills_dir.is_dir() else []
+    registry = build_registry(extra)
+    _combo_cache = collect_combo_skills(registry)
+    _combo_cache_mtime = current_mtime
+    return _combo_cache
+
 
 def get_combo_sub_commands(command_name: str) -> list:
     """Return the list of sub-commands for a combo skill, or empty list."""
-    return list(_COMBO_SKILLS.get(command_name, []))
+    cache = _build_combo_cache()
+    return list(cache.get(command_name, []))
 
 
 # Raw-word project prefix (e.g. "developers.esphome.io /plan ...").
@@ -932,7 +957,8 @@ def expand_combo_skill(
         False if not a combo skill.
     """
     project_id, command, args = parse_skill_mission(mission_text)
-    sub_commands = _COMBO_SKILLS.get(command)
+    cache = _build_combo_cache(Path(instance_dir))
+    sub_commands = cache.get(command)
     if not sub_commands:
         return False
 

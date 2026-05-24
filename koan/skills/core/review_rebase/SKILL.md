@@ -8,6 +8,7 @@ version: 1.0.0
 audience: hybrid
 github_enabled: true
 github_context_aware: true
+sub_commands: [review, rebase]
 commands:
   - name: reviewrebase
     description: "Queue /review then /rebase for a PR — review insights feed the rebase"
