@@ -1316,6 +1316,53 @@ def find_section_boundaries(lines: List[str]) -> Dict[str, Tuple[int, int]]:
     return boundaries
 
 
+def _collect_item_start_indices(
+    lines: List[str], section_start: int, section_end: int
+) -> List[int]:
+    """Return start-line indices for each '- ' item within a section."""
+    items: List[int] = []
+    i = section_start + 1  # Skip ## header
+    while i < section_end:
+        if lines[i].strip().startswith("- "):
+            items.append(i)
+            i += 1
+            while i < section_end:
+                s = lines[i].strip()
+                if s.startswith("- ") or s.startswith("## ") or s.startswith("### ") or s == "":
+                    break
+                i += 1
+        else:
+            i += 1
+    return items
+
+
+def _find_insertion_index(
+    lines: List[str], section_start: int, section_end: int,
+    item_starts: List[int], target: int
+) -> int:
+    """Compute the line index to insert a moved item at the given target position."""
+    if target == 1:
+        idx = section_start + 1
+        while idx < section_end and lines[idx].strip() == "":
+            idx += 1
+        return idx
+
+    if target - 1 < len(item_starts):
+        return item_starts[target - 1]
+
+    # Target beyond existing items — insert after the last item's content
+    if item_starts:
+        idx = item_starts[-1] + 1
+        while idx < section_end:
+            s = lines[idx].strip()
+            if s.startswith("- ") or s.startswith("## ") or s.startswith("### ") or s == "":
+                break
+            idx += 1
+        return idx
+
+    return section_start + 1
+
+
 def reorder_mission(content: str, position: int, target: int = 1) -> Tuple[str, str]:
     """Move a pending mission from one position to another.
 
@@ -1383,50 +1430,17 @@ def reorder_mission(content: str, position: int, target: int = 1) -> Tuple[str, 
     # Remove the moved item's lines
     new_lines = lines[:moved_start] + lines[moved_end:]
 
-    # Recalculate item positions after removal
-    new_boundaries = find_section_boundaries(new_lines)
-    new_start, new_end = new_boundaries["pending"]
+    # Adjust boundaries arithmetically — removal was within pending section
+    removed_count = moved_end - moved_start
+    new_start = start
+    new_end = end - removed_count
 
-    new_items = []
-    j = new_start + 1
-    while j < new_end:
-        s = new_lines[j].strip()
-        if s.startswith("- "):
-            item_start_j = j
-            j += 1
-            while j < new_end:
-                ns = new_lines[j].strip()
-                if (ns.startswith("- ") or
-                        ns.startswith("## ") or
-                        ns.startswith("### ") or
-                        ns == ""):
-                    break
-                j += 1
-            new_items.append(item_start_j)
-        else:
-            j += 1
+    new_items = _collect_item_start_indices(new_lines, new_start, new_end)
 
     # Determine insertion line index
-    if target == 1:
-        insert_idx = new_start + 1
-        while insert_idx < new_end and new_lines[insert_idx].strip() == "":
-            insert_idx += 1
-    elif target - 1 < len(new_items):
-        insert_idx = new_items[target - 1]
-    else:
-        if new_items:
-            last_start = new_items[-1]
-            insert_idx = last_start + 1
-            while insert_idx < new_end:
-                ns = new_lines[insert_idx].strip()
-                if (ns.startswith("- ") or
-                        ns.startswith("## ") or
-                        ns.startswith("### ") or
-                        ns == ""):
-                    break
-                insert_idx += 1
-        else:
-            insert_idx = new_start + 1
+    insert_idx = _find_insertion_index(
+        new_lines, new_start, new_end, new_items, target
+    )
 
     # Insert the moved lines
     result_lines = new_lines[:insert_idx] + moved_lines + new_lines[insert_idx:]
