@@ -28,17 +28,21 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from app.constants import (
+    CI_QUEUE_SLEEP_INTERVAL as _CI_QUEUE_SLEEP_INTERVAL,
+    GITHUB_CHECK_INTERVAL_DEFAULT as _GITHUB_CHECK_INTERVAL,
+    GITHUB_MAX_CHECK_INTERVAL_DEFAULT as _GITHUB_MAX_CHECK_INTERVAL,
+    JIRA_CHECK_INTERVAL_DEFAULT as _JIRA_CHECK_INTERVAL,
+    JIRA_MAX_CHECK_INTERVAL_DEFAULT as _JIRA_MAX_CHECK_INTERVAL,
+    MAX_DRAIN_PER_CYCLE as _MAX_DRAIN_PER_CYCLE,
+    MAX_PENDING_REPLIES as _MAX_PENDING_REPLIES,
+    MAX_REPLY_RETRIES as _MAX_REPLY_RETRIES,
+    NOTIF_CACHE_MAX as _NOTIF_CACHE_MAX,
+    NOTIF_CACHE_TTL as _NOTIF_CACHE_TTL,
+)
 from app.missions import count_pending
+from app.run_log import log_safe as _log_loop
 from app.utils import atomic_write
-
-
-def _log_loop(category: str, message: str):
-    """Log loop manager events via run_log.log() for timestamps and color."""
-    try:
-        from app.run_log import log as _run_log
-        _run_log(category, message)
-    except ImportError:
-        print(f"[{category}] {message}", file=sys.stderr)
 
 
 # --- Focus area resolution ---
@@ -153,8 +157,6 @@ def format_project_list(projects: list) -> str:
 
 # --- CI queue drain during sleep ---
 
-# Throttle: minimum seconds between CI queue checks during sleep.
-_CI_QUEUE_SLEEP_INTERVAL = 30
 _last_ci_queue_sleep_check: float = 0
 
 
@@ -231,12 +233,8 @@ Mode: {mode}
 
 # --- GitHub notification processing ---
 
-# Throttle: minimum seconds between GitHub notification checks.
-# This default is overridden at runtime by github.check_interval_seconds from config.yaml.
-_GITHUB_CHECK_INTERVAL = 60
-# Maximum backoff interval (3 minutes) when notifications are consistently empty.
-# Overridden at runtime by github.max_check_interval_seconds from config.yaml.
-_GITHUB_MAX_CHECK_INTERVAL = 180
+# _GITHUB_CHECK_INTERVAL and _GITHUB_MAX_CHECK_INTERVAL are imported from
+# app.constants (defaults) and overridden at runtime from config.yaml.
 _last_github_check: float = 0
 # ISO 8601 timestamp of the last successful notification fetch.
 # Passed as ``since`` to fetch_unread_notifications so that already-read
@@ -260,9 +258,7 @@ _github_config_cache_mtime: float = 0
 # updated_at prevents new comments from being silently dropped when they
 # share the same updated_at timestamp as a previously-processed notification.
 # Value: monotonic timestamp of when cached (time.monotonic() for TTL safety).
-# Entries expire after _NOTIF_CACHE_TTL seconds.
-_NOTIF_CACHE_TTL = 86400  # 24 hours
-_NOTIF_CACHE_MAX = 2000
+# Entries expire after _NOTIF_CACHE_TTL seconds (from app.constants).
 _notif_cache: dict = {}
 _notif_cache_lock = threading.Lock()
 
@@ -270,8 +266,6 @@ _notif_cache_lock = threading.Lock()
 # When posting an error reply to GitHub fails, store the params here for retry
 # on the next notification cycle. Each entry is a dict with keys:
 # owner, repo, issue_num, comment_id, error, comment_api_url.
-_MAX_REPLY_RETRIES = 3
-_MAX_PENDING_REPLIES = 50
 _pending_error_replies: list = []
 _pending_error_replies_lock = threading.Lock()
 
@@ -1053,11 +1047,6 @@ def _process_notifications_concurrent(
     return sum(1 for r in results if r)
 
 
-# Maximum non-actionable notifications to drain per check cycle.
-# Prevents API overload on first run after a long accumulation period.
-_MAX_DRAIN_PER_CYCLE = 30
-
-
 def _drain_notifications(notifications: list) -> int:
     """Mark non-actionable notifications as read to prevent accumulation.
 
@@ -1211,12 +1200,8 @@ def _post_error_for_notification(notif: dict, error: str) -> None:
 
 # --- Jira notification processing ---
 
-# Throttle: minimum seconds between Jira notification checks.
-# Overridden at runtime by jira.check_interval_seconds from config.yaml.
-_JIRA_CHECK_INTERVAL = 60
-# Maximum backoff interval when checks are consistently empty.
-# Overridden at runtime by jira.max_check_interval_seconds from config.yaml.
-_JIRA_MAX_CHECK_INTERVAL = 180
+# _JIRA_CHECK_INTERVAL and _JIRA_MAX_CHECK_INTERVAL are imported from
+# app.constants (defaults) and overridden at runtime from config.yaml.
 _last_jira_check: float = 0
 _last_jira_check_iso: str = ""
 _consecutive_jira_empty: int = 0

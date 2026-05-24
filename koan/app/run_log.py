@@ -124,5 +124,28 @@ def bold_cyan(text: str) -> str:
     return _styled(text, "bold", "cyan")
 
 
+def log_safe(category: str, message: str, *, force_stderr: bool = False):
+    """Log with automatic fallback to stderr.
+
+    Modules that run both inside the agent loop (where ``log()`` is available)
+    and as CLI subprocesses (where colored output must stay off stdout) should
+    call ``log_safe`` instead of ``log``.
+
+    Args:
+        category: Log category (e.g. ``"error"``, ``"mission"``).
+        message: Human-readable log message.
+        force_stderr: When *True*, bypass ``log()`` entirely and print
+            directly to stderr.  Used by iteration_manager when running
+            in CLI subprocess mode (stdout carries JSON).
+    """
+    if force_stderr:
+        print(f"[{category}] {message}", file=sys.stderr)
+        return
+    try:
+        log(category, message)
+    except Exception:
+        print(f"[{category}] {message}", file=sys.stderr)
+
+
 def bold_green(text: str) -> str:
     return _styled(text, "bold", "green")
