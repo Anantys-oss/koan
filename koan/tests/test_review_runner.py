@@ -3035,3 +3035,93 @@ class TestReviewSchemaClosePr:
         ok, errors = validate_review(data)
         assert ok is False
         assert any("close_pr" in e for e in errors)
+
+
+# ---------------------------------------------------------------------------
+# Silent Failure Analysis Formatting
+# ---------------------------------------------------------------------------
+
+
+class TestFormatErrorHunterFindings:
+    """Tests for _format_error_hunter_findings collapsible output."""
+
+    def test_basic_collapsible_structure(self):
+        from app.review_runner import _format_error_hunter_findings
+
+        findings = [
+            {
+                "severity": "HIGH",
+                "pattern": "swallowed exception",
+                "file": "src/auth.py",
+                "line_hint": "42",
+                "snippet": "except Exception:\n    pass",
+                "explanation": "Exception silently ignored",
+                "suggestion": "Log or re-raise the exception",
+            }
+        ]
+        result = _format_error_hunter_findings(findings)
+        assert "## Silent Failure Analysis" in result
+        assert "<details>" in result
+        assert "<summary>" in result
+        assert "</details>" in result
+        assert "HIGH" in result
+        assert "swallowed exception" in result
+        assert "`src/auth.py:42`" in result
+
+    def test_severity_sorting(self):
+        from app.review_runner import _format_error_hunter_findings
+
+        findings = [
+            {"severity": "MEDIUM", "pattern": "medium issue", "file": "a.py"},
+            {"severity": "CRITICAL", "pattern": "critical issue", "file": "b.py"},
+            {"severity": "HIGH", "pattern": "high issue", "file": "c.py"},
+        ]
+        result = _format_error_hunter_findings(findings)
+        crit_pos = result.index("critical issue")
+        high_pos = result.index("high issue")
+        med_pos = result.index("medium issue")
+        assert crit_pos < high_pos < med_pos
+
+    def test_emoji_per_severity(self):
+        from app.review_runner import _format_error_hunter_findings
+
+        findings = [
+            {"severity": "CRITICAL", "pattern": "x", "file": "a.py"},
+            {"severity": "HIGH", "pattern": "y", "file": "b.py"},
+            {"severity": "MEDIUM", "pattern": "z", "file": "c.py"},
+        ]
+        result = _format_error_hunter_findings(findings)
+        assert "🔴" in result
+        assert "🟠" in result
+        assert "🟡" in result
+
+    def test_details_wrapped_content(self):
+        from app.review_runner import _format_error_hunter_findings
+
+        findings = [
+            {
+                "severity": "HIGH",
+                "pattern": "silent null",
+                "file": "svc.py",
+                "line_hint": "10",
+                "snippet": "return None",
+                "explanation": "Hides upstream failure",
+                "suggestion": "Raise ValueError",
+            }
+        ]
+        result = _format_error_hunter_findings(findings)
+        # Explanation and snippet should be inside details (after summary, before </details>)
+        details_start = result.index("<details>")
+        details_end = result.index("</details>")
+        inner = result[details_start:details_end]
+        assert "Hides upstream failure" in inner
+        assert "return None" in inner
+        assert "Raise ValueError" in inner
+
+    def test_missing_optional_fields(self):
+        from app.review_runner import _format_error_hunter_findings
+
+        findings = [{"severity": "MEDIUM", "pattern": "bare except"}]
+        result = _format_error_hunter_findings(findings)
+        assert "<details>" in result
+        assert "bare except" in result

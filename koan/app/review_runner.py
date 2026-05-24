@@ -600,14 +600,18 @@ def _parse_error_hunter_output(raw_output: str) -> list:
     return []
 
 
+_ERROR_HUNTER_SEVERITY_EMOJI = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡"}
+
+
 def _format_error_hunter_findings(findings: list) -> str:
-    """Format error-hunter findings as a markdown section."""
+    """Format error-hunter findings as a markdown section with collapsible details."""
     severity_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2}
     findings = sorted(findings, key=lambda f: severity_order.get(f.get("severity", "MEDIUM"), 2))
 
     lines = ["## Silent Failure Analysis", ""]
     for f in findings:
         severity = f.get("severity", "?")
+        emoji = _ERROR_HUNTER_SEVERITY_EMOJI.get(severity, "⚪")
         pattern = f.get("pattern", "unknown pattern")
         file_path = f.get("file", "")
         line_hint = f.get("line_hint", "")
@@ -616,15 +620,25 @@ def _format_error_hunter_findings(findings: list) -> str:
         explanation = f.get("explanation", "")
         suggestion = f.get("suggestion", "")
 
-        lines.append(f"### `{severity}` — {pattern}")
+        title = f"{emoji} **{severity}** — {pattern}"
         if location:
-            lines.append(f"**Location**: `{location}`")
-        if snippet:
-            lines.append(f"```\n{snippet}\n```")
+            title += f" (`{location}`)"
+
+        lines.append("<details>")
+        lines.append(f"<summary>{title}</summary>")
+        lines.append("")
         if explanation:
             lines.append(f"**Risk**: {explanation}")
+            lines.append("")
+        if snippet:
+            lines.append("```")
+            lines.append(snippet)
+            lines.append("```")
+            lines.append("")
         if suggestion:
             lines.append(f"**Fix**: {suggestion}")
+            lines.append("")
+        lines.append("</details>")
         lines.append("")
 
     return "\n".join(lines).rstrip()
