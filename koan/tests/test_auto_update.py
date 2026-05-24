@@ -7,6 +7,10 @@ import pytest
 
 from app.auto_update import (
     _load_auto_update_config,
+    _get_latest_tag,
+    _read_last_notified_tag,
+    _write_last_notified_tag,
+    check_for_new_release_tag,
     is_auto_update_enabled,
     get_check_interval,
     check_for_updates,
@@ -187,8 +191,21 @@ class TestPerformAutoUpdate:
     def test_no_updates_returns_false(self):
         with patch("app.auto_update._load_auto_update_config", return_value={
             "enabled": True, "check_interval": 10, "notify": True,
-        }), patch("app.auto_update.check_for_updates", return_value=0):
+        }), patch("app.auto_update.check_for_updates", return_value=0), \
+             patch("app.auto_update.check_for_new_release_tag", return_value=None):
             assert perform_auto_update("/fake", "/fake/instance") is False
+
+    def test_no_updates_but_new_tag_notifies(self):
+        """Even without new commits, a new tag triggers notification."""
+        with patch("app.auto_update._load_auto_update_config", return_value={
+            "enabled": True, "check_interval": 10, "notify": True,
+        }), patch("app.auto_update.check_for_updates", return_value=0), \
+             patch("app.auto_update.check_for_new_release_tag", return_value="v1.5.0"), \
+             patch("app.auto_update._notify_new_release_tag") as mock_tag_notify:
+            result = perform_auto_update("/fake", "/fake/instance")
+
+        assert result is False
+        mock_tag_notify.assert_called_once_with("v1.5.0", "/fake/instance")
 
     def test_update_success_triggers_restart(self):
         update_result = UpdateResult(
@@ -199,6 +216,7 @@ class TestPerformAutoUpdate:
             "enabled": True, "check_interval": 10, "notify": True,
         }), \
              patch("app.auto_update.check_for_updates", return_value=3), \
+             patch("app.auto_update.check_for_new_release_tag", return_value=None), \
              patch("app.update_manager.pull_upstream", return_value=update_result), \
              patch("app.notify.format_and_send") as mock_notify, \
              patch("app.restart_manager.request_restart") as mock_restart, \
@@ -208,8 +226,29 @@ class TestPerformAutoUpdate:
         assert result is True
         mock_restart.assert_called_once_with("/fake")
         mock_unpause.assert_called_once_with("/fake")
-        # Should have sent 2 notifications: before and after
-        assert mock_notify.call_count == 2
+        # No notification when there's no new tag
+        mock_notify.assert_not_called()
+
+    def test_update_success_with_new_tag_notifies(self):
+        """New tag + new commits: notify about tag, then pull and restart."""
+        update_result = UpdateResult(
+            success=True, old_commit="abc", new_commit="def",
+            commits_pulled=3, stashed=False,
+        )
+        with patch("app.auto_update._load_auto_update_config", return_value={
+            "enabled": True, "check_interval": 10, "notify": True,
+        }), \
+             patch("app.auto_update.check_for_updates", return_value=3), \
+             patch("app.auto_update.check_for_new_release_tag", return_value="v2.0.0"), \
+             patch("app.auto_update._notify_new_release_tag") as mock_tag_notify, \
+             patch("app.update_manager.pull_upstream", return_value=update_result), \
+             patch("app.restart_manager.request_restart") as mock_restart, \
+             patch("app.pause_manager.remove_pause"):
+            result = perform_auto_update("/fake", "/fake/instance")
+
+        assert result is True
+        mock_restart.assert_called_once()
+        mock_tag_notify.assert_called_once_with("v2.0.0", "/fake/instance")
 
     def test_pull_failure_returns_false(self):
         update_result = UpdateResult(
@@ -220,11 +259,33 @@ class TestPerformAutoUpdate:
             "enabled": True, "check_interval": 10, "notify": True,
         }), \
              patch("app.auto_update.check_for_updates", return_value=3), \
+             patch("app.auto_update.check_for_new_release_tag", return_value=None), \
              patch("app.update_manager.pull_upstream", return_value=update_result), \
              patch("app.notify.format_and_send"):
             result = perform_auto_update("/fake", "/fake/instance")
 
         assert result is False
+
+    def test_pull_failure_with_tag_notifies_failure(self):
+        """Pull fails after tag notification — send failure notice."""
+        update_result = UpdateResult(
+            success=False, old_commit="abc", new_commit="abc",
+            commits_pulled=0, error="merge conflict",
+        )
+        with patch("app.auto_update._load_auto_update_config", return_value={
+            "enabled": True, "check_interval": 10, "notify": True,
+        }), \
+             patch("app.auto_update.check_for_updates", return_value=3), \
+             patch("app.auto_update.check_for_new_release_tag", return_value="v1.0.0"), \
+             patch("app.auto_update._notify_new_release_tag"), \
+             patch("app.update_manager.pull_upstream", return_value=update_result), \
+             patch("app.notify.format_and_send") as mock_notify:
+            result = perform_auto_update("/fake", "/fake/instance")
+
+        assert result is False
+        # Should notify about pull failure referencing the tag
+        mock_notify.assert_called_once()
+        assert "v1.0.0" in mock_notify.call_args[0][0]
 
     def test_no_notify_when_disabled(self):
         update_result = UpdateResult(
@@ -238,32 +299,17 @@ class TestPerformAutoUpdate:
              patch("app.update_manager.pull_upstream", return_value=update_result), \
              patch("app.restart_manager.request_restart"), \
              patch("app.pause_manager.remove_pause"), \
-             patch("app.notify.format_and_send") as mock_notify:
+             patch("app.notify.format_and_send") as mock_notify, \
+             patch("app.auto_update.check_for_new_release_tag") as mock_tag_check:
             result = perform_auto_update("/fake", "/fake/instance")
 
         assert result is True
         mock_notify.assert_not_called()
-
-    def test_stashed_warning_in_notification(self):
-        update_result = UpdateResult(
-            success=True, old_commit="abc", new_commit="def",
-            commits_pulled=1, stashed=True,
-        )
-        with patch("app.auto_update._load_auto_update_config", return_value={
-            "enabled": True, "check_interval": 10, "notify": True,
-        }), \
-             patch("app.auto_update.check_for_updates", return_value=1), \
-             patch("app.update_manager.pull_upstream", return_value=update_result), \
-             patch("app.notify.format_and_send") as mock_notify, \
-             patch("app.restart_manager.request_restart"), \
-             patch("app.pause_manager.remove_pause"):
-            perform_auto_update("/fake", "/fake/instance")
-
-        # Last call should include stash warning
-        last_call_msg = mock_notify.call_args_list[-1][0][0]
-        assert "auto-stashed" in last_call_msg
+        # Tag check should not run when notify is disabled
+        mock_tag_check.assert_not_called()
 
     def test_notification_failure_does_not_block_update(self):
+        """Tag notification failure doesn't prevent pull + restart."""
         update_result = UpdateResult(
             success=True, old_commit="abc", new_commit="def",
             commits_pulled=2, stashed=False,
@@ -272,8 +318,9 @@ class TestPerformAutoUpdate:
             "enabled": True, "check_interval": 10, "notify": True,
         }), \
              patch("app.auto_update.check_for_updates", return_value=2), \
+             patch("app.auto_update.check_for_new_release_tag", return_value="v3.0.0"), \
+             patch("app.auto_update._notify_new_release_tag", side_effect=Exception("telegram down")), \
              patch("app.update_manager.pull_upstream", return_value=update_result), \
-             patch("app.notify.format_and_send", side_effect=Exception("telegram down")), \
              patch("app.restart_manager.request_restart") as mock_restart, \
              patch("app.pause_manager.remove_pause"):
             result = perform_auto_update("/fake", "/fake/instance")
@@ -298,11 +345,105 @@ class TestPerformAutoUpdate:
             "enabled": True, "check_interval": 10, "notify": True,
         }), \
              patch("app.auto_update.check_for_updates", return_value=1), \
+             patch("app.auto_update.check_for_new_release_tag", return_value=None), \
              patch("app.update_manager.pull_upstream", return_value=update_result), \
              patch("app.notify.format_and_send"):
             result = perform_auto_update("/fake", "/fake/instance")
 
         assert result is False
+
+
+class TestGetLatestTag:
+    """Tests for _get_latest_tag()."""
+
+    def test_returns_first_tag_from_sorted_output(self):
+        mock_result = MagicMock(returncode=0, stdout="v2.0.0\nv1.5.0\nv1.0.0\n")
+        with patch("app.auto_update._run_git", return_value=mock_result):
+            assert _get_latest_tag(Path("/fake")) == "v2.0.0"
+
+    def test_returns_none_when_no_tags(self):
+        mock_result = MagicMock(returncode=0, stdout="")
+        with patch("app.auto_update._run_git", return_value=mock_result):
+            assert _get_latest_tag(Path("/fake")) is None
+
+    def test_returns_none_on_git_failure(self):
+        mock_result = MagicMock(returncode=1, stdout="", stderr="error")
+        with patch("app.auto_update._run_git", return_value=mock_result):
+            assert _get_latest_tag(Path("/fake")) is None
+
+    def test_single_tag(self):
+        mock_result = MagicMock(returncode=0, stdout="v0.1.0\n")
+        with patch("app.auto_update._run_git", return_value=mock_result):
+            assert _get_latest_tag(Path("/fake")) == "v0.1.0"
+
+
+class TestLastNotifiedTag:
+    """Tests for _read/_write_last_notified_tag."""
+
+    def test_read_missing_file_returns_none(self, tmp_path):
+        assert _read_last_notified_tag(str(tmp_path)) is None
+
+    def test_read_empty_file_returns_none(self, tmp_path):
+        (tmp_path / ".last-notified-tag").write_text("")
+        assert _read_last_notified_tag(str(tmp_path)) is None
+
+    def test_write_then_read(self, tmp_path):
+        _write_last_notified_tag(str(tmp_path), "v1.2.3")
+        assert _read_last_notified_tag(str(tmp_path)) == "v1.2.3"
+
+    def test_overwrite(self, tmp_path):
+        _write_last_notified_tag(str(tmp_path), "v1.0.0")
+        _write_last_notified_tag(str(tmp_path), "v2.0.0")
+        assert _read_last_notified_tag(str(tmp_path)) == "v2.0.0"
+
+
+class TestCheckForNewReleaseTag:
+    """Tests for check_for_new_release_tag()."""
+
+    def test_new_tag_detected(self, tmp_path):
+        mock_result = MagicMock(returncode=0, stdout="v1.5.0\nv1.4.0\n")
+        with patch("app.auto_update._run_git", return_value=mock_result):
+            result = check_for_new_release_tag("/fake", str(tmp_path))
+        assert result == "v1.5.0"
+
+    def test_same_tag_returns_none(self, tmp_path):
+        _write_last_notified_tag(str(tmp_path), "v1.5.0")
+        mock_result = MagicMock(returncode=0, stdout="v1.5.0\nv1.4.0\n")
+        with patch("app.auto_update._run_git", return_value=mock_result):
+            result = check_for_new_release_tag("/fake", str(tmp_path))
+        assert result is None
+
+    def test_newer_tag_than_cached(self, tmp_path):
+        _write_last_notified_tag(str(tmp_path), "v1.4.0")
+        mock_result = MagicMock(returncode=0, stdout="v1.5.0\nv1.4.0\n")
+        with patch("app.auto_update._run_git", return_value=mock_result):
+            result = check_for_new_release_tag("/fake", str(tmp_path))
+        assert result == "v1.5.0"
+
+    def test_no_tags_returns_none(self, tmp_path):
+        mock_result = MagicMock(returncode=0, stdout="")
+        with patch("app.auto_update._run_git", return_value=mock_result):
+            result = check_for_new_release_tag("/fake", str(tmp_path))
+        assert result is None
+
+
+class TestNotifyNewReleaseTag:
+    """Tests for _notify_new_release_tag()."""
+
+    def test_sends_notification_and_records_tag(self, tmp_path):
+        from app.auto_update import _notify_new_release_tag
+        with patch("app.notify.format_and_send") as mock_send:
+            _notify_new_release_tag("v2.0.0", str(tmp_path))
+        mock_send.assert_called_once()
+        assert "v2.0.0" in mock_send.call_args[0][0]
+        assert _read_last_notified_tag(str(tmp_path)) == "v2.0.0"
+
+    def test_notification_failure_does_not_record_tag(self, tmp_path):
+        from app.auto_update import _notify_new_release_tag
+        with patch("app.notify.format_and_send", side_effect=Exception("fail")):
+            _notify_new_release_tag("v2.0.0", str(tmp_path))
+        # Tag should NOT be recorded since notification failed
+        assert _read_last_notified_tag(str(tmp_path)) is None
 
 
 class TestConfigValidator:

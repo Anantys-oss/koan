@@ -11,6 +11,10 @@ Configuration (config.yaml):
 
 The check is lightweight (git fetch + rev-list count) and only
 triggers a full pull when new commits are actually available.
+
+Notification is tag-based: a Telegram message is sent only when a new
+release tag appears on upstream. The actual update mechanism always
+pulls from upstream main regardless of tags.
 """
 
 import time
@@ -75,8 +79,8 @@ def check_for_updates(koan_root: str) -> Optional[int]:
         log("update", "No upstream remote found, skipping update check")
         return None
 
-    # Fetch upstream (lightweight, only refs)
-    result = _run_git(["fetch", remote, "--quiet"], koan_path)
+    # Fetch upstream (lightweight, only refs + tags)
+    result = _run_git(["fetch", remote, "--tags", "--quiet"], koan_path)
     if result.returncode != 0:
         log("update", f"Fetch failed: {result.stderr.strip()}")
         return None
@@ -96,8 +100,61 @@ def check_for_updates(koan_root: str) -> Optional[int]:
         return None
 
 
+def _get_latest_tag(koan_path: Path) -> Optional[str]:
+    """Get the latest tag by version sort order.
+
+    Uses git tag --sort=-version:refname for reliable results
+    across all git versions (avoids git describe quirks).
+    """
+    result = _run_git(
+        ["tag", "--sort=-version:refname"],
+        koan_path,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    # First line is the latest tag
+    return result.stdout.strip().splitlines()[0]
+
+
+def _read_last_notified_tag(instance_dir: str) -> Optional[str]:
+    """Read the last tag we notified about."""
+    tag_file = Path(instance_dir) / ".last-notified-tag"
+    try:
+        return tag_file.read_text().strip() or None
+    except FileNotFoundError:
+        return None
+
+
+def _write_last_notified_tag(instance_dir: str, tag: str) -> None:
+    """Record the tag we just notified about."""
+    tag_file = Path(instance_dir) / ".last-notified-tag"
+    tag_file.write_text(tag)
+
+
+def check_for_new_release_tag(koan_root: str, instance_dir: str) -> Optional[str]:
+    """Check if upstream has a new release tag we haven't notified about.
+
+    Returns the new tag name if one is found, None otherwise.
+    Assumes tags have already been fetched by check_for_updates().
+    """
+    koan_path = Path(koan_root)
+    latest_tag = _get_latest_tag(koan_path)
+    if latest_tag is None:
+        return None
+
+    last_notified = _read_last_notified_tag(instance_dir)
+    if latest_tag == last_notified:
+        return None
+
+    return latest_tag
+
+
 def perform_auto_update(koan_root: str, instance: str) -> bool:
     """Check for updates and trigger pull + restart if available.
+
+    Notification is tag-based: a Telegram message is sent only when a new
+    release tag appears on upstream. The update mechanism always pulls from
+    upstream main regardless of tags.
 
     Returns True if an update was triggered (caller should exit).
     Returns False if no update needed or update failed.
@@ -108,21 +165,25 @@ def perform_auto_update(koan_root: str, instance: str) -> bool:
 
     commits_ahead = check_for_updates(koan_root)
     if not commits_ahead:
+        # Even with no new commits, check for new tags to notify about
+        # (tag may have been pushed without new commits on main)
+        if config["notify"]:
+            new_tag = check_for_new_release_tag(koan_root, instance)
+            if new_tag:
+                _notify_new_release_tag(new_tag, instance)
         return False
 
     log("update", f"Upstream has {commits_ahead} new commit(s). Pulling...")
 
-    # Notify before updating
+    # Check for new release tag before pulling (notify is tag-based)
+    new_tag = None
     if config["notify"]:
-        try:
-            from app.notify import format_and_send
-            format_and_send(
-                f"🔄 Auto-update: {commits_ahead} new commit(s) detected. "
-                f"Pulling and restarting...",
-                instance_dir=instance,
-            )
-        except Exception as e:
-            log("error", f"Auto-update notification failed: {e}")
+        new_tag = check_for_new_release_tag(koan_root, instance)
+        if new_tag:
+            try:
+                _notify_new_release_tag(new_tag, instance)
+            except Exception as e:
+                log("error", f"Tag notification failed: {e}")
 
     # Pull
     from app.update_manager import pull_upstream
@@ -130,11 +191,11 @@ def perform_auto_update(koan_root: str, instance: str) -> bool:
 
     if not result.success:
         log("error", f"Auto-update pull failed: {result.error}")
-        if config["notify"]:
+        if config["notify"] and new_tag:
             try:
                 from app.notify import format_and_send
                 format_and_send(
-                    f"❌ Auto-update failed: {result.error}",
+                    f"❌ Auto-update pull failed after tag {new_tag}: {result.error}",
                     instance_dir=instance,
                 )
             except Exception as e:
@@ -152,17 +213,24 @@ def perform_auto_update(koan_root: str, instance: str) -> bool:
     remove_pause(koan_root)
     request_restart(koan_root)
 
-    if config["notify"]:
-        try:
-            from app.notify import format_and_send
-            msg = f"✅ {result.summary()}\nRestarting..."
-            if result.stashed:
-                msg += "\n⚠️ Dirty work was auto-stashed."
-            format_and_send(msg, instance_dir=instance)
-        except Exception as e:
-            log("error", f"Failed to notify auto-update success: {e}")
-
     return True
+
+
+def _notify_new_release_tag(tag: str, instance_dir: str) -> None:
+    """Send a Telegram notification about a new release tag."""
+    log("update", f"New release tag detected: {tag}")
+    try:
+        from app.notify import format_and_send
+        format_and_send(
+            f"🏷️ New release available: **{tag}**\n"
+            f"Pulling latest changes and restarting...",
+            instance_dir=instance_dir,
+        )
+        # Only record after successful notification to avoid
+        # missing the notification if the process restarts
+        _write_last_notified_tag(instance_dir, tag)
+    except Exception as e:
+        log("error", f"Failed to notify new release tag: {e}")
 
 
 def reset_check_cache():
