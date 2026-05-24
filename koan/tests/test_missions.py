@@ -31,6 +31,8 @@ from app.missions import (
     QUARANTINE_MAX_BYTES,
     reorder_mission,
     reorder_missions_bulk,
+    _collect_item_start_indices,
+    _find_insertion_index,
     requeue_mission,
     sanitize_mission_text,
     stamp_queued,
@@ -891,6 +893,71 @@ class TestReorderMission:
         # clean_mission_display should convert [project:koan] to [koan]
         assert "[koan]" in moved
         assert "[project:koan]" not in moved
+
+
+# ---------------------------------------------------------------------------
+# _collect_item_start_indices / _find_insertion_index helpers
+# ---------------------------------------------------------------------------
+
+class TestCollectItemStartIndices:
+    def test_simple_items(self):
+        lines = ["## Pending", "- first", "- second", "- third"]
+        result = _collect_item_start_indices(lines, 0, 4)
+        assert result == [1, 2, 3]
+
+    def test_multiline_items(self):
+        lines = ["## Pending", "- first", "  continuation", "- second"]
+        result = _collect_item_start_indices(lines, 0, 4)
+        assert result == [1, 3]
+
+    def test_empty_section(self):
+        lines = ["## Pending", ""]
+        result = _collect_item_start_indices(lines, 0, 2)
+        assert result == []
+
+    def test_blank_lines_between_items(self):
+        lines = ["## Pending", "", "- first", "", "- second"]
+        result = _collect_item_start_indices(lines, 0, 5)
+        assert result == [2, 4]
+
+
+class TestFindInsertionIndex:
+    def test_target_first(self):
+        lines = ["## Pending", "- alpha", "- beta"]
+        idx = _find_insertion_index(lines, 0, 3, [1, 2], 1)
+        assert idx == 1
+
+    def test_target_first_skips_blank(self):
+        lines = ["## Pending", "", "- alpha", "- beta"]
+        idx = _find_insertion_index(lines, 0, 4, [2, 3], 1)
+        assert idx == 2
+
+    def test_target_middle(self):
+        lines = ["## Pending", "- alpha", "- beta", "- gamma"]
+        idx = _find_insertion_index(lines, 0, 4, [1, 2, 3], 2)
+        assert idx == 2
+
+    def test_target_beyond_items(self):
+        lines = ["## Pending", "- alpha", "- beta"]
+        idx = _find_insertion_index(lines, 0, 3, [1, 2], 5)
+        # Should insert after last item
+        assert idx == 3
+
+    def test_target_beyond_with_multiline_last(self):
+        lines = ["## Pending", "- alpha", "- beta", "  details"]
+        idx = _find_insertion_index(lines, 0, 4, [1, 2], 5)
+        assert idx == 4
+
+    def test_no_items_returns_after_header(self):
+        lines = ["## Pending", ""]
+        idx = _find_insertion_index(lines, 0, 2, [], 1)
+        # target==1 skips blank lines, lands at section_end
+        assert idx == 2
+
+    def test_no_items_no_blanks(self):
+        lines = ["## Pending"]
+        idx = _find_insertion_index(lines, 0, 1, [], 3)
+        assert idx == 1
 
 
 # ---------------------------------------------------------------------------
