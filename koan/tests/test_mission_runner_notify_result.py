@@ -467,3 +467,54 @@ class TestNotifyMissionResult:
         )
 
         assert (instance_dir / "outbox.md").read_text() == ""
+
+    def test_skill_skip_suppresses_forwarding(self, instance_dir, tmp_path):
+        """When a skill exits 0 with '— skipping' in stdout, the result
+        notification is suppressed because the skill already sent a direct
+        notification (e.g. fix_runner's '⏭ Issue already closed')."""
+        from app.mission_runner import _notify_mission_result
+
+        stdout_file = tmp_path / "stdout.json"
+        _write_claude_stdout(
+            stdout_file,
+            "[fix] Starting fix runner\n"
+            "Issue #42 (o/r) is already closed — skipping.",
+        )
+
+        start_ts = int(time.time()) - 60
+        os.utime(instance_dir / "outbox.md", (start_ts - 10, start_ts - 10))
+
+        _notify_mission_result(
+            mission_title="/fix https://github.com/o/r/issues/42",
+            instance_dir=str(instance_dir),
+            stdout_file=str(stdout_file),
+            start_time=start_ts,
+            exit_code=0,
+        )
+
+        assert (instance_dir / "outbox.md").read_text() == ""
+
+    def test_skill_skip_non_zero_still_forwards(self, instance_dir, tmp_path):
+        """A non-zero exit with '— skipping' is NOT suppressed — exit!=0
+        means something went wrong even if the text mentions skipping."""
+        from app.mission_runner import _notify_mission_result
+
+        stdout_file = tmp_path / "stdout.json"
+        _write_claude_stdout(
+            stdout_file,
+            "**SKIP** — Issue #42 is already closed — skipping.",
+        )
+
+        start_ts = int(time.time()) - 60
+        os.utime(instance_dir / "outbox.md", (start_ts - 10, start_ts - 10))
+
+        _notify_mission_result(
+            mission_title="/fix https://github.com/o/r/issues/42",
+            instance_dir=str(instance_dir),
+            stdout_file=str(stdout_file),
+            start_time=start_ts,
+            exit_code=1,
+        )
+
+        content = (instance_dir / "outbox.md").read_text()
+        assert "already closed" in content

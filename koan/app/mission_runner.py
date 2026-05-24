@@ -1101,6 +1101,13 @@ def _notify_mission_result(
 
     try:
         result_text = _read_stdout_summary(stdout_file, max_chars=_RESULT_FORWARD_MAX_CHARS)
+
+        # Skills that exit 0 with "— skipping" already sent their own
+        # notification (e.g. fix_runner's "⏭ Issue already closed").
+        # Suppress forwarding to avoid a redundant/confusing second message.
+        if exit_code == 0 and "— skipping" in (result_text or ""):
+            return
+
         should_forward, is_alert = _should_forward_result(mission_title, result_text)
         if not should_forward:
             return

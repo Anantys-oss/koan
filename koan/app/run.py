@@ -1375,10 +1375,18 @@ def _handle_skill_dispatch(
             ))
             return True, mission_title
 
-        _notify_mission_end(
-            instance, project_name, run_num, max_runs,
-            exit_code, mission_title,
+        # Suppress redundant notification when the skill already notified
+        # the user directly (e.g. fix_runner sends "⏭ Issue already closed").
+        _skill_stdout = skill_result.get("stdout", "")
+        _skill_already_notified = (
+            exit_code == 0
+            and "— skipping" in _skill_stdout
         )
+        if not _skill_already_notified:
+            _notify_mission_end(
+                instance, project_name, run_num, max_runs,
+                exit_code, mission_title,
+            )
         _finalize_mission(instance, mission_title, project_name, exit_code)
         _commit_instance(instance)
 

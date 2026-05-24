@@ -89,8 +89,8 @@ def run_fix(
             msg = f"Issue #{issue_number} ({owner}/{repo}) is already closed — skipping."
             logger.info(msg)
             if notify_fn:
-                notify_fn(f"\u2139\ufe0f {msg}")
-            return False, msg
+                notify_fn(f"\u23ed {msg}")
+            return True, msg
 
         notify_fn(
             f"\U0001f527 Fixing issue #{issue_number} "

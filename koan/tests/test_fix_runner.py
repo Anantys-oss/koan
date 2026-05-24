@@ -292,11 +292,13 @@ class TestRunFix:
             notify_fn=notify,
         )
 
-        assert success is False
+        assert success is True
         assert "already closed" in summary.lower()
-        # Verify notification was sent
+        # Verify notification was sent with skip icon
         notify.assert_called_once()
-        assert "already closed" in notify.call_args[0][0].lower()
+        notification_text = notify.call_args[0][0]
+        assert "already closed" in notification_text.lower()
+        assert "⏭" in notification_text
 
 
 # ---------------------------------------------------------------------------
