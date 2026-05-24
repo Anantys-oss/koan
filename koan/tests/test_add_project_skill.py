@@ -502,15 +502,16 @@ class TestCheckPushAccessSafe:
 
 
 class TestGitClone:
-    def test_calls_run_git_strict(self, handler):
-        with patch.object(handler, "run_git_strict") as mock_git:
+    def test_clones_via_gh(self, handler):
+        with patch("app.github.run_gh") as mock_gh:
             handler._git_clone("https://github.com/owner/repo.git", "/tmp/target")
 
-        mock_git.assert_called_once_with(
-            "clone", "https://github.com/owner/repo.git", "/tmp/target", timeout=120
+        mock_gh.assert_called_once_with(
+            "repo", "clone", "https://github.com/owner/repo.git", "/tmp/target",
+            timeout=120,
         )
 
     def test_propagates_error(self, handler):
-        with patch.object(handler, "run_git_strict", side_effect=RuntimeError("failed")):
-            with pytest.raises(RuntimeError, match="failed"):
+        with patch("app.github.run_gh", side_effect=RuntimeError("boom")):
+            with pytest.raises(RuntimeError, match="boom"):
                 handler._git_clone("url", "/tmp/t")

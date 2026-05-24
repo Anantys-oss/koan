@@ -172,9 +172,17 @@ def _extract_owner_repo(url):
 def _git_clone(url, target_dir):
     """Clone a git repository.
 
+    Uses ``gh repo clone`` rather than a bare ``git clone`` so that private
+    repositories authenticate via the session's gh credentials (GH_TOKEN).
+    A plain ``git clone`` over HTTPS has no credential helper and cannot
+    prompt (stdin is closed), so it fails on private repos with
+    "could not read Username for 'https://github.com': Device not configured".
+
     Raises RuntimeError on failure.
     """
-    run_git_strict("clone", url, target_dir, timeout=120)
+    from app.github import run_gh
+
+    run_gh("repo", "clone", url, target_dir, timeout=120)
 
 
 def _check_push_access(owner, repo):
