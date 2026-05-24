@@ -547,6 +547,37 @@ class TestRecoveryCounterHelpers:
         result = _set_recovery_attempts("- Fix the bug [r:abc]", 1)
         assert result == "- Fix the bug [r:1]"
 
+    # --- Literal [r:N] in description (regression) ---
+
+    def test_get_attempts_ignores_literal_in_description(self):
+        """Literal [r:N] in description is NOT parsed as a recovery counter."""
+        # Only the trailing [r:2] is the real counter
+        assert _get_recovery_attempts("- Fix regex [r:N] bug [r:2]") == 2
+
+    def test_get_attempts_no_counter_with_literal_in_description(self):
+        """Literal [r:N] in description without trailing counter returns 0."""
+        assert _get_recovery_attempts("- Fix regex [r:N] bug") == 0
+
+    def test_set_preserves_literal_in_description(self):
+        """Setting counter must NOT strip literal [r:N] from the description."""
+        result = _set_recovery_attempts("- Fix regex [r:N] bug", 1)
+        assert result == "- Fix regex [r:N] bug [r:1]"
+
+    def test_set_replaces_only_trailing_counter(self):
+        """When both literal [r:N] and real [r:1] exist, only trailing is replaced."""
+        result = _set_recovery_attempts("- Fix regex [r:N] bug [r:1]", 2)
+        assert result == "- Fix regex [r:N] bug [r:2]"
+
+    def test_strip_preserves_literal_in_description(self):
+        """Stripping counter must NOT remove literal [r:N] from description."""
+        result = _strip_recovery_counter("- Fix regex [r:N] bug [r:2]")
+        assert result == "- Fix regex [r:N] bug"
+
+    def test_strip_no_counter_preserves_literal(self):
+        """Stripping when no real counter exists preserves literal [r:N]."""
+        result = _strip_recovery_counter("- Fix regex [r:N] bug")
+        assert result == "- Fix regex [r:N] bug"
+
 
 # ---------------------------------------------------------------------------
 # State classification
@@ -638,6 +669,24 @@ class TestRecoveryCounterIntegration:
         content = missions.read_text()
         assert "[r:1]" in content
         assert "[r:abc]" not in content
+
+    def test_literal_r_n_in_description_preserved(self, instance_dir):
+        """Regression: literal [r:N] in mission description must not be corrupted."""
+        missions = instance_dir / "missions.md"
+        missions.write_text(
+            _missions(in_progress="- Fix recover.py regex [r:N] corruption")
+        )
+
+        count, _ = recover_missions(str(instance_dir))
+        assert count == 1
+
+        content = missions.read_text()
+        # The literal [r:N] in the description must survive
+        assert "[r:N]" in content
+        # The real counter [r:1] must be appended
+        assert "[r:1]" in content
+        # Full text check: description intact with counter at end
+        assert "Fix recover.py regex [r:N] corruption [r:1]" in content
 
     def test_counter_preserved_in_pending(self, instance_dir):
         """The [r:N] tag is present in Pending after recovery."""
