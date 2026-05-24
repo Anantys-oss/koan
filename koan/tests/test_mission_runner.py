@@ -543,6 +543,42 @@ class TestRunPostMission:
         # Pipeline continues — quota is NOT flagged as exhausted
         assert result["quota_exhausted"] is False
         assert result["success"] is True
+        assert result.get("quota_check_unreliable") is True
+
+    @patch("app.mission_runner.check_auto_merge", return_value=None)
+    @patch("app.mission_runner.trigger_reflection", return_value=False)
+    @patch("app.mission_runner.archive_pending", return_value=False)
+    @patch("app.mission_runner.update_usage", return_value=True)
+    def test_unreliable_quota_check_sends_telegram_alert(
+        self, mock_usage, mock_archive, mock_reflect, mock_merge, tmp_path
+    ):
+        """QUOTA_CHECK_UNRELIABLE must send a dedicated outbox notification."""
+        from app.mission_runner import run_post_mission
+        from app.quota_handler import QUOTA_CHECK_UNRELIABLE
+
+        instance_dir = str(tmp_path / "instance")
+        os.makedirs(instance_dir, exist_ok=True)
+
+        with patch(
+            "app.quota_handler.handle_quota_exhaustion",
+            return_value=QUOTA_CHECK_UNRELIABLE,
+        ):
+            run_post_mission(
+                instance_dir=instance_dir,
+                project_name="testproj",
+                project_path=str(tmp_path),
+                run_num=5,
+                exit_code=0,
+                stdout_file="/tmp/out.json",
+                stderr_file="/tmp/err.txt",
+                mission_title="fix the widget",
+            )
+
+        outbox = Path(instance_dir) / "outbox.md"
+        assert outbox.exists(), "outbox.md should have been created"
+        content = outbox.read_text()
+        assert "Quota protection disabled" in content
+        assert "testproj" in content
 
     @patch("app.mission_runner.check_auto_merge", return_value=None)
     @patch("app.mission_runner.trigger_reflection", return_value=False)

@@ -1394,6 +1394,20 @@ def run_post_mission(
             _log_runner("quota", f"⚠️  Quota check unreliable for {project_name} — "
                         "could not read log files, skipping quota detection")
             tracker.record("quota_check", "skipped", "unreliable — log files unreadable")
+            result["quota_check_unreliable"] = True
+            try:
+                from app.utils import append_to_outbox
+                from app.notify import NotificationPriority
+                outbox_path = Path(instance_dir) / "outbox.md"
+                append_to_outbox(
+                    outbox_path,
+                    f"⚠️ [{project_name}] Quota protection disabled — "
+                    f"could not read CLI output files after mission '{mission_title[:50]}'. "
+                    f"Quota exhaustion will be invisible until files are readable again.\n",
+                    priority=NotificationPriority.WARNING,
+                )
+            except Exception as e:
+                _log_runner("error", f"Quota unreliable notification failed: {e}")
         elif quota_result is not None:
             result["quota_exhausted"] = True
             result["quota_info"] = quota_result
