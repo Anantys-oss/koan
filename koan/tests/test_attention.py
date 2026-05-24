@@ -352,6 +352,59 @@ class TestGetAttentionItems:
         mock_known.assert_called_once_with(koan_root)
         assert captured["known_repos"] == {"some-org/real-repo"}
 
+    def test_github_mentions_return_web_urls(self, tmp_path):
+        """@mention items must contain web URLs, not API URLs."""
+        koan_root = _make_koan_root(tmp_path)
+        missions_file = Path(koan_root) / "instance" / "missions.md"
+        missions_file.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n\n## Failed\n")
+
+        fake_notif = {
+            "id": "42",
+            "reason": "mention",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "repository": {"full_name": "owner/repo"},
+            "subject": {
+                "title": "Bug in parsing",
+                "url": "https://api.github.com/repos/owner/repo/pulls/99",
+            },
+        }
+
+        from app.github_notifications import FetchResult
+        fake_result = FetchResult(actionable=[fake_notif], drain=[])
+
+        with patch("app.pr_tracker.fetch_all_prs", return_value={"prs": []}):
+            with patch("app.utils.load_config",
+                       return_value={"attention_github_notifications": True}):
+                with patch("app.loop_manager._get_known_repos_from_projects",
+                           return_value={"owner/repo"}):
+                    with patch("app.github_notifications.fetch_unread_notifications",
+                               return_value=fake_result):
+                        attention._attention_cache = None
+                        items = attention.get_attention_items(koan_root)
+
+        gh_items = [i for i in items if i["source"] == "github"]
+        assert len(gh_items) == 1
+        assert gh_items[0]["url"] == "https://github.com/owner/repo/pull/99"
+
+
+class TestApiUrlToWeb:
+    def test_pull_request_url(self):
+        assert attention._api_url_to_web(
+            "https://api.github.com/repos/owner/repo/pulls/42"
+        ) == "https://github.com/owner/repo/pull/42"
+
+    def test_issue_url(self):
+        assert attention._api_url_to_web(
+            "https://api.github.com/repos/owner/repo/issues/7"
+        ) == "https://github.com/owner/repo/issues/7"
+
+    def test_non_api_url_passthrough(self):
+        url = "https://github.com/owner/repo/pull/1"
+        assert attention._api_url_to_web(url) == url
+
+    def test_empty_string(self):
+        assert attention._api_url_to_web("") == ""
+
 
 # ---------------------------------------------------------------------------
 # Dashboard API routes (integration)
