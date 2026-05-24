@@ -136,12 +136,14 @@ class TestStagnationMonitorBehavior:
             abort_after_cycles=3,
         )
         # Drive the sampler synchronously to avoid timing flakiness.
-        monitor._sample_once()  # sample 1 → consecutive=1
-        monitor._sample_once()  # sample 2 → consecutive=2 → warn fires
-        assert warns == [2]
+        monitor._sample_once()  # sample 1 → baseline (consecutive=0)
+        monitor._sample_once()  # sample 2 → 1st duplicate → warn fires
+        assert warns == [1]
         assert not monitor.stagnated
         assert aborts == []
-        monitor._sample_once()  # sample 3 → consecutive=3 → abort fires
+        monitor._sample_once()  # sample 3 → 2nd duplicate
+        assert not monitor.stagnated
+        monitor._sample_once()  # sample 4 → 3rd duplicate → abort fires
         assert monitor.stagnated is True
         assert aborts == [True]
 
@@ -191,11 +193,11 @@ class TestStagnationMonitorBehavior:
             check_interval_seconds=1,
             abort_after_cycles=5,
         )
-        monitor._sample_once()
-        monitor._sample_once()  # consecutive=2 → warn
-        monitor._sample_once()  # consecutive=3 → no additional warn
-        monitor._sample_once()  # consecutive=4 → no additional warn
-        assert warns == [2]
+        monitor._sample_once()  # baseline (consecutive=0)
+        monitor._sample_once()  # 1st duplicate → warn
+        monitor._sample_once()  # 2nd duplicate → no additional warn
+        monitor._sample_once()  # 3rd duplicate → no additional warn
+        assert warns == [1]
 
     def test_callback_exception_does_not_kill_monitor(self, tmp_path):
         f = tmp_path / "stdout.log"
@@ -212,9 +214,10 @@ class TestStagnationMonitorBehavior:
             abort_after_cycles=3,
         )
         # Should not raise even though warn callback blows up.
-        monitor._sample_once()
-        monitor._sample_once()
-        monitor._sample_once()
+        monitor._sample_once()  # baseline
+        monitor._sample_once()  # 1st duplicate → warn (blows up)
+        monitor._sample_once()  # 2nd duplicate
+        monitor._sample_once()  # 3rd duplicate → abort
         assert monitor.stagnated is True
 
     def test_rejects_abort_after_cycles_below_two(self, tmp_path):
@@ -373,19 +376,19 @@ class TestSampleOnceNoneHash:
             abort_after_cycles=3,
         )
         # Build up consecutive identical hashes.
-        monitor._sample_once()  # consecutive=1
-        monitor._sample_once()  # consecutive=2
+        monitor._sample_once()  # baseline (consecutive=0)
+        monitor._sample_once()  # 1st duplicate (consecutive=1)
 
         # Truncate the file so _tail_hash returns None.
         f.write_text("tiny")
         monitor._sample_once()  # None → reset to 0
         assert monitor._consecutive == 0
 
-        # Restore output; count must start over from 1.
+        # Restore output; count must start over from 0.
         _make_stdout(f, 60)
-        monitor._sample_once()  # consecutive=1
-        monitor._sample_once()  # consecutive=2
-        assert not monitor.stagnated  # would need 3
+        monitor._sample_once()  # baseline (consecutive=0)
+        monitor._sample_once()  # 1st duplicate (consecutive=1)
+        assert not monitor.stagnated  # would need 3 duplicates
 
     def test_none_hash_does_not_count_toward_stagnation(self, tmp_path):
         """Consecutive None returns must never trigger abort."""
@@ -421,8 +424,9 @@ class TestAbortCallbackException:
             check_interval_seconds=1,
             abort_after_cycles=2,
         )
-        monitor._sample_once()
-        monitor._sample_once()
+        monitor._sample_once()  # baseline
+        monitor._sample_once()  # 1st duplicate
+        monitor._sample_once()  # 2nd duplicate → abort
         assert monitor.stagnated is True
 
 
@@ -441,18 +445,18 @@ class TestStagnationResetAndRestagnation:
             check_interval_seconds=1,
             abort_after_cycles=5,
         )
-        monitor._sample_once()
-        monitor._sample_once()  # warn fires
-        assert warns == [2]
+        monitor._sample_once()  # baseline (consecutive=0)
+        monitor._sample_once()  # 1st duplicate → warn fires
+        assert warns == [1]
 
         # Fresh output resets.
         with open(f, "a") as fh:
             fh.write("new progress that changes the tail hash\n")
-        monitor._sample_once()  # consecutive=1, warned=False
+        monitor._sample_once()  # new baseline (consecutive=0), warned=False
 
         # Stagnate again — warn fires a second time.
-        monitor._sample_once()  # consecutive=2, warn fires
-        assert warns == [2, 2]
+        monitor._sample_once()  # 1st duplicate → warn fires
+        assert warns == [1, 1]
 
 
 # ---------------------------------------------------------------------------
@@ -679,8 +683,9 @@ class TestMonitorCapturesPattern:
             check_interval_seconds=1,
             abort_after_cycles=2,
         )
-        monitor._sample_once()
-        monitor._sample_once()
+        monitor._sample_once()  # baseline
+        monitor._sample_once()  # 1st duplicate
+        monitor._sample_once()  # 2nd duplicate → abort
         assert monitor.stagnated
         assert monitor.pattern_type == "tool_loop"
         assert "Bash" in monitor.pattern_excerpt

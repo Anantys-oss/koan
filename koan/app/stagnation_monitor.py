@@ -292,13 +292,13 @@ class StagnationMonitor:
             self._consecutive += 1
         else:
             self._last_hash = current
-            self._consecutive = 1
+            self._consecutive = 0
             # Fresh output means any previous "warned" state is stale.
             self._warned = False
             return
 
-        # Warn on first duplicate (consecutive == 2) before escalating.
-        if self._consecutive == 2 and not self._warned:
+        # Warn on first duplicate (consecutive == 1) before escalating.
+        if self._consecutive == 1 and not self._warned:
             self._warned = True
             if self._on_warn is not None:
                 try:
