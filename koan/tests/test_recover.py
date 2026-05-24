@@ -547,6 +547,29 @@ class TestRecoveryCounterHelpers:
         result = _set_recovery_attempts("- Fix the bug [r:abc]", 1)
         assert result == "- Fix the bug [r:1]"
 
+    def test_get_attempts_ignores_mid_description_tag(self):
+        """[r:N] mid-description must not be mistaken for the recovery counter."""
+        assert _get_recovery_attempts("- fix [r:2] regex anchor issue") == 0
+
+    def test_get_attempts_finds_trailing_tag_with_mid_description(self):
+        """Trailing [r:1] is found even when [r:N] appears mid-description."""
+        assert _get_recovery_attempts("- fix [r:2] regex anchor issue [r:1]") == 1
+
+    def test_set_attempts_preserves_mid_description_tag(self):
+        """_set_recovery_attempts must not corrupt mid-description [r:N]."""
+        result = _set_recovery_attempts("- fix [r:2] regex anchor issue", 1)
+        assert result == "- fix [r:2] regex anchor issue [r:1]"
+
+    def test_strip_preserves_mid_description_tag(self):
+        """_strip_recovery_counter only removes the trailing [r:N]."""
+        result = _strip_recovery_counter("- fix [r:2] regex anchor issue [r:1]")
+        assert result == "- fix [r:2] regex anchor issue"
+
+    def test_strip_noop_when_only_mid_description_tag(self):
+        """No trailing counter means nothing to strip."""
+        result = _strip_recovery_counter("- fix [r:2] regex anchor issue")
+        assert result == "- fix [r:2] regex anchor issue"
+
 
 # ---------------------------------------------------------------------------
 # State classification
