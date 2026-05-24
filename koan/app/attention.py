@@ -16,6 +16,7 @@ Dismissed items are tracked in instance/.koan-attention-dismissed.json.
 import contextlib
 import hashlib
 import json
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -241,6 +242,20 @@ def _collect_quota_items(koan_root: str) -> list:
     return items
 
 
+_API_URL_RE = re.compile(
+    r"https://api\.github\.com/repos/([^/]+/[^/]+)/(pulls|issues)/(\d+)"
+)
+
+
+def _api_url_to_web(api_url: str) -> str:
+    m = _API_URL_RE.match(api_url)
+    if not m:
+        return api_url
+    slug, kind, number = m.group(1), m.group(2), m.group(3)
+    kind_web = "pull" if kind == "pulls" else kind
+    return f"https://github.com/{slug}/{kind_web}/{number}"
+
+
 def _collect_github_mention_items(koan_root: str) -> list:
     """Return attention items from unread GitHub @mention notifications.
 
@@ -271,7 +286,7 @@ def _collect_github_mention_items(koan_root: str) -> list:
             repo = (notif.get("repository") or {}).get("full_name", "")
             subject = notif.get("subject") or {}
             title = subject.get("title", "Notification")
-            url = subject.get("url", "")
+            url = _api_url_to_web(subject.get("url", ""))
             notif_id = str(notif.get("id", ""))
             updated_at = notif.get("updated_at", "")
             age = _age_seconds(updated_at)
