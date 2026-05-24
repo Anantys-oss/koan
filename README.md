@@ -53,6 +53,7 @@ This isn't a chatbot wrapper. It's a collaborator with memory, personality, and 
 ```bash
 git clone https://github.com/sukria/koan.git
 cd koan
+make setup
 make install    # Interactive web wizard — sets up everything
 make start      # Launches the full stack
 make logs       # Watch it work
