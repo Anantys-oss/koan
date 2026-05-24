@@ -65,6 +65,62 @@ class TestTailHash:
         assert baseline == after
 
 
+class TestStagnationOffByOne:
+    """Regression test: abort_after_cycles counts duplicates, not total samples.
+
+    With abort_after_cycles=3, the monitor should need 3 consecutive
+    *duplicate* hashes (i.e. 3 comparisons where current == previous)
+    before aborting. The first observation of a hash is a baseline, not
+    a duplicate. Total samples to abort = abort_after_cycles + 1.
+
+    Bug: _consecutive was initialised to 1 on a new hash, so the first
+    observation was counted as a duplicate. This caused abort after only
+    abort_after_cycles total samples (abort_after_cycles - 1 actual
+    duplicates), killing missions one sample early.
+    """
+
+    def test_no_abort_after_abort_after_cycles_total_samples(self, tmp_path):
+        """abort_after_cycles=3 must NOT abort after only 3 total samples."""
+        f = tmp_path / "stdout.log"
+        _make_stdout(f, 60)
+
+        aborts = []
+        monitor = StagnationMonitor(
+            stdout_file=str(f),
+            on_abort=lambda: aborts.append(True),
+            check_interval_seconds=1,
+            abort_after_cycles=3,
+        )
+        # 3 samples with the same hash: 1 baseline + 2 duplicates.
+        # With abort_after_cycles=3, this should NOT be enough.
+        monitor._sample_once()  # baseline
+        monitor._sample_once()  # 1st duplicate
+        monitor._sample_once()  # 2nd duplicate
+        assert not monitor.stagnated, (
+            "abort_after_cycles=3 should require 3 duplicates, not 2"
+        )
+        assert aborts == []
+
+    def test_aborts_after_abort_after_cycles_duplicates(self, tmp_path):
+        """abort_after_cycles=3 must abort after 3 actual duplicates (4 total)."""
+        f = tmp_path / "stdout.log"
+        _make_stdout(f, 60)
+
+        aborts = []
+        monitor = StagnationMonitor(
+            stdout_file=str(f),
+            on_abort=lambda: aborts.append(True),
+            check_interval_seconds=1,
+            abort_after_cycles=3,
+        )
+        monitor._sample_once()  # baseline
+        monitor._sample_once()  # 1st duplicate
+        monitor._sample_once()  # 2nd duplicate
+        monitor._sample_once()  # 3rd duplicate → abort
+        assert monitor.stagnated is True
+        assert aborts == [True]
+
+
 class TestStagnationMonitorBehavior:
     def test_aborts_after_k_identical_samples(self, tmp_path):
         f = tmp_path / "stdout.log"
