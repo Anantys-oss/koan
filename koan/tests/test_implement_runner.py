@@ -8,6 +8,7 @@ from app.github import fetch_issue_with_comments, detect_parent_repo
 from app.projects_config import get_project_submit_to_repository
 from skills.core.implement.implement_runner import (
     run_implement,
+    _GateImproved,
     _is_plan_content,
     _extract_latest_plan,
     _build_prompt,
@@ -217,7 +218,9 @@ class TestPlanReviewGate:
              patch(f"{_IMPL_MODULE}._write_plan_cache"), \
              patch(f"{_IMPL_MODULE}._post_improved_plan"):
             result = _run_plan_review_gate("## Phase 1\nDo stuff\n" * 10, "/project")
-            assert result == improved
+            assert isinstance(result, _GateImproved)
+            assert result.plan == improved
+            assert "missing file paths" in result.issues_fixed
 
     def test_issues_found_notifies_telegram_about_improvement(self):
         """When gate finds issues, notify_fn is called about auto-improvement."""
@@ -277,7 +280,8 @@ class TestPlanReviewGate:
             result = _run_plan_review_gate(
                 "## Phase 1\nDo stuff\n" * 10, "/project", notify_fn=notify,
             )
-            assert result == "improved"
+            assert isinstance(result, _GateImproved)
+            assert result.plan == "improved"
 
     def test_github_comment_failure_does_not_block_gate(self):
         """GitHub comment exception doesn't prevent gate from proceeding."""
@@ -294,7 +298,8 @@ class TestPlanReviewGate:
                 "## Phase 1\nDo stuff\n" * 10, "/project",
                 issue_url="https://github.com/o/r/issues/42",
             )
-            assert result == "improved"
+            assert isinstance(result, _GateImproved)
+            assert result.plan == "improved"
 
     def test_simple_plan_skips_review(self):
         """Simple plans bypass the review gate entirely — no config read needed."""
@@ -328,14 +333,15 @@ class TestPlanReviewGate:
             assert result is None
 
     def test_gate_improved_plan_used_for_implementation(self):
-        """Integration: run_implement uses improved plan from gate."""
+        """Integration: run_implement uses improved plan and context from gate."""
         notify = MagicMock()
         body = "### Summary\nPlan\n#### Phase 1: Do it"
         improved = "## Phase 1: koan/app/foo.py\nImproved plan"
+        gate_result = _GateImproved(improved, "- missing file paths")
         with patch(f"{_IMPL_MODULE}.fetch_issue_with_comments",
                     return_value=("Title", body, [])), \
              patch(f"{_IMPL_MODULE}._run_plan_review_gate",
-                    return_value=improved), \
+                    return_value=gate_result), \
              patch(f"{_IMPL_MODULE}._execute_implementation",
                     return_value="done") as mock_exec, \
              patch(f"{_IMPL_MODULE}._submit_implement_pr", return_value=None):
@@ -345,9 +351,10 @@ class TestPlanReviewGate:
                 notify_fn=notify,
             )
             assert ok
-            # Verify the improved plan was passed to implementation
             call_kwargs = mock_exec.call_args[1]
             assert call_kwargs["plan"] == improved
+            assert "Plan Improvement Notes" in call_kwargs["context"]
+            assert "missing file paths" in call_kwargs["context"]
 
     def test_gate_blocks_run_implement_on_tuple_failure(self):
         """Integration: run_implement returns failure when gate returns (False, msg)."""
@@ -390,7 +397,9 @@ class TestPlanReviewImprovementLoop:
              patch(f"{_IMPL_MODULE}._write_plan_cache") as mock_cache, \
              patch(f"{_IMPL_MODULE}._post_improved_plan") as mock_post:
             result = _run_plan_review_gate(self._PLAN, "/project")
-            assert result == improved
+            assert isinstance(result, _GateImproved)
+            assert result.plan == improved
+            assert "missing paths" in result.issues_fixed
             mock_cache.assert_called_once()
             mock_post.assert_called_once()
 
@@ -405,8 +414,8 @@ class TestPlanReviewImprovementLoop:
              patch(f"{_IMPL_MODULE}._write_plan_cache") as mock_cache, \
              patch(f"{_IMPL_MODULE}._post_improved_plan") as mock_post:
             result = _run_plan_review_gate(self._PLAN, "/project")
-            # Fail open: returns the improved plan (different from original)
-            assert result == "better but not perfect"
+            assert isinstance(result, _GateImproved)
+            assert result.plan == "better but not perfect"
             mock_cache.assert_not_called()
             mock_post.assert_called_once()
 
