@@ -119,19 +119,29 @@ def run_implement(
     gate_result = _run_plan_review_gate(
         plan, project_path, notify_fn=notify_fn, issue_url=issue_url,
     )
-    if isinstance(gate_result, str):
-        plan = gate_result
+    improvement_context = ""
+    if isinstance(gate_result, _GateImproved):
+        plan = gate_result.plan
+        improvement_context = (
+            "\n\n## Plan Improvement Notes\n\n"
+            "The plan was autonomously improved before implementation. "
+            "The original plan had these issues that were addressed:\n"
+            f"{gate_result.issues_fixed}\n\n"
+            "The plan above is the corrected version. Pay attention to the "
+            "specific file paths and details added during improvement."
+        )
     elif gate_result is not None:
         return gate_result
 
     # Invoke Claude with the plan
+    effective_context = (context or "Implement the full plan.") + improvement_context
     try:
         output = _execute_implementation(
             project_path=project_path,
             issue_url=issue_url,
             issue_title=title,
             plan=plan,
-            context=context or "Implement the full plan.",
+            context=effective_context,
             skill_dir=skill_dir,
             issue_number=str(issue_number),
         )
@@ -270,17 +280,27 @@ def _write_plan_cache(project_path: str, plan_hash_hex: str) -> None:
         logger.warning("Plan-review cache write failed: %s", e)
 
 
+class _GateImproved:
+    """Result when the gate self-healed the plan."""
+
+    __slots__ = ("plan", "issues_fixed")
+
+    def __init__(self, plan: str, issues_fixed: str):
+        self.plan = plan
+        self.issues_fixed = issues_fixed
+
+
 def _run_plan_review_gate(
     plan: str,
     project_path: str,
     notify_fn=None,
     issue_url: str = "",
-) -> Union[None, str, Tuple[bool, str]]:
+) -> Union[None, _GateImproved, Tuple[bool, str]]:
     """Run plan-review gate with autonomous improvement loop.
 
     Returns:
         None — proceed with original plan (simple/cached/disabled).
-        str — proceed with this improved plan (gate self-healed).
+        _GateImproved — proceed with improved plan + context about what was fixed.
         (False, msg) — block (only on catastrophic internal error).
     """
     from app.plan_runner import improve_plan, is_simple_plan, review_plan
@@ -302,6 +322,7 @@ def _run_plan_review_gate(
 
     max_rounds = review_cfg.get("max_rounds", 3)
     current_plan = plan
+    all_issues: List[str] = []
 
     for round_num in range(1, max_rounds + 1):
         logger.info("Plan-review gate: round %d/%d...", round_num, max_rounds)
@@ -313,9 +334,10 @@ def _run_plan_review_gate(
             _write_plan_cache(project_path, final_hash)
             if current_plan != plan:
                 _post_improved_plan(current_plan, issue_url, notify_fn)
-                return current_plan
+                return _GateImproved(current_plan, "\n".join(all_issues))
             return None
 
+        all_issues.append(issues)
         logger.info(
             "Plan-review gate: ISSUES_FOUND (round %d) — improving...",
             round_num,
@@ -351,7 +373,7 @@ def _run_plan_review_gate(
 
     if current_plan != plan:
         _post_improved_plan(current_plan, issue_url, notify_fn)
-        return current_plan
+        return _GateImproved(current_plan, "\n".join(all_issues))
     return None
 
 
