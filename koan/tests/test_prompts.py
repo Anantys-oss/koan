@@ -184,6 +184,15 @@ class TestLoadSkillPrompt:
                     assert len(result) > 0, f"{skill_dir.name}/{md_file.stem} is empty"
 
 
+class TestPlanPromptVerificationCriteria:
+    """Plan prompt must include a Verification Criteria section."""
+
+    def test_plan_prompt_contains_verification_criteria(self):
+        skills_dir = Path(__file__).parent.parent / "skills" / "core" / "plan"
+        result = load_skill_prompt(skills_dir, "plan")
+        assert "Verification Criteria" in result
+
+
 class TestLoadSkillPromptCavemanInjection:
     """``load_skill_prompt`` auto-appends the caveman directive only when the
     skill has explicitly opted in (SKILL.md ``caveman: true`` or config

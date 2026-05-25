@@ -55,8 +55,13 @@ each plan requirement independently against the actual diff.
 
 ### Part 1: Plan Alignment
 
-Read the plan carefully, then inspect the diff. For each requirement described
-in the plan's `### Implementation Phases` section, determine:
+Read the plan carefully, then inspect the diff. If the plan contains a
+`### Verification Criteria` section, read each criterion and populate
+`verification_criteria_results` with whether the diff satisfies it. If the
+section is absent, leave `verification_criteria_results` as an empty array.
+
+For each requirement described in the plan's `### Implementation Phases`
+section, determine:
 
 - **Met**: The diff implements this requirement. Be specific — name the file and
   what was added.
@@ -96,6 +101,10 @@ Your ENTIRE response must be a single valid JSON object (no markdown, no code fe
     ],
     "out_of_scope": [
       "review_schema.py: added PLAN_ALIGNMENT_SCHEMA (not mentioned in plan but consistent)"
+    ],
+    "verification_criteria_results": [
+      {"criterion": "Running make test produces no failures", "passed": true, "evidence": "CI workflow shows green"},
+      {"criterion": "Given X, when Y, then Z", "passed": false, "evidence": "No test or diff line covers this"}
     ]
   },
   "file_comments": [
@@ -141,4 +150,5 @@ Field rules:
   - `requirements_met`: Things the plan asked for that are present in the diff.
   - `requirements_missing`: Things the plan asked for that are absent or incomplete.
   - `out_of_scope`: Diff changes not mentioned in the plan (neutral observation).
+  - `verification_criteria_results`: Array of `{"criterion": "...", "passed": true/false, "evidence": "..."}` objects, one per criterion from the plan's `### Verification Criteria` section. Empty array `[]` when the plan has no such section.
 {@include review-output-rules}

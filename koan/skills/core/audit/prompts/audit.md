@@ -44,6 +44,12 @@ Systematically scan the codebase. Look for issues across these categories:
 - Stale TODO/FIXME/HACK comments
 - Obsolete compatibility shims
 
+#### F. Interface & Risk
+- Public functions that accept `**kwargs` or untyped dicts at system boundaries (caller/callee contract is implicit)
+- Missing caller/callee contracts: what the caller assumes vs. what the function actually guarantees
+- Error propagation paths where exceptions are silently swallowed before reaching the caller
+- Dependencies (imports or subprocess calls) that have no fallback if unavailable
+
 ### Phase 3 — Produce Findings
 
 For EACH finding, produce a block in this exact format. Use `---FINDING---` as separator between findings:
@@ -52,7 +58,7 @@ For EACH finding, produce a block in this exact format. Use `---FINDING---` as s
 ---FINDING---
 TITLE: <type>: <concise one-line summary>
 SEVERITY: <critical|high|medium|low>
-CATEGORY: <simplification|optimization|duplication|robustness|cleanup>
+CATEGORY: <simplification|optimization|duplication|robustness|cleanup|interface_risk>
 LOCATION: <file_path:line_range>
 PROBLEM: <2-3 sentences explaining what's wrong and why it matters>
 WHY: <1-2 sentences on the impact — bugs, performance, maintainability, readability>

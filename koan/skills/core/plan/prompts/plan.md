@@ -35,6 +35,7 @@ This plan will be posted as a GitHub issue — write it as a living document tha
    - Backward compatibility
    - What could go wrong
    - **YAGNI**: Ruthlessly eliminate features that aren't strictly necessary for the core ask.
+   - What would a reviewer need to observe or run to confirm each phase is complete?
 
 6. **Identify open questions**: List anything that needs clarification before implementation.
 
