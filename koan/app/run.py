@@ -57,6 +57,7 @@ from app.signals import (
     STATUS_FILE,
     STOP_FILE,
 )
+from app.subprocess_runner import kill_process_group
 from app.utils import atomic_write
 
 
@@ -194,35 +195,8 @@ class protected_phase:
 
 
 def _kill_process_group(proc):
-    """Terminate a subprocess and its entire process group.
-
-    When a subprocess is started with ``start_new_session=True``, it becomes
-    the leader of a new process group.  A simple ``proc.terminate()`` only
-    sends SIGTERM to the leader — children survive.  This helper sends
-    SIGTERM to the whole group, then SIGKILL if still alive after 3 s.
-    """
-    if proc is None or proc.poll() is not None:
-        return
-    try:
-        pgid = os.getpgid(proc.pid)
-        os.killpg(pgid, signal.SIGTERM)
-        try:
-            proc.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            os.killpg(pgid, signal.SIGKILL)
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                # Process didn't die even after SIGKILL — give up to
-                # avoid blocking the caller.  The OS will reap the
-                # zombie eventually.
-                print(
-                    f"[run] warning: pid {proc.pid} did not exit after SIGKILL",
-                    file=sys.stderr,
-                )
-    except (ProcessLookupError, PermissionError, OSError):
-        # Process already gone or we lack permissions — nothing to do.
-        pass
+    """Delegate to :func:`app.subprocess_runner.kill_process_group`."""
+    kill_process_group(proc)
 
 
 def _on_sigint(signum, frame):
@@ -367,7 +341,6 @@ def run_claude_task(
     from app.config import get_mission_timeout
 
     mission_timeout = get_mission_timeout()
-    timed_out = False
 
     exit_code = 1  # default if subprocess never completes
     try:
@@ -381,20 +354,14 @@ def run_claude_task(
             )
             _sig.claude_proc = proc
 
-            # Watchdog timer: kills the process group if mission exceeds timeout.
-            # Same pattern as skill dispatch (line ~1828). Without this,
-            # proc.wait() blocks indefinitely on runaway sessions.
-            timer = None
-            if mission_timeout > 0:
-                def _mission_watchdog():
-                    nonlocal timed_out
-                    timed_out = True
-                    log("error", f"Mission timed out ({mission_timeout}s) — killing process")
-                    _kill_process_group(proc)
+            from app.subprocess_runner import ProcessWatchdog
 
-                timer = threading.Timer(mission_timeout, _mission_watchdog)
-                timer.daemon = True
-                timer.start()
+            watchdog = None
+            if mission_timeout > 0:
+                watchdog = ProcessWatchdog(
+                    proc, mission_timeout,
+                    on_timeout=lambda: log("error", f"Mission timed out ({mission_timeout}s) — killing process"),
+                ).start()
 
             stagnation_monitor = _start_stagnation_monitor(
                 stdout_file, proc, project_name,
@@ -423,7 +390,7 @@ def run_claude_task(
                             except subprocess.TimeoutExpired:
                                 log("error", f"Process {proc.pid} unkillable after abort — abandoning")
                             break
-                        if timed_out:
+                        if watchdog and watchdog.fired:
                             # Watchdog already fired but process survived —
                             # make one last kill attempt from the main thread.
                             _kill_process_group(proc)
@@ -444,8 +411,8 @@ def run_claude_task(
                         # Single CTRL-C — keep waiting
                         continue
             finally:
-                if timer is not None:
-                    timer.cancel()
+                if watchdog is not None:
+                    watchdog.cancel()
                 if stagnation_monitor is not None:
                     stagnation_monitor.stop()
                     if stagnation_monitor.stagnated:
@@ -457,7 +424,7 @@ def run_claude_task(
         exit_code = proc.returncode
         if _last_mission_aborted:
             exit_code = 1
-        elif timed_out:
+        elif watchdog and watchdog.fired:
             exit_code = 1
             _last_mission_timed_out = True
         elif _last_mission_stagnated.is_set():
@@ -2877,7 +2844,6 @@ def _run_skill_mission(
     debug_log(f"[run] skill exec: cwd={koan_pkg_dir} timeout={skill_timeout}s")
     stdout_lines = []
     proc = None
-    timed_out = False
 
     # Create temp files for post-mission processing up front.
     # stderr is redirected to a file instead of a pipe to eliminate
@@ -2903,53 +2869,25 @@ def _run_skill_mission(
         # Register for double-tap CTRL-C termination.
         _sig.claude_proc = proc
 
-        # Watchdog timer: kills the process group if the skill exceeds
-        # skill_timeout.  Without this, the ``for line in proc.stdout``
-        # loop below blocks indefinitely if the subprocess hangs without
-        # closing its stdout pipe — ``proc.wait(timeout=...)`` is never
-        # reached because the iterator never finishes.
-        def _watchdog():
-            nonlocal timed_out
-            timed_out = True
-            _kill_process_group(proc)
+        from app.subprocess_runner import ProcessWatchdog, LivenessWatchdog
 
-        timer = threading.Timer(skill_timeout, _watchdog)
-        timer.daemon = True
-        timer.start()
+        watchdog = ProcessWatchdog(proc, skill_timeout).start()
 
-        # Liveness watchdog: kills the process if no stdout is received
-        # within first_output_timeout seconds.  A Claude CLI session
-        # that produces zero output for this long is almost certainly
-        # stuck (API hang, network issue).  Each line of output resets
-        # the timer.  Set to 0 to disable.  (#1253)
         from app.config import get_first_output_timeout
         first_output_timeout = get_first_output_timeout()
-        liveness_timer = None
-        liveness_fired = False
-
-        def _liveness_watchdog():
-            nonlocal timed_out, liveness_fired
-            liveness_fired = True
-            timed_out = True
-            elapsed = int(time.time() - mission_start)
-            log("error", f"No output for {first_output_timeout}s — killing stuck process (elapsed: {elapsed}s)")
-            _kill_process_group(proc)
-
-        def _reset_liveness():
-            nonlocal liveness_timer
-            if first_output_timeout <= 0:
-                return
-            if liveness_timer is not None:
-                liveness_timer.cancel()
-            liveness_timer = threading.Timer(first_output_timeout, _liveness_watchdog)
-            liveness_timer.daemon = True
-            liveness_timer.start()
-
-        _reset_liveness()
+        liveness = None
+        if first_output_timeout > 0:
+            liveness = LivenessWatchdog(
+                proc, first_output_timeout,
+                on_timeout=lambda: log(
+                    "error",
+                    f"No output for {first_output_timeout}s "
+                    f"— killing stuck process (elapsed: {int(time.time() - mission_start)}s)",
+                ),
+            ).start()
 
         # Stream stdout line-by-line, appending each to pending.md
-        # so /live shows real-time progress.  Open the file handle once
-        # to avoid repeated open/close race with archive_pending.
+        # so /live shows real-time progress.
         pending_fh = None
         try:
             pending_fh = open(pending_path, "a")
@@ -2957,7 +2895,8 @@ def _run_skill_mission(
             debug_log(f"[run] cannot open pending.md for streaming: {e}")
         try:
             for line in proc.stdout:
-                _reset_liveness()
+                if liveness is not None:
+                    liveness.heartbeat()
                 stripped = line.rstrip("\n")
                 stdout_lines.append(stripped)
                 print(stripped)
@@ -2970,13 +2909,12 @@ def _run_skill_mission(
         finally:
             if pending_fh is not None:
                 pending_fh.close()
-            timer.cancel()
-            if liveness_timer is not None:
-                liveness_timer.cancel()
+            watchdog.cancel()
+            if liveness is not None:
+                liveness.cancel()
 
         proc.wait(timeout=30)
-        if timed_out:
-            # Watchdog killed the process — treat as timeout
+        if watchdog.fired or (liveness and liveness.fired):
             raise subprocess.TimeoutExpired(skill_cmd, skill_timeout)
         exit_code = proc.returncode
         skill_stdout = "\n".join(stdout_lines)
@@ -3001,7 +2939,7 @@ def _run_skill_mission(
                 debug_log(f"[run] skill stderr: {skill_stderr[:2000]}")
     except subprocess.TimeoutExpired:
         _kill_process_group(proc)
-        timed_out = True
+        liveness_fired = liveness and liveness.fired
         timeout_kind = "liveness" if liveness_fired else "watchdog"
         timeout_val = first_output_timeout if liveness_fired else skill_timeout
         log("error", f"Skill runner timed out ({timeout_kind}: {timeout_val}s)")

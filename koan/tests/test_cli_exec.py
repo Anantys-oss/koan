@@ -442,9 +442,9 @@ class TestStreamWithTimeout:
         proc.pid = 12345
         proc.wait.return_value = -9
 
-        with patch("app.cli_exec.os.killpg",
+        with patch("app.subprocess_runner.os.killpg",
                    side_effect=lambda *a, **kw: killed.set()) as killpg, \
-                patch("app.cli_exec.os.getpgid", return_value=12345):
+                patch("app.subprocess_runner.os.getpgid", return_value=12345):
             result = stream_with_timeout(proc, timeout=0.5)
 
         assert result.timed_out is True
@@ -459,7 +459,7 @@ class TestStreamWithTimeout:
 
         proc = _fake_proc(["done\n"], returncode=0)
 
-        with patch("app.cli_exec.threading.Timer") as TimerMock:
+        with patch("app.subprocess_runner.threading.Timer") as TimerMock:
             timer_instance = MagicMock()
             captured = {}
 
@@ -469,7 +469,7 @@ class TestStreamWithTimeout:
 
             TimerMock.side_effect = factory
 
-            with patch("app.cli_exec.os.killpg") as killpg:
+            with patch("app.subprocess_runner.os.killpg") as killpg:
                 # Simulate the race: invoke the watchdog callback after
                 # stream consumption but before cancel() returns.
                 def fire_after_stream():
