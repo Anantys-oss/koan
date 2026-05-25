@@ -290,17 +290,21 @@ def issue_edit(number, body, cwd=None):
 
 
 def api(endpoint, method="GET", jq=None, input_data=None, cwd=None,
-        extra_args=None, timeout=30):
+        extra_args=None, timeout=30, raw_body=False):
     """Call ``gh api`` for lower-level GitHub API access.
 
     Args:
         endpoint: API path (e.g. ``repos/owner/repo/pulls/1/comments``).
         method: HTTP method (default GET).
         jq: Optional jq filter applied server-side.
-        input_data: If provided, passed via stdin (``-F body=@-``).
+        input_data: If provided, passed via stdin. Uses ``--input -``
+            when ``raw_body=True`` (sends stdin as the raw HTTP body),
+            otherwise uses ``-F body=@-`` (wraps stdin in a ``body`` field).
         cwd: Working directory.
         extra_args: Additional arguments for ``gh api``.
         timeout: Seconds before the subprocess is killed (default 30).
+        raw_body: When True, send input_data as the raw HTTP request body
+            via ``--input -`` instead of wrapping in ``-F body=@-``.
 
     Returns:
         Stripped stdout string.
@@ -313,7 +317,10 @@ def api(endpoint, method="GET", jq=None, input_data=None, cwd=None,
     if extra_args:
         args.extend(extra_args)
     if input_data is not None:
-        args.extend(["-F", "body=@-"])
+        if raw_body:
+            args.extend(["--input", "-"])
+        else:
+            args.extend(["-F", "body=@-"])
 
     return run_gh(*args, cwd=cwd, stdin_data=input_data, timeout=timeout)
 
@@ -811,6 +818,7 @@ def security_advisory_report(
         f"repos/{repo}/security-advisories/reports",
         method="POST",
         input_data=payload,
+        raw_body=True,
         cwd=cwd,
         timeout=30,
     )

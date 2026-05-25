@@ -74,9 +74,10 @@ class TestSecurityAdvisoryReport:
         )
         assert url == "https://github.com/o/r/security/advisories/GHSA-1234"
 
-        # Verify the API was called with POST
+        # Verify the API was called with POST and raw_body=True
         call_args = mock_api.call_args
         assert call_args[1]["method"] == "POST"
+        assert call_args[1]["raw_body"] is True
         assert "security-advisories/reports" in call_args[0][0]
 
     @patch("app.leak_detector.scan_and_redact", side_effect=lambda x, **kw: x)
