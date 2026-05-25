@@ -349,6 +349,29 @@ These features turn Kōan from a task runner into a full development workflow pa
 
 ### Code Operations
 
+**`/decompose`** — Queue a mission for LLM-driven decomposition into focused sub-tasks before execution.
+
+- **Usage:** `/decompose <mission description>`
+- **Aliases:** `/split`
+
+Before the agent runs the mission, a lightweight classifier decides if it is **atomic** (single pass) or **composite** (needs splitting). Atomic missions execute normally. Composite missions are automatically broken into up to 6 ordered sub-tasks injected into the Pending queue — each tagged `[group:ID]` for lineage tracking.
+
+By default, decomposition only runs on missions with an explicit `[decompose]` tag. Enable `decompose.auto: true` in `config.yaml` to classify all missions automatically (see [Configuration Deep-Dive](#configuration-deep-dive)).
+
+**Guards:**
+- Skill missions (starting with `/`) are never decomposed.
+- Sub-tasks tagged `[group:*]` or `[decomposed:*]` are never re-decomposed.
+- Any error (import, CLI, JSON parse) falls through to normal atomic execution — the queue never stalls.
+
+<details>
+<summary>Use cases</summary>
+
+- `/decompose Refactor the auth module and add integration tests` — Let the agent decide if this needs splitting
+- `/decompose koan Add retry logic to all API calls` — Target a specific project
+- `/decompose --now Redesign the dashboard layout` — Priority decomposition
+- You can also tag a `/mission` directly: `/mission [decompose] Overhaul the payment pipeline` — the agent will classify it before running
+</details>
+
 **`/brainstorm`** — Decompose a broad topic into 3-8 high-leverage GitHub sub-issues grouped under a master tracking issue.
 
 The decomposer runs as a senior-engineer-style ideation pass: it explores the codebase (if provided) or external source, hunts for compounding improvements, and refuses to pad with generic refactors. Every sub-issue body follows this template:
@@ -1033,6 +1056,10 @@ optimizations:
     enabled: true
     include: []                # canonical skill names, aliases auto-resolved
 
+# Mission decomposition — LLM-driven splitting of complex missions
+# decompose:
+#   auto: false           # true = classify all missions, not just [decompose]-tagged
+
 # Review ignore — exclude files from /review PR diffs
 # Reduces token spend on generated/vendored code
 # review_ignore:
@@ -1640,6 +1667,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | Command | Aliases | Tier | Description |
 |---------|---------|:----:|-------------|
 | `/mission <text>` | — | B | Queue a new mission (`--now` for top priority) |
+| `/decompose <text>` | `/split` | I | Queue mission for LLM decomposition into sub-tasks |
 | `/list` | `/queue`, `/ls` | B | List pending and in-progress missions |
 | `/cancel <n>` | `/remove`, `/clear` | B | Cancel a pending mission |
 | `/abort` | — | B | Abort current mission, pick next pending |
@@ -1729,4 +1757,4 @@ Skills marked with GitHub @mention support: `/audit`, `/doc`, `/security_audit`,
 
 ---
 
-*This manual covers all 44 core skills. For the full command reference with tabular format, see [docs/skills.md](skills.md). For skill authoring, see [koan/skills/README.md](../koan/skills/README.md).*
+*This manual covers all 45 core skills. For the full command reference with tabular format, see [docs/skills.md](skills.md). For skill authoring, see [koan/skills/README.md](../koan/skills/README.md).*

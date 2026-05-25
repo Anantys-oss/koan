@@ -190,6 +190,15 @@ skill_timeout: 7200
 #   sample_lines: 50
 #   max_retry_on_stagnation: 3
 
+# Mission decomposition — LLM-driven splitting of complex missions
+# When a mission is tagged [decompose] (or auto is true), a lightweight
+# classifier decides if it is atomic (single pass) or composite (needs
+# splitting). Composite missions are replaced with up to 6 ordered sub-tasks
+# in the Pending queue, each tagged [group:ID] for lineage tracking.
+# Skill missions (starting with /) are never decomposed.
+# decompose:
+#   auto: false           # true = classify all missions, not just [decompose]-tagged
+
 # Autonomous health diagnostics — automatically inject diagnostic missions
 # (tech_debt, dead_code, or audit) when a project's success rate falls below
 # a threshold and it has accumulated consecutive non-productive sessions.
