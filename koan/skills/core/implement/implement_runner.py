@@ -15,7 +15,7 @@ import hashlib
 import logging
 import re
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Union
 
 from app.github import fetch_issue_with_comments
 from app.github_url_parser import is_jira_url, parse_github_url, parse_issue_url, parse_jira_url
@@ -115,11 +115,13 @@ def run_implement(
             "The issue should contain implementation phases."
         )
 
-    # Plan-review quality gate — cheap subagent check before expensive execution
+    # Plan-review quality gate with autonomous improvement loop
     gate_result = _run_plan_review_gate(
         plan, project_path, notify_fn=notify_fn, issue_url=issue_url,
     )
-    if gate_result is not None:
+    if isinstance(gate_result, str):
+        plan = gate_result
+    elif gate_result is not None:
         return gate_result
 
     # Invoke Claude with the plan
@@ -273,15 +275,16 @@ def _run_plan_review_gate(
     project_path: str,
     notify_fn=None,
     issue_url: str = "",
-) -> Optional[Tuple[bool, str]]:
-    """Run lightweight plan-review gate before expensive implementation.
+) -> Union[None, str, Tuple[bool, str]]:
+    """Run plan-review gate with autonomous improvement loop.
 
-    Returns None to proceed, or (False, message) to abort.
-    Fails open on reviewer errors — implementation proceeds.
+    Returns:
+        None — proceed with original plan (simple/cached/disabled).
+        str — proceed with this improved plan (gate self-healed).
+        (False, msg) — block (only on catastrophic internal error).
     """
-    from app.plan_runner import is_simple_plan, review_plan
+    from app.plan_runner import improve_plan, is_simple_plan, review_plan
 
-    # Pure string check first — avoids config I/O for trivial plans
     if is_simple_plan(plan):
         logger.debug("Plan is simple — skipping review gate")
         return None
@@ -292,49 +295,83 @@ def _run_plan_review_gate(
     if not review_cfg.get("implement_gate", True):
         return None
 
-    # Content-hash cache — skip review when plan hasn't changed
     current_hash = _plan_hash(plan)
     if _is_plan_cache_fresh(project_path, current_hash):
         logger.info("Plan-review gate: cache hit — skipping review")
         return None
 
-    # Always use the plan skill directory for the review prompt
-    logger.info("Running plan-review quality gate...")
-    approved, issues = review_plan(plan, project_path, _PLAN_SKILL_DIR)
+    max_rounds = review_cfg.get("max_rounds", 3)
+    current_plan = plan
 
-    if approved:
-        logger.info("Plan-review gate: APPROVED")
-        _write_plan_cache(project_path, current_hash)
-        return None
+    for round_num in range(1, max_rounds + 1):
+        logger.info("Plan-review gate: round %d/%d...", round_num, max_rounds)
+        approved, issues = review_plan(current_plan, project_path, _PLAN_SKILL_DIR)
 
-    logger.warning("Plan-review gate: ISSUES_FOUND")
-    msg = (
-        f"Plan review failed — fix these before re-running /implement:\n{issues}"
+        if approved:
+            logger.info("Plan-review gate: APPROVED (round %d)", round_num)
+            final_hash = _plan_hash(current_plan)
+            _write_plan_cache(project_path, final_hash)
+            if current_plan != plan:
+                _post_improved_plan(current_plan, issue_url, notify_fn)
+                return current_plan
+            return None
+
+        logger.info(
+            "Plan-review gate: ISSUES_FOUND (round %d) — improving...",
+            round_num,
+        )
+
+        if notify_fn and round_num == 1:
+            try:
+                notify_fn(
+                    f"🔧 Plan review found issues — auto-improving "
+                    f"(up to {max_rounds} rounds):\n{issues}"
+                )
+            except Exception:
+                logger.debug("Failed to send improvement notification", exc_info=True)
+
+        if round_num < max_rounds:
+            current_plan = improve_plan(
+                current_plan, issues, project_path, _PLAN_SKILL_DIR
+            )
+
+    # Exhausted all rounds — fail open, use best available plan
+    logger.warning(
+        "Plan-review gate: exhausted %d rounds — proceeding with best plan (fail open)",
+        max_rounds,
     )
-
-    # Notify user via Telegram with specific issues
     if notify_fn:
         try:
-            notify_fn(f"⚠️ Plan review gate blocked /implement:\n{issues}")
-        except Exception:
-            logger.debug("Failed to send plan-review gate notification", exc_info=True)
-
-    # Post issues as a comment on the GitHub issue for in-context visibility
-    if issue_url:
-        try:
-            from app.github import run_gh
-            comment_body = (
-                "### ⚠️ Plan Review — Issues Found\n\n"
-                "The plan-review quality gate found issues that should be "
-                "fixed before implementation:\n\n"
-                f"{issues}\n\n"
-                "_Fix these in the plan above, then re-run `/implement`._"
+            notify_fn(
+                f"⚠️ Plan review couldn't fully resolve issues after {max_rounds} "
+                "rounds — proceeding with implementation anyway (fail open)."
             )
-            run_gh("issue", "comment", issue_url, "--body", comment_body)
         except Exception:
-            logger.debug("Failed to post plan-review issues to GitHub", exc_info=True)
+            logger.debug("Failed to send exhaustion notification", exc_info=True)
 
-    return False, msg
+    if current_plan != plan:
+        _post_improved_plan(current_plan, issue_url, notify_fn)
+        return current_plan
+    return None
+
+
+def _post_improved_plan(
+    improved_plan: str, issue_url: str, notify_fn=None,
+) -> None:
+    """Post the autonomously improved plan as a new comment on the issue."""
+    if not issue_url:
+        return
+    try:
+        from app.github import run_gh
+        comment_body = (
+            "### 🔧 Plan Improved (auto)\n\n"
+            "The plan-review gate found issues and autonomously fixed them. "
+            "Proceeding with this improved version:\n\n"
+            f"{improved_plan}"
+        )
+        run_gh("issue", "comment", issue_url, "--body", comment_body)
+    except Exception:
+        logger.debug("Failed to post improved plan to GitHub", exc_info=True)
 
 
 def _build_prompt(

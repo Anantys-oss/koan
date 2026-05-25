@@ -317,6 +317,54 @@ def review_plan(plan_text: str, project_path: str, skill_dir) -> Tuple[bool, str
     return True, ""
 
 
+def improve_plan(
+    plan_text: str, issues_text: str, project_path: str, skill_dir
+) -> str:
+    """Run a codebase-grounded subagent to fix plan quality issues.
+
+    The improver explores the codebase to resolve ambiguities identified by
+    the reviewer (missing file paths, vague descriptions, etc.) and returns
+    a corrected plan.
+
+    Args:
+        plan_text: The plan that failed review.
+        issues_text: Bullet list of issues from the reviewer.
+        project_path: Project directory (for codebase exploration).
+        skill_dir: Skill directory for loading the improve prompt.
+
+    Returns:
+        Improved plan text, or original plan_text on failure.
+    """
+    from app.cli_provider import run_command
+
+    try:
+        prompt = load_prompt_or_skill(
+            skill_dir, "plan-improve", PLAN=plan_text, ISSUES=issues_text
+        )
+    except Exception as e:
+        print(f"[plan_runner] Improve prompt load failed: {e}", file=sys.stderr)
+        return plan_text
+
+    try:
+        output = run_command(
+            prompt, project_path,
+            allowed_tools=["Read", "Glob", "Grep"],
+            model_key="chat",
+            max_turns=5,
+            timeout=180,
+            max_turns_source=None,
+        )
+    except Exception as e:
+        print(f"[plan_runner] Improve subagent failed: {e}", file=sys.stderr)
+        return plan_text
+
+    if not output or not output.strip():
+        print("[plan_runner] Improve subagent returned empty — keeping original", file=sys.stderr)
+        return plan_text
+
+    return output.strip()
+
+
 def _review_loop(
     plan_text: str,
     project_path: str,
