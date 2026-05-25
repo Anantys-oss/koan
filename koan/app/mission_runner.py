@@ -651,6 +651,7 @@ def trigger_reflection(
     mission_title: str,
     duration_minutes: int,
     project_name: str = "",
+    session_id: str = "",
 ) -> bool:
     """Trigger post-mission reflection if the mission was significant.
 
@@ -663,6 +664,8 @@ def trigger_reflection(
         mission_title: Mission description text.
         duration_minutes: Duration in minutes.
         project_name: Current project name (for journal file lookup).
+        session_id: Optional session ID from the main mission run.
+            Passed to ``run_reflection`` for session resumption.
 
     Returns:
         True if reflection was generated.
@@ -681,7 +684,9 @@ def trigger_reflection(
         if not is_significant_mission(mission_title, duration_minutes, journal_content):
             return False
 
-        reflection = run_reflection(inst, mission_title, journal_content)
+        reflection = run_reflection(
+            inst, mission_title, journal_content, session_id=session_id,
+        )
         if reflection:
             write_to_journal(inst, reflection)
             return True
@@ -1328,6 +1333,14 @@ def run_post_mission(
         except Exception as e:
             _log_runner("error", f"Token extraction failed: {e}")
 
+        # Extract session ID for reflection resumption
+        _session_id = ""
+        try:
+            from app.token_parser import extract_session_id
+            _session_id = extract_session_id(Path(stdout_file)) or ""
+        except Exception as e:
+            _log_runner("error", f"Session ID extraction failed: {e}")
+
         # Flag silent cost-tracking gaps so operators can detect them
         if _tokens is None:
             result["cost_tracking_failed"] = True
@@ -1500,7 +1513,7 @@ def run_post_mission(
             if lint_result is not None:
                 result["lint_passed"] = lint_result.passed
 
-            # Reflection
+            # Reflection (resumes main mission session when available)
             _report("running reflection")
             reflection_result = tracker.run_step(
                 "reflection",
@@ -1509,6 +1522,7 @@ def run_post_mission(
                 mission_title if mission_title else f"Autonomous {autonomous_mode} on {project_name}",
                 duration_minutes,
                 project_name=project_name,
+                session_id=_session_id,
                 pipeline_expired=_pipeline_expired,
             )
             result["reflection_written"] = bool(reflection_result)

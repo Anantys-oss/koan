@@ -147,3 +147,24 @@ def _build_result(
         cache_read_input_tokens=cache_read,
         cost_usd=cost_usd,
     )
+
+
+def extract_session_id(claude_json_path: Path) -> Optional[str]:
+    """Extract session_id from Claude CLI JSON output.
+
+    The Claude Code CLI includes a ``session_id`` field in its
+    ``--output-format json`` response. This ID can be passed to
+    ``--resume`` to continue the same conversation context.
+
+    Returns:
+        Session ID string, or None if not found or file unreadable.
+    """
+    try:
+        data = json.loads(claude_json_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+
+    sid = data.get("session_id")
+    if isinstance(sid, str) and sid.strip():
+        return sid.strip()
+    return None

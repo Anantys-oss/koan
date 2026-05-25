@@ -137,6 +137,7 @@ class OllamaLaunchProvider(CLIProvider):
         system_prompt: str = "",
         system_prompt_file: str = "",
         effort: str = "",
+        resume_session_id: str = "",
     ) -> List[str]:
         """Build: ollama launch claude --model X -- <claude-flags>.
 

@@ -4,7 +4,12 @@ import json
 import pytest
 from pathlib import Path
 
-from app.token_parser import TokenResult, extract_tokens, compute_cache_hit_rate
+from app.token_parser import (
+    TokenResult,
+    extract_tokens,
+    extract_session_id,
+    compute_cache_hit_rate,
+)
 
 
 @pytest.fixture
@@ -132,3 +137,50 @@ class TestCacheHitRate:
         result = extract_tokens(claude_json_nested)
         # 2000 / (3000 + 2000 + 500) = 2000/5500 ≈ 0.3636
         assert abs(result.cache_hit_rate() - 2000 / 5500) < 0.001
+
+
+class TestExtractSessionId:
+    """Tests for extract_session_id()."""
+
+    def test_extracts_session_id(self, tmp_path):
+        f = tmp_path / "output.json"
+        f.write_text(json.dumps({
+            "result": "Done.",
+            "session_id": "550e8400-e29b-41d4-a716-446655440000",
+            "input_tokens": 100,
+            "output_tokens": 50,
+        }))
+        assert extract_session_id(f) == "550e8400-e29b-41d4-a716-446655440000"
+
+    def test_returns_none_for_missing_field(self, tmp_path):
+        f = tmp_path / "output.json"
+        f.write_text(json.dumps({"result": "Done.", "input_tokens": 100}))
+        assert extract_session_id(f) is None
+
+    def test_returns_none_for_empty_string(self, tmp_path):
+        f = tmp_path / "output.json"
+        f.write_text(json.dumps({"session_id": "", "input_tokens": 100}))
+        assert extract_session_id(f) is None
+
+    def test_returns_none_for_whitespace_only(self, tmp_path):
+        f = tmp_path / "output.json"
+        f.write_text(json.dumps({"session_id": "  ", "input_tokens": 100}))
+        assert extract_session_id(f) is None
+
+    def test_returns_none_for_nonexistent_file(self, tmp_path):
+        assert extract_session_id(tmp_path / "nope.json") is None
+
+    def test_returns_none_for_invalid_json(self, tmp_path):
+        f = tmp_path / "bad.json"
+        f.write_text("not json")
+        assert extract_session_id(f) is None
+
+    def test_returns_none_for_non_string_session_id(self, tmp_path):
+        f = tmp_path / "output.json"
+        f.write_text(json.dumps({"session_id": 12345, "input_tokens": 100}))
+        assert extract_session_id(f) is None
+
+    def test_strips_whitespace(self, tmp_path):
+        f = tmp_path / "output.json"
+        f.write_text(json.dumps({"session_id": "  abc-123  "}))
+        assert extract_session_id(f) == "abc-123"
