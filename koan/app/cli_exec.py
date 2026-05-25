@@ -12,7 +12,6 @@ directly as a ``-p`` argument.
 
 import contextlib
 import os
-import signal
 import subprocess
 import sys
 import tempfile
@@ -160,47 +159,19 @@ def stream_with_timeout(
     optionally forwarded to *on_line*. After stdout EOF, the stderr
     stream is drained and the subprocess is awaited.
 
-    On timeout the entire process group is SIGKILL'd via
-    :func:`os.killpg` — the caller must have started *proc* with
-    ``start_new_session=True`` (or ``process_group=0`` on 3.11+) so the
-    group exists. Killing the group ensures grandchildren that inherited
-    the stdout pipe are torn down too, preventing pipe-drain hangs.
-
-    A ``completed`` flag guarded by a lock closes the race where the
-    watchdog Timer fires between the last consumed line and
-    ``Timer.cancel()`` — in that window we still want a clean completion
-    rather than a spurious timeout.
+    On timeout the entire process group is killed via
+    :func:`app.subprocess_runner.force_kill_process_group`. The caller
+    must start *proc* with ``start_new_session=True``.
 
     Both std streams are closed before returning.
     """
+    from app.subprocess_runner import ProcessWatchdog, force_kill_process_group
+
     stdout_lines: List[str] = []
     stderr_text = ""
-    timed_out = False
-    completed = False
-    state_lock = threading.Lock()
+    drain_timed_out = False
 
-    def _kill_process_group() -> None:
-        try:
-            pgid = os.getpgid(proc.pid)
-            os.killpg(pgid, signal.SIGKILL)
-        except (OSError, ProcessLookupError):
-            with contextlib.suppress(OSError, ProcessLookupError):
-                proc.kill()
-
-    def _watchdog_fire() -> None:
-        # Race guard: if the stream loop has already finished and is
-        # about to call watchdog.cancel(), don't flip ``timed_out`` and
-        # don't kill — the process is exiting cleanly.
-        nonlocal timed_out
-        with state_lock:
-            if completed:
-                return
-            timed_out = True
-        _kill_process_group()
-
-    watchdog = threading.Timer(timeout, _watchdog_fire)
-    watchdog.daemon = True
-    watchdog.start()
+    watchdog = ProcessWatchdog(proc, timeout, graceful=False).start()
 
     try:
         try:
@@ -210,9 +181,7 @@ def stream_with_timeout(
                 if on_line is not None:
                     on_line(stripped)
         finally:
-            with state_lock:
-                if not timed_out:
-                    completed = True
+            watchdog.mark_completed()
             watchdog.cancel()
 
         with contextlib.suppress(OSError, ValueError):
@@ -222,10 +191,8 @@ def stream_with_timeout(
         try:
             proc.wait(timeout=drain_timeout)
         except subprocess.TimeoutExpired:
-            # Stdout EOF reached but the process refuses to exit —
-            # force-kill and report a timeout so callers see the hang.
-            timed_out = True
-            _kill_process_group()
+            drain_timed_out = True
+            force_kill_process_group(proc)
             with contextlib.suppress(subprocess.TimeoutExpired):
                 proc.wait(timeout=5)
     finally:
@@ -237,7 +204,7 @@ def stream_with_timeout(
     return StreamResult(
         stdout="\n".join(stdout_lines).strip(),
         stderr=stderr_text,
-        timed_out=timed_out,
+        timed_out=watchdog.fired or drain_timed_out,
     )
 
 
