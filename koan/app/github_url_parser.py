@@ -5,7 +5,7 @@ with consistent error handling and validation.
 """
 
 import re
-from typing import Optional, Tuple
+from typing import Tuple
 
 # GitHub URL patterns
 PR_URL_PATTERN = r'https?://github\.com/([^/]+)/([^/]+)/pull/(\d+)'
@@ -151,15 +151,3 @@ def parse_jira_url(url: str) -> str:
     if not match:
         raise ValueError(f"Invalid Jira URL: {url}")
     return match.group(1)
-
-
-def search_jira_url(text: str) -> Optional[Tuple[str, str]]:
-    """Search for a Jira issue URL anywhere in text.
-
-    Returns:
-        Tuple of (full_url, issue_key) or None if not found.
-    """
-    match = re.search(JIRA_ISSUE_URL_PATTERN, text)
-    if not match:
-        return None
-    return match.group(0), match.group(1)
