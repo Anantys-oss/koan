@@ -19,6 +19,7 @@ from app.iteration_manager import (
     _check_focus,
     _check_schedule,
     _decide_autonomous_action,
+    _downgrade_if_burning_fast,
     _downgrade_if_unaffordable,
     _get_tier_cost_multiplier,
     _fallback_mission_extract,
@@ -31,6 +32,7 @@ from app.iteration_manager import (
     _log_selection_audit,
     _make_result,
     _maybe_inject_diagnostic_mission,
+    _maybe_warn_burn_rate,
     _pick_mission,
     _refresh_usage,
     _resolve_project_path,
@@ -3550,3 +3552,198 @@ class TestModeRank:
         assert _MODE_RANK["wait"] < _MODE_RANK["review"]
         assert _MODE_RANK["review"] < _MODE_RANK["implement"]
         assert _MODE_RANK["implement"] < _MODE_RANK["deep"]
+
+
+# === Tests: _downgrade_if_burning_fast ===
+
+
+class TestDowngradeIfBurningFast:
+
+    def test_wait_mode_not_downgraded(self):
+        mode, prev = _downgrade_if_burning_fast(Path("/tmp"), 50.0, "wait")
+        assert mode == "wait"
+        assert prev is None
+
+    def test_unknown_mode_not_downgraded(self):
+        mode, prev = _downgrade_if_burning_fast(Path("/tmp"), 50.0, "unknown")
+        assert mode == "unknown"
+        assert prev is None
+
+    @patch("app.burn_rate.BurnRateSnapshot", side_effect=ImportError)
+    def test_import_error_returns_unchanged(self, _mock):
+        mode, prev = _downgrade_if_burning_fast(Path("/tmp"), 50.0, "deep")
+        assert mode == "deep"
+        assert prev is None
+
+    @patch("app.burn_rate.BurnRateSnapshot")
+    def test_no_downgrade_when_tte_above_threshold(self, mock_snap_cls):
+        mock_snap = MagicMock()
+        mock_snap.time_to_exhaustion.return_value = 120.0
+        mock_snap_cls.return_value = mock_snap
+        mode, prev = _downgrade_if_burning_fast(Path("/tmp"), 50.0, "deep")
+        assert mode == "deep"
+        assert prev is None
+
+    @patch("app.burn_rate.BurnRateSnapshot")
+    def test_no_downgrade_when_tte_is_none(self, mock_snap_cls):
+        mock_snap = MagicMock()
+        mock_snap.time_to_exhaustion.return_value = None
+        mock_snap_cls.return_value = mock_snap
+        mode, prev = _downgrade_if_burning_fast(Path("/tmp"), 50.0, "deep")
+        assert mode == "deep"
+        assert prev is None
+
+    @patch("app.burn_rate.BurnRateSnapshot")
+    def test_downgrade_deep_to_implement(self, mock_snap_cls):
+        mock_snap = MagicMock()
+        mock_snap.time_to_exhaustion.return_value = 10.0
+        mock_snap_cls.return_value = mock_snap
+        mode, prev = _downgrade_if_burning_fast(Path("/tmp"), 50.0, "deep")
+        assert mode == _MODE_DOWNGRADE["deep"]
+        assert prev == "deep"
+
+    @patch("app.burn_rate.BurnRateSnapshot")
+    def test_downgrade_implement_to_review(self, mock_snap_cls):
+        mock_snap = MagicMock()
+        mock_snap.time_to_exhaustion.return_value = 5.0
+        mock_snap_cls.return_value = mock_snap
+        mode, prev = _downgrade_if_burning_fast(Path("/tmp"), 80.0, "implement")
+        assert mode == _MODE_DOWNGRADE["implement"]
+        assert prev == "implement"
+
+
+# === Tests: _maybe_warn_burn_rate ===
+
+
+class TestMaybeWarnBurnRate:
+
+    def test_no_warning_when_no_usage_state(self, tmp_path):
+        inst = tmp_path / "inst"
+        inst.mkdir()
+        usage = tmp_path / "usage_state.json"
+        _maybe_warn_burn_rate(inst, usage)
+        outbox = inst / "outbox.md"
+        assert not outbox.exists()
+
+    @patch("app.iteration_manager._read_session_pct_and_reset", return_value=(None, None))
+    def test_no_warning_when_session_pct_none(self, _mock, tmp_path):
+        inst = tmp_path / "inst"
+        inst.mkdir()
+        usage = tmp_path / "usage_state.json"
+        usage.write_text("{}")
+        _maybe_warn_burn_rate(inst, usage)
+        assert not (inst / "outbox.md").exists()
+
+    @patch("app.utils.append_to_outbox")
+    @patch("app.burn_rate.mark_warned")
+    @patch("app.burn_rate.BurnRateSnapshot")
+    @patch("app.iteration_manager._read_session_pct_and_reset", return_value=(60.0, 300.0))
+    def test_fires_warning_when_tte_below_threshold(self, _pct, mock_snap_cls,
+                                                      mock_mark, mock_outbox,
+                                                      tmp_path):
+        mock_snap = MagicMock()
+        mock_snap.last_warned_at = None
+        mock_snap.time_to_exhaustion.return_value = 20.0
+        mock_snap.burn_rate_pct_per_minute.return_value = 0.5
+        mock_snap_cls.return_value = mock_snap
+        inst = tmp_path / "inst"
+        inst.mkdir()
+        _maybe_warn_burn_rate(inst, tmp_path / "usage.json")
+        mock_outbox.assert_called_once()
+        msg = mock_outbox.call_args[0][1]
+        assert "Burn-rate alert" in msg
+        assert "30.0%/h" in msg
+        mock_mark.assert_called_once_with(inst)
+
+    @patch("app.utils.append_to_outbox")
+    @patch("app.burn_rate.BurnRateSnapshot")
+    @patch("app.iteration_manager._read_session_pct_and_reset", return_value=(60.0, 300.0))
+    def test_no_warning_when_tte_above_threshold(self, _pct, mock_snap_cls,
+                                                   mock_outbox, tmp_path):
+        mock_snap = MagicMock()
+        mock_snap.last_warned_at = None
+        mock_snap.time_to_exhaustion.return_value = 120.0
+        mock_snap_cls.return_value = mock_snap
+        inst = tmp_path / "inst"
+        inst.mkdir()
+        _maybe_warn_burn_rate(inst, tmp_path / "usage.json")
+        mock_outbox.assert_not_called()
+
+    @patch("app.utils.append_to_outbox")
+    @patch("app.burn_rate.BurnRateSnapshot")
+    @patch("app.iteration_manager._read_session_pct_and_reset", return_value=(60.0, 60.0))
+    def test_no_warning_when_reset_imminent(self, _pct, mock_snap_cls,
+                                              mock_outbox, tmp_path):
+        mock_snap = MagicMock()
+        mock_snap.last_warned_at = None
+        mock_snap.time_to_exhaustion.return_value = 20.0
+        mock_snap_cls.return_value = mock_snap
+        inst = tmp_path / "inst"
+        inst.mkdir()
+        _maybe_warn_burn_rate(inst, tmp_path / "usage.json")
+        mock_outbox.assert_not_called()
+
+    @patch("app.utils.append_to_outbox")
+    @patch("app.burn_rate.BurnRateSnapshot")
+    @patch("app.iteration_manager._read_session_pct_and_reset", return_value=(60.0, 300.0))
+    def test_no_duplicate_warning_when_already_warned(self, _pct, mock_snap_cls,
+                                                        mock_outbox, tmp_path):
+        from datetime import datetime, timezone, timedelta
+        session_start = datetime.now(timezone.utc) - timedelta(minutes=30)
+        warned_at = session_start + timedelta(minutes=10)
+        mock_snap = MagicMock()
+        mock_snap.last_warned_at = warned_at
+        mock_snap.time_to_exhaustion.return_value = 20.0
+        mock_snap_cls.return_value = mock_snap
+        inst = tmp_path / "inst"
+        inst.mkdir()
+        usage = tmp_path / "usage.json"
+        usage.write_text(json.dumps({
+            "session_start": session_start.isoformat(),
+        }))
+        _maybe_warn_burn_rate(inst, usage)
+        mock_outbox.assert_not_called()
+
+    @patch("app.burn_rate.clear_warning")
+    @patch("app.utils.append_to_outbox")
+    @patch("app.burn_rate.mark_warned")
+    @patch("app.burn_rate.BurnRateSnapshot")
+    @patch("app.iteration_manager._read_session_pct_and_reset", return_value=(60.0, 300.0))
+    def test_clears_stale_warning_from_previous_session(self, _pct, mock_snap_cls,
+                                                          mock_mark, mock_outbox,
+                                                          mock_clear, tmp_path):
+        from datetime import datetime, timezone, timedelta
+        old_warn = datetime.now(timezone.utc) - timedelta(hours=5)
+        new_session = datetime.now(timezone.utc) - timedelta(minutes=10)
+        mock_snap = MagicMock()
+        mock_snap.last_warned_at = old_warn
+        mock_snap.time_to_exhaustion.return_value = 15.0
+        mock_snap.burn_rate_pct_per_minute.return_value = 0.8
+        mock_snap_cls.return_value = mock_snap
+        inst = tmp_path / "inst"
+        inst.mkdir()
+        usage = tmp_path / "usage.json"
+        usage.write_text(json.dumps({
+            "session_start": new_session.isoformat(),
+        }))
+        _maybe_warn_burn_rate(inst, usage)
+        mock_clear.assert_called_once_with(inst)
+        mock_outbox.assert_called_once()
+        mock_mark.assert_called_once()
+
+    @patch("app.utils.append_to_outbox", side_effect=OSError("write failed"))
+    @patch("app.burn_rate.mark_warned")
+    @patch("app.burn_rate.BurnRateSnapshot")
+    @patch("app.iteration_manager._read_session_pct_and_reset", return_value=(60.0, 300.0))
+    def test_outbox_write_failure_does_not_mark_warned(self, _pct, mock_snap_cls,
+                                                         mock_mark, _outbox,
+                                                         tmp_path):
+        mock_snap = MagicMock()
+        mock_snap.last_warned_at = None
+        mock_snap.time_to_exhaustion.return_value = 10.0
+        mock_snap.burn_rate_pct_per_minute.return_value = 1.0
+        mock_snap_cls.return_value = mock_snap
+        inst = tmp_path / "inst"
+        inst.mkdir()
+        _maybe_warn_burn_rate(inst, tmp_path / "usage.json")
+        mock_mark.assert_not_called()

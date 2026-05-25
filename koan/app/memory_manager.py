@@ -33,7 +33,7 @@ import shutil
 import subprocess
 import sys
 from collections import defaultdict
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -1244,7 +1244,7 @@ class MemoryManager:
                     continue
                 try:
                     mtime = learnings_path.stat().st_mtime
-                    ts = datetime.utcfromtimestamp(mtime).strftime("%Y-%m-%dT%H:%M:%SZ")
+                    ts = datetime.fromtimestamp(mtime, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                     content = learnings_path.read_text(encoding="utf-8")
                     for line in content.splitlines():
                         stripped = line.strip()
@@ -1281,7 +1281,7 @@ class MemoryManager:
         prevent runaway diffs from inflating the log.
         """
         entry = {
-            "ts": ts or datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "ts": ts or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "type": type_,
             "project": project,
             "content": content[:2000],
@@ -1346,7 +1346,7 @@ class MemoryManager:
             fcntl.flock(f, fcntl.LOCK_EX)
             raw = f.read()
 
-            cutoff = datetime.utcnow() - timedelta(days=horizon_days)
+            cutoff = datetime.now(timezone.utc) - timedelta(days=horizon_days)
             kept = []
             removed = 0
             for line in raw.splitlines():
@@ -1358,7 +1358,7 @@ class MemoryManager:
                     ts_str = obj.get("ts", "")
                     # Parse ISO8601 timestamp; keep entries with unparseable ts
                     try:
-                        ts_dt = datetime.strptime(ts_str, "%Y-%m-%dT%H:%M:%SZ")
+                        ts_dt = datetime.strptime(ts_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
                         if ts_dt < cutoff:
                             removed += 1
                             continue
