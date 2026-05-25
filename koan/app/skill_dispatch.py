@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from app.github_url_parser import ISSUE_URL_PATTERN, JIRA_ISSUE_URL_PATTERN, PR_URL_PATTERN
-from app.missions import strip_timestamps
+from app.missions import extract_now_flag, strip_timestamps
 from app.utils import PROJECT_TAG_PREFIX_RE, is_known_project
 
 # Module-level registry cache for the run process.
@@ -460,6 +460,7 @@ def _build_url_context_cmd(
     if url_and_context:
         issue_url, context = url_and_context
         base_branch, context = _extract_branch_token(context)
+        _urgent, context = extract_now_flag(context)
 
         cmd.extend(["--issue-url", issue_url])
         if base_branch:

@@ -333,6 +333,24 @@ class TestBuildSkillCommand:
         cmd = self._build("implement", url)
         assert "--context" not in cmd
 
+    def test_implement_now_flag_stripped_from_context(self):
+        """--now after URL must not leak into --context (causes argparse crash)."""
+        url = "https://github.com/sukria/koan/issues/15"
+        cmd = self._build("implement", f"{url} --now")
+        assert cmd is not None
+        assert "--issue-url" in cmd
+        assert url in cmd
+        assert "--context" not in cmd
+        assert "--now" not in cmd
+
+    def test_implement_now_flag_preserves_real_context(self):
+        url = "https://github.com/sukria/koan/issues/15"
+        cmd = self._build("implement", f"{url} --now phase 1 only")
+        assert cmd is not None
+        assert "--context" in cmd
+        assert "phase 1 only" in cmd
+        assert "--now" not in cmd
+
     def test_fix_with_issue_url(self):
         url = "https://github.com/Anantys/investmindr/issues/42"
         cmd = self._build("fix", url)
