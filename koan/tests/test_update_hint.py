@@ -92,6 +92,10 @@ class TestMaybeSendUpdateHint:
         state = Path(instance_dir) / ".update-hint.json"
         assert state.exists()
 
+        # Tag recorded to prevent duplicate notifications from auto_update
+        tag_file = Path(instance_dir) / ".last-notified-tag"
+        assert tag_file.read_text().strip() == "v1.5.0"
+
     @patch("app.update_hint.check_for_updates", return_value=3)
     def test_skips_when_in_cooldown(self, mock_check, instance_dir, koan_root):
         from app.update_hint import maybe_send_update_hint, _write_last_notified
@@ -133,6 +137,9 @@ class TestMaybeSendUpdateHint:
         # State file NOT written on failure
         state = Path(instance_dir) / ".update-hint.json"
         assert not state.exists()
+        # Tag NOT recorded on failure
+        tag_file = Path(instance_dir) / ".last-notified-tag"
+        assert not tag_file.exists()
 
     @patch("app.update_hint.check_for_updates", side_effect=Exception("fetch failed"))
     def test_returns_false_on_check_exception(self, mock_check, instance_dir, koan_root):
