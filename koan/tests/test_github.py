@@ -1156,3 +1156,77 @@ class TestFindBotComment:
         mock_gh.return_value = f"{{not valid json}}\n{good}\n{marked}"
         result = find_bot_comment("owner", "repo", 42, self.MARKER)
         assert result["id"] == 66
+
+    @patch("app.github.run_gh")
+    def test_bot_username_skips_other_bots_comment(self, mock_gh):
+        """When bot_username is given, a marked comment by a different account
+        is not returned.
+
+        Reproduces the bot-switch bug: a first bot (other-bot) posts the
+        review summary, then a second bot (koan-bot) runs the review. Matching
+        by marker alone would return other-bot's comment, and koan-bot would
+        then PATCH it — which GitHub rejects with a 403. The current bot must
+        only treat its OWN comment as the existing one.
+        """
+        raw = self._make_comment(
+            101, f"{self.MARKER}\n## Review", user="other-bot",
+        )
+        mock_gh.return_value = raw
+        result = find_bot_comment(
+            "owner", "repo", 42, self.MARKER, bot_username="koan-bot",
+        )
+        assert result is None
+
+    @patch("app.github.run_gh")
+    def test_bot_username_returns_own_comment(self, mock_gh):
+        """When bot_username matches the comment author, it is returned."""
+        raw = self._make_comment(
+            101, f"{self.MARKER}\n## Review", user="koan-bot",
+        )
+        mock_gh.return_value = raw
+        result = find_bot_comment(
+            "owner", "repo", 42, self.MARKER, bot_username="koan-bot",
+        )
+        assert result is not None
+        assert result["id"] == 101
+
+    @patch("app.github.run_gh")
+    def test_bot_username_match_is_case_insensitive(self, mock_gh):
+        """Author matching ignores case (GitHub logins are case-insensitive)."""
+        raw = self._make_comment(
+            101, f"{self.MARKER}\n## Review", user="Koan-Bot",
+        )
+        mock_gh.return_value = raw
+        result = find_bot_comment(
+            "owner", "repo", 42, self.MARKER, bot_username="koan-bot",
+        )
+        assert result is not None
+        assert result["id"] == 101
+
+    @patch("app.github.run_gh")
+    def test_bot_username_picks_own_over_other_bot(self, mock_gh):
+        """With multiple marked comments, returns the one by the current bot,
+        not merely the first one."""
+        other = self._make_comment(
+            101, f"{self.MARKER} by other", user="other-bot",
+        )
+        mine = self._make_comment(
+            202, f"{self.MARKER} by me", user="koan-bot",
+        )
+        mock_gh.return_value = f"{other}\n{mine}"
+        result = find_bot_comment(
+            "owner", "repo", 42, self.MARKER, bot_username="koan-bot",
+        )
+        assert result["id"] == 202
+
+    @patch("app.github.run_gh")
+    def test_no_bot_username_keeps_first_match_behavior(self, mock_gh):
+        """Without bot_username (unconfigured), falls back to first marker match
+        regardless of author — preserves backward compatibility."""
+        other = self._make_comment(
+            101, f"{self.MARKER} by other", user="other-bot",
+        )
+        mock_gh.return_value = other
+        result = find_bot_comment("owner", "repo", 42, self.MARKER)
+        assert result is not None
+        assert result["id"] == 101

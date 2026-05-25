@@ -701,17 +701,29 @@ def list_open_pr_branches(repo: str, author: str, cwd: str = None) -> List[str]:
 
 def find_bot_comment(
     owner: str, repo: str, pr_number: int, marker: str,
+    bot_username: str = "",
 ) -> Optional[dict]:
     """Search issue comments on a PR for a comment containing ``marker``.
 
     Only searches conversation (issue-level) comments, not inline review
     comments.  Returns the first matching comment, or ``None`` if absent.
 
+    When ``bot_username`` is provided, only a comment authored by that account
+    is returned.  This matters when the review bot account changes between runs
+    (e.g. switching from one bot to another): GitHub only lets an account edit
+    its OWN comments, so PATCHing a marked comment left by a different bot
+    fails with a 403.  Filtering by author makes the current bot ignore the
+    other bot's comment and post a fresh one instead.  When ``bot_username`` is
+    empty (unconfigured), the first marker match wins regardless of author —
+    preserving backward-compatible behaviour.
+
     Args:
         owner: Repository owner.
         repo: Repository name.
         pr_number: PR number (int or str).
         marker: Marker string to search for (e.g. ``SUMMARY_TAG``).
+        bot_username: If provided, only return a comment authored by this
+            account (case-insensitive).
 
     Returns:
         Dict with keys ``id``, ``body``, ``user`` from the GitHub API, or
@@ -731,13 +743,17 @@ def find_bot_comment(
     if not raw.strip():
         return None
 
+    wanted_user = bot_username.strip().lower()
     for line in raw.strip().split("\n"):
         try:
             comment = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if marker in comment.get("body", ""):
-            return comment
+        if marker not in comment.get("body", ""):
+            continue
+        if wanted_user and str(comment.get("user", "")).lower() != wanted_user:
+            continue
+        return comment
 
     return None
 

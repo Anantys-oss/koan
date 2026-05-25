@@ -973,22 +973,33 @@ def _post_review_comment(
         if commits_block is not None:
             body = replace_section(body, COMMIT_IDS_START, COMMIT_IDS_END, commits_block)
 
-    try:
-        sanitized = sanitize_github_comment(body)
-        if existing_comment:
-            comment_id = existing_comment["id"]
+    sanitized = sanitize_github_comment(body)
+    if existing_comment:
+        comment_id = existing_comment["id"]
+        try:
             run_gh(
                 "api",
                 f"repos/{owner}/{repo}/issues/comments/{comment_id}",
                 "-X", "PATCH",
                 "-f", f"body={sanitized}",
             )
-        else:
-            run_gh(
-                "pr", "comment", pr_number,
-                "--repo", f"{owner}/{repo}",
-                "--body", sanitized,
+            return True, ""
+        except Exception as e:
+            # PATCH can fail with 403 when the existing comment belongs to a
+            # different bot account (review bot was switched). Fall back to
+            # posting a fresh comment so the review still lands.
+            print(
+                f"[review_runner] PATCH of comment {comment_id} failed "
+                f"({e}); posting a new comment instead",
+                file=sys.stderr,
             )
+
+    try:
+        run_gh(
+            "pr", "comment", pr_number,
+            "--repo", f"{owner}/{repo}",
+            "--body", sanitized,
+        )
         return True, ""
     except Exception as e:
         print(f"[review_runner] failed to post comment: {e}", file=sys.stderr)
@@ -1269,8 +1280,13 @@ def run_review(
     # Step 1b: Detect and fetch plan body for alignment checking
     plan_body = _resolve_plan_body(plan_url, context.get("body", ""))
 
-    # Step 1c: Look up any existing bot summary comment (Phase 3)
-    existing_comment = find_bot_comment(owner, repo, pr_number, SUMMARY_TAG)
+    # Step 1c: Look up any existing bot summary comment (Phase 3).
+    # Filter by the current bot's account: a summary left by a *different*
+    # bot (e.g. after switching review bots) can't be PATCHed by us — GitHub
+    # returns 403 — so we treat only our own comment as the upsert target.
+    existing_comment = find_bot_comment(
+        owner, repo, pr_number, SUMMARY_TAG, bot_username=bot_username,
+    )
 
     # Step 1d: Fetch current PR commit SHAs (Phase 5 — incremental review)
     current_shas = _fetch_pr_commit_shas(owner, repo, pr_number)

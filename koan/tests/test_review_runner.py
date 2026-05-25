@@ -2101,6 +2101,29 @@ class TestPostReviewCommentIdempotent:
         assert "abc123" in body_arg
         assert COMMIT_IDS_START in body_arg
 
+    @patch("app.review_runner.run_gh")
+    def test_patch_403_falls_back_to_new_comment(self, mock_gh):
+        """If PATCH fails (e.g. the existing comment belongs to another bot
+        account), fall back to posting a fresh comment instead of failing.
+
+        Defends the bot-switch case end-to-end: even if a foreign comment
+        slips through the author filter, the review still lands rather than
+        surfacing a 403 permissions error.
+        """
+        def _side_effect(*args, **kwargs):
+            if "PATCH" in args:
+                raise RuntimeError("HTTP 403: Resource not accessible by integration")
+            return ""
+
+        mock_gh.side_effect = _side_effect
+        existing = {"id": 555, "body": "old body", "user": "other-bot"}
+        success, error = _post_review_comment("owner", "repo", "42", "New review", existing)
+        assert success is True
+        # Last call should be the POST fallback ('pr comment'), not PATCH
+        last_call = mock_gh.call_args[0]
+        assert "pr" in last_call
+        assert "comment" in last_call
+
 
 
 # ---------------------------------------------------------------------------
