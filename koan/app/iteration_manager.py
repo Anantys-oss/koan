@@ -37,7 +37,7 @@ from app.constants import (
     MAX_SELECTION_AUDIT_ENTRIES as _MAX_SELECTION_AUDIT_ENTRIES,
 )
 from app.loop_manager import resolve_focus_area
-from app.run_log import log_safe
+from app.run_log import log_safe, suppress_logged
 
 
 # Set to True when running as CLI subprocess (stdout carries JSON).
@@ -260,7 +260,8 @@ def _maybe_warn_burn_rate(instance_dir: Path, usage_state_path: Path) -> None:
 
     last_warned = snapshot.last_warned_at
     if last_warned is not None:
-        try:
+        with suppress_logged(_log_iteration, "error", "Burn rate warning state parse failed",
+                             json.JSONDecodeError, OSError, KeyError, ValueError, TypeError):
             import json
             from datetime import datetime, timezone
             state = json.loads(usage_state_path.read_text())
@@ -270,8 +271,6 @@ def _maybe_warn_burn_rate(instance_dir: Path, usage_state_path: Path) -> None:
             if last_warned < session_start:
                 clear_warning(instance_dir)
                 last_warned = None
-        except (json.JSONDecodeError, OSError, KeyError, ValueError, TypeError) as exc:
-            _log_iteration("error", f"Burn rate warning state parse failed: {exc}")
 
     if last_warned is not None:
         return  # Already warned for this session cycle
@@ -841,7 +840,8 @@ def _select_diagnostic_type(
       - Majority "empty" outcomes → dead_code (cleanup to unblock exploration)
       - Otherwise (blocked/stagnated) → audit (deeper investigation)
     """
-    try:
+    with suppress_logged(_log_iteration, "error", "Diagnostic type detection failed",
+                         ImportError, OSError, ValueError):
         from app.mission_metrics import compute_project_metrics, compute_project_trend
 
         trend = compute_project_trend(instance_dir, project_name, days=30)
@@ -853,8 +853,6 @@ def _select_diagnostic_type(
         empty = metrics.get("empty", 0)
         if total > 0 and empty / total > 0.5:
             return "dead_code"
-    except (ImportError, OSError, ValueError) as exc:
-        _log_iteration("error", f"Diagnostic type detection failed: {exc}")
 
     return "audit"
 
@@ -1622,7 +1620,8 @@ def plan_iteration(
         # Adapt chance based on historical contemplative productivity
         adapted_chance = contemplative_chance
         if project_name and instance_dir:
-            try:
+            with suppress_logged(_log_iteration, "error", "Contemplative chance adaptation failed",
+                                 ImportError, OSError, ValueError):
                 from app.session_tracker import adapt_contemplative_chance
                 adapted_chance = adapt_contemplative_chance(
                     contemplative_chance, instance_dir, project_name
@@ -1632,8 +1631,6 @@ def plan_iteration(
                         f"Contemplative chance adapted: "
                         f"{contemplative_chance}% → {adapted_chance}% "
                         f"(project={project_name})")
-            except (ImportError, OSError, ValueError) as exc:
-                _log_iteration("error", f"Contemplative chance adaptation failed: {exc}")
 
         autonomous_decision = _decide_autonomous_action(
             autonomous_mode, koan_root, schedule_state, adapted_chance,

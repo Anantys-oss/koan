@@ -20,7 +20,7 @@ import threading
 import time
 from typing import Callable, List, Optional, Sequence, Tuple
 
-from app.run_log import log_safe as _log_cli
+from app.run_log import log_safe as _log_cli, suppress_logged
 
 STDIN_PLACEHOLDER = "@stdin"
 
@@ -95,10 +95,8 @@ def prepare_prompt_file(cmd: List[str]) -> Tuple[List[str], Optional[str]]:
 def _cleanup_prompt_file(path: Optional[str]) -> None:
     """Silently remove a temp prompt file if it exists."""
     if path:
-        try:
+        with suppress_logged(_log_cli, "error", f"Prompt file cleanup failed ({path})", OSError):
             os.unlink(path)
-        except OSError as exc:
-            _log_cli("error", f"Prompt file cleanup failed ({path}): {exc}")
 
 
 def run_cli(cmd, **kwargs) -> subprocess.CompletedProcess:
@@ -201,11 +199,9 @@ def stream_with_timeout(
             watchdog.mark_completed()
             watchdog.cancel()
 
-        try:
+        with suppress_logged(_log_cli, "error", "Stderr stream read failed", OSError, ValueError):
             if proc.stderr:
                 stderr_text = proc.stderr.read()
-        except (OSError, ValueError) as exc:
-            _log_cli("error", f"Stderr stream read failed: {exc}")
 
         try:
             proc.wait(timeout=drain_timeout)
@@ -217,10 +213,8 @@ def stream_with_timeout(
     finally:
         for stream in (proc.stdout, proc.stderr):
             if stream is not None:
-                try:
+                with suppress_logged(_log_cli, "error", "Stream close failed", OSError):
                     stream.close()
-                except OSError as exc:
-                    _log_cli("error", f"Stream close failed: {exc}")
 
     return StreamResult(
         stdout="\n".join(stdout_lines).strip(),
