@@ -598,20 +598,21 @@ After completion, Kōan posts a structured comment on the PR with these sections
 - **Usage:** `/check <pr-or-issue-url>`
 - **Aliases:** `/inspect`
 
-The check loop also **auto-forwards unresolved human review comments** on Kōan-created PRs. When a reviewer leaves comments, `/check` detects them and creates a mission to address the feedback — no explicit @mention required. Fingerprint-based deduplication (SHA-256 of sorted comment IDs) prevents re-dispatching the same set of comments across repeated checks. Bot comments (Codecov, Dependabot, etc.) are filtered out automatically.
+Kōan also **auto-forwards unresolved human review comments** on its open PRs. During the GitHub notification polling loop, `review_comment_dispatch` checks Kōan-created PRs for new review comments and creates missions to address the feedback — no explicit @mention required. Fingerprint-based deduplication (SHA-256 of sorted comment IDs) prevents re-dispatching the same set of comments. Bot comments are filtered out automatically.
 
 Configure this behavior in `config.yaml`:
 
 ```yaml
 review_dispatch:
-  include_drafts: true   # Also dispatch for draft PRs (default: true)
+  enabled: true            # Opt-in (default: false)
+  cooldown_minutes: 30     # Min minutes between checks per project (default: 30)
 ```
 
 <details>
 <summary>Use cases</summary>
 
 - `/check https://github.com/org/repo/pull/42` — Let Kōan decide what a PR needs
-- Reviewer leaves comments on a PR → next `/check` run creates a mission to address them
+- Reviewer leaves comments on a PR → next notification check creates a mission to address them
 </details>
 
 **`/check_need`** — Analyze whether a PR or issue is still needed given the current state of the repository.
