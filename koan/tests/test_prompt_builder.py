@@ -1617,6 +1617,43 @@ class TestBuildAgentPromptParts:
             assert "Language Preference" in sys_prompt
             assert "english" in sys_prompt
 
+    def test_system_prompt_stable_sections_before_conditional(self, prompt_env):
+        """Stable sections appear before conditional ones for cache prefix hits."""
+        self.mocks["app.prompt_builder._get_tdd_section"].return_value = (
+            "\n# TDD\nWrite tests first"
+        )
+        self.mocks["app.prompt_builder._get_verification_gate_section"].return_value = (
+            "\n# Verification\nGate rules"
+        )
+        self.mocks["app.prompt_builder._get_security_flagging_section"].return_value = (
+            "\n# Security\nFlag findings"
+        )
+        with patch(
+            "app.prompt_builder._get_caveman_section",
+            return_value="\n# Caveman\nShort output",
+        ), patch(
+            "app.prompt_builder._get_language_section",
+            return_value="\n# Language\nEnglish",
+        ):
+            sys_prompt, _ = self._build(
+                prompt_env, mission_title="Fix a bug",
+            )
+            merge_pos = sys_prompt.index("Merge Policy")
+            submit_pos = sys_prompt.index("Submit PR")
+            caveman_pos = sys_prompt.index("Caveman")
+            lang_pos = sys_prompt.index("Language")
+            tdd_pos = sys_prompt.index("TDD")
+            verify_pos = sys_prompt.index("Verification")
+            security_pos = sys_prompt.index("Security")
+
+            # Stable tier must come before conditional tier
+            assert merge_pos < tdd_pos
+            assert submit_pos < tdd_pos
+            assert caveman_pos < tdd_pos
+            assert lang_pos < tdd_pos
+            assert merge_pos < verify_pos
+            assert merge_pos < security_pos
+
 
 # --- Tests for _get_caveman_section ---
 

@@ -4,11 +4,14 @@ Handles agent prompt assembly (template + merge policy + deep research +
 verbose mode) and contemplative prompt assembly.
 
 Prompt caching: ``build_agent_prompt_parts()`` splits the assembled prompt
-into a stable *system prompt* (merge policy, PR guidelines, verification
-gate, etc.) and a variable *user prompt* (agent.md template, mission spec,
-drift, deep research). The system prompt is sent via ``--append-system-prompt``
-on Claude Code CLI, placing it in the prefix-cached position for better
-prompt caching across consecutive missions.
+into a stable *system prompt* and a variable *user prompt* (agent.md template,
+mission spec, drift, deep research). The system prompt is sent via
+``--append-system-prompt`` on Claude Code CLI, placing it in the prefix-cached
+position.  Within the system prompt, sections are ordered by stability:
+unconditionally stable (merge policy, caveman, RTK, language) first,
+semi-stable (focus, verbose) next, and conditional per-mission sections
+(TDD, antipatterns, verification, security) last — maximizing the shared
+prefix across consecutive missions for better cache hit rates.
 
 Usage:
     PROMPT=$("$PYTHON" -m app.prompt_builder agent \
@@ -902,14 +905,42 @@ def build_agent_prompt_parts(
     if autonomous_mode == "deep" and not mission_title:
         user_prompt += _get_deep_research(instance, project_name, project_path)
 
-    # --- System prompt: stable sections (best for cache prefix matching) ---
-    # These rarely change between consecutive missions on the same project.
+    # --- System prompt: ordered for maximum prompt cache prefix hits ---
+    # Anthropic's prompt cache keys on the prefix — shared prefix = cache hit.
+    # Sections are ordered: stable (same across all missions on a project) →
+    # semi-stable (changes rarely within a session) → conditional (varies per
+    # mission type).  Moving conditional sections to the end ensures consecutive
+    # missions share the longest possible cached prefix.
 
     sys_parts = []
 
+    # Tier 1: Always stable — identical for every mission on this project.
     sys_parts.append(_get_merge_policy(project_name))
     sys_parts.append(_get_submit_pr_section(project_path))
 
+    caveman = _get_caveman_section()
+    if caveman:
+        sys_parts.append(caveman)
+
+    rtk = _get_rtk_section(project_name)
+    if rtk:
+        sys_parts.append(rtk)
+
+    lang = _get_language_section()
+    if lang:
+        sys_parts.append(lang)
+
+    # Tier 2: Semi-stable — changes only when focus/verbose mode is toggled.
+    focus = _get_focus_section(instance)
+    if focus:
+        sys_parts.append(focus)
+
+    verbose = _get_verbose_section(instance)
+    if verbose:
+        sys_parts.append(verbose)
+
+    # Tier 3: Conditional — varies per mission type/mode.  Placed last so
+    # their presence/absence doesn't break the cached prefix above.
     tdd = _get_tdd_section(mission_title)
     if tdd:
         sys_parts.append(tdd)
@@ -922,29 +953,9 @@ def build_agent_prompt_parts(
     if verification:
         sys_parts.append(verification)
 
-    focus = _get_focus_section(instance)
-    if focus:
-        sys_parts.append(focus)
-
-    verbose = _get_verbose_section(instance)
-    if verbose:
-        sys_parts.append(verbose)
-
-    caveman = _get_caveman_section()
-    if caveman:
-        sys_parts.append(caveman)
-
-    rtk = _get_rtk_section(project_name)
-    if rtk:
-        sys_parts.append(rtk)
-
     security = _get_security_flagging_section(mission_title, autonomous_mode)
     if security:
         sys_parts.append(security)
-
-    lang = _get_language_section()
-    if lang:
-        sys_parts.append(lang)
 
     system_prompt = "\n\n".join(part for part in sys_parts if part)
 
