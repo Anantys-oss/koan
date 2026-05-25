@@ -223,12 +223,16 @@ class IssueCreationResult(NamedTuple):
 
     ``created_entries`` pairs each newly-created issue with its
     originating finding so callers can filter by severity for auto-fix.
+
+    ``local_files`` pairs each high+ finding with its local security
+    file path (written regardless of PVRS outcome).
     """
 
     urls: List[str]
     created: int
     reused: int
     created_entries: Tuple = ()
+    local_files: Tuple = ()
 
 
 _FINGERPRINT_MARKER_RE = re.compile(
@@ -393,6 +397,7 @@ def create_issues(
     pvrs_mode: str = "auto",
     pvrs_threshold: str = "high",
     project_name: str = "",
+    instance_dir: str = "",
 ) -> IssueCreationResult:
     """Create GitHub issues (or PVRS reports) for each finding.
 
@@ -459,73 +464,92 @@ def create_issues(
     created_count = 0
     reused_count = 0
     created_entries: List[Tuple[AuditFinding, str]] = []
+    local_files: List[Tuple[AuditFinding, Path]] = []
 
     for i, finding in enumerate(findings, 1):
         title = finding.title
-        use_pvrs = pvrs_available and _should_use_pvrs(
-            finding.severity, pvrs_threshold,
-        )
+        is_high_severity = _should_use_pvrs(finding.severity, pvrs_threshold)
+        use_pvrs = pvrs_available and is_high_severity
 
-        # Dedup applies to the public-issue path only — PVRS advisories
-        # live in a private endpoint not covered by `gh issue list`.
-        if not use_pvrs:
-            existing_url = _find_existing_match(finding, existing_index)
-            if existing_url:
-                reused_count += 1
-                issue_urls.append(existing_url)
+        # High+ severity: attempt PVRS then write local file
+        if is_high_severity:
+            if notify_fn:
+                notify_fn(
+                    f"  \U0001f512 {i}/{len(findings)}: {title}"
+                )
+
+            advisory_url = ""
+            pvrs_status = "disabled"
+
+            if use_pvrs:
+                try:
+                    advisory_url = _submit_pvrs_report(
+                        finding, ecosystem, package_name,
+                        target_repo, project_path,
+                    )
+                    pvrs_status = "submitted"
+                    advisory_url = advisory_url.strip() if advisory_url else ""
+                    if advisory_url:
+                        issue_urls.append(advisory_url)
+                        created_count += 1
+                        created_entries.append((finding, advisory_url))
+                except Exception as e:
+                    pvrs_status = "failed"
+                    print(
+                        f"[audit] PVRS failed for '{title}': {e}",
+                        file=sys.stderr,
+                    )
+
+            # Always write local file for high+ findings
+            if instance_dir:
+                file_path = _write_local_finding(
+                    finding, project_name, instance_dir,
+                    pvrs_status=pvrs_status,
+                    advisory_url=advisory_url,
+                )
+                local_files.append((finding, file_path))
+                relative = f"security/{project_name}/{file_path.name}"
                 if notify_fn:
                     notify_fn(
-                        f"  ↩️ {i}/{len(findings)}: "
-                        f"already tracked — {existing_url}"
+                        f"  \U0001f4c4 {relative}\n"
+                        f"  \U0001f4a1 Suggested: /fix {project_name} "
+                        f"Understand and fix the issue described by {relative}"
                     )
                 continue
 
+            # No instance_dir and PVRS didn't succeed: fall through to
+            # public issue as last resort (legacy behavior).
+            if pvrs_status == "submitted":
+                continue
+
+        # Public issue path (medium/low, or high fallback without instance_dir)
+        # Dedup: skip if fingerprint matches an already-open audit issue.
+        existing_url = _find_existing_match(finding, existing_index)
+        if existing_url:
+            reused_count += 1
+            issue_urls.append(existing_url)
+            if notify_fn:
+                notify_fn(
+                    f"  \u21a9\ufe0f {i}/{len(findings)}: "
+                    f"already tracked \u2014 {existing_url}"
+                )
+            continue
+
         if notify_fn:
-            channel = "\U0001f512 PVRS" if use_pvrs else "\U0001f4dd issue"
             notify_fn(
-                f"  {channel} {i}/{len(findings)}: {title}"
+                f"  \U0001f4dd issue {i}/{len(findings)}: {title}"
             )
 
         try:
-            if use_pvrs:
-                url = _submit_pvrs_report(
-                    finding, ecosystem, package_name,
-                    target_repo, project_path,
-                )
-            else:
-                url = _submit_public_issue(
-                    finding, target_repo, project_path,
-                )
+            url = _submit_public_issue(
+                finding, target_repo, project_path,
+            )
         except Exception as e:
-            # PVRS fallback: try public issue if PVRS submission failed
-            if use_pvrs:
-                print(
-                    f"[audit] PVRS failed for '{title}', "
-                    f"falling back to redacted public issue: {e}",
-                    file=sys.stderr,
-                )
-                if notify_fn:
-                    notify_fn(
-                        f"  \u26a0\ufe0f PVRS failed for '{title}', "
-                        f"creating redacted placeholder issue"
-                    )
-                try:
-                    url = _submit_redacted_fallback_issue(
-                        finding, target_repo, project_path,
-                    )
-                except Exception as e2:
-                    print(
-                        f"[audit] Fallback issue also failed for "
-                        f"'{title}': {e2}",
-                        file=sys.stderr,
-                    )
-                    continue
-            else:
-                print(
-                    f"[audit] Failed to create issue '{title}': {e}",
-                    file=sys.stderr,
-                )
-                continue
+            print(
+                f"[audit] Failed to create issue '{title}': {e}",
+                file=sys.stderr,
+            )
+            continue
 
         url = url.strip() if url else ""
         if url:
@@ -540,6 +564,7 @@ def create_issues(
         created=created_count,
         reused=reused_count,
         created_entries=tuple(created_entries),
+        local_files=tuple(local_files),
     )
 
 
@@ -582,37 +607,58 @@ def _submit_public_issue(
     )
 
 
-def _submit_redacted_fallback_issue(
+def _slugify_finding_title(title: str) -> str:
+    """Convert a finding title to a filesystem-safe slug."""
+    slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+    return slug[:60]
+
+
+def _write_local_finding(
     finding: AuditFinding,
-    target_repo: Optional[str],
-    project_path: str,
-) -> str:
-    """Create a redacted public issue when PVRS submission fails.
+    project_name: str,
+    instance_dir: str,
+    pvrs_status: str = "disabled",
+    advisory_url: str = "",
+) -> Path:
+    """Write a security finding to a local markdown file.
 
-    Omits exploit details to avoid leaking vulnerability information publicly.
-    The issue serves as a placeholder directing maintainers to investigate
-    via private channels.
+    Always called for high+ severity findings regardless of PVRS outcome.
+    The file serves as the local source of truth for security findings.
+
+    Returns:
+        Path to the written file.
     """
-    from app.github import issue_create
+    import os
 
-    redacted_body = (
-        "A security finding was identified during an automated audit but "
-        "could not be submitted via Private Vulnerability Reporting (PVRS).\n\n"
-        f"**Severity**: {finding.severity}\n"
-        f"**Category**: {finding.category}\n\n"
-        "Details have been withheld from this public issue to prevent "
-        "disclosure of exploitable vulnerabilities. Please review the audit "
-        "logs or contact the security team for full details.\n\n"
-        "---\n"
-        "\U0001f916 Created by K\u014dan from audit session"
+    from app.utils import atomic_write
+
+    today = datetime.now().strftime("%Y%m%d")
+    slug = _slugify_finding_title(finding.title)
+    filename = f"{today}.{finding.severity}.{slug}.md"
+
+    security_dir = Path(instance_dir) / "security" / project_name
+    os.makedirs(security_dir, exist_ok=True)
+
+    file_path = security_dir / filename
+
+    advisory_line = advisory_url if advisory_url else "—"
+    content = (
+        f"# {finding.title}\n\n"
+        f"| Field | Value |\n"
+        f"|-------|-------|\n"
+        f"| Severity | {finding.severity} |\n"
+        f"| Category | {finding.category} |\n"
+        f"| Location | `{finding.location}` |\n"
+        f"| Detected | {datetime.now().strftime('%Y-%m-%d')} |\n"
+        f"| PVRS | {pvrs_status} |\n"
+        f"| Advisory | {advisory_line} |\n\n"
+        f"## Problem\n\n{finding.problem}\n\n"
+        f"## Why This Matters\n\n{finding.why}\n\n"
+        f"## Suggested Fix\n\n{finding.suggested_fix}\n"
     )
 
-    return issue_create(
-        title=f"[Security] {finding.severity} finding — details withheld (PVRS unavailable)",
-        body=redacted_body,
-        repo=target_repo,
-        cwd=project_path,
-    )
+    atomic_write(file_path, content)
+    return file_path
 
 
 # ---------------------------------------------------------------------------
@@ -892,7 +938,7 @@ def run_audit(
         result = create_issues(
             findings, project_path, notify_fn=notify_fn,
             pvrs_mode=pvrs_mode, pvrs_threshold=pvrs_threshold,
-            project_name=project_name,
+            project_name=project_name, instance_dir=instance_dir,
         )
 
     # Step 6: Auto-fix — queue /fix missions for high-severity new issues
@@ -928,12 +974,16 @@ def run_audit(
             f"Report saved to {report_path.name} (no GitHub issues created)."
         )
     else:
+        parts = []
+        if result.created and result.reused:
+            parts.append(f"{result.created} new")
+        elif result.created:
+            parts.append(f"{result.created} GitHub issues created")
         if result.reused:
-            issue_summary = (
-                f"{result.created} new, {result.reused} already tracked"
-            )
-        else:
-            issue_summary = f"{result.created} GitHub issues created"
+            parts.append(f"{result.reused} already tracked")
+        if result.local_files:
+            parts.append(f"{len(result.local_files)} local security files")
+        issue_summary = ", ".join(parts) if parts else "no issues created"
         fix_summary = f", {auto_fix_count} auto-fix queued" if auto_fix_count else ""
         summary = (
             f"Audit complete: {len(findings)} findings, "

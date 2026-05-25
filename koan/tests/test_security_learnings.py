@@ -551,7 +551,7 @@ class TestRunAuditIntegration:
         def _fake_run_audit_cli(prompt, project_path):
             return canned_output
 
-        def _fake_create_issues(findings, project_path, notify_fn=None, pvrs_mode="auto", pvrs_threshold="high", project_name=""):
+        def _fake_create_issues(findings, project_path, notify_fn=None, pvrs_mode="auto", pvrs_threshold="high", project_name="", instance_dir=""):
             from skills.core.audit.audit_runner import IssueCreationResult
             return IssueCreationResult(
                 created=0, reused=0,
