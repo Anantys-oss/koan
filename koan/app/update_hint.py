@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from app.auto_update import check_for_updates, check_for_new_release_tag
+from app.auto_update import check_for_updates, check_for_new_release_tag, _write_last_notified_tag
 from app.notify import send_telegram
 from app.run_log import log
 from app.utils import atomic_write
@@ -115,7 +115,8 @@ def maybe_send_update_hint(instance_dir: str, koan_root: str) -> bool:
         log("update-hint", f"Failed to send update hint: {e}")
         return False
 
-    # 5. Update cooldown state
+    # 5. Record tag + update cooldown state
+    _write_last_notified_tag(instance_dir, new_tag)
     _write_last_notified(state_path)
     log("update-hint", f"Notified user about new release tag: {new_tag}")
     return True
