@@ -484,8 +484,8 @@ def run_startup(koan_root: str, instance: str, projects: list):
             try:
                 from app.notify import send_telegram
                 send_telegram(f"⚠️ Config error — agent cannot start:\n{e}")
-            except Exception:
-                pass
+            except Exception as exc:
+                log("warn", f"Failed to send Telegram notification: {exc}")
             raise
 
         _safe_run("Config validation", validate_config, koan_root)
