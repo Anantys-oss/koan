@@ -94,9 +94,12 @@ def maybe_send_update_hint(instance_dir: str, koan_root: str) -> bool:
 
     # 2. Fetch upstream refs + tags (reuses auto_update's lightweight fetch)
     try:
-        check_for_updates(koan_root)
+        fetch_result = check_for_updates(koan_root)
     except Exception as e:
         log("update-hint", f"check_for_updates failed: {e}")
+        return False
+
+    if fetch_result is None:
         return False
 
     # 3. Check for new release tag (same mechanism as auto_update)
