@@ -20,6 +20,8 @@ from skills.core.audit.audit_runner import (
     AuditFinding,
     _build_advisory_description,
     _should_use_pvrs,
+    _slugify_finding_title,
+    _write_local_finding,
     create_issues,
 )
 
@@ -331,49 +333,65 @@ class TestCreateIssuesPvrsRouting:
     @patch("app.github.security_advisory_report")
     @patch("app.github.issue_create")
     def test_routes_critical_high_to_pvrs(
-        self, mock_issue, mock_pvrs, mock_eco, mock_check, mock_repo,
+        self, mock_issue, mock_pvrs, mock_eco, mock_check, mock_repo, tmp_path,
     ):
         mock_pvrs.return_value = "https://github.com/o/r/security/advisories/GHSA-1"
         mock_issue.return_value = "https://github.com/o/r/issues/1\n"
 
         findings = self._make_findings()
-        result = create_issues(findings, "/path/proj", pvrs_threshold="high")
+        result = create_issues(
+            findings, "/path/proj", pvrs_threshold="high",
+            instance_dir=str(tmp_path), project_name="proj",
+        )
 
         # critical + high → PVRS (2 calls)
         assert mock_pvrs.call_count == 2
         # medium + low → public issues (2 calls)
         assert mock_issue.call_count == 2
         assert len(result.urls) == 4
+        # Local files written for high+ findings
+        assert len(result.local_files) == 2
 
     @patch("app.github.resolve_target_repo", return_value="upstream/repo")
     @patch("app.github.check_pvrs_enabled", return_value=False)
     @patch("app.github.issue_create")
-    def test_all_public_when_pvrs_disabled(
-        self, mock_issue, mock_check, mock_repo,
+    def test_high_get_local_files_when_pvrs_disabled(
+        self, mock_issue, mock_check, mock_repo, tmp_path,
     ):
         mock_issue.return_value = "https://github.com/o/r/issues/1\n"
         findings = self._make_findings()
-        result = create_issues(findings, "/path/proj")
+        result = create_issues(
+            findings, "/path/proj", instance_dir=str(tmp_path),
+            project_name="proj",
+        )
 
-        # All go to public issues
-        assert mock_issue.call_count == 4
-        assert len(result.urls) == 4
+        # medium + low → public issues (2 calls), critical + high → local files
+        assert mock_issue.call_count == 2
+        assert len(result.local_files) == 2
+        # Local files exist on disk
+        for finding, path in result.local_files:
+            assert path.exists()
+            content = path.read_text()
+            assert finding.title in content
 
     @patch("app.github.resolve_target_repo", return_value="upstream/repo")
     @patch("app.github.issue_create")
-    def test_pvrs_mode_false_skips_detection(self, mock_issue, mock_repo):
+    def test_pvrs_mode_false_skips_detection(self, mock_issue, mock_repo, tmp_path):
         """When pvrs_mode='false', PVRS detection is never called."""
         mock_issue.return_value = "https://github.com/o/r/issues/1\n"
         findings = self._make_findings()
 
         # Should NOT call check_pvrs_enabled at all
         with patch("app.github.check_pvrs_enabled") as mock_check:
-            create_issues(
+            result = create_issues(
                 findings, "/path/proj", pvrs_mode="false",
+                instance_dir=str(tmp_path), project_name="proj",
             )
             mock_check.assert_not_called()
 
-        assert mock_issue.call_count == 4
+        # medium + low → public issues, critical + high → local files
+        assert mock_issue.call_count == 2
+        assert len(result.local_files) == 2
 
     @patch("app.github.resolve_target_repo", return_value="upstream/repo")
     @patch("app.github.check_pvrs_enabled", return_value=True)
@@ -381,7 +399,7 @@ class TestCreateIssuesPvrsRouting:
     @patch("app.github.security_advisory_report")
     @patch("app.github.issue_create")
     def test_pvrs_mode_true_skips_detection(
-        self, mock_issue, mock_pvrs, mock_eco, mock_check, mock_repo,
+        self, mock_issue, mock_pvrs, mock_eco, mock_check, mock_repo, tmp_path,
     ):
         """When pvrs_mode='true', check_pvrs_enabled is NOT called."""
         mock_pvrs.return_value = "https://github.com/advisory/1"
@@ -390,6 +408,7 @@ class TestCreateIssuesPvrsRouting:
         findings = self._make_findings()
         create_issues(
             findings, "/path/proj", pvrs_mode="true", pvrs_threshold="high",
+            instance_dir=str(tmp_path), project_name="proj",
         )
 
         # check_pvrs_enabled should NOT be called when pvrs_mode is "true"
@@ -403,31 +422,33 @@ class TestCreateIssuesPvrsRouting:
     @patch("app.github.security_advisory_report",
            side_effect=RuntimeError("403 Forbidden"))
     @patch("app.github.issue_create")
-    def test_pvrs_failure_falls_back_to_public_issue(
-        self, mock_issue, mock_pvrs, mock_eco, mock_check, mock_repo,
+    def test_pvrs_failure_writes_local_file(
+        self, mock_issue, mock_pvrs, mock_eco, mock_check, mock_repo, tmp_path,
     ):
-        """When PVRS submission fails, fall back to a public issue."""
-        mock_issue.return_value = "https://github.com/o/r/issues/1\n"
+        """When PVRS submission fails, write local file (no public issue)."""
         findings = [self._make_findings()[0]]  # critical only
 
         notify = MagicMock()
         result = create_issues(
             findings, "/path/proj", notify_fn=notify,
-            pvrs_threshold="high",
+            pvrs_threshold="high", instance_dir=str(tmp_path),
+            project_name="proj",
         )
 
-        # PVRS was attempted, then redacted fallback issue created
+        # PVRS was attempted but no public issue created
         assert mock_pvrs.call_count == 1
-        assert mock_issue.call_count == 1
-        assert len(result.urls) == 1
-        # Fallback issue title is redacted (no finding title leaked)
-        title_arg = mock_issue.call_args[1]["title"]
-        assert "PVRS unavailable" in title_arg
-        assert "details withheld" in title_arg
-        # Body must NOT contain exploit details
-        body_arg = mock_issue.call_args[1]["body"]
-        assert "RCE via deserialization" not in body_arg
-        assert "withheld" in body_arg
+        assert mock_issue.call_count == 0
+        assert len(result.urls) == 0
+        # Local file was written with full details
+        assert len(result.local_files) == 1
+        finding, path = result.local_files[0]
+        assert path.exists()
+        content = path.read_text()
+        assert "RCE via deserialization" in content
+        assert "failed" in content
+        # Notification includes file path and fix suggestion
+        all_calls = [c.args[0] for c in notify.call_args_list]
+        assert any("/fix" in c for c in all_calls)
 
     @patch("app.github.resolve_target_repo", return_value="upstream/repo")
     @patch("app.github.check_pvrs_enabled", return_value=True)
@@ -435,7 +456,7 @@ class TestCreateIssuesPvrsRouting:
     @patch("app.github.security_advisory_report")
     @patch("app.github.issue_create")
     def test_threshold_critical_only(
-        self, mock_issue, mock_pvrs, mock_eco, mock_check, mock_repo,
+        self, mock_issue, mock_pvrs, mock_eco, mock_check, mock_repo, tmp_path,
     ):
         """With threshold='critical', only critical goes to PVRS."""
         mock_pvrs.return_value = "https://github.com/advisory/1"
@@ -444,20 +465,22 @@ class TestCreateIssuesPvrsRouting:
         findings = self._make_findings()
         create_issues(
             findings, "/path/proj", pvrs_threshold="critical",
+            instance_dir=str(tmp_path), project_name="proj",
         )
 
         assert mock_pvrs.call_count == 1  # only critical
-        assert mock_issue.call_count == 3  # high + medium + low
+        # high + medium + low → public issues (critical → local file only)
+        assert mock_issue.call_count == 3
 
     @patch("app.github.resolve_target_repo", return_value="upstream/repo")
     @patch("app.github.check_pvrs_enabled", return_value=True)
     @patch("app.github.detect_ecosystem", return_value="pip")
     @patch("app.github.security_advisory_report")
     @patch("app.github.issue_create")
-    def test_notify_fn_reports_pvrs_channel(
-        self, mock_issue, mock_pvrs, mock_eco, mock_check, mock_repo,
+    def test_notify_fn_reports_pvrs_and_local_file(
+        self, mock_issue, mock_pvrs, mock_eco, mock_check, mock_repo, tmp_path,
     ):
-        """notify_fn should indicate when PVRS is active."""
+        """notify_fn should indicate PVRS status and local file path."""
         mock_pvrs.return_value = "https://github.com/advisory/1"
         mock_issue.return_value = "https://github.com/o/r/issues/1\n"
 
@@ -465,14 +488,16 @@ class TestCreateIssuesPvrsRouting:
         findings = self._make_findings()[:2]  # critical + high
         create_issues(
             findings, "/path/proj", notify_fn=notify,
-            pvrs_threshold="high",
+            pvrs_threshold="high", instance_dir=str(tmp_path),
+            project_name="proj",
         )
 
         all_calls = [c.args[0] for c in notify.call_args_list]
         # Should have PVRS-enabled announcement
         assert any("PVRS enabled" in c for c in all_calls)
-        # Should have PVRS channel markers for findings
-        assert any("PVRS" in c and "1/" in c for c in all_calls)
+        # Should have local file path and fix suggestion
+        assert any("security/proj/" in c for c in all_calls)
+        assert any("/fix" in c for c in all_calls)
 
 
 # ---------------------------------------------------------------------------
@@ -563,10 +588,121 @@ class TestPvrsIntegration:
 
         assert success
         assert "2 findings" in summary
-        # critical → PVRS, medium → public issue
+        # critical → PVRS + local file, medium → public issue
         assert mock_pvrs.call_count == 1
         assert mock_issue.call_count == 1
 
-        # Verify report saved with channel annotation
-        report = (instance_dir / "memory" / "projects" / "proj" / "audit.md").read_text()
-        assert "private" in report  # PVRS finding annotated
+        # Verify local security file written for critical finding
+        security_dir = instance_dir / "security" / "proj"
+        security_files = list(security_dir.glob("*.critical.*.md"))
+        assert len(security_files) == 1
+        content = security_files[0].read_text()
+        assert "SQL injection in login" in content
+        assert "submitted" in content
+
+
+# ---------------------------------------------------------------------------
+# _slugify_finding_title
+# ---------------------------------------------------------------------------
+
+class TestSlugifyFindingTitle:
+    def test_basic(self):
+        assert _slugify_finding_title("SQL Injection in Auth") == "sql-injection-in-auth"
+
+    def test_special_chars(self):
+        assert _slugify_finding_title("XSS via <script> tag") == "xss-via-script-tag"
+
+    def test_truncates_long_titles(self):
+        long_title = "a" * 100
+        assert len(_slugify_finding_title(long_title)) == 60
+
+    def test_strips_leading_trailing_hyphens(self):
+        assert _slugify_finding_title("---hello---") == "hello"
+
+    def test_empty_string(self):
+        assert _slugify_finding_title("") == ""
+
+    def test_unicode(self):
+        assert _slugify_finding_title("Vulnérabilité d'injection") == "vuln-rabilit-d-injection"
+
+
+# ---------------------------------------------------------------------------
+# _write_local_finding
+# ---------------------------------------------------------------------------
+
+class TestWriteLocalFinding:
+    def _make_finding(self):
+        return AuditFinding(
+            title="SQL injection in login",
+            severity="critical",
+            category="injection",
+            location="auth.py:42-48",
+            problem="Direct string concatenation in SQL query",
+            why="Allows authentication bypass",
+            suggested_fix="Use parameterized queries",
+        )
+
+    def test_creates_file_at_expected_path(self, tmp_path):
+        finding = self._make_finding()
+        path = _write_local_finding(finding, "myapp", str(tmp_path))
+
+        assert path.exists()
+        assert path.parent.name == "myapp"
+        assert path.parent.parent.name == "security"
+        assert "critical" in path.name
+        assert "sql-injection-in-login" in path.name
+        assert path.name.endswith(".md")
+
+    def test_file_contains_full_details(self, tmp_path):
+        finding = self._make_finding()
+        path = _write_local_finding(finding, "myapp", str(tmp_path))
+
+        content = path.read_text()
+        assert "# SQL injection in login" in content
+        assert "critical" in content
+        assert "injection" in content
+        assert "`auth.py:42-48`" in content
+        assert "Direct string concatenation" in content
+        assert "Allows authentication bypass" in content
+        assert "Use parameterized queries" in content
+
+    def test_pvrs_status_submitted(self, tmp_path):
+        finding = self._make_finding()
+        path = _write_local_finding(
+            finding, "myapp", str(tmp_path),
+            pvrs_status="submitted",
+            advisory_url="https://github.com/o/r/security/advisories/GHSA-1",
+        )
+        content = path.read_text()
+        assert "submitted" in content
+        assert "GHSA-1" in content
+
+    def test_pvrs_status_failed(self, tmp_path):
+        finding = self._make_finding()
+        path = _write_local_finding(
+            finding, "myapp", str(tmp_path), pvrs_status="failed",
+        )
+        content = path.read_text()
+        assert "failed" in content
+
+    def test_pvrs_status_disabled(self, tmp_path):
+        finding = self._make_finding()
+        path = _write_local_finding(
+            finding, "myapp", str(tmp_path), pvrs_status="disabled",
+        )
+        content = path.read_text()
+        assert "disabled" in content
+
+    def test_creates_directory_structure(self, tmp_path):
+        finding = self._make_finding()
+        _write_local_finding(finding, "new-project", str(tmp_path))
+
+        assert (tmp_path / "security" / "new-project").is_dir()
+
+    def test_idempotent_overwrite(self, tmp_path):
+        finding = self._make_finding()
+        path1 = _write_local_finding(finding, "myapp", str(tmp_path))
+        path2 = _write_local_finding(finding, "myapp", str(tmp_path))
+
+        assert path1 == path2
+        assert path1.exists()
