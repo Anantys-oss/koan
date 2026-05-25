@@ -1215,22 +1215,22 @@ class TestResolveViaForkParent:
         from app.utils import _resolve_via_fork_parent
 
         fake_result = sp.CompletedProcess(
-            args=[], returncode=0, stdout="Anantys-oss/koan\n", stderr=""
+            args=[], returncode=0, stdout="upstream-org/my-toolkit\n", stderr=""
         )
         config = {
             "projects": {
-                "koan": {
-                    "path": "/home/user/koan",
-                    "github_url": "Anantys-oss/koan",
+                "my-toolkit": {
+                    "path": "/home/user/my-toolkit",
+                    "github_url": "upstream-org/my-toolkit",
                 }
             }
         }
         with patch("app.utils.subprocess.run", return_value=fake_result), \
              patch("app.projects_config.load_projects_config", return_value=config):
             result = _resolve_via_fork_parent(
-                "sukria/koan", [("koan", "/home/user/koan")]
+                "contributor/my-toolkit", [("my-toolkit", "/home/user/my-toolkit")]
             )
-        assert result == "/home/user/koan"
+        assert result == "/home/user/my-toolkit"
 
     @patch("app.utils.KOAN_ROOT", Path("/tmp/fake"))
     def test_resolves_fork_via_github_urls(self):
@@ -1333,22 +1333,22 @@ class TestResolveViaForkParent:
         from app.utils import _resolve_via_fork_parent
 
         fake_result = sp.CompletedProcess(
-            args=[], returncode=0, stdout="Anantys-OSS/Koan\n", stderr=""
+            args=[], returncode=0, stdout="Upstream-Org/My-Toolkit\n", stderr=""
         )
         config = {
             "projects": {
-                "koan": {
-                    "path": "/home/user/koan",
-                    "github_url": "anantys-oss/koan",
+                "my-toolkit": {
+                    "path": "/home/user/my-toolkit",
+                    "github_url": "upstream-org/my-toolkit",
                 }
             }
         }
         with patch("app.utils.subprocess.run", return_value=fake_result), \
              patch("app.projects_config.load_projects_config", return_value=config):
             result = _resolve_via_fork_parent(
-                "sukria/koan", [("koan", "/home/user/koan")]
+                "contributor/my-toolkit", [("my-toolkit", "/home/user/my-toolkit")]
             )
-        assert result == "/home/user/koan"
+        assert result == "/home/user/my-toolkit"
 
     @patch("app.utils.KOAN_ROOT", Path("/tmp/fake"))
     def test_falls_back_to_memory_cache(self):

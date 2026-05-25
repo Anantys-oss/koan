@@ -654,7 +654,7 @@ def resolve_project_path(repo_name: str, owner: Optional[str] = None) -> Optiona
     5. Fallback to single project if only one configured
     6. Cross-owner repo-name match (if owner provided): match the repo name
        against the repo component of configured github_url/github_urls.
-       E.g. "sukria/koan" matches a project with github_url "atoomic/koan".
+       E.g. "contributor/repo" matches a project with github_url "org/repo".
        Only used when exactly one project matches (avoids ambiguity).
     7. Fork resolution via GitHub API (if owner provided): ask GitHub whether
        the target repo is a fork and match its parent against known projects.
@@ -727,8 +727,8 @@ def resolve_project_path(repo_name: str, owner: Optional[str] = None) -> Optiona
                 return cpath
 
     # 4. Auto-discover from ALL git remotes (origin, upstream, etc.)
-    #    This catches cross-owner matches: e.g. local origin is atoomic/koan
-    #    but the PR URL points to sukria/koan (the upstream remote).
+    #    This catches cross-owner matches: e.g. local origin is org/repo
+    #    but the PR URL points to contributor/repo (the upstream remote).
     if target:
         for name, path in projects:
             all_remotes = get_all_github_remotes(path)
@@ -740,8 +740,8 @@ def resolve_project_path(repo_name: str, owner: Optional[str] = None) -> Optiona
     if not owner and len(projects) == 1:
         return projects[0][1]
 
-    # 6. Cross-owner repo-name match: e.g. "sukria/koan" matches a project
-    #    whose github_url is "atoomic/koan" — same repo, different owner.
+    # 6. Cross-owner repo-name match: e.g. "contributor/repo" matches a project
+    #    whose github_url is "org/repo" — same repo, different owner.
     #    Only used when exactly one project matches to avoid ambiguity.
     if target:
         repo_lower = repo_name.lower()
