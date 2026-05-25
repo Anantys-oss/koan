@@ -205,6 +205,15 @@ skill_timeout: 7200
 #   cooldown_days: 21           # Min days between diagnostics per project (default: 21)
 #   min_mode: implement         # Minimum autonomous mode required (default: implement)
 
+# Review comment dispatch — auto-create missions when human reviewers
+# leave comments on Koan's open PRs.  Uses fingerprint-based dedup
+# (sorted comment ID hashes) to dispatch only on new/changed comments.
+# State tracked in instance/.review-dispatch-tracker.json.
+# Disabled by default — opt in when you want automatic PR comment follow-up.
+# review_dispatch:
+#   enabled: false                # Master switch (default: false)
+#   cooldown_minutes: 30          # Min minutes between checks per project (default: 30)
+
 # Contemplative mode trigger chance (0-100%)
 # When no mission is pending, this is the probability of running a reflective
 # session instead of autonomous work. Allows regular moments of introspection

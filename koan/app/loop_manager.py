@@ -909,6 +909,21 @@ def process_github_notifications(
         # Check for SSO failures and alert if needed
         _check_sso_failures()
 
+        # Check for new review comments on Koan's open PRs and dispatch
+        # fix missions when the comment fingerprint changes.
+        try:
+            from app.review_comment_dispatch import check_and_dispatch_review_comments
+            review_dispatched = check_and_dispatch_review_comments(
+                instance_dir, koan_root,
+            )
+            if review_dispatched > 0:
+                _github_log(
+                    f"Dispatched {review_dispatched} mission(s) for review comments"
+                )
+                missions_created += review_dispatched
+        except (ImportError, OSError, RuntimeError) as e:
+            log.debug("Review comment dispatch failed: %s", e)
+
         # Update backoff state
         with _github_state_lock:
             if missions_created > 0 or notifications:
