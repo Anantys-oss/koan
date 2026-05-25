@@ -402,6 +402,7 @@ def daily_series(
     start: date,
     end: date,
     project: Optional[str] = None,
+    include_by_project: bool = False,
 ) -> list:
     """Return per-day token breakdown for a date range.
 
@@ -410,11 +411,13 @@ def daily_series(
         start: Start date (inclusive).
         end: End date (inclusive).
         project: Optional project name to filter by.
+        include_by_project: If True, embed per-project breakdown in each entry.
 
     Returns:
         List of dicts, one per day: {date, total_input, total_output, count, cost,
         cache_read_input_tokens, cache_creation_input_tokens, cache_hit_rate}.
         cost is a float (USD) when pricing is configured, otherwise None.
+        When include_by_project=True, each entry also has a by_project dict.
     """
     usage_dir = Path(instance_dir) / "usage"
     pricing = get_pricing_config()
@@ -441,7 +444,7 @@ def daily_series(
                     total_cost += c
             cost = total_cost
 
-        result.append({
+        entry = {
             "date": current.isoformat(),
             "total_input": day_summary["total_input"],
             "total_output": day_summary["total_output"],
@@ -450,7 +453,17 @@ def daily_series(
             "cache_hit_rate": day_summary["cache_hit_rate"],
             "count": day_summary["count"],
             "cost": cost,
-        })
+        }
+        if include_by_project:
+            entry["by_project"] = {
+                proj: {
+                    "total_input": pdata["input_tokens"],
+                    "total_output": pdata["output_tokens"],
+                    "count": pdata["count"],
+                }
+                for proj, pdata in day_summary["by_project"].items()
+            }
+        result.append(entry)
         current += timedelta(days=1)
     return result
 

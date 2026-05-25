@@ -20,6 +20,20 @@
 .chart-container { position: relative; width: 100%; }
 .empty-state { color: var(--text-muted); font-style: italic; padding: 1rem 0; text-align: center; }
 .filter-bar { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 1rem; }
+.nav-btn {
+    padding: 0.3rem 0.7rem;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.85rem;
+}
+.nav-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.nav-btn:not(:disabled):hover { background: var(--border); }
+.sortable-header { cursor: pointer; user-select: none; }
+.sortable-header:hover { color: var(--text); }
+.sort-indicator { font-size: 0.7rem; margin-left: 0.2rem; }
 </style>
 
 <h1>Usage</h1>
@@ -30,6 +44,14 @@
         <option value="7" selected>Last 7 days</option>
         <option value="30">Last 30 days</option>
     </select>
+    <select id="granularity-select" style="padding:0.4rem;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;">
+        <option value="day" selected>By day</option>
+        <option value="week">By week</option>
+        <option value="month">By month</option>
+    </select>
+    <button class="nav-btn" id="prev-btn">&#8592; Prev</button>
+    <span id="window-label" style="font-size:0.85rem;color:var(--text-muted);"></span>
+    <button class="nav-btn" id="next-btn" disabled>Next &#8594;</button>
     <span id="filter-label" style="display:none;color:var(--text-muted);font-size:0.85rem;">
         Filtering: <strong id="filter-project"></strong>
         <a href="#" id="clear-filter" style="color:var(--accent);margin-left:0.5rem;">clear</a>
@@ -59,12 +81,20 @@
     </div>
 </div>
 
-<h2>Daily Token Spend</h2>
+<h2>Token Spend</h2>
 <div class="card">
     <div class="chart-container" style="height:260px;">
         <canvas id="daily-chart"></canvas>
     </div>
     <div class="empty-state" id="daily-empty" style="display:none;">No usage data for this period.</div>
+</div>
+
+<h2>Spend by Project</h2>
+<div class="card">
+    <div class="chart-container" style="height:260px;">
+        <canvas id="stacked-chart"></canvas>
+    </div>
+    <div class="empty-state" id="stacked-empty" style="display:none;">No project data for this period.</div>
 </div>
 
 <h2>Mission Outcomes</h2>
@@ -74,6 +104,28 @@
     </div>
     <div id="outcome-legend" style="font-size:0.85rem;"></div>
     <div class="empty-state" id="outcome-empty" style="display:none;width:100%;">No mission data available.</div>
+</div>
+
+<h2>Mission Types</h2>
+<div class="card" style="display:flex;align-items:flex-start;gap:2rem;flex-wrap:wrap;">
+    <div style="flex:0 0 200px;">
+        <div class="chart-container" style="width:200px;height:200px;">
+            <canvas id="type-chart"></canvas>
+        </div>
+        <div class="empty-state" id="type-empty" style="display:none;">No type data.</div>
+    </div>
+    <div style="flex:1;min-width:280px;">
+        <table id="by-type-table" style="width:100%;border-collapse:collapse;font-family:var(--mono);font-size:0.85rem;">
+            <thead id="by-type-thead">
+                <tr style="color:var(--text-muted);text-align:left;">
+                    <th class="sortable-header" data-col="type" style="padding:0.5rem 0;">Type <span class="sort-indicator">&#8597;</span></th>
+                    <th class="sortable-header" data-col="total" style="padding:0.5rem 0;text-align:right;">Total <span class="sort-indicator">&#8597;</span></th>
+                </tr>
+            </thead>
+            <tbody id="by-type-tbody"></tbody>
+        </table>
+        <div class="empty-state" id="type-table-empty" style="display:none;">No type data available.</div>
+    </div>
 </div>
 
 <h2>By Project</h2>
@@ -112,8 +164,32 @@
 
 <script>
 let dailyChart = null;
+let stackedChart = null;
 let outcomeChart = null;
+let typeChart = null;
 let currentProject = '';
+let windowOffset = 0;
+
+// Project colour palette (consistent across charts)
+const PROJECT_COLORS = [
+    'rgba(88,166,255,0.8)',
+    'rgba(63,185,80,0.8)',
+    'rgba(210,153,34,0.8)',
+    'rgba(248,81,73,0.8)',
+    'rgba(188,140,255,0.8)',
+    'rgba(255,168,87,0.8)',
+    'rgba(87,220,188,0.8)',
+    'rgba(255,107,139,0.8)',
+];
+const _projectColorMap = {};
+let _colorIdx = 0;
+function projectColor(name) {
+    if (!_projectColorMap[name]) {
+        _projectColorMap[name] = PROJECT_COLORS[_colorIdx % PROJECT_COLORS.length];
+        _colorIdx++;
+    }
+    return _projectColorMap[name];
+}
 
 function fmtTokens(n) {
     if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
@@ -129,9 +205,15 @@ function shortModel(id) {
 }
 
 function trendBadge(trend) {
-    const symbols = {improving: '\u2191', declining: '\u2193', stable: '\u2192'};
+    const symbols = {improving: '↑', declining: '↓', stable: '→'};
     const cls = 'trend-' + (trend || 'stable');
-    return '<span class="trend-badge ' + cls + '">' + (symbols[trend] || '\u2192') + ' ' + (trend || 'stable') + '</span>';
+    return '<span class="trend-badge ' + cls + '">' + (symbols[trend] || '→') + ' ' + (trend || 'stable') + '</span>';
+}
+
+function seriesLabel(entry, granularity) {
+    if (granularity === 'week') return entry.week || entry.date.slice(5);
+    if (granularity === 'month') return entry.month || entry.date.slice(0, 7);
+    return entry.date.slice(5); // MM-DD
 }
 
 function setProjectFilter(project) {
@@ -140,18 +222,27 @@ function setProjectFilter(project) {
     if (project) {
         document.getElementById('filter-project').textContent = project;
         label.style.display = '';
-        history.replaceState(null, '', '?project=' + encodeURIComponent(project));
     } else {
         label.style.display = 'none';
-        history.replaceState(null, '', location.pathname);
     }
+    updateURL();
     loadAll();
 }
 
-function renderDailyChart(daily, hasPricing) {
+function updateURL() {
+    const params = new URLSearchParams();
+    if (currentProject) params.set('project', currentProject);
+    if (windowOffset > 0) params.set('offset', windowOffset);
+    const granularity = document.getElementById('granularity-select').value;
+    if (granularity !== 'day') params.set('granularity', granularity);
+    const str = params.toString();
+    history.replaceState(null, '', str ? '?' + str : location.pathname);
+}
+
+function renderDailyChart(series, hasPricing, granularity) {
     const canvas = document.getElementById('daily-chart');
     const emptyEl = document.getElementById('daily-empty');
-    const hasData = daily.some(d => d.total_input > 0 || d.total_output > 0);
+    const hasData = series.some(d => d.total_input > 0 || d.total_output > 0);
 
     if (!hasData) {
         canvas.style.display = 'none';
@@ -162,38 +253,38 @@ function renderDailyChart(daily, hasPricing) {
     canvas.style.display = '';
     emptyEl.style.display = 'none';
 
-    const labels = daily.map(d => d.date.slice(5)); // MM-DD
+    const labels = series.map(d => seriesLabel(d, granularity));
     const datasets = [
         {
             label: 'Input',
-            data: daily.map(d => d.total_input),
+            data: series.map(d => d.total_input),
             backgroundColor: 'rgba(88,166,255,0.7)',
             stack: 'tokens',
         },
         {
             label: 'Output',
-            data: daily.map(d => d.total_output),
+            data: series.map(d => d.total_output),
             backgroundColor: 'rgba(63,185,80,0.7)',
             stack: 'tokens',
         },
         {
             label: 'Cache Read',
-            data: daily.map(d => d.cache_read_input_tokens || 0),
+            data: series.map(d => d.cache_read_input_tokens || 0),
             backgroundColor: 'rgba(210,153,34,0.7)',
             stack: 'tokens',
         },
         {
             label: 'Cache Create',
-            data: daily.map(d => d.cache_creation_input_tokens || 0),
+            data: series.map(d => d.cache_creation_input_tokens || 0),
             backgroundColor: 'rgba(248,81,73,0.55)',
             stack: 'tokens',
         },
     ];
 
-    if (hasPricing && daily.some(d => d.cost !== null)) {
+    if (hasPricing && series.some(d => d.cost !== null)) {
         datasets.push({
             label: 'Cost ($)',
-            data: daily.map(d => d.cost),
+            data: series.map(d => d.cost),
             type: 'line',
             borderColor: 'rgba(210,153,34,0.9)',
             backgroundColor: 'transparent',
@@ -218,13 +309,65 @@ function renderDailyChart(daily, hasPricing) {
                     ticks: {color: '#8b949e', callback: v => fmtTokens(v)},
                     grid: {color: 'rgba(48,54,61,0.5)'},
                 },
-                ...(hasPricing && daily.some(d => d.cost !== null) ? {
+                ...(hasPricing && series.some(d => d.cost !== null) ? {
                     cost: {
                         position: 'right',
                         ticks: {color: '#d29922', callback: v => '$' + v.toFixed(2)},
                         grid: {drawOnChartArea: false},
                     }
                 } : {}),
+            },
+        },
+    });
+}
+
+function renderStackedChart(series, granularity) {
+    const canvas = document.getElementById('stacked-chart');
+    const emptyEl = document.getElementById('stacked-empty');
+
+    // Collect all project names across all series entries
+    const projectSet = new Set();
+    series.forEach(entry => {
+        if (entry.by_project) Object.keys(entry.by_project).forEach(p => projectSet.add(p));
+    });
+    const projects = Array.from(projectSet);
+
+    const hasData = projects.length > 0 && series.some(e => e.by_project && Object.keys(e.by_project).length > 0);
+    if (!hasData) {
+        canvas.style.display = 'none';
+        emptyEl.style.display = '';
+        if (stackedChart) { stackedChart.destroy(); stackedChart = null; }
+        return;
+    }
+    canvas.style.display = '';
+    emptyEl.style.display = 'none';
+
+    const labels = series.map(d => seriesLabel(d, granularity));
+    const datasets = projects.map(proj => ({
+        label: proj,
+        data: series.map(e => {
+            const bp = e.by_project && e.by_project[proj];
+            return bp ? (bp.total_input + bp.total_output) : 0;
+        }),
+        backgroundColor: projectColor(proj),
+        stack: 'projects',
+    }));
+
+    if (stackedChart) stackedChart.destroy();
+    stackedChart = new Chart(canvas, {
+        type: 'bar',
+        data: {labels, datasets},
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {legend: {labels: {color: '#8b949e'}}},
+            scales: {
+                x: {ticks: {color: '#8b949e'}, grid: {color: 'rgba(48,54,61,0.5)'}},
+                y: {
+                    stacked: true,
+                    ticks: {color: '#8b949e', callback: v => fmtTokens(v)},
+                    grid: {color: 'rgba(48,54,61,0.5)'},
+                },
             },
         },
     });
@@ -278,12 +421,111 @@ function renderOutcomeChart(metrics) {
     });
 }
 
+function renderTypeChart(byType) {
+    const canvas = document.getElementById('type-chart');
+    const emptyEl = document.getElementById('type-empty');
+    const tableEmptyEl = document.getElementById('type-table-empty');
+    const tbody = document.getElementById('by-type-tbody');
+
+    if (!byType || Object.keys(byType).length === 0) {
+        canvas.style.display = 'none';
+        emptyEl.style.display = '';
+        tbody.innerHTML = '';
+        tableEmptyEl.style.display = '';
+        if (typeChart) { typeChart.destroy(); typeChart = null; }
+        return;
+    }
+    canvas.style.display = '';
+    emptyEl.style.display = 'none';
+    tableEmptyEl.style.display = 'none';
+
+    const entries = Object.entries(byType)
+        .sort((a, b) => (b[1].input_tokens + b[1].output_tokens) - (a[1].input_tokens + a[1].output_tokens));
+    const labels = entries.map(([k]) => k);
+    const values = entries.map(([, v]) => v.input_tokens + v.output_tokens);
+    const typeColors = entries.map((_, i) => PROJECT_COLORS[i % PROJECT_COLORS.length]);
+
+    if (typeChart) typeChart.destroy();
+    typeChart = new Chart(canvas, {
+        type: 'doughnut',
+        data: {labels, datasets: [{data: values, backgroundColor: typeColors, borderWidth: 0}]},
+        options: {
+            responsive: true,
+            maintainAspectRatio: true,
+            plugins: {legend: {display: false}},
+            cutout: '55%',
+        },
+    });
+
+    // Render breakdown table
+    tbody.innerHTML = '';
+    for (const [typeName, typeData] of entries) {
+        const total = typeData.input_tokens + typeData.output_tokens;
+        tbody.innerHTML += '<tr style="border-top:1px solid var(--border);">' +
+            '<td style="padding:0.4rem 0;">' + typeName + '</td>' +
+            '<td style="padding:0.4rem 0;text-align:right;">' + fmtTokens(total) + '</td>' +
+            '</tr>';
+    }
+}
+
+// Type table sort state
+let typeSortCol = 'total';
+let typeSortAsc = false;
+
+function initTypeSortHandlers() {
+    document.querySelectorAll('#by-type-thead .sortable-header').forEach(th => {
+        th.addEventListener('click', () => {
+            const col = th.dataset.col;
+            if (typeSortCol === col) {
+                typeSortAsc = !typeSortAsc;
+            } else {
+                typeSortCol = col;
+                typeSortAsc = col === 'type';
+            }
+            resortTypeTable();
+        });
+    });
+}
+
+function resortTypeTable() {
+    const tbody = document.getElementById('by-type-tbody');
+    const rows = Array.from(tbody.querySelectorAll('tr'));
+    rows.sort((a, b) => {
+        const cells = [a, b].map(r => r.querySelectorAll('td'));
+        if (typeSortCol === 'type') {
+            const va = cells[0][0] ? cells[0][0].textContent : '';
+            const vb = cells[1][0] ? cells[1][0].textContent : '';
+            return typeSortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
+        }
+        // total column — parse display value back to number
+        const parseVal = txt => {
+            if (txt.endsWith('M')) return parseFloat(txt) * 1e6;
+            if (txt.endsWith('k')) return parseFloat(txt) * 1e3;
+            return parseFloat(txt) || 0;
+        };
+        const va = cells[0][1] ? parseVal(cells[0][1].textContent) : 0;
+        const vb = cells[1][1] ? parseVal(cells[1][1].textContent) : 0;
+        return typeSortAsc ? va - vb : vb - va;
+    });
+    rows.forEach(r => tbody.appendChild(r));
+}
+
 function loadAll() {
     const days = document.getElementById('range-select').value;
+    const granularity = document.getElementById('granularity-select').value;
     const projParam = currentProject ? '&project=' + encodeURIComponent(currentProject) : '';
+    const offsetParam = windowOffset > 0 ? '&offset=' + windowOffset : '';
+    const granularityParam = granularity !== 'day' ? '&granularity=' + granularity : '';
 
-    // Fetch usage data
-    fetch('/api/usage?days=' + days + projParam)
+    // Update Next button state
+    document.getElementById('next-btn').disabled = windowOffset === 0;
+
+    // Update window label
+    const labelEl = document.getElementById('window-label');
+    labelEl.textContent = windowOffset > 0 ? 'offset: ' + windowOffset : '';
+
+    // Fetch usage data with stacked=true for per-project chart
+    fetch('/api/usage?days=' + days + projParam + offsetParam + granularityParam + '&stacked=true&groupby=type')
         .then(r => r.json())
         .then(data => {
             document.getElementById('total-tokens').textContent =
@@ -312,8 +554,19 @@ function loadAll() {
                 savingsCard.style.display = 'none';
             }
 
-            // Daily chart
-            renderDailyChart(data.daily || [], data.has_pricing);
+            // Token spend chart
+            renderDailyChart(data.series || [], data.has_pricing, data.granularity || 'day');
+
+            // Stacked by-project chart
+            renderStackedChart(data.series || [], data.granularity || 'day');
+
+            // Mission type donut + table
+            renderTypeChart(data.by_type || {});
+
+            // Update window label with actual date range
+            if (data.start && data.end) {
+                labelEl.textContent = data.start + ' — ' + data.end;
+            }
 
             // By project table
             const pTbody = document.querySelector('#by-project tbody');
@@ -367,7 +620,7 @@ function loadAll() {
         .catch(() => {});
 
     // Fetch metrics data (for outcome chart and project trends)
-    fetch('/api/metrics?days=' + days + projParam)
+    fetch('/api/metrics?days=' + days + projParam + offsetParam)
         .then(r => r.json())
         .then(metrics => {
             renderOutcomeChart(metrics);
@@ -391,19 +644,55 @@ function loadAll() {
         .catch(() => {});
 }
 
-document.getElementById('range-select').addEventListener('change', () => loadAll());
+document.getElementById('range-select').addEventListener('change', () => {
+    windowOffset = 0;
+    updateURL();
+    loadAll();
+});
+
+document.getElementById('granularity-select').addEventListener('change', () => {
+    windowOffset = 0;
+    updateURL();
+    loadAll();
+});
+
+document.getElementById('prev-btn').addEventListener('click', () => {
+    windowOffset++;
+    updateURL();
+    loadAll();
+});
+
+document.getElementById('next-btn').addEventListener('click', () => {
+    if (windowOffset > 0) {
+        windowOffset--;
+        updateURL();
+        loadAll();
+    }
+});
+
 document.getElementById('clear-filter').addEventListener('click', e => {
     e.preventDefault();
     setProjectFilter('');
 });
 
-// Init from URL param
+// Init from URL params
 const params = new URLSearchParams(location.search);
 if (params.get('project')) {
     currentProject = params.get('project');
     document.getElementById('filter-project').textContent = currentProject;
     document.getElementById('filter-label').style.display = '';
 }
+if (params.get('offset')) {
+    windowOffset = Math.max(0, parseInt(params.get('offset')) || 0);
+}
+if (params.get('granularity')) {
+    const g = params.get('granularity');
+    if (['day', 'week', 'month'].includes(g)) {
+        document.getElementById('granularity-select').value = g;
+    }
+}
+
+initTypeSortHandlers();
 loadAll();
 </script>
 {% endblock %}

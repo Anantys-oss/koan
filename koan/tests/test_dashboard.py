@@ -190,7 +190,8 @@ class TestUsageApi:
         assert data["cache_read_input_tokens"] == 1200
         assert data["cache_hit_rate"] == pytest.approx(0.48)
         assert data["estimated_cache_savings"] == pytest.approx(0.00324)
-        assert data["daily"][0]["cache_read_input_tokens"] == 1200
+        assert data["series"][0]["cache_read_input_tokens"] == 1200
+        assert "daily" not in data
 
     def test_api_usage_without_pricing_returns_null_cache_savings(self, app_client):
         fake_summary = {
@@ -212,6 +213,189 @@ class TestUsageApi:
         data = resp.get_json()
         assert data["has_pricing"] is False
         assert data["estimated_cache_savings"] is None
+
+    def test_api_usage_groupby_type_returns_by_type(self, app_client):
+        fake_summary = {
+            "total_input": 500,
+            "total_output": 200,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_hit_rate": 0.0,
+            "count": 2,
+            "by_project": {},
+            "by_model": {},
+            "by_type": {
+                "implement": {"input_tokens": 300, "output_tokens": 150, "total_cost_usd": 0.01, "count": 1},
+                "review": {"input_tokens": 200, "output_tokens": 50, "total_cost_usd": 0.005, "count": 1},
+            },
+            "by_project_and_type": {},
+        }
+        with patch("app.cost_tracker.summarize_range", return_value=fake_summary), \
+             patch("app.cost_tracker.get_pricing_config", return_value=None), \
+             patch("app.cost_tracker.estimate_cache_savings", return_value=None), \
+             patch("app.cost_tracker.daily_series", return_value=[]):
+            resp = app_client.get("/api/usage?days=7&groupby=type")
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "by_type" in data
+        assert "implement" in data["by_type"]
+        assert "review" in data["by_type"]
+        assert data["by_type"]["implement"]["count"] == 1
+
+    def test_api_usage_groupby_type_absent_without_param(self, app_client):
+        fake_summary = {
+            "total_input": 0, "total_output": 0,
+            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+            "cache_hit_rate": 0.0, "count": 0,
+            "by_project": {}, "by_model": {},
+            "by_type": {"implement": {"count": 1}},
+            "by_project_and_type": {},
+        }
+        with patch("app.cost_tracker.summarize_range", return_value=fake_summary), \
+             patch("app.cost_tracker.get_pricing_config", return_value=None), \
+             patch("app.cost_tracker.estimate_cache_savings", return_value=None), \
+             patch("app.cost_tracker.daily_series", return_value=[]):
+            resp = app_client.get("/api/usage?days=7")
+
+        data = resp.get_json()
+        assert "by_type" not in data
+
+    def test_api_usage_granularity_week_buckets_series(self, app_client):
+        fake_daily = [
+            {"date": "2026-05-18", "total_input": 100, "total_output": 50,
+             "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+             "cache_hit_rate": 0.0, "count": 1, "cost": None},
+            {"date": "2026-05-19", "total_input": 200, "total_output": 80,
+             "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+             "cache_hit_rate": 0.0, "count": 2, "cost": None},
+            {"date": "2026-05-25", "total_input": 300, "total_output": 100,
+             "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+             "cache_hit_rate": 0.0, "count": 1, "cost": None},
+        ]
+        fake_summary = {
+            "total_input": 600, "total_output": 230,
+            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+            "cache_hit_rate": 0.0, "count": 4,
+            "by_project": {}, "by_model": {},
+        }
+        with patch("app.cost_tracker.summarize_range", return_value=fake_summary), \
+             patch("app.cost_tracker.get_pricing_config", return_value=None), \
+             patch("app.cost_tracker.estimate_cache_savings", return_value=None), \
+             patch("app.cost_tracker.daily_series", return_value=fake_daily):
+            resp = app_client.get("/api/usage?days=14&granularity=week")
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["granularity"] == "week"
+        # 2026-05-18 and 2026-05-19 are in ISO week 2026-W21;
+        # 2026-05-25 is in ISO week 2026-W22
+        assert len(data["series"]) == 2
+        w21 = next(e for e in data["series"] if "W21" in e["week"])
+        assert w21["total_input"] == 300  # 100 + 200
+        assert w21["count"] == 3
+
+    def test_api_usage_granularity_month_buckets_series(self, app_client):
+        fake_daily = [
+            {"date": "2026-04-30", "total_input": 100, "total_output": 50,
+             "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+             "cache_hit_rate": 0.0, "count": 1, "cost": None},
+            {"date": "2026-05-01", "total_input": 200, "total_output": 80,
+             "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+             "cache_hit_rate": 0.0, "count": 2, "cost": None},
+        ]
+        fake_summary = {
+            "total_input": 300, "total_output": 130,
+            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+            "cache_hit_rate": 0.0, "count": 3,
+            "by_project": {}, "by_model": {},
+        }
+        with patch("app.cost_tracker.summarize_range", return_value=fake_summary), \
+             patch("app.cost_tracker.get_pricing_config", return_value=None), \
+             patch("app.cost_tracker.estimate_cache_savings", return_value=None), \
+             patch("app.cost_tracker.daily_series", return_value=fake_daily):
+            resp = app_client.get("/api/usage?days=30&granularity=month")
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["granularity"] == "month"
+        assert len(data["series"]) == 2
+        apr = next(e for e in data["series"] if e["month"] == "2026-04")
+        may = next(e for e in data["series"] if e["month"] == "2026-05")
+        assert apr["total_input"] == 100
+        assert may["total_input"] == 200
+
+    def test_api_usage_stacked_embeds_by_project(self, app_client):
+        fake_daily = [
+            {"date": "2026-05-25", "total_input": 500, "total_output": 200,
+             "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+             "cache_hit_rate": 0.0, "count": 2, "cost": None,
+             "by_project": {
+                 "koan": {"total_input": 300, "total_output": 100, "count": 1},
+                 "other": {"total_input": 200, "total_output": 100, "count": 1},
+             }},
+        ]
+        fake_summary = {
+            "total_input": 500, "total_output": 200,
+            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+            "cache_hit_rate": 0.0, "count": 2,
+            "by_project": {}, "by_model": {},
+        }
+        with patch("app.cost_tracker.summarize_range", return_value=fake_summary), \
+             patch("app.cost_tracker.get_pricing_config", return_value=None), \
+             patch("app.cost_tracker.estimate_cache_savings", return_value=None), \
+             patch("app.cost_tracker.daily_series", return_value=fake_daily):
+            resp = app_client.get("/api/usage?days=7&stacked=true")
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "by_project" in data["series"][0]
+        assert "koan" in data["series"][0]["by_project"]
+
+    def test_api_usage_stacked_false_no_by_project_in_series(self, app_client):
+        fake_daily = [
+            {"date": "2026-05-25", "total_input": 100, "total_output": 50,
+             "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+             "cache_hit_rate": 0.0, "count": 1, "cost": None},
+        ]
+        fake_summary = {
+            "total_input": 100, "total_output": 50,
+            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+            "cache_hit_rate": 0.0, "count": 1,
+            "by_project": {}, "by_model": {},
+        }
+        with patch("app.cost_tracker.summarize_range", return_value=fake_summary), \
+             patch("app.cost_tracker.get_pricing_config", return_value=None), \
+             patch("app.cost_tracker.estimate_cache_savings", return_value=None), \
+             patch("app.cost_tracker.daily_series", return_value=fake_daily):
+            resp = app_client.get("/api/usage?days=7")
+
+        data = resp.get_json()
+        assert "by_project" not in data["series"][0]
+
+    def test_api_usage_offset_shifts_window(self, app_client):
+        """offset=1 with day granularity shifts end date back by days."""
+        fake_summary = {
+            "total_input": 0, "total_output": 0,
+            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+            "cache_hit_rate": 0.0, "count": 0,
+            "by_project": {}, "by_model": {},
+        }
+        with patch("app.cost_tracker.summarize_range", return_value=fake_summary) as mock_sr, \
+             patch("app.cost_tracker.get_pricing_config", return_value=None), \
+             patch("app.cost_tracker.estimate_cache_savings", return_value=None), \
+             patch("app.cost_tracker.daily_series", return_value=[]):
+            resp0 = app_client.get("/api/usage?days=7&offset=0")
+            resp1 = app_client.get("/api/usage?days=7&offset=1")
+
+        data0 = resp0.get_json()
+        data1 = resp1.get_json()
+        # offset=1 end date is 7 days before offset=0 end date
+        from datetime import date as _date, timedelta as _td
+        end0 = _date.fromisoformat(data0["end"])
+        end1 = _date.fromisoformat(data1["end"])
+        assert end0 - end1 == _td(days=7)
+        assert data1["offset"] == 1
 
 
 class TestSignals:
