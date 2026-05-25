@@ -583,3 +583,249 @@ class TestTimeBreakdowns:
         assert "Today:" not in result
         # "This week:" should also be absent for data from 20 days ago
         assert "This week:" not in result
+
+
+# ---------------------------------------------------------------------------
+# Tests: Flag parsing
+# ---------------------------------------------------------------------------
+
+class TestFlagParsing:
+    def test_no_flags_defaults_to_week(self):
+        from skills.core.stats.handler import _parse_args
+        days, project = _parse_args("")
+        assert days == 7
+        assert project == ""
+
+    def test_week_flag(self):
+        from skills.core.stats.handler import _parse_args
+        days, project = _parse_args("--week")
+        assert days == 7
+        assert project == ""
+
+    def test_month_flag(self):
+        from skills.core.stats.handler import _parse_args
+        days, project = _parse_args("--month")
+        assert days == 30
+        assert project == ""
+
+    def test_week_then_month_last_wins(self):
+        from skills.core.stats.handler import _parse_args
+        days, project = _parse_args("--week --month")
+        assert days == 30
+
+    def test_month_then_week_last_wins(self):
+        from skills.core.stats.handler import _parse_args
+        days, project = _parse_args("--month --week")
+        assert days == 7
+
+    def test_week_with_project(self):
+        from skills.core.stats.handler import _parse_args
+        days, project = _parse_args("--week koan")
+        assert days == 7
+        assert project == "koan"
+
+    def test_month_with_project(self):
+        from skills.core.stats.handler import _parse_args
+        days, project = _parse_args("--month koan")
+        assert days == 30
+        assert project == "koan"
+
+    def test_project_only(self):
+        from skills.core.stats.handler import _parse_args
+        days, project = _parse_args("koan")
+        assert days == 7
+        assert project == "koan"
+
+
+# ---------------------------------------------------------------------------
+# Tests: Token overview section
+# ---------------------------------------------------------------------------
+
+class TestTokenOverview:
+    def test_token_block_present_when_data_exists(self, tmp_path):
+        ctx = _make_ctx(tmp_path)
+        outcomes = [_make_outcome(outcome="productive", hours_ago=1)]
+        _write_outcomes(ctx.instance_dir, outcomes)
+
+        by_project = {
+            "alpha": {"input_tokens": 5000, "output_tokens": 1000, "count": 2},
+            "beta":  {"input_tokens": 3000, "output_tokens": 500,  "count": 1},
+            "gamma": {"input_tokens": 1000, "output_tokens": 200,  "count": 1},
+        }
+        with patch("app.cost_tracker.summarize_by_project", return_value=by_project), \
+             patch("app.cost_tracker.get_pricing_config", return_value=None):
+            from skills.core.stats import handler as h
+            import importlib
+            importlib.reload(h)
+            result = h.handle(ctx)
+
+        assert "Token spend" in result
+        assert "alpha" in result
+
+    def test_token_block_absent_when_empty(self, tmp_path):
+        ctx = _make_ctx(tmp_path)
+        outcomes = [_make_outcome(outcome="productive", hours_ago=1)]
+        _write_outcomes(ctx.instance_dir, outcomes)
+
+        with patch("app.cost_tracker.summarize_by_project", return_value={}), \
+             patch("app.cost_tracker.get_pricing_config", return_value=None):
+            from skills.core.stats import handler as h
+            import importlib
+            importlib.reload(h)
+            result = h.handle(ctx)
+
+        assert "Token spend" not in result
+
+    def test_token_block_caps_at_10_rows(self, tmp_path):
+        ctx = _make_ctx(tmp_path)
+        outcomes = [_make_outcome(outcome="productive", hours_ago=1)]
+        _write_outcomes(ctx.instance_dir, outcomes)
+
+        by_project = {
+            f"proj{i}": {"input_tokens": (12 - i) * 1000, "output_tokens": 100, "count": 1}
+            for i in range(12)
+        }
+        with patch("app.cost_tracker.summarize_by_project", return_value=by_project), \
+             patch("app.cost_tracker.get_pricing_config", return_value=None):
+            from skills.core.stats import handler as h
+            import importlib
+            importlib.reload(h)
+            result = h.handle(ctx)
+
+        assert "(+2 more)" in result
+
+    def test_no_cost_column_without_pricing(self, tmp_path):
+        ctx = _make_ctx(tmp_path)
+        outcomes = [_make_outcome(outcome="productive", hours_ago=1)]
+        _write_outcomes(ctx.instance_dir, outcomes)
+
+        by_project = {"alpha": {"input_tokens": 5000, "output_tokens": 1000, "count": 1}}
+        with patch("app.cost_tracker.summarize_by_project", return_value=by_project), \
+             patch("app.cost_tracker.get_pricing_config", return_value=None):
+            from skills.core.stats import handler as h
+            import importlib
+            importlib.reload(h)
+            result = h.handle(ctx)
+
+        assert "cost($)" not in result
+
+    def test_cost_column_present_with_pricing(self, tmp_path):
+        ctx = _make_ctx(tmp_path)
+        outcomes = [_make_outcome(outcome="productive", hours_ago=1)]
+        _write_outcomes(ctx.instance_dir, outcomes)
+
+        by_project = {"alpha": {"input_tokens": 5000, "output_tokens": 1000, "count": 1}}
+        pricing = {"sonnet": {"input": 3.0, "output": 15.0}}
+        with patch("app.cost_tracker.summarize_by_project", return_value=by_project), \
+             patch("app.cost_tracker.get_pricing_config", return_value=pricing):
+            from skills.core.stats import handler as h
+            import importlib
+            importlib.reload(h)
+            result = h.handle(ctx)
+
+        assert "cost($)" in result
+
+
+# ---------------------------------------------------------------------------
+# Tests: Type breakdown in project detail
+# ---------------------------------------------------------------------------
+
+class TestTypeBreakdown:
+    def test_type_block_present_when_data_exists(self, tmp_path):
+        ctx = _make_ctx(tmp_path, args="koan")
+        outcomes = [_make_outcome(outcome="productive", hours_ago=1)]
+        _write_outcomes(ctx.instance_dir, outcomes)
+
+        by_project_and_type = {
+            "koan": {
+                "implement": {"input_tokens": 5000, "output_tokens": 1000, "total_cost_usd": 0.0, "count": 3},
+                "review":    {"input_tokens": 2000, "output_tokens": 500,  "total_cost_usd": 0.0, "count": 2},
+            }
+        }
+        with patch("app.cost_tracker.summarize_by_project_and_type", return_value=by_project_and_type), \
+             patch("app.cost_tracker.get_pricing_config", return_value=None), \
+             patch("app.cost_tracker.summarize_by_project", return_value={}):
+            from skills.core.stats import handler as h
+            import importlib
+            importlib.reload(h)
+            result = h.handle(ctx)
+
+        assert "Tokens by type" in result
+        assert "implement" in result
+        assert "review" in result
+
+    def test_type_block_absent_when_no_data(self, tmp_path):
+        ctx = _make_ctx(tmp_path, args="koan")
+        outcomes = [_make_outcome(outcome="productive", hours_ago=1)]
+        _write_outcomes(ctx.instance_dir, outcomes)
+
+        with patch("app.cost_tracker.summarize_by_project_and_type", return_value={}), \
+             patch("app.cost_tracker.get_pricing_config", return_value=None), \
+             patch("app.cost_tracker.summarize_by_project", return_value={}):
+            from skills.core.stats import handler as h
+            import importlib
+            importlib.reload(h)
+            result = h.handle(ctx)
+
+        assert "Tokens by type" not in result
+
+    def test_type_block_case_insensitive_project_match(self, tmp_path):
+        ctx = _make_ctx(tmp_path, args="Koan")
+        outcomes = [
+            _make_outcome(project="koan", outcome="productive", hours_ago=1),
+        ]
+        _write_outcomes(ctx.instance_dir, outcomes)
+
+        by_project_and_type = {
+            "koan": {
+                "implement": {"input_tokens": 5000, "output_tokens": 1000, "total_cost_usd": 0.0, "count": 3},
+            }
+        }
+        with patch("app.cost_tracker.summarize_by_project_and_type", return_value=by_project_and_type), \
+             patch("app.cost_tracker.get_pricing_config", return_value=None), \
+             patch("app.cost_tracker.summarize_by_project", return_value={}):
+            from skills.core.stats import handler as h
+            import importlib
+            importlib.reload(h)
+            result = h.handle(ctx)
+
+        assert "Tokens by type" in result
+
+
+# ---------------------------------------------------------------------------
+# Tests: --month flag expands session window
+# ---------------------------------------------------------------------------
+
+class TestMonthFlag:
+    def test_month_includes_older_sessions(self, tmp_path):
+        ctx = _make_ctx(tmp_path, args="--month")
+        # 25-day-old session — outside 7-day window, inside 30-day window
+        old_ts = (datetime.now() - timedelta(days=25)).isoformat(timespec="seconds")
+        outcomes = [
+            {"timestamp": old_ts, "project": "koan", "mode": "implement",
+             "duration_minutes": 10, "outcome": "productive", "summary": "old work"},
+        ]
+        _write_outcomes(ctx.instance_dir, outcomes)
+        with patch("app.cost_tracker.summarize_by_project", return_value={}), \
+             patch("app.cost_tracker.get_pricing_config", return_value=None):
+            from skills.core.stats import handler as h
+            import importlib
+            importlib.reload(h)
+            result = h.handle(ctx)
+        assert "1 sessions" in result
+
+    def test_week_excludes_older_sessions(self, tmp_path):
+        ctx = _make_ctx(tmp_path, args="--week")
+        old_ts = (datetime.now() - timedelta(days=25)).isoformat(timespec="seconds")
+        outcomes = [
+            {"timestamp": old_ts, "project": "koan", "mode": "implement",
+             "duration_minutes": 10, "outcome": "productive", "summary": "old work"},
+        ]
+        _write_outcomes(ctx.instance_dir, outcomes)
+        with patch("app.cost_tracker.summarize_by_project", return_value={}), \
+             patch("app.cost_tracker.get_pricing_config", return_value=None):
+            from skills.core.stats import handler as h
+            import importlib
+            importlib.reload(h)
+            result = h.handle(ctx)
+        assert "No session data yet" in result
