@@ -1524,6 +1524,117 @@ class TestGetProjectSubmitToRepository:
 
 
 # ---------------------------------------------------------------------------
+# _validate_config — per-project key type checks
+# ---------------------------------------------------------------------------
+
+
+class TestValidateProjectKeyTypes:
+    """Tests for per-project key type validation added to _validate_config()."""
+
+    def test_git_auto_merge_must_be_dict(self, koan_root):
+        _write_yaml(koan_root, 'projects:\n  app:\n    path: /tmp/app\n    git_auto_merge: "yes"')
+        with pytest.raises(ValueError, match="projects.app.git_auto_merge.*must be dict"):
+            load_projects_config(koan_root)
+
+    def test_models_must_be_dict(self, koan_root):
+        _write_yaml(koan_root, "projects:\n  app:\n    path: /tmp/app\n    models: 42")
+        with pytest.raises(ValueError, match="projects.app.models.*must be dict"):
+            load_projects_config(koan_root)
+
+    def test_tools_must_be_dict(self, koan_root):
+        _write_yaml(koan_root, 'projects:\n  app:\n    path: /tmp/app\n    tools: "bash"')
+        with pytest.raises(ValueError, match="projects.app.tools.*must be dict"):
+            load_projects_config(koan_root)
+
+    def test_github_must_be_dict(self, koan_root):
+        _write_yaml(koan_root, "projects:\n  app:\n    path: /tmp/app\n    github: true")
+        with pytest.raises(ValueError, match="projects.app.github.*must be dict"):
+            load_projects_config(koan_root)
+
+    def test_cli_provider_must_be_str(self, koan_root):
+        _write_yaml(koan_root, "projects:\n  app:\n    path: /tmp/app\n    cli_provider: 42")
+        with pytest.raises(ValueError, match="projects.app.cli_provider.*must be str"):
+            load_projects_config(koan_root)
+
+    def test_stagnation_accepts_dict(self, koan_root):
+        _write_yaml(koan_root, "projects:\n  app:\n    path: /tmp/app\n    stagnation:\n      enabled: false")
+        config = load_projects_config(koan_root)
+        assert config is not None
+
+    def test_stagnation_accepts_bool(self, koan_root):
+        _write_yaml(koan_root, "projects:\n  app:\n    path: /tmp/app\n    stagnation: false")
+        config = load_projects_config(koan_root)
+        assert config is not None
+
+    def test_stagnation_rejects_string(self, koan_root):
+        _write_yaml(koan_root, 'projects:\n  app:\n    path: /tmp/app\n    stagnation: "off"')
+        with pytest.raises(ValueError, match="projects.app.stagnation.*must be dict/bool"):
+            load_projects_config(koan_root)
+
+    def test_exploration_accepts_bool_and_str(self, koan_root):
+        _write_yaml(koan_root, 'projects:\n  app:\n    path: /tmp/app\n    exploration: "false"')
+        config = load_projects_config(koan_root)
+        assert config is not None
+
+    def test_exploration_rejects_int(self, koan_root):
+        _write_yaml(koan_root, "projects:\n  app:\n    path: /tmp/app\n    exploration: 42")
+        with pytest.raises(ValueError, match="projects.app.exploration.*must be bool/str"):
+            load_projects_config(koan_root)
+
+    def test_mcp_must_be_list(self, koan_root):
+        _write_yaml(koan_root, 'projects:\n  app:\n    path: /tmp/app\n    mcp: "file.json"')
+        with pytest.raises(ValueError, match="projects.app.mcp.*must be list"):
+            load_projects_config(koan_root)
+
+    def test_valid_project_config_passes(self, koan_root):
+        _write_yaml(koan_root, """
+projects:
+  app:
+    path: /tmp/app
+    git_auto_merge:
+      enabled: true
+    models:
+      mission: sonnet
+    tools:
+      mission: [Bash, Read]
+    cli_provider: claude
+    exploration: true
+    focus: false
+    max_open_prs: 5
+    mcp: [file.json]
+""")
+        config = load_projects_config(koan_root)
+        assert config is not None
+
+    def test_unknown_keys_pass_through(self, koan_root):
+        """Unknown keys are allowed — they're custom overrides."""
+        _write_yaml(koan_root, "projects:\n  app:\n    path: /tmp/app\n    custom_flag: true")
+        config = load_projects_config(koan_root)
+        assert config["projects"]["app"]["custom_flag"] is True
+
+    def test_none_values_are_skipped(self, koan_root):
+        _write_yaml(koan_root, "projects:\n  app:\n    path: /tmp/app\n    models:")
+        config = load_projects_config(koan_root)
+        assert config is not None
+
+    def test_defaults_section_validated(self, koan_root):
+        _write_yaml(koan_root, 'defaults:\n  git_auto_merge: "yes"')
+        with pytest.raises(ValueError, match="defaults.git_auto_merge.*must be dict"):
+            load_projects_config(koan_root)
+
+    def test_defaults_accepts_valid_types(self, koan_root):
+        _write_yaml(koan_root, "defaults:\n  git_auto_merge:\n    enabled: true\n  exploration: false")
+        config = load_projects_config(koan_root)
+        assert config is not None
+
+    def test_bool_rejected_where_int_expected(self, koan_root):
+        """max_open_prs accepts int/str but not bool (bool is subclass of int)."""
+        _write_yaml(koan_root, "projects:\n  app:\n    path: /tmp/app\n    max_open_prs: true")
+        with pytest.raises(ValueError, match="projects.app.max_open_prs.*got bool"):
+            load_projects_config(koan_root)
+
+
+# ---------------------------------------------------------------------------
 # get_review_ignore_config (now in config.py, reads from config.yaml)
 # ---------------------------------------------------------------------------
 # Tests for review_ignore config accessor live in test_config.py.

@@ -84,6 +84,33 @@ def invalidate_projects_config_cache() -> None:
         _cache.clear()
 
 
+_PROJECT_KEY_TYPES = {
+    "path": (str,),
+    "github_url": (str,),
+    "github_urls": (list,),
+    "git_auto_merge": (dict,),
+    "models": (dict,),
+    "tools": (dict,),
+    "github": (dict,),
+    "security": (dict,),
+    "security_review": (dict,),
+    "cli_provider": (str,),
+    "submit_to_repository": (dict,),
+    "stagnation": (dict, bool),
+    "complexity_routing": (dict, bool),
+    "exploration": (bool, str),
+    "focus": (bool, str),
+    "max_open_prs": (int, str),
+    "max_pending_branches": (int, str),
+    "mcp": (list,),
+    "rtk": (bool, str),
+}
+
+_DEFAULTS_KEY_TYPES = {
+    k: v for k, v in _PROJECT_KEY_TYPES.items() if k != "path"
+}
+
+
 def _validate_config(config: dict) -> None:
     """Validate the structure of the projects config.
 
@@ -93,6 +120,9 @@ def _validate_config(config: dict) -> None:
     defaults = config.get("defaults")
     if defaults is not None and not isinstance(defaults, dict):
         raise ValueError("'defaults' must be a mapping")
+
+    if isinstance(defaults, dict):
+        _validate_section_keys(defaults, _DEFAULTS_KEY_TYPES, "defaults")
 
     # projects section is optional — missing means 0 projects (workspace provides them)
     projects = config.get("projects")
@@ -131,6 +161,34 @@ def _validate_config(config: dict) -> None:
         path = project.get("path")
         if path is not None and (not isinstance(path, str) or not path.strip()):
             raise ValueError(f"Project '{name}' has invalid path: {path!r}")
+
+        _validate_section_keys(project, _PROJECT_KEY_TYPES, f"projects.{name}")
+
+
+def _validate_section_keys(section: dict, schema: dict, context: str) -> None:
+    """Validate types of known keys in a config section.
+
+    Skips unknown keys (those are passed through as overrides).
+    Raises ValueError when a known key has the wrong type.
+    """
+    for key, value in section.items():
+        if value is None:
+            continue
+        expected_types = schema.get(key)
+        if expected_types is None:
+            continue
+        # bool is subclass of int — check bool before int
+        if isinstance(value, bool) and bool not in expected_types:
+            type_names = "/".join(t.__name__ for t in expected_types)
+            raise ValueError(
+                f"'{context}.{key}' must be {type_names}, got bool"
+            )
+        if not isinstance(value, expected_types):
+            type_names = "/".join(t.__name__ for t in expected_types)
+            raise ValueError(
+                f"'{context}.{key}' must be {type_names}, "
+                f"got {type(value).__name__}"
+            )
 
 
 def validate_project_paths(config: dict) -> Optional[str]:
