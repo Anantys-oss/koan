@@ -487,26 +487,36 @@ def create_issues(
                         finding, ecosystem, package_name,
                         target_repo, project_path,
                     )
-                    pvrs_status = "submitted"
                     advisory_url = advisory_url.strip() if advisory_url else ""
                     if advisory_url:
+                        pvrs_status = "submitted"
                         issue_urls.append(advisory_url)
                         created_count += 1
                         created_entries.append((finding, advisory_url))
+                    else:
+                        pvrs_status = "failed"
                 except Exception as e:
                     pvrs_status = "failed"
                     print(
-                        f"[audit] PVRS failed for '{title}': {e}",
+                        f"[audit] PVRS failed for '{title}': {repr(e)}",
                         file=sys.stderr,
                     )
 
             # Always write local file for high+ findings
             if instance_dir:
-                file_path = _write_local_finding(
-                    finding, project_name, instance_dir,
-                    pvrs_status=pvrs_status,
-                    advisory_url=advisory_url,
-                )
+                try:
+                    file_path = _write_local_finding(
+                        finding, project_name, instance_dir,
+                        pvrs_status=pvrs_status,
+                        advisory_url=advisory_url,
+                    )
+                except Exception as e:
+                    print(
+                        f"[audit] Failed to write local finding for "
+                        f"'{title}': {repr(e)}",
+                        file=sys.stderr,
+                    )
+                    continue
                 local_files.append((finding, file_path))
                 relative = f"security/{project_name}/{file_path.name}"
                 if notify_fn:
@@ -515,12 +525,14 @@ def create_issues(
                         f"  \U0001f4a1 Suggested: /fix {project_name} "
                         f"Understand and fix the issue described by {relative}"
                     )
-                continue
+            elif pvrs_status != "submitted":
+                print(
+                    f"[audit] No instance_dir configured — cannot store "
+                    f"high-severity finding '{title}' locally",
+                    file=sys.stderr,
+                )
 
-            # No instance_dir and PVRS didn't succeed: fall through to
-            # public issue as last resort (legacy behavior).
-            if pvrs_status == "submitted":
-                continue
+            continue
 
         # Public issue path (medium/low, or high fallback without instance_dir)
         # Dedup: skip if fingerprint matches an already-open audit issue.
@@ -632,9 +644,11 @@ def _write_local_finding(
 
     from app.utils import atomic_write
 
-    today = datetime.now().strftime("%Y%m%d")
+    now = datetime.now()
+    today = now.strftime("%Y%m%d")
     slug = _slugify_finding_title(finding.title)
-    filename = f"{today}.{finding.severity}.{slug}.md"
+    title_hash = hashlib.sha256(finding.title.encode()).hexdigest()[:6]
+    filename = f"{today}.{finding.severity}.{slug}.{title_hash}.md"
 
     security_dir = Path(instance_dir) / "security" / project_name
     os.makedirs(security_dir, exist_ok=True)
@@ -649,7 +663,7 @@ def _write_local_finding(
         f"| Severity | {finding.severity} |\n"
         f"| Category | {finding.category} |\n"
         f"| Location | `{finding.location}` |\n"
-        f"| Detected | {datetime.now().strftime('%Y-%m-%d')} |\n"
+        f"| Detected | {now.strftime('%Y-%m-%d')} |\n"
         f"| PVRS | {pvrs_status} |\n"
         f"| Advisory | {advisory_line} |\n\n"
         f"## Problem\n\n{finding.problem}\n\n"

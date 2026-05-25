@@ -441,7 +441,7 @@ class TestCreateIssues:
     @patch("app.github.list_open_audit_issues", return_value=[])
     @patch("app.github.resolve_target_repo", return_value="upstream/repo")
     @patch("app.github.issue_create")
-    def test_creates_issues_for_findings(self, mock_create, mock_repo, mock_list):
+    def test_creates_issues_for_findings(self, mock_create, mock_repo, mock_list, tmp_path):
         mock_create.side_effect = [
             "https://github.com/o/r/issues/1\n",
             "https://github.com/o/r/issues/2\n",
@@ -450,13 +450,17 @@ class TestCreateIssues:
             AuditFinding(title="fix A", severity="high", location="a.py:1", problem="p1"),
             AuditFinding(title="fix B", severity="low", location="b.py:2", problem="p2"),
         ]
-        result = create_issues(findings, "/path/proj")
+        result = create_issues(
+            findings, "/path/proj",
+            instance_dir=str(tmp_path), project_name="proj",
+        )
 
-        assert len(result.urls) == 2
-        assert result.created == 2
-        assert result.reused == 0
-        assert mock_create.call_count == 2
-        # Check repo targeting
+        # high → local file, low → public issue
+        assert len(result.urls) == 1
+        assert result.created == 1
+        assert len(result.local_files) == 1
+        assert mock_create.call_count == 1
+        # Check repo targeting on the public issue
         assert mock_create.call_args_list[0][1]["repo"] == "upstream/repo"
 
     @patch("app.github.list_open_audit_issues", return_value=[])
@@ -465,7 +469,7 @@ class TestCreateIssues:
     def test_no_upstream_uses_local(self, mock_create, mock_repo, mock_list):
         mock_create.return_value = "https://github.com/o/r/issues/1\n"
         findings = [
-            AuditFinding(title="fix A", severity="high", location="a.py:1", problem="p"),
+            AuditFinding(title="fix A", severity="medium", location="a.py:1", problem="p"),
         ]
         create_issues(findings, "/path/proj")
         assert mock_create.call_args[1]["repo"] is None
@@ -479,7 +483,7 @@ class TestCreateIssues:
             "https://github.com/o/r/issues/2\n",
         ]
         findings = [
-            AuditFinding(title="fix A", severity="high", location="a.py:1", problem="p1"),
+            AuditFinding(title="fix A", severity="medium", location="a.py:1", problem="p1"),
             AuditFinding(title="fix B", severity="low", location="b.py:2", problem="p2"),
         ]
         notify = MagicMock()
@@ -496,7 +500,7 @@ class TestCreateIssues:
     @patch("app.github.issue_create", side_effect=RuntimeError("API error"))
     def test_continues_on_failure(self, mock_create, mock_repo, mock_list):
         findings = [
-            AuditFinding(title="fix A", severity="high", location="a.py:1", problem="p"),
+            AuditFinding(title="fix A", severity="medium", location="a.py:1", problem="p"),
             AuditFinding(title="fix B", severity="low", location="b.py:2", problem="q"),
         ]
         result = create_issues(findings, "/path/proj")
@@ -516,7 +520,7 @@ class TestCreateIssuesDedup:
         self, mock_create, mock_repo, mock_list,
     ):
         existing = AuditFinding(
-            title="fix A", severity="high",
+            title="fix A", severity="medium",
             location="a.py:1", category="bug", problem="p",
         )
         mock_list.return_value = [
@@ -529,7 +533,7 @@ class TestCreateIssuesDedup:
         ]
         findings = [
             AuditFinding(
-                title="fix A", severity="high",
+                title="fix A", severity="medium",
                 location="a.py:1", category="bug", problem="p",
             ),
         ]
@@ -553,7 +557,7 @@ class TestCreateIssuesDedup:
         # run must reuse the existing issue rather than duplicate it.
         first_run = AuditFinding(
             title="Race in WS reconnect",
-            severity="high",
+            severity="medium",
             location="ws_client.py:142",
             category="concurrency",
             problem="race condition",
@@ -571,7 +575,7 @@ class TestCreateIssuesDedup:
         findings = [
             AuditFinding(
                 title="Potential race condition in websocket reconnect handler",
-                severity="high",
+                severity="medium",
                 location="ws_client.py:142",
                 category="concurrency",
                 problem="race condition",
@@ -604,7 +608,7 @@ class TestCreateIssuesDedup:
         mock_create.return_value = "https://github.com/o/r/issues/20\n"
         findings = [
             AuditFinding(
-                title="fix A", severity="high",
+                title="fix A", severity="medium",
                 location="a.py:1", category="bug", problem="p",
             ),
         ]
@@ -622,7 +626,7 @@ class TestCreateIssuesDedup:
         self, mock_create, mock_repo, mock_list,
     ):
         existing = AuditFinding(
-            title="fix A", severity="high",
+            title="fix A", severity="medium",
             location="a.py:1", category="bug", problem="p",
         )
         mock_list.return_value = [
@@ -636,7 +640,7 @@ class TestCreateIssuesDedup:
         mock_create.return_value = "https://github.com/o/r/issues/2\n"
         findings = [
             AuditFinding(
-                title="fix A", severity="high",
+                title="fix A", severity="medium",
                 location="a.py:1", category="bug", problem="p",
             ),
             AuditFinding(
@@ -668,7 +672,7 @@ class TestCreateIssuesDedup:
             "https://github.com/o/r/issues/11\n",
         ]
         findings = [
-            AuditFinding(title="fix A", severity="high", location="a.py:1", problem="p"),
+            AuditFinding(title="fix A", severity="medium", location="a.py:1", problem="p"),
             AuditFinding(title="fix B", severity="low", location="b.py:2", problem="q"),
         ]
 
@@ -688,7 +692,7 @@ class TestCreateIssuesDedup:
         # returns []; we must not block on dedup — create as before.
         mock_create.return_value = "https://github.com/o/r/issues/1\n"
         findings = [
-            AuditFinding(title="fix A", severity="high", location="a.py:1", problem="p"),
+            AuditFinding(title="fix A", severity="medium", location="a.py:1", problem="p"),
         ]
 
         result = create_issues(findings, "/path/proj")
@@ -698,7 +702,7 @@ class TestCreateIssuesDedup:
 
     def test_fingerprint_embedded_in_issue_body(self):
         finding = AuditFinding(
-            title="fix A", severity="high",
+            title="fix A", severity="medium",
             location="a.py:1", category="bug", problem="p",
         )
         body = _build_issue_body(finding)
@@ -1341,7 +1345,7 @@ class TestIssueCreationResultCreatedEntries:
             "https://github.com/o/r/issues/2\n",
         ]
         findings = [
-            AuditFinding(title="fix A", severity="high", location="a.py:1", problem="p1"),
+            AuditFinding(title="fix A", severity="medium", location="a.py:1", problem="p1"),
             AuditFinding(title="fix B", severity="low", location="b.py:2", problem="p2"),
         ]
 
@@ -1358,7 +1362,7 @@ class TestIssueCreationResultCreatedEntries:
     @patch("app.github.issue_create")
     def test_reused_not_in_created_entries(self, mock_create, mock_repo, mock_list):
         existing = AuditFinding(
-            title="fix A", severity="high",
+            title="fix A", severity="medium",
             location="a.py:1", category="bug", problem="p",
         )
         mock_list.return_value = [{
@@ -1370,7 +1374,7 @@ class TestIssueCreationResultCreatedEntries:
 
         findings = [
             AuditFinding(
-                title="fix A", severity="high",
+                title="fix A", severity="medium",
                 location="a.py:1", category="bug", problem="p",
             ),
             AuditFinding(
