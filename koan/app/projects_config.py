@@ -360,18 +360,6 @@ def get_project_rtk_enabled(config: dict, project_name: str) -> bool:
     return is_rtk_mode()
 
 
-def get_project_mcp(config: dict, project_name: str) -> list:
-    """Get MCP config file paths for a project from projects.yaml.
-
-    Returns a list of file path strings. Only includes entries explicitly
-    set — caller should fall back to global config.yaml mcp list.
-    """
-    project_cfg = get_project_config(config, project_name)
-    mcp = project_cfg.get("mcp", [])
-    if not isinstance(mcp, list):
-        return []
-    return mcp
-
 
 def get_project_focus(config: dict, project_name: str) -> bool:
     """Get focus flag for a project from projects.yaml.
