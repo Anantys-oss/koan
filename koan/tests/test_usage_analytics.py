@@ -201,12 +201,13 @@ class TestComputeProjectTrend:
 # --- /api/usage extensions ---
 
 class TestApiUsageExtended:
-    def test_daily_array_present(self, app_client, instance_dir):
+    def test_series_array_present(self, app_client, instance_dir):
         resp = app_client.get("/api/usage?days=3")
         data = resp.get_json()
-        assert "daily" in data
-        assert isinstance(data["daily"], list)
-        assert len(data["daily"]) == 3
+        assert "daily" not in data
+        assert "series" in data
+        assert isinstance(data["series"], list)
+        assert len(data["series"]) == 3
 
     def test_estimated_cost_null_without_pricing(self, app_client, instance_dir):
         with patch("app.cost_tracker.get_pricing_config", return_value=None):
