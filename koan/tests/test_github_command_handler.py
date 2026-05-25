@@ -3832,3 +3832,112 @@ class TestSkipIfForeignRepo:
         assert "GitHub assign" in caplog.text
         assert "stranger/repo" in caplog.text
         assert "reason=mention" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# --now priority flag in GitHub @mentions
+# ---------------------------------------------------------------------------
+
+
+class TestNowPriorityFlag:
+    """Tests that --now in GitHub @mention context inserts missions at top of queue."""
+
+    @patch("app.github_command_handler.mark_notification_read")
+    @patch("app.github_command_handler.add_reaction", return_value=True)
+    @patch("app.github_command_handler.check_user_permission", return_value=True)
+    @patch("app.github_command_handler.check_already_processed", return_value=False)
+    @patch("app.github_command_handler.is_self_mention", return_value=False)
+    @patch("app.github_command_handler.is_notification_stale", return_value=False)
+    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler.resolve_project_from_notification")
+    @patch("app.utils.insert_pending_mission")
+    def test_now_flag_passes_urgent_true(
+        self, mock_insert, mock_resolve, mock_get_comment,
+        mock_stale, mock_self, mock_processed, mock_perm,
+        mock_react, mock_read, registry, sample_notification, tmp_path,
+    ):
+        mock_resolve.return_value = ("koan", "owner", "koan")
+        mock_get_comment.return_value = {
+            "id": 99999,
+            "body": "@testbot implement --now https://github.com/owner/repo/issues/42",
+            "user": {"login": "alice"},
+        }
+
+        config = {"github": {"nickname": "testbot", "authorized_users": ["*"]}}
+
+        with patch.dict("os.environ", {"KOAN_ROOT": str(tmp_path)}):
+            success, error = process_single_notification(
+                sample_notification, registry, config, None, "testbot",
+            )
+
+        assert success is True
+        assert error is None
+        mock_insert.assert_called_once()
+        _, kwargs = mock_insert.call_args
+        assert kwargs.get("urgent") is True
+
+    @patch("app.github_command_handler.mark_notification_read")
+    @patch("app.github_command_handler.add_reaction", return_value=True)
+    @patch("app.github_command_handler.check_user_permission", return_value=True)
+    @patch("app.github_command_handler.check_already_processed", return_value=False)
+    @patch("app.github_command_handler.is_self_mention", return_value=False)
+    @patch("app.github_command_handler.is_notification_stale", return_value=False)
+    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler.resolve_project_from_notification")
+    @patch("app.utils.insert_pending_mission")
+    def test_without_now_flag_urgent_is_false(
+        self, mock_insert, mock_resolve, mock_get_comment,
+        mock_stale, mock_self, mock_processed, mock_perm,
+        mock_react, mock_read, registry, sample_notification, tmp_path,
+    ):
+        mock_resolve.return_value = ("koan", "owner", "koan")
+        mock_get_comment.return_value = {
+            "id": 99999,
+            "body": "@testbot rebase",
+            "user": {"login": "alice"},
+        }
+
+        config = {"github": {"nickname": "testbot", "authorized_users": ["*"]}}
+
+        with patch.dict("os.environ", {"KOAN_ROOT": str(tmp_path)}):
+            success, error = process_single_notification(
+                sample_notification, registry, config, None, "testbot",
+            )
+
+        assert success is True
+        mock_insert.assert_called_once()
+        _, kwargs = mock_insert.call_args
+        assert kwargs.get("urgent") is False
+
+    @patch("app.github_command_handler.mark_notification_read")
+    @patch("app.github_command_handler.add_reaction", return_value=True)
+    @patch("app.github_command_handler.check_user_permission", return_value=True)
+    @patch("app.github_command_handler.check_already_processed", return_value=False)
+    @patch("app.github_command_handler.is_self_mention", return_value=False)
+    @patch("app.github_command_handler.is_notification_stale", return_value=False)
+    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler.resolve_project_from_notification")
+    @patch("app.utils.insert_pending_mission")
+    def test_now_flag_stripped_from_mission_entry(
+        self, mock_insert, mock_resolve, mock_get_comment,
+        mock_stale, mock_self, mock_processed, mock_perm,
+        mock_react, mock_read, registry, sample_notification, tmp_path,
+    ):
+        """--now should not appear in the queued mission text."""
+        mock_resolve.return_value = ("koan", "owner", "koan")
+        mock_get_comment.return_value = {
+            "id": 99999,
+            "body": "@testbot implement --now https://github.com/owner/repo/issues/42",
+            "user": {"login": "alice"},
+        }
+
+        config = {"github": {"nickname": "testbot", "authorized_users": ["*"]}}
+
+        with patch.dict("os.environ", {"KOAN_ROOT": str(tmp_path)}):
+            process_single_notification(
+                sample_notification, registry, config, None, "testbot",
+            )
+
+        call_args = mock_insert.call_args[0]
+        mission_text = call_args[1]  # second positional arg is the entry
+        assert "--now" not in mission_text

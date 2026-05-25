@@ -1284,11 +1284,20 @@ def process_single_notification(
     ask_comment_url = None
     if command_name == "ask":
         ask_comment_url = comment.get("html_url") or None
+    # Extract --now flag from context before building mission entry
+    from app.missions import extract_now_flag
+    urgent = False
+    if context:
+        urgent, context = extract_now_flag(context)
+
     mission_entry = build_mission_from_command(
         skill, command_name, context, notification, project_name,
         comment_url=ask_comment_url,
     )
-    log.info("GitHub: inserting mission from @%s: %s", comment_author, mission_entry)
+    if urgent:
+        log.info("GitHub: priority insertion (--now) from @%s: %s", comment_author, mission_entry)
+    else:
+        log.info("GitHub: inserting mission from @%s: %s", comment_author, mission_entry)
 
     from app.utils import insert_pending_mission
     from pathlib import Path
@@ -1310,7 +1319,7 @@ def process_single_notification(
 
     try:
         for entry in mission_entries:
-            insert_pending_mission(missions_path, entry)
+            insert_pending_mission(missions_path, entry, urgent=urgent)
     except OSError as e:
         log.warning("GitHub: failed to insert mission: %s", e)
         # Mark notification as read to prevent infinite re-processing
