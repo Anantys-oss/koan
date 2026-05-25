@@ -437,12 +437,6 @@ def kill_session(
             pass
 
 
-def kill_all_sessions(registry: SessionRegistry):
-    """Kill all active sessions."""
-    for session in registry.get_active():
-        kill_session(session, registry)
-
-
 def recover_stale_sessions(registry: SessionRegistry):
     """Clean up sessions whose processes are no longer alive.
 
