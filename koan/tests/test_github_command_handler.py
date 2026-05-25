@@ -8,6 +8,7 @@ import pytest
 
 from app.github_command_handler import (
     _ASSIGNMENT_REASON_TO_COMMAND,
+    _REPLY_RATE_FILE,
     _error_replies,
     _expand_combo_mission,
     _closed_reason_from_subject_info,
@@ -16,10 +17,12 @@ from app.github_command_handler import (
     _fetch_subject_info,
     _handle_help_command,
     _is_subject_closed,
+    _load_reply_timestamps,
     _notify_closed_subject_skipped,
     _notify_github_question,
     _notify_github_reply,
     _post_help_reply,
+    _save_reply_timestamps,
     _try_assignment_notification,
     _try_nlp_classification,
     _try_reply,
@@ -886,6 +889,13 @@ class TestProcessNotificationCustomHandler:
 class TestTryReply:
     """Tests for the _try_reply helper that generates AI replies."""
 
+    @pytest.fixture(autouse=True)
+    def _mock_rate_limiter(self):
+        """Mock file-backed rate limiter so tests don't leak state across runs."""
+        with patch("app.github_command_handler._load_reply_timestamps", return_value={}), \
+             patch("app.github_command_handler._save_reply_timestamps"):
+            yield
+
     @pytest.fixture
     def reply_notification(self):
         return {
@@ -1045,6 +1055,12 @@ class TestTryReply:
 class TestProcessNotificationWithReply:
     """Tests for reply integration in process_single_notification."""
 
+    @pytest.fixture(autouse=True)
+    def _mock_rate_limiter(self):
+        with patch("app.github_command_handler._load_reply_timestamps", return_value={}), \
+             patch("app.github_command_handler._save_reply_timestamps"):
+            yield
+
     @patch("app.github_command_handler.mark_notification_read")
     @patch("app.github_command_handler.add_reaction", return_value=True)
     @patch("app.github_command_handler.check_user_permission", return_value=True)
@@ -1123,6 +1139,12 @@ class TestProcessNotificationWithReply:
 class TestTryReplyAuthorizedUsers:
     """Tests for separate reply_authorized_users permission in _try_reply."""
 
+    @pytest.fixture(autouse=True)
+    def _mock_rate_limiter(self):
+        with patch("app.github_command_handler._load_reply_timestamps", return_value={}), \
+             patch("app.github_command_handler._save_reply_timestamps"):
+            yield
+
     @pytest.fixture
     def reply_notification(self):
         return {
@@ -1162,14 +1184,14 @@ class TestTryReplyAuthorizedUsers:
         "title": "T", "body": "B", "comments": [], "is_pr": False, "diff_summary": "",
     })
     @patch("app.utils.resolve_project_path", return_value="/tmp/koan")
-    def test_reply_authorized_users_wildcard_allows_anyone(
+    def test_reply_authorized_users_wildcard_checks_write_access(
         self, mock_resolve, mock_ctx, mock_gen, mock_post,
         mock_perm, mock_react, mock_read,
         mock_notify_q, mock_notify_r,
         reply_notification, reply_comment,
     ):
-        """When reply_authorized_users: ["*"], any user can get a reply
-        without check_user_permission being called."""
+        """When reply_authorized_users: ["*"], check_user_permission is still
+        called to verify GitHub write access (same as command wildcard)."""
         config = {
             "github": {
                 "nickname": "bot",
@@ -1183,8 +1205,8 @@ class TestTryReplyAuthorizedUsers:
             "bot", "sukria", "koan", "koan", "what do you think?",
         )
         assert result is True
-        # check_user_permission should NOT be called when reply_authorized_users is ["*"]
-        mock_perm.assert_not_called()
+        mock_perm.assert_called_once()
+        assert mock_perm.call_args[0][3] == ["*"]
         mock_gen.assert_called_once()
 
     @patch("app.github_command_handler.check_user_permission", return_value=False)
@@ -1292,18 +1314,13 @@ class TestTryReplyRateLimit:
             }
         }
 
-    @pytest.fixture(autouse=True)
-    def clear_rate_state(self):
-        """Clear the module-level rate tracking dict between tests."""
-        from app import github_command_handler
-        github_command_handler._reply_timestamps.clear()
-        yield
-        github_command_handler._reply_timestamps.clear()
-
+    @patch("app.github_command_handler._save_reply_timestamps")
+    @patch("app.github_command_handler._load_reply_timestamps", return_value={})
     @patch("app.github_command_handler._notify_github_reply")
     @patch("app.github_command_handler._notify_github_question")
     @patch("app.github_command_handler.mark_notification_read")
     @patch("app.github_command_handler.add_reaction", return_value=True)
+    @patch("app.github_command_handler.check_user_permission", return_value=True)
     @patch("app.github_reply.post_reply", return_value=True)
     @patch("app.github_reply.generate_reply", return_value="reply")
     @patch("app.github_reply.fetch_thread_context", return_value={
@@ -1312,8 +1329,9 @@ class TestTryReplyRateLimit:
     @patch("app.utils.resolve_project_path", return_value="/tmp/koan")
     def test_rate_limit_allows_under_limit(
         self, mock_resolve, mock_ctx, mock_gen, mock_post,
-        mock_react, mock_read,
+        mock_perm, mock_react, mock_read,
         mock_notify_q, mock_notify_r,
+        mock_load, mock_save,
         reply_notification, reply_comment, rate_config,
     ):
         """Replies succeed when user is under the rate limit."""
@@ -1322,62 +1340,50 @@ class TestTryReplyRateLimit:
             "bot", "sukria", "koan", "koan", "question?",
         )
         assert result is True
+        mock_save.assert_called_once()
 
-    @patch("app.github_command_handler._notify_github_reply")
-    @patch("app.github_command_handler._notify_github_question")
-    @patch("app.github_command_handler.mark_notification_read")
-    @patch("app.github_command_handler.add_reaction", return_value=True)
-    @patch("app.github_reply.post_reply", return_value=True)
+    @patch("app.github_command_handler._load_reply_timestamps")
+    @patch("app.github_command_handler.check_user_permission", return_value=True)
     @patch("app.github_reply.generate_reply", return_value="reply")
-    @patch("app.github_reply.fetch_thread_context", return_value={
-        "title": "T", "body": "B", "comments": [], "is_pr": False, "diff_summary": "",
-    })
     @patch("app.utils.resolve_project_path", return_value="/tmp/koan")
     def test_rate_limit_blocks_when_exceeded(
-        self, mock_resolve, mock_ctx, mock_gen, mock_post,
-        mock_react, mock_read,
-        mock_notify_q, mock_notify_r,
+        self, mock_resolve, mock_gen, mock_perm, mock_load,
         reply_notification, reply_comment, rate_config,
     ):
         """Reply is denied when user exceeds rate limit."""
         import time
-        from app import github_command_handler
         now = time.time()
-        # Pre-fill 2 timestamps (the limit) within the last hour
-        github_command_handler._reply_timestamps["alice"] = [now - 60, now - 30]
+        mock_load.return_value = {"alice": [now - 60, now - 30]}
 
         result = _try_reply(
             reply_notification, reply_comment, rate_config, None,
             "bot", "sukria", "koan", "koan", "question?",
         )
         assert result is False
-        # generate_reply should NOT be called when rate limited
         mock_gen.assert_not_called()
 
+    @patch("app.github_command_handler._save_reply_timestamps")
+    @patch("app.github_command_handler._load_reply_timestamps")
     @patch("app.github_command_handler._notify_github_reply")
     @patch("app.github_command_handler._notify_github_question")
     @patch("app.github_command_handler.mark_notification_read")
     @patch("app.github_command_handler.add_reaction", return_value=True)
+    @patch("app.github_command_handler.check_user_permission", return_value=True)
     @patch("app.github_reply.post_reply", return_value=True)
     @patch("app.github_reply.generate_reply", return_value="reply")
     @patch("app.github_reply.fetch_thread_context", return_value={
         "title": "T", "body": "B", "comments": [], "is_pr": False, "diff_summary": "",
     })
     @patch("app.utils.resolve_project_path", return_value="/tmp/koan")
-    def test_rate_limit_stale_timestamps_cleaned(
+    def test_rate_limit_stale_timestamps_cleaned_by_loader(
         self, mock_resolve, mock_ctx, mock_gen, mock_post,
-        mock_react, mock_read,
+        mock_perm, mock_react, mock_read,
         mock_notify_q, mock_notify_r,
+        mock_load, mock_save,
         reply_notification, reply_comment, rate_config,
     ):
-        """Old timestamps (>1h) are cleaned up and don't count toward limit."""
-        import time
-        from app import github_command_handler
-        now = time.time()
-        # Pre-fill with old timestamps (>1 hour ago) — should not count
-        github_command_handler._reply_timestamps["alice"] = [
-            now - 7200, now - 3700, now - 3601,
-        ]
+        """_load_reply_timestamps strips stale entries — result is under limit."""
+        mock_load.return_value = {}
 
         result = _try_reply(
             reply_notification, reply_comment, rate_config, None,
@@ -2215,6 +2221,12 @@ class TestTelegramNotificationBoundaries:
 
 class TestTryReplyEdgeCases:
 
+    @pytest.fixture(autouse=True)
+    def _mock_rate_limiter(self):
+        with patch("app.github_command_handler._load_reply_timestamps", return_value={}), \
+             patch("app.github_command_handler._save_reply_timestamps"):
+            yield
+
     @pytest.fixture
     def reply_notification(self):
         return {
@@ -2253,7 +2265,8 @@ class TestTryReplyEdgeCases:
     @patch("app.utils.resolve_project_path", return_value="/tmp/koan")
     def test_question_notification_sent_before_generation(
         self, mock_resolve, mock_ctx, mock_gen, mock_perm,
-        mock_notify_q, reply_notification, reply_comment, reply_config,
+        mock_notify_q,
+        reply_notification, reply_comment, reply_config,
     ):
         """Question notification should be sent BEFORE generation (even if it fails)."""
         _try_reply(
@@ -4089,3 +4102,104 @@ class TestNowPriorityFlag:
         call_args = mock_insert.call_args[0]
         mission_text = call_args[1]  # second positional arg is the entry
         assert "--now" not in mission_text
+
+
+class TestLoadReplyTimestamps:
+    """Tests for _load_reply_timestamps — file-backed rate-limit state."""
+
+    def test_returns_empty_when_file_missing(self, tmp_path):
+        result = _load_reply_timestamps(str(tmp_path))
+        assert result == {}
+
+    def test_returns_empty_on_corrupt_json(self, tmp_path):
+        (tmp_path / _REPLY_RATE_FILE).write_text("not json")
+        result = _load_reply_timestamps(str(tmp_path))
+        assert result == {}
+
+    def test_strips_stale_entries(self, tmp_path):
+        import time
+        now = time.time()
+        data = {"alice": [now - 7200, now - 30, now - 10]}
+        (tmp_path / _REPLY_RATE_FILE).write_text(json.dumps(data))
+        result = _load_reply_timestamps(str(tmp_path))
+        assert len(result["alice"]) == 2
+        assert all(t > now - 3600 for t in result["alice"])
+
+    def test_removes_user_with_only_stale_entries(self, tmp_path):
+        import time
+        now = time.time()
+        data = {"alice": [now - 7200, now - 3700]}
+        (tmp_path / _REPLY_RATE_FILE).write_text(json.dumps(data))
+        result = _load_reply_timestamps(str(tmp_path))
+        assert "alice" not in result
+
+    def test_ignores_non_numeric_timestamps(self, tmp_path):
+        import time
+        now = time.time()
+        data = {"alice": ["bad", now - 10, None]}
+        (tmp_path / _REPLY_RATE_FILE).write_text(json.dumps(data))
+        result = _load_reply_timestamps(str(tmp_path))
+        assert len(result["alice"]) == 1
+
+
+class TestSaveReplyTimestamps:
+    """Tests for _save_reply_timestamps — atomic file write."""
+
+    def test_saves_and_round_trips(self, tmp_path):
+        import time
+        now = time.time()
+        data = {"alice": [now - 30, now - 10]}
+        _save_reply_timestamps(str(tmp_path), data)
+        loaded = _load_reply_timestamps(str(tmp_path))
+        assert len(loaded["alice"]) == 2
+
+
+class TestWarnReplyWildcard:
+    """Tests for startup warning when reply + wildcard are configured."""
+
+    def test_warns_on_wildcard_reply_auth(self, caplog):
+        import logging
+        from app.github_config import warn_reply_wildcard
+        config = {
+            "github": {
+                "reply_enabled": True,
+                "reply_authorized_users": ["*"],
+            }
+        }
+        with caplog.at_level(logging.WARNING, logger="app.github_config"):
+            warn_reply_wildcard(config)
+        assert "authorized to ALL" in caplog.text
+
+    def test_no_warning_when_reply_disabled(self, caplog):
+        import logging
+        from app.github_config import warn_reply_wildcard
+        config = {"github": {"reply_enabled": False, "reply_authorized_users": ["*"]}}
+        with caplog.at_level(logging.WARNING, logger="app.github_config"):
+            warn_reply_wildcard(config)
+        assert caplog.text == ""
+
+    def test_no_warning_with_named_users(self, caplog):
+        import logging
+        from app.github_config import warn_reply_wildcard
+        config = {
+            "github": {
+                "reply_enabled": True,
+                "reply_authorized_users": ["alice"],
+            }
+        }
+        with caplog.at_level(logging.WARNING, logger="app.github_config"):
+            warn_reply_wildcard(config)
+        assert caplog.text == ""
+
+    def test_warns_on_fallback_wildcard(self, caplog):
+        import logging
+        from app.github_config import warn_reply_wildcard
+        config = {
+            "github": {
+                "reply_enabled": True,
+                "authorized_users": ["*"],
+            }
+        }
+        with caplog.at_level(logging.WARNING, logger="app.github_config"):
+            warn_reply_wildcard(config)
+        assert "authorized to ALL" in caplog.text

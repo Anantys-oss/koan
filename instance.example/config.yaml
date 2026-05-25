@@ -508,10 +508,12 @@ usage:
 #   reply_enabled: false             # AI replies to non-command @mentions (default: false)
 #                                    # When enabled, the bot replies to questions/requests
 #                                    # from authorized users with contextual AI-generated answers.
-#   reply_authorized_users: ["*"]    # Who can trigger AI replies (default: uses authorized_users)
+#   reply_authorized_users: ["alice"] # Who can trigger AI replies (default: uses authorized_users)
 #                                    # Separate from command permissions — allows broader audience
-#                                    # for read-only replies. ["*"] = anyone (no permission check).
-#                                    # Omit to fall back to authorized_users. Set [] to disable.
+#                                    # for read-only replies. ["*"] = anyone with repo write access.
+#                                    # ⚠️ On public repos, ["*"] lets any write-access user trigger
+#                                    # Claude sessions. Prefer named users or omit to inherit
+#                                    # authorized_users. Set [] to disable.
 #                                    # Per-project override available in projects.yaml.
 #   reply_rate_limit: 5              # Max AI replies per user per hour (default: 5, min: 1)
 #                                    # Prevents API quota abuse when replies are open broadly.

@@ -22,7 +22,10 @@ Per-project override in projects.yaml:
           reply_authorized_users: ["*"]
 """
 
+import logging
 from typing import List, Optional
+
+log = logging.getLogger(__name__)
 
 
 def get_github_nickname(config: dict) -> str:
@@ -250,4 +253,19 @@ def validate_github_config(config: dict) -> Optional[str]:
     if not nickname:
         return "GitHub commands enabled but 'github.nickname' is not set in config.yaml"
 
+    warn_reply_wildcard(config)
     return None
+
+
+def warn_reply_wildcard(config: dict) -> None:
+    """Log a warning when reply_enabled + wildcard auth exposes replies to all GitHub users."""
+    if not get_github_reply_enabled(config):
+        return
+    reply_users = get_github_reply_authorized_users(config)
+    if reply_users is None:
+        reply_users = get_github_authorized_users(config)
+    if reply_users == ["*"]:
+        log.warning(
+            "GitHub reply: authorized to ALL GitHub users with repo write access "
+            "— consider restricting reply_authorized_users in config.yaml"
+        )

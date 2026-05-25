@@ -21,6 +21,7 @@ Reply flow (when reply_enabled=true and command not recognized):
 
 import json
 import logging
+import os
 import re
 import subprocess
 import time
@@ -58,8 +59,38 @@ log = logging.getLogger(__name__)
 _MAX_TRACKED_ENTRIES = 10000
 _error_replies: BoundedSet = BoundedSet(maxlen=_MAX_TRACKED_ENTRIES)
 
-# Per-user rate tracking for AI replies: {username: [timestamp, ...]}
-_reply_timestamps: Dict[str, List[float]] = {}
+# Per-user rate tracking for AI replies — persisted to survive restarts.
+_REPLY_RATE_FILE = ".reply-rate-limits.json"
+
+
+def _load_reply_timestamps(instance_dir: str) -> Dict[str, List[float]]:
+    """Load reply timestamps from disk, discarding entries older than 1 hour."""
+    path = os.path.join(instance_dir, _REPLY_RATE_FILE)
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    one_hour_ago = time.time() - 3600
+    result: Dict[str, List[float]] = {}
+    for user, timestamps in data.items():
+        if not isinstance(timestamps, list):
+            continue
+        fresh = [t for t in timestamps if isinstance(t, (int, float)) and t > one_hour_ago]
+        if fresh:
+            result[user] = fresh
+    return result
+
+
+def _save_reply_timestamps(instance_dir: str, data: Dict[str, List[float]]) -> None:
+    """Persist reply timestamps to disk atomically."""
+    from pathlib import Path
+
+    from app.utils import atomic_write_json
+
+    atomic_write_json(Path(instance_dir) / _REPLY_RATE_FILE, data)
 
 
 def _quarantine_github_mission(text: str, reason: str, author: str):
@@ -807,26 +838,24 @@ def _try_reply(
     if reply_users is None:
         reply_users = get_github_authorized_users(config, project_name, projects_config)
 
-    # Wildcard for replies means "anyone" — skip permission check entirely
-    # (unlike command wildcard which checks GitHub write access)
-    if reply_users != ["*"] and not check_user_permission(owner, repo, comment_author, reply_users):
+    if not check_user_permission(owner, repo, comment_author, reply_users):
         log.debug(
             "GitHub reply: permission denied for @%s on %s/%s",
             comment_author, owner, repo,
         )
         return False
 
-    # Rate limit: prevent API quota abuse from broad reply permissions
+    # Rate limit: prevent API quota abuse from broad reply permissions.
+    # State persisted to disk so limits survive process restarts.
+    koan_root = os.environ.get("KOAN_ROOT", "")
+    instance_dir = os.path.join(koan_root, "instance") if koan_root else ""
+
     rate_limit = get_github_reply_rate_limit(config)
-    now = time.time()
-    one_hour_ago = now - 3600
-    user_timestamps = _reply_timestamps.get(comment_author, [])
-    # Clean up stale entries (and remove key entirely if empty)
-    user_timestamps = [t for t in user_timestamps if t > one_hour_ago]
-    if user_timestamps:
-        _reply_timestamps[comment_author] = user_timestamps
+    if instance_dir:
+        all_timestamps = _load_reply_timestamps(instance_dir)
     else:
-        _reply_timestamps.pop(comment_author, None)
+        all_timestamps = {}
+    user_timestamps = all_timestamps.get(comment_author, [])
     if len(user_timestamps) >= rate_limit:
         log.warning(
             "GitHub reply: rate limit (%d/h) exceeded for @%s on %s/%s",
@@ -895,8 +924,11 @@ def _try_reply(
         owner, repo, issue_number, reply_text,
     )
 
-    # Record successful reply for rate limiting
-    _reply_timestamps.setdefault(comment_author, []).append(time.time())
+    # Record successful reply for rate limiting (persist to disk)
+    if instance_dir:
+        all_timestamps = _load_reply_timestamps(instance_dir)
+        all_timestamps.setdefault(comment_author, []).append(time.time())
+        _save_reply_timestamps(instance_dir, all_timestamps)
 
     log.info("GitHub reply: posted reply to @%s on %s/%s#%s", comment_author, owner, repo, issue_number)
     return True
