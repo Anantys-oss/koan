@@ -974,8 +974,8 @@ def _check_pipeline_timeout_rate(instance_dir: str) -> None:
                 last_alert = state.get("last_alert_ts", 0)
                 if now - last_alert < _TIMEOUT_ALERT_COOLDOWN:
                     return
-            except (json.JSONDecodeError, OSError):
-                pass
+            except (json.JSONDecodeError, OSError) as exc:
+                _log_runner("error", f"Timeout alert state read failed: {exc}")
 
         # Emit alert
         msg = (
@@ -991,8 +991,8 @@ def _check_pipeline_timeout_rate(instance_dir: str) -> None:
         try:
             from app.utils import atomic_write
             atomic_write(state_path, json.dumps({"last_alert_ts": now}))
-        except OSError:
-            pass
+        except OSError as exc:
+            _log_runner("error", f"Timeout alert state write failed: {exc}")
 
     except Exception as e:
         _log_runner("error", f"Pipeline timeout rate check failed: {e}")
@@ -1129,8 +1129,8 @@ def _notify_mission_result(
                 mtime = None
             if start_time > 0 and mtime is not None and mtime > start_time:
                 return
-        except OSError:
-            pass
+        except OSError as exc:
+            _log_runner("error", f"Outbox mtime check failed: {exc}")
 
         title_short = (mission_title or "").strip()
         if len(title_short) > 120:

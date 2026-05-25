@@ -270,8 +270,8 @@ def _maybe_warn_burn_rate(instance_dir: Path, usage_state_path: Path) -> None:
             if last_warned < session_start:
                 clear_warning(instance_dir)
                 last_warned = None
-        except (json.JSONDecodeError, OSError, KeyError, ValueError, TypeError):
-            pass
+        except (json.JSONDecodeError, OSError, KeyError, ValueError, TypeError) as exc:
+            _log_iteration("error", f"Burn rate warning state parse failed: {exc}")
 
     if last_warned is not None:
         return  # Already warned for this session cycle
@@ -853,8 +853,8 @@ def _select_diagnostic_type(
         empty = metrics.get("empty", 0)
         if total > 0 and empty / total > 0.5:
             return "dead_code"
-    except (ImportError, OSError, ValueError):
-        pass
+    except (ImportError, OSError, ValueError) as exc:
+        _log_iteration("error", f"Diagnostic type detection failed: {exc}")
 
     return "audit"
 
@@ -1632,8 +1632,8 @@ def plan_iteration(
                         f"Contemplative chance adapted: "
                         f"{contemplative_chance}% → {adapted_chance}% "
                         f"(project={project_name})")
-            except (ImportError, OSError, ValueError):
-                pass
+            except (ImportError, OSError, ValueError) as exc:
+                _log_iteration("error", f"Contemplative chance adaptation failed: {exc}")
 
         autonomous_decision = _decide_autonomous_action(
             autonomous_mode, koan_root, schedule_state, adapted_chance,

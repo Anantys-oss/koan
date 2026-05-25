@@ -449,12 +449,16 @@ def _skills_dir_mtime(instance_dir: str) -> float:
     """Get the max mtime of core and instance skills directories."""
     best = 0.0
     core_dir = Path(__file__).resolve().parent.parent / "skills" / "core"
-    with contextlib.suppress(OSError):
+    try:
         best = max(best, core_dir.stat().st_mtime)
+    except OSError as exc:
+        _log_loop("error", f"Core skills dir stat failed: {exc}")
     instance_skills = Path(instance_dir) / "skills"
     if instance_skills.is_dir():
-        with contextlib.suppress(OSError):
+        try:
             best = max(best, instance_skills.stat().st_mtime)
+        except OSError as exc:
+            _log_loop("error", f"Instance skills dir stat failed: {exc}")
     return best
 
 
@@ -569,8 +573,8 @@ def _get_known_repos_from_projects(koan_root: str) -> Optional[set]:
             for url in urls:
                 if url:
                     known_repos.add(_normalize_github_url(url))
-    except ImportError:
-        pass
+    except ImportError as exc:
+        _log_loop("error", f"GitHub known repos detection failed: {exc}")
 
     if known_repos:
         log.debug("GitHub: known repos from all sources: %s", known_repos)
@@ -590,8 +594,8 @@ def _warn_unregistered_mention_repos(
         from app.config import get_enable_multiple_instances
         if get_enable_multiple_instances():
             return
-    except (ImportError, OSError):
-        pass
+    except (ImportError, OSError) as exc:
+        _log_loop("error", f"Multi-instance config check failed: {exc}")
 
     with _warned_unregistered_repos_lock:
         new_repos = {
@@ -975,8 +979,8 @@ def _process_one_notification(
                     thread_id = str(notif.get("id", ""))
                     if thread_id:
                         mark_notification_read(thread_id)
-            except (ImportError, OSError):
-                pass
+            except (ImportError, OSError) as exc:
+                _log_loop("error", f"Notification read-mark failed: {exc}")
             return False
 
         _log_notification(notif)

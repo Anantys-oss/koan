@@ -926,8 +926,8 @@ def main_loop():
                                 if consecutive_idle == MAX_CONSECUTIVE_IDLE:
                                     log("koan", "Idle timeout reached but schedule is active — staying awake")
                                 continue
-                        except (ImportError, Exception):
-                            pass  # schedule check failed — fall through to pause
+                        except Exception as exc:
+                            log("error", f"Schedule active check failed: {exc}")
 
                         from app.config import get_auto_pause
                         if get_auto_pause():
@@ -1580,8 +1580,8 @@ def _maybe_retry_mission(
     try:
         open(stdout_file, "w").close()
         open(stderr_file, "w").close()
-    except OSError:
-        pass
+    except OSError as exc:
+        log("error", f"Output file clear before retry failed: {exc}")
 
     retry_exit = run_claude_task(
         cmd, stdout_file, stderr_file, cwd=project_path,
@@ -2202,8 +2202,8 @@ def _run_iteration(
                 try:
                     _cp_stdout = Path(stdout_file).read_text(errors="replace")
                     update_from_stdout(instance, original_mission_title, _cp_stdout)
-                except OSError:
-                    pass
+                except OSError as exc:
+                    log("error", f"Checkpoint stdout read failed: {exc}")
             except Exception as e:
                 log("error", f"Checkpoint update failed (non-blocking): {e}")
 
@@ -2959,8 +2959,8 @@ def _run_skill_mission(
             _timeout_stderr = Path(stderr_file).read_text().strip()
             if _timeout_stderr:
                 debug_log(f"[run] timeout stderr:\n{_timeout_stderr[:2000]}")
-        except OSError:
-            pass
+        except OSError as exc:
+            log("error", f"Timeout stderr read failed: {exc}")
         exit_code = 1
         skill_stdout = "\n".join(stdout_lines)
         skill_stderr = ""
@@ -2974,8 +2974,10 @@ def _run_skill_mission(
         skill_stderr = ""
     finally:
         if proc is not None and proc.stdout is not None:
-            with contextlib.suppress(OSError):
+            try:
                 proc.stdout.close()
+            except OSError as exc:
+                log("error", f"Skill proc stdout close failed: {exc}")
         if stderr_fh is not None:
             stderr_fh.close()
         _sig.claude_proc = None
@@ -3035,8 +3037,10 @@ def _run_skill_mission(
 def _cleanup_temp(*files):
     """Remove temporary files."""
     for f in files:
-        with contextlib.suppress(OSError):
+        try:
             Path(f).unlink(missing_ok=True)
+        except OSError as exc:
+            log("error", f"Temp file cleanup failed ({f}): {exc}")
 
 
 # ---------------------------------------------------------------------------
