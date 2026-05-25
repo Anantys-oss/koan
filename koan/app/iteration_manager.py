@@ -350,6 +350,17 @@ def _drain_ci_queue(instance_dir: Path):
         return None
 
 
+def _dispatch_ci_fixes(instance_dir: Path, koan_root: str):
+    """Auto-dispatch fix missions for failing CI on Koan PRs."""
+    try:
+        from app.ci_dispatch import check_and_dispatch_ci_fixes
+        count = check_and_dispatch_ci_fixes(str(instance_dir), koan_root)
+        if count > 0:
+            _log_iteration("koan", f"CI dispatch: {count} fix mission(s) queued")
+    except (ImportError, OSError, ValueError) as e:
+        _log_iteration("error", f"CI dispatch error: {e}")
+
+
 def _fallback_mission_extract(instance_dir: Path, projects_str: str,
                               context_msg: str):
     """Attempt direct mission extraction when the picker fails or returns empty.
@@ -1396,6 +1407,9 @@ def plan_iteration(
 
     # Step 3b: Drain CI queue (one entry per iteration, non-blocking)
     ci_drain_msg = _drain_ci_queue(instance)
+
+    # Step 3c: Auto-dispatch CI fix missions for failing Koan PRs
+    _dispatch_ci_fixes(instance, koan_root)
 
     # Step 4: Pick mission. Manual missions (queued in missions.md or via
     # notifications) are always eligible regardless of branch saturation —

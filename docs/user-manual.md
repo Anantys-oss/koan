@@ -1391,6 +1391,17 @@ Edit `instance/soul.md` to define Kōan's personality. This file shapes how Kōa
 
 The design principle: code is generic and open source; instance data (including personality) is private. Fork the repo, write your own soul.
 
+### CI Dispatch
+
+Kōan can automatically create fix missions when CI fails on its own PRs. When enabled, each iteration checks open Koan-authored PRs for failing check runs and inserts a fix mission with the failure log snippet. Dedup prevents re-dispatching the same failure.
+
+```yaml
+ci_dispatch:
+  enabled: true              # Master switch (default: false)
+  cooldown_minutes: 30       # Min time between checks per project (default: 30)
+  log_snippet_bytes: 4096    # Max CI log snippet in mission text (default: 4096)
+```
+
 ### Auto-Update
 
 Kōan can automatically check for and apply updates from upstream. Configure in `config.yaml`:

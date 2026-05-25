@@ -448,6 +448,12 @@ usage:
 #   check_interval: 10      # Check every N iterations (default: 10)
 #   notify: true            # Notify on Telegram before/after update (default: true)
 
+# CI dispatch: auto-create fix missions when CI fails on Koan's open PRs.
+# Checks GitHub check-runs API each iteration (per-project cooldown).
+# ci_dispatch:
+#   enabled: true              # Master switch (default: false)
+#   cooldown_minutes: 30       # Min time between checks per project (default: 30)
+#   log_snippet_bytes: 4096    # Max CI log snippet in mission text (default: 4096)
 
 
 # memory:
