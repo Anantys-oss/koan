@@ -141,6 +141,20 @@ class CLIProvider:
         """
         return []
 
+    def supports_session_resume(self) -> bool:
+        """Return True if the provider supports resuming a previous session.
+
+        When True, ``build_resume_args`` produces valid CLI flags.
+        """
+        return False
+
+    def build_resume_args(self, session_id: str) -> List[str]:
+        """Build args to resume a previous CLI session.
+
+        Base implementation returns empty (not supported).
+        """
+        return []
+
     def supports_stream_json(self) -> bool:
         """Return True if the provider supports ``--output-format stream-json``.
 
@@ -194,6 +208,7 @@ class CLIProvider:
         system_prompt: str = "",
         system_prompt_file: str = "",
         effort: str = "",
+        resume_session_id: str = "",
     ) -> List[str]:
         """Build a complete CLI command from generic parameters.
 
@@ -211,6 +226,9 @@ class CLIProvider:
                 back to the in-argv path.
             effort: Reasoning effort level (e.g. "low", "medium", "high", "max").
                 Empty string means no override.
+            resume_session_id: When set and the provider supports session
+                resumption, continues the given session instead of starting
+                fresh. Saves tokens by reusing the prior conversation context.
 
         Returns a list of strings suitable for subprocess.run().
         """
@@ -225,6 +243,8 @@ class CLIProvider:
                 prompt = system_prompt + "\n\n" + prompt
 
         cmd = [self.binary()]
+        if resume_session_id and self.supports_session_resume():
+            cmd.extend(self.build_resume_args(resume_session_id))
         cmd.extend(self.build_permission_args(skip_permissions))
         cmd.extend(sys_args)
         cmd.extend(self.build_prompt_args(prompt))

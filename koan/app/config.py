@@ -404,6 +404,17 @@ def get_debug_enabled() -> bool:
     return bool(config.get("debug", False))
 
 
+def is_session_resume_enabled() -> bool:
+    """Check if session resumption is enabled for post-mission reflection.
+
+    When True, the reflection phase reuses the main mission's Claude session
+    via ``--resume``, saving tokens by keeping the prior conversation context.
+    Default: True (opt-out via ``session_resume_enabled: false``).
+    """
+    config = _load_config()
+    return bool(config.get("session_resume_enabled", True))
+
+
 def is_dashboard_enabled() -> bool:
     """Check if dashboard is enabled for managed startup.
 

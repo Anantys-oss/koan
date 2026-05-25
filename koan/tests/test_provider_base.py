@@ -392,3 +392,58 @@ class TestThinkingArgs:
         cmd = p.build_command(prompt="go")
         assert "--think" not in cmd
         assert "--effort" not in cmd
+
+
+# ---------------------------------------------------------------------------
+# Session resume args
+# ---------------------------------------------------------------------------
+
+class TestSessionResumeArgs:
+    """Test session resume support on base and concrete providers."""
+
+    def test_base_does_not_support_resume(self):
+        p = StubProvider()
+        assert p.supports_session_resume() is False
+
+    def test_base_build_resume_args_returns_empty(self):
+        p = StubProvider()
+        assert p.build_resume_args("abc-123") == []
+
+    def test_build_command_without_resume(self):
+        p = StubProvider()
+        cmd = p.build_command(prompt="go")
+        assert "--resume" not in cmd
+
+    def test_build_command_ignores_resume_when_unsupported(self):
+        p = StubProvider()
+        cmd = p.build_command(prompt="go", resume_session_id="abc-123")
+        assert "--resume" not in cmd
+
+    def test_build_command_with_resume_on_supporting_provider(self):
+        class ResumeProvider(StubProvider):
+            def supports_session_resume(self):
+                return True
+
+            def build_resume_args(self, session_id):
+                if session_id:
+                    return ["--resume", session_id]
+                return []
+
+        p = ResumeProvider()
+        cmd = p.build_command(prompt="go", resume_session_id="abc-123")
+        assert "--resume" in cmd
+        assert "abc-123" in cmd
+
+    def test_build_command_no_resume_with_empty_session_id(self):
+        class ResumeProvider(StubProvider):
+            def supports_session_resume(self):
+                return True
+
+            def build_resume_args(self, session_id):
+                if session_id:
+                    return ["--resume", session_id]
+                return []
+
+        p = ResumeProvider()
+        cmd = p.build_command(prompt="go", resume_session_id="")
+        assert "--resume" not in cmd

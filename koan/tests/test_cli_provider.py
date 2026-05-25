@@ -1256,3 +1256,49 @@ class TestThinkingSupport:
             cmd = build_full_command(prompt="test")
             effort_count = cmd.count("--effort")
             assert effort_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Session resume
+# ---------------------------------------------------------------------------
+
+
+class TestSessionResume:
+    """Test session resume support across providers."""
+
+    def test_claude_provider_supports_resume(self):
+        p = ClaudeProvider()
+        assert p.supports_session_resume() is True
+
+    def test_claude_provider_build_resume_args(self):
+        p = ClaudeProvider()
+        assert p.build_resume_args("abc-123") == ["--resume", "abc-123"]
+
+    def test_claude_provider_build_resume_args_empty(self):
+        p = ClaudeProvider()
+        assert p.build_resume_args("") == []
+
+    def test_copilot_does_not_support_resume(self):
+        p = CopilotProvider()
+        assert p.supports_session_resume() is False
+
+    def test_local_does_not_support_resume(self):
+        p = LocalLLMProvider()
+        assert p.supports_session_resume() is False
+
+    def test_build_full_command_with_resume(self):
+        with patch("app.provider.get_provider", return_value=ClaudeProvider()), \
+             patch("app.config.get_skip_permissions", return_value=True):
+            cmd = build_full_command(
+                prompt="reflect on the mission",
+                resume_session_id="550e8400-e29b-41d4",
+            )
+            assert "--resume" in cmd
+            idx = cmd.index("--resume")
+            assert cmd[idx + 1] == "550e8400-e29b-41d4"
+
+    def test_build_full_command_without_resume(self):
+        with patch("app.provider.get_provider", return_value=ClaudeProvider()), \
+             patch("app.config.get_skip_permissions", return_value=True):
+            cmd = build_full_command(prompt="test")
+            assert "--resume" not in cmd

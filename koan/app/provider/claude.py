@@ -13,6 +13,14 @@ class ClaudeProvider(CLIProvider):
     def binary(self) -> str:
         return "claude"
 
+    def supports_session_resume(self) -> bool:
+        return True
+
+    def build_resume_args(self, session_id: str) -> List[str]:
+        if session_id:
+            return ["--resume", session_id]
+        return []
+
     def supports_stream_json(self) -> bool:
         return True
 

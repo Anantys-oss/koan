@@ -239,6 +239,7 @@ class CodexProvider(CLIProvider):
         system_prompt: str = "",
         system_prompt_file: str = "",
         effort: str = "",
+        resume_session_id: str = "",
     ) -> List[str]:
         """Build a complete Codex CLI command.
 
