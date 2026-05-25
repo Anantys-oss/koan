@@ -1,11 +1,59 @@
-"""Tests for error-path logging — verifies silent suppressions were replaced with log calls."""
+"""Tests for error-path logging — verifies suppress_logged replaces silent suppressions."""
 
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 
+class TestSuppressLogged:
+    """run_log.suppress_logged context manager works correctly."""
+
+    def test_catches_listed_exception_and_logs(self):
+        from app.run_log import suppress_logged
+
+        mock_log = MagicMock()
+        with suppress_logged(mock_log, "error", "file read failed", OSError):
+            raise OSError("disk full")
+
+        mock_log.assert_called_once()
+        assert "file read failed" in mock_log.call_args[0][1]
+        assert "disk full" in mock_log.call_args[0][1]
+
+    def test_does_not_catch_unlisted_exception(self):
+        from app.run_log import suppress_logged
+
+        mock_log = MagicMock()
+        try:
+            with suppress_logged(mock_log, "error", "msg", OSError):
+                raise ValueError("wrong type")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("ValueError should have propagated")
+        mock_log.assert_not_called()
+
+    def test_no_exception_passes_through(self):
+        from app.run_log import suppress_logged
+
+        mock_log = MagicMock()
+        with suppress_logged(mock_log, "error", "msg", OSError):
+            result = 42
+
+        assert result == 42
+        mock_log.assert_not_called()
+
+    def test_defaults_to_exception_when_no_types_given(self):
+        from app.run_log import suppress_logged
+
+        mock_log = MagicMock()
+        with suppress_logged(mock_log, "error", "catch-all"):
+            raise RuntimeError("boom")
+
+        mock_log.assert_called_once()
+        assert "boom" in mock_log.call_args[0][1]
+
+
 class TestSkillDispatchErrorLogging:
-    """skill_dispatch._get_skills_dir_mtime logs OSError instead of suppressing."""
+    """skill_dispatch uses suppress_logged for error paths."""
 
     @patch("app.skill_dispatch._log_skill")
     def test_temp_file_cleanup_failure_logged(self, mock_log):
@@ -19,18 +67,16 @@ class TestSkillDispatchErrorLogging:
 
 
 class TestMissionRunnerErrorLogging:
-    """mission_runner silent except:pass sites now log errors."""
+    """mission_runner uses suppress_logged for error paths."""
 
     @patch("app.mission_runner._log_runner")
     def test_timeout_alert_state_read_failure_logged(self, mock_log, tmp_path):
         from app.mission_runner import _check_pipeline_timeout_rate
 
         instance_dir = str(tmp_path)
-        # Write corrupt state file so JSON parse fails
         state_file = tmp_path / ".pipeline-timeout-alert.json"
         state_file.write_text("{invalid json")
 
-        # Write enough outcomes to trigger the threshold check
         outcomes = [{"pipeline_timed_out": True}] * 10
 
         with patch("app.session_tracker.load_outcomes", return_value=outcomes):
@@ -43,7 +89,6 @@ class TestMissionRunnerErrorLogging:
 
     @patch("app.mission_runner._log_runner")
     def test_timeout_alert_state_write_failure_logged(self, mock_log, tmp_path):
-        """Verify the write failure path in _check_pipeline_timeout_rate."""
         from app.mission_runner import _check_pipeline_timeout_rate
 
         instance_dir = str(tmp_path)
@@ -61,7 +106,7 @@ class TestMissionRunnerErrorLogging:
 
 
 class TestCliExecErrorLogging:
-    """cli_exec silent suppressions now log errors."""
+    """cli_exec uses suppress_logged for error paths."""
 
     @patch("app.cli_exec._log_cli")
     def test_prompt_file_cleanup_failure_logged(self, mock_log):
@@ -75,7 +120,7 @@ class TestCliExecErrorLogging:
 
 
 class TestRunErrorLogging:
-    """run.py silent suppressions now log errors."""
+    """run.py uses suppress_logged for error paths."""
 
     @patch("app.run.log")
     def test_cleanup_temp_failure_logged(self, mock_log):
@@ -93,7 +138,7 @@ class TestRunErrorLogging:
 
 
 class TestIterationManagerErrorLogging:
-    """iteration_manager silent suppressions now log errors."""
+    """iteration_manager uses suppress_logged for error paths."""
 
     @patch("app.iteration_manager._log_iteration")
     def test_diagnostic_type_detection_failure_logged(self, mock_log):

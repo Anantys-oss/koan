@@ -16,7 +16,6 @@ CLI interface:
 """
 
 import argparse
-import contextlib
 import logging
 import os
 import re
@@ -41,7 +40,7 @@ from app.constants import (
     NOTIF_CACHE_TTL as _NOTIF_CACHE_TTL,
 )
 from app.missions import count_pending
-from app.run_log import log_safe as _log_loop
+from app.run_log import log_safe as _log_loop, suppress_logged
 from app.utils import atomic_write
 
 
@@ -449,16 +448,12 @@ def _skills_dir_mtime(instance_dir: str) -> float:
     """Get the max mtime of core and instance skills directories."""
     best = 0.0
     core_dir = Path(__file__).resolve().parent.parent / "skills" / "core"
-    try:
+    with suppress_logged(_log_loop, "error", "Core skills dir stat failed", OSError):
         best = max(best, core_dir.stat().st_mtime)
-    except OSError as exc:
-        _log_loop("error", f"Core skills dir stat failed: {exc}")
     instance_skills = Path(instance_dir) / "skills"
     if instance_skills.is_dir():
-        try:
+        with suppress_logged(_log_loop, "error", "Instance skills dir stat failed", OSError):
             best = max(best, instance_skills.stat().st_mtime)
-        except OSError as exc:
-            _log_loop("error", f"Instance skills dir stat failed: {exc}")
     return best
 
 
@@ -546,35 +541,26 @@ def _get_known_repos_from_projects(koan_root: str) -> Optional[set]:
                     known_repos.add(_normalize_github_url(url))
 
     # 2. Workspace projects — in-memory cache.
-    try:
+    with suppress_logged(_log_loop, "error", "GitHub known repos detection failed", ImportError):
         from app.projects_merged import (
             get_all_github_urls_cache,
             get_github_url_cache,
             populate_workspace_github_urls,
         )
 
-        # Refresh the cache so repos cloned under ANY alias directory name are
-        # recognized without a restart (startup populate is a one-time snapshot).
         try:
             populate_workspace_github_urls(koan_root)
         except Exception as e:
-            # Fallback is the pre-existing stale-cache behavior, but a persistent
-            # failure here silently stops recognizing new repos — warn so it's
-            # visible without debug logging enabled.
             log.warning("workspace github-url refresh failed: %s", e)
 
-        # Primary URLs (origin remote)
         for url in get_github_url_cache().values():
             if url:
                 known_repos.add(_normalize_github_url(url))
 
-        # All remote URLs (origin + upstream + others)
         for urls in get_all_github_urls_cache().values():
             for url in urls:
                 if url:
                     known_repos.add(_normalize_github_url(url))
-    except ImportError as exc:
-        _log_loop("error", f"GitHub known repos detection failed: {exc}")
 
     if known_repos:
         log.debug("GitHub: known repos from all sources: %s", known_repos)
@@ -590,12 +576,10 @@ def _warn_unregistered_mention_repos(
     if not skipped_mention_repos:
         return
 
-    try:
+    with suppress_logged(_log_loop, "error", "Multi-instance config check failed", ImportError, OSError):
         from app.config import get_enable_multiple_instances
         if get_enable_multiple_instances():
             return
-    except (ImportError, OSError) as exc:
-        _log_loop("error", f"Multi-instance config check failed: {exc}")
 
     with _warned_unregistered_repos_lock:
         new_repos = {
@@ -988,14 +972,12 @@ def _process_one_notification(
             log.debug("GitHub: skipping notification for foreign repo %s", repo)
             _cache_notif(notif)
             # Single-instance: safe to mark as read — no sibling will claim it.
-            try:
+            with suppress_logged(_log_loop, "error", "Notification read-mark failed", ImportError, OSError):
                 from app.config import get_enable_multiple_instances
                 if not get_enable_multiple_instances():
                     thread_id = str(notif.get("id", ""))
                     if thread_id:
                         mark_notification_read(thread_id)
-            except (ImportError, OSError) as exc:
-                _log_loop("error", f"Notification read-mark failed: {exc}")
             return False
 
         _log_notification(notif)

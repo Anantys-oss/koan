@@ -20,7 +20,6 @@ Scoped skills:
     /namespace.skill <args>             -> resolved via skill registry
 """
 
-import contextlib
 import re
 import sys
 import threading
@@ -28,9 +27,8 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from app.github_url_parser import ISSUE_URL_PATTERN, JIRA_ISSUE_URL_PATTERN, PR_URL_PATTERN
-<<<<<<< HEAD
 from app.missions import extract_now_flag, strip_timestamps
-from app.run_log import log_safe as _log_skill
+from app.run_log import log_safe as _log_skill, suppress_logged
 from app.utils import PROJECT_TAG_PREFIX_RE, is_known_project
 
 # Module-level registry cache for the run process.
@@ -48,16 +46,12 @@ def _get_skills_dir_mtime(instance_dir: Path) -> float:
     """Get the max mtime of core and instance skills directories."""
     best = 0.0
     core_dir = Path(__file__).resolve().parent.parent / "skills" / "core"
-    try:
+    with suppress_logged(_log_skill, "error", "Core skills dir stat failed", OSError):
         best = max(best, core_dir.stat().st_mtime)
-    except OSError as exc:
-        _log_skill("error", f"Core skills dir stat failed: {exc}")
     instance_skills = instance_dir / "skills"
     if instance_skills.is_dir():
-        try:
+        with suppress_logged(_log_skill, "error", "Instance skills dir stat failed", OSError):
             best = max(best, instance_skills.stat().st_mtime)
-        except OSError as exc:
-            _log_skill("error", f"Instance skills dir stat failed: {exc}")
     return best
 
 
@@ -886,10 +880,8 @@ def cleanup_skill_temp_files(skill_cmd: List[str]) -> None:
         if prefix and i + 1 < len(skill_cmd):
             path = skill_cmd[i + 1]
             if prefix in path:
-                try:
+                with suppress_logged(_log_skill, "error", f"Temp skill file cleanup failed ({path})", OSError):
                     os.unlink(path)
-                except OSError as exc:
-                    _log_skill("error", f"Temp skill file cleanup failed ({path}): {exc}")
 
 
 def validate_skill_args(command: str, args: str) -> Optional[str]:

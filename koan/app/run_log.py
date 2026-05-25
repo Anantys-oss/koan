@@ -22,6 +22,7 @@ Usage:
     print(bold_cyan("=== Run 1/5 ==="))
 """
 
+import contextlib
 import os
 import sys
 import time
@@ -149,3 +150,12 @@ def log_safe(category: str, message: str, *, force_stderr: bool = False):
 
 def bold_green(text: str) -> str:
     return _styled(text, "bold", "green")
+
+
+@contextlib.contextmanager
+def suppress_logged(log_fn, level, message, *exceptions):
+    """Like contextlib.suppress but logs the exception."""
+    try:
+        yield
+    except (exceptions or (Exception,)) as exc:
+        log_fn(level, f"{message}: {exc}")
