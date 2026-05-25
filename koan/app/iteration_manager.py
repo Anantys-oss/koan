@@ -262,7 +262,6 @@ def _maybe_warn_burn_rate(instance_dir: Path, usage_state_path: Path) -> None:
     if last_warned is not None:
         with suppress_logged(_log_iteration, "error", "Burn rate warning state parse failed",
                              json.JSONDecodeError, OSError, KeyError, ValueError, TypeError):
-            import json
             from datetime import datetime, timezone
             state = json.loads(usage_state_path.read_text())
             session_start = datetime.fromisoformat(state["session_start"])
