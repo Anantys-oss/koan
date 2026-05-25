@@ -1888,8 +1888,22 @@ def _run_iteration(
             from app.mission_history import should_skip_mission
             if should_skip_mission(instance, mission_title, max_executions=3):
                 log("mission", f"Skipping repeated mission (3+ attempts): {mission_title[:60]}")
-                _update_mission_in_file(instance, mission_title, failed=True)
-                _notify(instance, f"⚠️ Mission failed 3+ times, moved to Failed: {mission_title[:60]}")
+                moved = _update_mission_in_file(
+                    instance, mission_title, failed=True,
+                    cause_tag="repeated-3x",
+                )
+                if moved:
+                    _notify(instance, f"⚠️ Mission ran 3+ times without clearing, moved to Failed: {mission_title[:60]}")
+                else:
+                    # The mission could not be matched in missions.md, so it
+                    # stays in Pending and would be re-picked forever. Surface
+                    # this loudly — a silent retry loop is the worst outcome.
+                    log("error", f"Repeated mission could not be removed from queue: {mission_title[:80]}")
+                    _notify(instance, (
+                        f"🛑 Mission ran 3+ times but could NOT be removed from the queue "
+                        f"(text mismatch in missions.md). It will keep being retried until you "
+                        f"edit/cancel it manually: {mission_title[:80]}"
+                    ))
                 _commit_instance(instance)
                 return False  # dedup skip — not productive
         except Exception as e:
@@ -2526,19 +2540,24 @@ def _update_mission_in_file(
     *,
     failed: bool = False,
     cause_tag: str = "",
-):
+) -> bool:
     """Move mission from Pending/In Progress to Done/Failed via locked write.
 
     *cause_tag* is only honored when *failed* is True; it is appended to
     the missions.md entry (e.g. ``[stagnation]``) so the failure reason
     is visible without digging through journals.
+
+    Returns True if the mission was actually moved, False otherwise (e.g.
+    the mission text could not be matched in Pending/In Progress). A False
+    return means the mission is still in the queue and will be re-picked —
+    callers should surface this rather than let it loop silently.
     """
     try:
         from app.missions import complete_mission, fail_mission
         from app.utils import modify_missions_file
         missions_path = Path(instance, "missions.md")
         if not missions_path.exists():
-            return
+            return False
 
         if failed:
             def transform(content):
@@ -2556,9 +2575,12 @@ def _update_mission_in_file(
         after = modify_missions_file(missions_path, tracked)
         if before[0] is not None and after == before[0]:
             log("warning", f"Mission not found (no change): {mission_title[:80]}")
+            return False
+        return True
     except Exception as e:
         label = "fail" if failed else "complete"
         log("error", f"Could not {label} mission in missions.md: {e}")
+        return False
 
 
 def _requeue_mission_in_file(instance: str, mission_title: str):

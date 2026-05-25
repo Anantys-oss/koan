@@ -1016,6 +1016,12 @@ def _remove_item_by_text(
         (ln.strip() for ln in needle.splitlines() if ln.strip()),
         needle,
     )
+    # Collapse internal whitespace runs in the needle so it matches the
+    # collapsed `comparable` below. Without this, a mission whose text
+    # contains double spaces (e.g. inline /plan context) can never match —
+    # the runner succeeds but the mission is never moved out of Pending,
+    # so it re-dispatches on every loop iteration forever.
+    line_needle = re.sub(r"\s+", " ", line_needle)
 
     lines = content.splitlines()
     boundaries = find_section_boundaries(lines)

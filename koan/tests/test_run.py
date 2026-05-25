@@ -5247,6 +5247,52 @@ class TestUpdateMissionInFile:
         # Mission should still be in In Progress (not moved)
         assert "/scope.myskill do something" in content.split("## In Progress")[1].split("##")[0]
 
+    def test_returns_true_when_moved(self, tmp_path):
+        """A successful move returns True so callers know the mission cleared."""
+        from app.run import _update_mission_in_file
+
+        missions = tmp_path / "instance" / "missions.md"
+        missions.parent.mkdir(parents=True)
+        missions.write_text(
+            "# Missions\n\n## Pending\n\n- /plan do something\n\n"
+            "## In Progress\n\n## Done\n"
+        )
+        assert _update_mission_in_file(str(missions.parent), "/plan do something") is True
+
+    def test_returns_false_when_not_matched(self, tmp_path):
+        """An unmatched mission returns False so callers can alert instead of looping."""
+        from app.run import _update_mission_in_file
+
+        missions = tmp_path / "instance" / "missions.md"
+        missions.parent.mkdir(parents=True)
+        missions.write_text(
+            "# Missions\n\n## Pending\n\n- /plan do something\n\n"
+            "## In Progress\n\n## Done\n"
+        )
+        assert _update_mission_in_file(str(missions.parent), "/plan absent mission") is False
+
+    def test_mission_with_double_spaces_is_moved(self, tmp_path):
+        """Regression: a mission with internal double spaces must clear the queue.
+
+        Previously the runner exited 0 but the mission stayed in Pending and
+        re-dispatched on every loop, because the completion matcher collapsed
+        whitespace on the file line but not on the search needle.
+        """
+        from app.run import _update_mission_in_file
+
+        mission = "/plan https://github.com/owner/repo/issues/15 cli  and  dashboard reconcile"
+        missions = tmp_path / "instance" / "missions.md"
+        missions.parent.mkdir(parents=True)
+        missions.write_text(
+            "# Missions\n\n## Pending\n\n"
+            f"- {mission}\n\n"
+            "## In Progress\n\n## Done\n"
+        )
+        assert _update_mission_in_file(str(missions.parent), mission) is True
+        content = missions.read_text()
+        assert mission not in content.split("## Pending")[1].split("##")[0]
+        assert "issues/15" in content.split("## Done")[1]
+
 
 # ---------------------------------------------------------------------------
 # Test: _run_iteration returns productive/idle boolean

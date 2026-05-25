@@ -1393,6 +1393,32 @@ class TestCompleteMission:
         assert len(sections["pending"]) == 0
         assert len(sections["done"]) == 1
 
+    def test_mission_with_internal_double_spaces_completes(self):
+        """A mission whose text contains runs of multiple spaces must still
+        be matched and moved to Done.
+
+        Regression: ``_remove_item_by_text`` collapsed whitespace on the
+        file line but NOT on the search needle, so a mission with double
+        spaces (e.g. inline /plan context typed with extra spacing) could
+        never be matched. The runner exited 0 but the mission stayed in
+        Pending and was re-dispatched on every loop iteration forever.
+        """
+        mission = (
+            "/plan https://github.com/owner/repo/issues/15 "
+            "issue #2 gives a cli  and #14 a dashboard  we reconcile both"
+        )
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            f"- {mission}\n\n"
+            "## In Progress\n\n"
+            "## Done\n"
+        )
+        result = complete_mission(content, mission)
+        sections = parse_sections(result)
+        assert len(sections["pending"]) == 0
+        assert len(sections["done"]) == 1
+
 
 # ---------------------------------------------------------------------------
 # fail_mission
