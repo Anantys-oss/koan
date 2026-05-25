@@ -98,10 +98,15 @@ def discover_workspace(koan_root: str, projects: list) -> list:
 def validate_config(koan_root: str):
     """Validate config.yaml keys and types, warn on typos or bad values.
 
-    Also detects config drift (keys in the template but missing from user config).
+    Raises ValueError on critical issues (broken YAML, wrong root type,
+    section type mismatches). Also detects config drift (keys in the
+    template but missing from user config).
     """
     from app.utils import load_config
-    from app.config_validator import validate_and_warn
+    from app.config_validator import validate_and_warn, validate_config_or_raise
+
+    validate_config_or_raise(koan_root)
+
     config = load_config()
     validate_and_warn(config, koan_root=koan_root)
 

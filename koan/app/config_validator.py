@@ -736,6 +736,68 @@ def find_extra_config_keys(
     return filtered
 
 
+def validate_config_or_raise(koan_root: str) -> None:
+    """Validate config.yaml strictly — raise ValueError on critical issues.
+
+    Called at startup to fail fast on broken config files. Checks:
+    1. YAML is parseable.
+    2. Root value is a mapping (dict).
+    3. Known section keys have correct types (dict sections aren't scalars).
+
+    Raises:
+        ValueError: With a human-readable message describing the issue.
+    """
+    import yaml as _yaml
+
+    config_path = Path(koan_root) / "instance" / "config.yaml"
+    if not config_path.exists():
+        return
+
+    try:
+        raw = config_path.read_text()
+    except OSError as e:
+        raise ValueError(f"Cannot read config.yaml: {e}") from e
+
+    try:
+        data = _yaml.safe_load(raw)
+    except _yaml.YAMLError as e:
+        raise ValueError(f"Invalid YAML in config.yaml: {e}") from e
+
+    if data is None:
+        return
+
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"config.yaml root must be a mapping, got {type(data).__name__}"
+        )
+
+    errors = []
+    for key, value in data.items():
+        if value is None or key not in CONFIG_SCHEMA:
+            continue
+        expected = CONFIG_SCHEMA[key]
+        if expected == _NESTED:
+            if key == "effort" and isinstance(value, str):
+                continue
+            if key == "stagnation" and value is False:
+                continue
+            if not isinstance(value, dict):
+                errors.append(
+                    f"'{key}' must be a mapping, got {type(value).__name__}"
+                )
+        else:
+            if not _check_type(value, expected):
+                exp_label = expected if isinstance(expected, str) else "/".join(expected)
+                errors.append(
+                    f"'{key}' must be {exp_label}, got {type(value).__name__}"
+                )
+
+    if errors:
+        raise ValueError(
+            "config.yaml has invalid entries:\n  - " + "\n  - ".join(errors)
+        )
+
+
 def validate_and_warn(config: dict, koan_root: Optional[str] = None) -> List[str]:
     """Validate config and log warnings. Optionally detect config drift.
 

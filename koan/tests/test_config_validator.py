@@ -791,3 +791,76 @@ class TestFindExtraConfigKeys:
         self._setup_template(tmp_path, {"max_runs_per_day": 20})
 
         assert find_extra_config_keys(str(tmp_path), user_config=["bad"]) == []
+
+
+# ---------------------------------------------------------------------------
+# validate_config_or_raise
+# ---------------------------------------------------------------------------
+
+class TestValidateConfigOrRaise:
+    """Tests for validate_config_or_raise() — strict startup validation."""
+
+    def _write_config(self, tmp_path, content):
+        instance = tmp_path / "instance"
+        instance.mkdir(exist_ok=True)
+        (instance / "config.yaml").write_text(content)
+
+    def test_missing_file_is_ok(self, tmp_path):
+        from app.config_validator import validate_config_or_raise
+        validate_config_or_raise(str(tmp_path))
+
+    def test_empty_file_is_ok(self, tmp_path):
+        from app.config_validator import validate_config_or_raise
+        self._write_config(tmp_path, "")
+        validate_config_or_raise(str(tmp_path))
+
+    def test_valid_config_passes(self, tmp_path):
+        from app.config_validator import validate_config_or_raise
+        self._write_config(tmp_path, "max_runs_per_day: 20\ninterval_seconds: 300\n")
+        validate_config_or_raise(str(tmp_path))
+
+    def test_raises_on_broken_yaml(self, tmp_path):
+        from app.config_validator import validate_config_or_raise
+        self._write_config(tmp_path, ":\n  bad: [yaml\n  unclosed")
+        with pytest.raises(ValueError, match="Invalid YAML"):
+            validate_config_or_raise(str(tmp_path))
+
+    def test_raises_on_non_dict_root(self, tmp_path):
+        from app.config_validator import validate_config_or_raise
+        self._write_config(tmp_path, "- this is a list\n- not a dict")
+        with pytest.raises(ValueError, match="root must be a mapping"):
+            validate_config_or_raise(str(tmp_path))
+
+    def test_raises_on_section_type_mismatch(self, tmp_path):
+        from app.config_validator import validate_config_or_raise
+        self._write_config(tmp_path, 'tools: "not-a-dict"\n')
+        with pytest.raises(ValueError, match="'tools' must be a mapping"):
+            validate_config_or_raise(str(tmp_path))
+
+    def test_raises_on_scalar_type_mismatch(self, tmp_path):
+        from app.config_validator import validate_config_or_raise
+        self._write_config(tmp_path, "max_runs_per_day: not-a-number\n")
+        with pytest.raises(ValueError, match="'max_runs_per_day' must be int"):
+            validate_config_or_raise(str(tmp_path))
+
+    def test_multiple_errors_collected(self, tmp_path):
+        from app.config_validator import validate_config_or_raise
+        self._write_config(tmp_path, 'tools: "bad"\nmodels: 42\n')
+        with pytest.raises(ValueError, match="config.yaml has invalid entries"):
+            validate_config_or_raise(str(tmp_path))
+
+    def test_effort_string_shorthand_accepted(self, tmp_path):
+        from app.config_validator import validate_config_or_raise
+        self._write_config(tmp_path, 'effort: "high"\n')
+        validate_config_or_raise(str(tmp_path))
+
+    def test_stagnation_false_accepted(self, tmp_path):
+        from app.config_validator import validate_config_or_raise
+        self._write_config(tmp_path, "stagnation: false\n")
+        validate_config_or_raise(str(tmp_path))
+
+    def test_unknown_keys_not_flagged(self, tmp_path):
+        """Unknown keys are handled by validate_and_warn, not the strict check."""
+        from app.config_validator import validate_config_or_raise
+        self._write_config(tmp_path, "unknown_key: 42\n")
+        validate_config_or_raise(str(tmp_path))
