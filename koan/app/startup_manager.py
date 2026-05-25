@@ -98,14 +98,12 @@ def discover_workspace(koan_root: str, projects: list) -> list:
 def validate_config(koan_root: str):
     """Validate config.yaml keys and types, warn on typos or bad values.
 
-    Raises ValueError on critical issues (broken YAML, wrong root type,
-    section type mismatches). Also detects config drift (keys in the
-    template but missing from user config).
+    Soft validation only — detects config drift and logs warnings.
+    Strict validation (validate_config_or_raise) runs separately in
+    run_startup() outside _safe_run so errors are visible to the operator.
     """
     from app.utils import load_config
-    from app.config_validator import validate_and_warn, validate_config_or_raise
-
-    validate_config_or_raise(koan_root)
+    from app.config_validator import validate_and_warn
 
     config = load_config()
     validate_and_warn(config, koan_root=koan_root)
@@ -476,6 +474,20 @@ def run_startup(koan_root: str, instance: str, projects: list):
     from app.run import protected_phase
 
     with protected_phase("Startup checks"):
+        # Strict config validation runs outside _safe_run so errors
+        # propagate (hard stop) and reach the operator via Telegram.
+        try:
+            from app.config_validator import validate_config_or_raise
+            validate_config_or_raise(koan_root)
+        except ValueError as e:
+            log("error", f"Config validation failed: {e}")
+            try:
+                from app.notify import send_telegram
+                send_telegram(f"⚠️ Config error — agent cannot start:\n{e}")
+            except Exception:
+                pass
+            raise
+
         _safe_run("Config validation", validate_config, koan_root)
         _safe_run("Crash recovery", recover_crashed_missions, instance)
         _safe_run("Projects migration", run_migrations, koan_root)
