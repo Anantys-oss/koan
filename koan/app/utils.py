@@ -577,6 +577,65 @@ def _persist_and_cache_remotes(
             print(f"[utils] Failed to cache github_url for {name}: {e}", file=sys.stderr)
 
 
+def _resolve_via_fork_parent(target: str, projects: list) -> Optional[str]:
+    """Resolve a GitHub repo via its fork parent.
+
+    When ``target`` (owner/repo) isn't found in any local remote, ask GitHub
+    whether it's a fork and try matching the parent repo instead. Handles the
+    common case where a user provides a PR URL from their personal fork but
+    the local project is cloned from the upstream org repo.
+
+    Returns the project path if the fork's parent matches a known project,
+    None otherwise.
+    """
+    try:
+        result = subprocess.run(
+            ["gh", "api", f"repos/{target}", "--jq", ".parent.full_name"],
+            capture_output=True, text=True, timeout=10,
+            stdin=subprocess.DEVNULL,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return None
+        parent_slug = result.stdout.strip().lower()
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return None
+
+    from app.projects_config import load_projects_config
+    try:
+        config = load_projects_config(str(KOAN_ROOT))
+    except (OSError, ValueError):
+        return None
+    if not config:
+        return None
+
+    for project in config.get("projects", {}).values():
+        if not isinstance(project, dict):
+            continue
+        gh_url = (project.get("github_url") or "").lower()
+        if gh_url == parent_slug:
+            path = project.get("path")
+            if path:
+                return path
+        for u in project.get("github_urls", []):
+            if u.lower() == parent_slug:
+                path = project.get("path")
+                if path:
+                    return path
+
+    # Also check in-memory cache (workspace projects not in projects.yaml)
+    try:
+        from app.projects_merged import get_github_url_cache
+        for proj_name, gh_url in get_github_url_cache().items():
+            if gh_url.lower() == parent_slug:
+                for name, path in projects:
+                    if name == proj_name:
+                        return path
+    except (ImportError, OSError):
+        pass
+
+    return None
+
+
 def resolve_project_path(repo_name: str, owner: Optional[str] = None) -> Optional[str]:
     """Find local project path matching a repository name.
 
@@ -597,6 +656,9 @@ def resolve_project_path(repo_name: str, owner: Optional[str] = None) -> Optiona
        against the repo component of configured github_url/github_urls.
        E.g. "sukria/koan" matches a project with github_url "atoomic/koan".
        Only used when exactly one project matches (avoids ambiguity).
+    7. Fork resolution via GitHub API (if owner provided): ask GitHub whether
+       the target repo is a fork and match its parent against known projects.
+       Handles the common case where a PR URL points to a contributor's fork.
     """
     projects = get_known_projects()
     target = f"{owner}/{repo_name}".lower() if owner else None
@@ -706,6 +768,13 @@ def resolve_project_path(repo_name: str, owner: Optional[str] = None) -> Optiona
                     return candidates[0]
         except Exception as e:
             print(f"[utils] Cross-owner repo-name match failed: {e}", file=sys.stderr)
+
+    # 7. Fork resolution via GitHub API: when the URL points to a fork not
+    #    in any local remote, ask GitHub for the parent repo and try matching.
+    if target:
+        resolved = _resolve_via_fork_parent(target, projects)
+        if resolved:
+            return resolved
 
     return None
 

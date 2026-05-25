@@ -1203,3 +1203,170 @@ class TestGetFileAgeSeconds:
         f = tmp_path / "ts"
         f.write_text("garbage")
         assert get_file_age_seconds(f) is None
+
+
+class TestResolveViaForkParent:
+    """Tests for _resolve_via_fork_parent — GitHub fork resolution."""
+
+    @patch("app.utils.KOAN_ROOT", Path("/tmp/fake"))
+    def test_resolves_fork_to_parent_project(self):
+        """Fork URL resolves to a project whose github_url matches the parent."""
+        import subprocess as sp
+        from app.utils import _resolve_via_fork_parent
+
+        fake_result = sp.CompletedProcess(
+            args=[], returncode=0, stdout="Anantys-oss/koan\n", stderr=""
+        )
+        config = {
+            "projects": {
+                "koan": {
+                    "path": "/home/user/koan",
+                    "github_url": "Anantys-oss/koan",
+                }
+            }
+        }
+        with patch("app.utils.subprocess.run", return_value=fake_result), \
+             patch("app.projects_config.load_projects_config", return_value=config):
+            result = _resolve_via_fork_parent(
+                "sukria/koan", [("koan", "/home/user/koan")]
+            )
+        assert result == "/home/user/koan"
+
+    @patch("app.utils.KOAN_ROOT", Path("/tmp/fake"))
+    def test_resolves_fork_via_github_urls(self):
+        """Fork parent matches a project's github_urls list (not primary url)."""
+        import subprocess as sp
+        from app.utils import _resolve_via_fork_parent
+
+        fake_result = sp.CompletedProcess(
+            args=[], returncode=0, stdout="upstream-org/repo\n", stderr=""
+        )
+        config = {
+            "projects": {
+                "myrepo": {
+                    "path": "/home/user/repo",
+                    "github_url": "my-fork/repo",
+                    "github_urls": ["my-fork/repo", "upstream-org/repo"],
+                }
+            }
+        }
+        with patch("app.utils.subprocess.run", return_value=fake_result), \
+             patch("app.projects_config.load_projects_config", return_value=config):
+            result = _resolve_via_fork_parent(
+                "contributor/repo", [("myrepo", "/home/user/repo")]
+            )
+        assert result == "/home/user/repo"
+
+    @patch("app.utils.KOAN_ROOT", Path("/tmp/fake"))
+    def test_returns_none_when_not_a_fork(self):
+        """Non-fork repos (no parent) return None."""
+        import subprocess as sp
+        from app.utils import _resolve_via_fork_parent
+
+        fake_result = sp.CompletedProcess(
+            args=[], returncode=0, stdout="\n", stderr=""
+        )
+        with patch("app.utils.subprocess.run", return_value=fake_result):
+            result = _resolve_via_fork_parent(
+                "someuser/repo", [("repo", "/home/user/repo")]
+            )
+        assert result is None
+
+    @patch("app.utils.KOAN_ROOT", Path("/tmp/fake"))
+    def test_returns_none_when_gh_fails(self):
+        """gh CLI errors (e.g., network failure) return None gracefully."""
+        import subprocess as sp
+        from app.utils import _resolve_via_fork_parent
+
+        fake_result = sp.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="error"
+        )
+        with patch("app.utils.subprocess.run", return_value=fake_result):
+            result = _resolve_via_fork_parent(
+                "someuser/repo", [("repo", "/home/user/repo")]
+            )
+        assert result is None
+
+    @patch("app.utils.KOAN_ROOT", Path("/tmp/fake"))
+    def test_returns_none_on_timeout(self):
+        """Subprocess timeout returns None without crashing."""
+        import subprocess as sp
+        from app.utils import _resolve_via_fork_parent
+
+        with patch(
+            "app.utils.subprocess.run",
+            side_effect=sp.TimeoutExpired(cmd="gh", timeout=10),
+        ):
+            result = _resolve_via_fork_parent(
+                "someuser/repo", [("repo", "/home/user/repo")]
+            )
+        assert result is None
+
+    @patch("app.utils.KOAN_ROOT", Path("/tmp/fake"))
+    def test_returns_none_when_parent_not_in_projects(self):
+        """Fork parent exists on GitHub but doesn't match any local project."""
+        import subprocess as sp
+        from app.utils import _resolve_via_fork_parent
+
+        fake_result = sp.CompletedProcess(
+            args=[], returncode=0, stdout="unknown-org/repo\n", stderr=""
+        )
+        config = {
+            "projects": {
+                "myrepo": {
+                    "path": "/home/user/repo",
+                    "github_url": "different-org/different-repo",
+                }
+            }
+        }
+        with patch("app.utils.subprocess.run", return_value=fake_result), \
+             patch("app.projects_config.load_projects_config", return_value=config):
+            result = _resolve_via_fork_parent(
+                "contributor/repo", [("myrepo", "/home/user/repo")]
+            )
+        assert result is None
+
+    @patch("app.utils.KOAN_ROOT", Path("/tmp/fake"))
+    def test_case_insensitive_parent_match(self):
+        """Parent slug comparison is case-insensitive."""
+        import subprocess as sp
+        from app.utils import _resolve_via_fork_parent
+
+        fake_result = sp.CompletedProcess(
+            args=[], returncode=0, stdout="Anantys-OSS/Koan\n", stderr=""
+        )
+        config = {
+            "projects": {
+                "koan": {
+                    "path": "/home/user/koan",
+                    "github_url": "anantys-oss/koan",
+                }
+            }
+        }
+        with patch("app.utils.subprocess.run", return_value=fake_result), \
+             patch("app.projects_config.load_projects_config", return_value=config):
+            result = _resolve_via_fork_parent(
+                "sukria/koan", [("koan", "/home/user/koan")]
+            )
+        assert result == "/home/user/koan"
+
+    @patch("app.utils.KOAN_ROOT", Path("/tmp/fake"))
+    def test_falls_back_to_memory_cache(self):
+        """Falls back to in-memory cache for workspace projects."""
+        import subprocess as sp
+        from app.utils import _resolve_via_fork_parent
+
+        fake_result = sp.CompletedProcess(
+            args=[], returncode=0, stdout="cached-org/repo\n", stderr=""
+        )
+        config = {"projects": {}}
+        with patch("app.utils.subprocess.run", return_value=fake_result), \
+             patch("app.projects_config.load_projects_config", return_value=config), \
+             patch(
+                 "app.projects_merged.get_github_url_cache",
+                 return_value={"myrepo": "cached-org/repo"},
+             ):
+            result = _resolve_via_fork_parent(
+                "contributor/repo", [("myrepo", "/home/user/repo")]
+            )
+        assert result == "/home/user/repo"
