@@ -16,6 +16,7 @@ from skills.core.implement.implement_runner import (
     _is_plan_cache_fresh,
     _plan_hash,
     _plan_review_cache_path,
+    _post_improved_plan,
     _run_plan_review_gate,
     _submit_implement_pr,
     _write_plan_cache,
@@ -202,44 +203,53 @@ class TestPlanReviewGate:
             result = _run_plan_review_gate("## Phase 1\nDo stuff\n" * 10, "/project")
             assert result is None
 
-    def test_issues_found_aborts(self):
-        """When review_plan returns ISSUES_FOUND, gate returns (False, msg)."""
+    def test_issues_found_triggers_improvement_then_proceeds(self):
+        """When review finds issues, gate improves plan and proceeds (fail open)."""
         issues = "- Phase 1: missing file paths"
+        improved = "## Phase 1: Update koan/app/foo.py\nDo stuff"
         with patch("app.config.get_plan_review_config",
-                    return_value={"implement_gate": True}), \
+                    return_value={"implement_gate": True, "max_rounds": 3}), \
              patch("app.plan_runner.is_simple_plan", return_value=False), \
-             patch("app.plan_runner.review_plan", return_value=(False, issues)), \
-             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False):
+             patch("app.plan_runner.review_plan",
+                    side_effect=[(False, issues), (True, "")]), \
+             patch("app.plan_runner.improve_plan", return_value=improved), \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
+             patch(f"{_IMPL_MODULE}._write_plan_cache"), \
+             patch(f"{_IMPL_MODULE}._post_improved_plan"):
             result = _run_plan_review_gate("## Phase 1\nDo stuff\n" * 10, "/project")
-            assert result is not None
-            ok, msg = result
-            assert not ok
-            assert "missing file paths" in msg
-            assert "Plan review failed" in msg
+            assert result == improved
 
-    def test_issues_found_notifies_telegram(self):
-        """When gate rejects, notify_fn is called with specific issues."""
+    def test_issues_found_notifies_telegram_about_improvement(self):
+        """When gate finds issues, notify_fn is called about auto-improvement."""
         issues = "- Phase 1: missing file paths"
         notify = MagicMock()
         with patch("app.config.get_plan_review_config",
-                    return_value={"implement_gate": True}), \
+                    return_value={"implement_gate": True, "max_rounds": 3}), \
              patch("app.plan_runner.is_simple_plan", return_value=False), \
-             patch("app.plan_runner.review_plan", return_value=(False, issues)), \
-             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False):
+             patch("app.plan_runner.review_plan",
+                    side_effect=[(False, issues), (True, "")]), \
+             patch("app.plan_runner.improve_plan", return_value="improved"), \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
+             patch(f"{_IMPL_MODULE}._write_plan_cache"), \
+             patch(f"{_IMPL_MODULE}._post_improved_plan"):
             _run_plan_review_gate(
                 "## Phase 1\nDo stuff\n" * 10, "/project", notify_fn=notify,
             )
             notify.assert_called_once()
-            assert "missing file paths" in notify.call_args[0][0]
+            assert "auto-improving" in notify.call_args[0][0]
 
-    def test_issues_found_posts_github_comment(self):
-        """When gate rejects and issue_url provided, posts comment to GitHub."""
+    def test_improvement_posts_improved_plan_to_github(self):
+        """When gate improves plan, posts improved version as GitHub comment."""
         issues = "- Phase 1: missing file paths"
+        improved = "## Phase 1: Update koan/app/foo.py\nFixed plan"
         with patch("app.config.get_plan_review_config",
-                    return_value={"implement_gate": True}), \
+                    return_value={"implement_gate": True, "max_rounds": 3}), \
              patch("app.plan_runner.is_simple_plan", return_value=False), \
-             patch("app.plan_runner.review_plan", return_value=(False, issues)), \
+             patch("app.plan_runner.review_plan",
+                    side_effect=[(False, issues), (True, "")]), \
+             patch("app.plan_runner.improve_plan", return_value=improved), \
              patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
+             patch(f"{_IMPL_MODULE}._write_plan_cache"), \
              patch("app.github.run_gh") as mock_gh:
             _run_plan_review_gate(
                 "## Phase 1\nDo stuff\n" * 10, "/project",
@@ -249,37 +259,42 @@ class TestPlanReviewGate:
             args = mock_gh.call_args[0]
             assert args[0] == "issue"
             assert args[1] == "comment"
-            assert "https://github.com/o/r/issues/42" in args
-            assert "missing file paths" in args[-1]
+            assert "Improved" in args[-1]
+            assert improved in args[-1]
 
-    def test_notify_failure_does_not_block_gate(self):
-        """notify_fn exception doesn't prevent gate from returning result."""
+    def test_notify_failure_does_not_block_improvement(self):
+        """notify_fn exception doesn't prevent gate from proceeding."""
         notify = MagicMock(side_effect=RuntimeError("send failed"))
         with patch("app.config.get_plan_review_config",
-                    return_value={"implement_gate": True}), \
+                    return_value={"implement_gate": True, "max_rounds": 3}), \
              patch("app.plan_runner.is_simple_plan", return_value=False), \
-             patch("app.plan_runner.review_plan", return_value=(False, "issues")), \
-             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False):
+             patch("app.plan_runner.review_plan",
+                    side_effect=[(False, "issues"), (True, "")]), \
+             patch("app.plan_runner.improve_plan", return_value="improved"), \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
+             patch(f"{_IMPL_MODULE}._write_plan_cache"), \
+             patch(f"{_IMPL_MODULE}._post_improved_plan"):
             result = _run_plan_review_gate(
                 "## Phase 1\nDo stuff\n" * 10, "/project", notify_fn=notify,
             )
-            assert result is not None
-            assert not result[0]
+            assert result == "improved"
 
     def test_github_comment_failure_does_not_block_gate(self):
-        """GitHub comment exception doesn't prevent gate from returning result."""
+        """GitHub comment exception doesn't prevent gate from proceeding."""
         with patch("app.config.get_plan_review_config",
-                    return_value={"implement_gate": True}), \
+                    return_value={"implement_gate": True, "max_rounds": 3}), \
              patch("app.plan_runner.is_simple_plan", return_value=False), \
-             patch("app.plan_runner.review_plan", return_value=(False, "issues")), \
+             patch("app.plan_runner.review_plan",
+                    side_effect=[(False, "issues"), (True, "")]), \
+             patch("app.plan_runner.improve_plan", return_value="improved"), \
              patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
+             patch(f"{_IMPL_MODULE}._write_plan_cache"), \
              patch("app.github.run_gh", side_effect=RuntimeError("gh failed")):
             result = _run_plan_review_gate(
                 "## Phase 1\nDo stuff\n" * 10, "/project",
                 issue_url="https://github.com/o/r/issues/42",
             )
-            assert result is not None
-            assert not result[0]
+            assert result == "improved"
 
     def test_simple_plan_skips_review(self):
         """Simple plans bypass the review gate entirely — no config read needed."""
@@ -312,8 +327,30 @@ class TestPlanReviewGate:
             result = _run_plan_review_gate("## Phase 1\nDo stuff\n" * 10, "/project")
             assert result is None
 
-    def test_gate_blocks_run_implement(self):
-        """Integration: run_implement returns failure when gate rejects the plan."""
+    def test_gate_improved_plan_used_for_implementation(self):
+        """Integration: run_implement uses improved plan from gate."""
+        notify = MagicMock()
+        body = "### Summary\nPlan\n#### Phase 1: Do it"
+        improved = "## Phase 1: koan/app/foo.py\nImproved plan"
+        with patch(f"{_IMPL_MODULE}.fetch_issue_with_comments",
+                    return_value=("Title", body, [])), \
+             patch(f"{_IMPL_MODULE}._run_plan_review_gate",
+                    return_value=improved), \
+             patch(f"{_IMPL_MODULE}._execute_implementation",
+                    return_value="done") as mock_exec, \
+             patch(f"{_IMPL_MODULE}._submit_implement_pr", return_value=None):
+            ok, msg = run_implement(
+                "/project",
+                "https://github.com/o/r/issues/42",
+                notify_fn=notify,
+            )
+            assert ok
+            # Verify the improved plan was passed to implementation
+            call_kwargs = mock_exec.call_args[1]
+            assert call_kwargs["plan"] == improved
+
+    def test_gate_blocks_run_implement_on_tuple_failure(self):
+        """Integration: run_implement returns failure when gate returns (False, msg)."""
         notify = MagicMock()
         body = "### Summary\nPlan\n#### Phase 1: Do it"
         with patch(f"{_IMPL_MODULE}.fetch_issue_with_comments",
@@ -329,6 +366,120 @@ class TestPlanReviewGate:
             assert not ok
             assert "Plan review failed" in msg
             mock_exec.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Plan review improvement loop
+# ---------------------------------------------------------------------------
+
+class TestPlanReviewImprovementLoop:
+    """Tests for the autonomous plan improvement loop in the review gate."""
+
+    _PLAN = "## Phase 1\nDo stuff\n" * 10
+
+    def test_improvement_loop_succeeds_on_second_round(self):
+        """Improve once, second review passes — returns improved plan."""
+        improved = "## Phase 1: koan/app/foo.py\nConcrete plan"
+        with patch("app.config.get_plan_review_config",
+                    return_value={"implement_gate": True, "max_rounds": 3}), \
+             patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan",
+                    side_effect=[(False, "missing paths"), (True, "")]), \
+             patch("app.plan_runner.improve_plan", return_value=improved), \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
+             patch(f"{_IMPL_MODULE}._write_plan_cache") as mock_cache, \
+             patch(f"{_IMPL_MODULE}._post_improved_plan") as mock_post:
+            result = _run_plan_review_gate(self._PLAN, "/project")
+            assert result == improved
+            mock_cache.assert_called_once()
+            mock_post.assert_called_once()
+
+    def test_improvement_loop_exhausts_all_rounds_fails_open(self):
+        """All rounds fail — returns improved plan anyway (fail open)."""
+        with patch("app.config.get_plan_review_config",
+                    return_value={"implement_gate": True, "max_rounds": 2}), \
+             patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan", return_value=(False, "issues")), \
+             patch("app.plan_runner.improve_plan", return_value="better but not perfect"), \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
+             patch(f"{_IMPL_MODULE}._write_plan_cache") as mock_cache, \
+             patch(f"{_IMPL_MODULE}._post_improved_plan") as mock_post:
+            result = _run_plan_review_gate(self._PLAN, "/project")
+            # Fail open: returns the improved plan (different from original)
+            assert result == "better but not perfect"
+            mock_cache.assert_not_called()
+            mock_post.assert_called_once()
+
+    def test_exhausted_with_unchanged_plan_returns_none(self):
+        """If improve_plan returns the same text, gate returns None (use original)."""
+        with patch("app.config.get_plan_review_config",
+                    return_value={"implement_gate": True, "max_rounds": 2}), \
+             patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan", return_value=(False, "issues")), \
+             patch("app.plan_runner.improve_plan", return_value=self._PLAN), \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
+             patch(f"{_IMPL_MODULE}._write_plan_cache") as mock_cache, \
+             patch(f"{_IMPL_MODULE}._post_improved_plan") as mock_post:
+            result = _run_plan_review_gate(self._PLAN, "/project")
+            assert result is None
+            mock_cache.assert_not_called()
+            mock_post.assert_not_called()
+
+    def test_improve_plan_called_with_issues(self):
+        """improve_plan receives the issues text from the reviewer."""
+        issues = "- Phase 1: no file paths\n- Phase 3: too large"
+        with patch("app.config.get_plan_review_config",
+                    return_value={"implement_gate": True, "max_rounds": 3}), \
+             patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan",
+                    side_effect=[(False, issues), (True, "")]), \
+             patch("app.plan_runner.improve_plan",
+                    return_value="fixed") as mock_improve, \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
+             patch(f"{_IMPL_MODULE}._write_plan_cache"), \
+             patch(f"{_IMPL_MODULE}._post_improved_plan"):
+            _run_plan_review_gate(self._PLAN, "/project")
+            mock_improve.assert_called_once()
+            args = mock_improve.call_args[0]
+            assert args[0] == self._PLAN
+            assert args[1] == issues
+            assert args[2] == "/project"
+
+    def test_improvement_not_called_on_last_round(self):
+        """On the final round, don't waste tokens improving — just fail open."""
+        call_count = 0
+
+        def counting_improve(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return "improved"
+
+        with patch("app.config.get_plan_review_config",
+                    return_value={"implement_gate": True, "max_rounds": 2}), \
+             patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan", return_value=(False, "issues")), \
+             patch("app.plan_runner.improve_plan", side_effect=counting_improve), \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
+             patch(f"{_IMPL_MODULE}._post_improved_plan"):
+            _run_plan_review_gate(self._PLAN, "/project")
+            # max_rounds=2: round 1 review fails → improve, round 2 review fails → stop
+            assert call_count == 1
+
+    def test_exhaustion_notifies_user(self):
+        """When all rounds exhausted, user is notified about fail-open."""
+        notify = MagicMock()
+        with patch("app.config.get_plan_review_config",
+                    return_value={"implement_gate": True, "max_rounds": 2}), \
+             patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan", return_value=(False, "issues")), \
+             patch("app.plan_runner.improve_plan", return_value="improved"), \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
+             patch(f"{_IMPL_MODULE}._post_improved_plan"):
+            _run_plan_review_gate(self._PLAN, "/project", notify_fn=notify)
+            # First call: improvement notification, second: exhaustion notification
+            assert notify.call_count == 2
+            exhaustion_msg = notify.call_args_list[1][0][0]
+            assert "couldn't fully resolve" in exhaustion_msg
 
 
 # ---------------------------------------------------------------------------
@@ -409,15 +560,17 @@ class TestPlanReviewCache:
             _run_plan_review_gate("## Phase 1\nDo stuff", "/project")
             mock_write.assert_called_once()
 
-    def test_rejected_does_not_write_cache(self):
-        """When review rejects, cache is NOT written."""
+    def test_exhausted_rounds_does_not_write_cache(self):
+        """When improvement exhausts all rounds (fail open), cache is NOT written."""
         with patch("app.plan_runner.is_simple_plan", return_value=False), \
              patch("app.config.get_plan_review_config",
-                    return_value={"implement_gate": True}), \
+                    return_value={"implement_gate": True, "max_rounds": 2}), \
              patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
              patch("app.plan_runner.review_plan", return_value=(False, "issues")), \
-             patch(f"{_IMPL_MODULE}._write_plan_cache") as mock_write:
-            _run_plan_review_gate("## Phase 1\nDo stuff", "/project")
+             patch("app.plan_runner.improve_plan", return_value="still bad"), \
+             patch(f"{_IMPL_MODULE}._write_plan_cache") as mock_write, \
+             patch(f"{_IMPL_MODULE}._post_improved_plan"):
+            _run_plan_review_gate("## Phase 1\nDo stuff\n" * 10, "/project")
             mock_write.assert_not_called()
 
 
