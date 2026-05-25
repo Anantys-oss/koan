@@ -1,6 +1,6 @@
 """Claude Code CLI provider implementation."""
 
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.provider.base import CLIProvider
 
@@ -138,6 +138,10 @@ class ClaudeProvider(CLIProvider):
         for d in plugin_dirs:
             flags.extend(["--plugin-dir", d])
         return flags
+
+    def get_session_data(self, project_path: str) -> Optional[Dict[str, Any]]:
+        from app.provider.claude_session import collect_jsonl_tokens
+        return collect_jsonl_tokens(project_path)
 
     def check_quota_available(self, project_path: str, timeout: int = 15) -> Tuple[bool, str]:
         """Check Claude API quota availability.

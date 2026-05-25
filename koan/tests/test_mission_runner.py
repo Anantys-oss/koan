@@ -1253,6 +1253,7 @@ class TestRecordSessionOutcome:
             pipeline_timed_out=False,
             provider="",
             model="",
+            last_action="",
         )
 
     @patch("app.session_tracker.record_outcome")

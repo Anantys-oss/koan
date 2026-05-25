@@ -427,6 +427,7 @@ def _record_session_outcome(
     pipeline_timed_out: bool = False,
     provider: str = "",
     model: str = "",
+    last_action: str = "",
 ) -> None:
     """Record session outcome for staleness tracking (fire-and-forget).
 
@@ -436,6 +437,7 @@ def _record_session_outcome(
         pipeline_timed_out: Whether POST_MISSION_TIMEOUT fired during this session.
         provider: CLI provider name (e.g. "claude", "copilot").
         model: Model identifier extracted from token output.
+        last_action: Last tool action from JSONL session data (e.g. "Edit").
     """
     try:
         from app.session_tracker import record_outcome
@@ -450,6 +452,7 @@ def _record_session_outcome(
             pipeline_timed_out=pipeline_timed_out,
             provider=provider,
             model=model,
+            last_action=last_action,
         )
     except Exception as e:
         _log_runner("error", f"Session outcome recording failed: {e}")
@@ -551,6 +554,7 @@ def _record_cost_event(
     allow_placeholder: bool = False,
     duration_seconds: int = 0,
     provider: str = "",
+    jsonl_data: "Optional[dict]" = None,
 ) -> None:
     """Record structured usage event to JSONL cost tracker (fire-and-forget).
 
@@ -559,6 +563,7 @@ def _record_cost_event(
             When provided, skips redundant file read + JSON parse.
         duration_seconds: Total mission wall-clock duration. Informational only.
         provider: CLI provider name (e.g. "claude", "copilot").
+        jsonl_data: Session data from provider JSONL files.
     """
     try:
         from app.cost_tracker import record_usage
@@ -577,6 +582,11 @@ def _record_cost_event(
                 "cache_read_input_tokens": 0,
                 "cost_usd": 0.0,
             }
+
+        # Enrich with pre-collected JSONL session data when available
+        if jsonl_data and not tokens.get("cost_usd"):
+            if jsonl_data.get("cost_usd"):
+                tokens["cost_usd"] = jsonl_data["cost_usd"]
 
         record_usage(
             instance_dir=Path(instance_dir),
@@ -1544,7 +1554,16 @@ def run_post_mission(
             duration_seconds = 0
             duration_minutes = 0
 
-        # 1c. Record structured usage to JSONL cost tracker
+        # 1c. Collect session data via provider (Claude-only; others return None)
+        _jsonl_data = None
+        try:
+            if project_path:
+                from app.provider import get_provider
+                _jsonl_data = get_provider().get_session_data(project_path)
+        except Exception as e:
+            _log_runner("warning", f"Session data enrichment failed: {e}")
+
+        # 1d. Record structured usage to JSONL cost tracker
         from app.session_tracker import classify_mission_type as _classify_type
         _mission_type = _classify_type(mission_title)
         _record_cost_event(
@@ -1554,6 +1573,7 @@ def run_post_mission(
             allow_placeholder=is_skill_dispatch,
             duration_seconds=duration_seconds,
             provider=provider_name,
+            jsonl_data=_jsonl_data,
         )
 
         # 2. Log activity usage to logs/usage.log (human-readable, rotated)
@@ -1618,6 +1638,7 @@ def run_post_mission(
                     mission_title=mission_title,
                     provider=provider_name,
                     model=_tokens.get("model", "") if _tokens else "",
+                    last_action=_jsonl_data.get("last_action", "") if _jsonl_data else "",
                 )
                 # Fire post_mission hooks before early return so hooks see quota events
                 _fire_post_mission_hook(
@@ -1758,6 +1779,7 @@ def run_post_mission(
         # Always runs — even after deadline — since it's a fast local write.
         _report("recording session outcome")
         _pipeline_timed_out = _pipeline_expired.is_set()
+
         _record_session_outcome(
             instance_dir, project_name, autonomous_mode,
             duration_minutes, pending_content,
@@ -1765,6 +1787,7 @@ def run_post_mission(
             pipeline_timed_out=_pipeline_timed_out,
             provider=provider_name,
             model=_tokens.get("model", "") if _tokens else "",
+            last_action=_jsonl_data.get("last_action", "") if _jsonl_data else "",
         )
         tracker.record("session_outcome", "success")
 

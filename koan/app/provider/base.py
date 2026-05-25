@@ -1,7 +1,7 @@
 """Base class and constants for CLI provider abstraction."""
 
 import shutil
-from typing import List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 
 # ---------------------------------------------------------------------------
@@ -314,6 +314,14 @@ class CLIProvider:
         cmd.extend(self.build_plugin_args(plugin_dirs))
         cmd.extend(self.build_effort_args(effort))
         return cmd
+
+    def get_session_data(self, project_path: str) -> Optional[Dict[str, Any]]:
+        """Extract post-mission session data (cost, tokens, last action).
+
+        Only providers that produce local session artifacts implement this.
+        Base returns ``None`` (no session data available).
+        """
+        return None
 
     def check_quota_available(self, project_path: str, timeout: int = 15) -> Tuple[bool, str]:
         """Probe real API quota with a minimal CLI call.

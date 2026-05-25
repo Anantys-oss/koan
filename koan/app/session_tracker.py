@@ -272,6 +272,7 @@ def record_outcome(
     pipeline_timed_out: bool = False,
     provider: str = "",
     model: str = "",
+    last_action: str = "",
 ) -> dict:
     """Record a session outcome to session_outcomes.json.
 
@@ -289,6 +290,7 @@ def record_outcome(
             entry when empty to keep old entries compact.
         model: Model identifier (e.g. "claude-opus-4-20250514"). Omitted from
             entry when empty.
+        last_action: Last tool action from JSONL session data (e.g. "Edit").
 
     Returns:
         The recorded outcome dict.
@@ -312,6 +314,8 @@ def record_outcome(
         entry["provider"] = provider
     if model:
         entry["model"] = model
+    if last_action:
+        entry["last_action"] = last_action
 
     outcomes_path = Path(instance_dir) / "session_outcomes.json"
 
