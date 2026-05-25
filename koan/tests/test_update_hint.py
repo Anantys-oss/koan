@@ -1,10 +1,9 @@
-"""Tests for app.update_hint — upstream update notification with 48 h cooldown."""
+"""Tests for app.update_hint — upstream update notification with 48 h cooldown (tag-based)."""
 
 import json
-import subprocess
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 
@@ -56,49 +55,29 @@ class TestCooldown:
         assert _is_within_cooldown(state) is False
 
 
-class TestFormatMessage:
-    """Message formatting."""
+class TestFormatTagMessage:
+    """Message formatting for tag-based hints."""
 
-    def test_single_commit(self):
-        from app.update_hint import _format_update_message
-        msg = _format_update_message(["abc1234 fix: something"])
-        assert "1 new commit" in msg
-        assert "abc1234 fix: something" in msg
+    def test_includes_tag_name(self):
+        from app.update_hint import _format_tag_update_message
+        msg = _format_tag_update_message("v1.5.0")
+        assert "v1.5.0" in msg
         assert "/update" in msg
-        # No plural
-        assert "commits" not in msg
 
-    def test_multiple_commits(self):
-        from app.update_hint import _format_update_message
-        commits = [f"abc{i:04d} commit {i}" for i in range(5)]
-        msg = _format_update_message(commits)
-        assert "5 new commits" in msg
-        assert "abc0000" in msg
-        assert "abc0004" in msg
-
-    def test_truncates_at_20(self):
-        from app.update_hint import _format_update_message
-        commits = [f"abc{i:04d} commit {i}" for i in range(25)]
-        msg = _format_update_message(commits)
-        assert "and 5 more" in msg
-        assert "abc0019" in msg  # last shown
-        assert "abc0020" not in msg  # truncated
-
-    def test_unicode_prefix(self):
-        from app.update_hint import _format_update_message
-        msg = _format_update_message(["abc fix"])
-        assert "\u2b06\ufe0f" in msg  # ⬆️
+    def test_includes_update_arrow(self):
+        from app.update_hint import _format_tag_update_message
+        msg = _format_tag_update_message("v2.0.0")
+        assert "⬆️" in msg  # ⬆️
 
 
 class TestMaybeSendUpdateHint:
     """Integration: the public maybe_send_update_hint() function."""
 
     @patch("app.update_hint.send_telegram", return_value=True)
-    @patch("app.update_hint._get_missing_commits", return_value=["abc1 fix: thing"])
-    @patch("app.update_hint.find_upstream_remote", return_value="origin")
+    @patch("app.update_hint.check_for_new_release_tag", return_value="v1.5.0")
     @patch("app.update_hint.check_for_updates", return_value=3)
-    def test_sends_when_behind_and_no_cooldown(
-        self, mock_check, mock_remote, mock_commits, mock_send,
+    def test_sends_when_new_tag_and_no_cooldown(
+        self, mock_check, mock_tag, mock_send,
         instance_dir, koan_root,
     ):
         from app.update_hint import maybe_send_update_hint
@@ -106,7 +85,8 @@ class TestMaybeSendUpdateHint:
         assert result is True
         mock_send.assert_called_once()
         msg = mock_send.call_args[0][0]
-        assert "abc1 fix: thing" in msg
+        assert "v1.5.0" in msg
+        assert "/update" in msg
 
         # State file written
         state = Path(instance_dir) / ".update-hint.json"
@@ -120,8 +100,16 @@ class TestMaybeSendUpdateHint:
         assert result is False
         mock_check.assert_not_called()
 
+    @patch("app.update_hint.check_for_new_release_tag", return_value=None)
+    @patch("app.update_hint.check_for_updates", return_value=3)
+    def test_skips_when_no_new_tag(self, mock_check, mock_tag, instance_dir, koan_root):
+        from app.update_hint import maybe_send_update_hint
+        result = maybe_send_update_hint(instance_dir, koan_root)
+        assert result is False
+
+    @patch("app.update_hint.check_for_new_release_tag", return_value=None)
     @patch("app.update_hint.check_for_updates", return_value=0)
-    def test_skips_when_up_to_date(self, mock_check, instance_dir, koan_root):
+    def test_skips_when_no_commits_no_tag(self, mock_check, mock_tag, instance_dir, koan_root):
         from app.update_hint import maybe_send_update_hint
         result = maybe_send_update_hint(instance_dir, koan_root)
         assert result is False
@@ -132,30 +120,11 @@ class TestMaybeSendUpdateHint:
         result = maybe_send_update_hint(instance_dir, koan_root)
         assert result is False
 
-    @patch("app.update_hint.find_upstream_remote", return_value=None)
-    @patch("app.update_hint.check_for_updates", return_value=5)
-    def test_skips_when_no_remote(self, mock_check, mock_remote, instance_dir, koan_root):
-        from app.update_hint import maybe_send_update_hint
-        result = maybe_send_update_hint(instance_dir, koan_root)
-        assert result is False
-
-    @patch("app.update_hint._get_missing_commits", return_value=[])
-    @patch("app.update_hint.find_upstream_remote", return_value="upstream")
-    @patch("app.update_hint.check_for_updates", return_value=2)
-    def test_skips_when_no_commit_subjects(
-        self, mock_check, mock_remote, mock_commits,
-        instance_dir, koan_root,
-    ):
-        from app.update_hint import maybe_send_update_hint
-        result = maybe_send_update_hint(instance_dir, koan_root)
-        assert result is False
-
     @patch("app.update_hint.send_telegram", side_effect=RuntimeError("network"))
-    @patch("app.update_hint._get_missing_commits", return_value=["abc fix"])
-    @patch("app.update_hint.find_upstream_remote", return_value="origin")
+    @patch("app.update_hint.check_for_new_release_tag", return_value="v2.0.0")
     @patch("app.update_hint.check_for_updates", return_value=1)
     def test_returns_false_on_send_failure(
-        self, mock_check, mock_remote, mock_commits, mock_send,
+        self, mock_check, mock_tag, mock_send,
         instance_dir, koan_root,
     ):
         from app.update_hint import maybe_send_update_hint
@@ -171,13 +140,17 @@ class TestMaybeSendUpdateHint:
         result = maybe_send_update_hint(instance_dir, koan_root)
         assert result is False
 
-    @patch("app.update_hint.find_upstream_remote", side_effect=Exception("git broken"))
-    @patch("app.update_hint.check_for_updates", return_value=5)
-    def test_returns_false_on_remote_exception(
-        self, mock_check, mock_remote, instance_dir, koan_root,
+    @patch("app.update_hint.send_telegram", return_value=True)
+    @patch("app.update_hint.check_for_new_release_tag", return_value="v3.0.0")
+    @patch("app.update_hint.check_for_updates", return_value=None)
+    def test_still_checks_tag_even_if_check_returns_none(
+        self, mock_check, mock_tag, mock_send,
+        instance_dir, koan_root,
     ):
+        """check_for_updates returning None means fetch failed — skip."""
         from app.update_hint import maybe_send_update_hint
         result = maybe_send_update_hint(instance_dir, koan_root)
+        # check_for_updates returning None is treated as error, bail early
         assert result is False
 
 
@@ -199,53 +172,3 @@ class TestNaiveDatetimeCooldown:
         old_naive = old.replace(tzinfo=None)
         state.write_text(json.dumps({"last_notified_at": old_naive.isoformat()}))
         assert _is_within_cooldown(state) is False
-
-
-class TestGetMissingCommits:
-    """Cover _get_missing_commits (lines 68-82)."""
-
-    @patch("app.update_hint.subprocess.run")
-    def test_returns_commit_list(self, mock_run, tmp_path):
-        from app.update_hint import _get_missing_commits
-        mock_run.return_value = MagicMock(
-            returncode=0,
-            stdout="abc123 fix: first\ndef456 feat: second\n",
-        )
-        result = _get_missing_commits(tmp_path, "upstream")
-        assert result == ["abc123 fix: first", "def456 feat: second"]
-
-    @patch("app.update_hint.subprocess.run")
-    def test_returns_empty_when_up_to_date(self, mock_run, tmp_path):
-        from app.update_hint import _get_missing_commits
-        mock_run.return_value = MagicMock(returncode=0, stdout="")
-        result = _get_missing_commits(tmp_path, "origin")
-        assert result == []
-
-    @patch("app.update_hint.subprocess.run")
-    def test_returns_none_on_nonzero_exit(self, mock_run, tmp_path):
-        from app.update_hint import _get_missing_commits
-        mock_run.return_value = MagicMock(returncode=128, stdout="")
-        result = _get_missing_commits(tmp_path, "origin")
-        assert result is None
-
-    @patch("app.update_hint.subprocess.run", side_effect=subprocess.TimeoutExpired("git", 15))
-    def test_returns_none_on_timeout(self, mock_run, tmp_path):
-        from app.update_hint import _get_missing_commits
-        result = _get_missing_commits(tmp_path, "origin")
-        assert result is None
-
-    @patch("app.update_hint.subprocess.run", side_effect=OSError("no git"))
-    def test_returns_none_on_oserror(self, mock_run, tmp_path):
-        from app.update_hint import _get_missing_commits
-        result = _get_missing_commits(tmp_path, "origin")
-        assert result is None
-
-    @patch("app.update_hint.subprocess.run")
-    def test_strips_blank_lines(self, mock_run, tmp_path):
-        from app.update_hint import _get_missing_commits
-        mock_run.return_value = MagicMock(
-            returncode=0,
-            stdout="\n  abc123 fix: thing  \n\n  def456 feat: other \n\n",
-        )
-        result = _get_missing_commits(tmp_path, "upstream")
-        assert result == ["abc123 fix: thing", "def456 feat: other"]

@@ -1,24 +1,26 @@
 """
-Koan -- Upstream update hint.
+Koan -- Upstream update hint (tag-based).
 
-Surfaces a Telegram notification when the local Koan install is behind
-upstream, at most once every 48 hours.  Triggered at startup (run_num == 0)
+Surfaces a Telegram notification when a new release tag appears upstream,
+at most once every 48 hours.  Triggered at startup (run_num == 0)
 and during idle sleep (alongside feature tips).
+
+Uses the same tag-based mechanism as auto_update: compares latest upstream
+tag against a cached value. The notification message informs the user
+a new release is available and suggests /update.
 
 Runtime state: ``instance/.update-hint.json``
   ``{"last_notified_at": "2026-05-18T12:00:00+00:00"}``
 """
 
 import json
-import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from app.auto_update import check_for_updates
+from app.auto_update import check_for_updates, check_for_new_release_tag
 from app.notify import send_telegram
 from app.run_log import log
-from app.update_manager import find_upstream_remote
 from app.utils import atomic_write
 
 # Cooldown: one notification every 48 hours.
@@ -59,46 +61,19 @@ def _is_within_cooldown(state_path: Path) -> bool:
     return (now - last).total_seconds() < _HINT_INTERVAL_SECONDS
 
 
-def _get_missing_commits(koan_root: Path, remote: str) -> Optional[list]:
-    """Return list of commit subject lines we are behind upstream.
-
-    Uses ``git log HEAD..{remote}/main --oneline`` to get compact summaries.
-    Returns None on error, empty list if up-to-date.
-    """
-    try:
-        result = subprocess.run(
-            # Note: hardcodes 'main' — matches check_for_updates() assumption
-            ["git", "log", f"HEAD..{remote}/main", "--oneline", "--no-decorate"],
-            capture_output=True,
-            text=True,
-            cwd=str(koan_root),
-            timeout=15,
-        )
-        if result.returncode != 0:
-            return None
-        lines = [line.strip() for line in result.stdout.strip().splitlines() if line.strip()]
-        return lines
-    except (subprocess.TimeoutExpired, OSError):
-        return None
-
-
-def _format_update_message(commits: list) -> str:
-    """Build the Telegram notification message.
-
-    Unicode prefix title + fenced code block of commit subjects.
-    """
-    count = len(commits)
-    title = f"\u2b06\ufe0f Koan update available \u2014 {count} new commit{'s' if count != 1 else ''}"
-    # Cap the displayed commits to avoid overly long messages
-    display = commits[:20]
-    code_block = "\n".join(display)
-    if len(commits) > 20:
-        code_block += f"\n... and {len(commits) - 20} more"
-    return f"{title}\n\n```\n{code_block}\n```\n\nRun /update to apply."
+def _format_tag_update_message(tag: str) -> str:
+    """Build the Telegram notification message for a new release tag."""
+    return (
+        f"⬆️ New Koan release available: **{tag}**\n\n"
+        f"Run /update to apply."
+    )
 
 
 def maybe_send_update_hint(instance_dir: str, koan_root: str) -> bool:
-    """Check for upstream updates and notify if behind (throttled to 48 h).
+    """Check for new release tags and notify if one is available (throttled to 48 h).
+
+    Uses the same tag-based mechanism as auto_update: fetches tags via
+    check_for_updates(), then compares the latest tag against a cached value.
 
     Called at startup and during idle sleep.  Returns True if a notification
     was sent, False otherwise.
@@ -117,32 +92,20 @@ def maybe_send_update_hint(instance_dir: str, koan_root: str) -> bool:
     if _is_within_cooldown(state_path):
         return False
 
-    # 2. Check upstream for new commits (reuses auto_update's lightweight fetch)
+    # 2. Fetch upstream refs + tags (reuses auto_update's lightweight fetch)
     try:
-        count = check_for_updates(koan_root)
+        check_for_updates(koan_root)
     except Exception as e:
         log("update-hint", f"check_for_updates failed: {e}")
         return False
 
-    if not count:
-        return False
-
-    # 3. Get commit subjects for the message body
-    try:
-        remote = find_upstream_remote(Path(koan_root))
-    except Exception as e:
-        log("update-hint", f"Failed to find upstream remote: {e}")
-        remote = None
-
-    if remote is None:
-        return False
-
-    commits = _get_missing_commits(Path(koan_root), remote)
-    if not commits:
+    # 3. Check for new release tag (same mechanism as auto_update)
+    new_tag = check_for_new_release_tag(koan_root, instance_dir)
+    if not new_tag:
         return False
 
     # 4. Build and send message
-    message = _format_update_message(commits)
+    message = _format_tag_update_message(new_tag)
     try:
         send_telegram(message)
     except Exception as e:
@@ -151,5 +114,5 @@ def maybe_send_update_hint(instance_dir: str, koan_root: str) -> bool:
 
     # 5. Update cooldown state
     _write_last_notified(state_path)
-    log("update-hint", f"Notified user about {len(commits)} upstream commit(s)")
+    log("update-hint", f"Notified user about new release tag: {new_tag}")
     return True
