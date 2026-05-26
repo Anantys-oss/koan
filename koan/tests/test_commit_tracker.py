@@ -129,6 +129,7 @@ class TestRecordAndReport:
         assert "2 new commit(s)" in msg
         assert "feat: new feature" in msg
         assert "fix: bug fix" in msg
+        assert "```" in msg
         state = _load_commit_state(str(tmp_path))
         assert state["koan"] == "newsha222"
 

@@ -339,4 +339,4 @@ def record_and_report(
     body = "\n".join(lines)
     if total > MAX_LOG_LINES:
         body += f"\n… and {total - MAX_LOG_LINES} more"
-    return f"{header}\n{body}"
+    return f"{header}\n```\n{body}\n```"
