@@ -933,10 +933,11 @@ class TestFetchDiffLocally:
         assert diff == ""
         mock_run.assert_not_called()
 
+    @patch("app.rebase_pr._token_fetch_url", return_value=(None, None))
     @patch("app.rebase_pr._resolve_fetch_source", return_value=("origin", None))
     @patch("app.rebase_pr.subprocess.run")
-    def test_returns_empty_on_fetch_failure(self, mock_run, _mock_src):
-        """Returns empty string when the PR head fetch fails."""
+    def test_returns_empty_on_fetch_failure(self, mock_run, _mock_src, _mock_tok):
+        """Returns empty string when the PR head fetch fails and no token retry is possible."""
         from app.rebase_pr import _fetch_diff_locally
 
         mock_run.side_effect = [
@@ -949,6 +950,64 @@ class TestFetchDiffLocally:
         diff = _fetch_diff_locally("/tmp/co", "o", "r", "42", "main")
 
         assert diff == ""
+
+    @patch(
+        "app.rebase_pr._token_fetch_url",
+        return_value=("https://x-access-token:tok@github.com/o/r.git", "tok"),
+    )
+    @patch("app.rebase_pr._resolve_fetch_source", return_value=("origin", None))
+    @patch("app.rebase_pr.subprocess.run")
+    def test_retries_with_token_url_when_remote_fetch_fails(
+        self, mock_run, _mock_src, _mock_tok,
+    ):
+        """An HTTPS remote without a helper fails, then the token-URL retry succeeds."""
+        from app.rebase_pr import _fetch_diff_locally
+
+        mock_run.side_effect = [
+            # First attempt via "origin": head fetch fails (no credentials)
+            MagicMock(
+                returncode=128,
+                stderr=b"fatal: could not read Username for 'https://github.com'",
+            ),
+            # Retry attempt via token URL: head, base, diff all succeed
+            MagicMock(returncode=0, stderr=b""),
+            MagicMock(returncode=0, stderr=b""),
+            MagicMock(returncode=0, stdout="diff --git a/f b/f\n+new", stderr=""),
+            # cleanup x2
+            MagicMock(returncode=0, stderr=b""),
+            MagicMock(returncode=0, stderr=b""),
+        ]
+
+        diff = _fetch_diff_locally("/tmp/co", "o", "r", "42", "main")
+
+        assert "diff --git" in diff
+        # The retry (second call) must use the authenticated token URL
+        retry_head_args = mock_run.call_args_list[1].args[0]
+        assert any("x-access-token" in a for a in retry_head_args)
+
+    @patch("app.rebase_pr._token_fetch_url", return_value=(None, None))
+    @patch(
+        "app.rebase_pr._resolve_fetch_source",
+        return_value=("https://x-access-token:tok@github.com/o/r.git", "tok"),
+    )
+    @patch("app.rebase_pr.subprocess.run")
+    def test_no_token_retry_when_source_already_token_url(
+        self, mock_run, _mock_src, mock_tok,
+    ):
+        """If the resolved source is already a token URL, don't retry (would loop)."""
+        from app.rebase_pr import _fetch_diff_locally
+
+        mock_run.side_effect = [
+            MagicMock(returncode=128, stderr=b"fatal: repository not found"),
+            MagicMock(returncode=0, stderr=b""),
+            MagicMock(returncode=0, stderr=b""),
+        ]
+
+        diff = _fetch_diff_locally("/tmp/co", "o", "r", "42", "main")
+
+        assert diff == ""
+        # secret was not None, so the token-URL retry path must be skipped
+        mock_tok.assert_not_called()
 
     @patch("app.rebase_pr._resolve_fetch_source", return_value=("origin", None))
     @patch("app.rebase_pr.subprocess.run")
@@ -1026,6 +1085,32 @@ class TestResolveFetchSource:
 
         source, secret = _resolve_fetch_source("o", "r", "/tmp/co")
         assert source is None
+        assert secret is None
+
+
+class TestTokenFetchUrl:
+    @patch("app.rebase_pr.run_gh", return_value="ghs_abc")
+    def test_builds_authenticated_url(self, _mock_gh):
+        from app.rebase_pr import _token_fetch_url
+
+        url, secret = _token_fetch_url("o", "r")
+        assert url == "https://x-access-token:ghs_abc@github.com/o/r.git"
+        assert secret == "ghs_abc"
+
+    @patch("app.rebase_pr.run_gh", return_value="")
+    def test_returns_none_when_token_empty(self, _mock_gh):
+        from app.rebase_pr import _token_fetch_url
+
+        url, secret = _token_fetch_url("o", "r")
+        assert url is None
+        assert secret is None
+
+    @patch("app.rebase_pr.run_gh", side_effect=RuntimeError("not logged in"))
+    def test_returns_none_when_gh_fails(self, _mock_gh):
+        from app.rebase_pr import _token_fetch_url
+
+        url, secret = _token_fetch_url("o", "r")
+        assert url is None
         assert secret is None
 
 

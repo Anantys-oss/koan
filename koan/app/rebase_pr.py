@@ -149,6 +149,25 @@ def _diff_too_large(error_message: str) -> bool:
     return any(marker in error_message for marker in _DIFF_TOO_LARGE_MARKERS)
 
 
+def _token_fetch_url(
+    owner: str, repo: str,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Build an authenticated HTTPS fetch URL from ``gh auth token``.
+
+    Returns ``(url, token)``, or ``(None, None)`` when no token is
+    available. ``gh`` resolves the token from ``GH_TOKEN`` / ``GITHUB_TOKEN``
+    or its keyring; plain ``git`` reads none of those, so the token must be
+    embedded in the URL for HTTPS fetches to authenticate.
+    """
+    try:
+        token = run_gh("auth", "token").strip()
+    except (RuntimeError, OSError):
+        token = ""
+    if token:
+        return f"https://x-access-token:{token}@github.com/{owner}/{repo}.git", token
+    return None, None
+
+
 def _resolve_fetch_source(
     owner: str, repo: str, project_path: str,
 ) -> Tuple[Optional[str], Optional[str]]:
@@ -167,14 +186,7 @@ def _resolve_fetch_source(
     remote = _find_remote_for_repo(owner, repo, project_path)
     if remote:
         return remote, None
-
-    try:
-        token = run_gh("auth", "token").strip()
-    except (RuntimeError, OSError):
-        token = ""
-    if token:
-        return f"https://x-access-token:{token}@github.com/{owner}/{repo}.git", token
-    return None, None
+    return _token_fetch_url(owner, repo)
 
 
 def _fetch_diff_locally(
@@ -192,7 +204,11 @@ def _fetch_diff_locally(
     300-file cap on ``gh pr diff`` because git itself has no such limit.
 
     The fetch source is the local remote matching ``owner/repo`` (whose
-    credentials already work); see :func:`_resolve_fetch_source`.
+    credentials already work); see :func:`_resolve_fetch_source`. If that
+    remote fetch fails — e.g. an HTTPS remote with no credential helper,
+    which dies with "could not read Username" — it retries once using an
+    authenticated ``gh auth token`` URL so the token in the environment is
+    actually used.
 
     Returns the raw diff text on success, or an empty string on any
     failure (network, missing branch, etc.). Temp refs are always cleaned
@@ -200,18 +216,6 @@ def _fetch_diff_locally(
     """
     head_ref = f"refs/koan-tmp/pr-{pr_number}-head"
     base_ref = f"refs/koan-tmp/pr-{pr_number}-base"
-
-    source, secret = _resolve_fetch_source(owner, repo, project_path)
-    if not source:
-        print(
-            f"[rebase_pr] local diff fallback: no usable fetch source for "
-            f"{owner}/{repo} (no matching remote and no gh token)",
-            file=sys.stderr,
-        )
-        return ""
-
-    def _redact(text: str) -> str:
-        return text.replace(secret, "***") if secret else text
 
     def _git(args: list, **kwargs) -> subprocess.CompletedProcess:
         return subprocess.run(
@@ -223,7 +227,11 @@ def _fetch_diff_locally(
             **kwargs,
         )
 
-    try:
+    def _attempt(source: str, secret: Optional[str]) -> Optional[str]:
+        """Fetch head + base from *source* and return the diff, or None on failure."""
+        def _redact(text: str) -> str:
+            return text.replace(secret, "***") if secret else text
+
         head_fetch = _git(
             ["fetch", "--no-tags", source, f"pull/{pr_number}/head:{head_ref}"],
         )
@@ -234,7 +242,7 @@ def _fetch_diff_locally(
                 f"failed: {_redact(stderr)[:200]}",
                 file=sys.stderr,
             )
-            return ""
+            return None
 
         base_fetch = _git(
             ["fetch", "--no-tags", source, f"{base_branch}:{base_ref}"],
@@ -246,7 +254,7 @@ def _fetch_diff_locally(
                 f"failed: {_redact(stderr)[:200]}",
                 file=sys.stderr,
             )
-            return ""
+            return None
 
         diff_result = _git(
             ["diff", f"{base_ref}...{head_ref}"],
@@ -258,11 +266,42 @@ def _fetch_diff_locally(
                 f"{_redact(diff_result.stderr)[:200]}",
                 file=sys.stderr,
             )
-            return ""
+            return None
         return diff_result.stdout
-    except (subprocess.TimeoutExpired, OSError) as e:
+
+    source, secret = _resolve_fetch_source(owner, repo, project_path)
+    if not source:
         print(
-            f"[rebase_pr] local diff fallback errored: {_redact(str(e))}",
+            f"[rebase_pr] local diff fallback: no usable fetch source for "
+            f"{owner}/{repo} (no matching remote and no gh token)",
+            file=sys.stderr,
+        )
+        return ""
+
+    try:
+        diff = _attempt(source, secret)
+        if diff is not None:
+            return diff
+
+        # The first source was a plain remote name (secret is None) whose
+        # transport failed — e.g. an HTTPS remote with no credential helper.
+        # Retry once with an authenticated token URL so GH_TOKEN is used.
+        if secret is None:
+            token_url, token = _token_fetch_url(owner, repo)
+            if token_url:
+                print(
+                    f"[rebase_pr] local diff fallback: remote fetch failed for "
+                    f"{owner}/{repo}; retrying with gh token URL",
+                    file=sys.stderr,
+                )
+                diff = _attempt(token_url, token)
+                if diff is not None:
+                    return diff
+        return ""
+    except (subprocess.TimeoutExpired, OSError) as e:
+        msg = str(e).replace(secret, "***") if secret else str(e)
+        print(
+            f"[rebase_pr] local diff fallback errored: {msg}",
             file=sys.stderr,
         )
         return ""
