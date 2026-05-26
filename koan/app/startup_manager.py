@@ -407,6 +407,16 @@ def check_auto_update(koan_root: str, instance: str) -> bool:
     return perform_auto_update(koan_root, instance)
 
 
+def track_project_commits(projects: list, instance: str):
+    """Record HEAD commits and report changes since last startup."""
+    from app.commit_tracker import record_and_report
+    messages = record_and_report(projects, instance)
+    if messages:
+        from app.run import _notify_raw
+        for msg in messages:
+            _notify_raw(instance, msg)
+
+
 def run_morning_ritual(instance: str) -> bool:
     """Execute the morning ritual. Returns True on success, False otherwise."""
     log("init", "Running morning ritual...")
@@ -511,6 +521,9 @@ def run_startup(koan_root: str, instance: str, projects: list):
     with protected_phase("Git sync"):
         run_git_sync(instance, projects)
         _safe_run("Remote HEAD check", check_remote_heads, koan_root, instance, projects)
+
+    # Track project commits (after sync so HEAD is current)
+    _safe_run("Commit tracker", track_project_commits, projects, instance)
 
     # Auto-update check (before daily report / morning ritual)
     updated = _safe_run("Auto-update check", check_auto_update, koan_root, instance)
