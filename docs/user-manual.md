@@ -269,6 +269,15 @@ Kōan can manage multiple projects simultaneously. It rotates between them based
 - `/projects` — See which repos Kōan is managing
 </details>
 
+**`/alias`** — Create short aliases for project names. Once set, typing `/<shortcut> <text>` queues a mission tagged with the aliased project.
+
+- **Usage:** `/alias <project> <shortcut>` — create an alias. `/alias` — list all aliases.
+- **Examples:** `/alias Template2 tt`, then `/tt fix the build` queues a mission for Template2.
+
+**`/unalias`** — Remove a project alias.
+
+- **Usage:** `/unalias <shortcut>`
+
 **`/focus`** — Lock Kōan to a single project. While focused, it only processes missions for that project and skips exploration/reflection.
 
 - **Usage:** `/focus [duration]` (default: 5 hours)
@@ -1668,6 +1677,8 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/verbose` | — | B | Enable real-time progress updates |
 | `/silent` | — | B | Disable real-time progress updates |
 | `/projects` | `/proj` | B | List configured projects |
+| `/alias <proj> <short>` | — | B | Create project shortcut (e.g. /alias Template2 tt) |
+| `/unalias <short>` | — | B | Remove a project alias |
 | `/focus [duration]` | — | B | Lock agent to one project |
 | `/unfocus` | — | B | Exit focus mode |
 | `/passive [duration]` | — | B | Enter read-only passive mode |

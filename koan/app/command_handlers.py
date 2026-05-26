@@ -64,6 +64,19 @@ def _has_in_progress_mission() -> bool:
         return False
 
 
+def _resolve_project_alias(command_name: str) -> Optional[str]:
+    """Check if command_name is a project alias. Returns project name or None."""
+    import json
+    aliases_path = INSTANCE_DIR / ".project-aliases.json"
+    if not aliases_path.exists():
+        return None
+    try:
+        aliases = json.loads(aliases_path.read_text(encoding="utf-8"))
+        return aliases.get(command_name)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
 def _strip_bot_mention(text: str) -> str:
     """Strip @botname suffix from Telegram group commands.
 
@@ -178,6 +191,15 @@ def handle_command(text: str):
             skill, subcommand, skill_args = resolved
             _dispatch_skill(skill, subcommand, skill_args)
             return
+
+    # Project alias fallback: /tt <text> → handle_mission("Template2 <text>")
+    alias_project = _resolve_project_alias(command_name)
+    if alias_project:
+        if command_args:
+            handle_mission(f"{alias_project} {command_args}")
+        else:
+            send_telegram(f"🔗 /{command_name} → {alias_project}\nUsage: /{command_name} <mission text>")
+        return
 
     # Project-name fallback: if the "command" is actually a known project name,
     # rewrite as "/mission <project> <context>" so the user can write e.g.
