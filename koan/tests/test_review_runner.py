@@ -775,7 +775,7 @@ class TestRunReview:
 
     @patch("app.review_runner.fetch_pr_context")
     def test_empty_diff(self, mock_fetch, pr_context):
-        """Returns failure when PR has no diff."""
+        """Returns a successful no-op when PR has no diff."""
         pr_context["diff"] = ""
         mock_fetch.return_value = pr_context
         mock_notify = MagicMock()
@@ -785,8 +785,25 @@ class TestRunReview:
             notify_fn=mock_notify,
         )
 
-        assert success is False
+        assert success is True
         assert "no diff" in summary
+
+    @patch("app.review_runner.fetch_pr_context")
+    def test_diff_unavailable(self, mock_fetch, pr_context):
+        """Diff fetch failures are not mislabeled as no-change PRs."""
+        pr_context["diff"] = ""
+        pr_context["diff_error"] = "HTTP 406: diff exceeded maximum"
+        mock_fetch.return_value = pr_context
+        mock_notify = MagicMock()
+
+        success, summary, _rd = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=mock_notify,
+        )
+
+        assert success is False
+        assert "diff unavailable" in summary
+        assert "no diff" not in summary
 
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
     @patch("app.review_runner._run_claude_review")
@@ -2432,7 +2449,7 @@ class TestRunReviewWithIgnoreFilter:
         self, mock_fetch, mock_claude, mock_repliable, mock_ignore,
         mock_find_bot, _mock_shas, review_skill_dir,
     ):
-        """When all files are ignored the review returns early with 'nothing to review'."""
+        """When all files are ignored the review exits as a clean no-op."""
         mock_fetch.return_value = self._make_pr_context()
 
         success, summary, _ = run_review(
@@ -2441,7 +2458,7 @@ class TestRunReviewWithIgnoreFilter:
             skill_dir=review_skill_dir,
         )
 
-        assert success is False
+        assert success is True
         assert "nothing to review" in summary.lower()
         mock_claude.assert_not_called()
 

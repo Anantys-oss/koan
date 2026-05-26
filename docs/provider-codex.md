@@ -81,7 +81,10 @@ codex exec --sandbox workspace-write --model gpt-5.4 "Your prompt here"
 ```
 
 This runs Codex as a scripted agent that reads the project, generates
-a plan, executes it, and streams the result to stdout.
+a plan, executes it, and returns the result. Streaming skill calls use
+`--json` for progress events and `--output-last-message` for the final
+assistant response, so Kōan can show live activity without relying on
+Codex event shapes for the final answer.
 
 ### Execution Modes
 
@@ -101,7 +104,7 @@ a plan, executes it, and streams the result to stdout.
 | Max turns              | ❌            | Codex exec runs to completion           |
 | MCP servers            | ⚠️            | Configure in `~/.codex/config.toml`     |
 | Plugin directories     | ❌            | Codex uses skills instead               |
-| Output format (JSON)   | ⚠️            | Available but not used (Kōan expects text) |
+| Output format (JSON)   | ✅            | Used for live progress; final text is read from `--output-last-message` |
 | Quota check            | ✅            | Minimal probe via `codex exec "ok"`     |
 
 ## Per-Project Override

@@ -693,6 +693,7 @@ class TestFetchPrContext:
         assert context["title"] == "Big PR"
         assert context["branch"] == "feat/big"
         assert context["diff"] == ""  # Graceful fallback
+        assert "HTTP 406" in context["diff_error"]
 
     @patch("app.rebase_pr._fetch_diff_locally")
     @patch("app.github.subprocess.run")
@@ -728,6 +729,7 @@ class TestFetchPrContext:
             "/tmp/checkout", "o", "r", "9", "develop",
         )
         assert "local fallback diff" in context["diff"]
+        assert context["diff_error"] == ""
 
     @patch("app.rebase_pr._fetch_diff_locally")
     @patch("app.github.subprocess.run")
@@ -758,6 +760,7 @@ class TestFetchPrContext:
 
         mock_local.assert_not_called()
         assert context["diff"] == ""
+        assert "HTTP 406" in context["diff_error"]
 
     @patch("app.rebase_pr._fetch_diff_locally")
     @patch("app.github.subprocess.run")
@@ -786,6 +789,7 @@ class TestFetchPrContext:
 
         mock_local.assert_not_called()
         assert context["diff"] == ""
+        assert "HTTP 404" in context["diff_error"]
 
     @patch("app.github.subprocess.run")
     def test_comments_fetch_failure_graceful(self, mock_run):

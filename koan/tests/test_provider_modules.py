@@ -1136,6 +1136,71 @@ class TestRunCommandStreaming:
             out = run_command_streaming("hi", "/tmp", [])
         assert out == "final codex answer"
 
+    def test_codex_last_message_file_wins_over_event_fallback(self):
+        """Codex writes the final answer to --output-last-message; prefer it.
+
+        The live failure mode was a stream full of progress events with no
+        extractable result body. The file is Codex's stable final-output API.
+        """
+        import json
+        from app.provider import run_command_streaming
+
+        events = [
+            json.dumps({"type": "agent_message"}) + "\n",
+            json.dumps({"type": "turn.completed"}) + "\n",
+        ]
+        proc = self._make_proc(events)
+        cleanup = MagicMock()
+        captured = {}
+
+        def fake_popen(cmd, **kwargs):
+            captured["cmd"] = cmd
+            path = cmd[cmd.index("--output-last-message") + 1]
+            captured["path"] = path
+            with open(path, "w") as f:
+                f.write("final answer from file\n")
+            return proc, cleanup
+
+        with patch("app.config.get_model_config", return_value={"chat": "m", "fallback": "f"}), \
+             patch("app.provider.get_provider_name", return_value="codex"), \
+             patch("app.provider.build_full_command", return_value=["codex", "exec", "--json", "prompt"]), \
+             patch("app.cli_exec.popen_cli", side_effect=fake_popen), \
+             patch("app.claude_step.strip_cli_noise", side_effect=lambda s: s):
+            out = run_command_streaming("hi", "/tmp", [])
+
+        assert out == "final answer from file"
+        assert captured["cmd"][-1] == "prompt"
+        assert "--output-last-message" in captured["cmd"]
+        assert not os.path.exists(captured["path"])
+
+    def test_codex_empty_last_message_file_falls_back_to_events(self):
+        import json
+        from app.provider import run_command_streaming
+
+        events = [
+            json.dumps({
+                "type": "turn_complete",
+                "last_agent_message": "event fallback answer",
+            }) + "\n",
+        ]
+        proc = self._make_proc(events)
+        cleanup = MagicMock()
+
+        def fake_popen(cmd, **kwargs):
+            path = cmd[cmd.index("--output-last-message") + 1]
+            with open(path, "w") as f:
+                f.write("")
+            return proc, cleanup
+
+        with patch("app.config.get_model_config", return_value={"chat": "m", "fallback": "f"}), \
+             patch("app.provider.get_provider_name", return_value="codex"), \
+             patch("app.provider.build_full_command", return_value=["codex", "exec", "--json", "prompt"]), \
+             patch("app.cli_exec.popen_cli", side_effect=fake_popen), \
+             patch("app.claude_step.strip_cli_noise", side_effect=lambda s: s):
+            out = run_command_streaming("hi", "/tmp", [])
+
+        assert out == "event fallback answer"
+
 
 class TestSummarizeStreamEvent:
     """Direct coverage for _summarize_stream_event so changes to the

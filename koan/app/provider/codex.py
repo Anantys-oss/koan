@@ -93,6 +93,12 @@ class CodexProvider(CLIProvider):
             return ["--json"]
         return []
 
+    def supports_last_message_file(self) -> bool:
+        return True
+
+    def build_last_message_file_args(self, path: str) -> List[str]:
+        return ["--output-last-message", path]
+
     def build_max_turns_args(self, max_turns: int = 0) -> List[str]:
         # Codex CLI does not support --max-turns.
         # codex exec runs to completion.
