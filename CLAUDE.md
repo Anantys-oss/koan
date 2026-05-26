@@ -108,7 +108,6 @@ Communication between processes happens through shared files in `instance/` with
 - **`recreate_pr.py`** — PR recreation: fetch metadata/diff, create fresh branch, reimplement from scratch
 - **`claude_step.py`** — Shared helpers for git operations and Claude CLI invocation (used by pr_review, rebase_pr, recreate_pr). Also provides `run_ci_fix_loop()` — shared CI fix loop with configurable recheck semantics (polling vs single-shot) via `use_polling` flag and caller-specific `prompt_builder` callable.
 - **`remote_rename_detector.py`** — Detects and fixes renamed GitHub remotes in workspace projects
-- **`commit_tracker.py`** — Tracks Kōan's own HEAD commit across startups. On each startup, records current HEAD SHA in `instance/.commit-tracker.json`. On subsequent startups, detects changes and reports new commits via Telegram. Integrated into `startup_manager.run_startup()` after git sync.
 - **`head_tracker.py`** — Detects remote HEAD branch changes (e.g. master → main) and updates local workspace. State persisted in `instance/.head-tracker.json`, throttled to once per 12h. Integrated into startup, manual trigger via `/rescan`.
 
 **Other:**
@@ -120,7 +119,7 @@ Communication between processes happens through shared files in `instance/` with
 - **`skill_manager.py`** — External skill package manager: install from Git repos, update, remove, track via `instance/skills.yaml`
 - **`claudemd_refresh.py`** — CLAUDE.md refresh pipeline: gathers git context, invokes Claude to update/create CLAUDE.md
 - **`update_manager.py`** — Kōan self-update: stash, checkout main, fetch/pull from upstream, report changes
-- **`auto_update.py`** — Automatic update checker: periodically fetches upstream, triggers pull + restart when new commits are available. Configurable via `auto_update` section in `config.yaml` (`enabled`, `check_interval`, `notify`)
+- **`auto_update.py`** — Automatic update checker and self-commit tracker. Periodically fetches upstream, triggers pull + restart when new commits are available. Also tracks Kōan's own HEAD across startups — records current SHA in `instance/.commit-tracker.json`, reports new commits via Telegram on subsequent startups. Configurable via `auto_update` section in `config.yaml` (`enabled`, `check_interval`, `notify`)
 - **`ci_dispatch.py`** — Auto-dispatch fix missions when CI fails on Koan-authored PRs. Checks open PRs by branch prefix, fetches check-run status via GitHub API, inserts fix missions with log snippets. Dedup via `.ci-dispatch-tracker.json` keyed by PR+SHA+job. Configurable via `ci_dispatch` section in `config.yaml` (`enabled`, `cooldown_minutes`, `log_snippet_bytes`).
 - **`security_review.py`** — Differential security review on mission diffs: blast radius analysis, risk classification, journal logging. Runs before auto-merge decisions.
 - **`rename_project.py`** — CLI tool to rename a project across `projects.yaml` and all `instance/` files (missions, memory dir, journal files, JSON references). Dry-run by default, `--apply` to execute. Invoked via `make rename-project old=X new=Y [apply=1]`.

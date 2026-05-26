@@ -409,7 +409,7 @@ def check_auto_update(koan_root: str, instance: str) -> bool:
 
 def track_koan_commits(koan_root: str, instance: str):
     """Record Kōan's own HEAD and report changes since last startup."""
-    from app.commit_tracker import record_and_report
+    from app.auto_update import record_and_report
     message = record_and_report(koan_root, instance)
     if message:
         from app.run import _notify_raw
