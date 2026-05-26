@@ -84,6 +84,12 @@ class TestGetLog:
             assert lines == []
             assert total == 0
 
+    def test_excludes_merge_commits(self):
+        with patch("app.auto_update._run_git_utils", return_value=(0, "abc commit\n", "")) as mock_git:
+            _get_commit_log("/koan", "old_sha")
+            args = mock_git.call_args[0]
+            assert "--no-merges" in args
+
 
 # --- record_and_report ---
 

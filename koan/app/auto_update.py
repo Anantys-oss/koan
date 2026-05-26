@@ -285,7 +285,7 @@ def _get_commit_log(koan_root: str, since_sha: str, limit: int = MAX_LOG_LINES) 
     is the real number of commits so the message can say "and N more".
     """
     rc, stdout, _ = _run_git_utils(
-        "log", "--oneline", f"{since_sha}..HEAD",
+        "log", "--oneline", "--no-merges", f"{since_sha}..HEAD",
         cwd=koan_root, timeout=15,
     )
     if rc != 0 or not stdout.strip():
