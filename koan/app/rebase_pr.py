@@ -149,6 +149,34 @@ def _diff_too_large(error_message: str) -> bool:
     return any(marker in error_message for marker in _DIFF_TOO_LARGE_MARKERS)
 
 
+def _resolve_fetch_source(
+    owner: str, repo: str, project_path: str,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Resolve a git fetch source for ``owner/repo`` from the local checkout.
+
+    Returns ``(source, secret)`` where *source* is a git remote name or URL
+    and *secret* is a token that must be redacted from logs (or ``None``).
+
+    Prefers the local remote whose URL matches ``owner/repo`` — its
+    credentials already work, since that is how Kōan fetches and pushes
+    (SSH key or git credential helper). Only when no matching remote exists
+    does it fall back to an authenticated HTTPS URL built from
+    ``gh auth token`` (a fresh ``https://github.com/...`` URL has no
+    credentials and prompts for a username on private repos).
+    """
+    remote = _find_remote_for_repo(owner, repo, project_path)
+    if remote:
+        return remote, None
+
+    try:
+        token = run_gh("auth", "token").strip()
+    except (RuntimeError, OSError):
+        token = ""
+    if token:
+        return f"https://x-access-token:{token}@github.com/{owner}/{repo}.git", token
+    return None, None
+
+
 def _fetch_diff_locally(
     project_path: str,
     owner: str,
@@ -159,17 +187,31 @@ def _fetch_diff_locally(
 ) -> str:
     """Fetch a PR diff from the local checkout when GitHub's API caps out.
 
-    Uses ``git fetch <url> pull/<N>/head`` and ``git fetch <url> <base>``
-    into temporary refs, then ``git diff base...head``. This bypasses the
+    Fetches the PR head (``pull/<N>/head``) and the base branch into
+    temporary refs, then runs ``git diff base...head``. This bypasses the
     300-file cap on ``gh pr diff`` because git itself has no such limit.
+
+    The fetch source is the local remote matching ``owner/repo`` (whose
+    credentials already work); see :func:`_resolve_fetch_source`.
 
     Returns the raw diff text on success, or an empty string on any
     failure (network, missing branch, etc.). Temp refs are always cleaned
     up, even on failure.
     """
-    url = f"https://github.com/{owner}/{repo}.git"
     head_ref = f"refs/koan-tmp/pr-{pr_number}-head"
     base_ref = f"refs/koan-tmp/pr-{pr_number}-base"
+
+    source, secret = _resolve_fetch_source(owner, repo, project_path)
+    if not source:
+        print(
+            f"[rebase_pr] local diff fallback: no usable fetch source for "
+            f"{owner}/{repo} (no matching remote and no gh token)",
+            file=sys.stderr,
+        )
+        return ""
+
+    def _redact(text: str) -> str:
+        return text.replace(secret, "***") if secret else text
 
     def _git(args: list, **kwargs) -> subprocess.CompletedProcess:
         return subprocess.run(
@@ -183,25 +225,25 @@ def _fetch_diff_locally(
 
     try:
         head_fetch = _git(
-            ["fetch", "--no-tags", url, f"pull/{pr_number}/head:{head_ref}"],
+            ["fetch", "--no-tags", source, f"pull/{pr_number}/head:{head_ref}"],
         )
         if head_fetch.returncode != 0:
             stderr = head_fetch.stderr.decode("utf-8", errors="replace")
             print(
                 f"[rebase_pr] local diff fallback: fetch of pull/{pr_number}/head "
-                f"failed: {stderr[:200]}",
+                f"failed: {_redact(stderr)[:200]}",
                 file=sys.stderr,
             )
             return ""
 
         base_fetch = _git(
-            ["fetch", "--no-tags", url, f"{base_branch}:{base_ref}"],
+            ["fetch", "--no-tags", source, f"{base_branch}:{base_ref}"],
         )
         if base_fetch.returncode != 0:
             stderr = base_fetch.stderr.decode("utf-8", errors="replace")
             print(
                 f"[rebase_pr] local diff fallback: fetch of base {base_branch} "
-                f"failed: {stderr[:200]}",
+                f"failed: {_redact(stderr)[:200]}",
                 file=sys.stderr,
             )
             return ""
@@ -213,14 +255,14 @@ def _fetch_diff_locally(
         if diff_result.returncode != 0:
             print(
                 f"[rebase_pr] local diff fallback: git diff failed: "
-                f"{diff_result.stderr[:200]}",
+                f"{_redact(diff_result.stderr)[:200]}",
                 file=sys.stderr,
             )
             return ""
         return diff_result.stdout
     except (subprocess.TimeoutExpired, OSError) as e:
         print(
-            f"[rebase_pr] local diff fallback errored: {e}",
+            f"[rebase_pr] local diff fallback errored: {_redact(str(e))}",
             file=sys.stderr,
         )
         return ""

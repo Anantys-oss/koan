@@ -896,8 +896,9 @@ class TestFetchPrContext:
 # ---------------------------------------------------------------------------
 
 class TestFetchDiffLocally:
+    @patch("app.rebase_pr._resolve_fetch_source", return_value=("origin", None))
     @patch("app.rebase_pr.subprocess.run")
-    def test_runs_three_git_commands_and_returns_diff(self, mock_run):
+    def test_runs_three_git_commands_and_returns_diff(self, mock_run, _mock_src):
         """The fallback fetches PR head + base then runs git diff."""
         from app.rebase_pr import _fetch_diff_locally
 
@@ -916,12 +917,25 @@ class TestFetchDiffLocally:
         # The first three calls should be git fetch / fetch / diff in that order
         first_three = [c.args[0][:2] for c in mock_run.call_args_list[:3]]
         assert first_three == [["git", "fetch"], ["git", "fetch"], ["git", "diff"]]
-        # PR head fetch must use the pull/<N>/head refspec
+        # PR head fetch must use the pull/<N>/head refspec and the resolved remote
         head_fetch_args = mock_run.call_args_list[0].args[0]
+        assert "origin" in head_fetch_args
         assert any("pull/42/head" in a for a in head_fetch_args)
 
+    @patch("app.rebase_pr._resolve_fetch_source", return_value=(None, None))
     @patch("app.rebase_pr.subprocess.run")
-    def test_returns_empty_on_fetch_failure(self, mock_run):
+    def test_returns_empty_when_no_fetch_source(self, mock_run, _mock_src):
+        """No matching remote and no token → no fetch attempt, empty diff."""
+        from app.rebase_pr import _fetch_diff_locally
+
+        diff = _fetch_diff_locally("/tmp/co", "o", "r", "42", "main")
+
+        assert diff == ""
+        mock_run.assert_not_called()
+
+    @patch("app.rebase_pr._resolve_fetch_source", return_value=("origin", None))
+    @patch("app.rebase_pr.subprocess.run")
+    def test_returns_empty_on_fetch_failure(self, mock_run, _mock_src):
         """Returns empty string when the PR head fetch fails."""
         from app.rebase_pr import _fetch_diff_locally
 
@@ -936,8 +950,9 @@ class TestFetchDiffLocally:
 
         assert diff == ""
 
+    @patch("app.rebase_pr._resolve_fetch_source", return_value=("origin", None))
     @patch("app.rebase_pr.subprocess.run")
-    def test_cleans_up_temp_refs_on_success(self, mock_run):
+    def test_cleans_up_temp_refs_on_success(self, mock_run, _mock_src):
         """Temp refs are deleted after a successful diff."""
         from app.rebase_pr import _fetch_diff_locally
 
@@ -956,6 +971,62 @@ class TestFetchDiffLocally:
             if c.args[0][:2] == ["git", "update-ref"]
         ]
         assert len(cleanup_calls) == 2
+
+    @patch("app.rebase_pr._resolve_fetch_source")
+    @patch("app.rebase_pr.subprocess.run")
+    def test_redacts_token_from_error_logs(self, mock_run, mock_src, capsys):
+        """A token in an authenticated URL must not leak into stderr logs."""
+        from app.rebase_pr import _fetch_diff_locally
+
+        token = "ghs_supersecret"
+        url = f"https://x-access-token:{token}@github.com/o/r.git"
+        mock_src.return_value = (url, token)
+        mock_run.side_effect = [
+            MagicMock(
+                returncode=128,
+                stderr=f"fatal: unable to access '{url}'".encode(),
+            ),
+            MagicMock(returncode=0, stderr=b""),
+            MagicMock(returncode=0, stderr=b""),
+        ]
+
+        _fetch_diff_locally("/tmp/co", "o", "r", "42", "main")
+
+        captured = capsys.readouterr()
+        assert token not in captured.err
+        assert "***" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# _resolve_fetch_source
+# ---------------------------------------------------------------------------
+
+class TestResolveFetchSource:
+    @patch("app.rebase_pr._find_remote_for_repo", return_value="origin")
+    def test_prefers_matching_remote(self, _mock_find):
+        from app.rebase_pr import _resolve_fetch_source
+
+        source, secret = _resolve_fetch_source("o", "r", "/tmp/co")
+        assert source == "origin"
+        assert secret is None
+
+    @patch("app.rebase_pr.run_gh", return_value="ghs_token123")
+    @patch("app.rebase_pr._find_remote_for_repo", return_value=None)
+    def test_falls_back_to_token_url(self, _mock_find, _mock_gh):
+        from app.rebase_pr import _resolve_fetch_source
+
+        source, secret = _resolve_fetch_source("o", "r", "/tmp/co")
+        assert source == "https://x-access-token:ghs_token123@github.com/o/r.git"
+        assert secret == "ghs_token123"
+
+    @patch("app.rebase_pr.run_gh", side_effect=RuntimeError("not logged in"))
+    @patch("app.rebase_pr._find_remote_for_repo", return_value=None)
+    def test_returns_none_when_no_remote_and_no_token(self, _mock_find, _mock_gh):
+        from app.rebase_pr import _resolve_fetch_source
+
+        source, secret = _resolve_fetch_source("o", "r", "/tmp/co")
+        assert source is None
+        assert secret is None
 
 
 # ---------------------------------------------------------------------------
