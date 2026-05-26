@@ -694,6 +694,99 @@ class TestFetchPrContext:
         assert context["branch"] == "feat/big"
         assert context["diff"] == ""  # Graceful fallback
 
+    @patch("app.rebase_pr._fetch_diff_locally")
+    @patch("app.github.subprocess.run")
+    def test_diff_406_falls_back_to_local_diff(
+        self, mock_run, mock_local,
+    ):
+        """When the diff endpoint returns 406 and project_path is set,
+        fetch_pr_context falls back to a local git diff."""
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout=json.dumps({
+                "title": "Huge PR",
+                "headRefName": "feat/huge",
+                "baseRefName": "develop",
+                "state": "OPEN",
+                "author": {"login": "dev"},
+                "url": "https://github.com/o/r/pull/9",
+            })),
+            MagicMock(returncode=0, stdout="0"),
+            # Diff fails with 406
+            MagicMock(
+                returncode=1,
+                stderr="HTTP 406: diff exceeded the maximum number of files",
+            ),
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout=""),
+        ]
+        mock_local.return_value = "diff --git a/x b/x\n+local fallback diff"
+
+        context = fetch_pr_context("o", "r", "9", project_path="/tmp/checkout")
+
+        mock_local.assert_called_once_with(
+            "/tmp/checkout", "o", "r", "9", "develop",
+        )
+        assert "local fallback diff" in context["diff"]
+
+    @patch("app.rebase_pr._fetch_diff_locally")
+    @patch("app.github.subprocess.run")
+    def test_diff_406_without_project_path_skips_fallback(
+        self, mock_run, mock_local,
+    ):
+        """No project_path → no fallback attempt, diff stays empty."""
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout=json.dumps({
+                "title": "Huge PR",
+                "headRefName": "feat/huge",
+                "baseRefName": "main",
+                "state": "OPEN",
+                "author": {"login": "dev"},
+                "url": "https://github.com/o/r/pull/9",
+            })),
+            MagicMock(returncode=0, stdout="0"),
+            MagicMock(
+                returncode=1,
+                stderr="HTTP 406: diff exceeded the maximum number of files",
+            ),
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout=""),
+        ]
+
+        context = fetch_pr_context("o", "r", "9")
+
+        mock_local.assert_not_called()
+        assert context["diff"] == ""
+
+    @patch("app.rebase_pr._fetch_diff_locally")
+    @patch("app.github.subprocess.run")
+    def test_diff_non_406_failure_skips_fallback(
+        self, mock_run, mock_local,
+    ):
+        """Other gh failures (e.g. transient 5xx) should not trigger the
+        local fallback — only the 'too many files' signature does."""
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout=json.dumps({
+                "title": "PR",
+                "headRefName": "br",
+                "baseRefName": "main",
+                "state": "OPEN",
+                "author": {"login": "dev"},
+                "url": "https://github.com/o/r/pull/1",
+            })),
+            MagicMock(returncode=0, stdout="0"),
+            MagicMock(returncode=1, stderr="HTTP 404: not found"),
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout=""),
+        ]
+
+        context = fetch_pr_context("o", "r", "1", project_path="/tmp/checkout")
+
+        mock_local.assert_not_called()
+        assert context["diff"] == ""
+
     @patch("app.github.subprocess.run")
     def test_comments_fetch_failure_graceful(self, mock_run):
         """API failures on comments should not crash the fetch."""
@@ -796,6 +889,73 @@ class TestFetchPrContext:
         assert context["has_pending_reviews"] is True
         # retry_with_backoff sleeps once between the failed and successful attempt
         assert mock_sleep.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# _fetch_diff_locally
+# ---------------------------------------------------------------------------
+
+class TestFetchDiffLocally:
+    @patch("app.rebase_pr.subprocess.run")
+    def test_runs_three_git_commands_and_returns_diff(self, mock_run):
+        """The fallback fetches PR head + base then runs git diff."""
+        from app.rebase_pr import _fetch_diff_locally
+
+        # head fetch, base fetch, diff, then two best-effort update-ref deletes
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stderr=b""),
+            MagicMock(returncode=0, stderr=b""),
+            MagicMock(returncode=0, stdout="diff --git a/f b/f\n+new", stderr=""),
+            MagicMock(returncode=0, stderr=b""),
+            MagicMock(returncode=0, stderr=b""),
+        ]
+
+        diff = _fetch_diff_locally("/tmp/co", "o", "r", "42", "main")
+
+        assert "diff --git" in diff
+        # The first three calls should be git fetch / fetch / diff in that order
+        first_three = [c.args[0][:2] for c in mock_run.call_args_list[:3]]
+        assert first_three == [["git", "fetch"], ["git", "fetch"], ["git", "diff"]]
+        # PR head fetch must use the pull/<N>/head refspec
+        head_fetch_args = mock_run.call_args_list[0].args[0]
+        assert any("pull/42/head" in a for a in head_fetch_args)
+
+    @patch("app.rebase_pr.subprocess.run")
+    def test_returns_empty_on_fetch_failure(self, mock_run):
+        """Returns empty string when the PR head fetch fails."""
+        from app.rebase_pr import _fetch_diff_locally
+
+        mock_run.side_effect = [
+            MagicMock(returncode=128, stderr=b"fatal: couldn't find remote ref"),
+            # Cleanup calls still run
+            MagicMock(returncode=0, stderr=b""),
+            MagicMock(returncode=0, stderr=b""),
+        ]
+
+        diff = _fetch_diff_locally("/tmp/co", "o", "r", "42", "main")
+
+        assert diff == ""
+
+    @patch("app.rebase_pr.subprocess.run")
+    def test_cleans_up_temp_refs_on_success(self, mock_run):
+        """Temp refs are deleted after a successful diff."""
+        from app.rebase_pr import _fetch_diff_locally
+
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stderr=b""),
+            MagicMock(returncode=0, stderr=b""),
+            MagicMock(returncode=0, stdout="+x", stderr=""),
+            MagicMock(returncode=0, stderr=b""),
+            MagicMock(returncode=0, stderr=b""),
+        ]
+
+        _fetch_diff_locally("/tmp/co", "o", "r", "7", "main")
+
+        cleanup_calls = [
+            c for c in mock_run.call_args_list
+            if c.args[0][:2] == ["git", "update-ref"]
+        ]
+        assert len(cleanup_calls) == 2
 
 
 # ---------------------------------------------------------------------------

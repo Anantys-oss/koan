@@ -692,7 +692,7 @@ class TestRunReview:
         assert "42" in summary
         assert review_data is not None
         assert review_data["review_summary"]["lgtm"] is True
-        mock_fetch.assert_called_once_with("owner", "repo", "42")
+        mock_fetch.assert_called_once_with("owner", "repo", "42", "/tmp/project")
         mock_claude.assert_called_once()
         mock_gh.assert_called_once()  # post comment
         assert mock_notify.call_count >= 2
