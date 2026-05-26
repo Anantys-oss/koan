@@ -1,9 +1,10 @@
 """CLI execution helpers — secure prompt passing via temp files.
 
-Prevents prompts from leaking into ``ps`` process listings by writing
-them to a temporary file (``0o600``) and redirecting that file as the
-subprocess stdin.  The ``-p`` argument visible in ``ps`` becomes the
-short placeholder ``@stdin`` instead of the full prompt text.
+Prevents prompts from leaking into ``ps`` process listings and avoids OS
+``ARG_MAX`` failures by writing them to a temporary file (``0o600``) and
+redirecting that file as the subprocess stdin.  Claude-style ``-p``
+arguments become the short placeholder ``@stdin``; Codex ``exec`` prompts
+become ``-``, which Codex reads from stdin.
 
 Providers that consume stdin for the prompt (making it unavailable for
 the agent's own tool calls) skip this mechanism and pass the prompt
@@ -44,26 +45,38 @@ def _uses_stdin_passing() -> bool:
 
 
 def prepare_prompt_file(cmd: List[str]) -> Tuple[List[str], Optional[str]]:
-    """Extract the ``-p`` prompt from *cmd* and write it to a secure temp file.
+    """Extract the prompt from *cmd* and write it to a secure temp file.
 
-    Returns ``(modified_cmd, temp_file_path)``.  If no ``-p`` argument is
-    found, it already equals :data:`STDIN_PLACEHOLDER`, or the current
-    provider does not support stdin-based prompt passing, returns
-    ``(cmd, None)`` unchanged.
+    Returns ``(modified_cmd, temp_file_path)``.  Claude-style commands are
+    rewritten from ``-p <prompt>`` to ``-p @stdin``.  Codex commands are
+    rewritten from ``codex exec ... <prompt>`` to ``codex exec ... -``.
+    If no supported prompt argument is found, it already uses a stdin
+    marker, or the current provider does not support stdin-based prompt
+    passing, returns ``(cmd, None)`` unchanged.
     """
     if not _uses_stdin_passing():
         return cmd, None
 
+    prompt_idx: Optional[int] = None
+    prompt_stdin_marker = STDIN_PLACEHOLDER
     try:
-        idx = cmd.index("-p")
+        prompt_idx = cmd.index("-p") + 1
     except ValueError:
+        if (
+            len(cmd) >= 3
+            and os.path.basename(cmd[0]) == "codex"
+            and cmd[1] == "exec"
+            and cmd[-1] != "-"
+            and not cmd[-1].startswith("-")
+        ):
+            prompt_idx = len(cmd) - 1
+            prompt_stdin_marker = "-"
+
+    if prompt_idx is None or prompt_idx >= len(cmd):
         return cmd, None
 
-    if idx + 1 >= len(cmd):
-        return cmd, None
-
-    prompt = cmd[idx + 1]
-    if prompt == STDIN_PLACEHOLDER:
+    prompt = cmd[prompt_idx]
+    if prompt == prompt_stdin_marker:
         return cmd, None
 
     fd, path = tempfile.mkstemp(suffix=".md", prefix="koan-prompt-")
@@ -74,7 +87,7 @@ def prepare_prompt_file(cmd: List[str]) -> Tuple[List[str], Optional[str]]:
     os.chmod(path, 0o600)
 
     new_cmd = cmd.copy()
-    new_cmd[idx + 1] = STDIN_PLACEHOLDER
+    new_cmd[prompt_idx] = prompt_stdin_marker
     return new_cmd, path
 
 

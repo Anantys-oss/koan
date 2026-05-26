@@ -133,6 +133,49 @@ class TestPreparePromptFile:
         assert new_cmd is cmd
         assert path is None
 
+    @patch("app.provider.get_provider_name", return_value="codex")
+    def test_codex_exec_prompt_uses_stdin_dash(self, _mock):
+        """Codex exec reads '-' from stdin, so the prompt stays out of argv."""
+        cmd = ["codex", "exec", "--sandbox", "workspace-write", "my prompt"]
+        new_cmd, path = prepare_prompt_file(cmd)
+        try:
+            assert path is not None
+            assert new_cmd == ["codex", "exec", "--sandbox", "workspace-write", "-"]
+            with open(path) as f:
+                assert f.read() == "my prompt"
+            mode = os.stat(path).st_mode & 0o777
+            assert mode == 0o600
+        finally:
+            _cleanup_prompt_file(path)
+
+    @patch("app.provider.get_provider_name", return_value="codex")
+    def test_codex_large_prompt_removed_from_argv(self, _mock):
+        """Regression for OSError: Argument list too long when using Codex."""
+        prompt = "x" * 200_000
+        cmd = ["codex", "exec", "--json", prompt]
+        new_cmd, path = prepare_prompt_file(cmd)
+        try:
+            assert new_cmd == ["codex", "exec", "--json", "-"]
+            assert prompt not in new_cmd
+            with open(path) as f:
+                assert f.read() == prompt
+        finally:
+            _cleanup_prompt_file(path)
+
+    @patch("app.provider.get_provider_name", return_value="codex")
+    def test_codex_existing_stdin_dash_returns_unchanged(self, _mock):
+        cmd = ["codex", "exec", "--json", "-"]
+        new_cmd, path = prepare_prompt_file(cmd)
+        assert new_cmd is cmd
+        assert path is None
+
+    @patch("app.provider.get_provider_name", return_value="codex")
+    def test_codex_without_prompt_returns_unchanged(self, _mock):
+        cmd = ["codex", "exec", "--json"]
+        new_cmd, path = prepare_prompt_file(cmd)
+        assert new_cmd is cmd
+        assert path is None
+
 
 # ---------------------------------------------------------------------------
 # _cleanup_prompt_file
