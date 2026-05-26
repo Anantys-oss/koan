@@ -105,7 +105,7 @@ class TestCodexProvider:
         result = self.provider.build_model_args(fallback="gpt-5.4-mini")
         assert result == []
 
-    # -- Output args (no-op) --
+    # -- Output args --
 
     def test_output_args_json(self):
         """Codex emits --json for json / stream-json formats (JSONL events)."""
@@ -116,6 +116,13 @@ class TestCodexProvider:
         """Plain text is the default; no flag emitted when format is unset."""
         assert self.provider.build_output_args() == []
         assert self.provider.build_output_args("") == []
+
+    def test_last_message_file_args(self):
+        assert self.provider.supports_last_message_file() is True
+        assert self.provider.build_last_message_file_args("/tmp/out.txt") == [
+            "--output-last-message",
+            "/tmp/out.txt",
+        ]
 
     # -- Max turns (no-op) --
 

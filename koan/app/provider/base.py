@@ -150,6 +150,14 @@ class CLIProvider:
         """
         return False
 
+    def supports_last_message_file(self) -> bool:
+        """Return True if the provider can write its final assistant text to a file."""
+        return False
+
+    def build_last_message_file_args(self, path: str) -> List[str]:
+        """Build args that ask the provider to write its final assistant text."""
+        return []
+
     def build_thinking_args(
         self, enabled: bool = False, budget_tokens: int = 0,
     ) -> List[str]:

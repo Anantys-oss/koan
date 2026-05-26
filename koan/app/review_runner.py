@@ -1274,7 +1274,13 @@ def run_review(
         context = {**context, "diff": filtered_diff}
 
     if not context.get("diff"):
-        return False, f"PR #{pr_number} has no diff — nothing to review.", None
+        if context.get("diff_error"):
+            return (
+                False,
+                f"PR #{pr_number} diff unavailable — cannot review.",
+                None,
+            )
+        return True, f"PR #{pr_number} has no diff — nothing to review.", None
 
     # Step 1b: Detect and fetch plan body for alignment checking
     plan_body = _resolve_plan_body(plan_url, context.get("body", ""))

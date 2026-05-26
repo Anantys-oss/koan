@@ -369,10 +369,12 @@ def fetch_pr_context(
     # happens and we have a local checkout, fall back to ``git diff`` from
     # the local repo, which has no such cap.
     diff = ""
+    diff_error = ""
     try:
         diff = run_gh("pr", "diff", pr_number, "--repo", full_repo)
     except RuntimeError as e:
         err_msg = str(e)
+        diff_error = err_msg
         too_large = _diff_too_large(err_msg)
         print(
             f"[rebase_pr] PR diff fetch failed for #{pr_number} "
@@ -386,6 +388,7 @@ def fetch_pr_context(
                 project_path, owner, repo, pr_number, base_branch,
             )
             if diff:
+                diff_error = ""
                 print(
                     f"[rebase_pr] PR #{pr_number} diff fetched locally "
                     f"({len(diff)} chars)",
@@ -450,6 +453,7 @@ def fetch_pr_context(
         "head_owner": metadata.get("headRepositoryOwner", {}).get("login", ""),
         "url": metadata.get("url", ""),
         "diff": truncate_diff(diff, 32000),
+        "diff_error": truncate_text(diff_error, 1000),
         "review_comments": truncate_text(comments_json, 4000),
         "reviews": truncate_text(reviews_json, 3000),
         "issue_comments": _truncate_recent(issue_comments, 4000),
