@@ -990,6 +990,7 @@ models:
   mission: null               # Default (sonnet) for mission work
   chat: null                  # Default for chat replies
   lightweight: haiku          # Quick tasks (formatting, picking)
+  review_mode: null           # Override autonomous review mode and /review
 
 # Budget thresholds
 budget:
@@ -1137,6 +1138,7 @@ projects:
     cli_provider: claude       # CLI provider override
     models:
       mission: opus            # Use Opus for this project
+      review_mode: sonnet      # Use Sonnet for review mode and /review
     tools:
       blocked: [WebSearch]     # Restrict certain tools
     git_auto_merge:
