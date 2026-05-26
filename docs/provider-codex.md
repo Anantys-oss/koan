@@ -90,8 +90,8 @@ Codex event shapes for the final answer.
 
 | Kōan Setting          | Codex Flag       | Behavior                        |
 |-----------------------|------------------|---------------------------------|
-| `skip_permissions: false` | `--sandbox workspace-write` | Workspace writes + on-request approvals |
-| `skip_permissions: true`  | `--yolo`        | No approvals, no sandbox        |
+| `skip_permissions: false` | `--sandbox workspace-write` | Workspace writes, but `.git` may be read-only |
+| `skip_permissions: true`  | `--dangerously-bypass-approvals-and-sandbox` | No approvals, no sandbox |
 
 ### Feature Mapping
 
@@ -165,8 +165,11 @@ not scan normal command output for generic billing or credit words.
 
 Codex does not support per-tool allow/disallow flags. Tool access is
 controlled by sandbox policies. Use `skip_permissions: true` (maps to
-`--yolo`) for full access, or the default `--sandbox workspace-write`
-for workspace-scoped writes.
+`--dangerously-bypass-approvals-and-sandbox`) for full access, or the
+default `--sandbox workspace-write` for workspace-scoped writes. In some
+deployments, `workspace-write` allows source edits but mounts `.git`
+read-only; use full access only when Kōan already runs in a trusted
+external sandbox and Codex should create branches, commits, pushes, and PRs.
 
 ### System prompt not taking effect
 

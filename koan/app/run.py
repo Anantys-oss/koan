@@ -2091,6 +2091,22 @@ def _run_iteration(
         # Build CLI command (provider-agnostic with per-project overrides)
         from app.mission_runner import build_mission_command
         from app.debug import debug_log as _debug_log
+        if provider_name == "codex":
+            try:
+                from app.config import get_skip_permissions
+                _codex_full_access = get_skip_permissions()
+            except Exception as e:
+                _codex_full_access = False
+                _debug_log(f"[run] codex skip_permissions check failed: {e}")
+            _mission_mode = (autonomous_mode or "implement").lower()
+            if not _codex_full_access and _mission_mode in {"implement", "deep"}:
+                log(
+                    "warning",
+                    "Codex workspace-write sandbox may make .git read-only; "
+                    "branch, commit, push, and PR creation can fail. "
+                    "Set skip_permissions: true when Koan runs in a trusted "
+                    "external sandbox and Codex should use git directly.",
+                )
 
         # Generate plugin directory so Claude CLI can discover Kōan skills
         plugin_dirs = None

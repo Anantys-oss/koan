@@ -59,7 +59,7 @@ class CodexProvider(CLIProvider):
     - No --append-system-prompt (falls back to prepend via base class)
     - No --max-turns (runs to completion)
     - Output: --json flag for JSONL events (not --output-format)
-    - Permissions: --yolo (equivalent to Claude's --dangerously-skip-permissions)
+    - Permissions: --dangerously-bypass-approvals-and-sandbox for full access
     - MCP: configured via config.toml, not CLI flags
 
     Configuration (config.yaml):
@@ -78,7 +78,7 @@ class CodexProvider(CLIProvider):
         return shutil.which("codex") is not None
 
     def build_permission_args(self, skip_permissions: bool = False) -> List[str]:
-        # Codex equivalent: --yolo bypasses approvals and sandbox entirely.
+        # Codex equivalent: bypass approvals and sandbox entirely.
         #
         # When skip_permissions=False we use --sandbox workspace-write
         # (replaces deprecated --full-auto) because Kōan runs headless
@@ -89,7 +89,7 @@ class CodexProvider(CLIProvider):
         # TODO: for read-only contexts (chat, review mode) a future
         # enhancement could pass --sandbox read-only instead.
         if skip_permissions:
-            return ["--yolo"]
+            return ["--dangerously-bypass-approvals-and-sandbox"]
         return ["--sandbox", "workspace-write"]
 
     def build_prompt_args(self, prompt: str) -> List[str]:
@@ -246,7 +246,8 @@ class CodexProvider(CLIProvider):
 
             codex exec [exec-flags] "prompt"
 
-        Permission flags (``--sandbox workspace-write``, ``--yolo``) and ``--model``
+        Permission flags (``--sandbox workspace-write``,
+        ``--dangerously-bypass-approvals-and-sandbox``) and ``--model``
         are ``exec`` subcommand flags in current Codex CLI (>= 0.1),
         so they must come *after* the ``exec`` keyword.  The prompt is
         the final positional argument.

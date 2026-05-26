@@ -153,9 +153,11 @@ class TestCodexProvider:
 
     # -- Permission args --
 
-    def test_permission_args_yolo(self):
-        """skip_permissions=True maps to --yolo."""
-        assert self.provider.build_permission_args(True) == ["--yolo"]
+    def test_permission_args_full_access(self):
+        """skip_permissions=True bypasses Codex approvals and sandbox."""
+        assert self.provider.build_permission_args(True) == [
+            "--dangerously-bypass-approvals-and-sandbox"
+        ]
 
     def test_permission_args_sandbox(self):
         """skip_permissions=False maps to --sandbox workspace-write."""
@@ -184,7 +186,7 @@ class TestCodexBuildCommand:
     def test_with_skip_permissions(self):
         cmd = self.provider.build_command(prompt="hello", skip_permissions=True)
         assert cmd[0] == "codex"
-        assert "--yolo" in cmd
+        assert "--dangerously-bypass-approvals-and-sandbox" in cmd
         assert "--sandbox" not in cmd
         assert "exec" in cmd
         assert "hello" in cmd
@@ -202,12 +204,12 @@ class TestCodexBuildCommand:
         exec_idx = cmd.index("exec")
         assert model_idx > exec_idx
 
-    def test_yolo_after_exec(self):
+    def test_full_access_after_exec(self):
         """Permission flags must appear after 'exec'."""
         cmd = self.provider.build_command(prompt="hello", skip_permissions=True)
-        yolo_idx = cmd.index("--yolo")
+        full_access_idx = cmd.index("--dangerously-bypass-approvals-and-sandbox")
         exec_idx = cmd.index("exec")
-        assert yolo_idx > exec_idx
+        assert full_access_idx > exec_idx
 
     def test_system_prompt_prepended(self):
         """System prompt is prepended to user prompt (no native flag)."""
@@ -269,7 +271,7 @@ class TestCodexBuildCommand:
         )
         assert cmd[0] == "codex"
         assert cmd[1] == "exec"
-        assert "--yolo" in cmd
+        assert "--dangerously-bypass-approvals-and-sandbox" in cmd
         assert "--model" in cmd
         # Prompt is the last element and contains both system + user prompt
         prompt_text = cmd[-1]

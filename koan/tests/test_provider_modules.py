@@ -1341,7 +1341,9 @@ class TestCodexProvider:
             assert p.is_available() is True
         with patch("app.provider.codex.shutil.which", return_value=None):
             assert p.is_available() is False
-        assert p.build_permission_args(True) == ["--yolo"]
+        assert p.build_permission_args(True) == [
+            "--dangerously-bypass-approvals-and-sandbox"
+        ]
         assert p.build_permission_args(False) == ["--sandbox", "workspace-write"]
         assert p.build_prompt_args("hi") == ["exec", "hi"]
         assert p.build_tool_args(allowed_tools=["Bash"]) == []
@@ -1358,7 +1360,11 @@ class TestCodexProvider:
         from app.provider.codex import CodexProvider
         p = CodexProvider()
         cmd = p.build_command(prompt="hello", model="gpt-5", skip_permissions=True)
-        assert cmd[0] == "codex" and "--yolo" in cmd and "exec" in cmd
+        assert (
+            cmd[0] == "codex"
+            and "--dangerously-bypass-approvals-and-sandbox" in cmd
+            and "exec" in cmd
+        )
 
     def test_build_command_prepends_system_prompt(self):
         from app.provider.codex import CodexProvider
