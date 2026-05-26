@@ -108,6 +108,7 @@ Communication between processes happens through shared files in `instance/` with
 - **`recreate_pr.py`** — PR recreation: fetch metadata/diff, create fresh branch, reimplement from scratch
 - **`claude_step.py`** — Shared helpers for git operations and Claude CLI invocation (used by pr_review, rebase_pr, recreate_pr). Also provides `run_ci_fix_loop()` — shared CI fix loop with configurable recheck semantics (polling vs single-shot) via `use_polling` flag and caller-specific `prompt_builder` callable.
 - **`remote_rename_detector.py`** — Detects and fixes renamed GitHub remotes in workspace projects
+- **`commit_tracker.py`** — Tracks Kōan's own HEAD commit across startups. On each startup, records current HEAD SHA in `instance/.commit-tracker.json`. On subsequent startups, detects changes and reports new commits via Telegram. Integrated into `startup_manager.run_startup()` after git sync.
 - **`head_tracker.py`** — Detects remote HEAD branch changes (e.g. master → main) and updates local workspace. State persisted in `instance/.head-tracker.json`, throttled to once per 12h. Integrated into startup, manual trigger via `/rescan`.
 
 **Other:**
