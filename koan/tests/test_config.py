@@ -136,6 +136,93 @@ class TestGetModelConfig:
         assert result["lightweight"] == "haiku"  # not overridden
 
 
+class TestGetModelConfigProviderSection:
+    """Tests for provider-specific model sections (models_for_{provider})."""
+
+    def test_provider_section_overrides_global_models(self):
+        from unittest.mock import patch
+
+        from app.config import get_model_config
+
+        config = {
+            "models": {"mission": "claude-opus"},
+            "models_for_codex": {"mission": "gpt-5.5"},
+        }
+        with _mock_config(config), patch("app.provider.get_provider_name", return_value="codex"):
+            result = get_model_config()
+        assert result["mission"] == "gpt-5.5"
+
+    def test_provider_section_per_key_fallback(self):
+        """Key absent from provider section falls back to global models."""
+        from unittest.mock import patch
+
+        from app.config import get_model_config
+
+        config = {
+            "models": {"mission": "claude-opus", "chat": "claude-haiku"},
+            "models_for_codex": {"mission": "gpt-5.5"},  # only mission overridden
+        }
+        with _mock_config(config), patch("app.provider.get_provider_name", return_value="codex"):
+            result = get_model_config()
+        assert result["mission"] == "gpt-5.5"
+        assert result["chat"] == "claude-haiku"  # falls back to global models
+
+    def test_no_provider_section_falls_back_to_global_models(self):
+        """No provider section → global models unchanged."""
+        from unittest.mock import patch
+
+        from app.config import get_model_config
+
+        config = {"models": {"mission": "claude-sonnet"}}
+        with _mock_config(config), patch("app.provider.get_provider_name", return_value="codex"):
+            result = get_model_config()
+        assert result["mission"] == "claude-sonnet"
+
+    def test_per_project_beats_provider_section(self):
+        """Per-project models override wins over global provider section."""
+        from unittest.mock import patch
+
+        from app.config import get_model_config
+
+        config = {
+            "models": {"chat": "gpt-5.5"},
+            "models_for_codex": {"chat": "gpt-5.5"},
+        }
+        project_overrides = {"models": {"chat": "gpt-4o-mini"}}
+        with (
+            _mock_config(config),
+            patch("app.provider.get_provider_name", return_value="codex"),
+            patch("app.config._load_project_overrides", return_value=project_overrides),
+        ):
+            result = get_model_config("my-project")
+        assert result["chat"] == "gpt-4o-mini"
+
+    def test_hyphen_to_underscore_normalization(self):
+        """Provider name with hyphens is normalized to underscores for the key."""
+        from unittest.mock import patch
+
+        from app.config import get_model_config
+
+        config = {
+            "models": {"mission": "default-model"},
+            "models_for_ollama_launch": {"mission": "llama3"},
+        }
+        with _mock_config(config), patch("app.provider.get_provider_name", return_value="ollama-launch"):
+            result = get_model_config()
+        assert result["mission"] == "llama3"
+
+    def test_provider_resolution_error_falls_back_gracefully(self):
+        """If provider resolution raises, global models are returned unchanged."""
+        from unittest.mock import patch
+
+        from app.config import get_model_config
+
+        config = {"models": {"mission": "claude-sonnet"}}
+        with _mock_config(config), patch("app.provider.get_provider_name", side_effect=RuntimeError("oops")):
+            result = get_model_config()
+        assert result["mission"] == "claude-sonnet"
+
+
 # --- get_start_on_pause ---
 
 

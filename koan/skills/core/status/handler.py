@@ -168,6 +168,14 @@ def _handle_status(ctx) -> str:
     if server_ip != "unknown":
         parts.append(f"  🌐 IP: {server_ip}")
 
+    # Show active CLI provider
+    try:
+        from app.provider import get_provider_name
+        provider_name = get_provider_name()
+        parts.append(f"  Provider: {provider_name}  (use /models to see model config)")
+    except Exception:
+        pass
+
     # Show focus mode if active
     try:
         from app.focus_manager import check_focus

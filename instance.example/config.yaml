@@ -303,9 +303,11 @@ cli_provider: "claude"
 #   model: "glm4"
 #   api_key: ""   # Usually empty for local servers
 
-# Claude model configuration
-# Controls which models are used for different types of Claude calls
-# Empty string = use default model (subscription default or ANTHROPIC_MODEL)
+# Model configuration (legacy/fallback)
+# Controls which models are used for different types of calls.
+# Empty string = use default model (subscription default or provider default).
+# For provider-specific overrides, use models_for_claude / models_for_codex below.
+# Per-project override: set models: {...} under the project in projects.yaml.
 models:
   mission: ""              # Main mission execution (empty = default)
   chat: ""                 # Telegram/dashboard chat responses
@@ -313,6 +315,29 @@ models:
   fallback: "sonnet"       # Fallback when primary model is overloaded (print mode only)
   review_mode: ""          # Override model for REVIEW mode (cheaper audits)
   reflect: ""              # Model for review reflection pass (empty = lightweight)
+
+# Provider-specific model configuration — resolved before the global models: section.
+# Resolution order per key: per-project models → models_for_{provider} → models → built-in default.
+# Key names use underscores; hyphens in provider names are normalised automatically
+# (e.g. ollama-launch → models_for_ollama_launch).
+#
+# Claude provider defaults (uncomment and set to override):
+# models_for_claude:
+#   mission: ""              # Main mission execution (empty = subscription default)
+#   chat: ""                 # Chat responses
+#   lightweight: "haiku"     # Low-cost calls
+#   fallback: "sonnet"       # Fallback when primary is overloaded
+#   review_mode: ""          # Override model for REVIEW mode (cheaper audits)
+#   reflect: ""              # Model for review reflection pass (empty = lightweight)
+#
+# Codex (OpenAI) provider defaults (uncomment and set to override):
+# models_for_codex:
+#   mission: "gpt-5.5"       # Main mission execution
+#   chat: "gpt-5.5"          # Chat responses
+#   lightweight: "gpt-5.5"   # Low-cost calls
+#   fallback: ""             # Empty = use provider default
+#   review_mode: "gpt-5.3-codex"  # Cheaper model for REVIEW mode audits
+#   reflect: "gpt-5.5"       # Model for review reflection pass
 
 # Branch cleanup — automatic deletion of merged branches during git sync
 # Every git_sync_interval iterations, Kōan detects merged branches (both

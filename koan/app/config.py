@@ -145,15 +145,19 @@ def get_model_config(project_name: str = "") -> dict:
     """Get model configuration from config.yaml with per-project overrides.
 
     Resolution order for each key:
-    1. projects.yaml models.{key} for the project (if set)
-    2. config.yaml models.{key}
-    3. Built-in default
+    1. projects.yaml models.{key} for the project (if set) — highest priority
+    2. config.yaml models_for_{provider}.{key} (provider-specific section)
+    3. config.yaml models.{key} (global fallback)
+    4. Built-in default
+
+    Provider name is resolved internally via get_provider_name(); hyphens are
+    normalised to underscores (e.g. ``ollama-launch`` → ``models_for_ollama_launch``).
 
     Args:
         project_name: Optional project name for per-project overrides.
 
     Returns:
-        Dict with keys: mission, chat, lightweight, fallback, review_mode.
+        Dict with keys: mission, chat, lightweight, fallback, review_mode, reflect.
         Empty strings mean "use default model".
     """
     config = _load_config()
@@ -166,10 +170,22 @@ def get_model_config(project_name: str = "") -> dict:
         "reflect": "",  # Model for second-pass reflection; defaults to lightweight when unset
     }
     # Start with global config
-    global_models = config.get("models", {})
+    global_models = config.get("models", {}) or {}
     result = {k: global_models.get(k, v) for k, v in defaults.items()}
 
-    # Apply per-project overrides
+    # Apply provider-specific section per key (models_for_{provider})
+    try:
+        from app.provider import get_provider_name
+        provider_key = "models_for_" + get_provider_name().replace("-", "_")
+        provider_models = config.get(provider_key, {}) or {}
+        if isinstance(provider_models, dict):
+            for key in defaults:
+                if key in provider_models:
+                    result[key] = provider_models[key]
+    except Exception as e:
+        print(f"[config] provider model section lookup failed: {e}", file=sys.stderr)
+
+    # Apply per-project overrides (highest priority)
     project_overrides = _load_project_overrides(project_name)
     project_models = project_overrides.get("models", {})
     if isinstance(project_models, dict):

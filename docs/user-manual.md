@@ -1070,6 +1070,14 @@ optimizations:
 
 See `instance.example/config.yaml` for all available options.
 
+**`/models`** (alias `/model`) — Show the resolved model configuration for the active CLI provider. Useful when debugging model-routing issues — displays which model wins for each of the 6 slots (`mission`, `chat`, `lightweight`, `fallback`, `review_mode`, `reflect`) after applying the full resolution chain: per-project `models:` → `models_for_{provider}:` → global `models:` → built-in defaults.
+
+```
+/models
+```
+
+The active provider is also shown in `/status` output. See [Provider-specific model config](#provider-specific-model-config) below for how to configure `models_for_claude:` / `models_for_codex:` sections.
+
 **`/config_check`** — Detect drift between your `instance/config.yaml` and the template at `instance.example/config.yaml`. Reports two things:
 
 - **Missing keys** — in the template but absent from your config. These are new features released since you last synced and are probably worth reviewing.
@@ -1297,6 +1305,35 @@ Kōan supports multiple CLI backends. Configure globally via `KOAN_CLI_PROVIDER`
 | **OpenAI Codex** | ChatGPT users who want Codex models | [provider-codex.md](provider-codex.md) |
 | **GitHub Copilot** | Teams with existing Copilot licenses | [provider-copilot.md](provider-copilot.md) |
 | **Local LLM** | Offline, privacy, zero API cost | [provider-local.md](provider-local.md) |
+
+#### Provider-specific model config
+
+When switching between providers, model names are not interchangeable. Use `models_for_claude:` / `models_for_codex:` sections in `instance/config.yaml` to configure provider-specific defaults without touching the global `models:` fallback:
+
+```yaml
+cli_provider: "codex"
+
+# Provider-specific overrides (resolved before global models:)
+models_for_codex:
+  mission: "gpt-5.5"
+  chat: "gpt-5.5"
+  lightweight: "gpt-5.5"
+  fallback: ""              # empty = use provider default
+  review_mode: "gpt-5.3-codex"
+  reflect: "gpt-5.5"
+
+models_for_claude:
+  review_mode: "haiku"      # use haiku for cheaper REVIEW mode audits
+
+# Global fallback for providers without a specific section
+models:
+  lightweight: "haiku"
+  fallback: "sonnet"
+```
+
+Resolution order per key: per-project `models:` → `models_for_{provider}:` → global `models:` → built-in default.
+
+Use `/models` to inspect the resolved values for the active provider at any time.
 
 ### Language Preference
 
@@ -1720,6 +1757,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/diagnose [project]` | `/dx` | B | Analyze last failure and queue a fix attempt |
 | `/gh_request <url> <text>` | — | I | Route natural-language GitHub request to the right skill |
 | `/claudemd [project]` | `/claude`, `/claude.md`, `/claude_md` | I | Refresh a project's CLAUDE.md |
+| `/models` | `/model` | P | Show resolved model config for the active CLI provider |
 | `/config_check` | `/cfgcheck`, `/configcheck` | P | Detect config.yaml drift against instance.example template |
 | `/rescan` | `/rescan_heads` | P | Re-check all projects for remote HEAD branch changes |
 | `/gha_audit [project]` | `/gha` | I | Audit GitHub Actions for security issues |
