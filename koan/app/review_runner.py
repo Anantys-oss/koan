@@ -8,8 +8,8 @@ and comments.
 Pipeline:
 1. Fetch PR metadata, diff, and existing comments from GitHub
 2. Build a review prompt with PR context
-3. Run Claude Code CLI (read-only tools) to analyze the code
-4. Parse Claude's review output
+3. Run the configured provider CLI (read-only tools) to analyze the code
+4. Parse the provider's review output
 5. Post the review as a GitHub comment
 
 CLI:
@@ -396,21 +396,26 @@ def _run_claude_review(
     timeout: int = 600,
     model: Optional[str] = None,
 ) -> Tuple[str, str]:
-    """Run Claude CLI with read-only tools and return the output text.
+    """Run provider CLI with read-only tools and return the output text.
 
     Args:
         prompt: The review prompt.
         project_path: Path to the project for codebase context.
         timeout: Maximum seconds to wait (default 600s — large PRs need
                  more time than the old 300s default).
-        model: Optional model override. When None, uses models["mission"].
+        model: Optional model override. When None, uses models["review_mode"]
+               if configured, otherwise models["mission"].
 
     Returns:
-        (output, error) tuple. output is Claude's review text (empty on
+        (output, error) tuple. output is the provider's review text (empty on
         failure), error is the failure reason (empty on success).
     """
     from app.cli_provider import run_command_streaming
-    from app.config import get_skill_max_turns
+    from app.config import get_model_config, get_skill_max_turns
+
+    if model is None:
+        models = get_model_config()
+        model = models.get("review_mode") or models.get("mission", "")
 
     try:
         output = run_command_streaming(
@@ -418,7 +423,7 @@ def _run_claude_review(
             project_path=project_path,
             allowed_tools=["Read", "Glob", "Grep"],
             model_key="mission",
-            model=model or "",
+            model=model,
             max_turns=get_skill_max_turns(),
             timeout=timeout,
         )
@@ -426,7 +431,7 @@ def _run_claude_review(
     except RuntimeError as e:
         error = str(e) or "unknown error"
         print(
-            f"[review_runner] Claude review failed: {error}",
+            f"[review_runner] Provider review failed: {error}",
             file=sys.stderr,
         )
         return "", error
@@ -1311,12 +1316,12 @@ def run_review(
         plan_body=plan_body or None, project_path=project_path,
     )
 
-    # Step 3: Run Claude review (read-only)
+    # Step 3: Run provider review (read-only)
     notify_fn(f"Analyzing code changes on `{context['branch']}`...")
     raw_output, error = _run_claude_review(prompt, project_path)
     if not raw_output:
         detail = f" ({error})" if error else ""
-        return False, f"Claude review failed for PR #{pr_number}{detail}.", None
+        return False, f"Provider review failed for PR #{pr_number}{detail}.", None
 
     # Step 4: Parse structured JSON review (with retry)
     review_data = _parse_review_json(raw_output)

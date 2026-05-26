@@ -62,6 +62,7 @@ models:
   mission: "gpt-5.4"           # Main mission execution
   chat: "gpt-5.4-mini"         # Chat responses (faster, cheaper)
   lightweight: "gpt-5.4-mini"  # Low-cost calls
+  review_mode: "gpt-5.3-codex" # Autonomous review mode and /review analysis
   fallback: ""                  # Not supported by Codex (ignored)
 ```
 
