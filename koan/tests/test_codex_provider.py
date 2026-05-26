@@ -108,11 +108,14 @@ class TestCodexProvider:
     # -- Output args (no-op) --
 
     def test_output_args_json(self):
-        """Codex output format is a no-op (uses plain text for Kōan compat)."""
-        assert self.provider.build_output_args("json") == []
+        """Codex emits --json for json / stream-json formats (JSONL events)."""
+        assert self.provider.build_output_args("json") == ["--json"]
+        assert self.provider.build_output_args("stream-json") == ["--json"]
 
     def test_output_args_empty(self):
+        """Plain text is the default; no flag emitted when format is unset."""
         assert self.provider.build_output_args() == []
+        assert self.provider.build_output_args("") == []
 
     # -- Max turns (no-op) --
 
