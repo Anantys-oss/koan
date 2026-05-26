@@ -2187,7 +2187,9 @@ def update_ci_item_attempt(content: str, pr_url: str) -> str:
 # Regex to extract the "action signature" from a mission line:
 # /command https://github.com/... → ("command", "url")
 _GITHUB_ACTION_RE = re.compile(
-    r"/(rebase|review|recreate|squash|ci_check|fix|check|gh_request)\s+"
+    r"/(rebase|review|recreate|squash|ci_check|fix|check|gh_request"
+    r"|plan|implement|impl|deepplan|check_need|need|needs"
+    r"|refactor|rf|ask|profile|perf|audit|security_audit|security|doc|docs)\s+"
     r"(https://github\.com/[^\s]+)"
 )
 
