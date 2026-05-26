@@ -859,86 +859,69 @@ class TestRunReview:
 # ---------------------------------------------------------------------------
 
 class TestRunClaudeReview:
-    @patch("app.claude_step.run_claude")
-    @patch("app.cli_provider.build_full_command", return_value=["claude", "--test"])
-    @patch("app.config.get_model_config", return_value={"mission": "m", "fallback": "f"})
+    @patch("app.cli_provider.run_command_streaming")
+    @patch("app.config.get_skill_max_turns", return_value=200)
     def test_success_returns_output_and_empty_error(
-        self, mock_config, mock_build, mock_claude,
+        self, mock_max_turns, mock_run,
     ):
         """On success, returns (output, empty error)."""
         from app.review_runner import _run_claude_review
 
-        mock_claude.return_value = {"success": True, "output": "review text", "error": ""}
+        mock_run.return_value = "review text"
         output, error = _run_claude_review("prompt", "/tmp/project")
         assert output == "review text"
         assert error == ""
 
-    @patch("app.claude_step.run_claude")
-    @patch("app.cli_provider.build_full_command", return_value=["claude", "--test"])
-    @patch("app.config.get_model_config", return_value={"mission": "m", "fallback": "f"})
+    @patch("app.cli_provider.run_command_streaming")
+    @patch("app.config.get_skill_max_turns", return_value=200)
     def test_failure_returns_error_detail(
-        self, mock_config, mock_build, mock_claude,
+        self, mock_max_turns, mock_run,
     ):
         """On failure, returns empty output and error detail."""
         from app.review_runner import _run_claude_review
 
-        mock_claude.return_value = {
-            "success": False, "output": "", "error": "Timeout (300s)",
-        }
+        mock_run.side_effect = RuntimeError("Timeout (300s)")
         output, error = _run_claude_review("prompt", "/tmp/project")
         assert output == ""
         assert "Timeout" in error
 
-    @patch("app.claude_step.run_claude")
-    @patch("app.cli_provider.build_full_command", return_value=["claude", "--test"])
-    @patch("app.config.get_model_config", return_value={"mission": "m", "fallback": "f"})
+    @patch("app.cli_provider.run_command_streaming")
+    @patch("app.config.get_skill_max_turns", return_value=200)
     def test_failure_logs_to_stderr(
-        self, mock_config, mock_build, mock_claude, capsys,
+        self, mock_max_turns, mock_run, capsys,
     ):
         """Failure is logged to stderr for diagnostics."""
         from app.review_runner import _run_claude_review
 
-        mock_claude.return_value = {
-            "success": False, "output": "", "error": "Exit code 1: model error",
-        }
+        mock_run.side_effect = RuntimeError("Exit code 1: model error")
         _run_claude_review("prompt", "/tmp/project")
         captured = capsys.readouterr()
         assert "Claude review failed" in captured.err
         assert "Exit code 1" in captured.err
 
-    @patch("app.claude_step.run_claude")
-    @patch("app.cli_provider.build_full_command", return_value=["claude", "--test"])
-    @patch("app.config.get_model_config", return_value={"mission": "m", "fallback": "f"})
-    def test_failure_logs_stdout_to_stderr(
-        self, mock_config, mock_build, mock_claude, capsys,
-    ):
-        """When CLI fails with stdout content, it is logged for diagnostics."""
-        from app.review_runner import _run_claude_review
-
-        mock_claude.return_value = {
-            "success": False,
-            "output": "Error: context window exceeded",
-            "error": "Exit code 1: no stderr | stdout: Error: context window exceeded",
-        }
-        _run_claude_review("prompt", "/tmp/project")
-        captured = capsys.readouterr()
-        assert "stdout from failed run" in captured.err
-        assert "context window exceeded" in captured.err
-
-    @patch("app.claude_step.run_claude")
-    @patch("app.cli_provider.build_full_command", return_value=["claude", "--test"])
-    @patch("app.config.get_model_config", return_value={"mission": "m", "fallback": "f"})
+    @patch("app.cli_provider.run_command_streaming")
+    @patch("app.config.get_skill_max_turns", return_value=200)
     def test_default_timeout_is_600(
-        self, mock_config, mock_build, mock_claude,
+        self, mock_max_turns, mock_run,
     ):
         """Default timeout increased from 300 to 600 for large PRs."""
         from app.review_runner import _run_claude_review
 
-        mock_claude.return_value = {"success": True, "output": "ok", "error": ""}
+        mock_run.return_value = "ok"
         _run_claude_review("prompt", "/tmp/project")
-        # Verify run_claude was called with timeout=600
-        _, kwargs = mock_claude.call_args
+        # Verify run_command_streaming was called with timeout=600
+        _, kwargs = mock_run.call_args
         assert kwargs.get("timeout") == 600
+
+    @patch("app.cli_provider.run_command_streaming")
+    @patch("app.config.get_skill_max_turns", return_value=200)
+    def test_model_override_is_forwarded(self, mock_max_turns, mock_run):
+        from app.review_runner import _run_claude_review
+
+        mock_run.return_value = "ok"
+        _run_claude_review("prompt", "/tmp/project", model="gpt-5.4-mini")
+        _, kwargs = mock_run.call_args
+        assert kwargs.get("model") == "gpt-5.4-mini"
 
 
 # ---------------------------------------------------------------------------
@@ -2680,35 +2663,34 @@ class TestReflectFindings:
 # ---------------------------------------------------------------------------
 
 class TestRunClaudeReviewModelOverride:
-    @patch("app.claude_step.run_claude")
-    @patch("app.cli_provider.build_full_command", return_value=["claude", "--test"])
-    @patch("app.config.get_model_config", return_value={"mission": "big-model", "fallback": "fallback-m"})
-    def test_model_override_passed_to_build_command(
-        self, mock_config, mock_build, mock_claude,
+    @patch("app.cli_provider.run_command_streaming")
+    @patch("app.config.get_skill_max_turns", return_value=200)
+    def test_model_override_passed_to_streaming_runner(
+        self, mock_max_turns, mock_run,
     ):
-        """model override is passed to build_full_command instead of models['mission']."""
+        """model override is passed through instead of using models['mission']."""
         from app.review_runner import _run_claude_review
 
-        mock_claude.return_value = {"success": True, "output": "ok", "error": ""}
+        mock_run.return_value = "ok"
         _run_claude_review("prompt", "/tmp/project", model="haiku")
 
-        _, kwargs = mock_build.call_args
+        _, kwargs = mock_run.call_args
         assert kwargs.get("model") == "haiku"
 
-    @patch("app.claude_step.run_claude")
-    @patch("app.cli_provider.build_full_command", return_value=["claude", "--test"])
-    @patch("app.config.get_model_config", return_value={"mission": "big-model", "fallback": "fallback-m"})
+    @patch("app.cli_provider.run_command_streaming")
+    @patch("app.config.get_skill_max_turns", return_value=200)
     def test_none_model_uses_mission_default(
-        self, mock_config, mock_build, mock_claude,
+        self, mock_max_turns, mock_run,
     ):
-        """When model=None, models['mission'] is used unchanged."""
+        """When model=None, run_command_streaming resolves models['mission']."""
         from app.review_runner import _run_claude_review
 
-        mock_claude.return_value = {"success": True, "output": "ok", "error": ""}
+        mock_run.return_value = "ok"
         _run_claude_review("prompt", "/tmp/project", model=None)
 
-        _, kwargs = mock_build.call_args
-        assert kwargs.get("model") == "big-model"
+        _, kwargs = mock_run.call_args
+        assert kwargs.get("model") == ""
+        assert kwargs.get("model_key") == "mission"
 
 
 # ---------------------------------------------------------------------------

@@ -400,8 +400,33 @@ def run_command(
     return strip_cli_noise(result.stdout.strip())
 
 
+def _content_text(content: Any) -> str:
+    """Extract text from common provider content shapes."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: List[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                text = block.get("text") or block.get("content")
+                if isinstance(text, str):
+                    parts.append(text)
+                elif isinstance(text, (list, dict)):
+                    nested = _content_text(text)
+                    if nested:
+                        parts.append(nested)
+        return "\n".join(parts)
+    if isinstance(content, dict):
+        text = content.get("text") or content.get("content")
+        if isinstance(text, str):
+            return text
+    return ""
+
+
 def _summarize_stream_event(event: Dict[str, Any]) -> str:
-    """Render a Claude ``stream-json`` event as a single human-readable line.
+    """Render a provider JSONL event as a single human-readable line.
 
     Returned strings are short and self-contained so the skill-runner's
     parent (run.py liveness watchdog) sees per-event activity instead of
@@ -454,33 +479,92 @@ def _summarize_stream_event(event: Dict[str, Any]) -> str:
             return f"[cli] result: {subtype or '?'} ({int(duration_ms) // 1000}s)"
         return f"[cli] result: {subtype or '?'}"
 
+    item = event.get("item")
+    if isinstance(item, dict):
+        item_type = item.get("type", "")
+        status = event.get("status") or item.get("status") or ""
+        if item_type == "message" or item.get("role") == "assistant":
+            text = _content_text(item.get("content")).strip()
+            if text:
+                return f"[cli] assistant — text: {text.splitlines()[0][:80]}"
+            return "[cli] assistant — message"
+        if item_type:
+            suffix = f" ({status})" if status else ""
+            return f"[cli] {item_type}{suffix}"
+
+    message = event.get("message")
+    if isinstance(message, str) and message.strip():
+        return f"[cli] {etype or 'message'}: {message.strip().splitlines()[0][:80]}"
+
+    delta = event.get("delta")
+    if isinstance(delta, str) and delta.strip():
+        return f"[cli] {etype or 'delta'}: {delta.strip().splitlines()[0][:80]}"
+
+    last_agent_message = event.get("last_agent_message")
+    if isinstance(last_agent_message, str) and last_agent_message.strip():
+        return f"[cli] {etype or 'result'}: {last_agent_message.strip().splitlines()[0][:80]}"
+
+    for key in ("name", "status", "subtype"):
+        value = event.get(key)
+        if isinstance(value, str) and value:
+            return f"[cli] {etype or 'event'}: {value}"
+
     return f"[cli] event: {etype or '?'}"
 
 
 def _extract_assistant_text_chunks(event: Dict[str, Any]) -> List[str]:
-    """Pull raw ``text`` block strings out of an ``assistant`` event.
+    """Pull raw assistant text out of common provider event shapes.
 
     Used as a partial-stream fallback: if the CLI dies before emitting a
     final ``result`` event, accumulated text chunks still surface to the
     caller instead of an empty string.
     """
-    if event.get("type") != "assistant":
-        return []
-    msg = event.get("message") or {}
-    blocks = msg.get("content") or []
     chunks: List[str] = []
-    for block in blocks:
-        if not isinstance(block, dict):
-            continue
-        if block.get("type") == "text":
-            text = block.get("text")
-            if isinstance(text, str) and text:
-                chunks.append(text)
+    if event.get("type") == "assistant":
+        msg = event.get("message") or {}
+        blocks = msg.get("content") or []
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "text":
+                text = block.get("text")
+                if isinstance(text, str) and text:
+                    chunks.append(text)
+
+    item = event.get("item")
+    if isinstance(item, dict) and (
+        item.get("role") == "assistant" or item.get("type") == "message"
+    ):
+        text = _content_text(item.get("content"))
+        if text:
+            chunks.append(text)
+
+    message = event.get("message")
+    if isinstance(message, str) and event.get("type") in {
+        "agent_message",
+        "agent_message_content_delta",
+        "assistant_message",
+        "message",
+    }:
+        chunks.append(message)
+
+    for key in ("output_text", "text", "delta"):
+        text = event.get(key)
+        if isinstance(text, str) and text and event.get("type") in {
+            "agent_message",
+            "agent_message_content_delta",
+            "assistant_message",
+            "message",
+            "response.output_text.delta",
+            "response.output_text.done",
+        }:
+            chunks.append(text)
+
     return chunks
 
 
 def _extract_result_text(event: Dict[str, Any]) -> Optional[str]:
-    """Pull the final assistant text out of a ``stream-json`` ``result`` event.
+    """Pull the final assistant text out of a provider result event.
 
     Returns ``None`` when *event* is not a result event, when its
     ``result`` field is missing or not a string, or when it is an empty
@@ -490,11 +574,29 @@ def _extract_result_text(event: Dict[str, Any]) -> Optional[str]:
     have printed into ``event["result"]``; we forward it verbatim so
     callers see the same return value they did before stream-json was on.
     """
-    if event.get("type") != "result":
+    etype = str(event.get("type") or "")
+    if etype != "result":
+        if not (
+            etype.endswith(".completed")
+            or etype.endswith(".done")
+            or etype in {
+                "turn.completed",
+                "response.completed",
+                "task.completed",
+                "turn_complete",
+                "task_complete",
+            }
+        ):
+            return None
+        for key in ("output_text", "last_agent_message"):
+            result = event.get(key)
+            if isinstance(result, str) and result:
+                return result
         return None
-    result = event.get("result")
-    if isinstance(result, str) and result:
-        return result
+    for key in ("result", "output_text", "last_agent_message"):
+        result = event.get(key)
+        if isinstance(result, str) and result:
+            return result
     return None
 
 
@@ -520,29 +622,28 @@ def run_command_streaming(
     project_path: str,
     allowed_tools: List[str],
     model_key: str = "chat",
+    model: str = "",
     max_turns: int = 10,
     timeout: int = 300,
     max_turns_source: Optional[str] = "skill_max_turns",
 ) -> str:
     """Build and run a CLI command, streaming progress to stdout in real time.
 
-    The Claude CLI ``-p`` print mode buffers the rendered text response
-    until the session ends. For high-effort skills (e.g. /fix on
-    python-zeroconf #1700) that can mean tens of minutes of silent tool
-    use, which the skill-runner liveness watchdog in run.py reads as a
-    hang and kills.
+    Some CLIs buffer rendered text until the session ends. For high-effort
+    skills that can mean tens of minutes of silent tool use, which the
+    skill-runner liveness watchdog in run.py reads as a hang and kills.
 
-    We avoid that by requesting ``--output-format stream-json --verbose``,
-    which emits one JSON event per turn/tool-use/result. Each event is
-    rendered into a short human-readable line printed to the runner's
-    stdout, so the parent watchdog sees real activity (not a fake
-    heartbeat) and ``/live`` shows what Claude is doing. The final
-    ``result`` event carries the same text a text-mode run would have
-    returned, so callers' return-value contract is unchanged.
+    Providers that support JSONL progress events opt in here: Claude uses
+    ``--output-format stream-json --verbose`` and Codex uses ``--json``.
+    Each event is rendered into a short human-readable line printed to the
+    runner's stdout, so the parent watchdog sees real activity and
+    ``/live`` shows what the provider is doing. The final assistant text is
+    extracted from provider-specific result/message events so callers'
+    return-value contract stays unchanged.
 
-    Non-Claude providers that don't support ``stream-json`` fall through
-    to the original raw text path; lines that fail to parse as JSON are
-    still printed and contribute to the return value.
+    Providers that don't support JSONL progress fall through to the
+    original raw text path; lines that fail to parse as JSON are still
+    printed and contribute to the return value.
 
     Raises:
         RuntimeError: If the command exits with non-zero code (except
@@ -551,17 +652,18 @@ def run_command_streaming(
     from app.config import get_model_config
 
     models = get_model_config()
-    use_stream_json = get_provider().supports_stream_json()
+    provider = get_provider()
+    use_stream_json = provider.supports_stream_json()
     cmd = build_full_command(
         prompt=prompt,
         allowed_tools=allowed_tools,
-        model=models.get(model_key, ""),
+        model=model or models.get(model_key, ""),
         fallback=models.get("fallback", ""),
         max_turns=max_turns,
         output_format="stream-json" if use_stream_json else "",
     )
 
-    print("[cli] Starting Claude CLI session", flush=True)
+    print(f"[cli] Starting {provider.name or 'provider'} CLI session", flush=True)
 
     from app.cli_exec import popen_cli
 
@@ -600,7 +702,7 @@ def run_command_streaming(
                 print(_summarize_stream_event(event), flush=True)
                 # Accumulate assistant text blocks so a stream that dies
                 # before the final ``result`` event (timeout, watchdog
-                # kill, SIGPIPE) still returns whatever Claude managed
+                # kill, SIGPIPE) still returns whatever the provider managed
                 # to print, instead of silently returning "".
                 text_lines.extend(_extract_assistant_text_chunks(event))
                 result_text = _extract_result_text(event)

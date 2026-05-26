@@ -1062,10 +1062,42 @@ class TestRunCommandStreaming:
         assert "first chunk" in out
         assert "second chunk" in out
 
-    def test_non_claude_provider_uses_raw_text(self, capsys):
-        """Codex/copilot/etc. don't speak stream-json; raw stdout is used."""
+    def test_non_streaming_provider_uses_raw_text(self, capsys):
+        """Providers without JSONL progress support use raw stdout."""
         from app.provider import run_command_streaming
         proc = self._make_proc(["plain text result\n"])
+        cleanup = MagicMock()
+        captured_kwargs = {}
+
+        def fake_build(**kwargs):
+            captured_kwargs.update(kwargs)
+            return ["fake"]
+
+        with patch("app.config.get_model_config", return_value={"chat": "m", "fallback": "f"}), \
+             patch("app.provider.get_provider_name", return_value="copilot"), \
+             patch("app.provider.build_full_command", side_effect=fake_build), \
+             patch("app.cli_exec.popen_cli", return_value=(proc, cleanup)), \
+             patch("app.claude_step.strip_cli_noise", side_effect=lambda s: s):
+            out = run_command_streaming("hi", "/tmp", [])
+        # No output_format request for providers that cannot stream JSONL.
+        assert captured_kwargs.get("output_format") == ""
+        assert "plain text result" in out
+
+    def test_codex_provider_requests_jsonl_progress(self):
+        """Codex uses --json events so parent liveness sees progress."""
+        import json
+        from app.provider import run_command_streaming
+        events = [
+            json.dumps({
+                "type": "item_completed",
+                "item": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "codex answer"}],
+                },
+            }) + "\n",
+        ]
+        proc = self._make_proc(events)
         cleanup = MagicMock()
         captured_kwargs = {}
 
@@ -1079,9 +1111,30 @@ class TestRunCommandStreaming:
              patch("app.cli_exec.popen_cli", return_value=(proc, cleanup)), \
              patch("app.claude_step.strip_cli_noise", side_effect=lambda s: s):
             out = run_command_streaming("hi", "/tmp", [])
-        # No output_format request for non-Claude providers.
-        assert captured_kwargs.get("output_format") == ""
-        assert "plain text result" in out
+        assert captured_kwargs.get("output_format") == "stream-json"
+        assert out == "codex answer"
+
+    def test_codex_turn_complete_returns_last_agent_message(self):
+        import json
+        from app.provider import run_command_streaming
+        events = [
+            json.dumps({"type": "turn_started"}) + "\n",
+            json.dumps({"type": "agent_message_content_delta", "delta": "partial"}) + "\n",
+            json.dumps({
+                "type": "turn_complete",
+                "last_agent_message": "final codex answer",
+            }) + "\n",
+        ]
+        proc = self._make_proc(events)
+        cleanup = MagicMock()
+
+        with patch("app.config.get_model_config", return_value={"chat": "m", "fallback": "f"}), \
+             patch("app.provider.get_provider_name", return_value="codex"), \
+             patch("app.provider.build_full_command", return_value=["fake"]), \
+             patch("app.cli_exec.popen_cli", return_value=(proc, cleanup)), \
+             patch("app.claude_step.strip_cli_noise", side_effect=lambda s: s):
+            out = run_command_streaming("hi", "/tmp", [])
+        assert out == "final codex answer"
 
 
 class TestSummarizeStreamEvent:
@@ -1229,7 +1282,9 @@ class TestCodexProvider:
         assert p.build_tool_args(allowed_tools=["Bash"]) == []
         assert p.build_model_args(model="m") == ["--model", "m"]
         assert p.build_model_args(model="", fallback="fb") == []
-        assert p.build_output_args("json") == []
+        assert p.supports_stream_json() is True
+        assert p.build_output_args("json") == ["--json"]
+        assert p.build_output_args("stream-json") == ["--json"]
         assert p.build_max_turns_args(10) == []
         assert p.build_mcp_args(configs=["x"]) == []
         assert p.build_plugin_args(plugin_dirs=["/x"]) == []

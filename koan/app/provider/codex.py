@@ -79,12 +79,18 @@ class CodexProvider(CLIProvider):
         # Codex has no --fallback-model; ignored silently
         return flags
 
+    def supports_stream_json(self) -> bool:
+        # Codex ``exec --json`` emits JSONL progress events.  Kōan asks
+        # for this only from run_command_streaming(), where those events
+        # are summarized back into human-readable progress lines.
+        return True
+
     def build_output_args(self, fmt: str = "") -> List[str]:
-        # Codex uses --json for machine-readable JSONL output.
-        # Without it, codex exec prints formatted text to stdout
-        # (which is what Kōan expects for most use cases).
-        # We do NOT pass --json by default because Kōan's output
-        # parsing expects plain text, not JSONL events.
+        # Codex uses --json for machine-readable JSONL output.  We keep
+        # plain text as the default and opt into JSONL only for callers
+        # that explicitly request a streaming/event format.
+        if fmt in {"json", "stream-json"}:
+            return ["--json"]
         return []
 
     def build_max_turns_args(self, max_turns: int = 0) -> List[str]:
@@ -141,6 +147,7 @@ class CodexProvider(CLIProvider):
         # Exec-level flags (permission, model) come after 'exec'
         cmd.extend(self.build_permission_args(skip_permissions))
         cmd.extend(self.build_model_args(model, fallback))
+        cmd.extend(self.build_output_args(output_format))
 
         # Prompt is the final positional argument
         cmd.append(prompt)

@@ -409,35 +409,27 @@ def _run_claude_review(
         (output, error) tuple. output is Claude's review text (empty on
         failure), error is the failure reason (empty on success).
     """
-    from app.claude_step import run_claude
-    from app.cli_provider import build_full_command
-    from app.config import get_model_config, get_skill_max_turns
+    from app.cli_provider import run_command_streaming
+    from app.config import get_skill_max_turns
 
-    models = get_model_config()
-    cmd = build_full_command(
-        prompt=prompt,
-        allowed_tools=["Read", "Glob", "Grep"],
-        model=model or models["mission"],
-        fallback=models["fallback"],
-        max_turns=get_skill_max_turns(),
-    )
-
-    result = run_claude(cmd, project_path, timeout=timeout)
-    if result["success"]:
-        return result["output"], ""
-    error = result.get("error", "unknown error")
-    # Log stdout from the failed run — it often contains the actual error
-    # that stderr does not (Claude CLI reports many errors via stdout).
-    stdout = result.get("output", "")
-    if stdout:
+    try:
+        output = run_command_streaming(
+            prompt=prompt,
+            project_path=project_path,
+            allowed_tools=["Read", "Glob", "Grep"],
+            model_key="mission",
+            model=model or "",
+            max_turns=get_skill_max_turns(),
+            timeout=timeout,
+        )
+        return output, ""
+    except RuntimeError as e:
+        error = str(e) or "unknown error"
         print(
-            f"[review_runner] Claude review failed: {error}\n"
-            f"[review_runner] stdout from failed run (last 500 chars): {stdout[-500:]}",
+            f"[review_runner] Claude review failed: {error}",
             file=sys.stderr,
         )
-    else:
-        print(f"[review_runner] Claude review failed: {error}", file=sys.stderr)
-    return "", error
+        return "", error
 
 
 def _reflect_findings(
