@@ -13,6 +13,7 @@ Pipeline:
 6. Comment on the PR with a summary
 """
 
+import contextlib
 import json
 import re
 import subprocess
@@ -140,11 +141,110 @@ def severity_at_or_above(min_severity: str) -> List[str]:
     return list(SEVERITY_LEVELS[: idx + 1])
 
 
-def fetch_pr_context(owner: str, repo: str, pr_number: str) -> dict:
+_DIFF_TOO_LARGE_MARKERS = ("HTTP 406", "too_large", "exceeded the maximum")
+
+
+def _diff_too_large(error_message: str) -> bool:
+    """Return True if a gh-pr-diff error matches the > 300 files signature."""
+    return any(marker in error_message for marker in _DIFF_TOO_LARGE_MARKERS)
+
+
+def _fetch_diff_locally(
+    project_path: str,
+    owner: str,
+    repo: str,
+    pr_number: str,
+    base_branch: str,
+    timeout: int = 180,
+) -> str:
+    """Fetch a PR diff from the local checkout when GitHub's API caps out.
+
+    Uses ``git fetch <url> pull/<N>/head`` and ``git fetch <url> <base>``
+    into temporary refs, then ``git diff base...head``. This bypasses the
+    300-file cap on ``gh pr diff`` because git itself has no such limit.
+
+    Returns the raw diff text on success, or an empty string on any
+    failure (network, missing branch, etc.). Temp refs are always cleaned
+    up, even on failure.
+    """
+    url = f"https://github.com/{owner}/{repo}.git"
+    head_ref = f"refs/koan-tmp/pr-{pr_number}-head"
+    base_ref = f"refs/koan-tmp/pr-{pr_number}-base"
+
+    def _git(args: list, **kwargs) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["git", *args],
+            cwd=project_path,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=timeout,
+            **kwargs,
+        )
+
+    try:
+        head_fetch = _git(
+            ["fetch", "--no-tags", url, f"pull/{pr_number}/head:{head_ref}"],
+        )
+        if head_fetch.returncode != 0:
+            stderr = head_fetch.stderr.decode("utf-8", errors="replace")
+            print(
+                f"[rebase_pr] local diff fallback: fetch of pull/{pr_number}/head "
+                f"failed: {stderr[:200]}",
+                file=sys.stderr,
+            )
+            return ""
+
+        base_fetch = _git(
+            ["fetch", "--no-tags", url, f"{base_branch}:{base_ref}"],
+        )
+        if base_fetch.returncode != 0:
+            stderr = base_fetch.stderr.decode("utf-8", errors="replace")
+            print(
+                f"[rebase_pr] local diff fallback: fetch of base {base_branch} "
+                f"failed: {stderr[:200]}",
+                file=sys.stderr,
+            )
+            return ""
+
+        diff_result = _git(
+            ["diff", f"{base_ref}...{head_ref}"],
+            text=True, encoding="utf-8", errors="replace",
+        )
+        if diff_result.returncode != 0:
+            print(
+                f"[rebase_pr] local diff fallback: git diff failed: "
+                f"{diff_result.stderr[:200]}",
+                file=sys.stderr,
+            )
+            return ""
+        return diff_result.stdout
+    except (subprocess.TimeoutExpired, OSError) as e:
+        print(
+            f"[rebase_pr] local diff fallback errored: {e}",
+            file=sys.stderr,
+        )
+        return ""
+    finally:
+        for ref in (head_ref, base_ref):
+            with contextlib.suppress(subprocess.TimeoutExpired, OSError):
+                _git(["update-ref", "-d", ref])
+
+
+def fetch_pr_context(
+    owner: str,
+    repo: str,
+    pr_number: str,
+    project_path: Optional[str] = None,
+) -> dict:
     """Fetch PR details, diff, and all comments via gh CLI.
 
     Returns a dict with keys: title, body, branch, base, state, author, url,
     diff, review_comments, reviews, issue_comments.
+
+    When ``project_path`` is provided, oversized-PR diff failures
+    (GitHub HTTP 406: > 300 files) trigger a local ``git fetch`` +
+    ``git diff`` fallback. Without ``project_path``, the diff is left
+    empty and a warning is logged.
     """
     full_repo = f"{owner}/{repo}"
 
@@ -153,6 +253,13 @@ def fetch_pr_context(owner: str, repo: str, pr_number: str) -> dict:
         "pr", "view", pr_number, "--repo", full_repo, "--json",
         "title,body,headRefName,baseRefName,state,author,url,headRepositoryOwner",
     )
+
+    # Parse metadata up front — needed for the local-diff fallback so we
+    # know the base branch name before attempting the fetch.
+    try:
+        metadata = json.loads(pr_json)
+    except (json.JSONDecodeError, TypeError):
+        metadata = {}
 
     # Fetch review comment count from REST API for pending review detection.
     # GitHub counts pending (unsubmitted) review comments in PR metadata but
@@ -176,11 +283,39 @@ def fetch_pr_context(owner: str, repo: str, pr_number: str) -> dict:
     except (RuntimeError, ValueError):
         api_review_comment_count = 0
 
-    # Fetch PR diff (may fail for very large PRs — GitHub HTTP 406)
+    # Fetch PR diff. May fail for very large PRs — GitHub returns HTTP 406
+    # when a diff would contain more than 300 changed files. When that
+    # happens and we have a local checkout, fall back to ``git diff`` from
+    # the local repo, which has no such cap.
+    diff = ""
     try:
         diff = run_gh("pr", "diff", pr_number, "--repo", full_repo)
-    except RuntimeError:
-        diff = ""
+    except RuntimeError as e:
+        err_msg = str(e)
+        too_large = _diff_too_large(err_msg)
+        print(
+            f"[rebase_pr] PR diff fetch failed for #{pr_number} "
+            f"({'oversized — > 300 files' if too_large else 'gh error'}): "
+            f"{err_msg[:300]}",
+            file=sys.stderr,
+        )
+        if too_large and project_path:
+            base_branch = metadata.get("baseRefName") or "main"
+            diff = _fetch_diff_locally(
+                project_path, owner, repo, pr_number, base_branch,
+            )
+            if diff:
+                print(
+                    f"[rebase_pr] PR #{pr_number} diff fetched locally "
+                    f"({len(diff)} chars)",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    f"[rebase_pr] PR #{pr_number} local diff fallback "
+                    f"produced no output",
+                    file=sys.stderr,
+                )
 
     # Fetch review comments (inline code comments)
     try:
@@ -216,11 +351,6 @@ def fetch_pr_context(owner: str, repo: str, pr_number: str) -> dict:
     # Bot replies (rebase summaries, review results) are verbose and push
     # human comments out of the truncation window.
     issue_comments = _filter_bot_issue_comments(issue_comments)
-
-    try:
-        metadata = json.loads(pr_json)
-    except (json.JSONDecodeError, TypeError):
-        metadata = {}
 
     # Detect pending (unsubmitted) reviews: GitHub counts pending review
     # comments in the PR metadata but the API doesn't return them to other

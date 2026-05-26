@@ -1236,7 +1236,9 @@ def run_review(
     notify_fn(f"Reviewing PR #{pr_number} ({full_repo})...")
     if concurrency_enabled and github_workers > 1:
         with ThreadPoolExecutor(max_workers=min(2, github_workers)) as pool:
-            f_context = pool.submit(fetch_pr_context, owner, repo, pr_number)
+            f_context = pool.submit(
+                fetch_pr_context, owner, repo, pr_number, project_path,
+            )
             f_comments = pool.submit(
                 fetch_repliable_comments, owner, repo, pr_number, True, bot_username,
             )
@@ -1247,7 +1249,7 @@ def run_review(
             repliable_comments = f_comments.result()
     else:
         try:
-            context = fetch_pr_context(owner, repo, pr_number)
+            context = fetch_pr_context(owner, repo, pr_number, project_path)
         except Exception as e:
             return False, f"Failed to fetch PR context: {e}", None
         repliable_comments = fetch_repliable_comments(
