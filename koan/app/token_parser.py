@@ -74,10 +74,42 @@ def extract_tokens(claude_json_path: Path) -> Optional[TokenResult]:
         or file unreadable.
     """
     try:
-        data = json.loads(claude_json_path.read_text())
-    except (json.JSONDecodeError, OSError):
+        raw = claude_json_path.read_text()
+    except OSError:
         return None
 
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return _extract_tokens_from_jsonl(raw)
+
+    if isinstance(data, dict):
+        return _extract_tokens_from_dict(data)
+
+    return None
+
+
+def _extract_tokens_from_jsonl(raw: str) -> Optional[TokenResult]:
+    """Extract the last usage-bearing event from provider JSONL output."""
+    last_result: Optional[TokenResult] = None
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            event = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        result = _extract_tokens_from_dict(event)
+        if result is not None and result.total_tokens > 0:
+            last_result = result
+    return last_result
+
+
+def _extract_tokens_from_dict(data: dict) -> Optional[TokenResult]:
+    """Extract token info from one JSON object/event."""
     model = data.get("model", "unknown")
 
     # Try top-level fields
@@ -118,6 +150,10 @@ def _build_result(
     if isinstance(usage, dict):
         cache_creation = usage.get("cache_creation_input_tokens", 0) or 0
         cache_read = usage.get("cache_read_input_tokens", 0) or 0
+        cached_input = usage.get("cached_input_tokens", 0) or 0
+        if cached_input and not cache_read:
+            cache_read = cached_input
+            input_tokens = max(0, input_tokens - cache_read)
 
     # Fallback: modelUsage entries (camelCase — alternate format)
     if not cache_creation and not cache_read:

@@ -1,11 +1,47 @@
 """OpenAI Codex CLI provider implementation."""
 
+import json
+import re
 import shutil
 import subprocess
 import sys
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 from app.provider.base import CLIProvider
+
+
+_CODEX_QUOTA_PATTERNS = [
+    r"rate[_\s-]?limit(?:ed|_error| exceeded)?",
+    r"insufficient[_\s-]?quota",
+    r"\bquota\b.*(?:exceeded|reached|exhausted|insufficient)",
+    r"(?:exceeded|reached|exhausted|insufficient).*\bquota\b",
+    r"usage.*(?:limit|cap).*(?:reached|exceeded|hit)",
+    r"billing.*(?:limit|quota|credit)",
+    r"HTTP\s*429",
+    r"status[\s:]+429",
+    r"too many requests",
+    r"retry[\s-]+after",
+]
+
+_CODEX_QUOTA_RE = re.compile("|".join(_CODEX_QUOTA_PATTERNS), re.IGNORECASE)
+
+_CODEX_ERROR_EVENT_TYPES = {
+    "error",
+    "turn.failed",
+    "response.failed",
+    "task.failed",
+}
+
+_CODEX_ERROR_KEYS = {
+    "code",
+    "error",
+    "error_code",
+    "error_type",
+    "message",
+    "status",
+    "status_code",
+    "type",
+}
 
 
 class CodexProvider(CLIProvider):
@@ -114,6 +150,80 @@ class CodexProvider(CLIProvider):
         # not plugin directories. Silently ignored.
         return []
 
+    def detect_quota_exhaustion(
+        self,
+        stdout_text: str = "",
+        stderr_text: str = "",
+        exit_code: int = 0,
+    ) -> bool:
+        """Detect Codex/OpenAI quota failures without scanning tool output.
+
+        Codex JSONL stdout can contain command ``aggregated_output`` with large
+        source snippets. Scanning that text with broad quota regexes causes
+        false positives. Trust stderr, explicit provider error events, and only
+        plain stdout lines that look like direct Codex/OpenAI errors.
+        """
+        stderr_text = stderr_text or ""
+        stdout_text = stdout_text or ""
+
+        if _CODEX_QUOTA_RE.search(stderr_text):
+            return True
+
+        for line in stdout_text.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                event = json.loads(stripped)
+            except json.JSONDecodeError:
+                if self._plain_stdout_quota_line(stripped, exit_code):
+                    return True
+                continue
+
+            if isinstance(event, dict) and self._event_has_quota_error(event):
+                return True
+
+        return False
+
+    _STDOUT_ERROR_MARKERS = ("error", "openai", "codex", "api")
+
+    def _plain_stdout_quota_line(self, line: str, exit_code: int) -> bool:
+        """Check non-JSON stdout only when it resembles a provider error."""
+        if exit_code == 0:
+            return False
+        if not self._line_has_error_marker(line, self._STDOUT_ERROR_MARKERS):
+            return False
+        return bool(_CODEX_QUOTA_RE.search(line))
+
+    def _event_has_quota_error(self, event: dict[str, Any]) -> bool:
+        event_type = str(event.get("type") or "").lower()
+        if event_type not in _CODEX_ERROR_EVENT_TYPES:
+            return False
+        return _CODEX_QUOTA_RE.search(self._error_event_text(event)) is not None
+
+    def _error_event_text(self, value: Any) -> str:
+        """Extract only provider-error fields, never command output fields."""
+        parts: list[str] = []
+
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key in {"aggregated_output", "command", "item", "items", "output"}:
+                    continue
+                if key in _CODEX_ERROR_KEYS or isinstance(item, dict):
+                    parts.append(self._error_event_text(item))
+                elif isinstance(item, (str, int, float)):
+                    parts.append(str(item))
+        elif isinstance(value, list):
+            parts.extend(
+                self._error_event_text(item)
+                for item in value
+                if isinstance(item, dict)
+            )
+        elif isinstance(value, (str, int, float)):
+            parts.append(str(value))
+
+        return "\n".join(p for p in parts if p)
+
     def build_command(
         self,
         prompt: str,
@@ -181,11 +291,12 @@ class CodexProvider(CLIProvider):
                 timeout=timeout,
                 cwd=project_path,
             )
-            combined = (result.stderr or "") + "\n" + (result.stdout or "")
-
-            from app.quota_handler import detect_quota_exhaustion
-
-            if detect_quota_exhaustion(combined):
+            if self.detect_quota_exhaustion(
+                stdout_text=result.stdout or "",
+                stderr_text=result.stderr or "",
+                exit_code=result.returncode,
+            ):
+                combined = (result.stderr or "") + "\n" + (result.stdout or "")
                 return False, combined
 
             return True, ""

@@ -114,6 +114,28 @@ class TestExtractTokens:
         assert d["cache_read_input_tokens"] == 2000
         assert d["model"] == "claude-opus-4-20250514"
 
+    def test_codex_jsonl_turn_completed_usage(self, tmp_path):
+        f = tmp_path / "codex.jsonl"
+        f.write_text("\n".join([
+            json.dumps({"type": "thread.started"}),
+            json.dumps({
+                "type": "turn.completed",
+                "usage": {
+                    "input_tokens": 2769595,
+                    "cached_input_tokens": 2650240,
+                    "output_tokens": 16146,
+                    "reasoning_output_tokens": 8124,
+                },
+            }),
+        ]))
+
+        result = extract_tokens(f)
+
+        assert result is not None
+        assert result.input_tokens == 119355
+        assert result.cache_read_input_tokens == 2650240
+        assert result.output_tokens == 16146
+
 
 class TestCacheHitRate:
     def test_basic_hit_rate(self):

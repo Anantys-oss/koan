@@ -788,6 +788,36 @@ class TestRunPostMissionKoanRoot:
         call_kwargs = mock_quota.call_args[1]
         assert call_kwargs["koan_root"] == str(tmp_path)
 
+    @patch("app.mission_runner.commit_instance")
+    @patch("app.mission_runner.check_auto_merge", return_value=None)
+    @patch("app.mission_runner.trigger_reflection", return_value=False)
+    @patch("app.mission_runner.archive_pending", return_value=False)
+    @patch("app.quota_handler.handle_quota_exhaustion", return_value=None)
+    @patch("app.mission_runner.update_usage", return_value=True)
+    def test_passes_provider_name_to_quota_handler(
+        self, mock_usage, mock_quota, mock_archive, mock_reflect,
+        mock_merge, mock_commit, tmp_path
+    ):
+        from app.mission_runner import run_post_mission
+
+        instance_dir = str(tmp_path / "instance")
+        os.makedirs(instance_dir, exist_ok=True)
+
+        run_post_mission(
+            instance_dir=instance_dir,
+            project_name="koan",
+            project_path=str(tmp_path),
+            run_num=1,
+            exit_code=0,
+            stdout_file="/tmp/out.json",
+            stderr_file="/tmp/err.txt",
+            provider_name="codex",
+        )
+
+        call_kwargs = mock_quota.call_args[1]
+        assert call_kwargs["provider_name"] == "codex"
+        assert call_kwargs["exit_code"] == 0
+
 
 class TestCommitInstance:
     """Test commit_instance function."""
@@ -1893,6 +1923,7 @@ class TestCLIPostMissionOutputDetails:
             mission_title="audit security",
             autonomous_mode="deep",
             start_time=1700000000,
+            provider_name="",
         )
 
 

@@ -181,15 +181,14 @@ class TestCopilotProviderQuota:
         """Combined output includes both stderr and stdout."""
         mock_run.return_value = MagicMock(
             stdout="stdout data",
-            stderr="stderr data",
-            returncode=0,
+            stderr="HTTP 429: too many requests",
+            returncode=1,
         )
 
         ok, detail = self.provider.check_quota_available("/tmp")
         assert ok is False
-        combined = mock_detect.call_args[0][0]
-        assert "stderr data" in combined
-        assert "stdout data" in combined
+        assert "HTTP 429" in detail
+        assert "stdout data" in detail
 
     @patch("subprocess.run")
     @patch("app.quota_handler.detect_quota_exhaustion", return_value=False)
@@ -234,3 +233,63 @@ class TestCopilotProviderQuota:
             assert "copilot" in cmd
             assert "-p" in cmd
             assert "ok" in cmd
+
+
+class TestCopilotDetectQuotaExhaustion:
+    """Stdout scanning must not pause Koan on incidental 'rate limit' text."""
+
+    def setup_method(self):
+        self.provider = CopilotProvider()
+
+    def test_stderr_pattern_always_triggers(self):
+        assert self.provider.detect_quota_exhaustion(
+            stdout_text="",
+            stderr_text="HTTP 429: too many requests",
+            exit_code=1,
+        ) is True
+
+    def test_stdout_rate_limit_in_assistant_text_ignored_on_success(self):
+        """A successful research mission discussing rate limits must not pause."""
+        stdout = (
+            "Here's a plan for handling API rate limits in the new endpoint:\n"
+            "1. Detect rate limit headers from the upstream.\n"
+            "2. Back off exponentially.\n"
+        )
+        assert self.provider.detect_quota_exhaustion(
+            stdout_text=stdout,
+            stderr_text="",
+            exit_code=0,
+        ) is False
+
+    def test_stdout_rate_limit_in_assistant_text_ignored_on_failure(self):
+        """Non-zero exit + assistant prose mentioning 'rate limit' must not trigger.
+
+        Without the content-marker gate, the generic 'rate limit' phrase in
+        normal output would mis-classify a max-turns or hook abort as quota.
+        """
+        stdout = (
+            "Here's a plan for handling API rate limits in the new endpoint.\n"
+            "It explains how to back off when servers return throttling info.\n"
+        )
+        assert self.provider.detect_quota_exhaustion(
+            stdout_text=stdout,
+            stderr_text="",
+            exit_code=1,
+        ) is False
+
+    def test_stdout_error_line_with_rate_limit_triggers_on_failure(self):
+        """When a stdout line looks like a Copilot/GitHub error, scan it."""
+        stdout = "Error: GitHub Copilot rate limit exceeded. Try again later."
+        assert self.provider.detect_quota_exhaustion(
+            stdout_text=stdout,
+            stderr_text="",
+            exit_code=1,
+        ) is True
+
+    def test_stdout_http_429_line_triggers_on_failure(self):
+        stdout = "HTTP 429: rate limit"
+        assert self.provider.detect_quota_exhaustion(
+            stdout_text=stdout,
+            stderr_text="",
+            exit_code=1,
+        ) is True

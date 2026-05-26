@@ -83,6 +83,7 @@ def classify_cli_error(
     exit_code: int,
     stdout: str = "",
     stderr: str = "",
+    provider_name: str = "",
 ) -> ErrorCategory:
     """Classify a CLI error based on exit code and output text.
 
@@ -90,6 +91,8 @@ def classify_cli_error(
         exit_code: Subprocess exit code (0 = success, not classified).
         stdout: Captured stdout from the CLI process.
         stderr: Captured stderr from the CLI process.
+        provider_name: Optional provider that produced the output. When set,
+            quota detection is delegated to that provider.
 
     Returns:
         ErrorCategory indicating how the caller should handle the error.
@@ -107,15 +110,16 @@ def classify_cli_error(
 
     # Check quota first — quota_handler is the authority for quota detection.
     # A 429 could be rate-limiting or quota exhaustion; defer to the
-    # specialized detector which has provider-specific patterns.
-    #
-    # IMPORTANT: Use the same split-detection strategy as handle_quota_exhaustion
-    # in quota_handler.py.  Loose patterns like "rate limit" and "too many
-    # requests" can appear in Claude's stdout when it discusses API rate
-    # limiting in its response text.  Only strict patterns are safe for stdout.
-    from app.quota_handler import _STRICT_QUOTA_RE, _QUOTA_RE
+    # specialized detector which has provider-specific patterns and the same
+    # legacy split-detection fallback when ``provider_name`` is empty.
+    from app.quota_handler import _detect_quota_for_provider
 
-    if bool(_QUOTA_RE.search(stderr)) or bool(_STRICT_QUOTA_RE.search(stdout)):
+    if _detect_quota_for_provider(
+        stdout_text=stdout,
+        stderr_text=stderr,
+        provider_name=provider_name,
+        exit_code=exit_code,
+    ):
         return ErrorCategory.QUOTA
 
     # Auth errors — Claude is logged out, needs human intervention.

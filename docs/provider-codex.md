@@ -157,7 +157,9 @@ Re-authenticate: `codex login --device-auth`
 ### Rate limits
 
 Codex shares quota with your ChatGPT subscription. If you hit limits,
-Kōan's quota detection will pause and notify you.
+Kōan's quota detection will pause and notify you. Codex quota detection is
+provider-specific: Kōan trusts Codex/OpenAI error events and stderr, but does
+not scan normal command output for generic billing or credit words.
 
 ### Tool restrictions not working
 

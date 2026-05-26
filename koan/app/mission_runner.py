@@ -1237,6 +1237,7 @@ def run_post_mission(
     start_time: int = 0,
     status_callback: Optional[Callable[[str], None]] = None,
     mission_tier: Optional[str] = None,
+    provider_name: str = "",
 ) -> dict:
     """Run the complete post-mission processing pipeline.
 
@@ -1255,6 +1256,8 @@ def run_post_mission(
         start_time: Mission start time as unix timestamp.
         status_callback: Optional callable to report progress during finalization.
             Called with a short description of the current step.
+        provider_name: CLI provider that produced stdout/stderr. Used for
+            provider-specific quota detection.
 
     Returns:
         Dict with keys:
@@ -1390,6 +1393,8 @@ def run_post_mission(
             run_count=run_num,
             stdout_file=stdout_file,
             stderr_file=stderr_file,
+            provider_name=provider_name,
+            exit_code=exit_code,
         )
         if quota_result is QUOTA_CHECK_UNRELIABLE:
             _log_runner("quota", f"⚠️  Quota check unreliable for {project_name} — "
@@ -1738,6 +1743,7 @@ def _cli_post_mission(args: list) -> None:
     parser.add_argument("--mission-title", default="")
     parser.add_argument("--autonomous-mode", default="")
     parser.add_argument("--start-time", type=int, default=0)
+    parser.add_argument("--provider-name", default="")
     parsed = parser.parse_args(args)
 
     result = run_post_mission(
@@ -1751,6 +1757,7 @@ def _cli_post_mission(args: list) -> None:
         mission_title=parsed.mission_title,
         autonomous_mode=parsed.autonomous_mode,
         start_time=parsed.start_time,
+        provider_name=parsed.provider_name,
     )
 
     # Output key results for bash consumption

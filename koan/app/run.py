@@ -29,7 +29,7 @@ import threading
 import time
 import traceback
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from app.iteration_manager import plan_iteration
 from app.loop_manager import check_pending_missions, interruptible_sleep
@@ -97,6 +97,19 @@ def _should_notify_error(attempt: int) -> bool:
     Notifies on first error and every ERROR_NOTIFICATION_INTERVAL errors.
     """
     return attempt == 1 or attempt % ERROR_NOTIFICATION_INTERVAL == 0
+
+
+def _provider_identity() -> Tuple[str, str]:
+    """Return the active provider name and a human-friendly label.
+
+    Centralizes the ``get_provider_name() + .title()`` lookup so notification
+    text and quota/auth handlers stay consistent across mission, skill, and
+    contemplative code paths.
+    """
+    from app.provider import get_provider_name
+
+    name = get_provider_name()
+    return name, name.title()
 
 
 # ---------------------------------------------------------------------------
@@ -1305,6 +1318,8 @@ def _handle_skill_dispatch(
             from app.skill_dispatch import cleanup_skill_temp_files
             cleanup_skill_temp_files(skill_cmd)
 
+        _skill_provider_name, _skill_provider_label = _provider_identity()
+
         # --- Auth / quota classification (mirrors regular mission path) ---
         if exit_code != 0:
             from app.cli_errors import ErrorCategory, classify_cli_error
@@ -1312,14 +1327,15 @@ def _handle_skill_dispatch(
                 exit_code,
                 skill_result.get("stdout", ""),
                 skill_result.get("stderr", ""),
+                provider_name=_skill_provider_name,
             )
             if _err_cat == ErrorCategory.AUTH:
-                log("error", "Claude is logged out — requeueing skill mission to Pending")
+                log("error", f"{_skill_provider_label} is logged out — requeueing skill mission to Pending")
                 _requeue_mission_in_file(instance, mission_title)
                 from app.pause_manager import create_pause
                 create_pause(koan_root, "auth")
                 _notify(instance, (
-                    "🔐 Claude is logged out. Please run `claude /login` to re-authenticate.\n\n"
+                    f"🔐 {_skill_provider_label} is logged out. Please re-authenticate the provider CLI.\n\n"
                     "The current mission has been moved back to Pending. "
                     "Use /resume after logging in."
                 ))
@@ -1335,6 +1351,8 @@ def _handle_skill_dispatch(
                     run_count=run_num,
                     stdout_text=skill_result.get("stdout", ""),
                     stderr_text=skill_result.get("stderr", ""),
+                    provider_name=_skill_provider_name,
+                    exit_code=exit_code,
                 )
                 reset_display = ""
                 if quota_result and quota_result is not QUOTA_CHECK_UNRELIABLE:
@@ -1369,7 +1387,7 @@ def _handle_skill_dispatch(
             _requeue_mission_in_file(instance, mission_title)
             _commit_instance(instance, f"koan: quota exhausted {time.strftime('%Y-%m-%d-%H:%M')}")
             _notify(instance, (
-                f"⚠️ Claude quota exhausted. {reset_display}\n\n"
+                f"⚠️ {_skill_provider_label} quota exhausted. {reset_display}\n\n"
                 f"Skill mission '{mission_title[:60]}' moved back to Pending.\n"
                 f"{resume_msg} or use /resume to restart manually."
             ))
@@ -1519,6 +1537,7 @@ def _maybe_retry_mission(
     project_name: str,
     run_num: int,
     has_mission: bool,
+    provider_name: str = "",
 ) -> tuple:
     """Attempt a single retry if the CLI error is transient.
 
@@ -1565,7 +1584,12 @@ def _maybe_retry_mission(
     except OSError:
         stderr_text = ""
 
-    category = classify_cli_error(claude_exit, stdout_text, stderr_text)
+    category = classify_cli_error(
+        claude_exit,
+        stdout_text,
+        stderr_text,
+        provider_name=provider_name,
+    )
     log("error", f"CLI error classified as {category.value} (exit={claude_exit})")
 
     if category != ErrorCategory.RETRYABLE:
@@ -2046,7 +2070,7 @@ def _run_iteration(
         log("error", f"Failed to create pending.md: {e}")
 
     # Execute Claude
-    log("koan", "Building CLI command and launching Claude...")
+    log("koan", "Building CLI command and launching provider...")
     if mission_title:
         set_status(koan_root, f"Run {run_num}/{max_runs} — executing mission on {project_name}")
     else:
@@ -2058,9 +2082,12 @@ def _run_iteration(
     fd_err, stderr_file = tempfile.mkstemp(prefix="koan-err-")
     os.close(fd_err)
     claude_exit = 1  # default to failure; overwritten on successful execution
+    provider_name = ""
+    provider_label = "Provider"
     plugin_dir = None  # generated plugin dir for Skill tool (cleaned up in finally)
     cmd_cleanup_paths: List[str] = []  # temp files created by build_mission_command
     try:
+        provider_name, provider_label = _provider_identity()
         # Build CLI command (provider-agnostic with per-project overrides)
         from app.mission_runner import build_mission_command
         from app.debug import debug_log as _debug_log
@@ -2115,7 +2142,7 @@ def _run_iteration(
         )
         _debug_log(f"[run] cli: exit_code={claude_exit}")
         elapsed_min = (int(time.time()) - mission_start) / 60
-        log("koan", f"Claude CLI finished (exit={claude_exit}, {elapsed_min:.1f}min)")
+        log("koan", f"{provider_label} CLI finished (exit={claude_exit}, {elapsed_min:.1f}min)")
 
         # --- Mission retry on transient CLI errors ---
         # One retry for missions, zero for autonomous (they're lower-priority).
@@ -2132,6 +2159,7 @@ def _run_iteration(
                 project_name=project_name,
                 run_num=run_num,
                 has_mission=bool(mission_title),
+                provider_name=provider_name,
             )
 
         # --- JSON success override ---
@@ -2198,7 +2226,7 @@ def _run_iteration(
 
         # --- Auth / Quota error detection (before finalizing mission) ---
         # Both require requeueing the mission so it isn't permanently lost:
-        # - AUTH: Claude is logged out, needs human re-login
+        # - AUTH: provider CLI is logged out, needs human re-login
         # - QUOTA: API quota exhausted, auto-resumes after reset
         if claude_exit != 0 and original_mission_title:
             from app.cli_errors import ErrorCategory, classify_cli_error
@@ -2210,14 +2238,19 @@ def _run_iteration(
                 _auth_stderr = Path(stderr_file).read_text()
             except OSError:
                 _auth_stderr = ""
-            _auth_category = classify_cli_error(claude_exit, _auth_stdout, _auth_stderr)
+            _auth_category = classify_cli_error(
+                claude_exit,
+                _auth_stdout,
+                _auth_stderr,
+                provider_name=provider_name,
+            )
             if _auth_category == ErrorCategory.AUTH:
-                log("error", "Claude is logged out — requeueing mission to Pending")
+                log("error", f"{provider_label} is logged out — requeueing mission to Pending")
                 _requeue_mission_in_file(instance, original_mission_title)
                 from app.pause_manager import create_pause
                 create_pause(koan_root, "auth")
                 _notify(instance, (
-                    "🔐 Claude is logged out. Please run `claude /login` to re-authenticate.\n\n"
+                    f"🔐 {provider_label} is logged out. Please re-authenticate the provider CLI.\n\n"
                     "The current mission has been moved back to Pending. "
                     "Use /resume after logging in."
                 ))
@@ -2233,6 +2266,8 @@ def _run_iteration(
                     run_count=run_num,
                     stdout_file=stdout_file,
                     stderr_file=stderr_file,
+                    provider_name=provider_name,
+                    exit_code=claude_exit,
                 )
                 reset_display = ""
                 if quota_result and quota_result is not QUOTA_CHECK_UNRELIABLE:
@@ -2295,10 +2330,11 @@ def _run_iteration(
                     koan_root, f"{_status_prefix} — {step}"
                 ),
                 mission_tier=mission_tier,
+                provider_name=provider_name,
             )
 
             if post_result.get("pending_archived"):
-                log("health", "pending.md archived to journal (Claude didn't clean up)")
+                log("health", f"pending.md archived to journal ({provider_label} didn't clean up)")
             if post_result.get("auto_merge_branch"):
                 log("git", f"Auto-merge checked for {post_result['auto_merge_branch']}")
 
@@ -2327,7 +2363,7 @@ def _run_iteration(
 
                 _commit_instance(instance, f"koan: quota exhausted {time.strftime('%Y-%m-%d-%H:%M')}")
                 _notify(instance, (
-                    f"⚠️ Claude quota exhausted. {reset_display}\n\n"
+                    f"⚠️ {provider_label} quota exhausted. {reset_display}\n\n"
                     f"Mission '{original_mission_title[:60]}' moved back to Pending.\n"
                     f"Kōan paused after {count} runs. {resume_msg} or use /resume to restart manually."
                 ))
@@ -3012,6 +3048,7 @@ def _run_skill_mission(
         _skill_prefix = f"Run {run_num}"
         set_status(koan_root, f"{_skill_prefix} — finalizing")
         from app.mission_runner import run_post_mission
+        _skill_provider_name, _ = _provider_identity()
         post_result = run_post_mission(
             instance_dir=instance,
             project_name=project_name,
@@ -3027,6 +3064,7 @@ def _run_skill_mission(
                 koan_root, f"{_skill_prefix} — {step}"
             ),
             mission_tier=mission_tier,
+            provider_name=_skill_provider_name,
         )
         if isinstance(post_result, dict) and post_result.get("quota_exhausted"):
             skill_result["quota_exhausted"] = True

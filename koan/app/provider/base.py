@@ -246,6 +246,31 @@ class CLIProvider:
         """
         return True, ""
 
+    def detect_quota_exhaustion(
+        self,
+        stdout_text: str = "",
+        stderr_text: str = "",
+        exit_code: int = 0,
+    ) -> bool:
+        """Return True when provider output is a quota/rate-limit failure.
+
+        Providers own this because quota wording and output structure differ:
+        Claude emits CLI/provider text, Codex emits JSONL events, Copilot emits
+        GitHub-style 429 messages. The base provider has no quota concept.
+        """
+        return False
+
+    @staticmethod
+    def _line_has_error_marker(line: str, markers: tuple) -> bool:
+        """Return True when ``line`` contains at least one marker (case-insensitive).
+
+        Used by providers that scan stdout for quota text but want to ignore
+        normal assistant prose. A "marker" is a short substring like ``"error"``
+        or ``"http"`` that signals the line is a provider/CLI error.
+        """
+        lowered = line.lower()
+        return any(marker in lowered for marker in markers)
+
     def build_extra_flags(
         self,
         model: str = "",

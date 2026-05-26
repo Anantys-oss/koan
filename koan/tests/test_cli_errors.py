@@ -1,5 +1,7 @@
 """Tests for app.cli_errors — CLI error classification."""
 
+import json
+
 import pytest
 
 from app.cli_errors import ErrorCategory, classify_cli_error
@@ -239,6 +241,26 @@ class TestClassifyCliError:
         """'too many requests' in Claude's code output should not trigger QUOTA."""
         stdout = 'raise HTTPException(status_code=429, detail="too many requests")'
         result = classify_cli_error(1, stdout=stdout, stderr="killed by signal")
+        assert result != ErrorCategory.QUOTA
+
+    def test_codex_ignores_command_aggregated_output_quota_words(self):
+        stdout = json.dumps({
+            "type": "item.completed",
+            "item": {
+                "type": "command_execution",
+                "aggregated_output": (
+                    "can_view_billing_credit_usage = true\n"
+                    "TrialExpiredAt = true\n"
+                    "default_shared_server_limit = 10\n"
+                ),
+            },
+        })
+        result = classify_cli_error(
+            1,
+            stdout=stdout,
+            stderr="process failed",
+            provider_name="codex",
+        )
         assert result != ErrorCategory.QUOTA
 
     def test_strict_patterns_still_match_in_stdout(self):

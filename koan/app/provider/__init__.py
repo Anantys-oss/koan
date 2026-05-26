@@ -121,6 +121,19 @@ def get_provider() -> CLIProvider:
     return _cached_provider
 
 
+def get_provider_by_name(name: str) -> CLIProvider:
+    """Return a fresh provider instance by name.
+
+    Used by provider-aware code paths that need to classify historical output
+    with the provider that produced it, without mutating the configured cached
+    provider for the current process.
+    """
+    provider_name = str(name or "").strip().lower()
+    if provider_name not in _PROVIDERS:
+        raise KeyError(f"Unknown CLI provider: {name}")
+    return _PROVIDERS[provider_name]()
+
+
 def get_cli_binary() -> str:
     """Get the CLI binary command for the configured provider.
 

@@ -1,11 +1,26 @@
 """GitHub Copilot CLI provider implementation."""
 
+import re
 import shutil
 import subprocess
 import sys
 from typing import List, Optional, Tuple
 
 from app.provider.base import CLIProvider, CLAUDE_TOOLS, TOOL_NAME_MAP
+
+
+_COPILOT_QUOTA_PATTERNS = [
+    r"rate limit",
+    r"too many requests",
+    r"usage limit",
+    r"exceeded.*(?:copilot|secondary).*(?:limit|rate)",
+    r"copilot.*(?:not available|unavailable)",
+    r"HTTP\s+429",
+    r"status[\s:]+429",
+    r"retry[\s-]+after",
+]
+
+_COPILOT_QUOTA_RE = re.compile("|".join(_COPILOT_QUOTA_PATTERNS), re.IGNORECASE)
 
 
 class CopilotProvider(CLIProvider):
@@ -134,11 +149,12 @@ class CopilotProvider(CLIProvider):
                 timeout=timeout,
                 cwd=project_path,
             )
-            combined = (result.stderr or "") + "\n" + (result.stdout or "")
-
-            from app.quota_handler import detect_quota_exhaustion
-
-            if detect_quota_exhaustion(combined):
+            if self.detect_quota_exhaustion(
+                stdout_text=result.stdout or "",
+                stderr_text=result.stderr or "",
+                exit_code=result.returncode,
+            ):
+                combined = (result.stderr or "") + "\n" + (result.stdout or "")
                 return False, combined
 
             # Non-zero exit with no detected pattern — could be auth failure
@@ -149,3 +165,38 @@ class CopilotProvider(CLIProvider):
         except Exception as e:
             print(f"[copilot] quota probe error: {e}", file=sys.stderr)
             return True, ""
+
+    def detect_quota_exhaustion(
+        self,
+        stdout_text: str = "",
+        stderr_text: str = "",
+        exit_code: int = 0,
+    ) -> bool:
+        """Detect GitHub/Copilot quota and rate-limit failures.
+
+        Stderr is trusted for the full pattern set. Stdout is only scanned
+        when the CLI itself failed AND the matched line looks like a
+        provider error message — generic phrases like "rate limit" appear
+        in normal assistant output (research/discussion missions) and must
+        not pause Koan on a non-quota failure.
+        """
+        if _COPILOT_QUOTA_RE.search(stderr_text or ""):
+            return True
+        if exit_code == 0:
+            return False
+        for line in (stdout_text or "").splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if not self._plain_stdout_quota_line(stripped):
+                continue
+            return True
+        return False
+
+    _STDOUT_ERROR_MARKERS = ("error", "copilot", "github", "http", "status")
+
+    def _plain_stdout_quota_line(self, line: str) -> bool:
+        """Check stdout only when the line resembles a provider error."""
+        if not self._line_has_error_marker(line, self._STDOUT_ERROR_MARKERS):
+            return False
+        return bool(_COPILOT_QUOTA_RE.search(line))

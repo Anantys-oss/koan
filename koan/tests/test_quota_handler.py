@@ -1,5 +1,6 @@
 """Tests for quota_handler.py — quota exhaustion detection and handling."""
 
+import json
 import os
 import subprocess
 import sys
@@ -1058,6 +1059,154 @@ class TestStdoutFalsePositives:
             str(tmp_path), instance, "koan", 5, stdout_file, stderr_file
         )
         assert result is not None, "Stderr quota error should trigger regardless of stdout"
+
+
+class TestCodexQuotaDetection:
+    """Codex quota detection must not scan command aggregated_output."""
+
+    def test_codex_command_output_credit_fields_do_not_trigger(self, tmp_path):
+        from app.quota_handler import handle_quota_exhaustion
+
+        stdout = "\n".join([
+            json.dumps({
+                "type": "item.completed",
+                "item": {
+                    "type": "command_execution",
+                    "aggregated_output": (
+                        "can_view_billing_credit_usage = true\n"
+                        "TrialExpiredAt = true\n"
+                        "default_shared_server_limit = 10\n"
+                    ),
+                },
+            }),
+            json.dumps({
+                "type": "turn.completed",
+                "usage": {
+                    "input_tokens": 2769595,
+                    "cached_input_tokens": 2650240,
+                    "output_tokens": 16146,
+                },
+            }),
+        ])
+
+        instance = str(tmp_path / "instance")
+        os.makedirs(instance)
+
+        result = handle_quota_exhaustion(
+            str(tmp_path),
+            instance,
+            "koan",
+            2,
+            stdout_text=stdout,
+            stderr_text="",
+            provider_name="codex",
+            exit_code=0,
+        )
+        assert result is None
+
+    def test_codex_stderr_rate_limit_triggers(self, tmp_path):
+        from app.quota_handler import handle_quota_exhaustion
+
+        instance = str(tmp_path / "instance")
+        os.makedirs(instance)
+
+        result = handle_quota_exhaustion(
+            str(tmp_path),
+            instance,
+            "koan",
+            2,
+            stdout_text="",
+            stderr_text="API Error: rate_limit_error HTTP 429 Retry-After: 300",
+            provider_name="codex",
+            exit_code=1,
+        )
+        assert result is not None
+
+    def test_codex_error_event_rate_limit_triggers(self, tmp_path):
+        from app.quota_handler import handle_quota_exhaustion
+
+        stdout = json.dumps({
+            "type": "error",
+            "error": {
+                "type": "rate_limit_error",
+                "message": "insufficient_quota",
+            },
+        })
+
+        instance = str(tmp_path / "instance")
+        os.makedirs(instance)
+
+        result = handle_quota_exhaustion(
+            str(tmp_path),
+            instance,
+            "koan",
+            2,
+            stdout_text=stdout,
+            stderr_text="",
+            provider_name="codex",
+            exit_code=1,
+        )
+        assert result is not None
+
+
+class TestProviderFallback:
+    """Provider-aware detection must degrade to legacy on failure."""
+
+    def test_unknown_provider_falls_back_to_legacy_detector(self, tmp_path):
+        from app.quota_handler import handle_quota_exhaustion
+
+        instance = str(tmp_path / "instance")
+        os.makedirs(instance)
+
+        result = handle_quota_exhaustion(
+            str(tmp_path),
+            instance,
+            "koan",
+            1,
+            stdout_text="",
+            stderr_text="rate limit exceeded",
+            provider_name="nonexistent-provider",
+            exit_code=1,
+        )
+        assert result is not None, (
+            "Unknown provider name should fall back to legacy detection, "
+            "not silently skip quota handling"
+        )
+
+    def test_provider_exception_falls_back_to_legacy_detector(
+        self, tmp_path, monkeypatch
+    ):
+        """A broken provider detector must not silently disable quota protection."""
+        from app.quota_handler import handle_quota_exhaustion
+
+        # Force the claude provider's detector to raise.
+        from app.provider import claude as claude_module
+
+        def _boom(self, stdout_text="", stderr_text="", exit_code=0):
+            raise RuntimeError("synthetic provider failure")
+
+        monkeypatch.setattr(
+            claude_module.ClaudeProvider, "detect_quota_exhaustion", _boom
+        )
+
+        instance = str(tmp_path / "instance")
+        os.makedirs(instance)
+
+        # Stderr contains a quota signal — legacy fallback should still
+        # detect it even though the provider blew up.
+        result = handle_quota_exhaustion(
+            str(tmp_path),
+            instance,
+            "koan",
+            1,
+            stdout_text="",
+            stderr_text="HTTP 429 too many requests",
+            provider_name="claude",
+            exit_code=1,
+        )
+        assert result is not None, (
+            "Exception in provider detector must not disable quota detection"
+        )
 
 
 class TestCLI:

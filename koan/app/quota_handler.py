@@ -115,6 +115,47 @@ def detect_quota_exhaustion(text: str) -> bool:
     return bool(_QUOTA_RE.search(text))
 
 
+def _detect_quota_for_provider(
+    stdout_text: str,
+    stderr_text: str,
+    provider_name: str = "",
+    exit_code: int = 0,
+) -> bool:
+    """Detect quota using the provider that produced the output.
+
+    Empty provider names use the legacy detector for backward-compatible CLI
+    and tests. Unknown provider names or provider-side exceptions also fall
+    back to the legacy detector so quota protection degrades conservatively
+    instead of disappearing.
+    """
+    if provider_name:
+        try:
+            from app.provider import get_provider_by_name
+
+            provider = get_provider_by_name(provider_name)
+            return provider.detect_quota_exhaustion(
+                stdout_text=stdout_text,
+                stderr_text=stderr_text,
+                exit_code=exit_code,
+            )
+        except KeyError as e:
+            print(
+                f"[quota_handler] unknown provider {provider_name!r}: {e}; "
+                "using legacy quota detector",
+                file=sys.stderr,
+            )
+        except Exception as e:
+            print(
+                f"[quota_handler] provider quota detector failed "
+                f"for {provider_name!r}: {e}; using legacy quota detector",
+                file=sys.stderr,
+            )
+
+    return bool(_QUOTA_RE.search(stderr_text or "")) or bool(
+        _STRICT_QUOTA_RE.search(stdout_text or "")
+    )
+
+
 def extract_reset_info(text: str) -> str:
     """Extract the reset info string from CLI output.
 
@@ -251,6 +292,8 @@ def handle_quota_exhaustion(
     *,
     stdout_text: str = "",
     stderr_text: str = "",
+    provider_name: str = "",
+    exit_code: int = 0,
 ) -> Optional[Tuple[str, str]]:
     """Full quota exhaustion handler.
 
@@ -273,6 +316,10 @@ def handle_quota_exhaustion(
         stderr_file: Path to CLI stderr capture file
         stdout_text: Pre-read stdout content (skips file read when non-empty)
         stderr_text: Pre-read stderr content (skips file read when non-empty)
+        provider_name: CLI provider that produced the output. Empty string
+            preserves legacy Claude/general detection.
+        exit_code: CLI exit code, used by providers that only trust stdout
+            quota text after provider-level failures.
 
     Returns:
         (reset_display, resume_message) if quota exhausted, None otherwise
@@ -305,8 +352,11 @@ def handle_quota_exhaustion(
     # Check stdout with STRICT patterns only — loose patterns like
     # "rate limit" cause false positives when Claude's response discusses
     # API rate limiting.
-    quota_detected = bool(_QUOTA_RE.search(stderr_text)) or bool(
-        _STRICT_QUOTA_RE.search(stdout_text)
+    quota_detected = _detect_quota_for_provider(
+        stdout_text=stdout_text,
+        stderr_text=stderr_text,
+        provider_name=provider_name,
+        exit_code=exit_code,
     )
     if not quota_detected:
         return None
@@ -330,7 +380,10 @@ def handle_quota_exhaustion(
     return reset_display, resume_message
 
 
-_CLI_USAGE = "Usage: quota_handler.py check <koan_root> <instance> <project_name> <run_count> <stdout_file> <stderr_file>"
+_CLI_USAGE = (
+    "Usage: quota_handler.py check <koan_root> <instance> <project_name> "
+    "<run_count> <stdout_file> <stderr_file> [provider]"
+)
 
 
 # CLI interface
@@ -355,6 +408,7 @@ if __name__ == "__main__":
         run_count=run_count,
         stdout_file=sys.argv[6],
         stderr_file=sys.argv[7],
+        provider_name=sys.argv[8] if len(sys.argv) > 8 else "",
     )
     if result is QUOTA_CHECK_UNRELIABLE:
         print("UNRELIABLE: could not read log files", file=sys.stderr)

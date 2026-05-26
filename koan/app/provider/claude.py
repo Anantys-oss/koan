@@ -99,6 +99,24 @@ class ClaudeProvider(CLIProvider):
         flags.extend(configs)
         return flags
 
+    def detect_quota_exhaustion(
+        self,
+        stdout_text: str = "",
+        stderr_text: str = "",
+        exit_code: int = 0,
+    ) -> bool:
+        """Detect Claude/Anthropic quota failures.
+
+        Preserve the legacy split behavior: stderr is trusted for all quota
+        patterns, while stdout only matches strict provider error phrases so
+        normal assistant discussion of rate limits does not pause Koan.
+        """
+        from app.quota_handler import _QUOTA_RE, _STRICT_QUOTA_RE
+
+        return bool(_QUOTA_RE.search(stderr_text or "")) or bool(
+            _STRICT_QUOTA_RE.search(stdout_text or "")
+        )
+
     def build_plugin_args(self, plugin_dirs: Optional[List[str]] = None) -> List[str]:
         if not plugin_dirs:
             return []
