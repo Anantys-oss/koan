@@ -1,15 +1,15 @@
-"""Track project HEAD commits across agent startups.
+"""Track koan's own HEAD commit across agent startups.
 
-On each startup, records the current HEAD SHA for every managed project.
-On subsequent startups, detects changes and reports new commits via
-Telegram so the human sees what landed while the agent was off.
+On each startup, records koan's current HEAD SHA. On subsequent startups,
+detects changes and reports new commits via Telegram so the human sees
+what koan code changes landed while the agent was off.
 
 State persisted in instance/.commit-tracker.json.
 """
 
 import json
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from app.git_utils import run_git
 from app.run_log import log
@@ -34,12 +34,12 @@ def _save_state(instance_dir: str, state: Dict[str, str]) -> None:
     atomic_write_json(path, state, indent=2)
 
 
-def _get_head(project_path: str) -> str:
-    rc, stdout, _ = run_git("rev-parse", "HEAD", cwd=project_path, timeout=5)
+def _get_head(repo_path: str) -> str:
+    rc, stdout, _ = run_git("rev-parse", "HEAD", cwd=repo_path, timeout=5)
     return stdout.strip() if rc == 0 else ""
 
 
-def _get_log(project_path: str, since_sha: str, limit: int = MAX_LOG_LINES) -> Tuple[List[str], int]:
+def _get_log(repo_path: str, since_sha: str, limit: int = MAX_LOG_LINES) -> Tuple[List[str], int]:
     """Get oneline log from since_sha..HEAD.
 
     Returns (lines, total_count). lines is capped at limit; total_count
@@ -47,7 +47,7 @@ def _get_log(project_path: str, since_sha: str, limit: int = MAX_LOG_LINES) -> T
     """
     rc, stdout, _ = run_git(
         "log", "--oneline", f"{since_sha}..HEAD",
-        cwd=project_path, timeout=15,
+        cwd=repo_path, timeout=15,
     )
     if rc != 0 or not stdout.strip():
         return [], 0
@@ -57,57 +57,43 @@ def _get_log(project_path: str, since_sha: str, limit: int = MAX_LOG_LINES) -> T
 
 
 def record_and_report(
-    projects: list,
+    koan_root: str,
     instance_dir: str,
-) -> List[str]:
-    """Record HEAD for each project; report changes since last startup.
+) -> Optional[str]:
+    """Record koan's HEAD; report changes since last startup.
 
     Args:
-        projects: List of (name, path) tuples.
+        koan_root: Path to the koan repository root.
         instance_dir: Path to instance/ directory.
 
     Returns:
-        List of Telegram message strings (one per changed project,
-        plus one for first-run). Empty if nothing to report.
+        Telegram message string if HEAD changed, None otherwise.
     """
     old_state = _load_state(instance_dir)
-    new_state: Dict[str, str] = {}
-    messages: List[str] = []
-    first_run = not old_state
+    old_head = old_state.get("head", "")
 
-    for name, path in projects:
-        head = _get_head(path)
-        if not head:
-            log("git", f"[commit-tracker] Could not read HEAD for {name}")
-            continue
-        new_state[name] = head
-        old_head = old_state.get(name, "")
+    head = _get_head(koan_root)
+    if not head:
+        log("git", "[commit-tracker] Could not read koan HEAD")
+        return None
 
-        if first_run:
-            short = head[:10]
-            log("git", f"[commit-tracker] {name}: recording HEAD {short}")
-        elif not old_head:
-            short = head[:10]
-            log("git", f"[commit-tracker] {name}: new project, recording HEAD {short}")
-        elif old_head != head:
-            lines, total = _get_log(path, old_head)
-            if lines:
-                log("git", f"[commit-tracker] {name}: {total} new commit(s) since last startup")
-                header = f"📋 [{name}] {total} new commit(s) since last startup:"
-                body = "\n".join(lines)
-                if total > MAX_LOG_LINES:
-                    body += f"\n… and {total - MAX_LOG_LINES} more"
-                messages.append(f"{header}\n{body}")
-            else:
-                log("git", f"[commit-tracker] {name}: HEAD changed but log empty (force-push or rebase?)")
-                messages.append(
-                    f"📋 [{name}] HEAD changed: {old_head[:10]} → {head[:10]} (no linear log — force-push?)"
-                )
+    _save_state(instance_dir, {"head": head})
 
-    _save_state(instance_dir, new_state)
+    if not old_head:
+        log("git", f"[commit-tracker] First run, recording HEAD {head[:10]}")
+        return None
 
-    if first_run and new_state:
-        heads = ", ".join(f"{n}: {s[:10]}" for n, s in sorted(new_state.items()))
-        messages.append(f"📌 Commit tracker initialized. Heads: {heads}")
+    if old_head == head:
+        return None
 
-    return messages
+    lines, total = _get_log(koan_root, old_head)
+    if lines:
+        log("git", f"[commit-tracker] {total} new koan commit(s) since last startup")
+        header = f"\U0001f4cb {total} new koan commit(s) since last startup:"
+        body = "\n".join(lines)
+        if total > MAX_LOG_LINES:
+            body += f"\n… and {total - MAX_LOG_LINES} more"
+        return f"{header}\n{body}"
+
+    log("git", "[commit-tracker] HEAD changed but log empty (force-push or rebase?)")
+    return f"\U0001f4cb koan HEAD changed: {old_head[:10]} → {head[:10]} (no linear log — force-push?)"
