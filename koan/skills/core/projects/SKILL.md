@@ -10,6 +10,6 @@ commands:
   - name: projects
     description: List configured projects
     usage: /projects
-    aliases: [proj]
+    aliases: [proj, project]
 handler: handler.py
 ---
