@@ -642,6 +642,21 @@ Usually auto-triggered when CI fails after a `/rebase`, but can also be invoked 
 - Auto-injected by the CI queue when a post-rebase CI run fails
 </details>
 
+**`/diagnose`** — Find the last failed mission, extract journal context, and queue a fix attempt.
+
+- **Usage:** `/diagnose [project]`
+- **Alias:** `/dx`
+
+Reads the Failed section of `missions.md`, finds the most recent failure (optionally filtered by project), pulls journal context from that session, and queues an urgent diagnostic mission with all the context baked in.
+
+<details>
+<summary>Use cases</summary>
+
+- `/diagnose` — Retry the last failed mission with full failure context
+- `/diagnose myapp` — Retry the last failure for a specific project
+- `/dx` — Quick alias
+</details>
+
 **`/gh_request`** — Route a natural-language GitHub request to the appropriate action.
 
 - **Usage:** `/gh_request <github-url> <request text>`
@@ -1700,6 +1715,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/check <url>` | `/inspect` | I | Run project health checks on a PR/issue |
 | `/check_need <url>` | `/need`, `/needs` | I | Analyze if a PR/issue is still needed |
 | `/ci_check <PR>` | — | I | Check and fix CI failures on a PR |
+| `/diagnose [project]` | `/dx` | B | Analyze last failure and queue a fix attempt |
 | `/gh_request <url> <text>` | — | I | Route natural-language GitHub request to the right skill |
 | `/claudemd [project]` | `/claude`, `/claude.md`, `/claude_md` | I | Refresh a project's CLAUDE.md |
 | `/config_check` | `/cfgcheck`, `/configcheck` | P | Detect config.yaml drift against instance.example template |
