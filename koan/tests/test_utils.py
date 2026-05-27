@@ -135,6 +135,86 @@ class TestDetectProjectFromText:
         assert project == "web"
         assert text == "deploy changes"
 
+    def test_alias_fallback(self):
+        from app.utils import detect_project_from_text
+        with patch("app.utils.get_known_projects", return_value=[("koan", "/p1")]), \
+             patch("app.utils.load_project_aliases", return_value={"tt": "Template2"}):
+            project, text = detect_project_from_text("tt fix the bug")
+        assert project == "Template2"
+        assert text == "fix the bug"
+
+    def test_alias_not_used_when_project_matches(self):
+        from app.utils import detect_project_from_text
+        with patch("app.utils.get_known_projects", return_value=[("koan", "/p1")]), \
+             patch("app.utils.load_project_aliases", return_value={"koan": "ShouldNotUse"}):
+            project, text = detect_project_from_text("koan fix the bug")
+        assert project == "koan"
+        assert text == "fix the bug"
+
+    def test_alias_case_insensitive(self):
+        from app.utils import detect_project_from_text
+        with patch("app.utils.get_known_projects", return_value=[]), \
+             patch("app.utils.load_project_aliases", return_value={"tt": "Template2"}):
+            project, text = detect_project_from_text("TT fix it")
+        assert project == "Template2"
+        assert text == "fix it"
+
+    def test_alias_only_no_remaining_text(self):
+        from app.utils import detect_project_from_text
+        with patch("app.utils.get_known_projects", return_value=[]), \
+             patch("app.utils.load_project_aliases", return_value={"tt": "Template2"}):
+            project, text = detect_project_from_text("tt")
+        assert project == "Template2"
+        assert text == ""
+
+
+class TestLoadProjectAliases:
+    def test_loads_from_file(self, tmp_path):
+        from app.utils import load_project_aliases
+        aliases_path = tmp_path / "instance" / ".project-aliases.json"
+        aliases_path.parent.mkdir(parents=True)
+        aliases_path.write_text('{"tt": "Template2", "k": "koan"}')
+        with patch("app.utils.KOAN_ROOT", tmp_path):
+            result = load_project_aliases()
+        assert result == {"tt": "Template2", "k": "koan"}
+
+    def test_returns_empty_when_no_file(self, tmp_path):
+        from app.utils import load_project_aliases
+        with patch("app.utils.KOAN_ROOT", tmp_path):
+            result = load_project_aliases()
+        assert result == {}
+
+    def test_returns_empty_on_bad_json(self, tmp_path):
+        from app.utils import load_project_aliases
+        aliases_path = tmp_path / "instance" / ".project-aliases.json"
+        aliases_path.parent.mkdir(parents=True)
+        aliases_path.write_text("not json")
+        with patch("app.utils.KOAN_ROOT", tmp_path):
+            result = load_project_aliases()
+        assert result == {}
+
+
+class TestResolveProjectAlias:
+    def test_resolves_known_alias(self):
+        from app.utils import resolve_project_alias
+        with patch("app.utils.load_project_aliases", return_value={"tt": "Template2"}):
+            assert resolve_project_alias("tt") == "Template2"
+
+    def test_resolves_case_insensitive(self):
+        from app.utils import resolve_project_alias
+        with patch("app.utils.load_project_aliases", return_value={"tt": "Template2"}):
+            assert resolve_project_alias("TT") == "Template2"
+
+    def test_returns_none_for_unknown(self):
+        from app.utils import resolve_project_alias
+        with patch("app.utils.load_project_aliases", return_value={"tt": "Template2"}):
+            assert resolve_project_alias("xyz") is None
+
+    def test_returns_none_when_no_aliases(self):
+        from app.utils import resolve_project_alias
+        with patch("app.utils.load_project_aliases", return_value={}):
+            assert resolve_project_alias("tt") is None
+
 
 class TestInsertPendingMission:
     def test_inserts_into_existing_file(self, tmp_path):

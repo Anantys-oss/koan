@@ -165,11 +165,37 @@ def parse_project(text: str) -> Tuple[Optional[str], str]:
     return None, text
 
 
-def detect_project_from_text(text: str) -> Tuple[Optional[str], str]:
-    """Detect project name from the first word of text.
+def load_project_aliases() -> dict:
+    """Load project aliases from instance/.project-aliases.json.
 
-    If the first word matches a known project name (case-insensitive),
-    returns (project_name, remaining_text). Otherwise returns (None, text).
+    Returns a dict mapping shortcut (lowercase) -> canonical project name.
+    """
+    import json
+    aliases_path = KOAN_ROOT / "instance" / ".project-aliases.json"
+    if not aliases_path.exists():
+        return {}
+    try:
+        return json.loads(aliases_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def resolve_project_alias(name: str) -> Optional[str]:
+    """Resolve a project alias to its canonical project name.
+
+    Returns the canonical project name if *name* is a known alias,
+    or None if it isn't.
+    """
+    aliases = load_project_aliases()
+    return aliases.get(name.lower())
+
+
+def detect_project_from_text(text: str) -> Tuple[Optional[str], str]:
+    """Detect project name or alias from the first word of text.
+
+    If the first word matches a known project name (case-insensitive)
+    or a project alias, returns (project_name, remaining_text).
+    Otherwise returns (None, text).
     """
     parts = text.strip().split(None, 1)
     if not parts:
@@ -182,6 +208,12 @@ def detect_project_from_text(text: str) -> Tuple[Optional[str], str]:
     if first_word in project_names:
         remaining = parts[1].strip() if len(parts) > 1 else ""
         return project_names[first_word], remaining
+
+    # Alias fallback
+    alias_project = resolve_project_alias(first_word)
+    if alias_project:
+        remaining = parts[1].strip() if len(parts) > 1 else ""
+        return alias_project, remaining
 
     return None, text
 
