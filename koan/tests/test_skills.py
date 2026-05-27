@@ -279,6 +279,27 @@ class TestParseSkillMd:
         assert skill is not None
         assert skill.commands[0].usage == ""
 
+    def test_simple_string_commands(self, tmp_path):
+        """Simple string entries like '- models' are parsed as commands."""
+        skill_dir = tmp_path / "core" / "models"
+        skill_dir.mkdir(parents=True)
+        skill_md = skill_dir / "SKILL.md"
+        skill_md.write_text(textwrap.dedent("""\
+            ---
+            name: models
+            scope: core
+            commands:
+              - models
+              - model
+            ---
+        """))
+
+        skill = parse_skill_md(skill_md)
+        assert skill is not None
+        assert len(skill.commands) == 2
+        assert skill.commands[0].name == "models"
+        assert skill.commands[1].name == "model"
+
     def test_scope_inferred_from_parent(self, tmp_path):
         skill_dir = tmp_path / "myproject" / "myskill"
         skill_dir.mkdir(parents=True)

@@ -155,7 +155,7 @@ def _parse_yaml_lite(text: str) -> Dict[str, Any]:
         value = match.group(2).strip()
 
         if key == "commands" and not value:
-            # Block list of command dicts
+            # Block list of command dicts (or simple strings)
             commands = []
             i += 1
             current_cmd: Dict[str, Any] = {}
@@ -168,6 +168,11 @@ def _parse_yaml_lite(text: str) -> Dict[str, Any]:
                     if current_cmd:
                         commands.append(current_cmd)
                     current_cmd = {"name": cline[7:].strip()}
+                elif cline.startswith("- ") and ":" not in cline:
+                    # Simple string entry: "- models"
+                    if current_cmd:
+                        commands.append(current_cmd)
+                    current_cmd = {"name": cline[2:].strip()}
                 elif cline.startswith("description:"):
                     current_cmd["description"] = cline[12:].strip()
                 elif cline.startswith("usage:"):
