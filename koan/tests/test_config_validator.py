@@ -342,6 +342,17 @@ class TestValidateConfigScheduleOverlap:
         assert "schedule" not in paths
 
 
+class TestValidateConfigJiraMigration:
+    def test_jira_projects_produces_deprecation_warning(self):
+        warnings = validate_config({
+            "jira": {"projects": {"FOO": "my-toolkit"}},
+        })
+
+        assert ("jira.projects",) == tuple(
+            path for path, msg in warnings if "ignored" in msg
+        )
+
+
 # ---------------------------------------------------------------------------
 # validate_and_warn
 # ---------------------------------------------------------------------------

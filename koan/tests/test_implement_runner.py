@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 from app.github import fetch_issue_with_comments, detect_parent_repo
+from app.issue_tracker.types import IssueContent, IssueRef
 from app.projects_config import get_project_submit_to_repository
 from skills.core.implement.implement_runner import (
     run_implement,
@@ -37,6 +38,19 @@ from app.pr_submit import (
 
 _IMPL_MODULE = "skills.core.implement.implement_runner"
 _PR_MODULE = "app.pr_submit"
+
+
+def _github_issue(title="Title", body="Body", comments=None, key="42", repo="o/r"):
+    """Build an IssueContent as the tracker's fetch_issue would return it."""
+    ref = IssueRef(
+        provider="github",
+        url="https://github.com/o/r/issues/42",
+        key=key,
+        repo=repo,
+    )
+    return IssueContent(
+        ref=ref, title=title, body=body, comments=comments or [], state="open",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -241,8 +255,8 @@ class TestPlanReviewGate:
             notify.assert_called_once()
             assert "auto-improving" in notify.call_args[0][0]
 
-    def test_improvement_posts_improved_plan_to_github(self):
-        """When gate improves plan, posts improved version as GitHub comment."""
+    def test_improvement_posts_improved_plan_to_tracker(self):
+        """When gate improves plan, posts improved version via the tracker."""
         issues = "- Phase 1: missing file paths"
         improved = "## Phase 1: Update koan/app/foo.py\nFixed plan"
         with patch("app.config.get_plan_review_config",
@@ -253,17 +267,16 @@ class TestPlanReviewGate:
              patch("app.plan_runner.improve_plan", return_value=improved), \
              patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
              patch(f"{_IMPL_MODULE}._write_plan_cache"), \
-             patch("app.github.run_gh") as mock_gh:
+             patch(f"{_IMPL_MODULE}.add_comment") as mock_comment:
             _run_plan_review_gate(
                 "## Phase 1\nDo stuff\n" * 10, "/project",
                 issue_url="https://github.com/o/r/issues/42",
             )
-            mock_gh.assert_called_once()
-            args = mock_gh.call_args[0]
-            assert args[0] == "issue"
-            assert args[1] == "comment"
-            assert "Improved" in args[-1]
-            assert improved in args[-1]
+            mock_comment.assert_called_once()
+            args = mock_comment.call_args[0]
+            assert args[0] == "https://github.com/o/r/issues/42"
+            assert "Improved" in args[1]
+            assert improved in args[1]
 
     def test_notify_failure_does_not_block_improvement(self):
         """notify_fn exception doesn't prevent gate from proceeding."""
@@ -283,8 +296,8 @@ class TestPlanReviewGate:
             assert isinstance(result, _GateImproved)
             assert result.plan == "improved"
 
-    def test_github_comment_failure_does_not_block_gate(self):
-        """GitHub comment exception doesn't prevent gate from proceeding."""
+    def test_comment_failure_does_not_block_gate(self):
+        """A tracker comment exception doesn't prevent gate from proceeding."""
         with patch("app.config.get_plan_review_config",
                     return_value={"implement_gate": True, "max_rounds": 3}), \
              patch("app.plan_runner.is_simple_plan", return_value=False), \
@@ -293,7 +306,7 @@ class TestPlanReviewGate:
              patch("app.plan_runner.improve_plan", return_value="improved"), \
              patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
              patch(f"{_IMPL_MODULE}._write_plan_cache"), \
-             patch("app.github.run_gh", side_effect=RuntimeError("gh failed")):
+             patch(f"{_IMPL_MODULE}.add_comment", side_effect=RuntimeError("post failed")):
             result = _run_plan_review_gate(
                 "## Phase 1\nDo stuff\n" * 10, "/project",
                 issue_url="https://github.com/o/r/issues/42",
@@ -338,8 +351,8 @@ class TestPlanReviewGate:
         body = "### Summary\nPlan\n#### Phase 1: Do it"
         improved = "## Phase 1: koan/app/foo.py\nImproved plan"
         gate_result = _GateImproved(improved, "- missing file paths")
-        with patch(f"{_IMPL_MODULE}.fetch_issue_with_comments",
-                    return_value=("Title", body, [])), \
+        with patch(f"{_IMPL_MODULE}.fetch_issue",
+                    return_value=_github_issue(title="Title", body=body)), \
              patch(f"{_IMPL_MODULE}._run_plan_review_gate",
                     return_value=gate_result), \
              patch(f"{_IMPL_MODULE}._execute_implementation",
@@ -360,8 +373,8 @@ class TestPlanReviewGate:
         """Integration: run_implement returns failure when gate returns (False, msg)."""
         notify = MagicMock()
         body = "### Summary\nPlan\n#### Phase 1: Do it"
-        with patch(f"{_IMPL_MODULE}.fetch_issue_with_comments",
-                    return_value=("Title", body, [])), \
+        with patch(f"{_IMPL_MODULE}.fetch_issue",
+                    return_value=_github_issue(title="Title", body=body)), \
              patch(f"{_IMPL_MODULE}._run_plan_review_gate",
                     return_value=(False, "Plan review failed — fix these")), \
              patch(f"{_IMPL_MODULE}._execute_implementation") as mock_exec:
@@ -641,6 +654,8 @@ class TestBuildPrompt:
         assert "gh pr create --draft" in prompt
         assert "git push" in prompt
         assert "Closes https://github.com/o/r/issues/42" in prompt
+        assert "{KOAN_PYTHON}" not in prompt
+        assert " -m app.issue_cli" in prompt
 
 
 class TestExecuteImplementation:
@@ -682,8 +697,8 @@ class TestRunImplement:
 
     def test_no_plan_found(self):
         notify = MagicMock()
-        with patch(f"{_IMPL_MODULE}.fetch_issue_with_comments",
-                    return_value=("Title", "", [])):
+        with patch(f"{_IMPL_MODULE}.fetch_issue",
+                    return_value=_github_issue(title="Title", body="")):
             ok, msg = run_implement(
                 "/project",
                 "https://github.com/o/r/issues/1",
@@ -695,8 +710,8 @@ class TestRunImplement:
     def test_successful_implementation(self):
         notify = MagicMock()
         body = "### Summary\nPlan\n#### Phase 1: Do it"
-        with patch(f"{_IMPL_MODULE}.fetch_issue_with_comments",
-                    return_value=("Title", body, [])), \
+        with patch(f"{_IMPL_MODULE}.fetch_issue",
+                    return_value=_github_issue(title="Title", body=body)), \
              patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
              patch(f"{_IMPL_MODULE}._execute_implementation",
                     return_value="Done"):
@@ -711,8 +726,8 @@ class TestRunImplement:
     def test_with_context(self):
         notify = MagicMock()
         body = "### Summary\nPlan\n#### Phase 1: Do it"
-        with patch(f"{_IMPL_MODULE}.fetch_issue_with_comments",
-                    return_value=("Title", body, [])), \
+        with patch(f"{_IMPL_MODULE}.fetch_issue",
+                    return_value=_github_issue(title="Title", body=body)), \
              patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
              patch(f"{_IMPL_MODULE}._execute_implementation",
                     return_value="Done") as mock_run:
@@ -730,7 +745,7 @@ class TestRunImplement:
 
     def test_fetch_failure(self):
         notify = MagicMock()
-        with patch(f"{_IMPL_MODULE}.fetch_issue_with_comments",
+        with patch(f"{_IMPL_MODULE}.fetch_issue",
                     side_effect=RuntimeError("API error")):
             ok, msg = run_implement(
                 "/project",
@@ -743,8 +758,8 @@ class TestRunImplement:
     def test_claude_failure(self):
         notify = MagicMock()
         body = "### Summary\nPlan\n#### Phase 1: Do it"
-        with patch(f"{_IMPL_MODULE}.fetch_issue_with_comments",
-                    return_value=("Title", body, [])), \
+        with patch(f"{_IMPL_MODULE}.fetch_issue",
+                    return_value=_github_issue(title="Title", body=body)), \
              patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
              patch(f"{_IMPL_MODULE}._execute_implementation",
                     side_effect=RuntimeError("Timeout")):
@@ -759,8 +774,8 @@ class TestRunImplement:
     def test_empty_claude_output(self):
         notify = MagicMock()
         body = "### Summary\nPlan\n#### Phase 1: Do it"
-        with patch(f"{_IMPL_MODULE}.fetch_issue_with_comments",
-                    return_value=("Title", body, [])), \
+        with patch(f"{_IMPL_MODULE}.fetch_issue",
+                    return_value=_github_issue(title="Title", body=body)), \
              patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
              patch(f"{_IMPL_MODULE}._execute_implementation",
                     return_value=""):
@@ -775,8 +790,8 @@ class TestRunImplement:
     def test_default_context_when_none(self):
         notify = MagicMock()
         body = "### Summary\nPlan\n#### Phase 1: Do it"
-        with patch(f"{_IMPL_MODULE}.fetch_issue_with_comments",
-                    return_value=("Title", body, [])), \
+        with patch(f"{_IMPL_MODULE}.fetch_issue",
+                    return_value=_github_issue(title="Title", body=body)), \
              patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
              patch(f"{_IMPL_MODULE}._execute_implementation",
                     return_value="Done") as mock_run:
@@ -791,8 +806,8 @@ class TestRunImplement:
     def test_notify_messages(self):
         notify = MagicMock()
         body = "### Summary\nPlan\n#### Phase 1: Do it"
-        with patch(f"{_IMPL_MODULE}.fetch_issue_with_comments",
-                    return_value=("Title", body, [])), \
+        with patch(f"{_IMPL_MODULE}.fetch_issue",
+                    return_value=_github_issue(title="Title", body=body)), \
              patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
              patch(f"{_IMPL_MODULE}._execute_implementation",
                     return_value="Done"):
@@ -1181,8 +1196,8 @@ class TestRunImplementWithPR:
     def test_pr_url_in_summary_on_success(self):
         notify = MagicMock()
         body = "### Summary\nPlan\n#### Phase 1: Do it"
-        with patch(f"{_IMPL_MODULE}.fetch_issue_with_comments",
-                    return_value=("Title", body, [])), \
+        with patch(f"{_IMPL_MODULE}.fetch_issue",
+                    return_value=_github_issue(title="Title", body=body)), \
              patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
              patch(f"{_IMPL_MODULE}._execute_implementation", return_value="Done"), \
              patch(f"{_IMPL_MODULE}._submit_implement_pr",
@@ -1199,8 +1214,8 @@ class TestRunImplementWithPR:
     def test_branch_in_summary_when_pr_fails(self):
         notify = MagicMock()
         body = "### Summary\nPlan\n#### Phase 1: Do it"
-        with patch(f"{_IMPL_MODULE}.fetch_issue_with_comments",
-                    return_value=("Title", body, [])), \
+        with patch(f"{_IMPL_MODULE}.fetch_issue",
+                    return_value=_github_issue(title="Title", body=body)), \
              patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
              patch(f"{_IMPL_MODULE}._execute_implementation", return_value="Done"), \
              patch(f"{_IMPL_MODULE}._submit_implement_pr", return_value=None), \
@@ -1216,8 +1231,8 @@ class TestRunImplementWithPR:
     def test_warning_when_on_main(self):
         notify = MagicMock()
         body = "### Summary\nPlan\n#### Phase 1: Do it"
-        with patch(f"{_IMPL_MODULE}.fetch_issue_with_comments",
-                    return_value=("Title", body, [])), \
+        with patch(f"{_IMPL_MODULE}.fetch_issue",
+                    return_value=_github_issue(title="Title", body=body)), \
              patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
              patch(f"{_IMPL_MODULE}._execute_implementation", return_value="Done"), \
              patch(f"{_IMPL_MODULE}._submit_implement_pr", return_value=None), \
@@ -1233,8 +1248,8 @@ class TestRunImplementWithPR:
     def test_pr_submission_exception_does_not_fail_mission(self):
         notify = MagicMock()
         body = "### Summary\nPlan\n#### Phase 1: Do it"
-        with patch(f"{_IMPL_MODULE}.fetch_issue_with_comments",
-                    return_value=("Title", body, [])), \
+        with patch(f"{_IMPL_MODULE}.fetch_issue",
+                    return_value=_github_issue(title="Title", body=body)), \
              patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
              patch(f"{_IMPL_MODULE}._execute_implementation", return_value="Done"), \
              patch(f"{_IMPL_MODULE}._submit_implement_pr",

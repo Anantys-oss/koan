@@ -43,7 +43,7 @@ def _extract_repo_override(context: str) -> Tuple[Optional[str], str]:
     """Parse a 'repo:name' token from comment context.
 
     When a commenter writes "@bot plan repo:myproject", the repo: token
-    overrides the default project mapping from jira.projects.
+    overrides the default project mapping from projects.yaml.
 
     Args:
         context: The context string after the command word.
@@ -66,7 +66,7 @@ def _extract_branch_override(context: str) -> Tuple[Optional[str], str]:
     """Parse a 'branch:name' token from comment context.
 
     When a commenter writes "@bot fix branch:11.126", the branch: token
-    overrides the default branch mapping from jira.projects.
+    overrides the default branch configured in projects.yaml.
 
     Args:
         context: The context string after the command word.
@@ -183,7 +183,7 @@ def process_jira_mention(
         processed_set: Set of already-processed comment IDs (mutated in-place
                        when a new comment is processed).
         branch_map: Optional mapping of Jira project keys to target branches
-                    (from jira_config.get_jira_branch_map()). When set, the
+                    (from projects.yaml issue_tracker.default_branch). When set, the
                     resolved branch is injected into the mission context.
 
     Returns:
@@ -200,6 +200,14 @@ def process_jira_mention(
 
     if not comment_id:
         log.debug("Jira: mention missing comment_id, skipping")
+        return False, None
+
+    if not project_name:
+        log.debug(
+            "Jira: mention %s on %s has no registered project, leaving unprocessed",
+            comment_id,
+            issue_key,
+        )
         return False, None
 
     # Check if already processed
@@ -244,6 +252,17 @@ def process_jira_mention(
             "Jira: repo: override '%s' for comment %s (default: %s)",
             repo_override, comment_id, project_name,
         )
+        from app.utils import is_known_project
+
+        if not is_known_project(repo_override):
+            log.warning(
+                "Jira: unknown repo: override '%s' for comment %s on %s",
+                repo_override,
+                comment_id,
+                issue_key,
+            )
+            mark_jira_comment_processed(comment_id, processed_set)
+            return False, f"Unknown project override '{repo_override}'"
         project_name = repo_override
 
     # Handle branch: override in context (highest priority)
@@ -254,6 +273,19 @@ def process_jira_mention(
             "Jira: branch: override '%s' for comment %s",
             target_branch, comment_id,
         )
+    elif repo_override:
+        from app.issue_tracker.config import get_tracker_for_project
+
+        tracker_cfg = get_tracker_for_project(
+            project_name,
+            koan_root=os.environ.get("KOAN_ROOT", ""),
+        )
+        target_branch = tracker_cfg.get("default_branch") or None
+        if target_branch:
+            log.debug(
+                "Jira: repo override project branch '%s' for %s",
+                target_branch, issue_key,
+            )
     elif branch_map:
         target_branch = resolve_branch_from_jira_key(issue_key, branch_map)
         if target_branch:

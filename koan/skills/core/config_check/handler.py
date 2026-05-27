@@ -3,6 +3,10 @@
 from pathlib import Path
 
 from app.config_validator import detect_config_drift, find_extra_config_keys
+from app.issue_tracker.config import (
+    detect_legacy_jira_projects,
+    format_legacy_jira_projects_warning,
+)
 from app.utils import load_config
 
 
@@ -30,8 +34,11 @@ def handle(ctx):
 
     missing = detect_config_drift(koan_root, user_config=user_config)
     extra = find_extra_config_keys(koan_root, user_config=user_config)
+    legacy_jira_keys = detect_legacy_jira_projects(user_config)
+    if legacy_jira_keys:
+        extra = [key for key in extra if key != "jira.projects"]
 
-    if not missing and not extra:
+    if not missing and not extra and not legacy_jira_keys:
         return "✅ config.yaml is in sync with instance.example/config.yaml"
 
     lines = ["🔧 Config check"]
@@ -47,5 +54,13 @@ def handle(ctx):
         lines.append(f"▸ Extra in your config ({len(extra)}):")
         lines.extend(f"  ⚠️ {key}" for key in extra)
         lines.append("     ↳ May be deprecated or typos")
+
+    if legacy_jira_keys:
+        lines.append("")
+        lines.append("▸ Deprecated Jira project mapping:")
+        lines.append(
+            "  ⚠️ "
+            + format_legacy_jira_projects_warning(legacy_jira_keys)
+        )
 
     return "\n".join(lines)

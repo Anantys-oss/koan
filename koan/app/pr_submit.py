@@ -2,7 +2,7 @@
 
 Used by fix_runner.py and implement_runner.py to avoid duplicating
 the post-execution PR submission pipeline (branch check, push,
-fork detection, PR creation, issue comment).
+fork detection, PR creation, tracker issue comment).
 """
 
 import logging
@@ -121,14 +121,14 @@ def submit_draft_pr(
     3. Push branch to origin
     4. Resolve submit target (config, fork detection, fallback)
     5. Create draft PR
-    6. Comment on the issue (if issue_url provided)
+    6. Comment on the tracker issue (if issue_url provided)
 
     Args:
         project_path: Local path to the project repository.
         project_name: Project name for config lookups.
         owner: GitHub repo owner (from the issue URL).
         repo: GitHub repo name (from the issue URL).
-        issue_number: Issue number for the cross-link comment.
+        issue_number: Legacy issue identifier kept for caller compatibility.
         pr_title: Full PR title string (caller builds it).
         pr_body: Full PR body markdown (caller builds it).
         issue_url: Optional issue URL for the cross-link comment.
@@ -198,16 +198,19 @@ def submit_draft_pr(
         logger.warning("Failed to create PR: %s", e)
         return None
 
-    # Comment on the issue with the PR link
+    # Comment on the source issue with the PR link. The issue may live in
+    # GitHub or Jira, so use the provider-neutral issue tracker service.
     if issue_url:
         try:
-            run_gh(
-                "issue", "comment", str(issue_number),
-                "--repo", f"{owner}/{repo}",
-                "--body", f"Draft PR submitted: {pr_url}",
-                cwd=project_path, timeout=15,
+            from app.issue_tracker import add_comment
+
+            add_comment(
+                issue_url,
+                f"Draft PR submitted: {pr_url}",
+                project_name=project_name,
+                project_path=project_path,
             )
-        except (RuntimeError, OSError, subprocess.SubprocessError) as e:
+        except Exception as e:
             logger.debug("Failed to comment on issue: %s", e)
 
     return pr_url

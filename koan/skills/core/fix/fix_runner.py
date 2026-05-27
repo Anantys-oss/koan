@@ -1,10 +1,10 @@
 """
 Koan -- Fix runner.
 
-Reads a GitHub issue, builds a fix prompt, and invokes Claude to fix it.
-Unlike implement_runner (which requires a pre-existing plan), fix_runner
-takes a raw issue and lets Claude handle the full pipeline: understand,
-plan, test, fix, and submit a PR.
+Reads an issue from the configured tracker (GitHub or Jira), builds a fix
+prompt, and invokes Claude to fix it. Unlike implement_runner (which requires
+a pre-existing plan), fix_runner takes a raw issue and lets Claude handle the
+full pipeline: understand, plan, test, fix, and submit a PR.
 
 CLI:
     python3 -m skills.core.fix.fix_runner --project-path <path> --issue-url <url>
@@ -15,8 +15,8 @@ import logging
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from app.github import fetch_issue_state, fetch_issue_with_comments
-from app.github_url_parser import is_jira_url, parse_issue_url, parse_jira_url
+from app.issue_tracker import fetch_issue, project_name_for_path
+from app.issue_tracker.config import resolve_code_repository
 from app.pr_submit import (
     get_current_branch,
     guess_project_name,
@@ -37,12 +37,12 @@ def run_fix(
 ) -> Tuple[bool, str]:
     """Execute the fix pipeline.
 
-    Fetches the GitHub or Jira issue, builds a fix prompt, and invokes Claude to
-    understand, plan, test, and fix the issue.
+    Fetches the issue through the project's tracker, builds a fix prompt, and
+    invokes Claude to understand, plan, test, and fix the issue.
 
     Args:
         project_path: Local path to the project repository.
-        issue_url: GitHub issue URL.
+        issue_url: GitHub or Jira issue URL.
         context: Optional additional context (e.g. "backend only").
         notify_fn: Notification function (defaults to send_telegram).
         skill_dir: Path to the fix skill directory for prompt loading.
@@ -56,58 +56,44 @@ def run_fix(
 
     print("[fix] Starting fix runner", flush=True)
     context_label = f" ({context})" if context else ""
-    _is_jira = is_jira_url(issue_url)
+    project_name = project_name_for_path(project_path)
+    print(f"[fix] Fetching tracker issue {issue_url}", flush=True)
 
-    # Parse URL and fetch issue content
-    if _is_jira:
-        try:
-            issue_key = parse_jira_url(issue_url)
-        except ValueError as e:
-            return False, str(e)
-
-        notify_fn(
-            f"\U0001f527 Fixing Jira issue {issue_key}{context_label}..."
+    # The tracker (GitHub or Jira) resolves itself from the URL — the runner
+    # never branches on provider.
+    try:
+        content = fetch_issue(
+            issue_url, project_name=project_name, project_path=project_path,
         )
-        print(f"[fix] Fetching Jira issue {issue_key}", flush=True)
+    except Exception as e:
+        return False, f"Failed to fetch issue: {str(e)[:300]}"
 
-        try:
-            from app.jira_notifications import fetch_jira_issue
-            title, body, comments = fetch_jira_issue(issue_key)
-        except Exception as e:
-            return False, f"Failed to fetch Jira issue: {str(e)[:300]}"
+    ref = content.ref
+    title = content.title
+    body = content.body
+    comments = content.comments
+    issue_number = ref.key
+    label = ref.label
+    provider = ref.provider
 
-        owner, repo, issue_number = None, None, issue_key
-    else:
-        try:
-            owner, repo, issue_number = parse_issue_url(issue_url)
-        except ValueError as e:
-            return False, str(e)
+    if content.state == "closed":
+        msg = f"Issue {label} is already closed — skipping."
+        logger.info(msg)
+        if notify_fn:
+            notify_fn(f"⏭ {msg}")
+        return True, msg
 
-        # Early exit if the issue is already closed
-        state = fetch_issue_state(owner, repo, issue_number)
-        if state == "closed":
-            msg = f"Issue #{issue_number} ({owner}/{repo}) is already closed — skipping."
-            logger.info(msg)
-            if notify_fn:
-                notify_fn(f"\u23ed {msg}")
-            return True, msg
+    # Resolve the GitHub repo that PRs target: the issue's own repo for
+    # GitHub, the configured code repo for a Jira-tracked project.
+    owner = repo = None
+    repo_slug = ref.repo or resolve_code_repository(project_name, project_path)
+    if repo_slug and "/" in repo_slug:
+        owner, repo = repo_slug.split("/", 1)
 
-        notify_fn(
-            f"\U0001f527 Fixing issue #{issue_number} "
-            f"({owner}/{repo}){context_label}..."
-        )
-        print(f"[fix] Fetching issue #{issue_number} from {owner}/{repo}", flush=True)
-
-        try:
-            title, body, comments = fetch_issue_with_comments(
-                owner, repo, issue_number
-            )
-        except Exception as e:
-            return False, f"Failed to fetch issue: {str(e)[:300]}"
+    notify_fn(f"\U0001f527 Fixing {provider} issue {label}{context_label}...")
 
     print("[fix] Issue fetched, building prompt", flush=True)
     if not body and not comments:
-        label = issue_key if _is_jira else f"#{issue_number}"
         return False, f"Issue {label} has no content."
 
     # Build full issue body (include relevant comments)
@@ -131,7 +117,7 @@ def run_fix(
     if not output:
         return False, "Claude returned empty output."
 
-    # Post-fix: submit draft PR (only for GitHub issues with repo info)
+    # Post-fix: submit draft PR (only when we know the target GitHub repo)
     pr_url = None
     if owner and repo:
         pr_url = _submit_fix_pr(
@@ -146,10 +132,9 @@ def run_fix(
 
     # Build notification and summary
     branch = get_current_branch(project_path)
-    label = issue_key if _is_jira else f"#{issue_number}"
     if pr_url:
         notify_fn(
-            f"\u2705 Fix complete for issue {label}"
+            f"✅ Fix complete for issue {label}"
             f"{context_label}\nDraft PR: {pr_url}"
         )
         summary = (
@@ -157,10 +142,13 @@ def run_fix(
             f"\nDraft PR: {pr_url}"
         )
     elif branch not in ("main", "master"):
+        skip_reason = (
+            " (PR creation skipped)" if provider != "github"
+            else " (PR creation failed)"
+        )
         notify_fn(
-            f"\u2705 Fix complete for issue {label}"
-            f"{context_label}\nBranch: {branch}"
-            f"{'' if pr_url else ' (PR creation skipped)' if _is_jira else ' (PR creation failed)'}"
+            f"✅ Fix complete for issue {label}"
+            f"{context_label}\nBranch: {branch}{skip_reason}"
         )
         summary = (
             f"Fix complete for {label}{context_label}"
@@ -168,8 +156,8 @@ def run_fix(
         )
     else:
         notify_fn(
-            f"\u26a0\ufe0f Fix complete for issue {label}"
-            f"{context_label} \u2014 changes landed on {branch}, no PR created"
+            f"⚠️ Fix complete for issue {label}"
+            f"{context_label} — changes landed on {branch}, no PR created"
         )
         summary = (
             f"Fix complete for {label}{context_label}"
@@ -327,7 +315,7 @@ def main(argv=None):
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Fix a GitHub issue end-to-end."
+        description="Fix a GitHub or Jira issue end-to-end."
     )
     parser.add_argument(
         "--project-path", required=True,
@@ -335,7 +323,7 @@ def main(argv=None):
     )
     parser.add_argument(
         "--issue-url", required=True,
-        help="GitHub issue URL to fix",
+        help="GitHub or Jira issue URL to fix",
     )
     parser.add_argument(
         "--context",

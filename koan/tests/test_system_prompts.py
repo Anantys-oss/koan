@@ -5,21 +5,24 @@ from pathlib import Path
 PROMPTS_DIR = Path(__file__).parent.parent / "system-prompts"
 
 
-def test_submit_pr_prompt_has_github_issue_instructions():
-    """Submit-pull-request template should instruct to create GitHub issues when appropriate."""
+def test_submit_pr_prompt_has_tracker_issue_instructions():
+    """Submit-pull-request template should use provider-neutral tracker issues."""
     prompt = (PROMPTS_DIR / "submit-pull-request.md").read_text()
 
     # Must have the audit section header
     assert "# Audit Missions" in prompt
 
-    # Must mention gh issue create
-    assert "gh issue create" in prompt
+    # Must use the issue tracker helper through Koan's current interpreter,
+    # not bare python or direct gh issue commands.
+    assert "{KOAN_PYTHON} -m app.issue_cli create" in prompt
+    assert "python -m app.issue_cli create" not in prompt
+    assert "gh issue create" not in prompt
 
     # Must have skip conditions (don't create issues for trivial findings)
     assert "Skip issue creation when" in prompt
 
-    # Must check for GitHub remote first
-    assert "gh repo view" in prompt
+    # Must mention configured tracker availability
+    assert "configured issue tracker" in prompt
 
 
 def test_agent_prompt_has_all_required_placeholders():
@@ -36,6 +39,7 @@ def test_agent_prompt_has_all_required_placeholders():
         "{FOCUS_AREA}",
         "{AVAILABLE_PCT}",
         "{MISSION_INSTRUCTION}",
+        "{KOAN_PYTHON}",
     ]
 
     for placeholder in required_placeholders:

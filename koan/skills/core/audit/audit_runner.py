@@ -554,7 +554,7 @@ def create_issues(
 
         try:
             url = _submit_public_issue(
-                finding, target_repo, project_path,
+                finding, project_name, project_path,
             )
         except Exception as e:
             print(
@@ -604,18 +604,18 @@ def _submit_pvrs_report(
 
 def _submit_public_issue(
     finding: AuditFinding,
-    target_repo: Optional[str],
+    project_name: str,
     project_path: str,
     title_prefix: str = "",
 ) -> str:
-    """Create a public GitHub issue for a finding. Returns the issue URL."""
-    from app.github import issue_create
+    """Create a public tracker issue for a finding. Returns the issue URL."""
+    from app.issue_tracker import create_issue
 
-    return issue_create(
+    return create_issue(
+        project_name=project_name,
+        project_path=project_path,
         title=f"{title_prefix}{finding.title}",
         body=_build_issue_body(finding),
-        repo=target_repo,
-        cwd=project_path,
     )
 
 

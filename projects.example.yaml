@@ -156,9 +156,23 @@ projects:
   myapp:
     path: "/Users/yourname/workspace/myapp"
     # github_url: "yourname/myapp"  # Auto-detected from git remote; override if needed
+    # issue_tracker:
+    #   provider: github             # github | jira
+    #   repo: "yourname/myapp"       # Optional; defaults to github_url / git remote
+    #   default_branch: "main"       # Optional tracker-specific target branch
     # git_auto_merge:
     #   enabled: true
     #   strategy: "merge"
+
+  # Example: a project whose issues live in Jira but whose PRs go to GitHub
+  # jira-backed-app:
+  #   path: "/Users/yourname/workspace/jira-backed-app"
+  #   github_url: "yourname/jira-backed-app"
+  #   issue_tracker:
+  #     provider: jira
+  #     jira_project: PROJ
+  #     jira_issue_type: Task        # Default if omitted
+  #     default_branch: "main"       # Used by Jira-triggered /fix and /implement
 
   # Example: workspace project with yaml overrides (no path needed!)
   # The project lives in workspace/my-lib (symlink or directory).

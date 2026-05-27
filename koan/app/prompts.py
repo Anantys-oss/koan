@@ -5,7 +5,9 @@ Supports ``{@include partial-name}`` directives for composable prompt fragments.
 """
 
 import re
+import shlex
 import subprocess
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -110,9 +112,15 @@ def _resolve_includes(
 
 def _substitute(template: str, kwargs: dict) -> str:
     """Replace {KEY} placeholders in a template string."""
-    for key, value in kwargs.items():
+    values = _default_placeholders()
+    values.update(kwargs)
+    for key, value in values.items():
         template = template.replace(f"{{{key}}}", str(value))
     return template
+
+
+def _default_placeholders() -> dict:
+    return {"KOAN_PYTHON": shlex.quote(sys.executable or "python3")}
 
 
 def load_prompt(name: str, **kwargs: str) -> str:

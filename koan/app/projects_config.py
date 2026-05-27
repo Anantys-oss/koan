@@ -12,6 +12,7 @@ Provides:
 - get_project_max_open_prs(config, name) -> int: Get max open PRs limit for a project
 - get_project_max_pending_branches(config, name) -> int: Get max pending branches limit
 - get_project_github_authorized_users(config, name) -> list: Get GitHub authorized users
+- get_project_issue_tracker(config, name) -> dict: Get issue tracker routing config
 
 File location: projects.yaml at KOAN_ROOT (next to .env).
 """
@@ -547,6 +548,13 @@ def get_project_submit_to_repository(config: dict, project_name: str) -> dict:
     if value.get("remote"):
         result["remote"] = str(value["remote"])
     return result
+
+
+def get_project_issue_tracker(config: dict, project_name: str) -> dict:
+    """Get normalized issue tracker config for a project from projects.yaml."""
+    from app.issue_tracker.config import get_project_issue_tracker as _get
+
+    return _get(config, project_name)
 
 
 def get_project_security_config(config: dict, project_name: str) -> dict:

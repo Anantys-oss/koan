@@ -347,6 +347,37 @@ class TestFetchJiraMentions:
         result = fetch_jira_mentions(config, {"FOO": "myproject"})
         assert result.mentions == []
 
+    @patch("app.jira_notifications._get_issue_comments")
+    @patch("app.jira_notifications._search_issues_with_comments")
+    def test_searches_only_registered_project_keys(self, mock_search, mock_comments):
+        """Polling scope is limited to projects registered to this instance."""
+        mock_search.return_value = []
+        config = self._make_config()
+
+        result = fetch_jira_mentions(
+            config,
+            {"FOO": "alpha", "BAR": "beta"},
+        )
+
+        assert result.mentions == []
+        project_keys = mock_search.call_args.args[2]
+        assert project_keys == ["BAR", "FOO"]
+        mock_comments.assert_not_called()
+
+    @patch("app.jira_notifications._get_issue_comments")
+    @patch("app.jira_notifications._search_issues_with_comments")
+    def test_unmapped_search_result_is_not_acknowledged_or_returned(
+        self, mock_search, mock_comments,
+    ):
+        """If Jira returns an issue outside the ownership map, leave it untouched."""
+        mock_search.return_value = [{"key": "BAR-456", "fields": {}}]
+        config = self._make_config()
+
+        result = fetch_jira_mentions(config, {"FOO": "myproject"})
+
+        assert result.mentions == []
+        mock_comments.assert_not_called()
+
     def test_pagination_across_three_pages(self):
         """Pagination: 3 pages of issues are all fetched via nextPageToken."""
         call_count = [0]

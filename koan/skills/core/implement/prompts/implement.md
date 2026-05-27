@@ -1,6 +1,6 @@
-You are implementing a plan from a GitHub issue. Your job is to read the plan carefully and execute it as code changes in the project.
+You are implementing a plan from the configured issue tracker. Your job is to read the plan carefully and execute it as code changes in the project.
 
-## GitHub Issue
+## Tracker Issue
 
 **Issue**: {ISSUE_URL}
 **Title**: {ISSUE_TITLE}
@@ -26,6 +26,7 @@ You are implementing a plan from a GitHub issue. Your job is to read the plan ca
 - **Be surgical**: Make the smallest changes necessary to fulfill the plan. Don't refactor unrelated code, don't add features not in the plan.
 - **Handle ambiguity**: If the plan is unclear about a detail, make your best judgment based on existing code patterns. Document your decision in a code comment if it's non-obvious.
 - **Subset scope**: If the additional context specifies a subset (e.g., "Phase 1 to 3"), only implement the specified phases. Skip the others.
+- **Use Koan's issue helper for tracker writes**: If you must fetch, create, or comment on tracker issues yourself, use `{KOAN_PYTHON} -m app.issue_cli` instead of direct `gh issue` commands so GitHub and Jira projects both work.
 - **Update documentation and config files** (if your changes affect user-facing behavior):
     - **Skip this step** if your changes are purely internal refactors with no user-visible impact.
     - **User docs**: Check for `README.md`, `docs/`, and `documentation/` directories at the project root. If any exist and your changes affect commands, configuration, features, or usage — update the relevant sections. Don't generate documentation from scratch for undocumented projects.

@@ -17,8 +17,8 @@ import re
 from pathlib import Path
 from typing import List, Optional, Tuple, Union
 
-from app.github import fetch_issue_with_comments
-from app.github_url_parser import is_jira_url, parse_github_url, parse_issue_url, parse_jira_url
+from app.issue_tracker import add_comment, fetch_issue, project_name_for_path
+from app.issue_tracker.config import resolve_code_repository
 from app.pr_submit import (
     get_current_branch,
     guess_project_name,
@@ -67,48 +67,41 @@ def run_implement(
         notify_fn = send_telegram
 
     context_label = f" ({context})" if context else ""
-    _is_jira = is_jira_url(issue_url)
+    project_name = project_name_for_path(project_path)
 
-    # Parse URL and fetch issue content
-    if _is_jira:
-        try:
-            issue_key = parse_jira_url(issue_url)
-        except ValueError as e:
-            return False, str(e)
+    print(f"[implement] Fetching tracker issue {issue_url}", flush=True)
 
-        notify_fn(
-            f"\U0001f528 Implementing Jira issue {issue_key}{context_label}..."
+    # The tracker (GitHub or Jira) resolves itself from the URL — the runner
+    # never branches on provider.
+    try:
+        issue = fetch_issue(
+            issue_url, project_name=project_name, project_path=project_path,
         )
+    except Exception as e:
+        return False, f"Failed to fetch issue: {str(e)[:300]}"
 
-        try:
-            from app.jira_notifications import fetch_jira_issue
-            title, body, comments = fetch_jira_issue(issue_key)
-        except Exception as e:
-            return False, f"Failed to fetch Jira issue: {str(e)[:300]}"
+    ref = issue.ref
+    title = issue.title
+    body = issue.body
+    comments = issue.comments
+    issue_number = ref.key
+    label = ref.label
+    provider = ref.provider
 
-        owner, repo, issue_number = None, None, issue_key
-    else:
-        # Parse issue or PR URL (GitHub's issues API works for PRs too)
-        try:
-            owner, repo, _url_type, issue_number = parse_github_url(issue_url)
-        except ValueError as e:
-            return False, str(e)
+    # Resolve the GitHub repo that PRs target: the issue's own repo for
+    # GitHub, the configured code repo for a Jira-tracked project.
+    owner = repo = None
+    repo_slug = ref.repo or resolve_code_repository(project_name, project_path)
+    if repo_slug and "/" in repo_slug:
+        owner, repo = repo_slug.split("/", 1)
 
-        notify_fn(
-            f"\U0001f528 Implementing issue #{issue_number} "
-            f"({owner}/{repo}){context_label}..."
-        )
-
-        try:
-            title, body, comments = fetch_issue_with_comments(
-                owner, repo, issue_number
-            )
-        except Exception as e:
-            return False, f"Failed to fetch issue: {str(e)[:300]}"
+    notify_fn(
+        f"\U0001f528 Implementing {provider} issue "
+        f"{label}{context_label}..."
+    )
 
     # Extract the most recent plan
     plan = _extract_latest_plan(body, comments)
-    label = issue_key if _is_jira else f"#{issue_number}"
     if not plan:
         return False, (
             f"No plan found in issue {label}. "
@@ -183,7 +176,7 @@ def run_implement(
         notify_fn(
             f"\u2705 Implementation complete for issue {label}"
             f"{context_label}\nBranch: {branch}"
-            f"{'' if pr_url else ' (PR creation skipped)' if _is_jira else ' (PR creation failed)'}"
+            f"{'' if pr_url else ' (PR creation skipped)' if provider != 'github' else ' (PR creation failed)'}"
         )
         summary = (
             f"Implementation complete for {label}{context_label}"
@@ -384,16 +377,16 @@ def _post_improved_plan(
     if not issue_url:
         return
     try:
-        from app.github import run_gh
         comment_body = (
             "### 🔧 Plan Improved (auto)\n\n"
             "The plan-review gate found issues and autonomously fixed them. "
             "Proceeding with this improved version:\n\n"
             f"{improved_plan}"
         )
-        run_gh("issue", "comment", issue_url, "--body", comment_body)
+        # The tracker resolves itself from the URL — GitHub or Jira alike.
+        add_comment(issue_url, comment_body)
     except Exception:
-        logger.debug("Failed to post improved plan to GitHub", exc_info=True)
+        logger.debug("Failed to post improved plan to issue tracker", exc_info=True)
 
 
 def _build_prompt(

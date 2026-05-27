@@ -164,6 +164,7 @@ Communication happens through shared markdown files in `instance/` — atomic wr
 - **Security review** — Automatic diff analysis for dangerous patterns (eval, shell injection, hardcoded secrets, etc.) before auto-merge. Configurable risk threshold and blocking behavior per project
 - **Git sync awareness** — Tracks branch state, detects merges, reports sync status
 - **GitHub integration** — Draft PRs, issue creation, PR reviews, rebasing — all via `gh` CLI. [Docs](docs/github-commands.md)
+- **Issue tracker routing** — Each project can use GitHub or Jira for issues via `projects.yaml` while still creating GitHub draft PRs for code review.
 - **Jira integration** — Respond to @mentions in Jira issue comments to queue missions. Runs alongside GitHub. [Docs](docs/jira-integration.md)
 - **PR review comment forwarding** — When reviewers leave comments on Koan-created PRs, the check loop auto-creates missions to address them (fingerprint-deduped, bot-filtered)
 - **GitHub @mention triggers** — Koan responds to @mentions on issues and PRs

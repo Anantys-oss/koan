@@ -262,12 +262,23 @@ Kōan can manage multiple projects simultaneously. It rotates between them based
 **`/projects`** — List all configured projects.
 
 - **Aliases:** `/proj`
+- Shows each project's configured issue tracker when set.
 
 <details>
 <summary>Use cases</summary>
 
 - `/projects` — See which repos Kōan is managing
 </details>
+
+**`/tracker`** — Show or configure per-project issue tracker routing.
+
+- **Usage:** `/tracker`
+- **Set GitHub:** `/tracker set <project> github [repo:owner/repo] [branch:main]`
+- **Set Jira:** `/tracker set <project> jira key:PROJ [type:Task] [branch:11.126]`
+
+This controls where `/plan` creates new tracker issues and how Jira-origin `/fix` and `/implement` resolve the target repo and branch.
+
+Jira project keys are registered per project in `projects.yaml`. The old `instance/config.yaml jira.projects` mapping is ignored; `/config_check` reports it as a migration warning.
 
 **`/alias`** — Create short aliases for project names. Once set, typing `/<shortcut> <text>` queues a mission tagged with the aliased project.
 
@@ -406,7 +417,7 @@ The master tracking issue then synthesizes the set with three optional sections:
 - `/brainstorm Refactor auth module --tag auth-refactor` — With explicit tag for grouping
 </details>
 
-**`/plan`** — Deep-think an idea and produce a structured implementation plan as a GitHub issue.
+**`/plan`** — Deep-think an idea and produce a structured implementation plan as a tracker issue.
 
 - **Usage:** `/plan <idea>`, `/plan <project> <idea>`, `/plan <issue-url>` (iterate on existing)
 - **GitHub @mention:** `@koan-bot /plan <idea>` on an issue
@@ -416,18 +427,19 @@ The master tracking issue then synthesizes the set with three optional sections:
 
 - `/plan Add WebSocket support for real-time notifications` — Get a phased plan before writing any code
 - `/plan https://github.com/org/repo/issues/42` — Iterate on an existing issue's plan
+- `/plan https://myorg.atlassian.net/browse/PROJ-123` — Iterate on a Jira issue's plan
 - `/plan webapp Add rate limiting to public API endpoints` — Target a specific project
 </details>
 
 **`/deepplan`** — Spec-first design with Socratic exploration of 2-3 approaches before planning. For complex missions where design matters more than speed.
 
-- **Usage:** `/deepplan <idea>`, `/deepplan <project> <idea>`, `/deepplan <github-issue-url>`
+- **Usage:** `/deepplan <idea>`, `/deepplan <project> <idea>`, `/deepplan <issue-url>`
 - **Aliases:** `/deeplan`
 - **GitHub @mention:** `@koan-bot /deepplan <idea>` on an issue
 
-The workflow: (1) explores your codebase and surfaces 2-3 distinct design approaches with trade-offs, (2) runs a spec review loop (up to 5 iterations) to ensure the spec is concrete and complete, (3) posts the approved spec as a GitHub issue, (4) queues a `/plan <issue-url>` mission for your review and approval.
+The workflow: (1) explores your codebase and surfaces 2-3 distinct design approaches with trade-offs, (2) runs a spec review loop (up to 5 iterations) to ensure the spec is concrete and complete, (3) posts the approved spec to the configured issue tracker, (4) queues a `/plan <issue-url>` mission for your review and approval.
 
-When given a GitHub issue URL, the project is automatically detected from the repository and the issue title, body, and all comments are fetched to provide full context for the design exploration.
+When given an issue URL, the issue title, body, and all comments are fetched to provide full context for the design exploration.
 
 Use this before `/plan` when the idea is architecturally complex, when you want to explore alternatives before committing, or when design mistakes would be expensive to fix later.
 
@@ -437,10 +449,11 @@ Use this before `/plan` when the idea is architecturally complex, when you want 
 - `/deepplan Refactor the auth middleware to support OAuth2` — Explore design approaches before writing any code
 - `/deepplan koan Add multi-tenant project isolation` — Target a specific project with spec-first design
 - `/deepplan https://github.com/org/repo/issues/42` — Deep plan from an existing GitHub issue with full context
+- `/deepplan https://myorg.atlassian.net/browse/PROJ-123` — Deep plan from an existing Jira issue
 - `/deepplan Redesign the mission queue for concurrent execution` — Surface trade-offs for a complex architectural change
 </details>
 
-**`/implement`** — Queue an implementation mission for a GitHub issue.
+**`/implement`** — Queue an implementation mission for a GitHub or Jira issue.
 
 - **Usage:** `/implement <issue-url> [additional context]`
 - **Aliases:** `/impl`
@@ -451,9 +464,10 @@ Use this before `/plan` when the idea is architecturally complex, when you want 
 
 - `/implement https://github.com/org/repo/issues/42` — Implement what the issue describes
 - `/implement https://github.com/org/repo/issues/42 Focus on the backend only` — Add guidance
+- `/implement https://myorg.atlassian.net/browse/PROJ-123 phase 1 only` — Implement a Jira-backed plan and post the PR link back to Jira
 </details>
 
-**`/fix`** — Fix a GitHub issue end-to-end: understand, plan, test, implement, and submit a PR.
+**`/fix`** — Fix a GitHub or Jira issue end-to-end: understand, plan, test, implement, and submit a PR.
 
 - **Usage:** `/fix <issue-url> [additional context]`
 - **GitHub @mention:** `@koan-bot /fix` on an issue
@@ -463,6 +477,7 @@ Use this before `/plan` when the idea is architecturally complex, when you want 
 
 - `/fix https://github.com/org/repo/issues/99` — Full bug-fix pipeline
 - `/fix https://github.com/org/repo/issues/99 Regression from v2.3` — Provide extra context
+- `/fix https://myorg.atlassian.net/browse/PROJ-123 branch:main` — Fix a Jira ticket using a one-off target branch
 </details>
 
 **`/review`** — Queue a code review for a pull request or issue.
@@ -1168,6 +1183,11 @@ projects:
     git_auto_merge:
       enabled: true            # Auto-merge for this project
       strategy: squash
+    issue_tracker:
+      provider: jira           # github | jira
+      jira_project: PROJ       # Jira project key for ticket routing
+      jira_issue_type: Task    # Default type for issues Koan creates
+      default_branch: main     # Target branch for Jira-triggered work
     authorized_users:          # Who can trigger via GitHub @mention
       - username1
 ```
@@ -1177,6 +1197,7 @@ Key per-project settings:
 - **`models`** — Override model selection per role
 - **`tools`** — Restrict available tools
 - **`git_auto_merge`** — Auto-merge completed PRs (strategy: squash/merge/rebase)
+- **`issue_tracker`** — Issue provider routing for GitHub/Jira-backed projects
 - **`security_review`** — Automatic diff analysis for dangerous patterns before auto-merge (see below)
 - **`authorized_users`** — GitHub users allowed to trigger via @mention
 - **`exploration`** — Enable/disable autonomous exploration
@@ -1732,6 +1753,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/verbose` | — | B | Enable real-time progress updates |
 | `/silent` | — | B | Disable real-time progress updates |
 | `/projects` | `/proj` | B | List configured projects |
+| `/tracker` | — | B | Show or set issue tracker routing |
 | `/alias <proj> <short>` | — | B | Create project shortcut (e.g. /alias Template2 tt) |
 | `/unalias <short>` | — | B | Remove a project alias |
 | `/focus [duration]` | — | B | Lock agent to one project |
@@ -1741,7 +1763,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/brainstorm <topic>` | — | I | Decompose topic into linked sub-issues + master issue |
 | `/plan <desc>` | — | I | Create a structured implementation plan |
 | `/deepplan <idea\|issue-url>` | `/deeplan` | I | Spec-first design: explore approaches, post spec, queue /plan |
-| `/implement <issue>` | `/impl` | I | Implement a GitHub issue |
+| `/implement <issue>` | `/impl` | I | Implement a GitHub or Jira issue |
 | `/fix <issue>` | — | I | Full bug-fix pipeline (understand → plan → test → fix → PR) |
 | `/review <PR> [--architecture] [--errors]` | `/rv` | I | Review a pull request |
 | `/refactor <desc>` | `/rf` | I | Targeted refactoring mission |
@@ -1793,7 +1815,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/delete_project <name>` | `/delete`, `/del` | P | Remove a project from workspace |
 | `/rename <old> <new>` | `/rename_project` | P | Rename a project everywhere |
 | `/profile <project>` | `/perf`, `/benchmark` | P | Performance profiling mission |
-| `/audit <project> [ctx] [limit=N]` | — | P | Audit project, create GitHub issues (top N, default 5) |
+| `/audit <project> [ctx] [limit=N]` | — | P | Audit project, create tracker issues (top N, default 5) |
 | `/security_audit <project> [ctx] [limit=N]` | `/security`, `/secu` | P | Security audit, find critical vulnerabilities (top N, default 5) |
 | `/private_security_audit <project> [ctx] [limit=N]` | `/private_security`, `/psecu` | P | Security audit, findings to journal only (no GitHub) |
 | `/doc <project> [categories]` | `/docs` | P | Extract structured documentation to docs/ |
@@ -1808,4 +1830,4 @@ Skills marked with GitHub @mention support: `/audit`, `/doc`, `/security_audit`,
 
 ---
 
-*This manual covers all 44 core skills. For the full command reference with tabular format, see [docs/skills.md](skills.md). For skill authoring, see [koan/skills/README.md](../koan/skills/README.md).*
+*This manual covers all 45 core skills. For the full command reference with tabular format, see [docs/skills.md](skills.md). For skill authoring, see [koan/skills/README.md](../koan/skills/README.md).*

@@ -12,6 +12,8 @@ Common utilities for skills that interact with GitHub PRs and issues:
 import re
 from typing import Callable, Optional, Tuple
 
+from app.github_url_parser import JIRA_ISSUE_URL_PATTERN
+
 
 _LIMIT_PATTERN = re.compile(r'--limit[=\s]+(\d+)', re.IGNORECASE)
 _AUTO_FIX_RE = re.compile(r"--auto-fix(?:=(\w+))?\b", re.IGNORECASE)
@@ -115,6 +117,24 @@ def extract_github_url(args: str, url_type: str = "pr-or-issue") -> Optional[Tup
         return None
 
     url = match.group(0).split("#")[0]  # Remove fragment
+    context = args[match.end():].strip()
+    return url, context if context else None
+
+
+def extract_issue_tracker_url(
+    args: str,
+    url_type: str = "pr-or-issue",
+) -> Optional[Tuple[str, Optional[str]]]:
+    """Extract a GitHub or Jira issue URL from command arguments."""
+    result = extract_github_url(args, url_type=url_type)
+    if result:
+        return result
+    if url_type == "pr":
+        return None
+    match = re.search(JIRA_ISSUE_URL_PATTERN, args)
+    if not match:
+        return None
+    url = match.group(0).split("#")[0]
     context = args[match.end():].strip()
     return url, context if context else None
 
@@ -303,11 +323,35 @@ def handle_github_skill(
         return _format_usage_message(command, url_type)
 
     # Extract URL from arguments
-    result = extract_github_url(args, url_type=url_type)
+    result = extract_issue_tracker_url(args, url_type=url_type)
     if not result:
         return _format_no_url_error(url_type)
 
     url, context = result
+
+    if "atlassian.net/browse/" in url:
+        from app.issue_tracker import resolve_issue_ref
+
+        try:
+            ref = resolve_issue_ref(url)
+        except ValueError as e:
+            return f"\u274c {e}"
+        if not ref.project_name:
+            return (
+                f"\u274c Could not resolve Koan project for Jira issue {ref.key}.\n"
+                "Configure projects.yaml issue_tracker.jira_project."
+            )
+        inserted = queue_github_mission(
+            ctx, command, url, ref.project_name, context, urgent=urgent,
+        )
+        if not inserted:
+            return (
+                f"\u26a0\ufe0f Duplicate ignored — /{command} already queued "
+                f"or running for Jira issue {ref.key}."
+            )
+        priority = " (priority)" if urgent else ""
+        suffix = f" — {context}" if context else ""
+        return f"{success_prefix}{priority} for Jira issue {ref.key}{suffix}"
 
     # Parse URL
     try:
@@ -367,12 +411,12 @@ def _format_usage_message(command: str, url_type: str) -> str:
 
 
 def _format_no_url_error(url_type: str) -> str:
-    """Format error for missing GitHub URL."""
+    """Format error for missing tracker URL."""
     if url_type == "issue":
-        example = "https://github.com/owner/repo/issues/123"
+        example = "https://github.com/owner/repo/issues/123 or https://org.atlassian.net/browse/PROJ-123"
     elif url_type == "pr":
         example = "https://github.com/owner/repo/pull/123"
     else:
         example = "https://github.com/owner/repo/pull/123"
     
-    return f"\u274c No valid GitHub URL found.\nEx: {example}"
+    return f"\u274c No valid issue tracker URL found.\nEx: {example}"

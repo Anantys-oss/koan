@@ -48,6 +48,19 @@ class TestSubstitute:
     def test_empty_string_value(self):
         assert _substitute("x{V}y", {"V": ""}) == "xy"
 
+    def test_koan_python_default_placeholder(self):
+        import shlex
+        import sys
+
+        result = _substitute("{KOAN_PYTHON} -m app.issue_cli", {})
+        assert result == f"{shlex.quote(sys.executable or 'python3')} -m app.issue_cli"
+
+    def test_explicit_value_overrides_default_placeholder(self):
+        result = _substitute("{KOAN_PYTHON} -m app.issue_cli", {
+            "KOAN_PYTHON": "python3",
+        })
+        assert result == "python3 -m app.issue_cli"
+
 
 # ---------- load_prompt ----------
 

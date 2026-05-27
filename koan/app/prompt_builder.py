@@ -283,11 +283,15 @@ def _get_focus_section(instance: str) -> str:
     return load_prompt("focus-mode", REMAINING=remaining)
 
 
-def _get_submit_pr_section(project_path: str) -> str:
+def _get_submit_pr_section(project_path: str, project_name: str = "") -> str:
     """Return the submit-pull-request section (always included)."""
     from app.prompts import load_prompt
 
-    return load_prompt("submit-pull-request", PROJECT_PATH=project_path)
+    return load_prompt(
+        "submit-pull-request",
+        PROJECT_PATH=project_path,
+        PROJECT_NAME=project_name,
+    )
 
 
 def _get_staleness_section(instance: str, project_name: str) -> str:
@@ -785,7 +789,7 @@ def build_agent_prompt(
     prompt += _get_security_flagging_section(mission_title, autonomous_mode)
 
     # Append submit-pull-request section
-    prompt += _get_submit_pr_section(project_path)
+    prompt += _get_submit_pr_section(project_path, project_name)
 
     # Append staleness warning (all autonomous modes — cheap local read)
     if not mission_title and not budget["skip_staleness"]:

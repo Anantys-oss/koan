@@ -1222,6 +1222,7 @@ _last_jira_check_iso: str = ""
 _consecutive_jira_empty: int = 0
 _jira_interval_loaded: bool = False
 _jira_config_logged: bool = False
+_jira_legacy_config_warned: bool = False
 # Lock protecting all Jira module-level state.
 _jira_state_lock = threading.Lock()
 
@@ -1251,6 +1252,38 @@ def _load_processed_jira_tracker(instance_dir: str):
     from app.jira_notifications import _load_processed_tracker
     tracker_path = Path(instance_dir) / ".jira-processed.json"
     return _load_processed_tracker(tracker_path), tracker_path
+
+
+def _warn_legacy_jira_projects(config: dict) -> None:
+    """Log and notify once when deprecated Jira project mapping is present."""
+    global _jira_legacy_config_warned
+
+    from app.issue_tracker.config import (
+        detect_legacy_jira_projects,
+        format_legacy_jira_projects_warning,
+    )
+
+    legacy_keys = detect_legacy_jira_projects(config)
+    if not legacy_keys:
+        return
+
+    with _jira_state_lock:
+        if _jira_legacy_config_warned:
+            return
+        _jira_legacy_config_warned = True
+
+    warning = format_legacy_jira_projects_warning(legacy_keys)
+    _jira_log(warning, "warning")
+
+    try:
+        from app.notify import NotificationPriority, send_telegram
+
+        send_telegram(
+            f"⚠️ Jira configuration migration needed\n\n{warning}",
+            priority=NotificationPriority.WARNING,
+        )
+    except (ImportError, OSError) as e:
+        log.debug("Failed to send Jira legacy-config warning: %s", e)
 
 
 def process_jira_notifications(
@@ -1309,12 +1342,16 @@ def process_jira_notifications(
         from app.jira_config import (
             get_jira_enabled,
             get_jira_nickname,
-            get_jira_project_map,
             validate_jira_config,
+        )
+        from app.issue_tracker.config import (
+            get_jira_branch_map_for_polling,
+            get_jira_project_map_for_polling,
         )
         from app.utils import load_config
 
         config = load_config()
+        _warn_legacy_jira_projects(config)
 
         if not get_jira_enabled(config):
             with _jira_state_lock:
@@ -1332,9 +1369,8 @@ def process_jira_notifications(
             return 0
 
         nickname = get_jira_nickname(config)
-        project_map = get_jira_project_map(config)
-        from app.jira_config import get_jira_branch_map
-        branch_map = get_jira_branch_map(config)
+        project_map = get_jira_project_map_for_polling(config, koan_root=koan_root)
+        branch_map = get_jira_branch_map_for_polling(config, koan_root=koan_root)
 
         with _jira_state_lock:
             if not _jira_config_logged:

@@ -105,13 +105,16 @@ class TestGetSubmitPrSection:
     """Tests for submit-pull-request section (always included)."""
 
     def test_includes_section(self):
-        result = _get_submit_pr_section("/tmp/project")
+        result = _get_submit_pr_section("/tmp/project", "myproject")
         assert "Audit Missions" in result
-        assert "GitHub Issue Follow-up" in result
+        assert "Issue Tracker Follow-up" in result
         assert "/tmp/project" in result
+        assert "myproject" in result
+        assert "{KOAN_PYTHON}" not in result
+        assert " -m app.issue_cli create" in result
 
     def test_substitutes_project_path(self):
-        result = _get_submit_pr_section("/home/user/myproject")
+        result = _get_submit_pr_section("/home/user/myproject", "myproject")
         assert "/home/user/myproject" in result
 
 
@@ -448,7 +451,9 @@ class TestBuildAgentPrompt:
             mission_title="Fix the login bug",
         )
 
-        mock_submit_pr.assert_called_once_with(prompt_env["project_path"])
+        mock_submit_pr.assert_called_once_with(
+            prompt_env["project_path"], "testproj",
+        )
         assert "PR" in result
 
     @patch("app.prompt_builder._get_verbose_section", return_value="")
@@ -782,6 +787,7 @@ class TestIntegration:
         assert "{AVAILABLE_PCT}" not in result
         assert "{MISSION_INSTRUCTION}" not in result
         assert "{BRANCH_PREFIX}" not in result
+        assert "{KOAN_PYTHON}" not in result
 
         # Verify substituted values are present
         assert prompt_env["instance"] in result
@@ -852,8 +858,9 @@ class TestIntegration:
         )
 
         assert "Audit Missions" in result
-        assert "GitHub Issue Follow-up" in result
-        assert "gh issue create" in result
+        assert "Issue Tracker Follow-up" in result
+        assert " -m app.issue_cli create" in result
+        assert "`python -m app.issue_cli" not in result
 
     def test_full_contemplative_prompt(self, prompt_env):
         """Build a full contemplative prompt using the real template."""

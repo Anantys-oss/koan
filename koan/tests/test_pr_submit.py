@@ -224,23 +224,21 @@ class TestSubmitDraftPr:
 
     def test_issue_comment_posted_when_url_given(self):
         with patch(f"{_M}.get_current_branch", return_value="feat"), \
-             patch(f"{_M}.run_gh", side_effect=["", ""]) as mock_gh, \
+             patch(f"{_M}.run_gh", return_value=""), \
              patch(f"{_M}.get_commit_subjects", return_value=["c1"]), \
              patch(f"{_M}.run_git_strict"), \
              patch(f"{_M}.resolve_submit_target",
                     return_value={"repo": "o/r", "is_fork": False}), \
-             patch(f"{_M}.pr_create", return_value="https://pr/1"):
+             patch(f"{_M}.pr_create", return_value="https://pr/1"), \
+             patch("app.issue_tracker.add_comment") as mock_comment:
             submit_draft_pr(
                 "/p", "proj", "o", "r", "42",
                 pr_title="T", pr_body="B",
-                issue_url="https://issue/42",
+                issue_url="https://github.com/o/r/issues/42",
             )
-            # Second run_gh call should be the issue comment
-            calls = mock_gh.call_args_list
-            assert len(calls) >= 2
-            comment_call = calls[1]
-            assert "issue" in comment_call[0]
-            assert "comment" in comment_call[0]
+            mock_comment.assert_called_once()
+            assert mock_comment.call_args.args[0] == "https://github.com/o/r/issues/42"
+            assert "https://pr/1" in mock_comment.call_args.args[1]
 
     def test_no_issue_comment_when_no_url(self):
         with patch(f"{_M}.get_current_branch", return_value="feat"), \
@@ -249,7 +247,28 @@ class TestSubmitDraftPr:
              patch(f"{_M}.run_git_strict"), \
              patch(f"{_M}.resolve_submit_target",
                     return_value={"repo": "o/r", "is_fork": False}), \
-             patch(f"{_M}.pr_create", return_value="https://pr/1"):
+             patch(f"{_M}.pr_create", return_value="https://pr/1"), \
+             patch("app.issue_tracker.add_comment") as mock_comment:
             submit_draft_pr("/p", "proj", "o", "r", "42", "T", "B")
             # Only 1 gh call (the PR check), no issue comment
+            assert mock_gh.call_count == 1
+            mock_comment.assert_not_called()
+
+    def test_issue_comment_for_non_github_url_uses_tracker_service(self):
+        with patch(f"{_M}.get_current_branch", return_value="feat"), \
+             patch(f"{_M}.run_gh", return_value="") as mock_gh, \
+             patch(f"{_M}.get_commit_subjects", return_value=["c1"]), \
+             patch(f"{_M}.run_git_strict"), \
+             patch(f"{_M}.resolve_submit_target",
+                    return_value={"repo": "o/r", "is_fork": False}), \
+             patch(f"{_M}.pr_create", return_value="https://pr/1"), \
+             patch("app.issue_tracker.add_comment") as mock_comment:
+            submit_draft_pr(
+                "/p", "proj", "o", "r", "PROJ-42",
+                pr_title="T", pr_body="B",
+                issue_url="https://org.atlassian.net/browse/PROJ-42",
+            )
+            mock_comment.assert_called_once()
+            assert mock_comment.call_args.args[0].endswith("/PROJ-42")
+            # Jira issues are not commented through `gh issue comment`.
             assert mock_gh.call_count == 1

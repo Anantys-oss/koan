@@ -33,8 +33,8 @@ Complete reference for all Koan slash commands. Use these via Telegram, Slack, o
 
 | Command | Aliases | Description | GitHub @mention |
 |---------|---------|-------------|:-:|
-| `/plan <desc>` | — | Deep-think an idea, create a GitHub issue with structured plan | — |
-| `/implement <issue>` | `/impl` | Queue implementation for a GitHub issue | Yes |
+| `/plan <desc>` | — | Deep-think an idea, create a tracker issue with structured plan | — |
+| `/implement <issue>` | `/impl` | Queue implementation for a GitHub or Jira issue | Yes |
 | `/fix <issue>` | — | Understand → plan → test → implement → submit PR | Yes |
 | `/review <PR>` | `/rv` | Review a pull request | Yes |
 | `/rebase <PR>` | `/rb` | Rebase a PR onto its base branch | Yes |
@@ -80,6 +80,7 @@ Skills marked **GitHub @mention** can be triggered by commenting `@koan-bot <com
 | Command | Aliases | Description |
 |---------|---------|-------------|
 | `/projects` | `/proj` | List configured projects |
+| `/tracker` | — | Show or set per-project issue tracker routing |
 | `/add_project <url>` | — | Clone a GitHub repo and add it to the workspace |
 | `/focus <project>` | — | Lock the agent to one project (suppress exploration) |
 | `/unfocus` | — | Exit focus mode |

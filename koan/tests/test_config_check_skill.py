@@ -71,6 +71,23 @@ class TestConfigCheckSkill:
         assert "Extra" in result
         assert "old_removed_setting" in result
 
+    def test_reports_deprecated_jira_projects(self, tmp_path):
+        from skills.core.config_check.handler import handle
+
+        template = {"jira": {"enabled": False}}
+        user = {"jira": {"enabled": True, "projects": {"FOO": "my-toolkit"}}}
+        _write_template(tmp_path, template)
+        _write_user_config(tmp_path, user)
+
+        ctx = _make_ctx(tmp_path)
+        with patch("skills.core.config_check.handler.load_config", return_value=user):
+            result = handle(ctx)
+
+        assert "Deprecated Jira project mapping" in result
+        assert "FOO" in result
+        assert "projects.yaml" in result
+        assert "Extra" not in result
+
     def test_reports_both_directions(self, tmp_path):
         from skills.core.config_check.handler import handle
 

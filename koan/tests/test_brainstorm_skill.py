@@ -10,6 +10,14 @@ import pytest
 from app.skills import SkillContext
 
 
+def _mock_create_issue(create_returns=None):
+    """Build a stand-in create_issue service mock for brainstorm runner tests."""
+    mock_create = MagicMock()
+    if create_returns is not None:
+        mock_create.side_effect = create_returns
+    return mock_create
+
+
 # ---------------------------------------------------------------------------
 # Import handler functions
 # ---------------------------------------------------------------------------
@@ -953,16 +961,20 @@ class TestRunBrainstormRetry:
                 for i in range(len(claude_outputs[-1]) if claude_outputs else 3)
             ]
         notify = MagicMock()
+        mock_create = _mock_create_issue(issue_create_returns)
         # _build_decompose_prompt avoids touching disk
         with patch.object(brainstorm_runner, "_build_decompose_prompt",
                           return_value="<prompt>"), \
              patch.object(brainstorm_runner, "_call_claude_with_prompt",
                           side_effect=claude_outputs) as mock_claude, \
-             patch.object(brainstorm_runner, "_get_repo_info",
-                          return_value=("owner", "repo")), \
+             patch.object(brainstorm_runner, "tracker_is_configured",
+                          return_value=True), \
+             patch.object(brainstorm_runner, "tracker_supports_labels",
+                          return_value=True), \
+             patch.object(brainstorm_runner, "tracker_provider",
+                          return_value="github"), \
+             patch.object(brainstorm_runner, "create_issue", mock_create), \
              patch.object(brainstorm_runner, "_ensure_label"), \
-             patch.object(brainstorm_runner, "issue_create",
-                          side_effect=issue_create_returns) as mock_create, \
              patch.object(brainstorm_runner, "_replace_sub_placeholders"):
             success, summary = brainstorm_runner.run_brainstorm(
                 project_path="/proj",
@@ -1022,15 +1034,19 @@ class TestRunBrainstormRetry:
 
     def test_master_synthesis_warning_when_all_keys_absent(self, capsys):
         good = _decomposition_json([_full_body()] * 3)
+        mock_create = _mock_create_issue([f"https://x/{i}" for i in range(10)])
         with patch.object(brainstorm_runner, "_build_decompose_prompt",
                           return_value="<prompt>"), \
              patch.object(brainstorm_runner, "_call_claude_with_prompt",
                           return_value=good), \
-             patch.object(brainstorm_runner, "_get_repo_info",
-                          return_value=("o", "r")), \
+             patch.object(brainstorm_runner, "tracker_is_configured",
+                          return_value=True), \
+             patch.object(brainstorm_runner, "tracker_supports_labels",
+                          return_value=True), \
+             patch.object(brainstorm_runner, "tracker_provider",
+                          return_value="github"), \
+             patch.object(brainstorm_runner, "create_issue", mock_create), \
              patch.object(brainstorm_runner, "_ensure_label"), \
-             patch.object(brainstorm_runner, "issue_create",
-                          side_effect=[f"https://x/{i}" for i in range(10)]), \
              patch.object(brainstorm_runner, "_replace_sub_placeholders"):
             brainstorm_runner.run_brainstorm(
                 project_path="/proj",

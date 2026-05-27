@@ -48,21 +48,28 @@ KOAN_JIRA_API_TOKEN=your-api-token-here
 
 ### 3. Map Jira projects to Koan projects
 
-Tell Koan which Jira project keys correspond to which Koan projects:
+Jira project ownership lives in `projects.yaml`, one tracker config per Koan project:
 
 ```yaml
-jira:
-  projects:
-    # Simple format — project name only:
-    FOO: myproject        # FOO-123 → project "myproject"
-
-    # Extended format — with optional target branch for PRs:
-    BAR:
-      project: anotherproject   # BAR-456 → project "anotherproject"
-      branch: "11.126"          # PRs target branch "11.126" instead of repo default
+projects:
+  myproject:
+    path: "/path/to/myproject"
+    github_url: "myorg/myproject"   # PRs are still created on GitHub
+    issue_tracker:
+      provider: jira
+      jira_project: FOO             # FOO-123 → project "myproject"
+      jira_issue_type: Task         # Default issue type when Koan creates issues
+      default_branch: "11.126"      # Optional PR target branch
 ```
 
-Both formats can be mixed. The `branch` field is optional — when omitted, PRs target the repository's default branch as usual.
+You can inspect or update this from Telegram:
+
+```
+/tracker
+/tracker set myproject jira key:FOO type:Task branch:11.126
+```
+
+The older `instance/config.yaml jira.projects` mapping is ignored. Koan logs a warning, sends one Telegram warning, and `/config_check` reports it so operators can migrate the mapping into `projects.yaml`.
 
 ### 4. Post a command in a Jira issue comment
 
@@ -95,7 +102,7 @@ All settings live under the `jira:` key in `instance/config.yaml`.
 | `check_interval_seconds` | int | `60` | Base polling interval in seconds (min: 10) |
 | `max_check_interval_seconds` | int | `180` | Maximum backoff interval when idle (min: 30) |
 | `max_issues_per_cycle` | int | `200` | Per-cycle cap on issues inspected for @mentions (min: 1). Each inspected issue triggers a separate `/comment` API call, so this directly bounds cold-start API consumption. A WARNING logs when the cap fires |
-| `projects` | dict | `{}` | Jira project key mapping. Simple: `FOO: myproject`. Extended: `FOO: {project: myproject, branch: "11.126"}` |
+| `projects` | dict | `{}` | Deprecated and ignored. Use `projects.yaml issue_tracker.jira_project` instead. |
 
 ### Environment variables
 
@@ -116,8 +123,8 @@ Jira reuses the same `github_enabled: true` skill flag for command discovery —
 | Command | Aliases | What it does | Context-aware |
 |---------|---------|--------------|---------------|
 | `ask` | — | Ask Koan a question about a Jira issue | **Yes** |
-| `audit` | — | Audit a project codebase and create GitHub issues | **Yes** |
-| `brainstorm` | — | Decompose a topic into linked GitHub issues | **Yes** |
+| `audit` | — | Audit a project codebase and create tracker issues | **Yes** |
+| `brainstorm` | — | Decompose a topic into linked tracker issues | **Yes** |
 | `deepplan` | `deeplan` | Spec-first design with Socratic exploration | **Yes** |
 | `fix` | — | Fix an issue end-to-end | **Yes** |
 | `gh_request` | — | Natural-language GitHub request dispatch | **Yes** |
@@ -160,9 +167,26 @@ You can override the target branch for PRs using the `branch:` token:
 @koan-bot fix branch:main
 ```
 
-This takes highest priority — overriding both the per-project `branch` configured in `jira.projects` and the repository's default branch. Useful for one-off requests targeting a different release branch.
+This takes highest priority — overriding both the per-project `issue_tracker.default_branch` configured in `projects.yaml` and the repository's default branch. Useful for one-off requests targeting a different release branch.
 
 When a target branch is set (via config or override), the feature branch is created from it and the PR targets it with `--base`.
+
+### Project tracker configuration
+
+Each project can choose `github` or `jira` as its issue tracker in `projects.yaml`:
+
+```yaml
+projects:
+  app:
+    github_url: "myorg/app"
+    issue_tracker:
+      provider: jira
+      jira_project: APP
+      jira_issue_type: Task
+      default_branch: "main"
+```
+
+For Jira-backed projects, `/plan <idea>`, `/brainstorm`, `/deepplan`, and audit issue creation post tracker issues in Jira. `/fix` and `/implement` still create GitHub draft PRs for code review, then comment the PR URL back on the Jira issue.
 
 ## How It Works
 
@@ -176,7 +200,7 @@ jira_notifications.py        ← Fetches & filters Jira comments, parses @mentio
   ↓
 jira_command_handler.py      ← Validates commands, checks permissions, creates missions
   ↓
-jira_config.py               ← Reads jira: config (project map + branch map)
+issue_tracker/config.py      ← Reads projects.yaml tracker ownership + branches
   ↓
 skills.py                    ← Skill flags: github_enabled (reused for Jira)
 ```
@@ -189,7 +213,7 @@ Jira notifications are checked in two places:
 
 ```
 1. process_jira_notifications()
-2. Build JQL query (POST /rest/api/3/search/jql): issues updated in mapped projects since last check
+2. Build JQL query (POST /rest/api/3/search/jql): issues updated in projects registered in projects.yaml since last check
 3. Paginate results using cursor-based nextPageToken
 4. Fetch recent comments on matching issues
 5. For each comment containing @nickname:
@@ -205,6 +229,10 @@ Jira notifications are checked in two places:
    j. Post 👍 acknowledgment reply on the Jira comment
    k. Notify via Telegram (🎫 emoji prefix)
 ```
+
+### Multiple instances
+
+When `enable_multiple_instances: true` is set, each Koan instance should declare only the Jira project keys it owns in that instance's `projects.yaml`. Jira polling searches only those registered keys. If Jira ever returns an issue whose project key is not registered to this instance, Koan skips it without acknowledging the comment, marking it processed, or queueing a mission, so another instance can handle it.
 
 ### ADF (Atlassian Document Format) handling
 
@@ -245,7 +273,7 @@ Skills that accept GitHub issue/PR URLs also accept Jira browse URLs:
 - `/plan https://myorg.atlassian.net/browse/FOO-123`
 - `/implement https://myorg.atlassian.net/browse/FOO-123`
 
-When the source is Jira, GitHub-specific steps (closed-state check, PR submission) are adjusted — PR submission still works if the Koan project has a `github_url` configured in `projects.yaml`.
+When the source is Jira, Koan fetches the Jira context through the issue tracker abstraction, creates the GitHub draft PR against the mapped project repo, and comments the PR link back on the Jira issue. Configure the repo with `github_url` or `submit_to_repository.repo` in `projects.yaml`.
 
 ## Security Model
 
@@ -301,11 +329,21 @@ jira:
   email: "bot@example.com"
   nickname: "koan-bot"
   authorized_users: ["*"]
-  projects:
-    PROJ: myproject              # Simple format
-    INFRA:                       # Extended format with target branch
-      project: infrastructure
-      branch: "11.126"
+
+# In projects.yaml
+projects:
+  myproject:
+    github_url: "myorg/myproject"
+    issue_tracker:
+      provider: jira
+      jira_project: PROJ
+      default_branch: "main"
+  infrastructure:
+    github_url: "myorg/infrastructure"
+    issue_tracker:
+      provider: jira
+      jira_project: INFRA
+      default_branch: "11.126"
 ```
 
 ```bash
@@ -329,7 +367,7 @@ Both can trigger the same set of commands. The difference is the context URL att
 
 1. **Check feature is enabled**: `jira.enabled: true` in config.yaml
 2. **Verify required fields**: `base_url`, `email`, `api_token`, and `nickname` must all be set. Check logs for startup validation warnings.
-3. **Check project mapping**: The Jira issue's project key must be in `jira.projects`. A comment on `FOO-123` requires `projects: { FOO: some_project }`.
+3. **Check project mapping**: The Jira issue's project key must be in `projects.yaml` under `issue_tracker.jira_project`. A comment on `FOO-123` requires a project mapped to `FOO`.
 4. **Check polling**: Look for `[jira]` log entries in `make logs`. If you see "no recently-updated issues found", the JQL query isn't matching.
 5. **Verify API access**: Test manually:
    ```bash
@@ -349,7 +387,7 @@ The 🎫 mission was written to `missions.md`. Check:
 
 ### "No valid project keys after sanitization"
 
-Jira project keys must be uppercase alphanumeric (e.g., `FOO`, `MYPROJ`). Keys with special characters are silently filtered out. Check your `jira.projects` mapping uses valid keys.
+Jira project keys must be uppercase alphanumeric (e.g., `FOO`, `MYPROJ`). Keys with special characters are silently filtered out. Check your `projects.yaml` `issue_tracker.jira_project` values use valid keys.
 
 ### Duplicate missions after restart
 

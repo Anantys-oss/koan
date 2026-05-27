@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 from app.github_skill_helpers import (
+    extract_issue_tracker_url,
     extract_github_url,
     resolve_project_for_repo,
     queue_github_mission,
@@ -107,6 +108,35 @@ class TestExtractGithubUrl:
     def test_http_url(self):
         result = extract_github_url("http://github.com/o/r/pull/1")
         assert result == ("http://github.com/o/r/pull/1", None)
+
+
+# ---------------------------------------------------------------------------
+# extract_issue_tracker_url
+# ---------------------------------------------------------------------------
+
+class TestExtractIssueTrackerUrl:
+    """Tests for GitHub-or-Jira issue tracker URL extraction."""
+
+    def test_accepts_github_issue(self):
+        result = extract_issue_tracker_url("https://github.com/o/r/issues/1")
+        assert result == ("https://github.com/o/r/issues/1", None)
+
+    def test_accepts_jira_issue(self):
+        result = extract_issue_tracker_url(
+            "https://example.atlassian.net/browse/FOO-123 focus auth",
+            url_type="issue",
+        )
+        assert result == (
+            "https://example.atlassian.net/browse/FOO-123",
+            "focus auth",
+        )
+
+    def test_pr_filter_rejects_jira_issue(self):
+        result = extract_issue_tracker_url(
+            "https://example.atlassian.net/browse/FOO-123",
+            url_type="pr",
+        )
+        assert result is None
 
 
 # ---------------------------------------------------------------------------
@@ -340,7 +370,7 @@ class TestHandleGithubSkill:
         ctx = self._make_ctx(tmp_path, args="just some text without url")
         result = handle_github_skill(ctx, "review", "pr-or-issue", self._parse_3tuple, "Review queued")
         assert "❌" in result
-        assert "No valid GitHub URL" in result
+        assert "No valid issue tracker URL" in result
 
     def test_parse_error_returns_error(self, tmp_path):
         def bad_parse(url):
@@ -419,7 +449,59 @@ class TestHandleGithubSkill:
         ctx = self._make_ctx(tmp_path, args="https://github.com/o/r/issues/1")
         result = handle_github_skill(ctx, "rebase", "pr", self._parse_3tuple, "Queued")
         assert "❌" in result
-        assert "No valid GitHub URL" in result
+        assert "No valid issue tracker URL" in result
+
+    @patch("app.utils.insert_pending_mission", return_value=True)
+    def test_jira_issue_url_queues_tracker_mission(self, mock_insert, tmp_path):
+        """Jira issue URLs are resolved through the issue tracker abstraction."""
+        from app.issue_tracker.types import IssueRef
+
+        ctx = self._make_ctx(
+            tmp_path,
+            args="https://test.atlassian.net/browse/FOO-123 phase 1",
+        )
+        ref = IssueRef(
+            provider="jira",
+            url="https://test.atlassian.net/browse/FOO-123",
+            key="FOO-123",
+            project_name="myapp",
+        )
+        with patch("app.issue_tracker.resolve_issue_ref", return_value=ref):
+            result = handle_github_skill(
+                ctx,
+                "implement",
+                "issue",
+                self._parse_3tuple,
+                "Implementation queued",
+            )
+
+        assert "Implementation queued for Jira issue FOO-123" in result
+        entry = mock_insert.call_args[0][1]
+        assert "[project:myapp]" in entry
+        assert "/implement https://test.atlassian.net/browse/FOO-123 phase 1" in entry
+
+    @patch("app.utils.insert_pending_mission", return_value=False)
+    def test_jira_issue_url_duplicate_message(self, mock_insert, tmp_path):
+        from app.issue_tracker.types import IssueRef
+
+        ctx = self._make_ctx(tmp_path, args="https://test.atlassian.net/browse/FOO-123")
+        ref = IssueRef(
+            provider="jira",
+            url="https://test.atlassian.net/browse/FOO-123",
+            key="FOO-123",
+            project_name="myapp",
+        )
+        with patch("app.issue_tracker.resolve_issue_ref", return_value=ref):
+            result = handle_github_skill(
+                ctx,
+                "implement",
+                "issue",
+                self._parse_3tuple,
+                "Implementation queued",
+            )
+
+        assert "Duplicate ignored" in result
+        assert "Jira issue FOO-123" in result
 
     @patch("app.utils.insert_pending_mission")
     @patch("app.utils.project_name_for_path", return_value="koan")

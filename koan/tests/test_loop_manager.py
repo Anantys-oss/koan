@@ -14,6 +14,23 @@ pytestmark = pytest.mark.slow
 # --- Test resolve_focus_area ---
 
 
+class TestJiraLegacyConfigWarning:
+    def test_warns_once_for_ignored_jira_projects(self, monkeypatch):
+        import app.loop_manager as loop_manager
+
+        monkeypatch.setattr(loop_manager, "_jira_legacy_config_warned", False)
+        config = {"jira": {"projects": {"FOO": "my-toolkit"}}}
+
+        with patch("app.notify.send_telegram") as mock_send:
+            loop_manager._warn_legacy_jira_projects(config)
+            loop_manager._warn_legacy_jira_projects(config)
+
+        assert mock_send.call_count == 1
+        message = mock_send.call_args.args[0]
+        assert "jira.projects" in message
+        assert "projects.yaml" in message
+
+
 class TestResolveFocusArea:
     """Test focus area resolution from autonomous mode."""
 

@@ -232,21 +232,24 @@ Be a doer, not just an observer.
 - If a mission is purely analytical, a report is fine.
   But if it can be solved with code, solve it with code.
 
-# GitHub
+# GitHub And Issue Trackers
 
 The `gh` CLI is the **only** way to interact with GitHub.
 Do NOT use `curl`, raw API calls, or git-based workarounds for GitHub operations.
 
 - **PRs are always draft**: Use `gh pr create --draft`. Never create a non-draft PR.
-- **Creating issues**: `gh issue create --title "..." --body "..."`
+- **Tracker issue writes**: Use Koan's provider-neutral helper, not direct `gh issue create/comment`.
+  - Create: `{KOAN_PYTHON} -m app.issue_cli create --project "{PROJECT_NAME}" --project-path "{PROJECT_PATH}" --title "..." --body-file /tmp/issue.md`
+  - Comment: `{KOAN_PYTHON} -m app.issue_cli comment <issue-url> --project "{PROJECT_NAME}" --project-path "{PROJECT_PATH}" --body-file /tmp/comment.md`
+  - Fetch: `{KOAN_PYTHON} -m app.issue_cli fetch <issue-url> --project "{PROJECT_NAME}" --project-path "{PROJECT_PATH}"`
 - **Fork-awareness**: If the local repo is a fork, always target the **upstream** repository:
   - PRs: `gh pr create --draft --repo <upstream-owner>/<repo> --head <fork-owner>:<branch>`
-  - Issues: `gh issue create --repo <upstream-owner>/<repo> --title "..." --body "..."`
+  - Tracker issues: use `{KOAN_PYTHON} -m app.issue_cli create ...`; Koan resolves the configured GitHub or Jira tracker for the project.
   - Detect forks with: `gh repo view --json parent --jq '.parent.owner.login + "/" + .parent.name'`
   - **CLAUDE.md overrides fork detection.** If the project's CLAUDE.md specifies a target
     repository, use that instead of `gh repo view --json parent`. Some repos are marked as
     forks on GitHub but are actually the canonical upstream (historical artifact).
-- **Checking status**: `gh pr view <number>`, `gh issue view <number>`
+- **Checking status**: `gh pr view <number>` for PRs; use `{KOAN_PYTHON} -m app.issue_cli fetch <issue-url> ...` for tracker issues.
 - **Posting comments**: `gh pr comment <number> --body "..."`
 - **API access**: `gh api repos/{owner}/{repo}/...` for anything not covered above.
 

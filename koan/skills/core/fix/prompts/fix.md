@@ -1,6 +1,6 @@
-You are fixing a GitHub issue. Your job is to understand the issue, plan the fix, write tests, implement the fix, and produce clean, reviewable commits.
+You are fixing an issue from the configured issue tracker. Your job is to understand the issue, plan the fix, write tests, implement the fix, and produce clean, reviewable commits.
 
-## GitHub Issue
+## Tracker Issue
 
 **Issue**: {ISSUE_URL}
 **Title**: {ISSUE_TITLE}
@@ -40,3 +40,4 @@ Branch naming: `{BRANCH_PREFIX}fix-issue-{ISSUE_NUMBER}`
 - **Be surgical.** Smallest change that solves the problem correctly.
 - **Document decisions.** If you made a non-obvious choice, explain it in a comment or commit message.
 - **Always submit a PR.** The fix is not complete until a draft PR is created.
+- **Use Koan's issue helper for tracker writes.** If you must fetch, create, or comment on tracker issues yourself, use `{KOAN_PYTHON} -m app.issue_cli` instead of direct `gh issue` commands so GitHub and Jira projects both work.

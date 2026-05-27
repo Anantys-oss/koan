@@ -1,9 +1,7 @@
 """Tests for plan_runner.py — the plan execution pipeline."""
 
-import json
-import subprocess
 from pathlib import Path
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import patch, MagicMock
 
 import pytest
 
@@ -14,14 +12,10 @@ from app.plan_runner import (
     _run_claude_plan,
     _is_error_output,
     _strip_preamble,
-    _get_repo_info,
-    _fetch_issue_context,
     _format_comments,
     _extract_title,
     _extract_idea_from_issue,
     _strip_title_line,
-    _search_existing_issue,
-    _extract_search_keywords,
     _run_new_plan,
     _run_issue_plan,
     _PLAN_LABEL,
@@ -29,10 +23,23 @@ from app.plan_runner import (
     review_plan,
     _review_loop,
     is_simple_plan,
-    _review_warning_note,
 )
+from app.issue_tracker.types import IssueContent, IssueRef
 
 pytestmark = pytest.mark.slow
+
+
+def _issue_ref(provider="github", url="https://github.com/o/r/issues/64",
+               key="64", repo="o/r"):
+    return IssueRef(provider=provider, url=url, key=key, repo=repo)
+
+
+def _issue_content(title="Issue Title", body="body", comments=None,
+                   provider="github", key="64"):
+    ref = _issue_ref(provider=provider, key=key)
+    return IssueContent(
+        ref=ref, title=title, body=body, comments=comments or [], state="open",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -92,11 +99,11 @@ class TestRunNewPlan:
     def test_successful_plan_with_issue(self):
         notify = MagicMock()
         with patch("app.plan_runner._generate_plan", return_value="## Plan\nStep 1"), \
-             patch("app.plan_runner._get_repo_info", return_value=("sukria", "koan")), \
-             patch("app.plan_runner._search_existing_issue", return_value=None), \
-             patch("app.github.subprocess.run", return_value=MagicMock(
-                 returncode=0, stdout="https://github.com/sukria/koan/issues/99\n"
-             )):
+             patch("app.plan_runner.find_existing_plan_issue", return_value=None), \
+             patch("app.plan_runner.tracker_is_configured", return_value=True), \
+             patch("app.plan_runner.tracker_supports_labels", return_value=True), \
+             patch("app.plan_runner.create_issue",
+                   return_value="https://github.com/sukria/koan/issues/99"):
             ok, msg = _run_new_plan("/project", "Add feature", notify, None)
             assert ok
             assert "issues/99" in msg
@@ -105,7 +112,8 @@ class TestRunNewPlan:
     def test_no_github_repo_sends_inline(self):
         notify = MagicMock()
         with patch("app.plan_runner._generate_plan", return_value="## Plan\nStep 1"), \
-             patch("app.plan_runner._get_repo_info", return_value=(None, None)):
+             patch("app.plan_runner.find_existing_plan_issue", return_value=None), \
+             patch("app.plan_runner.tracker_is_configured", return_value=False):
             ok, msg = _run_new_plan("/project", "Add feature", notify, None)
             assert ok
             assert "inline" in msg
@@ -115,7 +123,7 @@ class TestRunNewPlan:
 
     def test_generate_plan_failure(self):
         notify = MagicMock()
-        with patch("app.plan_runner._get_repo_info", return_value=(None, None)), \
+        with patch("app.plan_runner.find_existing_plan_issue", return_value=None), \
              patch("app.plan_runner._generate_plan", side_effect=RuntimeError("timeout")):
             ok, msg = _run_new_plan("/project", "idea", notify, None)
             assert not ok
@@ -123,7 +131,7 @@ class TestRunNewPlan:
 
     def test_empty_plan(self):
         notify = MagicMock()
-        with patch("app.plan_runner._get_repo_info", return_value=(None, None)), \
+        with patch("app.plan_runner.find_existing_plan_issue", return_value=None), \
              patch("app.plan_runner._generate_plan", return_value=""):
             ok, msg = _run_new_plan("/project", "idea", notify, None)
             assert not ok
@@ -132,7 +140,8 @@ class TestRunNewPlan:
     def test_context_passed_to_generate_plan(self):
         """User context should be forwarded to _generate_plan."""
         notify = MagicMock()
-        with patch("app.plan_runner._get_repo_info", return_value=(None, None)), \
+        with patch("app.plan_runner.find_existing_plan_issue", return_value=None), \
+             patch("app.plan_runner.tracker_is_configured", return_value=False), \
              patch("app.plan_runner._generate_plan", return_value="## Plan") as mock_gen:
             _run_new_plan("/project", "Add X", notify, None, context="Phase 2 only")
             _, kwargs = mock_gen.call_args
@@ -141,7 +150,8 @@ class TestRunNewPlan:
     def test_no_context_passes_empty_string(self):
         """Without context, _generate_plan should receive empty string."""
         notify = MagicMock()
-        with patch("app.plan_runner._get_repo_info", return_value=(None, None)), \
+        with patch("app.plan_runner.find_existing_plan_issue", return_value=None), \
+             patch("app.plan_runner.tracker_is_configured", return_value=False), \
              patch("app.plan_runner._generate_plan", return_value="## Plan") as mock_gen:
             _run_new_plan("/project", "Add X", notify, None)
             _, kwargs = mock_gen.call_args
@@ -149,27 +159,28 @@ class TestRunNewPlan:
 
     def test_issue_creation_failure_with_label_retries_without(self):
         notify = MagicMock()
+        # First (labelled) create fails; retry without labels succeeds.
+        create = MagicMock(side_effect=[
+            RuntimeError("label not found"),
+            "https://github.com/o/r/issues/5",
+        ])
         with patch("app.plan_runner._generate_plan", return_value="## Plan"), \
-             patch("app.plan_runner._get_repo_info", return_value=("o", "r")), \
-             patch("app.plan_runner._search_existing_issue", return_value=None), \
-             patch("app.github.subprocess.run") as mock_run:
-            # First call fails (label issue), second succeeds
-            mock_run.side_effect = [
-                MagicMock(returncode=1, stderr="label not found"),
-                MagicMock(returncode=0, stdout="https://github.com/o/r/issues/5\n"),
-            ]
+             patch("app.plan_runner.find_existing_plan_issue", return_value=None), \
+             patch("app.plan_runner.tracker_is_configured", return_value=True), \
+             patch("app.plan_runner.tracker_supports_labels", return_value=True), \
+             patch("app.plan_runner.create_issue", create):
             ok, msg = _run_new_plan("/project", "idea", notify, None)
             assert ok
             assert "issues/5" in msg
 
     def test_issue_creation_total_failure(self):
         notify = MagicMock()
+        create = MagicMock(side_effect=RuntimeError("no perms"))
         with patch("app.plan_runner._generate_plan", return_value="## Plan"), \
-             patch("app.plan_runner._get_repo_info", return_value=("o", "r")), \
-             patch("app.plan_runner._search_existing_issue", return_value=None), \
-             patch("app.github.subprocess.run", return_value=MagicMock(
-                 returncode=1, stderr="no perms"
-             )):
+             patch("app.plan_runner.find_existing_plan_issue", return_value=None), \
+             patch("app.plan_runner.tracker_is_configured", return_value=True), \
+             patch("app.plan_runner.tracker_supports_labels", return_value=True), \
+             patch("app.plan_runner.create_issue", create):
             ok, msg = _run_new_plan("/project", "idea", notify, None)
             assert ok
             assert "failed" in msg.lower()
@@ -177,7 +188,8 @@ class TestRunNewPlan:
     def test_sends_planning_notification(self):
         notify = MagicMock()
         with patch("app.plan_runner._generate_plan", return_value="## Plan"), \
-             patch("app.plan_runner._get_repo_info", return_value=(None, None)):
+             patch("app.plan_runner.find_existing_plan_issue", return_value=None), \
+             patch("app.plan_runner.tracker_is_configured", return_value=False):
             _run_new_plan("/project", "Add dark mode to dashboard", notify, None)
             first_msg = notify.call_args_list[0][0][0]
             assert "Planning" in first_msg
@@ -187,7 +199,8 @@ class TestRunNewPlan:
         notify = MagicMock()
         long_idea = "A" * 200
         with patch("app.plan_runner._generate_plan", return_value="## Plan"), \
-             patch("app.plan_runner._get_repo_info", return_value=(None, None)):
+             patch("app.plan_runner.find_existing_plan_issue", return_value=None), \
+             patch("app.plan_runner.tracker_is_configured", return_value=False):
             _run_new_plan("/project", long_idea, notify, None)
             first_msg = notify.call_args_list[0][0][0]
             assert "..." in first_msg
@@ -195,9 +208,8 @@ class TestRunNewPlan:
     def test_reuses_existing_issue_when_found(self):
         """When an existing issue matches, delegate to _run_issue_plan."""
         notify = MagicMock()
-        with patch("app.plan_runner._get_repo_info", return_value=("sukria", "koan")), \
-             patch("app.plan_runner._search_existing_issue",
-                    return_value=("42", "Add dark mode")), \
+        existing = _issue_ref(key="42", url="https://github.com/o/r/issues/42")
+        with patch("app.plan_runner.find_existing_plan_issue", return_value=existing), \
              patch("app.plan_runner._run_issue_plan",
                     return_value=(True, "Plan posted on #42")) as mock_issue:
             ok, msg = _run_new_plan("/project", "dark mode feature", notify, None)
@@ -211,40 +223,53 @@ class TestRunNewPlan:
     def test_existing_issue_notification(self):
         """When reusing an issue, notify the user about the redirect."""
         notify = MagicMock()
-        with patch("app.plan_runner._get_repo_info", return_value=("o", "r")), \
-             patch("app.plan_runner._search_existing_issue",
-                    return_value=("7", "Existing plan")), \
-             patch("app.plan_runner._run_issue_plan",
-                    return_value=(True, "ok")):
+        existing = _issue_ref(key="7", url="https://github.com/o/r/issues/7")
+        with patch("app.plan_runner.find_existing_plan_issue", return_value=existing), \
+             patch("app.plan_runner._run_issue_plan", return_value=(True, "ok")):
             _run_new_plan("/project", "similar idea", notify, None)
             # Should have notified about finding an existing issue
             msgs = [str(c) for c in notify.call_args_list]
-            assert any("existing issue" in m.lower() or "Found" in m for m in msgs)
+            assert any("existing" in m.lower() or "Found" in m for m in msgs)
 
     def test_search_failure_creates_new_issue(self):
-        """If search fails, proceed with new issue creation."""
+        """If no existing issue matches, proceed with new issue creation."""
         notify = MagicMock()
         with patch("app.plan_runner._generate_plan", return_value="## Plan"), \
-             patch("app.plan_runner._get_repo_info", return_value=("o", "r")), \
-             patch("app.plan_runner._search_existing_issue", return_value=None), \
-             patch("app.github.subprocess.run", return_value=MagicMock(
-                 returncode=0, stdout="https://github.com/o/r/issues/10\n"
-             )):
+             patch("app.plan_runner.find_existing_plan_issue", return_value=None), \
+             patch("app.plan_runner.tracker_is_configured", return_value=True), \
+             patch("app.plan_runner.tracker_supports_labels", return_value=True), \
+             patch("app.plan_runner.create_issue",
+                   return_value="https://github.com/o/r/issues/10"):
             ok, msg = _run_new_plan("/project", "brand new idea", notify, None)
             assert ok
             assert "issues/10" in msg
 
     def test_creates_issue_with_plan_label(self):
-        """New issues should be created with the 'plan' label."""
+        """New GitHub issues should be created with the 'plan' label."""
         notify = MagicMock()
+        create = MagicMock(return_value="https://github.com/o/r/issues/1")
         with patch("app.plan_runner._generate_plan", return_value="## Plan"), \
-             patch("app.plan_runner._get_repo_info", return_value=("o", "r")), \
-             patch("app.plan_runner._search_existing_issue", return_value=None), \
-             patch("app.plan_runner.issue_create",
-                    return_value="https://github.com/o/r/issues/1") as mock_create:
+             patch("app.plan_runner.find_existing_plan_issue", return_value=None), \
+             patch("app.plan_runner.tracker_is_configured", return_value=True), \
+             patch("app.plan_runner.tracker_supports_labels", return_value=True), \
+             patch("app.plan_runner.create_issue", create):
             _run_new_plan("/project", "test idea", notify, None)
-            _, kwargs = mock_create.call_args
+            _, kwargs = create.call_args
             assert kwargs.get("labels") == [_PLAN_LABEL]
+
+    def test_jira_tracker_omits_labels(self):
+        """A label-less tracker (Jira) should not pass labels to create_issue."""
+        notify = MagicMock()
+        create = MagicMock(return_value="https://org.atlassian.net/browse/PROJ-1")
+        with patch("app.plan_runner._generate_plan", return_value="## Plan"), \
+             patch("app.plan_runner.find_existing_plan_issue", return_value=None), \
+             patch("app.plan_runner.tracker_is_configured", return_value=True), \
+             patch("app.plan_runner.tracker_supports_labels", return_value=False), \
+             patch("app.plan_runner.create_issue", create):
+            ok, msg = _run_new_plan("/project", "test idea", notify, None)
+            assert ok
+            _, kwargs = create.call_args
+            assert kwargs.get("labels") is None
 
 
 # ---------------------------------------------------------------------------
@@ -252,30 +277,45 @@ class TestRunNewPlan:
 # ---------------------------------------------------------------------------
 
 class TestRunIssuePlan:
+    def _patch_tracker(self, content, ref=None):
+        """Patch service helpers for issue-plan tests."""
+        ref = ref or _issue_ref()
+        add = MagicMock(return_value=True)
+        return (
+            patch("app.plan_runner.resolve_issue_ref", return_value=ref),
+            patch("app.plan_runner.fetch_issue", return_value=content),
+            patch("app.plan_runner.add_comment", add),
+            add,
+        )
+
     def test_successful_iteration(self):
         notify = MagicMock()
         url = "https://github.com/sukria/koan/issues/64"
-        with patch("app.plan_runner._fetch_issue_context",
-                    return_value=("Issue Title", "body", "comments")), \
+        content = _issue_content(title="Issue Title", comments=[
+            {"author": "alice", "date": "2026-01-01", "body": "comment"},
+        ])
+        p_ref, p_fetch, p_add, add = self._patch_tracker(content)
+        with p_ref, p_fetch, p_add, \
              patch("app.plan_runner._generate_iteration_plan",
-                    return_value="## Updated Plan"), \
-             patch("app.plan_runner._comment_on_issue") as mock_comment:
+                    return_value="## Updated Plan"):
             ok, msg = _run_issue_plan("/project", url, notify, None)
             assert ok
             assert "#64" in msg
-            mock_comment.assert_called_once()
+            add.assert_called_once()
 
     def test_invalid_url(self):
         notify = MagicMock()
-        ok, msg = _run_issue_plan("/project", "not-a-url", notify, None)
+        with patch("app.plan_runner.resolve_issue_ref",
+                    side_effect=ValueError("Invalid GitHub URL")):
+            ok, msg = _run_issue_plan("/project", "not-a-url", notify, None)
         assert not ok
         assert "Invalid" in msg
 
     def test_fetch_failure(self):
         notify = MagicMock()
         url = "https://github.com/o/r/issues/1"
-        with patch("app.plan_runner._fetch_issue_context",
-                    side_effect=RuntimeError("not found")):
+        with patch("app.plan_runner.resolve_issue_ref", return_value=_issue_ref()), \
+             patch("app.plan_runner.fetch_issue", side_effect=RuntimeError("not found")):
             ok, msg = _run_issue_plan("/project", url, notify, None)
             assert not ok
             assert "Failed to fetch" in msg
@@ -283,8 +323,8 @@ class TestRunIssuePlan:
     def test_plan_generation_failure(self):
         notify = MagicMock()
         url = "https://github.com/o/r/issues/1"
-        with patch("app.plan_runner._fetch_issue_context",
-                    return_value=("Title", "body", "")), \
+        p_ref, p_fetch, p_add, _ = self._patch_tracker(_issue_content())
+        with p_ref, p_fetch, p_add, \
              patch("app.plan_runner._generate_iteration_plan",
                     side_effect=RuntimeError("error")):
             ok, msg = _run_issue_plan("/project", url, notify, None)
@@ -294,8 +334,8 @@ class TestRunIssuePlan:
     def test_empty_plan(self):
         notify = MagicMock()
         url = "https://github.com/o/r/issues/1"
-        with patch("app.plan_runner._fetch_issue_context",
-                    return_value=("Title", "body", "")), \
+        p_ref, p_fetch, p_add, _ = self._patch_tracker(_issue_content())
+        with p_ref, p_fetch, p_add, \
              patch("app.plan_runner._generate_iteration_plan", return_value=""):
             ok, msg = _run_issue_plan("/project", url, notify, None)
             assert not ok
@@ -304,12 +344,10 @@ class TestRunIssuePlan:
     def test_comment_failure_sends_inline(self):
         notify = MagicMock()
         url = "https://github.com/o/r/issues/1"
-        with patch("app.plan_runner._fetch_issue_context",
-                    return_value=("Title", "body", "")), \
-             patch("app.plan_runner._generate_iteration_plan",
-                    return_value="## Plan"), \
-             patch("app.plan_runner._comment_on_issue",
-                    side_effect=RuntimeError("no perms")):
+        with patch("app.plan_runner.resolve_issue_ref", return_value=_issue_ref()), \
+             patch("app.plan_runner.fetch_issue", return_value=_issue_content()), \
+             patch("app.plan_runner.add_comment", side_effect=RuntimeError("no perms")), \
+             patch("app.plan_runner._generate_iteration_plan", return_value="## Plan"):
             ok, msg = _run_issue_plan("/project", url, notify, None)
             assert ok
             assert "failed" in msg.lower()
@@ -317,11 +355,9 @@ class TestRunIssuePlan:
     def test_sends_reading_notification(self):
         notify = MagicMock()
         url = "https://github.com/sukria/koan/issues/64"
-        with patch("app.plan_runner._fetch_issue_context",
-                    return_value=("Title", "body", "")), \
-             patch("app.plan_runner._generate_iteration_plan",
-                    return_value="## Plan"), \
-             patch("app.plan_runner._comment_on_issue"):
+        p_ref, p_fetch, p_add, _ = self._patch_tracker(_issue_content())
+        with p_ref, p_fetch, p_add, \
+             patch("app.plan_runner._generate_iteration_plan", return_value="## Plan"):
             _run_issue_plan("/project", url, notify, None)
             first_msg = notify.call_args_list[0][0][0]
             assert "#64" in first_msg
@@ -329,11 +365,11 @@ class TestRunIssuePlan:
     def test_success_includes_title(self):
         notify = MagicMock()
         url = "https://github.com/sukria/koan/issues/64"
-        with patch("app.plan_runner._fetch_issue_context",
-                    return_value=("Add dark mode", "body", "")), \
-             patch("app.plan_runner._generate_iteration_plan",
-                    return_value="## Plan"), \
-             patch("app.plan_runner._comment_on_issue"):
+        p_ref, p_fetch, p_add, _ = self._patch_tracker(
+            _issue_content(title="Add dark mode"),
+        )
+        with p_ref, p_fetch, p_add, \
+             patch("app.plan_runner._generate_iteration_plan", return_value="## Plan"):
             ok, msg = _run_issue_plan("/project", url, notify, None)
             assert ok
             assert "Add dark mode" in msg
@@ -342,11 +378,13 @@ class TestRunIssuePlan:
         """Issue plan should use _generate_iteration_plan, not _generate_plan."""
         notify = MagicMock()
         url = "https://github.com/o/r/issues/1"
-        with patch("app.plan_runner._fetch_issue_context",
-                    return_value=("Title", "body text", "alice: great idea")), \
+        content = _issue_content(title="Title", body="body text", comments=[
+            {"author": "alice", "date": "2026-01-01", "body": "great idea"},
+        ])
+        p_ref, p_fetch, p_add, _ = self._patch_tracker(content)
+        with p_ref, p_fetch, p_add, \
              patch("app.plan_runner._generate_iteration_plan",
-                    return_value="## Updated Plan") as mock_iter, \
-             patch("app.plan_runner._comment_on_issue"):
+                    return_value="## Updated Plan") as mock_iter:
             _run_issue_plan("/project", url, notify, None)
             mock_iter.assert_called_once()
             # Verify the issue context is passed
@@ -359,11 +397,10 @@ class TestRunIssuePlan:
         """Even with no comments, the context should note that."""
         notify = MagicMock()
         url = "https://github.com/o/r/issues/1"
-        with patch("app.plan_runner._fetch_issue_context",
-                    return_value=("Title", "body", "")), \
+        p_ref, p_fetch, p_add, _ = self._patch_tracker(_issue_content(comments=[]))
+        with p_ref, p_fetch, p_add, \
              patch("app.plan_runner._generate_iteration_plan",
-                    return_value="## Plan") as mock_iter, \
-             patch("app.plan_runner._comment_on_issue"):
+                    return_value="## Plan") as mock_iter:
             _run_issue_plan("/project", url, notify, None)
             context_arg = mock_iter.call_args[0][1]
             assert "No comments" in context_arg
@@ -372,11 +409,13 @@ class TestRunIssuePlan:
         """User context should appear in the issue context passed to Claude."""
         notify = MagicMock()
         url = "https://github.com/o/r/issues/1"
-        with patch("app.plan_runner._fetch_issue_context",
-                    return_value=("Title", "body", "comments")), \
+        content = _issue_content(comments=[
+            {"author": "bob", "date": "2026-01-01", "body": "comment"},
+        ])
+        p_ref, p_fetch, p_add, _ = self._patch_tracker(content)
+        with p_ref, p_fetch, p_add, \
              patch("app.plan_runner._generate_iteration_plan",
-                    return_value="## Plan") as mock_iter, \
-             patch("app.plan_runner._comment_on_issue"):
+                    return_value="## Plan") as mock_iter:
             _run_issue_plan("/project", url, notify, None, context="Focus on phase 2")
             context_arg = mock_iter.call_args[0][1]
             assert "User Instructions" in context_arg
@@ -386,11 +425,10 @@ class TestRunIssuePlan:
         """Without user context, no 'User Instructions' section should appear."""
         notify = MagicMock()
         url = "https://github.com/o/r/issues/1"
-        with patch("app.plan_runner._fetch_issue_context",
-                    return_value=("Title", "body", "")), \
+        p_ref, p_fetch, p_add, _ = self._patch_tracker(_issue_content())
+        with p_ref, p_fetch, p_add, \
              patch("app.plan_runner._generate_iteration_plan",
-                    return_value="## Plan") as mock_iter, \
-             patch("app.plan_runner._comment_on_issue"):
+                    return_value="## Plan") as mock_iter:
             _run_issue_plan("/project", url, notify, None)
             context_arg = mock_iter.call_args[0][1]
             assert "User Instructions" not in context_arg
@@ -677,154 +715,6 @@ class TestStripPreamble:
         output = "Let me draft the plan:\n\nDraft title\n\n### Summary"
         result = _strip_preamble(output)
         assert result.startswith("Draft title")
-
-
-# ---------------------------------------------------------------------------
-# _search_existing_issue
-# ---------------------------------------------------------------------------
-
-class TestSearchExistingIssue:
-    def test_finds_matching_issue(self):
-        results = json.dumps([
-            {"number": 42, "title": "Plan: Add dark mode"},
-        ])
-        with patch("app.github.subprocess.run",
-                    return_value=MagicMock(returncode=0, stdout=results)):
-            result = _search_existing_issue("sukria", "koan", "dark mode feature")
-            assert result is not None
-            assert result[0] == "42"
-            assert result[1] == "Plan: Add dark mode"
-
-    def test_no_matching_issues(self):
-        with patch("app.github.subprocess.run",
-                    return_value=MagicMock(returncode=0, stdout="[]")):
-            result = _search_existing_issue("sukria", "koan", "unique idea")
-            assert result is None
-
-    def test_api_failure_returns_none(self):
-        with patch("app.github.subprocess.run",
-                    return_value=MagicMock(returncode=1, stderr="API error")):
-            result = _search_existing_issue("sukria", "koan", "some idea")
-            assert result is None
-
-    def test_timeout_returns_none(self):
-        with patch("app.plan_runner.api",
-                    side_effect=subprocess.TimeoutExpired(cmd="gh", timeout=30)):
-            result = _search_existing_issue("o", "r", "idea")
-            assert result is None
-
-    def test_empty_keywords_returns_none(self):
-        """If idea is only stop words, don't search."""
-        result = _search_existing_issue("o", "r", "the a an is")
-        assert result is None
-
-    def test_returns_first_match_only(self):
-        results = json.dumps([
-            {"number": 10, "title": "First match"},
-            {"number": 20, "title": "Second match"},
-        ])
-        with patch("app.github.subprocess.run",
-                    return_value=MagicMock(returncode=0, stdout=results)):
-            result = _search_existing_issue("o", "r", "keyword test")
-            assert result[0] == "10"
-
-
-# ---------------------------------------------------------------------------
-# _extract_search_keywords
-# ---------------------------------------------------------------------------
-
-class TestExtractSearchKeywords:
-    def test_filters_stop_words(self):
-        result = _extract_search_keywords("Add a dark mode to the dashboard")
-        assert "dark" in result
-        assert "mode" in result
-        assert "dashboard" in result
-        assert "the" not in result
-        assert "add" not in result
-
-    def test_limits_to_4_keywords(self):
-        result = _extract_search_keywords(
-            "Implement authentication authorization caching logging monitoring"
-        )
-        words = result.split()
-        assert len(words) <= 4
-
-    def test_empty_string(self):
-        assert _extract_search_keywords("") == ""
-
-    def test_only_stop_words(self):
-        assert _extract_search_keywords("the a an is are") == ""
-
-    def test_case_insensitive(self):
-        result = _extract_search_keywords("DARK MODE Feature")
-        assert "dark" in result
-        assert "mode" in result
-        assert "feature" in result
-
-    def test_short_words_excluded(self):
-        """Single-letter words should be excluded."""
-        result = _extract_search_keywords("X Y Z authentication")
-        assert "authentication" in result
-
-
-# ---------------------------------------------------------------------------
-# _get_repo_info
-# ---------------------------------------------------------------------------
-
-class TestGetRepoInfo:
-    def test_successful_gh_call(self):
-        gh_output = json.dumps({"owner": {"login": "sukria"}, "name": "koan"})
-        with patch("app.github.subprocess.run",
-                    return_value=MagicMock(returncode=0, stdout=gh_output)):
-            owner, repo = _get_repo_info("/path")
-            assert owner == "sukria"
-            assert repo == "koan"
-
-    def test_gh_failure_returns_none(self):
-        with patch("app.github.subprocess.run",
-                    return_value=MagicMock(returncode=1, stderr="err")):
-            owner, repo = _get_repo_info("/path")
-            assert owner is None
-            assert repo is None
-
-    def test_timeout_returns_none(self):
-        with patch("app.plan_runner.resolve_target_repo", return_value=None), \
-             patch("app.plan_runner.run_gh",
-                    side_effect=subprocess.TimeoutExpired(cmd="gh", timeout=15)):
-            owner, repo = _get_repo_info("/path")
-            assert owner is None
-            assert repo is None
-
-
-# ---------------------------------------------------------------------------
-# _fetch_issue_context
-# ---------------------------------------------------------------------------
-
-class TestFetchIssueContext:
-    @patch("app.plan_runner.fetch_issue_with_comments")
-    def test_returns_title_body_and_comments(self, mock_fetch):
-        mock_fetch.return_value = (
-            "My Issue", "Body",
-            [{"author": "alice", "date": "2026-02-01T10:00:00Z", "body": "Looks good"}],
-        )
-        title, body, comments = _fetch_issue_context("sukria", "koan", "64")
-        assert title == "My Issue"
-        assert body == "Body"
-        assert "alice" in comments
-        mock_fetch.assert_called_once_with("sukria", "koan", "64")
-
-    @patch("app.plan_runner.fetch_issue_with_comments")
-    def test_handles_empty_comments(self, mock_fetch):
-        mock_fetch.return_value = ("Title", "Body", [])
-        title, body, comments = _fetch_issue_context("o", "r", "1")
-        assert title == "Title"
-        assert comments == ""
-
-    @patch("app.plan_runner.fetch_issue_with_comments")
-    def test_propagates_runtime_error(self, mock_fetch):
-        mock_fetch.side_effect = RuntimeError("gh failed")
-        with pytest.raises(RuntimeError):
-            _fetch_issue_context("o", "r", "1")
 
 
 # ---------------------------------------------------------------------------

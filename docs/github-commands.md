@@ -329,6 +329,8 @@ GitHub and Jira integrations can run simultaneously. Both dispatch the same set 
 
 Missions from GitHub are marked with 📬, missions from Jira with 🎫. Both enter the same mission queue.
 
+Per-project issue routing is configured in `projects.yaml` under `issue_tracker`. Use `/tracker` from Telegram to inspect or update whether a project creates new tracker issues in GitHub or Jira.
+
 See [Jira Integration](jira-integration.md) for full setup instructions and the combined configuration guide.
 
 ## Related

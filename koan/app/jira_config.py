@@ -16,11 +16,13 @@ Config schema in config.yaml:
       check_interval_seconds: 60
       max_check_interval_seconds: 180
       max_issues_per_cycle: 200   # Cap on issues inspected per check; floor: 1
-      projects: {}                # Jira project key → Kōan project name
+
+Jira project ownership is configured in projects.yaml under each project's
+issue_tracker section, not in config.yaml.
 """
 
 import os
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 
 def get_jira_enabled(config: dict) -> bool:
@@ -134,68 +136,6 @@ def get_jira_max_issues_per_cycle(config: dict) -> int:
         return max(1, val)
     except (ValueError, TypeError):
         return 200
-
-
-def get_jira_project_map(config: dict) -> Dict[str, str]:
-    """Get the mapping of Jira project keys to Kōan project names.
-
-    Supports both simple and extended formats:
-
-        # Simple (string value):
-        jira:
-          projects:
-            FOO: myproject
-
-        # Extended (object value with optional branch):
-        jira:
-          projects:
-            FOO:
-              project: myproject
-              branch: "11.126"
-
-    Returns:
-        Dict of {jira_project_key: koan_project_name}.
-    """
-    jira = config.get("jira") or {}
-    projects = jira.get("projects") or {}
-    if not isinstance(projects, dict):
-        return {}
-    result = {}
-    for k, v in projects.items():
-        if isinstance(v, dict):
-            result[str(k)] = str(v.get("project", ""))
-        else:
-            result[str(k)] = str(v)
-    return result
-
-
-def get_jira_branch_map(config: dict) -> Dict[str, str]:
-    """Get the mapping of Jira project keys to target branches.
-
-    Only returns entries that have an explicit branch configured
-    via the extended format:
-
-        jira:
-          projects:
-            FOO:
-              project: myproject
-              branch: "11.126"
-
-    Returns:
-        Dict of {jira_project_key: branch_name}. Keys without a branch
-        are omitted.
-    """
-    jira = config.get("jira") or {}
-    projects = jira.get("projects") or {}
-    if not isinstance(projects, dict):
-        return {}
-    result = {}
-    for k, v in projects.items():
-        if isinstance(v, dict):
-            branch = v.get("branch")
-            if branch:
-                result[str(k)] = str(branch)
-    return result
 
 
 def validate_jira_config(config: dict) -> Optional[str]:

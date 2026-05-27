@@ -161,6 +161,33 @@ def _adf_to_text(node: Any) -> str:
     return " ".join(parts)
 
 
+def _text_to_adf(text: str) -> Dict[str, Any]:
+    """Convert plain markdown-ish text to a simple Jira ADF document."""
+    lines = (text or "").splitlines() or [""]
+    content = []
+    paragraph = []
+
+    def flush_paragraph():
+        if paragraph:
+            content.append({
+                "type": "paragraph",
+                "content": [{"type": "text", "text": "\n".join(paragraph)}],
+            })
+            paragraph.clear()
+
+    for line in lines:
+        if line.strip():
+            paragraph.append(line)
+        else:
+            flush_paragraph()
+    flush_paragraph()
+
+    if not content:
+        content = [{"type": "paragraph", "content": []}]
+
+    return {"version": 1, "type": "doc", "content": content}
+
+
 def _extract_comment_text(comment_body: Any) -> str:
     """Extract plain text from a Jira comment body.
 
@@ -373,7 +400,7 @@ def resolve_project_from_jira_key(issue_key: str, project_map: Dict[str, str]) -
 
     Args:
         issue_key: Full Jira issue key like "FOO-123".
-        project_map: Dict from jira_config.get_jira_project_map().
+        project_map: Jira project key -> Koan project name from projects.yaml.
 
     Returns:
         Kōan project name or None if not mapped.
@@ -389,7 +416,7 @@ def resolve_branch_from_jira_key(issue_key: str, branch_map: Dict[str, str]) -> 
 
     Args:
         issue_key: Full Jira issue key like "FOO-123".
-        branch_map: Dict from jira_config.get_jira_branch_map().
+        branch_map: Jira project key -> target branch from projects.yaml.
 
     Returns:
         Branch name or None if no branch is configured for this project key.
@@ -636,6 +663,113 @@ def fetch_jira_issue(
     return title, body, all_comments
 
 
+def _jira_auth_from_config() -> Tuple[str, str]:
+    """Return (base_url, auth_header) using config.yaml Jira credentials."""
+    from app.jira_config import (
+        get_jira_api_token,
+        get_jira_base_url,
+        get_jira_email,
+        get_jira_enabled,
+        validate_jira_config,
+    )
+    from app.utils import load_config
+
+    config = load_config()
+    if not get_jira_enabled(config):
+        raise RuntimeError("Jira integration is not enabled in config.yaml")
+    error = validate_jira_config(config)
+    if error:
+        raise RuntimeError(f"Jira config error: {error}")
+    base_url = get_jira_base_url(config)
+    email = get_jira_email(config)
+    api_token = get_jira_api_token(config)
+    return base_url, _make_auth_header(email, api_token)
+
+
+def jira_add_comment(issue_key: str, body_text: str) -> bool:
+    """Post a plain-text/markdown comment to a Jira issue."""
+    base_url, auth_header = _jira_auth_from_config()
+    result = _jira_post(
+        base_url,
+        auth_header,
+        f"/rest/api/3/issue/{issue_key}/comment",
+        {"body": _text_to_adf(body_text)},
+    )
+    return result is not None
+
+
+def jira_create_issue(
+    project_key: str,
+    title: str,
+    body_text: str,
+    issue_type: str = "Task",
+) -> str:
+    """Create a Jira issue and return its browse URL."""
+    if not re.match(r"^[A-Z0-9]+$", project_key or ""):
+        raise RuntimeError(f"Invalid Jira project key: {project_key!r}")
+
+    base_url, auth_header = _jira_auth_from_config()
+    payload = {
+        "fields": {
+            "project": {"key": project_key},
+            "summary": title,
+            "description": _text_to_adf(body_text),
+            "issuetype": {"name": issue_type or "Task"},
+        }
+    }
+    result = _jira_post(base_url, auth_header, "/rest/api/3/issue", payload)
+    if not isinstance(result, dict) or not result.get("key"):
+        raise RuntimeError(f"Failed to create Jira issue in {project_key}")
+    return f"{base_url}/browse/{result['key']}"
+
+
+def jira_search_issues(
+    project_key: str,
+    text: str,
+    limit: int = 5,
+) -> List[dict]:
+    """Search recent open Jira issues for roughly matching text."""
+    if not re.match(r"^[A-Z0-9]+$", project_key or ""):
+        return []
+    base_url, auth_header = _jira_auth_from_config()
+
+    words = re.findall(r"\b[A-Za-z][A-Za-z0-9_-]{2,}\b", text or "")
+    query = " ".join(words[:4])
+    if query:
+        jql = (
+            f'project = "{project_key}" AND statusCategory != Done '
+            f'AND text ~ "{query}" ORDER BY updated DESC'
+        )
+    else:
+        jql = (
+            f'project = "{project_key}" AND statusCategory != Done '
+            "ORDER BY updated DESC"
+        )
+    result = _jira_post(
+        base_url,
+        auth_header,
+        "/rest/api/3/search/jql",
+        {"jql": jql, "maxResults": max(1, limit), "fields": ["summary"]},
+    )
+    if not isinstance(result, dict):
+        return []
+    issues = result.get("issues", [])
+    if not isinstance(issues, list):
+        return []
+    matches = []
+    for issue in issues:
+        key = issue.get("key", "")
+        if not key:
+            continue
+        fields = issue.get("fields", {}) or {}
+        matches.append({
+            "key": key,
+            "title": fields.get("summary", ""),
+            "url": f"{base_url}/browse/{key}",
+        })
+    return matches
+
+
 def fetch_jira_mentions(
     config: dict,
     project_map: Dict[str, str],
@@ -674,10 +808,13 @@ def fetch_jira_mentions(
         return JiraFetchResult([])
 
     auth_header = _make_auth_header(email, api_token)
-    project_keys = list(project_map.keys())
+    project_keys = sorted(project_map.keys())
 
     if not project_keys:
-        log.debug("Jira: no project keys configured in jira.projects, skipping")
+        log.debug(
+            "Jira: no project keys configured in projects.yaml issue_tracker, "
+            "skipping"
+        )
         return JiraFetchResult([])
 
     # Determine time window
@@ -731,7 +868,10 @@ def fetch_jira_mentions(
         # Determine Kōan project for this issue
         project_name = resolve_project_from_jira_key(issue_key, project_map)
         if not project_name:
-            log.debug("Jira: issue %s has no project mapping, skipping", issue_key)
+            log.debug(
+                "Jira: issue %s is not registered to this instance, skipping",
+                issue_key,
+            )
             continue
 
         comments = _get_issue_comments(base_url, auth_header, issue_key, since)

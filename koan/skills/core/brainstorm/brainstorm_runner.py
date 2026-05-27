@@ -20,7 +20,14 @@ import sys
 from pathlib import Path
 from typing import Optional, Tuple
 
-from app.github import run_gh, issue_create, issue_edit
+from app.github import issue_edit, run_gh
+from app.issue_tracker import (
+    create_issue,
+    project_name_for_path,
+    tracker_is_configured,
+    tracker_provider,
+    tracker_supports_labels,
+)
 from app.prompts import load_prompt_or_skill
 
 
@@ -65,10 +72,9 @@ def run_brainstorm(
         f"{'...' if len(topic) > 100 else ''} (tag: {tag})"
     )
 
-    # Get repo info
-    owner, repo = _get_repo_info(project_path)
-    if not owner or not repo:
-        return False, "No GitHub repository found at project path."
+    project_name = project_name_for_path(project_path)
+    if not tracker_is_configured(project_name, project_path):
+        return False, "No issue tracker configured for this project."
 
     # Decompose via Claude, with one structural-validation retry.
     try:
@@ -136,8 +142,10 @@ def run_brainstorm(
             flush=True,
         )
 
-    # Ensure label exists
-    _ensure_label(tag, project_path)
+    # Ensure label exists when the tracker supports labels (GitHub).
+    supports_labels = tracker_supports_labels(project_name, project_path)
+    if supports_labels:
+        _ensure_label(tag, project_path)
 
     # Create sub-issues — each entry is (number, title, url, original_pos)
     # where original_pos is the 1-based index from the decomposition, so
@@ -146,25 +154,29 @@ def run_brainstorm(
     created_issues = []
     for i, issue in enumerate(issues, 1):
         try:
-            url = issue_create(
+            url = create_issue(
+                project_name,
+                project_path,
                 issue["title"],
                 issue["body"],
                 labels=[tag],
-                cwd=project_path,
             )
             # Extract issue number from URL
             number = url.strip().rstrip("/").split("/")[-1]
             created_issues.append((number, issue["title"], url.strip(), i))
-            notify_fn(f"  \u2705 #{number}: {issue['title'][:60]}")
+            notify_fn(f"  \u2705 {_format_issue_ref(number)}: {issue['title'][:60]}")
         except (RuntimeError, OSError) as e:
             # Retry without label if label creation failed silently
             try:
-                url = issue_create(
-                    issue["title"], issue["body"], cwd=project_path,
+                url = create_issue(
+                    project_name, project_path, issue["title"], issue["body"],
                 )
                 number = url.strip().rstrip("/").split("/")[-1]
                 created_issues.append((number, issue["title"], url.strip(), i))
-                notify_fn(f"  \u2705 #{number}: {issue['title'][:60]} (no label)")
+                notify_fn(
+                    f"  \u2705 {_format_issue_ref(number)}: "
+                    f"{issue['title'][:60]} (no label)"
+                )
             except (RuntimeError, OSError) as e2:
                 notify_fn(f"  \u274c Failed to create issue {i}: {e2}")
 
@@ -172,25 +184,29 @@ def run_brainstorm(
         return False, "No issues were created."
 
     # Replace SUB-N placeholders in issue bodies with real GitHub numbers
-    _replace_sub_placeholders(created_issues, issues, project_path)
+    _replace_sub_placeholders(
+        created_issues, issues, project_path,
+        tracker_provider(project_name, project_path),
+    )
 
     # Build master issue
     master_title = f"[{tag}] {_extract_master_title(topic)}"
     master_body = _build_master_body(
-        topic, master_summary, created_issues, owner, repo,
+        topic, master_summary, created_issues,
         top_ranked=top_ranked,
         fast_wins=fast_wins,
         overall_assessment=overall_assessment,
     )
 
+    labels = [tag] if supports_labels else None
     try:
-        master_url = issue_create(
-            master_title, master_body, labels=[tag], cwd=project_path,
+        master_url = create_issue(
+            project_name, project_path, master_title, master_body, labels=labels,
         )
     except (RuntimeError, OSError):
         try:
-            master_url = issue_create(
-                master_title, master_body, cwd=project_path,
+            master_url = create_issue(
+                project_name, project_path, master_title, master_body,
             )
         except (RuntimeError, OSError) as e:
             return True, (
@@ -206,7 +222,9 @@ def run_brainstorm(
     return True, summary
 
 
-def _replace_sub_placeholders(created_issues, original_issues, project_path):
+def _replace_sub_placeholders(
+    created_issues, original_issues, project_path, provider="github",
+):
     """Replace SUB-N placeholders in created issue bodies with real #numbers.
 
     After all sub-issues are created on GitHub, we know each ordinal position's
@@ -216,6 +234,9 @@ def _replace_sub_placeholders(created_issues, original_issues, project_path):
     Uses ``original_pos`` from each created_issues entry to map back to the
     correct original issue body and to build the SUB-N → #number mapping.
     """
+    if provider != "github":
+        return
+
     # Build original_pos → real number mapping (preserves original positions)
     ordinal_to_number = {
         original_pos: number
@@ -241,10 +262,16 @@ def _apply_sub_replacements(text, ordinal_to_number):
         idx = int(match.group(1))
         real = ordinal_to_number.get(idx)
         if real is not None:
-            return f"#{real}"
+            return _format_issue_ref(real)
         return match.group(0)  # leave unknown placeholders as-is
 
     return re.sub(r'SUB-(\d+)', _replace, text)
+
+
+def _format_issue_ref(number: str) -> str:
+    """Format numeric GitHub numbers and Jira keys naturally."""
+    text = str(number)
+    return f"#{text}" if text.isdigit() else text
 
 
 def _generate_tag(topic: str) -> str:
@@ -504,8 +531,8 @@ def _extract_master_title(topic: str) -> str:
 
 
 def _build_master_body(
-    topic, master_summary, created_issues, owner, repo,
-    top_ranked=None, fast_wins=None, overall_assessment=None,
+    topic, master_summary, created_issues,
+    owner=None, repo=None, top_ranked=None, fast_wins=None, overall_assessment=None,
 ):
     """Build the master tracking issue body.
 
@@ -547,7 +574,7 @@ def _build_master_body(
             rationale = _apply_sub_replacements(
                 entry.get("rationale", ""), ordinal_to_number,
             ).strip()
-            line = f"{rank}. #{number} — {title}"
+            line = f"{rank}. {_format_issue_ref(number)} — {title}"
             if rationale:
                 line += f": {rationale}"
             parts.append(line)
@@ -588,7 +615,7 @@ def _build_master_body(
     # Task list with links to sub-issues
     parts.append("## Sub-Issues\n")
     for number, title, _url, _pos in created_issues:
-        parts.append(f"- [ ] #{number} — {title}")
+        parts.append(f"- [ ] {_format_issue_ref(number)} — {title}")
     parts.append("")
 
     # Footer
@@ -617,28 +644,9 @@ def _resolve_sub_reference(value, ordinal_to_number, ordinal_to_title):
         number = ordinal_to_number.get(idx)
         title = ordinal_to_title.get(idx, "")
         if number is not None:
-            return f"#{number} — {title}" if title else f"#{number}"
+            issue_ref = _format_issue_ref(number)
+            return f"{issue_ref} — {title}" if title else issue_ref
     return _apply_sub_replacements(stripped, ordinal_to_number)
-
-
-def _get_repo_info(project_path):
-    """Get GitHub owner/repo from a local git repo."""
-    try:
-        output = run_gh(
-            "repo", "view", "--json", "owner,name",
-            cwd=project_path, timeout=15,
-        )
-        data = json.loads(output)
-        owner = data.get("owner", {}).get("login", "")
-        repo = data.get("name", "")
-        if owner and repo:
-            return owner, repo
-    except Exception as e:
-        print(
-            f"[brainstorm_runner] Repo info fetch failed: {e}",
-            file=sys.stderr,
-        )
-    return None, None
 
 
 # ---------------------------------------------------------------------------

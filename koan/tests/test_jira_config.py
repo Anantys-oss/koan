@@ -16,7 +16,6 @@ from app.jira_config import (
     get_jira_max_check_interval,
     get_jira_max_issues_per_cycle,
     get_jira_nickname,
-    get_jira_project_map,
     validate_jira_config,
 )
 
@@ -179,24 +178,6 @@ class TestGetJiraMaxIssuesPerCycle:
 
     def test_missing_jira_key(self):
         assert get_jira_max_issues_per_cycle({"github": {}}) == 200
-
-
-class TestGetJiraProjectMap:
-    def test_default_empty(self):
-        assert get_jira_project_map({}) == {}
-
-    def test_returns_map(self):
-        cfg = {"jira": {"projects": {"FOO": "myproject", "BAR": "another"}}}
-        assert get_jira_project_map(cfg) == {"FOO": "myproject", "BAR": "another"}
-
-    def test_non_dict_returns_empty(self):
-        cfg = {"jira": {"projects": "bad"}}
-        assert get_jira_project_map(cfg) == {}
-
-    def test_converts_keys_to_str(self):
-        cfg = {"jira": {"projects": {123: "myproject"}}}
-        result = get_jira_project_map(cfg)
-        assert "123" in result
 
 
 class TestValidateJiraConfig:

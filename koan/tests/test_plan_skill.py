@@ -99,6 +99,12 @@ class TestHandleRouting:
             handler.handle(ctx)
             mock.assert_called_once_with(ctx, "sukria", "koan", "64")
 
+    def test_routes_jira_issue_url(self, handler, ctx):
+        ctx.args = "https://test.atlassian.net/browse/FOO-123"
+        with patch.object(handler, "_queue_tracker_issue_plan", return_value="queued") as mock:
+            handler.handle(ctx)
+            mock.assert_called_once_with(ctx, "https://test.atlassian.net/browse/FOO-123")
+
     def test_empty_idea_returns_error(self, handler, ctx):
         ctx.args = "   "
         result = handler.handle(ctx)
@@ -260,6 +266,47 @@ class TestQueueIssuePlan:
         with patch("app.utils.get_known_projects", return_value=[("koan", "/p")]):
             result = handler._queue_issue_plan(ctx, "other", "repo", "1")
             assert "queued" in result.lower()
+
+
+class TestQueueTrackerIssuePlan:
+    def test_queues_jira_issue_plan(self, handler, ctx):
+        from app.issue_tracker.types import IssueRef
+
+        ref = IssueRef(
+            provider="jira",
+            url="https://test.atlassian.net/browse/FOO-123",
+            key="FOO-123",
+            project_name="myapp",
+        )
+
+        with patch("app.issue_tracker.resolve_issue_ref", return_value=ref):
+            result = handler._queue_tracker_issue_plan(
+                ctx,
+                "https://test.atlassian.net/browse/FOO-123",
+            )
+
+        assert "FOO-123" in result
+        missions = (ctx.instance_dir / "missions.md").read_text()
+        assert "[project:myapp]" in missions
+        assert "/plan https://test.atlassian.net/browse/FOO-123" in missions
+
+    def test_unresolved_jira_project_returns_config_hint(self, handler, ctx):
+        from app.issue_tracker.types import IssueRef
+
+        ref = IssueRef(
+            provider="jira",
+            url="https://test.atlassian.net/browse/FOO-123",
+            key="FOO-123",
+        )
+
+        with patch("app.issue_tracker.resolve_issue_ref", return_value=ref):
+            result = handler._queue_tracker_issue_plan(
+                ctx,
+                "https://test.atlassian.net/browse/FOO-123",
+            )
+
+        assert "Could not resolve Koan project" in result
+        assert "issue_tracker.jira_project" in result
 
 
 # ---------------------------------------------------------------------------

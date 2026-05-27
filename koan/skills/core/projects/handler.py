@@ -23,6 +23,26 @@ def _win_rate_annotation(bandit_state, project_name: str) -> str:
     return f" [win rate: {rate:.0%} (n={n})]"
 
 
+def _tracker_annotation(project_name: str) -> str:
+    """Return a compact issue tracker annotation for /projects output."""
+    try:
+        from app.issue_tracker.config import get_tracker_for_project
+
+        tracker = get_tracker_for_project(project_name)
+    except Exception:
+        return ""
+
+    provider = tracker.get("provider", "github")
+    if provider == "jira":
+        key = tracker.get("jira_project") or "?"
+        branch = tracker.get("default_branch", "")
+        suffix = f", branch:{branch}" if branch else ""
+        return f" [tracker: jira:{key}{suffix}]"
+
+    repo = tracker.get("repo")
+    return f" [tracker: github:{repo}]" if repo else ""
+
+
 def handle(ctx):
     """Handle /projects command."""
     from app.utils import get_known_projects, KOAN_ROOT
@@ -55,7 +75,8 @@ def handle(ctx):
     lines = ["Configured projects:"]
     for name, path in projects:
         annotation = _win_rate_annotation(bandit_state, name) if bandit_state else ""
-        lines.append(f"  - {name}: {_shorten_path(path)}{annotation}")
+        tracker = _tracker_annotation(name)
+        lines.append(f"  - {name}: {_shorten_path(path)}{annotation}{tracker}")
 
     if warnings:
         lines.append("")

@@ -7,6 +7,20 @@ from unittest.mock import patch, MagicMock, call
 import pytest
 
 from app.skills import SkillContext
+from app.issue_tracker.types import IssueContent, IssueRef
+
+
+def _issue_content(title="Issue", body="body", comments=None,
+                   provider="github", key="99"):
+    ref = IssueRef(
+        provider=provider,
+        url="https://github.com/o/r/issues/99",
+        key=key,
+        repo="o/r",
+    )
+    return IssueContent(
+        ref=ref, title=title, body=body, comments=comments or [], state="open",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -273,10 +287,12 @@ class TestRunnerApprovedFirstTry:
             "### Open Questions\n\nNone — ready for /plan."
         )
 
-        with patch.object(runner, "_get_repo_info", return_value=("owner", "repo")), \
+        with patch.object(runner, "tracker_is_configured", return_value=True), \
+             patch.object(runner, "tracker_supports_labels", return_value=True), \
+             patch.object(runner, "create_issue",
+                          return_value="https://github.com/o/r/issues/1"), \
              patch.object(runner, "_explore_design", return_value=valid_spec), \
              patch.object(runner, "_review_spec", return_value=(True, "")), \
-             patch.object(runner, "issue_create", return_value="https://github.com/o/r/issues/1"), \
              patch.object(runner, "_queue_plan_mission") as mock_queue, \
              patch("app.notify.send_telegram"):
 
@@ -301,10 +317,12 @@ class TestRunnerRetryOnIssuesFound:
         explore_results = [spec_v1, spec_v2, spec_v3]
         review_results = [(False, "Missing file paths"), (False, "Still vague"), (True, "")]
 
-        with patch.object(runner, "_get_repo_info", return_value=("o", "r")), \
+        with patch.object(runner, "tracker_is_configured", return_value=True), \
+             patch.object(runner, "tracker_supports_labels", return_value=True), \
+             patch.object(runner, "create_issue",
+                          return_value="https://github.com/o/r/issues/2"), \
              patch.object(runner, "_explore_design", side_effect=explore_results) as mock_explore, \
              patch.object(runner, "_review_spec", side_effect=review_results), \
-             patch.object(runner, "issue_create", return_value="https://github.com/o/r/issues/2"), \
              patch.object(runner, "_queue_plan_mission"), \
              patch("app.notify.send_telegram"):
 
@@ -325,10 +343,12 @@ class TestRunnerMaxIterations:
         spec = "Spec title\n\n### Summary\nSpec body."
         always_issues = (False, "Always failing")
 
-        with patch.object(runner, "_get_repo_info", return_value=("o", "r")), \
+        mock_create = MagicMock(return_value="https://github.com/o/r/issues/3")
+        with patch.object(runner, "tracker_is_configured", return_value=True), \
+             patch.object(runner, "tracker_supports_labels", return_value=True), \
+             patch.object(runner, "create_issue", mock_create), \
              patch.object(runner, "_explore_design", return_value=spec) as mock_explore, \
              patch.object(runner, "_review_spec", return_value=always_issues), \
-             patch.object(runner, "issue_create", return_value="https://github.com/o/r/issues/3") as mock_create, \
              patch.object(runner, "_queue_plan_mission"), \
              patch("app.notify.send_telegram"):
 
@@ -346,9 +366,9 @@ class TestRunnerMaxIterations:
 
 
 class TestRunnerNoGithubRepo:
-    def test_no_github_repo_returns_failure(self, runner, tmp_path):
-        """Runner returns failure when no GitHub repository found."""
-        with patch.object(runner, "_get_repo_info", return_value=(None, None)), \
+    def test_no_tracker_configured_returns_failure(self, runner, tmp_path):
+        """Runner returns failure when no issue tracker is configured."""
+        with patch.object(runner, "tracker_is_configured", return_value=False), \
              patch("app.notify.send_telegram"):
 
             success, summary = runner.run_deepplan(
@@ -358,7 +378,7 @@ class TestRunnerNoGithubRepo:
             )
 
         assert success is False
-        assert "No GitHub repository" in summary
+        assert "No issue tracker configured" in summary
 
 
 # ---------------------------------------------------------------------------
@@ -511,12 +531,15 @@ class TestRunnerWithIssueUrl:
             "### Open Questions\n\nNone."
         )
 
-        with patch.object(runner, "_get_repo_info", return_value=("owner", "repo")), \
-             patch.object(runner, "fetch_issue_with_comments",
-                          return_value=("Fix caching bug", "The cache is broken", [])), \
+        with patch.object(runner, "tracker_is_configured", return_value=True), \
+             patch.object(runner, "tracker_supports_labels", return_value=True), \
+             patch.object(runner, "create_issue",
+                          return_value="https://github.com/o/r/issues/1"), \
+             patch.object(runner, "fetch_issue",
+                          return_value=_issue_content(
+                              title="Fix caching bug", body="The cache is broken")), \
              patch.object(runner, "_explore_design", return_value=valid_spec) as mock_explore, \
              patch.object(runner, "_review_spec", return_value=(True, "")), \
-             patch.object(runner, "issue_create", return_value="https://github.com/o/r/issues/1"), \
              patch.object(runner, "_queue_plan_mission"), \
              patch("app.notify.send_telegram"):
 
@@ -541,8 +564,10 @@ class TestRunnerWithIssueUrl:
             {"author": "bob", "date": "2026-01-02T10:00:00Z", "body": "Memcached might be better"},
         ]
 
-        with patch.object(runner, "fetch_issue_with_comments",
-                          return_value=("Cache issue", "Fix caching", comments)), \
+        with patch.object(runner, "fetch_issue",
+                          return_value=_issue_content(
+                              title="Cache issue", body="Fix caching",
+                              comments=comments)), \
              patch("app.notify.send_telegram"):
 
             idea, context = runner._enrich_idea_from_issue(
@@ -559,7 +584,7 @@ class TestRunnerWithIssueUrl:
 
     def test_issue_fetch_failure_falls_back(self, runner, tmp_path):
         """Runner falls back gracefully when issue fetch fails."""
-        with patch.object(runner, "fetch_issue_with_comments",
+        with patch.object(runner, "fetch_issue",
                           side_effect=RuntimeError("API error")), \
              patch("app.notify.send_telegram"):
 

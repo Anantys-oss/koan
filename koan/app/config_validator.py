@@ -383,6 +383,21 @@ def validate_config(config: dict) -> List[Tuple[str, str]]:
                     f"Recommended: use non-overlapping ranges (e.g., deep_hours: \"0-8\", work_hours: \"8-20\")",
                 ))
 
+    try:
+        from app.issue_tracker.config import (
+            detect_legacy_jira_projects,
+            format_legacy_jira_projects_warning,
+        )
+
+        legacy_jira_keys = detect_legacy_jira_projects(config)
+        if legacy_jira_keys:
+            warnings.append((
+                "jira.projects",
+                format_legacy_jira_projects_warning(legacy_jira_keys),
+            ))
+    except ImportError:
+        pass
+
     return warnings
 
 

@@ -552,11 +552,11 @@ usage:
 #                                        # so this directly bounds cold-start API consumption.
 #                                        # Tighten on small instances; raise if mentions on busy
 #                                        # backlogs get dropped (a WARNING logs when the cap fires).
-#   projects:                            # Jira project key → Kōan project name mapping
-#     FOO: myproject                     # Simple: FOO-123 → project "myproject"
-#     BAR:                               # Extended: with optional target branch
-#       project: anotherproject          #   BAR-456 → project "anotherproject"
-#       branch: "11.126"                 #   PRs target branch "11.126" instead of default
+# Jira project key ownership is configured in projects.yaml:
+#   issue_tracker:
+#     provider: jira
+#     jira_project: FOO
+#     default_branch: "main"
 
 # Review ignore patterns — exclude files from /review PR diffs.
 # Applied before building the Claude prompt, reducing token spend on

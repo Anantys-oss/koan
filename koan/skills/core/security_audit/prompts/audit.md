@@ -1,4 +1,4 @@
-You are performing a **security audit** of the **{PROJECT_NAME}** project. Your goal is to find exploitable security vulnerabilities — the kind that would warrant a CVE, a security advisory, or an urgent fix. Produce a structured report that will be used to create individual GitHub issues.
+You are performing a **security audit** of the **{PROJECT_NAME}** project. Your goal is to find exploitable security vulnerabilities — the kind that would warrant a CVE, a security advisory, or an urgent fix. Produce a structured report that will be used to create individual tracker issues.
 
 {EXTRA_CONTEXT}
 

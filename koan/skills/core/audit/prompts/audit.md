@@ -1,4 +1,4 @@
-You are performing a codebase audit of the **{PROJECT_NAME}** project. Your goal is to find optimizations, simplifications, and potential issues — then produce a structured report that will be used to create individual GitHub issues.
+You are performing a codebase audit of the **{PROJECT_NAME}** project. Your goal is to find optimizations, simplifications, and potential issues — then produce a structured report that will be used to create individual tracker issues.
 
 {EXTRA_CONTEXT}
 

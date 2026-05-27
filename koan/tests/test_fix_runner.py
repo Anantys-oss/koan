@@ -10,6 +10,7 @@ from skills.core.fix.fix_runner import (
     _submit_fix_pr,
     main,
 )
+from app.issue_tracker.types import IssueContent, IssueRef
 
 # Shared helpers imported via app.pr_submit
 from app.pr_submit import (
@@ -23,6 +24,23 @@ from app.pr_submit import (
 
 _FIX_MODULE = "skills.core.fix.fix_runner"
 _PR_MODULE = "app.pr_submit"
+
+
+def _github_issue(
+    title="Bug title", body="Bug body", comments=None,
+    state="open", key="42", repo="o/r",
+):
+    """Build an IssueContent as the tracker's fetch_issue would return it."""
+    ref = IssueRef(
+        provider="github",
+        url="https://github.com/o/r/issues/42",
+        key=key,
+        repo=repo,
+    )
+    return IssueContent(
+        ref=ref, title=title, body=body,
+        comments=comments or [], state=state,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +140,8 @@ class TestBuildPrompt:
         assert "gh pr create --draft" in prompt
         assert "git push" in prompt
         assert "Closes https://github.com/o/r/issues/42" in prompt
+        assert "{KOAN_PYTHON}" not in prompt
+        assert " -m app.issue_cli" in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -210,10 +230,9 @@ class TestRunFix:
     @patch(f"{_FIX_MODULE}._submit_fix_pr", return_value="https://github.com/o/r/pull/1")
     @patch(f"{_FIX_MODULE}.get_current_branch", return_value="koan.atoomic/fix-issue-42")
     @patch(f"{_FIX_MODULE}._execute_fix", return_value="Done")
-    @patch(f"{_FIX_MODULE}.fetch_issue_with_comments")
-    @patch(f"{_FIX_MODULE}.fetch_issue_state", return_value="open")
-    def test_success_with_pr(self, mock_state, mock_fetch, mock_execute, mock_branch, mock_pr):
-        mock_fetch.return_value = ("Bug title", "Bug body", [])
+    @patch(f"{_FIX_MODULE}.fetch_issue")
+    def test_success_with_pr(self, mock_fetch, mock_execute, mock_branch, mock_pr):
+        mock_fetch.return_value = _github_issue()
         notify = MagicMock()
 
         success, summary = run_fix(
@@ -225,7 +244,7 @@ class TestRunFix:
         assert success is True
         assert "https://github.com/o/r/pull/1" in summary
 
-    @patch(f"{_FIX_MODULE}.fetch_issue_with_comments")
+    @patch(f"{_FIX_MODULE}.fetch_issue", side_effect=ValueError("bad url"))
     def test_invalid_url(self, mock_fetch):
         notify = MagicMock()
         success, summary = run_fix(
@@ -235,10 +254,9 @@ class TestRunFix:
         )
         assert success is False
 
-    @patch(f"{_FIX_MODULE}.fetch_issue_with_comments")
-    @patch(f"{_FIX_MODULE}.fetch_issue_state", return_value="open")
-    def test_empty_issue(self, mock_state, mock_fetch):
-        mock_fetch.return_value = ("Title", "", [])
+    @patch(f"{_FIX_MODULE}.fetch_issue")
+    def test_empty_issue(self, mock_fetch):
+        mock_fetch.return_value = _github_issue(body="", comments=[])
         notify = MagicMock()
 
         success, summary = run_fix(
@@ -252,10 +270,9 @@ class TestRunFix:
     @patch(f"{_FIX_MODULE}._submit_fix_pr", return_value=None)
     @patch(f"{_FIX_MODULE}.get_current_branch", return_value="koan.atoomic/fix-issue-42")
     @patch(f"{_FIX_MODULE}._execute_fix", return_value="Done")
-    @patch(f"{_FIX_MODULE}.fetch_issue_with_comments")
-    @patch(f"{_FIX_MODULE}.fetch_issue_state", return_value="open")
-    def test_success_no_pr(self, mock_state, mock_fetch, mock_execute, mock_branch, mock_pr):
-        mock_fetch.return_value = ("Title", "Body text", [])
+    @patch(f"{_FIX_MODULE}.fetch_issue")
+    def test_success_no_pr(self, mock_fetch, mock_execute, mock_branch, mock_pr):
+        mock_fetch.return_value = _github_issue(body="Body text")
         notify = MagicMock()
 
         success, summary = run_fix(
@@ -267,10 +284,9 @@ class TestRunFix:
         assert "Branch: koan.atoomic/fix-issue-42" in summary
 
     @patch(f"{_FIX_MODULE}._execute_fix", return_value="")
-    @patch(f"{_FIX_MODULE}.fetch_issue_with_comments")
-    @patch(f"{_FIX_MODULE}.fetch_issue_state", return_value="open")
-    def test_empty_claude_output(self, mock_state, mock_fetch, mock_execute):
-        mock_fetch.return_value = ("Title", "Body", [])
+    @patch(f"{_FIX_MODULE}.fetch_issue")
+    def test_empty_claude_output(self, mock_fetch, mock_execute):
+        mock_fetch.return_value = _github_issue(body="Body")
         notify = MagicMock()
 
         success, summary = run_fix(
@@ -281,9 +297,10 @@ class TestRunFix:
         assert success is False
         assert "empty output" in summary.lower()
 
-    @patch(f"{_FIX_MODULE}.fetch_issue_state", return_value="closed")
-    def test_closed_issue_skipped(self, mock_state):
+    @patch(f"{_FIX_MODULE}.fetch_issue")
+    def test_closed_issue_skipped(self, mock_fetch):
         """A closed issue should be skipped immediately without invoking Claude."""
+        mock_fetch.return_value = _github_issue(state="closed")
         notify = MagicMock()
 
         success, summary = run_fix(

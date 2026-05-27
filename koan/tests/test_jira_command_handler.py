@@ -227,6 +227,7 @@ class TestProcessJiraMention:
         with patch("app.jira_command_handler.get_jira_nickname", return_value="koan-bot"), \
              patch("app.jira_command_handler.get_jira_authorized_users", return_value=["*"]), \
              patch("app.jira_config.get_jira_max_age_hours", return_value=24), \
+             patch("app.utils.is_known_project", return_value=True), \
              patch("app.jira_command_handler.acknowledge_jira_comment", return_value=True), \
              patch("app.jira_command_handler._notify_mission_from_jira"):
 
@@ -282,6 +283,7 @@ class TestProcessJiraMention:
         with patch("app.jira_command_handler.get_jira_nickname", return_value="koan-bot"), \
              patch("app.jira_command_handler.get_jira_authorized_users", return_value=["*"]), \
              patch("app.jira_config.get_jira_max_age_hours", return_value=24), \
+             patch("app.utils.is_known_project", return_value=True), \
              patch("app.jira_command_handler.acknowledge_jira_comment", return_value=True), \
              patch("app.jira_command_handler._notify_mission_from_jira"):
 
@@ -295,6 +297,46 @@ class TestProcessJiraMention:
         assert "[project:override-project]" in content
         # Original project name not used
         assert "[project:myproject]" not in content
+
+    def test_unknown_repo_override_is_processed_without_mission(
+        self, tmp_path, monkeypatch, mention, skill_registry, basic_config
+    ):
+        """Unknown repo: override is rejected and not retried forever."""
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        missions_path = instance_dir / "missions.md"
+        missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        override_mention = dict(mention, body_text="@koan-bot plan repo:unknown-project")
+
+        with patch("app.jira_command_handler.get_jira_nickname", return_value="koan-bot"), \
+             patch("app.jira_config.get_jira_max_age_hours", return_value=24), \
+             patch("app.utils.is_known_project", return_value=False):
+            processed_set = set()
+            success, error = process_jira_mention(
+                override_mention, skill_registry, basic_config, processed_set,
+            )
+
+        assert success is False
+        assert "Unknown project override" in error
+        assert override_mention["comment_id"] in processed_set
+        assert "🎫" not in missions_path.read_text()
+
+    def test_unregistered_project_is_left_unprocessed(
+        self, mention, skill_registry, basic_config
+    ):
+        """Unknown Jira project notifications remain available for another instance."""
+        unowned = dict(mention, project_name="")
+        processed_set = set()
+
+        success, error = process_jira_mention(
+            unowned, skill_registry, basic_config, processed_set,
+        )
+
+        assert success is False
+        assert error is None
+        assert unowned["comment_id"] not in processed_set
 
     def test_unknown_command_skipped(
         self, tmp_path, monkeypatch, mention, skill_registry, basic_config
