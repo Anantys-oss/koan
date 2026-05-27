@@ -976,6 +976,14 @@ def _try_assignment_notification(
     project_name, owner, repo = project_info
 
     # One API call: subject state/merged (closed check) + head SHA (dedup key).
+    #
+    # Performance trade-off: for `review_requested`, this fetch runs on every
+    # poll of an already-tracked PR (unlike `assign`, which short-circuits on
+    # notif_id before any fetch). The cost was evaluated and accepted because
+    # the head SHA is required for the dedup key — without it, we'd re-queue
+    # /review on every comment that bumps `updated_at`. If GitHub API rate
+    # pressure becomes an issue, a local LRU keyed on (notif_id, updated_at)
+    # could fast-path the unchanged-since-last-poll case.
     subject_info = _fetch_subject_info(notification)
 
     # Persistent dedup key — survives restart, unlike the in-memory loop cache.
