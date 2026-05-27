@@ -254,7 +254,8 @@ def run_claude(cmd: list, cwd: str, timeout: int = 600) -> dict:
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             cwd=cwd,
             start_new_session=True,
         )

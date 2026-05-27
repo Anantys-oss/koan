@@ -843,6 +843,19 @@ class TestRunCommandStreaming:
         assert "line1" in out and "line2" in out
         cleanup.assert_called_once()
 
+    def test_popen_uses_errors_replace(self):
+        """popen_cli must be called with errors='replace' to survive non-UTF-8."""
+        from app.provider import run_command_streaming
+        proc = self._make_proc(["ok\n"])
+        cleanup = MagicMock()
+        with patch("app.config.get_model_config", return_value={"chat": "m", "fallback": "f"}), \
+             patch("app.provider.build_full_command", return_value=["fake"]), \
+             patch("app.cli_exec.popen_cli", return_value=(proc, cleanup)) as mock_popen, \
+             patch("app.claude_step.strip_cli_noise", side_effect=lambda s: s):
+            run_command_streaming("hi", "/tmp", [])
+        call_kwargs = mock_popen.call_args[1]
+        assert call_kwargs.get("errors") == "replace"
+
     def test_failure_raises(self):
         from app.provider import run_command_streaming
         proc = self._make_proc(["oops\n"], stderr="err", returncode=1)

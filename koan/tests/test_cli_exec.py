@@ -481,3 +481,52 @@ class TestStreamWithTimeout:
 
             killpg.assert_not_called()
             assert result.timed_out is False
+
+
+# ---------------------------------------------------------------------------
+# Non-UTF-8 resilience
+# ---------------------------------------------------------------------------
+
+
+class TestNonUtf8Resilience:
+    """Subprocess stdout containing invalid UTF-8 must not crash the reader.
+
+    Razor2-Client-Agent contains binary spam test data (0xff bytes).  When
+    Claude reads those files, the raw bytes can leak into CLI stdout.
+    Previously ``text=True`` without ``errors="replace"`` caused:
+      UnicodeDecodeError: 'utf-8' codec can't decode byte 0xff in position 8903
+    """
+
+    def test_stream_with_timeout_survives_invalid_utf8(self):
+        """Real subprocess emitting 0xff bytes must not crash stream_with_timeout."""
+        import sys
+
+        script = (
+            "import sys, os; "
+            "os.write(1, b'valid line\\n'); "
+            "os.write(1, b'bad byte \\xff here\\n'); "
+            "os.write(1, b'after bad\\n')"
+        )
+        proc = subprocess.Popen(
+            [sys.executable, "-c", script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            encoding="utf-8",
+            errors="replace",
+        )
+        result = stream_with_timeout(proc, timeout=10)
+        assert "valid line" in result.stdout
+        assert "after bad" in result.stdout
+        assert result.timed_out is False
+
+    def test_popen_cli_passes_errors_replace(self):
+        """popen_cli must forward errors='replace' to Popen."""
+        with patch("app.cli_exec.subprocess.Popen") as mock_popen:
+            mock_popen.return_value = MagicMock()
+            cmd = ["git", "status"]
+            proc, cleanup = popen_cli(
+                cmd, stdout=subprocess.PIPE, encoding="utf-8", errors="replace",
+            )
+            call_kwargs = mock_popen.call_args[1]
+            assert call_kwargs["errors"] == "replace"
+            cleanup()

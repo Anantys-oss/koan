@@ -702,7 +702,8 @@ def run_command_streaming(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             cwd=project_path,
         )
         # Every print() in this loop is the load-bearing watchdog signal —
