@@ -215,7 +215,7 @@ def run_squash(
     # -- Step 1: Fetch PR context --
     notify_fn(f"Reading PR #{pr_number}...")
     try:
-        context = fetch_pr_context(owner, repo, pr_number)
+        context = fetch_pr_context(owner, repo, pr_number, project_path)
     except Exception as e:
         return False, f"Failed to fetch PR context: {e}"
 

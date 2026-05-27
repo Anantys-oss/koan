@@ -83,7 +83,7 @@ def run_recreate(
     print(f"[recreate] Fetching PR #{pr_number} context", flush=True)
     notify_fn(f"Reading PR #{pr_number} to understand original intent...")
     try:
-        context = fetch_pr_context(owner, repo, pr_number)
+        context = fetch_pr_context(owner, repo, pr_number, project_path)
     except Exception as e:
         return False, f"Failed to fetch PR context: {e}"
 

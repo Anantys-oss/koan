@@ -351,7 +351,7 @@ def run_ci_check_and_fix(pr_url: str, project_path: str) -> Tuple[bool, str]:
     from app.rebase_pr import fetch_pr_context
 
     try:
-        context = fetch_pr_context(owner, repo, pr_number)
+        context = fetch_pr_context(owner, repo, pr_number, project_path)
     except Exception as e:
         return False, f"Failed to fetch PR context: {e}"
 

@@ -573,7 +573,7 @@ def run_rebase(
     print(f"[rebase] Fetching PR #{pr_number} context from {owner}/{repo}", flush=True)
     notify_fn(f"Reading PR #{pr_number}...")
     try:
-        context = fetch_pr_context(owner, repo, pr_number)
+        context = fetch_pr_context(owner, repo, pr_number, project_path)
     except Exception as e:
         return False, f"Failed to fetch PR context: {e}"
 
@@ -1809,7 +1809,7 @@ def main(argv=None):
     if not success and _is_conflict_failure(summary):
         # Check PR state before falling back — recreate only works on open PRs
         try:
-            ctx = fetch_pr_context(owner, repo, pr_number)
+            ctx = fetch_pr_context(owner, repo, pr_number, cli_args.project_path)
             pr_state = ctx.get("state", "").upper()
         except Exception as e:
             print(f"[rebase_pr] PR state check failed, proceeding with recreate: {e}", file=sys.stderr)
