@@ -13,7 +13,7 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 from app.github import run_gh
 
@@ -38,7 +38,8 @@ def _get_review_dispatch_config() -> dict:
             "enabled": bool(rd.get("enabled", _DEFAULT_ENABLED)),
             "cooldown_minutes": int(rd.get("cooldown_minutes", _DEFAULT_COOLDOWN_MINUTES)),
         }
-    except (ImportError, OSError, ValueError):
+    except (ImportError, OSError, ValueError) as e:
+        log.warning("Failed to load review_dispatch config, using defaults: %s", e)
         return {"enabled": _DEFAULT_ENABLED, "cooldown_minutes": _DEFAULT_COOLDOWN_MINUTES}
 
 
@@ -60,7 +61,8 @@ def _get_bot_username() -> str:
         cfg = load_config()
         gh = cfg.get("github") or {}
         return str(gh.get("nickname", "")).strip()
-    except (ImportError, OSError):
+    except (ImportError, OSError) as e:
+        log.warning("Failed to load bot username, bot-comment filtering disabled: %s", e)
         return ""
 
 
@@ -335,7 +337,7 @@ def check_and_dispatch_review_comments(
             if stored == fingerprint:
                 continue
 
-            summary = _format_comment_summary(inline)
+            summary = _format_comment_summary(all_comments)
             mission = (
                 f"[project:{project_name}] Address review comments on "
                 f"#{pr_number} ({summary})"
@@ -356,9 +358,8 @@ def check_and_dispatch_review_comments(
                     (stored or "none")[:8], fingerprint[:8],
                 )
                 dispatched += 1
-
-            tracker[pr_key] = fingerprint
-            tracker_changed = True
+                tracker[pr_key] = fingerprint
+                tracker_changed = True
 
         tracker[project_key] = now
         tracker_changed = True

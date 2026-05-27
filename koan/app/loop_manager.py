@@ -922,7 +922,7 @@ def process_github_notifications(
                 )
                 missions_created += review_dispatched
         except (ImportError, OSError, RuntimeError) as e:
-            log.debug("Review comment dispatch failed: %s", e)
+            log.warning("Review comment dispatch failed: %s", e)
 
         # Update backoff state
         with _github_state_lock:
