@@ -194,8 +194,9 @@ def _strip_project_prefix(text: str) -> Tuple[str, str]:
         return tag_match.group(1), stripped[tag_match.end():].strip()
 
     # 2. Raw word prefix: "koan /plan ..."
-    # Only accept known project names to avoid matching common English
-    # words (e.g. "the /keyword ..." was incorrectly parsed as project="the").
+    # Accept known project names or project aliases to avoid matching common
+    # English words (e.g. "the /keyword ..." was incorrectly parsed as
+    # project="the").
     parts = stripped.split(None, 1)
     if (len(parts) >= 2
             and not parts[0].startswith("/")
@@ -204,6 +205,10 @@ def _strip_project_prefix(text: str) -> Tuple[str, str]:
         candidate = parts[0]
         if is_known_project(candidate):
             return candidate, parts[1]
+        from app.utils import resolve_project_alias
+        alias_resolved = resolve_project_alias(candidate)
+        if alias_resolved:
+            return alias_resolved, parts[1]
 
     # 3. No prefix
     return "", stripped

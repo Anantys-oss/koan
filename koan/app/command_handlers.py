@@ -66,15 +66,8 @@ def _has_in_progress_mission() -> bool:
 
 def _resolve_project_alias(command_name: str) -> Optional[str]:
     """Check if command_name is a project alias. Returns project name or None."""
-    import json
-    aliases_path = INSTANCE_DIR / ".project-aliases.json"
-    if not aliases_path.exists():
-        return None
-    try:
-        aliases = json.loads(aliases_path.read_text(encoding="utf-8"))
-        return aliases.get(command_name)
-    except (json.JSONDecodeError, OSError):
-        return None
+    from app.utils import resolve_project_alias
+    return resolve_project_alias(command_name)
 
 
 def _strip_bot_mention(text: str) -> str:
@@ -315,8 +308,11 @@ def _queue_cli_skill_mission(skill: Skill, args: str):
     mission_args = args
     words = args.split(None, 1)
     if words:
+        from app.utils import resolve_project_alias
         known_map = {name.lower(): name for name, _ in get_known_projects()}
         matched = known_map.get(words[0].lower())
+        if not matched:
+            matched = resolve_project_alias(words[0])
         if matched:
             project = matched
             mission_args = words[1] if len(words) > 1 else ""

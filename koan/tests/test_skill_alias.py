@@ -35,7 +35,8 @@ def patch_bridge_state(koan_root):
     missions_file = instance / "missions.md"
     with patch("app.command_handlers.KOAN_ROOT", koan_root), \
          patch("app.command_handlers.INSTANCE_DIR", instance), \
-         patch("app.command_handlers.MISSIONS_FILE", missions_file):
+         patch("app.command_handlers.MISSIONS_FILE", missions_file), \
+         patch("app.utils.KOAN_ROOT", koan_root):
         yield koan_root
 
 
@@ -259,3 +260,102 @@ class TestAliasDispatch:
         from app.command_handlers import handle_command
         handle_command("/TT fix it")
         mock_mission.assert_called_once_with("Template2 fix it")
+
+
+# ---------------------------------------------------------------------------
+# Alias resolution in skill arguments (the main fix)
+# ---------------------------------------------------------------------------
+
+class TestAliasInSkillArgs:
+    """Tests that aliases are resolved when used as project arguments in skills."""
+
+    def _write_aliases(self, root, aliases):
+        path = root / "instance" / ".project-aliases.json"
+        path.write_text(json.dumps(aliases))
+
+    @patch("app.command_handlers.insert_pending_mission")
+    @patch("app.utils.get_known_projects", return_value=[("Template2", "/path/t2")])
+    @patch("app.utils.resolve_project_alias", return_value="Template2")
+    def test_queue_cli_skill_resolves_alias_as_project(
+        self, _mock_alias, _mock_proj, mock_insert,
+        patch_bridge_state, mock_send, mock_registry,
+    ):
+        """When first arg is an alias, it should resolve to the project name."""
+        from app.command_handlers import _queue_cli_skill_mission
+        from app.skills import Skill, SkillCommand
+
+        skill = Skill(
+            name="ai",
+            scope="core",
+            description="AI exploration",
+            audience="agent",
+            cli_skill="ai-tool",
+            commands=[SkillCommand(name="ai", description="AI")],
+        )
+
+        _queue_cli_skill_mission(skill, "tt explore auth")
+        entry = mock_insert.call_args[0][1]
+        assert "[project:Template2]" in entry
+        assert "explore auth" in entry
+
+    @patch("app.command_handlers.insert_pending_mission")
+    @patch("app.utils.get_known_projects", return_value=[("koan", "/path/k")])
+    def test_queue_cli_skill_prefers_project_over_alias(
+        self, _mock_proj, mock_insert, patch_bridge_state, mock_send, mock_registry
+    ):
+        """Known project names take priority over aliases."""
+        self._write_aliases(patch_bridge_state, {"koan": "ShouldNotUse"})
+        from app.command_handlers import _queue_cli_skill_mission
+        from app.skills import Skill, SkillCommand
+
+        skill = Skill(
+            name="audit",
+            scope="core",
+            description="Audit",
+            audience="agent",
+            cli_skill="audit-tool",
+            commands=[SkillCommand(name="audit", description="Audit")],
+        )
+
+        _queue_cli_skill_mission(skill, "koan check deps")
+        entry = mock_insert.call_args[0][1]
+        assert "[project:koan]" in entry
+
+    def test_strip_project_prefix_resolves_alias(self):
+        """_strip_project_prefix should recognize aliases as project prefixes."""
+        from app.skill_dispatch import _strip_project_prefix
+
+        with patch("app.skill_dispatch.is_known_project", return_value=False), \
+             patch("app.utils.resolve_project_alias", return_value="Template2"):
+            project, remainder = _strip_project_prefix("tt /plan add dark mode")
+        assert project == "Template2"
+        assert remainder == "/plan add dark mode"
+
+    def test_strip_project_prefix_prefers_known_project(self):
+        """Known projects take priority over aliases in _strip_project_prefix."""
+        from app.skill_dispatch import _strip_project_prefix
+
+        with patch("app.skill_dispatch.is_known_project", return_value=True):
+            project, remainder = _strip_project_prefix("koan /plan add dark mode")
+        assert project == "koan"
+        assert remainder == "/plan add dark mode"
+
+    def test_strip_project_prefix_no_alias_match(self):
+        """When first word is neither a project nor an alias, no prefix is extracted."""
+        from app.skill_dispatch import _strip_project_prefix
+
+        with patch("app.skill_dispatch.is_known_project", return_value=False), \
+             patch("app.utils.resolve_project_alias", return_value=None):
+            project, remainder = _strip_project_prefix("unknown /plan add mode")
+        assert project == ""
+        assert remainder == "unknown /plan add mode"
+
+    def test_detect_project_from_text_resolves_alias(self):
+        """detect_project_from_text should resolve aliases."""
+        from app.utils import detect_project_from_text
+
+        with patch("app.utils.get_known_projects", return_value=[]), \
+             patch("app.utils.load_project_aliases", return_value={"tt": "Template2"}):
+            project, text = detect_project_from_text("tt explore auth")
+        assert project == "Template2"
+        assert text == "explore auth"
