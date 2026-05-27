@@ -95,7 +95,7 @@ def prepare_prompt_file(cmd: List[str]) -> Tuple[List[str], Optional[str]]:
 def _cleanup_prompt_file(path: Optional[str]) -> None:
     """Silently remove a temp prompt file if it exists."""
     if path:
-        with suppress_logged(_log_cli, "error", f"Prompt file cleanup failed ({path})", OSError):
+        with suppress_logged(_log_cli, "debug", f"Prompt file cleanup failed ({path})", OSError):
             os.unlink(path)
 
 
@@ -199,7 +199,7 @@ def stream_with_timeout(
             watchdog.mark_completed()
             watchdog.cancel()
 
-        with suppress_logged(_log_cli, "error", "Stderr stream read failed", OSError, ValueError):
+        with suppress_logged(_log_cli, "warning", "Stderr stream read failed", OSError, ValueError):
             if proc.stderr:
                 stderr_text = proc.stderr.read()
 
@@ -213,7 +213,7 @@ def stream_with_timeout(
     finally:
         for stream in (proc.stdout, proc.stderr):
             if stream is not None:
-                with suppress_logged(_log_cli, "error", "Stream close failed", OSError):
+                with suppress_logged(_log_cli, "debug", "Stream close failed", OSError):
                     stream.close()
 
     return StreamResult(

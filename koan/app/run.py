@@ -920,7 +920,7 @@ def main_loop():
                         # Check if a schedule window is active — if so, the
                         # human configured deep_hours or work_hours and the
                         # agent should stay active, not auto-pause.
-                        with suppress_logged(log, "error", "Schedule active check failed", Exception):
+                        with suppress_logged(log, "warning", "Schedule active check failed", Exception):
                             from app.schedule_manager import is_scheduled_active
                             if is_scheduled_active():
                                 if consecutive_idle == MAX_CONSECUTIVE_IDLE:
@@ -1575,7 +1575,7 @@ def _maybe_retry_mission(
         time.sleep(_MISSION_RETRY_DELAY)
 
     # Clear output files before retry to avoid double-counting
-    with suppress_logged(log, "error", "Output file clear before retry failed", OSError):
+    with suppress_logged(log, "debug", "Output file clear before retry failed", OSError):
         open(stdout_file, "w").close()
         open(stderr_file, "w").close()
 
@@ -2195,7 +2195,7 @@ def _run_iteration(
                 if _cp_branch:
                     update_checkpoint(instance, original_mission_title, branch=_cp_branch)
                 update_from_pending(instance, original_mission_title)
-                with suppress_logged(log, "error", "Checkpoint stdout read failed", OSError):
+                with suppress_logged(log, "warning", "Checkpoint stdout read failed", OSError):
                     _cp_stdout = Path(stdout_file).read_text(errors="replace")
                     update_from_stdout(instance, original_mission_title, _cp_stdout)
             except Exception as e:
@@ -2949,7 +2949,7 @@ def _run_skill_mission(
             log("info", "No stdout captured before timeout")
             debug_log("[run] timeout: no stdout lines captured")
         # Log stderr — may contain API errors that explain the hang
-        with suppress_logged(log, "error", "Timeout stderr read failed", OSError):
+        with suppress_logged(log, "warning", "Timeout stderr read failed", OSError):
             _timeout_stderr = Path(stderr_file).read_text().strip()
             if _timeout_stderr:
                 debug_log(f"[run] timeout stderr:\n{_timeout_stderr[:2000]}")
@@ -2966,7 +2966,7 @@ def _run_skill_mission(
         skill_stderr = ""
     finally:
         if proc is not None and proc.stdout is not None:
-            with suppress_logged(log, "error", "Skill proc stdout close failed", OSError):
+            with suppress_logged(log, "debug", "Skill proc stdout close failed", OSError):
                 proc.stdout.close()
         if stderr_fh is not None:
             stderr_fh.close()
@@ -3027,7 +3027,7 @@ def _run_skill_mission(
 def _cleanup_temp(*files):
     """Remove temporary files."""
     for f in files:
-        with suppress_logged(log, "error", f"Temp file cleanup failed ({f})", OSError):
+        with suppress_logged(log, "debug", f"Temp file cleanup failed ({f})", OSError):
             Path(f).unlink(missing_ok=True)
 
 

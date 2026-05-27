@@ -132,9 +132,9 @@ class TestRunErrorLogging:
             MockPath.return_value = mock_path_instance
             _cleanup_temp("/tmp/fake-stdout", "/tmp/fake-stderr")
 
-        error_calls = [c for c in mock_log.call_args_list if c[0][0] == "error"]
-        assert len(error_calls) == 2
-        assert "Temp file cleanup failed" in error_calls[0][0][1]
+        debug_calls = [c for c in mock_log.call_args_list if c[0][0] == "debug"]
+        assert len(debug_calls) == 2
+        assert "Temp file cleanup failed" in debug_calls[0][0][1]
 
 
 class TestIterationManagerErrorLogging:

@@ -46,11 +46,11 @@ def _get_skills_dir_mtime(instance_dir: Path) -> float:
     """Get the max mtime of core and instance skills directories."""
     best = 0.0
     core_dir = Path(__file__).resolve().parent.parent / "skills" / "core"
-    with suppress_logged(_log_skill, "error", "Core skills dir stat failed", OSError):
+    with suppress_logged(_log_skill, "warning", "Core skills dir stat failed", OSError):
         best = max(best, core_dir.stat().st_mtime)
     instance_skills = instance_dir / "skills"
     if instance_skills.is_dir():
-        with suppress_logged(_log_skill, "error", "Instance skills dir stat failed", OSError):
+        with suppress_logged(_log_skill, "warning", "Instance skills dir stat failed", OSError):
             best = max(best, instance_skills.stat().st_mtime)
     return best
 
@@ -880,7 +880,7 @@ def cleanup_skill_temp_files(skill_cmd: List[str]) -> None:
         if prefix and i + 1 < len(skill_cmd):
             path = skill_cmd[i + 1]
             if prefix in path:
-                with suppress_logged(_log_skill, "error", f"Temp skill file cleanup failed ({path})", OSError):
+                with suppress_logged(_log_skill, "debug", f"Temp skill file cleanup failed ({path})", OSError):
                     os.unlink(path)
 
 
