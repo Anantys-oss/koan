@@ -641,12 +641,13 @@ def _format_error_hunter_findings(findings: list) -> str:
     return "\n".join(lines).rstrip()
 
 
-def _extract_review_body(raw_output: str) -> str:
+def _extract_review_body(raw_output: str) -> Optional[str]:
     """Extract structured review from Claude's raw output.
 
-    Tries to find markdown-structured review content. If the output
-    looks like JSON, attempts to parse and format it as markdown.
-    Falls back to the full output if no structure is detected.
+    Tries to find markdown-structured review content. If the output looks
+    like JSON, attempts to parse and format it as markdown. Returns None
+    when no structure can be recovered — callers MUST NOT post raw model
+    output to a PR (see the guardrail in ``run_review``).
     """
     # Look for the new format: ## PR Review — ...
     match = re.search(r'(## PR Review\b.*)', raw_output, re.DOTALL)
@@ -670,27 +671,88 @@ def _extract_review_body(raw_output: str) -> str:
         except (json.JSONDecodeError, ValueError):
             pass
 
-    # Fall back to full output (Claude may format differently)
-    return raw_output.strip()
+    # No structured review could be recovered. Signal failure rather than
+    # leaking raw narration / JSON to the PR.
+    return None
+
+
+def _is_parseable_json(text: str) -> bool:
+    """Return True if ``text`` parses as any JSON value (object, array, scalar)."""
+    try:
+        json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return False
+    return True
+
+
+def _loads_object_or_none(candidate: str) -> Optional[dict]:
+    """json.loads ``candidate``, returning the dict or None on failure.
+
+    Extracted so callers can attempt parsing inside a loop without a
+    per-iteration try/except (PERF203).
+    """
+    try:
+        decoded = json.loads(candidate)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return decoded if isinstance(decoded, dict) else None
+
+
+def _match_balanced_object(text: str, start: int) -> Optional[str]:
+    """Return the balanced ``{ ... }`` substring beginning at ``start``.
+
+    Tracks string context so braces inside JSON string values — and any
+    markdown code fences embedded in those strings — do not affect nesting
+    depth. Returns None if the braces never balance.
+    """
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start, len(text)):
+        c = text[i]
+        if escape:
+            escape = False
+            continue
+        if c == "\\":
+            escape = True
+            continue
+        if c == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+    return None
 
 
 def _extract_json_text(text: str) -> Optional[str]:
     """Extract a JSON object string from text that may contain surrounding prose.
 
-    Tries multiple strategies:
-    1. Direct parse of the full text (pure JSON)
-    2. Strip markdown code fences (```json ... ```)
-    3. Extract JSON from code fences anywhere in the text
-    4. Find the outermost { ... } in the text
+    Tries, in order:
+    1. Direct parse of the full text (pure JSON).
+    2. Strip markdown code fences wrapping the entire text (```json ... ```).
+    3. Scan every ``{`` in the text, brace-match a balanced object at each
+       (respecting string context), and return the largest substring that
+       decodes to a JSON object.
+
+    Strategy 3 is deliberately robust to two failure modes that previously
+    caused raw model output to be posted to a PR: preamble prose containing
+    brace-like tokens (e.g. GitHub Actions ``${{ ... }}`` expressions, whose
+    leading ``{`` would otherwise hijack a first-brace-only matcher) and
+    markdown code fences embedded inside JSON string values (which defeat
+    fence-based regexes). The largest balanced object wins because the review
+    object always wraps its nested file-comment objects.
     """
     stripped = text.strip()
 
     # Strategy 1: pure JSON
-    try:
-        json.loads(stripped)
+    if _is_parseable_json(stripped):
         return stripped
-    except (json.JSONDecodeError, ValueError):
-        pass
 
     # Strategy 2: text wrapped entirely in code fences
     fence_stripped = stripped
@@ -701,54 +763,23 @@ def _extract_json_text(text: str) -> Optional[str]:
     if fence_stripped.endswith("```"):
         fence_stripped = fence_stripped[:-3]
     fence_stripped = fence_stripped.strip()
-    if fence_stripped != stripped:
-        try:
-            json.loads(fence_stripped)
-            return fence_stripped
-        except (json.JSONDecodeError, ValueError):
-            pass
+    if fence_stripped != stripped and _is_parseable_json(fence_stripped):
+        return fence_stripped
 
-    # Strategy 3: code fences embedded in surrounding text
-    fence_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', stripped, re.DOTALL)
-    if fence_match:
-        candidate = fence_match.group(1).strip()
-        try:
-            json.loads(candidate)
-            return candidate
-        except (json.JSONDecodeError, ValueError):
-            pass
-
-    # Strategy 4: find outermost { ... } with brace matching
-    start = stripped.find("{")
-    if start != -1:
-        depth = 0
-        in_string = False
-        escape = False
-        for i in range(start, len(stripped)):
-            c = stripped[i]
-            if escape:
-                escape = False
-                continue
-            if c == "\\":
-                escape = True
-                continue
-            if c == '"':
-                in_string = not in_string
-                continue
-            if in_string:
-                continue
-            if c == "{":
-                depth += 1
-            elif c == "}":
-                depth -= 1
-                if depth == 0:
-                    candidate = stripped[start:i + 1]
-                    try:
-                        json.loads(candidate)
-                        return candidate
-                    except (json.JSONDecodeError, ValueError):
-                        break
-    return None
+    # Strategy 3: scan every '{' and keep the largest balanced object that
+    # decodes to a JSON object.
+    best: Optional[str] = None
+    pos = stripped.find("{")
+    while pos != -1:
+        candidate = _match_balanced_object(stripped, pos)
+        if (
+            candidate is not None
+            and _loads_object_or_none(candidate) is not None
+            and (best is None or len(candidate) > len(best))
+        ):
+            best = candidate
+        pos = stripped.find("{", pos + 1)
+    return best
 
 
 def _parse_review_json(raw_output: str) -> Optional[dict]:
@@ -788,6 +819,13 @@ _SEVERITY_HEADING = {
     "warning": "Important",
     "suggestion": "Suggestions",
 }
+
+# Posted to the PR when the model's output cannot be parsed into the structured
+# review format. A short placeholder is posted instead of raw narration / JSON.
+_UNPARSEABLE_REVIEW_NOTICE = (
+    "⚠️ The automated review could not be formatted into the standard "
+    "structure. Re-run `/review` to retry."
+)
 
 
 def _format_review_as_markdown(review_data: dict, title: str = "", bot_username: str = "") -> str:
@@ -1372,6 +1410,20 @@ def run_review(
             file=sys.stderr,
         )
         review_body = _extract_review_body(raw_output)
+        if review_body is None:
+            # Guardrail: never post raw model output (narration / JSON) to a PR.
+            # Post a short placeholder and alert a human to re-run.
+            print(
+                "[review_runner] review output unparseable; "
+                "posting placeholder notice",
+                file=sys.stderr,
+            )
+            notify_fn(
+                f"⚠️ Review for PR #{pr_number}: model output couldn't be "
+                "parsed into the structured format; posted a placeholder. "
+                "Re-run /review to retry."
+            )
+            review_body = _UNPARSEABLE_REVIEW_NOTICE
 
     # Step 6: Post replies to user comments
     reply_count = 0

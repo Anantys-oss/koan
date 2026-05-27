@@ -255,15 +255,15 @@ class TestExtractReviewBody:
         result = _extract_review_body(raw)
         assert result.startswith("## PR Review")
 
-    def test_fallback_to_full_output(self):
-        """When no structured format found, returns full text."""
+    def test_unstructured_output_returns_none(self):
+        """Guardrail: when no structured review can be recovered, returns None
+        rather than leaking raw model output to the PR."""
         raw = "This is a freeform review. Code is fine."
-        result = _extract_review_body(raw)
-        assert result == raw
+        assert _extract_review_body(raw) is None
 
-    def test_empty_input(self):
-        """Empty input returns empty string."""
-        assert _extract_review_body("") == ""
+    def test_empty_input_returns_none(self):
+        """Empty input yields no structured review -> None."""
+        assert _extract_review_body("") is None
 
     def test_whitespace_stripped(self):
         """Leading/trailing whitespace is removed."""
@@ -378,6 +378,48 @@ class TestExtractJsonText:
         assert "file_comments" in data
         assert "review_summary" in data
 
+    def test_preamble_with_github_actions_expression(self):
+        """Regression: preamble mentioning ${{ ... }} must not hijack extraction.
+
+        The first '{' in the text is inside a GitHub Actions expression, which
+        a first-brace-only matcher would latch onto and fail. The real object
+        must still be recovered.
+        """
+        obj = {"file_comments": [], "review_summary": {"lgtm": True}}
+        text = (
+            "The workflow uses `${{ steps.parse.outputs.name }}` inline in a "
+            "shell block (an injection vector).\n\n" + json.dumps(obj)
+        )
+        result = _extract_json_text(text)
+        assert result is not None
+        assert json.loads(result)["review_summary"]["lgtm"] is True
+
+    def test_returns_largest_object_skipping_decoys(self):
+        """Picks the largest valid object, skipping a small decoy {} and a
+        brace-token from preamble."""
+        big = {"file_comments": [], "review_summary": {"summary": "x" * 50}}
+        text = "Note ${{ x }} and an empty {} then:\n\n" + json.dumps(big)
+        result = _extract_json_text(text)
+        assert result is not None
+        assert json.loads(result) == big
+
+    def test_object_with_embedded_code_fences_in_strings(self):
+        """JSON whose string values contain ``` fences must still extract.
+
+        Fence-regex strategies break on embedded fences; the brace-matcher
+        respects string context and recovers the whole object.
+        """
+        obj = {
+            "file_comments": [],
+            "review_summary": {
+                "summary": "Use:\n```bash\ngh pr create || echo done\n```\nDone.",
+            },
+        }
+        text = "Here is the review:\n\n```json\n" + json.dumps(obj) + "\n```\n"
+        result = _extract_json_text(text)
+        assert result is not None
+        assert "```bash" in json.loads(result)["review_summary"]["summary"]
+
 
 # ---------------------------------------------------------------------------
 # _parse_review_json
@@ -412,6 +454,58 @@ LGTM_REVIEW_JSON = {
         "checklist": [],
     },
 }
+
+# Mirrors the real PR #40 regression: workflow-file review where the model
+# emitted narration containing a ${{ ... }} expression *before* a fenced JSON
+# object whose string values themselves contain ```bash code fences.
+_PR40_REVIEW_OBJ = {
+    "file_comments": [
+        {
+            "file": ".github/workflows/evaluate.yml",
+            "line_start": 88,
+            "line_end": 88,
+            "severity": "critical",
+            "title": "Command injection via expression interpolation",
+            "comment": "Move the value into an env block:\n```bash\nenv:\n  NAME: ${{ steps.parse.outputs.name }}\n```\nThen reference $NAME.",
+            "code_snippet": "run: echo ${{ steps.parse.outputs.name }}",
+        },
+        {
+            "file": ".github/workflows/evaluate.yml",
+            "line_start": 90,
+            "line_end": 90,
+            "severity": "warning",
+            "title": "`|| echo` swallows all failures",
+            "comment": "Check the exit code instead.",
+            "code_snippet": "|| echo \"exists\"",
+        },
+        {
+            "file": "scripts/validate.js",
+            "line_start": 10,
+            "line_end": 10,
+            "severity": "suggestion",
+            "title": "Reject symlinks in traversal",
+            "comment": "Use isSymbolicLink().",
+            "code_snippet": "",
+        },
+    ],
+    "review_summary": {
+        "lgtm": False,
+        "summary": "Solid security-focused PR with two items to address.",
+        "checklist": [
+            {"item": "No command injection", "passed": False, "finding_ref": "critical #1"},
+        ],
+    },
+    "comment_replies": [],
+}
+
+PR40_LIKE_RAW = (
+    "Now I have the full picture. The workflow uses "
+    "`${{ steps.parse.outputs.name }}` inline in shell `run:` blocks "
+    "(a known GitHub Actions injection vector).\n\n"
+    "Let me also verify the parse step is safe.\n\n"
+    "Good — the parse step uses `${GITHUB_REF#refs/tags/}` which is safe.\n\n"
+    "```json\n" + json.dumps(_PR40_REVIEW_OBJ) + "\n```\n"
+)
 
 
 class TestParseReviewJson:
@@ -492,6 +586,24 @@ class TestParseReviewJson:
         )
         result = _parse_review_json(raw)
         assert result is not None
+
+    def test_pr40_regression_parses_and_renders_buckets(self):
+        """The PR #40 regression end-to-end: narration with a ${{ }} expression
+        plus a fenced JSON object containing embedded ```bash fences must parse
+        and render into severity buckets (not be posted as raw JSON)."""
+        result = _parse_review_json(PR40_LIKE_RAW)
+        assert result is not None
+        assert {"file_comments", "review_summary"} <= result.keys()
+        assert len(result["file_comments"]) == 3
+
+        md = _format_review_as_markdown(result, title="Security hardening")
+        assert "## PR Review — Security hardening" in md
+        assert "### 🔴 Blocking" in md
+        assert "### 🟡 Important" in md
+        assert "### 🟢 Suggestions" in md
+        # The raw JSON envelope must not leak into the rendered comment.
+        assert '"file_comments"' not in md
+        assert "```json" not in md
 
 
 # ---------------------------------------------------------------------------
@@ -729,6 +841,43 @@ class TestRunReview:
         # Claude called twice (initial + retry)
         assert mock_claude.call_count == 2
         mock_gh.assert_called_once()
+
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
+    @patch("app.review_runner._run_error_hunter", return_value="")
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_unparseable_output_posts_placeholder_not_raw(
+        self, mock_fetch, mock_claude, mock_gh, mock_repliable,
+        _mock_hunter, _mock_shas, pr_context, review_skill_dir,
+    ):
+        """Guardrail: when neither attempt yields parseable/structured output,
+        post a short placeholder (never the raw narration) and alert a human."""
+        mock_fetch.return_value = pr_context
+        raw_junk = (
+            "Sorry — I was unable to produce a structured review here; "
+            "these are some loose notes about the diff."
+        )
+        mock_claude.return_value = (raw_junk, "")
+        mock_notify = MagicMock()
+
+        success, summary, review_data = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=mock_notify,
+            skill_dir=review_skill_dir,
+        )
+
+        assert review_data is None
+        assert mock_claude.call_count == 2  # initial + retry
+        mock_gh.assert_called_once()
+
+        posted_body = mock_gh.call_args.args[-1]
+        assert "could not be formatted" in posted_body
+        assert "loose notes about the diff" not in posted_body  # raw never posted
+
+        alerts = [str(c.args[0]) for c in mock_notify.call_args_list if c.args]
+        assert any("couldn't be parsed" in a for a in alerts)
 
     @patch("app.review_runner._reflect_findings", side_effect=lambda findings, *a, **kw: findings)
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
