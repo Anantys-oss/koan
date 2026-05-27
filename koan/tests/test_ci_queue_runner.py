@@ -215,13 +215,37 @@ class TestDrainOneErrorHandling:
             patch("app.utils.modify_missions_file"),
             patch("app.ci_queue_runner._check_pr_state_safe", return_value="OPEN"),
             patch("app.ci_queue_runner.check_ci_status", return_value=("failure", 456, "")),
-            patch("app.ci_queue_runner._inject_ci_fix_mission") as mock_inject,
+            patch("app.ci_queue_runner._inject_ci_fix_mission", return_value=True) as mock_inject,
         ):
             result = drain_one("/tmp/instance")
 
         assert result is not None
         assert "failed" in result.lower()
         mock_inject.assert_called_once()
+
+    def test_drain_one_failure_duplicate_skips_attempt_increment(self):
+        """When a /ci_check is already queued, drain_one skips the attempt increment.
+
+        Regression: _inject_ci_fix_mission used insert_mission (no dedup),
+        causing rapid-fire duplicate /ci_check missions and premature attempt
+        exhaustion on every iteration while the first fix was still pending.
+        """
+        from app.ci_queue_runner import drain_one
+
+        missions_content = self._missions_with_ci_entry(attempt=0, max_attempts=5)
+        with (
+            patch("pathlib.Path.exists", return_value=True),
+            patch("pathlib.Path.read_text", return_value=missions_content),
+            patch("app.ci_queue_runner._maybe_migrate_json_queue"),
+            patch("app.utils.modify_missions_file") as mock_modify,
+            patch("app.ci_queue_runner._check_pr_state_safe", return_value="OPEN"),
+            patch("app.ci_queue_runner.check_ci_status", return_value=("failure", 456, "")),
+            patch("app.ci_queue_runner._inject_ci_fix_mission", return_value=False),
+        ):
+            result = drain_one("/tmp/instance")
+
+        assert result is None
+        mock_modify.assert_not_called()
 
     def test_drain_one_failure_at_max_gives_up(self):
         """On CI failure at max attempts, entry is removed and failure notified."""
@@ -320,6 +344,47 @@ class TestDrainOneErrorHandling:
         # pending CI returns None and leaves the entry in place
         assert result is None
         mock_status.assert_called_once()
+
+
+class TestInjectCiFixMission:
+    """Verify _inject_ci_fix_mission uses dedup via insert_pending_mission."""
+
+    def test_uses_insert_pending_mission_for_dedup(self):
+        """_inject_ci_fix_mission must route through insert_pending_mission,
+        not raw insert_mission, so is_duplicate_mission is checked."""
+        from app.ci_queue_runner import _inject_ci_fix_mission
+
+        entry = {"project": "proj", "project_path": ""}
+        with patch("app.utils.insert_pending_mission", return_value=True) as mock_insert:
+            result = _inject_ci_fix_mission("/tmp/instance", PR_URL, entry)
+
+        assert result is True
+        mock_insert.assert_called_once()
+        call_args = mock_insert.call_args
+        assert "/ci_check" in call_args[0][1]
+        assert PR_URL in call_args[0][1]
+        assert call_args[1]["urgent"] is True
+
+    def test_returns_false_when_duplicate(self):
+        """When insert_pending_mission detects a duplicate, return False."""
+        from app.ci_queue_runner import _inject_ci_fix_mission
+
+        entry = {"project": "proj", "project_path": ""}
+        with patch("app.utils.insert_pending_mission", return_value=False):
+            result = _inject_ci_fix_mission("/tmp/instance", PR_URL, entry)
+
+        assert result is False
+
+    def test_project_tag_from_path_fallback(self):
+        """When entry has no 'project' key, derive from project_path."""
+        from app.ci_queue_runner import _inject_ci_fix_mission
+
+        entry = {"project_path": "/home/user/repos/my-toolkit"}
+        with patch("app.utils.insert_pending_mission", return_value=True) as mock_insert:
+            _inject_ci_fix_mission("/tmp/instance", PR_URL, entry)
+
+        mission_text = mock_insert.call_args[0][1]
+        assert "[project:my-toolkit]" in mission_text
 
 
 class TestCheckPrStateSafe:

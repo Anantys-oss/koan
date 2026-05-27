@@ -111,13 +111,17 @@ def drain_one(instance_dir: str) -> Optional[str]:
 
     if status == "failure":
         if attempt < max_attempts:
-            # Increment attempt counter, inject fix mission
-            modify_missions_file(
-                missions_path,
-                lambda c: update_ci_item_attempt(c, pr_url),
-            )
-            _inject_ci_fix_mission(instance_dir, pr_url, entry)
-            return f"CI failed for PR #{pr_number} — /ci_check mission queued (attempt {attempt + 1}/{max_attempts})"
+            # Only increment attempt counter when a fix mission is actually
+            # inserted.  If a /ci_check for this PR is already pending or in
+            # progress, skip — avoids rapid-fire duplicate missions and
+            # premature attempt exhaustion.
+            if _inject_ci_fix_mission(instance_dir, pr_url, entry):
+                modify_missions_file(
+                    missions_path,
+                    lambda c: update_ci_item_attempt(c, pr_url),
+                )
+                return f"CI failed for PR #{pr_number} — /ci_check mission queued (attempt {attempt + 1}/{max_attempts})"
+            return None
         else:
             # Max attempts exhausted
             modify_missions_file(
@@ -176,10 +180,13 @@ def _check_pr_state_safe(pr_number: str, full_repo: str) -> str:
         return "UNKNOWN"
 
 
-def _inject_ci_fix_mission(instance_dir: str, pr_url: str, entry: dict):
-    """Inject a /ci_check mission into the pending queue."""
-    from app.missions import insert_mission
-    from app.utils import modify_missions_file
+def _inject_ci_fix_mission(instance_dir: str, pr_url: str, entry: dict) -> bool:
+    """Inject a /ci_check mission into the pending queue.
+
+    Returns True if the mission was inserted, False if a duplicate
+    /ci_check for the same PR is already pending or in progress.
+    """
+    from app.utils import insert_pending_mission
 
     missions_path = Path(instance_dir) / "missions.md"
     project_name = entry.get("project") or _project_name_from_path(
@@ -189,10 +196,7 @@ def _inject_ci_fix_mission(instance_dir: str, pr_url: str, entry: dict):
 
     mission_text = f"- {tag}/ci_check {pr_url}"
 
-    modify_missions_file(
-        missions_path,
-        lambda content: insert_mission(content, mission_text, urgent=True),
-    )
+    return insert_pending_mission(missions_path, mission_text, urgent=True)
 
 
 def _project_name_from_path(project_path: str) -> str:
