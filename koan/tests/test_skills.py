@@ -2041,6 +2041,78 @@ class TestGithubActionRegexSync:
         )
 
 
+class TestClaudemdSkillListSync:
+    """Ensure the CLAUDE.md core skills list stays in sync with actual skills."""
+
+    def _get_claudemd_path(self):
+        skills_dir = get_default_skills_dir()
+        return skills_dir.parent.parent / "CLAUDE.md"
+
+    def _parse_claudemd_skills(self, claudemd_path):
+        """Extract the skill list from CLAUDE.md's core skills line."""
+        import re
+        text = claudemd_path.read_text(encoding="utf-8")
+        m = re.search(r"\*\*Core skills\*\*.*?\(([^)]+)\)", text)
+        assert m, "Could not find 'Core skills' list in CLAUDE.md"
+        return {s.strip() for s in m.group(1).split(",")}
+
+    def _get_actual_skills(self):
+        """Get all core skill names that have a SKILL.md file."""
+        skills_dir = get_default_skills_dir()
+        core_dir = skills_dir / "core"
+        return {
+            skill_md.parent.name
+            for skill_md in sorted(core_dir.rglob("SKILL.md"))
+            if parse_skill_md(skill_md) is not None
+        }
+
+    def test_all_core_skills_in_claudemd(self):
+        """Every core skill with SKILL.md must appear in CLAUDE.md's list."""
+        claudemd = self._get_claudemd_path()
+        if not claudemd.is_file():
+            return
+        listed = self._parse_claudemd_skills(claudemd)
+        actual = self._get_actual_skills()
+
+        missing = sorted(actual - listed)
+        assert not missing, (
+            f"Core skills missing from CLAUDE.md (add to the 'Core skills' list): "
+            f"{', '.join(missing)}"
+        )
+
+    def test_claudemd_entries_are_real_skills(self):
+        """Every entry in CLAUDE.md's list must be an actual core skill directory."""
+        claudemd = self._get_claudemd_path()
+        if not claudemd.is_file():
+            return
+        listed = self._parse_claudemd_skills(claudemd)
+        actual = self._get_actual_skills()
+
+        orphaned = sorted(listed - actual)
+        assert not orphaned, (
+            f"CLAUDE.md lists skills that don't exist as core skills "
+            f"(remove from list or create the skill): {', '.join(orphaned)}"
+        )
+
+    def test_no_orphaned_skill_directories(self):
+        """Core skill directories without SKILL.md are orphans that should be removed."""
+        skills_dir = get_default_skills_dir()
+        core_dir = skills_dir / "core"
+        skip = {"__pycache__", "__init__.py"}
+
+        orphans = []
+        for entry in sorted(core_dir.iterdir()):
+            if entry.name in skip or not entry.is_dir():
+                continue
+            if not (entry / "SKILL.md").is_file():
+                orphans.append(entry.name)
+
+        assert not orphans, (
+            f"Core skill directories without SKILL.md (remove or add SKILL.md): "
+            f"{', '.join(orphans)}"
+        )
+
+
 class TestHyphenValidation:
     """Ensure skills with hyphens in command names or aliases are rejected."""
 
