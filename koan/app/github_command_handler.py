@@ -933,36 +933,22 @@ def _try_assignment_notification(
     if not command_name:
         return False
 
-    # Composite key for persistent dedup. Bumping updated_at (re-requested
-    # review, new commits pushed) yields a fresh key so renewed requests
-    # still queue a new mission. Falls back to id-only if updated_at is
-    # missing — that loses re-request detection for the malformed
-    # notification but never produces a duplicate. An empty notif_id makes
-    # the key useless (a ":<updated_at>" record would never match future
-    # polls), so skip tracking entirely in that case.
     notif_id = str(notification.get("id", ""))
-    updated_at = str(notification.get("updated_at", ""))
-    if notif_id:
-        thread_key = f"{notif_id}:{updated_at}" if updated_at else notif_id
-    else:
-        thread_key = ""
-
     koan_root = os.environ.get("KOAN_ROOT", "")
     instance_dir = str(Path(koan_root) / "instance") if koan_root else ""
 
     from app.github_notification_tracker import is_thread_tracked, track_thread
 
-    # Persistent dedup — survives restart, unlike the in-memory loop cache.
-    # Sits above staleness/closed/repo checks so a previously-handled
-    # notification short-circuits without re-running them.
-    if instance_dir and thread_key:
-        if is_thread_tracked(instance_dir, thread_key):
-            log.debug(
-                "GitHub assign: %s notification %s already tracked, skipping",
-                reason, thread_key,
-            )
-            mark_notification_read(notif_id)
-            return True
+    # Fast path for `assign` (issues have no head SHA): dedup on notif_id
+    # alone, which needs no API call, so short-circuit before any fetch.
+    # updated_at is deliberately excluded — comments on the issue bump it,
+    # and we must not re-trigger /implement on every comment.
+    if reason == "assign" and instance_dir and notif_id and is_thread_tracked(
+        instance_dir, notif_id,
+    ):
+        log.debug("GitHub assign: notification %s already tracked, skipping", notif_id)
+        mark_notification_read(notif_id)
+        return True
 
     # Validate the command is registered and github_enabled
     skill = validate_command(command_name, registry)
@@ -989,8 +975,38 @@ def _try_assignment_notification(
 
     project_name, owner, repo = project_info
 
-    # Skip closed/merged subjects
-    subject_state = _is_subject_closed(notification)
+    # One API call: subject state/merged (closed check) + head SHA (dedup key).
+    subject_info = _fetch_subject_info(notification)
+
+    # Persistent dedup key — survives restart, unlike the in-memory loop cache.
+    #
+    # review_requested → key on the PR head SHA so a re-review fires only when
+    #   new commits land. The previous key embedded updated_at, but ANY thread
+    #   activity bumps updated_at — including the bot's own posted review and
+    #   CI-bot comments — yielding a fresh key every poll and re-queuing
+    #   /review in an infinite loop. The head SHA changes only with new code.
+    # assign / unknown SHA → notif_id alone. Falling back to notif_id when the
+    #   head SHA is unavailable loses new-commit re-review for that poll but
+    #   never produces a duplicate. An empty notif_id makes the key useless, so
+    #   tracking is skipped entirely in that case.
+    head_sha = str(subject_info.get("head_sha") or "")
+    if not notif_id:
+        thread_key = ""
+    elif reason == "review_requested" and head_sha:
+        thread_key = f"{notif_id}:{head_sha}"
+    else:
+        thread_key = notif_id
+
+    if instance_dir and thread_key and is_thread_tracked(instance_dir, thread_key):
+        log.debug(
+            "GitHub assign: %s notification %s already tracked, skipping",
+            reason, thread_key,
+        )
+        mark_notification_read(notif_id)
+        return True
+
+    # Skip closed/merged subjects (reuse the already-fetched subject_info)
+    subject_state = _closed_reason_from_subject_info(subject_info)
     if subject_state:
         subject_title = notification.get("subject", {}).get("title", "?")
         log.info(
@@ -1529,6 +1545,56 @@ def _try_subscription_notification(
     return True
 
 
+def _fetch_subject_info(notification: dict) -> dict:
+    """Fetch state, merged status, and head SHA for a notification's subject.
+
+    One API call returns everything the assignment path needs: the
+    ``state``/``merged`` fields for the closed/merged check and ``head_sha``
+    for the review-request dedup key. Issues have no ``head`` — ``head_sha``
+    comes back null in that case.
+
+    Returns:
+        A dict with keys ``state``, ``merged``, ``head_sha`` (values may be
+        empty/None/False). Returns an empty dict when the subject cannot be
+        fetched, so callers must treat a missing ``head_sha`` as "unknown".
+    """
+    from app.github import SSOAuthRequired, api as gh_api
+
+    subject_url = notification.get("subject", {}).get("url", "")
+    if not subject_url:
+        return {}
+
+    # Convert full URL to API endpoint
+    api_prefix = "https://api.github.com/"
+    if not subject_url.startswith(api_prefix):
+        return {}
+    endpoint = subject_url[len(api_prefix):]
+    if not endpoint:
+        return {}
+
+    try:
+        raw = gh_api(
+            endpoint,
+            jq="{state: .state, merged: .merged, head_sha: .head.sha}",
+            timeout=15,
+        )
+        data = json.loads(raw) if raw else {}
+    except (SSOAuthRequired, RuntimeError, json.JSONDecodeError, subprocess.TimeoutExpired):
+        # Can't determine state — don't block the notification
+        return {}
+
+    return data if isinstance(data, dict) else {}
+
+
+def _closed_reason_from_subject_info(subject_info: dict) -> Optional[str]:
+    """Derive a closed/merged reason string from fetched subject info."""
+    if subject_info.get("merged"):
+        return "merged"
+    if subject_info.get("state") == "closed":
+        return "closed"
+    return None
+
+
 def _is_subject_closed(notification: dict) -> Optional[str]:
     """Check if the notification's subject (PR or issue) is closed or merged.
 
@@ -1541,35 +1607,7 @@ def _is_subject_closed(notification: dict) -> Optional[str]:
         A human-readable reason string if the subject is closed/merged,
         or None if it's still open (or state cannot be determined).
     """
-    from app.github import SSOAuthRequired, api as gh_api
-
-    subject_url = notification.get("subject", {}).get("url", "")
-    if not subject_url:
-        return None
-
-    # Convert full URL to API endpoint
-    api_prefix = "https://api.github.com/"
-    if not subject_url.startswith(api_prefix):
-        return None
-    endpoint = subject_url[len(api_prefix):]
-    if not endpoint:
-        return None
-
-    try:
-        raw = gh_api(endpoint, jq="{state: .state, merged: .merged}", timeout=15)
-        data = json.loads(raw) if raw else {}
-    except (SSOAuthRequired, RuntimeError, json.JSONDecodeError, subprocess.TimeoutExpired):
-        # Can't determine state — don't block the notification
-        return None
-
-    state = data.get("state", "")
-    merged = data.get("merged", False)
-
-    if merged:
-        return "merged"
-    if state == "closed":
-        return "closed"
-    return None
+    return _closed_reason_from_subject_info(_fetch_subject_info(notification))
 
 
 def _notify_closed_subject_skipped(

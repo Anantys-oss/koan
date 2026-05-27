@@ -10,8 +10,10 @@ from app.github_command_handler import (
     _ASSIGNMENT_REASON_TO_COMMAND,
     _error_replies,
     _expand_combo_mission,
+    _closed_reason_from_subject_info,
     _extract_url_from_context,
     _fetch_and_filter_comment,
+    _fetch_subject_info,
     _handle_help_command,
     _is_subject_closed,
     _notify_closed_subject_skipped,
@@ -45,7 +47,7 @@ pytestmark = pytest.mark.slow
 
 @pytest.fixture
 def subject_closed_state():
-    """Per-test override hook for `_is_subject_closed`'s stubbed return value.
+    """Per-test override hook for the stubbed subject's closed/merged state.
 
     Defaults to `None` (subject treated as open). Tests that need to
     exercise the closed-subject branch should override this fixture in
@@ -57,19 +59,37 @@ def subject_closed_state():
     return None
 
 
-@pytest.fixture(autouse=True)
-def _stub_is_subject_closed(subject_closed_state):
-    """Stub the network-hitting `_is_subject_closed` helper.
+@pytest.fixture
+def subject_head_sha():
+    """Head SHA returned by the stubbed subject fetch.
 
-    Without this, `_is_subject_closed` calls the real GitHub API, which
-    makes tests network-flaky and unsafe to run in parallel. The return
-    value is sourced from the `subject_closed_state` fixture so tests
-    that need a non-default answer can override it without dropping back
-    to manual `@patch` wiring.
+    Anchors the ``review_requested`` dedup key. A fixed value keeps the
+    key deterministic across repeated calls within a test, so the
+    persistent thread tracker can dedup a re-poll of the same PR.
     """
+    return "deadbeefcafe0001"
+
+
+@pytest.fixture(autouse=True)
+def _stub_subject_info(subject_closed_state, subject_head_sha):
+    """Stub the network-hitting subject fetch shared by both notification paths.
+
+    ``_fetch_subject_info`` is the single seam that calls the GitHub API for a
+    subject's state/merged/head SHA. The @mention path reaches it through
+    ``_is_subject_closed`` and the assignment path calls it directly, so
+    stubbing it here keeps the whole module offline and parallel-safe. The
+    returned dict is consistent with ``subject_closed_state`` and carries
+    ``subject_head_sha`` so review-request dedup keys are deterministic.
+    """
+    if subject_closed_state == "merged":
+        info = {"state": "closed", "merged": True, "head_sha": subject_head_sha}
+    elif subject_closed_state == "closed":
+        info = {"state": "closed", "merged": False, "head_sha": subject_head_sha}
+    else:
+        info = {"state": "open", "merged": False, "head_sha": subject_head_sha}
     with patch(
-        "app.github_command_handler._is_subject_closed",
-        return_value=subject_closed_state,
+        "app.github_command_handler._fetch_subject_info",
+        return_value=info,
     ):
         yield
 
@@ -3362,6 +3382,36 @@ class TestTryAssignmentNotification:
         assert "/implement https://github.com/sukria/koan/issues/55" in content
         assert "[project:koan]" in content
 
+    def test_assign_does_not_requeue_on_comment_activity(
+        self, assign_notification, review_registry, tmp_path, monkeypatch,
+    ):
+        """An issue has no head SHA, so assign dedups on notif_id alone. A
+        bumped updated_at (someone commented on the issue) MUST NOT re-queue
+        /implement, even with a cold cache and the mission out of Pending."""
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        missions_path = tmp_path / "instance" / "missions.md"
+        missions_path.parent.mkdir(parents=True)
+        missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        with patch("app.github_command_handler.resolve_project_from_notification",
+                    return_value=("koan", "sukria", "koan")), \
+             patch("app.github_command_handler.is_notification_stale", return_value=False), \
+             patch("app.github_command_handler.mark_notification_read"):
+            _try_assignment_notification(assign_notification, review_registry, {})
+            # Move mission out of Pending so only the thread tracker decides.
+            missions_path.write_text(
+                "# Pending\n\n# In Progress\n\n"
+                "- [project:koan] /implement https://github.com/sukria/koan/issues/55 \U0001f4ec\n"
+                "\n# Done\n"
+            )
+            bumped = dict(assign_notification)
+            bumped["updated_at"] = "2026-03-22T05:00:00Z"
+            result = _try_assignment_notification(bumped, review_registry, {})
+
+        assert result is True  # idempotent — handled, not failed
+        content = missions_path.read_text()
+        assert content.count("/implement https://github.com/sukria/koan/issues/55") == 1
+
     def test_irrelevant_reason_returns_false(self, review_registry):
         """Notifications with non-assignment reasons are ignored."""
         notif = {"reason": "mention", "id": "1"}
@@ -3445,11 +3495,13 @@ class TestTryAssignmentNotification:
     def test_persistent_dedup_blocks_duplicate_across_restart(
         self, review_notification, review_registry, tmp_path, monkeypatch,
     ):
-        """After a /review mission has been queued once, a second call with
-        the same (id, updated_at) MUST NOT insert a duplicate — even when the
-        in-memory _notif_cache is cold (simulating a restart) AND the mission
-        has moved out of Pending (so the missions.md dedup at line 962 cannot
-        fire). The persistent thread tracker is the only thing protecting us.
+        """After a /review mission has been queued once, a second call for the
+        same PR head SHA MUST NOT insert a duplicate — even when the in-memory
+        _notif_cache is cold (simulating a restart) AND the mission has moved
+        out of Pending (so the missions.md dedup cannot fire). The persistent
+        thread tracker (keyed on notif_id:head_sha) is the only thing
+        protecting us. The autouse subject-info stub returns a fixed head SHA,
+        so both calls compute the same key.
         """
         monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
         missions_path = tmp_path / "instance" / "missions.md"
@@ -3459,7 +3511,6 @@ class TestTryAssignmentNotification:
         with patch("app.github_command_handler.resolve_project_from_notification",
                     return_value=("koan", "sukria", "koan")), \
              patch("app.github_command_handler.is_notification_stale", return_value=False), \
-             patch("app.github_command_handler._is_subject_closed", return_value=None), \
              patch("app.github_command_handler.mark_notification_read"):
             first = _try_assignment_notification(
                 review_notification, review_registry, {},
@@ -3481,11 +3532,15 @@ class TestTryAssignmentNotification:
         # Exactly one mission line for this URL across the whole file
         assert content.count("/review https://github.com/sukria/koan/pull/99") == 1
 
-    def test_bumped_updated_at_queues_new_mission(
+    def test_bumped_updated_at_does_not_requeue_review(
         self, review_notification, review_registry, tmp_path, monkeypatch,
     ):
-        """A new updated_at (re-requested review or new commits pushed) MUST
-        queue a fresh mission — the composite key is the renew signal."""
+        """A bumped updated_at with the SAME head SHA MUST NOT re-queue /review.
+
+        This is the regression guard for the runaway-review loop: the bot's own
+        posted review (and CI-bot comments) bump the PR's updated_at, but they
+        do not change the head SHA, so no fresh mission must be created.
+        """
         monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
         missions_path = tmp_path / "instance" / "missions.md"
         missions_path.parent.mkdir(parents=True)
@@ -3494,7 +3549,6 @@ class TestTryAssignmentNotification:
         with patch("app.github_command_handler.resolve_project_from_notification",
                     return_value=("koan", "sukria", "koan")), \
              patch("app.github_command_handler.is_notification_stale", return_value=False), \
-             patch("app.github_command_handler._is_subject_closed", return_value=None), \
              patch("app.github_command_handler.mark_notification_read"):
             _try_assignment_notification(review_notification, review_registry, {})
             # Move first mission out of Pending so the in-flight dedup
@@ -3507,6 +3561,45 @@ class TestTryAssignmentNotification:
             renewed = dict(review_notification)
             renewed["updated_at"] = "2026-03-22T05:00:00Z"
             result = _try_assignment_notification(renewed, review_registry, {})
+
+        assert result is True  # idempotent — handled, not failed
+        content = missions_path.read_text()
+        assert content.count("/review https://github.com/sukria/koan/pull/99") == 1
+
+    def test_new_head_sha_queues_new_review(
+        self, review_notification, review_registry, tmp_path, monkeypatch,
+    ):
+        """A new PR head SHA (commits pushed) MUST queue a fresh /review — the
+        head SHA is the renew signal that replaced updated_at."""
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        missions_path = tmp_path / "instance" / "missions.md"
+        missions_path.parent.mkdir(parents=True)
+        missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        with patch("app.github_command_handler.resolve_project_from_notification",
+                    return_value=("koan", "sukria", "koan")), \
+             patch("app.github_command_handler.is_notification_stale", return_value=False), \
+             patch("app.github_command_handler.mark_notification_read"), \
+             patch("app.github_command_handler._fetch_subject_info",
+                   return_value={"state": "open", "merged": False, "head_sha": "sha-aaaa"}):
+            _try_assignment_notification(review_notification, review_registry, {})
+            # Move first mission out of Pending so only the tracker decides.
+            missions_path.write_text(
+                "# Pending\n\n# In Progress\n\n"
+                "- [project:koan] /review https://github.com/sukria/koan/pull/99 \U0001f4ec\n"
+                "\n# Done\n"
+            )
+
+        # New commits pushed → new head SHA → fresh dedup key → re-review.
+        with patch("app.github_command_handler.resolve_project_from_notification",
+                    return_value=("koan", "sukria", "koan")), \
+             patch("app.github_command_handler.is_notification_stale", return_value=False), \
+             patch("app.github_command_handler.mark_notification_read"), \
+             patch("app.github_command_handler._fetch_subject_info",
+                   return_value={"state": "open", "merged": False, "head_sha": "sha-bbbb"}):
+            result = _try_assignment_notification(
+                review_notification, review_registry, {},
+            )
 
         assert result is True
         content = missions_path.read_text()
@@ -3530,7 +3623,6 @@ class TestTryAssignmentNotification:
         with patch("app.github_command_handler.resolve_project_from_notification",
                     return_value=("koan", "sukria", "koan")), \
              patch("app.github_command_handler.is_notification_stale", return_value=False), \
-             patch("app.github_command_handler._is_subject_closed", return_value=None), \
              patch("app.github_command_handler.mark_notification_read"), \
              patch("app.github_notification_tracker.track_thread") as mock_track:
             result = _try_assignment_notification(notif, review_registry, {})
@@ -3592,52 +3684,105 @@ class TestTryAssignmentNotification:
         assert "/implement" in content
 
 
-class TestIsSubjectClosed:
-    """Tests for _is_subject_closed helper."""
+class TestFetchSubjectInfo:
+    """Tests for _fetch_subject_info — the single network seam for subject state.
 
-    def test_returns_merged_for_merged_pr(self):
+    These call the real helper directly (the module-top import binding is not
+    affected by the autouse stub, which only replaces the module attribute), so
+    the GitHub API call is exercised through a mocked ``app.github.api``.
+    """
+
+    def test_parses_state_merged_and_head_sha(self):
         notification = {
             "subject": {
                 "url": "https://api.github.com/repos/owner/repo/pulls/1",
             },
         }
         with patch("app.github.api",
-                    return_value='{"state": "closed", "merged": true}'):
-            assert _is_subject_closed(notification) == "merged"
+                    return_value='{"state": "open", "merged": false, "head_sha": "abc123"}'):
+            info = _fetch_subject_info(notification)
+        assert info == {"state": "open", "merged": False, "head_sha": "abc123"}
 
-    def test_returns_closed_for_closed_issue(self):
+    def test_issue_has_null_head_sha(self):
         notification = {
             "subject": {
                 "url": "https://api.github.com/repos/owner/repo/issues/1",
             },
         }
         with patch("app.github.api",
-                    return_value='{"state": "closed", "merged": null}'):
-            assert _is_subject_closed(notification) == "closed"
+                    return_value='{"state": "open", "merged": null, "head_sha": null}'):
+            info = _fetch_subject_info(notification)
+        assert info["head_sha"] is None
 
-    def test_returns_none_for_open_pr(self):
+    def test_returns_empty_on_api_failure(self):
         notification = {
             "subject": {
                 "url": "https://api.github.com/repos/owner/repo/pulls/1",
             },
         }
-        with patch("app.github.api",
-                    return_value='{"state": "open", "merged": false}'):
-            assert _is_subject_closed(notification) is None
+        with patch("app.github.api", side_effect=RuntimeError("network")):
+            assert _fetch_subject_info(notification) == {}
 
-    def test_returns_none_on_api_failure(self):
+    def test_returns_empty_when_no_subject_url(self):
+        assert _fetch_subject_info({"subject": {}}) == {}
+        assert _fetch_subject_info({}) == {}
+
+    def test_returns_empty_for_non_api_url(self):
         notification = {
-            "subject": {
-                "url": "https://api.github.com/repos/owner/repo/pulls/1",
-            },
+            "subject": {"url": "https://github.com/owner/repo/pull/1"},
         }
-        with patch("app.github.api",
-                    side_effect=RuntimeError("network")):
-            assert _is_subject_closed(notification) is None
+        assert _fetch_subject_info(notification) == {}
 
-    def test_returns_none_when_no_subject_url(self):
-        assert _is_subject_closed({"subject": {}}) is None
-        assert _is_subject_closed({}) is None
+
+class TestClosedReasonFromSubjectInfo:
+    """Tests for _closed_reason_from_subject_info — pure derivation, no network."""
+
+    def test_merged_takes_priority(self):
+        assert _closed_reason_from_subject_info(
+            {"state": "closed", "merged": True},
+        ) == "merged"
+
+    def test_closed_state(self):
+        assert _closed_reason_from_subject_info(
+            {"state": "closed", "merged": False},
+        ) == "closed"
+
+    def test_open_state(self):
+        assert _closed_reason_from_subject_info(
+            {"state": "open", "merged": False},
+        ) is None
+
+    def test_empty_info(self):
+        assert _closed_reason_from_subject_info({}) is None
+
+
+class TestIsSubjectClosed:
+    """_is_subject_closed composes the fetch + the closed-reason derivation."""
+
+    def test_merged(self):
+        with patch(
+            "app.github_command_handler._fetch_subject_info",
+            return_value={"state": "closed", "merged": True, "head_sha": "x"},
+        ):
+            assert _is_subject_closed(
+                {"subject": {"url": "https://api.github.com/repos/o/r/pulls/1"}},
+            ) == "merged"
+
+    def test_open(self):
+        with patch(
+            "app.github_command_handler._fetch_subject_info",
+            return_value={"state": "open", "merged": False, "head_sha": "x"},
+        ):
+            assert _is_subject_closed(
+                {"subject": {"url": "https://api.github.com/repos/o/r/pulls/1"}},
+            ) is None
+
+    def test_unfetchable_subject_is_open(self):
+        with patch(
+            "app.github_command_handler._fetch_subject_info",
+            return_value={},
+        ):
+            assert _is_subject_closed({"subject": {}}) is None
 
 
 class TestNotifyClosedSubjectSkipped:
@@ -3762,6 +3907,11 @@ class TestProcessSingleNotificationClosedSubject:
 class TestTryAssignmentNotificationClosedSubject:
     """Tests for closed subject detection in _try_assignment_notification."""
 
+    @pytest.fixture
+    def subject_closed_state(self):
+        # Drives the autouse _fetch_subject_info stub to report a merged PR.
+        return "merged"
+
     def test_skips_review_request_on_merged_pr(self, monkeypatch):
         monkeypatch.setenv("KOAN_ROOT", "/tmp/test-koan")
         notification = {
@@ -3787,8 +3937,6 @@ class TestTryAssignmentNotificationClosedSubject:
                     return_value=False), \
              patch("app.github_command_handler.resolve_project_from_notification",
                    return_value=("myproject", "owner", "repo")), \
-             patch("app.github_command_handler._is_subject_closed",
-                   return_value="merged"), \
              patch("app.github_command_handler._notify_closed_subject_skipped") as mock_notify, \
              patch("app.github_command_handler.mark_notification_read"):
 
