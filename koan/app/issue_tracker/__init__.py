@@ -1,8 +1,9 @@
 """Provider-neutral issue tracker helpers."""
 
 import os
+import threading
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional, Tuple
 
 from app.github_url_parser import is_jira_url, parse_github_url, parse_jira_url
 from app.issue_tracker.base import IssueTracker
@@ -15,6 +16,13 @@ from app.issue_tracker.config import (
 from app.issue_tracker.github import GitHubIssueTracker
 from app.issue_tracker.jira import JiraIssueTracker
 from app.issue_tracker.types import IssueContent, IssueRef
+
+# Process-lifetime cache for owner/repo -> (project_name, project_path)
+# resolution. `resolve_project_path` can shell out to git to inspect remotes
+# (fork-parent detection) so a single CLI run that submits multiple comments
+# to the same repo would otherwise pay the same shell cost each time.
+_GITHUB_CONTEXT_CACHE: Dict[Tuple[str, str], Tuple[str, str]] = {}
+_GITHUB_CONTEXT_LOCK = threading.Lock()
 
 
 class UnresolvedJiraProjectError(ValueError):
@@ -74,9 +82,19 @@ def _resolve_github_project_context(
     repo: str,
     project_name: str,
     project_path: str,
-) -> tuple[str, str]:
+) -> Tuple[str, str]:
     if project_name:
         return project_name, project_path
+
+    # Result is keyed on (owner, repo) only — when the caller already supplies
+    # a project_name we return early above, so the cache never collides
+    # different name/path pairs.
+    cache_key = (owner, repo)
+    with _GITHUB_CONTEXT_LOCK:
+        cached = _GITHUB_CONTEXT_CACHE.get(cache_key)
+    if cached is not None:
+        resolved_name, resolved_path = cached
+        return resolved_name, project_path or resolved_path
 
     try:
         from app.utils import project_name_for_path as _project_name_for_path
@@ -84,11 +102,20 @@ def _resolve_github_project_context(
 
         resolved_path = resolve_project_path(repo, owner=owner)
         if resolved_path:
-            return _project_name_for_path(resolved_path), project_path or resolved_path
+            resolved_name = _project_name_for_path(resolved_path)
+            with _GITHUB_CONTEXT_LOCK:
+                _GITHUB_CONTEXT_CACHE[cache_key] = (resolved_name, resolved_path)
+            return resolved_name, project_path or resolved_path
     except (ImportError, OSError, ValueError):
         pass
 
     return project_name, project_path
+
+
+def _reset_github_context_cache() -> None:
+    """Clear the (owner, repo) -> project context cache. Test hook."""
+    with _GITHUB_CONTEXT_LOCK:
+        _GITHUB_CONTEXT_CACHE.clear()
 
 
 def _github_client_for_url(

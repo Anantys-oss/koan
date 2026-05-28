@@ -113,6 +113,8 @@ class TestIssueTrackerFactories:
                 assert "projects.yaml" in msg
 
     def test_client_for_url_resolves_github_project_context_when_possible(self):
+        from app.issue_tracker import _reset_github_context_cache
+        _reset_github_context_cache()
         with patch("app.utils.resolve_project_path", return_value="/tmp/myapp"), \
              patch("app.utils.project_name_for_path", return_value="myapp"):
             client = client_for_url("https://github.com/acme/app/issues/42")
@@ -121,6 +123,20 @@ class TestIssueTrackerFactories:
         assert client.project_name == "myapp"
         assert client.project_path == "/tmp/myapp"
         assert client.repo == "acme/app"
+
+    def test_client_for_url_caches_github_context_per_repo(self):
+        """Second call for the same (owner, repo) skips the shell-out path."""
+        from app.issue_tracker import _reset_github_context_cache
+        _reset_github_context_cache()
+
+        with patch("app.utils.resolve_project_path", return_value="/tmp/myapp") as mock_resolve, \
+             patch("app.utils.project_name_for_path", return_value="myapp"):
+            client_for_url("https://github.com/acme/app/issues/42")
+            client_for_url("https://github.com/acme/app/issues/99")
+
+        # resolve_project_path can shell out to git — once per (owner, repo)
+        # is the contract.
+        assert mock_resolve.call_count == 1
 
 
 # ---------------------------------------------------------------------------

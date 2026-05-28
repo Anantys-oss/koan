@@ -429,32 +429,46 @@ def create_issues(
         check_pvrs_enabled, detect_ecosystem,
         list_open_audit_issues, resolve_target_repo,
     )
+    from app.issue_tracker import tracker_provider
 
-    target_repo = resolve_target_repo(
-        project_path, project_name=project_name,
+    # PVRS and existing-issue lookup are GitHub-only — skip the gh-backed
+    # calls entirely when the project routes to a non-GitHub tracker (e.g.
+    # Jira). Without this, audit_runner shells out to gh for a repo that
+    # may not exist locally, just to discard the result.
+    is_github_tracker = (
+        tracker_provider(project_name, project_path) == "github"
+        if project_name else True
     )
 
-    # Determine PVRS availability
+    target_repo = ""
     pvrs_available = False
-    if pvrs_mode == "true":
-        pvrs_available = True
-    elif pvrs_mode != "false" and target_repo:
-        pvrs_available = check_pvrs_enabled(target_repo, cwd=project_path)
+    existing_index: Dict[str, str] = {}
 
-    if pvrs_available and notify_fn:
-        notify_fn(
-            f"  \U0001f512 PVRS enabled — "
-            f"routing {pvrs_threshold}+ findings privately"
+    if is_github_tracker:
+        target_repo = resolve_target_repo(
+            project_path, project_name=project_name,
         )
 
-    # Fetch existing audit issues once so we can dedup against them.
-    # Errors are swallowed inside list_open_audit_issues — a failed
-    # lookup yields an empty index, which means we fall back to the
-    # legacy "create unconditionally" behavior rather than skipping
-    # legitimate work.
-    existing_index = _build_existing_fingerprint_index(
-        list_open_audit_issues(repo=target_repo, cwd=project_path)
-    )
+        # Determine PVRS availability
+        if pvrs_mode == "true":
+            pvrs_available = True
+        elif pvrs_mode != "false" and target_repo:
+            pvrs_available = check_pvrs_enabled(target_repo, cwd=project_path)
+
+        if pvrs_available and notify_fn:
+            notify_fn(
+                f"  \U0001f512 PVRS enabled — "
+                f"routing {pvrs_threshold}+ findings privately"
+            )
+
+        # Fetch existing audit issues once so we can dedup against them.
+        # Errors are swallowed inside list_open_audit_issues — a failed
+        # lookup yields an empty index, which means we fall back to the
+        # legacy "create unconditionally" behavior rather than skipping
+        # legitimate work.
+        existing_index = _build_existing_fingerprint_index(
+            list_open_audit_issues(repo=target_repo, cwd=project_path)
+        )
 
     ecosystem = detect_ecosystem(project_path) if pvrs_available else "other"
     # Derive a package name from the project directory

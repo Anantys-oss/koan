@@ -509,6 +509,32 @@ class TestCreateIssues:
         assert result.reused == 0
         assert mock_create.call_count == 2
 
+    @patch("app.github.list_open_audit_issues")
+    @patch("app.github.resolve_target_repo")
+    @patch("app.github.check_pvrs_enabled")
+    @patch("app.issue_tracker.create_issue", return_value="https://example.atlassian.net/browse/PROJ-1")
+    @patch("app.issue_tracker.tracker_provider", return_value="jira")
+    def test_jira_tracker_skips_github_lookups(
+        self, mock_provider, mock_create, mock_pvrs, mock_repo, mock_list,
+    ):
+        """When tracker is Jira, PVRS/list-issues/resolve-target are skipped.
+
+        These are GitHub-only paths that shell out to `gh`. Calling them for
+        a Jira-routed project just burns subprocess time and returns nothing
+        useful.
+        """
+        findings = [
+            AuditFinding(title="fix A", severity="medium", location="a.py:1", problem="p"),
+        ]
+        create_issues(
+            findings, "/path/proj", project_name="proj",
+        )
+
+        mock_repo.assert_not_called()
+        mock_pvrs.assert_not_called()
+        mock_list.assert_not_called()
+        mock_create.assert_called_once()
+
 
 class TestCreateIssuesDedup:
     """A second audit run must not duplicate issues already open on the repo."""
