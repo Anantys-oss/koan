@@ -618,6 +618,7 @@ class TestBuildPrompt:
                 BRANCH_PREFIX="koan/",
                 ISSUE_NUMBER="",
                 PROJECT_MEMORY="",
+                BASE_BRANCH="main",
             )
             assert result == "prompt"
 
@@ -635,8 +636,21 @@ class TestBuildPrompt:
                 BRANCH_PREFIX="koan/",
                 ISSUE_NUMBER="",
                 PROJECT_MEMORY="",
+                BASE_BRANCH="main",
             )
             assert result == "prompt"
+
+    def test_base_branch_propagates_into_prompt_template_vars(self):
+        """BASE_BRANCH must reach load_prompt_or_skill so the rendered prompt
+        names the project's actual base (e.g. `staging`) — otherwise Claude
+        falls back to the hardcoded main/master branch-creation rule and
+        commits onto the base branch (regression seen on aback)."""
+        with patch(f"{_IMPL_MODULE}.load_prompt_or_skill", return_value="p") as mock_load:
+            _build_prompt(
+                "http://url", "Title", "Plan", "Context",
+                base_branch="staging",
+            )
+            assert mock_load.call_args.kwargs["BASE_BRANCH"] == "staging"
 
     def test_prompt_includes_pr_creation_step(self):
         """implement.md must instruct Claude to push and create a draft PR."""
@@ -651,12 +665,34 @@ class TestBuildPrompt:
             CONTEXT="ctx",
             BRANCH_PREFIX="koan/",
             ISSUE_NUMBER="42",
+            BASE_BRANCH="main",
         )
         assert "gh pr create --draft" in prompt
         assert "git push" in prompt
         assert "Closes https://github.com/o/r/issues/42" in prompt
         assert "{KOAN_PYTHON}" not in prompt
         assert " -m app.issue_cli" in prompt
+
+    def test_prompt_mentions_resolved_base_branch_so_claude_branches_off_it(self):
+        """When the project's base branch is not main/master (e.g. staging),
+        the rendered prompt MUST tell Claude that committing on that branch
+        is forbidden. Otherwise the branch-creation rule never triggers and
+        Claude commits straight onto staging."""
+        skill_dir = Path(__file__).resolve().parent.parent / "skills" / "core" / "implement"
+        from app.prompts import load_skill_prompt
+
+        prompt = load_skill_prompt(
+            skill_dir, "implement",
+            ISSUE_URL="https://github.com/o/r/issues/42",
+            ISSUE_TITLE="Test",
+            PLAN="Plan text",
+            CONTEXT="ctx",
+            BRANCH_PREFIX="koan/",
+            ISSUE_NUMBER="42",
+            BASE_BRANCH="staging",
+        )
+        assert "staging" in prompt
+        assert "Never commit on `staging`" in prompt
 
 
 class TestExecuteImplementation:
@@ -831,18 +867,21 @@ class TestRunImplement:
                     return_value=_github_issue(title="Title", body=body)), \
              patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
              patch(f"{_IMPL_MODULE}._execute_implementation",
-                    return_value="Done"):
+                    return_value="Done"), \
+             patch(f"{_IMPL_MODULE}._submit_implement_pr", return_value=None):
             run_implement(
                 "/project",
                 "https://github.com/o/r/issues/42",
                 context="Phase 1",
                 notify_fn=notify,
             )
-            first_msg = notify.call_args_list[0][0][0]
-            assert "#42" in first_msg
-            assert "Phase 1" in first_msg
-            second_msg = notify.call_args_list[1][0][0]
-            assert "#42" in second_msg
+            messages = [c.args[0] for c in notify.call_args_list]
+            # First message: the "Implementing #42..." kickoff.
+            assert "#42" in messages[0]
+            assert "Phase 1" in messages[0]
+            # Last message: the final implementation summary, also tagged #42.
+            assert "#42" in messages[-1]
+            assert "Phase 1" in messages[-1]
 
     def test_explicit_project_name_reaches_tracker_and_memory(self):
         notify = MagicMock()

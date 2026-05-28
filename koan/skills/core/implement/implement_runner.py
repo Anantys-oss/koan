@@ -140,6 +140,14 @@ def run_implement(
     elif gate_result is not None:
         return gate_result
 
+    # Resolve the effective base branch once; both the implementation prompt
+    # and the post-implementation guard need to agree on what counts as
+    # "the base branch" for this project (e.g. `staging` on anantys-back).
+    from app.projects_config import resolve_base_branch
+    effective_base_branch = base_branch or resolve_base_branch(
+        project_name or guess_project_name(project_path), project_path,
+    )
+
     # Invoke Claude with the plan
     effective_context = (context or "Implement the full plan.") + improvement_context
     try:
@@ -153,6 +161,7 @@ def run_implement(
             issue_number=str(issue_number),
             project_name=project_name,
             instance_dir=instance_dir,
+            base_branch=effective_base_branch,
         )
     except Exception as e:
         return False, f"Implementation failed: {str(e)[:300]}"
@@ -174,13 +183,19 @@ def run_implement(
                 skill_dir=skill_dir,
                 base_branch=base_branch,
                 project_name=project_name,
+                notify_fn=notify_fn,
             )
         except (RuntimeError, OSError, ValueError,
                 subprocess.SubprocessError) as e:
             logger.warning("PR submission failed: %s", e)
+            notify_fn(
+                f"\u274c PR submission for issue {label} raised "
+                f"{type(e).__name__}: {str(e)[:200]}"
+            )
 
     # Build notification and summary
     branch = get_current_branch(project_path)
+    on_base_branch = branch in (effective_base_branch, "main", "master")
     if pr_url:
         notify_fn(
             f"\u2705 Implementation complete for issue {label}"
@@ -190,11 +205,14 @@ def run_implement(
             f"Implementation complete for {label}{context_label}"
             f"\nDraft PR: {pr_url}"
         )
-    elif branch not in ("main", "master"):
+    elif not on_base_branch:
+        skip_reason = (
+            " (PR creation skipped)" if provider != "github"
+            else " (PR creation failed \u2014 see prior message for details)"
+        )
         notify_fn(
             f"\u2705 Implementation complete for issue {label}"
-            f"{context_label}\nBranch: {branch}"
-            f"{'' if pr_url else ' (PR creation skipped)' if provider != 'github' else ' (PR creation failed)'}"
+            f"{context_label}\nBranch: {branch}{skip_reason}"
         )
         summary = (
             f"Implementation complete for {label}{context_label}"
@@ -203,11 +221,14 @@ def run_implement(
     else:
         notify_fn(
             f"\u26a0\ufe0f Implementation complete for issue {label}"
-            f"{context_label} \u2014 changes landed on {branch}, no PR created"
+            f"{context_label} \u2014 changes landed on the base branch "
+            f"`{branch}`, no PR created. The skill failed to create a "
+            "feature branch; move the commits onto a feature branch "
+            "manually before pushing."
         )
         summary = (
             f"Implementation complete for {label}{context_label}"
-            f" (on {branch}, no PR)"
+            f" (on base branch {branch}, no PR)"
         )
 
     return True, summary
@@ -421,6 +442,7 @@ def _build_prompt(
     branch_prefix: str = "koan/",
     issue_number: str = "",
     project_memory: str = "",
+    base_branch: str = "main",
 ) -> str:
     """Build the implementation prompt from the issue and plan."""
     template_vars = dict(
@@ -431,6 +453,7 @@ def _build_prompt(
         BRANCH_PREFIX=branch_prefix,
         ISSUE_NUMBER=issue_number,
         PROJECT_MEMORY=project_memory,
+        BASE_BRANCH=base_branch,
     )
 
     return load_prompt_or_skill(skill_dir, "implement", **template_vars)
@@ -484,12 +507,17 @@ def _execute_implementation(
     issue_number: str = "",
     project_name: str = "",
     instance_dir: str = "",
+    base_branch: Optional[str] = None,
 ) -> str:
     """Execute the implementation via Claude CLI."""
     from app.config import get_branch_prefix
+    from app.projects_config import resolve_base_branch
     from app.skill_memory import build_memory_block_for_skill
 
     branch_prefix = get_branch_prefix()
+    effective_base = base_branch or resolve_base_branch(
+        project_name or guess_project_name(project_path), project_path,
+    )
     project_memory = build_memory_block_for_skill(
         project_path,
         f"{issue_title}\n{plan}",
@@ -502,6 +530,7 @@ def _execute_implementation(
         branch_prefix=branch_prefix,
         issue_number=issue_number,
         project_memory=project_memory,
+        base_branch=effective_base,
     )
 
     from app.cli_provider import CLAUDE_TOOLS, run_command_streaming
@@ -527,6 +556,7 @@ def _submit_implement_pr(
     skill_dir: Optional[Path] = None,
     base_branch: Optional[str] = None,
     project_name: str = "",
+    notify_fn=None,
 ) -> Optional[str]:
     """Build implement-specific PR title/body and delegate to shared submit."""
     from app.pr_submit import get_commit_subjects
@@ -570,9 +600,15 @@ def _submit_implement_pr(
             pr_body=pr_body,
             issue_url=issue_url,
             base_branch=base_branch,
+            notify_fn=notify_fn,
         )
     except Exception as e:
         logger.warning("PR submission failed: %s", e)
+        if notify_fn:
+            notify_fn(
+                f"❌ PR submission raised "
+                f"{type(e).__name__}: {str(e)[:200]}"
+            )
         return None
 
 

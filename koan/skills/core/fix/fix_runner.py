@@ -110,6 +110,15 @@ def run_fix(
     # Build full issue body (include relevant comments)
     full_body = _build_issue_body(body, comments)
 
+    # Resolve effective base branch once and feed it through the whole
+    # pipeline: the fix prompt needs it so Claude knows which branch counts
+    # as "the base" for this project (e.g. `staging`), and the post-fix PR
+    # submission + base-branch guard reuse the same resolution.
+    from app.projects_config import resolve_base_branch
+    effective_base_branch = base_branch or resolve_base_branch(
+        project_name, project_path,
+    )
+
     # Invoke Claude with the fix prompt
     print("[fix] Invoking Claude for fix", flush=True)
     try:
@@ -123,6 +132,7 @@ def run_fix(
             issue_number=str(issue_number),
             project_name=project_name,
             instance_dir=instance_dir,
+            base_branch=effective_base_branch,
         )
     except Exception as e:
         return False, f"Fix failed: {str(e)[:300]}"
@@ -142,10 +152,12 @@ def run_fix(
             issue_url=issue_url,
             base_branch=base_branch,
             project_name=project_name,
+            notify_fn=notify_fn,
         )
 
     # Build notification and summary
     branch = get_current_branch(project_path)
+    on_base_branch = branch in (effective_base_branch, "main", "master")
     if pr_url:
         notify_fn(
             f"✅ Fix complete for issue {label}"
@@ -155,10 +167,10 @@ def run_fix(
             f"Fix complete for {label}{context_label}"
             f"\nDraft PR: {pr_url}"
         )
-    elif branch not in ("main", "master"):
+    elif not on_base_branch:
         skip_reason = (
             " (PR creation skipped)" if provider != "github"
-            else " (PR creation failed)"
+            else " (PR creation failed — see prior message for details)"
         )
         notify_fn(
             f"✅ Fix complete for issue {label}"
@@ -171,11 +183,14 @@ def run_fix(
     else:
         notify_fn(
             f"⚠️ Fix complete for issue {label}"
-            f"{context_label} — changes landed on {branch}, no PR created"
+            f"{context_label} — changes landed on the base branch "
+            f"`{branch}`, no PR created. The skill failed to create a "
+            "feature branch; move the commits onto a feature branch "
+            "manually before pushing."
         )
         summary = (
             f"Fix complete for {label}{context_label}"
-            f" (on {branch}, no PR)"
+            f" (on base branch {branch}, no PR)"
         )
 
     return True, summary
@@ -213,12 +228,17 @@ def _execute_fix(
     issue_number: str = "",
     project_name: str = "",
     instance_dir: str = "",
+    base_branch: Optional[str] = None,
 ) -> str:
     """Execute the fix via Claude CLI."""
     from app.config import get_branch_prefix
+    from app.projects_config import resolve_base_branch
     from app.skill_memory import build_memory_block_for_skill
 
     branch_prefix = get_branch_prefix()
+    effective_base = base_branch or resolve_base_branch(
+        project_name or guess_project_name(project_path), project_path,
+    )
     project_memory = build_memory_block_for_skill(
         project_path,
         f"{issue_title}\n{issue_body}",
@@ -231,6 +251,7 @@ def _execute_fix(
         branch_prefix=branch_prefix,
         issue_number=issue_number,
         project_memory=project_memory,
+        base_branch=effective_base,
     )
 
     from app.cli_provider import CLAUDE_TOOLS, run_command_streaming
@@ -251,6 +272,7 @@ def _build_prompt(
     branch_prefix: str = "koan/",
     issue_number: str = "",
     project_memory: str = "",
+    base_branch: str = "main",
 ) -> str:
     """Build the fix prompt from the issue content."""
     template_vars = dict(
@@ -261,6 +283,7 @@ def _build_prompt(
         BRANCH_PREFIX=branch_prefix,
         ISSUE_NUMBER=issue_number,
         PROJECT_MEMORY=project_memory,
+        BASE_BRANCH=base_branch,
     )
 
     return load_prompt_or_skill(skill_dir, "fix", **template_vars)
@@ -279,6 +302,7 @@ def _submit_fix_pr(
     issue_url: str,
     base_branch: Optional[str] = None,
     project_name: str = "",
+    notify_fn=None,
 ) -> Optional[str]:
     """Build fix-specific PR title/body and delegate to shared submit."""
     from app.pr_submit import get_commit_subjects
@@ -320,9 +344,15 @@ def _submit_fix_pr(
             pr_body=pr_body,
             issue_url=issue_url,
             base_branch=base_branch,
+            notify_fn=notify_fn,
         )
     except Exception as e:
         logger.warning("PR submission failed: %s", e)
+        if notify_fn:
+            notify_fn(
+                f"❌ PR submission raised "
+                f"{type(e).__name__}: {str(e)[:200]}"
+            )
         return None
 
 

@@ -152,33 +152,85 @@ class TestResolveSubmitTarget:
 
 class TestSubmitDraftPr:
     def test_skips_on_main(self):
-        with patch(f"{_M}.get_current_branch", return_value="main"):
+        with patch(f"{_M}.get_current_branch", return_value="main"), \
+             patch(f"{_M}.resolve_base_branch", return_value="main"):
             assert submit_draft_pr("/p", "proj", "o", "r", "1", "T", "B") is None
 
     def test_skips_on_master(self):
-        with patch(f"{_M}.get_current_branch", return_value="master"):
+        with patch(f"{_M}.get_current_branch", return_value="master"), \
+             patch(f"{_M}.resolve_base_branch", return_value="master"):
             assert submit_draft_pr("/p", "proj", "o", "r", "1", "T", "B") is None
+
+    def test_skips_when_head_is_resolved_base_branch_staging(self):
+        """Regression for the staging-commit bug: when the project's base
+        branch resolves to `staging` and Claude landed there without
+        creating a feature branch, submit_draft_pr must abort the push (no
+        diff exists) and notify the caller — it must not just log+silent."""
+        notify = MagicMock()
+        with patch(f"{_M}.get_current_branch", return_value="staging"), \
+             patch(f"{_M}.resolve_base_branch", return_value="staging"):
+            result = submit_draft_pr(
+                "/p", "proj", "o", "r", "1", "T", "B", notify_fn=notify,
+            )
+        assert result is None
+        notify.assert_called_once()
+        msg = notify.call_args.args[0]
+        assert "staging" in msg
+        assert "feature branch" in msg.lower() or "base branch" in msg.lower()
+
+    def test_explicit_base_branch_arg_used_in_guard(self):
+        """If the caller passes an explicit base_branch, it overrides the
+        resolved one and the guard fires against that. Confirms the guard
+        is not bypassable through a misconfigured projects.yaml."""
+        notify = MagicMock()
+        with patch(f"{_M}.get_current_branch", return_value="release-11"), \
+             patch(f"{_M}.resolve_base_branch", return_value="staging") as resolved:
+            result = submit_draft_pr(
+                "/p", "proj", "o", "r", "1", "T", "B",
+                base_branch="release-11", notify_fn=notify,
+            )
+        assert result is None
+        # resolve_base_branch must NOT be consulted when an explicit value
+        # is supplied — that's a fork in the resolution path.
+        resolved.assert_not_called()
+        notify.assert_called_once()
 
     def test_returns_existing_pr(self):
         with patch(f"{_M}.get_current_branch", return_value="feat"), \
+             patch(f"{_M}.resolve_base_branch", return_value="main"), \
              patch(f"{_M}.run_gh", return_value="https://pr/1"):
             assert submit_draft_pr("/p", "proj", "o", "r", "1", "T", "B") == "https://pr/1"
 
-    def test_no_commits_returns_none(self):
+    def test_no_commits_returns_none_and_notifies(self):
+        notify = MagicMock()
         with patch(f"{_M}.get_current_branch", return_value="feat"), \
+             patch(f"{_M}.resolve_base_branch", return_value="main"), \
              patch(f"{_M}.run_gh", return_value=""), \
              patch(f"{_M}.get_commit_subjects", return_value=[]):
-            assert submit_draft_pr("/p", "proj", "o", "r", "1", "T", "B") is None
+            assert submit_draft_pr(
+                "/p", "proj", "o", "r", "1", "T", "B", notify_fn=notify,
+            ) is None
+        notify.assert_called_once()
+        assert "No commits" in notify.call_args.args[0]
 
-    def test_push_failure_returns_none(self):
+    def test_push_failure_returns_none_and_notifies(self):
+        notify = MagicMock()
         with patch(f"{_M}.get_current_branch", return_value="feat"), \
+             patch(f"{_M}.resolve_base_branch", return_value="main"), \
              patch(f"{_M}.run_gh", return_value=""), \
              patch(f"{_M}.get_commit_subjects", return_value=["c1"]), \
-             patch(f"{_M}.run_git_strict", side_effect=RuntimeError("push")):
-            assert submit_draft_pr("/p", "proj", "o", "r", "1", "T", "B") is None
+             patch(f"{_M}.run_git_strict", side_effect=RuntimeError("auth denied")):
+            assert submit_draft_pr(
+                "/p", "proj", "o", "r", "1", "T", "B", notify_fn=notify,
+            ) is None
+        notify.assert_called_once()
+        msg = notify.call_args.args[0]
+        assert "git push failed" in msg
+        assert "auth denied" in msg
 
     def test_creates_pr_with_correct_kwargs(self):
         with patch(f"{_M}.get_current_branch", return_value="koan/feat"), \
+             patch(f"{_M}.resolve_base_branch", return_value="main"), \
              patch(f"{_M}.run_gh", side_effect=["", ""]), \
              patch(f"{_M}.get_commit_subjects", return_value=["c1"]), \
              patch(f"{_M}.run_git_strict"), \
@@ -199,6 +251,7 @@ class TestSubmitDraftPr:
 
     def test_fork_workflow_sets_repo_and_head(self):
         with patch(f"{_M}.get_current_branch", return_value="koan/feat"), \
+             patch(f"{_M}.resolve_base_branch", return_value="main"), \
              patch(f"{_M}.run_gh", side_effect=["", ""]), \
              patch(f"{_M}.get_commit_subjects", return_value=["c1"]), \
              patch(f"{_M}.run_git_strict"), \
@@ -212,18 +265,27 @@ class TestSubmitDraftPr:
             assert kw["repo"] == "upstream/r"
             assert kw["head"] == "myfork:koan/feat"
 
-    def test_pr_create_failure_returns_none(self):
+    def test_pr_create_failure_returns_none_and_notifies(self):
+        notify = MagicMock()
         with patch(f"{_M}.get_current_branch", return_value="feat"), \
+             patch(f"{_M}.resolve_base_branch", return_value="main"), \
              patch(f"{_M}.run_gh", return_value=""), \
              patch(f"{_M}.get_commit_subjects", return_value=["c1"]), \
              patch(f"{_M}.run_git_strict"), \
              patch(f"{_M}.resolve_submit_target",
                     return_value={"repo": "o/r", "is_fork": False}), \
-             patch(f"{_M}.pr_create", side_effect=RuntimeError("auth")):
-            assert submit_draft_pr("/p", "proj", "o", "r", "1", "T", "B") is None
+             patch(f"{_M}.pr_create", side_effect=RuntimeError("403 forbidden")):
+            assert submit_draft_pr(
+                "/p", "proj", "o", "r", "1", "T", "B", notify_fn=notify,
+            ) is None
+        notify.assert_called_once()
+        msg = notify.call_args.args[0]
+        assert "gh pr create failed" in msg
+        assert "403 forbidden" in msg
 
     def test_issue_comment_posted_when_url_given(self):
         with patch(f"{_M}.get_current_branch", return_value="feat"), \
+             patch(f"{_M}.resolve_base_branch", return_value="main"), \
              patch(f"{_M}.run_gh", return_value=""), \
              patch(f"{_M}.get_commit_subjects", return_value=["c1"]), \
              patch(f"{_M}.run_git_strict"), \
@@ -242,6 +304,7 @@ class TestSubmitDraftPr:
 
     def test_no_issue_comment_when_no_url(self):
         with patch(f"{_M}.get_current_branch", return_value="feat"), \
+             patch(f"{_M}.resolve_base_branch", return_value="main"), \
              patch(f"{_M}.run_gh", return_value="") as mock_gh, \
              patch(f"{_M}.get_commit_subjects", return_value=["c1"]), \
              patch(f"{_M}.run_git_strict"), \
@@ -256,6 +319,7 @@ class TestSubmitDraftPr:
 
     def test_issue_comment_for_non_github_url_uses_tracker_service(self):
         with patch(f"{_M}.get_current_branch", return_value="feat"), \
+             patch(f"{_M}.resolve_base_branch", return_value="main"), \
              patch(f"{_M}.run_gh", return_value="") as mock_gh, \
              patch(f"{_M}.get_commit_subjects", return_value=["c1"]), \
              patch(f"{_M}.run_git_strict"), \

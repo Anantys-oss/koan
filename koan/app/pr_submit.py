@@ -9,7 +9,7 @@ import logging
 import os
 import subprocess
 from pathlib import Path
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from app.git_utils import (
     get_commit_subjects as _git_get_commit_subjects,
@@ -112,11 +112,14 @@ def submit_draft_pr(
     pr_body: str,
     issue_url: Optional[str] = None,
     base_branch: Optional[str] = None,
+    notify_fn: Optional[Callable[[str], None]] = None,
 ) -> Optional[str]:
     """Push branch and create a draft PR.
 
     Handles the full PR submission pipeline:
-    1. Check current branch (skip if on main/master)
+    1. Resolve the project's base branch; abort if HEAD is *on* that base
+       branch (or on main/master) — committing there means the skill failed
+       to create a feature branch and there's nothing diff-able to push.
     2. Check for existing PR on this branch
     3. Push branch to origin
     4. Resolve submit target (config, fork detection, fallback)
@@ -135,13 +138,34 @@ def submit_draft_pr(
         base_branch: Optional target branch for the PR (e.g. "11.126").
             When set, overrides the auto-resolved base branch for both
             commit diffing and the PR's --base flag.
+        notify_fn: Optional callable invoked with a one-line human-readable
+            reason when PR submission fails (push error, gh error, no commits,
+            HEAD landed on the base branch). Lets callers surface the failure
+            to Telegram instead of leaving it in logs only.
 
     Returns:
         PR URL on success, or None on failure.
     """
     branch = get_current_branch(project_path)
-    if branch in ("main", "master"):
-        logger.info("On %s — skipping PR creation", branch)
+
+    # Resolve the effective base branch up-front: it gates both the "HEAD is
+    # on the base" guard below AND the empty-diff check further down. Before
+    # this fix, the guard hardcoded `("main", "master")` and let projects
+    # configured with `base_branch: staging` (or any non-main/master base)
+    # slip through, so Claude would commit straight onto staging and the
+    # post-implementation PR submission silently no-op'd on the empty diff.
+    effective_base = base_branch or resolve_base_branch(project_name, project_path)
+
+    if branch == effective_base or branch in ("main", "master"):
+        reason = (
+            f"HEAD is on the base branch '{branch}' — the skill committed "
+            "without first creating a feature branch, so there is nothing "
+            "to push as a PR. The commits remain on your local base branch "
+            "until you move them onto a feature branch manually."
+        )
+        logger.warning(reason)
+        if notify_fn:
+            notify_fn(f"❌ PR creation aborted: {reason}")
         return None
 
     # Check for existing PR on this branch
@@ -157,10 +181,14 @@ def submit_draft_pr(
         logger.debug("No existing PR found (or check failed): %s", e)
 
     # Verify we have commits to submit
-    effective_base = base_branch or resolve_base_branch(project_name, project_path)
     commits = get_commit_subjects(project_path, base_branch=effective_base)
     if not commits:
-        logger.info("No commits on branch — skipping PR creation")
+        reason = (
+            f"No commits found on '{branch}' relative to '{effective_base}'."
+        )
+        logger.info("%s — skipping PR creation", reason)
+        if notify_fn:
+            notify_fn(f"❌ PR creation skipped: {reason}")
         return None
 
     # Push branch
@@ -170,7 +198,10 @@ def submit_draft_pr(
             cwd=project_path, timeout=120,
         )
     except (RuntimeError, OSError, subprocess.SubprocessError) as e:
-        logger.warning("Failed to push branch: %s", e)
+        reason = f"git push failed: {str(e)[:300]}"
+        logger.warning(reason)
+        if notify_fn:
+            notify_fn(f"❌ PR creation failed — {reason}")
         return None
 
     # Resolve where to submit
@@ -195,7 +226,10 @@ def submit_draft_pr(
     try:
         pr_url = pr_create(**pr_kwargs)
     except (RuntimeError, OSError, subprocess.SubprocessError) as e:
-        logger.warning("Failed to create PR: %s", e)
+        reason = f"gh pr create failed: {str(e)[:300]}"
+        logger.warning(reason)
+        if notify_fn:
+            notify_fn(f"❌ PR creation failed — {reason}")
         return None
 
     # Comment on the source issue with the PR link. The issue may live in

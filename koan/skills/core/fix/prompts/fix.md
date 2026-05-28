@@ -29,6 +29,8 @@ You are fixing an issue from the configured issue tracker. Your job is to unders
 
 Branch naming: `{BRANCH_PREFIX}fix-issue-{ISSUE_NUMBER}`
 
+**Mandatory before any commit**: the repository's base branch for this project is `{BASE_BRANCH}`. If you are currently on `{BASE_BRANCH}`, on `main`, or on `master`, create and switch to the branch named above before making any changes. **Never commit on `{BASE_BRANCH}`, `main`, or `master` directly** — that leaves the work on a base branch where no PR can be opened and is treated as a failed mission. If you are already on a feature branch (anything other than `{BASE_BRANCH}`, `main`, or `master`), stay on it.
+
 {@include implementation-workflow}
 
 ## Rules

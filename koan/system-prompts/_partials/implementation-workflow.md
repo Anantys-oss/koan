@@ -8,7 +8,7 @@
 
 For each phase in your plan:
 
-9. **Create a branch** (first phase only) following the branch naming specified above. If already on a feature branch, stay on it.
+9. **Create a feature branch — mandatory** (first phase only). If you are currently on the base branch `{BASE_BRANCH}` (or on `main` / `master`), create the feature branch now using the naming specified earlier in this prompt and switch to it before the first edit. **Never commit on the base branch.** If you are already on a feature branch (anything other than `{BASE_BRANCH}`, `main`, or `master`), stay on it.
 10. **Implement the change.** Edit the minimal set of files needed. Follow project conventions strictly.
 11. **Run tests** to verify. Fix any failures before proceeding.
 12. **Commit** with a clear message describing what this phase does.

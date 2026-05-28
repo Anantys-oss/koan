@@ -17,7 +17,7 @@ You are implementing a plan from the configured issue tracker. Your job is to re
 
 1. **Read the plan carefully**: Understand the overall goal, the phases, and the acceptance criteria for each phase.
 
-2. **Create a dedicated branch**: If you are currently on `main` or `master`, create a new branch before making any changes: `{BRANCH_PREFIX}implement-{ISSUE_NUMBER}`. If you are already on a feature branch, stay on it.
+2. **Create a dedicated branch — mandatory before any commit**: The repository's base branch for this project is `{BASE_BRANCH}`. If you are currently on `{BASE_BRANCH}`, on `main`, or on `master`, you MUST create a new branch named `{BRANCH_PREFIX}implement-{ISSUE_NUMBER}` before making any changes. **Never commit on `{BASE_BRANCH}`, `main`, or `master` directly** — that leaves the work on a base branch where no PR can be opened and is treated as a failed mission. If you are already on a feature branch (anything other than `{BASE_BRANCH}`, `main`, or `master`), stay on it.
 
 3. **Explore the codebase first**: Use Read, Glob, and Grep to understand the current state of the code. Verify that assumptions in the plan still hold — the codebase may have changed since the plan was written.
 
