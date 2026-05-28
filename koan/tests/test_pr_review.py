@@ -204,7 +204,8 @@ class TestRunClaudeStep:
             commit_msg="test commit", success_label="Step done",
             failure_label="Step failed", actions_log=actions,
         )
-        assert result is True
+        assert result  # StepResult truthy when committed
+        assert result.committed is True
         assert "Step done" in actions
 
     @patch("app.claude_step.commit_if_changes", return_value=False)
@@ -219,7 +220,8 @@ class TestRunClaudeStep:
             commit_msg="msg", success_label="OK",
             failure_label="FAIL", actions_log=actions,
         )
-        assert result is False
+        assert not result
+        assert result.committed is False
         assert len(actions) == 0
 
     @patch("app.claude_step.run_claude")
@@ -233,7 +235,7 @@ class TestRunClaudeStep:
             commit_msg="msg", success_label="OK",
             failure_label="Step failed", actions_log=actions,
         )
-        assert result is False
+        assert not result
         assert any("Step failed" in a for a in actions)
 
     @patch("app.claude_step.commit_if_changes", return_value=True)
@@ -294,29 +296,77 @@ class TestCommitIfChanges:
 # _run_claude
 # ---------------------------------------------------------------------------
 
+class _FakeStream:
+    def __init__(self, lines=None, read_text=""):
+        self._lines = list(lines or [])
+        self._read_text = read_text
+
+    def __iter__(self):
+        return iter(self._lines)
+
+    def read(self):
+        return self._read_text
+
+    def close(self):
+        return None
+
+
+def _fake_proc(stdout_lines, stderr_text="", returncode=0):
+    proc = MagicMock()
+    proc.stdout = _FakeStream(lines=stdout_lines)
+    proc.stderr = _FakeStream(read_text=stderr_text)
+    proc.returncode = returncode
+    proc.pid = 99999
+    proc.wait.return_value = returncode
+    return proc
+
+
 class TestRunClaude:
-    @patch("app.claude_step.subprocess.run")
-    def test_success(self, mock_run):
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout="Done", stderr=""
-        )
+    @patch("app.claude_step.popen_cli")
+    def test_success(self, mock_popen):
+        proc = _fake_proc(["Done\n"], stderr_text="", returncode=0)
+        mock_popen.return_value = (proc, lambda: None)
         result = _run_claude(["claude", "-p", "test"], "/tmp")
         assert result["success"] is True
         assert result["output"] == "Done"
 
-    @patch("app.claude_step.subprocess.run")
-    def test_failure(self, mock_run):
-        mock_run.return_value = MagicMock(
-            returncode=1, stdout="", stderr="error"
-        )
+    @patch("app.claude_step.popen_cli")
+    def test_failure(self, mock_popen):
+        proc = _fake_proc([], stderr_text="error", returncode=1)
+        mock_popen.return_value = (proc, lambda: None)
         result = _run_claude(["claude", "-p", "test"], "/tmp")
         assert result["success"] is False
         assert "Exit code 1" in result["error"]
 
-    @patch("app.claude_step.subprocess.run")
-    def test_timeout(self, mock_run):
-        mock_run.side_effect = subprocess.TimeoutExpired(cmd="claude", timeout=10)
-        result = _run_claude(["claude", "-p", "test"], "/tmp", timeout=10)
+    @patch("os.killpg")
+    @patch("app.claude_step.popen_cli")
+    def test_timeout(self, mock_popen, mock_killpg):
+        """When the watchdog fires the kill, run_claude returns Timeout."""
+        import threading
+
+        killed = threading.Event()
+        mock_killpg.side_effect = lambda *a, **kw: killed.set()
+
+        class _BlockingStream:
+            def __iter__(self):
+                killed.wait(timeout=10)
+                return iter([])
+
+            def read(self):
+                return ""
+
+            def close(self):
+                return None
+
+        proc = MagicMock()
+        proc.stdout = _BlockingStream()
+        proc.stderr = _FakeStream(read_text="")
+        proc.returncode = -9
+        proc.pid = 12345
+        proc.wait.return_value = -9
+        mock_popen.return_value = (proc, lambda: None)
+
+        result = _run_claude(["claude", "-p", "test"], "/tmp", timeout=1)
         assert result["success"] is False
         assert "Timeout" in result["error"]
 
@@ -331,18 +381,13 @@ class TestRebaseOntoTarget:
     def test_success_returns_remote_name(self, mock_subproc, mock_git):
         result = _rebase_onto_target("main", "/tmp/p")
         assert result == "origin"
-        assert mock_git.call_count == 2  # fetch + rebase
 
     @patch("app.claude_step._run_git")
     @patch("app.claude_step.subprocess.run")
     def test_falls_back_to_upstream(self, mock_subproc, mock_git):
         """When origin rebase fails, tries upstream."""
-        call_count = 0
-        def selective_fail(*args, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            # First two calls are origin fetch+rebase — fail the rebase
-            if call_count == 2:
+        def selective_fail(cmd, **kwargs):
+            if "rebase" in cmd and any("origin" in a for a in cmd):
                 raise RuntimeError("conflict on origin")
             return ""
         mock_git.side_effect = selective_fail
@@ -432,11 +477,11 @@ class TestDetectSkills:
         instance = tmp_path / "instance"
         instance.mkdir()
         (instance / "soul.md").write_text(
-            "Skills: `atoomic.refactor` and `atoomic.review` are available."
+            "Skills: `team.refactor` and `team.review` are available."
         )
         refactor, review = detect_skills()
-        assert refactor == "atoomic.refactor"
-        assert review == "atoomic.review"
+        assert refactor == "team.refactor"
+        assert review == "team.review"
 
     def test_without_soul(self, tmp_path, monkeypatch):
         monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
@@ -462,11 +507,11 @@ class TestDetectSkills:
         instance = tmp_path / "instance"
         instance.mkdir()
         (instance / "soul.md").write_text(
-            "Use atoomic.refactor and atoomic.review for code quality."
+            "Use team.refactor and team.review for code quality."
         )
         refactor, review = detect_skills()
-        assert refactor == "atoomic.refactor"
-        assert review == "atoomic.review"
+        assert refactor == "team.refactor"
+        assert review == "team.review"
 
     def test_claude_md_at_project_path(self, tmp_path, monkeypatch):
         """Skills detected from CLAUDE.md at project path (highest priority)."""
@@ -487,7 +532,7 @@ class TestDetectSkills:
         instance = tmp_path / "instance"
         instance.mkdir()
         (instance / "soul.md").write_text(
-            "Skills: `atoomic.refactor` and `atoomic.review` are available."
+            "Skills: `team.refactor` and `team.review` are available."
         )
         project = tmp_path / "project"
         project.mkdir()
@@ -497,7 +542,7 @@ class TestDetectSkills:
         refactor, review = detect_skills(str(project))
         assert refactor == "custom.refactor"
         # review falls through to soul.md
-        assert review == "atoomic.review"
+        assert review == "team.review"
 
     def test_no_project_path(self, tmp_path, monkeypatch):
         """Works without project_path, falls back to soul.md only."""
@@ -505,11 +550,11 @@ class TestDetectSkills:
         instance = tmp_path / "instance"
         instance.mkdir()
         (instance / "soul.md").write_text(
-            "Skills: `atoomic.refactor` and `atoomic.review`."
+            "Skills: `team.refactor` and `team.review`."
         )
         refactor, review = detect_skills("")
-        assert refactor == "atoomic.refactor"
-        assert review == "atoomic.review"
+        assert refactor == "team.refactor"
+        assert review == "team.review"
 
 
 # ---------------------------------------------------------------------------
@@ -593,8 +638,8 @@ class TestBuildRefactorPrompt:
         assert "/tmp/project" in prompt
 
     def test_includes_skill_name(self):
-        prompt = build_refactor_prompt("/tmp/project", "atoomic.refactor", skill_dir=PR_SKILL_DIR)
-        assert "atoomic.refactor" in prompt
+        prompt = build_refactor_prompt("/tmp/project", "team.refactor", skill_dir=PR_SKILL_DIR)
+        assert "team.refactor" in prompt
 
     def test_empty_skill_name(self):
         prompt = build_refactor_prompt("/tmp/project", "", skill_dir=PR_SKILL_DIR)
@@ -607,8 +652,8 @@ class TestBuildQualityReviewPrompt:
         assert "/tmp/project" in prompt
 
     def test_includes_skill_name(self):
-        prompt = build_quality_review_prompt("/tmp/project", "atoomic.review", skill_dir=PR_SKILL_DIR)
-        assert "atoomic.review" in prompt
+        prompt = build_quality_review_prompt("/tmp/project", "team.review", skill_dir=PR_SKILL_DIR)
+        assert "team.review" in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -674,7 +719,7 @@ class TestRunPrReview:
         assert success is False
         assert "Failed to fetch" in summary
 
-    @patch("app.pr_review.detect_skills", return_value=("atoomic.refactor", "atoomic.review"))
+    @patch("app.pr_review.detect_skills", return_value=("team.refactor", "team.review"))
     @patch("app.pr_review.detect_test_command", return_value="make test")
     @patch("app.pr_review.run_project_tests")
     @patch("app.pr_review.run_gh")

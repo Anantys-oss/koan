@@ -2,6 +2,7 @@
 name: journal
 scope: core
 group: status
+emoji: 📓
 description: View journal entries
 version: 1.0.0
 audience: bridge

@@ -2,9 +2,11 @@
 name: incident
 scope: core
 group: system
+emoji: 🚨
 description: "Triage and fix a production error from a pasted stack trace or log snippet"
 version: 1.0.0
 audience: hybrid
+caveman: false
 commands:
   - name: incident
     description: "Parse a production error, identify root cause, propose a fix with tests, and submit a draft PR"

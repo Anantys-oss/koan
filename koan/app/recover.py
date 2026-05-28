@@ -23,7 +23,7 @@ Returns via stdout:
     Missions file is updated in-place if recovery happens.
 """
 
-import fcntl
+import contextlib
 import json
 import re
 import sys
@@ -72,17 +72,22 @@ def _strip_recovery_counter(mission_line: str) -> str:
 # State classification
 # ---------------------------------------------------------------------------
 
-def classify_mission_state(mission_line: str, has_pending_journal: bool = False) -> str:
+def classify_mission_state(
+    mission_line: str,
+    has_pending_journal: bool = False,
+    has_checkpoint: bool = False,
+) -> str:
     """Classify a stale in-progress mission's recovery state.
 
     States:
         "unrecoverable" — Too many attempts. Escalate to Failed, notify human.
-        "partial"       — Has pending.md context from an interrupted run. Recover.
+        "partial"       — Has checkpoint or pending.md context. Recover with context.
         "dead"          — Standard crash, no special context. Simple recovery.
 
     Args:
         mission_line: The raw mission text line.
         has_pending_journal: True if a pending.md exists from an interrupted run.
+        has_checkpoint: True if a structured checkpoint file exists for this mission.
 
     Returns:
         One of "unrecoverable", "partial", or "dead".
@@ -90,7 +95,7 @@ def classify_mission_state(mission_line: str, has_pending_journal: bool = False)
     attempts = _get_recovery_attempts(mission_line)
     if attempts >= MAX_RECOVERY_ATTEMPTS:
         return "unrecoverable"
-    if has_pending_journal:
+    if has_checkpoint or has_pending_journal:
         return "partial"
     return "dead"
 
@@ -105,6 +110,7 @@ def _log_recovery_event(
     state: str,
     action: str,
     attempts: int,
+    has_checkpoint: bool = False,
 ) -> None:
     """Append a recovery event to recovery.jsonl for audit trail.
 
@@ -114,6 +120,7 @@ def _log_recovery_event(
         state: Classified state ("dead", "partial", "unrecoverable").
         action: Action taken ("recovered", "escalated", "skipped").
         attempts: Recovery attempt count at the time of this event.
+        has_checkpoint: Whether a structured checkpoint file was found.
     """
     event = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
@@ -121,14 +128,12 @@ def _log_recovery_event(
         "state": state,
         "action": action,
         "attempts": attempts,
+        "has_checkpoint": has_checkpoint,
     }
     log_path = Path(instance_dir) / "recovery.jsonl"
     try:
-        with open(log_path, "a") as f:
-            fcntl.flock(f, fcntl.LOCK_EX)
-            f.write(json.dumps(event) + "\n")
-            f.flush()
-            fcntl.flock(f, fcntl.LOCK_UN)
+        from app.locked_file import locked_jsonl_append
+        locked_jsonl_append(log_path, event)
     except OSError as e:
         print(f"[recover] Warning: could not write recovery log: {e}", file=sys.stderr)
 
@@ -168,7 +173,7 @@ def check_pending_journal(instance_dir: str) -> bool:
 # Main recovery logic
 # ---------------------------------------------------------------------------
 
-def recover_missions(instance_dir: str, dry_run: bool = False) -> int:
+def recover_missions(instance_dir: str, dry_run: bool = False) -> tuple:
     """Move stale in-progress missions back to pending or escalate to failed.
 
     Enhanced recovery with state classification:
@@ -185,24 +190,37 @@ def recover_missions(instance_dir: str, dry_run: bool = False) -> int:
         dry_run: If True, classify and log but do not modify missions.md.
 
     Returns:
-        Number of missions moved back to Pending (excludes escalated ones).
+        Tuple of (count of missions moved to Pending, list of escalated mission lines).
     """
     missions_path = Path(instance_dir) / "missions.md"
-    if not missions_path.exists():
-        return 0
+    try:
+        missions_path.read_text()
+    except FileNotFoundError:
+        return 0, []
 
     from app.missions import find_section_boundaries, normalize_content
-    from app.utils import modify_missions_file
+    from app.utils import atomic_write, modify_missions_file
 
     # Check pending.md once for the partial state detection
+    # Use try/except to avoid TOCTOU race (file deleted between check and read)
     pending_path = Path(instance_dir) / "journal" / "pending.md"
-    has_pending_journal = pending_path.exists() and pending_path.read_text().strip() != ""
+    try:
+        has_pending_journal = pending_path.read_text().strip() != ""
+    except FileNotFoundError:
+        has_pending_journal = False
+
+    # Import checkpoint manager for per-mission checkpoint lookup
+    try:
+        from app.checkpoint_manager import read_checkpoint as _read_cp
+    except ImportError:
+        _read_cp = None
 
     recovered_count = 0
     escalated_missions: list = []
+    recovered_mission_texts: list = []  # clean mission texts for checkpoint lookup
 
     def _recover_transform(content: str) -> str:
-        nonlocal recovered_count, escalated_missions
+        nonlocal recovered_count, escalated_missions, recovered_mission_texts
         lines = content.splitlines()
 
         boundaries = find_section_boundaries(lines)
@@ -240,24 +258,41 @@ def recover_missions(instance_dir: str, dry_run: bool = False) -> int:
                 continue
 
             if stripped.startswith("- ") and "~~" not in stripped:
+                # Extract clean mission text (no "- " prefix, no [r:N])
+                clean_text = _strip_recovery_counter(stripped).removeprefix("- ").strip()
+                # Check for a structured checkpoint for this mission
+                has_checkpoint = False
+                if _read_cp is not None:
+                    cp = _read_cp(instance_dir, clean_text)
+                    has_checkpoint = cp is not None
+
                 # Classify this mission
-                state = classify_mission_state(line, has_pending_journal=has_pending_journal)
+                state = classify_mission_state(
+                    line,
+                    has_pending_journal=has_pending_journal,
+                    has_checkpoint=has_checkpoint,
+                )
                 attempts = _get_recovery_attempts(line)
 
                 if dry_run:
-                    print(f"[recover] [dry-run] mission={stripped!r:.60} state={state} attempts={attempts}")
-                    _log_recovery_event(instance_dir, line, state, "dry_run", attempts)
+                    print(f"[recover] [dry-run] mission={stripped!r:.60} state={state} "
+                          f"attempts={attempts} checkpoint={has_checkpoint}")
+                    _log_recovery_event(instance_dir, line, state, "dry_run", attempts,
+                                        has_checkpoint=has_checkpoint)
                     remaining_in_progress.append(line)
                     continue
 
                 if state == "unrecoverable":
                     escalated.append(line)
-                    _log_recovery_event(instance_dir, line, state, "escalated", attempts)
+                    _log_recovery_event(instance_dir, line, state, "escalated", attempts,
+                                        has_checkpoint=has_checkpoint)
                 else:
                     # Increment counter and move to Pending
                     updated_line = _set_recovery_attempts(line, attempts + 1)
                     recovered.append(updated_line)
-                    _log_recovery_event(instance_dir, line, state, "recovered", attempts + 1)
+                    recovered_mission_texts.append(clean_text)
+                    _log_recovery_event(instance_dir, line, state, "recovered", attempts + 1,
+                                        has_checkpoint=has_checkpoint)
 
             elif stripped == "(aucune)" or stripped == "(none)":
                 remaining_in_progress.append(line)
@@ -288,12 +323,10 @@ def recover_missions(instance_dir: str, dry_run: bool = False) -> int:
 
             if i == pending_start:
                 new_lines.append("")
-                for m in recovered:
-                    new_lines.append(m)
+                new_lines.extend(recovered)
 
             if i == in_progress_start:
-                for m in remaining_in_progress:
-                    new_lines.append(m)
+                new_lines.extend(remaining_in_progress)
                 if not any(m.strip() for m in remaining_in_progress):
                     new_lines.append("")
 
@@ -301,12 +334,11 @@ def recover_missions(instance_dir: str, dry_run: bool = False) -> int:
             if failed_bounds and i == failed_bounds[0]:
                 # Re-insert original failed content (minus section boundaries we'll re-emit)
                 orig_failed = lines[failed_bounds[0] + 1 : failed_bounds[1]]
-                for fl in orig_failed:
-                    new_lines.append(fl)
+                new_lines.extend(orig_failed)
                 if escalated:
                     for m in escalated:
                         clean = _strip_recovery_counter(m).rstrip()
-                        new_lines.append(f"- ❌ needs_input: {clean.lstrip('- ')}")
+                        new_lines.append(f"- ❌ needs_input: {clean.removeprefix('- ')}")
                     new_lines.append("")
 
         # If there's no Failed section but we have escalated missions, append one
@@ -316,13 +348,61 @@ def recover_missions(instance_dir: str, dry_run: bool = False) -> int:
             new_lines.append("")
             for m in escalated:
                 clean = _strip_recovery_counter(m).rstrip()
-                new_lines.append(f"- ❌ needs_input: {clean.lstrip('- ')}")
+                new_lines.append(f"- ❌ needs_input: {clean.removeprefix('- ')}")
             new_lines.append("")
 
         return normalize_content("\n".join(new_lines) + "\n")
 
     modify_missions_file(missions_path, _recover_transform)
-    return recovered_count
+
+    # Write checkpoint recovery context to pending.md if available.
+    # This makes structured checkpoint data visible to the agent's normal
+    # recovery flow (which reads pending.md at session start).
+    if recovered_count > 0 and _read_cp is not None and not dry_run:
+        _inject_checkpoint_context(instance_dir, recovered_mission_texts)
+
+    return recovered_count, escalated_missions
+
+
+# ---------------------------------------------------------------------------
+# Checkpoint context injection
+# ---------------------------------------------------------------------------
+
+def _inject_checkpoint_context(instance_dir: str, mission_texts: list) -> None:
+    """Write checkpoint recovery context to pending.md for recovered missions.
+
+    When a mission has a structured checkpoint, appends formatted recovery
+    context to pending.md so the agent reads it on restart.
+    Only processes the first mission with a checkpoint (FIFO queue means
+    only one mission runs at a time).
+    """
+    try:
+        from app.checkpoint_manager import read_checkpoint, format_recovery_context
+    except ImportError:
+        return
+
+    from app.utils import atomic_write
+
+    for mission_text in mission_texts:
+        cp = read_checkpoint(instance_dir, mission_text)
+        if cp is None:
+            continue
+
+        context = format_recovery_context(cp)
+        pending_path = Path(instance_dir) / "journal" / "pending.md"
+        try:
+            existing = ""
+            with contextlib.suppress(FileNotFoundError):
+                existing = pending_path.read_text()
+            # Append checkpoint context after existing content
+            new_content = ""
+            if existing.strip():
+                new_content = existing.rstrip() + "\n\n"
+            new_content += context + "\n"
+            atomic_write(pending_path, new_content)
+        except OSError:
+            pass
+        break  # Only inject for the first mission with a checkpoint
 
 
 # ---------------------------------------------------------------------------
@@ -339,23 +419,11 @@ if __name__ == "__main__":
 
     instance_dir = args[0]
     has_pending = check_pending_journal(instance_dir)
-    count = recover_missions(instance_dir, dry_run=dry_run)
+    count, escalated_lines = recover_missions(instance_dir, dry_run=dry_run)
 
-    # Notify about escalated missions (needs_input) — read from the log
-    log_path = Path(instance_dir) / "recovery.jsonl"
-    escalated_msgs = []
-    if log_path.exists():
-        try:
-            with open(log_path) as f:
-                for line in f:
-                    try:
-                        ev = json.loads(line)
-                        if ev.get("action") == "escalated":
-                            escalated_msgs.append(ev.get("mission", "?")[:80])
-                    except json.JSONDecodeError:
-                        pass
-        except OSError:
-            pass
+    # Build escalated message list from current run only (not historical log)
+    escalated_msgs = [_strip_recovery_counter(m).strip().removeprefix("- ")[:80]
+                      for m in escalated_lines]
 
     if count > 0 or has_pending or escalated_msgs:
         parts = []

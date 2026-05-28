@@ -8,11 +8,21 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.pr_review_learning import (
+    _analyze_rejection_with_cli,
     _append_lessons_to_learnings,
     _compute_review_hash,
+    _fetch_issue_comments_for_pr,
+    _fetch_review_comments_for_pr,
+    _fetch_reviews_for_pr,
+    _increment_failure_count,
     _is_cache_fresh,
+    _notify_analysis_failures,
     _parse_iso,
+    _read_failure_count,
+    _reset_failure_count,
     _write_cache,
+    _write_rejection_journal_entries,
+    _FAILURE_ALERT_THRESHOLD,
     analyze_reviews_with_cli,
     fetch_pr_reviews,
     format_reviews_for_analysis,
@@ -138,6 +148,13 @@ class TestComputeReviewHash:
         ]
         assert _compute_review_hash(prs_a) == _compute_review_hash(prs_b)
 
+    def test_returns_full_sha256_hex_digest(self):
+        """Hash must be a full 64-char SHA-256 hex digest to prevent cache collisions."""
+        prs = [{"number": 1, "reviews": [{"body": "lgtm"}], "review_comments": []}]
+        h = _compute_review_hash(prs)
+        assert len(h) == 64
+        assert all(c in "0123456789abcdef" for c in h)
+
 
 # ─── cache ───────────────────────────────────────────────────────────────
 
@@ -227,6 +244,215 @@ class TestAppendLessonsToLearnings:
         assert added == 0
 
 
+class TestWriteTimeSemanticDedup:
+    """Dedup-with-CLI pre-pass on the write path."""
+
+    def _seed_existing(self, tmp_path, content):
+        instance_dir = tmp_path / "instance"
+        learnings_dir = instance_dir / "memory" / "projects" / "myproject"
+        learnings_dir.mkdir(parents=True)
+        (learnings_dir / "learnings.md").write_text(content)
+        return instance_dir, learnings_dir / "learnings.md"
+
+    def test_cli_filters_paraphrases_before_append(self, tmp_path):
+        """The CLI's filtered output is what gets appended (paraphrases dropped)."""
+        instance_dir, learnings_file = self._seed_existing(
+            tmp_path, "# Learnings\n\n- always test PR changes\n",
+        )
+        raw = "- verify changes with tests\n- new: profile boot path on slow machines"
+        # CLI keeps only the genuinely new entry.
+        with patch(
+            "app.pr_review_learning._is_write_time_dedup_enabled", return_value=True,
+        ), patch(
+            "app.pr_review_learning._dedup_lessons_with_cli",
+            return_value="- new: profile boot path on slow machines",
+        ):
+            added = _append_lessons_to_learnings(
+                str(instance_dir), "myproject", raw,
+                project_path="/fake/project",
+            )
+        content = learnings_file.read_text()
+        assert added == 1
+        assert "profile boot path" in content
+        assert "verify changes with tests" not in content
+
+    def test_cli_failure_falls_back_to_exact_string_dedup(self, tmp_path):
+        """When the CLI returns None, the original exact-string dedup must still run."""
+        instance_dir, learnings_file = self._seed_existing(
+            tmp_path, "# Learnings\n\n- always test PR changes\n",
+        )
+        raw = "- always test PR changes\n- profile boot path"
+        with patch(
+            "app.pr_review_learning._is_write_time_dedup_enabled", return_value=True,
+        ), patch(
+            "app.pr_review_learning._dedup_lessons_with_cli", return_value=None,
+        ):
+            added = _append_lessons_to_learnings(
+                str(instance_dir), "myproject", raw,
+                project_path="/fake/project",
+            )
+        content = learnings_file.read_text()
+        # Exact duplicate dropped; new line kept.
+        assert added == 1
+        assert content.count("always test PR changes") == 1
+        assert "profile boot path" in content
+
+    def test_disabled_via_config_skips_cli(self, tmp_path):
+        """When memory.write_time_dedup is false, the CLI must not be called."""
+        instance_dir, _ = self._seed_existing(
+            tmp_path, "# Learnings\n\n- existing\n",
+        )
+        with patch(
+            "app.pr_review_learning._is_write_time_dedup_enabled", return_value=False,
+        ), patch(
+            "app.pr_review_learning._dedup_lessons_with_cli",
+        ) as mock_cli:
+            _append_lessons_to_learnings(
+                str(instance_dir), "myproject", "- brand new",
+                project_path="/fake/project",
+            )
+        assert mock_cli.call_count == 0
+
+    def test_no_project_path_skips_cli(self, tmp_path):
+        """Without a project_path, the CLI has no cwd — must not be called."""
+        instance_dir, _ = self._seed_existing(
+            tmp_path, "# Learnings\n\n- existing\n",
+        )
+        with patch(
+            "app.pr_review_learning._is_write_time_dedup_enabled", return_value=True,
+        ), patch(
+            "app.pr_review_learning._dedup_lessons_with_cli",
+        ) as mock_cli:
+            _append_lessons_to_learnings(
+                str(instance_dir), "myproject", "- brand new",
+            )
+        assert mock_cli.call_count == 0
+
+    def test_empty_existing_skips_cli(self, tmp_path):
+        """Nothing to dedup against = no CLI call (waste of quota)."""
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        with patch(
+            "app.pr_review_learning._is_write_time_dedup_enabled", return_value=True,
+        ), patch(
+            "app.pr_review_learning._dedup_lessons_with_cli",
+        ) as mock_cli:
+            added = _append_lessons_to_learnings(
+                str(instance_dir), "myproject", "- first ever lesson",
+                project_path="/fake/project",
+            )
+        assert mock_cli.call_count == 0
+        assert added == 1
+
+    def test_all_exact_dupes_skip_cli(self, tmp_path):
+        """When every candidate is an exact duplicate, the CLI must not be called.
+
+        Regression guard for the reordered dedup passes (exact-string first,
+        CLI on survivors): a quiet review cycle where the agent extracts the
+        same bullet it already wrote should not burn a 15s CLI call.
+        """
+        instance_dir, _ = self._seed_existing(
+            tmp_path, "# Learnings\n\n- always test PR changes\n- use atomic writes\n",
+        )
+        raw = "- always test PR changes\n- use atomic writes"
+        with patch(
+            "app.pr_review_learning._is_write_time_dedup_enabled", return_value=True,
+        ), patch(
+            "app.pr_review_learning._dedup_lessons_with_cli",
+        ) as mock_cli:
+            added = _append_lessons_to_learnings(
+                str(instance_dir), "myproject", raw,
+                project_path="/fake/project",
+            )
+        assert mock_cli.call_count == 0
+        assert added == 0
+
+    def test_cli_only_sees_survivors_of_exact_pass(self, tmp_path):
+        """The CLI must be called with the post-exact-string survivors, not the raw input.
+
+        Mixed batch: one exact dupe + one paraphrase + one truly new. After
+        pass 1 only the paraphrase + the new line survive — that's what the
+        CLI prompt should see.
+        """
+        instance_dir, _ = self._seed_existing(
+            tmp_path, "# Learnings\n\n- always test PR changes\n",
+        )
+        raw = (
+            "- always test PR changes\n"          # exact dupe → dropped by pass 1
+            "- verify changes with tests\n"       # paraphrase  → reaches CLI
+            "- profile boot path on slow boxes"   # truly new   → reaches CLI
+        )
+        with patch(
+            "app.pr_review_learning._is_write_time_dedup_enabled", return_value=True,
+        ), patch(
+            "app.pr_review_learning._dedup_lessons_with_cli",
+            return_value="- profile boot path on slow boxes",
+        ) as mock_cli:
+            _append_lessons_to_learnings(
+                str(instance_dir), "myproject", raw,
+                project_path="/fake/project",
+            )
+        assert mock_cli.call_count == 1
+        sent_to_cli = mock_cli.call_args.args[0]
+        assert "always test PR changes" not in sent_to_cli
+        assert "verify changes with tests" in sent_to_cli
+        assert "profile boot path" in sent_to_cli
+
+    @patch("app.cli_exec.run_cli_with_retry")
+    @patch("app.cli_provider.build_full_command")
+    @patch("app.config.get_model_config")
+    @patch("app.prompts.load_prompt")
+    def test_dedup_cli_call_caps_attempts_to_one(
+        self, mock_prompt, mock_models, mock_build, mock_run,
+    ):
+        """The hot-path dedup must pass max_attempts=1 so retry backoff
+        cannot stretch the 15s budget into 60s+ on transient errors."""
+        from app.pr_review_learning import _dedup_lessons_with_cli
+
+        mock_prompt.return_value = "dedup prompt"
+        mock_models.return_value = {"lightweight": "haiku", "fallback": "sonnet"}
+        mock_build.return_value = ["claude", "-p", "..."]
+        mock_run.return_value = MagicMock(returncode=0, stdout="- kept\n", stderr="")
+
+        _dedup_lessons_with_cli("- new", "- existing", "/fake/path")
+
+        assert mock_run.call_count == 1
+        assert mock_run.call_args.kwargs.get("max_attempts") == 1
+
+    @patch("app.prompts.load_prompt", side_effect=OSError("missing prompt"))
+    def test_dedup_cli_prompt_load_failure_returns_none(self, mock_prompt):
+        from app.pr_review_learning import _dedup_lessons_with_cli
+
+        assert _dedup_lessons_with_cli("- new", "- old", "/fake/path") is None
+
+    def test_dedup_cli_skips_when_inputs_empty(self):
+        from app.pr_review_learning import _dedup_lessons_with_cli
+
+        assert _dedup_lessons_with_cli("- new", "", "/fake/path") == "- new"
+        assert _dedup_lessons_with_cli("", "- old", "/fake/path") == ""
+
+
+class TestWriteTimeDedupConfig:
+    @patch("app.utils.load_config", return_value={"memory": {"write_time_dedup": False}})
+    def test_disabled_by_config(self, mock_config):
+        from app.pr_review_learning import _is_write_time_dedup_enabled
+
+        assert _is_write_time_dedup_enabled() is False
+
+    @patch("app.utils.load_config", return_value={})
+    def test_defaults_enabled(self, mock_config):
+        from app.pr_review_learning import _is_write_time_dedup_enabled
+
+        assert _is_write_time_dedup_enabled() is True
+
+    @patch("app.utils.load_config", side_effect=OSError("config unreadable"))
+    def test_config_lookup_failure_defaults_enabled(self, mock_config, capsys):
+        from app.pr_review_learning import _is_write_time_dedup_enabled
+
+        assert _is_write_time_dedup_enabled() is True
+        assert "dedup config lookup failed" in capsys.readouterr().err
+
+
 # ─── analyze_reviews_with_cli ────────────────────────────────────────────
 
 
@@ -263,6 +489,107 @@ class TestAnalyzeReviewsWithCli:
 
         result = analyze_reviews_with_cli("review text", "/fake/path")
         assert result == ""
+
+
+class TestAnalyzeRejectionWithCli:
+    @patch("app.cli_exec.run_cli_with_retry")
+    @patch("app.cli_provider.build_full_command")
+    @patch("app.config.get_model_config")
+    @patch("app.prompts.load_prompt")
+    def test_returns_stdout_on_success(
+        self, mock_prompt, mock_models, mock_build, mock_run,
+    ):
+        mock_prompt.return_value = "reject prompt"
+        mock_models.return_value = {"lightweight": "haiku", "fallback": "sonnet"}
+        mock_build.return_value = ["claude", "-p", "..."]
+        mock_run.return_value = MagicMock(returncode=0, stdout="- Too broad\n", stderr="")
+
+        assert _analyze_rejection_with_cli("review text", "/fake/path") == "- Too broad"
+
+    @patch("app.cli_exec.run_cli_with_retry")
+    @patch("app.cli_provider.build_full_command")
+    @patch("app.config.get_model_config")
+    @patch("app.prompts.load_prompt")
+    def test_returns_empty_on_nonzero_exit(
+        self, mock_prompt, mock_models, mock_build, mock_run, capsys,
+    ):
+        mock_prompt.return_value = "reject prompt"
+        mock_models.return_value = {"lightweight": "haiku", "fallback": "sonnet"}
+        mock_build.return_value = ["claude", "-p", "..."]
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="quota")
+
+        assert _analyze_rejection_with_cli("review text", "/fake/path") == ""
+        assert "Rejection analysis failed" in capsys.readouterr().err
+
+    @patch("app.cli_exec.run_cli_with_retry", side_effect=RuntimeError("boom"))
+    @patch("app.cli_provider.build_full_command", return_value=["claude"])
+    @patch("app.config.get_model_config", return_value={"lightweight": "haiku"})
+    @patch("app.prompts.load_prompt", return_value="reject prompt")
+    def test_returns_empty_on_exception(
+        self, mock_prompt, mock_models, mock_build, mock_run, capsys,
+    ):
+        assert _analyze_rejection_with_cli("review text", "/fake/path") == ""
+        assert "Rejection analysis error" in capsys.readouterr().err
+
+
+class TestFailureNotifications:
+    @patch("app.utils.append_to_outbox")
+    def test_notify_skips_below_threshold(self, mock_outbox, tmp_path):
+        _notify_analysis_failures(str(tmp_path), _FAILURE_ALERT_THRESHOLD - 1)
+
+        mock_outbox.assert_not_called()
+
+    @patch("app.utils.append_to_outbox")
+    def test_notify_only_on_exact_threshold(self, mock_outbox, tmp_path):
+        _notify_analysis_failures(str(tmp_path), _FAILURE_ALERT_THRESHOLD + 1)
+
+        mock_outbox.assert_not_called()
+
+    @patch("app.utils.append_to_outbox")
+    def test_notify_exact_threshold_writes_warning(self, mock_outbox, tmp_path):
+        _notify_analysis_failures(str(tmp_path), _FAILURE_ALERT_THRESHOLD)
+
+        mock_outbox.assert_called_once()
+        assert "failed" in mock_outbox.call_args.args[1]
+
+    def test_reset_failure_count_unlink_error_is_logged(self, tmp_path, caplog):
+        from app.pr_review_learning import _get_failure_counter_path
+
+        path = _get_failure_counter_path(str(tmp_path))
+        path.write_text("3")
+
+        with patch.object(Path, "unlink", side_effect=OSError("locked")):
+            _reset_failure_count(str(tmp_path))
+
+        assert "Failure counter reset failed" in caplog.text
+
+
+class TestRejectedPrJournalEntries:
+    @patch("app.journal.append_to_journal")
+    def test_writes_one_entry_per_rejected_pr(self, mock_append, tmp_path):
+        rejected = [
+            {"number": 10, "title": "feat: too much"},
+            {"number": 11, "title": "fix: risky"},
+        ]
+
+        _write_rejection_journal_entries(
+            str(tmp_path), "myproject", rejected, "- Keep PRs smaller\n- Add tests",
+        )
+
+        assert mock_append.call_count == 2
+        first_entry = mock_append.call_args_list[0].args[2]
+        assert "PR #10" in first_entry
+        assert "Keep PRs smaller" in first_entry
+
+    @patch("app.journal.append_to_journal", side_effect=OSError("disk"))
+    def test_journal_write_error_is_logged(self, mock_append, tmp_path, capsys):
+        _write_rejection_journal_entries(
+            str(tmp_path), "myproject",
+            [{"number": 10, "title": "feat: rejected"}],
+            "",
+        )
+
+        assert "Journal write failed" in capsys.readouterr().err
 
     @patch("app.cli_exec.run_cli_with_retry")
     @patch("app.cli_provider.build_full_command")
@@ -361,6 +688,43 @@ class TestFetchPrReviews:
             assert result == []
 
 
+# ─── _fetch_reviews_for_pr / _fetch_review_comments_for_pr warnings ─────
+
+
+class TestFetchReviewsWarnsOnMalformedJson:
+    """Malformed gh --jq output should log a warning, not be silently discarded."""
+
+    @patch("app.github.run_gh")
+    def test_malformed_review_line_logs_warning(self, mock_gh, caplog):
+        good = json.dumps({"state": "APPROVED", "body": "lgtm", "user": "r"})
+        mock_gh.return_value = f"{good}\nNOT-JSON\n"
+
+        import logging
+        logger = logging.getLogger("app.pr_review_learning")
+        logger.addHandler(logging.NullHandler())
+        with caplog.at_level(logging.DEBUG, logger="app.pr_review_learning"):
+            result = _fetch_reviews_for_pr("/fake", 42)
+
+        assert len(result) == 1  # good line parsed
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("PR #42" in r.message for r in warnings)
+
+    @patch("app.github.run_gh")
+    def test_malformed_comment_line_logs_warning(self, mock_gh, caplog):
+        good = json.dumps({"body": "fix this", "path": "a.py", "user": "r"})
+        mock_gh.return_value = f"{good}\n{{broken\n"
+
+        import logging
+        logger = logging.getLogger("app.pr_review_learning")
+        logger.addHandler(logging.NullHandler())
+        with caplog.at_level(logging.DEBUG, logger="app.pr_review_learning"):
+            result = _fetch_review_comments_for_pr("/fake", 7)
+
+        assert len(result) == 1
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("PR #7" in r.message for r in warnings)
+
+
 # ─── learn_from_reviews (integration) ────────────────────────────────────
 
 
@@ -385,13 +749,16 @@ class TestLearnFromReviews:
         assert result["skipped_reason"] == "cache_fresh"
         mock_write.assert_not_called()
 
+    @patch("app.pr_review_learning._write_rejection_journal_entries")
     @patch("app.pr_review_learning._append_lessons_to_learnings")
     @patch("app.pr_review_learning._write_cache")
     @patch("app.pr_review_learning._is_cache_fresh")
+    @patch("app.pr_review_learning._analyze_rejection_with_cli")
     @patch("app.pr_review_learning.analyze_reviews_with_cli")
     @patch("app.pr_review_learning.fetch_pr_reviews")
-    def test_full_flow(self, mock_fetch, mock_analyze, mock_cache_check,
-                       mock_cache_write, mock_append):
+    def test_full_flow(self, mock_fetch, mock_analyze, mock_reject_analyze,
+                       mock_cache_check, mock_cache_write, mock_append,
+                       mock_journal):
         mock_fetch.return_value = [
             {
                 "number": 1, "title": "feat: X", "was_merged": False,
@@ -399,10 +766,11 @@ class TestLearnFromReviews:
                     {"state": "CHANGES_REQUESTED", "body": "Too big!", "user": "r"},
                 ],
                 "review_comments": [],
+                "issue_comments": [],
             },
         ]
         mock_cache_check.return_value = False
-        mock_analyze.return_value = "- Keep PRs small and focused"
+        mock_reject_analyze.return_value = "- Keep PRs small and focused"
         mock_append.return_value = 1
 
         result = learn_from_reviews("/instance", "proj", "/path")
@@ -412,6 +780,8 @@ class TestLearnFromReviews:
         assert result["lessons_added"] == 1
         assert result["skipped_reason"] is None
         mock_cache_write.assert_called_once()
+        mock_analyze.assert_not_called()
+        mock_reject_analyze.assert_called_once()
 
     @patch("app.pr_review_learning._write_cache")
     @patch("app.pr_review_learning._is_cache_fresh")
@@ -436,3 +806,350 @@ class TestLearnFromReviews:
         # Cache must NOT be written on empty analysis (API failure),
         # so future retries can re-attempt the analysis
         mock_cache_write.assert_not_called()
+
+    @patch("app.pr_review_learning._notify_analysis_failures")
+    @patch("app.pr_review_learning._increment_failure_count")
+    @patch("app.pr_review_learning._is_cache_fresh")
+    @patch("app.pr_review_learning.analyze_reviews_with_cli")
+    @patch("app.pr_review_learning.fetch_pr_reviews")
+    def test_empty_analysis_increments_failure_counter(
+        self, mock_fetch, mock_analyze, mock_cache_check,
+        mock_increment, mock_notify,
+    ):
+        mock_fetch.return_value = [
+            {
+                "number": 1, "title": "feat: X", "was_merged": True,
+                "reviews": [{"state": "APPROVED", "body": "ok", "user": "r"}],
+                "review_comments": [],
+            },
+        ]
+        mock_cache_check.return_value = False
+        mock_analyze.return_value = ""
+        mock_increment.return_value = 2
+
+        result = learn_from_reviews("/instance", "proj", "/path")
+        assert result["skipped_reason"] == "empty_analysis"
+        mock_increment.assert_called_once_with("/instance")
+        mock_notify.assert_called_once_with("/instance", 2)
+
+    @patch("app.pr_review_learning._reset_failure_count")
+    @patch("app.pr_review_learning._append_lessons_to_learnings")
+    @patch("app.pr_review_learning._write_cache")
+    @patch("app.pr_review_learning._is_cache_fresh")
+    @patch("app.pr_review_learning.analyze_reviews_with_cli")
+    @patch("app.pr_review_learning.fetch_pr_reviews")
+    def test_successful_analysis_resets_failure_counter(
+        self, mock_fetch, mock_analyze, mock_cache_check,
+        mock_cache_write, mock_append, mock_reset,
+    ):
+        mock_fetch.return_value = [
+            {
+                "number": 1, "title": "feat: X", "was_merged": True,
+                "reviews": [{"state": "APPROVED", "body": "ok", "user": "r"}],
+                "review_comments": [],
+            },
+        ]
+        mock_cache_check.return_value = False
+        mock_analyze.return_value = "- New lesson"
+        mock_append.return_value = 1
+
+        result = learn_from_reviews("/instance", "proj", "/path")
+        assert result["lessons_added"] == 1
+        mock_reset.assert_called_once_with("/instance")
+
+    @patch("app.pr_review_learning._reset_failure_count")
+    @patch("app.pr_review_learning._write_rejection_journal_entries")
+    @patch("app.pr_review_learning._append_lessons_to_learnings")
+    @patch("app.pr_review_learning._write_cache")
+    @patch("app.pr_review_learning._is_cache_fresh")
+    @patch("app.pr_review_learning._analyze_rejection_with_cli")
+    @patch("app.pr_review_learning.analyze_reviews_with_cli")
+    @patch("app.pr_review_learning.fetch_pr_reviews")
+    def test_mixed_result_resets_failure_counter_when_some_lessons_added(
+        self, mock_fetch, mock_analyze_merged, mock_analyze_rejected,
+        mock_cache_check, mock_cache_write, mock_append,
+        mock_journal, mock_reset,
+    ):
+        """When merged PRs produce lessons but rejected PRs return empty,
+        the failure counter should still reset because useful work was done."""
+        mock_fetch.return_value = [
+            {
+                "number": 1, "title": "feat: A", "was_merged": True,
+                "reviews": [{"state": "APPROVED", "body": "good", "user": "r"}],
+                "review_comments": [],
+            },
+            {
+                "number": 2, "title": "feat: B", "was_merged": False,
+                "reviews": [{"state": "CHANGES_REQUESTED", "body": "nope", "user": "r"}],
+                "review_comments": [],
+            },
+        ]
+        mock_cache_check.return_value = False
+        mock_analyze_merged.return_value = "- Lesson from merged PR"
+        mock_analyze_rejected.return_value = ""  # empty — rejected analysis failed
+        mock_append.return_value = 1
+
+        result = learn_from_reviews("/instance", "proj", "/path")
+        assert result["lessons_added"] == 1
+        mock_reset.assert_called_once_with("/instance")
+
+
+# ─── Consecutive failure tracking ───────────────────────────────────────
+
+
+class TestFailureCounter:
+    def test_read_returns_zero_when_no_file(self, tmp_path):
+        assert _read_failure_count(str(tmp_path)) == 0
+
+    def test_increment_from_zero(self, tmp_path):
+        count = _increment_failure_count(str(tmp_path))
+        assert count == 1
+        assert _read_failure_count(str(tmp_path)) == 1
+
+    def test_increment_accumulates(self, tmp_path):
+        _increment_failure_count(str(tmp_path))
+        _increment_failure_count(str(tmp_path))
+        count = _increment_failure_count(str(tmp_path))
+        assert count == 3
+        assert _read_failure_count(str(tmp_path)) == 3
+
+    def test_reset_removes_file(self, tmp_path):
+        _increment_failure_count(str(tmp_path))
+        _increment_failure_count(str(tmp_path))
+        _reset_failure_count(str(tmp_path))
+        assert _read_failure_count(str(tmp_path)) == 0
+
+    def test_reset_noop_when_no_file(self, tmp_path):
+        # Should not raise
+        _reset_failure_count(str(tmp_path))
+
+    def test_read_handles_corrupt_file(self, tmp_path):
+        counter_path = tmp_path / ".koan-pr-review-analysis-failures"
+        counter_path.write_text("not-a-number\n")
+        assert _read_failure_count(str(tmp_path)) == 0
+
+
+class TestNotifyAnalysisFailures:
+    def test_no_alert_below_threshold(self, tmp_path):
+        with patch("app.utils.append_to_outbox") as mock_append:
+            _notify_analysis_failures(str(tmp_path), _FAILURE_ALERT_THRESHOLD - 1)
+            mock_append.assert_not_called()
+
+    def test_alert_at_threshold(self, tmp_path):
+        with patch("app.utils.append_to_outbox") as mock_append:
+            _notify_analysis_failures(str(tmp_path), _FAILURE_ALERT_THRESHOLD)
+            mock_append.assert_called_once()
+            msg = mock_append.call_args[0][1]
+            assert "failed" in msg
+            assert str(_FAILURE_ALERT_THRESHOLD) in msg
+
+    def test_no_alert_above_threshold(self, tmp_path):
+        """Only alert at exact threshold to avoid spamming."""
+        with patch("app.utils.append_to_outbox") as mock_append:
+            _notify_analysis_failures(str(tmp_path), _FAILURE_ALERT_THRESHOLD + 1)
+            mock_append.assert_not_called()
+
+
+# ─── Issue comments for closed PRs ────────────────────────────────────
+
+
+class TestFetchIssueCommentsForPr:
+    @patch("app.github.run_gh")
+    def test_fetches_issue_comments(self, mock_gh):
+        comment = json.dumps({"body": "closing this", "user": "reviewer", "created_at": "2026-01-01T00:00:00Z"})
+        mock_gh.return_value = comment + "\n"
+        result = _fetch_issue_comments_for_pr("/fake", 42)
+        assert len(result) == 1
+        assert result[0]["body"] == "closing this"
+
+    @patch("app.github.run_gh")
+    def test_returns_empty_on_no_comments(self, mock_gh):
+        mock_gh.return_value = ""
+        result = _fetch_issue_comments_for_pr("/fake", 42)
+        assert result == []
+
+
+class TestFetchPrReviewsIssueComments:
+    """Verify issue comments are only fetched for closed-unmerged PRs."""
+
+    @patch("subprocess.run")
+    def test_closed_pr_gets_issue_comments(self, mock_run):
+        now = datetime.now(timezone.utc)
+        prs = [{
+            "number": 1, "title": "feat: bad",
+            "createdAt": now.isoformat(), "mergedAt": None,
+            "closedAt": now.isoformat(),
+            "headRefName": "koan/bad-idea", "state": "CLOSED",
+        }]
+        reviews_json = json.dumps({"state": "CHANGES_REQUESTED", "body": "no", "user": "r"})
+        comment_json = json.dumps({"body": "fix", "path": "a.py", "user": "r"})
+        issue_json = json.dumps({"body": "closing", "user": "r", "created_at": now.isoformat()})
+
+        def side_effect(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args", [])
+            cmd_str = " ".join(str(c) for c in cmd)
+            if "pr" in cmd_str and "list" in cmd_str:
+                return MagicMock(returncode=0, stdout=json.dumps(prs), stderr="")
+            if "issues" in cmd_str:
+                return MagicMock(returncode=0, stdout=issue_json + "\n", stderr="")
+            if "reviews" in cmd_str:
+                return MagicMock(returncode=0, stdout=reviews_json + "\n", stderr="")
+            return MagicMock(returncode=0, stdout=comment_json + "\n", stderr="")
+
+        mock_run.side_effect = side_effect
+        result = fetch_pr_reviews("/fake/path")
+        assert len(result) == 1
+        assert len(result[0]["issue_comments"]) == 1
+        assert result[0]["issue_comments"][0]["body"] == "closing"
+
+    @patch("subprocess.run")
+    def test_merged_pr_no_issue_comments(self, mock_run):
+        now = datetime.now(timezone.utc)
+        prs = [{
+            "number": 1, "title": "feat: good",
+            "createdAt": now.isoformat(),
+            "mergedAt": now.isoformat(),
+            "closedAt": now.isoformat(),
+            "headRefName": "koan/good", "state": "MERGED",
+        }]
+        reviews_json = json.dumps({"state": "APPROVED", "body": "lgtm", "user": "r"})
+
+        def side_effect(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args", [])
+            cmd_str = " ".join(str(c) for c in cmd)
+            if "pr" in cmd_str and "list" in cmd_str:
+                return MagicMock(returncode=0, stdout=json.dumps(prs), stderr="")
+            if "reviews" in cmd_str:
+                return MagicMock(returncode=0, stdout=reviews_json + "\n", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        mock_run.side_effect = side_effect
+        result = fetch_pr_reviews("/fake/path")
+        assert len(result) == 1
+        assert result[0]["issue_comments"] == []
+
+
+# ─── Format includes issue comments for closed PRs ────────────────────
+
+
+class TestFormatWithIssueComments:
+    def test_closed_pr_includes_issue_comments(self):
+        prs = [{
+            "number": 1, "title": "feat: bad", "was_merged": False,
+            "reviews": [], "review_comments": [],
+            "issue_comments": [{"body": "This isn't useful", "user": "human"}],
+        }]
+        result = format_reviews_for_analysis(prs)
+        assert "Comment by human: This isn't useful" in result
+        assert "CLOSED (not merged)" in result
+
+    def test_merged_pr_excludes_issue_comments(self):
+        prs = [{
+            "number": 1, "title": "feat: good", "was_merged": True,
+            "reviews": [{"state": "APPROVED", "body": "nice", "user": "r"}],
+            "review_comments": [],
+            "issue_comments": [{"body": "should not appear", "user": "human"}],
+        }]
+        result = format_reviews_for_analysis(prs)
+        assert "should not appear" not in result
+
+
+# ─── Rejection learning uses dedicated prompt ─────────────────────────
+
+
+class TestRejectionLearningPrompt:
+    @patch("app.pr_review_learning._write_rejection_journal_entries")
+    @patch("app.pr_review_learning._append_lessons_to_learnings")
+    @patch("app.pr_review_learning._write_cache")
+    @patch("app.pr_review_learning._is_cache_fresh")
+    @patch("app.pr_review_learning._analyze_rejection_with_cli")
+    @patch("app.pr_review_learning.analyze_reviews_with_cli")
+    @patch("app.pr_review_learning.fetch_pr_reviews")
+    def test_rejected_prs_use_rejection_prompt(
+        self, mock_fetch, mock_analyze, mock_reject,
+        mock_cache_check, mock_cache_write, mock_append, mock_journal,
+    ):
+        mock_fetch.return_value = [
+            {
+                "number": 1, "title": "feat: unwanted", "was_merged": False,
+                "reviews": [{"state": "CHANGES_REQUESTED", "body": "no", "user": "r"}],
+                "review_comments": [], "issue_comments": [],
+            },
+            {
+                "number": 2, "title": "feat: good", "was_merged": True,
+                "reviews": [{"state": "APPROVED", "body": "nice", "user": "r"}],
+                "review_comments": [], "issue_comments": [],
+            },
+        ]
+        mock_cache_check.return_value = False
+        mock_analyze.return_value = "- Good pattern"
+        mock_reject.return_value = "- Do not do X"
+        mock_append.return_value = 1
+
+        learn_from_reviews("/instance", "proj", "/path")
+
+        mock_analyze.assert_called_once()
+        mock_reject.assert_called_once()
+        # Verify rejection learnings get distinct section header
+        calls = mock_append.call_args_list
+        headers = [c.kwargs.get("section_header", c[0][3] if len(c[0]) > 3 else "PR review learnings") for c in calls]
+        assert "Rejected PR learnings" in headers
+
+
+# ─── Rejected PR journal entry ────────────────────────────────────────
+
+
+class TestRejectedPrJournalEntry:
+    @patch("app.journal.append_to_journal")
+    def test_writes_journal_for_rejected_prs(self, mock_journal):
+        rejected_prs = [
+            {"number": 42, "title": "feat: bad idea"},
+        ]
+        _write_rejection_journal_entries(
+            "/instance", "myproject", rejected_prs,
+            "- Do not touch the auth module\n- Keep scope narrow",
+        )
+        mock_journal.assert_called_once()
+        content = mock_journal.call_args[0][2]
+        assert "PR #42" in content
+        assert "bad idea" in content
+        assert "Do not touch the auth module" in content
+        assert "myproject" in content
+
+    @patch("app.journal.append_to_journal")
+    def test_no_lessons_uses_fallback_reason(self, mock_journal):
+        _write_rejection_journal_entries(
+            "/instance", "proj", [{"number": 1, "title": "X"}], "no bullets here",
+        )
+        mock_journal.assert_called_once()
+        content = mock_journal.call_args[0][2]
+        assert "No specific reason extracted" in content
+
+
+# ─── Rejected PR learnings section header ──────────────────────────────
+
+
+class TestRejectedPrLearningsSectionHeader:
+    def test_custom_section_header(self, tmp_path):
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        added = _append_lessons_to_learnings(
+            str(instance_dir), "proj", "- Never refactor logging",
+            section_header="Rejected PR learnings",
+        )
+        assert added == 1
+        learnings = instance_dir / "memory" / "projects" / "proj" / "learnings.md"
+        content = learnings.read_text()
+        assert "## Rejected PR learnings (" in content
+        assert "Never refactor logging" in content
+
+
+# ─── Cache includes issue comments ─────────────────────────────────────
+
+
+class TestCacheIncludesIssueComments:
+    def test_hash_changes_with_issue_comments(self):
+        prs1 = [{"number": 1, "reviews": [], "review_comments": [], "issue_comments": []}]
+        prs2 = [{"number": 1, "reviews": [], "review_comments": [],
+                 "issue_comments": [{"body": "closing"}]}]
+        assert _compute_review_hash(prs1) != _compute_review_hash(prs2)

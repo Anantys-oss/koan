@@ -69,6 +69,24 @@
     </div>
 </div>
 
+<div id="health-card" class="card" style="margin-bottom:1.5rem;display:none;">
+    <h2 style="margin-bottom:0.75rem;">Health</h2>
+    <div style="display:flex;gap:1.5rem;flex-wrap:wrap;font-size:0.85rem;">
+        <div id="health-disk" style="display:flex;align-items:center;gap:0.5rem;">
+            <span class="activity-dot" id="health-disk-dot"></span>
+            <span>Disk: <span id="health-disk-pct">—</span></span>
+        </div>
+        <div id="health-run" style="display:flex;align-items:center;gap:0.5rem;">
+            <span class="activity-dot" id="health-run-dot"></span>
+            <span>Run process: <span id="health-run-label">—</span></span>
+        </div>
+        <div id="health-awake" style="display:flex;align-items:center;gap:0.5rem;">
+            <span class="activity-dot" id="health-awake-dot"></span>
+            <span>Awake process: <span id="health-awake-label">—</span></span>
+        </div>
+    </div>
+</div>
+
 {% if project_stats %}
 <h2>Projects</h2>
 <div class="grid">
@@ -80,6 +98,25 @@
             {% if pdata.in_progress %}<span style="margin-left:0.75rem;">{{ pdata.in_progress }} in progress</span>{% endif %}
         </div>
     </a>
+{% endfor %}
+</div>
+{% endif %}
+
+{% if skill_metrics %}
+<h2>Skill Metrics <span style="font-size:0.75rem;color:var(--text-muted);font-weight:normal;">(30d)</span></h2>
+<div class="grid">
+{% for pname, sm in skill_metrics.items() %}
+    <div class="card">
+        <div style="font-weight:600;margin-bottom:0.5rem;">{{ pname }}</div>
+        <div style="font-size:0.85rem;color:var(--text-muted);">
+            {% if sm.plan_total > 0 %}
+            <div>Plan approval: <strong>{{ "%.0f"|format(sm.plan_approval_rate * 100) }}%</strong> ({{ sm.plan_approved }}/{{ sm.plan_total }}), avg {{ "%.1f"|format(sm.plan_avg_rounds) }} rounds</div>
+            {% endif %}
+            {% if sm.pr_total > 0 %}
+            <div>PR CI pass: <strong>{{ "%.0f"|format(sm.pr_ci_pass_rate * 100) }}%</strong> ({{ sm.pr_ci_pass }}/{{ sm.pr_total }})</div>
+            {% endif %}
+        </div>
+    </div>
 {% endfor %}
 </div>
 {% endif %}
@@ -362,6 +399,57 @@
 
     loadAttention();
     setInterval(loadAttention, 30000);
+})();
+</script>
+
+<script>
+// Health card — polls /api/health every 60s
+(function() {
+    var dotColors = {ok: 'var(--green)', warn: 'var(--orange)', error: 'var(--red)'};
+
+    function setDot(dotEl, status) {
+        dotEl.style.background = dotColors[status] || 'var(--text-muted)';
+    }
+
+    function loadHealth() {
+        fetch('/api/health')
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                var card = document.getElementById('health-card');
+                if (card) card.style.display = '';
+
+                var diskDot = document.getElementById('health-disk-dot');
+                var diskPct = document.getElementById('health-disk-pct');
+                if (data.disk && diskDot && diskPct) {
+                    setDot(diskDot, data.disk.status);
+                    diskPct.textContent = data.disk.used_pct !== null
+                        ? data.disk.used_pct + '%'
+                        : '—';
+                }
+
+                var runDot   = document.getElementById('health-run-dot');
+                var runLabel = document.getElementById('health-run-label');
+                if (data.run && runDot && runLabel) {
+                    setDot(runDot, data.run.status);
+                    runLabel.textContent = data.run.alive ? 'running' : 'stopped';
+                }
+
+                var awakeDot   = document.getElementById('health-awake-dot');
+                var awakeLabel = document.getElementById('health-awake-label');
+                if (data.awake && awakeDot && awakeLabel) {
+                    setDot(awakeDot, data.awake.status);
+                    awakeLabel.textContent = data.awake.alive ? 'running' : 'stopped';
+                }
+            })
+            .catch(function() {});
+    }
+
+    loadHealth();
+    // Use setTimeout-chain to avoid overlap
+    function scheduleHealth() {
+        setTimeout(function() { loadHealth(); scheduleHealth(); }, 60000);
+    }
+    scheduleHealth();
 })();
 </script>
 {% endblock %}

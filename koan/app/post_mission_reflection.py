@@ -187,13 +187,22 @@ def run_reflection(
     instance_dir: Path,
     mission_text: str,
     journal_content: str = "",
+    session_id: str = "",
 ) -> str:
     """Generate a journal reflection via Claude.
+
+    When *session_id* is provided and session resume is enabled, the
+    reflection reuses the main mission's conversation context via
+    ``--resume``, saving ~40% of input tokens.  Falls back to a fresh
+    session on any error.
 
     Args:
         instance_dir: Path to instance directory
         mission_text: The mission that was completed
         journal_content: Content of the mission's journal entry
+        session_id: Optional session ID from the main mission run.
+            When set and the provider supports it, the reflection
+            resumes this session instead of starting fresh.
 
     Returns:
         Reflection text, or empty string on failure/skip
@@ -204,15 +213,40 @@ def run_reflection(
         from app.claude_step import run_claude, strip_cli_noise
         from app.cli_provider import build_full_command
 
-        cmd = build_full_command(prompt=prompt, max_turns=1)
-        result = run_claude(cmd, cwd=str(instance_dir), timeout=60)
+        resume_id = ""
+        if session_id:
+            try:
+                from app.config import is_session_resume_enabled
+                if is_session_resume_enabled():
+                    resume_id = session_id
+            except ImportError:
+                pass
+
+        cmd = build_full_command(
+            prompt=prompt, max_turns=1, resume_session_id=resume_id,
+        )
+        koan_root = instance_dir.parent
+        result = run_claude(cmd, cwd=str(koan_root), timeout=60)
 
         if result["success"]:
             output = strip_cli_noise(result["output"])
-            # Check for skip signal
             if output in ["—", "-", ""]:
                 return ""
             return output
+
+        # Resume failed — retry without resume
+        if resume_id:
+            print(
+                "[post_mission_reflection] Resume failed, retrying fresh",
+                file=sys.stderr,
+            )
+            cmd = build_full_command(prompt=prompt, max_turns=1)
+            result = run_claude(cmd, cwd=str(koan_root), timeout=60)
+            if result["success"]:
+                output = strip_cli_noise(result["output"])
+                if output in ["—", "-", ""]:
+                    return ""
+                return output
     except Exception as e:
         print(f"[post_mission_reflection] Error: {e}", file=sys.stderr)
 

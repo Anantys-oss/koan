@@ -121,15 +121,39 @@ def get_commit_subjects(
     return [s for s in stdout.splitlines() if s.strip()]
 
 
-def ordered_remotes(preferred: Optional[str] = None) -> List[str]:
-    """Return remote names to try, with *preferred* first if given.
+def _list_remotes(cwd: Optional[str] = None) -> Optional[List[str]]:
+    """Return configured git remotes for *cwd* preserving git's output order.
 
-    Always includes both ``origin`` and ``upstream`` (de-duplicated).
+    Returns ``None`` when discovery fails (e.g. not a git repository).
     """
-    remotes: list[str] = []
-    if preferred:
+    rc, stdout, _ = run_git("remote", cwd=cwd, timeout=10)
+    if rc != 0:
+        return None
+    remotes = [line.strip() for line in stdout.splitlines() if line.strip()]
+    return remotes
+
+
+def ordered_remotes(preferred: Optional[str] = None, cwd: Optional[str] = None) -> List[str]:
+    """Return remote names to try, with *preferred* first when available.
+
+    If *cwd* is provided and remotes can be discovered, only configured remotes
+    are returned. If discovery fails, falls back to ``origin``/``upstream``.
+    """
+    discovered = _list_remotes(cwd=cwd) if cwd else None
+
+    if not discovered:
+        remotes: list[str] = []
+        if preferred:
+            remotes.append(preferred)
+        for remote in ("origin", "upstream"):
+            if remote not in remotes:
+                remotes.append(remote)
+        return remotes
+
+    remotes = []
+    if preferred and preferred in discovered:
         remotes.append(preferred)
-    for r in ("origin", "upstream"):
-        if r not in remotes:
-            remotes.append(r)
+    for remote in discovered:
+        if remote not in remotes:
+            remotes.append(remote)
     return remotes

@@ -11,11 +11,20 @@ from app.cost_tracker import (
     summarize_range,
     summarize_by_project,
     summarize_by_model,
+    summarize_by_type,
+    summarize_by_project_and_type,
+    summarize_week,
+    summarize_month,
     estimate_cost,
+    estimate_cache_savings,
+    daily_series,
     get_pricing_config,
+    format_cache_summary,
+    format_mission_cache_line,
     _read_jsonl_for_date,
     _read_jsonl_range,
     _aggregate,
+    _format_tokens,
 )
 
 
@@ -108,6 +117,33 @@ class TestRecordUsage:
         today = date.today().isoformat()
         line = (instance_dir / "usage" / f"{today}.jsonl").read_text().strip()
         assert ": " not in line  # No pretty-printing
+
+    def test_mission_type_written_when_provided(self, instance_dir):
+        """mission_type field appears in JSONL when explicitly passed."""
+        record_usage(
+            instance_dir, "koan", "sonnet", 1000, 500,
+            mission_type="rebase",
+        )
+        today = date.today().isoformat()
+        line = (instance_dir / "usage" / f"{today}.jsonl").read_text().strip()
+        entry = json.loads(line)
+        assert entry["mission_type"] == "rebase"
+
+    def test_mission_type_omitted_when_empty(self, instance_dir):
+        """mission_type field is absent when not passed (backwards compat)."""
+        record_usage(instance_dir, "koan", "sonnet", 1000, 500)
+        today = date.today().isoformat()
+        line = (instance_dir / "usage" / f"{today}.jsonl").read_text().strip()
+        entry = json.loads(line)
+        assert "mission_type" not in entry
+
+    def test_mission_type_omitted_for_empty_string(self, instance_dir):
+        """Explicitly passing empty string for mission_type omits the field."""
+        record_usage(instance_dir, "koan", "sonnet", 1000, 500, mission_type="")
+        today = date.today().isoformat()
+        line = (instance_dir / "usage" / f"{today}.jsonl").read_text().strip()
+        entry = json.loads(line)
+        assert "mission_type" not in entry
 
 
 class TestReadJsonl:
@@ -325,6 +361,67 @@ class TestCacheTracking:
         assert result["cache_read_input_tokens"] == 100000
         assert result["cache_hit_rate"] > 0
 
+    def test_estimate_cache_savings_from_pricing(self):
+        summary = {
+            "by_model": {
+                "claude-sonnet-4-20250514": {
+                    "cache_read_input_tokens": 1_000_000,
+                },
+            }
+        }
+        pricing = {"sonnet": {"input": 3.0, "output": 15.0}}
+        # 1M read tokens * $3/M input * 90% savings
+        assert estimate_cache_savings(summary, pricing) == pytest.approx(2.7)
+
+    def test_estimate_cache_savings_none_without_pricing(self):
+        summary = {"by_model": {"m": {"cache_read_input_tokens": 1000}}}
+        assert estimate_cache_savings(summary, None) is None
+
+    def test_daily_series_includes_cache_fields(self, instance_dir):
+        record_usage(
+            instance_dir,
+            "koan",
+            "claude-sonnet-4-20250514",
+            100,
+            50,
+            cache_creation_input_tokens=200,
+            cache_read_input_tokens=800,
+        )
+        today = date.today()
+        rows = daily_series(instance_dir, today, today)
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["cache_creation_input_tokens"] == 200
+        assert row["cache_read_input_tokens"] == 800
+        assert row["cache_hit_rate"] > 0
+
+    def test_daily_series_has_exact_expected_keys(self, instance_dir):
+        """Verify daily_series rows contain exactly the expected keys.
+
+        Regression test: duplicate dict keys (cache_read_input_tokens,
+        cache_creation_input_tokens, cache_hit_rate) were present in the
+        dict literal, causing the per-day values to silently overwrite
+        earlier assignments.
+        """
+        record_usage(
+            instance_dir,
+            "koan",
+            "claude-sonnet-4-20250514",
+            100,
+            50,
+            cache_creation_input_tokens=200,
+            cache_read_input_tokens=800,
+        )
+        today = date.today()
+        rows = daily_series(instance_dir, today, today)
+        assert len(rows) == 1
+        expected_keys = {
+            "date", "total_input", "total_output",
+            "cache_creation_input_tokens", "cache_read_input_tokens",
+            "cache_hit_rate", "count", "cost",
+        }
+        assert set(rows[0].keys()) == expected_keys
+
 
 class TestEstimateCost:
     def test_returns_none_without_pricing(self):
@@ -372,3 +469,261 @@ class TestGetPricingConfig:
     def test_returns_none_for_non_dict_pricing(self):
         config = {"usage": {"pricing": "invalid"}}
         assert get_pricing_config(config) is None
+
+
+class TestFormatCacheSummary:
+    def test_returns_empty_when_no_data(self, instance_dir):
+        assert format_cache_summary(instance_dir) == ""
+
+    def test_returns_summary_with_cache_data(self, instance_dir):
+        record_usage(
+            instance_dir, "koan", "opus",
+            1000, 500,
+            cache_read_input_tokens=9000,
+            cache_creation_input_tokens=1000,
+        )
+        result = format_cache_summary(instance_dir)
+        assert "hit rate" in result
+        assert "read" in result
+        assert "created" in result
+
+    def test_summary_shows_zero_pct_for_creation_only(self, instance_dir):
+        record_usage(
+            instance_dir, "koan", "opus",
+            1000, 500,
+            cache_creation_input_tokens=5000,
+        )
+        result = format_cache_summary(instance_dir)
+        assert "0% hit rate" in result
+
+
+class TestFormatMissionCacheLine:
+    def test_empty_when_no_cache(self):
+        assert format_mission_cache_line(0, 0, 1000) == ""
+
+    def test_shows_hit_rate(self):
+        result = format_mission_cache_line(
+            cache_read=9000, cache_create=0, input_tokens=1000,
+        )
+        assert "90% hit" in result
+        assert "9.0k read" in result
+
+    def test_shows_creation(self):
+        result = format_mission_cache_line(
+            cache_read=0, cache_create=5000, input_tokens=1000,
+        )
+        assert "0% hit" in result
+        assert "5.0k created" in result
+
+    def test_mixed(self):
+        result = format_mission_cache_line(
+            cache_read=4000, cache_create=1000, input_tokens=5000,
+        )
+        assert "hit" in result
+        assert "read" in result
+        assert "created" in result
+
+
+class TestFormatTokens:
+    def test_small(self):
+        assert _format_tokens(500) == "500"
+
+    def test_thousands(self):
+        assert _format_tokens(1500) == "1.5k"
+
+    def test_millions(self):
+        assert _format_tokens(1_500_000) == "1.5M"
+
+
+class TestDailySeriesCacheFields:
+    def test_includes_cache_fields(self, instance_dir):
+        record_usage(
+            instance_dir, "koan", "opus",
+            1000, 500,
+            cache_read_input_tokens=3000,
+            cache_creation_input_tokens=1000,
+        )
+        from app.cost_tracker import daily_series
+        series = daily_series(instance_dir, date.today(), date.today())
+        assert len(series) == 1
+        day = series[0]
+        assert day["cache_read_input_tokens"] == 3000
+        assert day["cache_creation_input_tokens"] == 1000
+
+
+class TestAggregateByType:
+    """Tests for mission_type aggregation in _aggregate."""
+
+    def test_aggregate_includes_by_type(self):
+        entries = [
+            {"input_tokens": 100, "output_tokens": 50, "project": "p", "model": "m",
+             "mission_type": "review"},
+            {"input_tokens": 200, "output_tokens": 100, "project": "p", "model": "m",
+             "mission_type": "implement"},
+            {"input_tokens": 300, "output_tokens": 150, "project": "p", "model": "m",
+             "mission_type": "review"},
+        ]
+        result = _aggregate(entries)
+        assert "by_type" in result
+        assert result["by_type"]["review"]["count"] == 2
+        assert result["by_type"]["review"]["input_tokens"] == 400
+        assert result["by_type"]["review"]["output_tokens"] == 200
+        assert result["by_type"]["implement"]["count"] == 1
+
+    def test_missing_mission_type_defaults_to_unknown(self):
+        entries = [
+            {"input_tokens": 100, "output_tokens": 50, "project": "p", "model": "m"},
+        ]
+        result = _aggregate(entries)
+        assert "unknown" in result["by_type"]
+        assert result["by_type"]["unknown"]["count"] == 1
+
+    def test_empty_entries_has_by_type(self):
+        result = _aggregate([])
+        assert result["by_type"] == {}
+
+    def test_cost_aggregated_by_type(self):
+        entries = [
+            {"input_tokens": 100, "output_tokens": 50, "project": "p", "model": "m",
+             "mission_type": "plan", "cost_usd": 0.5},
+            {"input_tokens": 200, "output_tokens": 100, "project": "p", "model": "m",
+             "mission_type": "plan", "cost_usd": 1.0},
+        ]
+        result = _aggregate(entries)
+        assert result["by_type"]["plan"]["total_cost_usd"] == pytest.approx(1.5)
+
+
+class TestSummarizeByType:
+    def test_returns_type_breakdown(self, instance_dir, usage_dir):
+        today = date.today()
+        entries = [
+            {"input_tokens": 100, "output_tokens": 50, "project": "p", "model": "m",
+             "mission_type": "review", "ts": today.isoformat()},
+            {"input_tokens": 200, "output_tokens": 100, "project": "p", "model": "m",
+             "mission_type": "implement", "ts": today.isoformat()},
+            {"input_tokens": 150, "output_tokens": 75, "project": "p", "model": "m",
+             "ts": today.isoformat()},
+        ]
+        jsonl_path = usage_dir / f"{today.isoformat()}.jsonl"
+        jsonl_path.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
+
+        result = summarize_by_type(instance_dir, days=1)
+        assert result["review"]["count"] == 1
+        assert result["implement"]["count"] == 1
+        assert result["unknown"]["count"] == 1
+
+    def test_empty_returns_empty(self, instance_dir):
+        result = summarize_by_type(instance_dir, days=1)
+        assert result == {}
+
+
+class TestSummarizeByProjectAndType:
+    def test_returns_nested_breakdown(self, instance_dir, usage_dir):
+        today = date.today()
+        entries = [
+            {"input_tokens": 100, "output_tokens": 50, "project": "koan", "model": "m",
+             "mission_type": "review", "ts": today.isoformat()},
+            {"input_tokens": 200, "output_tokens": 100, "project": "koan", "model": "m",
+             "mission_type": "implement", "ts": today.isoformat()},
+            {"input_tokens": 300, "output_tokens": 150, "project": "other", "model": "m",
+             "mission_type": "review", "ts": today.isoformat()},
+        ]
+        jsonl_path = usage_dir / f"{today.isoformat()}.jsonl"
+        jsonl_path.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
+
+        result = summarize_by_project_and_type(instance_dir, days=1)
+        assert result["koan"]["review"]["count"] == 1
+        assert result["koan"]["implement"]["count"] == 1
+        assert result["other"]["review"]["count"] == 1
+        assert result["other"]["review"]["input_tokens"] == 300
+
+    def test_missing_type_grouped_as_unknown(self, instance_dir, usage_dir):
+        today = date.today()
+        entries = [
+            {"input_tokens": 100, "output_tokens": 50, "project": "p", "model": "m",
+             "ts": today.isoformat()},
+        ]
+        jsonl_path = usage_dir / f"{today.isoformat()}.jsonl"
+        jsonl_path.write_text(json.dumps(entries[0]) + "\n")
+
+        result = summarize_by_project_and_type(instance_dir, days=1)
+        assert result["p"]["unknown"]["count"] == 1
+
+    def test_empty_returns_empty(self, instance_dir):
+        result = summarize_by_project_and_type(instance_dir, days=1)
+        assert result == {}
+
+    def test_cost_tracked_per_type(self, instance_dir, usage_dir):
+        today = date.today()
+        entries = [
+            {"input_tokens": 100, "output_tokens": 50, "project": "p", "model": "m",
+             "mission_type": "review", "cost_usd": 0.5, "ts": today.isoformat()},
+            {"input_tokens": 200, "output_tokens": 100, "project": "p", "model": "m",
+             "mission_type": "review", "cost_usd": 1.0, "ts": today.isoformat()},
+        ]
+        jsonl_path = usage_dir / f"{today.isoformat()}.jsonl"
+        jsonl_path.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
+
+        result = summarize_by_project_and_type(instance_dir, days=1)
+        assert result["p"]["review"]["total_cost_usd"] == pytest.approx(1.5)
+
+
+class TestSummarizeWeekMonth:
+    def test_summarize_week_covers_7_days(self, instance_dir, usage_dir):
+        today = date.today()
+        # Write data for today and 6 days ago
+        for d in [today, today - timedelta(days=6)]:
+            jsonl_path = usage_dir / f"{d.isoformat()}.jsonl"
+            jsonl_path.write_text(
+                json.dumps({"input_tokens": 100, "output_tokens": 50,
+                            "project": "p", "model": "m"}) + "\n"
+            )
+        result = summarize_week(instance_dir)
+        assert result["count"] == 2
+        assert result["total_input"] == 200
+
+    def test_summarize_week_excludes_8th_day(self, instance_dir, usage_dir):
+        today = date.today()
+        # Only 8 days ago — outside the 7-day window
+        d = today - timedelta(days=7)
+        jsonl_path = usage_dir / f"{d.isoformat()}.jsonl"
+        jsonl_path.write_text(
+            json.dumps({"input_tokens": 100, "output_tokens": 50,
+                        "project": "p", "model": "m"}) + "\n"
+        )
+        result = summarize_week(instance_dir)
+        assert result["count"] == 0
+
+    def test_summarize_month_covers_30_days(self, instance_dir, usage_dir):
+        today = date.today()
+        for d in [today, today - timedelta(days=29)]:
+            jsonl_path = usage_dir / f"{d.isoformat()}.jsonl"
+            jsonl_path.write_text(
+                json.dumps({"input_tokens": 100, "output_tokens": 50,
+                            "project": "p", "model": "m"}) + "\n"
+            )
+        result = summarize_month(instance_dir)
+        assert result["count"] == 2
+
+    def test_summarize_month_excludes_31st_day(self, instance_dir, usage_dir):
+        today = date.today()
+        d = today - timedelta(days=30)
+        jsonl_path = usage_dir / f"{d.isoformat()}.jsonl"
+        jsonl_path.write_text(
+            json.dumps({"input_tokens": 100, "output_tokens": 50,
+                        "project": "p", "model": "m"}) + "\n"
+        )
+        result = summarize_month(instance_dir)
+        assert result["count"] == 0
+
+    def test_week_and_month_include_by_type(self, instance_dir, usage_dir):
+        today = date.today()
+        jsonl_path = usage_dir / f"{today.isoformat()}.jsonl"
+        jsonl_path.write_text(
+            json.dumps({"input_tokens": 100, "output_tokens": 50,
+                        "project": "p", "model": "m", "mission_type": "plan"}) + "\n"
+        )
+        week = summarize_week(instance_dir)
+        month = summarize_month(instance_dir)
+        assert "plan" in week["by_type"]
+        assert "plan" in month["by_type"]

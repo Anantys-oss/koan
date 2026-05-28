@@ -10,6 +10,7 @@ Used by the /update command to ensure both bridge and run loop
 run the latest code after a restart.
 """
 
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -52,13 +53,13 @@ class UpdateResult:
         return f"Updated: {self.old_commit} → {self.new_commit} ({self.commits_pulled} new commit{'s' if self.commits_pulled != 1 else ''})"
 
 
-def _run_git(args: list[str], cwd: Path) -> _GitResult:
+def _run_git(args: list[str], cwd: Path, timeout: int = 60) -> _GitResult:
     """Run a git command and return the result.
 
     Thin wrapper around git_utils.run_git() preserving the
     CompletedProcess-like interface for existing callers.
     """
-    rc, stdout, stderr = _run_git_core(*args, cwd=str(cwd), timeout=60)
+    rc, stdout, stderr = _run_git_core(*args, cwd=str(cwd), timeout=timeout)
     return _GitResult(rc, stdout, stderr)
 
 
@@ -84,7 +85,7 @@ def _is_dirty(koan_root: Path) -> bool:
     return bool(result.stdout.strip())
 
 
-def _find_upstream_remote(koan_root: Path) -> Optional[str]:
+def find_upstream_remote(koan_root: Path) -> Optional[str]:
     """Find the upstream remote name (prefers 'upstream', falls back to 'origin')."""
     result = _run_git(["remote"], koan_root)
     if result.returncode != 0:
@@ -110,7 +111,7 @@ def _count_commits_between(koan_root: Path, old_sha: str, new_sha: str) -> int:
     return 0
 
 
-def pull_upstream(koan_root: Path) -> UpdateResult:
+def pull_upstream(koan_root: Path, timeout: int = 120) -> UpdateResult:
     """Pull the latest code from upstream/main.
 
     Steps:
@@ -120,13 +121,28 @@ def pull_upstream(koan_root: Path) -> UpdateResult:
     4. Pull (fast-forward only)
     5. Report results
 
+    Args:
+        koan_root: Path to the koan repository.
+        timeout: Total wall-clock timeout in seconds for the entire
+            operation (default: 120). Individual git commands get
+            the lesser of 60s or the remaining time budget.
+
     Returns an UpdateResult with success/failure info.
     """
+    deadline = time.monotonic() + timeout
+
+    def _remaining_timeout() -> int:
+        """Per-command timeout capped by overall deadline."""
+        remaining = int(deadline - time.monotonic())
+        if remaining <= 0:
+            return 0
+        return min(60, remaining)
+
     old_sha = _get_short_sha(koan_root)
     stashed = False
 
     # Find upstream remote
-    remote = _find_upstream_remote(koan_root)
+    remote = find_upstream_remote(koan_root)
     if remote is None:
         return UpdateResult(
             success=False,
@@ -138,7 +154,13 @@ def pull_upstream(koan_root: Path) -> UpdateResult:
 
     # Stash dirty work if needed
     if _is_dirty(koan_root):
-        result = _run_git(["stash", "push", "-m", "koan-update-auto-stash"], koan_root)
+        cmd_timeout = _remaining_timeout()
+        if cmd_timeout <= 0:
+            return UpdateResult(
+                success=False, old_commit=old_sha, new_commit=old_sha,
+                commits_pulled=0, error="Update operation timed out",
+            )
+        result = _run_git(["stash", "push", "-m", "koan-update-auto-stash"], koan_root, timeout=cmd_timeout)
         if result.returncode != 0:
             return UpdateResult(
                 success=False,
@@ -152,7 +174,15 @@ def pull_upstream(koan_root: Path) -> UpdateResult:
     # Checkout main branch
     current_branch = _get_current_branch(koan_root)
     if current_branch != "main":
-        result = _run_git(["checkout", "main"], koan_root)
+        cmd_timeout = _remaining_timeout()
+        if cmd_timeout <= 0:
+            if stashed:
+                _run_git(["stash", "pop"], koan_root)
+            return UpdateResult(
+                success=False, old_commit=old_sha, new_commit=old_sha,
+                commits_pulled=0, error="Update operation timed out", stashed=stashed,
+            )
+        result = _run_git(["checkout", "main"], koan_root, timeout=cmd_timeout)
         if result.returncode != 0:
             # Try to restore state
             if stashed:
@@ -167,7 +197,17 @@ def pull_upstream(koan_root: Path) -> UpdateResult:
             )
 
     # Fetch upstream
-    result = _run_git(["fetch", remote], koan_root)
+    cmd_timeout = _remaining_timeout()
+    if cmd_timeout <= 0:
+        if current_branch and current_branch != "main":
+            _run_git(["checkout", current_branch], koan_root)
+        if stashed:
+            _run_git(["stash", "pop"], koan_root)
+        return UpdateResult(
+            success=False, old_commit=old_sha, new_commit=old_sha,
+            commits_pulled=0, error="Update operation timed out", stashed=stashed,
+        )
+    result = _run_git(["fetch", remote], koan_root, timeout=cmd_timeout)
     if result.returncode != 0:
         # Restore previous branch
         if current_branch and current_branch != "main":
@@ -184,7 +224,17 @@ def pull_upstream(koan_root: Path) -> UpdateResult:
         )
 
     # Pull (fast-forward only for safety)
-    result = _run_git(["pull", "--ff-only", remote, "main"], koan_root)
+    cmd_timeout = _remaining_timeout()
+    if cmd_timeout <= 0:
+        if current_branch and current_branch != "main":
+            _run_git(["checkout", current_branch], koan_root)
+        if stashed:
+            _run_git(["stash", "pop"], koan_root)
+        return UpdateResult(
+            success=False, old_commit=old_sha, new_commit=old_sha,
+            commits_pulled=0, error="Update operation timed out", stashed=stashed,
+        )
+    result = _run_git(["pull", "--ff-only", remote, "main"], koan_root, timeout=cmd_timeout)
     if result.returncode != 0:
         # Restore previous branch
         if current_branch and current_branch != "main":

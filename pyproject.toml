@@ -2,7 +2,16 @@
 name = "koan"
 version = "0.1.0"
 description = "Autonomous background agent using idle Claude API quota"
-requires-python = ">=3.14"
+requires-python = ">=3.11"
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["PERF", "SIM105", "F541"]
+
+[tool.ruff.lint.per-file-ignores]
+"koan/tests/*" = ["PERF"]
 
 [tool.pytest.ini_options]
 testpaths = ["koan/tests"]
@@ -14,3 +23,16 @@ markers = [
     "slow: marks tests as slow (run in dedicated CI groups)",
 ]
 timeout = 60
+
+[tool.coverage.run]
+source = ["app"]
+omit = ["tests/*", "app/setup_wizard.py"]
+
+[tool.coverage.report]
+show_missing = true
+precision = 1
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.",
+    "if TYPE_CHECKING:",
+]

@@ -1,5 +1,6 @@
 """Tests for mission retry logic in app.run — _maybe_retry_mission and _get_git_head."""
 
+import contextlib
 import os
 import subprocess
 import tempfile
@@ -53,10 +54,8 @@ def temp_output_files():
     os.close(fd_err)
     yield stdout_file, stderr_file
     for f in (stdout_file, stderr_file):
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(f)
-        except OSError:
-            pass
 
 
 class TestMaybeRetryMission:

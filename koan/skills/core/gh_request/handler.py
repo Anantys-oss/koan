@@ -70,9 +70,9 @@ def handle(ctx) -> Optional[str]:
     command, classified_context = _classify_request(request_text, project_name, url)
 
     if not command:
-        # Classification failed or returned no match — queue as generic mission
-        # The agent will handle it naturally via Claude
-        mission_text = f"/gh_request {url} {request_text}" if url else f"/gh_request {request_text}"
+        # Classification failed or returned no match — queue as generic mission.
+        # Use plain text (no /gh_request prefix) so Claude handles it naturally.
+        mission_text = f"{url} {request_text}".strip() if url else request_text
         mission_entry = f"- [project:{project_name}] {mission_text}"
         from app.utils import insert_pending_mission
         missions_path = ctx.instance_dir / "missions.md"
@@ -86,7 +86,11 @@ def handle(ctx) -> Optional[str]:
     if classified_context:
         mission_parts.append(classified_context)
 
-    queue_github_mission(ctx, command, url or "", project_name, classified_context)
+    inserted = queue_github_mission(ctx, command, url or "", project_name, classified_context)
+
+    if not inserted:
+        url_info = f" ({url.split('/')[-1]})" if url else ""
+        return f"\u26a0\ufe0f Duplicate ignored — /{command} already queued or running for {project_name}{url_info}."
 
     url_info = f" ({url.split('/')[-1]})" if url else ""
     return f"/{command} queued for {project_name}{url_info}: {classified_context[:60]}" if classified_context else f"/{command} queued for {project_name}{url_info}"

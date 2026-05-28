@@ -216,12 +216,8 @@ def _format_output(by_project, hours):
     urls = []
     for project in sorted(by_project):
         data = by_project[project]
-        for pr in data["merged"]:
-            if pr.get("url"):
-                urls.append(pr["url"])
-        for pr in data["open"]:
-            if pr.get("url"):
-                urls.append(pr["url"])
+        urls.extend(pr["url"] for pr in data["merged"] if pr.get("url"))
+        urls.extend(pr["url"] for pr in data["open"] if pr.get("url"))
 
     if urls:
         lines.append("")

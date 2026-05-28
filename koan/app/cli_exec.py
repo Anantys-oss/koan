@@ -1,21 +1,26 @@
 """CLI execution helpers — secure prompt passing via temp files.
 
-Prevents prompts from leaking into ``ps`` process listings by writing
-them to a temporary file (``0o600``) and redirecting that file as the
-subprocess stdin.  The ``-p`` argument visible in ``ps`` becomes the
-short placeholder ``@stdin`` instead of the full prompt text.
+Prevents prompts from leaking into ``ps`` process listings and avoids OS
+``ARG_MAX`` failures by writing them to a temporary file (``0o600``) and
+redirecting that file as the subprocess stdin.  Claude-style ``-p``
+arguments become the short placeholder ``@stdin``; Codex ``exec`` prompts
+become ``-``, which Codex reads from stdin.
 
 Providers that consume stdin for the prompt (making it unavailable for
 the agent's own tool calls) skip this mechanism and pass the prompt
 directly as a ``-p`` argument.
 """
 
+import contextlib
 import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from typing import Callable, List, Optional, Sequence, Tuple
+
+from app.run_log import log_safe as _log_cli, suppress_logged
 
 STDIN_PLACEHOLDER = "@stdin"
 
@@ -41,26 +46,38 @@ def _uses_stdin_passing() -> bool:
 
 
 def prepare_prompt_file(cmd: List[str]) -> Tuple[List[str], Optional[str]]:
-    """Extract the ``-p`` prompt from *cmd* and write it to a secure temp file.
+    """Extract the prompt from *cmd* and write it to a secure temp file.
 
-    Returns ``(modified_cmd, temp_file_path)``.  If no ``-p`` argument is
-    found, it already equals :data:`STDIN_PLACEHOLDER`, or the current
-    provider does not support stdin-based prompt passing, returns
-    ``(cmd, None)`` unchanged.
+    Returns ``(modified_cmd, temp_file_path)``.  Claude-style commands are
+    rewritten from ``-p <prompt>`` to ``-p @stdin``.  Codex commands are
+    rewritten from ``codex exec ... <prompt>`` to ``codex exec ... -``.
+    If no supported prompt argument is found, it already uses a stdin
+    marker, or the current provider does not support stdin-based prompt
+    passing, returns ``(cmd, None)`` unchanged.
     """
     if not _uses_stdin_passing():
         return cmd, None
 
+    prompt_idx: Optional[int] = None
+    prompt_stdin_marker = STDIN_PLACEHOLDER
     try:
-        idx = cmd.index("-p")
+        prompt_idx = cmd.index("-p") + 1
     except ValueError:
+        if (
+            len(cmd) >= 3
+            and os.path.basename(cmd[0]) == "codex"
+            and cmd[1] == "exec"
+            and cmd[-1] != "-"
+            and not cmd[-1].startswith("-")
+        ):
+            prompt_idx = len(cmd) - 1
+            prompt_stdin_marker = "-"
+
+    if prompt_idx is None or prompt_idx >= len(cmd):
         return cmd, None
 
-    if idx + 1 >= len(cmd):
-        return cmd, None
-
-    prompt = cmd[idx + 1]
-    if prompt == STDIN_PLACEHOLDER:
+    prompt = cmd[prompt_idx]
+    if prompt == prompt_stdin_marker:
         return cmd, None
 
     fd, path = tempfile.mkstemp(suffix=".md", prefix="koan-prompt-")
@@ -71,17 +88,15 @@ def prepare_prompt_file(cmd: List[str]) -> Tuple[List[str], Optional[str]]:
     os.chmod(path, 0o600)
 
     new_cmd = cmd.copy()
-    new_cmd[idx + 1] = STDIN_PLACEHOLDER
+    new_cmd[prompt_idx] = prompt_stdin_marker
     return new_cmd, path
 
 
 def _cleanup_prompt_file(path: Optional[str]) -> None:
     """Silently remove a temp prompt file if it exists."""
     if path:
-        try:
+        with suppress_logged(_log_cli, "debug", f"Prompt file cleanup failed ({path})", OSError):
             os.unlink(path)
-        except OSError:
-            pass
 
 
 def run_cli(cmd, **kwargs) -> subprocess.CompletedProcess:
@@ -134,6 +149,78 @@ def popen_cli(
     else:
         kwargs.setdefault("stdin", subprocess.DEVNULL)
         return subprocess.Popen(cmd, **kwargs), lambda: None
+
+
+class StreamResult:
+    """Result of :func:`stream_with_timeout`."""
+
+    __slots__ = ("stdout", "stderr", "timed_out")
+
+    def __init__(self, stdout: str, stderr: str, timed_out: bool):
+        self.stdout = stdout
+        self.stderr = stderr
+        self.timed_out = timed_out
+
+
+def stream_with_timeout(
+    proc: subprocess.Popen,
+    timeout: float,
+    on_line: Optional[Callable[[str], None]] = None,
+    drain_timeout: float = 30.0,
+) -> StreamResult:
+    """Consume ``proc.stdout`` line-by-line with a process-group-kill watchdog.
+
+    Each stdout line is collected into the returned ``stdout`` text and
+    optionally forwarded to *on_line*. After stdout EOF, the stderr
+    stream is drained and the subprocess is awaited.
+
+    On timeout the entire process group is killed via
+    :func:`app.subprocess_runner.force_kill_process_group`. The caller
+    must start *proc* with ``start_new_session=True``.
+
+    Both std streams are closed before returning.
+    """
+    from app.subprocess_runner import ProcessWatchdog, force_kill_process_group
+
+    stdout_lines: List[str] = []
+    stderr_text = ""
+    drain_timed_out = False
+
+    watchdog = ProcessWatchdog(proc, timeout, graceful=False).start()
+
+    try:
+        try:
+            for line in proc.stdout:
+                stripped = line.rstrip("\n")
+                stdout_lines.append(stripped)
+                if on_line is not None:
+                    on_line(stripped)
+        finally:
+            watchdog.mark_completed()
+            watchdog.cancel()
+
+        with suppress_logged(_log_cli, "warning", "Stderr stream read failed", OSError, ValueError):
+            if proc.stderr:
+                stderr_text = proc.stderr.read()
+
+        try:
+            proc.wait(timeout=drain_timeout)
+        except subprocess.TimeoutExpired:
+            drain_timed_out = True
+            force_kill_process_group(proc)
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.wait(timeout=5)
+    finally:
+        for stream in (proc.stdout, proc.stderr):
+            if stream is not None:
+                with suppress_logged(_log_cli, "debug", "Stream close failed", OSError):
+                    stream.close()
+
+    return StreamResult(
+        stdout="\n".join(stdout_lines).strip(),
+        stderr=stderr_text,
+        timed_out=watchdog.fired or drain_timed_out,
+    )
 
 
 # Default backoff durations for CLI retries (seconds).
@@ -194,10 +281,15 @@ def run_cli_with_retry(
 
         if attempt < max_attempts - 1:
             delay = backoff[min(attempt, len(backoff) - 1)]
+            err_detail = (result.stderr or "").strip()
+            if not err_detail:
+                err_detail = (result.stdout or "").strip()[-200:]
+            else:
+                err_detail = err_detail[:200]
             print(
                 f"[cli_exec] Retryable CLI error "
                 f"(attempt {attempt + 1}/{max_attempts}): "
-                f"{(result.stderr or '')[:200]} "
+                f"{err_detail} "
                 f"— retrying in {delay}s",
                 file=sys.stderr,
             )

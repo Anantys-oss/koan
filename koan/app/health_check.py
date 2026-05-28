@@ -22,7 +22,7 @@ from pathlib import Path
 
 from app.notify import format_and_send
 from app.signals import HEARTBEAT_FILE, RUN_HEARTBEAT_FILE
-from app.utils import atomic_write
+from app.utils import atomic_write, get_file_age_seconds
 DEFAULT_MAX_AGE = 60  # seconds
 # Run loop heartbeat is written once per iteration (~minutes apart),
 # so a longer max age is appropriate. 10 minutes covers normal idle periods.
@@ -45,31 +45,31 @@ def check_heartbeat(koan_root: str, max_age: int = DEFAULT_MAX_AGE) -> bool:
         # No heartbeat file = bridge never started or first run. Not an error.
         return True
 
-    try:
-        ts = float(path.read_text().strip())
-    except (ValueError, OSError):
+    age = get_file_age_seconds(path)
+    if age is None:
         return False
 
-    age = time.time() - ts
     return age <= max_age
 
 
 def check_and_alert(koan_root: str, max_age: int = DEFAULT_MAX_AGE) -> bool:
     """Check heartbeat and send alert if stale. Returns True if healthy."""
-    if check_heartbeat(koan_root, max_age):
+    path = Path(koan_root) / HEARTBEAT_FILE
+    if not path.exists():
         return True
 
-    path = Path(koan_root) / HEARTBEAT_FILE
-    try:
-        ts = float(path.read_text().strip())
-        age_minutes = (time.time() - ts) / 60
-        format_and_send(
-            f"Telegram bridge (awake.py) appears down — "
-            f"last heartbeat {age_minutes:.0f} min ago."
-        )
-    except (ValueError, OSError):
+    age = get_file_age_seconds(path)
+    if age is None:
         format_and_send("Telegram bridge (awake.py) appears down — heartbeat file unreadable.")
+        return False
 
+    if age <= max_age:
+        return True
+
+    format_and_send(
+        f"Telegram bridge (awake.py) appears down — "
+        f"last heartbeat {age / 60:.0f} min ago."
+    )
     return False
 
 
@@ -91,25 +91,18 @@ def check_run_heartbeat(koan_root: str, max_age: int = DEFAULT_RUN_MAX_AGE) -> b
     if not path.exists():
         return True
 
-    try:
-        ts = float(path.read_text().strip())
-    except (ValueError, OSError):
+    age = get_file_age_seconds(path)
+    if age is None:
         return False
 
-    age = time.time() - ts
     return age <= max_age
 
 
 def get_run_heartbeat_age(koan_root: str) -> float:
     """Return age of the run heartbeat in seconds, or -1 if no file."""
     path = Path(koan_root) / RUN_HEARTBEAT_FILE
-    if not path.exists():
-        return -1
-    try:
-        ts = float(path.read_text().strip())
-        return time.time() - ts
-    except (ValueError, OSError):
-        return -1
+    age = get_file_age_seconds(path)
+    return age if age is not None else -1
 
 
 if __name__ == "__main__":
@@ -139,7 +132,7 @@ if __name__ == "__main__":
     if run_age >= 0:
         print(f"[health] Run loop: {run_status} (age: {run_age:.0f}s)")
     else:
-        print(f"[health] Run loop: no heartbeat file")
+        print("[health] Run loop: no heartbeat file")
 
     all_healthy = bridge_healthy and run_healthy
     sys.exit(0 if all_healthy else 1)

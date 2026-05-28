@@ -1,16 +1,7 @@
 """Koan /check skill -- queue a check mission for a PR or issue."""
 
-import re
-
-
-# PR URL: https://github.com/owner/repo/pull/123
-_PR_URL_RE = re.compile(
-    r"https?://github\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+)/pull/(?P<number>\d+)"
-)
-# Issue URL: https://github.com/owner/repo/issues/123
-_ISSUE_URL_RE = re.compile(
-    r"https?://github\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+)/issues/(?P<number>\d+)"
-)
+from app.github_url_parser import parse_github_url
+from app.github_skill_helpers import extract_github_url, resolve_project_for_repo
 
 
 def handle(ctx):
@@ -32,33 +23,30 @@ def handle(ctx):
             "or triggers /plan for updated issues."
         )
 
-    # Validate URL format before queuing
-    pr_match = _PR_URL_RE.search(args)
-    issue_match = _ISSUE_URL_RE.search(args)
-
-    if not pr_match and not issue_match:
+    # Extract and validate URL
+    result = extract_github_url(args, url_type="pr-or-issue")
+    if not result:
         return (
             "\u274c No valid GitHub PR or issue URL found.\n"
             "Expected: https://github.com/owner/repo/pull/123\n"
             "      or: https://github.com/owner/repo/issues/123"
         )
 
-    # Extract the clean URL (strip fragments/query)
-    if pr_match:
-        owner = pr_match.group("owner")
-        repo = pr_match.group("repo")
-        number = pr_match.group("number")
-        url = f"https://github.com/{owner}/{repo}/pull/{number}"
-        label = f"PR #{number} ({owner}/{repo})"
-    else:
-        owner = issue_match.group("owner")
-        repo = issue_match.group("repo")
-        number = issue_match.group("number")
-        url = f"https://github.com/{owner}/{repo}/issues/{number}"
-        label = f"issue #{number} ({owner}/{repo})"
+    url, _context = result
+
+    # Parse URL to get owner/repo/type/number
+    try:
+        owner, repo, url_type, number = parse_github_url(url)
+    except ValueError as e:
+        return f"\u274c {e}"
+
+    type_label = "PR" if url_type == "pull" else "issue"
+    label = f"{type_label} #{number} ({owner}/{repo})"
 
     # Resolve project name for the mission tag
-    project_name = _resolve_project_name(repo, owner)
+    project_path, project_name = resolve_project_for_repo(repo, owner=owner)
+    if not project_name:
+        project_name = repo
 
     # Queue the mission with clean format
     from app.utils import insert_pending_mission
@@ -68,13 +56,3 @@ def handle(ctx):
     insert_pending_mission(missions_path, mission_entry)
 
     return f"\U0001f50d Check queued for {label}"
-
-
-def _resolve_project_name(repo, owner=None):
-    """Resolve a repo name to a known project name."""
-    from app.utils import project_name_for_path, resolve_project_path
-
-    project_path = resolve_project_path(repo, owner=owner)
-    if project_path:
-        return project_name_for_path(project_path)
-    return repo

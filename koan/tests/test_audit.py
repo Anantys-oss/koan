@@ -1,0 +1,1557 @@
+"""Tests for the /audit skill — handler, runner, and parser."""
+
+import importlib.util
+from pathlib import Path
+from unittest.mock import patch, MagicMock
+
+import pytest
+
+from app.skills import SkillContext
+
+
+# ---------------------------------------------------------------------------
+# Handler tests
+# ---------------------------------------------------------------------------
+
+HANDLER_PATH = Path(__file__).parent.parent / "skills" / "core" / "audit" / "handler.py"
+
+
+def _load_handler():
+    """Load the audit handler module dynamically."""
+    spec = importlib.util.spec_from_file_location("audit_handler", str(HANDLER_PATH))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.fixture
+def handler():
+    return _load_handler()
+
+
+@pytest.fixture
+def ctx(tmp_path):
+    """Create a basic SkillContext for tests."""
+    instance_dir = tmp_path / "instance"
+    instance_dir.mkdir()
+    missions_path = instance_dir / "missions.md"
+    missions_path.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
+    return SkillContext(
+        koan_root=tmp_path,
+        instance_dir=instance_dir,
+        command_name="audit",
+        args="",
+        send_message=MagicMock(),
+    )
+
+
+class TestHandleRouting:
+    def test_help_flag_returns_usage(self, handler, ctx):
+        ctx.args = "--help"
+        result = handler.handle(ctx)
+        assert "Usage:" in result
+
+    def test_help_short_flag_returns_usage(self, handler, ctx):
+        ctx.args = "-h"
+        result = handler.handle(ctx)
+        assert "Usage:" in result
+
+    def test_no_args_returns_error(self, handler, ctx):
+        ctx.args = ""
+        result = handler.handle(ctx)
+        assert "\u274c" in result
+        assert "Usage:" in result
+
+
+class TestHandleQueueMission:
+    @patch("app.utils.resolve_project_path", return_value="/path/koan")
+    @patch("app.utils.insert_pending_mission")
+    def test_named_project(self, mock_insert, mock_resolve, handler, ctx):
+        ctx.args = "koan"
+        result = handler.handle(ctx)
+
+        assert "Audit queued" in result
+        assert "koan" in result
+        mock_insert.assert_called_once()
+        mission_entry = mock_insert.call_args[0][1]
+        assert "[project:koan]" in mission_entry
+        assert "/audit" in mission_entry
+
+    @patch("app.utils.resolve_project_path", return_value="/path/koan")
+    @patch("app.utils.insert_pending_mission")
+    def test_with_extra_context(self, mock_insert, mock_resolve, handler, ctx):
+        ctx.args = "koan focus on error handling"
+        result = handler.handle(ctx)
+
+        assert "Audit queued" in result
+        assert "focus: focus on error handling" in result
+        mission_entry = mock_insert.call_args[0][1]
+        assert "/audit focus on error handling" in mission_entry
+        assert "[project:koan]" in mission_entry
+
+    @patch("app.utils.resolve_project_path", return_value=None)
+    @patch("app.utils.get_known_projects", return_value=[("web", "/path/web")])
+    def test_unknown_project(self, mock_projects, mock_resolve, handler, ctx):
+        ctx.args = "nonexistent"
+        result = handler.handle(ctx)
+
+        assert "\u274c" in result
+        assert "nonexistent" in result
+        assert "web" in result
+
+    @patch("app.utils.resolve_project_path", return_value="/path/koan")
+    @patch("app.utils.insert_pending_mission")
+    def test_with_limit_override(self, mock_insert, mock_resolve, handler, ctx):
+        ctx.args = "koan focus on auth limit=10"
+        result = handler.handle(ctx)
+
+        assert "Audit queued" in result
+        assert "limit=10" in result
+        mission_entry = mock_insert.call_args[0][1]
+        assert "limit=10" in mission_entry
+        assert "/audit focus on auth" in mission_entry
+        # limit=10 should not be in the context part
+        assert "limit=10 limit=10" not in mission_entry
+
+    @patch("app.utils.resolve_project_path", return_value="/path/koan")
+    @patch("app.utils.insert_pending_mission")
+    def test_default_limit_not_in_mission(self, mock_insert, mock_resolve, handler, ctx):
+        ctx.args = "koan"
+        handler.handle(ctx)
+        mission_entry = mock_insert.call_args[0][1]
+        assert "limit=" not in mission_entry
+
+    @patch("app.utils.resolve_project_path", return_value="/path/koan")
+    @patch("app.utils.insert_pending_mission")
+    def test_limit_without_context(self, mock_insert, mock_resolve, handler, ctx):
+        ctx.args = "koan limit=3"
+        result = handler.handle(ctx)
+
+        assert "Audit queued" in result
+        assert "limit=3" in result
+        mission_entry = mock_insert.call_args[0][1]
+        assert "limit=3" in mission_entry
+
+
+# ---------------------------------------------------------------------------
+# Runner tests — parsing
+# ---------------------------------------------------------------------------
+
+from skills.core.audit.audit_runner import (
+    AUTO_FIX_CAP,
+    AUTO_FIX_DEFAULT_THRESHOLD,
+    AuditFinding,
+    DEFAULT_MAX_ISSUES,
+    IssueCreationResult,
+    build_audit_prompt,
+    create_issues,
+    main,
+    parse_findings,
+    prioritize_findings,
+    queue_auto_fix_missions,
+    run_audit,
+    severity_at_or_above,
+    _build_issue_body,
+    _compute_finding_fingerprint,
+    _save_audit_report,
+)
+
+
+def _audit_body(finding: AuditFinding) -> str:
+    """Helper: build an issue body matching one produced by the audit runner."""
+    return _build_issue_body(finding)
+
+
+SAMPLE_OUTPUT = """\
+Some preamble text from Claude.
+
+---FINDING---
+TITLE: refactor: extract duplicated errno-preservation pattern
+SEVERITY: medium
+CATEGORY: duplication
+LOCATION: FileCheck.xs:105-152
+PROBLEM: The errno-preservation pattern appears 3 times with identical code. If the pattern ever needs to change, all three instances must be updated manually.
+WHY: Maintenance risk — a future change to one instance without updating the others would introduce subtle bugs.
+SUGGESTED_FIX: Extract into a macro like LEAVE_PRESERVING_ERRNO().
+EFFORT: small
+
+---FINDING---
+TITLE: fix: validate user input in parse_query
+SEVERITY: high
+CATEGORY: robustness
+LOCATION: src/parser.py:42-58
+PROBLEM: The parse_query function passes user input directly to a regex without escaping. Special regex characters in the input cause crashes.
+WHY: User-facing bug that causes 500 errors on certain search queries.
+SUGGESTED_FIX: Use re.escape() on the user input before passing to re.compile().
+EFFORT: small
+
+---FINDING---
+TITLE: cleanup: remove unused legacy adapter
+SEVERITY: low
+CATEGORY: cleanup
+LOCATION: src/adapters/legacy.py:1-120
+PROBLEM: The LegacyAdapter class has no references in the codebase. It was superseded by NewAdapter in v2.0.
+WHY: Dead code adds cognitive load and maintenance burden.
+SUGGESTED_FIX: Delete the file after confirming no external consumers depend on it.
+EFFORT: small
+"""
+
+
+class TestParseFindingsBasic:
+    def test_parses_multiple_findings(self):
+        findings = parse_findings(SAMPLE_OUTPUT)
+        assert len(findings) == 3
+
+    def test_first_finding_fields(self):
+        findings = parse_findings(SAMPLE_OUTPUT)
+        f = findings[0]
+        assert f.title == "refactor: extract duplicated errno-preservation pattern"
+        assert f.severity == "medium"
+        assert f.category == "duplication"
+        assert f.location == "FileCheck.xs:105-152"
+        assert "errno" in f.problem.lower()
+        assert f.effort == "small"
+
+    def test_second_finding_severity(self):
+        findings = parse_findings(SAMPLE_OUTPUT)
+        assert findings[1].severity == "high"
+        assert findings[1].category == "robustness"
+
+    def test_empty_output(self):
+        assert parse_findings("") == []
+
+    def test_no_findings_in_output(self):
+        assert parse_findings("Just some regular text without findings.") == []
+
+    def test_invalid_finding_missing_title(self):
+        raw = "---FINDING---\nSEVERITY: high\nLOCATION: foo.py:1\nPROBLEM: something\n"
+        findings = parse_findings(raw)
+        assert len(findings) == 0  # missing title = invalid
+
+    def test_invalid_finding_missing_location(self):
+        raw = "---FINDING---\nTITLE: fix something\nPROBLEM: it's broken\n"
+        findings = parse_findings(raw)
+        assert len(findings) == 0  # missing location = invalid
+
+
+class TestPrioritizeFindings:
+    def _make_finding(self, severity):
+        return AuditFinding(
+            title=f"{severity} issue",
+            severity=severity,
+            location="a.py:1",
+            problem="broken",
+        )
+
+    def test_keeps_all_when_under_limit(self):
+        findings = [self._make_finding("high"), self._make_finding("low")]
+        result = prioritize_findings(findings, max_issues=5)
+        assert len(result) == 2
+
+    def test_truncates_to_limit(self):
+        findings = [
+            self._make_finding("low"),
+            self._make_finding("medium"),
+            self._make_finding("critical"),
+            self._make_finding("high"),
+        ]
+        result = prioritize_findings(findings, max_issues=2)
+        assert len(result) == 2
+        assert result[0].severity == "critical"
+        assert result[1].severity == "high"
+
+    def test_default_limit_is_five(self):
+        findings = [self._make_finding("low") for _ in range(8)]
+        result = prioritize_findings(findings)
+        assert len(result) == DEFAULT_MAX_ISSUES
+
+    def test_preserves_order_within_same_severity(self):
+        findings = [
+            AuditFinding(title="A", severity="medium", location="a:1", problem="p"),
+            AuditFinding(title="B", severity="medium", location="b:1", problem="p"),
+            AuditFinding(title="C", severity="medium", location="c:1", problem="p"),
+        ]
+        result = prioritize_findings(findings, max_issues=2)
+        assert result[0].title == "A"
+        assert result[1].title == "B"
+
+
+class TestLimitExtraction:
+    """Test limit=N parsing from handler."""
+
+    def test_extract_limit_present(self):
+        handler = _load_handler()
+        limit, cleaned = handler.extract_limit("focus on auth limit=10")
+        assert limit == 10
+        assert cleaned == "focus on auth"
+
+    def test_extract_limit_absent(self):
+        handler = _load_handler()
+        limit, cleaned = handler.extract_limit("focus on auth")
+        assert limit == handler.DEFAULT_MAX_ISSUES
+        assert cleaned == "focus on auth"
+
+    def test_extract_limit_only(self):
+        handler = _load_handler()
+        limit, cleaned = handler.extract_limit("limit=3")
+        assert limit == 3
+        assert cleaned == ""
+
+    def test_extract_limit_case_insensitive(self):
+        handler = _load_handler()
+        limit, cleaned = handler.extract_limit("focus LIMIT=7")
+        assert limit == 7
+        assert cleaned == "focus"
+
+    def test_extract_limit_zero_becomes_one(self):
+        handler = _load_handler()
+        limit, _ = handler.extract_limit("limit=0")
+        assert limit == 1
+
+
+class TestAuditFinding:
+    def test_is_valid_with_required_fields(self):
+        f = AuditFinding(title="fix X", problem="broken", location="a.py:1")
+        assert f.is_valid()
+
+    def test_is_invalid_without_title(self):
+        f = AuditFinding(problem="broken", location="a.py:1")
+        assert not f.is_valid()
+
+    def test_is_invalid_without_problem(self):
+        f = AuditFinding(title="fix X", location="a.py:1")
+        assert not f.is_valid()
+
+    def test_is_invalid_without_location(self):
+        f = AuditFinding(title="fix X", problem="broken")
+        assert not f.is_valid()
+
+
+class TestBuildIssueBody:
+    def test_contains_all_sections(self):
+        finding = AuditFinding(
+            title="fix: something",
+            severity="high",
+            category="robustness",
+            location="src/foo.py:10-20",
+            problem="It's broken.",
+            why="Users see errors.",
+            suggested_fix="Add validation.",
+            effort="small",
+        )
+        body = _build_issue_body(finding)
+        assert "## Problem" in body
+        assert "## Why This Matters" in body
+        assert "## Suggested Fix" in body
+        assert "## Details" in body
+        assert "High" in body
+        assert "`src/foo.py:10-20`" in body
+        assert "robustness" in body
+        assert "Quick fix" in body
+        assert "K\u014dan" in body
+
+    def test_severity_icons(self):
+        for severity in ("critical", "high", "medium", "low"):
+            f = AuditFinding(
+                title="t", severity=severity,
+                problem="p", location="l",
+            )
+            body = _build_issue_body(f)
+            assert severity.capitalize() in body
+
+
+class TestBuildPrompt:
+    def test_prompt_contains_project_name(self):
+        prompt = build_audit_prompt(
+            "myproject",
+            skill_dir=Path(__file__).parent.parent / "skills" / "core" / "audit",
+        )
+        assert "myproject" in prompt
+
+    def test_prompt_contains_instructions(self):
+        prompt = build_audit_prompt(
+            "test",
+            skill_dir=Path(__file__).parent.parent / "skills" / "core" / "audit",
+        )
+        assert "FINDING" in prompt
+        assert "audit" in prompt.lower()
+
+    def test_prompt_with_extra_context(self):
+        prompt = build_audit_prompt(
+            "test", extra_context="focus on auth",
+            skill_dir=Path(__file__).parent.parent / "skills" / "core" / "audit",
+        )
+        assert "focus on auth" in prompt
+        assert "Additional Focus" in prompt
+
+    def test_prompt_without_extra_context(self):
+        prompt = build_audit_prompt(
+            "test",
+            skill_dir=Path(__file__).parent.parent / "skills" / "core" / "audit",
+        )
+        assert "Additional Focus" not in prompt
+
+    def test_prompt_default_max_issues(self):
+        prompt = build_audit_prompt(
+            "test",
+            skill_dir=Path(__file__).parent.parent / "skills" / "core" / "audit",
+        )
+        assert f"at most {DEFAULT_MAX_ISSUES} findings" in prompt
+
+    def test_prompt_custom_max_issues(self):
+        prompt = build_audit_prompt(
+            "test", max_issues=12,
+            skill_dir=Path(__file__).parent.parent / "skills" / "core" / "audit",
+        )
+        assert "at most 12 findings" in prompt
+
+
+class TestSaveAuditReport:
+    def test_creates_report_file(self, tmp_path):
+        findings = [
+            AuditFinding(
+                title="fix X", severity="high",
+                location="a.py:1", problem="broken",
+            ),
+        ]
+        path = _save_audit_report(tmp_path, "myproj", findings, ["https://github.com/o/r/issues/1"])
+        assert path.exists()
+        content = path.read_text()
+        assert "Last audit:" in content
+        assert "Findings: 1" in content
+        assert "fix X" in content
+        assert "issues/1" in content
+
+    def test_creates_directory_structure(self, tmp_path):
+        _save_audit_report(tmp_path, "newproj", [], [])
+        assert (tmp_path / "memory" / "projects" / "newproj").exists()
+
+    def test_handles_fewer_urls_than_findings(self, tmp_path):
+        findings = [
+            AuditFinding(title="a", severity="h", location="x:1", problem="p"),
+            AuditFinding(title="b", severity="m", location="y:2", problem="q"),
+        ]
+        path = _save_audit_report(tmp_path, "proj", findings, ["url1"])
+        content = path.read_text()
+        assert "url1" in content
+        assert "no issue created" in content
+
+
+class TestCreateIssues:
+    @patch("app.github.list_open_audit_issues", return_value=[])
+    @patch("app.github.resolve_target_repo", return_value="upstream/repo")
+    @patch("app.github.issue_create")
+    def test_creates_issues_for_findings(self, mock_create, mock_repo, mock_list, tmp_path):
+        mock_create.side_effect = [
+            "https://github.com/o/r/issues/1\n",
+            "https://github.com/o/r/issues/2\n",
+        ]
+        findings = [
+            AuditFinding(title="fix A", severity="high", location="a.py:1", problem="p1"),
+            AuditFinding(title="fix B", severity="low", location="b.py:2", problem="p2"),
+        ]
+        result = create_issues(
+            findings, "/path/proj",
+            instance_dir=str(tmp_path), project_name="proj",
+        )
+
+        # high → local file, low → public issue
+        assert len(result.urls) == 1
+        assert result.created == 1
+        assert len(result.local_files) == 1
+        assert mock_create.call_count == 1
+        # Check repo targeting on the public issue
+        assert mock_create.call_args_list[0][1]["repo"] == "upstream/repo"
+
+    @patch("app.github.list_open_audit_issues", return_value=[])
+    @patch("app.github.resolve_target_repo", return_value=None)
+    @patch("app.github.issue_create")
+    def test_no_upstream_uses_local(self, mock_create, mock_repo, mock_list):
+        mock_create.return_value = "https://github.com/o/r/issues/1\n"
+        findings = [
+            AuditFinding(title="fix A", severity="medium", location="a.py:1", problem="p"),
+        ]
+        create_issues(findings, "/path/proj")
+        assert mock_create.call_args[1]["repo"] is None
+
+    @patch("app.github.list_open_audit_issues", return_value=[])
+    @patch("app.github.resolve_target_repo", return_value="upstream/repo")
+    @patch("app.github.issue_create")
+    def test_notify_fn_receives_issue_url(self, mock_create, mock_repo, mock_list):
+        mock_create.side_effect = [
+            "https://github.com/o/r/issues/1\n",
+            "https://github.com/o/r/issues/2\n",
+        ]
+        findings = [
+            AuditFinding(title="fix A", severity="medium", location="a.py:1", problem="p1"),
+            AuditFinding(title="fix B", severity="low", location="b.py:2", problem="p2"),
+        ]
+        notify = MagicMock()
+        create_issues(findings, "/path/proj", notify_fn=notify)
+
+        # URLs should appear in the notify stream for each created issue
+        url_calls = [c.args[0] for c in notify.call_args_list if "github.com" in c.args[0]]
+        assert len(url_calls) == 2
+        assert "https://github.com/o/r/issues/1" in url_calls[0]
+        assert "https://github.com/o/r/issues/2" in url_calls[1]
+
+    @patch("app.github.list_open_audit_issues", return_value=[])
+    @patch("app.github.resolve_target_repo", return_value=None)
+    @patch("app.github.issue_create", side_effect=RuntimeError("API error"))
+    def test_continues_on_failure(self, mock_create, mock_repo, mock_list):
+        findings = [
+            AuditFinding(title="fix A", severity="medium", location="a.py:1", problem="p"),
+            AuditFinding(title="fix B", severity="low", location="b.py:2", problem="q"),
+        ]
+        result = create_issues(findings, "/path/proj")
+        assert len(result.urls) == 0
+        assert result.created == 0
+        assert result.reused == 0
+        assert mock_create.call_count == 2
+
+    @patch("app.github.list_open_audit_issues")
+    @patch("app.github.resolve_target_repo")
+    @patch("app.github.check_pvrs_enabled")
+    @patch("app.issue_tracker.create_issue", return_value="https://example.atlassian.net/browse/PROJ-1")
+    @patch("app.issue_tracker.tracker_provider", return_value="jira")
+    def test_jira_tracker_skips_github_lookups(
+        self, mock_provider, mock_create, mock_pvrs, mock_repo, mock_list,
+    ):
+        """When tracker is Jira, PVRS/list-issues/resolve-target are skipped.
+
+        These are GitHub-only paths that shell out to `gh`. Calling them for
+        a Jira-routed project just burns subprocess time and returns nothing
+        useful.
+        """
+        findings = [
+            AuditFinding(title="fix A", severity="medium", location="a.py:1", problem="p"),
+        ]
+        create_issues(
+            findings, "/path/proj", project_name="proj",
+        )
+
+        mock_repo.assert_not_called()
+        mock_pvrs.assert_not_called()
+        mock_list.assert_not_called()
+        mock_create.assert_called_once()
+
+
+class TestCreateIssuesDedup:
+    """A second audit run must not duplicate issues already open on the repo."""
+
+    @patch("app.github.list_open_audit_issues")
+    @patch("app.github.resolve_target_repo", return_value="upstream/repo")
+    @patch("app.github.issue_create")
+    def test_skips_finding_when_fingerprint_already_open(
+        self, mock_create, mock_repo, mock_list,
+    ):
+        existing = AuditFinding(
+            title="fix A", severity="medium",
+            location="a.py:1", category="bug", problem="p",
+        )
+        mock_list.return_value = [
+            {
+                "number": 42,
+                "title": "fix A",
+                "url": "https://github.com/o/r/issues/42",
+                "body": _audit_body(existing),
+            },
+        ]
+        findings = [
+            AuditFinding(
+                title="fix A", severity="medium",
+                location="a.py:1", category="bug", problem="p",
+            ),
+        ]
+
+        result = create_issues(findings, "/path/proj")
+
+        # No new issue should be created — the existing one is reused.
+        assert mock_create.call_count == 0
+        assert result.created == 0
+        assert result.reused == 1
+        assert result.urls == ["https://github.com/o/r/issues/42"]
+
+    @patch("app.github.list_open_audit_issues")
+    @patch("app.github.resolve_target_repo", return_value="upstream/repo")
+    @patch("app.github.issue_create")
+    def test_dedup_survives_title_drift_for_same_location(
+        self, mock_create, mock_repo, mock_list,
+    ):
+        # Regression: Claude rephrases the title across runs but the
+        # location+category fingerprint stays stable, so the second
+        # run must reuse the existing issue rather than duplicate it.
+        first_run = AuditFinding(
+            title="Race in WS reconnect",
+            severity="medium",
+            location="ws_client.py:142",
+            category="concurrency",
+            problem="race condition",
+        )
+        mock_list.return_value = [
+            {
+                "number": 7,
+                "title": "Race in WS reconnect",
+                "url": "https://github.com/o/r/issues/7",
+                "body": _audit_body(first_run),
+            },
+        ]
+        # Second run produces lexically different title but identical
+        # location/category — must still be recognised as the same finding.
+        findings = [
+            AuditFinding(
+                title="Potential race condition in websocket reconnect handler",
+                severity="medium",
+                location="ws_client.py:142",
+                category="concurrency",
+                problem="race condition",
+            ),
+        ]
+
+        result = create_issues(findings, "/path/proj")
+
+        assert mock_create.call_count == 0
+        assert result.reused == 1
+        assert result.urls == ["https://github.com/o/r/issues/7"]
+
+    @patch("app.github.list_open_audit_issues")
+    @patch("app.github.resolve_target_repo", return_value="upstream/repo")
+    @patch("app.github.issue_create")
+    def test_ignores_issues_without_fingerprint_marker(
+        self, mock_create, mock_repo, mock_list,
+    ):
+        # Older audit issues (created before the fingerprint marker was
+        # introduced) lack the koan-audit-id comment. They are simply
+        # left alone — a fresh issue is opened.
+        mock_list.return_value = [
+            {
+                "number": 9,
+                "title": "fix A",
+                "url": "https://github.com/o/r/issues/9",
+                "body": "... Created by Kōan from audit session",
+            },
+        ]
+        mock_create.return_value = "https://github.com/o/r/issues/20\n"
+        findings = [
+            AuditFinding(
+                title="fix A", severity="medium",
+                location="a.py:1", category="bug", problem="p",
+            ),
+        ]
+
+        result = create_issues(findings, "/path/proj")
+
+        assert mock_create.call_count == 1
+        assert result.created == 1
+        assert result.reused == 0
+
+    @patch("app.github.list_open_audit_issues")
+    @patch("app.github.resolve_target_repo", return_value="upstream/repo")
+    @patch("app.github.issue_create")
+    def test_creates_only_genuinely_new_findings(
+        self, mock_create, mock_repo, mock_list,
+    ):
+        existing = AuditFinding(
+            title="fix A", severity="medium",
+            location="a.py:1", category="bug", problem="p",
+        )
+        mock_list.return_value = [
+            {
+                "number": 1,
+                "title": "fix A",
+                "url": "https://github.com/o/r/issues/1",
+                "body": _audit_body(existing),
+            },
+        ]
+        mock_create.return_value = "https://github.com/o/r/issues/2\n"
+        findings = [
+            AuditFinding(
+                title="fix A", severity="medium",
+                location="a.py:1", category="bug", problem="p",
+            ),
+            AuditFinding(
+                title="fix B", severity="low",
+                location="b.py:2", category="perf", problem="q",
+            ),
+        ]
+
+        result = create_issues(findings, "/path/proj")
+
+        assert mock_create.call_count == 1
+        # New finding goes through issue_create with its own title.
+        assert mock_create.call_args[1]["title"] == "fix B"
+        assert result.created == 1
+        assert result.reused == 1
+        assert result.urls == [
+            "https://github.com/o/r/issues/1",
+            "https://github.com/o/r/issues/2",
+        ]
+
+    @patch("app.github.list_open_audit_issues", return_value=[])
+    @patch("app.github.resolve_target_repo", return_value="upstream/repo")
+    @patch("app.github.issue_create")
+    def test_no_existing_issues_creates_all(
+        self, mock_create, mock_repo, mock_list,
+    ):
+        mock_create.side_effect = [
+            "https://github.com/o/r/issues/10\n",
+            "https://github.com/o/r/issues/11\n",
+        ]
+        findings = [
+            AuditFinding(title="fix A", severity="medium", location="a.py:1", problem="p"),
+            AuditFinding(title="fix B", severity="low", location="b.py:2", problem="q"),
+        ]
+
+        result = create_issues(findings, "/path/proj")
+
+        assert result.created == 2
+        assert result.reused == 0
+        assert mock_create.call_count == 2
+
+    @patch("app.github.list_open_audit_issues", return_value=[])
+    @patch("app.github.resolve_target_repo", return_value="upstream/repo")
+    @patch("app.github.issue_create")
+    def test_gh_listing_failure_falls_back_to_creation(
+        self, mock_create, mock_repo, mock_list,
+    ):
+        # When `gh issue list` itself fails, list_open_audit_issues
+        # returns []; we must not block on dedup — create as before.
+        mock_create.return_value = "https://github.com/o/r/issues/1\n"
+        findings = [
+            AuditFinding(title="fix A", severity="medium", location="a.py:1", problem="p"),
+        ]
+
+        result = create_issues(findings, "/path/proj")
+
+        assert result.created == 1
+        assert result.reused == 0
+
+    def test_fingerprint_embedded_in_issue_body(self):
+        finding = AuditFinding(
+            title="fix A", severity="medium",
+            location="a.py:1", category="bug", problem="p",
+        )
+        body = _build_issue_body(finding)
+        fingerprint = _compute_finding_fingerprint(finding)
+        assert f"<!-- koan-audit-id: {fingerprint} -->" in body
+
+    def test_fingerprint_is_stable_across_title_drift(self):
+        a = AuditFinding(
+            title="Race in WS reconnect",
+            location="ws_client.py:142", category="concurrency",
+        )
+        b = AuditFinding(
+            title="Potential race condition in websocket reconnect handler",
+            location="ws_client.py:142", category="concurrency",
+        )
+        assert _compute_finding_fingerprint(a) == _compute_finding_fingerprint(b)
+
+    def test_fingerprint_differs_across_locations(self):
+        a = AuditFinding(location="a.py:1", category="bug")
+        b = AuditFinding(location="b.py:2", category="bug")
+        assert _compute_finding_fingerprint(a) != _compute_finding_fingerprint(b)
+
+
+class TestRunAudit:
+    @patch("skills.core.audit.audit_runner.build_audit_prompt", return_value="audit prompt")
+    @patch("skills.core.audit.audit_runner._run_claude_audit", return_value=SAMPLE_OUTPUT)
+    @patch("skills.core.audit.audit_runner.create_issues")
+    def test_full_pipeline_success(self, mock_issues, mock_scan, mock_prompt, tmp_path):
+        mock_issues.return_value = IssueCreationResult(
+            urls=[
+                "https://github.com/o/r/issues/1",
+                "https://github.com/o/r/issues/2",
+                "https://github.com/o/r/issues/3",
+            ],
+            created=3,
+            reused=0,
+        )
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        notify = MagicMock()
+
+        success, summary = run_audit(
+            project_path="/path/proj",
+            project_name="proj",
+            instance_dir=str(instance_dir),
+            notify_fn=notify,
+        )
+
+        assert success
+        assert "3 findings" in summary
+        assert "3 GitHub issues created" in summary
+        assert "audit.md" in summary
+
+    @patch("skills.core.audit.audit_runner.build_audit_prompt", return_value="prompt")
+    @patch("skills.core.audit.audit_runner._run_claude_audit", return_value=SAMPLE_OUTPUT)
+    @patch("skills.core.audit.audit_runner.create_issues")
+    def test_dedup_reflected_in_summary(self, mock_issues, mock_scan, mock_prompt, tmp_path):
+        # Two existing matches + one new finding: summary should distinguish
+        # newly created issues from those already tracked.
+        mock_issues.return_value = IssueCreationResult(
+            urls=[
+                "https://github.com/o/r/issues/1",
+                "https://github.com/o/r/issues/2",
+                "https://github.com/o/r/issues/3",
+            ],
+            created=1,
+            reused=2,
+        )
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+
+        success, summary = run_audit(
+            project_path="/path/proj",
+            project_name="proj",
+            instance_dir=str(instance_dir),
+            notify_fn=MagicMock(),
+        )
+
+        assert success
+        assert "1 new" in summary
+        assert "2 already tracked" in summary
+
+    @patch("skills.core.audit.audit_runner.build_audit_prompt", return_value="prompt")
+    @patch("skills.core.audit.audit_runner._run_claude_audit", return_value=SAMPLE_OUTPUT)
+    @patch("skills.core.audit.audit_runner.create_issues")
+    def test_passes_extra_context(self, mock_issues, mock_scan, mock_prompt, tmp_path):
+        mock_issues.return_value = IssueCreationResult(urls=[], created=0, reused=0)
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+
+        run_audit(
+            project_path="/path/proj",
+            project_name="proj",
+            instance_dir=str(instance_dir),
+            extra_context="focus on auth",
+            notify_fn=MagicMock(),
+        )
+
+        mock_prompt.assert_called_once()
+        assert mock_prompt.call_args[0][1] == "focus on auth"
+
+    @patch("skills.core.audit.audit_runner.build_audit_prompt", return_value="prompt")
+    @patch("skills.core.audit.audit_runner._run_claude_audit", side_effect=RuntimeError("quota"))
+    def test_scan_failure(self, mock_scan, mock_prompt, tmp_path):
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+
+        success, summary = run_audit(
+            project_path="/path/proj",
+            project_name="proj",
+            instance_dir=str(instance_dir),
+            notify_fn=MagicMock(),
+        )
+
+        assert not success
+        assert "failed" in summary.lower()
+
+    @patch("skills.core.audit.audit_runner.build_audit_prompt", return_value="prompt")
+    @patch("skills.core.audit.audit_runner._run_claude_audit", return_value="")
+    def test_empty_output(self, mock_scan, mock_prompt, tmp_path):
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+
+        success, summary = run_audit(
+            project_path="/path/proj",
+            project_name="proj",
+            instance_dir=str(instance_dir),
+            notify_fn=MagicMock(),
+        )
+
+        assert not success
+        assert "no output" in summary.lower()
+
+    @patch("skills.core.audit.audit_runner.build_audit_prompt", return_value="prompt")
+    @patch("skills.core.audit.audit_runner._run_claude_audit", return_value="No findings here.")
+    def test_no_findings(self, mock_scan, mock_prompt, tmp_path):
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        notify = MagicMock()
+
+        success, summary = run_audit(
+            project_path="/path/proj",
+            project_name="proj",
+            instance_dir=str(instance_dir),
+            notify_fn=notify,
+        )
+
+        assert success
+        assert "no findings" in summary.lower()
+
+    @patch("skills.core.audit.audit_runner.build_audit_prompt", return_value="prompt")
+    @patch("skills.core.audit.audit_runner._run_claude_audit", return_value=SAMPLE_OUTPUT)
+    @patch("skills.core.audit.audit_runner.create_issues")
+    def test_max_issues_truncates_findings(self, mock_issues, mock_scan, mock_prompt, tmp_path):
+        mock_issues.return_value = IssueCreationResult(
+            urls=["https://github.com/o/r/issues/1"],
+            created=1,
+            reused=0,
+        )
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        notify = MagicMock()
+
+        # SAMPLE_OUTPUT has 3 findings, limit to 1
+        success, summary = run_audit(
+            project_path="/path/proj",
+            project_name="proj",
+            instance_dir=str(instance_dir),
+            max_issues=1,
+            notify_fn=notify,
+        )
+
+        assert success
+        assert "1 findings" in summary
+        # create_issues should receive only 1 finding
+        assert len(mock_issues.call_args[0][0]) == 1
+        # The kept finding should be the highest severity one (high)
+        assert mock_issues.call_args[0][0][0].severity == "high"
+
+    @patch("skills.core.audit.audit_runner.build_audit_prompt", return_value="prompt")
+    @patch("skills.core.audit.audit_runner._run_claude_audit", return_value=SAMPLE_OUTPUT)
+    @patch("skills.core.audit.audit_runner.create_issues")
+    def test_max_issues_passed_to_prompt(self, mock_issues, mock_scan, mock_prompt, tmp_path):
+        mock_issues.return_value = IssueCreationResult(urls=[], created=0, reused=0)
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+
+        run_audit(
+            project_path="/path/proj",
+            project_name="proj",
+            instance_dir=str(instance_dir),
+            max_issues=8,
+            notify_fn=MagicMock(),
+        )
+
+        assert mock_prompt.call_args[1].get("max_issues") == 8
+
+
+class TestCLI:
+    @patch("skills.core.audit.audit_runner.run_audit", return_value=(True, "Done"))
+    def test_main_success(self, mock_run, tmp_path):
+        exit_code = main([
+            "--project-path", "/path/proj",
+            "--project-name", "proj",
+            "--instance-dir", str(tmp_path),
+        ])
+        assert exit_code == 0
+        mock_run.assert_called_once()
+
+    @patch("skills.core.audit.audit_runner.run_audit", return_value=(False, "Failed"))
+    def test_main_failure(self, mock_run, tmp_path):
+        exit_code = main([
+            "--project-path", "/path/proj",
+            "--project-name", "proj",
+            "--instance-dir", str(tmp_path),
+        ])
+        assert exit_code == 1
+
+    @patch("skills.core.audit.audit_runner.run_audit", return_value=(True, "Done"))
+    def test_main_with_context(self, mock_run, tmp_path):
+        main([
+            "--project-path", "/path/proj",
+            "--project-name", "proj",
+            "--instance-dir", str(tmp_path),
+            "--context", "focus on auth",
+        ])
+        _, kwargs = mock_run.call_args
+        assert kwargs.get("extra_context") == "focus on auth"
+
+    @patch("skills.core.audit.audit_runner.run_audit", return_value=(True, "Done"))
+    def test_main_with_context_file(self, mock_run, tmp_path):
+        ctx_file = tmp_path / "context.txt"
+        ctx_file.write_text("look at the database layer")
+        main([
+            "--project-path", "/path/proj",
+            "--project-name", "proj",
+            "--instance-dir", str(tmp_path),
+            "--context-file", str(ctx_file),
+        ])
+        _, kwargs = mock_run.call_args
+        assert kwargs.get("extra_context") == "look at the database layer"
+
+    @patch("skills.core.audit.audit_runner.run_audit", return_value=(True, "Done"))
+    def test_main_sets_skill_dir(self, mock_run, tmp_path):
+        main([
+            "--project-path", "/path/proj",
+            "--project-name", "proj",
+            "--instance-dir", str(tmp_path),
+        ])
+        _, kwargs = mock_run.call_args
+        skill_dir = kwargs.get("skill_dir")
+        assert skill_dir is not None
+        assert skill_dir.name == "audit"
+
+    @patch("skills.core.audit.audit_runner.run_audit", return_value=(True, "Done"))
+    def test_main_with_max_issues(self, mock_run, tmp_path):
+        main([
+            "--project-path", "/path/proj",
+            "--project-name", "proj",
+            "--instance-dir", str(tmp_path),
+            "--max-issues", "8",
+        ])
+        _, kwargs = mock_run.call_args
+        assert kwargs.get("max_issues") == 8
+
+    @patch("skills.core.audit.audit_runner.run_audit", return_value=(True, "Done"))
+    def test_main_default_max_issues(self, mock_run, tmp_path):
+        main([
+            "--project-path", "/path/proj",
+            "--project-name", "proj",
+            "--instance-dir", str(tmp_path),
+        ])
+        _, kwargs = mock_run.call_args
+        assert kwargs.get("max_issues") == DEFAULT_MAX_ISSUES
+
+
+# ---------------------------------------------------------------------------
+# skill_dispatch integration tests
+# ---------------------------------------------------------------------------
+
+class TestSkillDispatch:
+    def test_audit_in_runners(self):
+        from app.skill_dispatch import _SKILL_RUNNERS
+        assert "audit" in _SKILL_RUNNERS
+        assert _SKILL_RUNNERS["audit"] == "skills.core.audit.audit_runner"
+
+    def test_build_skill_command(self):
+        from app.skill_dispatch import build_skill_command
+
+        cmd = build_skill_command(
+            command="audit",
+            args="",
+            project_name="myproj",
+            project_path="/path/myproj",
+            koan_root="/koan",
+            instance_dir="/koan/instance",
+        )
+
+        assert cmd is not None
+        assert "--project-path" in cmd
+        assert "/path/myproj" in cmd
+        assert "--project-name" in cmd
+        assert "myproj" in cmd
+        assert "--instance-dir" in cmd
+
+    def test_build_skill_command_with_context(self):
+        from app.skill_dispatch import build_skill_command
+
+        cmd = build_skill_command(
+            command="audit",
+            args="focus on auth module",
+            project_name="myproj",
+            project_path="/path/myproj",
+            koan_root="/koan",
+            instance_dir="/koan/instance",
+        )
+
+        assert cmd is not None
+        assert "--context-file" in cmd
+
+    def test_parse_skill_mission(self):
+        from app.skill_dispatch import parse_skill_mission
+
+        project, command, args = parse_skill_mission("/audit")
+        assert command == "audit"
+        assert args == ""
+
+    def test_parse_with_project_tag(self):
+        from app.skill_dispatch import parse_skill_mission
+
+        project, command, args = parse_skill_mission(
+            "[project:koan] /audit focus on error handling"
+        )
+        assert project == "koan"
+        assert command == "audit"
+        assert args == "focus on error handling"
+
+    def test_build_skill_command_with_limit(self):
+        from app.skill_dispatch import build_skill_command
+
+        cmd = build_skill_command(
+            command="audit",
+            args="focus on auth limit=8",
+            project_name="myproj",
+            project_path="/path/myproj",
+            koan_root="/koan",
+            instance_dir="/koan/instance",
+        )
+
+        assert cmd is not None
+        assert "--max-issues" in cmd
+        idx = cmd.index("--max-issues")
+        assert cmd[idx + 1] == "8"
+
+    def test_build_skill_command_with_auto_fix(self):
+        from app.skill_dispatch import build_skill_command
+
+        cmd = build_skill_command(
+            command="audit",
+            args="--auto-fix",
+            project_name="myproj",
+            project_path="/path/myproj",
+            koan_root="/koan",
+            instance_dir="/koan/instance",
+        )
+
+        assert cmd is not None
+        assert "--auto-fix" in cmd
+        idx = cmd.index("--auto-fix")
+        assert cmd[idx + 1] == "high"
+
+    def test_build_skill_command_with_auto_fix_severity(self):
+        from app.skill_dispatch import build_skill_command
+
+        cmd = build_skill_command(
+            command="audit",
+            args="--auto-fix=critical",
+            project_name="myproj",
+            project_path="/path/myproj",
+            koan_root="/koan",
+            instance_dir="/koan/instance",
+        )
+
+        assert cmd is not None
+        assert "--auto-fix" in cmd
+        idx = cmd.index("--auto-fix")
+        assert cmd[idx + 1] == "critical"
+
+    def test_build_skill_command_auto_fix_with_context(self):
+        from app.skill_dispatch import build_skill_command
+
+        cmd = build_skill_command(
+            command="audit",
+            args="focus on auth --auto-fix",
+            project_name="myproj",
+            project_path="/path/myproj",
+            koan_root="/koan",
+            instance_dir="/koan/instance",
+        )
+
+        assert cmd is not None
+        assert "--auto-fix" in cmd
+        assert "--context-file" in cmd
+
+
+# ---------------------------------------------------------------------------
+# Auto-fix handler flag extraction
+# ---------------------------------------------------------------------------
+
+class TestAutoFixExtraction:
+    """Test --auto-fix parsing from handler."""
+
+    def test_extract_auto_fix_present_no_severity(self):
+        handler = _load_handler()
+        severity, cleaned = handler.extract_auto_fix("koan --auto-fix")
+        assert severity == "high"
+        assert cleaned == "koan"
+
+    def test_extract_auto_fix_with_severity(self):
+        handler = _load_handler()
+        severity, cleaned = handler.extract_auto_fix("koan --auto-fix=critical")
+        assert severity == "critical"
+        assert cleaned == "koan"
+
+    def test_extract_auto_fix_absent(self):
+        handler = _load_handler()
+        severity, cleaned = handler.extract_auto_fix("koan focus on auth")
+        assert severity is None
+        assert cleaned == "koan focus on auth"
+
+    def test_extract_auto_fix_case_insensitive(self):
+        handler = _load_handler()
+        severity, cleaned = handler.extract_auto_fix("koan --AUTO-FIX=HIGH")
+        assert severity == "high"
+        assert cleaned == "koan"
+
+    def test_extract_auto_fix_with_limit(self):
+        handler = _load_handler()
+        severity, cleaned = handler.extract_auto_fix("koan limit=3 --auto-fix")
+        assert severity == "high"
+        assert "limit=3" in cleaned
+        assert "--auto-fix" not in cleaned
+
+
+class TestHandleAutoFixQueue:
+    @patch("app.utils.resolve_project_path", return_value="/path/koan")
+    @patch("app.utils.insert_pending_mission")
+    def test_auto_fix_in_mission_entry(self, mock_insert, mock_resolve, handler, ctx):
+        ctx.args = "koan --auto-fix"
+        result = handler.handle(ctx)
+
+        assert "auto-fix" in result
+        mission_entry = mock_insert.call_args[0][1]
+        assert "--auto-fix" in mission_entry
+
+    @patch("app.utils.resolve_project_path", return_value="/path/koan")
+    @patch("app.utils.insert_pending_mission")
+    def test_auto_fix_critical_in_mission_entry(self, mock_insert, mock_resolve, handler, ctx):
+        ctx.args = "koan --auto-fix=critical"
+        result = handler.handle(ctx)
+
+        assert "auto-fix=critical" in result
+        mission_entry = mock_insert.call_args[0][1]
+        assert "--auto-fix=critical" in mission_entry
+
+    @patch("app.utils.resolve_project_path", return_value="/path/koan")
+    @patch("app.utils.insert_pending_mission")
+    def test_no_auto_fix_when_absent(self, mock_insert, mock_resolve, handler, ctx):
+        ctx.args = "koan"
+        handler.handle(ctx)
+
+        mission_entry = mock_insert.call_args[0][1]
+        assert "--auto-fix" not in mission_entry
+
+
+# ---------------------------------------------------------------------------
+# severity_at_or_above
+# ---------------------------------------------------------------------------
+
+class TestSeverityAtOrAbove:
+    def test_critical_above_high(self):
+        assert severity_at_or_above("critical", "high")
+
+    def test_high_at_high(self):
+        assert severity_at_or_above("high", "high")
+
+    def test_medium_below_high(self):
+        assert not severity_at_or_above("medium", "high")
+
+    def test_low_below_high(self):
+        assert not severity_at_or_above("low", "high")
+
+    def test_critical_at_critical(self):
+        assert severity_at_or_above("critical", "critical")
+
+    def test_high_below_critical(self):
+        assert not severity_at_or_above("high", "critical")
+
+    def test_unknown_severity_below_any(self):
+        assert not severity_at_or_above("unknown", "low")
+
+    def test_all_above_low(self):
+        for sev in ("critical", "high", "medium", "low"):
+            assert severity_at_or_above(sev, "low")
+
+    def test_unknown_threshold_fails_closed(self):
+        """An unrecognized threshold must NOT accept every finding.
+
+        Previously the code defaulted unknown ranks to 99 on both sides,
+        which meant `severity_at_or_above("critical", "totally-typoed")`
+        returned True. Now both unknown severity *and* unknown threshold
+        fail closed.
+        """
+        for sev in ("critical", "high", "medium", "low"):
+            assert not severity_at_or_above(sev, "totally-typoed")
+
+
+# ---------------------------------------------------------------------------
+# queue_auto_fix_missions
+# ---------------------------------------------------------------------------
+
+class TestQueueAutoFixMissions:
+    def _make_entry(self, severity, url):
+        finding = AuditFinding(
+            title=f"{severity} issue", severity=severity,
+            location="x.py:1", problem="broken",
+        )
+        return (finding, url)
+
+    def test_queues_matching_severity(self, tmp_path):
+        missions = tmp_path / "missions.md"
+        missions.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
+
+        entries = (
+            self._make_entry("critical", "https://github.com/o/r/issues/1"),
+            self._make_entry("high", "https://github.com/o/r/issues/2"),
+            self._make_entry("medium", "https://github.com/o/r/issues/3"),
+        )
+
+        count = queue_auto_fix_missions(
+            entries, "myproj", str(tmp_path), threshold="high",
+        )
+
+        assert count == 2
+        content = missions.read_text()
+        assert "/fix https://github.com/o/r/issues/1" in content
+        assert "/fix https://github.com/o/r/issues/2" in content
+        assert "/fix https://github.com/o/r/issues/3" not in content
+
+    def test_respects_cap(self, tmp_path):
+        missions = tmp_path / "missions.md"
+        missions.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
+
+        entries = tuple(
+            self._make_entry("critical", f"https://github.com/o/r/issues/{i}")
+            for i in range(10)
+        )
+
+        count = queue_auto_fix_missions(
+            entries, "myproj", str(tmp_path), threshold="low",
+        )
+
+        assert count == AUTO_FIX_CAP
+
+    def test_skips_pvrs_advisories(self, tmp_path):
+        missions = tmp_path / "missions.md"
+        missions.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
+
+        entries = (
+            self._make_entry("critical", "https://github.com/o/r/security/advisories/GHSA-xxx"),
+        )
+
+        count = queue_auto_fix_missions(
+            entries, "myproj", str(tmp_path), threshold="high",
+        )
+
+        assert count == 0
+
+    def test_empty_entries(self, tmp_path):
+        missions = tmp_path / "missions.md"
+        missions.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
+
+        count = queue_auto_fix_missions(
+            (), "myproj", str(tmp_path), threshold="high",
+        )
+
+        assert count == 0
+
+    def test_notify_fn_called(self, tmp_path):
+        missions = tmp_path / "missions.md"
+        missions.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
+
+        entries = (
+            self._make_entry("critical", "https://github.com/o/r/issues/1"),
+        )
+        notify = MagicMock()
+
+        queue_auto_fix_missions(
+            entries, "myproj", str(tmp_path),
+            threshold="high", notify_fn=notify,
+        )
+
+        notify.assert_called_once()
+        assert "Auto-fix" in notify.call_args[0][0]
+
+    def test_mission_format(self, tmp_path):
+        missions = tmp_path / "missions.md"
+        missions.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
+
+        entries = (
+            self._make_entry("critical", "https://github.com/o/r/issues/1"),
+        )
+
+        queue_auto_fix_missions(
+            entries, "myproj", str(tmp_path), threshold="high",
+        )
+
+        content = missions.read_text()
+        assert "- [project:myproj] /fix https://github.com/o/r/issues/1" in content
+
+    def test_critical_only_threshold(self, tmp_path):
+        missions = tmp_path / "missions.md"
+        missions.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
+
+        entries = (
+            self._make_entry("critical", "https://github.com/o/r/issues/1"),
+            self._make_entry("high", "https://github.com/o/r/issues/2"),
+        )
+
+        count = queue_auto_fix_missions(
+            entries, "myproj", str(tmp_path), threshold="critical",
+        )
+
+        assert count == 1
+        content = missions.read_text()
+        assert "/fix https://github.com/o/r/issues/1" in content
+        assert "/fix https://github.com/o/r/issues/2" not in content
+
+
+# ---------------------------------------------------------------------------
+# IssueCreationResult created_entries
+# ---------------------------------------------------------------------------
+
+class TestIssueCreationResultCreatedEntries:
+    @patch("app.github.list_open_audit_issues", return_value=[])
+    @patch("app.github.resolve_target_repo", return_value="upstream/repo")
+    @patch("app.github.issue_create")
+    def test_created_entries_populated(self, mock_create, mock_repo, mock_list):
+        mock_create.side_effect = [
+            "https://github.com/o/r/issues/1\n",
+            "https://github.com/o/r/issues/2\n",
+        ]
+        findings = [
+            AuditFinding(title="fix A", severity="medium", location="a.py:1", problem="p1"),
+            AuditFinding(title="fix B", severity="low", location="b.py:2", problem="p2"),
+        ]
+
+        result = create_issues(findings, "/path/proj")
+
+        assert len(result.created_entries) == 2
+        assert result.created_entries[0][0].title == "fix A"
+        assert result.created_entries[0][1] == "https://github.com/o/r/issues/1"
+        assert result.created_entries[1][0].title == "fix B"
+        assert result.created_entries[1][1] == "https://github.com/o/r/issues/2"
+
+    @patch("app.github.list_open_audit_issues")
+    @patch("app.github.resolve_target_repo", return_value="upstream/repo")
+    @patch("app.github.issue_create")
+    def test_reused_not_in_created_entries(self, mock_create, mock_repo, mock_list):
+        existing = AuditFinding(
+            title="fix A", severity="medium",
+            location="a.py:1", category="bug", problem="p",
+        )
+        mock_list.return_value = [{
+            "number": 42, "title": "fix A",
+            "url": "https://github.com/o/r/issues/42",
+            "body": _audit_body(existing),
+        }]
+        mock_create.return_value = "https://github.com/o/r/issues/2\n"
+
+        findings = [
+            AuditFinding(
+                title="fix A", severity="medium",
+                location="a.py:1", category="bug", problem="p",
+            ),
+            AuditFinding(
+                title="fix B", severity="low",
+                location="b.py:2", category="perf", problem="q",
+            ),
+        ]
+
+        result = create_issues(findings, "/path/proj")
+
+        # Only the newly created issue should be in created_entries
+        assert len(result.created_entries) == 1
+        assert result.created_entries[0][0].title == "fix B"
+
+    def test_default_created_entries_is_empty_tuple(self):
+        result = IssueCreationResult(urls=[], created=0, reused=0)
+        assert result.created_entries == ()
+
+
+# ---------------------------------------------------------------------------
+# run_audit with auto_fix_severity
+# ---------------------------------------------------------------------------
+
+class TestRunAuditAutoFix:
+    @patch("skills.core.audit.audit_runner.build_audit_prompt", return_value="prompt")
+    @patch("skills.core.audit.audit_runner._run_claude_audit", return_value=SAMPLE_OUTPUT)
+    @patch("skills.core.audit.audit_runner.create_issues")
+    @patch("skills.core.audit.audit_runner.queue_auto_fix_missions")
+    def test_auto_fix_called_when_enabled(
+        self, mock_queue, mock_issues, mock_scan, mock_prompt, tmp_path,
+    ):
+        finding = AuditFinding(
+            title="fix A", severity="high", location="a.py:1", problem="p",
+        )
+        mock_issues.return_value = IssueCreationResult(
+            urls=["https://github.com/o/r/issues/1"],
+            created=1, reused=0,
+            created_entries=((finding, "https://github.com/o/r/issues/1"),),
+        )
+        mock_queue.return_value = 1
+
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+
+        success, summary = run_audit(
+            project_path="/path/proj",
+            project_name="proj",
+            instance_dir=str(instance_dir),
+            notify_fn=MagicMock(),
+            auto_fix_severity="high",
+        )
+
+        assert success
+        mock_queue.assert_called_once()
+        assert mock_queue.call_args[1]["threshold"] == "high"
+        assert "1 auto-fix queued" in summary
+
+    @patch("skills.core.audit.audit_runner.build_audit_prompt", return_value="prompt")
+    @patch("skills.core.audit.audit_runner._run_claude_audit", return_value=SAMPLE_OUTPUT)
+    @patch("skills.core.audit.audit_runner.create_issues")
+    @patch("skills.core.audit.audit_runner.queue_auto_fix_missions")
+    def test_auto_fix_not_called_when_disabled(
+        self, mock_queue, mock_issues, mock_scan, mock_prompt, tmp_path,
+    ):
+        mock_issues.return_value = IssueCreationResult(
+            urls=["https://github.com/o/r/issues/1"],
+            created=1, reused=0,
+        )
+
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+
+        success, summary = run_audit(
+            project_path="/path/proj",
+            project_name="proj",
+            instance_dir=str(instance_dir),
+            notify_fn=MagicMock(),
+            # auto_fix_severity defaults to None
+        )
+
+        assert success
+        mock_queue.assert_not_called()
+        assert "auto-fix" not in summary
+
+    @patch("skills.core.audit.audit_runner.build_audit_prompt", return_value="prompt")
+    @patch("skills.core.audit.audit_runner._run_claude_audit", return_value=SAMPLE_OUTPUT)
+    @patch("skills.core.audit.audit_runner.create_issues")
+    @patch("skills.core.audit.audit_runner.queue_auto_fix_missions")
+    def test_auto_fix_not_called_when_no_created_entries(
+        self, mock_queue, mock_issues, mock_scan, mock_prompt, tmp_path,
+    ):
+        mock_issues.return_value = IssueCreationResult(
+            urls=["https://github.com/o/r/issues/1"],
+            created=0, reused=1,
+            created_entries=(),
+        )
+
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+
+        run_audit(
+            project_path="/path/proj",
+            project_name="proj",
+            instance_dir=str(instance_dir),
+            notify_fn=MagicMock(),
+            auto_fix_severity="high",
+        )
+
+        mock_queue.assert_not_called()
+
+
+class TestCLIAutoFix:
+    @patch("skills.core.audit.audit_runner.run_audit", return_value=(True, "Done"))
+    def test_auto_fix_default_severity(self, mock_run, tmp_path):
+        main([
+            "--project-path", "/path/proj",
+            "--project-name", "proj",
+            "--instance-dir", str(tmp_path),
+            "--auto-fix",
+        ])
+        _, kwargs = mock_run.call_args
+        assert kwargs.get("auto_fix_severity") == AUTO_FIX_DEFAULT_THRESHOLD
+
+    @patch("skills.core.audit.audit_runner.run_audit", return_value=(True, "Done"))
+    def test_auto_fix_custom_severity(self, mock_run, tmp_path):
+        main([
+            "--project-path", "/path/proj",
+            "--project-name", "proj",
+            "--instance-dir", str(tmp_path),
+            "--auto-fix", "critical",
+        ])
+        _, kwargs = mock_run.call_args
+        assert kwargs.get("auto_fix_severity") == "critical"
+
+    @patch("skills.core.audit.audit_runner.run_audit", return_value=(True, "Done"))
+    def test_no_auto_fix_by_default(self, mock_run, tmp_path):
+        main([
+            "--project-path", "/path/proj",
+            "--project-name", "proj",
+            "--instance-dir", str(tmp_path),
+        ])
+        _, kwargs = mock_run.call_args
+        assert kwargs.get("auto_fix_severity") is None

@@ -147,3 +147,16 @@ class TestRunCliWithRetry:
         assert result.returncode == 0
         assert mock_run.call_count == 1
         mock_sleep.assert_not_called()
+
+    @patch("app.cli_exec.time.sleep")
+    @patch("app.cli_exec.run_cli")
+    def test_retry_log_includes_stdout_when_stderr_empty(self, mock_run, mock_sleep, capsys):
+        """When stderr is empty, retry log should include stdout content."""
+        mock_run.side_effect = [
+            _make_result(1, stdout="Error: connection reset", stderr=""),
+            _make_result(0, stdout="ok"),
+        ]
+        result = run_cli_with_retry(["claude", "-p", "test"], max_attempts=2)
+        assert result.returncode == 0
+        captured = capsys.readouterr()
+        assert "connection reset" in captured.err

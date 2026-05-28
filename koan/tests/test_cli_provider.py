@@ -96,7 +96,7 @@ class TestClaudeProvider:
 
     def test_tool_args_disallowed(self):
         result = self.provider.build_tool_args(disallowed_tools=["Bash", "Edit", "Write"])
-        assert result == ["--disallowedTools", "Bash", "Edit", "Write"]
+        assert result == ["--disallowedTools", "Bash,Edit,Write"]
 
     def test_tool_args_empty(self):
         assert self.provider.build_tool_args() == []
@@ -354,7 +354,7 @@ class TestCopilotProvider:
         # Should allow the remaining tools: Read, Glob, Grep
         assert "--allow-tool" in result
         tool_names = [result[i + 1] for i in range(len(result)) if result[i] == "--allow-tool"]
-        assert set(tool_names) == {"read_file", "glob", "grep"}
+        assert set(tool_names) == {"read_file", "glob", "grep", "skill"}
 
     def test_model_args(self):
         p = self._make()
@@ -879,78 +879,27 @@ class TestLocalProviderResolution:
 # ---------------------------------------------------------------------------
 
 class TestClaudeQuotaCheck:
-    """Tests for ClaudeProvider.check_quota_available()."""
+    """Tests for ClaudeProvider.check_quota_available().
+
+    The method is a no-op that always returns (True, '') because
+    'claude usage' is not a real CLI subcommand. Quota exhaustion is
+    detected post-run by quota_handler.py instead.
+    """
 
     def setup_method(self):
         self.provider = ClaudeProvider()
 
-    @patch("app.provider.claude.subprocess.run")
-    @patch("app.quota_handler.detect_quota_exhaustion", return_value=False)
-    def test_quota_available(self, mock_detect, mock_run):
-        """Returns (True, '') when quota is available."""
-        mock_run.return_value = MagicMock(stderr="", stdout="Usage: 50%")
-        available, detail = self.provider.check_quota_available("/fake/path")
-        assert available is True
-        assert detail == ""
-        mock_run.assert_called_once()
-        mock_detect.assert_called_once()
-
-    @patch("app.provider.claude.subprocess.run")
-    @patch("app.quota_handler.detect_quota_exhaustion", return_value=True)
-    def test_quota_exhausted(self, mock_detect, mock_run):
-        """Returns (False, output) when quota is exhausted."""
-        mock_run.return_value = MagicMock(
-            stderr="Rate limit exceeded",
-            stdout="Quota exhausted"
-        )
-        available, detail = self.provider.check_quota_available("/fake/path")
-        assert available is False
-        assert "Quota exhausted" in detail
-
-    @patch("app.provider.claude.subprocess.run")
-    def test_timeout_returns_available(self, mock_run):
-        """Timeout is treated optimistically — proceed as if quota available."""
-        import subprocess
-        mock_run.side_effect = subprocess.TimeoutExpired(cmd=["claude", "usage"], timeout=15)
+    def test_always_returns_available(self):
+        """Always returns (True, '') — no subprocess call."""
         available, detail = self.provider.check_quota_available("/fake/path")
         assert available is True
         assert detail == ""
 
-    @patch("app.provider.claude.subprocess.run")
-    def test_other_exception_returns_available(self, mock_run):
-        """Non-quota exceptions treated optimistically."""
-        mock_run.side_effect = OSError("binary not found")
-        available, detail = self.provider.check_quota_available("/fake/path")
+    def test_custom_timeout_ignored(self):
+        """Timeout parameter accepted but has no effect."""
+        available, detail = self.provider.check_quota_available("/fake/path", timeout=30)
         assert available is True
         assert detail == ""
-
-    @patch("app.provider.claude.subprocess.run")
-    @patch("app.quota_handler.detect_quota_exhaustion", return_value=False)
-    def test_custom_timeout(self, mock_detect, mock_run):
-        """Custom timeout is passed to subprocess.run."""
-        mock_run.return_value = MagicMock(stderr="", stdout="ok")
-        self.provider.check_quota_available("/fake/path", timeout=30)
-        call_kwargs = mock_run.call_args[1]
-        assert call_kwargs["timeout"] == 30
-
-    @patch("app.provider.claude.subprocess.run")
-    @patch("app.quota_handler.detect_quota_exhaustion", return_value=False)
-    def test_uses_project_path_as_cwd(self, mock_detect, mock_run):
-        """subprocess.run cwd is set to project_path."""
-        mock_run.return_value = MagicMock(stderr="", stdout="ok")
-        self.provider.check_quota_available("/my/project")
-        call_kwargs = mock_run.call_args[1]
-        assert call_kwargs["cwd"] == "/my/project"
-
-    @patch("app.provider.claude.subprocess.run")
-    @patch("app.quota_handler.detect_quota_exhaustion", return_value=False)
-    def test_combines_stderr_and_stdout(self, mock_detect, mock_run):
-        """Both stderr and stdout are combined for quota detection."""
-        mock_run.return_value = MagicMock(stderr="warning", stdout="usage data")
-        self.provider.check_quota_available("/fake/path")
-        combined = mock_detect.call_args[0][0]
-        assert "warning" in combined
-        assert "usage data" in combined
 
 
 # ---------------------------------------------------------------------------
@@ -1051,7 +1000,7 @@ class TestRunCommand:
     @patch("app.config.get_model_config", return_value={"chat": "sonnet", "fallback": "haiku"})
     def test_failure_raises_runtime_error(self, mock_models, mock_run):
         """Non-zero exit raises RuntimeError with stderr snippet."""
-        mock_run.return_value = MagicMock(returncode=1, stderr="some error message")
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="some error message")
         with pytest.raises(RuntimeError, match="CLI invocation failed"):
             run_command(
                 prompt="analyze this",
@@ -1223,3 +1172,133 @@ class TestPluginDirSupport:
         provider = CLIProvider()
         assert provider.build_plugin_args(["/tmp/plugins"]) == []
         assert provider.build_plugin_args(None) == []
+
+
+# ---------------------------------------------------------------------------
+# Effort args
+# ---------------------------------------------------------------------------
+
+
+class TestEffortSupport:
+    """Test --effort flag support across providers."""
+
+    def test_claude_provider_valid_effort(self):
+        p = ClaudeProvider()
+        assert p.build_effort_args("high") == ["--effort", "high"]
+        assert p.build_effort_args("low") == ["--effort", "low"]
+        assert p.build_effort_args("medium") == ["--effort", "medium"]
+        assert p.build_effort_args("max") == ["--effort", "max"]
+
+    def test_claude_provider_empty_effort(self):
+        p = ClaudeProvider()
+        assert p.build_effort_args("") == []
+        assert p.build_effort_args() == []
+
+    def test_claude_provider_invalid_effort(self):
+        p = ClaudeProvider()
+        assert p.build_effort_args("turbo") == []
+
+    def test_copilot_provider_returns_empty(self):
+        p = CopilotProvider()
+        assert p.build_effort_args("high") == []
+
+    def test_local_provider_returns_empty(self):
+        p = LocalLLMProvider()
+        assert p.build_effort_args("high") == []
+
+    def test_build_full_command_includes_effort(self):
+        with patch("app.provider.get_provider", return_value=ClaudeProvider()), \
+             patch("app.config.get_skip_permissions", return_value=True):
+            cmd = build_full_command(prompt="test", effort="high")
+            assert "--effort" in cmd
+            idx = cmd.index("--effort")
+            assert cmd[idx + 1] == "high"
+
+    def test_build_full_command_no_effort(self):
+        with patch("app.provider.get_provider", return_value=ClaudeProvider()), \
+             patch("app.config.get_skip_permissions", return_value=True):
+            cmd = build_full_command(prompt="test")
+            assert "--effort" not in cmd
+
+
+class TestThinkingSupport:
+    """Test build_thinking_args on providers (called directly by mission_runner,
+    no longer threaded through build_command/build_full_command)."""
+
+    def test_claude_provider_thinking_enabled(self):
+        p = ClaudeProvider()
+        result = p.build_thinking_args(enabled=True)
+        assert result == ["--effort", "max"]
+
+    def test_claude_provider_thinking_disabled(self):
+        p = ClaudeProvider()
+        assert p.build_thinking_args(enabled=False) == []
+
+    def test_claude_provider_thinking_with_budget(self):
+        """budget_tokens is accepted but does not change the CLI flags."""
+        p = ClaudeProvider()
+        result = p.build_thinking_args(enabled=True, budget_tokens=10000)
+        assert result == ["--effort", "max"]
+
+    def test_copilot_provider_returns_empty(self):
+        p = CopilotProvider()
+        assert p.build_thinking_args(enabled=True) == []
+
+    def test_local_provider_returns_empty(self):
+        p = LocalLLMProvider()
+        assert p.build_thinking_args(enabled=True) == []
+
+    def test_build_full_command_no_thinking_param(self):
+        """build_full_command no longer accepts thinking params — thinking
+        is appended by mission_runner after command construction."""
+        with patch("app.provider.get_provider", return_value=ClaudeProvider()), \
+             patch("app.config.get_skip_permissions", return_value=True):
+            cmd = build_full_command(prompt="test")
+            effort_count = cmd.count("--effort")
+            assert effort_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Session resume
+# ---------------------------------------------------------------------------
+
+
+class TestSessionResume:
+    """Test session resume support across providers."""
+
+    def test_claude_provider_supports_resume(self):
+        p = ClaudeProvider()
+        assert p.supports_session_resume() is True
+
+    def test_claude_provider_build_resume_args(self):
+        p = ClaudeProvider()
+        assert p.build_resume_args("abc-123") == ["--resume", "abc-123"]
+
+    def test_claude_provider_build_resume_args_empty(self):
+        p = ClaudeProvider()
+        assert p.build_resume_args("") == []
+
+    def test_copilot_does_not_support_resume(self):
+        p = CopilotProvider()
+        assert p.supports_session_resume() is False
+
+    def test_local_does_not_support_resume(self):
+        p = LocalLLMProvider()
+        assert p.supports_session_resume() is False
+
+    def test_build_full_command_with_resume(self):
+        with patch("app.provider.get_provider", return_value=ClaudeProvider()), \
+             patch("app.config.get_skip_permissions", return_value=True):
+            cmd = build_full_command(
+                prompt="reflect on the mission",
+                resume_session_id="550e8400-e29b-41d4",
+            )
+            assert "--resume" in cmd
+            idx = cmd.index("--resume")
+            assert cmd[idx + 1] == "550e8400-e29b-41d4"
+
+    def test_build_full_command_without_resume(self):
+        with patch("app.provider.get_provider", return_value=ClaudeProvider()), \
+             patch("app.config.get_skip_permissions", return_value=True):
+            cmd = build_full_command(prompt="test")
+            assert "--resume" not in cmd

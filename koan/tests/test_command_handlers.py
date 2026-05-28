@@ -74,6 +74,62 @@ class TestHandleCommandRouting:
         mock_send.assert_called_once()
         assert "Stop requested" in mock_send.call_args[0][0]
 
+    def test_update_command_creates_cycle_file(self, patch_bridge_state, mock_send):
+        from app.command_handlers import handle_command
+        handle_command("/update")
+        cycle_file = patch_bridge_state / ".koan-cycle"
+        assert cycle_file.exists()
+        assert cycle_file.read_text() == "CYCLE"
+        mock_send.assert_called_once()
+        assert "Update requested" in mock_send.call_args[0][0]
+
+    def test_upgrade_alias_creates_cycle_file(self, patch_bridge_state, mock_send):
+        from app.command_handlers import handle_command
+        handle_command("/upgrade")
+        cycle_file = patch_bridge_state / ".koan-cycle"
+        assert cycle_file.exists()
+        assert cycle_file.read_text() == "CYCLE"
+        mock_send.assert_called_once()
+        assert "Update requested" in mock_send.call_args[0][0]
+
+    def test_stop_message_mentions_mission_when_in_progress(self, patch_bridge_state, mock_send):
+        from app.command_handlers import handle_command
+        missions = patch_bridge_state / "instance" / "missions.md"
+        missions.parent.mkdir(parents=True, exist_ok=True)
+        missions.write_text("## In Progress\n- some mission\n## Pending\n## Done\n")
+        handle_command("/stop")
+        msg = mock_send.call_args[0][0]
+        assert "Current mission will complete" in msg
+
+    def test_stop_message_no_mission_reference_when_idle(self, patch_bridge_state, mock_send):
+        from app.command_handlers import handle_command
+        missions = patch_bridge_state / "instance" / "missions.md"
+        missions.parent.mkdir(parents=True, exist_ok=True)
+        missions.write_text("## In Progress\n## Pending\n## Done\n")
+        handle_command("/stop")
+        msg = mock_send.call_args[0][0]
+        assert "Current mission will complete" not in msg
+        assert "after the current cycle" in msg
+
+    def test_update_message_mentions_mission_when_in_progress(self, patch_bridge_state, mock_send):
+        from app.command_handlers import handle_command
+        missions = patch_bridge_state / "instance" / "missions.md"
+        missions.parent.mkdir(parents=True, exist_ok=True)
+        missions.write_text("## In Progress\n- some mission\n## Pending\n## Done\n")
+        handle_command("/update")
+        msg = mock_send.call_args[0][0]
+        assert "Current mission will complete" in msg
+
+    def test_update_message_no_mission_reference_when_idle(self, patch_bridge_state, mock_send):
+        from app.command_handlers import handle_command
+        missions = patch_bridge_state / "instance" / "missions.md"
+        missions.parent.mkdir(parents=True, exist_ok=True)
+        missions.write_text("## In Progress\n## Pending\n## Done\n")
+        handle_command("/update")
+        msg = mock_send.call_args[0][0]
+        assert "Current mission will complete" not in msg
+        assert "will update and restart" in msg
+
     def test_pause_command_creates_pause_file(self, patch_bridge_state, mock_send):
         from app.command_handlers import handle_command
         handle_command("/pause")
@@ -441,7 +497,67 @@ class TestHandleResume:
         from app.command_handlers import handle_resume
         handle_resume()
         mock_send.assert_called_once()
-        assert "No pause" in mock_send.call_args[0][0]
+        assert "Resume acknowledged" in mock_send.call_args[0][0]
+        # Skip file should be created to prevent startup re-pause
+        assert (patch_bridge_state / ".koan-skip-start-pause").exists()
+
+    def test_resume_creates_skip_file(self, mock_alive, patch_bridge_state, mock_send):
+        """Resuming from pause writes .koan-skip-start-pause to prevent race."""
+        from app.command_handlers import handle_resume
+        (patch_bridge_state / ".koan-pause").touch()
+        handle_resume()
+        assert (patch_bridge_state / ".koan-skip-start-pause").exists()
+
+
+# ---------------------------------------------------------------------------
+# Test: /resume during startup race condition
+# ---------------------------------------------------------------------------
+
+@patch("app.command_handlers._is_runner_alive", return_value=True)
+class TestResumeDuringStartupRace:
+    """Verify /resume during startup prevents handle_start_on_pause from re-pausing.
+
+    Bug: if /resume is sent while the runner is still in run_startup()
+    (e.g., during the startup notification), handle_start_on_pause either
+    hasn't run yet (re-creates pause) or already ran (pause was just removed
+    but the startup log still shows paused). The skip file mechanism ensures
+    that no matter when /resume arrives during startup, the pause is not
+    re-created.
+    """
+
+    @patch("app.utils.get_start_on_pause", return_value=True)
+    def test_resume_before_start_on_pause_prevents_repause(
+        self, mock_config, mock_alive, patch_bridge_state, mock_send
+    ):
+        """Scenario: /resume arrives before handle_start_on_pause runs."""
+        from app.command_handlers import handle_resume
+        from app.startup_manager import handle_start_on_pause
+
+        # No pause file yet (startup hasn't created it)
+        handle_resume()
+        # Now startup runs handle_start_on_pause
+        handle_start_on_pause(str(patch_bridge_state))
+        # The skip file should prevent the pause from being created
+        assert not (patch_bridge_state / ".koan-pause").exists()
+
+    @patch("app.utils.get_start_on_pause", return_value=True)
+    def test_resume_after_start_on_pause_prevents_repause(
+        self, mock_config, mock_alive, patch_bridge_state, mock_send
+    ):
+        """Scenario: /resume arrives after handle_start_on_pause created the pause."""
+        from app.command_handlers import handle_resume
+        from app.startup_manager import handle_start_on_pause
+
+        # Startup creates the pause first
+        handle_start_on_pause(str(patch_bridge_state))
+        assert (patch_bridge_state / ".koan-pause").exists()
+        # Then /resume removes it
+        handle_resume()
+        assert not (patch_bridge_state / ".koan-pause").exists()
+        # If startup were to call handle_start_on_pause again (e.g., after
+        # a crash-restart), the skip file prevents re-pause
+        handle_start_on_pause(str(patch_bridge_state))
+        assert not (patch_bridge_state / ".koan-pause").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -746,6 +862,134 @@ class TestCliSkillDispatch:
 
         mock_exec.assert_called_once()
         mock_insert.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Test: _dispatch_skill — early abort when required args missing
+# ---------------------------------------------------------------------------
+
+class TestDispatchSkillEarlyAbort:
+    """Skills with required args (<param> in usage) should abort early with usage."""
+
+    def test_required_args_missing_returns_usage(
+        self, patch_bridge_state, mock_send, mock_registry
+    ):
+        """Skill with <required> arg and no args provided should show usage immediately."""
+        from app.command_handlers import _dispatch_skill
+        from app.skills import Skill, SkillCommand
+
+        skill = Skill(
+            name="add_project",
+            scope="core",
+            worker=True,
+            commands=[SkillCommand(
+                name="add_project",
+                description="Add a project",
+                usage="/add_project <github-url> [name]",
+                aliases=["add"],
+            )],
+        )
+
+        with patch("app.command_handlers.execute_skill") as mock_exec:
+            _dispatch_skill(skill, "add_project", "")
+
+        mock_exec.assert_not_called()
+        msg = mock_send.call_args[0][0]
+        assert "Usage:" in msg
+        assert "<github-url>" in msg
+
+    def test_required_args_missing_via_alias(
+        self, patch_bridge_state, mock_send, mock_registry
+    ):
+        """Early abort also works when invoked via alias."""
+        from app.command_handlers import _dispatch_skill
+        from app.skills import Skill, SkillCommand
+
+        skill = Skill(
+            name="delete_project",
+            scope="core",
+            worker=True,
+            commands=[SkillCommand(
+                name="delete_project",
+                description="Remove a project",
+                usage="/delete_project <project-name>",
+                aliases=["remove_project", "del"],
+            )],
+        )
+
+        with patch("app.command_handlers.execute_skill") as mock_exec:
+            _dispatch_skill(skill, "remove_project", "  ")
+
+        mock_exec.assert_not_called()
+        msg = mock_send.call_args[0][0]
+        assert "Usage:" in msg
+        assert "<project-name>" in msg
+
+    def test_args_provided_proceeds_normally(
+        self, patch_bridge_state, mock_send, mock_registry
+    ):
+        """When args ARE provided, skill should execute normally."""
+        from app.command_handlers import _dispatch_skill
+        from app.skills import Skill, SkillCommand
+
+        skill = Skill(
+            name="add_project",
+            scope="core",
+            worker=False,
+            commands=[SkillCommand(
+                name="add_project",
+                description="Add a project",
+                usage="/add_project <github-url> [name]",
+                aliases=["add"],
+            )],
+        )
+
+        with patch("app.command_handlers.execute_skill", return_value="added") as mock_exec:
+            _dispatch_skill(skill, "add_project", "owner/repo")
+
+        mock_exec.assert_called_once()
+
+    def test_no_usage_defined_proceeds_normally(
+        self, patch_bridge_state, mock_send, mock_registry
+    ):
+        """Skills without usage in their commands should not be affected."""
+        from app.command_handlers import _dispatch_skill
+        from app.skills import Skill, SkillCommand
+
+        skill = Skill(
+            name="status",
+            scope="core",
+            worker=False,
+            commands=[SkillCommand(name="status", description="Show status")],
+        )
+
+        with patch("app.command_handlers.execute_skill", return_value="ok") as mock_exec:
+            _dispatch_skill(skill, "status", "")
+
+        mock_exec.assert_called_once()
+
+    def test_optional_only_args_proceeds_normally(
+        self, patch_bridge_state, mock_send, mock_registry
+    ):
+        """Skills with only [optional] args in usage should NOT abort on empty args."""
+        from app.command_handlers import _dispatch_skill
+        from app.skills import Skill, SkillCommand
+
+        skill = Skill(
+            name="list",
+            scope="core",
+            worker=False,
+            commands=[SkillCommand(
+                name="list",
+                description="List missions",
+                usage="/list [filter]",
+            )],
+        )
+
+        with patch("app.command_handlers.execute_skill", return_value="ok") as mock_exec:
+            _dispatch_skill(skill, "list", "")
+
+        mock_exec.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -1412,6 +1656,68 @@ class TestDispatchSkillWorkerExceptionHandling:
 
 
 # ---------------------------------------------------------------------------
+# Test: SkillError survives module reload (class identity change)
+# ---------------------------------------------------------------------------
+
+class TestSkillErrorModuleReload:
+    """Regression test for TypeError when module reload changes SkillError class.
+
+    When _refresh_stale_app_modules() reloads app.skills, the SkillError
+    namedtuple class is recreated.  command_handlers.py holds a reference to
+    the OLD class, so isinstance() returns False.  Without the fix, the raw
+    SkillError namedtuple (containing a non-serializable exception object)
+    leaks into send_telegram → requests.post(json=...) → json.dumps, which
+    raises TypeError: Object of type ModuleNotFoundError is not JSON serializable.
+    """
+
+    def test_handle_skill_result_with_reloaded_skillerror(
+        self, patch_bridge_state, mock_send
+    ):
+        """_handle_skill_result should detect SkillError even after class rebuild."""
+        from collections import namedtuple
+        from app.command_handlers import _handle_skill_result
+
+        # Simulate a post-reload SkillError — different class identity
+        FreshSkillError = namedtuple("SkillError", ["skill_name", "exception", "message"])
+        result = FreshSkillError(
+            skill_name="core/audit",
+            exception="ModuleNotFoundError: No module named 'skills.core'",
+            message="Skill error (core/audit): No module named 'skills.core'",
+        )
+
+        _handle_skill_result(result, "audit", "koan")
+
+        # Should send the .message string, not the raw namedtuple
+        mock_send.assert_called_once()
+        sent = mock_send.call_args[0][0]
+        assert isinstance(sent, str)
+        assert "Skill error" in sent
+
+    def test_handle_skill_result_with_raw_exception_object(
+        self, patch_bridge_state, mock_send
+    ):
+        """Even with a raw exception in .exception, message should be sent as string."""
+        from collections import namedtuple
+        from app.command_handlers import _handle_skill_result
+
+        # Worst case: raw exception object (pre-fix SkillError)
+        FreshSkillError = namedtuple("SkillError", ["skill_name", "exception", "message"])
+        result = FreshSkillError(
+            skill_name="core/audit",
+            exception=ModuleNotFoundError("No module named 'skills.core'"),
+            message="Skill error (core/audit): No module named 'skills.core'",
+        )
+
+        _handle_skill_result(result, "audit", "koan")
+
+        # Should still send .message as a string
+        mock_send.assert_called_once()
+        sent = mock_send.call_args[0][0]
+        assert isinstance(sent, str)
+        assert "Skill error" in sent
+
+
+# ---------------------------------------------------------------------------
 # Test: _handle_help_command — detailed help with aliases and usage
 # ---------------------------------------------------------------------------
 
@@ -1688,11 +1994,11 @@ class TestHandleResumeAutoRestart:
     def test_resume_no_pause_alive_runner_shows_info(
         self, mock_alive, patch_bridge_state, mock_send
     ):
-        """When no pause and runner is alive, show info message."""
+        """When no pause and runner is alive, show resume acknowledged message."""
         from app.command_handlers import handle_resume
         handle_resume()
         mock_send.assert_called_once()
-        assert "No pause" in mock_send.call_args[0][0]
+        assert "Resume acknowledged" in mock_send.call_args[0][0]
 
     @patch("app.pid_manager.check_pidfile", return_value=None)
     @patch("app.pid_manager.start_runner", return_value=(True, "Agent loop started (PID 999)"))
@@ -1718,3 +2024,182 @@ class TestHandleResumeAutoRestart:
         result = _auto_restart_runner()
         assert result is False
         assert "Failed" in mock_send.call_args[0][0]
+
+
+# ---------------------------------------------------------------------------
+# _strip_bot_mention — Telegram group command normalization
+# ---------------------------------------------------------------------------
+
+class TestStripBotMention:
+    """Test _strip_bot_mention strips @botname from group commands."""
+
+    def test_plain_command_unchanged(self):
+        from app.command_handlers import _strip_bot_mention
+        assert _strip_bot_mention("/resume") == "/resume"
+
+    def test_command_with_bot_mention(self):
+        from app.command_handlers import _strip_bot_mention
+        assert _strip_bot_mention("/resume@MyKoanBot") == "/resume"
+
+    def test_command_with_mention_and_args(self):
+        from app.command_handlers import _strip_bot_mention
+        assert _strip_bot_mention("/pause@MyKoanBot 2h") == "/pause 2h"
+
+    def test_plain_command_with_args_unchanged(self):
+        from app.command_handlers import _strip_bot_mention
+        assert _strip_bot_mention("/help status") == "/help status"
+
+    def test_empty_string(self):
+        from app.command_handlers import _strip_bot_mention
+        assert _strip_bot_mention("") == ""
+
+    def test_whitespace_preserved_in_args(self):
+        from app.command_handlers import _strip_bot_mention
+        assert _strip_bot_mention("/implement@Bot   some task here") == "/implement some task here"
+
+    def test_at_in_args_not_stripped(self):
+        """@ in args (not in the command) should be preserved."""
+        from app.command_handlers import _strip_bot_mention
+        assert _strip_bot_mention("/chat tell user@example.com hi") == "/chat tell user@example.com hi"
+
+
+class TestHandleCommandGroupChat:
+    """handle_command should work with Telegram group-style /cmd@bot commands."""
+
+    @patch("app.command_handlers.atomic_write")
+    def test_stop_with_bot_mention(self, mock_write, patch_bridge_state, mock_send):
+        from app.command_handlers import handle_command
+        handle_command("/stop@MyKoanBot")
+        mock_write.assert_called_once()
+        mock_send.assert_called_once()
+        assert "Stop" in mock_send.call_args[0][0]
+
+    @patch("app.command_handlers.handle_resume")
+    def test_resume_with_bot_mention(self, mock_resume, patch_bridge_state, mock_send):
+        from app.command_handlers import handle_command
+        handle_command("/resume@MyKoanBot")
+        mock_resume.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# /skill approve — audit finding §3 regression
+# ---------------------------------------------------------------------------
+
+class TestSkillApproveCommand:
+    """The /skill approve <ref> <fingerprint> path must:
+      * accept the correct fingerprint and reload the registry
+      * reject mismatched fingerprints without clearing the marker
+      * report 'nothing pending' for unknown refs
+    """
+
+    @staticmethod
+    def _make_pending(instance, scope, name=None, body=None):
+        """Create a pending skill under instance/skills/<scope>[/<name>]."""
+        from app.skill_approval import compute_fingerprint, mark_pending
+
+        skill_root = instance / "skills" / scope
+        if name:
+            skill_dir = skill_root / name
+        else:
+            # /skill install style: a single skill nested inside the scope dir
+            skill_dir = skill_root / "deploy"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: deploy\ndescription: x\nversion: 1.0.0\n"
+            "commands:\n  - name: deploy\n    description: x\n---\n"
+        )
+        (skill_dir / "handler.py").write_text(
+            body or "def handle(ctx):\n    return 'ok'\n"
+        )
+        marker_dir = skill_dir if name else skill_root
+        fp = compute_fingerprint(marker_dir)
+        mark_pending(marker_dir, fp)
+        return marker_dir, fp
+
+    def test_approve_with_matching_short_fp_clears_marker(
+        self, patch_bridge_state, mock_send
+    ):
+        from app.command_handlers import handle_command
+        instance = patch_bridge_state / "instance"
+        marker_dir, fp = self._make_pending(instance, "ops")
+
+        with patch("app.command_handlers._reset_registry") as mock_reset:
+            handle_command(f"/skill approve ops {fp[:12]}")
+
+        assert not (marker_dir / ".koan-pending").exists()
+        mock_reset.assert_called_once()
+        reply = mock_send.call_args[0][0]
+        assert "✅" in reply and "Approved" in reply
+
+    def test_approve_with_full_fp_also_works(self, patch_bridge_state, mock_send):
+        from app.command_handlers import handle_command
+        instance = patch_bridge_state / "instance"
+        marker_dir, fp = self._make_pending(instance, "ops")
+
+        with patch("app.command_handlers._reset_registry"):
+            handle_command(f"/skill approve ops {fp}")
+        assert not (marker_dir / ".koan-pending").exists()
+
+    def test_approve_scope_slash_name_form(self, patch_bridge_state, mock_send):
+        from app.command_handlers import handle_command
+        instance = patch_bridge_state / "instance"
+        marker_dir, fp = self._make_pending(instance, "myteam", name="haiku")
+
+        with patch("app.command_handlers._reset_registry") as mock_reset:
+            handle_command(f"/skill approve myteam/haiku {fp[:12]}")
+
+        assert not (marker_dir / ".koan-pending").exists()
+        mock_reset.assert_called_once()
+
+    def test_approve_with_wrong_fp_leaves_marker(self, patch_bridge_state, mock_send):
+        from app.command_handlers import handle_command
+        instance = patch_bridge_state / "instance"
+        marker_dir, fp = self._make_pending(instance, "ops")
+
+        with patch("app.command_handlers._reset_registry") as mock_reset:
+            handle_command("/skill approve ops deadbeefcafe")
+
+        assert (marker_dir / ".koan-pending").exists()
+        mock_reset.assert_not_called()
+        reply = mock_send.call_args[0][0]
+        assert "❌" in reply
+        assert "does not match" in reply
+
+    def test_approve_unknown_ref_reports_nothing_pending(
+        self, patch_bridge_state, mock_send
+    ):
+        from app.command_handlers import handle_command
+        with patch("app.command_handlers._reset_registry") as mock_reset:
+            handle_command("/skill approve ghost abcdef123456")
+        mock_reset.assert_not_called()
+        reply = mock_send.call_args[0][0]
+        assert "❌" in reply and "Nothing pending" in reply
+
+    def test_approve_rejects_path_traversal_ref(
+        self, patch_bridge_state, mock_send
+    ):
+        """A '..' in the ref must not let the attacker target a marker file
+        outside instance/skills/."""
+        from app.command_handlers import handle_command
+        with patch("app.command_handlers._reset_registry") as mock_reset:
+            handle_command("/skill approve ../etc deadbeef")
+        mock_reset.assert_not_called()
+        reply = mock_send.call_args[0][0]
+        assert "❌" in reply
+
+    def test_approve_missing_args_returns_usage(
+        self, patch_bridge_state, mock_send
+    ):
+        from app.command_handlers import handle_command
+        handle_command("/skill approve")
+        reply = mock_send.call_args[0][0]
+        assert "Usage:" in reply
+        assert "fingerprint" in reply
+
+    def test_approve_non_hex_fp_rejected(self, patch_bridge_state, mock_send):
+        from app.command_handlers import handle_command
+        with patch("app.command_handlers._reset_registry") as mock_reset:
+            handle_command("/skill approve ops not-a-hash!")
+        mock_reset.assert_not_called()
+        reply = mock_send.call_args[0][0]
+        assert "❌" in reply

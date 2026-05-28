@@ -18,7 +18,7 @@ class TestConstants:
         assert isinstance(CLAUDE_TOOLS, set)
 
     def test_claude_tools_contains_core_tools(self):
-        expected = {"Bash", "Read", "Write", "Glob", "Grep", "Edit"}
+        expected = {"Bash", "Read", "Write", "Glob", "Grep", "Edit", "Skill"}
         assert CLAUDE_TOOLS == expected
 
     def test_tool_name_map_is_a_dict(self):
@@ -335,3 +335,115 @@ class TestPluginArgsOverride:
         p = PluginProvider()
         cmd = p.build_command(prompt="go")
         assert "--plugin-dir" not in cmd
+
+
+# ---------------------------------------------------------------------------
+# Effort args
+# ---------------------------------------------------------------------------
+
+
+class TestEffortArgs:
+    """Test build_effort_args base implementation and build_command wiring."""
+
+    def test_base_returns_empty(self):
+        p = StubProvider()
+        assert p.build_effort_args("high") == []
+
+    def test_build_command_passes_effort(self):
+        """build_command should call build_effort_args with the effort parameter."""
+
+        class EffortProvider(StubProvider):
+            def build_effort_args(self, effort=""):
+                if effort:
+                    return ["--effort", effort]
+                return []
+
+        p = EffortProvider()
+        cmd = p.build_command(prompt="go", effort="high")
+        assert "--effort" in cmd
+        assert "high" in cmd
+
+    def test_build_command_no_effort(self):
+        p = StubProvider()
+        cmd = p.build_command(prompt="go")
+        assert "--effort" not in cmd
+
+
+# ---------------------------------------------------------------------------
+# build_thinking_args
+# ---------------------------------------------------------------------------
+
+class TestThinkingArgs:
+    """Test build_thinking_args base implementation (called directly, not via build_command)."""
+
+    def test_base_returns_empty_when_disabled(self):
+        p = StubProvider()
+        assert p.build_thinking_args(enabled=False) == []
+
+    def test_base_returns_empty_when_enabled(self):
+        """Base class is a no-op even when enabled — concrete providers override."""
+        p = StubProvider()
+        assert p.build_thinking_args(enabled=True, budget_tokens=5000) == []
+
+    def test_build_command_does_not_include_thinking(self):
+        """build_command no longer accepts thinking params — thinking is
+        appended by mission_runner after command construction."""
+        p = StubProvider()
+        cmd = p.build_command(prompt="go")
+        assert "--think" not in cmd
+        assert "--effort" not in cmd
+
+
+# ---------------------------------------------------------------------------
+# Session resume args
+# ---------------------------------------------------------------------------
+
+class TestSessionResumeArgs:
+    """Test session resume support on base and concrete providers."""
+
+    def test_base_does_not_support_resume(self):
+        p = StubProvider()
+        assert p.supports_session_resume() is False
+
+    def test_base_build_resume_args_returns_empty(self):
+        p = StubProvider()
+        assert p.build_resume_args("abc-123") == []
+
+    def test_build_command_without_resume(self):
+        p = StubProvider()
+        cmd = p.build_command(prompt="go")
+        assert "--resume" not in cmd
+
+    def test_build_command_ignores_resume_when_unsupported(self):
+        p = StubProvider()
+        cmd = p.build_command(prompt="go", resume_session_id="abc-123")
+        assert "--resume" not in cmd
+
+    def test_build_command_with_resume_on_supporting_provider(self):
+        class ResumeProvider(StubProvider):
+            def supports_session_resume(self):
+                return True
+
+            def build_resume_args(self, session_id):
+                if session_id:
+                    return ["--resume", session_id]
+                return []
+
+        p = ResumeProvider()
+        cmd = p.build_command(prompt="go", resume_session_id="abc-123")
+        assert "--resume" in cmd
+        assert "abc-123" in cmd
+
+    def test_build_command_no_resume_with_empty_session_id(self):
+        class ResumeProvider(StubProvider):
+            def supports_session_resume(self):
+                return True
+
+            def build_resume_args(self, session_id):
+                if session_id:
+                    return ["--resume", session_id]
+                return []
+
+        p = ResumeProvider()
+        cmd = p.build_command(prompt="go", resume_session_id="")
+        assert "--resume" not in cmd

@@ -1,6 +1,8 @@
 ## debug
 
-Before changing any code, reproduce the bug and identify the root cause. Reason step-by-step through the failure path. Write a failing test that captures the bug (test observable behavior — mocking dependencies is fine, but never inspect source code directly), then fix the code to make it pass.
+Before changing any code, reproduce the bug and identify the root cause. Reason step-by-step through the failure path. Write a failing test that captures the bug:
+{@include test-guidance}
+Then fix the code to make it pass.
 
 ## implement
 

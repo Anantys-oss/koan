@@ -74,13 +74,31 @@ class TestGetCommitSubjects:
 # ---------------------------------------------------------------------------
 
 class TestGetForkOwner:
-    @patch(f"{_M}.run_gh", return_value="myuser\n")
-    def test_returns_stripped(self, mock):
+    @patch(f"{_M}.origin_repo", return_value="myuser/myrepo")
+    def test_returns_origin_owner(self, mock):
         assert get_fork_owner("/p") == "myuser"
 
+    @patch(f"{_M}.origin_repo", return_value=None)
+    @patch(f"{_M}.run_gh", return_value="ghuser\n")
+    def test_falls_back_to_gh_when_no_origin(self, mock_gh, mock_origin):
+        assert get_fork_owner("/p") == "ghuser"
+
+    @patch(f"{_M}.origin_repo", return_value=None)
     @patch(f"{_M}.run_gh", side_effect=RuntimeError("gh not found"))
-    def test_error_returns_empty(self, mock):
+    def test_error_returns_empty(self, mock_gh, mock_origin):
         assert get_fork_owner("/p") == ""
+
+    @patch(f"{_M}.origin_repo", return_value="aiolibsbot/aiohappyeyeballs")
+    @patch(f"{_M}.run_gh", return_value="aio-libs\n")
+    def test_prefers_origin_over_gh_resolved_upstream(self, mock_gh, mock_origin):
+        """Regression: when an `upstream` remote exists, `gh repo view`
+        resolves to the upstream repo and reports the *upstream* owner
+        (`aio-libs`). The PR head was pushed to origin (the fork), so the
+        head owner must be the fork owner (`aiolibsbot`) — not the upstream.
+        Returning the wrong owner made `--head aio-libs:branch` point at a
+        non-existent branch and silently landed the PR on the fork.
+        """
+        assert get_fork_owner("/p") == "aiolibsbot"
 
 
 # ---------------------------------------------------------------------------
@@ -88,17 +106,29 @@ class TestGetForkOwner:
 # ---------------------------------------------------------------------------
 
 class TestResolveSubmitTarget:
-    @patch(f"{_M}.detect_parent_repo", return_value=None)
+    @patch(f"{_M}.resolve_target_repo", return_value=None)
     @patch.dict("os.environ", {"KOAN_ROOT": ""})
     def test_fallback_to_owner_repo(self, mock):
         result = resolve_submit_target("/p", "proj", "owner", "repo")
         assert result == {"repo": "owner/repo", "is_fork": False}
 
-    @patch(f"{_M}.detect_parent_repo", return_value="upstream/repo")
+    @patch(f"{_M}.resolve_target_repo", return_value="upstream/repo")
     @patch.dict("os.environ", {"KOAN_ROOT": ""})
     def test_fork_detected(self, mock):
         result = resolve_submit_target("/p", "proj", "o", "r")
         assert result == {"repo": "upstream/repo", "is_fork": True}
+
+    @patch(f"{_M}.resolve_target_repo", return_value="aio-libs/aiohappyeyeballs")
+    @patch.dict("os.environ", {"KOAN_ROOT": ""})
+    def test_fork_detected_via_upstream_remote_when_gh_parent_null(self, mock):
+        """Regression: gh repo view reports no parent (it resolved to the
+        upstream repo, which is not itself a fork), but an `upstream` git
+        remote exists. resolve_target_repo's remote fallback must still
+        identify this as a fork so the PR targets upstream with --head, rather
+        than landing on the fork via gh's ambiguous base resolution.
+        """
+        result = resolve_submit_target("/p", "proj", "aio-libs", "aiohappyeyeballs")
+        assert result == {"repo": "aio-libs/aiohappyeyeballs", "is_fork": True}
 
     def test_config_override(self):
         config = {
@@ -194,23 +224,21 @@ class TestSubmitDraftPr:
 
     def test_issue_comment_posted_when_url_given(self):
         with patch(f"{_M}.get_current_branch", return_value="feat"), \
-             patch(f"{_M}.run_gh", side_effect=["", ""]) as mock_gh, \
+             patch(f"{_M}.run_gh", return_value=""), \
              patch(f"{_M}.get_commit_subjects", return_value=["c1"]), \
              patch(f"{_M}.run_git_strict"), \
              patch(f"{_M}.resolve_submit_target",
                     return_value={"repo": "o/r", "is_fork": False}), \
-             patch(f"{_M}.pr_create", return_value="https://pr/1"):
+             patch(f"{_M}.pr_create", return_value="https://pr/1"), \
+             patch("app.issue_tracker.add_comment") as mock_comment:
             submit_draft_pr(
                 "/p", "proj", "o", "r", "42",
                 pr_title="T", pr_body="B",
-                issue_url="https://issue/42",
+                issue_url="https://github.com/o/r/issues/42",
             )
-            # Second run_gh call should be the issue comment
-            calls = mock_gh.call_args_list
-            assert len(calls) >= 2
-            comment_call = calls[1]
-            assert "issue" in comment_call[0]
-            assert "comment" in comment_call[0]
+            mock_comment.assert_called_once()
+            assert mock_comment.call_args.args[0] == "https://github.com/o/r/issues/42"
+            assert "https://pr/1" in mock_comment.call_args.args[1]
 
     def test_no_issue_comment_when_no_url(self):
         with patch(f"{_M}.get_current_branch", return_value="feat"), \
@@ -219,7 +247,28 @@ class TestSubmitDraftPr:
              patch(f"{_M}.run_git_strict"), \
              patch(f"{_M}.resolve_submit_target",
                     return_value={"repo": "o/r", "is_fork": False}), \
-             patch(f"{_M}.pr_create", return_value="https://pr/1"):
+             patch(f"{_M}.pr_create", return_value="https://pr/1"), \
+             patch("app.issue_tracker.add_comment") as mock_comment:
             submit_draft_pr("/p", "proj", "o", "r", "42", "T", "B")
             # Only 1 gh call (the PR check), no issue comment
+            assert mock_gh.call_count == 1
+            mock_comment.assert_not_called()
+
+    def test_issue_comment_for_non_github_url_uses_tracker_service(self):
+        with patch(f"{_M}.get_current_branch", return_value="feat"), \
+             patch(f"{_M}.run_gh", return_value="") as mock_gh, \
+             patch(f"{_M}.get_commit_subjects", return_value=["c1"]), \
+             patch(f"{_M}.run_git_strict"), \
+             patch(f"{_M}.resolve_submit_target",
+                    return_value={"repo": "o/r", "is_fork": False}), \
+             patch(f"{_M}.pr_create", return_value="https://pr/1"), \
+             patch("app.issue_tracker.add_comment") as mock_comment:
+            submit_draft_pr(
+                "/p", "proj", "o", "r", "PROJ-42",
+                pr_title="T", pr_body="B",
+                issue_url="https://org.atlassian.net/browse/PROJ-42",
+            )
+            mock_comment.assert_called_once()
+            assert mock_comment.call_args.args[0].endswith("/PROJ-42")
+            # Jira issues are not commented through `gh issue comment`.
             assert mock_gh.call_count == 1

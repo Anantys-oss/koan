@@ -90,7 +90,7 @@ def _is_analysis_mission(title: str) -> bool:
     return bool(words & ANALYSIS_KEYWORDS)
 
 
-def _expects_tests(title: str) -> bool:
+def expects_tests(title: str) -> bool:
     """Check if mission type typically requires test additions."""
     words = set(re.findall(r'\b\w+\b', title.lower()))
     return bool(words & TEST_EXPECTED_KEYWORDS)
@@ -164,7 +164,7 @@ def check_test_coverage(project_path: str, mission_title: str) -> Check:
 
     Only checks if test files were touched in the diff — does not run tests.
     """
-    if not _expects_tests(mission_title):
+    if not expects_tests(mission_title):
         return Check(
             "test_coverage", CheckStatus.SKIP,
             "Mission type does not typically require tests"

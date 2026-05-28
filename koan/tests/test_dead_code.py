@@ -143,6 +143,10 @@ class TestHandleQueueMission:
 
 from skills.core.dead_code.dead_code_runner import (
     build_dead_code_prompt,
+    _prescan_project,
+    _prescan_python_references,
+    _collect_python_symbols,
+    _find_unreferenced_symbols,
     _extract_report_body,
     _extract_dead_code_score,
     _extract_missions,
@@ -151,6 +155,223 @@ from skills.core.dead_code.dead_code_runner import (
     run_dead_code,
     main,
 )
+
+
+class TestPrescanProject:
+    def test_detects_python_files(self, tmp_path):
+        (tmp_path / "main.py").write_text("print('hi')")
+        (tmp_path / "utils.py").write_text("x = 1")
+
+        result = _prescan_project(str(tmp_path))
+        assert "Python: 2 files" in result
+        assert "main.py" in result
+        assert "utils.py" in result
+
+    def test_detects_multiple_languages(self, tmp_path):
+        (tmp_path / "app.py").write_text("")
+        (tmp_path / "index.js").write_text("")
+        (tmp_path / "style.css").write_text("")
+
+        result = _prescan_project(str(tmp_path))
+        assert "Python" in result
+        assert "JavaScript" in result
+        assert "CSS" in result
+
+    def test_skips_venv_and_node_modules(self, tmp_path):
+        (tmp_path / ".venv").mkdir()
+        (tmp_path / ".venv" / "lib.py").write_text("")
+        (tmp_path / "node_modules").mkdir()
+        (tmp_path / "node_modules" / "pkg.js").write_text("")
+        (tmp_path / "real.py").write_text("")
+
+        result = _prescan_project(str(tmp_path))
+        assert "lib.py" not in result
+        assert "pkg.js" not in result
+        assert "real.py" in result
+
+    def test_empty_project_returns_empty(self, tmp_path):
+        result = _prescan_project(str(tmp_path))
+        assert result == ""
+
+    def test_caps_file_listing_at_200(self, tmp_path):
+        src = tmp_path / "src"
+        src.mkdir()
+        for i in range(250):
+            (src / f"mod_{i:03d}.py").write_text("")
+
+        result = _prescan_project(str(tmp_path))
+        assert "showing first 200 of 250" in result
+
+    def test_contains_inventory_header(self, tmp_path):
+        (tmp_path / "app.py").write_text("")
+
+        result = _prescan_project(str(tmp_path))
+        assert "## Pre-scan: Project Inventory" in result
+        assert "### Language breakdown" in result
+        assert "### Source files" in result
+
+
+class TestCollectPythonSymbols:
+    def test_collects_top_level_functions(self, tmp_path):
+        (tmp_path / "mod.py").write_text("def hello():\n    pass\n\ndef world():\n    pass\n")
+        defined, contents = _collect_python_symbols(tmp_path)
+        assert "hello" in defined
+        assert "world" in defined
+        assert defined["hello"][0][2] == "function"
+
+    def test_collects_classes(self, tmp_path):
+        (tmp_path / "mod.py").write_text("class Foo:\n    pass\n")
+        defined, _ = _collect_python_symbols(tmp_path)
+        assert "Foo" in defined
+        assert defined["Foo"][0][2] == "class"
+
+    def test_skips_private_symbols(self, tmp_path):
+        (tmp_path / "mod.py").write_text(
+            "def _private():\n    pass\n"
+            "def __dunder__():\n    pass\n"
+            "class _Internal:\n    pass\n"
+        )
+        defined, _ = _collect_python_symbols(tmp_path)
+        assert "_private" not in defined
+        assert "__dunder__" not in defined
+        assert "_Internal" not in defined
+
+    def test_skips_test_functions(self, tmp_path):
+        (tmp_path / "mod.py").write_text("def test_something():\n    pass\n")
+        defined, _ = _collect_python_symbols(tmp_path)
+        assert "test_something" not in defined
+
+    def test_skips_vendored_dirs(self, tmp_path):
+        venv = tmp_path / ".venv"
+        venv.mkdir()
+        (venv / "lib.py").write_text("def vendored():\n    pass\n")
+        defined, _ = _collect_python_symbols(tmp_path)
+        assert "vendored" not in defined
+
+    def test_handles_syntax_errors(self, tmp_path):
+        (tmp_path / "bad.py").write_text("def broken(:\n")
+        (tmp_path / "good.py").write_text("def working():\n    pass\n")
+        defined, contents = _collect_python_symbols(tmp_path)
+        assert "working" in defined
+        assert len(contents) == 2  # both files read, only good one parsed
+
+    def test_collects_file_contents(self, tmp_path):
+        (tmp_path / "a.py").write_text("x = 1")
+        (tmp_path / "b.py").write_text("y = 2")
+        _, contents = _collect_python_symbols(tmp_path)
+        assert len(contents) == 2
+
+    def test_skips_nested_functions(self, tmp_path):
+        (tmp_path / "mod.py").write_text(
+            "def outer():\n    def inner():\n        pass\n"
+        )
+        defined, _ = _collect_python_symbols(tmp_path)
+        assert "outer" in defined
+        # inner is nested, not top-level — should not be collected
+        assert "inner" not in defined
+
+    def test_async_functions(self, tmp_path):
+        (tmp_path / "mod.py").write_text("async def fetch():\n    pass\n")
+        defined, _ = _collect_python_symbols(tmp_path)
+        assert "fetch" in defined
+        assert defined["fetch"][0][2] == "function"
+
+
+class TestFindUnreferencedSymbols:
+    def test_finds_unreferenced(self, tmp_path):
+        (tmp_path / "a.py").write_text("def used():\n    pass\n\ndef orphan():\n    pass\n")
+        (tmp_path / "b.py").write_text("from a import used\nused()\n")
+        defined, contents = _collect_python_symbols(tmp_path)
+        candidates = _find_unreferenced_symbols(defined, contents)
+        names = [c[0] for c in candidates]
+        assert "orphan" in names
+        assert "used" not in names
+
+    def test_short_names_skipped(self, tmp_path):
+        (tmp_path / "a.py").write_text("def ab():\n    pass\n")
+        defined, contents = _collect_python_symbols(tmp_path)
+        candidates = _find_unreferenced_symbols(defined, contents)
+        names = [c[0] for c in candidates]
+        assert "ab" not in names
+
+    def test_cross_file_reference_clears(self, tmp_path):
+        (tmp_path / "a.py").write_text("def helper():\n    pass\n")
+        (tmp_path / "b.py").write_text("# Uses helper somewhere\nresult = helper()\n")
+        defined, contents = _collect_python_symbols(tmp_path)
+        candidates = _find_unreferenced_symbols(defined, contents)
+        names = [c[0] for c in candidates]
+        assert "helper" not in names
+
+    def test_empty_project(self, tmp_path):
+        defined, contents = _collect_python_symbols(tmp_path)
+        candidates = _find_unreferenced_symbols(defined, contents)
+        assert candidates == []
+
+
+class TestPrescanPythonReferences:
+    def test_reports_unreferenced_symbols(self, tmp_path):
+        (tmp_path / "mod.py").write_text(
+            "def used_func():\n    pass\n\n"
+            "def orphan_func():\n    pass\n"
+        )
+        (tmp_path / "main.py").write_text("from mod import used_func\nused_func()\n")
+
+        result = _prescan_python_references(str(tmp_path))
+        assert "orphan_func" in result
+        assert "used_func" not in result
+        assert "Candidate Dead Code" in result
+
+    def test_empty_project_returns_empty(self, tmp_path):
+        result = _prescan_python_references(str(tmp_path))
+        assert result == ""
+
+    def test_all_symbols_referenced(self, tmp_path):
+        (tmp_path / "a.py").write_text("def func_a():\n    pass\n")
+        (tmp_path / "b.py").write_text("from a import func_a\nfunc_a()\n")
+
+        result = _prescan_python_references(str(tmp_path))
+        assert result == ""
+
+    def test_includes_verification_note(self, tmp_path):
+        (tmp_path / "mod.py").write_text("def lonely():\n    pass\n")
+
+        result = _prescan_python_references(str(tmp_path))
+        assert "Verification needed" in result
+
+
+class TestBuildPromptWithPrescan:
+    def test_prompt_includes_inventory_when_path_given(self, tmp_path):
+        (tmp_path / "app.py").write_text("print('hi')")
+
+        prompt = build_dead_code_prompt(
+            "test",
+            project_path=str(tmp_path),
+            skill_dir=Path(__file__).parent.parent / "skills" / "core" / "dead_code",
+        )
+        assert "Pre-scan: Project Inventory" in prompt
+        assert "Python" in prompt
+
+    def test_prompt_includes_python_refs_when_dead_code_found(self, tmp_path):
+        (tmp_path / "mod.py").write_text("def orphan_func():\n    pass\n")
+        (tmp_path / "main.py").write_text("x = 1\n")
+
+        prompt = build_dead_code_prompt(
+            "test",
+            project_path=str(tmp_path),
+            skill_dir=Path(__file__).parent.parent / "skills" / "core" / "dead_code",
+        )
+        assert "Candidate Dead Code" in prompt
+        assert "orphan_func" in prompt
+
+    def test_prompt_without_path_has_no_inventory(self):
+        prompt = build_dead_code_prompt(
+            "test",
+            skill_dir=Path(__file__).parent.parent / "skills" / "core" / "dead_code",
+        )
+        # The prompt instructions may mention "Pre-scan" but should not
+        # contain actual inventory data (language breakdown, source files).
+        assert "### Language breakdown" not in prompt
+        assert "### Source files" not in prompt
 
 
 class TestBuildPrompt:

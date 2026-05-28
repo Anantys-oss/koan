@@ -34,6 +34,8 @@ You are rebasing a pull request and applying changes requested by reviewers.
 
 ---
 
+{COMMIT_CONVENTIONS}
+
 ## Your Task
 
 **IMPORTANT: Do NOT create new branches or switch branches with git checkout/switch.
@@ -52,3 +54,5 @@ clearly explain each change and justify it by referencing the reviewer's request
 Use bullet points if you made multiple changes. Be specific about what was
 modified (e.g. "Renamed `get_user()` to `fetch_user()` per reviewer request")
 rather than vague (e.g. "Applied feedback").
+
+{COMMIT_SUBJECT_INSTRUCTION}

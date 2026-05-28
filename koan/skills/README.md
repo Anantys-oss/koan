@@ -60,6 +60,11 @@ handler: handler.py
 | `cli_skill` | no | Provider slash command to invoke (e.g. `audit`). Requires `audience: agent`. See [CLI skill bridge](#cli-skill-bridge). |
 | `github_enabled` | no | Set to `true` to allow triggering via GitHub @mentions (default: `false`) |
 | `github_context_aware` | no | Set to `true` if the skill accepts additional context after the command (default: `false`) |
+| `caveman` | no | Set to `true` to opt this skill into the [caveman](#caveman-output-optimization) output optimization. Defaults to `false` (caveman does not apply unless explicitly opted in). |
+| `forward_result` | no | Set to `true` to forward Claude's final result text to outbox.md when a mission for this skill completes. See [Result forwarding](#result-forwarding). Defaults to `false`. |
+| `title_markers` | no | Optional list of additional mission-title substrings to match against this skill (case-insensitive). Used when a handler emits a plain-text mission title without the slash command. Defaults to `[]`. |
+| `requirements` | no | Python packages to auto-install before first execution (e.g. `[requests, boto3]`) |
+| `sub_commands` | no | List of skill commands to expand into when triggered. Defines a combo skill — see [Combo skills](#combo-skills). Defaults to `[]`. |
 
 ### Audience
 
@@ -88,6 +93,8 @@ Skills default to `bridge` when `audience` is omitted (backward compatible).
 
 Skills with `github_enabled: true` can be triggered via GitHub @mentions in PR/issue comments. When a user posts `@bot-nickname rebase` in a PR comment, Kōan creates a mission automatically.
 
+> **Note:** the same `github_enabled` flag also governs **Jira** @mentions — both channels dispatch the same set of commands. There is no separate `jira_enabled` flag.
+
 ```yaml
 ---
 name: implement
@@ -106,6 +113,63 @@ github:
   authorized_users: ["*"]       # "*" = all, or ["alice", "bob"]
 ```
 
+#### Exposing custom skills to external channels
+
+Custom skills under `instance/skills/<scope>/` opt in the same way — add `github_enabled: true` (plus `group:` so they appear in the grouped help listing). Use the `integrations` group to place them in a dedicated **Integrations** section, separate from the core help groups.
+
+```yaml
+---
+name: fix
+scope: my_team
+group: integrations
+emoji: 🐛
+github_enabled: true
+github_context_aware: true
+handler: handler.py
+commands:
+  - name: my_fix
+    aliases: [myfix]
+---
+```
+
+When the skill has a `handler.py`, the GitHub / Jira bridge invokes the handler **in-process** at notification time (the same path Telegram uses) instead of queueing a `/my_fix …` slash mission. The handler is expected to queue whatever mission it needs via `insert_pending_mission` — mirroring `instance/skills/<scope>/<name>/handler.py`.
+
+**Auto-feeding the source issue.** When the author doesn't include a Jira key in the command text, the bridge appends one automatically:
+
+- **Jira source**: the issue the comment was posted on.
+- **GitHub source**: the first Jira key found in the issue/PR title, then body.
+- **Author override**: if the author already typed a key (e.g. `@bot myfix PROJ-1`), that key is used verbatim and no auto-feed happens.
+
+This keeps the handler logic untouched — the detection lives at the dispatch boundary (`app.external_skill_dispatch.augment_args_with_issue_key`).
+
+### Result forwarding
+
+Skills with `forward_result: true` opt into post-mission **result forwarding** — when the mission completes, the Claude session's final result text is appended to `instance/outbox.md` (and from there relayed to Telegram) so the user sees the response to their slash command / @mention even when the Claude session's sandbox blocked direct writes to `instance/`.
+
+The runtime auto-derives mission-title markers for every opted-in skill:
+
+- `/{cmd.name}` and `/{alias}` for every command + alias in `commands:`,
+- `/{scope}.{name}` (the scoped form Telegram queues when a `[project:…]` tag is present).
+
+If the skill's handler composes a plain-text mission title without the slash command, list any extra substrings under `title_markers:` so the runtime can still recognise the result as belonging to the skill.
+
+Forwarding is also triggered, regardless of `forward_result`, when the result body contains alert markers (`**SKIP**` / `**FAIL**` / `**ERROR**` / `**BLOCKED**`, `permission deadlock`, `no PR opened`, etc.) — those always reach Telegram.
+
+```yaml
+---
+name: fix
+scope: my_team
+forward_result: true
+title_markers:
+  - "my-custom-workflow"          # matches handler-composed long-form titles
+commands:
+  - name: my_fix
+    aliases: [myfix]
+---
+```
+
+The global on/off switch is `notify_mission_results:` in `instance/config.yaml` (default: `true`).
+
 ### Commands
 
 A single skill can expose multiple commands. Each command has:
@@ -113,6 +177,51 @@ A single skill can expose multiple commands. Each command has:
 - **`name`** — what the user types after `/` (e.g., `/greet`)
 - **`description`** — shown in help listings
 - **`aliases`** — alternative names (e.g., `/hi` resolves to the `greet` command)
+
+### Requirements (auto-install)
+
+Skills can declare Python package dependencies via the `requirements` field. Missing packages are automatically installed (via `pip`) before the handler's first execution in a session.
+
+```yaml
+---
+name: fetcher
+requirements: [requests, boto3]
+handler: handler.py
+commands:
+  - name: fetch
+    description: Fetch remote data
+---
+```
+
+- Packages are checked via `importlib.import_module()` — already-installed packages skip the install step (fast path).
+- Version specifiers are supported: `requests>=2.28`, `boto3==1.26.0`.
+- Install failures are reported as a `SkillError` (surfaced to Telegram), not silently swallowed.
+- The check runs once per skill per session — subsequent invocations skip directly.
+
+### Combo skills
+
+A **combo skill** queues multiple sub-commands when triggered — useful for workflows that chain two or more skills together (e.g. review then rebase). Declare the expansion in SKILL.md via `sub_commands`:
+
+```yaml
+---
+name: review_rebase
+scope: core
+sub_commands: [review, rebase]
+commands:
+  - name: reviewrebase
+    description: "Queue /review then /rebase for a PR"
+    aliases: [rr]
+---
+```
+
+When a combo skill is triggered (via Telegram, GitHub @mention, or agent loop), Kōan expands it into separate missions for each sub-command. The sub-commands run sequentially in the order listed.
+
+**Key points:**
+
+- Each entry in `sub_commands` must be a valid skill command name
+- All command names and aliases of the combo skill map to the same expansion
+- No `handler.py` is needed — the expansion is handled by the skill dispatch infrastructure
+- Adding a new combo skill requires only a SKILL.md with `sub_commands` — zero changes to Python code
 
 ### Prompt-only skills (no handler)
 
@@ -273,6 +382,25 @@ Every handler receives a `SkillContext` object:
 - Access shared state via `ctx.instance_dir` (missions.md, soul.md, memory/, etc.)
 - Use `fcntl.flock()` when reading/writing shared files concurrently
 - Mark `worker: true` in SKILL.md if your handler blocks (API calls, subprocess, etc.)
+
+## Caveman output optimization
+
+Kōan ships with the **caveman** optimization (`optimizations.caveman` in `config.yaml`, default `true`): a "no filler, 3–6 word sentences, direct answers" directive that reduces output tokens.
+
+**Skills are opt-in.** By default a skill does *not* receive the caveman directive — even when the global flag is on. The agent loop (regular missions) is the one place caveman fires by default; for skills, the author must explicitly declare it.
+
+If your skill produces terse, status-style output that benefits from the directive (git plumbing, diagnostics, focused fixes), opt in via SKILL.md frontmatter:
+
+```yaml
+---
+name: my_skill
+caveman: true
+---
+```
+
+Operators can override on a per-instance basis with `optimizations.caveman.include: [my_skill]` in `config.yaml`. The operator's `include:` list overrides a SKILL.md `caveman: false`, giving instance owners final authority. See `docs/users/user-manual.md` → "Caveman Output Optimization" for the full resolution rules.
+
+Skills that produce rich prose (design exploration, code review, security analysis, conversation, documentation) should leave the flag off entirely, or set `caveman: false` explicitly to document intent.
 
 ## Skill prompts
 

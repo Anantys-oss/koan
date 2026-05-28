@@ -73,7 +73,7 @@ class TestHandleStatus:
         from skills.core.status.handler import _handle_status
         ctx = _make_ctx("status", instance, tmp_path)
         result = _handle_status(ctx)
-        assert "Working" in result
+        assert "Active" in result
         assert "Paused" not in result
 
     def test_paused_mode_generic(self, tmp_path):
@@ -287,6 +287,52 @@ class TestTruncate:
     def test_empty_string(self):
         from skills.core.status.handler import _truncate
         assert _truncate("") == ""
+
+
+# ---------------------------------------------------------------------------
+# _get_server_ip()
+# ---------------------------------------------------------------------------
+
+class TestGetServerIp:
+    """Test the _get_server_ip() helper."""
+
+    def test_returns_ip_string(self):
+        from skills.core.status.handler import _get_server_ip
+        result = _get_server_ip()
+        # Should return a dotted IP or "unknown"
+        assert isinstance(result, str)
+        if result != "unknown":
+            parts = result.split(".")
+            assert len(parts) == 4
+
+    def test_returns_unknown_on_failure(self):
+        from skills.core.status.handler import _get_server_ip
+        with patch("socket.socket") as mock_socket:
+            mock_socket.return_value.__enter__ = MagicMock(
+                side_effect=OSError("no network")
+            )
+            result = _get_server_ip()
+        assert result == "unknown"
+
+    def test_ip_shown_in_status(self, tmp_path):
+        """Server IP appears in /status output."""
+        instance = tmp_path / "instance"
+        instance.mkdir()
+        from skills.core.status.handler import _handle_status
+        ctx = _make_ctx("status", instance, tmp_path)
+        with patch("skills.core.status.handler._get_server_ip", return_value="192.168.1.42"):
+            result = _handle_status(ctx)
+        assert "🌐 IP: 192.168.1.42" in result
+
+    def test_ip_hidden_when_unknown(self, tmp_path):
+        """When IP can't be determined, no IP line shown."""
+        instance = tmp_path / "instance"
+        instance.mkdir()
+        from skills.core.status.handler import _handle_status
+        ctx = _make_ctx("status", instance, tmp_path)
+        with patch("skills.core.status.handler._get_server_ip", return_value="unknown"):
+            result = _handle_status(ctx)
+        assert "IP:" not in result
 
 
 # ---------------------------------------------------------------------------
@@ -726,3 +772,167 @@ class TestHandleStatusCache:
         ctx = _make_ctx("status", instance, tmp_path)
         result = _handle_status(ctx)
         assert "Cache" not in result
+
+
+# ---------------------------------------------------------------------------
+# Usage staleness check
+# ---------------------------------------------------------------------------
+
+class TestCheckUsageStaleness:
+    """Test _check_usage_staleness() health check."""
+
+    def test_no_usage_file(self, tmp_path):
+        """Missing usage.md warns about 75% default."""
+        from skills.core.status.handler import _check_usage_staleness
+        result = _check_usage_staleness(tmp_path)
+        assert "no data" in result
+        assert "75%" in result
+
+    def test_fresh_usage_file(self, tmp_path):
+        """Recently updated usage.md shows minutes."""
+        usage = tmp_path / "usage.md"
+        usage.write_text("Session (5hr) : 25% (reset in 3h)")
+        from skills.core.status.handler import _check_usage_staleness
+        result = _check_usage_staleness(tmp_path)
+        assert "m old" in result
+        assert "⚠️" not in result
+
+    def test_stale_usage_file(self, tmp_path):
+        """usage.md older than 6h triggers warning with fallback note."""
+        import os
+        usage = tmp_path / "usage.md"
+        usage.write_text("Session (5hr) : 25% (reset in 3h)")
+        # Set mtime to 8 hours ago
+        old_time = __import__("time").time() - 8 * 3600
+        os.utime(usage, (old_time, old_time))
+        from skills.core.status.handler import _check_usage_staleness
+        result = _check_usage_staleness(tmp_path)
+        assert "⚠️" in result
+        assert "stale" in result
+        assert "75% fallback" in result
+
+    def test_moderately_old_usage_file(self, tmp_path):
+        """usage.md between 1h and 6h shows hours without warning."""
+        import os
+        usage = tmp_path / "usage.md"
+        usage.write_text("Session (5hr) : 25% (reset in 3h)")
+        old_time = __import__("time").time() - 3 * 3600
+        os.utime(usage, (old_time, old_time))
+        from skills.core.status.handler import _check_usage_staleness
+        result = _check_usage_staleness(tmp_path)
+        assert "h old" in result
+        assert "⚠️" not in result
+
+
+# ---------------------------------------------------------------------------
+# GitHub notification queue depth check
+# ---------------------------------------------------------------------------
+
+class TestCheckGithubNotifications:
+    """Test _check_github_notifications() health check."""
+
+    def test_zero_notifications(self):
+        """Empty notification list shows 0 unread."""
+        from skills.core.status.handler import _check_github_notifications
+        with patch("app.github.api", return_value="[]"):
+            result = _check_github_notifications()
+        assert result == "📬 GitHub: 0 unread"
+
+    def test_some_notifications(self):
+        """Small number of notifications shows count."""
+        import json
+        from skills.core.status.handler import _check_github_notifications
+        fake = json.dumps([{"id": str(i)} for i in range(5)])
+        with patch("app.github.api", return_value=fake):
+            result = _check_github_notifications()
+        assert result == "📬 GitHub: 5 unread"
+
+    def test_many_notifications_no_warning(self):
+        """20+ unread notifications shows mailbox icon, not warning."""
+        import json
+        from skills.core.status.handler import _check_github_notifications
+        fake = json.dumps([{"id": str(i)} for i in range(25)])
+        with patch("app.github.api", return_value=fake):
+            result = _check_github_notifications()
+        assert "📬" in result
+        assert "⚠️" not in result
+        assert "25 unread" in result
+
+    def test_overflow_notifications(self):
+        """100+ unread shows overflow indicator with mailbox icon."""
+        import json
+        from skills.core.status.handler import _check_github_notifications
+        fake = json.dumps([{"id": str(i)} for i in range(100)])
+        with patch("app.github.api", return_value=fake):
+            result = _check_github_notifications()
+        assert "📬" in result
+        assert "100+" in result
+
+    def test_api_failure_returns_none(self):
+        """API errors produce None (item is silently omitted)."""
+        from skills.core.status.handler import _check_github_notifications
+        with patch("app.github.api", side_effect=RuntimeError("auth failed")):
+            result = _check_github_notifications()
+        assert result is None
+
+    def test_empty_response(self):
+        """Empty string response = 0 unread."""
+        from skills.core.status.handler import _check_github_notifications
+        with patch("app.github.api", return_value=""):
+            result = _check_github_notifications()
+        assert "0 unread" in result
+
+
+# ---------------------------------------------------------------------------
+# _get_version()
+# ---------------------------------------------------------------------------
+
+class TestGetVersion:
+    """Test the _get_version() helper."""
+
+    def test_exact_tag(self):
+        """On exact tag, returns just the tag name."""
+        from skills.core.status.handler import _get_version
+        mock_result = MagicMock(returncode=0, stdout="v0.73\n")
+        with patch("subprocess.run", return_value=mock_result):
+            assert _get_version() == "v0.73"
+
+    def test_ahead_of_tag(self):
+        """Ahead of tag, returns tag@sha +N format."""
+        from skills.core.status.handler import _get_version
+        mock_result = MagicMock(returncode=0, stdout="v0.73-17-g7754a635\n")
+        with patch("subprocess.run", return_value=mock_result):
+            assert _get_version() == "v0.73@7754a635 +17"
+
+    def test_git_failure_returns_empty(self):
+        """git describe failure returns empty string."""
+        from skills.core.status.handler import _get_version
+        mock_result = MagicMock(returncode=128, stdout="")
+        with patch("subprocess.run", return_value=mock_result):
+            assert _get_version() == ""
+
+    def test_exception_returns_empty(self):
+        """Subprocess exception returns empty string."""
+        from skills.core.status.handler import _get_version
+        with patch("subprocess.run", side_effect=FileNotFoundError):
+            assert _get_version() == ""
+
+    def test_version_in_status_header(self, tmp_path):
+        """Version appears in Kōan Status header."""
+        instance = tmp_path / "instance"
+        instance.mkdir()
+        from skills.core.status.handler import _handle_status
+        ctx = _make_ctx("status", instance, tmp_path)
+        with patch("skills.core.status.handler._get_version", return_value="v0.73"):
+            result = _handle_status(ctx)
+        assert "Kōan Status (v0.73)" in result
+
+    def test_no_version_no_parens(self, tmp_path):
+        """Empty version = no parentheses in header."""
+        instance = tmp_path / "instance"
+        instance.mkdir()
+        from skills.core.status.handler import _handle_status
+        ctx = _make_ctx("status", instance, tmp_path)
+        with patch("skills.core.status.handler._get_version", return_value=""):
+            result = _handle_status(ctx)
+        assert result.startswith("Kōan Status\n") or result == "Kōan Status"

@@ -5,11 +5,12 @@ from unittest.mock import patch, MagicMock
 
 from skills.core.fix.handler import (
     handle,
-    _parse_repo_url,
-    _parse_limit,
     _list_open_issues,
+    _list_open_prs,
+    _issues_covered_by_prs,
     _handle_batch,
 )
+from app.github_skill_helpers import parse_repo_url, parse_limit
 from app.skills import SkillContext
 
 
@@ -22,49 +23,49 @@ _HANDLER = "skills.core.fix.handler"
 
 class TestParseRepoUrl:
     def test_plain_repo_url(self):
-        result = _parse_repo_url("https://github.com/owner/repo")
+        result = parse_repo_url("https://github.com/owner/repo")
         assert result == ("https://github.com/owner/repo", "owner", "repo")
 
     def test_repo_url_with_dot_git(self):
-        result = _parse_repo_url("https://github.com/owner/repo.git")
+        result = parse_repo_url("https://github.com/owner/repo.git")
         assert result == ("https://github.com/owner/repo", "owner", "repo")
 
     def test_repo_url_with_limit(self):
-        result = _parse_repo_url("https://github.com/owner/repo --limit=5")
+        result = parse_repo_url("https://github.com/owner/repo --limit=5")
         assert result is not None
         assert result[1] == "owner"
         assert result[2] == "repo"
 
     def test_issue_url_returns_none(self):
-        result = _parse_repo_url("https://github.com/owner/repo/issues/42")
+        result = parse_repo_url("https://github.com/owner/repo/issues/42")
         assert result is None
 
     def test_pr_url_returns_none(self):
-        result = _parse_repo_url("https://github.com/owner/repo/pull/10")
+        result = parse_repo_url("https://github.com/owner/repo/pull/10")
         assert result is None
 
     def test_no_url_returns_none(self):
-        result = _parse_repo_url("just some text")
+        result = parse_repo_url("just some text")
         assert result is None
 
     def test_rejects_sub_paths(self):
-        result = _parse_repo_url("https://github.com/owner/issues")
+        result = parse_repo_url("https://github.com/owner/issues")
         assert result is None
 
     def test_rejects_pulls_path(self):
-        result = _parse_repo_url("https://github.com/owner/pull")
+        result = parse_repo_url("https://github.com/owner/pull")
         assert result is None
 
     def test_hyphenated_repo_name(self):
-        result = _parse_repo_url("https://github.com/cpan-authors/YAML-Syck")
+        result = parse_repo_url("https://github.com/cpan-authors/YAML-Syck")
         assert result == ("https://github.com/cpan-authors/YAML-Syck", "cpan-authors", "YAML-Syck")
 
     def test_hyphenated_repo_with_trailing_issues_path(self):
-        result = _parse_repo_url("https://github.com/cpan-authors/YAML-Syck/issues")
+        result = parse_repo_url("https://github.com/cpan-authors/YAML-Syck/issues")
         assert result == ("https://github.com/cpan-authors/YAML-Syck", "cpan-authors", "YAML-Syck")
 
     def test_repo_with_trailing_issues_path(self):
-        result = _parse_repo_url("https://github.com/owner/repo/issues")
+        result = parse_repo_url("https://github.com/owner/repo/issues")
         assert result == ("https://github.com/owner/repo", "owner", "repo")
 
 
@@ -74,16 +75,16 @@ class TestParseRepoUrl:
 
 class TestParseLimit:
     def test_limit_equals(self):
-        assert _parse_limit("https://github.com/o/r --limit=5") == 5
+        assert parse_limit("https://github.com/o/r --limit=5") == 5
 
     def test_limit_space(self):
-        assert _parse_limit("https://github.com/o/r --limit 10") == 10
+        assert parse_limit("https://github.com/o/r --limit 10") == 10
 
     def test_no_limit(self):
-        assert _parse_limit("https://github.com/o/r") is None
+        assert parse_limit("https://github.com/o/r") is None
 
     def test_case_insensitive(self):
-        assert _parse_limit("--LIMIT=3") == 3
+        assert parse_limit("--LIMIT=3") == 3
 
 
 # ---------------------------------------------------------------------------
@@ -91,7 +92,7 @@ class TestParseLimit:
 # ---------------------------------------------------------------------------
 
 class TestListOpenIssues:
-    @patch("app.github.run_gh")
+    @patch(f"{_HANDLER}.run_gh")
     def test_uses_valid_gh_flags_only(self, mock_gh):
         """Regression: gh issue list does not support --order or --sort flags."""
         mock_gh.return_value = "[]"
@@ -101,7 +102,7 @@ class TestListOpenIssues:
         assert "--order" not in args, "--order is not a valid gh issue list flag"
         assert "--sort" not in args, "--sort is not a valid gh issue list flag"
 
-    @patch("app.github.run_gh")
+    @patch(f"{_HANDLER}.run_gh")
     def test_passes_limit(self, mock_gh):
         mock_gh.return_value = "[]"
         _list_open_issues("owner", "repo", limit=5)
@@ -111,7 +112,7 @@ class TestListOpenIssues:
         limit_idx = args.index("--limit")
         assert args[limit_idx + 1] == "5"
 
-    @patch("app.github.run_gh")
+    @patch(f"{_HANDLER}.run_gh")
     def test_default_limit_100(self, mock_gh):
         mock_gh.return_value = "[]"
         _list_open_issues("owner", "repo")
@@ -119,6 +120,80 @@ class TestListOpenIssues:
         args = mock_gh.call_args[0]
         limit_idx = args.index("--limit")
         assert args[limit_idx + 1] == "100"
+
+
+# ---------------------------------------------------------------------------
+# _issues_covered_by_prs
+# ---------------------------------------------------------------------------
+
+class TestIssuesCoveredByPrs:
+    def test_fixes_keyword(self):
+        prs = [{"number": 10, "body": "Fixes #3"}]
+        assert _issues_covered_by_prs(prs, "o", "r") == {3}
+
+    def test_closes_keyword(self):
+        prs = [{"number": 10, "body": "Closes #7"}]
+        assert _issues_covered_by_prs(prs, "o", "r") == {7}
+
+    def test_resolves_keyword(self):
+        prs = [{"number": 10, "body": "Resolves #12"}]
+        assert _issues_covered_by_prs(prs, "o", "r") == {12}
+
+    def test_past_tense_variants(self):
+        prs = [
+            {"number": 1, "body": "Fixed #1"},
+            {"number": 2, "body": "Closed #2"},
+            {"number": 3, "body": "Resolved #3"},
+        ]
+        assert _issues_covered_by_prs(prs, "o", "r") == {1, 2, 3}
+
+    def test_case_insensitive(self):
+        prs = [{"number": 10, "body": "FIXES #5"}]
+        assert _issues_covered_by_prs(prs, "o", "r") == {5}
+
+    def test_issue_url_reference(self):
+        prs = [{"number": 10, "body": "Fixes https://github.com/o/r/issues/42"}]
+        assert _issues_covered_by_prs(prs, "o", "r") == {42}
+
+    def test_issue_url_without_closing_keyword_ignored(self):
+        prs = [{"number": 10, "body": "See https://github.com/o/r/issues/42"}]
+        assert _issues_covered_by_prs(prs, "o", "r") == set()
+
+    def test_url_from_different_repo_ignored(self):
+        prs = [{"number": 10, "body": "Fixes https://github.com/other/repo/issues/42"}]
+        assert _issues_covered_by_prs(prs, "o", "r") == set()
+
+    def test_multiple_refs_in_one_body(self):
+        prs = [{"number": 10, "body": "Fixes #1, closes #2"}]
+        assert _issues_covered_by_prs(prs, "o", "r") == {1, 2}
+
+    def test_empty_body(self):
+        prs = [{"number": 10, "body": None}]
+        assert _issues_covered_by_prs(prs, "o", "r") == set()
+
+    def test_no_prs(self):
+        assert _issues_covered_by_prs([], "o", "r") == set()
+
+    def test_owner_with_special_chars_escaped(self):
+        prs = [{"number": 1, "body": "Closes https://github.com/a.b/c.d/issues/5"}]
+        assert _issues_covered_by_prs(prs, "a.b", "c.d") == {5}
+
+
+# ---------------------------------------------------------------------------
+# _list_open_prs
+# ---------------------------------------------------------------------------
+
+class TestListOpenPrs:
+    @patch(f"{_HANDLER}.run_gh")
+    def test_returns_parsed_json(self, mock_gh):
+        mock_gh.return_value = '[{"number": 1, "body": "fix #2"}]'
+        result = _list_open_prs("o", "r")
+        assert result == [{"number": 1, "body": "fix #2"}]
+
+    @patch(f"{_HANDLER}.run_gh")
+    def test_empty_output(self, mock_gh):
+        mock_gh.return_value = ""
+        assert _list_open_prs("o", "r") == []
 
 
 # ---------------------------------------------------------------------------
@@ -135,9 +210,10 @@ class TestHandleBatch:
         )
 
     @patch(f"{_HANDLER}.queue_github_mission")
+    @patch(f"{_HANDLER}._list_open_prs", return_value=[])
     @patch(f"{_HANDLER}._list_open_issues")
     @patch(f"{_HANDLER}.resolve_project_for_repo", return_value=("/path/to/repo", "myrepo"))
-    def test_queues_all_issues(self, mock_resolve, mock_list, mock_queue):
+    def test_queues_all_issues(self, mock_resolve, mock_list, mock_prs, mock_queue):
         mock_list.return_value = [
             {"number": 1, "title": "Bug one", "url": "https://github.com/o/r/issues/1"},
             {"number": 2, "title": "Bug two", "url": "https://github.com/o/r/issues/2"},
@@ -151,9 +227,10 @@ class TestHandleBatch:
         assert mock_queue.call_count == 3
 
     @patch(f"{_HANDLER}.queue_github_mission")
+    @patch(f"{_HANDLER}._list_open_prs", return_value=[])
     @patch(f"{_HANDLER}._list_open_issues")
     @patch(f"{_HANDLER}.resolve_project_for_repo", return_value=("/path/to/repo", "myrepo"))
-    def test_limit_passed_to_list(self, mock_resolve, mock_list, mock_queue):
+    def test_limit_passed_to_list(self, mock_resolve, mock_list, mock_prs, mock_queue):
         mock_list.return_value = [
             {"number": 1, "title": "Bug one", "url": "https://github.com/o/r/issues/1"},
         ]
@@ -172,6 +249,62 @@ class TestHandleBatch:
 
         assert "No open issues" in result
 
+    @patch(f"{_HANDLER}.queue_github_mission")
+    @patch(f"{_HANDLER}._list_open_prs")
+    @patch(f"{_HANDLER}._list_open_issues")
+    @patch(f"{_HANDLER}.resolve_project_for_repo", return_value=("/path", "myrepo"))
+    def test_skips_issues_with_prs(self, mock_resolve, mock_list, mock_prs, mock_queue):
+        mock_list.return_value = [
+            {"number": 1, "title": "Bug one", "url": "https://github.com/o/r/issues/1"},
+            {"number": 2, "title": "Bug two", "url": "https://github.com/o/r/issues/2"},
+            {"number": 3, "title": "Bug three", "url": "https://github.com/o/r/issues/3"},
+        ]
+        mock_prs.return_value = [
+            {"number": 10, "body": "Fixes #2"},
+        ]
+        ctx = self._make_ctx("https://github.com/o/r")
+        result = _handle_batch(ctx, ctx.args, ("https://github.com/o/r", "o", "r"))
+
+        assert mock_queue.call_count == 2
+        assert "Queued 2" in result
+        assert "skipped 1 with existing PRs" in result
+        queued_urls = [c[0][2] for c in mock_queue.call_args_list]
+        assert "https://github.com/o/r/issues/2" not in queued_urls
+
+    @patch(f"{_HANDLER}.queue_github_mission")
+    @patch(f"{_HANDLER}._list_open_prs")
+    @patch(f"{_HANDLER}._list_open_issues")
+    @patch(f"{_HANDLER}.resolve_project_for_repo", return_value=("/path", "myrepo"))
+    def test_all_issues_covered_queues_zero(self, mock_resolve, mock_list, mock_prs, mock_queue):
+        mock_list.return_value = [
+            {"number": 1, "title": "Bug one", "url": "https://github.com/o/r/issues/1"},
+        ]
+        mock_prs.return_value = [
+            {"number": 10, "body": "Closes #1"},
+        ]
+        ctx = self._make_ctx("https://github.com/o/r")
+        result = _handle_batch(ctx, ctx.args, ("https://github.com/o/r", "o", "r"))
+
+        assert mock_queue.call_count == 0
+        assert "Queued 0" in result
+        assert "skipped 1" in result
+
+    @patch(f"{_HANDLER}.queue_github_mission")
+    @patch(f"{_HANDLER}._list_open_prs", side_effect=RuntimeError("API error"))
+    @patch(f"{_HANDLER}._list_open_issues")
+    @patch(f"{_HANDLER}.resolve_project_for_repo", return_value=("/path", "myrepo"))
+    def test_pr_fetch_failure_queues_all(self, mock_resolve, mock_list, mock_prs, mock_queue):
+        """When PR listing fails, fall back to queuing all issues."""
+        mock_list.return_value = [
+            {"number": 1, "title": "Bug one", "url": "https://github.com/o/r/issues/1"},
+            {"number": 2, "title": "Bug two", "url": "https://github.com/o/r/issues/2"},
+        ]
+        ctx = self._make_ctx("https://github.com/o/r")
+        result = _handle_batch(ctx, ctx.args, ("https://github.com/o/r", "o", "r"))
+
+        assert mock_queue.call_count == 2
+        assert "Queued 2" in result
+
     @patch(f"{_HANDLER}.resolve_project_for_repo", return_value=(None, None))
     def test_project_not_found(self, mock_resolve):
         ctx = self._make_ctx("https://github.com/o/r")
@@ -188,9 +321,10 @@ class TestHandleBatch:
         assert "Failed to list issues" in result
 
     @patch(f"{_HANDLER}.queue_github_mission")
+    @patch(f"{_HANDLER}._list_open_prs", return_value=[])
     @patch(f"{_HANDLER}._list_open_issues")
     @patch(f"{_HANDLER}.resolve_project_for_repo", return_value=("/path", "myrepo"))
-    def test_issue_url_constructed_when_missing(self, mock_resolve, mock_list, mock_queue):
+    def test_issue_url_constructed_when_missing(self, mock_resolve, mock_list, mock_prs, mock_queue):
         """When issue dict has no 'url' key, construct it from owner/repo/number."""
         mock_list.return_value = [
             {"number": 42, "title": "Bug"},
@@ -248,6 +382,35 @@ class TestHandleRouting:
 
         mock_batch.assert_called_once()
 
+    @patch(f"{_HANDLER}.handle_github_skill")
+    def test_now_flag_passed_to_single_mode(self, mock_single):
+        """--now flag is extracted and passed as urgent=True to handle_github_skill."""
+        mock_single.return_value = "Fix queued (priority)"
+        ctx = self._make_ctx("--now https://github.com/owner/repo/issues/42")
+        result = handle(ctx)
+
+        mock_single.assert_called_once()
+        assert mock_single.call_args[1]["urgent"] is True
+
+    @patch(f"{_HANDLER}.handle_github_skill")
+    def test_now_flag_stripped_from_args(self, mock_single):
+        """--now is removed from ctx.args before delegating."""
+        mock_single.return_value = "Fix queued"
+        ctx = self._make_ctx("--now https://github.com/owner/repo/issues/42")
+        handle(ctx)
+
+        # ctx.args should have --now stripped
+        assert "--now" not in ctx.args
+
+    @patch(f"{_HANDLER}.handle_github_skill")
+    def test_without_now_flag_not_urgent(self, mock_single):
+        """Without --now, urgent defaults to False."""
+        mock_single.return_value = "Fix queued"
+        ctx = self._make_ctx("https://github.com/owner/repo/issues/42")
+        handle(ctx)
+
+        assert mock_single.call_args[1].get("urgent", False) is False
+
     @patch(f"{_HANDLER}._handle_batch")
     def test_hyphenated_repo_with_issues_path_routes_to_batch(self, mock_batch):
         """Regression: hyphenated repo names with /issues path must batch correctly."""
@@ -262,9 +425,10 @@ class TestHandleRouting:
         assert repo_match == ("https://github.com/cpan-authors/YAML-Syck", "cpan-authors", "YAML-Syck")
 
     @patch(f"{_HANDLER}.queue_github_mission")
+    @patch(f"{_HANDLER}._list_open_prs", return_value=[])
     @patch(f"{_HANDLER}._list_open_issues")
     @patch(f"{_HANDLER}.resolve_project_for_repo", return_value=("/path/to/YAML-Syck", "YAML-Syck"))
-    def test_batch_end_to_end_hyphenated_repo(self, mock_resolve, mock_list, mock_queue):
+    def test_batch_end_to_end_hyphenated_repo(self, mock_resolve, mock_list, mock_prs, mock_queue):
         """End-to-end: /fix <hyphenated-repo>/issues queues missions for each issue."""
         mock_list.return_value = [
             {"number": 1, "title": "Bug one", "url": "https://github.com/cpan-authors/YAML-Syck/issues/1"},

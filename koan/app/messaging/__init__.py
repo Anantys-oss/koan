@@ -9,6 +9,7 @@ Usage:
     provider.send_message("Hello from Kōan")
 """
 
+import contextlib
 import os
 import sys
 import threading
@@ -23,10 +24,17 @@ _providers: Dict[str, Type[MessagingProvider]] = {}
 _instance: Optional[MessagingProvider] = None
 _instance_lock = threading.Lock()
 
+# Set to True after ``_ensure_providers_loaded`` walks ``_PROVIDER_MODULES``
+# once.  Tracking loop completion explicitly — rather than inferring it from
+# ``bool(_providers)`` — avoids skipping unloaded modules when something
+# imported a single provider as a side-effect before the loader ran.
+_modules_loaded: bool = False
+
 # List of known provider modules for auto-loading
 _PROVIDER_MODULES = [
     "app.messaging.telegram",
     "app.messaging.slack",
+    "app.messaging.matrix",
 ]
 
 
@@ -142,15 +150,23 @@ def _resolve_provider_name() -> str:
 
 
 def _ensure_providers_loaded():
-    """Import provider modules to trigger registration."""
-    if _providers:
-        return
+    """Import provider modules to trigger registration.
 
+    Short-circuits on the explicit ``_modules_loaded`` flag rather than
+    ``bool(_providers)``.  The latter looks like the same check but is
+    wrong: if anything imports e.g. ``app.messaging.telegram`` first
+    (which the default startup path does), ``_providers`` becomes
+    ``{"telegram": ...}`` without this loader ever running, and a later
+    request for ``matrix`` / ``slack`` would skip the import loop and
+    leave them unregistered.
+    """
+    global _modules_loaded
+    if _modules_loaded:
+        return
     for module_name in _PROVIDER_MODULES:
-        try:
+        with contextlib.suppress(ImportError):
             __import__(module_name)
-        except ImportError:
-            pass
+    _modules_loaded = True
 
 
 __all__ = [

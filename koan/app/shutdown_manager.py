@@ -12,6 +12,7 @@ honors a shutdown signal if it was issued AFTER the process started. This
 prevents a leftover shutdown file from killing a freshly started instance.
 """
 
+import contextlib
 import os
 import time
 from pathlib import Path
@@ -56,7 +57,5 @@ def is_shutdown_requested(koan_root: str, process_start_time: float) -> bool:
 def clear_shutdown(koan_root: str) -> None:
     """Remove the shutdown signal file."""
     path = os.path.join(koan_root, SHUTDOWN_FILE)
-    try:
+    with contextlib.suppress(FileNotFoundError):
         os.remove(path)
-    except FileNotFoundError:
-        pass

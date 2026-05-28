@@ -2,6 +2,7 @@
 name: email
 scope: core
 group: config
+emoji: 📧
 description: Email status and test
 version: 1.0.0
 audience: bridge

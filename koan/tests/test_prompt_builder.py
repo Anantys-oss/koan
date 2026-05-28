@@ -17,9 +17,11 @@ from app.prompt_builder import (
     _get_staleness_section,
     _get_mission_type_section,
     _get_tdd_section,
+    _get_testing_antipatterns_section,
     _get_verification_gate_section,
     _get_verbose_section,
     _get_security_flagging_section,
+    _warn_unresolved_placeholders,
 )
 
 
@@ -103,13 +105,16 @@ class TestGetSubmitPrSection:
     """Tests for submit-pull-request section (always included)."""
 
     def test_includes_section(self):
-        result = _get_submit_pr_section("/tmp/project")
+        result = _get_submit_pr_section("/tmp/project", "myproject")
         assert "Audit Missions" in result
-        assert "GitHub Issue Follow-up" in result
+        assert "Issue Tracker Follow-up" in result
         assert "/tmp/project" in result
+        assert "myproject" in result
+        assert "{KOAN_PYTHON}" not in result
+        assert " -m app.issue_cli create" in result
 
     def test_substitutes_project_path(self):
-        result = _get_submit_pr_section("/home/user/myproject")
+        result = _get_submit_pr_section("/home/user/myproject", "myproject")
         assert "/home/user/myproject" in result
 
 
@@ -247,30 +252,27 @@ class TestBuildAgentPrompt:
             mission_title="Fix the bug",
         )
 
-        # Verify load_prompt was called for agent template
-        mock_load.assert_any_call(
-            "agent",
-            INSTANCE=prompt_env["instance"],
-            PROJECT_PATH=prompt_env["project_path"],
-            PROJECT_NAME="testproj",
-            RUN_NUM="3",
-            MAX_RUNS="25",
-            AUTONOMOUS_MODE="implement",
-            FOCUS_AREA="Medium-cost implementation",
-            AVAILABLE_PCT="42",
-            MISSION_INSTRUCTION=(
-                "Your assigned mission is: **Fix the bug** "
-                "The mission is already marked In Progress. "
-                "Follow the Mission Execution Workflow below."
-            ),
-            BRANCH_PREFIX="koan/",
-        )
+        # Verify load_prompt was called for agent template with fenced mission
+        agent_calls = [
+            c for c in mock_load.call_args_list
+            if c[0] and c[0][0] == "agent"
+        ]
+        assert agent_calls, "Expected load_prompt('agent', ...) call"
+        _, kwargs = agent_calls[0]
+        mission_instr = kwargs["MISSION_INSTRUCTION"]
+        assert "Fix the bug" in mission_instr
+        assert "BEGIN EXTERNAL DATA" in mission_instr
+        assert "Follow the Mission Execution Workflow below." in mission_instr
+        assert kwargs["PROJECT_NAME"] == "testproj"
+        assert kwargs["BRANCH_PREFIX"] == "koan/"
         # Verification gate also loaded for mission-driven runs
         mock_load.assert_any_call("verification-gate")
 
         # Merge policy appended
         assert "Git Merge" in result
 
+    @patch("app.prompt_builder._get_rtk_section", return_value="")
+    @patch("app.prompt_builder._get_caveman_section", return_value="")
     @patch("app.prompt_builder._get_verbose_section", return_value="")
     @patch("app.prompt_builder._get_security_flagging_section", return_value="")
     @patch("app.prompt_builder._get_submit_pr_section", return_value="")
@@ -280,7 +282,7 @@ class TestBuildAgentPrompt:
     @patch("app.prompts.load_prompt")
     def test_autonomous_mode_instruction(
         self, mock_load, mock_prefix, mock_merge, mock_deep, mock_submit_pr,
-        mock_security, mock_verbose,
+        mock_security, mock_verbose, mock_caveman, mock_rtk,
         prompt_env,
     ):
         mock_load.return_value = "Template"
@@ -449,7 +451,9 @@ class TestBuildAgentPrompt:
             mission_title="Fix the login bug",
         )
 
-        mock_submit_pr.assert_called_once_with(prompt_env["project_path"])
+        mock_submit_pr.assert_called_once_with(
+            prompt_env["project_path"], "testproj",
+        )
         assert "PR" in result
 
     @patch("app.prompt_builder._get_verbose_section", return_value="")
@@ -501,7 +505,7 @@ class TestBuildAgentPrompt:
             max_runs=20,
             autonomous_mode="review",
             focus_area="Low work",
-            available_pct=10,
+            available_pct=35,  # Above critical threshold so staleness is included
             mission_title="",
         )
 
@@ -589,6 +593,7 @@ class TestBuildContemplativePrompt:
             INSTANCE=prompt_env["instance"],
             PROJECT_NAME="testproj",
             SESSION_INFO="Pause mode. Run loop paused.",
+            GITHUB_NICKNAME="",
         )
         assert result == "Contemplative template"
 
@@ -605,6 +610,52 @@ class TestBuildContemplativePrompt:
         call_kwargs = mock_load.call_args[1]
         assert "Run 5/25" in call_kwargs["SESSION_INFO"]
         assert "deep" in call_kwargs["SESSION_INFO"]
+
+    def test_github_nickname_included_in_prompt(self, prompt_env):
+        """When github_nickname is set, the pre-check block appears with the nickname."""
+        result = build_contemplative_prompt(
+            instance=prompt_env["instance"],
+            project_name="testproj",
+            session_info="Run 1/10",
+            github_nickname="Koan-Bot",
+        )
+        assert "Koan-Bot" in result
+        # Sentinel markers must not remain in the output
+        assert "GITHUB_CHECK_BLOCK_START" not in result
+        assert "GITHUB_CHECK_BLOCK_END" not in result
+        # The pre-check instructions should be present
+        assert "gh issue view" in result
+        assert "gh pr list" in result
+
+    def test_github_nickname_empty_omits_check_block(self, prompt_env):
+        """When github_nickname is empty, the pre-check block is stripped."""
+        result = build_contemplative_prompt(
+            instance=prompt_env["instance"],
+            project_name="testproj",
+            session_info="Run 1/10",
+            github_nickname="",
+        )
+        # Sentinel markers must not remain
+        assert "GITHUB_CHECK_BLOCK_START" not in result
+        assert "GITHUB_CHECK_BLOCK_END" not in result
+        # GitHub-specific instructions should be absent
+        assert "gh issue view" not in result
+        assert "gh pr list" not in result
+
+    def test_github_nickname_default_is_empty(self, prompt_env):
+        """github_nickname defaults to empty string (no GitHub check block)."""
+        result_default = build_contemplative_prompt(
+            instance=prompt_env["instance"],
+            project_name="testproj",
+            session_info="Run 1/10",
+        )
+        result_explicit_empty = build_contemplative_prompt(
+            instance=prompt_env["instance"],
+            project_name="testproj",
+            session_info="Run 1/10",
+            github_nickname="",
+        )
+        assert result_default == result_explicit_empty
 
 
 # --- Tests for CLI interface ---
@@ -665,6 +716,7 @@ class TestCLI:
             instance=prompt_env["instance"],
             project_name="koan",
             session_info="Pause mode",
+            github_nickname="",
         )
         captured = capsys.readouterr()
         assert "Contemplate output" in captured.out
@@ -735,6 +787,7 @@ class TestIntegration:
         assert "{AVAILABLE_PCT}" not in result
         assert "{MISSION_INSTRUCTION}" not in result
         assert "{BRANCH_PREFIX}" not in result
+        assert "{KOAN_PYTHON}" not in result
 
         # Verify substituted values are present
         assert prompt_env["instance"] in result
@@ -805,8 +858,9 @@ class TestIntegration:
         )
 
         assert "Audit Missions" in result
-        assert "GitHub Issue Follow-up" in result
-        assert "gh issue create" in result
+        assert "Issue Tracker Follow-up" in result
+        assert " -m app.issue_cli create" in result
+        assert "`python -m app.issue_cli" not in result
 
     def test_full_contemplative_prompt(self, prompt_env):
         """Build a full contemplative prompt using the real template."""
@@ -1145,6 +1199,52 @@ class TestGetTddSection:
         )
 
         assert "TDD Mode" not in result
+
+
+# --- Tests for _get_testing_antipatterns_section ---
+
+
+class TestGetTestingAntipatternsSection:
+    """Tests for testing anti-patterns reference injection."""
+
+    def test_tdd_tag_injects_antipatterns(self):
+        """Mission tagged [tdd] should inject testing anti-patterns reference."""
+        result = _get_testing_antipatterns_section("[tdd] Add user validation")
+        assert "Anti-Pattern" in result
+        assert "Self-Check" in result
+
+    def test_test_expecting_keyword_injects_antipatterns(self):
+        """Mission with test-expecting keywords should inject anti-patterns reference."""
+        # 'implement', 'fix', 'add', 'create', 'build' all trigger expects_tests
+        result = _get_testing_antipatterns_section("implement login feature")
+        assert "Anti-Pattern" in result
+
+    def test_fix_keyword_injects_antipatterns(self):
+        """'fix' keyword in mission title should inject anti-patterns reference."""
+        result = _get_testing_antipatterns_section("fix authentication bug")
+        assert "Anti-Pattern" in result
+
+    def test_non_testing_mission_returns_empty(self):
+        """Non-testing missions (docs, review, audit) should not inject anti-patterns."""
+        assert _get_testing_antipatterns_section("update README") == ""
+        assert _get_testing_antipatterns_section("review PR changes") == ""
+        assert _get_testing_antipatterns_section("audit security setup") == ""
+
+    def test_empty_mission_returns_empty(self):
+        """Autonomous mode (no mission) should not inject anti-patterns."""
+        assert _get_testing_antipatterns_section("") == ""
+
+    def test_no_double_injection_with_tdd_tag(self):
+        """[tdd] missions should include anti-patterns exactly once."""
+        result = _get_testing_antipatterns_section("[tdd] implement login")
+        count = result.count("Testing Anti-Patterns Reference")
+        assert count == 1
+
+    def test_project_tag_does_not_false_positive(self):
+        """[project:X] brackets should not trigger anti-patterns injection."""
+        # 'update docs' is not a test-expecting mission — project tag is irrelevant
+        result = _get_testing_antipatterns_section("[project:koan] update docs")
+        assert result == ""
 
 
 # --- Tests for _get_verification_gate_section ---
@@ -1524,6 +1624,272 @@ class TestBuildAgentPromptParts:
             assert "Language Preference" in sys_prompt
             assert "english" in sys_prompt
 
+    def test_system_prompt_stable_sections_before_conditional(self, prompt_env):
+        """Stable sections appear before conditional ones for cache prefix hits."""
+        self.mocks["app.prompt_builder._get_tdd_section"].return_value = (
+            "\n# TDD\nWrite tests first"
+        )
+        self.mocks["app.prompt_builder._get_verification_gate_section"].return_value = (
+            "\n# Verification\nGate rules"
+        )
+        self.mocks["app.prompt_builder._get_security_flagging_section"].return_value = (
+            "\n# Security\nFlag findings"
+        )
+        with patch(
+            "app.prompt_builder._get_caveman_section",
+            return_value="\n# Caveman\nShort output",
+        ), patch(
+            "app.prompt_builder._get_language_section",
+            return_value="\n# Language\nEnglish",
+        ):
+            sys_prompt, _ = self._build(
+                prompt_env, mission_title="Fix a bug",
+            )
+            merge_pos = sys_prompt.index("Merge Policy")
+            submit_pos = sys_prompt.index("Submit PR")
+            caveman_pos = sys_prompt.index("Caveman")
+            lang_pos = sys_prompt.index("Language")
+            tdd_pos = sys_prompt.index("TDD")
+            verify_pos = sys_prompt.index("Verification")
+            security_pos = sys_prompt.index("Security")
+
+            # Stable tier must come before conditional tier
+            assert merge_pos < tdd_pos
+            assert submit_pos < tdd_pos
+            assert caveman_pos < tdd_pos
+            assert lang_pos < tdd_pos
+            assert merge_pos < verify_pos
+            assert merge_pos < security_pos
+
+
+# --- Tests for _get_caveman_section ---
+
+
+class TestGetCavemanSection:
+    """Tests for caveman output optimization injection."""
+
+    def test_caveman_enabled_returns_prompt(self):
+        """When caveman is enabled (default), returns the caveman prompt."""
+        from app.prompt_builder import _get_caveman_section
+
+        with patch("app.config.is_caveman_mode", return_value=True):
+            with patch("app.prompts.load_prompt", return_value="# Caveman\nShort.") as mock_lp:
+                result = _get_caveman_section()
+                mock_lp.assert_called_once_with("caveman-mode")
+                assert "Caveman" in result
+
+    def test_caveman_disabled_returns_empty(self):
+        """When caveman is disabled, returns empty string."""
+        from app.prompt_builder import _get_caveman_section
+
+        with patch("app.config.is_caveman_mode", return_value=False):
+            result = _get_caveman_section()
+            assert result == ""
+
+    def test_caveman_import_error_returns_empty(self):
+        """ImportError from config → returns empty string gracefully."""
+        from app.prompt_builder import _get_caveman_section
+
+        with patch("app.prompt_builder._get_caveman_section", wraps=_get_caveman_section):
+            # Force ImportError by making is_caveman_mode unavailable
+            with patch.dict("sys.modules", {"app.config": None}):
+                result = _get_caveman_section()
+                assert result == ""
+
+
+class TestIsCavemanMode:
+    """Tests for config.is_caveman_mode()."""
+
+    def test_default_is_true(self):
+        """Default (no config) → caveman enabled."""
+        from app.config import is_caveman_mode
+
+        with patch("app.config._load_config", return_value={}):
+            assert is_caveman_mode() is True
+
+    def test_explicitly_enabled(self):
+        """Explicit optimizations.caveman.enabled: true."""
+        from app.config import is_caveman_mode
+
+        with patch("app.config._load_config", return_value={
+            "optimizations": {"caveman": {"enabled": True}}
+        }):
+            assert is_caveman_mode() is True
+
+    def test_explicitly_disabled(self):
+        """Explicit optimizations.caveman.enabled: false."""
+        from app.config import is_caveman_mode
+
+        with patch("app.config._load_config", return_value={
+            "optimizations": {"caveman": {"enabled": False}}
+        }):
+            assert is_caveman_mode() is False
+
+    def test_non_dict_optimizations_defaults_true(self):
+        """Non-dict optimizations value → default true."""
+        from app.config import is_caveman_mode
+
+        with patch("app.config._load_config", return_value={"optimizations": "invalid"}):
+            assert is_caveman_mode() is True
+
+
+# --- Tests for _get_rtk_section ---
+
+
+class TestGetRtkSection:
+    """Tests for the RTK awareness section in agent prompts."""
+
+    def test_disabled_returns_empty(self):
+        from app.prompt_builder import _get_rtk_section
+
+        with patch("app.config.is_rtk_awareness_enabled", return_value=False):
+            assert _get_rtk_section() == ""
+
+    def test_enabled_returns_prompt(self):
+        from app.prompt_builder import _get_rtk_section
+
+        with patch("app.config.is_rtk_awareness_enabled", return_value=True), \
+             patch("app.prompts.load_prompt", return_value="# RTK\nUse rtk.") as mock_lp:
+            result = _get_rtk_section()
+            mock_lp.assert_called_once_with("rtk-awareness")
+            assert "RTK" in result
+
+    def test_per_project_opt_out(self, monkeypatch):
+        """When the project sets rtk: false, the section is suppressed."""
+        from app.prompt_builder import _get_rtk_section
+
+        monkeypatch.setenv("KOAN_ROOT", "/tmp/test-koan")
+        with patch("app.config.is_rtk_awareness_enabled", return_value=True), \
+             patch("app.projects_config.load_projects_config", return_value={"projects": {"myproject": {"rtk": False}}}), \
+             patch("app.projects_config.get_project_rtk_enabled", return_value=False), \
+             patch("app.prompts.load_prompt", return_value="# RTK\nUse rtk."):
+            assert _get_rtk_section(project_name="myproject") == ""
+
+    def test_load_prompt_failure_returns_empty(self):
+        from app.prompt_builder import _get_rtk_section
+
+        with patch("app.config.is_rtk_awareness_enabled", return_value=True), \
+             patch(
+                 "app.prompts.load_prompt",
+                 side_effect=FileNotFoundError("missing"),
+             ):
+            assert _get_rtk_section() == ""
+
+
+# --- Tests for is_rtk_mode ---
+
+
+class TestIsRtkMode:
+    """Tests for config.is_rtk_mode()."""
+
+    def test_default_auto_with_binary_returns_true(self, tmp_path, monkeypatch):
+        from app.config import is_rtk_mode
+        from app.rtk_detector import RtkStatus, reset_cache
+        reset_cache()
+
+        # No KOAN_ROOT override file.
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        with patch("app.config._load_config", return_value={}), \
+             patch("app.rtk_detector.detect_rtk", return_value=RtkStatus(installed=True)):
+            assert is_rtk_mode() is True
+
+    def test_default_auto_without_binary_returns_false(self, tmp_path, monkeypatch):
+        from app.config import is_rtk_mode
+        from app.rtk_detector import RtkStatus, reset_cache
+        reset_cache()
+
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        with patch("app.config._load_config", return_value={}), \
+             patch("app.rtk_detector.detect_rtk", return_value=RtkStatus(installed=False)):
+            assert is_rtk_mode() is False
+
+    def test_explicit_true_overrides_detection(self, tmp_path, monkeypatch):
+        from app.config import is_rtk_mode
+        from app.rtk_detector import RtkStatus, reset_cache
+        reset_cache()
+
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        with patch("app.config._load_config", return_value={
+            "optimizations": {"rtk": {"enabled": True}}
+        }), patch("app.rtk_detector.detect_rtk", return_value=RtkStatus(installed=False)):
+            assert is_rtk_mode() is True
+
+    def test_explicit_false(self, tmp_path, monkeypatch):
+        from app.config import is_rtk_mode
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        with patch("app.config._load_config", return_value={
+            "optimizations": {"rtk": {"enabled": False}}
+        }):
+            assert is_rtk_mode() is False
+
+    def test_runtime_override_off_wins(self, tmp_path, monkeypatch):
+        """``/rtk off`` writes an override that beats config.yaml."""
+        from app.config import is_rtk_mode
+        from app.rtk_detector import RtkStatus, reset_cache
+        reset_cache()
+
+        instance = tmp_path / "instance"
+        instance.mkdir()
+        (instance / ".koan-rtk-override").write_text("off")
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+
+        with patch("app.config._load_config", return_value={
+            "optimizations": {"rtk": {"enabled": True}}
+        }), patch("app.rtk_detector.detect_rtk", return_value=RtkStatus(installed=True)):
+            assert is_rtk_mode() is False
+
+    def test_runtime_override_on_wins(self, tmp_path, monkeypatch):
+        from app.config import is_rtk_mode
+        instance = tmp_path / "instance"
+        instance.mkdir()
+        (instance / ".koan-rtk-override").write_text("on")
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+
+        with patch("app.config._load_config", return_value={
+            "optimizations": {"rtk": {"enabled": False}}
+        }):
+            assert is_rtk_mode() is True
+
+    @pytest.mark.parametrize("content,expected", [
+        ("true", True), ("True\n", True), ("yes", True), ("1", True), ("on", True),
+        ("false", False), ("FALSE", False), ("no", False), ("0", False), ("off", False),
+    ])
+    def test_runtime_override_accepts_full_vocabulary(
+        self, content, expected, tmp_path, monkeypatch,
+    ):
+        """Override file must accept the same vocabulary as ``optimizations.rtk.enabled``.
+
+        Without parity, a user mirroring config syntax (``echo true > .koan-rtk-override``)
+        gets a silent no-op.
+        """
+        from app.config import is_rtk_mode
+        from app.rtk_detector import RtkStatus, reset_cache
+        reset_cache()
+
+        instance = tmp_path / "instance"
+        instance.mkdir()
+        (instance / ".koan-rtk-override").write_text(content)
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+
+        # Set config to the *opposite* state so we know the override won.
+        config_state = {"optimizations": {"rtk": {"enabled": not expected}}}
+        with patch("app.config._load_config", return_value=config_state), \
+             patch("app.rtk_detector.detect_rtk", return_value=RtkStatus(installed=False)):
+            assert is_rtk_mode() is expected
+
+    def test_runtime_override_unrecognised_falls_through(self, tmp_path, monkeypatch):
+        """A garbage override file must not silently force a state — defer to config."""
+        from app.config import is_rtk_mode
+        instance = tmp_path / "instance"
+        instance.mkdir()
+        (instance / ".koan-rtk-override").write_text("maybe\n")
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+
+        with patch("app.config._load_config", return_value={
+            "optimizations": {"rtk": {"enabled": False}}
+        }):
+            assert is_rtk_mode() is False
+
 
 # --- Tests for _get_language_section ---
 
@@ -1646,3 +2012,490 @@ class TestGetLanguageSection:
             )
             assert "Language Preference" in result
             assert "english" in result
+
+
+# --- Tests for _warn_unresolved_placeholders ---
+
+
+class TestWarnUnresolvedPlaceholders:
+    """Tests for post-substitution placeholder detection."""
+
+    def test_no_warning_when_all_resolved(self, caplog):
+        """Clean text produces no warning."""
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="app.prompt_builder"):
+            _warn_unresolved_placeholders("Hello world, no placeholders here.", "test")
+        assert caplog.records == []
+
+    def test_warns_on_unresolved_placeholder(self, caplog):
+        """Unresolved {PLACEHOLDER} triggers a warning."""
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="app.prompt_builder"):
+            _warn_unresolved_placeholders(
+                "Hello {INSTANCE}, welcome to {MISSING_VAR}.", "agent"
+            )
+        assert len(caplog.records) == 1
+        assert "INSTANCE" in caplog.records[0].message
+        assert "MISSING_VAR" in caplog.records[0].message
+        assert "'agent'" in caplog.records[0].message
+
+    def test_ignores_lowercase_braces(self, caplog):
+        """Lowercase brace content like {n} or {example} is not flagged."""
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="app.prompt_builder"):
+            _warn_unresolved_placeholders("Use {n} items in {example}.", "test")
+        assert caplog.records == []
+
+    def test_deduplicates_placeholders(self, caplog):
+        """Repeated placeholders are reported once."""
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="app.prompt_builder"):
+            _warn_unresolved_placeholders(
+                "{FOO} and {FOO} and {BAR}", "test"
+            )
+        assert len(caplog.records) == 1
+        msg = caplog.records[0].message
+        assert msg.count("{FOO}") == 1
+        assert "{BAR}" in msg
+
+    def test_agent_template_integration(self, prompt_env, caplog):
+        """_load_agent_template warns when a placeholder is missing from substitution."""
+        import logging
+        from app.prompt_builder import _load_agent_template
+
+        # load_prompt returns already-substituted text; simulate a template
+        # where one placeholder was NOT provided to load_prompt
+        substituted_with_leftover = "You are on testproj with {BOGUS_PLACEHOLDER}."
+        with patch("app.prompts.load_prompt", return_value=substituted_with_leftover), \
+             patch("app.prompt_builder._get_branch_prefix", return_value="koan/"), \
+             caplog.at_level(logging.WARNING, logger="app.prompt_builder"):
+            result = _load_agent_template(
+                instance=prompt_env["instance"],
+                project_name="testproj",
+                project_path=prompt_env["project_path"],
+                run_num=1,
+                max_runs=10,
+                autonomous_mode="implement",
+                focus_area="test",
+                available_pct=50,
+                mission_title="test mission",
+            )
+        assert "{BOGUS_PLACEHOLDER}" in result
+        assert len(caplog.records) == 1
+        assert "BOGUS_PLACEHOLDER" in caplog.records[0].message
+
+
+# --- Tests for _get_learnings_section (issue #1306) ---
+
+
+class TestGetLearningsSection:
+    """Filtered learnings injection."""
+
+    def _write_learnings(self, prompt_env, content):
+        path = (
+            Path(prompt_env["instance"])
+            / "memory"
+            / "projects"
+            / prompt_env["project_name"]
+            / "learnings.md"
+        )
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    def test_returns_empty_when_file_missing(self, prompt_env):
+        from app.prompt_builder import _get_learnings_section
+
+        result = _get_learnings_section(
+            prompt_env["instance"], prompt_env["project_name"], "fix bug", "",
+        )
+        assert result == ""
+
+    def test_returns_empty_when_file_blank(self, prompt_env):
+        from app.prompt_builder import _get_learnings_section
+
+        self._write_learnings(prompt_env, "   \n\n")
+        result = _get_learnings_section(
+            prompt_env["instance"], prompt_env["project_name"], "fix bug", "",
+        )
+        assert result == ""
+
+    def test_filters_irrelevant_lines(self, prompt_env):
+        from app.prompt_builder import _get_learnings_section
+
+        content = "\n".join(
+            [
+                "- database migration needs backfill plans",
+                "- CSS grid wraps better than flexbox",
+                "- database migration tooling failed during release",
+                "- React hook ordering matters for components",
+            ]
+            + [f"- recent line {i} padding text" for i in range(10)]
+        )
+        self._write_learnings(prompt_env, content)
+        with patch("app.prompt_builder._load_recall_config", return_value=(2, 1)):
+            section = _get_learnings_section(
+                prompt_env["instance"],
+                prompt_env["project_name"],
+                "fix the database migration error",
+                "",
+            )
+        # Section is now wrapped in <memory-context> with a "Project Memory"
+        # title and a "Learnings (filtered — N of T)" sub-heading.
+        assert "<memory-context>" in section
+        assert "Project Memory" in section
+        assert "Learnings (filtered" in section
+        # Both top-scoring lines share the mission's key terms.
+        assert "database migration needs backfill" in section
+        assert "database migration tooling failed" in section
+        # Recency hedge keeps the most recent line.
+        assert "recent line 9" in section
+        # Unrelated lines should be dropped.
+        assert "CSS grid wraps" not in section
+        assert "React hook ordering" not in section
+
+    def test_recall_full_tag_bypasses_filter(self, prompt_env):
+        from app.prompt_builder import _get_learnings_section
+
+        content = "\n".join(f"- learning {i}" for i in range(20))
+        self._write_learnings(prompt_env, content)
+        with patch("app.prompt_builder._load_recall_config", return_value=(2, 0)):
+            section = _get_learnings_section(
+                prompt_env["instance"],
+                prompt_env["project_name"],
+                "do something [recall:full]",
+                "",
+            )
+        assert "[recall:full] override" in section
+        assert "learning 0" in section
+        assert "learning 19" in section
+
+    def test_uses_focus_area_when_no_mission_title(self, prompt_env):
+        from app.prompt_builder import _get_learnings_section
+
+        content = (
+            "- alpha beta\n"
+            "- gamma delta\n"
+            "- unrelated stuff\n"
+            "- recency padding\n"
+        )
+        self._write_learnings(prompt_env, content)
+        with patch("app.prompt_builder._load_recall_config", return_value=(1, 0)):
+            section = _get_learnings_section(
+                prompt_env["instance"],
+                prompt_env["project_name"],
+                "",
+                "alpha beta optimization",
+            )
+        assert "alpha beta" in section
+        assert "unrelated stuff" not in section
+
+    def test_corrupt_file_returns_empty(self, prompt_env):
+        from app.prompt_builder import _get_learnings_section
+
+        path = (
+            Path(prompt_env["instance"])
+            / "memory"
+            / "projects"
+            / prompt_env["project_name"]
+            / "learnings.md"
+        )
+        # Make path a directory so read_text raises OSError.
+        path.mkdir()
+        result = _get_learnings_section(
+            prompt_env["instance"], prompt_env["project_name"], "x", "",
+        )
+        assert result == ""
+
+
+# --- Tests for _load_recall_config ---
+
+
+class TestLoadRecallConfig:
+    """Config wiring for memory recall."""
+
+    def test_defaults_when_no_config(self):
+        from app.prompt_builder import _load_recall_config
+
+        with patch("app.utils.load_config", return_value={}):
+            assert _load_recall_config() == (40, 5)
+
+    def test_reads_max_relevant_learnings(self):
+        from app.prompt_builder import _load_recall_config
+
+        cfg = {"memory": {"max_relevant_learnings": 12, "recall_recent_hedge": 3}}
+        with patch("app.utils.load_config", return_value=cfg):
+            assert _load_recall_config() == (12, 3)
+
+    def test_invalid_values_fall_back_to_defaults(self):
+        from app.prompt_builder import _load_recall_config
+
+        cfg = {"memory": {"max_relevant_learnings": "nope", "recall_recent_hedge": None}}
+        with patch("app.utils.load_config", return_value=cfg):
+            assert _load_recall_config() == (40, 5)
+
+    def test_negative_values_clamped_to_zero(self):
+        from app.prompt_builder import _load_recall_config
+
+        cfg = {"memory": {"max_relevant_learnings": -5, "recall_recent_hedge": -1}}
+        with patch("app.utils.load_config", return_value=cfg):
+            assert _load_recall_config() == (0, 0)
+
+
+# --- Tests for _context_budget (issue #1309) ---
+
+
+class TestContextBudget:
+    """Tests for budget-aware context trimming."""
+
+    def test_deep_mode_high_budget_returns_normal(self):
+        from app.prompt_builder import _context_budget, PRESSURE_NORMAL
+
+        with patch("app.prompt_builder._load_config_safe", return_value={}):
+            budget = _context_budget("deep", 50)
+        assert budget["pressure"] == PRESSURE_NORMAL
+        assert budget["memory_entries"] == 20
+        assert budget["learnings_k"] == 40
+        assert budget["learnings_hedge"] == 5
+        assert budget["skip_pr_feedback"] is False
+        assert budget["skip_drift"] is False
+        assert budget["skip_staleness"] is False
+
+    def test_implement_mode_returns_low(self):
+        from app.prompt_builder import _context_budget, PRESSURE_LOW
+
+        with patch("app.prompt_builder._load_config_safe", return_value={}):
+            budget = _context_budget("implement", 50)
+        assert budget["pressure"] == PRESSURE_LOW
+        assert budget["memory_entries"] == 10
+        assert budget["learnings_k"] == 20
+        assert budget["learnings_hedge"] == 3
+        assert budget["skip_pr_feedback"] is True
+        assert budget["skip_drift"] is True
+
+    def test_review_mode_returns_low(self):
+        from app.prompt_builder import _context_budget, PRESSURE_LOW
+
+        with patch("app.prompt_builder._load_config_safe", return_value={}):
+            budget = _context_budget("review", 50)
+        assert budget["pressure"] == PRESSURE_LOW
+
+    def test_deep_mode_low_budget_returns_low(self):
+        from app.prompt_builder import _context_budget, PRESSURE_LOW
+
+        with patch("app.prompt_builder._load_config_safe", return_value={}):
+            budget = _context_budget("deep", 25)
+        assert budget["pressure"] == PRESSURE_LOW
+
+    def test_very_low_budget_returns_critical(self):
+        from app.prompt_builder import _context_budget, PRESSURE_CRITICAL
+
+        with patch("app.prompt_builder._load_config_safe", return_value={}):
+            budget = _context_budget("deep", 10)
+        assert budget["pressure"] == PRESSURE_CRITICAL
+        assert budget["memory_entries"] == 5
+        assert budget["learnings_k"] == 10
+        assert budget["learnings_hedge"] == 2
+        assert budget["skip_pr_feedback"] is True
+        assert budget["skip_drift"] is True
+        assert budget["skip_staleness"] is True
+
+    def test_critical_overrides_mode_check(self):
+        """Even in deep mode, critical budget takes precedence."""
+        from app.prompt_builder import _context_budget, PRESSURE_CRITICAL
+
+        with patch("app.prompt_builder._load_config_safe", return_value={}):
+            budget = _context_budget("deep", 5)
+        assert budget["pressure"] == PRESSURE_CRITICAL
+
+    def test_config_overrides_thresholds(self):
+        """Custom thresholds from config.yaml context: section."""
+        from app.prompt_builder import _context_budget, PRESSURE_LOW
+
+        cfg = {"context": {"low_pressure_pct": 50, "critical_pressure_pct": 20}}
+        with patch("app.prompt_builder._load_config_safe", return_value=cfg):
+            # 40% < 50% threshold -> low
+            budget = _context_budget("deep", 40)
+        assert budget["pressure"] == PRESSURE_LOW
+
+    def test_config_overrides_entries(self):
+        """Custom entry counts from config.yaml."""
+        from app.prompt_builder import _context_budget, PRESSURE_LOW
+
+        cfg = {"context": {"memory_entries_low": 7, "learnings_k_low": 15}}
+        with patch("app.prompt_builder._load_config_safe", return_value=cfg):
+            budget = _context_budget("implement", 50)
+        assert budget["pressure"] == PRESSURE_LOW
+        assert budget["memory_entries"] == 7
+        assert budget["learnings_k"] == 15
+
+    def test_invalid_config_falls_back_to_defaults(self):
+        """Invalid config values use defaults."""
+        from app.prompt_builder import _context_budget, PRESSURE_NORMAL
+
+        cfg = {"context": {"low_pressure_pct": "nope", "memory_entries": "bad"}}
+        with patch("app.prompt_builder._load_config_safe", return_value=cfg):
+            budget = _context_budget("deep", 50)
+        assert budget["pressure"] == PRESSURE_NORMAL
+        assert budget["memory_entries"] == 20
+
+    def test_boundary_at_low_threshold(self):
+        """Budget exactly at low_pressure_pct stays normal."""
+        from app.prompt_builder import _context_budget, PRESSURE_NORMAL
+
+        with patch("app.prompt_builder._load_config_safe", return_value={}):
+            budget = _context_budget("deep", 30)
+        assert budget["pressure"] == PRESSURE_NORMAL
+
+    def test_boundary_below_low_threshold(self):
+        """Budget one below low_pressure_pct goes low."""
+        from app.prompt_builder import _context_budget, PRESSURE_LOW
+
+        with patch("app.prompt_builder._load_config_safe", return_value={}):
+            budget = _context_budget("deep", 29)
+        assert budget["pressure"] == PRESSURE_LOW
+
+
+class TestContextBudgetIntegration:
+    """Integration: verify budget is applied in build_agent_prompt_parts."""
+
+    @patch("app.prompt_builder._get_deep_research", return_value="")
+    @patch("app.prompt_builder._get_pr_feedback_section", return_value="\n\nPR FEEDBACK")
+    @patch("app.prompt_builder._get_drift_section", return_value="\n\nDRIFT")
+    @patch("app.prompt_builder._get_staleness_section", return_value="\n\nSTALE")
+    @patch("app.prompt_builder._get_memory_log_section", return_value="")
+    @patch("app.prompt_builder._get_learnings_section", return_value="")
+    @patch("app.prompt_builder._load_agent_template", return_value="BASE")
+    @patch("app.prompt_builder._get_merge_policy", return_value="MERGE")
+    @patch("app.prompt_builder._get_submit_pr_section", return_value="SUBMIT")
+    @patch("app.prompt_builder._get_caveman_section", return_value="")
+    @patch("app.prompt_builder._get_rtk_section", return_value="")
+    @patch("app.prompt_builder._get_language_section", return_value="")
+    def test_low_pressure_skips_drift_and_pr_feedback(
+        self, _lang, _rtk, _cave, _submit, _merge, _template,
+        _learn, mock_mem, mock_stale, mock_drift, mock_pr, _deep,
+    ):
+        """In low pressure (implement mode), drift and PR feedback are skipped."""
+        with patch("app.prompt_builder._load_config_safe", return_value={}):
+            _, user = build_agent_prompt_parts(
+                instance="/tmp/i", project_name="p", project_path="/tmp/p",
+                run_num=1, max_runs=10, autonomous_mode="implement",
+                focus_area="general", available_pct=50, mission_title="",
+            )
+        # Drift and PR feedback should NOT be called
+        mock_drift.assert_not_called()
+        mock_pr.assert_not_called()
+        # Staleness is still called in low pressure
+        mock_stale.assert_called_once()
+
+    @patch("app.prompt_builder._get_deep_research", return_value="")
+    @patch("app.prompt_builder._get_pr_feedback_section", return_value="\n\nPR FEEDBACK")
+    @patch("app.prompt_builder._get_drift_section", return_value="\n\nDRIFT")
+    @patch("app.prompt_builder._get_staleness_section", return_value="\n\nSTALE")
+    @patch("app.prompt_builder._get_memory_log_section", return_value="")
+    @patch("app.prompt_builder._get_learnings_section", return_value="")
+    @patch("app.prompt_builder._load_agent_template", return_value="BASE")
+    @patch("app.prompt_builder._get_merge_policy", return_value="MERGE")
+    @patch("app.prompt_builder._get_submit_pr_section", return_value="SUBMIT")
+    @patch("app.prompt_builder._get_caveman_section", return_value="")
+    @patch("app.prompt_builder._get_rtk_section", return_value="")
+    @patch("app.prompt_builder._get_language_section", return_value="")
+    def test_critical_pressure_skips_staleness_too(
+        self, _lang, _rtk, _cave, _submit, _merge, _template,
+        _learn, mock_mem, mock_stale, mock_drift, mock_pr, _deep,
+    ):
+        """In critical pressure, staleness is also skipped."""
+        with patch("app.prompt_builder._load_config_safe", return_value={}):
+            _, user = build_agent_prompt_parts(
+                instance="/tmp/i", project_name="p", project_path="/tmp/p",
+                run_num=1, max_runs=10, autonomous_mode="deep",
+                focus_area="general", available_pct=10, mission_title="",
+            )
+        mock_drift.assert_not_called()
+        mock_pr.assert_not_called()
+        mock_stale.assert_not_called()
+
+    @patch("app.prompt_builder._get_deep_research", return_value="")
+    @patch("app.prompt_builder._get_pr_feedback_section", return_value="\n\nPR FEEDBACK")
+    @patch("app.prompt_builder._get_drift_section", return_value="\n\nDRIFT")
+    @patch("app.prompt_builder._get_staleness_section", return_value="\n\nSTALE")
+    @patch("app.prompt_builder._get_memory_log_section", return_value="")
+    @patch("app.prompt_builder._get_learnings_section", return_value="")
+    @patch("app.prompt_builder._load_agent_template", return_value="BASE")
+    @patch("app.prompt_builder._get_merge_policy", return_value="MERGE")
+    @patch("app.prompt_builder._get_submit_pr_section", return_value="SUBMIT")
+    @patch("app.prompt_builder._get_caveman_section", return_value="")
+    @patch("app.prompt_builder._get_rtk_section", return_value="")
+    @patch("app.prompt_builder._get_language_section", return_value="")
+    def test_normal_pressure_includes_all(
+        self, _lang, _rtk, _cave, _submit, _merge, _template,
+        _learn, mock_mem, mock_stale, mock_drift, mock_pr, _deep,
+    ):
+        """In deep mode with high budget, all sections included."""
+        with patch("app.prompt_builder._load_config_safe", return_value={}):
+            _, user = build_agent_prompt_parts(
+                instance="/tmp/i", project_name="p", project_path="/tmp/p",
+                run_num=1, max_runs=10, autonomous_mode="deep",
+                focus_area="general", available_pct=50, mission_title="",
+            )
+        mock_drift.assert_called_once()
+        mock_pr.assert_called_once()
+        mock_stale.assert_called_once()
+
+    @patch("app.prompt_builder._get_deep_research", return_value="")
+    @patch("app.prompt_builder._get_pr_feedback_section", return_value="")
+    @patch("app.prompt_builder._get_drift_section", return_value="")
+    @patch("app.prompt_builder._get_staleness_section", return_value="")
+    @patch("app.prompt_builder._get_memory_log_section", return_value="")
+    @patch("app.prompt_builder._get_learnings_section", return_value="")
+    @patch("app.prompt_builder._load_agent_template", return_value="BASE")
+    @patch("app.prompt_builder._get_merge_policy", return_value="MERGE")
+    @patch("app.prompt_builder._get_submit_pr_section", return_value="SUBMIT")
+    @patch("app.prompt_builder._get_caveman_section", return_value="")
+    @patch("app.prompt_builder._get_rtk_section", return_value="")
+    @patch("app.prompt_builder._get_language_section", return_value="")
+    def test_budget_caps_passed_to_learnings(
+        self, _lang, _rtk, _cave, _submit, _merge, _template,
+        mock_learn, mock_mem, _stale, _drift, _pr, _deep,
+    ):
+        """Budget-derived K and hedge are passed to _get_learnings_section."""
+        with patch("app.prompt_builder._load_config_safe", return_value={}):
+            build_agent_prompt_parts(
+                instance="/tmp/i", project_name="p", project_path="/tmp/p",
+                run_num=1, max_runs=10, autonomous_mode="implement",
+                focus_area="general", available_pct=50, mission_title="task",
+            )
+        # Low pressure: learnings_k=20, hedge=3
+        call_kwargs = mock_learn.call_args[1]
+        assert call_kwargs["max_k_override"] == 20
+        assert call_kwargs["hedge_override"] == 3
+
+    @patch("app.prompt_builder._get_deep_research", return_value="")
+    @patch("app.prompt_builder._get_pr_feedback_section", return_value="")
+    @patch("app.prompt_builder._get_drift_section", return_value="")
+    @patch("app.prompt_builder._get_staleness_section", return_value="")
+    @patch("app.prompt_builder._get_memory_log_section", return_value="")
+    @patch("app.prompt_builder._get_learnings_section", return_value="")
+    @patch("app.prompt_builder._load_agent_template", return_value="BASE")
+    @patch("app.prompt_builder._get_merge_policy", return_value="MERGE")
+    @patch("app.prompt_builder._get_submit_pr_section", return_value="SUBMIT")
+    @patch("app.prompt_builder._get_caveman_section", return_value="")
+    @patch("app.prompt_builder._get_rtk_section", return_value="")
+    @patch("app.prompt_builder._get_language_section", return_value="")
+    def test_budget_caps_passed_to_memory_log(
+        self, _lang, _rtk, _cave, _submit, _merge, _template,
+        _learn, mock_mem, _stale, _drift, _pr, _deep,
+    ):
+        """Budget-derived entry count is passed to _get_memory_log_section."""
+        with patch("app.prompt_builder._load_config_safe", return_value={}):
+            build_agent_prompt_parts(
+                instance="/tmp/i", project_name="p", project_path="/tmp/p",
+                run_num=1, max_runs=10, autonomous_mode="review",
+                focus_area="general", available_pct=50, mission_title="",
+            )
+        # Low pressure: memory_entries=10
+        call_kwargs = mock_mem.call_args[1]
+        assert call_kwargs["max_entries_override"] == 10

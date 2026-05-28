@@ -1,4 +1,8 @@
-"""Koan quota skill — live LLM quota check, no cache."""
+"""Koan quota skill — live LLM quota check + manual override.
+
+/quota        — show current quota metrics
+/quota <N>    — override: tell koan that N% has been used (fixes drift)
+"""
 
 import json
 from datetime import datetime, timedelta
@@ -14,7 +18,55 @@ STATS_CACHE_PATH = Path.home() / ".claude" / "stats-cache.json"
 
 
 def handle(ctx):
-    """Check LLM quota live and display friendly metrics."""
+    """Check LLM quota live, or override remaining % if argument given."""
+    args = (ctx.args or "").strip()
+
+    # --- Override mode: /quota <N> ---
+    if args:
+        return _handle_override(ctx, args)
+
+    # --- Display mode: /quota ---
+    return _handle_display(ctx)
+
+
+def _handle_override(ctx, args):
+    """Override internal quota estimation with human-provided used %."""
+    try:
+        used_pct = int(args)
+    except ValueError:
+        return "Usage: /quota <used_%>\nExample: /quota 5 (= 5% used, 95% remaining)"
+
+    if used_pct < 0 or used_pct > 100:
+        return "Used percentage must be between 0 and 100."
+
+    instance_dir = ctx.instance_dir
+    koan_root = ctx.koan_root
+    state_file = instance_dir / "usage_state.json"
+    usage_md = instance_dir / "usage.md"
+
+    # Apply the override
+    from app.usage_estimator import cmd_set_used
+    cmd_set_used(used_pct, state_file, usage_md)
+
+    # If paused for quota, clear the pause
+    unpaused = False
+    from app.pause_manager import is_paused, get_pause_state, remove_pause
+    if is_paused(str(koan_root)):
+        state = get_pause_state(str(koan_root))
+        if state and state.is_quota:
+            remove_pause(str(koan_root))
+            unpaused = True
+
+    # Confirm
+    remaining_pct = 100 - used_pct
+    msg = f"Quota override applied: {used_pct}% used ({remaining_pct}% remaining)."
+    if unpaused:
+        msg += "\nQuota pause cleared — agent will resume on next iteration."
+    return msg
+
+
+def _handle_display(ctx):
+    """Show current quota metrics (original behavior)."""
     instance_dir = ctx.instance_dir
     koan_root = ctx.koan_root
 
@@ -27,7 +79,8 @@ def handle(ctx):
 
     if state:
         state = _apply_resets(state)
-        parts.append(_format_koan_usage(state, session_limit, weekly_limit))
+        parts.append(_format_koan_usage(state, session_limit, weekly_limit,
+                                        instance_dir=instance_dir))
     else:
         parts.append("No internal usage data yet (first run?).")
 
@@ -137,7 +190,7 @@ def _time_remaining(start_iso, duration_hours):
     return f"{minutes}m"
 
 
-def _format_koan_usage(state, session_limit, weekly_limit):
+def _format_koan_usage(state, session_limit, weekly_limit, instance_dir=None):
     """Format Koan's internal usage tracking."""
     session_tokens = state.get("session_tokens", 0)
     weekly_tokens = state.get("weekly_tokens", 0)
@@ -154,18 +207,67 @@ def _format_koan_usage(state, session_limit, weekly_limit):
         days_to_monday = 7
 
     lines = [
-        "Session quota",
-        f"  {_progress_bar(session_pct)} {session_pct}%",
+        "Session quota (token estimate)",
+        f"  {_progress_bar(session_pct)} ~{session_pct}%",
         f"  {_format_tokens(session_tokens)} / {_format_tokens(session_limit)} tokens",
         f"  Resets in {session_reset} | {runs} run(s) this session",
-        "",
-        "Weekly quota",
-        f"  {_progress_bar(weekly_pct)} {weekly_pct}%",
-        f"  {_format_tokens(weekly_tokens)} / {_format_tokens(weekly_limit)} tokens",
-        f"  Resets in {days_to_monday}d",
     ]
 
+    burn_lines = _format_burn_rate(instance_dir, session_pct)
+    if burn_lines:
+        lines.extend(burn_lines)
+
+    lines.extend([
+        "",
+        "Weekly quota (token estimate)",
+        f"  {_progress_bar(weekly_pct)} ~{weekly_pct}%",
+        f"  {_format_tokens(weekly_tokens)} / {_format_tokens(weekly_limit)} tokens",
+        f"  Resets in {days_to_monday}d",
+        "",
+        "⚠️ These are estimates based on token counting.",
+        "Real API quota may differ — use /quota <N> to correct.",
+    ])
+
     return "\n".join(lines)
+
+
+def _format_burn_rate(instance_dir, session_pct):
+    """Build the burn-rate summary lines for /quota output.
+
+    Returns an empty list when there is not enough history to estimate.
+    """
+    if instance_dir is None:
+        return []
+
+    try:
+        from app.burn_rate import (
+            burn_rate_pct_per_minute,
+            time_to_exhaustion,
+        )
+    except ImportError:
+        return []
+
+    rate = burn_rate_pct_per_minute(instance_dir)
+    if rate is None:
+        return []
+
+    tte = time_to_exhaustion(instance_dir, session_pct)
+    tte_str = "—" if tte is None else _format_minutes(tte)
+    return [
+        f"  Burn rate: ~{rate * 60:.1f}%/h ({rate:.2f}%/min)",
+        f"  Est. time to exhaustion: {tte_str}",
+    ]
+
+
+def _format_minutes(minutes):
+    """Format a positive minute count as a friendly duration string."""
+    if minutes <= 0:
+        return "0m"
+    if minutes >= 60:
+        hours = int(minutes // 60)
+        mins = int(minutes % 60)
+        return f"{hours}h{mins:02d}m"
+    return f"{int(minutes)}m"
 
 
 def _format_cost_breakdown(instance_dir):

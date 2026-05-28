@@ -89,7 +89,7 @@ class OllamaLaunchProvider(CLIProvider):
         if allowed_tools:
             flags.extend(["--allowedTools", ",".join(allowed_tools)])
         if disallowed_tools:
-            flags.extend(["--disallowedTools"] + disallowed_tools)
+            flags.extend(["--disallowedTools", ",".join(disallowed_tools)])
         return flags
 
     def build_model_args(self, model: str = "", fallback: str = "") -> List[str]:
@@ -133,11 +133,22 @@ class OllamaLaunchProvider(CLIProvider):
         max_turns: int = 0,
         mcp_configs: Optional[List[str]] = None,
         plugin_dirs: Optional[List[str]] = None,
+        skip_permissions: bool = False,
+        system_prompt: str = "",
+        system_prompt_file: str = "",
+        effort: str = "",
+        resume_session_id: str = "",
     ) -> List[str]:
         """Build: ollama launch claude --model X -- <claude-flags>.
 
         The ``--`` separator divides Ollama args from Claude Code args.
         """
+        # Handle system prompt: prepend to user prompt (no dedicated flag).
+        # system_prompt_file is silently ignored — supports_system_prompt_file()
+        # returns False on this provider.
+        if system_prompt:
+            prompt = system_prompt + "\n\n" + prompt
+
         # Ollama part: binary + launch subcommand + model
         cmd = ["ollama", "launch", "claude"]
         effective_model = model or self._get_default_model()
@@ -154,6 +165,7 @@ class OllamaLaunchProvider(CLIProvider):
         cmd.extend(self.build_max_turns_args(max_turns))
         cmd.extend(self.build_mcp_args(mcp_configs))
         cmd.extend(self.build_plugin_args(plugin_dirs))
+        cmd.extend(self.build_effort_args(effort))
         return cmd
 
     def get_env(self) -> Dict[str, str]:

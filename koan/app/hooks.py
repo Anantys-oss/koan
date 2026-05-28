@@ -1,10 +1,20 @@
 """Hook system for extensible pre/post-action events.
 
-Discovers hook modules from instance/hooks/ at startup and provides
-fire-and-forget event dispatching. Hook modules are .py files with a
-HOOKS dict mapping event names to callables.
+Discovers lifecycle hooks from two locations at startup:
 
-Example hook module (instance/hooks/my_hook.py):
+1. Instance-wide hooks: ``instance/hooks/<name>.py`` — any module name; the
+   module exports a ``HOOKS`` dict mapping event names to callables. These
+   run first for every event, across all skills and projects.
+
+2. Skill-bound hooks: ``instance/skills/<scope>/<name>/<event>.py`` — the
+   filename is the event name (e.g. ``post_mission.py``) and the module
+   exports a ``run(ctx)`` function. These run after instance-wide hooks and
+   let a custom skill own its lifecycle behavior without touching Kōan core.
+
+Both flavors are fire-and-forget: errors are logged to stderr but never
+block the agent loop.
+
+Example instance-wide hook (instance/hooks/my_hook.py):
 
     def on_post_mission(ctx):
         print(f"Mission completed: {ctx['mission_title']}")
@@ -13,26 +23,62 @@ Example hook module (instance/hooks/my_hook.py):
         "post_mission": on_post_mission,
     }
 
+Example skill-bound hook (instance/skills/my/fix/post_mission.py):
+
+    def run(ctx):
+        if "myfix" not in ctx.get("mission_title", ""):
+            return
+        # ... skill-owned post-mission work ...
+
 Supported events:
     - session_start: Fired after startup completes
     - session_end: Fired on shutdown (in finally block)
     - pre_mission: Fired before Claude execution
     - post_mission: Fired after post-mission pipeline completes
+
+Automation rules:
+    Declarative rules from instance/automation_rules.yaml are evaluated
+    after user hook modules on every fire() call. Each rule maps an event
+    to an action (notify, create_mission, pause, resume, auto_merge).
+    A per-rule loop guard prevents runaway rule execution.
 """
 
+import contextlib
 import importlib.util
+import os
 import sys
+import time
 import traceback
+from collections import defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
+
+from app.automation_rules import AutomationRule, load_rules
+
+
+_VALID_SKILL_HOOK_EVENTS = (
+    "session_start",
+    "session_end",
+    "pre_mission",
+    "post_mission",
+)
 
 
 class HookRegistry:
     """Discovers and manages hook modules from a directory."""
 
-    def __init__(self, hooks_dir: Path):
+    def __init__(self, hooks_dir: Path, instance_dir: Optional[str] = None):
         self._handlers: Dict[str, List[Callable]] = {}
+        self._instance_dir: Optional[str] = instance_dir
+        # Per-rule fire timestamps for the loop guard: {rule_id: [timestamp, ...]}
+        self._rule_fire_times: Dict[str, List[float]] = defaultdict(list)
         self._discover(hooks_dir)
+        # Also discover skill-bound hooks under instance/skills/<scope>/<name>/.
+        # Instance-wide hooks above are registered first, so they fire first
+        # for each event; skill-bound hooks run afterward.
+        if instance_dir:
+            self._discover_skill_hooks(Path(instance_dir) / "skills")
 
     def _discover(self, hooks_dir: Path) -> None:
         """Scan hooks_dir for .py files and register their HOOKS dicts."""
@@ -68,8 +114,68 @@ class HookRegistry:
             if callable(handler):
                 self._handlers.setdefault(event_name, []).append(handler)
 
+    def _discover_skill_hooks(self, skills_root: Path) -> None:
+        """Scan instance/skills/<scope>/<name>/ for <event>.py lifecycle modules.
+
+        Convention: the file name is the event name (e.g. ``post_mission.py``)
+        and the module exports a ``run(ctx)`` function. This lets a custom
+        skill own its lifecycle behavior alongside its handler.py without
+        touching Kōan core.
+        """
+        if not skills_root.is_dir():
+            return
+
+        for scope_dir in sorted(skills_root.iterdir()):
+            if not scope_dir.is_dir() or scope_dir.name.startswith((".", "_")):
+                continue
+            for skill_dir in sorted(scope_dir.iterdir()):
+                if not skill_dir.is_dir() or skill_dir.name.startswith((".", "_")):
+                    continue
+                # Only probe known event filenames — any other .py file in the
+                # skill directory (handler.py, helpers.py, utils.py, …) is
+                # silently ignored, not registered under a nonsense event.
+                for event_name in _VALID_SKILL_HOOK_EVENTS:
+                    hook_file = skill_dir / f"{event_name}.py"
+                    if not hook_file.is_file():
+                        continue
+                    try:
+                        self._load_skill_module(
+                            hook_file, event_name, scope_dir.name, skill_dir.name,
+                        )
+                    except Exception as exc:
+                        print(
+                            f"[hooks] Failed to load skill hook "
+                            f"{scope_dir.name}/{skill_dir.name}/{hook_file.name}: {exc}",
+                            file=sys.stderr,
+                        )
+
+    def _load_skill_module(
+        self, path: Path, event_name: str, scope: str, name: str,
+    ) -> None:
+        """Load a skill hook module and register its ``run`` function."""
+        module_name = f"koan_skill_hook_{scope}_{name}_{event_name}"
+        spec = importlib.util.spec_from_file_location(module_name, path)
+        if spec is None or spec.loader is None:
+            return
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
+
+        handler = getattr(module, "run", None)
+        if not callable(handler):
+            print(
+                f"[hooks] Skill hook {scope}/{name}/{event_name}.py has no "
+                f"callable run() — skipping.",
+                file=sys.stderr,
+            )
+            return
+        self._handlers.setdefault(event_name, []).append(handler)
+
     def fire(self, event: str, **kwargs) -> Dict[str, str]:
         """Call all handlers for event, catching exceptions per-handler.
+
+        After user hook modules execute, evaluates matching automation rules
+        from instance/automation_rules.yaml (if instance_dir was provided).
 
         Returns a dict mapping failed handler names to error messages.
         Empty dict means all handlers succeeded.
@@ -90,11 +196,173 @@ class HookRegistry:
                     f"{traceback.format_exc()}",
                     file=sys.stderr,
                 )
+
+        # Execute matching automation rules
+        if self._instance_dir is not None:
+            self._fire_automation_rules(event, kwargs)
+
         return failures
 
     def has_hooks(self, event: str) -> bool:
         """Check if any hooks are registered for event."""
         return bool(self._handlers.get(event))
+
+    # ------------------------------------------------------------------
+    # Automation rules
+    # ------------------------------------------------------------------
+
+    def _fire_automation_rules(self, event: str, ctx: dict) -> None:
+        """Evaluate and execute all enabled rules matching event."""
+        try:
+            rules = load_rules(self._instance_dir)
+        except Exception as exc:
+            print(f"[hooks] Failed to load automation rules: {exc}", file=sys.stderr)
+            return
+
+        for rule in rules:
+            if rule.event != event:
+                continue
+            if not rule.enabled:
+                continue
+            if self._loop_guard(rule):
+                print(
+                    f"[hooks] Loop guard triggered for rule {rule.id} "
+                    f"(action={rule.action}) — skipping.",
+                    file=sys.stderr,
+                )
+                continue
+            try:
+                self._execute_rule(rule, ctx)
+                self._write_rule_journal(rule)
+            except Exception as exc:
+                print(
+                    f"[hooks] Error executing automation rule {rule.id} "
+                    f"({rule.event} → {rule.action}): {exc}\n"
+                    f"{traceback.format_exc()}",
+                    file=sys.stderr,
+                )
+
+    def _loop_guard(self, rule: AutomationRule) -> bool:
+        """Return True (skip) if rule has exceeded max_fires_per_minute.
+
+        The counter is in-memory and resets on process restart.
+        Threshold is read from instance/config.yaml under
+        automation_rules.max_fires_per_minute (default 5).
+        """
+        from app.utils import load_config
+        config = {}
+        try:
+            config = load_config() or {}
+        except Exception as exc:
+            print(f"[hooks] Could not load config for loop guard: {exc}", file=sys.stderr)
+        max_fires = (
+            config.get("automation_rules", {}).get("max_fires_per_minute", 5)
+        )
+        window = 60.0  # seconds
+        now = time.monotonic()
+
+        # Prune old timestamps outside the window
+        self._rule_fire_times[rule.id] = [
+            t for t in self._rule_fire_times[rule.id] if now - t < window
+        ]
+
+        if len(self._rule_fire_times[rule.id]) >= max_fires:
+            return True  # over limit — skip
+
+        self._rule_fire_times[rule.id].append(now)
+        return False
+
+    def _execute_rule(self, rule: AutomationRule, ctx: dict) -> None:
+        """Execute a single automation rule action. Fire-and-forget."""
+        instance_dir = self._instance_dir
+        action = rule.action
+        params = rule.params or {}
+
+        if action == "notify":
+            self._action_notify(instance_dir, params, ctx)
+        elif action == "create_mission":
+            self._action_create_mission(instance_dir, params, ctx)
+        elif action == "pause":
+            self._action_pause(instance_dir)
+        elif action == "resume":
+            self._action_resume(instance_dir)
+        elif action == "auto_merge":
+            self._action_auto_merge(instance_dir, ctx)
+        else:
+            print(f"[hooks] Unknown action '{action}' in rule {rule.id}", file=sys.stderr)
+
+    def _action_notify(self, instance_dir: str, params: dict, ctx: dict) -> None:
+        """Append a message to instance/outbox.md."""
+        message = params.get("message", "Automation rule fired.")
+        outbox_path = Path(instance_dir) / "outbox.md"
+        from app.utils import atomic_write
+        existing = outbox_path.read_text() if outbox_path.exists() else ""
+        if existing and not existing.endswith("\n"):
+            existing += "\n"
+        atomic_write(outbox_path, existing + f"- {message}\n")
+
+    def _action_create_mission(self, instance_dir: str, params: dict, ctx: dict) -> None:
+        """Append a mission to the Pending section of instance/missions.md."""
+        text = params.get("text", "Automation rule: create mission")
+        missions_path = Path(instance_dir) / "missions.md"
+        from app.utils import insert_pending_mission
+        insert_pending_mission(missions_path, text)
+
+    def _action_pause(self, instance_dir: str) -> None:
+        """Write .koan-pause to pause the agent."""
+        pause_file = Path(instance_dir).parent / ".koan-pause"
+        # Idempotent — overwrite is harmless
+        pause_file.write_text("automation_rule\n")
+
+    def _action_resume(self, instance_dir: str) -> None:
+        """Remove .koan-pause if it exists."""
+        pause_file = Path(instance_dir).parent / ".koan-pause"
+        # Already absent — idempotent
+        with contextlib.suppress(FileNotFoundError):
+            pause_file.unlink()
+
+    def _action_auto_merge(self, instance_dir: str, ctx: dict) -> None:
+        """Call git_auto_merge.auto_merge_branch() if project context present."""
+        project_path = ctx.get("project_path")
+        project_name = ctx.get("project_name")
+        branch = ctx.get("branch")
+        if not project_path or not project_name:
+            print(
+                "[hooks] auto_merge action skipped — project_path or project_name absent in ctx.",
+                file=sys.stderr,
+            )
+            return
+        if not branch:
+            # Try to read current branch from git
+            import subprocess
+            try:
+                result = subprocess.run(
+                    ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                    cwd=project_path,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                branch = result.stdout.strip()
+            except Exception as exc:
+                print(f"[hooks] auto_merge: failed to get branch: {exc}", file=sys.stderr)
+                return
+        from app.git_auto_merge import auto_merge_branch
+        auto_merge_branch(instance_dir, project_name, project_path, branch)
+
+    def _write_rule_journal(self, rule: AutomationRule) -> None:
+        """Write a [automation_rule]-tagged entry to today's journal."""
+        try:
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            journal_dir = Path(self._instance_dir) / "journal" / today
+            journal_dir.mkdir(parents=True, exist_ok=True)
+            journal_file = journal_dir / "automation.md"
+            ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+            entry = f"[automation_rule] {ts} rule={rule.id} event={rule.event} action={rule.action}\n"
+            with open(journal_file, "a") as f:
+                f.write(entry)
+        except Exception as exc:
+            print(f"[hooks] Failed to write rule journal: {exc}", file=sys.stderr)
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +381,12 @@ def init_hooks(instance_dir: str) -> None:
     global _registry
     hooks_dir = Path(instance_dir) / "hooks"
     hooks_dir.mkdir(parents=True, exist_ok=True)
-    _registry = HookRegistry(hooks_dir)
+    _registry = HookRegistry(hooks_dir, instance_dir=instance_dir)
+
+
+def read_automation_rules(instance_dir: str) -> list:
+    """Load and return automation rules from instance/automation_rules.yaml."""
+    return load_rules(instance_dir)
 
 
 def fire_hook(event: str, **kwargs) -> Dict[str, str]:

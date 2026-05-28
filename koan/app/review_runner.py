@@ -8,8 +8,8 @@ and comments.
 Pipeline:
 1. Fetch PR metadata, diff, and existing comments from GitHub
 2. Build a review prompt with PR context
-3. Run Claude Code CLI (read-only tools) to analyze the code
-4. Parse Claude's review output
+3. Run the configured provider CLI (read-only tools) to analyze the code
+4. Parse the provider's review output
 5. Post the review as a GitHub comment
 
 CLI:
@@ -19,28 +19,70 @@ CLI:
 import json
 import re
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from app.github import run_gh
-from app.prompts import load_prompt_or_skill
+from app.claude_step import resolve_pr_location
+from app.config import is_review_compressor_enabled
+from app.run_log import log
+from app.diff_compressor import compress_diff
+from app.github import run_gh, sanitize_github_comment, find_bot_comment
+from app.github_url_parser import ISSUE_URL_PATTERN
+from app.prompts import load_prompt, load_prompt_or_skill, load_skill_prompt
 from app.rebase_pr import fetch_pr_context
+from app.utils import KOAN_ROOT
+from app.review_markers import (
+    SUMMARY_TAG,
+    COMMIT_IDS_START,
+    COMMIT_IDS_END,
+    extract_between_markers,
+    replace_section,
+)
 from app.review_schema import validate_review
 
+_ISSUE_URL_RE = re.compile(ISSUE_URL_PATTERN)
 
-def fetch_repliable_comments(
-    owner: str, repo: str, pr_number: str,
-) -> List[dict]:
-    """Fetch PR comments with their IDs for reply targeting.
 
-    Returns a list of dicts with keys: id, type, user, body, path (for
-    inline comments only). Excludes bot comments and the PR author's own
-    inline comments to reduce noise.
+def load_project_learnings(project_name: Optional[str]) -> str:
+    """Return learnings.md content for the given project as a formatted section.
+
+    Returns an empty string if project_name is None, the file is missing,
+    or the file is empty — so callers can pass the result directly into the
+    prompt template without extra checks.
     """
-    full_repo = f"{owner}/{repo}"
-    comments: List[dict] = []
+    if not project_name:
+        return ""
+    try:
+        learnings_path = KOAN_ROOT / "instance" / "memory" / "projects" / project_name / "learnings.md"
+        content = learnings_path.read_text().strip()
+        if not content:
+            return ""
+        return f"## Project best practices\n\n{content}\n\n---\n\n"
+    except (FileNotFoundError, OSError):
+        return ""
 
-    # Inline review comments (code-level)
+
+def _resolve_bot_username() -> str:
+    """Read the bot's GitHub nickname from config.yaml.
+
+    Returns empty string if not configured (filtering is then skipped).
+    """
+    try:
+        from app.utils import load_config
+        config = load_config()
+        github = config.get("github") or {}
+        return str(github.get("nickname", "")).strip()
+    except Exception as e:
+        print(f"[review_runner] could not resolve bot username: {e}", file=sys.stderr)
+        return ""
+
+
+def _fetch_inline_review_comments(
+    full_repo: str, pr_number: str, bot_username: str = "",
+) -> List[dict]:
+    """Fetch inline review comments (code-level) for a PR."""
+    results: List[dict] = []
     try:
         raw = run_gh(
             "api", f"repos/{full_repo}/pulls/{pr_number}/comments",
@@ -53,7 +95,10 @@ def fetch_repliable_comments(
                     item = json.loads(line)
                     if item.get("user_type") == "Bot":
                         continue
-                    comments.append({
+                    # Skip bot's own comments to prevent self-reply loops
+                    if bot_username and item["user"].lower() == bot_username.lower():
+                        continue
+                    results.append({
                         "id": item["id"],
                         "type": "review_comment",
                         "user": item["user"],
@@ -65,8 +110,14 @@ def fetch_repliable_comments(
                     continue
     except RuntimeError:
         pass
+    return results
 
-    # Issue-level comments (conversation thread)
+
+def _fetch_issue_comments(
+    full_repo: str, pr_number: str, bot_username: str = "",
+) -> List[dict]:
+    """Fetch issue-level comments (conversation thread) for a PR."""
+    results: List[dict] = []
     try:
         raw = run_gh(
             "api", f"repos/{full_repo}/issues/{pr_number}/comments",
@@ -79,7 +130,10 @@ def fetch_repliable_comments(
                     item = json.loads(line)
                     if item.get("user_type") == "Bot":
                         continue
-                    comments.append({
+                    # Skip bot's own comments to prevent self-reply loops
+                    if bot_username and item["user"].lower() == bot_username.lower():
+                        continue
+                    results.append({
                         "id": item["id"],
                         "type": "issue_comment",
                         "user": item["user"],
@@ -89,6 +143,42 @@ def fetch_repliable_comments(
                     continue
     except RuntimeError:
         pass
+    return results
+
+
+def fetch_repliable_comments(
+    owner: str, repo: str, pr_number: str,
+    parallel: bool = True,
+    bot_username: str = "",
+) -> List[dict]:
+    """Fetch PR comments with their IDs for reply targeting.
+
+    Returns a list of dicts with keys: id, type, user, body, path (for
+    inline comments only). Excludes bot comments and the PR author's own
+    inline comments to reduce noise.
+
+    Args:
+        owner: GitHub owner/org.
+        repo: Repository name.
+        pr_number: PR number as string.
+        parallel: When True (default), fetch inline and issue comments
+            concurrently using two threads. Set to False to force sequential
+            fetching (useful in tests or single-threaded contexts).
+        bot_username: If provided, comments from this user are excluded
+            to prevent self-reply loops.
+    """
+    full_repo = f"{owner}/{repo}"
+    comments: List[dict] = []
+
+    if parallel:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            f_inline = pool.submit(_fetch_inline_review_comments, full_repo, pr_number, bot_username)
+            f_issue = pool.submit(_fetch_issue_comments, full_repo, pr_number, bot_username)
+            comments.extend(f_inline.result())
+            comments.extend(f_issue.result())
+    else:
+        comments.extend(_fetch_inline_review_comments(full_repo, pr_number, bot_username))
+        comments.extend(_fetch_issue_comments(full_repo, pr_number, bot_username))
 
     return comments
 
@@ -115,66 +205,449 @@ def _format_repliable_comments(comments: List[dict]) -> str:
     return "\n\n".join(lines)
 
 
+def _detect_plan_url(body: str) -> Optional[str]:
+    """Extract the first GitHub issue URL from a PR body.
+
+    Returns the full issue URL string if found, or None.
+    Only matches issue URLs (not PR URLs) — /issues/ not /pull/.
+    """
+    match = _ISSUE_URL_RE.search(body)
+    if not match:
+        return None
+    return match.group(0)
+
+
+def _fetch_plan_body(owner: str, repo: str, issue_number: str) -> str:
+    """Fetch the body of a GitHub issue, checking that it has a 'plan' label.
+
+    Returns the plan text (with footer stripped), or empty string if:
+    - The issue cannot be fetched
+    - The issue does not have a 'plan' label
+
+    Also checks the latest issue comment for an updated plan iteration.
+    If the last comment contains '### Implementation Phases', it is treated
+    as the authoritative plan (newer than the issue body).
+    """
+    full_repo = f"{owner}/{repo}"
+
+    try:
+        raw = run_gh("api", f"repos/{full_repo}/issues/{issue_number}")
+        issue = json.loads(raw)
+    except (RuntimeError, json.JSONDecodeError, ValueError):
+        return ""
+
+    labels = [lbl.get("name", "") for lbl in issue.get("labels", [])]
+    if "plan" not in labels:
+        return ""
+
+    plan_body = issue.get("body", "") or ""
+
+    # Check latest comment for an updated plan iteration
+    try:
+        raw_comments = run_gh(
+            "api", f"repos/{full_repo}/issues/{issue_number}/comments",
+            "--paginate", "--jq",
+            r'.[] | {body: .body}',
+        )
+        if raw_comments.strip():
+            for line in reversed(raw_comments.strip().split("\n")):
+                try:
+                    comment = json.loads(line)
+                    comment_body = comment.get("body", "")
+                    if "### Implementation Phases" in comment_body:
+                        plan_body = comment_body
+                        break
+                except (json.JSONDecodeError, KeyError):
+                    continue
+    except RuntimeError:
+        pass
+
+    # Strip plan footer added by /plan skill
+    footer_marker = "\n---\n*Generated by Kōan /plan"
+    if footer_marker in plan_body:
+        plan_body = plan_body[:plan_body.index(footer_marker)].rstrip()
+
+    return plan_body
+
+
+def _truncate_plan(plan_body: str) -> str:
+    """Truncate a plan to its key sections (Summary + Implementation Phases).
+
+    Used when the combined plan + diff context is very large (>80K chars).
+    Extracts Summary and Implementation Phases sections; falls back to the
+    first 5000 chars if those sections cannot be found.
+    """
+    sections = []
+    for section_title in ("## Summary", "### Summary", "### Implementation Phases"):
+        idx = plan_body.find(section_title)
+        if idx == -1:
+            continue
+        remaining = plan_body[idx:]
+        # Find next ## heading to delimit the section
+        end_match = re.search(r'\n##\s', remaining[1:])
+        if end_match:
+            sections.append(remaining[:end_match.start() + 1])
+        else:
+            sections.append(remaining)
+
+    if sections:
+        return "\n\n".join(sections)
+    return plan_body[:5000] + "\n\n...(plan truncated)"
+
+
 def build_review_prompt(
     context: dict,
     skill_dir: Optional[Path] = None,
     architecture: bool = False,
+    comments: bool = False,
     repliable_comments: Optional[List[dict]] = None,
+    plan_body: Optional[str] = None,
+    project_path: Optional[str] = None,
 ) -> str:
-    """Build a prompt for Claude to review a PR."""
-    prompt_name = "review-architecture" if architecture else "review"
+    """Build a prompt for Claude to review a PR.
+
+    When plan_body is provided, selects the plan-aware prompt variant
+    (review-with-plan) regardless of the architecture flag. When architecture
+    is True but no plan is present, uses the architecture prompt.
+
+    When ``project_path`` is set, project memory (filtered learnings +
+    human-curated context + priorities) is injected via
+    :func:`app.skill_memory.build_memory_block_for_skill`.
+    """
+    if plan_body:
+        if architecture:
+            print(
+                "[review_runner] --architecture ignored: plan alignment takes priority",
+                file=sys.stderr,
+            )
+        prompt_name = "review-with-plan"
+    elif architecture:
+        prompt_name = "review-architecture"
+    elif comments:
+        prompt_name = "review-comments"
+    else:
+        prompt_name = "review"
+
     repliable_text = _format_repliable_comments(repliable_comments or [])
-    return load_prompt_or_skill(
-        skill_dir, prompt_name,
+
+    project_memory = ""
+    if project_path:
+        from app.skill_memory import build_memory_block_for_skill
+        # Score learnings against the PR's actual content (title + body +
+        # diff slice), not just title + branch. Branch names are mostly
+        # autogenerated noise (e.g. ``koan/fix-issue-123``) that produce
+        # near-zero Jaccard signal; the diff is where filenames, modules,
+        # and recurring patterns live — exactly what the learnings file
+        # tends to index against. Cap the diff slice at ~2K chars so the
+        # tokenizer doesn't churn on giant PRs.
+        diff = context.get("diff", "") or ""
+        task_text = "\n".join(filter(None, (
+            context.get("title", ""),
+            context.get("body", ""),
+            diff[:2000],
+        )))
+        project_memory = build_memory_block_for_skill(project_path, task_text)
+
+    raw_diff = context["diff"]
+    skipped_note = ""
+    if is_review_compressor_enabled():
+        compressed = compress_diff(raw_diff)
+        raw_diff = compressed.diff_text
+        if compressed.skipped_files:
+            log(
+                "review",
+                f"Diff compressed — {len(compressed.skipped_files)} file(s) skipped: "
+                + ", ".join(compressed.skipped_files),
+            )
+            skipped_list = ", ".join(f"`{f}`" for f in compressed.skipped_files)
+            skipped_note = (
+                f"> ⚠️ Diff compressed — {len(compressed.skipped_files)} file(s) omitted"
+                f" due to size: {skipped_list}\n\n"
+            )
+
+    kwargs: dict = dict(
         TITLE=context["title"],
         AUTHOR=context["author"],
         BRANCH=context["branch"],
         BASE=context["base"],
         BODY=context["body"],
-        DIFF=context["diff"],
+        DIFF=raw_diff,
         REVIEW_COMMENTS=context["review_comments"],
         REVIEWS=context["reviews"],
         ISSUE_COMMENTS=context["issue_comments"],
         REPLIABLE_COMMENTS=repliable_text,
+        PROJECT_MEMORY=project_memory,
+        SKIPPED_FILES=skipped_note,
     )
 
+    if plan_body:
+        # Truncate plan if combined context would be too large
+        combined_len = len(context.get("diff", "")) + len(plan_body)
+        if combined_len > 80_000:
+            plan_body = _truncate_plan(plan_body)
+        kwargs["PLAN"] = plan_body
 
-def _run_claude_review(prompt: str, project_path: str, timeout: int = 600) -> str:
-    """Run Claude CLI with read-only tools and return the output text.
+    return load_prompt_or_skill(skill_dir, prompt_name, **kwargs)
+
+
+def _run_claude_review(
+    prompt: str,
+    project_path: str,
+    timeout: int = 600,
+    model: Optional[str] = None,
+) -> Tuple[str, str]:
+    """Run provider CLI with read-only tools and return the output text.
 
     Args:
         prompt: The review prompt.
         project_path: Path to the project for codebase context.
-        timeout: Maximum seconds to wait.
+        timeout: Maximum seconds to wait (default 600s — large PRs need
+                 more time than the old 300s default).
+        model: Optional model override. When None, uses models["review_mode"]
+               if configured, otherwise models["mission"].
 
     Returns:
-        Claude's review text, or empty string on failure.
+        (output, error) tuple. output is the provider's review text (empty on
+        failure), error is the failure reason (empty on success).
     """
-    from app.claude_step import run_claude
-    from app.cli_provider import build_full_command
-    from app.config import get_model_config
+    from app.cli_provider import run_command_streaming
+    from app.config import get_model_config, get_skill_max_turns
 
-    models = get_model_config()
-    cmd = build_full_command(
-        prompt=prompt,
-        allowed_tools=["Read", "Glob", "Grep"],
-        model=models["mission"],
-        fallback=models["fallback"],
-        max_turns=15,
+    if model is None:
+        models = get_model_config()
+        model = models.get("review_mode") or models.get("mission", "")
+
+    try:
+        output = run_command_streaming(
+            prompt=prompt,
+            project_path=project_path,
+            allowed_tools=["Read", "Glob", "Grep"],
+            model_key="mission",
+            model=model,
+            max_turns=get_skill_max_turns(),
+            timeout=timeout,
+        )
+        return output, ""
+    except RuntimeError as e:
+        error = str(e) or "unknown error"
+        print(
+            f"[review_runner] Provider review failed: {error}",
+            file=sys.stderr,
+        )
+        return "", error
+
+
+def _reflect_findings(
+    findings: list,
+    diff: str,
+    project_path: str,
+    model: Optional[str],
+    threshold: int,
+    skill_dir: Optional[Path] = None,
+) -> list:
+    """Run a second-pass reflection on review findings and filter low-signal ones.
+
+    Calls Claude with a lightweight reflection prompt to score each finding
+    0-10. Returns only findings whose score >= threshold. On any parse or
+    validation failure, returns the original findings unchanged (fail-open).
+
+    Args:
+        findings: List of file_comment dicts from the first-pass review.
+        diff: PR diff string for context.
+        project_path: Path to the project for codebase context.
+        model: Model override for the reflection call (uses lightweight default).
+        threshold: Minimum score (0-10) for a finding to be kept.
+
+    Returns:
+        Filtered list of findings.
+    """
+    # Clamp threshold to valid range
+    threshold = max(0, min(10, threshold))
+
+    if not findings or threshold <= 0:
+        return findings
+
+    if skill_dir is None:
+        skill_dir = Path(__file__).resolve().parent.parent / "skills" / "core" / "review"
+
+    try:
+        findings_json = json.dumps(findings, indent=2)
+        prompt = load_skill_prompt(
+            skill_dir, "reflect",
+            FINDINGS_JSON=findings_json,
+            DIFF=diff or "(diff not available)",
+        )
+    except Exception as e:
+        print(f"[reflect] prompt build failed: {e}", file=sys.stderr)
+        return findings
+
+    raw_output, error = _run_claude_review(prompt, project_path, model=model)
+    if not raw_output:
+        return findings
+
+    # Parse and validate response
+    try:
+        # Strip markdown fences if present
+        text = raw_output.strip()
+        if text.startswith("```"):
+            lines = text.splitlines()
+            text = "\n".join(lines[1:-1]) if lines[-1].strip() == "```" else "\n".join(lines[1:])
+        scores = json.loads(text)
+    except json.JSONDecodeError:
+        return findings
+
+    if not isinstance(scores, list):
+        return findings
+
+    # Build index → score map; skip out-of-range indices
+    score_map: dict = {}
+    for entry in scores:
+        if not isinstance(entry, dict):
+            continue
+        idx = entry.get("finding_index")
+        score = entry.get("score")
+        if not isinstance(idx, (int, float)) or not isinstance(score, (int, float)):
+            continue
+        idx = int(idx)
+        score = int(score)
+        if 0 <= idx < len(findings):
+            score_map[idx] = score
+
+    # Keep findings whose score meets threshold (or whose index wasn't scored)
+    filtered = [
+        f for i, f in enumerate(findings)
+        if score_map.get(i, threshold) >= threshold
+    ]
+
+    return filtered
+
+
+_ERROR_PATTERN_RE = re.compile(
+    r'try:|except |catch\(|\.catch\(|on_error',
+    re.IGNORECASE,
+)
+
+
+def _should_run_error_hunter(diff: str) -> bool:
+    """Return True if added lines in the diff contain error-handling patterns."""
+    added_lines = '\n'.join(
+        line for line in diff.splitlines() if line.startswith('+')
     )
-
-    result = run_claude(cmd, project_path, timeout=timeout)
-    if result["success"]:
-        return result["output"]
-    return ""
+    return bool(_ERROR_PATTERN_RE.search(added_lines))
 
 
-def _extract_review_body(raw_output: str) -> str:
+def _run_error_hunter(
+    diff: str, project_path: str, skill_dir: Optional[Path],
+) -> str:
+    """Run the silent-failure-hunter pass and return formatted markdown section.
+
+    Returns an empty string if no findings are produced.
+    """
+    if skill_dir is not None:
+        prompt = load_skill_prompt(skill_dir, "silent-failure-hunter", DIFF=diff)
+    else:
+        prompt = load_prompt("silent-failure-hunter", DIFF=diff)
+
+    raw_output, error = _run_claude_review(prompt, project_path)
+    if not raw_output:
+        print(
+            f"[review_runner] silent-failure-hunter pass failed: {error}",
+            file=sys.stderr,
+        )
+        return ""
+
+    # Parse JSON array of findings
+    findings = _parse_error_hunter_output(raw_output)
+    if not findings:
+        return ""
+
+    return _format_error_hunter_findings(findings)
+
+
+def _parse_error_hunter_output(raw_output: str) -> list:
+    """Parse the JSON array returned by the silent-failure-hunter prompt."""
+    # Try to find a JSON array in the output
+    match = re.search(r'\[\s*\{.*?\}\s*\]', raw_output, re.DOTALL)
+    if match:
+        try:
+            findings = json.loads(match.group(0))
+            if isinstance(findings, list):
+                return findings
+        except json.JSONDecodeError:
+            pass
+
+    # Try parsing the whole output as JSON
+    stripped = raw_output.strip()
+    # Remove markdown code fences if present
+    if stripped.startswith("```"):
+        lines = stripped.split("\n")
+        stripped = "\n".join(lines[1:-1]) if len(lines) > 2 else stripped
+
+    try:
+        findings = json.loads(stripped)
+        if isinstance(findings, list):
+            return findings
+    except json.JSONDecodeError:
+        pass
+
+    print(
+        "[review_runner] silent-failure-hunter: could not parse JSON output",
+        file=sys.stderr,
+    )
+    return []
+
+
+_ERROR_HUNTER_SEVERITY_EMOJI = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡"}
+
+
+def _format_error_hunter_findings(findings: list) -> str:
+    """Format error-hunter findings as a markdown section with collapsible details."""
+    severity_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2}
+    findings = sorted(findings, key=lambda f: severity_order.get(f.get("severity", "MEDIUM"), 2))
+
+    lines = ["## Silent Failure Analysis", ""]
+    for f in findings:
+        severity = f.get("severity", "?")
+        emoji = _ERROR_HUNTER_SEVERITY_EMOJI.get(severity, "⚪")
+        pattern = f.get("pattern", "unknown pattern")
+        file_path = f.get("file", "")
+        line_hint = f.get("line_hint", "")
+        location = f"{file_path}:{line_hint}" if line_hint else file_path
+        snippet = f.get("snippet", "")
+        explanation = f.get("explanation", "")
+        suggestion = f.get("suggestion", "")
+
+        title = f"{emoji} **{severity}** — {pattern}"
+        if location:
+            title += f" (`{location}`)"
+
+        lines.append("<details>")
+        lines.append(f"<summary>{title}</summary>")
+        lines.append("")
+        if explanation:
+            lines.append(f"**Risk**: {explanation}")
+            lines.append("")
+        if snippet:
+            lines.append("```")
+            lines.append(snippet)
+            lines.append("```")
+            lines.append("")
+        if suggestion:
+            lines.append(f"**Fix**: {suggestion}")
+            lines.append("")
+        lines.append("</details>")
+        lines.append("")
+
+    return "\n".join(lines).rstrip()
+
+
+def _extract_review_body(raw_output: str) -> Optional[str]:
     """Extract structured review from Claude's raw output.
 
-    Tries to find markdown-structured review content. If the output
-    looks like JSON, attempts to parse and format it as markdown.
-    Falls back to the full output if no structure is detected.
+    Tries to find markdown-structured review content. If the output looks
+    like JSON, attempts to parse and format it as markdown. Returns None
+    when no structure can be recovered — callers MUST NOT post raw model
+    output to a PR (see the guardrail in ``run_review``).
     """
     # Look for the new format: ## PR Review — ...
     match = re.search(r'(## PR Review\b.*)', raw_output, re.DOTALL)
@@ -198,27 +671,88 @@ def _extract_review_body(raw_output: str) -> str:
         except (json.JSONDecodeError, ValueError):
             pass
 
-    # Fall back to full output (Claude may format differently)
-    return raw_output.strip()
+    # No structured review could be recovered. Signal failure rather than
+    # leaking raw narration / JSON to the PR.
+    return None
+
+
+def _is_parseable_json(text: str) -> bool:
+    """Return True if ``text`` parses as any JSON value (object, array, scalar)."""
+    try:
+        json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return False
+    return True
+
+
+def _loads_object_or_none(candidate: str) -> Optional[dict]:
+    """json.loads ``candidate``, returning the dict or None on failure.
+
+    Extracted so callers can attempt parsing inside a loop without a
+    per-iteration try/except (PERF203).
+    """
+    try:
+        decoded = json.loads(candidate)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return decoded if isinstance(decoded, dict) else None
+
+
+def _match_balanced_object(text: str, start: int) -> Optional[str]:
+    """Return the balanced ``{ ... }`` substring beginning at ``start``.
+
+    Tracks string context so braces inside JSON string values — and any
+    markdown code fences embedded in those strings — do not affect nesting
+    depth. Returns None if the braces never balance.
+    """
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start, len(text)):
+        c = text[i]
+        if escape:
+            escape = False
+            continue
+        if c == "\\":
+            escape = True
+            continue
+        if c == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+    return None
 
 
 def _extract_json_text(text: str) -> Optional[str]:
     """Extract a JSON object string from text that may contain surrounding prose.
 
-    Tries multiple strategies:
-    1. Direct parse of the full text (pure JSON)
-    2. Strip markdown code fences (```json ... ```)
-    3. Extract JSON from code fences anywhere in the text
-    4. Find the outermost { ... } in the text
+    Tries, in order:
+    1. Direct parse of the full text (pure JSON).
+    2. Strip markdown code fences wrapping the entire text (```json ... ```).
+    3. Scan every ``{`` in the text, brace-match a balanced object at each
+       (respecting string context), and return the largest substring that
+       decodes to a JSON object.
+
+    Strategy 3 is deliberately robust to two failure modes that previously
+    caused raw model output to be posted to a PR: preamble prose containing
+    brace-like tokens (e.g. GitHub Actions ``${{ ... }}`` expressions, whose
+    leading ``{`` would otherwise hijack a first-brace-only matcher) and
+    markdown code fences embedded inside JSON string values (which defeat
+    fence-based regexes). The largest balanced object wins because the review
+    object always wraps its nested file-comment objects.
     """
     stripped = text.strip()
 
     # Strategy 1: pure JSON
-    try:
-        json.loads(stripped)
+    if _is_parseable_json(stripped):
         return stripped
-    except (json.JSONDecodeError, ValueError):
-        pass
 
     # Strategy 2: text wrapped entirely in code fences
     fence_stripped = stripped
@@ -229,54 +763,23 @@ def _extract_json_text(text: str) -> Optional[str]:
     if fence_stripped.endswith("```"):
         fence_stripped = fence_stripped[:-3]
     fence_stripped = fence_stripped.strip()
-    if fence_stripped != stripped:
-        try:
-            json.loads(fence_stripped)
-            return fence_stripped
-        except (json.JSONDecodeError, ValueError):
-            pass
+    if fence_stripped != stripped and _is_parseable_json(fence_stripped):
+        return fence_stripped
 
-    # Strategy 3: code fences embedded in surrounding text
-    fence_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', stripped, re.DOTALL)
-    if fence_match:
-        candidate = fence_match.group(1).strip()
-        try:
-            json.loads(candidate)
-            return candidate
-        except (json.JSONDecodeError, ValueError):
-            pass
-
-    # Strategy 4: find outermost { ... } with brace matching
-    start = stripped.find("{")
-    if start != -1:
-        depth = 0
-        in_string = False
-        escape = False
-        for i in range(start, len(stripped)):
-            c = stripped[i]
-            if escape:
-                escape = False
-                continue
-            if c == "\\":
-                escape = True
-                continue
-            if c == '"':
-                in_string = not in_string
-                continue
-            if in_string:
-                continue
-            if c == "{":
-                depth += 1
-            elif c == "}":
-                depth -= 1
-                if depth == 0:
-                    candidate = stripped[start:i + 1]
-                    try:
-                        json.loads(candidate)
-                        return candidate
-                    except (json.JSONDecodeError, ValueError):
-                        break
-    return None
+    # Strategy 3: scan every '{' and keep the largest balanced object that
+    # decodes to a JSON object.
+    best: Optional[str] = None
+    pos = stripped.find("{")
+    while pos != -1:
+        candidate = _match_balanced_object(stripped, pos)
+        if (
+            candidate is not None
+            and _loads_object_or_none(candidate) is not None
+            and (best is None or len(candidate) > len(best))
+        ):
+            best = candidate
+        pos = stripped.find("{", pos + 1)
+    return best
 
 
 def _parse_review_json(raw_output: str) -> Optional[dict]:
@@ -317,12 +820,19 @@ _SEVERITY_HEADING = {
     "suggestion": "Suggestions",
 }
 
+# Posted to the PR when the model's output cannot be parsed into the structured
+# review format. A short placeholder is posted instead of raw narration / JSON.
+_UNPARSEABLE_REVIEW_NOTICE = (
+    "⚠️ The automated review could not be formatted into the standard "
+    "structure. Re-run `/review` to retry."
+)
 
-def _format_review_as_markdown(review_data: dict, title: str = "") -> str:
+
+def _format_review_as_markdown(review_data: dict, title: str = "", bot_username: str = "") -> str:
     """Convert validated review JSON into the markdown format for GitHub.
 
-    Produces the standard ## PR Review format with severity sections,
-    checklist, and summary.
+    Produces the standard ## PR Review format with an optional plan alignment
+    section (when present), followed by severity sections, checklist, and summary.
     """
     comments = review_data["file_comments"]
     summary_data = review_data["review_summary"]
@@ -337,6 +847,32 @@ def _format_review_as_markdown(review_data: dict, title: str = "") -> str:
     lines.append("")
     lines.append("---")
     lines.append("")
+
+    # Plan alignment section (only present when review was done with a plan)
+    plan_alignment = review_data.get("plan_alignment")
+    if plan_alignment and isinstance(plan_alignment, dict):
+        lines.append("### Plan Alignment")
+        lines.append("")
+        met = plan_alignment.get("requirements_met") or []
+        missing = plan_alignment.get("requirements_missing") or []
+        out_of_scope = plan_alignment.get("out_of_scope") or []
+        if met:
+            lines.append(f"✅ **Met** ({len(met)})")
+            lines.append("")
+            lines.extend(f"- {req}" for req in met)
+            lines.append("")
+        if missing:
+            lines.append(f"❌ **Missing** ({len(missing)})")
+            lines.append("")
+            lines.extend(f"- {req}" for req in missing)
+            lines.append("")
+        if out_of_scope:
+            lines.append(f"📋 **Out of scope** ({len(out_of_scope)})")
+            lines.append("")
+            lines.extend(f"- {item}" for item in out_of_scope)
+            lines.append("")
+        lines.append("---")
+        lines.append("")
 
     # Group comments by severity
     by_severity: dict = {"critical": [], "warning": [], "suggestion": []}
@@ -354,18 +890,27 @@ def _format_review_as_markdown(review_data: dict, title: str = "") -> str:
         lines.append(f"### {emoji} {heading}")
         lines.append("")
         for i, item in enumerate(items, 1):
-            loc = f"`{item['file']}`"
-            if item.get("line_start") and item["line_start"] > 0:
-                loc += f", L{item['line_start']}"
+            has_loc = item.get("line_start") and item["line_start"] > 0
+            if has_loc:
+                loc = f"`{item['file']}`, L{item['line_start']}"
                 if item.get("line_end") and item["line_end"] != item["line_start"]:
                     loc += f"-{item['line_end']}"
-            lines.append(f"**{i}. {item['title']}** ({loc})")
+                summary_line = f"<b>{i}. {item['title']}</b> ({loc})"
+            else:
+                summary_line = f"<b>{i}. {item['title']}</b>"
+            lines.append("<details>")
+            lines.append("<summary>")
+            lines.append(summary_line)
+            lines.append("</summary>")
+            lines.append("")
             lines.append(item["comment"])
             if item.get("code_snippet"):
                 lines.append("")
                 lines.append("```")
                 lines.append(item["code_snippet"])
                 lines.append("```")
+            lines.append("")
+            lines.append("</details>")
             lines.append("")
 
     # Checklist
@@ -377,7 +922,14 @@ def _format_review_as_markdown(review_data: dict, title: str = "") -> str:
         lines.append("")
         for ci in checklist:
             mark = "x" if ci["passed"] else " "
-            ref = f" — {ci['finding_ref']}" if ci.get("finding_ref") else ""
+            finding_ref = ci.get("finding_ref", "")
+            if finding_ref:
+                # Replace ASCII # with fullwidth ＃ (U+FF03) to prevent GitHub
+                # from auto-linking cross-references to repository issues/PRs.
+                safe_ref = finding_ref.replace("#", "\uFF03")
+                ref = f" \u2014 {safe_ref}"
+            else:
+                ref = ""
             lines.append(f"- [{mark}] {ci['item']}{ref}")
         lines.append("")
 
@@ -388,15 +940,48 @@ def _format_review_as_markdown(review_data: dict, title: str = "") -> str:
     lines.append("")
     lines.append(summary_data["summary"])
 
+    # Severity filter hint — only show when there are findings at multiple
+    # severity levels so the hint is actually useful.
+    severity_count = sum(1 for s in ("critical", "warning", "suggestion") if by_severity.get(s))
+    if severity_count > 1:
+        lines.append("")
+        lines.append("---")
+        if bot_username:
+            mention = f"@{bot_username}"
+            lines.append(
+                f"_To rebase specific severity levels, mention me:_ "
+                f"`{mention} rebase critical` _(fixes 🔴 only)_, "
+                f"`{mention} rebase important` _(fixes 🔴 + 🟡)_, "
+                f"_or just_ `{mention} rebase` _for all._"
+            )
+        else:
+            lines.append(
+                "_To rebase specific severity levels, use:_ "
+                "`/rebase <url> critical` _(fixes 🔴 only)_, "
+                "`/rebase <url> important` _(fixes 🔴 + 🟡)_, "
+                "_or just_ `/rebase <url>` _for all._"
+            )
+
     return "\n".join(lines)
 
 
 def _post_review_comment(
     owner: str, repo: str, pr_number: str, review_text: str,
-) -> bool:
-    """Post the review as a comment on the PR.
+    existing_comment: Optional[dict] = None,
+    commit_shas: Optional[List[str]] = None,
+) -> Tuple[bool, str]:
+    """Post (or update) the review as a comment on the PR.
 
-    Returns True on success.
+    Prepends ``SUMMARY_TAG`` so future runs can locate the comment via
+    ``find_bot_comment``.  When ``existing_comment`` is provided the
+    comment is updated via PATCH instead of creating a new one.
+
+    When ``commit_shas`` is provided, embeds them in the body so the
+    incremental-review check can skip already-reviewed commits.  When
+    absent, preserves any COMMIT_IDS block from ``existing_comment`` so
+    a re-review without SHA info doesn't clobber prior state.
+
+    Returns (True, "") on success, (False, error_detail) on failure.
     """
     # Truncate if too long for GitHub (max ~65536 chars)
     max_len = 60000
@@ -405,20 +990,55 @@ def _post_review_comment(
 
     # If body already starts with a ## heading, don't add another
     if review_text.startswith("## "):
-        body = f"{review_text}\n\n---\n_Automated review by Kōan_"
+        body = f"{SUMMARY_TAG}\n{review_text}\n\n---\n_Automated review by Kōan_"
     else:
-        body = f"## Code Review\n\n{review_text}\n\n---\n_Automated review by Kōan_"
+        body = f"{SUMMARY_TAG}\n## Code Review\n\n{review_text}\n\n---\n_Automated review by Kōan_"
+
+    # Embed commit SHAs when provided; otherwise preserve from existing
+    # comment so a re-review doesn't clobber prior incremental state.
+    if commit_shas:
+        body = replace_section(
+            body, COMMIT_IDS_START, COMMIT_IDS_END, "\n".join(commit_shas),
+        )
+    elif existing_comment:
+        existing_body = existing_comment.get("body", "")
+        commits_block = extract_between_markers(
+            existing_body, COMMIT_IDS_START, COMMIT_IDS_END,
+        )
+        if commits_block is not None:
+            body = replace_section(body, COMMIT_IDS_START, COMMIT_IDS_END, commits_block)
+
+    sanitized = sanitize_github_comment(body)
+    if existing_comment:
+        comment_id = existing_comment["id"]
+        try:
+            run_gh(
+                "api",
+                f"repos/{owner}/{repo}/issues/comments/{comment_id}",
+                "-X", "PATCH",
+                "-f", f"body={sanitized}",
+            )
+            return True, ""
+        except Exception as e:
+            # PATCH can fail with 403 when the existing comment belongs to a
+            # different bot account (review bot was switched). Fall back to
+            # posting a fresh comment so the review still lands.
+            print(
+                f"[review_runner] PATCH of comment {comment_id} failed "
+                f"({e}); posting a new comment instead",
+                file=sys.stderr,
+            )
 
     try:
         run_gh(
             "pr", "comment", pr_number,
             "--repo", f"{owner}/{repo}",
-            "--body", body,
+            "--body", sanitized,
         )
-        return True
+        return True, ""
     except Exception as e:
         print(f"[review_runner] failed to post comment: {e}", file=sys.stderr)
-        return False
+        return False, str(e)
 
 
 def _post_comment_replies(
@@ -460,10 +1080,11 @@ def _post_comment_replies(
         try:
             if original["type"] == "review_comment":
                 # Reply to an inline review comment via the API
+                safe_reply = sanitize_github_comment(reply_text)
                 run_gh(
                     "api", f"repos/{full_repo}/pulls/{pr_number}/comments",
                     "-X", "POST",
-                    "-f", f"body={reply_text}",
+                    "-f", f"body={safe_reply}",
                     "-F", f"in_reply_to={comment_id}",
                 )
             else:
@@ -472,7 +1093,7 @@ def _post_comment_replies(
                 quote_line = original["body"].split("\n")[0]
                 if len(quote_line) > 100:
                     quote_line = quote_line[:100] + "..."
-                body = f"> @{user}: {quote_line}\n\n{reply_text}"
+                body = sanitize_github_comment(f"> @{user}: {quote_line}\n\n{reply_text}")
                 run_gh(
                     "pr", "comment", pr_number,
                     "--repo", full_repo,
@@ -488,6 +1109,108 @@ def _post_comment_replies(
     return posted
 
 
+def _patch_comment_body(
+    owner: str, repo: str, comment_id: int, body: str,
+) -> bool:
+    """PATCH a GitHub issue comment body. Returns True on success."""
+    try:
+        run_gh(
+            "api",
+            f"repos/{owner}/{repo}/issues/comments/{comment_id}",
+            "-X", "PATCH",
+            "-f", f"body={body}",
+        )
+        return True
+    except Exception as e:
+        print(f"[review_runner] failed to patch comment {comment_id}: {e}", file=sys.stderr)
+        return False
+
+
+def _resolve_plan_body(plan_url: Optional[str], pr_body: str) -> str:
+    """Fetch the plan body from an explicit URL or auto-detect from the PR body.
+
+    When plan_url is provided, fetches that issue directly (skipping label check
+    only for explicit URLs, to allow non-labelled issues when the user explicitly
+    specifies them). When plan_url is None, searches the PR body for issue URLs
+    and fetches the first one that has the 'plan' label.
+
+    Returns the plan text, or empty string if no plan is found.
+    """
+    from app.github_url_parser import parse_issue_url
+
+    if plan_url:
+        try:
+            p_owner, p_repo, p_number = parse_issue_url(plan_url)
+        except ValueError:
+            print(
+                f"[review_runner] invalid --plan-url '{plan_url}', skipping plan alignment",
+                file=sys.stderr,
+            )
+            return ""
+        # For explicit URLs, fetch without label requirement
+        try:
+            raw = run_gh("api", f"repos/{p_owner}/{p_repo}/issues/{p_number}")
+            issue = json.loads(raw)
+        except (RuntimeError, json.JSONDecodeError, ValueError):
+            return ""
+        plan_body = issue.get("body", "") or ""
+        # Still check for latest iteration in comments
+        try:
+            raw_comments = run_gh(
+                "api", f"repos/{p_owner}/{p_repo}/issues/{p_number}/comments",
+                "--paginate", "--jq", r'.[] | {body: .body}',
+            )
+            if raw_comments.strip():
+                for line in reversed(raw_comments.strip().split("\n")):
+                    try:
+                        comment = json.loads(line)
+                        comment_body = comment.get("body", "")
+                        if "### Implementation Phases" in comment_body:
+                            plan_body = comment_body
+                            break
+                    except (json.JSONDecodeError, KeyError):
+                        continue
+        except RuntimeError:
+            pass
+        footer_marker = "\n---\n*Generated by Kōan /plan"
+        if footer_marker in plan_body:
+            plan_body = plan_body[:plan_body.index(footer_marker)].rstrip()
+        return plan_body
+
+    # Auto-detect from PR body
+    detected_url = _detect_plan_url(pr_body)
+    if not detected_url:
+        return ""
+
+    try:
+        p_owner, p_repo, p_number = parse_issue_url(detected_url)
+    except ValueError:
+        return ""
+
+    return _fetch_plan_body(p_owner, p_repo, p_number)
+
+
+def _fetch_pr_commit_shas(owner: str, repo: str, pr_number: str) -> List[str]:
+    """Return the list of full commit SHAs for a PR (oldest first).
+
+    Returns an empty list on any error so callers can treat absence as
+    "no prior state" rather than crashing.
+    """
+    try:
+        raw = run_gh(
+            "api",
+            f"repos/{owner}/{repo}/pulls/{pr_number}/commits",
+            "--paginate",
+            "--jq", r".[].sha",
+        )
+        if not raw.strip():
+            return []
+        return [line.strip() for line in raw.strip().splitlines() if line.strip()]
+    except RuntimeError:
+        return []
+
+
+
 def run_review(
     owner: str,
     repo: str,
@@ -496,6 +1219,10 @@ def run_review(
     notify_fn=None,
     skill_dir: Optional[Path] = None,
     architecture: bool = False,
+    plan_url: Optional[str] = None,
+    project_name: Optional[str] = None,
+    errors: bool = False,
+    comments: bool = False,
 ) -> Tuple[bool, str, Optional[dict]]:
     """Execute a read-only code review on a PR.
 
@@ -507,6 +1234,14 @@ def run_review(
         notify_fn: Optional callback for progress notifications.
         skill_dir: Optional path to the review skill directory for prompts.
         architecture: If True, use architecture-focused review prompt.
+        plan_url: Optional explicit GitHub issue URL for the plan to check
+            alignment against. When None, auto-detection from PR body is used.
+        project_name: Optional project name for injecting project-specific
+            learnings into the review prompt.
+        errors: If True, run an additional silent-failure-hunter pass to detect
+            swallowed exceptions and silent error paths. Auto-triggered when
+            the diff contains error-handling patterns.
+        comments: If True, use comment-quality review prompt.
 
     Returns:
         (success, summary, review_data) tuple. review_data is the validated
@@ -516,32 +1251,121 @@ def run_review(
         from app.notify import send_telegram
         notify_fn = send_telegram
 
+    # ── Step 0: Resolve actual PR location (cross-owner support) ──────
+    try:
+        owner, repo = resolve_pr_location(owner, repo, pr_number, project_path)
+    except RuntimeError as e:
+        return False, str(e), None
+
+    from app.config import get_review_concurrency_config
+    concurrency_cfg = get_review_concurrency_config()
+    github_workers = concurrency_cfg["github_workers"]
+    concurrency_enabled = concurrency_cfg["enabled"]
+
     full_repo = f"{owner}/{repo}"
 
-    # Step 1: Fetch PR context
+    # Resolve bot username to exclude own comments from repliable list
+    bot_username = _resolve_bot_username()
+
+    # Step 1: Fetch PR context and repliable comments in parallel
     notify_fn(f"Reviewing PR #{pr_number} ({full_repo})...")
-    try:
-        context = fetch_pr_context(owner, repo, pr_number)
-    except Exception as e:
-        return False, f"Failed to fetch PR context: {e}", None
+    if concurrency_enabled and github_workers > 1:
+        with ThreadPoolExecutor(max_workers=min(2, github_workers)) as pool:
+            f_context = pool.submit(
+                fetch_pr_context, owner, repo, pr_number, project_path,
+            )
+            f_comments = pool.submit(
+                fetch_repliable_comments, owner, repo, pr_number, True, bot_username,
+            )
+            try:
+                context = f_context.result()
+            except Exception as e:
+                return False, f"Failed to fetch PR context: {e}", None
+            repliable_comments = f_comments.result()
+    else:
+        try:
+            context = fetch_pr_context(owner, repo, pr_number, project_path)
+        except Exception as e:
+            return False, f"Failed to fetch PR context: {e}", None
+        repliable_comments = fetch_repliable_comments(
+            owner, repo, pr_number, parallel=False, bot_username=bot_username,
+        )
+
+    # Step 1a: Apply review_ignore filters to the diff (from config.yaml)
+    from app.config import get_review_ignore_config
+    from app.utils import filter_diff_by_ignore
+
+    _review_ignore = get_review_ignore_config()
+    _glob_pats = _review_ignore.get("glob", [])
+    _regex_pats = _review_ignore.get("regex", [])
+    if _glob_pats or _regex_pats:
+        filtered_diff, skipped = filter_diff_by_ignore(
+            context.get("diff", ""),
+            _glob_pats,
+            _regex_pats,
+        )
+        if skipped:
+            print(
+                f"[review_runner] Ignoring {len(skipped)} file(s): {skipped}",
+                file=sys.stderr,
+            )
+        context = {**context, "diff": filtered_diff}
 
     if not context.get("diff"):
-        return False, f"PR #{pr_number} has no diff — nothing to review.", None
+        if context.get("diff_error"):
+            return (
+                False,
+                f"PR #{pr_number} diff unavailable — cannot review.",
+                None,
+            )
+        return True, f"PR #{pr_number} has no diff — nothing to review.", None
 
-    # Step 1b: Fetch repliable comments (with IDs for reply targeting)
-    repliable_comments = fetch_repliable_comments(owner, repo, pr_number)
+    # Step 1b: Detect and fetch plan body for alignment checking
+    plan_body = _resolve_plan_body(plan_url, context.get("body", ""))
+
+    # Step 1c: Look up any existing bot summary comment (Phase 3).
+    # Filter by the current bot's account: a summary left by a *different*
+    # bot (e.g. after switching review bots) can't be PATCHed by us — GitHub
+    # returns 403 — so we treat only our own comment as the upsert target.
+    existing_comment = find_bot_comment(
+        owner, repo, pr_number, SUMMARY_TAG, bot_username=bot_username,
+    )
+
+    # Step 1d: Fetch current PR commit SHAs (Phase 5 — incremental review)
+    current_shas = _fetch_pr_commit_shas(owner, repo, pr_number)
+
+    # Step 1e: Extract previously reviewed SHAs from existing comment (Phase 5)
+    prior_shas: List[str] = []
+    if existing_comment:
+        raw_prior = extract_between_markers(
+            existing_comment.get("body", ""),
+            COMMIT_IDS_START,
+            COMMIT_IDS_END,
+        )
+        if raw_prior:
+            prior_shas = [s.strip() for s in raw_prior.splitlines() if s.strip()]
+
+    # If all current commits were already reviewed, skip
+    if current_shas and prior_shas and set(current_shas) == set(prior_shas):
+        return (
+            True,
+            f"PR #{pr_number} has no new commits since last review — skipping.",
+            None,
+        )
 
     # Step 2: Build review prompt
     prompt = build_review_prompt(
         context, skill_dir=skill_dir, architecture=architecture,
-        repliable_comments=repliable_comments,
+        comments=comments, repliable_comments=repliable_comments,
+        plan_body=plan_body or None, project_path=project_path,
     )
 
-    # Step 3: Run Claude review (read-only)
+    # Step 3: Run provider review (read-only)
     notify_fn(f"Analyzing code changes on `{context['branch']}`...")
-    raw_output = _run_claude_review(prompt, project_path)
+    raw_output, error = _run_claude_review(prompt, project_path)
     if not raw_output:
-        return False, f"Claude review produced no output for PR #{pr_number}.", None
+        detail = f" ({error})" if error else ""
+        return False, f"Provider review failed for PR #{pr_number}{detail}.", None
 
     # Step 4: Parse structured JSON review (with retry)
     review_data = _parse_review_json(raw_output)
@@ -553,14 +1377,31 @@ def run_review(
             "You MUST respond with ONLY a valid JSON object matching the "
             "schema described above. No markdown, no text, just JSON."
         )
-        retry_output = _run_claude_review(retry_prompt, project_path)
+        retry_output, _ = _run_claude_review(retry_prompt, project_path)
         if retry_output:
             review_data = _parse_review_json(retry_output)
+
+    # Step 4b: Reflection pass — filter low-signal findings
+    if review_data is not None and review_data.get("file_comments"):
+        from app.config import get_model_config, get_review_reflect_config
+        _models = get_model_config()
+        reflect_cfg = get_review_reflect_config()
+        reflect_model = _models.get("reflect") or _models.get("lightweight")
+        reflect_threshold = reflect_cfg.get("threshold", 5)
+        review_data["file_comments"] = _reflect_findings(
+            review_data["file_comments"],
+            context.get("diff", ""),
+            project_path,
+            reflect_model,
+            reflect_threshold,
+            skill_dir=skill_dir,
+        )
 
     # Step 5: Convert to markdown for posting
     if review_data is not None:
         review_body = _format_review_as_markdown(
             review_data, title=context.get("title", ""),
+            bot_username=bot_username,
         )
     else:
         # Fallback: use regex extraction for non-JSON responses
@@ -569,12 +1410,22 @@ def run_review(
             file=sys.stderr,
         )
         review_body = _extract_review_body(raw_output)
+        if review_body is None:
+            # Guardrail: never post raw model output (narration / JSON) to a PR.
+            # Post a short placeholder and alert a human to re-run.
+            print(
+                "[review_runner] review output unparseable; "
+                "posting placeholder notice",
+                file=sys.stderr,
+            )
+            notify_fn(
+                f"⚠️ Review for PR #{pr_number}: model output couldn't be "
+                "parsed into the structured format; posted a placeholder. "
+                "Re-run /review to retry."
+            )
+            review_body = _UNPARSEABLE_REVIEW_NOTICE
 
-    # Step 6: Post review comment
-    notify_fn(f"Posting review on PR #{pr_number}...")
-    posted = _post_review_comment(owner, repo, pr_number, review_body)
-
-    # Step 7: Post replies to user comments
+    # Step 6: Post replies to user comments
     reply_count = 0
     if review_data and review_data.get("comment_replies") and repliable_comments:
         reply_count = _post_comment_replies(
@@ -588,13 +1439,100 @@ def run_review(
                 file=sys.stderr,
             )
 
+    # Step 6a: Silent-failure-hunter pass (explicit flag or auto-detected)
+    diff = context.get("diff", "")
+    run_error_hunter = errors or _should_run_error_hunter(diff)
+    if run_error_hunter:
+        notify_fn(f"Running silent-failure-hunter on PR #{pr_number}...")
+        error_section = _run_error_hunter(diff, project_path, skill_dir)
+        if error_section:
+            review_body = review_body + "\n\n---\n\n" + error_section
+        else:
+            print(
+                "[review_runner] silent-failure-hunter: no findings",
+                file=sys.stderr,
+            )
+
+    # Step 7: Post (or update) review comment (Phase 3 — idempotent upsert)
+    # Commit SHAs are embedded in the body upfront to avoid extra API calls.
+    notify_fn(f"Posting review on PR #{pr_number}...")
+    posted, post_error = _post_review_comment(
+        owner, repo, pr_number, review_body, existing_comment,
+        commit_shas=current_shas or None,
+    )
+
+    # Step 8: Close the PR if the review decided closure is warranted
+    closed = False
+    close_reason = ""
+    if isinstance(review_data, dict):
+        close_decision = review_data.get("close_pr") or {}
+        if close_decision.get("close") is True:
+            if posted:
+                close_reason = (close_decision.get("reason") or "").strip()
+                closed = _close_pr_from_review(
+                    owner, repo, pr_number, close_reason, notify_fn=notify_fn,
+                )
+            else:
+                print(
+                    f"[review_runner] close_pr.close=True observed but review "
+                    f"post failed; skipping close on PR #{pr_number}",
+                    file=sys.stderr,
+                )
+
     if posted:
         summary = f"Review posted on PR #{pr_number} ({full_repo})."
+        if run_error_hunter:
+            summary += " Silent-failure-hunter pass included."
         if reply_count:
             summary += f" Replied to {reply_count} comment(s)."
+        if closed:
+            summary += f" PR closed: {close_reason or 'no reason provided'}."
         return True, summary, review_data
     else:
-        return False, f"Review generated but failed to post comment on PR #{pr_number}.", review_data
+        detail = f" Error: {post_error}" if post_error else ""
+        return False, f"Review generated but failed to post comment on PR #{pr_number}.{detail}", review_data
+
+
+def _close_pr_from_review(
+    owner: str,
+    repo: str,
+    pr_number: str,
+    reason: str,
+    notify_fn=None,
+) -> bool:
+    """Close a PR after the review decided closure is warranted.
+
+    Runs ``gh pr close --comment ...`` so the explanatory comment and the
+    close action are atomic: if close fails (403, rate limit, etc.) no
+    misleading "PR Closed" comment is left dangling on an open PR.
+
+    Returns True on success, False on any failure (caller continues either way).
+    """
+    full_repo = f"{owner}/{repo}"
+    reason_text = reason or "Closure recommended by the latest review."
+    comment_body = (
+        "## PR Closed by Reviewer Recommendation\n\n"
+        f"{reason_text}\n\n"
+        "See the review above for the full rationale. Reopen the PR with a "
+        "comment if this determination is incorrect.\n\n"
+        "---\n_Automated by Kōan_"
+    )
+    try:
+        run_gh(
+            "pr", "close", pr_number,
+            "--repo", full_repo,
+            "--comment", sanitize_github_comment(comment_body),
+        )
+    except Exception as e:
+        print(f"[review_runner] PR close failed: {e}", file=sys.stderr)
+        return False
+
+    if notify_fn:
+        msg = f"PR #{pr_number} ({full_repo}) closed by reviewer recommendation."
+        if reason:
+            msg += f" Reason: {reason}"
+        notify_fn(msg)
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -622,6 +1560,24 @@ def main(argv=None):
         "--architecture", action="store_true",
         help="Use architecture-focused review (SOLID, layering, coupling)",
     )
+    parser.add_argument(
+        "--plan-url",
+        help="GitHub issue URL for the plan to check alignment against. "
+             "When omitted, auto-detects from the PR body.",
+    )
+    parser.add_argument(
+        "--project-name",
+        help="Project name for injecting project-specific learnings into the review prompt.",
+    )
+    parser.add_argument(
+        "--errors", action="store_true",
+        help="Run an additional silent-failure-hunter pass to detect swallowed "
+             "exceptions and silent error paths.",
+    )
+    parser.add_argument(
+        "--comments", action="store_true",
+        help="Use comment-quality review (accuracy, completeness, stale TODOs)",
+    )
     cli_args = parser.parse_args(argv)
 
     try:
@@ -636,6 +1592,10 @@ def main(argv=None):
         owner, repo, pr_number, cli_args.project_path,
         skill_dir=skill_dir,
         architecture=cli_args.architecture,
+        plan_url=cli_args.plan_url,
+        project_name=cli_args.project_name,
+        errors=cli_args.errors,
+        comments=cli_args.comments,
     )
     print(summary)
     return 0 if success else 1

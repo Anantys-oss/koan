@@ -210,6 +210,33 @@ class TestGetProjectSuccessRates:
         assert rates["koan"] == 1.0
         assert rates["other"] == 0.0
 
+    def test_all_outcomes_passthrough_skips_file_read(self, metrics_env):
+        """When _all_outcomes is provided, file read is skipped."""
+        # Write nothing to disk — pass outcomes directly
+        pre_loaded = [
+            _make_outcome(project="koan", outcome="productive"),
+            _make_outcome(project="koan", outcome="productive"),
+            _make_outcome(project="koan", outcome="empty"),
+        ]
+        rates = get_project_success_rates(
+            metrics_env, ["koan"], _all_outcomes=pre_loaded,
+        )
+        # 3 sessions, 2 productive → 0.667
+        assert abs(rates["koan"] - 2 / 3) < 0.01
+
+    def test_all_outcomes_empty_list(self, metrics_env):
+        """Explicit empty _all_outcomes means no data, not 'load from file'."""
+        _write_outcomes(metrics_env, [
+            _make_outcome(project="koan", outcome="productive"),
+            _make_outcome(project="koan", outcome="productive"),
+            _make_outcome(project="koan", outcome="productive"),
+        ])
+        # Pass empty list explicitly — should NOT fall back to file
+        rates = get_project_success_rates(
+            metrics_env, ["koan"], _all_outcomes=[],
+        )
+        assert rates["koan"] == 0.5  # No data → neutral
+
 
 # --- _compute_trend ---
 

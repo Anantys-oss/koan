@@ -146,6 +146,258 @@ class TestRoutes:
         assert data["ok"] is False
 
 
+class TestUsageApi:
+    def test_api_usage_exposes_cache_metrics(self, app_client):
+        fake_summary = {
+            "total_input": 1000,
+            "total_output": 500,
+            "cache_creation_input_tokens": 300,
+            "cache_read_input_tokens": 1200,
+            "cache_hit_rate": 0.48,
+            "count": 3,
+            "by_project": {"koan": {"input_tokens": 1000, "output_tokens": 500, "count": 3}},
+            "by_model": {
+                "claude-sonnet-4-20250514": {
+                    "input_tokens": 1000,
+                    "output_tokens": 500,
+                    "cache_creation_input_tokens": 300,
+                    "cache_read_input_tokens": 1200,
+                    "count": 3,
+                }
+            },
+        }
+        fake_daily = [{
+            "date": "2026-03-21",
+            "total_input": 1000,
+            "total_output": 500,
+            "cache_creation_input_tokens": 300,
+            "cache_read_input_tokens": 1200,
+            "cache_hit_rate": 0.48,
+            "count": 3,
+            "cost": 0.12,
+        }]
+
+        with patch("app.cost_tracker.summarize_range", return_value=fake_summary), \
+             patch("app.cost_tracker.get_pricing_config", return_value={"sonnet": {"input": 3.0, "output": 15.0}}), \
+             patch("app.cost_tracker.estimate_cost", return_value=0.12), \
+             patch("app.cost_tracker.estimate_cache_savings", return_value=0.00324), \
+             patch("app.cost_tracker.daily_series", return_value=fake_daily):
+            resp = app_client.get("/api/usage?days=7")
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["cache_creation_input_tokens"] == 300
+        assert data["cache_read_input_tokens"] == 1200
+        assert data["cache_hit_rate"] == pytest.approx(0.48)
+        assert data["estimated_cache_savings"] == pytest.approx(0.00324)
+        assert data["series"][0]["cache_read_input_tokens"] == 1200
+        assert "daily" not in data
+
+    def test_api_usage_without_pricing_returns_null_cache_savings(self, app_client):
+        fake_summary = {
+            "total_input": 0,
+            "total_output": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_hit_rate": 0.0,
+            "count": 0,
+            "by_project": {},
+            "by_model": {},
+        }
+        with patch("app.cost_tracker.summarize_range", return_value=fake_summary), \
+             patch("app.cost_tracker.get_pricing_config", return_value=None), \
+             patch("app.cost_tracker.daily_series", return_value=[]):
+            resp = app_client.get("/api/usage?days=1")
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["has_pricing"] is False
+        assert data["estimated_cache_savings"] is None
+
+    def test_api_usage_groupby_type_returns_by_type(self, app_client):
+        fake_summary = {
+            "total_input": 500,
+            "total_output": 200,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_hit_rate": 0.0,
+            "count": 2,
+            "by_project": {},
+            "by_model": {},
+            "by_type": {
+                "implement": {"input_tokens": 300, "output_tokens": 150, "total_cost_usd": 0.01, "count": 1},
+                "review": {"input_tokens": 200, "output_tokens": 50, "total_cost_usd": 0.005, "count": 1},
+            },
+            "by_project_and_type": {},
+        }
+        with patch("app.cost_tracker.summarize_range", return_value=fake_summary), \
+             patch("app.cost_tracker.get_pricing_config", return_value=None), \
+             patch("app.cost_tracker.estimate_cache_savings", return_value=None), \
+             patch("app.cost_tracker.daily_series", return_value=[]):
+            resp = app_client.get("/api/usage?days=7&groupby=type")
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "by_type" in data
+        assert "implement" in data["by_type"]
+        assert "review" in data["by_type"]
+        assert data["by_type"]["implement"]["count"] == 1
+
+    def test_api_usage_groupby_type_absent_without_param(self, app_client):
+        fake_summary = {
+            "total_input": 0, "total_output": 0,
+            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+            "cache_hit_rate": 0.0, "count": 0,
+            "by_project": {}, "by_model": {},
+            "by_type": {"implement": {"count": 1}},
+            "by_project_and_type": {},
+        }
+        with patch("app.cost_tracker.summarize_range", return_value=fake_summary), \
+             patch("app.cost_tracker.get_pricing_config", return_value=None), \
+             patch("app.cost_tracker.estimate_cache_savings", return_value=None), \
+             patch("app.cost_tracker.daily_series", return_value=[]):
+            resp = app_client.get("/api/usage?days=7")
+
+        data = resp.get_json()
+        assert "by_type" not in data
+
+    def test_api_usage_granularity_week_buckets_series(self, app_client):
+        fake_daily = [
+            {"date": "2026-05-18", "total_input": 100, "total_output": 50,
+             "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+             "cache_hit_rate": 0.0, "count": 1, "cost": None},
+            {"date": "2026-05-19", "total_input": 200, "total_output": 80,
+             "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+             "cache_hit_rate": 0.0, "count": 2, "cost": None},
+            {"date": "2026-05-25", "total_input": 300, "total_output": 100,
+             "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+             "cache_hit_rate": 0.0, "count": 1, "cost": None},
+        ]
+        fake_summary = {
+            "total_input": 600, "total_output": 230,
+            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+            "cache_hit_rate": 0.0, "count": 4,
+            "by_project": {}, "by_model": {},
+        }
+        with patch("app.cost_tracker.summarize_range", return_value=fake_summary), \
+             patch("app.cost_tracker.get_pricing_config", return_value=None), \
+             patch("app.cost_tracker.estimate_cache_savings", return_value=None), \
+             patch("app.cost_tracker.daily_series", return_value=fake_daily):
+            resp = app_client.get("/api/usage?days=14&granularity=week")
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["granularity"] == "week"
+        # 2026-05-18 and 2026-05-19 are in ISO week 2026-W21;
+        # 2026-05-25 is in ISO week 2026-W22
+        assert len(data["series"]) == 2
+        w21 = next(e for e in data["series"] if "W21" in e["week"])
+        assert w21["total_input"] == 300  # 100 + 200
+        assert w21["count"] == 3
+
+    def test_api_usage_granularity_month_buckets_series(self, app_client):
+        fake_daily = [
+            {"date": "2026-04-30", "total_input": 100, "total_output": 50,
+             "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+             "cache_hit_rate": 0.0, "count": 1, "cost": None},
+            {"date": "2026-05-01", "total_input": 200, "total_output": 80,
+             "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+             "cache_hit_rate": 0.0, "count": 2, "cost": None},
+        ]
+        fake_summary = {
+            "total_input": 300, "total_output": 130,
+            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+            "cache_hit_rate": 0.0, "count": 3,
+            "by_project": {}, "by_model": {},
+        }
+        with patch("app.cost_tracker.summarize_range", return_value=fake_summary), \
+             patch("app.cost_tracker.get_pricing_config", return_value=None), \
+             patch("app.cost_tracker.estimate_cache_savings", return_value=None), \
+             patch("app.cost_tracker.daily_series", return_value=fake_daily):
+            resp = app_client.get("/api/usage?days=30&granularity=month")
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["granularity"] == "month"
+        assert len(data["series"]) == 2
+        apr = next(e for e in data["series"] if e["month"] == "2026-04")
+        may = next(e for e in data["series"] if e["month"] == "2026-05")
+        assert apr["total_input"] == 100
+        assert may["total_input"] == 200
+
+    def test_api_usage_stacked_embeds_by_project(self, app_client):
+        fake_daily = [
+            {"date": "2026-05-25", "total_input": 500, "total_output": 200,
+             "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+             "cache_hit_rate": 0.0, "count": 2, "cost": None,
+             "by_project": {
+                 "koan": {"total_input": 300, "total_output": 100, "count": 1},
+                 "other": {"total_input": 200, "total_output": 100, "count": 1},
+             }},
+        ]
+        fake_summary = {
+            "total_input": 500, "total_output": 200,
+            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+            "cache_hit_rate": 0.0, "count": 2,
+            "by_project": {}, "by_model": {},
+        }
+        with patch("app.cost_tracker.summarize_range", return_value=fake_summary), \
+             patch("app.cost_tracker.get_pricing_config", return_value=None), \
+             patch("app.cost_tracker.estimate_cache_savings", return_value=None), \
+             patch("app.cost_tracker.daily_series", return_value=fake_daily):
+            resp = app_client.get("/api/usage?days=7&stacked=true")
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "by_project" in data["series"][0]
+        assert "koan" in data["series"][0]["by_project"]
+
+    def test_api_usage_stacked_false_no_by_project_in_series(self, app_client):
+        fake_daily = [
+            {"date": "2026-05-25", "total_input": 100, "total_output": 50,
+             "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+             "cache_hit_rate": 0.0, "count": 1, "cost": None},
+        ]
+        fake_summary = {
+            "total_input": 100, "total_output": 50,
+            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+            "cache_hit_rate": 0.0, "count": 1,
+            "by_project": {}, "by_model": {},
+        }
+        with patch("app.cost_tracker.summarize_range", return_value=fake_summary), \
+             patch("app.cost_tracker.get_pricing_config", return_value=None), \
+             patch("app.cost_tracker.estimate_cache_savings", return_value=None), \
+             patch("app.cost_tracker.daily_series", return_value=fake_daily):
+            resp = app_client.get("/api/usage?days=7")
+
+        data = resp.get_json()
+        assert "by_project" not in data["series"][0]
+
+    def test_api_usage_offset_shifts_window(self, app_client):
+        """offset=1 with day granularity shifts end date back by days."""
+        fake_summary = {
+            "total_input": 0, "total_output": 0,
+            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+            "cache_hit_rate": 0.0, "count": 0,
+            "by_project": {}, "by_model": {},
+        }
+        with patch("app.cost_tracker.summarize_range", return_value=fake_summary) as mock_sr, \
+             patch("app.cost_tracker.get_pricing_config", return_value=None), \
+             patch("app.cost_tracker.estimate_cache_savings", return_value=None), \
+             patch("app.cost_tracker.daily_series", return_value=[]):
+            resp0 = app_client.get("/api/usage?days=7&offset=0")
+            resp1 = app_client.get("/api/usage?days=7&offset=1")
+
+        data0 = resp0.get_json()
+        data1 = resp1.get_json()
+        # offset=1 end date is 7 days before offset=0 end date
+        from datetime import date as _date, timedelta as _td
+        end0 = _date.fromisoformat(data0["end"])
+        end1 = _date.fromisoformat(data1["end"])
+        assert end0 - end1 == _td(days=7)
+        assert data1["offset"] == 1
+
+
 class TestSignals:
     def test_no_signals(self, tmp_path):
         with patch.object(dashboard, "KOAN_ROOT", tmp_path):
@@ -1179,3 +1431,237 @@ class TestPlansPage:
             )
         assert len(linked) == 1
         assert "/plan" in linked[0]
+
+
+# ---------------------------------------------------------------------------
+# Automation rules routes
+# ---------------------------------------------------------------------------
+
+import yaml as _yaml
+
+
+class TestRulesRoutes:
+    """Integration tests for the /api/rules and /rules endpoints."""
+
+    def test_get_rules_empty(self, app_client, instance_dir):
+        with patch.object(dashboard, "INSTANCE_DIR", instance_dir):
+            resp = app_client.get("/api/rules")
+        assert resp.status_code == 200
+        assert resp.get_json() == []
+
+    def test_post_rule_creates_entry(self, app_client, instance_dir):
+        with patch.object(dashboard, "INSTANCE_DIR", instance_dir):
+            resp = app_client.post("/api/rules", json={
+                "event": "post_mission",
+                "action": "notify",
+                "params": {"message": "done"},
+            })
+            assert resp.status_code == 201
+            rule = resp.get_json()
+            assert rule["event"] == "post_mission"
+            assert rule["action"] == "notify"
+            assert rule["params"]["message"] == "done"
+
+            # Appears in subsequent GET
+            resp2 = app_client.get("/api/rules")
+            assert resp2.status_code == 200
+            rules = resp2.get_json()
+            assert len(rules) == 1
+            assert rules[0]["id"] == rule["id"]
+
+    def test_post_rule_unknown_event_returns_400(self, app_client, instance_dir):
+        with patch.object(dashboard, "INSTANCE_DIR", instance_dir):
+            resp = app_client.post("/api/rules", json={
+                "event": "no_such_event",
+                "action": "notify",
+            })
+        assert resp.status_code == 400
+        assert "error" in resp.get_json()
+
+    def test_post_rule_unknown_action_returns_400(self, app_client, instance_dir):
+        with patch.object(dashboard, "INSTANCE_DIR", instance_dir):
+            resp = app_client.post("/api/rules", json={
+                "event": "post_mission",
+                "action": "send_email",
+            })
+        assert resp.status_code == 400
+
+    def test_patch_rule_toggles_enabled(self, app_client, instance_dir):
+        with patch.object(dashboard, "INSTANCE_DIR", instance_dir):
+            create = app_client.post("/api/rules", json={
+                "event": "post_mission",
+                "action": "notify",
+                "params": {"message": "hi"},
+            })
+            rule_id = create.get_json()["id"]
+            assert create.get_json()["enabled"] is True
+
+            patch_resp = app_client.patch(f"/api/rules/{rule_id}", json={"enabled": False})
+            assert patch_resp.status_code == 200
+            assert patch_resp.get_json()["enabled"] is False
+
+    def test_delete_rule_removes_it(self, app_client, instance_dir):
+        with patch.object(dashboard, "INSTANCE_DIR", instance_dir):
+            create = app_client.post("/api/rules", json={
+                "event": "pre_mission",
+                "action": "pause",
+            })
+            rule_id = create.get_json()["id"]
+
+            del_resp = app_client.delete(f"/api/rules/{rule_id}")
+            assert del_resp.status_code == 200
+
+            rules = app_client.get("/api/rules").get_json()
+            assert all(r["id"] != rule_id for r in rules)
+
+    def test_delete_nonexistent_rule_returns_404(self, app_client, instance_dir):
+        with patch.object(dashboard, "INSTANCE_DIR", instance_dir):
+            resp = app_client.delete("/api/rules/does_not_exist")
+        assert resp.status_code == 404
+
+    def test_rules_page_renders_without_error(self, app_client, instance_dir):
+        with patch.object(dashboard, "INSTANCE_DIR", instance_dir), \
+             patch.object(dashboard, "JOURNAL_DIR", instance_dir / "journal"):
+            resp = app_client.get("/rules")
+        assert resp.status_code == 200
+        assert b"Automation Rules" in resp.data
+
+    def test_rules_page_shows_empty_state_when_no_rules(self, app_client, instance_dir):
+        with patch.object(dashboard, "INSTANCE_DIR", instance_dir), \
+             patch.object(dashboard, "JOURNAL_DIR", instance_dir / "journal"):
+            resp = app_client.get("/rules")
+        assert resp.status_code == 200
+        assert b"No rules yet" in resp.data
+
+
+class TestApiLogs:
+    """Tests for /api/logs endpoint."""
+
+    def test_api_logs_no_log_dir(self, app_client, tmp_path):
+        """Returns empty lines when $KOAN_ROOT/logs/ doesn't exist."""
+        with patch.object(dashboard, "KOAN_ROOT", tmp_path):
+            resp = app_client.get("/api/logs")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["lines"] == []
+        assert data["total"] == 0
+
+    def test_api_logs_run_only(self, app_client, tmp_path):
+        """source=run returns lines only from run.log."""
+        logs_dir = tmp_path / "logs"
+        logs_dir.mkdir()
+        (logs_dir / "run.log").write_text("line1\nline2\nline3\n")
+        with patch.object(dashboard, "KOAN_ROOT", tmp_path):
+            resp = app_client.get("/api/logs?source=run")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        texts = [e["text"] for e in data["lines"]]
+        assert texts == ["line1", "line2", "line3"]
+        assert all(e["source"] == "run" for e in data["lines"])
+
+    def test_api_logs_filter(self, app_client, tmp_path):
+        """?q=error returns only lines containing 'error'."""
+        logs_dir = tmp_path / "logs"
+        logs_dir.mkdir()
+        (logs_dir / "run.log").write_text(
+            "info: all good\nerror: something failed\ninfo: still ok\n"
+        )
+        with patch.object(dashboard, "KOAN_ROOT", tmp_path):
+            resp = app_client.get("/api/logs?source=run&q=error")
+        data = resp.get_json()
+        assert data["total"] == 1
+        assert "error" in data["lines"][0]["text"].lower()
+
+    def test_api_logs_limit(self, app_client, tmp_path):
+        """?limit=50 returns at most 50 lines."""
+        logs_dir = tmp_path / "logs"
+        logs_dir.mkdir()
+        content = "\n".join(f"line{i}" for i in range(300)) + "\n"
+        (logs_dir / "run.log").write_text(content)
+        with patch.object(dashboard, "KOAN_ROOT", tmp_path):
+            resp = app_client.get("/api/logs?source=run&limit=50")
+        data = resp.get_json()
+        assert data["total"] == 50
+
+    def test_api_logs_limit_clamped(self, app_client, tmp_path):
+        """limit above 2000 is clamped to 2000."""
+        logs_dir = tmp_path / "logs"
+        logs_dir.mkdir()
+        content = "\n".join(f"line{i}" for i in range(10)) + "\n"
+        (logs_dir / "run.log").write_text(content)
+        with patch.object(dashboard, "KOAN_ROOT", tmp_path):
+            resp = app_client.get("/api/logs?source=run&limit=99999")
+        assert resp.status_code == 200  # no error
+
+    def test_api_logs_missing_source_file(self, app_client, tmp_path):
+        """Missing awake.log returns empty lines for that source."""
+        logs_dir = tmp_path / "logs"
+        logs_dir.mkdir()
+        (logs_dir / "run.log").write_text("run line\n")
+        # awake.log intentionally absent
+        with patch.object(dashboard, "KOAN_ROOT", tmp_path):
+            resp = app_client.get("/api/logs?source=all")
+        data = resp.get_json()
+        sources = {e["source"] for e in data["lines"]}
+        assert "run" in sources
+        assert "awake" not in sources
+
+
+class TestApiHealth:
+    """Tests for /api/health endpoint."""
+
+    def test_api_health_structure(self, app_client, tmp_path):
+        """Response contains disk, run, and awake keys."""
+        with patch.object(dashboard, "KOAN_ROOT", tmp_path):
+            resp = app_client.get("/api/health")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "disk" in data
+        assert "run" in data
+        assert "awake" in data
+
+    def test_api_health_no_pids(self, app_client, tmp_path):
+        """With no PID files, run.alive and awake.alive are False."""
+        with patch.object(dashboard, "KOAN_ROOT", tmp_path):
+            resp = app_client.get("/api/health")
+        data = resp.get_json()
+        assert data["run"]["alive"] is False
+        assert data["awake"]["alive"] is False
+
+    def test_api_health_disk_warn(self, app_client, tmp_path):
+        """disk.status is 'warn' when usage is between 85% and 95%."""
+        total = 100 * 1024 * 1024
+        used = 90 * 1024 * 1024
+        free = total - used
+        mock_usage = shutil.disk_usage.__class__  # just need the namedtuple shape
+        with patch.object(dashboard, "KOAN_ROOT", tmp_path), \
+             patch("app.dashboard.shutil.disk_usage",
+                   return_value=type("DiskUsage", (), {"total": total, "used": used, "free": free})()):
+            resp = app_client.get("/api/health")
+        data = resp.get_json()
+        assert data["disk"]["status"] == "warn"
+        assert data["disk"]["used_pct"] == 90
+
+    def test_api_health_disk_error(self, app_client, tmp_path):
+        """disk.status is 'error' when usage >= 95%."""
+        total = 100 * 1024 * 1024
+        used = 96 * 1024 * 1024
+        free = total - used
+        with patch.object(dashboard, "KOAN_ROOT", tmp_path), \
+             patch("app.dashboard.shutil.disk_usage",
+                   return_value=type("DiskUsage", (), {"total": total, "used": used, "free": free})()):
+            resp = app_client.get("/api/health")
+        data = resp.get_json()
+        assert data["disk"]["status"] == "error"
+
+    def test_api_health_disk_ok(self, app_client, tmp_path):
+        """disk.status is 'ok' when usage < 85%."""
+        total = 100 * 1024 * 1024
+        used = 50 * 1024 * 1024
+        free = total - used
+        with patch.object(dashboard, "KOAN_ROOT", tmp_path), \
+             patch("app.dashboard.shutil.disk_usage",
+                   return_value=type("DiskUsage", (), {"total": total, "used": used, "free": free})()):
+            resp = app_client.get("/api/health")
+        data = resp.get_json()
+        assert data["disk"]["status"] == "ok"

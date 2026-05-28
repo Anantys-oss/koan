@@ -13,6 +13,7 @@ Pipeline:
 6. Comment on the original PR with cross-link
 """
 
+import contextlib
 import re
 import sys
 from pathlib import Path
@@ -20,15 +21,17 @@ from typing import List, Optional, Tuple
 
 from app.claude_step import (
     _build_pr_prompt,
+    _fetch_branch,
     _get_current_branch,
     _get_diffstat,
     _push_with_pr_fallback,
     _run_git,
     _safe_checkout,
+    resolve_pr_location,
     run_claude_step,
     run_project_tests,
 )
-from app.github import run_gh
+from app.github import run_gh, sanitize_github_comment
 from app.prompts import load_prompt, load_skill_prompt  # noqa: F401 — safety import
 from app.rebase_pr import (
     build_comment_summary,
@@ -65,13 +68,22 @@ def run_recreate(
         from app.notify import send_telegram
         notify_fn = send_telegram
 
-    full_repo = f"{owner}/{repo}"
     actions_log: List[str] = []
 
+    # -- Step 0: Resolve actual PR location (cross-owner support) ---------------
+    print(f"[recreate] Resolving PR #{pr_number} location", flush=True)
+    try:
+        owner, repo = resolve_pr_location(owner, repo, pr_number, project_path)
+    except RuntimeError as e:
+        return False, str(e)
+
+    full_repo = f"{owner}/{repo}"
+
     # -- Step 1: Fetch PR context ------------------------------------------------
+    print(f"[recreate] Fetching PR #{pr_number} context", flush=True)
     notify_fn(f"Reading PR #{pr_number} to understand original intent...")
     try:
-        context = fetch_pr_context(owner, repo, pr_number)
+        context = fetch_pr_context(owner, repo, pr_number, project_path)
     except Exception as e:
         return False, f"Failed to fetch PR context: {e}"
 
@@ -101,6 +113,7 @@ def run_recreate(
         actions_log.append("Read PR comments and review feedback")
 
     # -- Step 2: Create fresh branch from upstream target -----------------------
+    print(f"[recreate] Creating fresh branch from upstream `{base}`", flush=True)
     notify_fn(f"Creating fresh branch from upstream `{base}`...")
 
     original_branch = _get_current_branch(project_path)
@@ -113,11 +126,10 @@ def run_recreate(
     # Create a fresh working branch from the upstream target
     work_branch = branch  # We'll try to reuse the original branch name
     try:
-        # Delete local branch if it exists (we're recreating from scratch)
-        try:
+        # Delete local branch if it exists (we're recreating from scratch).
+        # Branch doesn't exist locally, that's fine.
+        with contextlib.suppress(RuntimeError, OSError):
             _run_git(["git", "branch", "-D", work_branch], cwd=project_path)
-        except (RuntimeError, OSError):
-            pass  # Branch doesn't exist locally, that's fine
 
         _run_git(
             ["git", "checkout", "-b", work_branch, f"{upstream_remote}/{base}"],
@@ -129,6 +141,7 @@ def run_recreate(
         return False, f"Failed to create fresh branch: {e}"
 
     # -- Step 3: Reimplement the feature via Claude ----------------------------
+    print(f"[recreate] Reimplementing feature via Claude (PR #{pr_number})", flush=True)
     notify_fn(f"Reimplementing feature from PR #{pr_number}...")
 
     reimpl_ok = _reimpl_feature(
@@ -159,6 +172,7 @@ def run_recreate(
         return False, reason
 
     # -- Step 4: Run tests ----------------------------------------------------
+    print("[recreate] Running tests", flush=True)
     notify_fn("Running tests...")
     test_result = run_project_tests(project_path)
     if test_result["passed"]:
@@ -170,6 +184,7 @@ def run_recreate(
     diffstat = _get_diffstat(f"{upstream_remote}/{base}", project_path)
 
     # -- Step 5: Push the result -----------------------------------------------
+    print(f"[recreate] Pushing `{work_branch}`", flush=True)
     notify_fn(f"Pushing `{work_branch}`...")
     push_result = _push_recreated(
         work_branch, base, full_repo, pr_number, context, project_path
@@ -195,7 +210,7 @@ def run_recreate(
         run_gh(
             "pr", "comment", pr_number,
             "--repo", full_repo,
-            "--body", comment_body,
+            "--body", sanitize_github_comment(comment_body),
         )
         actions_log.append("Commented on original PR")
     except Exception as e:
@@ -225,7 +240,7 @@ def _fetch_upstream_target(base: str, project_path: str) -> Optional[str]:
     """
     for remote in ("upstream", "origin"):
         try:
-            _run_git(["git", "fetch", remote, base], cwd=project_path)
+            _fetch_branch(remote, base, cwd=project_path)
             return remote
         except (RuntimeError, OSError):
             continue
@@ -248,7 +263,7 @@ def _reimpl_feature(
 
     Returns True if the step produced a commit, False otherwise.
     """
-    from app.config import get_skill_timeout
+    from app.config import get_skill_max_turns, get_skill_timeout
     prompt = _build_recreate_prompt(context, skill_dir=skill_dir)
     return run_claude_step(
         prompt=prompt,
@@ -257,7 +272,7 @@ def _reimpl_feature(
         success_label="Reimplemented feature from scratch",
         failure_label="Feature reimplementation step failed",
         actions_log=actions_log,
-        max_turns=30,
+        max_turns=get_skill_max_turns(),
         timeout=get_skill_timeout(),
     )
 

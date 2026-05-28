@@ -19,6 +19,7 @@ Usage from Python:
     release_pidfile(lock, koan_root, "awake")
 """
 
+import contextlib
 import fcntl
 import os
 import shutil
@@ -30,6 +31,7 @@ from pathlib import Path
 from typing import Optional, IO
 
 from app.signals import (
+    CYCLE_FILE,
     PAUSE_FILE,
     PROJECT_FILE,
     STATUS_FILE,
@@ -334,8 +336,8 @@ def start_runner(
 
     Returns (success: bool, message: str).
     """
-    # Clear stop and pause signals so run.py starts fresh
-    for signal_file in (STOP_FILE, PAUSE_FILE):
+    # Clear stop, pause, and cycle signals so run.py starts fresh
+    for signal_file in (STOP_FILE, PAUSE_FILE, CYCLE_FILE):
         (koan_root / signal_file).unlink(missing_ok=True)
 
     return _launch_python_process(
@@ -443,10 +445,8 @@ def _read_runner_state(koan_root: Path) -> dict:
 
     status_file = koan_root / STATUS_FILE
     if status_file.exists():
-        try:
+        with contextlib.suppress(OSError):
             state["status"] = status_file.read_text().strip()
-        except OSError:
-            pass
 
     pause_file = koan_root / PAUSE_FILE
     if pause_file.exists():
@@ -460,10 +460,8 @@ def _read_runner_state(koan_root: Path) -> dict:
 
     project_file = koan_root / PROJECT_FILE
     if project_file.exists():
-        try:
+        with contextlib.suppress(OSError):
             state["project"] = project_file.read_text().strip()
-        except OSError:
-            pass
 
     return state
 
@@ -710,10 +708,8 @@ def stop_processes(koan_root: Path, timeout: float = 5.0) -> dict:
             results[name] = "stopped"
         else:
             # Force kill
-            try:
+            with contextlib.suppress(OSError, ProcessLookupError):
                 os.kill(pid, signal.SIGKILL)
-            except (OSError, ProcessLookupError):
-                pass
             # Wait briefly for SIGKILL to take effect
             _wait_for_exit(pid, 1.0)
             results[name] = "force_killed"

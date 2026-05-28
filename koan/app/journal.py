@@ -70,9 +70,11 @@ def read_all_journals(instance_dir: Path, target_date) -> str:
 
     # Check nested per-project files
     if journal_dir.is_dir():
-        for f in sorted(journal_dir.iterdir()):
-            if f.suffix == ".md":
-                parts.append(f"[{f.stem}]\n{f.read_text()}")
+        parts.extend(
+            f"[{f.stem}]\n{f.read_text()}"
+            for f in sorted(journal_dir.iterdir())
+            if f.suffix == ".md"
+        )
 
     return "\n\n---\n\n".join(parts)
 

@@ -2,6 +2,7 @@
 name: profile
 scope: core
 group: code
+emoji: 📊
 description: Queue a performance profiling mission for a managed project
 version: 1.0.0
 audience: hybrid

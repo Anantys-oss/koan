@@ -1,6 +1,21 @@
 """Kōan status skill — consolidates /status, /ping, /usage."""
 
 
+def _get_server_ip() -> str:
+    """Return the IP address of the main network interface.
+
+    Uses a UDP socket connection to determine the default route IP
+    without actually sending any data.
+    """
+    import socket
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+    except Exception:
+        return "unknown"
+
+
 def _needs_ollama() -> bool:
     """Return True if the configured provider requires ollama serve."""
     try:
@@ -8,6 +23,35 @@ def _needs_ollama() -> bool:
         return get_provider_name() in ("local", "ollama")
     except Exception:
         return False
+
+
+def _get_version() -> str:
+    """Return Kōan version from git tags.
+
+    Format: 'v0.73' (exact tag) or 'v0.73@deadbeef +17' (ahead of tag).
+    """
+    import subprocess
+    from pathlib import Path
+    # koan source root: handler.py is at koan/skills/core/status/handler.py
+    koan_src = Path(__file__).resolve().parents[3]
+    try:
+        result = subprocess.run(
+            ["git", "describe", "--tags"],
+            capture_output=True, text=True, timeout=5,
+            cwd=koan_src,
+        )
+        if result.returncode != 0:
+            return ""
+        desc = result.stdout.strip()
+        # Exact tag: just "v0.73"
+        # Ahead of tag: "v0.73-17-gabcdef12"
+        parts = desc.rsplit("-", 2)
+        if len(parts) == 3 and parts[2].startswith("g"):
+            tag, commits_ahead, sha = parts[0], parts[1], parts[2][1:]
+            return f"{tag}@{sha[:8]} +{commits_ahead}"
+        return desc
+    except Exception:
+        return ""
 
 
 def _truncate(text: str, max_len: int = 60) -> str:
@@ -67,7 +111,8 @@ def _handle_status(ctx) -> str:
     instance_dir = ctx.instance_dir
     missions_file = instance_dir / "missions.md"
 
-    parts = ["Kōan Status"]
+    version = _get_version()
+    parts = [f"Kōan Status ({version})" if version else "Kōan Status"]
 
     pause_file = koan_root / ".koan-pause"
     stop_file = koan_root / ".koan-stop"
@@ -103,7 +148,33 @@ def _handle_status(ctx) -> str:
             parts.append("\n⏸️ Mode: Paused")
         parts.append("  /resume to unpause")
     else:
-        parts.append("\n🟢 Mode: Working")
+        # Check passive mode before showing "Working"
+        try:
+            from app.passive_manager import check_passive
+            passive_state = check_passive(str(koan_root))
+            if passive_state:
+                remaining = passive_state.remaining_display()
+                if passive_state.duration == 0:
+                    parts.append("\n👁️ Mode: Passive (read-only)")
+                else:
+                    parts.append(f"\n👁️ Mode: Passive (read-only, {remaining} remaining)")
+            else:
+                parts.append("\n🟢 Mode: Active")
+        except Exception:
+            parts.append("\n🟢 Mode: Active")
+
+    # Show server IP
+    server_ip = _get_server_ip()
+    if server_ip != "unknown":
+        parts.append(f"  🌐 IP: {server_ip}")
+
+    # Show active CLI provider
+    try:
+        from app.provider import get_provider_name
+        provider_name = get_provider_name()
+        parts.append(f"  Provider: {provider_name}  (use /models to see model config)")
+    except Exception:
+        pass
 
     # Show focus mode if active
     try:
@@ -121,7 +192,7 @@ def _handle_status(ctx) -> str:
         if ollama_pid:
             parts.append(f"  🦙 Ollama: running (PID {ollama_pid})")
         else:
-            parts.append(f"  🦙 Ollama: not running")
+            parts.append("  🦙 Ollama: not running")
 
     status_file = koan_root / ".koan-status"
     if status_file.exists():
@@ -155,17 +226,88 @@ def _handle_status(ctx) -> str:
                     parts.append(f"\n{project}")
                     if in_progress:
                         parts.append(f"  In progress: {len(in_progress)}")
-                        for m in in_progress[:2]:
-                            parts.append(f"    {_format_mission_display(m)}")
+                        parts.extend(
+                            f"    {_format_mission_display(m)}" for m in in_progress[:2]
+                        )
                     if pending:
                         parts.append(f"  Pending: {len(pending)}")
-                        for m in pending[:3]:
-                            parts.append(f"    {_format_mission_display(m)}")
+                        parts.extend(
+                            f"    {_format_mission_display(m)}" for m in pending[:3]
+                        )
+
+    # Skill metrics section (per-project plan approval + CI pass rates)
+    skill_metrics_lines = _build_skill_metrics_section(instance_dir)
+    if skill_metrics_lines:
+        parts.extend(skill_metrics_lines)
 
     # Health section
     parts.extend(_build_health_section(koan_root, instance_dir))
 
+    # Contemplative adaptation rates
+    parts.extend(_build_contemplative_section(instance_dir))
+
     return "\n".join(parts)
+
+
+def _build_skill_metrics_section(instance_dir) -> list:
+    """Build skill metrics summary lines for /status output."""
+    try:
+        from pathlib import Path
+        from app.skill_metrics import format_skill_metrics_summary
+
+        projects_dir = Path(instance_dir) / "memory" / "projects"
+        if not projects_dir.exists():
+            return []
+
+        lines = []
+        for project_dir in sorted(projects_dir.iterdir()):
+            if not project_dir.is_dir():
+                continue
+            summary = format_skill_metrics_summary(
+                instance_dir, project_dir.name, days=30,
+            )
+            if summary:
+                if not lines:
+                    lines.append("\nSkill Metrics (30d)")
+                lines.append(f"  {project_dir.name}:")
+                lines.extend(f"  {line}" for line in summary.splitlines())
+        return lines
+    except Exception:
+        return []
+
+
+def _build_contemplative_section(instance_dir) -> list:
+    """Build contemplative adaptation rates for /status output."""
+    try:
+        from app.session_tracker import get_contemplative_productivity
+        from app.utils import get_contemplative_chance, get_known_projects
+
+        base_chance = get_contemplative_chance()
+        projects = get_known_projects()
+        items = []
+
+        for name, _ in projects:
+            ratio = get_contemplative_productivity(str(instance_dir), name)
+            if ratio is None:
+                continue
+            # Compute adapted chance
+            if ratio < 0.2:
+                adapted = int(base_chance * 0.4)
+            elif ratio >= 0.5:
+                adapted = min(int(base_chance * 1.5), 25)
+            else:
+                adapted = base_chance
+            pct_label = f"{ratio:.0%}"
+            if adapted != base_chance:
+                items.append(f"  {name}: {pct_label} productive → {adapted}%")
+            else:
+                items.append(f"  {name}: {pct_label} productive (unchanged)")
+
+        if items:
+            return [f"\nContemplative (base {base_chance}%)"] + items
+    except Exception:
+        pass
+    return []
 
 
 def _build_health_section(koan_root, instance_dir) -> list:
@@ -181,16 +323,26 @@ def _build_health_section(koan_root, instance_dir) -> list:
         age = get_run_heartbeat_age(str(koan_root))
         if age >= 0:
             if age < 120:
-                health_items.append(f"Heartbeat: {age:.0f}s ago")
+                health_items.append(f"💓 Heartbeat: {age:.0f}s ago")
+            elif age < 900:
+                health_items.append(f"💓 Heartbeat: {age / 60:.0f}m ago")
             else:
                 health_items.append(f"⚠️ Heartbeat: {age / 60:.0f}m ago")
         else:
-            health_items.append("Heartbeat: n/a")
+            health_items.append("💓 Heartbeat: n/a")
 
         # Stale missions (read-only check, no alerting)
         stale = check_stale_missions(str(instance_dir))
         if stale:
             health_items.append(f"⚠️ {len(stale)} stale mission(s)")
+
+        # Usage data freshness
+        health_items.append(_check_usage_staleness(instance_dir))
+
+        # GitHub notification queue depth
+        gh_item = _check_github_notifications()
+        if gh_item:
+            health_items.append(gh_item)
 
         # Disk space
         free_gb = get_disk_free_gb(str(koan_root))
@@ -198,15 +350,57 @@ def _build_health_section(koan_root, instance_dir) -> list:
             if free_gb < 1.0:
                 health_items.append(f"⚠️ Disk: {free_gb:.1f} GB free")
             else:
-                health_items.append(f"Disk: {free_gb:.0f} GB free")
+                health_items.append(f"💾 Disk: {free_gb:.0f} GB free")
 
         if health_items:
             lines.append("\nHealth")
-            for item in health_items:
-                lines.append(f"  {item}")
+            lines.extend(f"  {item}" for item in health_items)
     except Exception:
         pass
     return lines
+
+
+def _check_usage_staleness(instance_dir) -> str:
+    """Check if usage.md is stale (>6h), which triggers the 75% fallback."""
+    import os
+    import time
+
+    usage_path = instance_dir / "usage.md"
+    if not usage_path.exists():
+        return "⚠️ Usage: no data (defaulting to 75%)"
+
+    try:
+        age_seconds = time.time() - os.path.getmtime(usage_path)
+        age_hours = age_seconds / 3600
+
+        if age_hours > 6:
+            return f"⚠️ Usage: stale ({age_hours:.0f}h old, 75% fallback active)"
+        elif age_hours > 1:
+            return f"📊 Usage: {age_hours:.1f}h old"
+        else:
+            minutes = age_seconds / 60
+            return f"📊 Usage: {minutes:.0f}m old"
+    except OSError:
+        return "⚠️ Usage: unreadable"
+
+
+def _check_github_notifications() -> str:
+    """Check unread GitHub notification queue depth."""
+    try:
+        from app.github import api
+        raw = api("notifications?per_page=100")
+        if not raw or raw.strip() == "[]":
+            return "📬 GitHub: 0 unread"
+
+        import json
+        notifications = json.loads(raw)
+        count = len(notifications)
+        if count >= 100:
+            return f"📬 GitHub: {count}+ unread"
+        else:
+            return f"📬 GitHub: {count} unread"
+    except Exception:
+        return None
 
 
 def _handle_ping(ctx) -> str:

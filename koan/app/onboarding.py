@@ -10,6 +10,7 @@ Usage:
     make onboard
 """
 
+import contextlib
 import json
 import os
 import platform
@@ -300,7 +301,7 @@ def step_instance_init(state: OnboardingState) -> OnboardingState:
         pause()
         return state
 
-    print(f"  Creating instance directory and .env file...")
+    print("  Creating instance directory and .env file...")
 
     if not instance_dir.exists():
         ok = create_instance_dir()
@@ -382,23 +383,29 @@ def step_messaging(state: OnboardingState) -> OnboardingState:
         verify_telegram_token,
     )
 
-    # Check if already configured
+    # Check if already configured (any supported provider)
     token = get_env_var("KOAN_TELEGRAM_TOKEN")
     chat_id = get_env_var("KOAN_TELEGRAM_CHAT_ID")
     if token and "your-bot-token" not in token and chat_id and "your-chat-id" not in chat_id:
         print(f"  {green('✓')} Messaging already configured.")
         return state
+    if get_env_var("KOAN_SLACK_BOT_TOKEN") and get_env_var("KOAN_SLACK_CHANNEL_ID"):
+        print(f"  {green('✓')} Messaging already configured.")
+        return state
+    if get_env_var("KOAN_MATRIX_ACCESS_TOKEN") and get_env_var("KOAN_MATRIX_ROOM_ID"):
+        print(f"  {green('✓')} Messaging already configured.")
+        return state
 
     provider_idx = ask_choice(
         "Which messaging platform?",
-        ["Telegram (default)", "Slack"],
+        ["Telegram (default)", "Slack", "Matrix"],
         default=0,
     )
 
     if provider_idx == 1:
         # Slack setup
         print(f"\n  {bold('Slack setup')}")
-        print(f"  {dim('See docs/messaging-slack.md for setup instructions.')}")
+        print(f"  {dim('See docs/messaging/slack.md for setup instructions.')}")
         print()
 
         bot_token = ask("Slack Bot Token (xoxb-...)")
@@ -414,6 +421,27 @@ def step_messaging(state: OnboardingState) -> OnboardingState:
             print(f"\n  {green('✓')} Slack configuration saved.")
         else:
             print(f"\n  {yellow('○')} Incomplete Slack config — skipping for now.")
+    elif provider_idx == 2:
+        # Matrix setup
+        print(f"\n  {bold('Matrix setup')}")
+        print(f"  {dim('See docs/messaging/matrix.md for setup instructions.')}")
+        print()
+
+        homeserver = ask("Matrix Homeserver URL (https://matrix.org)")
+        access_token = ask("Matrix access token (syt_...)")
+        user_id = ask("Bot Matrix user ID (@koan:matrix.org)")
+        room_id = ask("Room ID (!abcdef:matrix.org)")
+
+        if homeserver and access_token and user_id and room_id:
+            update_env_var("KOAN_MATRIX_HOMESERVER", homeserver)
+            update_env_var("KOAN_MATRIX_ACCESS_TOKEN", access_token)
+            update_env_var("KOAN_MATRIX_USER_ID", user_id)
+            update_env_var("KOAN_MATRIX_ROOM_ID", room_id)
+            update_env_var("KOAN_MESSAGING_PROVIDER", "matrix")
+            state.data["messaging_provider"] = "matrix"
+            print(f"\n  {green('✓')} Matrix configuration saved.")
+        else:
+            print(f"\n  {yellow('○')} Incomplete Matrix config — skipping for now.")
     else:
         # Telegram setup
         print(f"\n  {bold('Telegram setup')}")
@@ -428,7 +456,7 @@ def step_messaging(state: OnboardingState) -> OnboardingState:
             return state
 
         # Verify token
-        print(f"  Verifying token...", end="", flush=True)
+        print("  Verifying token...", end="", flush=True)
         result = verify_telegram_token(bot_token)
         if result.get("valid"):
             print(f" {green('✓')} Bot: @{result.get('username', '?')}")
@@ -441,10 +469,8 @@ def step_messaging(state: OnboardingState) -> OnboardingState:
         # Try to auto-detect chat ID
         print(f"\n  {dim('Send any message to your bot on Telegram, then press Enter.')}")
         if _is_interactive:
-            try:
+            with contextlib.suppress(EOFError, KeyboardInterrupt):
                 input(f"  {dim('Press Enter when ready...')}")
-            except (EOFError, KeyboardInterrupt):
-                pass
 
         chat_id_detected = get_chat_id_from_updates(bot_token)
         if chat_id_detected:
@@ -839,7 +865,7 @@ def step_deployment(state: OnboardingState) -> OnboardingState:
     if method == "docker":
         docker_script = KOAN_ROOT / "setup-docker.sh"
         if docker_script.exists():
-            print(f"\n  Running Docker setup...")
+            print("\n  Running Docker setup...")
             subprocess.run(["bash", str(docker_script)], cwd=str(KOAN_ROOT))
         else:
             print(f"  {yellow('○')} setup-docker.sh not found.")
@@ -934,7 +960,7 @@ def step_final(state: OnboardingState) -> OnboardingState:
 
     # Offer to start
     if ask_yes_no("Start Kōan now?", default=False):
-        print(f"\n  Starting Kōan...")
+        print("\n  Starting Kōan...")
         subprocess.run(["make", "start"], cwd=str(KOAN_ROOT))
     else:
         print(f"\n  {bold('Next steps:')}")
@@ -996,7 +1022,7 @@ def run_onboarding(force: bool = False) -> None:
     # Welcome page — explain what's about to happen
     if not state.completed_steps:
         print(f"  {bold('Welcome!')} This wizard will walk you through setting up Kōan.")
-        print(f"  It takes about 5 minutes. Progress is saved after each step.")
+        print("  It takes about 5 minutes. Progress is saved after each step.")
         print()
         print(f"  {dim('Navigation: follow the prompts at each step.')}")
         print(f"  {dim('You can press Ctrl-C at any time to save and quit.')}")

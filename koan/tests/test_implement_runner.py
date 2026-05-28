@@ -5,15 +5,24 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 from app.github import fetch_issue_with_comments, detect_parent_repo
+from app.issue_tracker.types import IssueContent, IssueRef
+from app.issue_tracker import UnresolvedJiraProjectError
 from app.projects_config import get_project_submit_to_repository
 from skills.core.implement.implement_runner import (
     run_implement,
+    _GateImproved,
     _is_plan_content,
     _extract_latest_plan,
     _build_prompt,
     _execute_implementation,
     _generate_pr_summary,
+    _is_plan_cache_fresh,
+    _plan_hash,
+    _plan_review_cache_path,
+    _post_improved_plan,
+    _run_plan_review_gate,
     _submit_implement_pr,
+    _write_plan_cache,
     main,
 )
 
@@ -30,6 +39,19 @@ from app.pr_submit import (
 
 _IMPL_MODULE = "skills.core.implement.implement_runner"
 _PR_MODULE = "app.pr_submit"
+
+
+def _github_issue(title="Title", body="Body", comments=None, key="42", repo="o/r"):
+    """Build an IssueContent as the tracker's fetch_issue would return it."""
+    ref = IssueRef(
+        provider="github",
+        url="https://github.com/o/r/issues/42",
+        key=key,
+        repo=repo,
+    )
+    return IssueContent(
+        ref=ref, title=title, body=body, comments=comments or [], state="open",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -120,6 +142,19 @@ class TestExtractLatestPlan:
         result = _extract_latest_plan(body, [])
         assert "Phase 1" in result
 
+    def test_none_body_no_comments(self):
+        """Issues with empty body (GitHub returns body=null) must not crash."""
+        result = _extract_latest_plan(None, [])
+        assert result == ""
+
+    def test_none_body_with_plan_in_comment(self):
+        """A plan in a comment is returned even when the issue body is None."""
+        comments = [
+            {"body": "### Summary\nPlan from comment", "author": "bot", "date": "2026-01-01"},
+        ]
+        result = _extract_latest_plan(None, comments)
+        assert "Plan from comment" in result
+
 
 # ---------------------------------------------------------------------------
 # fetch_issue_with_comments (now in github.py)
@@ -158,6 +193,409 @@ class TestFetchIssueWithComments:
             _, _, comments = fetch_issue_with_comments("o", "r", "1")
             assert comments == []
 
+    def test_null_body_normalized_to_empty_string(self):
+        """GitHub returns body=null for issues with empty body — must coerce to ''."""
+        issue_data = json.dumps({"title": "T", "body": None})
+        with patch("app.github.api", side_effect=[issue_data, "[]"]):
+            _, body, _ = fetch_issue_with_comments("o", "r", "1")
+            assert body == ""
+
+
+# ---------------------------------------------------------------------------
+# _run_plan_review_gate
+# ---------------------------------------------------------------------------
+
+class TestPlanReviewGate:
+    """Tests for the plan-review quality gate in implement_runner."""
+
+    def test_approved_plan_proceeds(self):
+        """When review_plan returns APPROVED, gate returns None (proceed)."""
+        with patch("app.config.get_plan_review_config",
+                    return_value={"implement_gate": True}), \
+             patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan", return_value=(True, "")), \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
+             patch(f"{_IMPL_MODULE}._write_plan_cache"):
+            result = _run_plan_review_gate("## Phase 1\nDo stuff\n" * 10, "/project")
+            assert result is None
+
+    def test_issues_found_triggers_improvement_then_proceeds(self):
+        """When review finds issues, gate improves plan and proceeds (fail open)."""
+        issues = "- Phase 1: missing file paths"
+        improved = "## Phase 1: Update koan/app/foo.py\nDo stuff"
+        with patch("app.config.get_plan_review_config",
+                    return_value={"implement_gate": True, "max_rounds": 3}), \
+             patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan",
+                    side_effect=[(False, issues), (True, "")]), \
+             patch("app.plan_runner.improve_plan", return_value=improved), \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
+             patch(f"{_IMPL_MODULE}._write_plan_cache"), \
+             patch(f"{_IMPL_MODULE}._post_improved_plan"):
+            result = _run_plan_review_gate("## Phase 1\nDo stuff\n" * 10, "/project")
+            assert isinstance(result, _GateImproved)
+            assert result.plan == improved
+            assert "missing file paths" in result.issues_fixed
+
+    def test_issues_found_notifies_telegram_about_improvement(self):
+        """When gate finds issues, notify_fn is called about auto-improvement."""
+        issues = "- Phase 1: missing file paths"
+        notify = MagicMock()
+        with patch("app.config.get_plan_review_config",
+                    return_value={"implement_gate": True, "max_rounds": 3}), \
+             patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan",
+                    side_effect=[(False, issues), (True, "")]), \
+             patch("app.plan_runner.improve_plan", return_value="improved"), \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
+             patch(f"{_IMPL_MODULE}._write_plan_cache"), \
+             patch(f"{_IMPL_MODULE}._post_improved_plan"):
+            _run_plan_review_gate(
+                "## Phase 1\nDo stuff\n" * 10, "/project", notify_fn=notify,
+            )
+            notify.assert_called_once()
+            assert "auto-improving" in notify.call_args[0][0]
+
+    def test_improvement_posts_improved_plan_to_tracker(self):
+        """When gate improves plan, posts improved version via the tracker."""
+        issues = "- Phase 1: missing file paths"
+        improved = "## Phase 1: Update koan/app/foo.py\nFixed plan"
+        with patch("app.config.get_plan_review_config",
+                    return_value={"implement_gate": True, "max_rounds": 3}), \
+             patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan",
+                    side_effect=[(False, issues), (True, "")]), \
+             patch("app.plan_runner.improve_plan", return_value=improved), \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
+             patch(f"{_IMPL_MODULE}._write_plan_cache"), \
+             patch(f"{_IMPL_MODULE}.add_comment") as mock_comment:
+            _run_plan_review_gate(
+                "## Phase 1\nDo stuff\n" * 10, "/project",
+                issue_url="https://github.com/o/r/issues/42",
+            )
+            mock_comment.assert_called_once()
+            args = mock_comment.call_args[0]
+            assert args[0] == "https://github.com/o/r/issues/42"
+            assert "Improved" in args[1]
+            assert improved in args[1]
+
+    def test_notify_failure_does_not_block_improvement(self):
+        """notify_fn exception doesn't prevent gate from proceeding."""
+        notify = MagicMock(side_effect=RuntimeError("send failed"))
+        with patch("app.config.get_plan_review_config",
+                    return_value={"implement_gate": True, "max_rounds": 3}), \
+             patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan",
+                    side_effect=[(False, "issues"), (True, "")]), \
+             patch("app.plan_runner.improve_plan", return_value="improved"), \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
+             patch(f"{_IMPL_MODULE}._write_plan_cache"), \
+             patch(f"{_IMPL_MODULE}._post_improved_plan"):
+            result = _run_plan_review_gate(
+                "## Phase 1\nDo stuff\n" * 10, "/project", notify_fn=notify,
+            )
+            assert isinstance(result, _GateImproved)
+            assert result.plan == "improved"
+
+    def test_comment_failure_does_not_block_gate(self):
+        """A tracker comment exception doesn't prevent gate from proceeding."""
+        with patch("app.config.get_plan_review_config",
+                    return_value={"implement_gate": True, "max_rounds": 3}), \
+             patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan",
+                    side_effect=[(False, "issues"), (True, "")]), \
+             patch("app.plan_runner.improve_plan", return_value="improved"), \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
+             patch(f"{_IMPL_MODULE}._write_plan_cache"), \
+             patch(f"{_IMPL_MODULE}.add_comment", side_effect=RuntimeError("post failed")):
+            result = _run_plan_review_gate(
+                "## Phase 1\nDo stuff\n" * 10, "/project",
+                issue_url="https://github.com/o/r/issues/42",
+            )
+            assert isinstance(result, _GateImproved)
+            assert result.plan == "improved"
+
+    def test_simple_plan_skips_review(self):
+        """Simple plans bypass the review gate entirely — no config read needed."""
+        with patch("app.plan_runner.is_simple_plan", return_value=True), \
+             patch("app.config.get_plan_review_config") as mock_cfg, \
+             patch("app.plan_runner.review_plan") as mock_review:
+            result = _run_plan_review_gate("Rename X to Y", "/project")
+            assert result is None
+            mock_cfg.assert_not_called()
+            mock_review.assert_not_called()
+
+    def test_config_disabled_skips_review(self):
+        """When implement_gate is False, gate is skipped."""
+        with patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.config.get_plan_review_config",
+                    return_value={"implement_gate": False}), \
+             patch("app.plan_runner.review_plan") as mock_review:
+            result = _run_plan_review_gate("## Phase 1\nBig plan", "/project")
+            assert result is None
+            mock_review.assert_not_called()
+
+    def test_reviewer_error_fails_open(self):
+        """When review_plan fails open (returns approved=True on error), proceed."""
+        with patch("app.config.get_plan_review_config",
+                    return_value={"implement_gate": True}), \
+             patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan", return_value=(True, "")), \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
+             patch(f"{_IMPL_MODULE}._write_plan_cache"):
+            result = _run_plan_review_gate("## Phase 1\nDo stuff\n" * 10, "/project")
+            assert result is None
+
+    def test_gate_improved_plan_used_for_implementation(self):
+        """Integration: run_implement uses improved plan and context from gate."""
+        notify = MagicMock()
+        body = "### Summary\nPlan\n#### Phase 1: Do it"
+        improved = "## Phase 1: koan/app/foo.py\nImproved plan"
+        gate_result = _GateImproved(improved, "- missing file paths")
+        with patch(f"{_IMPL_MODULE}.fetch_issue",
+                    return_value=_github_issue(title="Title", body=body)), \
+             patch(f"{_IMPL_MODULE}._run_plan_review_gate",
+                    return_value=gate_result), \
+             patch(f"{_IMPL_MODULE}._execute_implementation",
+                    return_value="done") as mock_exec, \
+             patch(f"{_IMPL_MODULE}._submit_implement_pr", return_value=None):
+            ok, msg = run_implement(
+                "/project",
+                "https://github.com/o/r/issues/42",
+                notify_fn=notify,
+            )
+            assert ok
+            call_kwargs = mock_exec.call_args[1]
+            assert call_kwargs["plan"] == improved
+            assert "Plan Improvement Notes" in call_kwargs["context"]
+            assert "missing file paths" in call_kwargs["context"]
+
+    def test_gate_blocks_run_implement_on_tuple_failure(self):
+        """Integration: run_implement returns failure when gate returns (False, msg)."""
+        notify = MagicMock()
+        body = "### Summary\nPlan\n#### Phase 1: Do it"
+        with patch(f"{_IMPL_MODULE}.fetch_issue",
+                    return_value=_github_issue(title="Title", body=body)), \
+             patch(f"{_IMPL_MODULE}._run_plan_review_gate",
+                    return_value=(False, "Plan review failed — fix these")), \
+             patch(f"{_IMPL_MODULE}._execute_implementation") as mock_exec:
+            ok, msg = run_implement(
+                "/project",
+                "https://github.com/o/r/issues/42",
+                notify_fn=notify,
+            )
+            assert not ok
+            assert "Plan review failed" in msg
+            mock_exec.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Plan review improvement loop
+# ---------------------------------------------------------------------------
+
+class TestPlanReviewImprovementLoop:
+    """Tests for the autonomous plan improvement loop in the review gate."""
+
+    _PLAN = "## Phase 1\nDo stuff\n" * 10
+
+    def test_improvement_loop_succeeds_on_second_round(self):
+        """Improve once, second review passes — returns improved plan."""
+        improved = "## Phase 1: koan/app/foo.py\nConcrete plan"
+        with patch("app.config.get_plan_review_config",
+                    return_value={"implement_gate": True, "max_rounds": 3}), \
+             patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan",
+                    side_effect=[(False, "missing paths"), (True, "")]), \
+             patch("app.plan_runner.improve_plan", return_value=improved), \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
+             patch(f"{_IMPL_MODULE}._write_plan_cache") as mock_cache, \
+             patch(f"{_IMPL_MODULE}._post_improved_plan") as mock_post:
+            result = _run_plan_review_gate(self._PLAN, "/project")
+            assert isinstance(result, _GateImproved)
+            assert result.plan == improved
+            assert "missing paths" in result.issues_fixed
+            mock_cache.assert_called_once()
+            mock_post.assert_called_once()
+
+    def test_improvement_loop_exhausts_all_rounds_fails_open(self):
+        """All rounds fail — returns improved plan anyway (fail open)."""
+        with patch("app.config.get_plan_review_config",
+                    return_value={"implement_gate": True, "max_rounds": 2}), \
+             patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan", return_value=(False, "issues")), \
+             patch("app.plan_runner.improve_plan", return_value="better but not perfect"), \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
+             patch(f"{_IMPL_MODULE}._write_plan_cache") as mock_cache, \
+             patch(f"{_IMPL_MODULE}._post_improved_plan") as mock_post:
+            result = _run_plan_review_gate(self._PLAN, "/project")
+            assert isinstance(result, _GateImproved)
+            assert result.plan == "better but not perfect"
+            mock_cache.assert_not_called()
+            mock_post.assert_called_once()
+
+    def test_exhausted_with_unchanged_plan_returns_none(self):
+        """If improve_plan returns the same text, gate returns None (use original)."""
+        with patch("app.config.get_plan_review_config",
+                    return_value={"implement_gate": True, "max_rounds": 2}), \
+             patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan", return_value=(False, "issues")), \
+             patch("app.plan_runner.improve_plan", return_value=self._PLAN), \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
+             patch(f"{_IMPL_MODULE}._write_plan_cache") as mock_cache, \
+             patch(f"{_IMPL_MODULE}._post_improved_plan") as mock_post:
+            result = _run_plan_review_gate(self._PLAN, "/project")
+            assert result is None
+            mock_cache.assert_not_called()
+            mock_post.assert_not_called()
+
+    def test_improve_plan_called_with_issues(self):
+        """improve_plan receives the issues text from the reviewer."""
+        issues = "- Phase 1: no file paths\n- Phase 3: too large"
+        with patch("app.config.get_plan_review_config",
+                    return_value={"implement_gate": True, "max_rounds": 3}), \
+             patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan",
+                    side_effect=[(False, issues), (True, "")]), \
+             patch("app.plan_runner.improve_plan",
+                    return_value="fixed") as mock_improve, \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
+             patch(f"{_IMPL_MODULE}._write_plan_cache"), \
+             patch(f"{_IMPL_MODULE}._post_improved_plan"):
+            _run_plan_review_gate(self._PLAN, "/project")
+            mock_improve.assert_called_once()
+            args = mock_improve.call_args[0]
+            assert args[0] == self._PLAN
+            assert args[1] == issues
+            assert args[2] == "/project"
+
+    def test_improvement_not_called_on_last_round(self):
+        """On the final round, don't waste tokens improving — just fail open."""
+        call_count = 0
+
+        def counting_improve(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return "improved"
+
+        with patch("app.config.get_plan_review_config",
+                    return_value={"implement_gate": True, "max_rounds": 2}), \
+             patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan", return_value=(False, "issues")), \
+             patch("app.plan_runner.improve_plan", side_effect=counting_improve), \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
+             patch(f"{_IMPL_MODULE}._post_improved_plan"):
+            _run_plan_review_gate(self._PLAN, "/project")
+            # max_rounds=2: round 1 review fails → improve, round 2 review fails → stop
+            assert call_count == 1
+
+    def test_exhaustion_notifies_user(self):
+        """When all rounds exhausted, user is notified about fail-open."""
+        notify = MagicMock()
+        with patch("app.config.get_plan_review_config",
+                    return_value={"implement_gate": True, "max_rounds": 2}), \
+             patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan", return_value=(False, "issues")), \
+             patch("app.plan_runner.improve_plan", return_value="improved"), \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
+             patch(f"{_IMPL_MODULE}._post_improved_plan"):
+            _run_plan_review_gate(self._PLAN, "/project", notify_fn=notify)
+            # First call: improvement notification, second: exhaustion notification
+            assert notify.call_count == 2
+            exhaustion_msg = notify.call_args_list[1][0][0]
+            assert "couldn't fully resolve" in exhaustion_msg
+
+
+# ---------------------------------------------------------------------------
+# Plan review cache
+# ---------------------------------------------------------------------------
+
+class TestPlanReviewCache:
+    """Tests for content-hash caching in the plan-review gate."""
+
+    def test_plan_hash_deterministic(self):
+        """Same plan text always produces the same hash."""
+        plan = "## Phase 1\nDo stuff\n## Phase 2\nMore stuff"
+        assert _plan_hash(plan) == _plan_hash(plan)
+
+    def test_plan_hash_strips_whitespace(self):
+        """Leading/trailing whitespace doesn't affect hash."""
+        assert _plan_hash("  plan  ") == _plan_hash("plan")
+
+    def test_plan_hash_differs_for_different_plans(self):
+        """Different plan text produces different hashes."""
+        assert _plan_hash("plan A") != _plan_hash("plan B")
+
+    def test_cache_path_is_project_specific(self):
+        """Cache path includes the project name."""
+        with patch(f"{_IMPL_MODULE}.guess_project_name", return_value="myproj"):
+            path = _plan_review_cache_path("/some/project")
+            assert "myproj" in path.name
+
+    def test_is_plan_cache_fresh_no_file(self, tmp_path):
+        """Returns False when no cache file exists."""
+        with patch(f"{_IMPL_MODULE}._plan_review_cache_path",
+                    return_value=tmp_path / "nonexistent"):
+            assert not _is_plan_cache_fresh("/project", "abc123")
+
+    def test_is_plan_cache_fresh_match(self, tmp_path):
+        """Returns True when cached hash matches."""
+        cache_file = tmp_path / ".plan-review-hash-myproj"
+        cache_file.write_text("abc123\n")
+        with patch(f"{_IMPL_MODULE}._plan_review_cache_path",
+                    return_value=cache_file):
+            assert _is_plan_cache_fresh("/project", "abc123")
+
+    def test_is_plan_cache_fresh_mismatch(self, tmp_path):
+        """Returns False when cached hash differs."""
+        cache_file = tmp_path / ".plan-review-hash-myproj"
+        cache_file.write_text("old_hash\n")
+        with patch(f"{_IMPL_MODULE}._plan_review_cache_path",
+                    return_value=cache_file):
+            assert not _is_plan_cache_fresh("/project", "new_hash")
+
+    def test_write_plan_cache(self, tmp_path):
+        """write_plan_cache persists the hash to disk."""
+        cache_file = tmp_path / ".plan-review-hash-myproj"
+        with patch(f"{_IMPL_MODULE}._plan_review_cache_path",
+                    return_value=cache_file):
+            _write_plan_cache("/project", "deadbeef")
+            assert cache_file.read_text().strip() == "deadbeef"
+
+    def test_cache_hit_skips_review(self):
+        """When cache is fresh, review_plan is never called."""
+        with patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.config.get_plan_review_config",
+                    return_value={"implement_gate": True}), \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=True), \
+             patch("app.plan_runner.review_plan") as mock_review:
+            result = _run_plan_review_gate("## Phase 1\nBig plan", "/project")
+            assert result is None
+            mock_review.assert_not_called()
+
+    def test_approved_writes_cache(self):
+        """When review approves, cache is written."""
+        with patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.config.get_plan_review_config",
+                    return_value={"implement_gate": True}), \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
+             patch("app.plan_runner.review_plan", return_value=(True, "")), \
+             patch(f"{_IMPL_MODULE}._write_plan_cache") as mock_write:
+            _run_plan_review_gate("## Phase 1\nDo stuff", "/project")
+            mock_write.assert_called_once()
+
+    def test_exhausted_rounds_does_not_write_cache(self):
+        """When improvement exhausts all rounds (fail open), cache is NOT written."""
+        with patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.config.get_plan_review_config",
+                    return_value={"implement_gate": True, "max_rounds": 2}), \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
+             patch("app.plan_runner.review_plan", return_value=(False, "issues")), \
+             patch("app.plan_runner.improve_plan", return_value="still bad"), \
+             patch(f"{_IMPL_MODULE}._write_plan_cache") as mock_write, \
+             patch(f"{_IMPL_MODULE}._post_improved_plan"):
+            _run_plan_review_gate("## Phase 1\nDo stuff\n" * 10, "/project")
+            mock_write.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # _build_prompt + _execute_implementation
@@ -179,6 +617,7 @@ class TestBuildPrompt:
                 CONTEXT="Context",
                 BRANCH_PREFIX="koan/",
                 ISSUE_NUMBER="",
+                PROJECT_MEMORY="",
             )
             assert result == "prompt"
 
@@ -195,6 +634,7 @@ class TestBuildPrompt:
                 CONTEXT="Context",
                 BRANCH_PREFIX="koan/",
                 ISSUE_NUMBER="",
+                PROJECT_MEMORY="",
             )
             assert result == "prompt"
 
@@ -215,6 +655,8 @@ class TestBuildPrompt:
         assert "gh pr create --draft" in prompt
         assert "git push" in prompt
         assert "Closes https://github.com/o/r/issues/42" in prompt
+        assert "{KOAN_PYTHON}" not in prompt
+        assert " -m app.issue_cli" in prompt
 
 
 class TestExecuteImplementation:
@@ -230,7 +672,7 @@ class TestExecuteImplementation:
             assert call_kwargs[0][0] == "prompt"
             assert call_kwargs[0][1] == "/project"
             assert call_kwargs[1]["max_turns"] == 200
-            assert call_kwargs[1]["timeout"] == 3600
+            assert call_kwargs[1]["timeout"] == 7200
             assert result == "ok"
 
     def test_passes_allowed_tools(self):
@@ -254,10 +696,30 @@ class TestRunImplement:
         assert not ok
         assert "Invalid" in msg
 
+    def test_unmapped_jira_project_notifies_and_fails(self):
+        notify = MagicMock()
+        with patch(
+            f"{_IMPL_MODULE}.fetch_issue",
+            side_effect=UnresolvedJiraProjectError(
+                "Unmapped Jira issue 'PROJ-42': no Koan project was resolved. "
+                "Add this mapping in projects.yaml under projects.<name>.issue_tracker "
+                "with provider: jira and jira_project: PROJ.",
+            ),
+        ):
+            ok, msg = run_implement(
+                "/project",
+                "https://org.atlassian.net/browse/PROJ-42",
+                notify_fn=notify,
+            )
+            assert not ok
+            assert "projects.yaml" in msg
+            assert "PROJ-42" in msg
+            notify.assert_called_once()
+
     def test_no_plan_found(self):
         notify = MagicMock()
-        with patch(f"{_IMPL_MODULE}.fetch_issue_with_comments",
-                    return_value=("Title", "", [])):
+        with patch(f"{_IMPL_MODULE}.fetch_issue",
+                    return_value=_github_issue(title="Title", body="")):
             ok, msg = run_implement(
                 "/project",
                 "https://github.com/o/r/issues/1",
@@ -269,8 +731,9 @@ class TestRunImplement:
     def test_successful_implementation(self):
         notify = MagicMock()
         body = "### Summary\nPlan\n#### Phase 1: Do it"
-        with patch(f"{_IMPL_MODULE}.fetch_issue_with_comments",
-                    return_value=("Title", body, [])), \
+        with patch(f"{_IMPL_MODULE}.fetch_issue",
+                    return_value=_github_issue(title="Title", body=body)), \
+             patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
              patch(f"{_IMPL_MODULE}._execute_implementation",
                     return_value="Done"):
             ok, msg = run_implement(
@@ -284,8 +747,9 @@ class TestRunImplement:
     def test_with_context(self):
         notify = MagicMock()
         body = "### Summary\nPlan\n#### Phase 1: Do it"
-        with patch(f"{_IMPL_MODULE}.fetch_issue_with_comments",
-                    return_value=("Title", body, [])), \
+        with patch(f"{_IMPL_MODULE}.fetch_issue",
+                    return_value=_github_issue(title="Title", body=body)), \
+             patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
              patch(f"{_IMPL_MODULE}._execute_implementation",
                     return_value="Done") as mock_run:
             ok, msg = run_implement(
@@ -302,7 +766,7 @@ class TestRunImplement:
 
     def test_fetch_failure(self):
         notify = MagicMock()
-        with patch(f"{_IMPL_MODULE}.fetch_issue_with_comments",
+        with patch(f"{_IMPL_MODULE}.fetch_issue",
                     side_effect=RuntimeError("API error")):
             ok, msg = run_implement(
                 "/project",
@@ -315,8 +779,9 @@ class TestRunImplement:
     def test_claude_failure(self):
         notify = MagicMock()
         body = "### Summary\nPlan\n#### Phase 1: Do it"
-        with patch(f"{_IMPL_MODULE}.fetch_issue_with_comments",
-                    return_value=("Title", body, [])), \
+        with patch(f"{_IMPL_MODULE}.fetch_issue",
+                    return_value=_github_issue(title="Title", body=body)), \
+             patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
              patch(f"{_IMPL_MODULE}._execute_implementation",
                     side_effect=RuntimeError("Timeout")):
             ok, msg = run_implement(
@@ -330,8 +795,9 @@ class TestRunImplement:
     def test_empty_claude_output(self):
         notify = MagicMock()
         body = "### Summary\nPlan\n#### Phase 1: Do it"
-        with patch(f"{_IMPL_MODULE}.fetch_issue_with_comments",
-                    return_value=("Title", body, [])), \
+        with patch(f"{_IMPL_MODULE}.fetch_issue",
+                    return_value=_github_issue(title="Title", body=body)), \
+             patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
              patch(f"{_IMPL_MODULE}._execute_implementation",
                     return_value=""):
             ok, msg = run_implement(
@@ -345,8 +811,9 @@ class TestRunImplement:
     def test_default_context_when_none(self):
         notify = MagicMock()
         body = "### Summary\nPlan\n#### Phase 1: Do it"
-        with patch(f"{_IMPL_MODULE}.fetch_issue_with_comments",
-                    return_value=("Title", body, [])), \
+        with patch(f"{_IMPL_MODULE}.fetch_issue",
+                    return_value=_github_issue(title="Title", body=body)), \
+             patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
              patch(f"{_IMPL_MODULE}._execute_implementation",
                     return_value="Done") as mock_run:
             run_implement(
@@ -360,8 +827,9 @@ class TestRunImplement:
     def test_notify_messages(self):
         notify = MagicMock()
         body = "### Summary\nPlan\n#### Phase 1: Do it"
-        with patch(f"{_IMPL_MODULE}.fetch_issue_with_comments",
-                    return_value=("Title", body, [])), \
+        with patch(f"{_IMPL_MODULE}.fetch_issue",
+                    return_value=_github_issue(title="Title", body=body)), \
+             patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
              patch(f"{_IMPL_MODULE}._execute_implementation",
                     return_value="Done"):
             run_implement(
@@ -375,6 +843,26 @@ class TestRunImplement:
             assert "Phase 1" in first_msg
             second_msg = notify.call_args_list[1][0][0]
             assert "#42" in second_msg
+
+    def test_explicit_project_name_reaches_tracker_and_memory(self):
+        notify = MagicMock()
+        body = "### Summary\nPlan\n#### Phase 1: Do it"
+        with patch(f"{_IMPL_MODULE}.fetch_issue",
+                    return_value=_github_issue(title="Title", body=body)) as fetch, \
+             patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
+             patch(f"{_IMPL_MODULE}._execute_implementation",
+                   return_value="Done") as execute:
+            run_implement(
+                "/workspace/webpros-shield",
+                "https://github.com/o/r/issues/42",
+                notify_fn=notify,
+                project_name="webpros-shield",
+                instance_dir="/koan/instance",
+            )
+
+        assert fetch.call_args.kwargs["project_name"] == "webpros-shield"
+        assert execute.call_args.kwargs["project_name"] == "webpros-shield"
+        assert execute.call_args.kwargs["instance_dir"] == "/koan/instance"
 
 
 # ---------------------------------------------------------------------------
@@ -467,7 +955,7 @@ class TestResolveSubmitTarget:
     def test_auto_detect_fork(self):
         with patch("app.projects_config.load_projects_config",
                     return_value=None), \
-             patch(f"{_PR_MODULE}.detect_parent_repo",
+             patch(f"{_PR_MODULE}.resolve_target_repo",
                     return_value="parent-owner/repo"), \
              patch.dict("os.environ", {"KOAN_ROOT": "/koan"}):
             target = resolve_submit_target("/project", "myapp", "o", "r")
@@ -476,14 +964,14 @@ class TestResolveSubmitTarget:
     def test_fallback_to_issue_repo(self):
         with patch("app.projects_config.load_projects_config",
                     return_value=None), \
-             patch(f"{_PR_MODULE}.detect_parent_repo",
+             patch(f"{_PR_MODULE}.resolve_target_repo",
                     return_value=None), \
              patch.dict("os.environ", {"KOAN_ROOT": "/koan"}):
             target = resolve_submit_target("/project", "myapp", "owner", "repo")
             assert target == {"repo": "owner/repo", "is_fork": False}
 
     def test_no_koan_root(self):
-        with patch(f"{_PR_MODULE}.detect_parent_repo",
+        with patch(f"{_PR_MODULE}.resolve_target_repo",
                     return_value=None), \
              patch.dict("os.environ", {}, clear=True):
             target = resolve_submit_target("/project", "myapp", "o", "r")
@@ -749,8 +1237,9 @@ class TestRunImplementWithPR:
     def test_pr_url_in_summary_on_success(self):
         notify = MagicMock()
         body = "### Summary\nPlan\n#### Phase 1: Do it"
-        with patch(f"{_IMPL_MODULE}.fetch_issue_with_comments",
-                    return_value=("Title", body, [])), \
+        with patch(f"{_IMPL_MODULE}.fetch_issue",
+                    return_value=_github_issue(title="Title", body=body)), \
+             patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
              patch(f"{_IMPL_MODULE}._execute_implementation", return_value="Done"), \
              patch(f"{_IMPL_MODULE}._submit_implement_pr",
                     return_value="https://github.com/o/r/pull/99"), \
@@ -766,8 +1255,9 @@ class TestRunImplementWithPR:
     def test_branch_in_summary_when_pr_fails(self):
         notify = MagicMock()
         body = "### Summary\nPlan\n#### Phase 1: Do it"
-        with patch(f"{_IMPL_MODULE}.fetch_issue_with_comments",
-                    return_value=("Title", body, [])), \
+        with patch(f"{_IMPL_MODULE}.fetch_issue",
+                    return_value=_github_issue(title="Title", body=body)), \
+             patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
              patch(f"{_IMPL_MODULE}._execute_implementation", return_value="Done"), \
              patch(f"{_IMPL_MODULE}._submit_implement_pr", return_value=None), \
              patch(f"{_IMPL_MODULE}.get_current_branch", return_value="koan/impl-42"):
@@ -782,8 +1272,9 @@ class TestRunImplementWithPR:
     def test_warning_when_on_main(self):
         notify = MagicMock()
         body = "### Summary\nPlan\n#### Phase 1: Do it"
-        with patch(f"{_IMPL_MODULE}.fetch_issue_with_comments",
-                    return_value=("Title", body, [])), \
+        with patch(f"{_IMPL_MODULE}.fetch_issue",
+                    return_value=_github_issue(title="Title", body=body)), \
+             patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
              patch(f"{_IMPL_MODULE}._execute_implementation", return_value="Done"), \
              patch(f"{_IMPL_MODULE}._submit_implement_pr", return_value=None), \
              patch(f"{_IMPL_MODULE}.get_current_branch", return_value="main"):
@@ -798,8 +1289,9 @@ class TestRunImplementWithPR:
     def test_pr_submission_exception_does_not_fail_mission(self):
         notify = MagicMock()
         body = "### Summary\nPlan\n#### Phase 1: Do it"
-        with patch(f"{_IMPL_MODULE}.fetch_issue_with_comments",
-                    return_value=("Title", body, [])), \
+        with patch(f"{_IMPL_MODULE}.fetch_issue",
+                    return_value=_github_issue(title="Title", body=body)), \
+             patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
              patch(f"{_IMPL_MODULE}._execute_implementation", return_value="Done"), \
              patch(f"{_IMPL_MODULE}._submit_implement_pr",
                     side_effect=RuntimeError("unexpected")), \
@@ -855,3 +1347,16 @@ class TestMain:
             ])
             _, kwargs = mock.call_args
             assert kwargs["context"] is None
+
+    def test_project_identity_args_passed(self):
+        with patch(f"{_IMPL_MODULE}.run_implement",
+                    return_value=(True, "ok")) as mock:
+            main([
+                "--project-path", "/project",
+                "--issue-url", "https://github.com/o/r/issues/1",
+                "--project-name", "webpros-shield",
+                "--instance-dir", "/koan/instance",
+            ])
+            _, kwargs = mock.call_args
+            assert kwargs["project_name"] == "webpros-shield"
+            assert kwargs["instance_dir"] == "/koan/instance"

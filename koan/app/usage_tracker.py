@@ -91,7 +91,7 @@ class UsageTracker:
 
         # Parse session line
         session_match = re.search(
-            r'Session\s*\([^)]+\)\s*:\s*(\d+)%\s*\((?:reset|resets)\s+in\s+([^)]+)\)',
+            r'Session\s*\([^)]+\)\s*:\s*~?(\d+)%\s*\((?:reset|resets)\s+in\s+([^)]+)\)',
             content,
             re.IGNORECASE
         )
@@ -101,7 +101,7 @@ class UsageTracker:
 
         # Parse weekly line
         weekly_match = re.search(
-            r'Weekly\s*\([^)]+\)\s*:\s*(\d+)%\s*\((?:reset|resets)\s+in\s+([^)]+)\)',
+            r'Weekly\s*\([^)]+\)\s*:\s*~?(\d+)%\s*\((?:reset|resets)\s+in\s+([^)]+)\)',
             content,
             re.IGNORECASE
         )
@@ -156,23 +156,23 @@ class UsageTracker:
             return self.session_pct / self.runs_this_session
         return 5.0  # Conservative default for first run
 
-    def can_afford_run(self, mode: str) -> bool:
+    def can_afford_run(self, mode: str, tier_multiplier: float = 1.0) -> bool:
         """Check if budget allows a run in the given mode.
 
         Args:
             mode: One of "review", "implement", "deep"
+            tier_multiplier: Additional cost multiplier from complexity tier
+                (e.g. 1.5 for complex, 2.0 for critical). Applied on top of
+                the mode multiplier so tier-based model upgrades are reflected
+                in the budget check.
 
         Returns:
             True if estimated cost fits within available budget
         """
-        cost_multipliers = {
-            "review": 0.5,      # Low-cost: read-only activities
-            "implement": 1.0,   # Medium-cost: normal development
-            "deep": 2.0,        # High-cost: intensive work
-        }
+        from app.burn_rate import MODE_MULTIPLIERS
 
         base_cost = self.estimate_run_cost()
-        estimated_cost = base_cost * cost_multipliers.get(mode, 1.0)
+        estimated_cost = base_cost * MODE_MULTIPLIERS.get(mode, 1.0) * tier_multiplier
 
         session_rem, weekly_rem = self.remaining_budget()
         available = min(session_rem, weekly_rem)

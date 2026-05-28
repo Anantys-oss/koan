@@ -117,6 +117,47 @@ class TestImplementHandler:
 
         assert mock_skill.call_args[0][0] is ctx
 
+    def test_now_flag_stripped_and_sets_urgent(self, tmp_path):
+        from skills.core.implement.handler import handle
+
+        url = "https://github.com/owner/repo/issues/15"
+        ctx = _make_ctx(
+            tmp_path, command_name="implement",
+            args=f"{url} --now",
+        )
+        with patch("skills.core.implement.handler.handle_github_skill",
+                    return_value="ok") as mock_skill:
+            handle(ctx)
+
+        assert ctx.args == url
+        assert mock_skill.call_args[1]["urgent"] is True
+
+    def test_now_flag_before_url(self, tmp_path):
+        from skills.core.implement.handler import handle
+
+        url = "https://github.com/owner/repo/issues/15"
+        ctx = _make_ctx(
+            tmp_path, command_name="implement",
+            args=f"--now {url}",
+        )
+        with patch("skills.core.implement.handler.handle_github_skill",
+                    return_value="ok") as mock_skill:
+            handle(ctx)
+
+        assert ctx.args == url
+        assert mock_skill.call_args[1]["urgent"] is True
+
+    def test_no_now_flag_not_urgent(self, tmp_path):
+        from skills.core.implement.handler import handle
+
+        url = "https://github.com/owner/repo/issues/42"
+        ctx = _make_ctx(tmp_path, command_name="implement", args=url)
+        with patch("skills.core.implement.handler.handle_github_skill",
+                    return_value="ok") as mock_skill:
+            handle(ctx)
+
+        assert mock_skill.call_args[1]["urgent"] is False
+
 
 # ---------------------------------------------------------------------------
 # refactor handler

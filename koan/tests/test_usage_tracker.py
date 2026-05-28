@@ -1,9 +1,12 @@
 """Tests for usage_tracker.py — Usage parsing and autonomous mode decisions."""
 
 import logging
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from pathlib import Path
 from unittest.mock import patch
+from app import burn_rate
 from app.usage_tracker import UsageTracker, _get_budget_mode, MALFORMED_DEFAULT_PCT
 
 
@@ -359,6 +362,37 @@ class TestCanAffordRun:
         # deep = 16.0 → 16.0 > 10
         assert tracker.can_afford_run("deep") is False
 
+    def test_tier_multiplier_increases_cost(self, tmp_path):
+        """tier_multiplier scales cost on top of mode multiplier."""
+        usage = tmp_path / "usage.md"
+        usage.write_text("Session (5hr) : 50% (reset in 2h)\nWeekly (7 day) : 10% (Resets in 5d)")
+        tracker = UsageTracker(usage, runs_completed=10)
+        # base_cost = 50/10 = 5.0, available = min(40, 80) = 40
+        # implement = 5*1.0 = 5.0 ≤ 40 → affordable
+        assert tracker.can_afford_run("implement") is True
+        # implement with tier_mult=2.0 = 5*1.0*2.0 = 10.0 ≤ 40 → still OK
+        assert tracker.can_afford_run("implement", tier_multiplier=2.0) is True
+        # deep = 5*2.0 = 10.0 ≤ 40 → affordable
+        assert tracker.can_afford_run("deep") is True
+        # deep with tier_mult=2.0 = 5*2.0*2.0 = 20.0 ≤ 40 → still fits
+        assert tracker.can_afford_run("deep", tier_multiplier=2.0) is True
+
+    def test_tier_multiplier_causes_rejection(self, tmp_path):
+        """High tier multiplier can push an otherwise affordable mode over budget."""
+        usage = tmp_path / "usage.md"
+        usage.write_text("Session (5hr) : 80% (reset in 1h)\nWeekly (7 day) : 80% (Resets in 2d)")
+        tracker = UsageTracker(usage, runs_completed=10)
+        # base_cost = 80/10 = 8.0, available = min(10, 10) = 10
+        # implement = 8*1.0 = 8.0 ≤ 10 → affordable
+        assert tracker.can_afford_run("implement") is True
+        # implement with tier_mult=1.5 = 8*1.0*1.5 = 12.0 > 10 → rejected
+        assert tracker.can_afford_run("implement", tier_multiplier=1.5) is False
+
+    def test_tier_multiplier_default_is_noop(self, usage_file_standard):
+        """Default tier_multiplier=1.0 doesn't change behavior."""
+        tracker = UsageTracker(usage_file_standard, runs_completed=5)
+        assert tracker.can_afford_run("deep") == tracker.can_afford_run("deep", tier_multiplier=1.0)
+
 
 class TestBudgetMode:
     """Test budget_mode parameter for controlling which limits are active."""
@@ -435,6 +469,75 @@ class TestBudgetMode:
         tracker = UsageTracker(usage, runs_completed=5, budget_mode="session_only")
         # available = min(60, 90) = 60
         assert tracker.can_afford_run("deep") is True
+
+
+class TestBurnRateDowngrade:
+    """_downgrade_if_burning_fast drops one tier when projected exhaustion is near."""
+
+    @staticmethod
+    def _seed_burn_rate(tmp_path, pct_per_min):
+        """Seed rolling buffer for a desired observed burn rate.
+
+        Records 5 samples evenly spaced so total_cost / span = pct_per_min.
+        """
+        base = datetime(2026, 5, 15, 12, 0, tzinfo=timezone.utc)
+        # 5 samples × pct_per_min each over 4 minutes spread.
+        # Total = 5 * pct_per_min, span = 4 → rate = 5/4 * pct_per_min.
+        # Use cost = (4/5) * pct_per_min so total/span = pct_per_min.
+        per_sample = pct_per_min * 4.0 / 5.0
+        for i in range(5):
+            burn_rate.record_run(
+                tmp_path,
+                cost_pct=per_sample,
+                timestamp=base + timedelta(minutes=i),
+            )
+
+    def test_downgrades_deep_to_implement_when_exhaustion_imminent(self, tmp_path):
+        from app.iteration_manager import _downgrade_if_burning_fast
+        self._seed_burn_rate(tmp_path, pct_per_min=5.0)
+        # 50% remaining at 5%/min, deep multiplier 2.0 → ~5 min → downgrade
+        mode, downgraded_from = _downgrade_if_burning_fast(
+            tmp_path, session_pct=50.0, mode="deep",
+        )
+        assert mode == "implement"
+        assert downgraded_from == "deep"
+
+    def test_no_downgrade_with_slow_burn(self, tmp_path):
+        from app.iteration_manager import _downgrade_if_burning_fast
+        self._seed_burn_rate(tmp_path, pct_per_min=0.1)
+        mode, downgraded_from = _downgrade_if_burning_fast(
+            tmp_path, session_pct=10.0, mode="deep",
+        )
+        assert mode == "deep"
+        assert downgraded_from is None
+
+    def test_no_downgrade_when_history_too_short(self, tmp_path):
+        from app.iteration_manager import _downgrade_if_burning_fast
+        burn_rate.record_run(tmp_path, cost_pct=10.0)
+        mode, downgraded_from = _downgrade_if_burning_fast(
+            tmp_path, session_pct=50.0, mode="deep",
+        )
+        assert mode == "deep"
+        assert downgraded_from is None
+
+    def test_wait_mode_not_downgraded(self, tmp_path):
+        from app.iteration_manager import _downgrade_if_burning_fast
+        self._seed_burn_rate(tmp_path, pct_per_min=5.0)
+        mode, downgraded_from = _downgrade_if_burning_fast(
+            tmp_path, session_pct=95.0, mode="wait",
+        )
+        assert mode == "wait"
+        assert downgraded_from is None
+
+    def test_get_decision_reason_unchanged(self, tmp_path):
+        """UsageTracker.get_decision_reason no longer carries burn-rate text."""
+        usage = tmp_path / "usage.md"
+        usage.write_text(
+            "Session (5hr) : 50% (reset in 4h)\nWeekly (7 day) : 20% (Resets in 5d)"
+        )
+        tracker = UsageTracker(usage, budget_mode="session_only")
+        reason = tracker.get_decision_reason("implement")
+        assert "burn-rate" not in reason.lower()
 
 
 class TestGetBudgetMode:

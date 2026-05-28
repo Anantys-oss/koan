@@ -32,6 +32,21 @@ defaults:
     base_branch: "main"
     strategy: "squash"
 
+  # Security review — scan mission diffs for dangerous patterns before auto-merge.
+  # Detects eval/exec, shell injection, hardcoded secrets, unsafe deserialization,
+  # XSS, wildcard CORS, overly permissive permissions, and more.
+  # Results are logged to the project journal.
+  #
+  # - enabled: Run the review on every mission (default: false)
+  # - blocking: Block auto-merge when risk meets threshold (default: false)
+  # - severity_threshold: Minimum risk level to trigger block
+  #   ("low", "medium", "high", "critical"). Default: "high"
+  #
+  # security_review:
+  #   enabled: true
+  #   blocking: false
+  #   severity_threshold: high
+
   # CLI provider — which AI CLI to use ("claude", "codex", "copilot", "local")
   # Per-project overrides allow different providers for different repos.
   # Can also be set globally in config.yaml or via KOAN_CLI_PROVIDER env var.
@@ -50,6 +65,26 @@ defaults:
   # tools:
   #   mission: ["Read", "Glob", "Grep", "Edit", "Write", "Bash"]
   #   chat: ["Read", "Glob", "Grep"]
+
+  # MCP server configuration — paths to MCP config JSON files.
+  # Replaces the global mcp list from config.yaml when set.
+  # mcp:
+  #   - "/path/to/project-specific-mcp.json"
+
+  # Focus mode — disable autonomous work for this project.
+  #
+  # When enabled, the agent ONLY works on explicitly queued missions for
+  # this project — no contemplative sessions, no DEEP mode, no autonomous
+  # exploration. This is the per-project equivalent of the global
+  # config.yaml `focus: true` setting.
+  #
+  # Set at defaults level to control the global policy, then override
+  # per-project. Common patterns:
+  #   - defaults: true + myapp: false → all focused except myapp
+  #   - defaults: false + vendor: true → only vendor is focused
+  #
+  # Default: false
+  # focus: false
 
   # Exploration — controls autonomous work on this project.
   #
@@ -83,14 +118,61 @@ defaults:
   # Default: 0 (unlimited)
   max_open_prs: 10
 
+  # Max pending branches — limit total unreviewed work the agent will
+  # create via autonomous exploration. Counts the union of local unmerged
+  # <branch_prefix>/* branches and open PRs (deduplicated by branch
+  # name). When the limit is reached, autonomous exploration is paused
+  # for this project until existing branches are reviewed/merged.
+  # Explicit missions (queued in missions.md or via Jira/GitHub
+  # notifications) are never affected by this limit — it is a
+  # self-throttle for the agent, not a gate on human instructions.
+  # More comprehensive than max_open_prs because it also counts local
+  # unmerged branches, not just GitHub PRs.
+  # Set to 0 for unlimited.
+  # Default: 10
+  max_pending_branches: 10
+
+  # Security audit — PVRS (Private Vulnerability Reporting) settings.
+  #
+  # When /security_audit runs, findings at or above the threshold severity
+  # are submitted as private security advisories (PVRS) instead of public
+  # issues, keeping exploit details private until a fix is applied.
+  #
+  # pvrs: auto | true | false
+  #   auto  — detect PVRS at runtime via GitHub API (default)
+  #   true  — always submit high-severity findings via PVRS
+  #   false — always create public issues (opt out of PVRS)
+  #
+  # pvrs_threshold: critical | high | medium | low
+  #   Findings at or above this severity go to PVRS (default: high).
+  #   E.g., "high" routes critical + high to PVRS; medium + low stay public.
+  #
+  # security:
+  #   pvrs: auto
+  #   pvrs_threshold: high
+
 projects:
   # Example: your main project (minimal config — inherits all defaults)
   myapp:
     path: "/Users/yourname/workspace/myapp"
     # github_url: "yourname/myapp"  # Auto-detected from git remote; override if needed
+    # issue_tracker:
+    #   provider: github             # github | jira
+    #   repo: "yourname/myapp"       # Optional; defaults to github_url / git remote
+    #   default_branch: "main"       # Optional tracker-specific target branch
     # git_auto_merge:
     #   enabled: true
     #   strategy: "merge"
+
+  # Example: a project whose issues live in Jira but whose PRs go to GitHub
+  # jira-backed-app:
+  #   path: "/Users/yourname/workspace/jira-backed-app"
+  #   github_url: "yourname/jira-backed-app"
+  #   issue_tracker:
+  #     provider: jira
+  #     jira_project: PROJ
+  #     jira_issue_type: Task        # Default if omitted
+  #     default_branch: "main"       # Used by Jira-triggered /fix and /implement
 
   # Example: workspace project with yaml overrides (no path needed!)
   # The project lives in workspace/my-lib (symlink or directory).
@@ -132,10 +214,25 @@ projects:
   #   path: "/Users/yourname/workspace/my-main-app"
   #   exploration: true                    # Override global false default
 
+  # Example: focus mode — missions only, no autonomous work
+  # Use when you want Kōan to be a quiet executor for a project.
+  # quiet-repo:
+  #   path: "/Users/yourname/workspace/quiet-repo"
+  #   focus: true                           # Only run queued missions
+
   # Example: a project with a lower PR limit (overrides default of 10)
   # oss-lib:
   #   path: "/Users/yourname/workspace/oss-lib"
   #   max_open_prs: 3                        # Keep max 3 open PRs for this repo
+  #   max_pending_branches: 5                # Cap total unreviewed branches
+
+  # Example: a production API with strict security review (blocks auto-merge)
+  # production-api:
+  #   path: "/Users/yourname/workspace/production-api"
+  #   security_review:
+  #     enabled: true
+  #     blocking: true           # Block auto-merge for risky changes
+  #     severity_threshold: medium
 
   # Example: a project using GitHub Copilot instead of Claude
   # copilot-project:

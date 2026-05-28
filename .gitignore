@@ -10,6 +10,9 @@ __pycache__/
 .venv/
 venv/
 .coverage
+.coverage.*
+htmlcov/
+koan/htmlcov/
 
 # Runtime
 .koan-status
@@ -52,3 +55,4 @@ projects.docker.yaml
 docker-compose.override.yml
 .env.docker
 claude-auth/
+.spec/

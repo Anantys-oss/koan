@@ -1,7 +1,6 @@
 """Tests for self_reflection module."""
 
 import re
-import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -84,6 +83,21 @@ class TestBuildReflectionPrompt:
         assert "Patterns" in prompt
         assert "Growth" in prompt
         assert "Relationship" in prompt
+
+    def test_no_private_names_in_prompt(self, instance_dir):
+        """OPSEC: prompt must not contain private owner names."""
+        prompt = build_reflection_prompt(instance_dir)
+        assert "Alexis" not in prompt
+
+    def test_uses_generic_language_instruction(self, instance_dir):
+        """Language instruction should reference soul.md, not hardcode a language."""
+        prompt = build_reflection_prompt(instance_dir)
+        assert "preferred language" in prompt
+        assert "Write in French" not in prompt
+
+    def test_interval_injected_into_prompt(self, instance_dir):
+        prompt = build_reflection_prompt(instance_dir, interval=20)
+        assert "20" in prompt
 
 
 class TestSaveReflection:
@@ -174,80 +188,87 @@ class TestShouldReflectEdgeCases:
 
 
 class TestRunReflection:
-    @patch("app.self_reflection.subprocess.run")
-    def test_successful_reflection(self, mock_run, instance_dir):
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout="- I notice I like tests\n- I avoid fluff\n"
-        )
+    @patch("app.claude_step.run_claude")
+    @patch("app.cli_provider.build_full_command", return_value=["claude", "-p", "test"])
+    def test_successful_reflection(self, mock_cmd, mock_run_claude, instance_dir):
+        mock_run_claude.return_value = {
+            "success": True,
+            "output": "- I notice I like tests\n- I avoid fluff\n",
+            "error": "",
+        }
         result = run_reflection(instance_dir)
         assert "I notice I like tests" in result
-        mock_run.assert_called_once()
-        call_args = mock_run.call_args[0][0]
-        assert call_args[0] == "claude"
-        assert "-p" in call_args
+        mock_run_claude.assert_called_once()
 
-    @patch("app.self_reflection.subprocess.run")
-    def test_claude_failure_returns_empty(self, mock_run, instance_dir):
-        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="Error")
+    @patch("app.claude_step.run_claude")
+    @patch("app.cli_provider.build_full_command", return_value=["claude", "-p", "test"])
+    def test_claude_failure_returns_empty(self, mock_cmd, mock_run_claude, instance_dir):
+        mock_run_claude.return_value = {
+            "success": False,
+            "output": "",
+            "error": "API error",
+        }
         result = run_reflection(instance_dir)
         assert result == ""
 
-    @patch("app.self_reflection.subprocess.run")
-    def test_claude_failure_logs_stderr(self, mock_run, instance_dir, capsys):
-        """Verify that Claude errors are logged to stderr (M4 security finding)."""
-        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="API key invalid")
+    @patch("app.claude_step.run_claude")
+    @patch("app.cli_provider.build_full_command", return_value=["claude", "-p", "test"])
+    def test_claude_failure_logs_stderr(self, mock_cmd, mock_run_claude, instance_dir, capsys):
+        """Verify that Claude errors are logged to stderr."""
+        mock_run_claude.return_value = {
+            "success": False,
+            "output": "",
+            "error": "API key invalid",
+        }
         run_reflection(instance_dir)
         captured = capsys.readouterr()
         assert "[self_reflection] Claude error" in captured.err
         assert "API key invalid" in captured.err
 
-    @patch("app.self_reflection.subprocess.run")
-    def test_claude_empty_output(self, mock_run, instance_dir):
-        mock_run.return_value = MagicMock(returncode=0, stdout="   ")
+    @patch("app.claude_step.run_claude")
+    @patch("app.cli_provider.build_full_command", return_value=["claude", "-p", "test"])
+    def test_claude_empty_output(self, mock_cmd, mock_run_claude, instance_dir):
+        mock_run_claude.return_value = {
+            "success": True,
+            "output": "   ",
+            "error": "",
+        }
+        result = run_reflection(instance_dir)
+        # strip_cli_noise on whitespace returns empty
+        assert result == ""
+
+    @patch("app.claude_step.run_claude")
+    @patch("app.cli_provider.build_full_command", return_value=["claude", "-p", "test"])
+    def test_generic_exception_returns_empty(self, mock_cmd, mock_run_claude, instance_dir):
+        mock_run_claude.side_effect = OSError("No such file")
         result = run_reflection(instance_dir)
         assert result == ""
 
-    @patch("app.self_reflection.subprocess.run")
-    def test_timeout_returns_empty(self, mock_run, instance_dir):
-        mock_run.side_effect = subprocess.TimeoutExpired(cmd="claude", timeout=60)
-        result = run_reflection(instance_dir)
-        assert result == ""
-
-    @patch("app.self_reflection.subprocess.run")
-    def test_generic_exception_returns_empty(self, mock_run, instance_dir):
-        mock_run.side_effect = OSError("No such file")
-        result = run_reflection(instance_dir)
-        assert result == ""
-
-    @patch("app.self_reflection.subprocess.run")
-    def test_strips_max_turns_error_from_output(self, mock_run, instance_dir):
+    @patch("app.claude_step.run_claude")
+    @patch("app.cli_provider.build_full_command", return_value=["claude", "-p", "test"])
+    def test_strips_max_turns_error_from_output(self, mock_cmd, mock_run_claude, instance_dir):
         """Regression: CLI 'max turns' error was polluting personality-evolution.md."""
-        mock_run.return_value = MagicMock(
-            returncode=0,
-            stdout="- I notice patterns\n- I avoid fluff\nError: Reached max turns (1)\n",
-        )
+        mock_run_claude.return_value = {
+            "success": True,
+            "output": "- I notice patterns\n- I avoid fluff\nError: Reached max turns (1)\n",
+            "error": "",
+        }
         result = run_reflection(instance_dir)
         assert "I notice patterns" in result
         assert "Error" not in result
-
-    @patch("app.self_reflection.subprocess.run")
-    def test_only_max_turns_error_returns_empty(self, mock_run, instance_dir):
-        """When Claude produces no content, only the error line, return empty."""
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout="Error: Reached max turns (1)\n"
-        )
-        result = run_reflection(instance_dir)
-        assert result == ""
 
 
 class TestSelfReflectionCLI:
     """CLI tests use direct function calls instead of runpy to avoid re-import issues."""
 
-    @patch("app.self_reflection.subprocess.run")
-    def test_main_with_force(self, mock_subprocess, instance_dir):
-        mock_subprocess.return_value = MagicMock(
-            returncode=0, stdout="- observation"
-        )
+    @patch("app.claude_step.run_claude")
+    @patch("app.cli_provider.build_full_command", return_value=["claude", "-p", "test"])
+    def test_main_with_force(self, mock_cmd, mock_run_claude, instance_dir):
+        mock_run_claude.return_value = {
+            "success": True,
+            "output": "- observation",
+            "error": "",
+        }
         personality = instance_dir / "memory" / "global" / "personality-evolution.md"
         personality.write_text("# Personality\n")
         summary = instance_dir / "memory" / "summary.md"
@@ -256,7 +277,7 @@ class TestSelfReflectionCLI:
         from app.self_reflection import main
         with patch.object(sys, "argv", ["self_reflection.py", str(instance_dir), "--force"]):
             main()
-        mock_subprocess.assert_called_once()
+        mock_run_claude.assert_called_once()
         assert "observation" in personality.read_text()
 
     def test_main_skips_when_not_time(self, instance_dir):
@@ -281,11 +302,14 @@ class TestSelfReflectionCLI:
                 main()
             assert exc_info.value.code == 1
 
-    @patch("app.self_reflection.subprocess.run")
-    def test_main_with_notify(self, mock_subprocess, instance_dir):
-        mock_subprocess.return_value = MagicMock(
-            returncode=0, stdout="- observation"
-        )
+    @patch("app.claude_step.run_claude")
+    @patch("app.cli_provider.build_full_command", return_value=["claude", "-p", "test"])
+    def test_main_with_notify(self, mock_cmd, mock_run_claude, instance_dir):
+        mock_run_claude.return_value = {
+            "success": True,
+            "output": "- observation",
+            "error": "",
+        }
         personality = instance_dir / "memory" / "global" / "personality-evolution.md"
         personality.write_text("# Personality\n")
 
@@ -295,9 +319,14 @@ class TestSelfReflectionCLI:
         outbox = instance_dir / "outbox.md"
         assert outbox.exists()
 
-    @patch("app.self_reflection.subprocess.run")
-    def test_main_no_observations(self, mock_subprocess, instance_dir):
-        mock_subprocess.return_value = MagicMock(returncode=0, stdout="")
+    @patch("app.claude_step.run_claude")
+    @patch("app.cli_provider.build_full_command", return_value=["claude", "-p", "test"])
+    def test_main_no_observations(self, mock_cmd, mock_run_claude, instance_dir):
+        mock_run_claude.return_value = {
+            "success": True,
+            "output": "",
+            "error": "",
+        }
         from app.self_reflection import main
         with patch.object(sys, "argv", ["self_reflection.py", str(instance_dir), "--force"]):
             main()  # Should complete without error

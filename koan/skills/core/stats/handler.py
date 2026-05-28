@@ -9,23 +9,65 @@ from pathlib import Path
 def handle(ctx):
     """Show session productivity stats, optionally filtered by project."""
     instance_dir = ctx.instance_dir
-    project_filter = ctx.args.strip() if ctx.args else ""
+    raw_args = ctx.args.strip() if ctx.args else ""
 
-    outcomes = _load_outcomes(instance_dir / "session_outcomes.json")
+    # Phase 1: parse --week / --month flags (last flag wins, default 7 days)
+    days, project_filter = _parse_args(raw_args)
+
+    # Phase 4: filter outcomes to the requested window
+    all_outcomes = _load_outcomes(instance_dir / "session_outcomes.json")
+    outcomes = _filter_by_days(all_outcomes, days)
+
     if not outcomes:
         return "No session data yet. Stats will appear after the first completed run."
 
     if project_filter:
-        filtered = [o for o in outcomes if o.get("project") == project_filter]
+        # case-insensitive project lookup
+        filtered = [o for o in outcomes if o.get("project", "").lower() == project_filter.lower()]
         if not filtered:
-            known = sorted(set(o.get("project", "") for o in outcomes))
+            known = sorted(set(o.get("project", "") for o in all_outcomes))
             return (
                 f"No data for '{project_filter}'.\n"
                 f"Known projects: {', '.join(known)}"
             )
-        return _format_project_detail(project_filter, filtered)
+        canonical = filtered[0].get("project", project_filter)
+        return _format_project_detail(canonical, filtered, instance_dir, days)
 
-    return _format_overview(outcomes)
+    return _format_overview(outcomes, instance_dir, days)
+
+
+def _parse_args(raw: str):
+    """Parse flag/project args. Returns (days, project_name).
+
+    Last --week/--month flag wins; remaining token is the project name.
+    """
+    days = 7
+    tokens = raw.split()
+    remaining = []
+    for token in tokens:
+        if token == "--week":
+            days = 7
+        elif token == "--month":
+            days = 30
+        else:
+            remaining.append(token)
+    project = " ".join(remaining).strip()
+    return days, project
+
+
+def _filter_by_days(outcomes: list, days: int) -> list:
+    """Return outcomes from the last N days."""
+    cutoff = datetime.now() - timedelta(days=days)
+    filtered = []
+    for o in outcomes:
+        ts_str = o.get("timestamp", "")
+        try:
+            ts = datetime.fromisoformat(ts_str)
+        except (ValueError, TypeError):
+            continue
+        if ts >= cutoff:
+            filtered.append(o)
+    return filtered
 
 
 def _load_outcomes(path: Path) -> list:
@@ -38,7 +80,7 @@ def _load_outcomes(path: Path) -> list:
         return []
 
 
-def _format_overview(outcomes: list) -> str:
+def _format_overview(outcomes: list, instance_dir: Path, days: int) -> str:
     """Format a cross-project overview."""
     by_project = {}
     for o in outcomes:
@@ -55,8 +97,9 @@ def _format_overview(outcomes: list) -> str:
     # Streak
     streak = _productive_streak(outcomes)
 
+    window_label = "30d" if days == 30 else "7d"
     lines = [
-        "Session Stats",
+        f"Session Stats ({window_label})",
         f"  Total: {total} sessions | {pct}% productive",
         f"  {total_productive} productive | {total_empty} empty | {total_blocked} blocked",
     ]
@@ -100,12 +143,20 @@ def _format_overview(outcomes: list) -> str:
         lines.append(f"  {project}: {count} ({p_pct}% productive){status}")
 
     lines.append("")
+
+    # Phase 2: token spend overview
+    token_block = _format_token_overview(instance_dir, days)
+    if token_block:
+        lines.append(token_block)
+        lines.append("")
+
     lines.append("Use /stats <project> for details.")
 
     return "\n".join(lines)
 
 
-def _format_project_detail(project: str, outcomes: list) -> str:
+def _format_project_detail(project: str, outcomes: list,
+                           instance_dir: Path, days: int) -> str:
     """Format detailed stats for a single project."""
     total = len(outcomes)
     productive = sum(1 for o in outcomes if o.get("outcome") == "productive")
@@ -126,8 +177,9 @@ def _format_project_detail(project: str, outcomes: list) -> str:
     # Streak
     streak = _productive_streak(outcomes)
 
+    window_label = "30d" if days == 30 else "7d"
     lines = [
-        f"Stats: {project}",
+        f"Stats: {project} ({window_label})",
         f"  Sessions: {total} | {pct}% productive",
         f"  {productive} productive | {empty} empty | {blocked} blocked",
     ]
@@ -174,6 +226,12 @@ def _format_project_detail(project: str, outcomes: list) -> str:
     if avg_duration > 0:
         lines.append(f"\nAvg duration: {avg_duration} min")
 
+    # Phase 3: tokens by mission type
+    type_block = _format_type_breakdown(instance_dir, project, days)
+    if type_block:
+        lines.append("")
+        lines.append(type_block)
+
     # Last 5 sessions
     recent = outcomes[-5:]
     lines.append("\nRecent:")
@@ -194,6 +252,120 @@ def _format_project_detail(project: str, outcomes: list) -> str:
         lines.append(line)
 
     return "\n".join(lines)
+
+
+def _format_token_overview(instance_dir: Path, days: int) -> str:
+    """Build a monospace token-spend block for the overview.
+
+    Returns empty string when no JSONL data is present.
+    """
+    try:
+        from app import cost_tracker
+    except ImportError:
+        return ""
+
+    by_project = cost_tracker.summarize_by_project(instance_dir, days=days)
+    if not by_project:
+        return ""
+
+    pricing = cost_tracker.get_pricing_config()
+    show_cost = pricing is not None
+
+    total_tokens = sum(
+        v["input_tokens"] + v["output_tokens"]
+        for v in by_project.values()
+        if (v["input_tokens"] + v["output_tokens"]) > 0
+    )
+    if total_tokens == 0:
+        return ""
+
+    # Sort by descending total tokens, cap at 10
+    sorted_projects = sorted(
+        [(k, v) for k, v in by_project.items()
+         if (v["input_tokens"] + v["output_tokens"]) > 0],
+        key=lambda x: -(x[1]["input_tokens"] + x[1]["output_tokens"]),
+    )
+    overflow = max(0, len(sorted_projects) - 10)
+    rows = sorted_projects[:10]
+
+    window_label = "30d" if days == 30 else "7d"
+    header_parts = ["project      ", " tokens(K)", "   %"]
+    if show_cost:
+        header_parts.append("  cost($)")
+    header = "".join(header_parts)
+    sep = "-" * len(header)
+
+    table_lines = [header, sep]
+    for proj_name, data in rows:
+        tok = data["input_tokens"] + data["output_tokens"]
+        tok_k = tok / 1000
+        pct = int(tok / max(1, total_tokens) * 100)
+        name = proj_name[:12] + ("…" if len(proj_name) > 12 else "")
+        row = f"{name:<13} {tok_k:>8.1f}  {pct:>3}%"
+        if show_cost:
+            # Estimate cost using the model breakdown from the project entry
+            # cost_usd not stored per project in summarize_by_project, so omit
+            row += "       -"
+        table_lines.append(row)
+
+    if overflow > 0:
+        table_lines.append(f"(+{overflow} more)")
+
+    inner = "\n".join(table_lines)
+    return f"Token spend ({window_label}):\n```\n{inner}\n```"
+
+
+def _format_type_breakdown(instance_dir: Path, project: str, days: int) -> str:
+    """Build a monospace tokens-by-type block for a project detail view.
+
+    Returns empty string when no JSONL data is present for the project.
+    """
+    try:
+        from app import cost_tracker
+    except ImportError:
+        return ""
+
+    by_project_and_type = cost_tracker.summarize_by_project_and_type(instance_dir, days=days)
+    if not by_project_and_type:
+        return ""
+
+    # Case-insensitive lookup
+    project_lower = project.lower()
+    type_data = None
+    for key, val in by_project_and_type.items():
+        if key.lower() == project_lower:
+            type_data = val
+            break
+
+    if not type_data:
+        return ""
+
+    total_tokens = sum(
+        v["input_tokens"] + v["output_tokens"]
+        for v in type_data.values()
+    )
+    if total_tokens == 0:
+        return ""
+
+    sorted_types = sorted(
+        type_data.items(),
+        key=lambda x: -(x[1]["input_tokens"] + x[1]["output_tokens"]),
+    )[:10]
+
+    header = "type          count  tokens(K)   %"
+    sep = "-" * len(header)
+    table_lines = [header, sep]
+    for mtype, data in sorted_types:
+        tok = data["input_tokens"] + data["output_tokens"]
+        tok_k = tok / 1000
+        count = data["count"]
+        pct = int(tok / max(1, total_tokens) * 100)
+        name = mtype[:13] + ("…" if len(mtype) > 13 else "")
+        table_lines.append(f"{name:<14} {count:>5}  {tok_k:>8.1f}  {pct:>3}%")
+
+    inner = "\n".join(table_lines)
+    window_label = "30d" if days == 30 else "7d"
+    return f"Tokens by type ({window_label}):\n```\n{inner}\n```"
 
 
 def _consecutive_non_productive(outcomes: list) -> int:

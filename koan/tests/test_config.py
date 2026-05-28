@@ -51,7 +51,7 @@ class TestGetMissionTools:
         from app.config import get_mission_tools
 
         with _mock_config({}):
-            assert get_mission_tools() == "Read,Glob,Grep,Edit,Write,Bash"
+            assert get_mission_tools() == "Read,Glob,Grep,Edit,Write,Bash,Skill"
 
     def test_custom(self):
         from app.config import get_mission_tools
@@ -91,7 +91,7 @@ class TestGetAllowedTools:
         from app.config import get_allowed_tools
 
         with _mock_config({}):
-            assert get_allowed_tools() == "Read,Glob,Grep,Edit,Write,Bash"
+            assert get_allowed_tools() == "Read,Glob,Grep,Edit,Write,Bash,Skill"
 
 
 # --- get_tools_description ---
@@ -134,6 +134,93 @@ class TestGetModelConfig:
         assert result["mission"] == "opus"
         assert result["chat"] == "sonnet"
         assert result["lightweight"] == "haiku"  # not overridden
+
+
+class TestGetModelConfigProviderSection:
+    """Tests for provider-specific model sections (models_for_{provider})."""
+
+    def test_provider_section_overrides_global_models(self):
+        from unittest.mock import patch
+
+        from app.config import get_model_config
+
+        config = {
+            "models": {"mission": "claude-opus"},
+            "models_for_codex": {"mission": "gpt-5.5"},
+        }
+        with _mock_config(config), patch("app.provider.get_provider_name", return_value="codex"):
+            result = get_model_config()
+        assert result["mission"] == "gpt-5.5"
+
+    def test_provider_section_per_key_fallback(self):
+        """Key absent from provider section falls back to global models."""
+        from unittest.mock import patch
+
+        from app.config import get_model_config
+
+        config = {
+            "models": {"mission": "claude-opus", "chat": "claude-haiku"},
+            "models_for_codex": {"mission": "gpt-5.5"},  # only mission overridden
+        }
+        with _mock_config(config), patch("app.provider.get_provider_name", return_value="codex"):
+            result = get_model_config()
+        assert result["mission"] == "gpt-5.5"
+        assert result["chat"] == "claude-haiku"  # falls back to global models
+
+    def test_no_provider_section_falls_back_to_global_models(self):
+        """No provider section → global models unchanged."""
+        from unittest.mock import patch
+
+        from app.config import get_model_config
+
+        config = {"models": {"mission": "claude-sonnet"}}
+        with _mock_config(config), patch("app.provider.get_provider_name", return_value="codex"):
+            result = get_model_config()
+        assert result["mission"] == "claude-sonnet"
+
+    def test_per_project_beats_provider_section(self):
+        """Per-project models override wins over global provider section."""
+        from unittest.mock import patch
+
+        from app.config import get_model_config
+
+        config = {
+            "models": {"chat": "gpt-5.5"},
+            "models_for_codex": {"chat": "gpt-5.5"},
+        }
+        project_overrides = {"models": {"chat": "gpt-4o-mini"}}
+        with (
+            _mock_config(config),
+            patch("app.provider.get_provider_name", return_value="codex"),
+            patch("app.config._load_project_overrides", return_value=project_overrides),
+        ):
+            result = get_model_config("my-project")
+        assert result["chat"] == "gpt-4o-mini"
+
+    def test_hyphen_to_underscore_normalization(self):
+        """Provider name with hyphens is normalized to underscores for the key."""
+        from unittest.mock import patch
+
+        from app.config import get_model_config
+
+        config = {
+            "models": {"mission": "default-model"},
+            "models_for_ollama_launch": {"mission": "llama3"},
+        }
+        with _mock_config(config), patch("app.provider.get_provider_name", return_value="ollama-launch"):
+            result = get_model_config()
+        assert result["mission"] == "llama3"
+
+    def test_provider_resolution_error_falls_back_gracefully(self):
+        """If provider resolution raises, global models are returned unchanged."""
+        from unittest.mock import patch
+
+        from app.config import get_model_config
+
+        config = {"models": {"mission": "claude-sonnet"}}
+        with _mock_config(config), patch("app.provider.get_provider_name", side_effect=RuntimeError("oops")):
+            result = get_model_config()
+        assert result["mission"] == "claude-sonnet"
 
 
 # --- get_start_on_pause ---
@@ -262,6 +349,32 @@ class TestGetIntervalSeconds:
             assert get_interval_seconds() == 120
 
 
+# --- get_same_project_stickiness_percent ---
+
+
+class TestGetSameProjectStickinessPercent:
+    def test_default_disabled(self):
+        from app.config import get_same_project_stickiness_percent
+
+        with _mock_config({}):
+            assert get_same_project_stickiness_percent() == 0
+
+    def test_reads_nested_prompt_caching_value(self):
+        from app.config import get_same_project_stickiness_percent
+
+        with _mock_config({"prompt_caching": {"same_project_stickiness_percent": 35}}):
+            assert get_same_project_stickiness_percent() == 35
+
+    def test_clamps_out_of_range_values(self):
+        from app.config import get_same_project_stickiness_percent
+
+        with _mock_config({"prompt_caching": {"same_project_stickiness_percent": 999}}):
+            assert get_same_project_stickiness_percent() == 100
+
+        with _mock_config({"prompt_caching": {"same_project_stickiness_percent": -5}}):
+            assert get_same_project_stickiness_percent() == 0
+
+
 # --- get_fast_reply_model ---
 
 
@@ -345,7 +458,7 @@ class TestGetSkillTimeout:
         from app.config import get_skill_timeout
 
         with _mock_config({}):
-            assert get_skill_timeout() == 3600
+            assert get_skill_timeout() == 7200
 
     def test_custom(self):
         from app.config import get_skill_timeout
@@ -363,13 +476,36 @@ class TestGetSkillTimeout:
         from app.config import get_skill_timeout
 
         with _mock_config({"skill_timeout": "forever"}):
-            assert get_skill_timeout() == 3600
+            assert get_skill_timeout() == 7200
 
     def test_none_returns_default(self):
         from app.config import get_skill_timeout
 
         with _mock_config({"skill_timeout": None}):
-            assert get_skill_timeout() == 3600
+            assert get_skill_timeout() == 7200
+
+
+# --- get_first_output_timeout ---
+
+
+class TestGetFirstOutputTimeout:
+    def test_default(self):
+        from app.config import get_first_output_timeout
+
+        with _mock_config({}):
+            assert get_first_output_timeout() == 600
+
+    def test_custom(self):
+        from app.config import get_first_output_timeout
+
+        with _mock_config({"first_output_timeout": 300}):
+            assert get_first_output_timeout() == 300
+
+    def test_zero_disables(self):
+        from app.config import get_first_output_timeout
+
+        with _mock_config({"first_output_timeout": 0}):
+            assert get_first_output_timeout() == 0
 
 
 # --- get_skill_max_turns ---
@@ -401,6 +537,35 @@ class TestGetSkillMaxTurns:
             assert get_skill_max_turns() == 200
 
 
+# --- get_analysis_max_turns ---
+
+
+class TestGetAnalysisMaxTurns:
+    def test_default(self):
+        from app.config import get_analysis_max_turns
+
+        with _mock_config({}):
+            assert get_analysis_max_turns() == 75
+
+    def test_custom(self):
+        from app.config import get_analysis_max_turns
+
+        with _mock_config({"analysis_max_turns": 100}):
+            assert get_analysis_max_turns() == 100
+
+    def test_string_value_coerced(self):
+        from app.config import get_analysis_max_turns
+
+        with _mock_config({"analysis_max_turns": "100"}):
+            assert get_analysis_max_turns() == 100
+
+    def test_invalid_string_returns_default(self):
+        from app.config import get_analysis_max_turns
+
+        with _mock_config({"analysis_max_turns": "lots"}):
+            assert get_analysis_max_turns() == 75
+
+
 # --- get_mission_timeout ---
 
 
@@ -422,6 +587,35 @@ class TestGetMissionTimeout:
 
         with _mock_config({"mission_timeout": 0}):
             assert get_mission_timeout() == 0
+
+
+# --- get_post_mission_timeout ---
+
+
+class TestGetPostMissionTimeout:
+    def test_default(self):
+        from app.config import get_post_mission_timeout
+
+        with _mock_config({}):
+            assert get_post_mission_timeout() == 300
+
+    def test_custom(self):
+        from app.config import get_post_mission_timeout
+
+        with _mock_config({"post_mission_timeout": 600}):
+            assert get_post_mission_timeout() == 600
+
+    def test_string_parsed(self):
+        from app.config import get_post_mission_timeout
+
+        with _mock_config({"post_mission_timeout": "120"}):
+            assert get_post_mission_timeout() == 120
+
+    def test_invalid_returns_default(self):
+        from app.config import get_post_mission_timeout
+
+        with _mock_config({"post_mission_timeout": "nope"}):
+            assert get_post_mission_timeout() == 300
 
 
 # --- build_claude_flags ---
@@ -679,6 +873,74 @@ class TestDashboardConfig:
             assert get_dashboard_port() == 8080
 
 
+# --- get_mcp_configs ---
+
+
+class TestGetMcpConfigs:
+    def test_default_empty(self):
+        from app.config import get_mcp_configs
+
+        with _mock_config({}):
+            with patch("app.config._load_project_overrides", return_value={}):
+                assert get_mcp_configs() == []
+
+    def test_global_list(self):
+        from app.config import get_mcp_configs
+
+        with _mock_config({"mcp": ["/path/to/mcp.json"]}):
+            with patch("app.config._load_project_overrides", return_value={}):
+                assert get_mcp_configs() == ["/path/to/mcp.json"]
+
+    def test_global_multiple(self):
+        from app.config import get_mcp_configs
+
+        configs = ["/path/a.json", "/path/b.json"]
+        with _mock_config({"mcp": configs}):
+            with patch("app.config._load_project_overrides", return_value={}):
+                assert get_mcp_configs() == configs
+
+    def test_non_list_returns_empty(self):
+        from app.config import get_mcp_configs
+
+        with _mock_config({"mcp": "not-a-list"}):
+            with patch("app.config._load_project_overrides", return_value={}):
+                assert get_mcp_configs() == []
+
+    def test_filters_non_string_entries(self):
+        from app.config import get_mcp_configs
+
+        with _mock_config({"mcp": ["/valid.json", 42, "", None]}):
+            with patch("app.config._load_project_overrides", return_value={}):
+                assert get_mcp_configs() == ["/valid.json"]
+
+    def test_project_override_replaces_global(self):
+        from app.config import get_mcp_configs
+
+        with _mock_config({"mcp": ["/global.json"]}):
+            with patch(
+                "app.config._load_project_overrides",
+                return_value={"mcp": ["/project.json"]},
+            ):
+                assert get_mcp_configs("myproject") == ["/project.json"]
+
+    def test_project_override_absent_uses_global(self):
+        from app.config import get_mcp_configs
+
+        with _mock_config({"mcp": ["/global.json"]}):
+            with patch("app.config._load_project_overrides", return_value={}):
+                assert get_mcp_configs("myproject") == ["/global.json"]
+
+    def test_project_override_empty_list_clears_global(self):
+        from app.config import get_mcp_configs
+
+        with _mock_config({"mcp": ["/global.json"]}):
+            with patch(
+                "app.config._load_project_overrides",
+                return_value={"mcp": []},
+            ):
+                assert get_mcp_configs("myproject") == []
+
+
 class TestBackwardCompat:
     """Verify that importing from app.utils still works."""
 
@@ -688,3 +950,120 @@ class TestBackwardCompat:
         assert callable(get_chat_tools)
         assert callable(get_model_config)
         assert callable(get_branch_prefix)
+
+
+# --- get_effort_for_mode ---
+
+
+class TestGetEffortForMode:
+    def test_defaults_no_config(self):
+        from app.config import get_effort_for_mode
+        with _mock_config({}):
+            assert get_effort_for_mode("review") == "low"
+            assert get_effort_for_mode("implement") == ""
+            assert get_effort_for_mode("deep") == "high"
+            assert get_effort_for_mode("wait") == ""
+
+    def test_string_config_applies_to_all_modes(self):
+        from app.config import get_effort_for_mode
+        with _mock_config({"effort": "max"}):
+            assert get_effort_for_mode("review") == "max"
+            assert get_effort_for_mode("implement") == "max"
+            assert get_effort_for_mode("deep") == "max"
+
+    def test_dict_config_per_mode(self):
+        from app.config import get_effort_for_mode
+        with _mock_config({"effort": {"review": "low", "deep": "max"}}):
+            assert get_effort_for_mode("review") == "low"
+            assert get_effort_for_mode("deep") == "max"
+            # Missing mode falls back to default
+            assert get_effort_for_mode("implement") == ""
+
+    def test_empty_string_disables(self):
+        from app.config import get_effort_for_mode
+        with _mock_config({"effort": ""}):
+            assert get_effort_for_mode("deep") == ""
+
+    def test_invalid_string_returns_empty(self):
+        from app.config import get_effort_for_mode
+        with _mock_config({"effort": "turbo"}):
+            assert get_effort_for_mode("deep") == ""
+
+    def test_invalid_dict_value_falls_back(self):
+        from app.config import get_effort_for_mode
+        with _mock_config({"effort": {"deep": "turbo"}}):
+            # Invalid value in dict falls back to default
+            assert get_effort_for_mode("deep") == "high"
+
+
+# --- get_thinking_config / should_enable_thinking ---
+
+
+class TestThinkingConfig:
+    def test_defaults_no_config(self):
+        from app.config import get_thinking_config
+        with _mock_config({}):
+            cfg = get_thinking_config()
+            assert cfg["enabled"] is False
+            assert cfg["budget_tokens"] == 0
+            assert cfg["min_mode"] == "deep"
+
+    def test_enabled_with_defaults(self):
+        from app.config import get_thinking_config
+        with _mock_config({"thinking": {"enabled": True}}):
+            cfg = get_thinking_config()
+            assert cfg["enabled"] is True
+            assert cfg["budget_tokens"] == 0
+            assert cfg["min_mode"] == "deep"
+
+    def test_full_config(self):
+        from app.config import get_thinking_config
+        with _mock_config({"thinking": {"enabled": True, "budget_tokens": 10000, "min_mode": "implement"}}):
+            cfg = get_thinking_config()
+            assert cfg["enabled"] is True
+            assert cfg["budget_tokens"] == 10000
+            assert cfg["min_mode"] == "implement"
+
+    def test_non_dict_thinking_returns_defaults(self):
+        from app.config import get_thinking_config
+        with _mock_config({"thinking": "yes"}):
+            cfg = get_thinking_config()
+            assert cfg["enabled"] is False
+
+    def test_should_enable_thinking_disabled(self):
+        from app.config import should_enable_thinking
+        with _mock_config({"thinking": {"enabled": False}}):
+            assert should_enable_thinking("deep", tier="critical") is False
+
+    def test_should_enable_thinking_requires_critical_tier(self):
+        """Thinking only activates for 'critical' tier missions."""
+        from app.config import should_enable_thinking
+        with _mock_config({"thinking": {"enabled": True, "min_mode": "deep"}}):
+            assert should_enable_thinking("deep", tier="critical") is True
+            assert should_enable_thinking("deep", tier="complex") is False
+            assert should_enable_thinking("deep", tier="medium") is False
+            assert should_enable_thinking("deep", tier="") is False
+
+    def test_should_enable_thinking_deep_mode(self):
+        from app.config import should_enable_thinking
+        with _mock_config({"thinking": {"enabled": True, "min_mode": "deep"}}):
+            assert should_enable_thinking("deep", tier="critical") is True
+            assert should_enable_thinking("implement", tier="critical") is False
+            assert should_enable_thinking("review", tier="critical") is False
+
+    def test_should_enable_thinking_implement_mode(self):
+        from app.config import should_enable_thinking
+        with _mock_config({"thinking": {"enabled": True, "min_mode": "implement"}}):
+            assert should_enable_thinking("deep", tier="critical") is True
+            assert should_enable_thinking("implement", tier="critical") is True
+            assert should_enable_thinking("review", tier="critical") is False
+
+    def test_should_enable_thinking_no_config(self):
+        from app.config import should_enable_thinking
+        with _mock_config({}):
+            assert should_enable_thinking("deep", tier="critical") is False
+
+    def test_should_enable_thinking_unknown_mode(self):
+        from app.config import should_enable_thinking
+        with _mock_config({"thinking": {"enabled": True, "min_mode": "deep"}}):
+            assert should_enable_thinking("unknown", tier="critical") is False

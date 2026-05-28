@@ -14,7 +14,7 @@ Examples of input formats:
 
 import re
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
 
 try:
@@ -43,6 +43,12 @@ def parse_reset_time(text: str, now: Optional[datetime] = None) -> Tuple[Optiona
     # Pattern: "resets <time_info> (<timezone>)" or just "resets <time_info>"
     match = re.search(r'resets?\s+(.+?\([^)]+\)|[^·\n]+)', text, re.IGNORECASE)
     if not match:
+        resets_at = re.search(r'resetsAt\s*:?\s*(\d{9,})', text, re.IGNORECASE)
+        if resets_at:
+            reset_ts = int(resets_at.group(1))
+            reset_dt = datetime.fromtimestamp(reset_ts, timezone.utc)
+            reset_info = f"resets at {reset_dt:%Y-%m-%d %H:%M UTC}"
+            return reset_ts, reset_info
         return None, text.strip()
 
     reset_str = match.group(1).strip()

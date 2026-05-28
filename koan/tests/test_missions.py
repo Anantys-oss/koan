@@ -27,13 +27,20 @@ from app.missions import (
     normalize_content,
     promote_all_ideas,
     promote_idea,
+    quarantine_mission,
+    QUARANTINE_MAX_BYTES,
     reorder_mission,
+    reorder_missions_bulk,
+    _collect_item_start_indices,
+    _find_insertion_index,
+    requeue_mission,
     sanitize_mission_text,
     stamp_queued,
     stamp_started,
     start_mission,
     strip_timestamps,
     prune_done_section,
+    _enforce_quarantine_cap,
     _flush_in_progress_to_done,
     DEFAULT_SKELETON,
 )
@@ -91,7 +98,7 @@ class TestParseSections:
 
     def test_empty_content(self):
         result = parse_sections("")
-        assert result == {"pending": [], "in_progress": [], "done": [], "failed": []}
+        assert result == {"pending": [], "in_progress": [], "done": [], "failed": [], "ci": []}
 
     def test_complex_mission(self):
         content = (
@@ -889,6 +896,172 @@ class TestReorderMission:
 
 
 # ---------------------------------------------------------------------------
+# _collect_item_start_indices / _find_insertion_index helpers
+# ---------------------------------------------------------------------------
+
+class TestCollectItemStartIndices:
+    def test_simple_items(self):
+        lines = ["## Pending", "- first", "- second", "- third"]
+        result = _collect_item_start_indices(lines, 0, 4)
+        assert result == [1, 2, 3]
+
+    def test_multiline_items(self):
+        lines = ["## Pending", "- first", "  continuation", "- second"]
+        result = _collect_item_start_indices(lines, 0, 4)
+        assert result == [1, 3]
+
+    def test_empty_section(self):
+        lines = ["## Pending", ""]
+        result = _collect_item_start_indices(lines, 0, 2)
+        assert result == []
+
+    def test_blank_lines_between_items(self):
+        lines = ["## Pending", "", "- first", "", "- second"]
+        result = _collect_item_start_indices(lines, 0, 5)
+        assert result == [2, 4]
+
+
+class TestFindInsertionIndex:
+    def test_target_first(self):
+        lines = ["## Pending", "- alpha", "- beta"]
+        idx = _find_insertion_index(lines, 0, 3, [1, 2], 1)
+        assert idx == 1
+
+    def test_target_first_skips_blank(self):
+        lines = ["## Pending", "", "- alpha", "- beta"]
+        idx = _find_insertion_index(lines, 0, 4, [2, 3], 1)
+        assert idx == 2
+
+    def test_target_middle(self):
+        lines = ["## Pending", "- alpha", "- beta", "- gamma"]
+        idx = _find_insertion_index(lines, 0, 4, [1, 2, 3], 2)
+        assert idx == 2
+
+    def test_target_beyond_items(self):
+        lines = ["## Pending", "- alpha", "- beta"]
+        idx = _find_insertion_index(lines, 0, 3, [1, 2], 5)
+        # Should insert after last item
+        assert idx == 3
+
+    def test_target_beyond_with_multiline_last(self):
+        lines = ["## Pending", "- alpha", "- beta", "  details"]
+        idx = _find_insertion_index(lines, 0, 4, [1, 2], 5)
+        assert idx == 4
+
+    def test_no_items_returns_after_header(self):
+        lines = ["## Pending", ""]
+        idx = _find_insertion_index(lines, 0, 2, [], 1)
+        # target==1 skips blank lines, lands at section_end
+        assert idx == 2
+
+    def test_no_items_no_blanks(self):
+        lines = ["## Pending"]
+        idx = _find_insertion_index(lines, 0, 1, [], 3)
+        assert idx == 1
+
+
+# ---------------------------------------------------------------------------
+# reorder_missions_bulk
+# ---------------------------------------------------------------------------
+
+class TestReorderMissionsBulk:
+    SAMPLE = (
+        "## Pending\n\n"
+        "- first task\n"
+        "- second task\n"
+        "- third task\n"
+        "- fourth task\n"
+        "- fifth task\n\n"
+        "## In Progress\n\n"
+        "## Done\n"
+    )
+
+    def test_reorder_three(self):
+        new_content, displays = reorder_missions_bulk(self.SAMPLE, [4, 2, 5])
+        lines = [l for l in new_content.splitlines() if l.startswith("- ")]
+        assert lines[0] == "- fourth task"
+        assert lines[1] == "- second task"
+        assert lines[2] == "- fifth task"
+        # Remaining keep relative order
+        assert lines[3] == "- first task"
+        assert lines[4] == "- third task"
+        assert len(displays) == 3
+        assert "fourth" in displays[0]
+        assert "second" in displays[1]
+        assert "fifth" in displays[2]
+
+    def test_reorder_two(self):
+        new_content, displays = reorder_missions_bulk(self.SAMPLE, [3, 1])
+        lines = [l for l in new_content.splitlines() if l.startswith("- ")]
+        assert lines[0] == "- third task"
+        assert lines[1] == "- first task"
+        assert lines[2] == "- second task"
+        assert lines[3] == "- fourth task"
+        assert lines[4] == "- fifth task"
+        assert len(displays) == 2
+
+    def test_reorder_all(self):
+        new_content, displays = reorder_missions_bulk(self.SAMPLE, [5, 4, 3, 2, 1])
+        lines = [l for l in new_content.splitlines() if l.startswith("- ")]
+        assert lines[0] == "- fifth task"
+        assert lines[1] == "- fourth task"
+        assert lines[2] == "- third task"
+        assert lines[3] == "- second task"
+        assert lines[4] == "- first task"
+
+    def test_invalid_position(self):
+        with pytest.raises(ValueError, match="Invalid position: 9"):
+            reorder_missions_bulk(self.SAMPLE, [1, 9])
+
+    def test_zero_position(self):
+        with pytest.raises(ValueError, match="Invalid position: 0"):
+            reorder_missions_bulk(self.SAMPLE, [0, 1])
+
+    def test_duplicate_position(self):
+        with pytest.raises(ValueError, match="Duplicate position: 3"):
+            reorder_missions_bulk(self.SAMPLE, [3, 1, 3])
+
+    def test_no_pending(self):
+        content = "## Pending\n\n## In Progress\n\n## Done\n"
+        with pytest.raises(ValueError, match="No pending missions"):
+            reorder_missions_bulk(content, [1])
+
+    def test_preserves_project_tags(self):
+        content = (
+            "## Pending\n\n"
+            "- [project:koan] first\n"
+            "- [project:web] second\n"
+            "- third\n\n"
+            "## In Progress\n\n"
+            "## Done\n"
+        )
+        new_content, displays = reorder_missions_bulk(content, [3, 1])
+        assert "[project:koan]" in new_content
+        assert "[project:web]" in new_content
+        lines = [l for l in new_content.splitlines() if l.startswith("- ")]
+        assert lines[0] == "- third"
+        assert lines[1] == "- [project:koan] first"
+
+    def test_preserves_multiline_missions(self):
+        content = (
+            "## Pending\n\n"
+            "- first task\n"
+            "  continuation line\n"
+            "- second task\n"
+            "- third task\n\n"
+            "## In Progress\n\n"
+            "## Done\n"
+        )
+        new_content, displays = reorder_missions_bulk(content, [2, 1])
+        lines = new_content.splitlines()
+        pending_items = [l for l in lines if l.startswith("- ")]
+        assert pending_items[0] == "- second task"
+        assert pending_items[1] == "- first task"
+        # Continuation line should still be present
+        assert "  continuation line" in new_content
+
+
+# ---------------------------------------------------------------------------
 # edit_pending_mission
 # ---------------------------------------------------------------------------
 
@@ -1220,6 +1393,32 @@ class TestCompleteMission:
         assert len(sections["pending"]) == 0
         assert len(sections["done"]) == 1
 
+    def test_mission_with_internal_double_spaces_completes(self):
+        """A mission whose text contains runs of multiple spaces must still
+        be matched and moved to Done.
+
+        Regression: ``_remove_item_by_text`` collapsed whitespace on the
+        file line but NOT on the search needle, so a mission with double
+        spaces (e.g. inline /plan context typed with extra spacing) could
+        never be matched. The runner exited 0 but the mission stayed in
+        Pending and was re-dispatched on every loop iteration forever.
+        """
+        mission = (
+            "/plan https://github.com/owner/repo/issues/15 "
+            "issue #2 gives a cli  and #14 a dashboard  we reconcile both"
+        )
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            f"- {mission}\n\n"
+            "## In Progress\n\n"
+            "## Done\n"
+        )
+        result = complete_mission(content, mission)
+        sections = parse_sections(result)
+        assert len(sections["pending"]) == 0
+        assert len(sections["done"]) == 1
+
 
 # ---------------------------------------------------------------------------
 # fail_mission
@@ -1306,6 +1505,34 @@ class TestFailMission:
         assert "Old failed task" in failed_text
         assert "New task" in failed_text
 
+    def test_multiline_needle_matches_first_line(self):
+        """Picker returns multi-line block when continuation lines exist.
+
+        The dedup-skip path passes that block as the needle. Match must
+        succeed on the first line so the mission actually moves out of
+        Pending (otherwise the agent loop tight-loops on the same item).
+        """
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- /ci_check https://example.com/pr/297 ⏳(2026-05-14T21:24)\n"
+            "stray comment text from a broken template\n"
+            "more stray text\n"
+            "-->\n\n"
+            "## In Progress\n\n"
+            "## Done\n"
+        )
+        multiline_needle = (
+            "/ci_check https://example.com/pr/297 ⏳(2026-05-14T21:24)\n"
+            "stray comment text from a broken template\n"
+            "more stray text\n"
+            "-->"
+        )
+        result = fail_mission(content, multiline_needle)
+        sections = parse_sections(result)
+        assert len(sections["pending"]) == 0
+        assert "/ci_check https://example.com/pr/297" in "\n".join(sections["failed"])
+
     def test_project_tagged_mission(self):
         content = (
             "# Missions\n\n"
@@ -1318,6 +1545,106 @@ class TestFailMission:
         sections = parse_sections(result)
         assert len(sections["pending"]) == 0
         assert len(sections["failed"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# requeue_mission — move from In Progress back to Pending
+# ---------------------------------------------------------------------------
+
+class TestRequeueMission:
+    def test_basic_requeue(self):
+        content = (
+            "## Pending\n\n"
+            "## In Progress\n\n"
+            "- Fix login bug\n"
+        )
+        result = requeue_mission(content, "Fix login bug")
+        sections = parse_sections(result)
+        assert len(sections["in_progress"]) == 0
+        assert len(sections["pending"]) == 1
+        assert "Fix login bug" in sections["pending"][0]
+
+    def test_requeue_strips_started_timestamp(self):
+        content = (
+            "## Pending\n\n"
+            "## In Progress\n\n"
+            "- Fix login bug ▶(2026-03-26T22:00)\n"
+        )
+        result = requeue_mission(content, "Fix login bug")
+        sections = parse_sections(result)
+        assert len(sections["pending"]) == 1
+        assert "▶" not in sections["pending"][0]
+        assert "Fix login bug" in sections["pending"][0]
+
+    def test_requeue_preserves_project_tag(self):
+        content = (
+            "## Pending\n\n"
+            "## In Progress\n\n"
+            "- [project:koan] Fix login bug ▶(2026-03-26T22:00)\n"
+        )
+        result = requeue_mission(content, "Fix login bug")
+        sections = parse_sections(result)
+        assert len(sections["pending"]) == 1
+        assert "[project:koan]" in sections["pending"][0]
+
+    def test_requeue_not_found_returns_unchanged(self):
+        content = (
+            "## Pending\n\n"
+            "## In Progress\n\n"
+            "- Some other mission\n"
+        )
+        result = requeue_mission(content, "Fix login bug")
+        assert result == normalize_content(content)
+
+    def test_requeue_with_existing_pending(self):
+        content = (
+            "## Pending\n\n"
+            "- Existing task\n\n"
+            "## In Progress\n\n"
+            "- Fix login bug ▶(2026-03-26T22:00)\n"
+        )
+        result = requeue_mission(content, "Fix login bug")
+        sections = parse_sections(result)
+        assert len(sections["pending"]) == 2
+        assert len(sections["in_progress"]) == 0
+
+
+    def test_requeue_from_failed_section(self):
+        """Requeue should rescue missions from Failed back to Pending.
+
+        This handles the case where quota exhaustion is detected after
+        _finalize_mission already moved the mission to Failed.
+        """
+        content = (
+            "## Pending\n\n"
+            "## In Progress\n\n"
+            "## Failed\n\n"
+            "- Fix login bug ❌(2026-04-13 14:47)\n"
+        )
+        result = requeue_mission(content, "Fix login bug")
+        sections = parse_sections(result)
+        assert len(sections["failed"]) == 0
+        assert len(sections["pending"]) == 1
+        assert "Fix login bug" in sections["pending"][0]
+        # Markers should be stripped
+        assert "❌" not in sections["pending"][0]
+        assert "2026-04-13" not in sections["pending"][0]
+
+    def test_requeue_prefers_in_progress_over_failed(self):
+        """If mission exists in both sections, In Progress takes priority."""
+        content = (
+            "## Pending\n\n"
+            "## In Progress\n\n"
+            "- Fix login bug ▶(2026-04-13T10:00)\n"
+            "## Failed\n\n"
+            "- Fix login bug ❌(2026-04-12 09:00)\n"
+        )
+        result = requeue_mission(content, "Fix login bug")
+        sections = parse_sections(result)
+        assert len(sections["in_progress"]) == 0
+        # Failed copy should remain untouched (requeue found it in In Progress first)
+        assert len(sections["failed"]) == 1
+        assert len(sections["pending"]) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -2691,3 +3018,189 @@ class TestInsertMissionNewlineSanitization:
         for line in result.split("\n"):
             if "fix" in line and "bug" in line:
                 assert "\n" not in line.replace("\n", "")  # trivially true per line
+
+
+# ---------------------------------------------------------------------------
+# quarantine_mission shared helper
+# ---------------------------------------------------------------------------
+
+class TestQuarantineMission:
+
+    def test_writes_entry(self, tmp_path):
+        qpath = tmp_path / "missions-quarantine.md"
+        ok = quarantine_mission(qpath, "bad text", "injection", source="telegram")
+        assert ok is True
+        content = qpath.read_text()
+        assert "injection" in content
+        assert "bad text" in content
+        assert "telegram" in content
+        assert "\U0001f6e1\ufe0f" in content  # shield emoji
+
+    def test_appends_multiple(self, tmp_path):
+        qpath = tmp_path / "missions-quarantine.md"
+        quarantine_mission(qpath, "first", "reason1", source="telegram")
+        quarantine_mission(qpath, "second", "reason2", source="github/@alice")
+        content = qpath.read_text()
+        assert "first" in content
+        assert "second" in content
+        assert "github/@alice" in content
+
+    def test_truncates_long_text(self, tmp_path):
+        qpath = tmp_path / "missions-quarantine.md"
+        long_text = "x" * 1000
+        quarantine_mission(qpath, long_text, "too long")
+        content = qpath.read_text()
+        # Entry should contain at most 500 chars of the text
+        assert "x" * 500 in content
+        assert "x" * 501 not in content
+
+    def test_returns_false_on_oserror(self, tmp_path):
+        # Non-existent parent → OSError
+        qpath = tmp_path / "no" / "such" / "dir" / "quarantine.md"
+        ok = quarantine_mission(qpath, "text", "reason")
+        assert ok is False
+
+    def test_default_source(self, tmp_path):
+        qpath = tmp_path / "missions-quarantine.md"
+        quarantine_mission(qpath, "text", "reason")
+        assert "unknown" in qpath.read_text()
+
+
+class TestQuarantineSizeCap:
+
+    def test_no_prune_under_limit(self, tmp_path):
+        qpath = tmp_path / "quarantine.md"
+        qpath.write_text("- entry 1\n- entry 2\n")
+        _enforce_quarantine_cap(qpath)
+        assert "entry 1" in qpath.read_text()
+        assert "entry 2" in qpath.read_text()
+
+    def test_prunes_when_over_limit(self, tmp_path):
+        qpath = tmp_path / "quarantine.md"
+        # Write enough data to exceed the cap
+        lines = [f"- entry {i}: {'x' * 200}\n" for i in range(600)]
+        qpath.write_text("".join(lines))
+        assert qpath.stat().st_size > QUARANTINE_MAX_BYTES
+        _enforce_quarantine_cap(qpath)
+        remaining = qpath.read_text()
+        # Older half was pruned
+        assert "entry 0" not in remaining
+        assert "entry 1" not in remaining
+        # Newer half is kept
+        assert "entry 599" in remaining
+        # File is smaller now
+        assert qpath.stat().st_size < QUARANTINE_MAX_BYTES * 0.7
+
+    def test_cap_enforced_on_write(self, tmp_path):
+        qpath = tmp_path / "quarantine.md"
+        lines = [f"- old entry {i}: {'y' * 200}\n" for i in range(600)]
+        qpath.write_text("".join(lines))
+        quarantine_mission(qpath, "new entry", "reason", source="test")
+        content = qpath.read_text()
+        # Old entries pruned
+        assert "old entry 0" not in content
+        # New entry present
+        assert "new entry" in content
+
+
+# --- Duplicate detection ---
+
+from app.missions import is_duplicate_mission, _extract_mission_signature
+
+
+class TestExtractMissionSignature:
+    def test_rebase_url(self):
+        line = "- [project:koan] /rebase https://github.com/owner/repo/pull/123 📬"
+        assert _extract_mission_signature(line) == "rebase:https://github.com/owner/repo/pull/123"
+
+    def test_review_url(self):
+        line = "- [project:koan] /review https://github.com/owner/repo/pull/42"
+        assert _extract_mission_signature(line) == "review:https://github.com/owner/repo/pull/42"
+
+    def test_ci_check_url(self):
+        line = "- [project:foo] /ci_check https://github.com/org/foo/pull/99"
+        assert _extract_mission_signature(line) == "ci_check:https://github.com/org/foo/pull/99"
+
+    def test_recreate_url(self):
+        line = "/recreate https://github.com/owner/repo/pull/7"
+        assert _extract_mission_signature(line) == "recreate:https://github.com/owner/repo/pull/7"
+
+    def test_non_github_mission_returns_none(self):
+        line = "- [project:koan] Fix the login bug"
+        assert _extract_mission_signature(line) is None
+
+    def test_unknown_command_returns_none(self):
+        line = "- /deploy https://github.com/owner/repo/pull/1"
+        assert _extract_mission_signature(line) is None
+
+    def test_strips_trailing_paren(self):
+        line = "/review https://github.com/o/r/pull/5)"
+        assert _extract_mission_signature(line) == "review:https://github.com/o/r/pull/5"
+
+
+class TestIsDuplicateMission:
+    def test_duplicate_in_pending(self):
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- [project:koan] /rebase https://github.com/owner/repo/pull/10 ⏳(2026-05-16T10:00)\n\n"
+            "## In Progress\n\n"
+            "## Done\n"
+        )
+        new_entry = "- [project:koan] /rebase https://github.com/owner/repo/pull/10"
+        assert is_duplicate_mission(content, new_entry) is True
+
+    def test_duplicate_in_progress(self):
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "## In Progress\n\n"
+            "- [project:koan] /review https://github.com/owner/repo/pull/5 ⏳(2026-05-16T09:00) ▶(2026-05-16T09:01)\n\n"
+            "## Done\n"
+        )
+        new_entry = "- [project:koan] /review https://github.com/owner/repo/pull/5"
+        assert is_duplicate_mission(content, new_entry) is True
+
+    def test_not_duplicate_different_pr(self):
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- [project:koan] /rebase https://github.com/owner/repo/pull/10\n\n"
+            "## In Progress\n\n"
+            "## Done\n"
+        )
+        new_entry = "- [project:koan] /rebase https://github.com/owner/repo/pull/11"
+        assert is_duplicate_mission(content, new_entry) is False
+
+    def test_not_duplicate_different_command(self):
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- [project:koan] /review https://github.com/owner/repo/pull/10\n\n"
+            "## In Progress\n\n"
+            "## Done\n"
+        )
+        new_entry = "- [project:koan] /rebase https://github.com/owner/repo/pull/10"
+        assert is_duplicate_mission(content, new_entry) is False
+
+    def test_non_github_mission_never_duplicate(self):
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- [project:koan] Fix the login bug\n\n"
+            "## In Progress\n\n"
+            "## Done\n"
+        )
+        new_entry = "- [project:koan] Fix the login bug"
+        assert is_duplicate_mission(content, new_entry) is False
+
+    def test_done_section_not_checked(self):
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "## In Progress\n\n"
+            "## Done\n\n"
+            "- [project:koan] /rebase https://github.com/owner/repo/pull/10 ✅ (2026-05-16 10:00)\n"
+        )
+        new_entry = "- [project:koan] /rebase https://github.com/owner/repo/pull/10"
+        assert is_duplicate_mission(content, new_entry) is False

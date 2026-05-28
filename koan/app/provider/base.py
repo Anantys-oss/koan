@@ -9,7 +9,7 @@ from typing import List, Optional, Tuple
 # ---------------------------------------------------------------------------
 
 # Claude Code tool names (canonical, used throughout koan codebase)
-CLAUDE_TOOLS = {"Bash", "Read", "Write", "Glob", "Grep", "Edit"}
+CLAUDE_TOOLS = {"Bash", "Read", "Write", "Glob", "Grep", "Edit", "Skill"}
 
 # Mapping from Kōan canonical tool names to OpenAI-style function names.
 # Used by Copilot provider (--allow-tool) and local LLM runner (function calling).
@@ -20,6 +20,7 @@ TOOL_NAME_MAP = {
     "Edit": "edit_file",
     "Glob": "glob",
     "Grep": "grep",
+    "Skill": "skill",
 }
 
 
@@ -63,6 +64,24 @@ class CLIProvider:
         Base implementation prepends system prompt to the user prompt by
         returning empty — callers must handle the fallback. Providers that
         support a dedicated system prompt flag should override this.
+        """
+        return []
+
+    def supports_system_prompt_file(self) -> bool:
+        """Return True if the provider accepts a system prompt via file path.
+
+        File-based delivery keeps large prompts out of ``argv`` — they no
+        longer appear in ``ps`` listings or process supervisors, and they
+        sidestep ``ARG_MAX``.  Providers that opt in must also override
+        :meth:`build_system_prompt_file_args`.
+        """
+        return False
+
+    def build_system_prompt_file_args(self, path: str) -> List[str]:
+        """Build args for passing a system prompt via an on-disk file.
+
+        Only consulted when :meth:`supports_system_prompt_file` returns
+        True. Base implementation returns empty.
         """
         return []
 
@@ -110,6 +129,63 @@ class CLIProvider:
         """
         return []
 
+    def build_effort_args(self, effort: str = "") -> List[str]:
+        """Build args for reasoning effort control.
+
+        Args:
+            effort: Effort level (e.g. "low", "medium", "high", "max").
+                Empty string means no override (use provider default).
+
+        Returns:
+            CLI flags list. Base implementation returns empty (no-op).
+        """
+        return []
+
+    def supports_session_resume(self) -> bool:
+        """Return True if the provider supports resuming a previous session.
+
+        When True, ``build_resume_args`` produces valid CLI flags.
+        """
+        return False
+
+    def build_resume_args(self, session_id: str) -> List[str]:
+        """Build args to resume a previous CLI session.
+
+        Base implementation returns empty (not supported).
+        """
+        return []
+
+    def supports_stream_json(self) -> bool:
+        """Return True if the provider supports ``--output-format stream-json``.
+
+        When True, :func:`run_command_streaming` uses structured JSON events
+        for real-time progress and result extraction. When False, it falls
+        back to raw text output.
+        """
+        return False
+
+    def supports_last_message_file(self) -> bool:
+        """Return True if the provider can write its final assistant text to a file."""
+        return False
+
+    def build_last_message_file_args(self, path: str) -> List[str]:
+        """Build args that ask the provider to write its final assistant text."""
+        return []
+
+    def build_thinking_args(
+        self, enabled: bool = False, budget_tokens: int = 0,
+    ) -> List[str]:
+        """Build args for extended thinking / reasoning controls.
+
+        When *enabled* is True the provider should emit whatever flags
+        activate its extended-thinking mode.  *budget_tokens* is an
+        optional soft cap on thinking tokens (ignored by providers that
+        do not support token budgets).
+
+        Base implementation returns empty (no-op).
+        """
+        return []
+
     def build_permission_args(self, skip_permissions: bool = False) -> List[str]:
         """Build args for permission skipping.
 
@@ -130,6 +206,9 @@ class CLIProvider:
         plugin_dirs: Optional[List[str]] = None,
         skip_permissions: bool = False,
         system_prompt: str = "",
+        system_prompt_file: str = "",
+        effort: str = "",
+        resume_session_id: str = "",
     ) -> List[str]:
         """Build a complete CLI command from generic parameters.
 
@@ -138,16 +217,34 @@ class CLIProvider:
             system_prompt: Optional system prompt text. When provided and the
                 provider supports it, sent via a dedicated flag (e.g.,
                 ``--append-system-prompt``). Otherwise prepended to *prompt*.
+            system_prompt_file: Optional path to a file containing the system
+                prompt. When set and the provider supports it (see
+                :meth:`supports_system_prompt_file`), takes precedence over
+                ``system_prompt`` and is sent via a file-based flag (e.g.,
+                ``--append-system-prompt-file``).  Keeps large prompts out
+                of argv so they don't leak via ``ps``.  Empty string falls
+                back to the in-argv path.
+            effort: Reasoning effort level (e.g. "low", "medium", "high", "max").
+                Empty string means no override.
+            resume_session_id: When set and the provider supports session
+                resumption, continues the given session instead of starting
+                fresh. Saves tokens by reusing the prior conversation context.
 
         Returns a list of strings suitable for subprocess.run().
         """
-        # If system_prompt is set but provider doesn't support it natively,
-        # prepend to user prompt as fallback.
-        sys_args = self.build_system_prompt_args(system_prompt) if system_prompt else []
-        if system_prompt and not sys_args:
-            prompt = system_prompt + "\n\n" + prompt
+        # File-mode system prompt takes precedence over inline content.
+        sys_args: List[str] = []
+        if system_prompt_file and self.supports_system_prompt_file():
+            sys_args = self.build_system_prompt_file_args(system_prompt_file)
+        elif system_prompt:
+            sys_args = self.build_system_prompt_args(system_prompt)
+            if not sys_args:
+                # Provider doesn't support a dedicated flag — prepend to user prompt.
+                prompt = system_prompt + "\n\n" + prompt
 
         cmd = [self.binary()]
+        if resume_session_id and self.supports_session_resume():
+            cmd.extend(self.build_resume_args(resume_session_id))
         cmd.extend(self.build_permission_args(skip_permissions))
         cmd.extend(sys_args)
         cmd.extend(self.build_prompt_args(prompt))
@@ -157,6 +254,7 @@ class CLIProvider:
         cmd.extend(self.build_max_turns_args(max_turns))
         cmd.extend(self.build_mcp_args(mcp_configs))
         cmd.extend(self.build_plugin_args(plugin_dirs))
+        cmd.extend(self.build_effort_args(effort))
         return cmd
 
     def check_quota_available(self, project_path: str, timeout: int = 15) -> Tuple[bool, str]:
@@ -167,6 +265,31 @@ class CLIProvider:
         (e.g. local/ollama providers have no quota).
         """
         return True, ""
+
+    def detect_quota_exhaustion(
+        self,
+        stdout_text: str = "",
+        stderr_text: str = "",
+        exit_code: int = 0,
+    ) -> bool:
+        """Return True when provider output is a quota/rate-limit failure.
+
+        Providers own this because quota wording and output structure differ:
+        Claude emits CLI/provider text, Codex emits JSONL events, Copilot emits
+        GitHub-style 429 messages. The base provider has no quota concept.
+        """
+        return False
+
+    @staticmethod
+    def _line_has_error_marker(line: str, markers: tuple) -> bool:
+        """Return True when ``line`` contains at least one marker (case-insensitive).
+
+        Used by providers that scan stdout for quota text but want to ignore
+        normal assistant prose. A "marker" is a short substring like ``"error"``
+        or ``"http"`` that signals the line is a provider/CLI error.
+        """
+        lowered = line.lower()
+        return any(marker in lowered for marker in markers)
 
     def build_extra_flags(
         self,

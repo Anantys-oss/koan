@@ -13,18 +13,18 @@ Severities: critical > warning > info.
 Dismissed items are tracked in instance/.koan-attention-dismissed.json.
 """
 
-import fcntl
+import contextlib
 import hashlib
 import json
-import os
+import re
 import sys
-import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 from app.signals import PAUSE_FILE, QUOTA_RESET_FILE
+from app.utils import PROJECT_TAG_STRIP_RE
 
 # Stale PR threshold in seconds (7 days)
 _STALE_PR_SECONDS = 7 * 24 * 3600
@@ -76,21 +76,10 @@ def load_dismissed(koan_root: str) -> set:
 
 def save_dismissed(koan_root: str, dismissed: set) -> None:
     """Atomically persist the set of dismissed item IDs."""
+    from app.utils import atomic_write_json
     path = _dismissed_file_path(koan_root)
-    try:
-        data = sorted(dismissed)
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            dir=str(path.parent),
-            delete=False,
-            suffix=".tmp",
-        ) as tmp:
-            fcntl.flock(tmp, fcntl.LOCK_EX)
-            json.dump(data, tmp)
-            tmp_path = tmp.name
-        os.replace(tmp_path, path)
-    except OSError:
-        pass
+    with contextlib.suppress(OSError):
+        atomic_write_json(path, sorted(dismissed))
 
 
 def dismiss_item(koan_root: str, item_id: str) -> None:
@@ -130,9 +119,8 @@ def _collect_failed_missions(koan_root: str) -> list:
             text_hash = hashlib.md5(mission_text.encode()).hexdigest()[:8]
             item_id = _make_id("failed-mission", text_hash)
             # Strip leading "- " and project tags for display
-            display = mission_text.strip().lstrip("- ")
-            import re
-            display = re.sub(r"\[projec?t:[a-zA-Z0-9_-]+\]\s*", "", display).strip()
+            display = mission_text.strip().removeprefix("- ")
+            display = PROJECT_TAG_STRIP_RE.sub("", display).strip()
             items.append({
                 "id": item_id,
                 "severity": "critical",
@@ -254,6 +242,20 @@ def _collect_quota_items(koan_root: str) -> list:
     return items
 
 
+_API_URL_RE = re.compile(
+    r"https://api\.github\.com/repos/([^/]+/[^/]+)/(pulls|issues)/(\d+)"
+)
+
+
+def _api_url_to_web(api_url: str) -> str:
+    m = _API_URL_RE.match(api_url)
+    if not m:
+        return api_url
+    slug, kind, number = m.group(1), m.group(2), m.group(3)
+    kind_web = "pull" if kind == "pulls" else kind
+    return f"https://github.com/{slug}/{kind_web}/{number}"
+
+
 def _collect_github_mention_items(koan_root: str) -> list:
     """Return attention items from unread GitHub @mention notifications.
 
@@ -269,19 +271,14 @@ def _collect_github_mention_items(koan_root: str) -> list:
             return []
 
         from app.github_notifications import fetch_unread_notifications
-        from app.projects_config import load_projects_config, get_projects_from_config
+        from app.loop_manager import _get_known_repos_from_projects
 
-        proj_cfg = load_projects_config(koan_root)
-        known_repos: set = set()
-        if proj_cfg:
-            for name, _path in get_projects_from_config(proj_cfg):
-                from app.projects_config import get_project_config
-                pc = get_project_config(proj_cfg, name)
-                url = pc.get("github_url", "")
-                if url:
-                    known_repos.add(url.lower())
+        # Reuse the shared builder so workspace projects (cloned under any
+        # alias directory name) are matched by git remote, and full URLs are
+        # normalized to owner/repo — same coverage as the agent-loop poll.
+        known_repos = _get_known_repos_from_projects(koan_root)
 
-        result = fetch_unread_notifications(known_repos=known_repos or None)
+        result = fetch_unread_notifications(known_repos=known_repos)
         for notif in result.actionable:
             reason = notif.get("reason", "")
             if reason not in ("mention", "review_requested"):
@@ -289,7 +286,7 @@ def _collect_github_mention_items(koan_root: str) -> list:
             repo = (notif.get("repository") or {}).get("full_name", "")
             subject = notif.get("subject") or {}
             title = subject.get("title", "Notification")
-            url = subject.get("url", "")
+            url = _api_url_to_web(subject.get("url", ""))
             notif_id = str(notif.get("id", ""))
             updated_at = notif.get("updated_at", "")
             age = _age_seconds(updated_at)

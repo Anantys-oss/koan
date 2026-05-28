@@ -1,51 +1,30 @@
 """Koan fix skill -- queue a fix mission for a GitHub issue."""
 
+import json
 import re
 from typing import Optional, Tuple
 
+from app.github import run_gh
 from app.github_url_parser import parse_issue_url
+from app.missions import extract_now_flag
 from app.github_skill_helpers import (
     handle_github_skill,
+    parse_limit,
+    parse_repo_url,
     resolve_project_for_repo,
     format_project_not_found_error,
     queue_github_mission,
 )
 
 
-_LIMIT_PATTERN = re.compile(r'--limit[=\s]+(\d+)', re.IGNORECASE)
-
-
-def _parse_repo_url(args: str) -> Optional[Tuple[str, str, str]]:
-    """Try to extract a repo-only URL (no issue/PR number) from args.
-
-    Returns (url, owner, repo) or None if args contain an issue/PR URL
-    or no valid repo URL.
-    """
-    # If there's already an issue or PR URL, don't treat as batch
-    if re.search(r'github\.com/[^/\s]+/[^/\s]+/(?:issues|pull)/\d+', args):
-        return None
-
-    match = re.search(r'https?://github\.com/([^/\s]+)/([^/\s]+?)(?:\.git)?(?=/|\s|$)', args)
-    if not match:
-        return None
-
-    owner = match.group(1)
-    repo = match.group(2)
-    url = f"https://github.com/{owner}/{repo}"
-
-    # Reject if the "repo" part looks like a sub-path (issues, pull, etc.)
-    if repo in ("issues", "pull", "pulls", "actions", "settings", "wiki"):
-        return None
-
-    return url, owner, repo
-
-
-def _parse_limit(args: str) -> Optional[int]:
-    """Extract --limit=N from args. Returns None if not specified."""
-    match = _LIMIT_PATTERN.search(args)
-    if match:
-        return int(match.group(1))
-    return None
+_CLOSING_REF = re.compile(
+    r'(?:fix(?:es|ed)?|close[sd]?|resolve[sd]?)\s+#(\d+)',
+    re.IGNORECASE,
+)
+_CLOSING_URL = re.compile(
+    r'(?:fix(?:es|ed)?|close[sd]?|resolve[sd]?)\s+https?://github\.com/([^/\s]+)/([^/\s]+)/issues/(\d+)',
+    re.IGNORECASE,
+)
 
 
 def _list_open_issues(owner: str, repo: str, limit: Optional[int] = None) -> list:
@@ -54,9 +33,6 @@ def _list_open_issues(owner: str, repo: str, limit: Optional[int] = None) -> lis
     Returns list of dicts with 'number', 'title', and 'url' keys,
     ordered by most recently created first.
     """
-    import json
-    from app.github import run_gh
-
     gh_limit = str(limit) if limit else "100"
     output = run_gh(
         "issue", "list",
@@ -70,6 +46,36 @@ def _list_open_issues(owner: str, repo: str, limit: Optional[int] = None) -> lis
     return json.loads(output)
 
 
+def _list_open_prs(owner: str, repo: str) -> list:
+    """List open PRs from a GitHub repo using gh CLI.
+
+    Returns list of dicts with 'number' and 'body' keys.
+    """
+    output = run_gh(
+        "pr", "list",
+        "--repo", f"{owner}/{repo}",
+        "--state", "open",
+        "--limit", "100",
+        "--json", "number,body",
+    )
+    if not output.strip():
+        return []
+    return json.loads(output)
+
+
+def _issues_covered_by_prs(prs: list, owner: str, repo: str) -> set:
+    """Return set of issue numbers referenced by open PRs via closing keywords."""
+    covered = set()
+    for pr in prs:
+        body = pr.get("body") or ""
+        for m in _CLOSING_REF.finditer(body):
+            covered.add(int(m.group(1)))
+        for m in _CLOSING_URL.finditer(body):
+            if m.group(1) == owner and m.group(2) == repo:
+                covered.add(int(m.group(3)))
+    return covered
+
+
 def handle(ctx):
     """Handle /fix command -- queue a mission to fix a GitHub issue.
 
@@ -81,8 +87,12 @@ def handle(ctx):
     """
     args = ctx.args.strip() if ctx.args else ""
 
+    # Extract --now flag for priority queuing
+    urgent, args = extract_now_flag(args)
+    ctx.args = args
+
     # Check for batch mode: repo URL without issue number
-    repo_match = _parse_repo_url(args)
+    repo_match = parse_repo_url(args)
     if repo_match:
         return _handle_batch(ctx, args, repo_match)
 
@@ -93,13 +103,14 @@ def handle(ctx):
         url_type="issue",
         parse_func=parse_issue_url,
         success_prefix="Fix queued",
+        urgent=urgent,
     )
 
 
 def _handle_batch(ctx, args: str, repo_match: Tuple[str, str, str]) -> str:
     """Handle batch /fix: list issues from repo and queue a fix for each."""
     url, owner, repo = repo_match
-    limit = _parse_limit(args)
+    limit = parse_limit(args)
 
     # Resolve to local project
     project_path, project_name = resolve_project_for_repo(repo, owner=owner)
@@ -115,12 +126,27 @@ def _handle_batch(ctx, args: str, repo_match: Tuple[str, str, str]) -> str:
     if not issues:
         return f"No open issues found in {owner}/{repo}."
 
-    # Queue a /fix mission for each issue
+    # Filter out issues that already have an open PR referencing them
+    try:
+        prs = _list_open_prs(owner, repo)
+        covered = _issues_covered_by_prs(prs, owner, repo)
+    except (RuntimeError, ValueError):
+        covered = set()
+
+    # Queue a /fix mission for each uncovered issue
     queued = 0
+    skipped = 0
     for issue in issues:
+        if issue.get("number") in covered:
+            skipped += 1
+            continue
         issue_url = issue.get("url") or f"https://github.com/{owner}/{repo}/issues/{issue['number']}"
-        queue_github_mission(ctx, "fix", issue_url, project_name)
+        inserted = queue_github_mission(ctx, "fix", issue_url, project_name)
+        if not inserted:
+            skipped += 1
+            continue
         queued += 1
 
     limit_note = f" (limited to {limit})" if limit else ""
-    return f"Queued {queued} /fix missions for {owner}/{repo}{limit_note}."
+    skip_note = f", skipped {skipped} with existing PRs" if skipped else ""
+    return f"Queued {queued} /fix missions for {owner}/{repo}{limit_note}{skip_note}."

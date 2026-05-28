@@ -13,6 +13,12 @@ from collections import defaultdict
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
+from app.utils import (
+    PROJECT_SUBHEADER_RE,
+    PROJECT_TAG_RE,
+    PROJECT_TAG_STRIP_RE,
+)
+
 
 # Section name normalization — accepts French and English variants
 _SECTION_MAP = {
@@ -26,9 +32,13 @@ _SECTION_MAP = {
     "done": "done",
     "completed": "done",
     "failed": "failed",
+    "ci": "ci",
 }
 
-DEFAULT_SKELETON = "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n\n## Failed\n"
+DEFAULT_SKELETON = "# Missions\n\n## CI\n\n## Pending\n\n## In Progress\n\n## Done\n\n## Failed\n"
+
+# Regex to parse CI item attempt counters: (attempt N/M)
+_CI_ATTEMPT_RE = re.compile(r"\(\s*attempt\s+(\d+)\s*/\s*(\d+)\s*\)")
 
 # Timestamp markers for mission lifecycle tracking
 _QUEUED_MARKER = "⏳"
@@ -208,7 +218,7 @@ def parse_sections(content: str) -> Dict[str, List[str]]:
     (for ### complex missions). Continuation lines (indented text,
     code-fenced blocks) are attached to their parent "- ..." item.
     """
-    sections = {"pending": [], "in_progress": [], "done": [], "failed": []}
+    sections = {"pending": [], "in_progress": [], "done": [], "failed": [], "ci": []}
     current = None
     current_block = []
     in_code_fence = False
@@ -377,9 +387,7 @@ def extract_next_pending(content: str, project_name: str = "") -> str:
 
         # Track ### project:X sub-headers within pending section
         if stripped_lower.startswith("### "):
-            subheader_match = re.search(
-                r"###\s+projec?t\s*:\s*([a-zA-Z0-9_-]+)", stripped, re.IGNORECASE
-            )
+            subheader_match = PROJECT_SUBHEADER_RE.search(stripped)
             if subheader_match:
                 current_subheader_project = subheader_match.group(1).lower()
             else:
@@ -398,7 +406,7 @@ def extract_next_pending(content: str, project_name: str = "") -> str:
 
         if project_name:
             # 1. Check inline tag first (takes priority)
-            tag_match = re.search(r"\[projec?t:([a-zA-Z0-9_-]+)\]", line)
+            tag_match = PROJECT_TAG_RE.search(line)
             if tag_match:
                 if tag_match.group(1).lower() != project_name.lower():
                     i += 1
@@ -466,14 +474,105 @@ def extract_project_tag(line: str) -> str:
     2. Sub-header: ### project:name or ### projet:name
     """
     # Inline tag (brackets)
-    match = re.search(r'\[(?:project|projet):([a-zA-Z0-9_-]+)\]', line)
+    match = PROJECT_TAG_RE.search(line)
     if match:
         return match.group(1)
     # Sub-header format (### project:name)
-    match = re.search(r'###\s+projec?t\s*:\s*([a-zA-Z0-9_-]+)', line, re.IGNORECASE)
+    match = PROJECT_SUBHEADER_RE.search(line)
     if match:
         return match.group(1)
     return "default"
+
+
+# Regex to extract complexity tag: [complexity:trivial|simple|medium|complex]
+_COMPLEXITY_TAG_RE = re.compile(r'\[complexity:(trivial|simple|medium|complex)\]', re.IGNORECASE)
+
+
+def extract_complexity_tag(mission_text: str) -> Optional[str]:
+    """Extract the cached complexity tier from a mission line, or None.
+
+    Reads the [complexity:X] tag appended by tag_complexity_in_pending().
+
+    Args:
+        mission_text: Mission line or block text.
+
+    Returns:
+        Tier string ("trivial", "simple", "medium", "complex") or None.
+    """
+    match = _COMPLEXITY_TAG_RE.search(mission_text)
+    if match:
+        return match.group(1).lower()
+    return None
+
+
+def tag_complexity_in_pending(
+    mission_text: str,
+    tier: str,
+    missions_path,
+) -> None:
+    """Append a [complexity:X] tag to a pending mission line (atomic write).
+
+    Modifies only the first line of the mission that matches *mission_text*
+    in the Pending section.  Uses modify_missions_file() for atomic,
+    cross-process-safe writes.
+
+    The tag is inserted before any timestamp markers (⏳, ▶) so it does not
+    interfere with timestamp parsing.
+
+    Args:
+        mission_text: The mission description to find and tag (first-line match).
+        tier: Tier string — one of "trivial", "simple", "medium", "complex".
+        missions_path: Path-like object pointing to missions.md.
+    """
+    from app.utils import modify_missions_file
+    from pathlib import Path
+
+    missions_path = Path(missions_path)
+
+    def _apply(content: str) -> str:
+        lines = content.splitlines(keepends=True)
+        # Normalise the search key to first line only
+        search_key = mission_text.splitlines()[0].strip() if mission_text else ""
+        if not search_key:
+            return content
+
+        in_pending = False
+        for i, raw_line in enumerate(lines):
+            stripped = raw_line.strip()
+            # Track section headers
+            if stripped.startswith("##") and not stripped.startswith("###"):
+                section_name = stripped.lstrip("#").strip().lower()
+                normalized = _SECTION_MAP.get(section_name, "")
+                in_pending = normalized == "pending"
+                continue
+
+            if not in_pending:
+                continue
+
+            # First-line match — skip lines that already have the tag
+            if search_key in raw_line and not _COMPLEXITY_TAG_RE.search(raw_line):
+                # Insert tag before any timestamp markers (⏳ or ▶)
+                base = raw_line.rstrip("\n").rstrip("\r")
+                tag = f"[complexity:{tier}]"
+                # Find position of first timestamp marker if present
+                ts_match = re.search(r'\s*[⏳▶]\(', base)
+                if ts_match:
+                    insert_pos = ts_match.start()
+                    new_line = (
+                        base[:insert_pos]
+                        + f" {tag}"
+                        + base[insert_pos:]
+                    )
+                else:
+                    new_line = f"{base} {tag}"
+                # Restore original line ending
+                ending = raw_line[len(raw_line.rstrip("\r\n")):]
+                lines[i] = new_line + (ending or "\n")
+                break  # Only tag the first matching line
+
+        return "".join(lines)
+
+    modify_missions_file(missions_path, _apply)
 
 
 def group_by_project(content: str) -> Dict[str, Dict[str, List[str]]]:
@@ -799,6 +898,93 @@ def cancel_pending_mission(content: str, identifier: str) -> Tuple[str, str]:
     return result[0], target_text
 
 
+def cancel_pending_missions_bulk(
+    content: str, positions: List[int]
+) -> Tuple[str, List[str]]:
+    """Cancel multiple pending missions by 1-indexed positions.
+
+    Args:
+        content: Full missions.md content.
+        positions: 1-indexed positions of missions to cancel.
+
+    Returns:
+        (updated_content, list_of_cancelled_display_texts) tuple.
+
+    Raises:
+        ValueError: If any position is invalid, duplicated, or no pending missions.
+    """
+    lines = content.splitlines()
+    boundaries = find_section_boundaries(lines)
+
+    if "pending" not in boundaries:
+        raise ValueError("No pending section found.")
+
+    start, end = boundaries["pending"]
+
+    # Collect pending items as (start_line_idx, end_line_idx) tuples
+    items: List[Tuple[int, int]] = []
+    i = start + 1
+    while i < end:
+        stripped = lines[i].strip()
+        if stripped.startswith("- "):
+            item_start = i
+            i += 1
+            while i < end:
+                next_stripped = lines[i].strip()
+                if (next_stripped.startswith("- ") or
+                        next_stripped.startswith("## ") or
+                        next_stripped.startswith("### ") or
+                        next_stripped == ""):
+                    break
+                i += 1
+            items.append((item_start, i))
+        else:
+            i += 1
+
+    if not items:
+        raise ValueError("No pending missions to cancel.")
+
+    # Validate positions
+    seen: set = set()
+    for pos in positions:
+        if pos < 1 or pos > len(items):
+            raise ValueError(
+                f"Invalid position: {pos}. "
+                f"Queue has {len(items)} pending mission(s)."
+            )
+        if pos in seen:
+            raise ValueError(f"Duplicate position: {pos}")
+        seen.add(pos)
+
+    # Collect display texts in the order positions were given
+    remove_set = {p - 1 for p in positions}
+    displays = [
+        clean_mission_display("\n".join(lines[items[p - 1][0]:items[p - 1][1]]))
+        for p in positions
+    ]
+
+    # Keep only non-cancelled items
+    remaining = [item for idx, item in enumerate(items) if idx not in remove_set]
+
+    # Build the pending section header (preserve blank lines after header)
+    header_lines = lines[start : start + 1]
+    blank_after_header = []
+    j = start + 1
+    while j < end and lines[j].strip() == "":
+        blank_after_header.append(lines[j])
+        j += 1
+
+    # Rebuild pending section
+    pending_block = header_lines + blank_after_header
+    for item_start, item_end in remaining:
+        pending_block.extend(lines[item_start:item_end])
+
+    # Reassemble full content
+    result_lines = lines[:start] + pending_block + lines[end:]
+
+    return normalize_content("\n".join(result_lines)), displays
+
+
 def _remove_pending_by_text(
     content: str, needle: str,
 ) -> Optional[Tuple[str, str]]:
@@ -820,6 +1006,23 @@ def _remove_item_by_text(
 
     Returns ``(updated_content, removed_text)`` or ``None`` when no match.
     """
+    # When the picker returned a multi-line block (mission + continuation
+    # lines absorbed from a corrupted Pending section), the raw needle
+    # contains \n and can never substring-match a single stripped line.
+    # Reduce to the first non-empty line so lookup still works; fall back
+    # to the original needle if every line is blank (caller's match will
+    # then naturally miss and return None).
+    line_needle = next(
+        (ln.strip() for ln in needle.splitlines() if ln.strip()),
+        needle,
+    )
+    # Collapse internal whitespace runs in the needle so it matches the
+    # collapsed `comparable` below. Without this, a mission whose text
+    # contains double spaces (e.g. inline /plan context) can never match —
+    # the runner succeeds but the mission is never moved out of Pending,
+    # so it re-dispatches on every loop iteration forever.
+    line_needle = re.sub(r"\s+", " ", line_needle)
+
     lines = content.splitlines()
     boundaries = find_section_boundaries(lines)
     if section_key not in boundaries:
@@ -829,7 +1032,12 @@ def _remove_item_by_text(
 
     for i in range(start + 1, end):
         stripped = lines[i].strip()
-        if stripped.startswith("- ") and needle in stripped:
+        if not stripped.startswith("- "):
+            continue
+        # Strip [complexity:X] tags before comparing — these may have been
+        # inserted after the needle was captured by the mission picker.
+        comparable = re.sub(r"\s+", " ", _COMPLEXITY_TAG_RE.sub("", stripped))
+        if line_needle in comparable:
             return _splice_pending_item(lines, i, _find_item_extent(lines, i, end))
 
     return None
@@ -837,12 +1045,17 @@ def _remove_item_by_text(
 
 def _move_pending_to_section(
     content: str, mission_text: str, section_key: str, marker: str, header: str,
+    cause_tag: str = "",
 ) -> str:
     """Move a mission from Pending (or In Progress) to a target section.
 
     Shared implementation for complete_mission() and fail_mission().
     Searches Pending first, then falls back to In Progress.
     Returns content unchanged if the mission is not found in either section.
+
+    When *cause_tag* is a non-empty string, it is appended in square
+    brackets after the timestamp — e.g. ``❌ (2026-04-19 03:45) [stagnation]``.
+    Used to surface why a mission failed without parsing logs.
     """
     needle = mission_text.strip()
     result = _remove_pending_by_text(content, needle)
@@ -859,6 +1072,15 @@ def _move_pending_to_section(
 
     timestamp = time.strftime("%Y-%m-%d %H:%M")
     entry = f"- {display} {marker} ({timestamp})"
+    tag = (cause_tag or "").strip()
+    if tag:
+        # Strip brackets to keep the missions.md entry parseable. Without this,
+        # an extended tag (e.g. retry counters supplied by callers) could
+        # introduce nested or unbalanced brackets and confuse downstream
+        # readers of missions.md.
+        tag = tag.replace("[", "").replace("]", "")
+        if tag:
+            entry = f"{entry} [{tag}]"
 
     lines = updated.splitlines()
     boundaries = find_section_boundaries(lines)
@@ -979,17 +1201,71 @@ def complete_mission(content: str, mission_text: str) -> str:
     return _move_pending_to_section(content, mission_text, "done", "\u2705", "Done")
 
 
-def fail_mission(content: str, mission_text: str) -> str:
+def fail_mission(content: str, mission_text: str, cause_tag: str = "") -> str:
     """Move a mission from Pending (or In Progress) to Failed with a timestamp.
 
     Same pattern as complete_mission() but moves to ## Failed instead of ## Done.
     Searches Pending first, then In Progress.
 
+    When *cause_tag* is supplied (e.g. ``"stagnation"``), it is appended
+    in square brackets after the failure timestamp so operators can tell
+    a stuck-in-a-loop abort from a regular failure at a glance.
+
     Returns content unchanged if the mission is not found in either section.
     """
     from app.security_audit import MISSION_FAIL, log_event
-    log_event(MISSION_FAIL, details={"mission": mission_text})
-    return _move_pending_to_section(content, mission_text, "failed", "\u274c", "Failed")
+    log_event(MISSION_FAIL, details={"mission": mission_text, "cause_tag": cause_tag})
+    return _move_pending_to_section(
+        content, mission_text, "failed", "\u274c", "Failed",
+        cause_tag=cause_tag,
+    )
+
+
+def requeue_mission(content: str, mission_text: str) -> str:
+    """Move a mission from In Progress (or Failed) back to Pending.
+
+    Used when an error is recoverable (e.g. re-login, quota reset)
+    rather than a permanent mission failure.  Strips the started/failed
+    timestamps so the mission looks like a fresh pending item.
+
+    Searches In Progress first, then falls back to Failed — this handles
+    the case where quota is detected after _finalize_mission already moved
+    the mission to Failed.
+
+    Returns content unchanged if the mission is not found in either section.
+    """
+    needle = mission_text.strip()
+    result = _remove_item_by_text(content, needle, "in_progress")
+    if result is None:
+        result = _remove_item_by_text(content, needle, "failed")
+    if result is None:
+        return content
+
+    updated, removed = result
+    # Strip the "- " prefix and lifecycle markers so we re-insert cleanly
+    display = removed.strip()
+    if display.startswith("- "):
+        display = display[2:]
+    # Remove started timestamp (▶(2026-03-26T22:00))
+    display = _STARTED_PATTERN.sub("", display).strip()
+    # Remove completed/failed marker (✅/❌(2026-04-13 14:47))
+    display = _COMPLETED_PATTERN.sub("", display).strip()
+
+    entry = f"- {display}"
+
+    lines = updated.splitlines()
+    boundaries = find_section_boundaries(lines)
+    if "pending" in boundaries:
+        start, end = boundaries["pending"]
+        insert_at = start + 1
+        # Skip blank lines after header
+        while insert_at < end and lines[insert_at].strip() == "":
+            insert_at += 1
+        lines.insert(insert_at, entry)
+        return normalize_content("\n".join(lines))
+
+    # No Pending section — create one
+    return normalize_content(updated + f"\n## Pending\n\n{entry}\n")
 
 
 def clean_mission_display(text: str, max_length: int = 120) -> str:
@@ -1007,16 +1283,18 @@ def clean_mission_display(text: str, max_length: int = 120) -> str:
         text = text[2:]
 
     # Strip project tag but keep project name as prefix
-    tag_match = re.search(r'\[projec?t:([a-zA-Z0-9_-]+)\]\s*', text)
+    tag_match = PROJECT_TAG_RE.search(text)
     if tag_match:
         project = tag_match.group(1)
-        text = re.sub(r'\[projec?t:[a-zA-Z0-9_-]+\]\s*', '', text)
+        text = PROJECT_TAG_STRIP_RE.sub('', text)
         text = f"[{project}] {text}"
 
-    # Strip trailing GitHub origin marker (displayed by /list as a leading hint)
+    # Strip trailing origin markers (displayed by /list as a leading hint)
     text = text.rstrip()
-    if text.endswith("📬"):
-        text = text[:-1].rstrip()
+    for _marker in ("📬", "🎫"):
+        if text.endswith(_marker):
+            text = text[:-len(_marker)].rstrip()
+            break
 
     # Truncate for readability
     if len(text) > max_length:
@@ -1049,6 +1327,53 @@ def find_section_boundaries(lines: List[str]) -> Dict[str, Tuple[int, int]]:
         boundaries[key] = (start, end)
 
     return boundaries
+
+
+def _collect_item_start_indices(
+    lines: List[str], section_start: int, section_end: int
+) -> List[int]:
+    """Return start-line indices for each '- ' item within a section."""
+    items: List[int] = []
+    i = section_start + 1  # Skip ## header
+    while i < section_end:
+        if lines[i].strip().startswith("- "):
+            items.append(i)
+            i += 1
+            while i < section_end:
+                s = lines[i].strip()
+                if s.startswith("- ") or s.startswith("## ") or s.startswith("### ") or s == "":
+                    break
+                i += 1
+        else:
+            i += 1
+    return items
+
+
+def _find_insertion_index(
+    lines: List[str], section_start: int, section_end: int,
+    item_starts: List[int], target: int
+) -> int:
+    """Compute the line index to insert a moved item at the given target position."""
+    if target == 1:
+        idx = section_start + 1
+        while idx < section_end and lines[idx].strip() == "":
+            idx += 1
+        return idx
+
+    if target - 1 < len(item_starts):
+        return item_starts[target - 1]
+
+    # Target beyond existing items — insert after the last item's content
+    if item_starts:
+        idx = item_starts[-1] + 1
+        while idx < section_end:
+            s = lines[idx].strip()
+            if s.startswith("- ") or s.startswith("## ") or s.startswith("### ") or s == "":
+                break
+            idx += 1
+        return idx
+
+    return section_start + 1
 
 
 def reorder_mission(content: str, position: int, target: int = 1) -> Tuple[str, str]:
@@ -1118,56 +1443,116 @@ def reorder_mission(content: str, position: int, target: int = 1) -> Tuple[str, 
     # Remove the moved item's lines
     new_lines = lines[:moved_start] + lines[moved_end:]
 
-    # Recalculate item positions after removal
-    new_boundaries = find_section_boundaries(new_lines)
-    new_start, new_end = new_boundaries["pending"]
+    # Adjust cached boundary indices — removing lines inside the section shifts
+    # the section end by the number of removed lines; start is unaffected because
+    # the removed item always falls after the section header (start).
+    removed_count = moved_end - moved_start
+    new_start = start
+    new_end = end - removed_count
 
-    new_items = []
-    j = new_start + 1
-    while j < new_end:
-        s = new_lines[j].strip()
-        if s.startswith("- "):
-            item_start_j = j
-            j += 1
-            while j < new_end:
-                ns = new_lines[j].strip()
-                if (ns.startswith("- ") or
-                        ns.startswith("## ") or
-                        ns.startswith("### ") or
-                        ns == ""):
-                    break
-                j += 1
-            new_items.append(item_start_j)
-        else:
-            j += 1
+    new_items = _collect_item_start_indices(new_lines, new_start, new_end)
 
     # Determine insertion line index
-    if target == 1:
-        insert_idx = new_start + 1
-        while insert_idx < new_end and new_lines[insert_idx].strip() == "":
-            insert_idx += 1
-    elif target - 1 < len(new_items):
-        insert_idx = new_items[target - 1]
-    else:
-        if new_items:
-            last_start = new_items[-1]
-            insert_idx = last_start + 1
-            while insert_idx < new_end:
-                ns = new_lines[insert_idx].strip()
-                if (ns.startswith("- ") or
-                        ns.startswith("## ") or
-                        ns.startswith("### ") or
-                        ns == ""):
-                    break
-                insert_idx += 1
-        else:
-            insert_idx = new_start + 1
+    insert_idx = _find_insertion_index(
+        new_lines, new_start, new_end, new_items, target
+    )
 
     # Insert the moved lines
     result_lines = new_lines[:insert_idx] + moved_lines + new_lines[insert_idx:]
 
     display = clean_mission_display(moved_text)
     return normalize_content("\n".join(result_lines)), display
+
+
+def reorder_missions_bulk(
+    content: str, positions: List[int]
+) -> Tuple[str, List[str]]:
+    """Reorder multiple pending missions to the top of the queue.
+
+    The missions at the given positions are placed at the top in the
+    order specified.  Remaining missions keep their relative order below.
+
+    Args:
+        content: Full missions.md content.
+        positions: 1-indexed positions of missions to promote, in desired order.
+
+    Returns:
+        (new_content, list_of_display_texts) tuple.
+
+    Raises:
+        ValueError: If any position is invalid, duplicated, or no pending missions.
+    """
+    lines = content.splitlines()
+    boundaries = find_section_boundaries(lines)
+
+    if "pending" not in boundaries:
+        raise ValueError("No pending section found.")
+
+    start, end = boundaries["pending"]
+
+    # Collect pending items as (start_line_idx, end_line_idx) tuples
+    items: List[Tuple[int, int]] = []
+    i = start + 1
+    while i < end:
+        stripped = lines[i].strip()
+        if stripped.startswith("- "):
+            item_start = i
+            i += 1
+            while i < end:
+                next_stripped = lines[i].strip()
+                if (next_stripped.startswith("- ") or
+                        next_stripped.startswith("## ") or
+                        next_stripped.startswith("### ") or
+                        next_stripped == ""):
+                    break
+                i += 1
+            items.append((item_start, i))
+        else:
+            i += 1
+
+    if not items:
+        raise ValueError("No pending missions to reorder.")
+
+    # Validate positions
+    seen: set = set()
+    for pos in positions:
+        if pos < 1 or pos > len(items):
+            raise ValueError(
+                f"Invalid position: {pos}. "
+                f"Queue has {len(items)} pending mission(s)."
+            )
+        if pos in seen:
+            raise ValueError(f"Duplicate position: {pos}")
+        seen.add(pos)
+
+    # Extract item line blocks in the requested order
+    promoted = [items[p - 1] for p in positions]
+    promoted_set = {p - 1 for p in positions}
+    remaining = [item for idx, item in enumerate(items) if idx not in promoted_set]
+
+    new_order = promoted + remaining
+
+    # Build the pending section header (preserve blank lines after header)
+    header_lines = lines[start : start + 1]
+    blank_after_header = []
+    j = start + 1
+    while j < end and lines[j].strip() == "":
+        blank_after_header.append(lines[j])
+        j += 1
+
+    # Rebuild pending section
+    pending_block = header_lines + blank_after_header
+    for item_start, item_end in new_order:
+        pending_block.extend(lines[item_start:item_end])
+
+    # Reassemble full content
+    result_lines = lines[:start] + pending_block + lines[end:]
+
+    displays = [
+        clean_mission_display("\n".join(lines[s:e]))
+        for s, e in promoted
+    ]
+    return normalize_content("\n".join(result_lines)), displays
 
 
 def edit_pending_mission(content: str, position: int, new_text: str) -> Tuple[str, str]:
@@ -1532,3 +1917,326 @@ def count_in_progress(content: str) -> int:
     """Count the number of missions currently in progress."""
     sections = parse_sections(content)
     return len(sections.get("in_progress", []))
+
+
+# ---------------------------------------------------------------------------
+# Quarantine helpers
+# ---------------------------------------------------------------------------
+
+# Max quarantine file size in bytes. Once exceeded, the oldest half of
+# entries is pruned to make room.  100 KB is ~200 entries at ~500 bytes each.
+QUARANTINE_MAX_BYTES = 100_000
+
+
+def quarantine_mission(
+    quarantine_path: "Path",
+    text: str,
+    reason: str,
+    source: str = "unknown",
+) -> bool:
+    """Append a flagged mission to the quarantine file.
+
+    Args:
+        quarantine_path: Path to missions-quarantine.md.
+        text: The mission text (truncated to 500 chars).
+        reason: Why it was quarantined.
+        source: Origin label (e.g. "telegram", "github/@user").
+
+    Returns:
+        True if the entry was written, False on error.
+    """
+    from pathlib import Path  # local to avoid top-level import
+
+    quarantine_path = Path(quarantine_path)
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    entry = f"- \U0001f6e1\ufe0f [{timestamp}] ({source}) {reason}: {text[:500]}\n"
+    try:
+        _enforce_quarantine_cap(quarantine_path)
+        with open(quarantine_path, "a") as f:
+            f.write(entry)
+        return True
+    except OSError:
+        return False
+
+
+def _enforce_quarantine_cap(path: "Path") -> None:
+    """If the quarantine file exceeds QUARANTINE_MAX_BYTES, prune oldest half."""
+    from pathlib import Path
+    from app.utils import atomic_write
+
+    path = Path(path)
+    if not path.exists():
+        return
+    size = path.stat().st_size
+    if size <= QUARANTINE_MAX_BYTES:
+        return
+    lines = path.read_text().splitlines(keepends=True)
+    # Keep the newer half
+    half = len(lines) // 2
+    atomic_write(path, "".join(lines[half:]))
+
+
+# ── CI section helpers ────────────────────────────────────────────────────────
+# These functions manage the ## CI section in missions.md which tracks
+# in-flight CI monitoring entries. Each entry has the format:
+#   - [project:name] https://github.com/owner/repo/pull/N branch:b repo:owner/repo queued:TIMESTAMP (attempt 0/5)
+
+
+def add_ci_item(
+    content: str,
+    project_name: str,
+    pr_url: str,
+    pr_number: str,
+    branch: str,
+    full_repo: str,
+    max_attempts: int,
+) -> str:
+    """Add or refresh a CI monitoring entry in the ## CI section.
+
+    Deduplicates by pr_url — if already present, resets the attempt counter
+    to 0 (fresh CI run, e.g. after a rebase force-push).
+
+    Returns the updated content string.
+    """
+    from datetime import datetime, timezone
+
+    if not content:
+        content = DEFAULT_SKELETON
+
+    queued = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M")
+    tag = f"[project:{project_name}] " if project_name else ""
+    new_line = (
+        f"- {tag}{pr_url} branch:{branch} repo:{full_repo}"
+        f" queued:{queued} (attempt 0/{max_attempts})"
+    )
+
+    # Remove any existing entry for this PR URL (dedup / reset)
+    content = remove_ci_item(content, pr_url)
+
+    # Ensure ## CI section exists
+    if "## CI" not in content:
+        # Insert before ## Pending (or at top if no ## Pending)
+        if "## Pending" in content:
+            content = content.replace("## Pending", "## CI\n\n## Pending", 1)
+        elif "## En attente" in content:
+            content = content.replace("## En attente", "## CI\n\n## En attente", 1)
+        else:
+            # Fallback: prepend after # Missions header
+            if "# Missions" in content:
+                content = content.replace("# Missions\n", "# Missions\n\n## CI\n", 1)
+            else:
+                content = f"## CI\n\n{content}"
+
+    # Append the new entry to the ## CI section
+    lines = content.splitlines()
+    ci_header_idx = None
+    for i, line in enumerate(lines):
+        if line.strip() == "## CI":
+            ci_header_idx = i
+            break
+
+    if ci_header_idx is None:
+        # Should not happen after the block above, but be safe
+        content += f"\n## CI\n\n{new_line}\n"
+        return normalize_content(content)
+
+    # Find end of CI section (next ## header or EOF)
+    insert_idx = ci_header_idx + 1
+    for j in range(ci_header_idx + 1, len(lines)):
+        if lines[j].strip().startswith("## "):
+            break
+        insert_idx = j + 1
+
+    lines.insert(insert_idx, new_line)
+    return normalize_content("\n".join(lines))
+
+
+def remove_ci_item(content: str, pr_url: str) -> str:
+    """Remove the CI monitoring entry for the given PR URL.
+
+    Returns the updated content string (unchanged if not found).
+    """
+    if not content or "## CI" not in content:
+        return content
+
+    lines = content.splitlines()
+    in_ci = False
+    filtered = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "## CI":
+            in_ci = True
+            filtered.append(line)
+            continue
+        if in_ci and stripped.startswith("## "):
+            in_ci = False
+        if in_ci and pr_url in line:
+            continue  # Remove this line
+        filtered.append(line)
+
+    return normalize_content("\n".join(filtered))
+
+
+def get_ci_items(content: str) -> List[dict]:
+    """Parse ## CI section entries into a list of dicts.
+
+    Each dict has keys: project, pr_url, pr_number, branch, full_repo,
+    queued, attempt, max_attempts, raw_line.
+    """
+    if not content:
+        return []
+
+    items = []
+    in_ci = False
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped == "## CI":
+            in_ci = True
+            continue
+        if in_ci and stripped.startswith("## "):
+            break
+        if not in_ci or not stripped.startswith("- "):
+            continue
+
+        item = _parse_ci_line(stripped)
+        if item:
+            items.append(item)
+
+    return items
+
+
+def _parse_ci_line(line: str) -> Optional[dict]:
+    """Parse a single CI entry line. Returns dict or None if unparseable."""
+    # Extract project tag
+    project = ""
+    tag_match = re.search(r"\[project:([^\]]+)\]", line)
+    if tag_match:
+        project = tag_match.group(1)
+
+    # Extract attempt counter
+    attempt_match = _CI_ATTEMPT_RE.search(line)
+    if not attempt_match:
+        return None
+    attempt = int(attempt_match.group(1))
+    max_attempts = int(attempt_match.group(2))
+
+    # Extract URL (first https:// token)
+    url_match = re.search(r"(https://[^\s]+/pull/\d+)", line)
+    if not url_match:
+        return None
+    pr_url = url_match.group(1)
+
+    # Derive pr_number from URL
+    pr_num_match = re.search(r"/pull/(\d+)", pr_url)
+    pr_number = pr_num_match.group(1) if pr_num_match else ""
+
+    # Extract branch:, repo:, queued: fields
+    branch_match = re.search(r"\bbranch:(\S+)", line)
+    repo_match = re.search(r"\brepo:(\S+)", line)
+    queued_match = re.search(r"\bqueued:(\S+)", line)
+
+    return {
+        "project": project,
+        "pr_url": pr_url,
+        "pr_number": pr_number,
+        "branch": branch_match.group(1) if branch_match else "",
+        "full_repo": repo_match.group(1) if repo_match else "",
+        "queued": queued_match.group(1) if queued_match else "",
+        "attempt": attempt,
+        "max_attempts": max_attempts,
+        "raw_line": line,
+    }
+
+
+def update_ci_item_attempt(content: str, pr_url: str) -> str:
+    """Increment the attempt counter for the CI entry matching pr_url.
+
+    Finds the line containing pr_url in the ## CI section and increments
+    the attempt number in-place: (attempt N/M) → (attempt N+1/M).
+    Returns content unchanged if pr_url not found or attempt already at max.
+    """
+    if not content or "## CI" not in content:
+        return content
+
+    lines = content.splitlines()
+    in_ci = False
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped == "## CI":
+            in_ci = True
+            continue
+        if in_ci and stripped.startswith("## "):
+            break
+        if in_ci and pr_url in line:
+            m = _CI_ATTEMPT_RE.search(line)
+            if m:
+                current = int(m.group(1))
+                maximum = int(m.group(2))
+                if current < maximum:
+                    new_line = _CI_ATTEMPT_RE.sub(
+                        f"(attempt {current + 1}/{maximum})", line
+                    )
+                    lines[i] = new_line
+            break
+
+    return normalize_content("\n".join(lines))
+
+
+# ---------------------------------------------------------------------------
+# Duplicate detection
+# ---------------------------------------------------------------------------
+
+# Regex to extract the "action signature" from a mission line:
+# /command https://github.com/... → ("command", "url")
+_GITHUB_ACTION_RE = re.compile(
+    r"/(ask|audit|benchmark|brainstorm|check|check_need|ci_check"
+    r"|deeplan|deepplan|doc|docs|fix|gh_request"
+    r"|impl|implement|inspect|need|needs|perf|plan|profile"
+    r"|rb|rc|rebase|recreate|refactor|review|reviewrebase|rf|rr|rv"
+    r"|secu|security|security_audit|sq|squash)\s+"
+    r"(https://github\.com/[^\s]+)"
+)
+
+
+def _extract_mission_signature(text: str) -> Optional[str]:
+    """Extract a normalized signature from a mission line for dedup.
+
+    For GitHub-related missions (/rebase, /review, etc.), the signature is
+    "command:url" — two missions are duplicates if they target the same
+    command on the same URL.
+
+    For other missions, returns None (no signature-based dedup).
+    """
+    match = _GITHUB_ACTION_RE.search(text)
+    if match:
+        command = match.group(1)
+        url = match.group(2).rstrip("/)")  # strip trailing paren or slash
+        return f"{command}:{url}"
+    return None
+
+
+def is_duplicate_mission(content: str, new_entry: str) -> bool:
+    """Check if a mission with the same action signature already exists.
+
+    Checks both Pending and In Progress sections.
+
+    Args:
+        content: Full missions.md content.
+        new_entry: The mission entry about to be inserted.
+
+    Returns:
+        True if a duplicate exists, False otherwise.
+    """
+    signature = _extract_mission_signature(new_entry)
+    if signature is None:
+        return False
+
+    sections = parse_sections(content)
+    existing = sections.get("pending", []) + sections.get("in_progress", [])
+
+    for item in existing:
+        item_sig = _extract_mission_signature(item)
+        if item_sig == signature:
+            return True
+
+    return False

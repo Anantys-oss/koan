@@ -1,8 +1,10 @@
 """Tests for memory_manager.py — scoped summary, compaction, learnings dedup, journal archival."""
 
-import pytest
+import contextlib
 from datetime import date, timedelta
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from app.memory_manager import (
     MemoryManager,
@@ -11,11 +13,17 @@ from app.memory_manager import (
     compact_summary,
     cleanup_learnings,
     cap_learnings,
+    compact_learnings,
     archive_journals,
     run_cleanup,
+    append_memory_entry,
+    read_memory_window,
+    prune_memory_log,
+    migrate_markdown_to_jsonl,
     _extract_project_hint,
     _extract_session_digest,
     _balanced_select,
+    _should_skip_compaction,
 )
 
 
@@ -458,6 +466,192 @@ class TestRunCleanup:
         stats = run_cleanup(str(tmp_path))
         assert stats["summary_compacted"] == 0
 
+    def test_pipeline_runs_dedup_compact_cap_in_order(self, tmp_path):
+        """Verify the three-step learnings pipeline: dedup -> compact -> cap."""
+        mem = tmp_path / "memory"
+        mem.mkdir()
+        (mem / "summary.md").write_text("# Summary\n")
+
+        proj = mem / "projects" / "koan"
+        proj.mkdir(parents=True)
+        lines = ["# Learnings", ""]
+        # 250 unique lines + 50 duplicates = dedup should remove 50
+        for i in range(250):
+            lines.append(f"- fact {i}")
+        for i in range(50):
+            lines.append(f"- fact {i}")  # duplicates
+        (proj / "learnings.md").write_text("\n".join(lines))
+
+        call_order = []
+        original_cleanup = MemoryManager.cleanup_learnings
+        original_compact = MemoryManager.compact_learnings
+        original_cap = MemoryManager.cap_learnings
+
+        def track_cleanup(self, name):
+            call_order.append("dedup")
+            return original_cleanup(self, name)
+
+        def track_compact(self, name, max_lines=100):
+            call_order.append("compact")
+            return {"skipped": True}
+
+        def track_cap(self, name, max_lines=200):
+            call_order.append("cap")
+            return original_cap(self, name, max_lines)
+
+        with patch.object(MemoryManager, "cleanup_learnings", track_cleanup), \
+             patch.object(MemoryManager, "compact_learnings", track_compact), \
+             patch.object(MemoryManager, "cap_learnings", track_cap):
+            run_cleanup(str(tmp_path))
+
+        assert call_order == ["dedup", "compact", "cap"]
+
+    def test_compaction_failure_does_not_break_pipeline(self, tmp_path):
+        """If compact_learnings raises, cap_learnings still runs."""
+        mem = tmp_path / "memory"
+        mem.mkdir()
+        (mem / "summary.md").write_text("# Summary\n")
+
+        proj = mem / "projects" / "koan"
+        proj.mkdir(parents=True)
+        lines = ["# Learnings", ""]
+        for i in range(300):
+            lines.append(f"- fact {i}")
+        (proj / "learnings.md").write_text("\n".join(lines))
+
+        with patch.object(MemoryManager, "compact_learnings", side_effect=RuntimeError("boom")):
+            stats = run_cleanup(str(tmp_path), max_learnings_lines=50)
+
+        # cap_learnings should still run as safety net
+        assert stats.get("learnings_capped_koan", 0) == 250
+
+
+class TestSecurityLearningsCompaction:
+    def _write_security_learnings(self, tmp_path, lines):
+        path = tmp_path / "memory" / "projects" / "koan" / "security_learnings.md"
+        path.parent.mkdir(parents=True)
+        path.write_text("# Security Intelligence\n\n" + "\n".join(lines) + "\n")
+        return path
+
+    def test_missing_security_file_skips(self, tmp_path):
+        mgr = MemoryManager(str(tmp_path))
+
+        result = mgr.compact_security_learnings("koan", max_lines=5)
+
+        assert result == {"original_lines": 0, "compacted_lines": 0, "skipped": True}
+
+    def test_security_compaction_cli_failure_truncates(self, tmp_path):
+        path = self._write_security_learnings(
+            tmp_path,
+            [f"- finding {i}" for i in range(5)],
+        )
+        mgr = MemoryManager(str(tmp_path))
+
+        with patch.object(
+            MemoryManager,
+            "_run_security_compaction_cli",
+            side_effect=RuntimeError("cli down"),
+        ):
+            result = mgr.compact_security_learnings("koan", max_lines=2)
+
+        assert result["fallback"] is True
+        assert result["compacted_lines"] == 2
+        content = path.read_text()
+        assert "- finding 3" in content
+        assert "- finding 4" in content
+        assert "- finding 0" not in content
+
+    def test_security_compaction_success_writes_marker_and_state(self, tmp_path):
+        path = self._write_security_learnings(
+            tmp_path,
+            [f"- finding {i}" for i in range(5)],
+        )
+        mgr = MemoryManager(str(tmp_path))
+
+        with patch.object(
+            MemoryManager,
+            "_run_security_compaction_cli",
+            return_value="- merged finding",
+        ):
+            result = mgr.compact_security_learnings("koan", max_lines=2)
+
+        assert result["method"] == "semantic"
+        assert result["compacted_lines"] == 1
+        content = path.read_text()
+        assert "compacted from 5 to 1 lines" in content
+        assert "- merged finding" in content
+        assert (tmp_path / ".koan-security-compact-hash-koan").exists()
+
+    def test_security_compaction_empty_cli_output_skips(self, tmp_path):
+        self._write_security_learnings(tmp_path, [f"- finding {i}" for i in range(5)])
+        mgr = MemoryManager(str(tmp_path))
+
+        with patch.object(MemoryManager, "_run_security_compaction_cli", return_value=""):
+            result = mgr.compact_security_learnings("koan", max_lines=2)
+
+        assert result["skipped"] is True
+        assert result["compacted_lines"] == 5
+
+
+class TestMemoryManagerProjectHelpers:
+    def test_get_file_tree_without_project_path(self, tmp_path):
+        mgr = MemoryManager(str(tmp_path))
+
+        assert mgr._get_file_tree(None) == "(project path not available)"
+
+    def test_get_file_tree_from_git_ls_files(self, tmp_path):
+        mgr = MemoryManager(str(tmp_path))
+        result = MagicMock(returncode=0, stdout="app.py\nREADME.md\n")
+
+        with patch("subprocess.run", return_value=result):
+            assert mgr._get_file_tree("/repo") == "app.py\nREADME.md"
+
+    def test_get_file_tree_timeout_returns_fallback(self, tmp_path):
+        import subprocess
+
+        mgr = MemoryManager(str(tmp_path))
+
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("git", 10)):
+            assert mgr._get_file_tree("/repo") == "(file tree not available)"
+
+    def test_resolve_project_path_without_koan_root_returns_none(self, tmp_path):
+        mgr = MemoryManager(str(tmp_path))
+
+        with patch.dict("os.environ", {}, clear=True):
+            assert mgr._resolve_project_path("koan") is None
+
+    def test_resolve_project_path_matches_case_insensitively(self, tmp_path):
+        mgr = MemoryManager(str(tmp_path))
+
+        with (
+            patch.dict("os.environ", {"KOAN_ROOT": str(tmp_path)}),
+            patch("app.projects_config.load_projects_config", return_value={"projects": {}}),
+            patch("app.projects_config.get_projects_from_config", return_value=[("Koan", "/repo/koan")]),
+        ):
+            assert mgr._resolve_project_path("koan") == "/repo/koan"
+
+    def test_export_snapshot_includes_summary_global_project_and_soul(self, tmp_path):
+        mgr = MemoryManager(str(tmp_path))
+        (tmp_path / "memory" / "global").mkdir(parents=True)
+        (tmp_path / "memory" / "projects" / "koan").mkdir(parents=True)
+        (tmp_path / "memory" / "summary.md").write_text(
+            "# Summary\n\n## 2026-01-01\n\nSession 1 (project: koan) : did work\n"
+        )
+        (tmp_path / "memory" / "global" / "strategy.md").write_text("Prefer tests.")
+        (tmp_path / "memory" / "projects" / "koan" / "learnings.md").write_text(
+            "# Learnings\n\n- Keep tests focused\n"
+        )
+        (tmp_path / "soul.md").write_text("# Soul\nBe direct.\n")
+
+        snapshot_path = mgr.export_snapshot()
+
+        content = snapshot_path.read_text()
+        assert "Kōan Memory Snapshot" in content
+        assert "Session 1" in content
+        assert "Prefer tests." in content
+        assert "Keep tests focused" in content
+        assert "Be direct." in content
+
 
 # ---------------------------------------------------------------------------
 # _extract_session_digest
@@ -698,7 +892,439 @@ class TestCapLearnings:
         marker_lines = [l for l in content_lines if "oldest" in l and "archived" in l]
         assert len(marker_lines) == 1
         # The marker should be a clean line, not contain embedded \n
-        assert marker_lines[0].strip() == f"_(oldest 15 entries archived)_"
+        assert marker_lines[0].strip() == "_(oldest 15 entries archived)_"
+
+
+# ---------------------------------------------------------------------------
+# _should_skip_compaction (extracted anti-thrash decision logic)
+# ---------------------------------------------------------------------------
+
+class TestShouldSkipCompaction:
+
+    def test_below_threshold_skips(self):
+        result = _should_skip_compaction(50, 100, "abc", None)
+        assert result is not None
+        assert result["skipped"] is True
+
+    def test_above_threshold_no_prior_state_proceeds(self):
+        result = _should_skip_compaction(200, 100, "abc", None)
+        assert result is None
+
+    def test_hash_match_skips(self):
+        prior = {"hash": "same-hash", "compacted_lines": 80}
+        result = _should_skip_compaction(150, 100, "same-hash", prior)
+        assert result is not None
+        assert result["skipped"] is True
+
+    def test_hash_mismatch_proceeds(self):
+        prior = {"hash": "old-hash", "compacted_lines": 80}
+        result = _should_skip_compaction(200, 100, "new-hash", prior)
+        assert result is None
+
+    def test_growth_aware_skips_below_threshold(self):
+        prior = {"hash": "old", "compacted_lines": 100}
+        result = _should_skip_compaction(105, 50, "new", prior)
+        assert result is not None
+        assert result.get("reason") == "anti_thrash"
+
+    def test_growth_aware_proceeds_above_threshold(self):
+        prior = {"hash": "old", "compacted_lines": 100}
+        result = _should_skip_compaction(200, 50, "new", prior)
+        assert result is None
+
+    def test_target_distance_fallback_skips(self):
+        """No prior compacted_lines — uses target-distance heuristic."""
+        prior = {"hash": "old"}
+        result = _should_skip_compaction(105, 100, "new", prior)
+        assert result is not None
+        assert result.get("reason") == "anti_thrash"
+
+    def test_target_distance_fallback_proceeds(self):
+        prior = {"hash": "old"}
+        result = _should_skip_compaction(200, 100, "new", prior)
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# compact_learnings (semantic compaction via Claude CLI)
+# ---------------------------------------------------------------------------
+
+class TestCompactLearnings:
+
+    def _write_learnings(self, tmp_path, project, content):
+        p = tmp_path / "memory" / "projects" / project
+        p.mkdir(parents=True, exist_ok=True)
+        (p / "learnings.md").write_text(content)
+        return p / "learnings.md"
+
+    def test_happy_path_compaction(self, tmp_path):
+        """Claude CLI returns compacted content, file is rewritten."""
+        lines = ["# Learnings — koan", ""]
+        for i in range(150):
+            lines.append(f"- fact {i}")
+        path = self._write_learnings(tmp_path, "koan", "\n".join(lines))
+
+        compacted_output = "- merged fact A\n- merged fact B\n- merged fact C\n"
+
+        with patch("app.memory_manager.MemoryManager._run_compaction_cli", return_value=compacted_output):
+            stats = compact_learnings(str(tmp_path), "koan", max_lines=100)
+
+        assert stats["original_lines"] == 150
+        assert stats["compacted_lines"] == 3
+        assert not stats["skipped"]
+        content = path.read_text()
+        assert "merged fact A" in content
+        assert "compacted from 150 to 3 lines" in content
+        assert content.startswith("# Learnings")
+
+    def test_skips_when_below_threshold(self, tmp_path):
+        """No compaction needed when content is already small."""
+        self._write_learnings(tmp_path, "koan", "# Learnings\n\n- fact 1\n- fact 2\n")
+        stats = compact_learnings(str(tmp_path), "koan", max_lines=100)
+        assert stats["skipped"] is True
+
+    def test_no_subprocess_when_below_threshold(self, tmp_path):
+        """_get_file_tree (git subprocess) must not run when below threshold."""
+        self._write_learnings(tmp_path, "koan", "# Learnings\n\n- fact 1\n- fact 2\n")
+        with patch("app.memory_manager.MemoryManager._get_file_tree") as mock_tree:
+            stats = compact_learnings(str(tmp_path), "koan", max_lines=100)
+        assert stats["skipped"] is True
+        mock_tree.assert_not_called()
+
+    def test_no_subprocess_when_hash_unchanged(self, tmp_path):
+        """_get_file_tree must not run on a repeat call with unchanged content."""
+        lines = ["# Learnings", ""]
+        for i in range(150):
+            lines.append(f"- fact {i}")
+        self._write_learnings(tmp_path, "koan", "\n".join(lines))
+
+        compacted_output = "- merged fact A\n- merged fact B\n"
+        with patch("app.memory_manager.MemoryManager._run_compaction_cli", return_value=compacted_output):
+            compact_learnings(str(tmp_path), "koan", max_lines=100)
+
+        # Second call: content now below threshold — subprocess must not run
+        with patch("app.memory_manager.MemoryManager._get_file_tree") as mock_tree:
+            stats2 = compact_learnings(str(tmp_path), "koan", max_lines=100)
+        assert stats2["skipped"] is True
+        mock_tree.assert_not_called()
+
+    def test_skips_when_hash_unchanged(self, tmp_path):
+        """Second call with same content is skipped via hash check."""
+        lines = ["# Learnings", ""]
+        for i in range(150):
+            lines.append(f"- fact {i}")
+        self._write_learnings(tmp_path, "koan", "\n".join(lines))
+
+        compacted_output = "- merged fact A\n- merged fact B\n"
+        with patch("app.memory_manager.MemoryManager._run_compaction_cli", return_value=compacted_output) as mock_cli:
+            compact_learnings(str(tmp_path), "koan", max_lines=100)
+            # Second call — content changed (compacted), so hash differs
+            # But since the new content is below threshold, it should skip
+            stats2 = compact_learnings(str(tmp_path), "koan", max_lines=100)
+
+        assert stats2["skipped"] is True
+        # CLI should only have been called once
+        assert mock_cli.call_count == 1
+
+    def test_fallback_on_cli_failure(self, tmp_path):
+        """Falls back to cap_learnings when Claude CLI fails."""
+        lines = ["# Learnings", ""]
+        for i in range(300):
+            lines.append(f"- fact {i}")
+        path = self._write_learnings(tmp_path, "koan", "\n".join(lines))
+
+        with patch("app.memory_manager.MemoryManager._run_compaction_cli", side_effect=RuntimeError("CLI failed")):
+            stats = compact_learnings(str(tmp_path), "koan", max_lines=100)
+
+        assert stats.get("fallback") is True
+        content = path.read_text()
+        # cap_learnings should have truncated to 100 lines
+        content_lines = [l for l in content.splitlines() if l.strip() and not l.startswith("#") and "archived" not in l]
+        assert len(content_lines) <= 100
+
+    def test_missing_file(self, tmp_path):
+        """Returns skip stats for non-existent learnings."""
+        stats = compact_learnings(str(tmp_path), "koan")
+        assert stats["skipped"] is True
+        assert stats["original_lines"] == 0
+
+    def test_empty_cli_output_skips(self, tmp_path):
+        """Empty Claude response doesn't overwrite the file."""
+        lines = ["# Learnings", ""]
+        for i in range(150):
+            lines.append(f"- fact {i}")
+        path = self._write_learnings(tmp_path, "koan", "\n".join(lines))
+        original_content = path.read_text()
+
+        with patch("app.memory_manager.MemoryManager._run_compaction_cli", return_value=""):
+            stats = compact_learnings(str(tmp_path), "koan", max_lines=100)
+
+        assert stats["skipped"] is True
+        assert path.read_text() == original_content
+
+    def test_anti_thrash_skips_when_savings_below_threshold(self, tmp_path):
+        """Skip CLI when predicted savings are below the 10% threshold.
+
+        With 105 content lines and max_lines=100, predicted savings is
+        ~4.8% — below 10%, so the CLI must NOT be invoked and the file
+        must NOT be rewritten.
+        """
+        lines = ["# Learnings", ""]
+        for i in range(105):
+            lines.append(f"- fact {i}")
+        path = self._write_learnings(tmp_path, "koan", "\n".join(lines))
+        before = path.read_text()
+
+        with patch("app.memory_manager.MemoryManager._run_compaction_cli") as mock_cli:
+            stats = compact_learnings(str(tmp_path), "koan", max_lines=100)
+
+        assert mock_cli.call_count == 0, "anti-thrash should not invoke the CLI"
+        assert stats["skipped"] is True
+        assert stats.get("reason") == "anti_thrash"
+        assert path.read_text() == before
+
+    def test_anti_thrash_does_not_skip_when_savings_above_threshold(self, tmp_path):
+        """Run CLI when predicted savings exceed the 10% threshold.
+
+        With 200 content lines and max_lines=100, predicted savings is
+        50% — well above 10%, so compaction must proceed normally.
+        """
+        lines = ["# Learnings", ""]
+        for i in range(200):
+            lines.append(f"- fact {i}")
+        self._write_learnings(tmp_path, "koan", "\n".join(lines))
+
+        compacted_output = "- merged A\n- merged B\n"
+        with patch(
+            "app.memory_manager.MemoryManager._run_compaction_cli",
+            return_value=compacted_output,
+        ) as mock_cli:
+            stats = compact_learnings(str(tmp_path), "koan", max_lines=100)
+
+        assert mock_cli.call_count == 1
+        assert stats["skipped"] is False
+        assert stats.get("reason") != "anti_thrash"
+
+    def test_anti_thrash_growth_aware_skips_when_growth_below_threshold(
+        self, tmp_path,
+    ):
+        """When prior state shows last compaction left 100 lines and we're
+        now at 105, growth is ~5% — below 10%, skip even though target
+        distance (5/105 ≈ 4.8%) would also skip. The point: when growth
+        telemetry exists, it drives the decision instead of target distance.
+        """
+        import json
+        lines = ["# Learnings", ""]
+        for i in range(105):
+            lines.append(f"- fact {i}")
+        path = self._write_learnings(tmp_path, "koan", "\n".join(lines))
+
+        state_path = tmp_path / ".koan-learnings-compact-hash-koan"
+        state_path.write_text(json.dumps({
+            "hash": "previous-different-hash",
+            "compacted_lines": 100,
+            "updated_at": "2026-05-01T00:00:00",
+        }))
+
+        with patch(
+            "app.memory_manager.MemoryManager._run_compaction_cli",
+        ) as mock_cli:
+            stats = compact_learnings(str(tmp_path), "koan", max_lines=50)
+
+        assert mock_cli.call_count == 0
+        assert stats["skipped"] is True
+        assert stats.get("reason") == "anti_thrash"
+        # File untouched.
+        assert path.read_text().splitlines()[2] == "- fact 0"
+
+    def test_anti_thrash_growth_aware_runs_when_growth_above_threshold(
+        self, tmp_path,
+    ):
+        """Last compaction left 100 lines; we're now at 200 (100% growth).
+        Compaction must run even though target-distance heuristic alone
+        would also run — proves the growth path doesn't accidentally skip.
+        """
+        import json
+        lines = ["# Learnings", ""]
+        for i in range(200):
+            lines.append(f"- fact {i}")
+        self._write_learnings(tmp_path, "koan", "\n".join(lines))
+
+        state_path = tmp_path / ".koan-learnings-compact-hash-koan"
+        state_path.write_text(json.dumps({
+            "hash": "previous-different-hash",
+            "compacted_lines": 100,
+            "updated_at": "2026-05-01T00:00:00",
+        }))
+
+        with patch(
+            "app.memory_manager.MemoryManager._run_compaction_cli",
+            return_value="- merged\n",
+        ) as mock_cli:
+            stats = compact_learnings(str(tmp_path), "koan", max_lines=100)
+
+        assert mock_cli.call_count == 1
+        assert stats["skipped"] is False
+
+    def test_state_file_is_json_with_compacted_lines(self, tmp_path):
+        """After successful compaction, state file persists JSON with the count."""
+        import json
+        lines = ["# Learnings", ""]
+        for i in range(200):
+            lines.append(f"- fact {i}")
+        self._write_learnings(tmp_path, "koan", "\n".join(lines))
+
+        with patch(
+            "app.memory_manager.MemoryManager._run_compaction_cli",
+            return_value="- a\n- b\n- c\n",
+        ):
+            compact_learnings(str(tmp_path), "koan", max_lines=100)
+
+        state_path = tmp_path / ".koan-learnings-compact-hash-koan"
+        assert state_path.exists()
+        payload = json.loads(state_path.read_text())
+        assert "hash" in payload
+        assert payload["compacted_lines"] == 3
+        assert "updated_at" in payload
+
+    def test_non_dict_json_state_is_tolerated(self, tmp_path):
+        """State file with valid-JSON-but-not-an-object must not crash.
+
+        Hand-edited or corrupted files can hold ``true``, ``[1,2,3]``,
+        a bare number, or a JSON string. ``_read_compact_state`` must
+        wrap them as a legacy dict so callers' ``.get("hash")`` is safe.
+        """
+        import json as _json
+
+        from app.memory_manager import _read_compact_state
+
+        for raw in ("true", "[1, 2, 3]", "42", '"some-string"'):
+            state_path = tmp_path / "state-file"
+            state_path.write_text(raw)
+            state = _read_compact_state(state_path)
+            assert isinstance(state, dict), f"{raw!r} produced non-dict {state!r}"
+            # The exact "hash" payload isn't important — what matters is
+            # that callers can safely chain ``.get("hash")``.
+            state.get("hash")  # must not raise
+
+        # And the full compaction path must survive a non-dict state file
+        # without exploding mid-cycle.
+        lines = ["# Learnings", ""] + [f"- fact {i}" for i in range(200)]
+        self._write_learnings(tmp_path, "koan", "\n".join(lines))
+        state_path = tmp_path / ".koan-learnings-compact-hash-koan"
+        state_path.write_text("true")  # valid JSON, wrong shape
+
+        with patch(
+            "app.memory_manager.MemoryManager._run_compaction_cli",
+            return_value="- merged\n",
+        ) as mock_cli:
+            stats = compact_learnings(str(tmp_path), "koan", max_lines=100)
+
+        assert mock_cli.call_count == 1
+        assert stats["skipped"] is False
+        # State file rewritten in canonical JSON form.
+        assert _json.loads(state_path.read_text())["compacted_lines"] == 1
+
+    def test_legacy_plain_hash_state_is_tolerated(self, tmp_path):
+        """Pre-anti-thrash state file (plain hex) must not crash compaction.
+
+        Operators upgrading mid-flight will have a plain-hash file; the
+        loader should treat it as 'hash known, growth telemetry missing'
+        rather than failing.
+        """
+        lines = ["# Learnings", ""]
+        for i in range(200):
+            lines.append(f"- fact {i}")
+        self._write_learnings(tmp_path, "koan", "\n".join(lines))
+
+        # Write a legacy plain-hash state with a DIFFERENT hash so the
+        # compaction proceeds (otherwise it would short-circuit).
+        state_path = tmp_path / ".koan-learnings-compact-hash-koan"
+        state_path.write_text("legacy_plain_hex_that_will_not_match")
+
+        with patch(
+            "app.memory_manager.MemoryManager._run_compaction_cli",
+            return_value="- merged\n",
+        ) as mock_cli:
+            stats = compact_learnings(str(tmp_path), "koan", max_lines=100)
+
+        assert mock_cli.call_count == 1
+        assert stats["skipped"] is False
+        # After successful run, state is rewritten in JSON format.
+        import json
+        assert "compacted_lines" in json.loads(state_path.read_text())
+
+
+# ---------------------------------------------------------------------------
+# cap_global_memory (global memory file rotation)
+# ---------------------------------------------------------------------------
+
+class TestCapGlobalMemory:
+
+    def _write_global(self, tmp_path, filename, content):
+        p = tmp_path / "memory" / "global"
+        p.mkdir(parents=True, exist_ok=True)
+        (p / filename).write_text(content)
+        return p / filename
+
+    def test_caps_oversized_file(self, tmp_path):
+        lines = ["# Personality Evolution", ""]
+        for i in range(200):
+            lines.append(f"- reflection {i}")
+        path = self._write_global(tmp_path, "personality-evolution.md", "\n".join(lines))
+
+        mgr = MemoryManager(str(tmp_path))
+        removed = mgr.cap_global_memory("personality-evolution.md", max_lines=150)
+        assert removed == 50
+        content = path.read_text()
+        assert "reflection 199" in content
+        assert "reflection 0" not in content
+        assert "rotated" in content
+
+    def test_no_cap_when_small(self, tmp_path):
+        self._write_global(tmp_path, "emotional-memory.md", "# Emotional\n\n- happy\n- calm\n")
+        mgr = MemoryManager(str(tmp_path))
+        assert mgr.cap_global_memory("emotional-memory.md", max_lines=100) == 0
+
+    def test_missing_file(self, tmp_path):
+        mgr = MemoryManager(str(tmp_path))
+        assert mgr.cap_global_memory("nonexistent.md") == 0
+
+    def test_preserves_header(self, tmp_path):
+        lines = ["# Personality Evolution", ""]
+        for i in range(200):
+            lines.append(f"- reflection {i}")
+        path = self._write_global(tmp_path, "personality-evolution.md", "\n".join(lines))
+
+        mgr = MemoryManager(str(tmp_path))
+        mgr.cap_global_memory("personality-evolution.md", max_lines=50)
+        content = path.read_text()
+        assert content.startswith("# Personality Evolution")
+
+    def test_run_cleanup_caps_global_files(self, tmp_path):
+        """run_cleanup caps personality-evolution.md and emotional-memory.md."""
+        mem = tmp_path / "memory"
+        mem.mkdir()
+        (mem / "summary.md").write_text("# Summary\n")
+
+        global_dir = mem / "global"
+        global_dir.mkdir()
+
+        # personality-evolution: 200 lines (threshold 150)
+        lines = ["# PE", ""]
+        for i in range(200):
+            lines.append(f"- reflection {i}")
+        (global_dir / "personality-evolution.md").write_text("\n".join(lines))
+
+        # emotional-memory: 150 lines (threshold 100)
+        lines = ["# EM", ""]
+        for i in range(150):
+            lines.append(f"- feeling {i}")
+        (global_dir / "emotional-memory.md").write_text("\n".join(lines))
+
+        stats = run_cleanup(str(tmp_path))
+        assert stats.get("global_capped_personality_evolution", 0) == 50
+        assert stats.get("global_capped_emotional_memory", 0) == 50
 
 
 # ---------------------------------------------------------------------------
@@ -967,7 +1593,9 @@ class TestMemoryManagerClass:
             lines.append(f"- fact {i}")
         (proj / "learnings.md").write_text("\n".join(lines))
 
-        stats = run_cleanup(str(tmp_path), max_learnings_lines=50)
+        # Mock compact_learnings so it doesn't interfere with cap test
+        with patch.object(MemoryManager, "compact_learnings", return_value={"skipped": True}):
+            stats = run_cleanup(str(tmp_path), max_learnings_lines=50)
         assert stats.get("learnings_capped_koan", 0) == 250
         content = (proj / "learnings.md").read_text()
         assert "fact 299" in content
@@ -1036,10 +1664,8 @@ class TestCLIMainBlock:
         out = StringIO()
         with patch.object(sys, "argv", ["memory_manager", str(tmp_path), "scoped-summary", "koan"]):
             with patch("sys.stdout", out):
-                try:
+                with contextlib.suppress(SystemExit):
                     run_module("app.memory_manager", run_name="__main__")
-                except SystemExit:
-                    pass
         assert "koan work" in out.getvalue()
         assert "other work" not in out.getvalue()
 
@@ -1071,10 +1697,8 @@ class TestCLIMainBlock:
         out = StringIO()
         with patch.object(sys, "argv", ["memory_manager", str(tmp_path), "compact", "5"]):
             with patch("sys.stdout", out):
-                try:
+                with contextlib.suppress(SystemExit):
                     run_module("app.memory_manager", run_name="__main__")
-                except SystemExit:
-                    pass
         assert "Compacted: 6 sessions removed" in out.getvalue()
 
     def test_compact_default_max(self, tmp_path):
@@ -1091,10 +1715,8 @@ class TestCLIMainBlock:
         out = StringIO()
         with patch.object(sys, "argv", ["memory_manager", str(tmp_path), "compact"]):
             with patch("sys.stdout", out):
-                try:
+                with contextlib.suppress(SystemExit):
                     run_module("app.memory_manager", run_name="__main__")
-                except SystemExit:
-                    pass
         assert "Compacted: 0 sessions removed" in out.getvalue()
 
     def test_cleanup_learnings_command(self, tmp_path):
@@ -1111,10 +1733,8 @@ class TestCLIMainBlock:
         out = StringIO()
         with patch.object(sys, "argv", ["memory_manager", str(tmp_path), "cleanup-learnings", "koan"]):
             with patch("sys.stdout", out):
-                try:
+                with contextlib.suppress(SystemExit):
                     run_module("app.memory_manager", run_name="__main__")
-                except SystemExit:
-                    pass
         assert "Deduped: 1 lines removed" in out.getvalue()
 
     def test_cleanup_learnings_no_project_exits_1(self, tmp_path):
@@ -1144,10 +1764,8 @@ class TestCLIMainBlock:
         out = StringIO()
         with patch.object(sys, "argv", ["memory_manager", str(tmp_path), "archive-journals"]):
             with patch("sys.stdout", out):
-                try:
+                with contextlib.suppress(SystemExit):
                     run_module("app.memory_manager", run_name="__main__")
-                except SystemExit:
-                    pass
         output = out.getvalue()
         assert "archived_days" in output
 
@@ -1163,10 +1781,8 @@ class TestCLIMainBlock:
         out = StringIO()
         with patch.object(sys, "argv", ["memory_manager", str(tmp_path), "archive-journals", "7"]):
             with patch("sys.stdout", out):
-                try:
+                with contextlib.suppress(SystemExit):
                     run_module("app.memory_manager", run_name="__main__")
-                except SystemExit:
-                    pass
         output = out.getvalue()
         assert "archived_days" in output
 
@@ -1184,10 +1800,8 @@ class TestCLIMainBlock:
         out = StringIO()
         with patch.object(sys, "argv", ["memory_manager", str(tmp_path), "cleanup"]):
             with patch("sys.stdout", out):
-                try:
+                with contextlib.suppress(SystemExit):
                     run_module("app.memory_manager", run_name="__main__")
-                except SystemExit:
-                    pass
         output = out.getvalue()
         assert "summary_compacted" in output
 
@@ -1208,9 +1822,180 @@ class TestCLIMainBlock:
         out = StringIO()
         with patch.object(sys, "argv", ["memory_manager", str(tmp_path), "cleanup", "5"]):
             with patch("sys.stdout", out):
-                try:
+                with contextlib.suppress(SystemExit):
                     run_module("app.memory_manager", run_name="__main__")
-                except SystemExit:
-                    pass
         output = out.getvalue()
         assert "summary_compacted" in output
+
+
+# ---------------------------------------------------------------------------
+# JSONL truth log: append_memory_entry, read_memory_window, prune_memory_log
+# ---------------------------------------------------------------------------
+
+class TestAppendMemoryEntry:
+
+    def test_creates_log_file(self, tmp_path):
+        instance = str(tmp_path)
+        append_memory_entry(instance, "session", "myproject", "did some work")
+        log_path = tmp_path / "memory" / "log.jsonl"
+        assert log_path.exists()
+
+    def test_valid_jsonl(self, tmp_path):
+        import json
+        instance = str(tmp_path)
+        append_memory_entry(instance, "session", "myproject", "did some work")
+        append_memory_entry(instance, "learning", "myproject", "use async")
+        lines = (tmp_path / "memory" / "log.jsonl").read_text().splitlines()
+        assert len(lines) == 2
+        for line in lines:
+            obj = json.loads(line)
+            assert "ts" in obj
+            assert "type" in obj
+            assert "project" in obj
+            assert "content" in obj
+
+    def test_content_capped_at_2000_chars(self, tmp_path):
+        import json
+        instance = str(tmp_path)
+        long_content = "x" * 5000
+        append_memory_entry(instance, "session", None, long_content)
+        lines = (tmp_path / "memory" / "log.jsonl").read_text().splitlines()
+        obj = json.loads(lines[0])
+        assert len(obj["content"]) == 2000
+
+    def test_null_project(self, tmp_path):
+        import json
+        instance = str(tmp_path)
+        append_memory_entry(instance, "session", None, "global entry")
+        lines = (tmp_path / "memory" / "log.jsonl").read_text().splitlines()
+        obj = json.loads(lines[0])
+        assert obj["project"] is None
+
+    def test_custom_ts(self, tmp_path):
+        import json
+        instance = str(tmp_path)
+        append_memory_entry(instance, "session", "proj", "work", ts="2024-01-01T00:00:00Z")
+        lines = (tmp_path / "memory" / "log.jsonl").read_text().splitlines()
+        obj = json.loads(lines[0])
+        assert obj["ts"] == "2024-01-01T00:00:00Z"
+
+
+class TestReadMemoryWindow:
+
+    def test_filters_by_project(self, tmp_path):
+        instance = str(tmp_path)
+        append_memory_entry(instance, "session", "alpha", "alpha work")
+        append_memory_entry(instance, "session", "beta", "beta work")
+        append_memory_entry(instance, "session", "alpha", "more alpha")
+        results = read_memory_window(instance, "alpha")
+        assert len(results) == 2
+        assert all(e["project"] == "alpha" for e in results)
+
+    def test_includes_global_entries(self, tmp_path):
+        instance = str(tmp_path)
+        append_memory_entry(instance, "session", None, "global entry")
+        append_memory_entry(instance, "session", "myproject", "project entry")
+        results = read_memory_window(instance, "myproject")
+        assert len(results) == 2
+
+    def test_respects_max_entries(self, tmp_path):
+        instance = str(tmp_path)
+        for i in range(10):
+            append_memory_entry(instance, "session", "proj", f"entry {i}")
+        results = read_memory_window(instance, "proj", max_entries=3)
+        assert len(results) == 3
+
+    def test_returns_empty_on_missing_file(self, tmp_path):
+        results = read_memory_window(str(tmp_path), "proj")
+        assert results == []
+
+    def test_skips_malformed_lines(self, tmp_path):
+        import json
+        log_path = tmp_path / "memory" / "log.jsonl"
+        log_path.parent.mkdir(parents=True)
+        good = json.dumps({"ts": "2024-01-01T00:00:00Z", "type": "session", "project": "p", "content": "ok"})
+        log_path.write_text("not-json\n" + good + "\n")
+        results = read_memory_window(str(tmp_path), "p")
+        assert len(results) == 1
+        assert results[0]["content"] == "ok"
+
+    def test_case_insensitive_project_filter(self, tmp_path):
+        instance = str(tmp_path)
+        append_memory_entry(instance, "session", "MyProject", "work")
+        results = read_memory_window(instance, "myproject")
+        assert len(results) == 1
+
+    def test_returns_oldest_first(self, tmp_path):
+        instance = str(tmp_path)
+        for i in range(5):
+            append_memory_entry(instance, "session", "proj", f"entry {i}",
+                                ts=f"2024-01-0{i+1}T00:00:00Z")
+        results = read_memory_window(instance, "proj", max_entries=5)
+        contents = [e["content"] for e in results]
+        assert contents == ["entry 0", "entry 1", "entry 2", "entry 3", "entry 4"]
+
+
+class TestPruneMemoryLog:
+
+    def test_removes_old_entries(self, tmp_path):
+        instance = str(tmp_path)
+        append_memory_entry(instance, "session", "proj", "old", ts="2020-01-01T00:00:00Z")
+        append_memory_entry(instance, "session", "proj", "new", ts="2099-01-01T00:00:00Z")
+        removed = prune_memory_log(instance, horizon_days=1)
+        assert removed == 1
+        remaining = read_memory_window(instance, "proj", max_entries=100)
+        assert len(remaining) == 1
+        assert remaining[0]["content"] == "new"
+
+    def test_no_op_on_missing_file(self, tmp_path):
+        removed = prune_memory_log(str(tmp_path), horizon_days=365)
+        assert removed == 0
+
+    def test_keeps_recent_entries(self, tmp_path):
+        instance = str(tmp_path)
+        append_memory_entry(instance, "session", "proj", "recent", ts="2099-12-31T00:00:00Z")
+        removed = prune_memory_log(instance, horizon_days=365)
+        assert removed == 0
+
+
+class TestMigrateMarkdownToJsonl:
+
+    def test_migrates_summary_sessions(self, tmp_path):
+        mem = tmp_path / "memory"
+        mem.mkdir()
+        (mem / "summary.md").write_text(
+            "# Summary\n\n"
+            "## 2026-01-15\n\nWorked on feature (project: myproject)\n\n"
+            "## 2026-02-10\n\nFixed a bug\n"
+        )
+        stats = migrate_markdown_to_jsonl(str(tmp_path))
+        assert stats["sessions"] == 2
+        entries = read_memory_window(str(tmp_path), "myproject")
+        assert len(entries) >= 1
+
+    def test_migrates_learnings(self, tmp_path):
+        mem = tmp_path / "memory"
+        proj_dir = mem / "projects" / "testproj"
+        proj_dir.mkdir(parents=True)
+        (proj_dir / "learnings.md").write_text(
+            "# Learnings\n\n- Use async\n- Test behavior\n"
+        )
+        stats = migrate_markdown_to_jsonl(str(tmp_path))
+        assert stats["learnings"] == 2
+
+    def test_idempotent_via_sentinel(self, tmp_path):
+        mem = tmp_path / "memory"
+        mem.mkdir()
+        (mem / "summary.md").write_text("## 2026-01-01\n\nSession A\n")
+        migrate_markdown_to_jsonl(str(tmp_path))
+        stats2 = migrate_markdown_to_jsonl(str(tmp_path))
+        assert stats2.get("skipped") is True
+
+    def test_graceful_on_empty_instance(self, tmp_path):
+        # No summary.md, no learnings — should not crash
+        stats = migrate_markdown_to_jsonl(str(tmp_path))
+        assert stats.get("skipped") is not True
+        assert stats["sessions"] == 0
+        assert stats["learnings"] == 0
+        sentinel = tmp_path / "memory" / ".migration_done"
+        assert sentinel.exists()

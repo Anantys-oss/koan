@@ -14,6 +14,8 @@ from app.session_tracker import (
     get_recent_outcomes,
     get_staleness_score,
     get_staleness_warning,
+    get_contemplative_productivity,
+    adapt_contemplative_chance,
     get_project_freshness,
     get_last_session_timestamp,
     get_project_drift,
@@ -21,10 +23,10 @@ from app.session_tracker import (
     _count_commits_since,
     _commits_cache,
     _COMMITS_CACHE_TTL,
-    _detect_pr_created,
+    detect_pr_created,
     _detect_branch_pushed,
     _extract_summary,
-    _load_outcomes,
+    load_outcomes,
     MAX_OUTCOMES,
 )
 
@@ -402,7 +404,7 @@ class TestGetProjectFreshness:
         assert weights["koan"] == 6  # staleness 2 → weight 6
 
 
-# --- _load_outcomes type validation ---
+# --- load_outcomes type validation ---
 
 class TestLoadOutcomesTypeValidation:
 
@@ -637,26 +639,26 @@ class TestRecordOutcomeMissionTitle:
         assert entry["outcome"] == "productive"
 
 
-# --- _load_outcomes type validation ---
+# --- load_outcomes type validation ---
 
 class TestLoadOutcomesValidation:
-    """Tests for _load_outcomes type safety."""
+    """Tests for load_outcomes type safety."""
 
     def test_dict_json_returns_empty(self, tmp_path):
         """A JSON object (not array) should be treated as corrupt."""
         outcomes_path = tmp_path / "session_outcomes.json"
         outcomes_path.write_text('{"not": "a list"}')
-        assert _load_outcomes(outcomes_path) == []
+        assert load_outcomes(outcomes_path) == []
 
     def test_string_json_returns_empty(self, tmp_path):
         outcomes_path = tmp_path / "session_outcomes.json"
         outcomes_path.write_text('"just a string"')
-        assert _load_outcomes(outcomes_path) == []
+        assert load_outcomes(outcomes_path) == []
 
     def test_valid_list_works(self, tmp_path):
         outcomes_path = tmp_path / "session_outcomes.json"
         outcomes_path.write_text('[{"a": 1}]')
-        result = _load_outcomes(outcomes_path)
+        result = load_outcomes(outcomes_path)
         assert len(result) == 1
 
 
@@ -842,49 +844,110 @@ class TestClassifyMissionType:
     def test_empty_title_is_autonomous(self):
         assert classify_mission_type("") == "autonomous"
 
-    def test_none_like_empty(self):
+    def test_whitespace_only_is_autonomous(self):
         assert classify_mission_type("  ") == "autonomous"
-
-    def test_skill_command(self):
-        assert classify_mission_type("/rebase https://github.com/o/r/pull/1") == "skill"
-
-    def test_implement_skill(self):
-        assert classify_mission_type("/implement https://github.com/o/r/issues/10") == "skill"
-
-    def test_review_skill(self):
-        assert classify_mission_type("/review https://github.com/o/r/pull/3") == "skill"
 
     def test_autonomous_label(self):
         assert classify_mission_type("Autonomous deep on koan") == "autonomous"
 
+    def test_autonomous_reflection(self):
+        assert classify_mission_type("Autonomous reflection session") == "autonomous"
+
+    # Granular slash-command types
+    def test_plan(self):
+        assert classify_mission_type("/plan https://github.com/o/r/issues/5") == "plan"
+
+    def test_review(self):
+        assert classify_mission_type("/review https://github.com/o/r/pull/3") == "review"
+
+    def test_rebase(self):
+        assert classify_mission_type("/rebase https://github.com/o/r/pull/1") == "rebase"
+
+    def test_recreate(self):
+        assert classify_mission_type("/recreate https://github.com/o/r/pull/2") == "recreate"
+
+    def test_implement(self):
+        assert classify_mission_type("/implement https://github.com/o/r/issues/10") == "implement"
+
+    def test_fix(self):
+        assert classify_mission_type("/fix login bug") == "implement"
+
+    def test_ai_alias(self):
+        assert classify_mission_type("/ai fix the login bug") == "implement"
+
+    def test_refactor(self):
+        assert classify_mission_type("/refactor auth module") == "refactor"
+
+    def test_audit(self):
+        assert classify_mission_type("/audit dependencies") == "audit"
+
+    def test_security_audit(self):
+        assert classify_mission_type("/security_audit") == "audit"
+
+    def test_check(self):
+        assert classify_mission_type("/check koan") == "check"
+
+    def test_claudemd(self):
+        assert classify_mission_type("/claudemd koan") == "check"
+
+    def test_config_check(self):
+        assert classify_mission_type("/config_check") == "check"
+
+    def test_chat(self):
+        assert classify_mission_type("/chat what's up") == "chat"
+
+    def test_sparring(self):
+        assert classify_mission_type("/sparring architecture design") == "chat"
+
+    def test_idea(self):
+        assert classify_mission_type("/idea new feature") == "chat"
+
+    # /mission and unknown slash commands → freetext
+    def test_mission_command(self):
+        assert classify_mission_type("/mission add task to queue") == "freetext"
+
+    def test_unknown_slash_command(self):
+        assert classify_mission_type("/scaffold_skill my_skill") == "freetext"
+
+    def test_unknown_slash_command_short(self):
+        assert classify_mission_type("/unknown_cmd") == "freetext"
+
+    # Human free-text → freetext
     def test_freetext_mission(self):
-        assert classify_mission_type("Fix the auth module") == "mission"
+        assert classify_mission_type("Fix the auth module") == "freetext"
 
-    def test_mission_with_project_tag(self):
-        assert classify_mission_type("Fix auth [project:koan]") == "mission"
+    def test_freetext_with_project_tag(self):
+        assert classify_mission_type("Fix auth [project:koan]") == "freetext"
+
+    # Case normalization
+    def test_mixed_case_rebase(self):
+        assert classify_mission_type("/Rebase https://github.com/o/r/pull/1") == "rebase"
+
+    def test_mixed_case_plan(self):
+        assert classify_mission_type("/PLAN issue") == "plan"
 
 
-# --- _detect_pr_created ---
+# --- detect_pr_created ---
 
 class TestDetectPrCreated:
 
     def test_empty(self):
-        assert _detect_pr_created("") is False
+        assert detect_pr_created("") is False
 
     def test_pr_number(self):
-        assert _detect_pr_created("Opened PR #42") is True
+        assert detect_pr_created("Opened PR #42") is True
 
     def test_pr_created(self):
-        assert _detect_pr_created("PR created for the fix") is True
+        assert detect_pr_created("PR created for the fix") is True
 
     def test_draft_pr(self):
-        assert _detect_pr_created("Draft PR submitted") is True
+        assert detect_pr_created("Draft PR submitted") is True
 
     def test_pull_request(self):
-        assert _detect_pr_created("Created a pull request") is True
+        assert detect_pr_created("Created a pull request") is True
 
     def test_no_pr(self):
-        assert _detect_pr_created("Fixed the bug, pushed branch") is False
+        assert detect_pr_created("Fixed the bug, pushed branch") is False
 
 
 # --- _detect_branch_pushed ---
@@ -918,7 +981,7 @@ class TestRecordOutcomeEnrichedFields:
             "Branch pushed. PR #42 created.",
             mission_title="/rebase https://github.com/o/r/pull/1",
         )
-        assert entry["mission_type"] == "skill"
+        assert entry["mission_type"] == "rebase"
         assert entry["has_pr"] is True
         assert entry["has_branch"] is True
 
@@ -937,6 +1000,177 @@ class TestRecordOutcomeEnrichedFields:
             "Fixed the auth module. Branch pushed.",
             mission_title="Fix the auth module",
         )
-        assert entry["mission_type"] == "mission"
+        assert entry["mission_type"] == "freetext"
         assert entry["has_branch"] is True
         assert entry["has_pr"] is False
+
+    def test_mission_type_override(self, tracker_env):
+        """Explicit mission_type bypasses classify_mission_type."""
+        entry = record_outcome(
+            tracker_env, "koan", "deep", 10,
+            "Explored codebase. Branch pushed.",
+            mission_title="",
+            mission_type="contemplative",
+        )
+        assert entry["mission_type"] == "contemplative"
+        # Other fields still classified normally
+        assert entry["has_branch"] is True
+        assert entry["outcome"] == "productive"
+
+    def test_mission_type_none_uses_classifier(self, tracker_env):
+        """When mission_type is None, classify_mission_type is used."""
+        entry = record_outcome(
+            tracker_env, "koan", "deep", 10,
+            "Explored codebase.",
+            mission_title="/review https://github.com/o/r/pull/1",
+            mission_type=None,
+        )
+        assert entry["mission_type"] == "review"
+
+
+# --- get_contemplative_productivity & adapt_contemplative_chance ---
+
+class TestContemplativeProductivity:
+    """Tests for adaptive contemplative probability."""
+
+    def _write_outcomes(self, instance_dir, outcomes):
+        """Helper to write outcomes to session_outcomes.json."""
+        path = Path(instance_dir) / "session_outcomes.json"
+        path.write_text(json.dumps(outcomes))
+
+    def _make_contemplative(self, project, outcome="productive"):
+        return {
+            "timestamp": "2026-05-24T10:00:00",
+            "project": project,
+            "mode": "deep",
+            "duration_minutes": 3,
+            "outcome": outcome,
+            "summary": "Test session",
+            "mission_type": "contemplative",
+            "has_pr": False,
+            "has_branch": False,
+            "pipeline_timed_out": False,
+        }
+
+    def test_insufficient_data_returns_none(self, tracker_env):
+        """Fewer than 5 contemplative sessions → None."""
+        outcomes = [self._make_contemplative("proj") for _ in range(4)]
+        self._write_outcomes(tracker_env, outcomes)
+        assert get_contemplative_productivity(tracker_env, "proj") is None
+
+    def test_exactly_five_samples(self, tracker_env):
+        """Exactly 5 contemplative sessions → returns ratio."""
+        outcomes = [self._make_contemplative("proj", "productive") for _ in range(3)]
+        outcomes += [self._make_contemplative("proj", "empty") for _ in range(2)]
+        self._write_outcomes(tracker_env, outcomes)
+        ratio = get_contemplative_productivity(tracker_env, "proj")
+        assert ratio == pytest.approx(0.6)
+
+    def test_filters_by_project(self, tracker_env):
+        """Only counts contemplative sessions for the specified project."""
+        outcomes = [self._make_contemplative("other", "productive") for _ in range(10)]
+        outcomes += [self._make_contemplative("proj", "productive") for _ in range(3)]
+        self._write_outcomes(tracker_env, outcomes)
+        # proj has only 3 samples → insufficient
+        assert get_contemplative_productivity(tracker_env, "proj") is None
+
+    def test_filters_by_mission_type(self, tracker_env):
+        """Only counts sessions with mission_type='contemplative'."""
+        outcomes = [self._make_contemplative("proj") for _ in range(5)]
+        # Add non-contemplative sessions
+        for _ in range(5):
+            o = self._make_contemplative("proj")
+            o["mission_type"] = "autonomous"
+            outcomes.append(o)
+        self._write_outcomes(tracker_env, outcomes)
+        # Should only count the 5 contemplative ones (all productive)
+        assert get_contemplative_productivity(tracker_env, "proj") == 1.0
+
+    def test_uses_last_n_sessions(self, tracker_env):
+        """Only the last `limit` contemplative sessions are considered."""
+        # 10 old empty sessions + 10 new productive ones
+        outcomes = [self._make_contemplative("proj", "empty") for _ in range(10)]
+        outcomes += [self._make_contemplative("proj", "productive") for _ in range(10)]
+        self._write_outcomes(tracker_env, outcomes)
+        # Default limit=10, last 10 are all productive
+        assert get_contemplative_productivity(tracker_env, "proj") == 1.0
+
+    def test_all_empty(self, tracker_env):
+        """All empty → ratio 0.0."""
+        outcomes = [self._make_contemplative("proj", "empty") for _ in range(6)]
+        self._write_outcomes(tracker_env, outcomes)
+        assert get_contemplative_productivity(tracker_env, "proj") == 0.0
+
+    def test_preloaded_outcomes(self, tracker_env):
+        """Accepts _all_outcomes parameter to skip file I/O."""
+        outcomes = [self._make_contemplative("proj") for _ in range(5)]
+        ratio = get_contemplative_productivity(
+            tracker_env, "proj", _all_outcomes=outcomes
+        )
+        assert ratio == 1.0
+
+
+class TestAdaptContemplativeChance:
+    """Tests for adapt_contemplative_chance multiplier logic."""
+
+    def _write_outcomes(self, instance_dir, outcomes):
+        path = Path(instance_dir) / "session_outcomes.json"
+        path.write_text(json.dumps(outcomes))
+
+    def _make_contemplative(self, project, outcome="productive"):
+        return {
+            "timestamp": "2026-05-24T10:00:00",
+            "project": project,
+            "mode": "deep",
+            "duration_minutes": 3,
+            "outcome": outcome,
+            "summary": "Test",
+            "mission_type": "contemplative",
+            "has_pr": False,
+            "has_branch": False,
+            "pipeline_timed_out": False,
+        }
+
+    def test_low_productivity_reduces_chance(self, tracker_env):
+        """ratio < 0.2 → multiply by 0.4."""
+        # 1/10 productive = 0.1
+        outcomes = [self._make_contemplative("proj", "empty") for _ in range(9)]
+        outcomes.append(self._make_contemplative("proj", "productive"))
+        self._write_outcomes(tracker_env, outcomes)
+        # base 10% * 0.4 = 4%
+        assert adapt_contemplative_chance(10, tracker_env, "proj") == 4
+
+    def test_mid_productivity_unchanged(self, tracker_env):
+        """0.2 <= ratio < 0.5 → no change."""
+        # 3/10 productive = 0.3
+        outcomes = [self._make_contemplative("proj", "empty") for _ in range(7)]
+        outcomes += [self._make_contemplative("proj", "productive") for _ in range(3)]
+        self._write_outcomes(tracker_env, outcomes)
+        assert adapt_contemplative_chance(10, tracker_env, "proj") == 10
+
+    def test_high_productivity_increases_chance(self, tracker_env):
+        """ratio >= 0.5 → multiply by 1.5."""
+        # 6/10 productive = 0.6
+        outcomes = [self._make_contemplative("proj", "empty") for _ in range(4)]
+        outcomes += [self._make_contemplative("proj", "productive") for _ in range(6)]
+        self._write_outcomes(tracker_env, outcomes)
+        # base 10% * 1.5 = 15%
+        assert adapt_contemplative_chance(10, tracker_env, "proj") == 15
+
+    def test_cap_at_25_percent(self, tracker_env):
+        """Adapted chance is capped at 25% even with high base."""
+        # All productive
+        outcomes = [self._make_contemplative("proj") for _ in range(10)]
+        self._write_outcomes(tracker_env, outcomes)
+        # base 20% * 1.5 = 30% → capped to 25%
+        assert adapt_contemplative_chance(20, tracker_env, "proj") == 25
+
+    def test_insufficient_data_returns_base(self, tracker_env):
+        """Fewer than 5 samples → return base chance unchanged."""
+        outcomes = [self._make_contemplative("proj") for _ in range(3)]
+        self._write_outcomes(tracker_env, outcomes)
+        assert adapt_contemplative_chance(10, tracker_env, "proj") == 10
+
+    def test_no_outcomes_file(self, tracker_env):
+        """Missing outcomes file → return base chance."""
+        assert adapt_contemplative_chance(10, tracker_env, "proj") == 10

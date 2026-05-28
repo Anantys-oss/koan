@@ -7,13 +7,23 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.github_command_handler import (
+    _ASSIGNMENT_REASON_TO_COMMAND,
+    _REPLY_RATE_FILE,
     _error_replies,
+    _expand_combo_mission,
+    _closed_reason_from_subject_info,
     _extract_url_from_context,
     _fetch_and_filter_comment,
+    _fetch_subject_info,
     _handle_help_command,
+    _is_subject_closed,
+    _load_reply_timestamps,
+    _notify_closed_subject_skipped,
     _notify_github_question,
     _notify_github_reply,
     _post_help_reply,
+    _save_reply_timestamps,
+    _try_assignment_notification,
     _try_nlp_classification,
     _try_reply,
     _validate_and_parse_command,
@@ -36,6 +46,55 @@ pytestmark = pytest.mark.slow
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def subject_closed_state():
+    """Per-test override hook for the stubbed subject's closed/merged state.
+
+    Defaults to `None` (subject treated as open). Tests that need to
+    exercise the closed-subject branch should override this fixture in
+    their module/class scope and return ``"merged"`` or ``"closed"``.
+    Making the default explicit (rather than hidden inside an autouse
+    stub) lets future test authors see the seam without reading the
+    fixture body.
+    """
+    return None
+
+
+@pytest.fixture
+def subject_head_sha():
+    """Head SHA returned by the stubbed subject fetch.
+
+    Anchors the ``review_requested`` dedup key. A fixed value keeps the
+    key deterministic across repeated calls within a test, so the
+    persistent thread tracker can dedup a re-poll of the same PR.
+    """
+    return "deadbeefcafe0001"
+
+
+@pytest.fixture(autouse=True)
+def _stub_subject_info(subject_closed_state, subject_head_sha):
+    """Stub the network-hitting subject fetch shared by both notification paths.
+
+    ``_fetch_subject_info`` is the single seam that calls the GitHub API for a
+    subject's state/merged/head SHA. The @mention path reaches it through
+    ``_is_subject_closed`` and the assignment path calls it directly, so
+    stubbing it here keeps the whole module offline and parallel-safe. The
+    returned dict is consistent with ``subject_closed_state`` and carries
+    ``subject_head_sha`` so review-request dedup keys are deterministic.
+    """
+    if subject_closed_state == "merged":
+        info = {"state": "closed", "merged": True, "head_sha": subject_head_sha}
+    elif subject_closed_state == "closed":
+        info = {"state": "closed", "merged": False, "head_sha": subject_head_sha}
+    else:
+        info = {"state": "open", "merged": False, "head_sha": subject_head_sha}
+    with patch(
+        "app.github_command_handler._fetch_subject_info",
+        return_value=info,
+    ):
+        yield
 
 
 @pytest.fixture
@@ -418,6 +477,9 @@ class TestProcessSingleNotification:
         assert error is None
         mock_insert.assert_called_once()
         mock_react.assert_called_once()
+        # Notification dict is annotated with parsed command and author
+        assert sample_notification["_koan_command"] == "rebase"
+        assert sample_notification["_koan_author"] == "alice"
 
     @patch("app.github_command_handler.mark_notification_read")
     @patch("app.github_command_handler.is_notification_stale", return_value=True)
@@ -443,22 +505,65 @@ class TestProcessSingleNotification:
     @patch("app.github_command_handler.is_notification_stale", return_value=False)
     @patch("app.github_command_handler.get_comment_from_notification")
     @patch("app.github_command_handler.resolve_project_from_notification", return_value=None)
-    def test_unknown_repo_error(
+    def test_unknown_repo_silently_skipped(
         self, mock_resolve, mock_comment, mock_stale, mock_self,
         mock_processed, mock_read, registry, sample_notification,
     ):
+        """When repo is not in projects.yaml, leave it untouched.
+
+        Marking the notification as read is a write to shared GitHub state.
+        With a shared bot identity across multiple Kōan instances, this
+        instance must not clear notifications belonging to a sibling
+        instance — leaving the notification unread lets the owning
+        instance process it on its next poll.
+        """
+        mock_comment.return_value = {
+            "id": 99999, "body": "@bot rebase", "user": {"login": "alice"},
+        }
+        config = {"github": {"nickname": "bot", "authorized_users": ["alice"]}}
+
+        success, error = process_single_notification(
+            sample_notification, registry, config, None, "bot",
+        )
+        assert success is False
+        assert error is None
+        mock_read.assert_not_called()
+
+    @patch("app.github_command_handler.mark_notification_read")
+    @patch("app.github_command_handler.check_already_processed", return_value=False)
+    @patch("app.github_command_handler.is_self_mention", return_value=False)
+    @patch("app.github_command_handler.is_notification_stale", return_value=False)
+    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler.resolve_project_from_notification", return_value=None)
+    def test_unknown_repo_bad_fullname_skips(
+        self, mock_resolve, mock_comment, mock_stale, mock_self,
+        mock_processed, mock_read, registry,
+    ):
+        """Notification with no valid full_name is silently skipped.
+
+        Same contract as ``test_unknown_repo_silently_skipped``: no write to
+        shared GitHub state — the notification is left unread.
+        """
+        notif = {
+            "id": "12345", "reason": "mention",
+            "updated_at": "2026-02-11T20:00:00Z",
+            "repository": {"full_name": ""},
+            "subject": {
+                "url": "https://api.github.com/repos/x/y/pulls/1",
+                "latest_comment_url": "https://api.github.com/repos/x/y/issues/comments/1",
+            },
+        }
         mock_comment.return_value = {
             "id": 99999, "body": "@bot rebase", "user": {"login": "alice"},
         }
         config = {"github": {"nickname": "bot"}}
 
         success, error = process_single_notification(
-            sample_notification, registry, config, None, "bot",
+            notif, registry, config, None, "bot",
         )
         assert success is False
-        assert "Unknown repository" in error
-        # Notification must be marked as read to prevent re-processing loop
-        mock_read.assert_called_once_with("12345")
+        assert error is None
+        mock_read.assert_not_called()
 
     @patch("app.github_command_handler.mark_notification_read")
     @patch("app.github_command_handler.check_already_processed", return_value=False)
@@ -691,8 +796,105 @@ class TestProcessSingleNotification:
         mock_insert.assert_not_called()
 
 
+class TestProcessNotificationCustomHandler:
+    """Custom skills under instance/skills/<scope>/ with a handler.py are
+    dispatched in-process by ``external_skill_dispatch.try_dispatch_custom_handler``
+    instead of being queued as slash missions without a runner."""
+
+    def _registry_with_custom_skill(self, handler_path: Path):
+        skill = Skill(
+            name="my_fix",
+            scope="my_team",
+            description="Team-specific fix",
+            handler_path=handler_path,
+            skill_dir=handler_path.parent,
+            github_enabled=True,
+            github_context_aware=True,
+            commands=[SkillCommand(name="my_fix", aliases=["myfix"])],
+        )
+        reg = SkillRegistry()
+        reg._register(skill)
+        return reg
+
+    @patch("app.github_command_handler.mark_notification_read")
+    @patch("app.github_command_handler.add_reaction", return_value=True)
+    @patch("app.github_command_handler.check_user_permission", return_value=True)
+    @patch("app.github_command_handler.check_already_processed", return_value=False)
+    @patch("app.github_command_handler.is_self_mention", return_value=False)
+    @patch("app.github_command_handler.is_notification_stale", return_value=False)
+    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler.resolve_project_from_notification")
+    def test_custom_handler_runs_inline_and_no_slash_mission(
+        self, mock_resolve, mock_get_comment,
+        mock_stale, mock_self, mock_processed, mock_perm,
+        mock_react, mock_read, sample_notification, tmp_path,
+    ):
+        """The custom handler runs and missions.md is NOT touched via
+        ``insert_pending_mission`` from the slash-mission branch."""
+        # Handler writes a marker file so we can see it ran.
+        marker = tmp_path / "ran.txt"
+        handler_dir = tmp_path / "skills" / "my_team" / "fix"
+        handler_dir.mkdir(parents=True)
+        handler = handler_dir / "handler.py"
+        handler.write_text(
+            f"def handle(ctx):\n"
+            f"    with open({str(marker)!r}, 'w') as f:\n"
+            f"        f.write(ctx.args)\n"
+            f"    return 'inline ok'\n"
+        )
+
+        # Notification subject title carries a Jira key that should be
+        # auto-fed when the user omits one from the command.
+        sample_notification["subject"]["title"] = "Broken login PROJ-123"
+
+        registry = self._registry_with_custom_skill(handler)
+        mock_resolve.return_value = ("my_team", "alice", "koan")
+        mock_get_comment.return_value = {
+            "id": 99999,
+            "body": "@testbot myfix",
+            "user": {"login": "alice"},
+            "url": "https://api.github.com/x",
+        }
+        config = {"github": {"nickname": "testbot", "authorized_users": ["*"]}}
+
+        with patch.dict("os.environ", {"KOAN_ROOT": str(tmp_path)}), \
+             patch("app.utils.insert_pending_mission") as mock_insert:
+            success, error = process_single_notification(
+                sample_notification, registry, config, None, "testbot",
+            )
+
+        assert success is True
+        assert error is None
+        # Handler ran inline and saw the auto-fed Jira key from the title.
+        assert marker.exists()
+        assert marker.read_text() == "PROJ-123"
+        # The slash-mission path was bypassed — no direct insert_pending_mission
+        # call from process_single_notification itself.
+        # (The handler may insert its own mission through utils, but that
+        # would also hit mock_insert, so assert *either* zero calls or that
+        # no GitHub-flavoured slash mission was queued.)
+        for call in mock_insert.call_args_list:
+            assert "/my_fix" not in str(call), (
+                "slash mission /my_fix should NOT have been queued from GitHub path"
+            )
+            assert "📬" not in str(call), (
+                "📬-marked GitHub mission should NOT have been queued"
+            )
+        # Notification bookkeeping still happened.
+        mock_react.assert_called_once()
+        assert sample_notification["_koan_command"] == "myfix"
+        assert sample_notification["_koan_author"] == "alice"
+
+
 class TestTryReply:
     """Tests for the _try_reply helper that generates AI replies."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_rate_limiter(self):
+        """Mock file-backed rate limiter so tests don't leak state across runs."""
+        with patch("app.github_command_handler._load_reply_timestamps", return_value={}), \
+             patch("app.github_command_handler._save_reply_timestamps"):
+            yield
 
     @pytest.fixture
     def reply_notification(self):
@@ -853,6 +1055,12 @@ class TestTryReply:
 class TestProcessNotificationWithReply:
     """Tests for reply integration in process_single_notification."""
 
+    @pytest.fixture(autouse=True)
+    def _mock_rate_limiter(self):
+        with patch("app.github_command_handler._load_reply_timestamps", return_value={}), \
+             patch("app.github_command_handler._save_reply_timestamps"):
+            yield
+
     @patch("app.github_command_handler.mark_notification_read")
     @patch("app.github_command_handler.add_reaction", return_value=True)
     @patch("app.github_command_handler.check_user_permission", return_value=True)
@@ -926,6 +1134,263 @@ class TestProcessNotificationWithReply:
         assert success is False
         assert error is not None
         assert "`what`" in error
+
+
+class TestTryReplyAuthorizedUsers:
+    """Tests for separate reply_authorized_users permission in _try_reply."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_rate_limiter(self):
+        with patch("app.github_command_handler._load_reply_timestamps", return_value={}), \
+             patch("app.github_command_handler._save_reply_timestamps"):
+            yield
+
+    @pytest.fixture
+    def reply_notification(self):
+        return {
+            "id": "77777",
+            "subject": {
+                "url": "https://api.github.com/repos/sukria/koan/issues/42",
+            },
+            "repository": {"full_name": "sukria/koan"},
+        }
+
+    @pytest.fixture
+    def reply_comment(self):
+        return {
+            "id": 55555,
+            "body": "@bot what do you think about this?",
+            "user": {"login": "unprivileged_user"},
+        }
+
+    @pytest.fixture
+    def base_config(self):
+        return {
+            "github": {
+                "nickname": "bot",
+                "reply_enabled": True,
+                "authorized_users": ["admin_only"],
+            }
+        }
+
+    @patch("app.github_command_handler._notify_github_reply")
+    @patch("app.github_command_handler._notify_github_question")
+    @patch("app.github_command_handler.mark_notification_read")
+    @patch("app.github_command_handler.add_reaction", return_value=True)
+    @patch("app.github_command_handler.check_user_permission", return_value=True)
+    @patch("app.github_reply.post_reply", return_value=True)
+    @patch("app.github_reply.generate_reply", return_value="Here is my reply")
+    @patch("app.github_reply.fetch_thread_context", return_value={
+        "title": "T", "body": "B", "comments": [], "is_pr": False, "diff_summary": "",
+    })
+    @patch("app.utils.resolve_project_path", return_value="/tmp/koan")
+    def test_reply_authorized_users_wildcard_checks_write_access(
+        self, mock_resolve, mock_ctx, mock_gen, mock_post,
+        mock_perm, mock_react, mock_read,
+        mock_notify_q, mock_notify_r,
+        reply_notification, reply_comment,
+    ):
+        """When reply_authorized_users: ["*"], check_user_permission is still
+        called to verify GitHub write access (same as command wildcard)."""
+        config = {
+            "github": {
+                "nickname": "bot",
+                "reply_enabled": True,
+                "authorized_users": ["admin_only"],
+                "reply_authorized_users": ["*"],
+            }
+        }
+        result = _try_reply(
+            reply_notification, reply_comment, config, None,
+            "bot", "sukria", "koan", "koan", "what do you think?",
+        )
+        assert result is True
+        mock_perm.assert_called_once()
+        assert mock_perm.call_args[0][3] == ["*"]
+        mock_gen.assert_called_once()
+
+    @patch("app.github_command_handler.check_user_permission", return_value=False)
+    def test_fallback_to_authorized_users_when_not_configured(
+        self, mock_perm, reply_notification, reply_comment, base_config,
+    ):
+        """When reply_authorized_users is not set, falls back to authorized_users."""
+        result = _try_reply(
+            reply_notification, reply_comment, base_config, None,
+            "bot", "sukria", "koan", "koan", "what?",
+        )
+        assert result is False
+        # Should have called check_user_permission with the authorized_users list
+        mock_perm.assert_called_once()
+        call_args = mock_perm.call_args
+        assert call_args[0][3] == ["admin_only"]
+
+    @patch("app.github_command_handler._notify_github_reply")
+    @patch("app.github_command_handler._notify_github_question")
+    @patch("app.github_command_handler.mark_notification_read")
+    @patch("app.github_command_handler.add_reaction", return_value=True)
+    @patch("app.github_command_handler.check_user_permission", return_value=True)
+    @patch("app.github_reply.post_reply", return_value=True)
+    @patch("app.github_reply.generate_reply", return_value="reply")
+    @patch("app.github_reply.fetch_thread_context", return_value={
+        "title": "T", "body": "B", "comments": [], "is_pr": False, "diff_summary": "",
+    })
+    @patch("app.utils.resolve_project_path", return_value="/tmp/koan")
+    def test_explicit_reply_authorized_users_list(
+        self, mock_resolve, mock_ctx, mock_gen, mock_post,
+        mock_perm, mock_react, mock_read,
+        mock_notify_q, mock_notify_r,
+        reply_notification, reply_comment,
+    ):
+        """When reply_authorized_users is an explicit list, use it for permission check."""
+        config = {
+            "github": {
+                "nickname": "bot",
+                "reply_enabled": True,
+                "authorized_users": ["admin_only"],
+                "reply_authorized_users": ["unprivileged_user", "another"],
+            }
+        }
+        result = _try_reply(
+            reply_notification, reply_comment, config, None,
+            "bot", "sukria", "koan", "koan", "what?",
+        )
+        assert result is True
+        # check_user_permission called with the reply_authorized_users list
+        mock_perm.assert_called_once()
+        call_args = mock_perm.call_args
+        assert call_args[0][3] == ["unprivileged_user", "another"]
+
+    def test_empty_reply_authorized_users_denies_all(
+        self, reply_notification, reply_comment,
+    ):
+        """Explicit empty list means no one can get replies."""
+        config = {
+            "github": {
+                "nickname": "bot",
+                "reply_enabled": True,
+                "authorized_users": ["*"],
+                "reply_authorized_users": [],
+            }
+        }
+        with patch("app.github_command_handler.check_user_permission", return_value=False) as mock_perm:
+            result = _try_reply(
+                reply_notification, reply_comment, config, None,
+                "bot", "sukria", "koan", "koan", "what?",
+            )
+        assert result is False
+        # Should call check_user_permission with empty list, which returns False
+        mock_perm.assert_called_once()
+
+
+class TestTryReplyRateLimit:
+    """Tests for per-user rate limiting in _try_reply."""
+
+    @pytest.fixture
+    def reply_notification(self):
+        return {
+            "id": "77777",
+            "subject": {
+                "url": "https://api.github.com/repos/sukria/koan/issues/42",
+            },
+            "repository": {"full_name": "sukria/koan"},
+        }
+
+    @pytest.fixture
+    def reply_comment(self):
+        return {
+            "id": 55555,
+            "body": "@bot question?",
+            "user": {"login": "alice"},
+        }
+
+    @pytest.fixture
+    def rate_config(self):
+        return {
+            "github": {
+                "nickname": "bot",
+                "reply_enabled": True,
+                "reply_authorized_users": ["*"],
+                "reply_rate_limit": 2,
+            }
+        }
+
+    @patch("app.github_command_handler._save_reply_timestamps")
+    @patch("app.github_command_handler._load_reply_timestamps", return_value={})
+    @patch("app.github_command_handler._notify_github_reply")
+    @patch("app.github_command_handler._notify_github_question")
+    @patch("app.github_command_handler.mark_notification_read")
+    @patch("app.github_command_handler.add_reaction", return_value=True)
+    @patch("app.github_command_handler.check_user_permission", return_value=True)
+    @patch("app.github_reply.post_reply", return_value=True)
+    @patch("app.github_reply.generate_reply", return_value="reply")
+    @patch("app.github_reply.fetch_thread_context", return_value={
+        "title": "T", "body": "B", "comments": [], "is_pr": False, "diff_summary": "",
+    })
+    @patch("app.utils.resolve_project_path", return_value="/tmp/koan")
+    def test_rate_limit_allows_under_limit(
+        self, mock_resolve, mock_ctx, mock_gen, mock_post,
+        mock_perm, mock_react, mock_read,
+        mock_notify_q, mock_notify_r,
+        mock_load, mock_save,
+        reply_notification, reply_comment, rate_config,
+    ):
+        """Replies succeed when user is under the rate limit."""
+        result = _try_reply(
+            reply_notification, reply_comment, rate_config, None,
+            "bot", "sukria", "koan", "koan", "question?",
+        )
+        assert result is True
+        mock_save.assert_called_once()
+
+    @patch("app.github_command_handler._load_reply_timestamps")
+    @patch("app.github_command_handler.check_user_permission", return_value=True)
+    @patch("app.github_reply.generate_reply", return_value="reply")
+    @patch("app.utils.resolve_project_path", return_value="/tmp/koan")
+    def test_rate_limit_blocks_when_exceeded(
+        self, mock_resolve, mock_gen, mock_perm, mock_load,
+        reply_notification, reply_comment, rate_config,
+    ):
+        """Reply is denied when user exceeds rate limit."""
+        import time
+        now = time.time()
+        mock_load.return_value = {"alice": [now - 60, now - 30]}
+
+        result = _try_reply(
+            reply_notification, reply_comment, rate_config, None,
+            "bot", "sukria", "koan", "koan", "question?",
+        )
+        assert result is False
+        mock_gen.assert_not_called()
+
+    @patch("app.github_command_handler._save_reply_timestamps")
+    @patch("app.github_command_handler._load_reply_timestamps")
+    @patch("app.github_command_handler._notify_github_reply")
+    @patch("app.github_command_handler._notify_github_question")
+    @patch("app.github_command_handler.mark_notification_read")
+    @patch("app.github_command_handler.add_reaction", return_value=True)
+    @patch("app.github_command_handler.check_user_permission", return_value=True)
+    @patch("app.github_reply.post_reply", return_value=True)
+    @patch("app.github_reply.generate_reply", return_value="reply")
+    @patch("app.github_reply.fetch_thread_context", return_value={
+        "title": "T", "body": "B", "comments": [], "is_pr": False, "diff_summary": "",
+    })
+    @patch("app.utils.resolve_project_path", return_value="/tmp/koan")
+    def test_rate_limit_stale_timestamps_cleaned_by_loader(
+        self, mock_resolve, mock_ctx, mock_gen, mock_post,
+        mock_perm, mock_react, mock_read,
+        mock_notify_q, mock_notify_r,
+        mock_load, mock_save,
+        reply_notification, reply_comment, rate_config,
+    ):
+        """_load_reply_timestamps strips stale entries — result is under limit."""
+        mock_load.return_value = {}
+
+        result = _try_reply(
+            reply_notification, reply_comment, rate_config, None,
+            "bot", "sukria", "koan", "koan", "question?",
+        )
+        assert result is True
+        mock_gen.assert_called_once()
 
 
 class TestGitHubTelegramNotifications:
@@ -1756,6 +2221,12 @@ class TestTelegramNotificationBoundaries:
 
 class TestTryReplyEdgeCases:
 
+    @pytest.fixture(autouse=True)
+    def _mock_rate_limiter(self):
+        with patch("app.github_command_handler._load_reply_timestamps", return_value={}), \
+             patch("app.github_command_handler._save_reply_timestamps"):
+            yield
+
     @pytest.fixture
     def reply_notification(self):
         return {
@@ -1794,7 +2265,8 @@ class TestTryReplyEdgeCases:
     @patch("app.utils.resolve_project_path", return_value="/tmp/koan")
     def test_question_notification_sent_before_generation(
         self, mock_resolve, mock_ctx, mock_gen, mock_perm,
-        mock_notify_q, reply_notification, reply_comment, reply_config,
+        mock_notify_q,
+        reply_notification, reply_comment, reply_config,
     ):
         """Question notification should be sent BEFORE generation (even if it fails)."""
         _try_reply(
@@ -2040,6 +2512,70 @@ class TestFormatHelpListMessage:
         msg = format_help_list_message(reg, "koanbot")
         assert "help" in msg
         assert "Usage:" in msg
+
+    def test_grouped_by_category(self):
+        """Commands are grouped by their SKILL.md group field."""
+        review = Skill(
+            name="review", scope="core", group="code", emoji="🔍",
+            github_enabled=True,
+            commands=[SkillCommand(name="review", description="Review a PR", aliases=["rv"])],
+        )
+        rebase = Skill(
+            name="rebase", scope="core", group="pr", emoji="🔄",
+            github_enabled=True,
+            commands=[SkillCommand(name="rebase", description="Rebase a PR", aliases=["rb"])],
+        )
+        reg = SkillRegistry()
+        reg._register(review)
+        reg._register(rebase)
+        msg = format_help_list_message(reg, "koanbot")
+        # Group headers present
+        assert "### Code & Development" in msg
+        assert "### Pull Requests" in msg
+        # Emoji present
+        assert "🔍" in msg
+        assert "🔄" in msg
+        # Aliases shown
+        assert "`rv`" in msg
+        assert "`rb`" in msg
+        # Code section appears before PR section
+        code_pos = msg.index("### Code & Development")
+        pr_pos = msg.index("### Pull Requests")
+        assert code_pos < pr_pos
+
+    def test_integrations_group_renders(self):
+        """Custom skills with group=integrations get a dedicated section."""
+        custom = Skill(
+            name="my_fix", scope="my_team", group="integrations", emoji="🐛",
+            github_enabled=True, github_context_aware=True,
+            commands=[SkillCommand(name="my_fix", description="Fix a team bug", aliases=["myfix"])],
+        )
+        core = Skill(
+            name="rebase", scope="core", group="pr", emoji="🔄",
+            github_enabled=True,
+            commands=[SkillCommand(name="rebase", description="Rebase a PR")],
+        )
+        reg = SkillRegistry()
+        reg._register(core)
+        reg._register(custom)
+        msg = format_help_list_message(reg, "koanbot")
+        assert "### Integrations" in msg
+        assert "`@koanbot my_fix`" in msg
+        assert "`myfix`" in msg
+        # Integrations section comes after core groups (placed last in _GROUP_LABELS).
+        assert msg.index("### Pull Requests") < msg.index("### Integrations")
+
+    def test_ungrouped_skills_go_to_other(self):
+        """Skills without a recognized group appear under their group name."""
+        skill = Skill(
+            name="custom", scope="core", group="", github_enabled=True,
+            commands=[SkillCommand(name="custom", description="A custom command")],
+        )
+        reg = SkillRegistry()
+        reg._register(skill)
+        msg = format_help_list_message(reg, "koanbot")
+        assert "`@koanbot custom`" in msg
+        assert "A custom command" in msg
 
 
 # ---------------------------------------------------------------------------
@@ -2572,7 +3108,7 @@ class TestContextAwareCoreSkills:
         skills_dir = Path(__file__).parent.parent / "skills" / "core"
         return SkillRegistry(skills_dir)
 
-    @pytest.mark.parametrize("command_name", ["rebase", "recreate", "refactor"])
+    @pytest.mark.parametrize("command_name", ["rebase", "recreate", "refactor", "squash"])
     def test_skill_is_context_aware(self, core_registry, command_name):
         """Each PR-manipulation skill must have github_context_aware=True."""
         skill = core_registry.find_by_command(command_name)
@@ -2581,13 +3117,13 @@ class TestContextAwareCoreSkills:
             f"Skill '{command_name}' must have github_context_aware: true in SKILL.md"
         )
 
-    @pytest.mark.parametrize("command_name", ["rebase", "recreate", "refactor"])
+    @pytest.mark.parametrize("command_name", ["rebase", "recreate", "refactor", "squash"])
     def test_context_included_in_mission(self, core_registry, command_name):
         """When context is provided, it should appear in the built mission."""
         skill = core_registry.find_by_command(command_name)
         assert skill is not None
 
-        notif = {"subject": {"url": f"https://api.github.com/repos/o/r/pulls/42"}}
+        notif = {"subject": {"url": "https://api.github.com/repos/o/r/pulls/42"}}
         context = "please squash into one commit"
         mission = build_mission_from_command(skill, command_name, context, notif, "myproject")
 
@@ -2596,13 +3132,1074 @@ class TestContextAwareCoreSkills:
         )
         assert f"/{command_name}" in mission
 
-    @pytest.mark.parametrize("command_name", ["rebase", "recreate", "refactor"])
+    @pytest.mark.parametrize("command_name", ["rebase", "recreate", "refactor", "squash"])
     def test_no_context_mission_unchanged(self, core_registry, command_name):
         """Without extra context, mission format should be unchanged."""
         skill = core_registry.find_by_command(command_name)
         assert skill is not None
 
-        notif = {"subject": {"url": f"https://api.github.com/repos/o/r/pulls/42"}}
+        notif = {"subject": {"url": "https://api.github.com/repos/o/r/pulls/42"}}
         mission = build_mission_from_command(skill, command_name, "", notif, "myproject")
 
         assert mission == f"- [project:myproject] /{command_name} https://github.com/o/r/pull/42 📬"
+
+
+class TestExpandComboMission:
+    """Tests for _expand_combo_mission — expanding /rr into /review + /rebase."""
+
+    def test_rr_expands_to_review_and_rebase(self):
+        """The /rr combo should expand into /review and /rebase missions."""
+        mission = "- [project:koan] /rr https://github.com/o/r/pull/42 📬"
+        result = _expand_combo_mission("rr", mission, "koan")
+        assert len(result) == 2
+        assert "/review https://github.com/o/r/pull/42 📬" in result[0]
+        assert "/rebase https://github.com/o/r/pull/42 📬" in result[1]
+
+    def test_reviewrebase_expands(self):
+        """The /reviewrebase alias should also expand."""
+        mission = "- [project:koan] /reviewrebase https://github.com/o/r/pull/42 📬"
+        result = _expand_combo_mission("reviewrebase", mission, "koan")
+        assert len(result) == 2
+        assert "/review" in result[0]
+        assert "/rebase" in result[1]
+
+    def test_non_combo_passthrough(self):
+        """Non-combo commands should return the original mission unchanged."""
+        mission = "- [project:koan] /rebase https://github.com/o/r/pull/42 📬"
+        result = _expand_combo_mission("rebase", mission, "koan")
+        assert result == [mission]
+
+    def test_preserves_project_tag(self):
+        """Expanded missions should keep the [project:] tag."""
+        mission = "- [project:myproj] /rr https://github.com/o/r/pull/42 📬"
+        result = _expand_combo_mission("rr", mission, "myproj")
+        for entry in result:
+            assert "[project:myproj]" in entry
+
+    def test_preserves_url_and_context(self):
+        """URL and trailing markers should be preserved in expanded missions."""
+        mission = "- [project:koan] /rr https://github.com/o/r/pull/42 focus on security 📬"
+        result = _expand_combo_mission("rr", mission, "koan")
+        for entry in result:
+            assert "https://github.com/o/r/pull/42" in entry
+            assert "focus on security" in entry
+            assert "📬" in entry
+
+
+class TestComboSkillGithubIntegration:
+    """Integration test: @bot rr via GitHub @mention expands into sub-missions."""
+
+    @patch("app.github_command_handler.mark_notification_read")
+    @patch("app.github_command_handler.add_reaction", return_value=True)
+    @patch("app.github_command_handler.check_user_permission", return_value=True)
+    @patch("app.github_command_handler.check_already_processed", return_value=False)
+    @patch("app.github_command_handler.is_self_mention", return_value=False)
+    @patch("app.github_command_handler.is_notification_stale", return_value=False)
+    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler.resolve_project_from_notification")
+    @patch("app.utils.insert_pending_mission")
+    def test_rr_mention_inserts_two_sub_missions(
+        self, mock_insert, mock_resolve, mock_get_comment,
+        mock_stale, mock_self, mock_processed, mock_perm,
+        mock_react, mock_read, tmp_path,
+    ):
+        """@bot rr on a PR should insert /review and /rebase, not /rr."""
+        # Build a registry that includes the review_rebase skill
+        from app.skills import build_registry
+        registry = build_registry()
+
+        mock_resolve.return_value = ("koan", "sukria", "koan")
+        mock_get_comment.return_value = {
+            "id": 99999,
+            "url": "https://api.github.com/repos/sukria/koan/issues/comments/99999",
+            "body": "@testbot rr",
+            "user": {"login": "alice"},
+        }
+
+        notification = {
+            "id": "12345",
+            "reason": "mention",
+            "updated_at": "2026-02-11T20:00:00Z",
+            "repository": {"full_name": "sukria/koan"},
+            "subject": {
+                "type": "PullRequest",
+                "url": "https://api.github.com/repos/sukria/koan/pulls/42",
+                "latest_comment_url": "https://api.github.com/repos/sukria/koan/issues/comments/99999",
+            },
+        }
+
+        config = {"github": {"nickname": "testbot", "authorized_users": ["*"]}}
+
+        with patch.dict("os.environ", {"KOAN_ROOT": str(tmp_path)}):
+            success, error = process_single_notification(
+                notification, registry, config, None, "testbot",
+            )
+
+        assert success is True
+        assert error is None
+        # Should have inserted TWO missions, not one
+        assert mock_insert.call_count == 2
+        calls = [c[0][1] for c in mock_insert.call_args_list]
+        assert any("/review" in c for c in calls), f"Expected /review in {calls}"
+        assert any("/rebase" in c for c in calls), f"Expected /rebase in {calls}"
+        # Neither should contain /rr
+        for c in calls:
+            assert "/rr " not in c, f"Found unexpanded /rr in mission: {c}"
+
+    @patch("app.github_command_handler.mark_notification_read")
+    @patch("app.github_command_handler.add_reaction", return_value=True)
+    @patch("app.github_command_handler.check_user_permission", return_value=True)
+    @patch("app.github_command_handler.check_already_processed", return_value=False)
+    @patch("app.github_command_handler.is_self_mention", return_value=False)
+    @patch("app.github_command_handler.is_notification_stale", return_value=False)
+    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler.resolve_project_from_notification")
+    @patch("app.utils.insert_pending_mission")
+    def test_regular_command_still_inserts_one_mission(
+        self, mock_insert, mock_resolve, mock_get_comment,
+        mock_stale, mock_self, mock_processed, mock_perm,
+        mock_react, mock_read, tmp_path,
+    ):
+        """Non-combo commands like @bot rebase should still insert exactly one mission."""
+        from app.skills import build_registry
+        registry = build_registry()
+
+        mock_resolve.return_value = ("koan", "sukria", "koan")
+        mock_get_comment.return_value = {
+            "id": 99999,
+            "url": "https://api.github.com/repos/sukria/koan/issues/comments/99999",
+            "body": "@testbot rebase",
+            "user": {"login": "alice"},
+        }
+
+        notification = {
+            "id": "12345",
+            "reason": "mention",
+            "updated_at": "2026-02-11T20:00:00Z",
+            "repository": {"full_name": "sukria/koan"},
+            "subject": {
+                "type": "PullRequest",
+                "url": "https://api.github.com/repos/sukria/koan/pulls/42",
+                "latest_comment_url": "https://api.github.com/repos/sukria/koan/issues/comments/99999",
+            },
+        }
+
+        config = {"github": {"nickname": "testbot", "authorized_users": ["*"]}}
+
+        with patch.dict("os.environ", {"KOAN_ROOT": str(tmp_path)}):
+            success, error = process_single_notification(
+                notification, registry, config, None, "testbot",
+            )
+
+        assert success is True
+        assert mock_insert.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# _try_assignment_notification — review_requested and assign
+# ---------------------------------------------------------------------------
+
+
+class TestTryAssignmentNotification:
+    """Tests for assignment-based notification handling."""
+
+    @pytest.fixture
+    def review_notification(self):
+        return {
+            "id": "77001",
+            "reason": "review_requested",
+            "updated_at": "2026-03-21T01:00:00Z",
+            "repository": {"full_name": "sukria/koan"},
+            "subject": {
+                "type": "PullRequest",
+                "url": "https://api.github.com/repos/sukria/koan/pulls/99",
+            },
+        }
+
+    @pytest.fixture
+    def assign_notification(self):
+        return {
+            "id": "77002",
+            "reason": "assign",
+            "updated_at": "2026-03-21T01:00:00Z",
+            "repository": {"full_name": "sukria/koan"},
+            "subject": {
+                "type": "Issue",
+                "url": "https://api.github.com/repos/sukria/koan/issues/55",
+            },
+        }
+
+    @pytest.fixture
+    def review_registry(self):
+        """Registry with review and implement skills (both github_enabled)."""
+        reg = SkillRegistry()
+        reg._register(Skill(
+            name="review",
+            scope="core",
+            description="Review PR",
+            github_enabled=True,
+            github_context_aware=True,
+            commands=[SkillCommand(name="review", aliases=["rv"])],
+        ))
+        reg._register(Skill(
+            name="implement",
+            scope="core",
+            description="Implement issue",
+            github_enabled=True,
+            github_context_aware=True,
+            commands=[SkillCommand(name="implement", aliases=["impl"])],
+        ))
+        return reg
+
+    def test_review_requested_queues_review_mission(
+        self, review_notification, review_registry, tmp_path, monkeypatch,
+    ):
+        """review_requested notification queues /review <PR URL>."""
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        missions_path = tmp_path / "instance" / "missions.md"
+        missions_path.parent.mkdir(parents=True)
+        missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        with patch("app.github_command_handler.resolve_project_from_notification",
+                    return_value=("koan", "sukria", "koan")), \
+             patch("app.github_command_handler.is_notification_stale", return_value=False), \
+             patch("app.github_command_handler.mark_notification_read"):
+            result = _try_assignment_notification(
+                review_notification, review_registry, {},
+            )
+
+        assert result is True
+        content = missions_path.read_text()
+        assert "/review https://github.com/sukria/koan/pull/99" in content
+        assert "[project:koan]" in content
+
+    def test_assign_queues_implement_mission(
+        self, assign_notification, review_registry, tmp_path, monkeypatch,
+    ):
+        """assign notification queues /implement <issue URL>."""
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        missions_path = tmp_path / "instance" / "missions.md"
+        missions_path.parent.mkdir(parents=True)
+        missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        with patch("app.github_command_handler.resolve_project_from_notification",
+                    return_value=("koan", "sukria", "koan")), \
+             patch("app.github_command_handler.is_notification_stale", return_value=False), \
+             patch("app.github_command_handler.mark_notification_read"):
+            result = _try_assignment_notification(
+                assign_notification, review_registry, {},
+            )
+
+        assert result is True
+        content = missions_path.read_text()
+        assert "/implement https://github.com/sukria/koan/issues/55" in content
+        assert "[project:koan]" in content
+
+    def test_assign_does_not_requeue_on_comment_activity(
+        self, assign_notification, review_registry, tmp_path, monkeypatch,
+    ):
+        """An issue has no head SHA, so assign dedups on notif_id alone. A
+        bumped updated_at (someone commented on the issue) MUST NOT re-queue
+        /implement, even with a cold cache and the mission out of Pending."""
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        missions_path = tmp_path / "instance" / "missions.md"
+        missions_path.parent.mkdir(parents=True)
+        missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        with patch("app.github_command_handler.resolve_project_from_notification",
+                    return_value=("koan", "sukria", "koan")), \
+             patch("app.github_command_handler.is_notification_stale", return_value=False), \
+             patch("app.github_command_handler.mark_notification_read"):
+            _try_assignment_notification(assign_notification, review_registry, {})
+            # Move mission out of Pending so only the thread tracker decides.
+            missions_path.write_text(
+                "# Pending\n\n# In Progress\n\n"
+                "- [project:koan] /implement https://github.com/sukria/koan/issues/55 \U0001f4ec\n"
+                "\n# Done\n"
+            )
+            bumped = dict(assign_notification)
+            bumped["updated_at"] = "2026-03-22T05:00:00Z"
+            result = _try_assignment_notification(bumped, review_registry, {})
+
+        assert result is True  # idempotent — handled, not failed
+        content = missions_path.read_text()
+        assert content.count("/implement https://github.com/sukria/koan/issues/55") == 1
+
+    def test_irrelevant_reason_returns_false(self, review_registry):
+        """Notifications with non-assignment reasons are ignored."""
+        notif = {"reason": "mention", "id": "1"}
+        result = _try_assignment_notification(notif, review_registry, {})
+        assert result is False
+
+    def test_stale_notification_skipped(
+        self, review_notification, review_registry,
+    ):
+        """Stale assignment notifications are marked read and skipped."""
+        with patch("app.github_command_handler.is_notification_stale", return_value=True), \
+             patch("app.github_command_handler.mark_notification_read") as mock_mark:
+            result = _try_assignment_notification(
+                review_notification, review_registry, {},
+            )
+
+        assert result is False
+        mock_mark.assert_called_once()
+
+    def test_unknown_repo_skipped(
+        self, review_notification, review_registry,
+    ):
+        """Notifications from unknown repos are skipped without side effects.
+
+        Marking the notification as read is a write to shared GitHub state.
+        With a shared bot identity, this instance must leave foreign repos
+        untouched so the sibling instance that owns the repo can process
+        them on its next poll.
+        """
+        with patch("app.github_command_handler.is_notification_stale", return_value=False), \
+             patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=None), \
+             patch("app.github_command_handler.mark_notification_read") as mock_mark:
+            result = _try_assignment_notification(
+                review_notification, review_registry, {},
+            )
+
+        assert result is False
+        mock_mark.assert_not_called()
+
+    def test_no_subject_url_skipped(self, review_registry):
+        """Notifications without a subject URL are skipped."""
+        notif = {
+            "id": "77003",
+            "reason": "review_requested",
+            "updated_at": "2026-03-21T01:00:00Z",
+            "repository": {"full_name": "sukria/koan"},
+            "subject": {"type": "PullRequest"},
+        }
+        with patch("app.github_command_handler.is_notification_stale", return_value=False), \
+             patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=("koan", "sukria", "koan")), \
+             patch("app.github_command_handler.mark_notification_read") as mock_mark:
+            result = _try_assignment_notification(
+                notif, review_registry, {},
+            )
+
+        assert result is False
+        mock_mark.assert_called_once()
+
+    def test_command_not_github_enabled(self):
+        """If the mapped command is not github_enabled, skip."""
+        reg = SkillRegistry()
+        reg._register(Skill(
+            name="review",
+            scope="core",
+            description="Review PR",
+            github_enabled=False,  # not enabled
+            commands=[SkillCommand(name="review")],
+        ))
+        notif = {
+            "id": "77004",
+            "reason": "review_requested",
+            "updated_at": "2026-03-21T01:00:00Z",
+            "repository": {"full_name": "sukria/koan"},
+            "subject": {"url": "https://api.github.com/repos/sukria/koan/pulls/10"},
+        }
+        result = _try_assignment_notification(notif, reg, {})
+        assert result is False
+
+    def test_persistent_dedup_blocks_duplicate_across_restart(
+        self, review_notification, review_registry, tmp_path, monkeypatch,
+    ):
+        """After a /review mission has been queued once, a second call for the
+        same PR head SHA MUST NOT insert a duplicate — even when the in-memory
+        _notif_cache is cold (simulating a restart) AND the mission has moved
+        out of Pending (so the missions.md dedup cannot fire). The persistent
+        thread tracker (keyed on notif_id:head_sha) is the only thing
+        protecting us. The autouse subject-info stub returns a fixed head SHA,
+        so both calls compute the same key.
+        """
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        missions_path = tmp_path / "instance" / "missions.md"
+        missions_path.parent.mkdir(parents=True)
+        missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        with patch("app.github_command_handler.resolve_project_from_notification",
+                    return_value=("koan", "sukria", "koan")), \
+             patch("app.github_command_handler.is_notification_stale", return_value=False), \
+             patch("app.github_command_handler.mark_notification_read"):
+            first = _try_assignment_notification(
+                review_notification, review_registry, {},
+            )
+            # Simulate the runner picking up the mission: move it out of Pending
+            # so the in-process missions.md dedup can no longer catch a dup.
+            missions_path.write_text(
+                "# Pending\n\n# In Progress\n\n"
+                "- [project:koan] /review https://github.com/sukria/koan/pull/99 \U0001f4ec\n"
+                "\n# Done\n"
+            )
+            second = _try_assignment_notification(
+                review_notification, review_registry, {},
+            )
+
+        assert first is True
+        assert second is True  # idempotent — handled, not failed
+        content = missions_path.read_text()
+        # Exactly one mission line for this URL across the whole file
+        assert content.count("/review https://github.com/sukria/koan/pull/99") == 1
+
+    def test_bumped_updated_at_does_not_requeue_review(
+        self, review_notification, review_registry, tmp_path, monkeypatch,
+    ):
+        """A bumped updated_at with the SAME head SHA MUST NOT re-queue /review.
+
+        This is the regression guard for the runaway-review loop: the bot's own
+        posted review (and CI-bot comments) bump the PR's updated_at, but they
+        do not change the head SHA, so no fresh mission must be created.
+        """
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        missions_path = tmp_path / "instance" / "missions.md"
+        missions_path.parent.mkdir(parents=True)
+        missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        with patch("app.github_command_handler.resolve_project_from_notification",
+                    return_value=("koan", "sukria", "koan")), \
+             patch("app.github_command_handler.is_notification_stale", return_value=False), \
+             patch("app.github_command_handler.mark_notification_read"):
+            _try_assignment_notification(review_notification, review_registry, {})
+            # Move first mission out of Pending so the in-flight dedup
+            # doesn't fire — only the thread tracker decides here.
+            missions_path.write_text(
+                "# Pending\n\n# In Progress\n\n"
+                "- [project:koan] /review https://github.com/sukria/koan/pull/99 \U0001f4ec\n"
+                "\n# Done\n"
+            )
+            renewed = dict(review_notification)
+            renewed["updated_at"] = "2026-03-22T05:00:00Z"
+            result = _try_assignment_notification(renewed, review_registry, {})
+
+        assert result is True  # idempotent — handled, not failed
+        content = missions_path.read_text()
+        assert content.count("/review https://github.com/sukria/koan/pull/99") == 1
+
+    def test_new_head_sha_queues_new_review(
+        self, review_notification, review_registry, tmp_path, monkeypatch,
+    ):
+        """A new PR head SHA (commits pushed) MUST queue a fresh /review — the
+        head SHA is the renew signal that replaced updated_at."""
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        missions_path = tmp_path / "instance" / "missions.md"
+        missions_path.parent.mkdir(parents=True)
+        missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        with patch("app.github_command_handler.resolve_project_from_notification",
+                    return_value=("koan", "sukria", "koan")), \
+             patch("app.github_command_handler.is_notification_stale", return_value=False), \
+             patch("app.github_command_handler.mark_notification_read"), \
+             patch("app.github_command_handler._fetch_subject_info",
+                   return_value={"state": "open", "merged": False, "head_sha": "sha-aaaa"}):
+            _try_assignment_notification(review_notification, review_registry, {})
+            # Move first mission out of Pending so only the tracker decides.
+            missions_path.write_text(
+                "# Pending\n\n# In Progress\n\n"
+                "- [project:koan] /review https://github.com/sukria/koan/pull/99 \U0001f4ec\n"
+                "\n# Done\n"
+            )
+
+        # New commits pushed → new head SHA → fresh dedup key → re-review.
+        with patch("app.github_command_handler.resolve_project_from_notification",
+                    return_value=("koan", "sukria", "koan")), \
+             patch("app.github_command_handler.is_notification_stale", return_value=False), \
+             patch("app.github_command_handler.mark_notification_read"), \
+             patch("app.github_command_handler._fetch_subject_info",
+                   return_value={"state": "open", "merged": False, "head_sha": "sha-bbbb"}):
+            result = _try_assignment_notification(
+                review_notification, review_registry, {},
+            )
+
+        assert result is True
+        content = missions_path.read_text()
+        assert content.count("/review https://github.com/sukria/koan/pull/99") == 2
+
+    def test_empty_notif_id_skips_tracker_to_avoid_useless_key(
+        self, review_notification, review_registry, tmp_path, monkeypatch,
+    ):
+        """If notification.id is missing, the composite key would be useless
+        (a ':<updated_at>' record never matches future polls). The mission
+        must still queue, but track_thread MUST NOT be called with a junk key.
+        """
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        missions_path = tmp_path / "instance" / "missions.md"
+        missions_path.parent.mkdir(parents=True)
+        missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        notif = dict(review_notification)
+        notif["id"] = ""  # malformed: no id
+
+        with patch("app.github_command_handler.resolve_project_from_notification",
+                    return_value=("koan", "sukria", "koan")), \
+             patch("app.github_command_handler.is_notification_stale", return_value=False), \
+             patch("app.github_command_handler.mark_notification_read"), \
+             patch("app.github_notification_tracker.track_thread") as mock_track:
+            result = _try_assignment_notification(notif, review_registry, {})
+
+        assert result is True
+        content = missions_path.read_text()
+        assert "/review https://github.com/sukria/koan/pull/99" in content
+        mock_track.assert_not_called()
+
+    def test_assignment_reason_mapping(self):
+        """Verify the reason-to-command mapping."""
+        assert _ASSIGNMENT_REASON_TO_COMMAND["review_requested"] == "review"
+        assert _ASSIGNMENT_REASON_TO_COMMAND["assign"] == "implement"
+
+    def test_process_single_notification_routes_review_requested(
+        self, review_notification, review_registry, tmp_path, monkeypatch,
+    ):
+        """process_single_notification routes review_requested to assignment handler."""
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        missions_path = tmp_path / "instance" / "missions.md"
+        missions_path.parent.mkdir(parents=True)
+        missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        with patch("app.github_command_handler._fetch_and_filter_comment", return_value=None), \
+             patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=("koan", "sukria", "koan")), \
+             patch("app.github_command_handler.is_notification_stale", return_value=False), \
+             patch("app.github_command_handler.mark_notification_read"):
+            success, error = process_single_notification(
+                review_notification, review_registry, {}, None, "koan-bot",
+            )
+
+        assert success is True
+        assert error is None
+        content = missions_path.read_text()
+        assert "/review" in content
+
+    def test_process_single_notification_routes_assign(
+        self, assign_notification, review_registry, tmp_path, monkeypatch,
+    ):
+        """process_single_notification routes assign to assignment handler."""
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        missions_path = tmp_path / "instance" / "missions.md"
+        missions_path.parent.mkdir(parents=True)
+        missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        with patch("app.github_command_handler._fetch_and_filter_comment", return_value=None), \
+             patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=("koan", "sukria", "koan")), \
+             patch("app.github_command_handler.is_notification_stale", return_value=False), \
+             patch("app.github_command_handler.mark_notification_read"):
+            success, error = process_single_notification(
+                assign_notification, review_registry, {}, None, "koan-bot",
+            )
+
+        assert success is True
+        assert error is None
+        content = missions_path.read_text()
+        assert "/implement" in content
+
+
+class TestFetchSubjectInfo:
+    """Tests for _fetch_subject_info — the single network seam for subject state.
+
+    These call the real helper directly (the module-top import binding is not
+    affected by the autouse stub, which only replaces the module attribute), so
+    the GitHub API call is exercised through a mocked ``app.github.api``.
+    """
+
+    def test_parses_state_merged_and_head_sha(self):
+        notification = {
+            "subject": {
+                "url": "https://api.github.com/repos/owner/repo/pulls/1",
+            },
+        }
+        with patch("app.github.api",
+                    return_value='{"state": "open", "merged": false, "head_sha": "abc123"}'):
+            info = _fetch_subject_info(notification)
+        assert info == {"state": "open", "merged": False, "head_sha": "abc123"}
+
+    def test_issue_has_null_head_sha(self):
+        notification = {
+            "subject": {
+                "url": "https://api.github.com/repos/owner/repo/issues/1",
+            },
+        }
+        with patch("app.github.api",
+                    return_value='{"state": "open", "merged": null, "head_sha": null}'):
+            info = _fetch_subject_info(notification)
+        assert info["head_sha"] is None
+
+    def test_returns_empty_on_api_failure(self):
+        notification = {
+            "subject": {
+                "url": "https://api.github.com/repos/owner/repo/pulls/1",
+            },
+        }
+        with patch("app.github.api", side_effect=RuntimeError("network")):
+            assert _fetch_subject_info(notification) == {}
+
+    def test_returns_empty_when_no_subject_url(self):
+        assert _fetch_subject_info({"subject": {}}) == {}
+        assert _fetch_subject_info({}) == {}
+
+    def test_returns_empty_for_non_api_url(self):
+        notification = {
+            "subject": {"url": "https://github.com/owner/repo/pull/1"},
+        }
+        assert _fetch_subject_info(notification) == {}
+
+
+class TestClosedReasonFromSubjectInfo:
+    """Tests for _closed_reason_from_subject_info — pure derivation, no network."""
+
+    def test_merged_takes_priority(self):
+        assert _closed_reason_from_subject_info(
+            {"state": "closed", "merged": True},
+        ) == "merged"
+
+    def test_closed_state(self):
+        assert _closed_reason_from_subject_info(
+            {"state": "closed", "merged": False},
+        ) == "closed"
+
+    def test_open_state(self):
+        assert _closed_reason_from_subject_info(
+            {"state": "open", "merged": False},
+        ) is None
+
+    def test_empty_info(self):
+        assert _closed_reason_from_subject_info({}) is None
+
+
+class TestIsSubjectClosed:
+    """_is_subject_closed composes the fetch + the closed-reason derivation."""
+
+    def test_merged(self):
+        with patch(
+            "app.github_command_handler._fetch_subject_info",
+            return_value={"state": "closed", "merged": True, "head_sha": "x"},
+        ):
+            assert _is_subject_closed(
+                {"subject": {"url": "https://api.github.com/repos/o/r/pulls/1"}},
+            ) == "merged"
+
+    def test_open(self):
+        with patch(
+            "app.github_command_handler._fetch_subject_info",
+            return_value={"state": "open", "merged": False, "head_sha": "x"},
+        ):
+            assert _is_subject_closed(
+                {"subject": {"url": "https://api.github.com/repos/o/r/pulls/1"}},
+            ) is None
+
+    def test_unfetchable_subject_is_open(self):
+        with patch(
+            "app.github_command_handler._fetch_subject_info",
+            return_value={},
+        ):
+            assert _is_subject_closed({"subject": {}}) is None
+
+
+class TestNotifyClosedSubjectSkipped:
+    """Tests for _notify_closed_subject_skipped helper."""
+
+    def test_sends_telegram_notification(self):
+        notification = {
+            "subject": {
+                "type": "PullRequest",
+                "url": "https://api.github.com/repos/owner/repo/pulls/42",
+            },
+        }
+        with patch("app.notify.send_telegram") as mock_send:
+            _notify_closed_subject_skipped(
+                "owner", "repo", "Fix bug", "merged", notification,
+            )
+            mock_send.assert_called_once()
+            msg = mock_send.call_args[0][0]
+            assert "merged" in msg
+            assert "owner/repo" in msg
+            assert "Fix bug" in msg
+            assert "pullrequest" in msg.lower()
+
+    def test_handles_send_failure_gracefully(self):
+        notification = {"subject": {"type": "Issue", "url": ""}}
+        with patch("app.notify.send_telegram",
+                    side_effect=Exception("boom")):
+            # Should not raise
+            _notify_closed_subject_skipped(
+                "owner", "repo", "Title", "closed", notification,
+            )
+
+
+class TestProcessSingleNotificationClosedSubject:
+    """Tests for closed/merged subject detection in process_single_notification."""
+
+    @pytest.fixture
+    def closed_pr_notification(self):
+        return {
+            "id": "99999",
+            "reason": "mention",
+            "updated_at": "2026-05-13T12:00:00Z",
+            "repository": {"full_name": "owner/repo"},
+            "subject": {
+                "type": "PullRequest",
+                "title": "Some closed PR",
+                "url": "https://api.github.com/repos/owner/repo/pulls/10",
+                "latest_comment_url": "https://api.github.com/repos/owner/repo/issues/comments/555",
+            },
+        }
+
+    def test_skips_closed_pr_and_notifies(
+        self, closed_pr_notification, registry, monkeypatch,
+    ):
+        """Notifications on closed PRs are skipped with Telegram notification."""
+        monkeypatch.setenv("KOAN_ROOT", "/tmp/test-koan")
+
+        comment = {
+            "id": "555",
+            "url": "https://api.github.com/repos/owner/repo/issues/comments/555",
+            "body": "@bot rebase",
+            "user": {"login": "someone"},
+        }
+
+        with patch("app.github_command_handler._fetch_and_filter_comment",
+                    return_value=comment), \
+             patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=("myproject", "owner", "repo")), \
+             patch("app.github_command_handler._is_subject_closed",
+                   return_value="merged") as mock_closed, \
+             patch("app.github_command_handler._notify_closed_subject_skipped") as mock_notify, \
+             patch("app.github_command_handler.add_reaction") as mock_react, \
+             patch("app.github_command_handler.mark_notification_read") as mock_read:
+
+            success, error = process_single_notification(
+                closed_pr_notification, registry, {}, None, "bot",
+            )
+
+        assert success is False
+        assert error is None
+        mock_closed.assert_called_once()
+        mock_notify.assert_called_once_with(
+            "owner", "repo", "Some closed PR", "merged", closed_pr_notification,
+        )
+        mock_react.assert_called_once_with(
+            "owner", "repo", "555", emoji="eyes",
+            comment_api_url="https://api.github.com/repos/owner/repo/issues/comments/555",
+        )
+        mock_read.assert_called_once()
+
+    def test_does_not_skip_open_pr(
+        self, closed_pr_notification, registry, monkeypatch,
+    ):
+        """Notifications on open PRs proceed normally."""
+        monkeypatch.setenv("KOAN_ROOT", "/tmp/test-koan")
+
+        comment = {
+            "id": "555",
+            "url": "https://api.github.com/repos/owner/repo/issues/comments/555",
+            "body": "@bot rebase",
+            "user": {"login": "someone"},
+        }
+
+        with patch("app.github_command_handler._fetch_and_filter_comment",
+                    return_value=comment), \
+             patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=("myproject", "owner", "repo")), \
+             patch("app.github_command_handler._is_subject_closed",
+                   return_value=None), \
+             patch("app.github_command_handler._validate_and_parse_command",
+                   return_value=(None, None, "")), \
+             patch("app.github_command_handler._notify_closed_subject_skipped") as mock_notify:
+
+            success, error = process_single_notification(
+                closed_pr_notification, registry, {}, None, "bot",
+            )
+
+        # Should NOT have called the skip notification
+        mock_notify.assert_not_called()
+
+
+class TestTryAssignmentNotificationClosedSubject:
+    """Tests for closed subject detection in _try_assignment_notification."""
+
+    @pytest.fixture
+    def subject_closed_state(self):
+        # Drives the autouse _fetch_subject_info stub to report a merged PR.
+        return "merged"
+
+    def test_skips_review_request_on_merged_pr(self, monkeypatch):
+        monkeypatch.setenv("KOAN_ROOT", "/tmp/test-koan")
+        notification = {
+            "id": "77777",
+            "reason": "review_requested",
+            "updated_at": "2026-05-13T12:00:00Z",
+            "repository": {"full_name": "owner/repo"},
+            "subject": {
+                "type": "PullRequest",
+                "title": "Merged PR",
+                "url": "https://api.github.com/repos/owner/repo/pulls/5",
+            },
+        }
+        registry = SkillRegistry()
+        skill = Skill(
+            name="review", scope="core", description="Review",
+            commands=[SkillCommand(name="review")],
+            github_enabled=True,
+        )
+        registry._register(skill)
+
+        with patch("app.github_command_handler.is_notification_stale",
+                    return_value=False), \
+             patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=("myproject", "owner", "repo")), \
+             patch("app.github_command_handler._notify_closed_subject_skipped") as mock_notify, \
+             patch("app.github_command_handler.mark_notification_read"):
+
+            result = _try_assignment_notification(notification, registry, {})
+
+        assert result is False
+        mock_notify.assert_called_once()
+        assert mock_notify.call_args[0][3] == "merged"  # subject_state
+
+
+class TestSkipIfForeignRepo:
+    """_skip_if_foreign_repo centralizes the resolve-or-log boilerplate."""
+
+    def test_returns_project_info_for_owned_repo(self):
+        from app.github_command_handler import _skip_if_foreign_repo
+
+        notif = {"repository": {"full_name": "owner/repo"}}
+        with patch(
+            "app.github_command_handler.resolve_project_from_notification",
+            return_value=("repo", "owner", "repo"),
+        ):
+            result = _skip_if_foreign_repo(notif, "GitHub")
+
+        assert result == ("repo", "owner", "repo")
+
+    def test_logs_and_returns_none_for_foreign_repo(self, caplog):
+        import logging
+        from app.github_command_handler import _skip_if_foreign_repo
+
+        notif = {
+            "repository": {"full_name": "stranger/repo"},
+            "reason": "mention",
+        }
+        with patch(
+            "app.github_command_handler.resolve_project_from_notification",
+            return_value=None,
+        ), caplog.at_level(logging.DEBUG, logger="app.github_command_handler"):
+            result = _skip_if_foreign_repo(notif, "GitHub assign")
+
+        assert result is None
+        assert "GitHub assign" in caplog.text
+        assert "stranger/repo" in caplog.text
+        assert "reason=mention" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# --now priority flag in GitHub @mentions
+# ---------------------------------------------------------------------------
+
+
+class TestNowPriorityFlag:
+    """Tests that --now in GitHub @mention context inserts missions at top of queue."""
+
+    @patch("app.github_command_handler.mark_notification_read")
+    @patch("app.github_command_handler.add_reaction", return_value=True)
+    @patch("app.github_command_handler.check_user_permission", return_value=True)
+    @patch("app.github_command_handler.check_already_processed", return_value=False)
+    @patch("app.github_command_handler.is_self_mention", return_value=False)
+    @patch("app.github_command_handler.is_notification_stale", return_value=False)
+    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler.resolve_project_from_notification")
+    @patch("app.utils.insert_pending_mission")
+    def test_now_flag_passes_urgent_true(
+        self, mock_insert, mock_resolve, mock_get_comment,
+        mock_stale, mock_self, mock_processed, mock_perm,
+        mock_react, mock_read, registry, sample_notification, tmp_path,
+    ):
+        mock_resolve.return_value = ("koan", "owner", "koan")
+        mock_get_comment.return_value = {
+            "id": 99999,
+            "body": "@testbot implement --now https://github.com/owner/repo/issues/42",
+            "user": {"login": "alice"},
+        }
+
+        config = {"github": {"nickname": "testbot", "authorized_users": ["*"]}}
+
+        with patch.dict("os.environ", {"KOAN_ROOT": str(tmp_path)}):
+            success, error = process_single_notification(
+                sample_notification, registry, config, None, "testbot",
+            )
+
+        assert success is True
+        assert error is None
+        mock_insert.assert_called_once()
+        _, kwargs = mock_insert.call_args
+        assert kwargs.get("urgent") is True
+
+    @patch("app.github_command_handler.mark_notification_read")
+    @patch("app.github_command_handler.add_reaction", return_value=True)
+    @patch("app.github_command_handler.check_user_permission", return_value=True)
+    @patch("app.github_command_handler.check_already_processed", return_value=False)
+    @patch("app.github_command_handler.is_self_mention", return_value=False)
+    @patch("app.github_command_handler.is_notification_stale", return_value=False)
+    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler.resolve_project_from_notification")
+    @patch("app.utils.insert_pending_mission")
+    def test_without_now_flag_urgent_is_false(
+        self, mock_insert, mock_resolve, mock_get_comment,
+        mock_stale, mock_self, mock_processed, mock_perm,
+        mock_react, mock_read, registry, sample_notification, tmp_path,
+    ):
+        mock_resolve.return_value = ("koan", "owner", "koan")
+        mock_get_comment.return_value = {
+            "id": 99999,
+            "body": "@testbot rebase",
+            "user": {"login": "alice"},
+        }
+
+        config = {"github": {"nickname": "testbot", "authorized_users": ["*"]}}
+
+        with patch.dict("os.environ", {"KOAN_ROOT": str(tmp_path)}):
+            success, error = process_single_notification(
+                sample_notification, registry, config, None, "testbot",
+            )
+
+        assert success is True
+        mock_insert.assert_called_once()
+        _, kwargs = mock_insert.call_args
+        assert kwargs.get("urgent") is False
+
+    @patch("app.github_command_handler.mark_notification_read")
+    @patch("app.github_command_handler.add_reaction", return_value=True)
+    @patch("app.github_command_handler.check_user_permission", return_value=True)
+    @patch("app.github_command_handler.check_already_processed", return_value=False)
+    @patch("app.github_command_handler.is_self_mention", return_value=False)
+    @patch("app.github_command_handler.is_notification_stale", return_value=False)
+    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler.resolve_project_from_notification")
+    @patch("app.utils.insert_pending_mission")
+    def test_now_flag_stripped_from_mission_entry(
+        self, mock_insert, mock_resolve, mock_get_comment,
+        mock_stale, mock_self, mock_processed, mock_perm,
+        mock_react, mock_read, registry, sample_notification, tmp_path,
+    ):
+        """--now should not appear in the queued mission text."""
+        mock_resolve.return_value = ("koan", "owner", "koan")
+        mock_get_comment.return_value = {
+            "id": 99999,
+            "body": "@testbot implement --now https://github.com/owner/repo/issues/42",
+            "user": {"login": "alice"},
+        }
+
+        config = {"github": {"nickname": "testbot", "authorized_users": ["*"]}}
+
+        with patch.dict("os.environ", {"KOAN_ROOT": str(tmp_path)}):
+            process_single_notification(
+                sample_notification, registry, config, None, "testbot",
+            )
+
+        call_args = mock_insert.call_args[0]
+        mission_text = call_args[1]  # second positional arg is the entry
+        assert "--now" not in mission_text
+
+
+class TestLoadReplyTimestamps:
+    """Tests for _load_reply_timestamps — file-backed rate-limit state."""
+
+    def test_returns_empty_when_file_missing(self, tmp_path):
+        result = _load_reply_timestamps(str(tmp_path))
+        assert result == {}
+
+    def test_returns_empty_on_corrupt_json(self, tmp_path):
+        (tmp_path / _REPLY_RATE_FILE).write_text("not json")
+        result = _load_reply_timestamps(str(tmp_path))
+        assert result == {}
+
+    def test_strips_stale_entries(self, tmp_path):
+        import time
+        now = time.time()
+        data = {"alice": [now - 7200, now - 30, now - 10]}
+        (tmp_path / _REPLY_RATE_FILE).write_text(json.dumps(data))
+        result = _load_reply_timestamps(str(tmp_path))
+        assert len(result["alice"]) == 2
+        assert all(t > now - 3600 for t in result["alice"])
+
+    def test_removes_user_with_only_stale_entries(self, tmp_path):
+        import time
+        now = time.time()
+        data = {"alice": [now - 7200, now - 3700]}
+        (tmp_path / _REPLY_RATE_FILE).write_text(json.dumps(data))
+        result = _load_reply_timestamps(str(tmp_path))
+        assert "alice" not in result
+
+    def test_ignores_non_numeric_timestamps(self, tmp_path):
+        import time
+        now = time.time()
+        data = {"alice": ["bad", now - 10, None]}
+        (tmp_path / _REPLY_RATE_FILE).write_text(json.dumps(data))
+        result = _load_reply_timestamps(str(tmp_path))
+        assert len(result["alice"]) == 1
+
+
+class TestSaveReplyTimestamps:
+    """Tests for _save_reply_timestamps — atomic file write."""
+
+    def test_saves_and_round_trips(self, tmp_path):
+        import time
+        now = time.time()
+        data = {"alice": [now - 30, now - 10]}
+        _save_reply_timestamps(str(tmp_path), data)
+        loaded = _load_reply_timestamps(str(tmp_path))
+        assert len(loaded["alice"]) == 2
+
+
+class TestWarnReplyWildcard:
+    """Tests for startup warning when reply + wildcard are configured."""
+
+    def test_warns_on_wildcard_reply_auth(self, caplog):
+        import logging
+        from app.github_config import warn_reply_wildcard
+        config = {
+            "github": {
+                "reply_enabled": True,
+                "reply_authorized_users": ["*"],
+            }
+        }
+        with caplog.at_level(logging.WARNING, logger="app.github_config"):
+            warn_reply_wildcard(config)
+        assert "authorized to ALL" in caplog.text
+
+    def test_no_warning_when_reply_disabled(self, caplog):
+        import logging
+        from app.github_config import warn_reply_wildcard
+        config = {"github": {"reply_enabled": False, "reply_authorized_users": ["*"]}}
+        with caplog.at_level(logging.WARNING, logger="app.github_config"):
+            warn_reply_wildcard(config)
+        assert caplog.text == ""
+
+    def test_no_warning_with_named_users(self, caplog):
+        import logging
+        from app.github_config import warn_reply_wildcard
+        config = {
+            "github": {
+                "reply_enabled": True,
+                "reply_authorized_users": ["alice"],
+            }
+        }
+        with caplog.at_level(logging.WARNING, logger="app.github_config"):
+            warn_reply_wildcard(config)
+        assert caplog.text == ""
+
+    def test_warns_on_fallback_wildcard(self, caplog):
+        import logging
+        from app.github_config import warn_reply_wildcard
+        config = {
+            "github": {
+                "reply_enabled": True,
+                "authorized_users": ["*"],
+            }
+        }
+        with caplog.at_level(logging.WARNING, logger="app.github_config"):
+            warn_reply_wildcard(config)
+        assert "authorized to ALL" in caplog.text

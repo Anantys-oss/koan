@@ -154,8 +154,9 @@ class TestTelegramVerification:
         assert data["ok"] is False
         assert "required" in data["error"].lower()
 
+    @patch("app.setup_wizard.get_chat_id_from_updates", return_value=None)
     @patch("app.setup_wizard.verify_telegram_token")
-    def test_verify_valid_token(self, mock_verify, wizard_app):
+    def test_verify_valid_token(self, mock_verify, mock_chat, wizard_app):
         """Valid token should return bot info."""
         client, root = wizard_app
         mock_verify.return_value = {

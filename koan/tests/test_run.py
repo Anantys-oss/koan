@@ -1,5 +1,6 @@
 """Tests for app.run — the full Python main loop."""
 
+import contextlib
 import os
 import signal
 import subprocess
@@ -17,6 +18,18 @@ pytestmark = pytest.mark.slow
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _skip_startup_delay():
+    """Disable _startup_delay for all tests in this module.
+
+    The startup delay sleeps for 30 s by default, which causes timeouts
+    in tests that invoke main_loop().  Tests for the delay itself live
+    in test_startup_delay.py.
+    """
+    with patch("app.run._startup_delay"):
+        yield
+
 
 @pytest.fixture
 def koan_root(tmp_path):
@@ -133,13 +146,25 @@ class TestParseProjects:
         with pytest.raises(SystemExit):
             parse_projects()
 
-    def test_nonexistent_path_exits(self, tmp_path, monkeypatch):
+    def test_all_nonexistent_paths_exits(self, tmp_path, monkeypatch):
         from app import utils
         monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
         monkeypatch.setenv("KOAN_PROJECTS", f"bad:{tmp_path}/nonexistent")
         from app.run import parse_projects
         with pytest.raises(SystemExit):
             parse_projects()
+
+    def test_some_nonexistent_paths_filtered(self, tmp_path, monkeypatch):
+        """Missing project dirs are skipped; valid ones are kept."""
+        from app import utils
+        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+        from app.run import parse_projects
+        p = tmp_path / "good"
+        p.mkdir()
+        monkeypatch.setenv("KOAN_PROJECTS", f"good:{p};bad:{tmp_path}/nonexistent")
+        result = parse_projects()
+        assert len(result) == 1
+        assert result[0] == ("good", str(p))
 
     def test_too_many_projects(self, tmp_path, monkeypatch):
         from app import utils
@@ -783,7 +808,8 @@ class TestHandlePause:
         instance = str(koan_root / "instance")
         (koan_root / ".koan-pause").touch()
 
-        with patch("app.pause_manager.check_and_resume", return_value="Quota reset"):
+        with patch("app.pause_manager.check_and_resume", return_value="Quota reset"), \
+             patch("app.run._notify"):
             result = handle_pause(str(koan_root), instance, 5)
         assert result == "resume"
 
@@ -920,6 +946,27 @@ class TestHandlePause:
             # Should break much earlier than 60 sleeps
             assert mock_sleep.call_count < 10
 
+    @patch("app.run.time.sleep")
+    def test_pause_breaks_on_cycle_signal(self, mock_sleep, koan_root):
+        """Pause breaks out when .koan-cycle appears, returns None."""
+        from app.run import handle_pause
+
+        instance = str(koan_root / "instance")
+        (koan_root / ".koan-pause").touch()
+
+        sleep_count = [0]
+        def create_cycle_after_2(duration):
+            sleep_count[0] += 1
+            if sleep_count[0] >= 2:
+                (koan_root / ".koan-cycle").write_text("CYCLE")
+
+        mock_sleep.side_effect = create_cycle_after_2
+
+        with patch("app.pause_manager.check_and_resume", return_value=None):
+            result = handle_pause(str(koan_root), instance, 5)
+            assert result is None
+            assert mock_sleep.call_count < 10
+
 
 # ---------------------------------------------------------------------------
 # Test: run_claude_task
@@ -986,15 +1033,13 @@ class TestRunClaudeTask:
         stderr_f = str(tmp_path / "err.txt")
 
         with patch("app.cli_exec.popen_cli", side_effect=OSError("exec failed")):
-            try:
+            with contextlib.suppress(OSError):
                 run_claude_task(
                     cmd=["nonexistent"],
                     stdout_file=stdout_f,
                     stderr_file=stderr_f,
                     cwd=str(tmp_path),
                 )
-            except OSError:
-                pass
 
         # Signal state must be cleaned up despite the exception
         assert _sig.task_running is False
@@ -1012,15 +1057,13 @@ class TestRunClaudeTask:
         bad_dir.mkdir()
         stderr_f = str(tmp_path / "err.txt")
 
-        try:
+        with contextlib.suppress(OSError, IsADirectoryError):
             run_claude_task(
                 cmd=["echo", "hello"],
                 stdout_file=str(bad_dir),  # can't open a directory for writing
                 stderr_file=stderr_f,
                 cwd=str(tmp_path),
             )
-        except (OSError, IsADirectoryError):
-            pass
 
         assert _sig.task_running is False
         assert _sig.claude_proc is None
@@ -1130,6 +1173,90 @@ class TestWatchdogTimeoutGuard:
 
             assert mock_task.called
 
+    def test_retry_skipped_on_stagnation(self, tmp_path, monkeypatch):
+        """_maybe_retry_mission returns immediately when stagnation monitor aborted."""
+        import app.run as run_mod
+
+        run_mod._last_mission_timed_out = False
+        run_mod._last_mission_aborted = False
+        run_mod._last_mission_stagnated.set()
+
+        stdout_f = str(tmp_path / "out.txt")
+        stderr_f = str(tmp_path / "err.txt")
+        Path(stdout_f).write_text("500 Internal Server Error")
+        Path(stderr_f).write_text("")
+
+        result = run_mod._maybe_retry_mission(
+            claude_exit=1,
+            stdout_file=stdout_f,
+            stderr_file=stderr_f,
+            cmd=["echo", "test"],
+            project_path=str(tmp_path),
+            pre_head="abc123",
+            instance=str(tmp_path),
+            project_name="test",
+            run_num=1,
+            has_mission=True,
+        )
+
+        # Should return the same exit code — no retry; stagnation has its
+        # own retry logic in _finalize_mission.
+        assert result[0] == 1
+        # Stagnation flag must still be set so _finalize_mission can read it
+        assert run_mod._last_mission_stagnated.is_set()
+
+
+class TestJsonOverrideGuard:
+    """JSON success override must be skipped after watchdog/abort kills (#1254)."""
+
+    def test_json_override_skipped_on_timeout(self):
+        """When _last_mission_timed_out is True, JSON override must not fire."""
+        import app.run as run_mod
+
+        run_mod._last_mission_timed_out = True
+        run_mod._last_mission_aborted = False
+
+        # The condition in run.py is:
+        # if claude_exit != 0 and not _last_mission_timed_out and not _last_mission_aborted:
+        # Simulate the guard check
+        claude_exit = 1
+        should_check = (
+            claude_exit != 0
+            and not run_mod._last_mission_timed_out
+            and not run_mod._last_mission_aborted
+        )
+        assert should_check is False
+
+    def test_json_override_skipped_on_abort(self):
+        """When _last_mission_aborted is True, JSON override must not fire."""
+        import app.run as run_mod
+
+        run_mod._last_mission_timed_out = False
+        run_mod._last_mission_aborted = True
+
+        claude_exit = 1
+        should_check = (
+            claude_exit != 0
+            and not run_mod._last_mission_timed_out
+            and not run_mod._last_mission_aborted
+        )
+        assert should_check is False
+
+    def test_json_override_allowed_on_normal_failure(self):
+        """Normal (non-timeout, non-abort) failures still allow JSON override."""
+        import app.run as run_mod
+
+        run_mod._last_mission_timed_out = False
+        run_mod._last_mission_aborted = False
+
+        claude_exit = 1
+        should_check = (
+            claude_exit != 0
+            and not run_mod._last_mission_timed_out
+            and not run_mod._last_mission_aborted
+        )
+        assert should_check is True
+
 
 class TestProcWaitPolling:
     """Verify that proc.wait uses periodic timeout instead of blocking forever."""
@@ -1165,7 +1292,7 @@ class TestPostMissionDeadline:
 
     def test_deadline_skips_slow_steps(self, tmp_path, monkeypatch):
         """Steps are skipped when the pipeline deadline expires."""
-        from app.mission_runner import run_post_mission, POST_MISSION_TIMEOUT
+        from app.mission_runner import run_post_mission
 
         # Create required files
         stdout_f = str(tmp_path / "stdout.txt")
@@ -1182,7 +1309,7 @@ class TestPostMissionDeadline:
             return None
 
         monkeypatch.setattr(
-            "app.mission_runner.POST_MISSION_TIMEOUT", 0.2
+            "app.mission_runner._resolve_post_mission_timeout", lambda: 0.2
         )
         monkeypatch.setattr(
             "app.mission_runner._run_mission_verification", slow_verification
@@ -1251,7 +1378,7 @@ class TestPostMissionDeadline:
 
         outcome_recorded = []
 
-        monkeypatch.setattr("app.mission_runner.POST_MISSION_TIMEOUT", 0.01)
+        monkeypatch.setattr("app.mission_runner._resolve_post_mission_timeout", lambda: 0.01)
         monkeypatch.setattr(
             "app.mission_runner.update_usage", lambda *a: True,
         )
@@ -1459,7 +1586,7 @@ class TestMainLoop:
         # Create restart file AFTER startup (via side_effect) so startup
         # cleanup doesn't remove it before the loop's restart check runs.
         def startup_creates_restart(*args, **kwargs):
-            restart_file = koan_root / ".koan-restart"
+            restart_file = koan_root / ".koan-restart-run"
             restart_file.write_text("restart")
             future = time.time() + 3600
             os.utime(str(restart_file), (future, future))
@@ -1477,16 +1604,16 @@ class TestMainLoop:
     @patch("app.run.acquire_pidfile")
     @patch("app.run.release_pidfile")
     def test_restart_file_cleared_before_exit(self, mock_release, mock_acquire, mock_startup, mock_subproc, koan_root):
-        """Regression: run.py must clear .koan-restart before sys.exit(RESTART_EXIT_CODE)
-        to prevent the restarted process from seeing a stale file and
-        entering a restart loop."""
+        """Regression: run.py must clear its per-process restart marker before
+        sys.exit(RESTART_EXIT_CODE) to prevent the restarted process from
+        seeing a stale file and entering a restart loop."""
         from app.run import main_loop
         from app.restart_manager import RESTART_EXIT_CODE
 
         os.environ["KOAN_ROOT"] = str(koan_root)
         os.environ["KOAN_PROJECTS"] = f"test:{koan_root}"
 
-        restart_file = koan_root / ".koan-restart"
+        restart_file = koan_root / ".koan-restart-run"
 
         def startup_creates_restart(*args, **kwargs):
             restart_file.write_text("restart")
@@ -1500,9 +1627,9 @@ class TestMainLoop:
             with patch("app.run._notify"):
                 main_loop()
         assert exc.value.code == RESTART_EXIT_CODE
-        # The restart file must be deleted BEFORE exit
+        # The runner's per-process marker must be deleted BEFORE exit
         assert not restart_file.exists(), \
-            ".koan-restart was not cleared before exit — restart loop risk"
+            ".koan-restart-run was not cleared before exit — restart loop risk"
 
     @patch("app.run.subprocess.run")
     @patch("app.run.run_startup", return_value=(5, 10, "koan/"))
@@ -1521,8 +1648,8 @@ class TestMainLoop:
         os.environ["KOAN_PROJECTS"] = f"test:{koan_root}"
         (koan_root / ".koan-project").write_text("test")
 
-        # Simulate stale .koan-restart from a previous session
-        (koan_root / ".koan-restart").write_text("stale restart")
+        # Simulate stale .koan-restart-run from a previous session
+        (koan_root / ".koan-restart-run").write_text("stale restart")
 
         # Startup creates a stop file so the loop exits cleanly
         def startup_then_stop(*args, **kwargs):
@@ -1536,8 +1663,137 @@ class TestMainLoop:
 
         # Startup ran (stale restart didn't cause immediate exit)
         mock_startup.assert_called_once()
-        # The restart file was cleared
-        assert not (koan_root / ".koan-restart").exists()
+        # The runner's per-process marker was cleared
+        assert not (koan_root / ".koan-restart-run").exists()
+
+    @patch("app.run.subprocess.run")
+    @patch("app.run.run_startup", return_value=(5, 10, "koan/"))
+    @patch("app.run.acquire_pidfile")
+    @patch("app.run.release_pidfile")
+    def test_update_signal_triggers_update_and_restart(self, mock_release, mock_acquire, mock_startup, mock_subproc, koan_root):
+        """Update signal file triggers _handle_update and exits with RESTART_EXIT_CODE."""
+        from app.run import main_loop
+        from app.restart_manager import RESTART_EXIT_CODE
+
+        os.environ["KOAN_ROOT"] = str(koan_root)
+        os.environ["KOAN_PROJECTS"] = f"test:{koan_root}"
+        (koan_root / ".koan-project").write_text("test")
+
+        def startup_creates_cycle(*args, **kwargs):
+            (koan_root / ".koan-cycle").write_text("CYCLE")
+            return (5, 10, "koan/")
+
+        mock_startup.side_effect = startup_creates_cycle
+
+        with pytest.raises(SystemExit) as exc:
+            with patch("app.run._notify"):
+                with patch("app.run._handle_update") as mock_update:
+                    main_loop()
+        assert exc.value.code == RESTART_EXIT_CODE
+        mock_update.assert_called_once()
+        # Signal file should be cleaned up
+        assert not (koan_root / ".koan-cycle").exists()
+
+    @patch("app.run.subprocess.run")
+    @patch("app.run.run_startup", return_value=(5, 10, "koan/"))
+    @patch("app.run.acquire_pidfile")
+    @patch("app.run.release_pidfile")
+    def test_stale_update_signal_cleared_on_startup(self, mock_release, mock_acquire, mock_startup, mock_subproc, koan_root):
+        """Stale .koan-cycle from a previous session is cleared on startup."""
+        from app.run import main_loop
+
+        os.environ["KOAN_ROOT"] = str(koan_root)
+        os.environ["KOAN_PROJECTS"] = f"test:{koan_root}"
+        (koan_root / ".koan-project").write_text("test")
+
+        # Create stale cycle file
+        (koan_root / ".koan-cycle").write_text("CYCLE")
+
+        def startup_then_stop(*args, **kwargs):
+            (koan_root / ".koan-stop").touch()
+            return (5, 10, "koan/")
+
+        mock_startup.side_effect = startup_then_stop
+
+        with patch("app.run._notify"):
+            main_loop()
+
+        # Stale cycle file was cleared on startup (didn't trigger cycle)
+        assert not (koan_root / ".koan-cycle").exists()
+
+
+# ---------------------------------------------------------------------------
+# Test: _handle_update
+# ---------------------------------------------------------------------------
+
+class TestHandleUpdate:
+    def test_update_with_new_commits(self, tmp_path):
+        """_handle_update pulls updates and requests restart."""
+        from app.run import _handle_update
+        from app.update_manager import UpdateResult
+
+        instance = str(tmp_path / "instance")
+        os.makedirs(instance, exist_ok=True)
+
+        result = UpdateResult(
+            success=True, old_commit="abc1234", new_commit="def5678",
+            commits_pulled=3,
+        )
+
+        with patch("app.update_manager.pull_upstream", return_value=result) as mock_pull, \
+             patch("app.restart_manager.request_restart") as mock_restart, \
+             patch("app.pause_manager.remove_pause") as mock_unpause, \
+             patch("app.run._notify") as mock_notify:
+            _handle_update(str(tmp_path), instance, 10)
+
+        mock_pull.assert_called_once()
+        mock_restart.assert_called_once_with(str(tmp_path))
+        mock_unpause.assert_called_once_with(str(tmp_path))
+        assert "3 new commits" in mock_notify.call_args[0][1]
+
+    def test_update_already_up_to_date(self, tmp_path):
+        """_handle_update still restarts even when no updates found."""
+        from app.run import _handle_update
+        from app.update_manager import UpdateResult
+
+        instance = str(tmp_path / "instance")
+        os.makedirs(instance, exist_ok=True)
+
+        result = UpdateResult(
+            success=True, old_commit="abc1234", new_commit="abc1234",
+            commits_pulled=0,
+        )
+
+        with patch("app.update_manager.pull_upstream", return_value=result), \
+             patch("app.restart_manager.request_restart") as mock_restart, \
+             patch("app.pause_manager.remove_pause"), \
+             patch("app.run._notify") as mock_notify:
+            _handle_update(str(tmp_path), instance, 5)
+
+        mock_restart.assert_called_once()
+        assert "up to date" in mock_notify.call_args[0][1]
+
+    def test_update_fails_still_restarts(self, tmp_path):
+        """_handle_update restarts even when update fails."""
+        from app.run import _handle_update
+        from app.update_manager import UpdateResult
+
+        instance = str(tmp_path / "instance")
+        os.makedirs(instance, exist_ok=True)
+
+        result = UpdateResult(
+            success=False, old_commit="abc1234", new_commit="abc1234",
+            commits_pulled=0, error="No git remote found",
+        )
+
+        with patch("app.update_manager.pull_upstream", return_value=result), \
+             patch("app.restart_manager.request_restart") as mock_restart, \
+             patch("app.pause_manager.remove_pause"), \
+             patch("app.run._notify") as mock_notify:
+            _handle_update(str(tmp_path), instance, 3)
+
+        mock_restart.assert_called_once()
+        assert "failed" in mock_notify.call_args[0][1]
 
 
 # ---------------------------------------------------------------------------
@@ -1642,8 +1898,11 @@ class TestIdleWaitConfig:
             count=0, max_runs=10, interval=60, git_sync_interval=5,
         )
 
-        # Verify sleep was called with the interval
-        mock_sleep.assert_called_once_with(60, str(tmp_path), instance)
+        # Verify sleep was called with the interval and wakes on missions
+        # (default behaviour for non-branch-saturated waits).
+        mock_sleep.assert_called_once_with(
+            60, str(tmp_path), instance, wake_on_mission=True,
+        )
         # Verify status was set with focus info
         status_calls = [c for c in mock_status.call_args_list if "Focus mode" in str(c)]
         assert len(status_calls) >= 1
@@ -1717,6 +1976,56 @@ class TestIdleWaitConfig:
         status_calls = [c for c in mock_status.call_args_list if "PR limit" in str(c)]
         assert len(status_calls) >= 1
 
+    @patch("app.run.run_claude_task")
+    @patch("app.run.interruptible_sleep", return_value=None)
+    @patch("app.run.set_status")
+    @patch("app.run.log")
+    @patch("app.run.plan_iteration")
+    def test_branch_saturated_wait_action(
+        self, mock_plan, mock_log, mock_status, mock_sleep, mock_cli, tmp_path,
+    ):
+        """branch_saturated_wait must sleep without waking on pending missions,
+        not launch the CLI, and return non-idle so auto-pause is not tripped.
+
+        Regressions covered:
+          - Action fell through _IDLE_WAIT_CONFIG → autonomous CLI ran anyway.
+          - interruptible_sleep woke immediately on pending missions (the very
+            missions that caused the saturation), producing a 1-iter/sec tight
+            loop that burned through MAX_CONSECUTIVE_IDLE in seconds and
+            triggered bogus "Idle for 150 min — auto-pausing".
+        """
+        from app.run import _run_iteration
+        mock_plan.return_value = self._make_plan(
+            "branch_saturated_wait",
+            decision_reason="Project 'koan' at branch limit (36/10) — mission stays Pending",
+        )
+        instance = str(tmp_path / "instance")
+        os.makedirs(instance, exist_ok=True)
+        (tmp_path / ".koan-project").write_text("koan")
+
+        result = _run_iteration(
+            koan_root=str(tmp_path),
+            instance=instance,
+            projects=[("koan", "/tmp/koan")],
+            count=0, max_runs=10, interval=60, git_sync_interval=5,
+        )
+
+        # Slept once with wake_on_mission=False so the pending (blocked)
+        # missions don't short-circuit the wait into a tight loop.
+        mock_sleep.assert_called_once_with(
+            60, str(tmp_path), instance, wake_on_mission=False,
+        )
+        # Status contains "Branch-saturated", not "DEEP"
+        status_calls = [c for c in mock_status.call_args_list if "Branch-saturated" in str(c)]
+        assert len(status_calls) >= 1
+        assert not any("DEEP" in str(c) for c in mock_status.call_args_list)
+        # CLI must NOT be launched
+        mock_cli.assert_not_called()
+        # Must not count as "idle" — branch saturation is blocked-on-human,
+        # not truly idle. Returning "idle" would accumulate consecutive_idle
+        # and trigger the 150-min auto-pause path.
+        assert result != "idle"
+
     @patch("app.run.interruptible_sleep", return_value="mission")
     @patch("app.run.set_status")
     @patch("app.run.log")
@@ -1778,9 +2087,36 @@ class TestComputeQuotaResetTs:
     ):
         """When usage_estimator works, uses its output."""
         from app.run import _compute_quota_reset_ts
+        from app.pause_manager import QUOTA_RESET_BUFFER_SECONDS
+
         reset_ts, reset_display = _compute_quota_reset_ts("/tmp/test-instance")
-        assert reset_ts == 9999999999
+        assert reset_ts == 9999999999 + QUOTA_RESET_BUFFER_SECONDS
         assert "4h30m" in reset_display
+
+    @patch("app.usage_estimator.cmd_reset_time", return_value=9999999999)
+    @patch("app.usage_estimator._load_state", return_value={"session_start": ""})
+    @patch("app.usage_estimator._estimate_reset_time", return_value="?")
+    @patch("app.run.log")
+    def test_compute_quota_reset_ts_delegates_buffer_to_quota_handler(
+        self, mock_log, mock_estimate, mock_state, mock_reset
+    ):
+        """Buffer math must come from quota_handler.compute_resume_info.
+
+        Regression guard for Phase 7: the buffer policy used to be duplicated
+        as a literal ``reset_ts += QUOTA_RESET_BUFFER_SECONDS``. Centralizing
+        it on compute_resume_info means the test stops working if a future
+        change re-adds the inline arithmetic.
+        """
+        from unittest.mock import patch as _patch
+        from app.run import _compute_quota_reset_ts
+
+        with _patch("app.quota_handler.compute_resume_info",
+                    return_value=(1234, "msg")) as mock_resume:
+            reset_ts, _ = _compute_quota_reset_ts("/tmp/x")
+
+        mock_resume.assert_called_once()
+        # Whatever compute_resume_info returns is exactly what we propagate.
+        assert reset_ts == 1234
 
 
 # ---------------------------------------------------------------------------
@@ -2289,11 +2625,13 @@ class TestMainCrashRecovery:
     @patch("app.run.main_loop")
     @patch("app.run.time.sleep")
     def test_gives_up_after_max_crashes(self, mock_sleep, mock_loop):
-        """main() stops retrying after MAX_MAIN_CRASHES consecutive crashes."""
+        """main() exits with code 1 after MAX_MAIN_CRASHES consecutive crashes."""
         from app.run import main, MAX_MAIN_CRASHES
 
         mock_loop.side_effect = RuntimeError("always crashing")
-        main()
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 1
         assert mock_loop.call_count == MAX_MAIN_CRASHES
 
     @patch("app.run.main_loop")
@@ -2379,9 +2717,13 @@ class TestRunIterationErrorAction:
 
         # Mission moved to Failed
         mock_update.assert_called_once_with(instance, "do stuff", failed=True)
-        # User notified
-        mock_notify.assert_called_once()
-        assert "Unknown project: foo" in mock_notify.call_args[0][1]
+        # User notified about the error (filter out first-iteration startup
+        # notifications which can also fire when count=0).
+        error_msgs = [
+            c for c in mock_notify.call_args_list
+            if "Unknown project: foo" in c.args[1]
+        ]
+        assert len(error_msgs) == 1
         # Instance committed
         mock_commit.assert_called_once_with(instance)
 
@@ -2425,9 +2767,13 @@ class TestRunIterationErrorAction:
         mock_update.assert_not_called()
         # No instance commit
         mock_commit.assert_not_called()
-        # Notification sent
-        mock_notify.assert_called_once()
-        assert "Iteration error" in mock_notify.call_args[0][1]
+        # Iteration-error notification sent (filter out first-iteration
+        # startup notifications which can also fire when count=0).
+        error_msgs = [
+            c for c in mock_notify.call_args_list
+            if "Iteration error" in c.args[1]
+        ]
+        assert len(error_msgs) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -2437,11 +2783,12 @@ class TestRunIterationErrorAction:
 class TestRunIterationGitHubPreCheck:
     """_run_iteration checks GitHub notifications before planning."""
 
+    @patch("app.github_config.get_github_commands_enabled", return_value=True)
     @patch("app.run.plan_iteration")
     @patch("app.run._notify")
     @patch("app.loop_manager.process_github_notifications")
     def test_github_notifications_checked_before_planning(
-        self, mock_gh_notif, mock_notify, mock_plan, koan_root
+        self, mock_gh_notif, mock_notify, mock_plan, mock_gh_enabled, koan_root
     ):
         """process_github_notifications is called before plan_iteration."""
         from app.run import _run_iteration
@@ -2475,7 +2822,7 @@ class TestRunIterationGitHubPreCheck:
                 git_sync_interval=5,
             )
 
-        mock_gh_notif.assert_called_once_with(str(koan_root), instance)
+        mock_gh_notif.assert_called_once_with(str(koan_root), instance, force=False)
 
     @patch("app.run.plan_iteration")
     @patch("app.run._notify")
@@ -2516,16 +2863,346 @@ class TestRunIterationGitHubPreCheck:
             )
 
 
+class TestRunIterationFirstIterationNotifications:
+    """Per-phase Telegram visibility for the first iteration after startup
+    or /resume. count==0 fires GH/Jira/picking notifications; count>=1 stays
+    quiet to avoid steady-state spam.
+    """
+
+    @staticmethod
+    def _stop_plan(koan_root):
+        return {
+            "action": "error",
+            "error": "test-stop",
+            "project_name": "test",
+            "project_path": str(koan_root),
+            "mission_title": "",
+            "autonomous_mode": "implement",
+            "focus_area": "",
+            "available_pct": 50,
+            "decision_reason": "Default",
+            "display_lines": [],
+            "recurring_injected": [],
+        }
+
+    @pytest.fixture(autouse=True)
+    def _reset_startup_flag(self):
+        import app.run as run_mod
+        run_mod._startup_notified = False
+        run_mod._boot_notified = False
+        yield
+        run_mod._startup_notified = False
+        run_mod._boot_notified = False
+
+    @patch("app.jira_config.get_jira_enabled", return_value=True)
+    @patch("app.github_config.get_github_commands_enabled", return_value=True)
+    @patch("app.run.plan_iteration")
+    @patch("app.run._notify_raw")
+    @patch("app.run._notify")
+    @patch("app.loop_manager.process_jira_notifications", return_value=0)
+    @patch("app.loop_manager.process_github_notifications", return_value=0)
+    def test_first_iteration_emits_phase_notifications(
+        self, mock_gh, mock_jira, mock_notify, mock_notify_raw, mock_plan, mock_gh_enabled, mock_jira_enabled, koan_root,
+    ):
+        """count=0: scanning-GH, scanning-Jira, picking-mission Telegrams all
+        fire via _notify_raw (verbatim, no Claude-CLI rewrite).
+        """
+        from app.run import _run_iteration
+        mock_plan.return_value = self._stop_plan(koan_root)
+        instance = str(koan_root / "instance")
+
+        with patch("app.utils.get_known_projects", return_value=[("test", str(koan_root))]):
+            _run_iteration(
+                koan_root=str(koan_root), instance=instance,
+                projects=[("test", str(koan_root))],
+                count=0, max_runs=5, interval=10, git_sync_interval=5,
+            )
+
+        messages = [c.args[1] for c in mock_notify_raw.call_args_list]
+        joined = " | ".join(messages)
+        assert "Scanning GitHub notifications" in joined
+        assert "Scanning Jira" in joined
+        assert "Picking first mission" in joined
+
+    @patch("app.run.plan_iteration")
+    @patch("app.run._notify_raw")
+    @patch("app.run._notify")
+    @patch("app.loop_manager.process_jira_notifications", return_value=0)
+    @patch("app.loop_manager.process_github_notifications", return_value=0)
+    def test_subsequent_iteration_stays_quiet(
+        self, mock_gh, mock_jira, mock_notify, mock_notify_raw, mock_plan, koan_root,
+    ):
+        """After the first iteration, the startup trio must not re-fire —
+        even when count stays 0 (non-productive idle/passive wake loop,
+        regression test for #1193).
+        """
+        from app.run import _run_iteration
+        mock_plan.return_value = self._stop_plan(koan_root)
+        instance = str(koan_root / "instance")
+
+        with patch("app.utils.get_known_projects", return_value=[("test", str(koan_root))]):
+            _run_iteration(
+                koan_root=str(koan_root), instance=instance,
+                projects=[("test", str(koan_root))],
+                count=0, max_runs=5, interval=10, git_sync_interval=5,
+            )
+            mock_notify_raw.reset_mock()
+            # Simulate a non-productive wake-up: count still 0 because the
+            # previous iteration was idle/passive, not a productive mission.
+            _run_iteration(
+                koan_root=str(koan_root), instance=instance,
+                projects=[("test", str(koan_root))],
+                count=0, max_runs=5, interval=10, git_sync_interval=5,
+            )
+
+        messages = [c.args[1] for c in mock_notify_raw.call_args_list]
+        joined = " | ".join(messages)
+        assert "Scanning GitHub" not in joined
+        assert "Scanning Jira" not in joined
+        assert "Picking first mission" not in joined
+
+    @patch("app.jira_config.get_jira_enabled", return_value=False)
+    @patch("app.github_config.get_github_commands_enabled", return_value=True)
+    @patch("app.run.plan_iteration")
+    @patch("app.run._notify_raw")
+    @patch("app.run._notify")
+    @patch("app.loop_manager.process_github_notifications", return_value=0)
+    def test_first_iteration_skips_jira_when_disabled(
+        self, mock_gh, mock_notify, mock_notify_raw, mock_plan, mock_gh_enabled, mock_jira_enabled, koan_root,
+    ):
+        """When Jira is not configured, no Jira-related messages appear."""
+        from app.run import _run_iteration
+        mock_plan.return_value = self._stop_plan(koan_root)
+        instance = str(koan_root / "instance")
+
+        with patch("app.utils.get_known_projects", return_value=[("test", str(koan_root))]):
+            _run_iteration(
+                koan_root=str(koan_root), instance=instance,
+                projects=[("test", str(koan_root))],
+                count=0, max_runs=5, interval=10, git_sync_interval=5,
+            )
+
+        messages = [c.args[1] for c in mock_notify_raw.call_args_list]
+        joined = " | ".join(messages)
+        assert "Jira" not in joined
+        assert "Scanning GitHub notifications" in joined
+        assert "Notifications clear" in joined
+
+    @patch("app.jira_config.get_jira_enabled", return_value=True)
+    @patch("app.github_config.get_github_commands_enabled", return_value=True)
+    @patch("app.run.plan_iteration")
+    @patch("app.run._notify_raw")
+    @patch("app.run._notify")
+    @patch("app.loop_manager.process_jira_notifications", return_value=2)
+    @patch("app.loop_manager.process_github_notifications", return_value=3)
+    def test_first_iteration_reports_mission_counts(
+        self, mock_gh, mock_jira, mock_notify, mock_notify_raw, mock_plan, mock_gh_enabled, mock_jira_enabled, koan_root,
+    ):
+        """When notifications create missions, the count surfaces in the
+        startup messages so the human knows new work was queued.
+        """
+        from app.run import _run_iteration
+        mock_plan.return_value = self._stop_plan(koan_root)
+        instance = str(koan_root / "instance")
+
+        with patch("app.utils.get_known_projects", return_value=[("test", str(koan_root))]):
+            _run_iteration(
+                koan_root=str(koan_root), instance=instance,
+                projects=[("test", str(koan_root))],
+                count=0, max_runs=5, interval=10, git_sync_interval=5,
+            )
+
+        messages = [c.args[1] for c in mock_notify_raw.call_args_list]
+        joined = " | ".join(messages)
+        assert "GitHub: 3 new mission" in joined
+        assert "Jira: 2 new mission" in joined
+
+    @patch("app.jira_config.get_jira_enabled", return_value=True)
+    @patch("app.github_config.get_github_commands_enabled", return_value=True)
+    @patch("app.run.plan_iteration")
+    @patch("app.run._notify_raw")
+    @patch("app.run._notify")
+    @patch("app.loop_manager.process_jira_notifications", return_value=0)
+    @patch("app.loop_manager.process_github_notifications", return_value=0)
+    def test_resume_without_missions_suppresses_empty_state_pings(
+        self, mock_gh, mock_jira, mock_notify, mock_notify_raw, mock_plan, mock_gh_enabled, mock_jira_enabled, koan_root,
+    ):
+        """After resume (simulated by resetting _startup_notified only), the
+        empty-state "scanned, no new missions" and "Notifications clear" pings
+        MUST be silenced. The "🔍 Scanning GitHub" progress ping still fires
+        so the human knows the cold-start scan is happening.
+        """
+        from app.run import _run_iteration
+        import app.run as run_mod
+        mock_plan.return_value = self._stop_plan(koan_root)
+        instance = str(koan_root / "instance")
+
+        with patch("app.utils.get_known_projects", return_value=[("test", str(koan_root))]):
+            # Boot iteration: all 3 messages expected
+            _run_iteration(
+                koan_root=str(koan_root), instance=instance,
+                projects=[("test", str(koan_root))],
+                count=0, max_runs=5, interval=10, git_sync_interval=5,
+            )
+            # Simulate /resume: only _startup_notified is reset, not _boot_notified
+            run_mod._startup_notified = False
+            mock_notify_raw.reset_mock()
+            _run_iteration(
+                koan_root=str(koan_root), instance=instance,
+                projects=[("test", str(koan_root))],
+                count=0, max_runs=5, interval=10, git_sync_interval=5,
+            )
+
+        messages = [c.args[1] for c in mock_notify_raw.call_args_list]
+        joined = " | ".join(messages)
+        # The cold-start progress ping stays — still useful on resume.
+        assert "Scanning GitHub notifications" in joined
+        # But the empty-state variants must NOT reappear on resume.
+        assert "scanned, no new missions" not in joined
+        assert "Notifications clear" not in joined
+
+    @patch("app.jira_config.get_jira_enabled", return_value=True)
+    @patch("app.github_config.get_github_commands_enabled", return_value=True)
+    @patch("app.run.plan_iteration")
+    @patch("app.run._notify_raw")
+    @patch("app.run._notify")
+    @patch("app.loop_manager.process_jira_notifications", return_value=1)
+    @patch("app.loop_manager.process_github_notifications", return_value=2)
+    def test_resume_with_missions_still_reports_counts(
+        self, mock_gh, mock_jira, mock_notify, mock_notify_raw, mock_plan, mock_gh_enabled, mock_jira_enabled, koan_root,
+    ):
+        """When resume brings new missions, count-bearing pings must still
+        fire — those carry real signal, unlike the empty-state variants.
+        """
+        from app.run import _run_iteration
+        import app.run as run_mod
+        mock_plan.return_value = self._stop_plan(koan_root)
+        instance = str(koan_root / "instance")
+
+        # Start in "already booted" state to simulate resume
+        run_mod._boot_notified = True
+        run_mod._startup_notified = False
+
+        with patch("app.utils.get_known_projects", return_value=[("test", str(koan_root))]):
+            _run_iteration(
+                koan_root=str(koan_root), instance=instance,
+                projects=[("test", str(koan_root))],
+                count=0, max_runs=5, interval=10, git_sync_interval=5,
+            )
+
+        messages = [c.args[1] for c in mock_notify_raw.call_args_list]
+        joined = " | ".join(messages)
+        assert "GitHub: 2 new mission" in joined
+        assert "Jira: 1 new mission" in joined
+
+    @patch("app.jira_config.get_jira_enabled", return_value=True)
+    @patch("app.github_config.get_github_commands_enabled", return_value=True)
+    @patch("app.run.plan_iteration")
+    @patch("app.notify.send_telegram")
+    @patch("app.run._notify")
+    @patch("app.loop_manager.process_jira_notifications", return_value=0)
+    @patch("app.loop_manager.process_github_notifications", return_value=0)
+    def test_first_iteration_status_messages_bypass_formatter(
+        self, mock_gh, mock_jira, mock_notify, mock_send, mock_plan, mock_gh_enabled, mock_jira_enabled, koan_root,
+    ):
+        """Startup-status notifications must NOT route through _notify (and
+        therefore NOT trigger the Claude-CLI formatter). They must reach
+        send_telegram directly via _notify_raw, with verbatim text + emoji.
+        """
+        from app.run import _run_iteration
+        mock_plan.return_value = self._stop_plan(koan_root)
+        instance = str(koan_root / "instance")
+
+        with patch("app.utils.get_known_projects", return_value=[("test", str(koan_root))]):
+            _run_iteration(
+                koan_root=str(koan_root), instance=instance,
+                projects=[("test", str(koan_root))],
+                count=0, max_runs=5, interval=10, git_sync_interval=5,
+            )
+
+        # _notify (formatter path) must not have received the status pings.
+        notify_msgs = " | ".join(c.args[1] for c in mock_notify.call_args_list)
+        assert "Scanning GitHub notifications" not in notify_msgs
+        assert "Scanning Jira" not in notify_msgs
+        assert "Picking first mission" not in notify_msgs
+
+        # send_telegram (raw path) received them verbatim, including emojis.
+        send_msgs = " | ".join(c.args[0] for c in mock_send.call_args_list)
+        assert "🔍 Scanning GitHub notifications" in send_msgs
+        assert "📋 GitHub: scanned, no new missions. Scanning Jira" in send_msgs
+        assert "🎯 Notifications clear" in send_msgs
+
+    @patch("app.jira_config.get_jira_enabled", return_value=True)
+    @patch("app.github_config.get_github_commands_enabled", return_value=False)
+    @patch("app.run.plan_iteration")
+    @patch("app.run._notify_raw")
+    @patch("app.run._notify")
+    @patch("app.loop_manager.process_jira_notifications", return_value=0)
+    def test_github_disabled_omits_github_from_all_notifications(
+        self, mock_jira, mock_notify, mock_notify_raw, mock_plan, mock_gh_enabled, mock_jira_enabled, koan_root,
+    ):
+        """When GitHub is disabled, no GitHub-referencing messages must appear
+        in any Telegram notification (scanning, intermediate, or final).
+        The Jira-only intermediate message 'Scanning Jira notifications' fires instead.
+        """
+        from app.run import _run_iteration
+        mock_plan.return_value = self._stop_plan(koan_root)
+        instance = str(koan_root / "instance")
+
+        with patch("app.utils.get_known_projects", return_value=[("test", str(koan_root))]):
+            _run_iteration(
+                koan_root=str(koan_root), instance=instance,
+                projects=[("test", str(koan_root))],
+                count=0, max_runs=5, interval=10, git_sync_interval=5,
+            )
+
+        messages = [c.args[1] for c in mock_notify_raw.call_args_list]
+        joined = " | ".join(messages)
+        # No GitHub reference in any notification
+        assert "GitHub" not in joined
+        # Jira-only intermediate message fires instead
+        assert "Scanning Jira notifications" in joined
+
+
+class TestNotifyRaw:
+    """_notify_raw bypasses the Claude-CLI formatter and sends straight to
+    Telegram. Used for terse status pings where verbatim text matters.
+    """
+
+    @patch("app.notify.send_telegram")
+    def test_calls_send_telegram_directly(self, mock_send):
+        from app.run import _notify_raw
+        _notify_raw("/tmp/instance", "🔍 verbatim test")
+        mock_send.assert_called_once_with("🔍 verbatim test")
+
+    @patch("app.run.log")
+    @patch("app.notify.send_telegram", side_effect=RuntimeError("boom"))
+    def test_swallows_send_errors(self, mock_send, mock_log):
+        """Telegram failures must not crash the run loop; same contract as _notify."""
+        from app.run import _notify_raw
+        _notify_raw("/tmp/instance", "test")
+        # Error logged, no exception propagated.
+        assert any("Raw notification failed" in str(c)
+                   for c in mock_log.call_args_list)
+
+
 class TestRunIterationProjectRefresh:
     """_run_iteration refreshes projects list each iteration."""
 
     @patch("app.run.plan_iteration")
     @patch("app.run._notify")
     def test_refreshed_projects_passed_to_plan(self, mock_notify, mock_plan, koan_root):
-        """When get_known_projects returns updated list, plan_iteration sees it."""
+        """When get_known_projects returns updated list, plan_iteration sees it.
+
+        Projects with missing directories are filtered out during refresh.
+        """
         from app.run import _run_iteration
 
-        refreshed_projects = [("test", str(koan_root)), ("new-proj", "/tmp/new")]
+        # Create a second real directory for the new project
+        new_proj_dir = koan_root / "new-proj-dir"
+        new_proj_dir.mkdir()
+
+        refreshed_projects = [("test", str(koan_root)), ("new-proj", str(new_proj_dir))]
 
         mock_plan.return_value = {
             "action": "error",
@@ -2559,6 +3236,46 @@ class TestRunIterationProjectRefresh:
         # plan_iteration should have received the refreshed list
         call_kwargs = mock_plan.call_args[1]
         assert call_kwargs["projects"] == refreshed_projects
+
+    @patch("app.run.plan_iteration")
+    @patch("app.run._notify")
+    def test_missing_project_dirs_filtered_on_refresh(self, mock_notify, mock_plan, koan_root):
+        """Projects with non-existent directories are filtered out during refresh."""
+        from app.run import _run_iteration
+
+        refreshed_projects = [("test", str(koan_root)), ("missing", "/tmp/nonexistent-xyz")]
+
+        mock_plan.return_value = {
+            "action": "error",
+            "error": "test-stop",
+            "project_name": "test",
+            "project_path": str(koan_root),
+            "mission_title": "",
+            "autonomous_mode": "implement",
+            "focus_area": "",
+            "available_pct": 50,
+            "decision_reason": "Default",
+            "display_lines": [],
+            "recurring_injected": [],
+        }
+
+        instance = str(koan_root / "instance")
+
+        with patch("app.utils.get_known_projects", return_value=refreshed_projects), \
+             patch("app.loop_manager.process_github_notifications", return_value=0):
+            _run_iteration(
+                koan_root=str(koan_root),
+                instance=instance,
+                projects=[("test", str(koan_root))],
+                count=0,
+                max_runs=5,
+                interval=10,
+                git_sync_interval=5,
+            )
+
+        # Only the existing project should be passed to plan_iteration
+        call_kwargs = mock_plan.call_args[1]
+        assert call_kwargs["projects"] == [("test", str(koan_root))]
 
     @patch("app.run.plan_iteration")
     @patch("app.run._notify")
@@ -3082,7 +3799,7 @@ class TestRunSkillMissionEnv:
             )
 
         mock_kill.assert_called_once_with(mock_proc)
-        assert result == 1  # exit code should be failure
+        assert result["exit_code"] == 1  # exit code should be failure
 
     def test_restores_branch_even_on_popen_exception(self, tmp_path):
         """Branch is restored even when Popen raises an exception."""
@@ -3364,6 +4081,7 @@ class TestRunSkillMissionEnv:
              patch("app.run._restore_koan_branch"), \
              patch("app.run._reset_terminal"), \
              patch("app.config.get_skill_timeout", return_value=7200), \
+             patch("app.config.get_first_output_timeout", return_value=600), \
              patch("app.run.threading.Timer", return_value=mock_timer) as mock_timer_cls, \
              patch("app.mission_runner.run_post_mission"):
             _run_skill_mission(
@@ -3377,15 +4095,17 @@ class TestRunSkillMissionEnv:
                 autonomous_mode="implement",
             )
 
-        # Watchdog timer should use the configurable timeout (7200s)
-        mock_timer_cls.assert_called_once_with(7200, mock_timer_cls.call_args[0][1])
-        mock_timer.start.assert_called_once()
-        mock_timer.cancel.assert_called_once()
+        # First Timer call is the watchdog (skill_timeout=7200s),
+        # subsequent calls are liveness timer resets (first_output_timeout=600s).
+        all_calls = mock_timer_cls.call_args_list
+        assert all_calls[0][0][0] == 7200, "First timer should be watchdog"
+        for call in all_calls[1:]:
+            assert call[0][0] == 600, "Liveness timers should use first_output_timeout"
         # proc.wait() is now a 30s cleanup wait (real timeout via watchdog)
         mock_proc.wait.assert_called_once_with(timeout=30)
 
-    def test_skill_timeout_default_is_3600(self, tmp_path):
-        """Default skill timeout should be 3600s (60 minutes)."""
+    def test_skill_timeout_default_is_7200(self, tmp_path):
+        """Default skill timeout should be 7200s (2 hours)."""
         from app.run import _run_skill_mission
         koan_root = str(tmp_path)
         instance = str(tmp_path / "instance")
@@ -3413,10 +4133,10 @@ class TestRunSkillMissionEnv:
                 autonomous_mode="implement",
             )
 
-        # Default timeout from get_skill_timeout() is 3600s, enforced by watchdog
-        mock_timer_cls.assert_called_once_with(3600, mock_timer_cls.call_args[0][1])
-        mock_timer.start.assert_called_once()
-        mock_timer.cancel.assert_called_once()
+        # Default timeout from get_skill_timeout() is 7200s, enforced by watchdog.
+        # First Timer call is the watchdog, subsequent are liveness resets.
+        all_calls = mock_timer_cls.call_args_list
+        assert all_calls[0][0][0] == 7200, "First timer should be watchdog (7200s default)"
         # proc.wait() is now a 30s cleanup wait
         mock_proc.wait.assert_called_once_with(timeout=30)
 
@@ -3511,7 +4231,7 @@ class TestRunSkillMissionEnv:
 
             mock_proc.wait.side_effect = wait_side_effect
 
-            exit_code = _run_skill_mission(
+            result = _run_skill_mission(
                 skill_cmd=["python3", "--help"],
                 koan_root=koan_root,
                 instance=instance,
@@ -3525,10 +4245,9 @@ class TestRunSkillMissionEnv:
         # Watchdog should have killed the process group
         mock_killpg.assert_any_call(99999, signal.SIGTERM)
         # Exit code should be 1 (timeout = failure)
-        assert exit_code == 1
-        # Timer was created with the configured timeout
-        mock_timer_cls.assert_called_once()
-        assert mock_timer_cls.call_args[0][0] == 60
+        assert result["exit_code"] == 1
+        # First Timer call is the watchdog with configured timeout
+        assert mock_timer_cls.call_args_list[0][0][0] == 60
 
     def test_watchdog_timer_cancelled_on_normal_completion(self, tmp_path):
         """Timer is properly cancelled when skill completes before timeout."""
@@ -3548,7 +4267,7 @@ class TestRunSkillMissionEnv:
              patch("app.run._reset_terminal"), \
              patch("app.run.threading.Timer", return_value=mock_timer), \
              patch("app.mission_runner.run_post_mission"):
-            exit_code = _run_skill_mission(
+            result = _run_skill_mission(
                 skill_cmd=["python3", "--help"],
                 koan_root=koan_root,
                 instance=instance,
@@ -3559,13 +4278,13 @@ class TestRunSkillMissionEnv:
                 autonomous_mode="implement",
             )
 
-        # Timer must be started and then cancelled
-        mock_timer.start.assert_called_once()
-        mock_timer.cancel.assert_called_once()
+        # Timer must be started and then cancelled (watchdog + liveness timers)
+        assert mock_timer.start.call_count >= 1
+        assert mock_timer.cancel.call_count >= 1
         # Timer must be set as daemon
         assert mock_timer.daemon is True
         # Normal exit
-        assert exit_code == 0
+        assert result["exit_code"] == 0
 
     def test_stdout_closed_on_success(self, tmp_path):
         """proc.stdout is closed in the finally block after normal completion."""
@@ -3750,7 +4469,7 @@ class TestRunSkillMissionEnv:
             )
 
         # Should return failure exit code
-        assert result == 1
+        assert result["exit_code"] == 1
 
     def test_threading_imported_for_watchdog(self):
         """Verify run.py imports threading (needed for watchdog timer)."""
@@ -3813,7 +4532,7 @@ class TestRestartManagerIntegration:
              patch("app.run.check_restart", side_effect=[False, True]) as mock_check:
             result = handle_pause(str(koan_root), instance, 5)
             assert result is None  # breaks out of pause loop
-            mock_check.assert_called_with(str(koan_root))
+            mock_check.assert_called_with(str(koan_root), target="run")
 
     @patch("app.run.subprocess.run")
     @patch("app.run.run_startup", return_value=(5, 10, "koan/"))
@@ -3836,7 +4555,7 @@ class TestRestartManagerIntegration:
         with patch("app.run._notify"), \
              patch("app.run.clear_restart") as mock_clear:
             main_loop()
-            mock_clear.assert_called_once_with(str(koan_root))
+            mock_clear.assert_called_once_with(str(koan_root), target="run")
 
     @patch("app.run.subprocess.run")
     @patch("app.run.run_startup", return_value=(5, 10, "koan/"))
@@ -4012,6 +4731,471 @@ class TestSkillDispatchExceptionFinalization(TestRunSkillMissionEnv):
 
 
 # ---------------------------------------------------------------------------
+# Skill dispatch auth/quota classification (mirrors regular mission path)
+# ---------------------------------------------------------------------------
+
+
+class TestSkillDispatchAuthQuota(TestRunSkillMissionEnv):
+    """Verify skill dispatch handles auth/quota errors like regular missions."""
+
+    def test_quota_error_requeues_and_pauses(self, tmp_path):
+        """Quota error during skill should requeue mission and create pause."""
+        from app.run import _handle_skill_dispatch
+
+        koan_root = str(tmp_path)
+        instance = str(tmp_path / "instance")
+        (tmp_path / "instance").mkdir()
+        (tmp_path / "instance" / "journal").mkdir(parents=True)
+        (tmp_path / "koan").mkdir()
+
+        # Skill exits with error and quota pattern in stderr
+        mock_proc = self._make_mock_popen(
+            returncode=1,
+            stdout_lines=[""],
+            stderr_content="Error: You've hit your limit. Resets at 6pm (UTC)\n",
+        )
+
+        with patch("app.run.subprocess.Popen", side_effect=mock_proc._side_effect), \
+             patch("app.run._get_koan_branch", return_value="main"), \
+             patch("app.run._restore_koan_branch"), \
+             patch("app.run._reset_terminal"), \
+             patch("app.run.protected_phase", return_value=MagicMock(
+                 __enter__=MagicMock(), __exit__=MagicMock(return_value=False)
+             )), \
+             patch("app.run._notify") as mock_notify, \
+             patch("app.run._notify_mission_end"), \
+             patch("app.run._finalize_mission") as mock_finalize, \
+             patch("app.run._requeue_mission_in_file") as mock_requeue, \
+             patch("app.run._commit_instance"), \
+             patch("app.run._sleep_between_runs"), \
+             patch("app.run.set_status"), \
+             patch("app.run.log"), \
+             patch("app.skill_dispatch.dispatch_skill_mission",
+                   return_value=["python3", "-m", "app.plan_runner"]), \
+             patch("app.mission_runner.run_post_mission"), \
+             patch("app.run._compute_quota_reset_ts", return_value=(0, "Resets in 5h")), \
+             patch("app.pause_manager.create_pause"):
+            handled, _ = _handle_skill_dispatch(
+                mission_title="/plan test",
+                project_name="test",
+                project_path=str(tmp_path),
+                koan_root=koan_root,
+                instance=instance,
+                run_num=1,
+                max_runs=20,
+                autonomous_mode="implement",
+                interval=30,
+            )
+
+        assert handled is True
+        # Mission should be requeued, not finalized
+        mock_requeue.assert_called_once()
+        mock_finalize.assert_not_called()
+        # Notification should mention quota
+        notify_text = mock_notify.call_args_list[-1][0][1]
+        assert "quota" in notify_text.lower()
+
+    def test_stdout_session_limit_requeues_and_pauses(self, tmp_path):
+        """Claude session-limit text on stdout should classify as quota."""
+        from app.run import _handle_skill_dispatch
+
+        koan_root = str(tmp_path)
+        instance = str(tmp_path / "instance")
+        (tmp_path / "instance").mkdir()
+        (tmp_path / "instance" / "journal").mkdir(parents=True)
+        (tmp_path / "koan").mkdir()
+
+        mock_proc = self._make_mock_popen(
+            returncode=1,
+            stdout_lines=["You've hit your session limit · resets 3am (UTC)\n"],
+            stderr_content="",
+        )
+
+        with patch("app.run.subprocess.Popen", side_effect=mock_proc._side_effect), \
+             patch("app.run._get_koan_branch", return_value="main"), \
+             patch("app.run._restore_koan_branch"), \
+             patch("app.run._reset_terminal"), \
+             patch("app.run.protected_phase", return_value=MagicMock(
+                 __enter__=MagicMock(), __exit__=MagicMock(return_value=False)
+             )), \
+             patch("app.run._notify") as mock_notify, \
+             patch("app.run._notify_mission_end"), \
+             patch("app.run._finalize_mission") as mock_finalize, \
+             patch("app.run._requeue_mission_in_file") as mock_requeue, \
+             patch("app.run._commit_instance"), \
+             patch("app.run._sleep_between_runs"), \
+             patch("app.run.set_status"), \
+             patch("app.run.log"), \
+             patch("app.skill_dispatch.dispatch_skill_mission",
+                   return_value=["python3", "-m", "app.plan_runner"]), \
+             patch("app.mission_runner.run_post_mission"), \
+             patch("app.pause_manager.create_pause") as mock_pause:
+            handled, _ = _handle_skill_dispatch(
+                mission_title="/plan test",
+                project_name="test",
+                project_path=str(tmp_path),
+                koan_root=koan_root,
+                instance=instance,
+                run_num=1,
+                max_runs=20,
+                autonomous_mode="implement",
+                interval=30,
+            )
+
+        assert handled is True
+        mock_requeue.assert_called_once()
+        mock_finalize.assert_not_called()
+        mock_pause.assert_called()
+        notify_text = mock_notify.call_args_list[-1][0][1]
+        assert "quota" in notify_text.lower()
+
+    def test_auth_error_requeues_and_pauses(self, tmp_path):
+        """Auth error during skill should requeue mission and create auth pause."""
+        from app.run import _handle_skill_dispatch
+
+        koan_root = str(tmp_path)
+        instance = str(tmp_path / "instance")
+        (tmp_path / "instance").mkdir()
+        (tmp_path / "instance" / "journal").mkdir(parents=True)
+        (tmp_path / "koan").mkdir()
+
+        mock_proc = self._make_mock_popen(
+            returncode=1,
+            stdout_lines=[""],
+            stderr_content="Error: OAuth token has expired. Please run /login.\n",
+        )
+
+        with patch("app.run.subprocess.Popen", side_effect=mock_proc._side_effect), \
+             patch("app.run._get_koan_branch", return_value="main"), \
+             patch("app.run._restore_koan_branch"), \
+             patch("app.run._reset_terminal"), \
+             patch("app.run.protected_phase", return_value=MagicMock(
+                 __enter__=MagicMock(), __exit__=MagicMock(return_value=False)
+             )), \
+             patch("app.run._notify") as mock_notify, \
+             patch("app.run._notify_mission_end"), \
+             patch("app.run._finalize_mission") as mock_finalize, \
+             patch("app.run._requeue_mission_in_file") as mock_requeue, \
+             patch("app.run._commit_instance"), \
+             patch("app.run._sleep_between_runs"), \
+             patch("app.run.set_status"), \
+             patch("app.run.log"), \
+             patch("app.skill_dispatch.dispatch_skill_mission",
+                   return_value=["python3", "-m", "app.plan_runner"]), \
+             patch("app.mission_runner.run_post_mission"), \
+             patch("app.pause_manager.create_pause") as mock_pause:
+            handled, _ = _handle_skill_dispatch(
+                mission_title="/plan test",
+                project_name="test",
+                project_path=str(tmp_path),
+                koan_root=koan_root,
+                instance=instance,
+                run_num=1,
+                max_runs=20,
+                autonomous_mode="implement",
+                interval=30,
+            )
+
+        assert handled is True
+        mock_requeue.assert_called_once()
+        mock_finalize.assert_not_called()
+        mock_pause.assert_called_once_with(koan_root, "auth")
+
+    def test_post_mission_quota_requeues_and_pauses(self, tmp_path):
+        """Quota detected in post-mission pipeline should requeue.
+
+        When quota_info is present, handle_quota_exhaustion inside
+        run_post_mission already created the pause — the outer layer
+        should NOT overwrite it with a less accurate fallback.
+        """
+        from app.run import _handle_skill_dispatch
+
+        koan_root = str(tmp_path)
+        instance = str(tmp_path / "instance")
+        (tmp_path / "instance").mkdir()
+        (tmp_path / "instance" / "journal").mkdir(parents=True)
+        (tmp_path / "koan").mkdir()
+
+        mock_proc = self._make_mock_popen(returncode=0, stdout_lines=["ok\n"])
+
+        # run_post_mission returns quota_exhausted signal with quota_info
+        # (meaning handle_quota_exhaustion already created the pause)
+        mock_post_result = {
+            "success": True,
+            "quota_exhausted": True,
+            "quota_info": ("Resets at 15:00", "Auto-resume in 5h"),
+        }
+
+        with patch("app.run.subprocess.Popen", side_effect=mock_proc._side_effect), \
+             patch("app.run._get_koan_branch", return_value="main"), \
+             patch("app.run._restore_koan_branch"), \
+             patch("app.run._reset_terminal"), \
+             patch("app.run.protected_phase", return_value=MagicMock(
+                 __enter__=MagicMock(), __exit__=MagicMock(return_value=False)
+             )), \
+             patch("app.run._notify") as mock_notify, \
+             patch("app.run._notify_mission_end"), \
+             patch("app.run._finalize_mission") as mock_finalize, \
+             patch("app.run._requeue_mission_in_file") as mock_requeue, \
+             patch("app.run._commit_instance"), \
+             patch("app.run._compute_quota_reset_ts", return_value=(0, "soon")), \
+             patch("app.run._sleep_between_runs"), \
+             patch("app.run.set_status"), \
+             patch("app.run.log"), \
+             patch("app.skill_dispatch.dispatch_skill_mission",
+                   return_value=["python3", "-m", "app.plan_runner"]), \
+             patch("app.mission_runner.run_post_mission", return_value=mock_post_result), \
+             patch("app.pause_manager.create_pause") as mock_pause:
+            handled, _ = _handle_skill_dispatch(
+                mission_title="/plan test",
+                project_name="test",
+                project_path=str(tmp_path),
+                koan_root=koan_root,
+                instance=instance,
+                run_num=1,
+                max_runs=20,
+                autonomous_mode="implement",
+                interval=30,
+            )
+
+        assert handled is True
+        mock_finalize.assert_not_called()
+        mock_requeue.assert_called_once()
+        # Pause already created by handle_quota_exhaustion inside
+        # run_post_mission — outer layer should not overwrite
+        mock_pause.assert_not_called()
+
+    def test_post_mission_quota_fallback_creates_pause(self, tmp_path):
+        """When quota_info is missing, outer layer creates fallback pause."""
+        from app.run import _handle_skill_dispatch
+
+        koan_root = str(tmp_path)
+        instance = str(tmp_path / "instance")
+        (tmp_path / "instance").mkdir()
+        (tmp_path / "instance" / "journal").mkdir(parents=True)
+        (tmp_path / "koan").mkdir()
+
+        mock_proc = self._make_mock_popen(returncode=0, stdout_lines=["ok\n"])
+
+        # quota_exhausted but no quota_info — handle_quota_exhaustion
+        # returned unreliable or None inside run_post_mission
+        mock_post_result = {
+            "success": True,
+            "quota_exhausted": True,
+            "quota_info": None,
+        }
+
+        with patch("app.run.subprocess.Popen", side_effect=mock_proc._side_effect), \
+             patch("app.run._get_koan_branch", return_value="main"), \
+             patch("app.run._restore_koan_branch"), \
+             patch("app.run._reset_terminal"), \
+             patch("app.run.protected_phase", return_value=MagicMock(
+                 __enter__=MagicMock(), __exit__=MagicMock(return_value=False)
+             )), \
+             patch("app.run._notify"), \
+             patch("app.run._notify_mission_end"), \
+             patch("app.run._finalize_mission"), \
+             patch("app.run._requeue_mission_in_file"), \
+             patch("app.run._commit_instance"), \
+             patch("app.run._compute_quota_reset_ts", return_value=(0, "soon")), \
+             patch("app.run._sleep_between_runs"), \
+             patch("app.run.set_status"), \
+             patch("app.run.log"), \
+             patch("app.skill_dispatch.dispatch_skill_mission",
+                   return_value=["python3", "-m", "app.plan_runner"]), \
+             patch("app.mission_runner.run_post_mission", return_value=mock_post_result), \
+             patch("app.pause_manager.create_pause") as mock_pause:
+            handled, _ = _handle_skill_dispatch(
+                mission_title="/plan test",
+                project_name="test",
+                project_path=str(tmp_path),
+                koan_root=koan_root,
+                instance=instance,
+                run_num=1,
+                max_runs=20,
+                autonomous_mode="implement",
+                interval=30,
+            )
+
+        assert handled is True
+        # No quota_info → fallback pause should be created
+        mock_pause.assert_called_once()
+
+    def test_exit_zero_quota_probe_requeues(self, tmp_path):
+        """Quota patterns on stdout with exit 0 should requeue, not finalize.
+
+        Some provider wrappers emit a quota payload and exit successfully.
+        Without the exit-0 probe, the mission would be marked Done before any
+        pause fires.
+        """
+        from app.run import _handle_skill_dispatch
+
+        koan_root = str(tmp_path)
+        instance = str(tmp_path / "instance")
+        (tmp_path / "instance").mkdir()
+        (tmp_path / "instance" / "journal").mkdir(parents=True)
+        (tmp_path / "koan").mkdir()
+
+        # Skill exits with 0 but stdout shows quota exhaustion
+        mock_proc = self._make_mock_popen(
+            returncode=0,
+            stdout_lines=["You've hit your session limit · resets 4pm (UTC)\n"],
+            stderr_content="",
+        )
+
+        # run_post_mission returns without flagging quota_exhausted (the
+        # subprocess wrapper didn't detect it self-reportedly)
+        mock_post_result = {
+            "success": True,
+            "quota_exhausted": False,
+            "quota_info": None,
+        }
+
+        with patch("app.run.subprocess.Popen", side_effect=mock_proc._side_effect), \
+             patch("app.run._get_koan_branch", return_value="main"), \
+             patch("app.run._restore_koan_branch"), \
+             patch("app.run._reset_terminal"), \
+             patch("app.run.protected_phase", return_value=MagicMock(
+                 __enter__=MagicMock(), __exit__=MagicMock(return_value=False)
+             )), \
+             patch("app.run._notify") as mock_notify, \
+             patch("app.run._notify_mission_end"), \
+             patch("app.run._finalize_mission") as mock_finalize, \
+             patch("app.run._requeue_mission_in_file") as mock_requeue, \
+             patch("app.run._commit_instance"), \
+             patch("app.run._sleep_between_runs"), \
+             patch("app.run.set_status"), \
+             patch("app.run.log"), \
+             patch("app.skill_dispatch.dispatch_skill_mission",
+                   return_value=["python3", "-m", "app.plan_runner"]), \
+             patch("app.mission_runner.run_post_mission", return_value=mock_post_result), \
+             patch("app.pause_manager.create_pause"):
+            handled, _ = _handle_skill_dispatch(
+                mission_title="/plan test",
+                project_name="test",
+                project_path=str(tmp_path),
+                koan_root=koan_root,
+                instance=instance,
+                run_num=1,
+                max_runs=20,
+                autonomous_mode="implement",
+                interval=30,
+            )
+
+        assert handled is True
+        mock_requeue.assert_called_once()
+        mock_finalize.assert_not_called()
+        notify_text = mock_notify.call_args_list[-1][0][1]
+        assert "quota" in notify_text.lower()
+
+    def test_mission_tier_passed_to_post_mission(self, tmp_path):
+        """mission_tier is forwarded from _handle_skill_dispatch to run_post_mission."""
+        from app.run import _handle_skill_dispatch
+
+        koan_root = str(tmp_path)
+        instance = str(tmp_path / "instance")
+        (tmp_path / "instance").mkdir()
+        (tmp_path / "instance" / "journal").mkdir(parents=True)
+        (tmp_path / "koan").mkdir()
+
+        mock_proc = self._make_mock_popen(returncode=0, stdout_lines=["ok\n"])
+
+        with patch("app.run.subprocess.Popen", side_effect=mock_proc._side_effect), \
+             patch("app.run._get_koan_branch", return_value="main"), \
+             patch("app.run._restore_koan_branch"), \
+             patch("app.run._reset_terminal"), \
+             patch("app.run.protected_phase", return_value=MagicMock(
+                 __enter__=MagicMock(), __exit__=MagicMock(return_value=False)
+             )), \
+             patch("app.run._notify"), \
+             patch("app.run._notify_mission_end"), \
+             patch("app.run._finalize_mission"), \
+             patch("app.run._commit_instance"), \
+             patch("app.run._sleep_between_runs"), \
+             patch("app.run.set_status"), \
+             patch("app.run.log"), \
+             patch("app.skill_dispatch.dispatch_skill_mission",
+                   return_value=["python3", "-m", "app.plan_runner"]), \
+             patch("app.mission_runner.run_post_mission") as mock_post:
+            _handle_skill_dispatch(
+                mission_title="/plan test",
+                project_name="test",
+                project_path=str(tmp_path),
+                koan_root=koan_root,
+                instance=instance,
+                run_num=1,
+                max_runs=20,
+                autonomous_mode="implement",
+                interval=30,
+                mission_tier="complex",
+            )
+
+        # run_post_mission should receive mission_tier
+        assert mock_post.call_count == 1
+        call_kwargs = mock_post.call_args[1] if mock_post.call_args[1] else {}
+        # mission_tier can be in kwargs or positional — check kwargs
+        assert call_kwargs.get("mission_tier") == "complex"
+
+    def test_normal_failure_still_finalizes(self, tmp_path):
+        """Non-auth/non-quota failures still go through normal finalization."""
+        from app.run import _handle_skill_dispatch
+
+        koan_root = str(tmp_path)
+        instance = str(tmp_path / "instance")
+        (tmp_path / "instance").mkdir()
+        (tmp_path / "instance" / "journal").mkdir(parents=True)
+        (tmp_path / "koan").mkdir()
+
+        mock_proc = self._make_mock_popen(
+            returncode=1,
+            stdout_lines=["some error\n"],
+        )
+
+        # run_post_mission must return a real dict (not MagicMock)
+        # so .get("quota_exhausted") returns None (falsy), not a MagicMock (truthy)
+        mock_post_result = {
+            "success": False,
+            "quota_exhausted": False,
+            "quota_info": None,
+        }
+
+        with patch("app.run.subprocess.Popen", side_effect=mock_proc._side_effect), \
+             patch("app.run._get_koan_branch", return_value="main"), \
+             patch("app.run._restore_koan_branch"), \
+             patch("app.run._reset_terminal"), \
+             patch("app.run.protected_phase", return_value=MagicMock(
+                 __enter__=MagicMock(), __exit__=MagicMock(return_value=False)
+             )), \
+             patch("app.run._notify"), \
+             patch("app.run._notify_mission_end"), \
+             patch("app.run._finalize_mission") as mock_finalize, \
+             patch("app.run._requeue_mission_in_file") as mock_requeue, \
+             patch("app.run._commit_instance"), \
+             patch("app.run._sleep_between_runs"), \
+             patch("app.run.set_status"), \
+             patch("app.run.log"), \
+             patch("app.skill_dispatch.dispatch_skill_mission",
+                   return_value=["python3", "-m", "app.plan_runner"]), \
+             patch("app.mission_runner.run_post_mission", return_value=mock_post_result):
+            handled, _ = _handle_skill_dispatch(
+                mission_title="/plan test",
+                project_name="test",
+                project_path=str(tmp_path),
+                koan_root=koan_root,
+                instance=instance,
+                run_num=1,
+                max_runs=20,
+                autonomous_mode="implement",
+                interval=30,
+            )
+
+        assert handled is True
+        # Normal failure: finalize called, no requeue
+        mock_finalize.assert_called_once()
+        mock_requeue.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # Bug fix: _run_skill_mission temp file cleanup must use try/finally
 # ---------------------------------------------------------------------------
 
@@ -4117,7 +5301,7 @@ class TestRunSkillMissionCleanup(TestRunSkillMissionEnv):
              patch("app.run._reset_terminal"), \
              patch("app.mission_runner.run_post_mission"), \
              patch("app.run._cleanup_temp") as mock_cleanup:
-            exit_code = _run_skill_mission(
+            result = _run_skill_mission(
                 skill_cmd=["python3", "--help"],
                 koan_root=koan_root,
                 instance=instance,
@@ -4128,7 +5312,7 @@ class TestRunSkillMissionCleanup(TestRunSkillMissionEnv):
                 autonomous_mode="implement",
             )
 
-        assert exit_code == 0
+        assert result["exit_code"] == 0
         mock_cleanup.assert_called_once()
 
     def test_temp_files_cleaned_on_timeout(self, tmp_path):
@@ -4151,7 +5335,7 @@ class TestRunSkillMissionCleanup(TestRunSkillMissionEnv):
              patch("app.run._kill_process_group"), \
              patch("app.mission_runner.run_post_mission"), \
              patch("app.run._cleanup_temp") as mock_cleanup:
-            exit_code = _run_skill_mission(
+            result = _run_skill_mission(
                 skill_cmd=["python3", "--help"],
                 koan_root=koan_root,
                 instance=instance,
@@ -4162,7 +5346,7 @@ class TestRunSkillMissionCleanup(TestRunSkillMissionEnv):
                 autonomous_mode="implement",
             )
 
-        assert exit_code == 1
+        assert result["exit_code"] == 1
         mock_cleanup.assert_called_once()
 
 
@@ -4210,6 +5394,52 @@ class TestUpdateMissionInFile:
         content = missions.read_text()
         # Mission should still be in In Progress (not moved)
         assert "/scope.myskill do something" in content.split("## In Progress")[1].split("##")[0]
+
+    def test_returns_true_when_moved(self, tmp_path):
+        """A successful move returns True so callers know the mission cleared."""
+        from app.run import _update_mission_in_file
+
+        missions = tmp_path / "instance" / "missions.md"
+        missions.parent.mkdir(parents=True)
+        missions.write_text(
+            "# Missions\n\n## Pending\n\n- /plan do something\n\n"
+            "## In Progress\n\n## Done\n"
+        )
+        assert _update_mission_in_file(str(missions.parent), "/plan do something") is True
+
+    def test_returns_false_when_not_matched(self, tmp_path):
+        """An unmatched mission returns False so callers can alert instead of looping."""
+        from app.run import _update_mission_in_file
+
+        missions = tmp_path / "instance" / "missions.md"
+        missions.parent.mkdir(parents=True)
+        missions.write_text(
+            "# Missions\n\n## Pending\n\n- /plan do something\n\n"
+            "## In Progress\n\n## Done\n"
+        )
+        assert _update_mission_in_file(str(missions.parent), "/plan absent mission") is False
+
+    def test_mission_with_double_spaces_is_moved(self, tmp_path):
+        """Regression: a mission with internal double spaces must clear the queue.
+
+        Previously the runner exited 0 but the mission stayed in Pending and
+        re-dispatched on every loop, because the completion matcher collapsed
+        whitespace on the file line but not on the search needle.
+        """
+        from app.run import _update_mission_in_file
+
+        mission = "/plan https://github.com/owner/repo/issues/15 cli  and  dashboard reconcile"
+        missions = tmp_path / "instance" / "missions.md"
+        missions.parent.mkdir(parents=True)
+        missions.write_text(
+            "# Missions\n\n## Pending\n\n"
+            f"- {mission}\n\n"
+            "## In Progress\n\n## Done\n"
+        )
+        assert _update_mission_in_file(str(missions.parent), mission) is True
+        content = missions.read_text()
+        assert mission not in content.split("## Pending")[1].split("##")[0]
+        assert "issues/15" in content.split("## Done")[1]
 
 
 # ---------------------------------------------------------------------------
@@ -4592,7 +5822,7 @@ class TestIdleTimeoutAutoPause:
 
         mock_iteration.side_effect = iteration_side_effect
 
-        with patch("app.run._notify"):
+        with patch("app.run._notify"), patch("app.run.time.sleep"):
             main_loop()
 
         # Should NOT have created pause (False doesn't count as idle)
@@ -4763,6 +5993,121 @@ class TestHandleContemplativeCommit:
 
 
 # ---------------------------------------------------------------------------
+# Contemplative session outcome recording
+# ---------------------------------------------------------------------------
+
+class TestContemplativeOutcomeRecording:
+    """Tests that _handle_contemplative records session outcomes."""
+
+    @patch("app.run._commit_instance")
+    @patch("app.run.interruptible_sleep", return_value=None)
+    @patch("app.run.check_pending_missions", return_value=False)
+    @patch("app.run.run_claude_task", return_value=0)
+    @patch("app.run._notify")
+    @patch("app.run.log")
+    @patch("app.run.set_status")
+    def test_records_outcome_on_success(
+        self, mock_status, mock_log, mock_notify, mock_task,
+        mock_pending, mock_sleep, mock_commit,
+    ):
+        """Session outcome is recorded after successful contemplative session."""
+        from app.run import _handle_contemplative
+
+        plan = {"project_name": "test-proj", "autonomous_mode": "deep"}
+        with (
+            patch("app.contemplative_runner.build_contemplative_command", return_value=["echo", "ok"]),
+            patch("app.mission_runner._record_session_outcome") as mock_record,
+            patch("app.mission_runner._read_pending_content", return_value="explored codebase"),
+        ):
+            _handle_contemplative(plan, 1, 5, "/tmp/koan", "/tmp/koan/instance", 60)
+
+        mock_record.assert_called_once()
+        call_kwargs = mock_record.call_args
+        assert call_kwargs[0][1] == "test-proj"  # project_name
+        assert call_kwargs.kwargs.get("mission_type") or call_kwargs[0][-1] == "contemplative"
+
+    @patch("app.run._commit_instance")
+    @patch("app.run.check_pending_missions", return_value=True)
+    @patch("app.run.run_claude_task", side_effect=RuntimeError("stagnation kill"))
+    @patch("app.run._notify")
+    @patch("app.run.log")
+    @patch("app.run.set_status")
+    def test_records_outcome_on_cli_error(
+        self, mock_status, mock_log, mock_notify, mock_task,
+        mock_pending, mock_commit,
+    ):
+        """Session outcome is recorded even when CLI throws."""
+        from app.run import _handle_contemplative
+
+        plan = {"project_name": "test-proj", "autonomous_mode": "deep"}
+        with (
+            patch("app.contemplative_runner.build_contemplative_command", return_value=["echo", "ok"]),
+            patch("app.mission_runner._record_session_outcome") as mock_record,
+            patch("app.mission_runner._read_pending_content", return_value=""),
+            patch("app.mission_runner._read_stdout_summary", return_value=""),
+        ):
+            _handle_contemplative(plan, 1, 5, "/tmp/koan", "/tmp/koan/instance", 60)
+
+        mock_record.assert_called_once()
+
+    @patch("app.run._commit_instance")
+    @patch("app.run.interruptible_sleep", return_value=None)
+    @patch("app.run.check_pending_missions", return_value=False)
+    @patch("app.run.run_claude_task", return_value=0)
+    @patch("app.run._notify")
+    @patch("app.run.log")
+    @patch("app.run.set_status")
+    def test_outcome_uses_contemplative_mission_type(
+        self, mock_status, mock_log, mock_notify, mock_task,
+        mock_pending, mock_sleep, mock_commit,
+    ):
+        """Outcome is recorded with mission_type='contemplative'."""
+        from app.run import _handle_contemplative
+
+        plan = {"project_name": "test-proj", "autonomous_mode": "implement"}
+        with (
+            patch("app.contemplative_runner.build_contemplative_command", return_value=["echo", "ok"]),
+            patch("app.mission_runner._record_session_outcome") as mock_record,
+            patch("app.mission_runner._read_pending_content", return_value="branch pushed"),
+        ):
+            _handle_contemplative(plan, 3, 10, "/tmp/koan", "/tmp/koan/instance", 60)
+
+        mock_record.assert_called_once()
+        # Check mission_type kwarg
+        kwargs = mock_record.call_args
+        # _record_session_outcome(instance, project_name, mode, duration, content, mission_type=...)
+        assert kwargs.kwargs["mission_type"] == "contemplative"
+
+    @patch("app.run._commit_instance")
+    @patch("app.run.interruptible_sleep", return_value=None)
+    @patch("app.run.check_pending_missions", return_value=False)
+    @patch("app.run.run_claude_task", return_value=0)
+    @patch("app.run._notify")
+    @patch("app.run.log")
+    @patch("app.run.set_status")
+    def test_outcome_falls_back_to_stdout_summary(
+        self, mock_status, mock_log, mock_notify, mock_task,
+        mock_pending, mock_sleep, mock_commit,
+    ):
+        """When pending.md is empty, stdout summary is used for classification."""
+        from app.run import _handle_contemplative
+
+        plan = {"project_name": "test-proj", "autonomous_mode": "deep"}
+        with (
+            patch("app.contemplative_runner.build_contemplative_command", return_value=["echo", "ok"]),
+            patch("app.mission_runner._record_session_outcome") as mock_record,
+            patch("app.mission_runner._read_pending_content", return_value=""),
+            patch("app.mission_runner._read_stdout_summary", return_value="explored code") as mock_stdout,
+        ):
+            _handle_contemplative(plan, 1, 5, "/tmp/koan", "/tmp/koan/instance", 60)
+
+        mock_stdout.assert_called_once()
+        mock_record.assert_called_once()
+        # The pending_content arg (4th positional) should be the stdout summary
+        assert mock_record.call_args[0][4] == "explored code"
+
+
+# ---------------------------------------------------------------------------
 # Wait/pause commit gap fix
 # ---------------------------------------------------------------------------
 
@@ -4905,7 +6250,7 @@ class TestRunIterationPaths:
             ),
             "build_agent_prompt": MagicMock(return_value="test prompt"),
             "create_pending_file": MagicMock(),
-            "build_mission_command": MagicMock(return_value=["echo", "ok"]),
+            "build_mission_command": MagicMock(return_value=(["echo", "ok"], [])),
             "run_post_mission": MagicMock(return_value={}),
             "parse_claude_output": MagicMock(return_value="output text"),
         }
@@ -5057,10 +6402,78 @@ class TestRunIterationPaths:
             mocks["run_claude_task"].assert_called_once()
             assert result is True
 
+    # --- Quota error: mission requeued instead of failed ---
+
+    def test_quota_error_requeues_mission_not_failed(self, tmp_path):
+        """When quota is hit during execution, mission must be requeued to Pending.
+
+        Regression: quota errors triggered _finalize_mission (fail) instead of
+        _requeue_mission_in_file, permanently losing the mission.
+        """
+        plan = self._make_plan("mission", mission_title="implement feature")
+        with self._patched_iteration(
+            tmp_path, plan,
+            run_claude_task=MagicMock(return_value=1),
+        ) as mocks:
+            with patch("app.cli_errors.classify_cli_error") as mock_classify:
+                from app.cli_errors import ErrorCategory
+                mock_classify.return_value = ErrorCategory.QUOTA
+                with patch("app.run._requeue_mission_in_file") as mock_requeue:
+                    with patch("app.quota_handler.handle_quota_exhaustion",
+                               return_value=("resets at 10am", "Auto-resume in ~5h")):
+                        with patch("app.run._compute_quota_reset_ts",
+                                   return_value=(int(time.time()) + 3600, "1h")):
+                            result = self._call(tmp_path)
+            # Mission must be requeued, NOT finalized (failed)
+            mock_requeue.assert_called_once()
+            mocks["_finalize_mission"].assert_not_called()
+            # Returns True — budget was consumed before quota hit
+            assert result is True
+
+    def test_quota_error_creates_pause_when_detection_fails(self, tmp_path):
+        """When quota is classified but pattern detection is inconclusive, create fallback pause."""
+        plan = self._make_plan("mission", mission_title="analyze codebase")
+        with self._patched_iteration(
+            tmp_path, plan,
+            run_claude_task=MagicMock(return_value=1),
+        ) as mocks:
+            with patch("app.cli_errors.classify_cli_error") as mock_classify:
+                from app.cli_errors import ErrorCategory
+                mock_classify.return_value = ErrorCategory.QUOTA
+                with patch("app.run._requeue_mission_in_file"):
+                    with patch("app.quota_handler.handle_quota_exhaustion", return_value=None):
+                        with patch("app.run._compute_quota_reset_ts",
+                                   return_value=(int(time.time()) + 3600, "1h")):
+                            with patch("app.pause_manager.create_pause") as mock_pause:
+                                result = self._call(tmp_path)
+            # Pause must be created even when pattern detection returns None
+            mock_pause.assert_called_once()
+            assert result is True
+
+    def test_quota_error_does_not_run_post_mission_pipeline(self, tmp_path):
+        """When quota is detected via classify_cli_error, skip the heavy post-mission pipeline."""
+        plan = self._make_plan("mission", mission_title="refactor utils")
+        with self._patched_iteration(
+            tmp_path, plan,
+            run_claude_task=MagicMock(return_value=1),
+        ) as mocks:
+            with patch("app.cli_errors.classify_cli_error") as mock_classify:
+                from app.cli_errors import ErrorCategory
+                mock_classify.return_value = ErrorCategory.QUOTA
+                with patch("app.run._requeue_mission_in_file"):
+                    with patch("app.quota_handler.handle_quota_exhaustion",
+                               return_value=("resets at 10am", "Auto-resume in ~5h")):
+                        with patch("app.run._compute_quota_reset_ts",
+                                   return_value=(int(time.time()) + 3600, "1h")):
+                            result = self._call(tmp_path)
+            # Post-mission pipeline must NOT run (we returned early)
+            mocks["run_post_mission"].assert_not_called()
+            assert result is True
+
     # --- Post-mission quota exhaustion ---
 
     def test_post_mission_quota_exhaustion_creates_pause(self, tmp_path):
-        """Quota hit during post-mission → create pause and return True."""
+        """Quota hit during post-mission → requeue and return True."""
         plan = self._make_plan("mission", mission_title="big task")
         with self._patched_iteration(
             tmp_path, plan,
@@ -5072,9 +6485,26 @@ class TestRunIterationPaths:
             with patch("app.run._compute_quota_reset_ts", return_value=(int(time.time()) + 3600, "1h")):
                 with patch("app.pause_manager.create_pause"):
                     result = self._call(tmp_path)
-            # Should still have finalized mission before post-processing
-            mocks["_finalize_mission"].assert_called_once()
+            # Post-mission quota handling should requeue before normal
+            # finalization can move the mission to Done/Failed.
+            mocks["_finalize_mission"].assert_not_called()
             # Should return True (ran Claude before quota hit)
+            assert result is True
+
+    def test_zero_exit_quota_output_requeues_before_finalize(self, tmp_path):
+        """Quota text with exit 0 must pause/requeue before normal finalization."""
+        plan = self._make_plan("mission", mission_title="big task")
+        with self._patched_iteration(tmp_path, plan) as mocks:
+            with patch(
+                "app.quota_handler.handle_quota_exhaustion",
+                return_value=("resets 3am (UTC)", "Auto-resume 10m after reset time"),
+            ):
+                with patch("app.run._requeue_mission_in_file") as mock_requeue:
+                    result = self._call(tmp_path)
+
+            mock_requeue.assert_called_once()
+            mocks["_finalize_mission"].assert_not_called()
+            mocks["run_post_mission"].assert_not_called()
             assert result is True
 
     # --- Max runs triggers pause ---
@@ -5165,7 +6595,9 @@ class TestRunIterationPaths:
                 return_value=PrepResult(success=False, error="checkout failed")
             ),
         ) as mocks:
-            result = self._call(tmp_path)
+            # count>=1 — testing operational failure, not first-iteration
+            # behavior; avoids the startup-only Telegram notifications.
+            result = self._call(tmp_path, count=1)
             assert result is False
             mock_update.assert_called_once_with(
                 str(Path(tmp_path) / "instance"), title, failed=True
@@ -5183,7 +6615,7 @@ class TestRunIterationPaths:
             tmp_path, plan,
             prepare_project_branch=MagicMock(side_effect=RuntimeError("git broke")),
         ) as mocks:
-            result = self._call(tmp_path)
+            result = self._call(tmp_path, count=1)
             assert result is False
             mock_update.assert_called_once_with(
                 str(Path(tmp_path) / "instance"), title, failed=True

@@ -10,6 +10,8 @@ Config schema in config.yaml:
       authorized_users: ["*"]
       max_age_hours: 24
       reply_enabled: false
+      reply_authorized_users: ["*"]   # separate from command permissions
+      reply_rate_limit: 5             # max replies per user per hour
       check_interval_seconds: 60
 
 Per-project override in projects.yaml:
@@ -17,9 +19,13 @@ Per-project override in projects.yaml:
       myproject:
         github:
           authorized_users: ["alice", "bob"]
+          reply_authorized_users: ["*"]
 """
 
+import logging
 from typing import List, Optional
+
+log = logging.getLogger(__name__)
 
 
 def get_github_nickname(config: dict) -> str:
@@ -82,6 +88,45 @@ def get_github_natural_language(config: dict, project_name: Optional[str] = None
     return bool(github.get("natural_language", False))
 
 
+def get_github_reply_authorized_users(config: dict, project_name: Optional[str] = None,
+                                       projects_config: Optional[dict] = None) -> Optional[List[str]]:
+    """Get the list of users authorized to receive AI replies.
+
+    Separate from command authorized_users — allows broader audience for
+    read-only replies while keeping command permissions restricted.
+
+    Returns a list of usernames or ["*"] if explicitly configured.
+    Returns None if not configured (caller should fall back to authorized_users).
+    """
+    # Check per-project override first
+    if project_name and projects_config:
+        from app.projects_config import get_project_github_reply_authorized_users
+        project_users = get_project_github_reply_authorized_users(projects_config, project_name)
+        if project_users is not None:
+            return project_users
+
+    # Fall back to global config.yaml
+    github = config.get("github") or {}
+    users = github.get("reply_authorized_users")
+    if users is None:
+        return None
+    return users if isinstance(users, list) else None
+
+
+def get_github_reply_rate_limit(config: dict) -> int:
+    """Get the max number of AI replies per user per hour.
+
+    Prevents API quota abuse when replies are open to a broad audience.
+    Default: 5. Floor: 1.
+    """
+    github = config.get("github") or {}
+    try:
+        val = int(github.get("reply_rate_limit", 5))
+        return max(1, val)
+    except (ValueError, TypeError):
+        return 5
+
+
 def get_github_reply_enabled(config: dict) -> bool:
     """Check if AI-powered replies to non-command @mentions are enabled.
 
@@ -103,6 +148,24 @@ def get_github_max_age_hours(config: dict) -> int:
         return int(github.get("max_age_hours", 24))
     except (ValueError, TypeError):
         return 24
+
+
+def get_github_stale_drain_hours(config: dict) -> int:
+    """Get the age threshold for draining stale notifications in multi-instance mode.
+
+    In multi-instance mode, notifications from unregistered repos are
+    normally left untouched for sibling instances.  However, notifications
+    older than this threshold are safe to mark as read — no sibling will
+    process them at that point, and leaving them accumulates cruft that
+    can block future @mention detection on the same thread.
+
+    Default: 48 hours.  Set to 0 to disable stale draining entirely.
+    """
+    github = config.get("github") or {}
+    try:
+        return int(github.get("stale_drain_hours", 48))
+    except (ValueError, TypeError):
+        return 48
 
 
 def get_github_check_interval(config: dict) -> int:
@@ -131,6 +194,28 @@ def get_github_max_check_interval(config: dict) -> int:
         return max(30, val)  # Floor at 30s — below that backoff is pointless
     except (ValueError, TypeError):
         return 180
+
+
+def get_github_parallel_workers(config: dict) -> int:
+    """Max worker threads for concurrent notification processing.
+
+    During cold start the bot may receive many notifications at once
+    (typically 10+ from a 24h lookback). Each notification triggers
+    several sequential ``gh`` API calls (fetch comment, check subject
+    state, mark read, react). Processing them serially adds 5-20s of
+    wall-clock latency during startup.
+
+    Workers >1 process notifications concurrently; the work is I/O bound
+    (subprocess + HTTP) so threads scale linearly. Default: 4.
+    Floor: 1 (effectively disables parallelism). Ceiling: 16 (above
+    that GitHub secondary rate limits become a risk).
+    """
+    github = config.get("github") or {}
+    try:
+        val = int(github.get("parallel_workers", 4))
+        return max(1, min(16, val))
+    except (ValueError, TypeError):
+        return 4
 
 
 def get_github_subscribe_enabled(config: dict) -> bool:
@@ -168,4 +253,19 @@ def validate_github_config(config: dict) -> Optional[str]:
     if not nickname:
         return "GitHub commands enabled but 'github.nickname' is not set in config.yaml"
 
+    warn_reply_wildcard(config)
     return None
+
+
+def warn_reply_wildcard(config: dict) -> None:
+    """Log a warning when reply_enabled + wildcard auth exposes replies to all GitHub users."""
+    if not get_github_reply_enabled(config):
+        return
+    reply_users = get_github_reply_authorized_users(config)
+    if reply_users is None:
+        reply_users = get_github_authorized_users(config)
+    if reply_users == ["*"]:
+        log.warning(
+            "GitHub reply: authorized to ALL GitHub users with repo write access "
+            "— consider restricting reply_authorized_users in config.yaml"
+        )

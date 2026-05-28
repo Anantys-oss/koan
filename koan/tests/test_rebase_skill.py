@@ -81,11 +81,19 @@ class TestHandleRouting:
 # ---------------------------------------------------------------------------
 
 class TestMissionQueuing:
+    def _own_pr_patch(self, handler_mod):
+        """Patch is_own_pr on the helper module used by the handler."""
+        return patch(
+            "app.github_skill_helpers.is_own_pr",
+            return_value=(True, "koan/some-branch"),
+        )
+
     def test_valid_url_queues_mission(self, handler, ctx):
         ctx.args = "https://github.com/sukria/koan/pull/42"
         with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
              patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
-             patch("app.utils.insert_pending_mission") as mock_insert:
+             patch("app.utils.insert_pending_mission") as mock_insert, \
+             self._own_pr_patch(handler):
             result = handler.handle(ctx)
             assert "queued" in result.lower()
             assert "#42" in result
@@ -98,7 +106,8 @@ class TestMissionQueuing:
         ctx.args = "https://github.com/sukria/koan/pull/42#discussion_r123"
         with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
              patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
-             patch("app.utils.insert_pending_mission") as mock_insert:
+             patch("app.utils.insert_pending_mission") as mock_insert, \
+             self._own_pr_patch(handler):
             result = handler.handle(ctx)
             assert "queued" in result.lower()
             mock_insert.assert_called_once()
@@ -107,7 +116,8 @@ class TestMissionQueuing:
         ctx.args = "please rebase https://github.com/sukria/koan/pull/99 thanks"
         with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
              patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
-             patch("app.utils.insert_pending_mission") as mock_insert:
+             patch("app.utils.insert_pending_mission") as mock_insert, \
+             self._own_pr_patch(handler):
             result = handler.handle(ctx)
             assert "queued" in result.lower()
             assert "#99" in result
@@ -117,7 +127,8 @@ class TestMissionQueuing:
         ctx.args = "https://github.com/sukria/koan/pull/42"
         with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
              patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
-             patch("app.utils.insert_pending_mission"):
+             patch("app.utils.insert_pending_mission"), \
+             self._own_pr_patch(handler):
             result = handler.handle(ctx)
             assert result == "Rebase queued for PR #42 (sukria/koan)"
 
@@ -126,7 +137,8 @@ class TestMissionQueuing:
         ctx.args = "https://github.com/sukria/koan/pull/42"
         with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
              patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
-             patch("app.utils.insert_pending_mission") as mock_insert:
+             patch("app.utils.insert_pending_mission") as mock_insert, \
+             self._own_pr_patch(handler):
             handler.handle(ctx)
             entry = mock_insert.call_args[0][1]
             assert entry.startswith("- [project:koan]")
@@ -140,7 +152,8 @@ class TestMissionQueuing:
         ctx.args = "https://github.com/other/myrepo/pull/7"
         with patch("app.utils.resolve_project_path", return_value="/some/myrepo"), \
              patch("app.utils.get_known_projects", return_value=[("onlyone", "/other/path")]), \
-             patch("app.utils.insert_pending_mission") as mock_insert:
+             patch("app.utils.insert_pending_mission") as mock_insert, \
+             self._own_pr_patch(handler):
             result = handler.handle(ctx)
             assert "queued" in result.lower()
             entry = mock_insert.call_args[0][1]
@@ -152,10 +165,213 @@ class TestMissionQueuing:
         ctx.args = "https://github.com/sukria/koan/pull/42"
         with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
              patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
-             patch("app.utils.insert_pending_mission") as mock_insert:
+             patch("app.utils.insert_pending_mission") as mock_insert, \
+             self._own_pr_patch(handler):
             handler.handle(ctx)
             missions_path = mock_insert.call_args[0][0]
             assert missions_path == ctx.instance_dir / "missions.md"
+
+
+# ---------------------------------------------------------------------------
+# handle() — PR ownership check
+# ---------------------------------------------------------------------------
+
+class TestPROwnership:
+    def test_rejects_pr_from_other_instance(self, handler, ctx):
+        """Refuse to rebase a PR whose branch wasn't created by this instance."""
+        ctx.args = "https://github.com/sukria/koan/pull/42"
+        with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
+             patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
+             patch("app.github_skill_helpers.is_own_pr", return_value=(False, "other-bot/fix-thing")), \
+             patch("app.utils.insert_pending_mission") as mock_insert:
+            result = handler.handle(ctx)
+            assert "Not my PR" in result
+            assert "other-bot/fix-thing" in result
+            mock_insert.assert_not_called()
+
+    def test_accepts_pr_from_own_instance(self, handler, ctx):
+        """Allow rebase when the PR branch matches our prefix."""
+        ctx.args = "https://github.com/sukria/koan/pull/42"
+        with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
+             patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
+             patch("app.github_skill_helpers.is_own_pr", return_value=(True, "koan/fix-thing")), \
+             patch("app.utils.insert_pending_mission") as mock_insert:
+            result = handler.handle(ctx)
+            assert "queued" in result.lower()
+            mock_insert.assert_called_once()
+
+    def test_ownership_check_failure_returns_error(self, handler, ctx):
+        """If the GitHub API call fails, return an error instead of crashing."""
+        ctx.args = "https://github.com/sukria/koan/pull/42"
+        with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
+             patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
+             patch("app.github_skill_helpers.is_own_pr", side_effect=Exception("API timeout")):
+            result = handler.handle(ctx)
+            assert "\u274c" in result
+            assert "ownership" in result.lower()
+
+
+# ---------------------------------------------------------------------------
+# handle() — --now priority flag
+# ---------------------------------------------------------------------------
+
+class TestNowFlag:
+    def _own_pr_patch(self):
+        return patch(
+            "app.github_skill_helpers.is_own_pr",
+            return_value=(True, "koan/some-branch"),
+        )
+
+    def test_now_flag_queues_as_urgent(self, handler, ctx):
+        """--now flag causes the mission to be queued with urgent=True."""
+        ctx.args = "--now https://github.com/sukria/koan/pull/42"
+        with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
+             patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
+             patch("app.utils.insert_pending_mission") as mock_insert, \
+             self._own_pr_patch():
+            result = handler.handle(ctx)
+            assert "queued" in result.lower()
+            assert "(priority)" in result
+            mock_insert.assert_called_once()
+            assert mock_insert.call_args[1]["urgent"] is True
+
+    def test_now_flag_after_url(self, handler, ctx):
+        """--now after URL is also recognized (within first 5 words)."""
+        ctx.args = "https://github.com/sukria/koan/pull/42 --now"
+        with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
+             patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
+             patch("app.utils.insert_pending_mission") as mock_insert, \
+             self._own_pr_patch():
+            result = handler.handle(ctx)
+            assert "(priority)" in result
+            assert mock_insert.call_args[1]["urgent"] is True
+
+    def test_without_now_flag_not_urgent(self, handler, ctx):
+        """Without --now, mission is queued normally (not urgent)."""
+        ctx.args = "https://github.com/sukria/koan/pull/42"
+        with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
+             patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
+             patch("app.utils.insert_pending_mission") as mock_insert, \
+             self._own_pr_patch():
+            result = handler.handle(ctx)
+            assert "(priority)" not in result
+            assert mock_insert.call_args[1].get("urgent", False) is False
+
+    def test_now_flag_stripped_from_mission_text(self, handler, ctx):
+        """--now should not appear in the queued mission text."""
+        ctx.args = "--now https://github.com/sukria/koan/pull/42"
+        with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
+             patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
+             patch("app.utils.insert_pending_mission") as mock_insert, \
+             self._own_pr_patch():
+            handler.handle(ctx)
+            mission_entry = mock_insert.call_args[0][1]
+            assert "--now" not in mission_entry
+
+    def test_now_flag_usage_documented(self, handler, ctx):
+        """Empty args help text mentions --now."""
+        ctx.args = ""
+        result = handler.handle(ctx)
+        assert "--now" in result
+
+
+# ---------------------------------------------------------------------------
+# Stale module cache guard (issue #1235)
+# ---------------------------------------------------------------------------
+
+class TestStaleModuleReload:
+    """Verify _execute_handler refreshes stale app modules before loading."""
+
+    def test_execute_handler_reloads_stale_modules(self):
+        """_refresh_stale_app_modules reloads the module in-place when
+        its source file mtime has changed."""
+        import os
+        import app.github_skill_helpers as gh_mod
+        from app.skills import _module_mtimes, _refresh_stale_app_modules
+
+        original = gh_mod.queue_github_mission
+        del gh_mod.queue_github_mission
+        assert not hasattr(gh_mod, "queue_github_mission")
+
+        # Force mtime cache to show a stale value so reload is triggered
+        source = gh_mod.__file__
+        _module_mtimes["app.github_skill_helpers"] = os.path.getmtime(source) - 10
+
+        try:
+            _refresh_stale_app_modules()
+            assert hasattr(gh_mod, "queue_github_mission")
+        finally:
+            if not hasattr(gh_mod, "queue_github_mission"):
+                gh_mod.queue_github_mission = original
+            # Restore mtime cache
+            _module_mtimes["app.github_skill_helpers"] = os.path.getmtime(source)
+
+    def test_stale_urgent_param_restored_after_reload(self):
+        """The exact scenario from #1235: queue_github_mission exists but
+        lacks the 'urgent' keyword argument.  After reload, the correct
+        signature is available."""
+        import inspect
+        import os
+        import app.github_skill_helpers as gh_mod
+        from app.skills import _module_mtimes, _refresh_stale_app_modules
+
+        original = gh_mod.queue_github_mission
+
+        def stale(ctx, command, url, project_name, context=None):
+            pass
+
+        gh_mod.queue_github_mission = stale
+
+        # Force mtime cache to show a stale value
+        source = gh_mod.__file__
+        _module_mtimes["app.github_skill_helpers"] = os.path.getmtime(source) - 10
+
+        try:
+            _refresh_stale_app_modules()
+            sig = inspect.signature(gh_mod.queue_github_mission)
+            assert "urgent" in sig.parameters
+        finally:
+            if gh_mod.queue_github_mission is stale:
+                gh_mod.queue_github_mission = original
+            _module_mtimes["app.github_skill_helpers"] = os.path.getmtime(source)
+
+    def test_evicts_module_on_reload_failure(self):
+        """If importlib.reload raises, the stale entry is removed from
+        sys.modules so the handler's own import loads a fresh copy."""
+        import os
+        import sys as _sys
+        from unittest.mock import patch as _patch
+
+        from app.skills import _module_mtimes, _refresh_stale_app_modules
+
+        target = "app.github_skill_helpers"
+        saved_mod = _sys.modules.get(target)
+        saved_mtime = _module_mtimes.get(target)
+        sentinel = type("StaleModule", (), {
+            "__name__": target, "__spec__": None,
+            "__file__": saved_mod.__file__ if saved_mod else "/dev/null",
+        })()
+        _sys.modules[target] = sentinel
+        # Force stale mtime
+        source = saved_mod.__file__ if saved_mod else "/dev/null"
+        try:
+            _module_mtimes[target] = os.path.getmtime(source) - 10
+        except OSError:
+            _module_mtimes[target] = 0
+
+        try:
+            with _patch("importlib.reload", side_effect=ImportError("boom")):
+                _refresh_stale_app_modules()
+            assert target not in _sys.modules or _sys.modules[target] is not sentinel
+        finally:
+            if saved_mod is not None:
+                _sys.modules[target] = saved_mod
+            else:
+                _sys.modules.pop(target, None)
+            if saved_mtime is not None:
+                _module_mtimes[target] = saved_mtime
+            else:
+                _module_mtimes.pop(target, None)
 
 
 # ---------------------------------------------------------------------------

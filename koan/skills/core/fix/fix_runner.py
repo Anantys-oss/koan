@@ -1,22 +1,27 @@
 """
 Koan -- Fix runner.
 
-Reads a GitHub issue, builds a fix prompt, and invokes Claude to fix it.
-Unlike implement_runner (which requires a pre-existing plan), fix_runner
-takes a raw issue and lets Claude handle the full pipeline: understand,
-plan, test, fix, and submit a PR.
+Reads an issue from the configured tracker (GitHub or Jira), builds a fix
+prompt, and invokes Claude to fix it. Unlike implement_runner (which requires
+a pre-existing plan), fix_runner takes a raw issue and lets Claude handle the
+full pipeline: understand, plan, test, fix, and submit a PR.
 
 CLI:
     python3 -m skills.core.fix.fix_runner --project-path <path> --issue-url <url>
     python3 -m skills.core.fix.fix_runner --project-path <path> --issue-url <url> --context "backend only"
+    python3 -m skills.core.fix.fix_runner --project-path <path> --project-name <name> --issue-url <url>
 """
 
 import logging
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from app.github import fetch_issue_with_comments
-from app.github_url_parser import parse_issue_url
+from app.issue_tracker import (
+    UnresolvedJiraProjectError,
+    fetch_issue,
+    project_name_for_path,
+)
+from app.issue_tracker.config import resolve_code_repository
 from app.pr_submit import (
     get_current_branch,
     guess_project_name,
@@ -33,15 +38,18 @@ def run_fix(
     context: Optional[str] = None,
     notify_fn=None,
     skill_dir: Optional[Path] = None,
+    base_branch: Optional[str] = None,
+    project_name: str = "",
+    instance_dir: str = "",
 ) -> Tuple[bool, str]:
     """Execute the fix pipeline.
 
-    Fetches the GitHub issue, builds a fix prompt, and invokes Claude to
-    understand, plan, test, and fix the issue.
+    Fetches the issue through the project's tracker, builds a fix prompt, and
+    invokes Claude to understand, plan, test, and fix the issue.
 
     Args:
         project_path: Local path to the project repository.
-        issue_url: GitHub issue URL.
+        issue_url: GitHub or Jira issue URL.
         context: Optional additional context (e.g. "backend only").
         notify_fn: Notification function (defaults to send_telegram).
         skill_dir: Path to the fix skill directory for prompt loading.
@@ -53,33 +61,57 @@ def run_fix(
         from app.notify import send_telegram
         notify_fn = send_telegram
 
-    # Parse issue URL
-    try:
-        owner, repo, issue_number = parse_issue_url(issue_url)
-    except ValueError as e:
-        return False, str(e)
-
+    print("[fix] Starting fix runner", flush=True)
     context_label = f" ({context})" if context else ""
-    notify_fn(
-        f"\U0001f527 Fixing issue #{issue_number} "
-        f"({owner}/{repo}){context_label}..."
-    )
+    project_name = project_name or project_name_for_path(project_path)
+    print(f"[fix] Fetching tracker issue {issue_url}", flush=True)
 
-    # Fetch issue content
+    # The tracker (GitHub or Jira) resolves itself from the URL — the runner
+    # never branches on provider.
     try:
-        title, body, comments = fetch_issue_with_comments(
-            owner, repo, issue_number
+        content = fetch_issue(
+            issue_url, project_name=project_name, project_path=project_path,
         )
+    except UnresolvedJiraProjectError as e:
+        msg = str(e)
+        notify_fn(f"❌ {msg}")
+        return False, msg
     except Exception as e:
         return False, f"Failed to fetch issue: {str(e)[:300]}"
 
+    ref = content.ref
+    title = content.title
+    body = content.body
+    comments = content.comments
+    issue_number = ref.key
+    label = ref.label
+    provider = ref.provider
+
+    if content.state == "closed":
+        msg = f"Issue {label} is already closed — skipping."
+        logger.info(msg)
+        if notify_fn:
+            notify_fn(f"⏭ {msg}")
+        return True, msg
+
+    # Resolve the GitHub repo that PRs target: the issue's own repo for
+    # GitHub, the configured code repo for a Jira-tracked project.
+    owner = repo = None
+    repo_slug = ref.repo or resolve_code_repository(project_name, project_path)
+    if repo_slug and "/" in repo_slug:
+        owner, repo = repo_slug.split("/", 1)
+
+    notify_fn(f"\U0001f527 Fixing {provider} issue {label}{context_label}...")
+
+    print("[fix] Issue fetched, building prompt", flush=True)
     if not body and not comments:
-        return False, f"Issue #{issue_number} has no content."
+        return False, f"Issue {label} has no content."
 
     # Build full issue body (include relevant comments)
     full_body = _build_issue_body(body, comments)
 
     # Invoke Claude with the fix prompt
+    print("[fix] Invoking Claude for fix", flush=True)
     try:
         output = _execute_fix(
             project_path=project_path,
@@ -89,6 +121,8 @@ def run_fix(
             context=context or "Fix the issue completely.",
             skill_dir=skill_dir,
             issue_number=str(issue_number),
+            project_name=project_name,
+            instance_dir=instance_dir,
         )
     except Exception as e:
         return False, f"Fix failed: {str(e)[:300]}"
@@ -96,43 +130,51 @@ def run_fix(
     if not output:
         return False, "Claude returned empty output."
 
-    # Post-fix: submit draft PR
-    pr_url = _submit_fix_pr(
-        project_path=project_path,
-        owner=owner,
-        repo=repo,
-        issue_number=str(issue_number),
-        issue_title=title,
-        issue_url=issue_url,
-    )
+    # Post-fix: submit draft PR (only when we know the target GitHub repo)
+    pr_url = None
+    if owner and repo:
+        pr_url = _submit_fix_pr(
+            project_path=project_path,
+            owner=owner,
+            repo=repo,
+            issue_number=str(issue_number),
+            issue_title=title,
+            issue_url=issue_url,
+            base_branch=base_branch,
+            project_name=project_name,
+        )
 
     # Build notification and summary
     branch = get_current_branch(project_path)
     if pr_url:
         notify_fn(
-            f"\u2705 Fix complete for issue #{issue_number}"
+            f"✅ Fix complete for issue {label}"
             f"{context_label}\nDraft PR: {pr_url}"
         )
         summary = (
-            f"Fix complete for #{issue_number}{context_label}"
+            f"Fix complete for {label}{context_label}"
             f"\nDraft PR: {pr_url}"
         )
     elif branch not in ("main", "master"):
+        skip_reason = (
+            " (PR creation skipped)" if provider != "github"
+            else " (PR creation failed)"
+        )
         notify_fn(
-            f"\u2705 Fix complete for issue #{issue_number}"
-            f"{context_label}\nBranch: {branch} (PR creation failed)"
+            f"✅ Fix complete for issue {label}"
+            f"{context_label}\nBranch: {branch}{skip_reason}"
         )
         summary = (
-            f"Fix complete for #{issue_number}{context_label}"
+            f"Fix complete for {label}{context_label}"
             f"\nBranch: {branch}"
         )
     else:
         notify_fn(
-            f"\u26a0\ufe0f Fix complete for issue #{issue_number}"
-            f"{context_label} \u2014 changes landed on {branch}, no PR created"
+            f"⚠️ Fix complete for issue {label}"
+            f"{context_label} — changes landed on {branch}, no PR created"
         )
         summary = (
-            f"Fix complete for #{issue_number}{context_label}"
+            f"Fix complete for {label}{context_label}"
             f" (on {branch}, no PR)"
         )
 
@@ -169,15 +211,26 @@ def _execute_fix(
     context: str,
     skill_dir: Optional[Path] = None,
     issue_number: str = "",
+    project_name: str = "",
+    instance_dir: str = "",
 ) -> str:
     """Execute the fix via Claude CLI."""
     from app.config import get_branch_prefix
+    from app.skill_memory import build_memory_block_for_skill
+
     branch_prefix = get_branch_prefix()
+    project_memory = build_memory_block_for_skill(
+        project_path,
+        f"{issue_title}\n{issue_body}",
+        project_name=project_name,
+        instance_dir=instance_dir,
+    )
 
     prompt = _build_prompt(
         issue_url, issue_title, issue_body, context, skill_dir,
         branch_prefix=branch_prefix,
         issue_number=issue_number,
+        project_memory=project_memory,
     )
 
     from app.cli_provider import CLAUDE_TOOLS, run_command_streaming
@@ -197,6 +250,7 @@ def _build_prompt(
     skill_dir: Optional[Path] = None,
     branch_prefix: str = "koan/",
     issue_number: str = "",
+    project_memory: str = "",
 ) -> str:
     """Build the fix prompt from the issue content."""
     template_vars = dict(
@@ -206,6 +260,7 @@ def _build_prompt(
         CONTEXT=context,
         BRANCH_PREFIX=branch_prefix,
         ISSUE_NUMBER=issue_number,
+        PROJECT_MEMORY=project_memory,
     )
 
     return load_prompt_or_skill(skill_dir, "fix", **template_vars)
@@ -222,14 +277,16 @@ def _submit_fix_pr(
     issue_number: str,
     issue_title: str,
     issue_url: str,
+    base_branch: Optional[str] = None,
+    project_name: str = "",
 ) -> Optional[str]:
     """Build fix-specific PR title/body and delegate to shared submit."""
     from app.pr_submit import get_commit_subjects
     from app.projects_config import resolve_base_branch
 
-    project_name = guess_project_name(project_path)
-    base_branch = resolve_base_branch(project_name, project_path)
-    commits = get_commit_subjects(project_path, base_branch=base_branch)
+    project_name = project_name or guess_project_name(project_path)
+    effective_base = base_branch or resolve_base_branch(project_name, project_path)
+    commits = get_commit_subjects(project_path, base_branch=effective_base)
     commits_text = "\n".join(f"- {s}" for s in commits)
 
     pr_title = f"fix: {issue_title}"[:70]
@@ -241,6 +298,18 @@ def _submit_fix_pr(
     )
 
     try:
+        from app.describe_pr import describe_pr, format_description
+        desc = describe_pr(project_path, effective_base)
+        if desc:
+            pr_body = (
+                f"{format_description(desc)}\n\n"
+                f"Fixes {issue_url}\n\n"
+                f"---\n*Generated by Koan /fix*"
+            )
+    except Exception as e:
+        logger.warning("describe_pr failed, using fallback body: %s", e)
+
+    try:
         return submit_draft_pr(
             project_path=project_path,
             project_name=project_name,
@@ -250,6 +319,7 @@ def _submit_fix_pr(
             pr_title=pr_title,
             pr_body=pr_body,
             issue_url=issue_url,
+            base_branch=base_branch,
         )
     except Exception as e:
         logger.warning("PR submission failed: %s", e)
@@ -265,7 +335,7 @@ def main(argv=None):
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Fix a GitHub issue end-to-end."
+        description="Fix a GitHub or Jira issue end-to-end."
     )
     parser.add_argument(
         "--project-path", required=True,
@@ -273,12 +343,27 @@ def main(argv=None):
     )
     parser.add_argument(
         "--issue-url", required=True,
-        help="GitHub issue URL to fix",
+        help="GitHub or Jira issue URL to fix",
     )
     parser.add_argument(
         "--context",
         help="Additional context (e.g. 'backend only')",
         default=None,
+    )
+    parser.add_argument(
+        "--base-branch",
+        help="Target branch for the PR (e.g. '11.126')",
+        default=None,
+    )
+    parser.add_argument(
+        "--project-name",
+        help="Koan project name for memory and tracker configuration",
+        default="",
+    )
+    parser.add_argument(
+        "--instance-dir",
+        help="Koan instance directory for project memory",
+        default="",
     )
     cli_args = parser.parse_args(argv)
 
@@ -289,6 +374,9 @@ def main(argv=None):
         issue_url=cli_args.issue_url,
         context=cli_args.context,
         skill_dir=skill_dir,
+        base_branch=cli_args.base_branch,
+        project_name=cli_args.project_name,
+        instance_dir=cli_args.instance_dir,
     )
     print(summary)
     return 0 if success else 1

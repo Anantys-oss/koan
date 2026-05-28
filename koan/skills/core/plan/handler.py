@@ -1,12 +1,6 @@
 """Kōan plan skill -- queue a plan mission."""
 
-import re
-
-
-# GitHub issue URL pattern
-_ISSUE_URL_RE = re.compile(
-    r"https?://github\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+)/issues/(?P<number>\d+)"
-)
+from app.github_url_parser import search_issue_url, search_jira_url
 
 
 def handle(ctx):
@@ -34,10 +28,17 @@ def handle(ctx):
             "Posts to GitHub as an issue."
         )
 
-    # Mode 1: existing GitHub issue URL
-    issue_match = _ISSUE_URL_RE.search(args)
-    if issue_match:
-        return _queue_issue_plan(ctx, issue_match)
+    # Mode 1: existing GitHub or Jira issue URL
+    try:
+        owner, repo, issue_number = search_issue_url(args)
+        return _queue_issue_plan(ctx, owner, repo, issue_number)
+    except ValueError:
+        pass
+
+    jira_match = search_jira_url(args)
+    if jira_match:
+        issue_url, _issue_key = jira_match
+        return _queue_tracker_issue_plan(ctx, issue_url)
 
     # Mode 2: new idea (optionally project-prefixed)
     project, idea = _parse_project_arg(args)
@@ -126,13 +127,10 @@ def _queue_new_plan(ctx, project_name, idea):
     return f"\U0001f9e0 Plan queued: {idea[:100]}{'...' if len(idea) > 100 else ''} (project: {project_label})"
 
 
-def _queue_issue_plan(ctx, match):
+def _queue_issue_plan(ctx, owner, repo, issue_number):
     """Queue a mission to iterate on an existing GitHub issue."""
     from app.utils import insert_pending_mission
 
-    owner = match.group("owner")
-    repo = match.group("repo")
-    issue_number = match.group("number")
     issue_url = f"https://github.com/{owner}/{repo}/issues/{issue_number}"
 
     project_path = _resolve_project_path(repo, fallback=True, owner=owner)
@@ -143,6 +141,28 @@ def _queue_issue_plan(ctx, match):
     insert_pending_mission(missions_path, mission_entry)
 
     return f"\U0001f4d6 Plan queued for issue #{issue_number} ({owner}/{repo})"
+
+
+def _queue_tracker_issue_plan(ctx, issue_url: str):
+    """Queue a mission to iterate on a provider-neutral issue URL."""
+    from app.issue_tracker import resolve_issue_ref
+    from app.utils import insert_pending_mission
+
+    try:
+        ref = resolve_issue_ref(issue_url)
+    except ValueError as e:
+        return f"\u274c {e}"
+
+    if not ref.project_name:
+        return (
+            f"\u274c Could not resolve Koan project for Jira issue {ref.key}.\n"
+            "Configure projects.yaml issue_tracker.jira_project."
+        )
+
+    mission_entry = f"- [project:{ref.project_name}] /plan {issue_url}"
+    missions_path = ctx.instance_dir / "missions.md"
+    insert_pending_mission(missions_path, mission_entry)
+    return f"\U0001f4d6 Plan queued for {ref.provider} issue {ref.label}"
 
 
 def _project_name_for_path(project_path):

@@ -6,11 +6,43 @@ which sets ``GH_TOKEN`` — this module has no auth logic.
 """
 
 import json
+import re
 import subprocess
+import sys
 import time
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
-from app.retry import retry_with_backoff, is_gh_transient
+from app.retry import (
+    retry_with_backoff,
+    is_gh_transient,
+    is_gh_secondary_rate_limit,
+    parse_retry_after,
+)
+
+
+# Bot usernames whose @mentions should be escaped in GitHub comments to
+# avoid triggering automated bot responses.
+_BOT_USERNAMES = ('copilot', 'dependabot', 'github-actions')
+
+# Regex to match bare @bot mentions (case-insensitive), with negative
+# lookbehind/lookahead to skip already-backtick-escaped variants.
+_BOT_MENTION_RE = re.compile(
+    r'(?<!`)@(' + '|'.join(re.escape(u) for u in _BOT_USERNAMES) + r')(?![\w-])(?!`)',
+    re.IGNORECASE,
+)
+
+
+def sanitize_github_comment(text: Optional[str]) -> Optional[str]:
+    """Escape bare bot @mentions so GitHub doesn't trigger automated bots.
+
+    Replaces ``@copilot``, ``@dependabot``, ``@github-actions`` (any
+    capitalisation) with backtick-escaped variants unless already enclosed
+    in backticks.  Safe to call on any string including empty strings and
+    ``None`` values.
+    """
+    if not text:
+        return text
+    return _BOT_MENTION_RE.sub(r'`@\1`', text)
 
 
 class SSOAuthRequired(RuntimeError):
@@ -41,7 +73,7 @@ def _is_sso_error(stderr: str) -> bool:
 _cached_gh_username = None
 
 
-def run_gh(*args, cwd=None, timeout=30, stdin_data=None):
+def run_gh(*args, cwd=None, timeout=30, stdin_data=None, idempotent=True):
     """Run a ``gh`` CLI command and return stripped stdout.
 
     Args:
@@ -49,6 +81,9 @@ def run_gh(*args, cwd=None, timeout=30, stdin_data=None):
         cwd: Working directory for the subprocess.
         timeout: Seconds before the command is killed.
         stdin_data: Optional string passed to the process via stdin.
+        idempotent: Deprecated — secondary rate limits are now never
+            retried (they indicate abuse and retrying escalates GitHub's
+            response).  Kept for backward compatibility.
 
     Returns:
         Stripped stdout string.
@@ -62,7 +97,8 @@ def run_gh(*args, cwd=None, timeout=30, stdin_data=None):
     def _invoke():
         result = subprocess.run(
             cmd, **stdin_kwarg,
-            capture_output=True, text=True, timeout=timeout, cwd=cwd,
+            capture_output=True, timeout=timeout, cwd=cwd,
+            encoding="utf-8", errors="replace",
         )
         if result.returncode != 0:
             if _is_sso_error(result.stderr):
@@ -79,6 +115,8 @@ def run_gh(*args, cwd=None, timeout=30, stdin_data=None):
             _invoke,
             retryable=(RuntimeError, OSError, subprocess.TimeoutExpired),
             is_transient=is_gh_transient,
+            non_retryable=is_gh_secondary_rate_limit,
+            get_retry_delay=parse_retry_after,
             label=f"gh {' '.join(args[:2])}",
         )
         log_event(GIT_OPERATION, details={
@@ -121,16 +159,17 @@ def pr_create(title, body, draft=True, base=None, repo=None, head=None, cwd=None
         args.extend(["--repo", repo])
     if head:
         args.extend(["--head", head])
-    return run_gh(*args, cwd=cwd)
+    return run_gh(*args, cwd=cwd, idempotent=False)
 
 
-def issue_create(title, body, labels=None, cwd=None):
+def issue_create(title, body, labels=None, repo=None, cwd=None):
     """Create a GitHub issue via ``gh issue create``.
 
     Args:
         title: Issue title.
         body: Issue body (markdown).
         labels: Optional list of label names.
+        repo: Repository in ``owner/repo`` format (omit to use local repo).
         cwd: Working directory (must be inside a git repo).
 
     Returns:
@@ -143,20 +182,129 @@ def issue_create(title, body, labels=None, cwd=None):
     args = ["issue", "create", "--title", title, "--body", body]
     if labels:
         args.extend(["--label", ",".join(labels)])
-    return run_gh(*args, cwd=cwd)
+    if repo:
+        args.extend(["--repo", repo])
+    return run_gh(*args, cwd=cwd, idempotent=False)
+
+
+AUDIT_ISSUE_MARKER = "Created by Kōan from audit session"
+
+
+def list_open_issues(
+    repo: Optional[str] = None,
+    cwd: Optional[str] = None,
+    body_contains: Optional[str] = None,
+    limit: int = 200,
+) -> List[Dict]:
+    """List currently-open issues on a repository.
+
+    Wraps ``gh issue list --state open --json number,title,url,body``.
+    When ``body_contains`` is provided, only issues whose body contains
+    that substring are returned — useful for filtering down to issues
+    created by a specific tool/marker.
+
+    Returns ``[]`` on any error (safe default for callers performing
+    dedup checks — failing to fetch should not block issue creation).
+
+    Args:
+        repo: Repository in ``owner/repo`` format (omit for local repo).
+        cwd: Working directory (must be inside a git repo when ``repo``
+            is None).
+        body_contains: Optional substring to filter issue bodies.
+        limit: Maximum number of issues to fetch (default 200).
+
+    Returns:
+        List of ``{"number", "title", "url", "body"}`` dicts.
+    """
+    args = [
+        "issue", "list",
+        "--state", "open",
+        "--limit", str(limit),
+        "--json", "number,title,url,body",
+    ]
+    if repo:
+        args.extend(["--repo", repo])
+    try:
+        output = run_gh(*args, cwd=cwd)
+    except (RuntimeError, subprocess.TimeoutExpired, OSError):
+        return []
+    if not output:
+        return []
+    try:
+        issues = json.loads(output)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(issues, list):
+        return []
+
+    result = []
+    for item in issues:
+        if not isinstance(item, dict):
+            continue
+        body = item.get("body") or ""
+        if body_contains and body_contains not in body:
+            continue
+        result.append({
+            "number": item.get("number"),
+            "title": item.get("title") or "",
+            "url": item.get("url") or "",
+            "body": body,
+        })
+    return result
+
+
+def list_open_audit_issues(
+    repo: Optional[str] = None,
+    cwd: Optional[str] = None,
+    limit: int = 200,
+) -> List[Dict]:
+    """List open issues that were created by a previous Kōan audit run.
+
+    Filters ``list_open_issues()`` by the audit marker embedded in
+    every audit-created issue body. Used by the audit pipeline to
+    avoid duplicating findings already tracked on the repo.
+
+    Returns ``[]`` on any failure (callers fall back to creating new
+    issues — duplicates are recoverable, missed audits are not).
+    """
+    return list_open_issues(
+        repo=repo, cwd=cwd,
+        body_contains=AUDIT_ISSUE_MARKER,
+        limit=limit,
+    )
+
+
+def issue_edit(number, body, cwd=None):
+    """Update a GitHub issue body via ``gh issue edit``.
+
+    Args:
+        number: Issue number (string or int).
+        body: New body text (markdown).
+        cwd: Working directory (must be inside a git repo).
+    """
+    from app.leak_detector import scan_and_redact
+
+    body = scan_and_redact(body, context="Issue body")
+    return run_gh("issue", "edit", str(number), "--body", body,
+                  cwd=cwd, idempotent=False)
 
 
 def api(endpoint, method="GET", jq=None, input_data=None, cwd=None,
-        extra_args=None):
+        extra_args=None, timeout=30, raw_body=False):
     """Call ``gh api`` for lower-level GitHub API access.
 
     Args:
         endpoint: API path (e.g. ``repos/owner/repo/pulls/1/comments``).
         method: HTTP method (default GET).
         jq: Optional jq filter applied server-side.
-        input_data: If provided, passed via stdin (``-F body=@-``).
+        input_data: If provided, passed via stdin. Uses ``--input -``
+            when ``raw_body=True`` (sends stdin as the raw HTTP body),
+            otherwise uses ``-F body=@-`` (wraps stdin in a ``body`` field).
         cwd: Working directory.
         extra_args: Additional arguments for ``gh api``.
+        timeout: Seconds before the subprocess is killed (default 30).
+        raw_body: When True, send input_data as the raw HTTP request body
+            via ``--input -`` instead of wrapping in ``-F body=@-``.
 
     Returns:
         Stripped stdout string.
@@ -169,9 +317,30 @@ def api(endpoint, method="GET", jq=None, input_data=None, cwd=None,
     if extra_args:
         args.extend(extra_args)
     if input_data is not None:
-        args.extend(["-F", "body=@-"])
+        if raw_body:
+            args.extend(["--input", "-"])
+        else:
+            args.extend(["-F", "body=@-"])
 
-    return run_gh(*args, cwd=cwd, stdin_data=input_data)
+    return run_gh(*args, cwd=cwd, stdin_data=input_data, timeout=timeout)
+
+
+def fetch_issue_state(owner, repo, issue_number):
+    """Fetch the state of a GitHub issue (open/closed).
+
+    Returns:
+        The issue state string (e.g. "open", "closed"), or "open" on error.
+    """
+    try:
+        result = api(
+            f"repos/{owner}/{repo}/issues/{issue_number}",
+            jq=".state",
+        )
+        state = result.strip().strip('"')
+        return state if state in ("open", "closed") else "open"
+    except Exception as e:
+        print(f"[github] fetch_issue_state error: {e}", file=sys.stderr)
+        return "open"
 
 
 def fetch_issue_with_comments(owner, repo, issue_number):
@@ -195,8 +364,8 @@ def fetch_issue_with_comments(owner, repo, issue_number):
     )
     try:
         data = json.loads(issue_json)
-        title = data.get("title", "")
-        body = data.get("body", "")
+        title = data.get("title") or ""
+        body = data.get("body") or ""
     except (json.JSONDecodeError, TypeError):
         title = ""
         body = issue_json
@@ -273,6 +442,137 @@ def detect_parent_repo(project_path: str) -> Optional[str]:
         return None
     except (RuntimeError, subprocess.SubprocessError, OSError):
         return None
+
+
+_GITHUB_URL_RE = re.compile(
+    r"github\.com[:/]([^/]+)/([^/.]+?)(?:\.git)?$"
+)
+
+
+def _parse_remote_url(url: str) -> Optional[str]:
+    """Extract ``owner/repo`` from a GitHub remote URL."""
+    m = _GITHUB_URL_RE.search(url)
+    if m:
+        return f"{m.group(1)}/{m.group(2)}"
+    return None
+
+
+def _get_remote_url(project_path: str, remote: str) -> Optional[str]:
+    """Return the URL of a git remote, or None."""
+    try:
+        result = subprocess.run(
+            ["git", "remote", "get-url", remote],
+            capture_output=True, text=True, timeout=5,
+            cwd=project_path, stdin=subprocess.DEVNULL,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+    return None
+
+
+def _upstream_remote_repo(project_path: str) -> Optional[str]:
+    """Return ``owner/repo`` from the ``upstream`` git remote if it
+    differs from ``origin``.  Returns ``None`` when there's no
+    ``upstream`` remote or it points to the same repo as ``origin``.
+    """
+    upstream_url = _get_remote_url(project_path, "upstream")
+    if not upstream_url:
+        return None
+    upstream_repo = _parse_remote_url(upstream_url)
+    if not upstream_repo:
+        return None
+
+    # Only return upstream if it's different from origin
+    origin_url = _get_remote_url(project_path, "origin")
+    if origin_url:
+        origin_repo = _parse_remote_url(origin_url)
+        if origin_repo and origin_repo.lower() == upstream_repo.lower():
+            return None
+
+    return upstream_repo
+
+
+def origin_repo(project_path: str) -> Optional[str]:
+    """Return ``owner/repo`` parsed from the ``origin`` git remote URL.
+
+    Reflects the actual push target (the fork, in a fork workflow), unlike
+    ``gh repo view`` which resolves to the upstream/base repo when an
+    ``upstream`` remote is present. Returns ``None`` when there's no origin
+    remote or its URL can't be parsed as a GitHub slug.
+    """
+    url = _get_remote_url(project_path, "origin")
+    if url:
+        return _parse_remote_url(url)
+    return None
+
+
+_UNSET = object()
+
+
+def _config_target_repo(
+    project_path: str, project_name: str,
+) -> object:
+    """Check ``submit_to_repository.repo`` in projects.yaml.
+
+    Returns the configured target repo, ``None`` when origin already IS
+    the canonical repo, or the ``_UNSET`` sentinel when no config exists.
+    """
+    import os
+    koan_root = os.environ.get("KOAN_ROOT", "")
+    if not koan_root:
+        return _UNSET
+    try:
+        from app.projects_config import (
+            load_projects_config, get_project_submit_to_repository,
+        )
+        config = load_projects_config(koan_root)
+        if not config:
+            return _UNSET
+        submit_cfg = get_project_submit_to_repository(config, project_name)
+        configured_repo = submit_cfg.get("repo")
+        if not configured_repo:
+            return _UNSET
+        origin_url = _get_remote_url(project_path, "origin")
+        if origin_url:
+            origin_slug = _parse_remote_url(origin_url)
+            if origin_slug and origin_slug.lower() == configured_repo.lower():
+                return None
+        return configured_repo
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).debug("_config_target_repo failed: %s", exc)
+        return _UNSET
+
+
+def resolve_target_repo(
+    project_path: str, *, project_name: str = "",
+) -> Optional[str]:
+    """Return the upstream ``owner/repo`` if working in a fork, else ``None``.
+
+    Resolution order:
+    0. ``submit_to_repository.repo`` from projects.yaml (when *project_name*
+       is provided).  If the configured repo matches ``origin``, returns
+       ``None`` — origin IS the canonical repo, not a fork.
+    1. GitHub fork parent (via ``gh repo view --json parent``)
+    2. Git ``upstream`` remote (if it differs from ``origin``)
+
+    When the local repo is a fork the returned value should be used as
+    the ``--repo`` argument for ``gh pr create`` / ``gh issue create``
+    so that operations target the upstream repository instead of the fork.
+    """
+    if project_name:
+        configured = _config_target_repo(project_path, project_name)
+        if configured is not _UNSET:
+            return configured
+
+    parent = detect_parent_repo(project_path)
+    if parent:
+        return parent
+
+    # Fallback: check if there's a distinct 'upstream' git remote
+    return _upstream_remote_repo(project_path)
 
 
 # TTL cache for count_open_prs results (avoids repeated gh CLI calls)
@@ -360,6 +660,237 @@ def batch_count_open_prs(repos: list, author: str) -> Dict[str, int]:
     except (RuntimeError, subprocess.TimeoutExpired, json.JSONDecodeError,
             OSError, TypeError, KeyError):
         return {}
+
+
+def list_open_pr_branches(repo: str, author: str, cwd: str = None) -> List[str]:
+    """List branch names of open PRs by a specific author in a repository.
+
+    Args:
+        repo: Repository in ``owner/repo`` format.
+        author: GitHub username to filter by. If empty, returns ``[]``.
+        cwd: Optional working directory.
+
+    Returns:
+        Sorted list of branch names (headRefName) for open PRs.
+        Returns empty list on error.
+    """
+    if not author:
+        return []
+
+    try:
+        output = run_gh(
+            "pr", "list",
+            "--repo", repo,
+            "--state", "open",
+            "--author", author,
+            "--json", "headRefName",
+            cwd=cwd, timeout=15,
+        )
+        prs = json.loads(output) if output else []
+        if not isinstance(prs, list):
+            return []
+        return sorted({
+            pr["headRefName"]
+            for pr in prs
+            if isinstance(pr, dict) and pr.get("headRefName")
+        })
+    except (RuntimeError, subprocess.TimeoutExpired, json.JSONDecodeError,
+            TypeError, KeyError):
+        return []
+
+
+def find_bot_comment(
+    owner: str, repo: str, pr_number: int, marker: str,
+    bot_username: str = "",
+) -> Optional[dict]:
+    """Search issue comments on a PR for a comment containing ``marker``.
+
+    Only searches conversation (issue-level) comments, not inline review
+    comments.  Returns the first matching comment, or ``None`` if absent.
+
+    When ``bot_username`` is provided, only a comment authored by that account
+    is returned.  This matters when the review bot account changes between runs
+    (e.g. switching from one bot to another): GitHub only lets an account edit
+    its OWN comments, so PATCHing a marked comment left by a different bot
+    fails with a 403.  Filtering by author makes the current bot ignore the
+    other bot's comment and post a fresh one instead.  When ``bot_username`` is
+    empty (unconfigured), the first marker match wins regardless of author —
+    preserving backward-compatible behaviour.
+
+    Args:
+        owner: Repository owner.
+        repo: Repository name.
+        pr_number: PR number (int or str).
+        marker: Marker string to search for (e.g. ``SUMMARY_TAG``).
+        bot_username: If provided, only return a comment authored by this
+            account (case-insensitive).
+
+    Returns:
+        Dict with keys ``id``, ``body``, ``user`` from the GitHub API, or
+        ``None`` if no matching comment is found or on any error.
+    """
+    try:
+        raw = run_gh(
+            "api",
+            f"repos/{owner}/{repo}/issues/{pr_number}/comments",
+            "--paginate",
+            "--jq", r'.[] | {id: .id, body: .body, user: .user.login}',
+            timeout=30,
+        )
+    except RuntimeError:
+        return None
+
+    if not raw.strip():
+        return None
+
+    wanted_user = bot_username.strip().lower()
+    for line in raw.strip().split("\n"):
+        try:
+            comment = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if marker not in comment.get("body", ""):
+            continue
+        if wanted_user and str(comment.get("user", "")).lower() != wanted_user:
+            continue
+        return comment
+
+    return None
+
+
+def check_pvrs_enabled(repo: str, cwd: str = None) -> bool:
+    """Check if Private Vulnerability Reporting is enabled on a repository.
+
+    Calls ``GET /repos/{owner}/{repo}/private-vulnerability-reporting``.
+    Returns ``False`` on any error (safe default — falls back to public issues).
+
+    Args:
+        repo: Repository in ``owner/repo`` format.
+        cwd: Optional working directory.
+
+    Returns:
+        True if PVRS is enabled, False otherwise.
+    """
+    try:
+        output = api(
+            f"repos/{repo}/private-vulnerability-reporting",
+            cwd=cwd, timeout=15,
+        )
+        data = json.loads(output)
+        return data.get("enabled", False) is True
+    except (RuntimeError, subprocess.TimeoutExpired, json.JSONDecodeError,
+            OSError, TypeError, KeyError):
+        return False
+
+
+def security_advisory_report(
+    summary: str,
+    description: str,
+    severity: str,
+    ecosystem: str = "other",
+    package_name: str = "",
+    repo: str = None,
+    cwd: str = None,
+) -> str:
+    """Submit a private vulnerability report via GitHub PVRS.
+
+    Calls ``POST /repos/{owner}/{repo}/security-advisories/reports``.
+
+    Args:
+        summary: Advisory title.
+        description: Markdown body with vulnerability details.
+        severity: One of ``critical``, ``high``, ``medium``, ``low``.
+        ecosystem: Package ecosystem (``pip``, ``npm``, ``go``, etc.).
+        package_name: Package or project name.
+        repo: Repository in ``owner/repo`` format.
+        cwd: Optional working directory.
+
+    Returns:
+        The advisory URL (``html_url``) on success.
+
+    Raises:
+        RuntimeError: If the API call fails.
+    """
+    from app.leak_detector import scan_and_redact
+
+    summary = scan_and_redact(summary, context="PVRS summary")
+    description = scan_and_redact(description, context="PVRS description")
+
+    payload = json.dumps({
+        "summary": summary,
+        "description": description,
+        "severity": severity,
+        "vulnerabilities": [{
+            "package": {
+                "ecosystem": ecosystem,
+                "name": package_name or "unknown",
+            },
+            "vulnerable_version_range": "*",
+            "patched_versions": "*",
+        }],
+    })
+
+    output = api(
+        f"repos/{repo}/security-advisories/reports",
+        method="POST",
+        input_data=payload,
+        raw_body=True,
+        cwd=cwd,
+        timeout=30,
+    )
+
+    try:
+        data = json.loads(output)
+        url = data.get("html_url", "")
+        if url:
+            return url
+        ghsa = data.get("ghsa_id", "")
+        if ghsa:
+            return f"GHSA: {ghsa}"
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    return output.strip() if output else ""
+
+
+def detect_ecosystem(project_path: str) -> str:
+    """Infer the package ecosystem from project files.
+
+    Checks for common package manager files and returns the corresponding
+    ecosystem identifier used by GitHub's advisory API.
+
+    Args:
+        project_path: Path to the project root.
+
+    Returns:
+        Ecosystem string: ``pip``, ``npm``, ``go``, ``cargo``, ``maven``,
+        ``nuget``, ``rubygems``, ``composer``, or ``other``.
+    """
+    from pathlib import Path
+
+    root = Path(project_path)
+
+    # Order matters: more specific files first
+    indicators = [
+        (("pyproject.toml", "requirements.txt", "setup.py", "Pipfile"), "pip"),
+        (("package.json",), "npm"),
+        (("go.mod",), "go"),
+        (("Cargo.toml",), "cargo"),
+        (("pom.xml", "build.gradle", "build.gradle.kts"), "maven"),
+        (("*.csproj", "*.sln"), "nuget"),
+        (("Gemfile",), "rubygems"),
+        (("composer.json",), "composer"),
+    ]
+
+    for filenames, ecosystem in indicators:
+        for filename in filenames:
+            if "*" in filename:
+                if list(root.glob(filename)):
+                    return ecosystem
+            elif (root / filename).exists():
+                return ecosystem
+
+    return "other"
 
 
 def count_open_prs(repo: str, author: str, cwd: str = None) -> int:

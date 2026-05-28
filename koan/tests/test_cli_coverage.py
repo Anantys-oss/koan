@@ -209,7 +209,7 @@ class TestRecoverComplexMissionFallback:
             "- Another stale\n\n"
             "## Done\n\n"
         )
-        count = recover_missions(str(instance_dir))
+        count, _ = recover_missions(str(instance_dir))
         # All lines after ### are part of the complex mission — none recovered
         assert count == 0
 
@@ -351,7 +351,7 @@ class TestModelConfig:
         """DisallowedTools flags generated correctly."""
         from app.utils import build_claude_flags
         flags = build_claude_flags(disallowed_tools=["Bash", "Edit"])
-        assert flags == ["--disallowedTools", "Bash", "Edit"]
+        assert flags == ["--disallowedTools", "Bash,Edit"]
 
     def test_build_claude_flags_combined(self):
         """All flags combined."""

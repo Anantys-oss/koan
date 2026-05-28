@@ -19,6 +19,44 @@
 # after resume doesn't immediately re-pause.
 # start_on_pause: false
 
+# Start in passive mode — boot into read-only mode
+# When true, Kōan starts in passive mode: the loop runs (heartbeat, GitHub
+# notification polling, Telegram commands) but never executes missions or
+# autonomous work. Use /active to resume normal execution.
+# start_passive: false
+
+# Focus mode (permanent) — only run explicitly queued missions
+# When true, Kōan becomes a pure "mission executor": no DEEP mode, no
+# contemplative sessions, no autonomous exploration. Only missions queued
+# via /mission (Telegram), recurring missions, and GitHub @mention commands
+# are executed. The loop idles (wake-on-mission) whenever the queue is empty.
+#
+# This is the config-level permanent switch. The /focus Telegram command
+# provides time-bounded focus (e.g. /focus 3h). Both produce the same
+# runtime behavior.
+#
+# Per-project override: set focus: true/false in projects.yaml under
+# defaults or individual projects. Config.yaml sets the global default.
+#
+# Differs from passive mode:
+#   - passive = no execution at all (missions stay Pending)
+#   - focus   = autonomous work disabled, but missions still run
+#
+# Env override: KOAN_FOCUS=1 (truthy values)
+# focus: false
+
+# Multiple instances — acknowledge that several Kōan instances share
+# the same GitHub account, each watching a different set of repos.
+# When true, Kōan suppresses warnings about @mentions on repos not in
+# this instance's projects.yaml (another instance likely handles them).
+# enable_multiple_instances: false
+
+# Startup reflection — run self-reflection check on startup
+# When true, Kōan checks whether periodic self-reflection is due (every N
+# sessions) and, if so, invokes Claude to generate observations. Disabled by
+# default to avoid unexpected Claude CLI calls at boot time.
+# startup_reflection: false
+
 # Budget & Scheduling
 # These are the primary source of truth for run loop configuration.
 # max_runs_per_day: Maximum runs before auto-pause (resets on /resume or quota reset)
@@ -26,10 +64,23 @@
 max_runs_per_day: 20
 interval_seconds: 300
 
+# Startup delay — seconds to wait before the first mission after boot.
+# Gives you time to send /pause before any mission runs.
+# Set to 0 to disable. Skipped automatically if already paused at startup.
+# startup_delay: 30
+
 # Auto-pause — automatically pause after max_runs or idle timeout.
 # When false, Kōan keeps running indefinitely (quota and error pauses still apply).
 # Useful when you have scheduled recurring tasks that must fire reliably.
 # auto_pause: true
+
+# Prompt caching behavior
+# Keep consecutive autonomous runs on the same project to preserve
+# prompt-prefix cache warmth across iterations.
+# 0 = disabled (always avoid repeating last project, legacy behavior)
+# 100 = always stay on the previous project when still eligible
+# prompt_caching:
+#   same_project_stickiness_percent: 30
 
 # Fast reply mode — use lightweight model (Haiku) for command handlers
 # When true, /usage, /sparring, and similar commands use Haiku instead of default model
@@ -52,11 +103,19 @@ fast_reply: false
 # e.g., "koan-alice" creates branches like "koan-alice/fix-something"
 # branch_prefix: "koan"
 
+# CI fix max attempts — maximum number of Claude-based fix attempts per PR
+# When CI fails after a rebase/push, Kōan will attempt to fix it up to this
+# many times. Each attempt: fetch failure logs → run Claude → force-push →
+# re-check. The counter is stored in the ## CI section of missions.md, so
+# it's visible in your task queue. Default: 5.
+# ci_fix_max_attempts: 5
+
 # Skill timeout — maximum seconds for heavy skill execution (fix, implement, recreate)
 # These skills invoke Claude with full tool access and can run for a long time.
+# Complex /implement missions with multi-phase plans routinely exceed 60 min.
 # Increase if you see timeouts on complex issues; decrease to save quota.
-# Default: 3600 (60 minutes). Previous default was 900 (15 minutes).
-skill_timeout: 3600
+# Default: 7200 (2 hours). Previous default was 3600 (60 minutes).
+skill_timeout: 7200
 
 # Skill max turns — maximum agentic turns for heavy skill execution
 # Controls how many back-and-forth turns Claude CLI is allowed during
@@ -66,12 +125,114 @@ skill_timeout: 3600
 # Default: 200.
 # skill_max_turns: 200
 
+# Analysis max turns — maximum turns for read-only analysis skills
+# Controls how many turns Claude CLI is allowed during /dead_code,
+# /tech_debt, /audit, /brainstorm, and /deepplan invocations. These
+# skills only use read tools (Read, Glob, Grep). The dead_code skill
+# includes Python AST pre-analysis to reduce turn consumption, but
+# large codebases may still need more headroom.
+# Default: 75.
+# analysis_max_turns: 75
+
+# Reasoning effort level — controls Claude's --effort flag per autonomous mode.
+# Higher effort = deeper reasoning but more tokens. Accepts per-mode overrides
+# or a single value for all modes. Valid levels: low, medium, high, max.
+# Omit or set to "" to use no --effort flag (provider default).
+# Default: review=low, implement=(none), deep=high.
+# effort:
+#   review: low
+#   implement: medium
+#   deep: high
+
+# Extended thinking / reasoning controls — activates the provider's
+# extended-thinking mode (e.g. Claude's --effort max) for missions
+# classified as "critical" complexity tier AND at or above the
+# configured minimum autonomous mode.
+# Disabled by default. Thinking only triggers for the most complex
+# missions (critical tier) when the mode qualifies.
+# thinking:
+#   enabled: true
+#   budget_tokens: 10000   # soft cap (provider-dependent; 0 = no cap)
+#   min_mode: deep         # one of: wait, review, implement, deep
+
+# Post-mission pipeline timeout — maximum seconds for the steps that run after
+# a mission completes: verification, reflection, PR review learning, auto-merge.
+# Increase if post-mission steps are being cut short; decrease to keep the loop snappy.
+# Default: 300 (5 minutes).
+# post_mission_timeout: 300
+
+# Forward Claude's final result text to outbox.md when a mission's outcome is an
+# alert (SKIP / FAIL / ERROR / BLOCKED, "permission deadlock", "no PR opened",
+# etc.) or when the mission title matches a skill that opted in via SKILL.md
+# (see "Result forwarding" in koan/skills/README.md — set `forward_result: true`
+# on the skill's SKILL.md frontmatter to enable). Guarantees the user sees the
+# result on Telegram even when the Claude session's sandbox blocked writes to
+# instance/.
+# Default: true. Set to false to silence the forwarder entirely.
+# notify_mission_results: true
+
+# Stagnation detection — abort Claude sessions stuck in a loop long before
+# mission_timeout would kill them, saving quota.
+# How it works: a daemon thread samples the subprocess stdout every
+# ``check_interval_seconds`` and hashes the last ``sample_lines`` lines.
+# After ``abort_after_cycles`` consecutive identical hashes, the monitor
+# kills the process group and re-queues the mission to Pending so a fresh
+# Claude run can try again. After ``max_retry_on_stagnation`` consecutive
+# stagnation re-queues for the same mission, it is marked Failed with a
+# [stagnation] cause tag in missions.md and a distinct Telegram message.
+# Set ``max_retry_on_stagnation: 0`` to skip retries (fail on first stagnation).
+# Per-project overrides go in projects.yaml under ``stagnation:`` (set
+# ``stagnation: false`` or ``stagnation.enabled: false`` to disable).
+# stagnation:
+#   enabled: true
+#   check_interval_seconds: 60
+#   abort_after_cycles: 3
+#   sample_lines: 50
+#   max_retry_on_stagnation: 3
+
+# Autonomous health diagnostics — automatically inject diagnostic missions
+# (tech_debt, dead_code, or audit) when a project's success rate falls below
+# a threshold and it has accumulated consecutive non-productive sessions.
+# Diagnostic type selection:
+#   - "declining" trend  → tech_debt (structural issues causing failures)
+#   - many "empty" sessions → dead_code (cleanup to unblock exploration)
+#   - many "blocked"/stagnated sessions → audit (deeper investigation)
+# Disabled by default — opt in when you want self-healing behavior.
+# autonomous_health:
+#   enabled: false              # Master switch (default: false)
+#   success_rate_floor: 0.25    # Trigger below this success rate (default: 0.25)
+#   staleness_floor: 3          # Consecutive non-productive sessions required (default: 3)
+#   cooldown_days: 21           # Min days between diagnostics per project (default: 21)
+#   min_mode: implement         # Minimum autonomous mode required (default: implement)
+
+# Review comment dispatch — auto-create missions when human reviewers
+# leave comments on Koan's open PRs.  Uses fingerprint-based dedup
+# (sorted comment ID hashes) to dispatch only on new/changed comments.
+# State tracked in instance/.review-dispatch-tracker.json.
+# Disabled by default — opt in when you want automatic PR comment follow-up.
+# review_dispatch:
+#   enabled: false                # Master switch (default: false)
+#   cooldown_minutes: 30          # Min minutes between checks per project (default: 30)
+
 # Contemplative mode trigger chance (0-100%)
 # When no mission is pending, this is the probability of running a reflective
 # session instead of autonomous work. Allows regular moments of introspection
 # without waiting for budget exhaustion.
 # 0 = never contemplative, 10 = ~1 in 10 runs, 20 = ~1 in 5 runs
 contemplative_chance: 10
+
+# Notification priority filtering
+# Controls which priority levels are sent to Telegram vs written to the daily journal.
+# Priority levels (highest to lowest): urgent, action, warning, info
+#   urgent  — critical failures, quota exhausted (always sent)
+#   action  — mission complete, command responses (default threshold)
+#   warning — quota low, focus validation warnings
+#   info    — progress updates, reflections
+# Messages below min_priority are suppressed from Telegram and written to the daily
+# journal instead (under a "notifications" project entry), so nothing is lost.
+# Default: "action" (sends urgent + action; suppresses warning + info)
+# notifications:
+#   min_priority: action
 
 # Telegram
 # NOTE: Prefer setting these in .env (KOAN_TELEGRAM_TOKEN, KOAN_TELEGRAM_CHAT_ID)
@@ -84,8 +245,21 @@ telegram:
 # Controls which messaging platform Kōan uses for communication.
 # If not specified, defaults to "telegram" (backward compatible).
 # Can also be set via KOAN_MESSAGING_PROVIDER env var (overrides this).
+#
+# Recommended: configure here in config.yaml rather than via env vars.
+# Env vars (KOAN_MATRIX_*, KOAN_SLACK_*, KOAN_TELEGRAM_*) are kept as
+# legacy/override fallbacks but the cleaner setup lives here.
+#
+# Telegram and Slack credentials still come from env vars (see env.example).
+# Matrix supports config.yaml directly:
+#
 # messaging:
-#   provider: "telegram"  # "telegram" (default) or "slack"
+#   provider: "telegram"  # "telegram" (default), "slack", or "matrix"
+#   matrix:
+#     homeserver: "https://matrix.org"
+#     user_id: "@koan:matrix.org"
+#     room_id: "!abcdefghijk:matrix.org"
+#     access_token: "syt_your_token_here"
 
 # Usage thresholds
 budget:
@@ -112,9 +286,21 @@ tools:
 # Can also be set via KOAN_CLI_PROVIDER env var (overrides this)
 cli_provider: "claude"
 
-# Skip permission prompts — required for MCP tools to work in autonomous mode.
-# Only enable this if you understand the security implications.
+# Skip permission prompts/sandboxing for CLI providers.
+# Claude: adds --dangerously-skip-permissions; does not work when Koan runs as root.
+# Codex: adds --dangerously-bypass-approvals-and-sandbox so Codex can use git
+# directly. Only enable this when Koan already runs in a trusted external sandbox.
+# For MCP tools, use provider-specific allowlists/settings instead.
+# See docs/provider-claude.md and docs/provider-codex.md for details.
 # skip_permissions: false
+
+# MCP server configuration — paths to MCP config JSON files.
+# Passed as --mcp-config to the Claude CLI.
+# For autonomous mode, pre-approve MCP tools in the project's
+# .claude/settings.local.json (see docs/provider-claude.md).
+# Per-project overrides available in projects.yaml (replaces global list).
+# mcp:
+#   - "/path/to/mcp-servers.json"
 
 # Local LLM configuration (used when cli_provider: "local")
 # Connects to any OpenAI-compatible API server:
@@ -128,15 +314,53 @@ cli_provider: "claude"
 #   model: "glm4"
 #   api_key: ""   # Usually empty for local servers
 
-# Claude model configuration
-# Controls which models are used for different types of Claude calls
-# Empty string = use default model (subscription default or ANTHROPIC_MODEL)
+# Model configuration (legacy/fallback)
+# Controls which models are used for different types of calls.
+# Empty string = use default model (subscription default or provider default).
+# For provider-specific overrides, use models_for_claude / models_for_codex below.
+# Per-project override: set models: {...} under the project in projects.yaml.
 models:
   mission: ""              # Main mission execution (empty = default)
   chat: ""                 # Telegram/dashboard chat responses
   lightweight: "haiku"     # Low-cost calls: format_outbox, pick_mission, contemplative
   fallback: "sonnet"       # Fallback when primary model is overloaded (print mode only)
   review_mode: ""          # Override model for REVIEW mode (cheaper audits)
+  reflect: ""              # Model for review reflection pass (empty = lightweight)
+
+# Provider-specific model configuration — resolved before the global models: section.
+# Resolution order per key: per-project models → models_for_{provider} → models → built-in default.
+# Key names use underscores; hyphens in provider names are normalised automatically
+# (e.g. ollama-launch → models_for_ollama_launch).
+#
+# Claude provider defaults (uncomment and set to override):
+# models_for_claude:
+#   mission: ""              # Main mission execution (empty = subscription default)
+#   chat: ""                 # Chat responses
+#   lightweight: "haiku"     # Low-cost calls
+#   fallback: "sonnet"       # Fallback when primary is overloaded
+#   review_mode: ""          # Override model for REVIEW mode (cheaper audits)
+#   reflect: ""              # Model for review reflection pass (empty = lightweight)
+#
+# Codex (OpenAI) provider defaults (uncomment and set to override):
+# models_for_codex:
+#   mission: "gpt-5.5"       # Main mission execution
+#   chat: "gpt-5.5"          # Chat responses
+#   lightweight: "gpt-5.5"   # Low-cost calls
+#   fallback: ""             # Empty = use provider default
+#   review_mode: "gpt-5.3-codex"  # Cheaper model for REVIEW mode audits
+#   reflect: "gpt-5.5"       # Model for review reflection pass
+
+# Branch cleanup — automatic deletion of merged branches during git sync
+# Every git_sync_interval iterations, Kōan detects merged branches (both
+# regular merges via git ancestry and squash/rebase merges via GitHub API)
+# and deletes them locally. Enable delete_remote_branches to also push-delete
+# the corresponding remote refs (safe: only agent-prefixed branches are touched,
+# the current branch is never deleted, and remote deletion failures are ignored
+# if the remote branch was already removed by GitHub's auto-delete).
+# branch_cleanup:
+#   enabled: true                  # Master switch (default: true)
+#   delete_remote_branches: true   # Also delete remote refs (default: true)
+#                                  # Set false to only clean up local branches
 
 # Git auto-merge configuration
 # Automatically merges koan/* branches based on rules
@@ -186,7 +410,34 @@ usage:
 #   - models: override model selection (mission, chat, lightweight, etc.)
 #   - tools: restrict available tools (mission, chat tool lists)
 #   - github: override authorized_users for GitHub @mention commands
+#   - complexity_routing: per-project override (false to disable, or tier overrides)
 # See projects.example.yaml for documentation and examples.
+
+# Complexity routing — pre-classify missions and route to cheapest capable model
+# A lightweight Haiku call assigns each mission a tier (trivial/simple/medium/complex)
+# before dispatch. The tier drives model selection and max-turns cap, saving quota
+# on simple work while reserving expensive models for genuinely complex tasks.
+# The tier is cached as [complexity:X] in missions.md so reruns skip re-classification.
+# Set enabled: false (or complexity_routing: false per-project) to disable entirely.
+# complexity_routing:
+#   enabled: true
+#   tiers:
+#     trivial:
+#       model: "haiku"          # Cheapest model for tiny mechanical changes
+#       max_turns: 50           # Reduced turn budget
+#       timeout_multiplier: 0.5 # Halve the default timeout
+#     simple:
+#       model: "sonnet"         # Capable model for small self-contained changes
+#       max_turns: 100
+#       timeout_multiplier: 0.75
+#     medium:
+#       model: ""               # Empty = use models.mission (no override)
+#       max_turns: 100
+#       timeout_multiplier: 1.0
+#     complex:
+#       model: ""               # Empty = use models.mission (no override)
+#       max_turns: 500          # Generous turns for architectural work
+#       timeout_multiplier: 1.5
 
 # Plan review loop — validates generated plans before posting to GitHub
 # A lightweight subagent (Haiku) reviews each plan for missing file paths,
@@ -196,6 +447,7 @@ usage:
 # plan_review:
 #   enabled: true       # Run review loop after plan generation (default: true)
 #   max_rounds: 3       # Maximum re-generation rounds per plan (default: 3)
+#   implement_gate: true  # Run plan-review gate before /implement execution (default: true)
 
 # Prompt injection guard — scans incoming missions for suspicious patterns
 # Detects instruction overrides, role confusion, secret extraction, shell injection.
@@ -211,6 +463,17 @@ usage:
 #   enabled: false          # Include dashboard in managed processes (default: false)
 #   port: 5001              # HTTP port (default: 5001)
 
+# Automation suggestions — context-aware recurring task proposals
+# When the agent is idle (no pending missions, not in focus mode), it can
+# generate personalized suggestions for recurring tasks the user should set up.
+# Uses a lightweight model to analyze project learnings, existing recurring
+# tasks, and cross-project patterns. Suggestions are written to outbox as
+# copy-pasteable /daily, /weekly, /every commands.
+# suggestions:
+#   enabled: true              # Master switch (default: true)
+#   min_interval_hours: 24     # Minimum hours between suggestions per project (default: 24)
+#   max_per_day: 2             # Maximum suggestions per project per day (default: 2)
+
 # Auto-update — automatically keep Kōan up to date
 # When enabled, Kōan periodically checks if upstream has new commits
 # and pulls + restarts automatically. Checks run at startup and every
@@ -221,6 +484,23 @@ usage:
 #   check_interval: 10      # Check every N iterations (default: 10)
 #   notify: true            # Notify on Telegram before/after update (default: true)
 
+# CI dispatch: auto-create fix missions when CI fails on Koan's open PRs.
+# Checks GitHub check-runs API each iteration (per-project cooldown).
+# ci_dispatch:
+#   enabled: true              # Master switch (default: false)
+#   cooldown_minutes: 30       # Min time between checks per project (default: 30)
+#   log_snippet_bytes: 4096    # Max CI log snippet in mission text (default: 4096)
+
+
+# memory:
+#  learnings_max_lines: 100        # Target after semantic compaction
+#  learnings_hard_cap: 200         # Absolute max (safety net)
+#  global_personality_max: 150     # Max lines for personality-evolution.md
+#  global_emotional_max: 100       # Max lines for emotional-memory.md
+#  compaction_interval_hours: 24   # How often cleanup runs
+#  log_horizon_days: 365           # Retain JSONL truth log entries for this many days (default: 365)
+#  context_window_entries: 20      # Number of recent JSONL entries injected into the agent prompt (default: 20)
+
 # GitHub notification-driven commands
 # Enable Kōan to respond to @mentions in GitHub PR/issue comments.
 # When a user posts "@nickname rebase" in a PR comment, Kōan reacts with 👍,
@@ -230,15 +510,91 @@ usage:
 #   commands_enabled: false          # Master switch (default: false)
 #   authorized_users: ["*"]          # "*" = all users, or list of GitHub usernames
 #   max_age_hours: 24                # Ignore notifications older than this (default: 24)
+#   stale_drain_hours: 48            # Multi-instance: drain unregistered-repo notifications
+#                                    # older than this (default: 48). Set to 0 to disable.
 #   check_interval_seconds: 60       # Base polling interval (default: 60, min: 10)
 #   max_check_interval_seconds: 180  # Backoff cap when idle (default: 180, min: 30)
 #   reply_enabled: false             # AI replies to non-command @mentions (default: false)
 #                                    # When enabled, the bot replies to questions/requests
 #                                    # from authorized users with contextual AI-generated answers.
+#   reply_authorized_users: ["*"]    # Who can trigger AI replies (default: uses authorized_users)
+#                                    # Separate from command permissions — allows broader audience
+#                                    # for read-only replies. ["*"] = anyone with repo write access.
+#                                    # Safe for private/enterprise repos where all users are trusted.
+#                                    # ⚠️ On public repos, ["*"] lets any write-access user trigger
+#                                    # Claude sessions — consider named users instead.
+#                                    # Omit to fall back to authorized_users. Set [] to disable.
+#                                    # Per-project override available in projects.yaml.
+#   reply_rate_limit: 5              # Max AI replies per user per hour (default: 5, min: 1)
+#                                    # Prevents API quota abuse when replies are open broadly.
 #   natural_language: false           # NLP intent parsing for @mentions (default: false)
 #                                    # When enabled, unrecognized commands are sent to Claude
 #                                    # for intent classification before falling back to error.
 #                                    # Per-project override available in projects.yaml.
+
+# Jira notification-driven commands
+# Enable Kōan to respond to @mentions in Jira issue comments.
+# When a user posts "@nickname plan" in a Jira comment, Kōan creates a mission
+# and processes it in the next iteration.
+# jira:
+#   enabled: false                       # Master switch (default: false)
+#   base_url: "https://myorg.atlassian.net"  # Jira instance URL (required if enabled)
+#   email: "bot@example.com"             # Atlassian account email for Basic auth (required)
+#   api_token: ""                        # Jira API token (required); also via KOAN_JIRA_API_TOKEN
+#   nickname: "koan-bot"                 # Bot's @mention name in Jira comments (required)
+#   commands_enabled: false              # Reserved for future per-command filtering (default: false)
+#   authorized_users: ["*"]             # "*" = all users, or list of Jira account emails
+#   max_age_hours: 24                    # Ignore comments older than this (default: 24)
+#   check_interval_seconds: 60           # Base polling interval (default: 60, min: 10)
+#   max_check_interval_seconds: 180      # Backoff cap when idle (default: 180, min: 30)
+#   max_issues_per_cycle: 200            # Cap on issues inspected per check (default: 200, min: 1).
+#                                        # Each inspected issue triggers a separate /comment API call,
+#                                        # so this directly bounds cold-start API consumption.
+#                                        # Tighten on small instances; raise if mentions on busy
+#                                        # backlogs get dropped (a WARNING logs when the cap fires).
+# Jira project key ownership is configured in projects.yaml:
+#   issue_tracker:
+#     provider: jira
+#     jira_project: FOO
+#     default_branch: "main"
+
+# Review ignore patterns — exclude files from /review PR diffs.
+# Applied before building the Claude prompt, reducing token spend on
+# generated code, lock files, and vendor directories.
+#
+# glob: patterns are matched against the full file path from the diff.
+#   - Patterns without '/' match the basename at any depth:
+#       "*.lock" matches "package-lock.json", "subdir/yarn.lock"
+#   - Patterns with '/' match the full path:
+#       "vendor/**" matches "vendor/lodash.js" but not "src/vendor.js"
+# regex: patterns are matched against the full file path (Python re.search).
+#   A pattern like ".*\.pb\.go$" matches "api/types.pb.go".
+#
+# When all files are filtered out, the review returns "nothing to review"
+# without calling Claude — saving quota entirely.
+#
+# review_ignore:
+#   glob:
+#     - "vendor/**"         # all files under vendor/
+#     - "*.lock"            # lock files at any depth (yarn.lock, etc.)
+#     - "*.min.js"          # minified JS bundles
+#   regex:
+#     - '.*\.pb\.go$'       # protobuf-generated Go files (full path regex)
+
+# Review concurrency — parallel GitHub API calls during code reviews
+# When enabled, PR context and comment fetching run concurrently using a
+# ThreadPoolExecutor. The LLM call (Claude CLI) is always sequential.
+# review_concurrency:
+#   enabled: true           # Enable parallel GitHub API fetches (default: true)
+#   github_workers: 4       # Max concurrent GitHub API calls (default: 4)
+
+# Review reflection pass — second-pass LLM call to score and filter findings
+# After the first-pass review generates file comments, a lightweight model
+# scores each finding 0-10. Findings scoring below the threshold are dropped.
+# Uses the models.reflect model (defaults to models.lightweight = haiku).
+# Set threshold: 0 to disable filtering (all findings pass through).
+# review_reflect:
+#   threshold: 5            # Min score to keep a finding (0-10, default: 5)
 
 # Dashboard attention zone — GitHub @mention notifications
 # When true, the dashboard attention zone also shows unread GitHub @mention
@@ -246,3 +602,134 @@ usage:
 # to be set in projects.yaml and the gh CLI to be authenticated.
 # Default: false (avoids GitHub API calls for users who haven't configured it).
 # attention_github_notifications: false
+
+# Memory compaction — controls how learnings and global memory files are managed
+# Learnings files grow append-only from PR reviews and agent experience.
+# Compaction uses Claude (lightweight model) to merge redundant entries and
+# remove obsolete ones. The hard cap is a safety net that truncates to keep
+# the most recent entries if compaction output is still too large.
+# Global personality/emotional files are simple tail-truncations (no AI).
+# memory:
+#   learnings_max_lines: 100        # Target after semantic compaction (default: 100)
+#   learnings_hard_cap: 200         # Absolute max, safety net truncation (default: 200)
+#   global_personality_max: 150     # Max lines for personality-evolution.md (default: 150)
+#   global_emotional_max: 100       # Max lines for emotional-memory.md (default: 100)
+#   compaction_interval_hours: 24   # How often to run cleanup (default: 24)
+#   max_relevant_learnings: 40      # Top-K learnings injected per mission (default: 40).
+#                                   # Lines are ranked by Jaccard word-overlap against
+#                                   # the mission text. Set to 0 to keep only the
+#                                   # recency hedge below. Bypass with [recall:full]
+#                                   # in mission text to load the full file.
+#   recall_recent_hedge: 5          # Most recent N lines always included regardless
+#                                   # of relevance score (default: 5).
+#                                   # Note: setting BOTH max_relevant_learnings: 0
+#                                   # and recall_recent_hedge: 0 disables learnings
+#                                   # injection entirely (the section is omitted).
+#   write_time_dedup: true          # Run a lightweight Claude pass to drop
+#                                   # paraphrased duplicates BEFORE appending new
+#                                   # PR-review lessons to learnings.md (default: true).
+#                                   # Complements the periodic semantic compaction
+#                                   # by stopping near-duplicates at the write
+#                                   # boundary. Set to false to save quota if you
+#                                   # run on a tight burn budget; the periodic pass
+#                                   # will still dedup, just less often.
+#   max_block_lines: 200            # Hard ceiling on the assembled <memory-context>
+#                                   # block injected into every mission and skill
+#                                   # prompt (default: 200, matching the on-disk
+#                                   # learnings hard cap). When exceeded, parts are
+#                                   # truncated in reverse curation order: learnings
+#                                   # first, then priorities, then context. A WARNING
+#                                   # is logged and a marker is appended so the model
+#                                   # knows content was elided. Tune down if you want
+#                                   # to actively trim well-behaved instances; tune
+#                                   # up only if you've measured the per-mission
+#                                   # token budget you want to spend.
+
+# Context trimming — budget-aware prompt reduction (issue #1309)
+# When quota is low, the agent prompt is trimmed to save tokens.
+# Pressure levels: normal (full context), low (reduced), critical (minimal).
+# Pressure is derived from autonomous_mode + available_pct.
+# context:
+#   low_pressure_pct: 30            # Below this %, switch to low pressure (default: 30)
+#   critical_pressure_pct: 15       # Below this %, switch to critical pressure (default: 15)
+#   memory_entries: 20              # Memory log entries at normal pressure (default: 20)
+#   memory_entries_low: 10          # Memory log entries at low pressure (default: 10)
+#   memory_entries_critical: 5      # Memory log entries at critical pressure (default: 5)
+#   learnings_k: 40                 # Learnings top-K at normal pressure (default: 40)
+#   learnings_k_low: 20             # Learnings top-K at low pressure (default: 20)
+#   learnings_k_critical: 10        # Learnings top-K at critical pressure (default: 10)
+#   learnings_hedge: 5              # Recency hedge at normal pressure (default: 5)
+#   learnings_hedge_low: 3          # Recency hedge at low pressure (default: 3)
+#   learnings_hedge_critical: 2     # Recency hedge at critical pressure (default: 2)
+
+# Automation rules — loop guard
+# Limits how many times a single automation rule can fire within a 60-second
+# window. Prevents runaway loops, e.g. a create_mission rule triggered by
+# post_mission that re-queues itself indefinitely.
+# The counter is in-memory and resets when the agent restarts.
+# automation_rules:
+#   max_fires_per_minute: 5   # Per-rule rate limit (default: 5, min: 1)
+
+# Output optimizations — reduce token consumption
+# These settings control prompt-level optimizations that reduce output verbosity
+# while preserving response quality.
+#
+# Caveman ("no filler, 3-6 word sentences, direct answers") applies by default
+# to the agent loop (regular missions) — that's where the bulk of token cost
+# lives.
+#
+# Skills are **opt-in**: a skill only receives caveman when it declares
+# ``caveman: true`` in its SKILL.md frontmatter, OR when its canonical name
+# is listed in ``optimizations.caveman.include`` below. Core skills shipping
+# with ``caveman: true``: /rebase, /recreate, /squash, /fix, /ci_check,
+# /check, /implement.
+#
+# Set ``enabled: false`` to suppress caveman everywhere (agent loop and skills):
+#
+# Review compressor — compress large PR diffs before sending to Claude.
+# Sorts files by language priority (source code first, lockfiles last) and
+# fits as many hunks as possible within an 80k-token budget. Skipped files
+# are surfaced in the review comment so reviewers know analysis is partial.
+# Enabled by default.
+# optimizations:
+#   caveman:
+#     enabled: true
+#     include: [my_custom_skill]   # canonical names; aliases auto-resolved
+#   review_compressor:
+#     enabled: true
+
+# RTK (Rust Token Killer — https://github.com/rtk-ai/rtk)
+#
+# Optional CLI proxy that compresses common dev-command output (git, ls,
+# cat/read, grep/find, pytest, jest, cargo, gh, docker, kubectl, aws, …) by
+# 60-90 % before it reaches Claude.  Strictly complementary to caveman:
+#   - caveman trims what Claude WRITES.
+#   - rtk     trims what Claude READS.
+#
+# rtk is **not** a Kōan dependency.  Kōan only:
+#   1. Detects the binary at boot (logged once).
+#   2. Optionally injects an awareness section into Claude's system prompt
+#      so Claude prefers ``rtk <cmd>`` over the raw command.
+#   3. Exposes a ``/rtk`` skill for status/setup/uninstall/gain.
+#
+# Hook installation (``rtk init -g``) only ever happens via explicit
+# ``/rtk setup`` from Telegram — Kōan never silently mutates
+# ``~/.claude/settings.json``.
+#
+# optimizations:
+#   rtk:
+#     enabled: auto         # auto | true | false
+#                           #   auto = on iff `rtk` is on PATH (default)
+#                           #   true = on regardless of detection
+#                           #   false = off everywhere
+#     awareness: true       # inject RTK awareness into the system prompt
+#     require_jq: true      # warn at boot if `jq` is missing (rtk's
+#                           # auto-rewrite hook requires jq)
+#
+# Per-project opt-out lives in ``projects.yaml``:
+#
+#   projects:
+#     myproject:
+#       rtk: false          # never inject awareness for this project
+#                           # (e.g. its test runner emits JSON that rtk's
+#                           #  filter would clobber)

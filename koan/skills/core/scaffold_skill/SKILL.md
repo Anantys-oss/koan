@@ -1,10 +1,11 @@
 ---
 name: scaffold_skill
 scope: core
-description: Generate a new skill from a description
+description: Generate a new skill from a description (quarantined until /skill approve)
 version: 1.0.0
 audience: bridge
 group: system
+emoji: 🧩
 worker: true
 commands:
   - name: scaffold_skill

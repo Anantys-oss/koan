@@ -10,6 +10,15 @@ from unittest.mock import MagicMock, patch, call
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _reset_circuit_breaker():
+    """Reset the mission_runner circuit breaker between tests."""
+    from app.mission_runner import _breaker
+    _breaker.reset()
+    yield
+    _breaker.reset()
+
+
 # ---------------------------------------------------------------------------
 # Phase 1: scan_changes
 # ---------------------------------------------------------------------------

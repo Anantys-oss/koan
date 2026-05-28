@@ -147,7 +147,7 @@ if __name__ == "__main__":
         migrations = list_migrations()
         if not migrations:
             print("No migrations found.")
-        for mid, name, done in migrations:
+        for _mid, name, done in migrations:
             status = "applied" if done else "pending"
             print(f"  [{status}] {name}")
     else:

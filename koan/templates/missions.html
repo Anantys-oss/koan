@@ -207,6 +207,14 @@
     let isEditing = false;
     let isDragging = false;
 
+    // Project-tag regexes — single source of truth for the JS side.
+    // Mirrors PROJECT_TAG_FULL_RE / PROJECT_TAG_RE in koan/app/utils.py.
+    // Extend the character class here AND there in lockstep.
+    const PROJECT_NAME_CHARS = 'a-zA-Z0-9_.\\-';
+    const PROJECT_TAG_STRIP_RE = new RegExp('\\s*\\[(?:project|projet):[' + PROJECT_NAME_CHARS + ']+\\]\\s*', 'g');
+    const PROJECT_TAG_CAPTURE_RE = new RegExp('\\[(?:project|projet):([' + PROJECT_NAME_CHARS + ']+)\\]');
+    const PROJECT_TAG_STRIP_ONCE_RE = new RegExp('\\[(?:project|projet):[' + PROJECT_NAME_CHARS + ']+\\]\\s*');
+
     // --- Toast notifications ---
     function showToast(message, type) {
         const t = document.createElement('div');
@@ -252,8 +260,8 @@
         let html = '';
         items.forEach((text, i) => {
             const pos = i + 1;
-            const stripped = text.replace(/\s*\[(?:project|projet):[a-zA-Z0-9_-]+\]\s*/g, ' ').trim();
-            const tagMatch = text.match(/\[(?:project|projet):([a-zA-Z0-9_-]+)\]/);
+            const stripped = text.replace(PROJECT_TAG_STRIP_RE, ' ').trim();
+            const tagMatch = text.match(PROJECT_TAG_CAPTURE_RE);
             const badge = tagMatch ? '<span class="badge badge-blue">' + tagMatch[1] + '</span> ' : '';
             const promoteBtn = pos > 1
                 ? '<button class="action-btn promote-btn" title="Move to top" data-action="promote" data-position="' + pos + '">&#x2191;</button>'
@@ -407,8 +415,8 @@
                 const textEl = item.querySelector('.mission-text');
                 let rawText = textEl.textContent.trim();
                 // Don't duplicate existing tag
-                if (rawText.match(/\[(?:project|projet):[a-zA-Z0-9_-]+\]/)) {
-                    rawText = rawText.replace(/\[(?:project|projet):[a-zA-Z0-9_-]+\]\s*/, '');
+                if (rawText.match(PROJECT_TAG_CAPTURE_RE)) {
+                    rawText = rawText.replace(PROJECT_TAG_STRIP_ONCE_RE, '');
                 }
                 const newText = '[project:' + name + '] ' + rawText;
                 const data = await apiCall('/api/missions/edit', {position: position, text: newText});
@@ -504,8 +512,8 @@
             if (data.in_progress && data.in_progress.length) {
                 let html = '<h2>In Progress</h2>';
                 data.in_progress.forEach(m => {
-                    const stripped = m.replace(/\s*\[(?:project|projet):[a-zA-Z0-9_-]+\]\s*/g, ' ').trim();
-                    const tagMatch = m.match(/\[(?:project|projet):([a-zA-Z0-9_-]+)\]/);
+                    const stripped = m.replace(PROJECT_TAG_STRIP_RE, ' ').trim();
+                    const tagMatch = m.match(PROJECT_TAG_CAPTURE_RE);
                     const badge = tagMatch ? '<span class="badge badge-blue">' + tagMatch[1] + '</span> ' : '';
                     html += '<div class="card"><div class="in-progress-item">'
                         + '<span class="pulse"></span>'

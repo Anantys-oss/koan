@@ -222,6 +222,7 @@ class TestRunRefresh:
         self._mock_pr_create = MagicMock(
             return_value="https://github.com/o/r/pull/42",
         )
+        self._mock_memory = MagicMock(return_value="")
 
         with patch("app.claude_step.run_claude", self._mock_run_claude), \
              patch("app.cli_provider.build_full_command", self._mock_build_cmd), \
@@ -230,7 +231,8 @@ class TestRunRefresh:
              patch("app.config.get_branch_prefix", self._mock_branch_prefix), \
              patch("app.claudemd_refresh.run_git_strict", self._mock_git_strict), \
              patch("app.claudemd_refresh._has_changes", self._mock_has_changes), \
-             patch("app.github.pr_create", self._mock_pr_create):
+             patch("app.github.pr_create", self._mock_pr_create), \
+             patch("app.claudemd_refresh.build_memory_block_for_skill", self._mock_memory):
             yield
 
     def test_success_creates_branch_and_pr(self, tmp_path):
@@ -242,11 +244,12 @@ class TestRunRefresh:
             result = run_refresh(str(project), "test")
 
         assert result == 0
-        # Branch was created
+        # Branch was created with timestamp suffix
         branch_calls = [c for c in self._mock_git_strict.call_args_list
                         if c[0][0] == "checkout" and "-b" in c[0]]
         assert len(branch_calls) == 1
-        assert "koan/update-claudemd-test" in branch_calls[0][0]
+        branch_arg = " ".join(branch_calls[0][0])
+        assert "koan/update-claudemd-test." in branch_arg
         # PR was created
         self._mock_pr_create.assert_called_once()
 
@@ -338,15 +341,17 @@ class TestRunRefresh:
 
         assert self._mock_prompt.call_args[1]["PROJECT_NAME"] == "myproject"
 
-    def test_max_turns_set(self, tmp_path):
+    def test_max_turns_uses_skill_config(self, tmp_path):
+        """max_turns should use get_skill_max_turns(), not a hardcoded value."""
         project = tmp_path / "project"
         project.mkdir()
         (project / "CLAUDE.md").write_text("# Project\n")
 
-        with patch("app.claudemd_refresh.build_git_context", return_value="abc Commit"):
+        with patch("app.claudemd_refresh.build_git_context", return_value="abc Commit"), \
+             patch("app.config.get_skill_max_turns", return_value=42):
             run_refresh(str(project), "test")
 
-        assert self._mock_build_cmd.call_args[1]["max_turns"] == 10
+        assert self._mock_build_cmd.call_args[1]["max_turns"] == 42
 
     def test_commit_stages_only_claudemd(self, tmp_path):
         """Commit should stage CLAUDE.md specifically, not git add -A."""
@@ -385,6 +390,45 @@ class TestRunRefresh:
         pr_kwargs = self._mock_pr_create.call_args[1]
         assert "update" in pr_kwargs["title"].lower()
 
+    def test_project_memory_passed_to_prompt(self, tmp_path):
+        """build_memory_block_for_skill output is forwarded as PROJECT_MEMORY."""
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "CLAUDE.md").write_text("# Project\n")
+        self._mock_memory.return_value = "<memory-context>\n## Learnings\n- lesson\n</memory-context>"
+
+        with patch("app.claudemd_refresh.build_git_context", return_value="abc Commit"):
+            run_refresh(str(project), "test")
+
+        prompt_kwargs = self._mock_prompt.call_args[1]
+        assert "PROJECT_MEMORY" in prompt_kwargs
+        assert "Learnings" in prompt_kwargs["PROJECT_MEMORY"]
+
+    def test_empty_memory_passes_empty_string(self, tmp_path):
+        """When no learnings exist, PROJECT_MEMORY is empty string."""
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "CLAUDE.md").write_text("# Project\n")
+        self._mock_memory.return_value = ""
+
+        with patch("app.claudemd_refresh.build_git_context", return_value="abc Commit"):
+            run_refresh(str(project), "test")
+
+        prompt_kwargs = self._mock_prompt.call_args[1]
+        assert prompt_kwargs["PROJECT_MEMORY"] == ""
+
+    def test_memory_task_text_includes_project_name(self, tmp_path):
+        """Task text passed to build_memory_block_for_skill includes project name."""
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "CLAUDE.md").write_text("# Project\n")
+
+        with patch("app.claudemd_refresh.build_git_context", return_value="abc Commit"):
+            run_refresh(str(project), "myproj")
+
+        task_text = self._mock_memory.call_args[0][1]
+        assert "myproj" in task_text
+
     def test_returns_to_base_branch_after_success(self, tmp_path):
         project = tmp_path / "project"
         project.mkdir()
@@ -397,6 +441,23 @@ class TestRunRefresh:
         checkout_main = [c for c in self._mock_git_strict.call_args_list
                          if c[0] == ("checkout", "main")]
         assert len(checkout_main) >= 1
+
+    def test_branch_name_includes_timestamp(self, tmp_path):
+        """Branch name must include a timestamp to avoid collisions."""
+        import re
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "CLAUDE.md").write_text("# Project\n")
+
+        with patch("app.claudemd_refresh.build_git_context", return_value="abc Commit"):
+            run_refresh(str(project), "myproj")
+
+        branch_calls = [c for c in self._mock_git_strict.call_args_list
+                        if c[0][0] == "checkout" and "-b" in c[0]]
+        assert len(branch_calls) == 1
+        branch_name = branch_calls[0][0][2]  # ("checkout", "-b", "<name>")
+        # Pattern: prefix/update-claudemd-project.YYYYMMDDHHmm
+        assert re.match(r"koan/update-claudemd-myproj\.\d{12}$", branch_name)
 
 
 # ---------------------------------------------------------------------------

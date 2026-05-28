@@ -10,6 +10,8 @@ from skills.core.fix.fix_runner import (
     _submit_fix_pr,
     main,
 )
+from app.issue_tracker.types import IssueContent, IssueRef
+from app.issue_tracker import UnresolvedJiraProjectError
 
 # Shared helpers imported via app.pr_submit
 from app.pr_submit import (
@@ -23,6 +25,23 @@ from app.pr_submit import (
 
 _FIX_MODULE = "skills.core.fix.fix_runner"
 _PR_MODULE = "app.pr_submit"
+
+
+def _github_issue(
+    title="Bug title", body="Bug body", comments=None,
+    state="open", key="42", repo="o/r",
+):
+    """Build an IssueContent as the tracker's fetch_issue would return it."""
+    ref = IssueRef(
+        provider="github",
+        url="https://github.com/o/r/issues/42",
+        key=key,
+        repo=repo,
+    )
+    return IssueContent(
+        ref=ref, title=title, body=body,
+        comments=comments or [], state=state,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +140,9 @@ class TestBuildPrompt:
         assert "Submit Pull Request" in prompt
         assert "gh pr create --draft" in prompt
         assert "git push" in prompt
-        assert "Fixes https://github.com/o/r/issues/42" in prompt
+        assert "Closes https://github.com/o/r/issues/42" in prompt
+        assert "{KOAN_PYTHON}" not in prompt
+        assert " -m app.issue_cli" in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -189,15 +210,15 @@ class TestGetForkOwner:
 # ---------------------------------------------------------------------------
 
 class TestResolveSubmitTarget:
-    @patch(f"{_PR_MODULE}.detect_parent_repo", return_value=None)
+    @patch(f"{_PR_MODULE}.resolve_target_repo", return_value=None)
     @patch.dict("os.environ", {"KOAN_ROOT": ""}, clear=False)
-    def test_fallback_to_issue_repo(self, mock_detect):
-        result = resolve_submit_target("/path", "proj", "Anantys", "investmindr")
-        assert result == {"repo": "Anantys/investmindr", "is_fork": False}
+    def test_fallback_to_issue_repo(self, mock_resolve):
+        result = resolve_submit_target("/path", "proj", "my-org", "my-toolkit")
+        assert result == {"repo": "my-org/my-toolkit", "is_fork": False}
 
-    @patch(f"{_PR_MODULE}.detect_parent_repo", return_value="upstream/repo")
+    @patch(f"{_PR_MODULE}.resolve_target_repo", return_value="upstream/repo")
     @patch.dict("os.environ", {"KOAN_ROOT": ""}, clear=False)
-    def test_fork_detected(self, mock_detect):
+    def test_fork_detected(self, mock_resolve):
         result = resolve_submit_target("/path", "proj", "o", "r")
         assert result == {"repo": "upstream/repo", "is_fork": True}
 
@@ -210,9 +231,9 @@ class TestRunFix:
     @patch(f"{_FIX_MODULE}._submit_fix_pr", return_value="https://github.com/o/r/pull/1")
     @patch(f"{_FIX_MODULE}.get_current_branch", return_value="koan.atoomic/fix-issue-42")
     @patch(f"{_FIX_MODULE}._execute_fix", return_value="Done")
-    @patch(f"{_FIX_MODULE}.fetch_issue_with_comments")
+    @patch(f"{_FIX_MODULE}.fetch_issue")
     def test_success_with_pr(self, mock_fetch, mock_execute, mock_branch, mock_pr):
-        mock_fetch.return_value = ("Bug title", "Bug body", [])
+        mock_fetch.return_value = _github_issue()
         notify = MagicMock()
 
         success, summary = run_fix(
@@ -224,7 +245,7 @@ class TestRunFix:
         assert success is True
         assert "https://github.com/o/r/pull/1" in summary
 
-    @patch(f"{_FIX_MODULE}.fetch_issue_with_comments")
+    @patch(f"{_FIX_MODULE}.fetch_issue", side_effect=ValueError("bad url"))
     def test_invalid_url(self, mock_fetch):
         notify = MagicMock()
         success, summary = run_fix(
@@ -234,9 +255,29 @@ class TestRunFix:
         )
         assert success is False
 
-    @patch(f"{_FIX_MODULE}.fetch_issue_with_comments")
+    @patch(
+        f"{_FIX_MODULE}.fetch_issue",
+        side_effect=UnresolvedJiraProjectError(
+            "Unmapped Jira issue 'PROJ-42': no Koan project was resolved. "
+            "Add this mapping in projects.yaml under projects.<name>.issue_tracker "
+            "with provider: jira and jira_project: PROJ.",
+        ),
+    )
+    def test_unmapped_jira_project_notifies_and_fails(self, _mock_fetch):
+        notify = MagicMock()
+        success, summary = run_fix(
+            project_path="/path",
+            issue_url="https://org.atlassian.net/browse/PROJ-42",
+            notify_fn=notify,
+        )
+        assert success is False
+        assert "projects.yaml" in summary
+        assert "PROJ-42" in summary
+        notify.assert_called_once()
+
+    @patch(f"{_FIX_MODULE}.fetch_issue")
     def test_empty_issue(self, mock_fetch):
-        mock_fetch.return_value = ("Title", "", [])
+        mock_fetch.return_value = _github_issue(body="", comments=[])
         notify = MagicMock()
 
         success, summary = run_fix(
@@ -250,9 +291,9 @@ class TestRunFix:
     @patch(f"{_FIX_MODULE}._submit_fix_pr", return_value=None)
     @patch(f"{_FIX_MODULE}.get_current_branch", return_value="koan.atoomic/fix-issue-42")
     @patch(f"{_FIX_MODULE}._execute_fix", return_value="Done")
-    @patch(f"{_FIX_MODULE}.fetch_issue_with_comments")
+    @patch(f"{_FIX_MODULE}.fetch_issue")
     def test_success_no_pr(self, mock_fetch, mock_execute, mock_branch, mock_pr):
-        mock_fetch.return_value = ("Title", "Body text", [])
+        mock_fetch.return_value = _github_issue(body="Body text")
         notify = MagicMock()
 
         success, summary = run_fix(
@@ -264,9 +305,9 @@ class TestRunFix:
         assert "Branch: koan.atoomic/fix-issue-42" in summary
 
     @patch(f"{_FIX_MODULE}._execute_fix", return_value="")
-    @patch(f"{_FIX_MODULE}.fetch_issue_with_comments")
+    @patch(f"{_FIX_MODULE}.fetch_issue")
     def test_empty_claude_output(self, mock_fetch, mock_execute):
-        mock_fetch.return_value = ("Title", "Body", [])
+        mock_fetch.return_value = _github_issue(body="Body")
         notify = MagicMock()
 
         success, summary = run_fix(
@@ -276,6 +317,48 @@ class TestRunFix:
         )
         assert success is False
         assert "empty output" in summary.lower()
+
+    @patch(f"{_FIX_MODULE}.fetch_issue")
+    def test_closed_issue_skipped(self, mock_fetch):
+        """A closed issue should be skipped immediately without invoking Claude."""
+        mock_fetch.return_value = _github_issue(state="closed")
+        notify = MagicMock()
+
+        success, summary = run_fix(
+            project_path="/path",
+            issue_url="https://github.com/o/r/issues/42",
+            notify_fn=notify,
+        )
+
+        assert success is True
+        assert "already closed" in summary.lower()
+        # Verify notification was sent with skip icon
+        notify.assert_called_once()
+        notification_text = notify.call_args[0][0]
+        assert "already closed" in notification_text.lower()
+        assert "⏭" in notification_text
+
+    @patch(f"{_FIX_MODULE}._submit_fix_pr", return_value="https://github.com/o/r/pull/1")
+    @patch(f"{_FIX_MODULE}.get_current_branch", return_value="koan/fix-42")
+    @patch(f"{_FIX_MODULE}._execute_fix", return_value="Done")
+    @patch(f"{_FIX_MODULE}.fetch_issue")
+    def test_explicit_project_name_reaches_tracker_and_memory(
+        self, mock_fetch, mock_execute, mock_branch, mock_pr,
+    ):
+        mock_fetch.return_value = _github_issue()
+
+        run_fix(
+            project_path="/workspace/webpros-shield",
+            issue_url="https://github.com/o/r/issues/42",
+            notify_fn=MagicMock(),
+            project_name="webpros-shield",
+            instance_dir="/koan/instance",
+        )
+
+        assert mock_fetch.call_args.kwargs["project_name"] == "webpros-shield"
+        assert mock_execute.call_args.kwargs["project_name"] == "webpros-shield"
+        assert mock_execute.call_args.kwargs["instance_dir"] == "/koan/instance"
+        assert mock_pr.call_args.kwargs["project_name"] == "webpros-shield"
 
 
 # ---------------------------------------------------------------------------
@@ -302,3 +385,15 @@ class TestMain:
         ])
         _, kwargs = mock_run.call_args
         assert kwargs.get("context") == "backend only" or mock_run.call_args[0][2] == "backend only"
+
+    @patch(f"{_FIX_MODULE}.run_fix", return_value=(True, "Done"))
+    def test_project_identity_args_passed(self, mock_run):
+        main([
+            "--project-path", "/path",
+            "--issue-url", "https://github.com/o/r/issues/1",
+            "--project-name", "webpros-shield",
+            "--instance-dir", "/koan/instance",
+        ])
+        _, kwargs = mock_run.call_args
+        assert kwargs["project_name"] == "webpros-shield"
+        assert kwargs["instance_dir"] == "/koan/instance"

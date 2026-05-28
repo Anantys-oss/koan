@@ -41,7 +41,7 @@ class TestFetchNotificationsLogging:
         from app.github_notifications import fetch_unread_notifications
 
         notifications = [
-            {"reason": "assign", "repository": {"full_name": "o/r"}},
+            {"reason": "state_change", "repository": {"full_name": "o/r"}},
         ]
         mock_api.return_value = json.dumps(notifications)
 
@@ -49,7 +49,7 @@ class TestFetchNotificationsLogging:
             result = fetch_unread_notifications()
 
         assert "drain-only" in caplog.text
-        assert "assign=1" in caplog.text
+        assert "state_change=1" in caplog.text
         assert len(result.drain) == 1
 
     @patch("app.github_notifications.api")
@@ -57,8 +57,9 @@ class TestFetchNotificationsLogging:
         import json
         from app.github_notifications import fetch_unread_notifications
 
+        # All reasons are filtered by known_repos (shared GitHub account)
         notifications = [
-            {"reason": "mention", "repository": {"full_name": "o/unknown"}},
+            {"reason": "comment", "repository": {"full_name": "o/unknown"}},
         ]
         mock_api.return_value = json.dumps(notifications)
 
@@ -75,7 +76,7 @@ class TestFetchNotificationsLogging:
 
         notifications = [
             {"reason": "mention", "repository": {"full_name": "o/r"}},
-            {"reason": "assign", "repository": {"full_name": "o/r"}},
+            {"reason": "state_change", "repository": {"full_name": "o/r"}},
         ]
         mock_api.return_value = json.dumps(notifications)
 
@@ -222,7 +223,7 @@ class TestProcessSingleNotificationLogging:
     @patch("app.github_command_handler.get_comment_from_notification")
     @patch("app.github_command_handler.is_notification_stale", return_value=False)
     @patch("app.github_command_handler.resolve_project_from_notification", return_value=None)
-    def test_logs_unknown_repo(self, mock_project, mock_stale, mock_comment, mock_read, caplog):
+    def test_logs_unknown_repo_skipped(self, mock_project, mock_stale, mock_comment, mock_read, caplog):
         from app.github_command_handler import process_single_notification
 
         mock_comment.return_value = {"id": "c1", "user": {"login": "alice"}, "body": "@bot rebase"}
@@ -237,8 +238,13 @@ class TestProcessSingleNotificationLogging:
                 notif, MagicMock(), {}, None, "bot", 24,
             )
 
-        assert not success
-        assert "not found in projects.yaml" in caplog.text
+        # Unknown repos are silently skipped (shared GitHub account support).
+        # The notification must NOT be marked as read — that would clear it
+        # from the inbox of the sibling Kōan instance that owns the repo.
+        assert "not in projects.yaml" in caplog.text
+        assert "ignoring notification" in caplog.text
+        assert success is False
+        mock_read.assert_not_called()
 
     @patch("app.github_command_handler.mark_notification_read")
     @patch("app.github_command_handler.check_user_permission", return_value=False)
@@ -418,6 +424,8 @@ class TestProcessNotificationsIntegration:
         }
         with patch("app.projects_config.load_projects_config", return_value={}), \
              patch("app.github_notifications.fetch_unread_notifications", return_value=self._make_fetch_result([fake_notif])), \
+             patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=("proj", "o", "r")), \
              patch("app.github_command_handler.process_single_notification", return_value=(True, None)):
             result = process_github_notifications(str(tmp_path), str(tmp_path))
 
@@ -477,6 +485,8 @@ class TestProcessNotificationsIntegration:
         side_effects = [(True, None), (True, None), (False, None)]
         with patch("app.projects_config.load_projects_config", return_value={}), \
              patch("app.github_notifications.fetch_unread_notifications", return_value=self._make_fetch_result(notifs)), \
+             patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=("proj", "o", "r")), \
              patch("app.github_command_handler.process_single_notification", side_effect=side_effects):
             result = process_github_notifications(str(tmp_path), str(tmp_path))
 
@@ -587,3 +597,37 @@ class TestGetKnownReposFromProjects:
         # Should not crash, just use github_url
         assert repos is not None
         assert "owner/repo" in repos
+
+    def test_resolves_aliased_workspace_repo_without_restart(self, tmp_path):
+        """A repo cloned under an alias dir name (git remote != dir name) must be
+        recognized even when the cache was warm/empty from a prior poll —
+        simulating a clone made after the process already started."""
+        import subprocess
+
+        from app.loop_manager import _get_known_repos_from_projects
+        from app.projects_merged import clear_github_url_cache, invalidate_cache
+
+        # Workspace project cloned under alias "yarn" but whose remote is a
+        # completely different repo name.
+        alias_dir = tmp_path / "workspace" / "yarn"
+        alias_dir.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q"], cwd=alias_dir, check=True)
+        subprocess.run(
+            ["git", "remote", "add", "origin",
+             "https://github.com/some-org/real-repo.git"],
+            cwd=alias_dir, check=True,
+        )
+
+        # No projects.yaml entry; caches cold (as if the bot was already
+        # running and this repo was cloned afterward).
+        clear_github_url_cache()
+        invalidate_cache()
+        try:
+            repos = _get_known_repos_from_projects(str(tmp_path))
+        finally:
+            clear_github_url_cache()
+            invalidate_cache()
+
+        assert repos is not None
+        # Matched by git remote, not by the "yarn" directory name.
+        assert "some-org/real-repo" in repos

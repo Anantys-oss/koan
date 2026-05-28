@@ -2,7 +2,7 @@
 export
 
 .PHONY: install onboard setup start stop status restart
-.PHONY: clean say migrate test sync-instance
+.PHONY: clean say migrate test test-skills test-strict coverage lint sync-instance rename-project release
 .PHONY: awake run errand-run errand-awake dashboard
 .PHONY: ollama logs ssh-forward
 .PHONY: install-systemctl-service uninstall-systemctl-service
@@ -13,6 +13,36 @@ PYTHON_BIN ?= python3
 
 VENV   ?= .venv
 PYTHON ?= $(VENV)/bin/$(PYTHON_BIN)
+# Absolute, normalized path — avoids `koan/../.venv/...` warnings from CPython's
+# site module when the interpreter is invoked after `cd koan`.
+PYTHON_ABS := $(abspath $(PYTHON))
+
+# Shared invocation prefix: enter koan/, set runtime env, run the venv Python by
+# absolute path. Used by every target that drives the agent or a CLI tool.
+KOAN_RUN      := cd koan && KOAN_ROOT=$(PWD) PYTHONPATH=. $(PYTHON_ABS)
+KOAN_TEST_RUN := cd koan && KOAN_ROOT=/tmp/test-koan PYTHONPATH=. $(PYTHON_ABS)
+
+# --- pytest-xdist worker count ---
+# Auto-pick the worker count for `make test` based on the environment:
+#   * CI / GitHub Actions  → all available cores (`-n auto`)
+#   * Remote SSH session   → 2 workers (be polite on shared hosts)
+#   * Local terminal       → all available cores (`-n auto`)
+# Override anytime with `make test PYTEST_WORKERS=N` (use 0 to disable xdist).
+ifneq ($(CI),)
+  PYTEST_WORKERS ?= auto
+else ifneq ($(GITHUB_ACTIONS),)
+  PYTEST_WORKERS ?= auto
+else ifneq ($(SSH_CONNECTION)$(SSH_CLIENT)$(SSH_TTY),)
+  PYTEST_WORKERS ?= 2
+else
+  PYTEST_WORKERS ?= auto
+endif
+
+ifeq ($(PYTEST_WORKERS),0)
+  PYTEST_XDIST_ARGS :=
+else
+  PYTEST_XDIST_ARGS := -n $(PYTEST_WORKERS) --dist loadfile
+endif
 
 # --- service manager detection ---
 # Default: foreground processes via pid_manager (no service manager)
@@ -40,24 +70,53 @@ $(VENV)/.installed: koan/requirements.txt
 	@touch $@
 
 awake: setup
-	cd koan && KOAN_ROOT=$(PWD) PYTHONPATH=. ../$(PYTHON) app/awake.py
+	$(KOAN_RUN) app/awake.py
 
 run: setup
-	cd koan && KOAN_ROOT=$(PWD) PYTHONPATH=. ../$(PYTHON) app/run.py
+	$(KOAN_RUN) app/run.py
 
 say: setup
 	@test -n "$(m)" || (echo "Usage: make say m=\"your message\"" && exit 1)
-	@cd koan && KOAN_ROOT=$(PWD) PYTHONPATH=. ../$(PYTHON) -c "from app.awake import handle_message; handle_message('$(m)')"
+	@$(KOAN_RUN) -c "from app.awake import handle_message; handle_message('$(m)')"
+
+lint: setup
+	$(VENV)/bin/pip install -q ruff 2>/dev/null
+	$(VENV)/bin/ruff check koan/
 
 test: setup
-	$(VENV)/bin/pip install -q pytest 2>/dev/null
-	cd koan && KOAN_ROOT=/tmp/test-koan PYTHONPATH=. ../$(PYTHON) -m pytest tests/ -v
+	@echo "→ pytest workers: $(PYTEST_WORKERS)"
+	$(VENV)/bin/pip install -q pytest pytest-cov pytest-xdist 2>/dev/null
+	$(KOAN_TEST_RUN) -m pytest tests/ -v $(PYTEST_XDIST_ARGS) --cov=app --cov-report=term-missing --cov-report=html:htmlcov
+	@$(MAKE) --no-print-directory test-skills
+
+test-skills: setup
+	@if [ -d instance/skills ] && find -L instance/skills -path '*/tests/test_*.py' -print -quit 2>/dev/null | grep -q .; then \
+		$(VENV)/bin/pip install -q pytest pytest-cov pytest-xdist 2>/dev/null; \
+		echo "→ running skill-local tests (instance/skills/**/tests)"; \
+		KOAN_REPO=$(PWD) KOAN_ROOT=/tmp/test-koan PYTHONPATH=koan $(PYTHON) -m pytest instance/skills/ -v $(PYTEST_XDIST_ARGS); \
+	else \
+		echo "→ no skill-local tests found under instance/skills/**/tests/ — skipping"; \
+	fi
+
+test-strict: setup
+	@echo "→ running full test suite in strict mode (0 failures required, workers: $(PYTEST_WORKERS))"
+	$(VENV)/bin/pip install -q pytest pytest-cov pytest-xdist 2>/dev/null
+	@$(KOAN_TEST_RUN) -m pytest tests/ -q --tb=short $(PYTEST_XDIST_ARGS) \
+		|| (echo "✗ tests failed — aborting" && exit 1)
+	@if [ -d instance/skills ] && find -L instance/skills -path '*/tests/test_*.py' -print -quit 2>/dev/null | grep -q .; then \
+		KOAN_REPO=$(PWD) KOAN_ROOT=/tmp/test-koan PYTHONPATH=koan $(PYTHON) -m pytest instance/skills/ -q --tb=short $(PYTEST_XDIST_ARGS) \
+			|| (echo "✗ skill-local tests failed — aborting" && exit 1); \
+	fi
+	@echo "✓ all tests passed"
+
+release: setup
+	@bash scripts/release.sh
 
 migrate: setup
-	cd koan && KOAN_ROOT=$(PWD) PYTHONPATH=. ../$(PYTHON) app/migrate_memory.py
+	$(KOAN_RUN) app/migrate_memory.py
 
 dashboard: setup
-	cd koan && KOAN_ROOT=$(PWD) PYTHONPATH=. ../$(PYTHON) app/dashboard.py
+	$(KOAN_RUN) app/dashboard.py
 
 restart:
 	$(MAKE) stop
@@ -99,7 +158,7 @@ start: setup
 	@if [ -f ~/Library/LaunchAgents/com.koan.dashboard.plist ]; then \
 		launchctl bootstrap "gui/$$(id -u)" ~/Library/LaunchAgents/com.koan.dashboard.plist 2>/dev/null || true; \
 	fi
-	@cd koan && KOAN_ROOT=$(PWD) PYTHONPATH=. ../$(PYTHON) -c "from pathlib import Path; from app.pid_manager import _show_startup_banner; from app.utils import get_cli_provider_env; _show_startup_banner(Path('$(PWD)'), get_cli_provider_env())"
+	@$(KOAN_RUN) -c "from pathlib import Path; from app.pid_manager import _show_startup_banner; from app.utils import get_cli_provider_env; _show_startup_banner(Path('$(PWD)'), get_cli_provider_env())"
 	@echo "✓ Kōan started via launchd"
 
 stop:
@@ -115,7 +174,7 @@ status:
 else
 
 start: setup
-	@cd koan && KOAN_ROOT=$(PWD) PYTHONPATH=. ../$(PYTHON) -m app.pid_manager start-all $(PWD)
+	@$(KOAN_RUN) -m app.pid_manager start-all $(PWD)
 
 stop: setup
 	@if [ "$$(uname -s)" = "Darwin" ] && launchctl list com.koan.run >/dev/null 2>&1; then \
@@ -123,10 +182,10 @@ stop: setup
 		launchctl bootout "gui/$$(id -u)/com.koan.run" 2>/dev/null || true; \
 		launchctl bootout "gui/$$(id -u)/com.koan.awake" 2>/dev/null || true; \
 	fi
-	@cd koan && KOAN_ROOT=$(PWD) PYTHONPATH=. ../$(PYTHON) -m app.pid_manager stop-all $(PWD)
+	@$(KOAN_RUN) -m app.pid_manager stop-all $(PWD)
 
 status: setup
-	@cd koan && KOAN_ROOT=$(PWD) PYTHONPATH=. ../$(PYTHON) -m app.pid_manager status-all $(PWD)
+	@$(KOAN_RUN) -m app.pid_manager status-all $(PWD)
 
 endif
 
@@ -142,11 +201,11 @@ errand-run: setup
 	caffeinate -i $(MAKE) run
 
 errand-awake: setup
-	caffeinate -i sh -c 'cd koan && KOAN_ROOT=$(PWD) PYTHONPATH=. ../$(PYTHON) app/awake.py'
+	caffeinate -i sh -c '$(KOAN_RUN) app/awake.py'
 
 ollama: setup
 	@echo "→ Starting Kōan with Ollama stack..."
-	@cd koan && KOAN_ROOT=$(PWD) PYTHONPATH=. ../$(PYTHON) -m app.pid_manager start-stack $(PWD)
+	@$(KOAN_RUN) -m app.pid_manager start-stack $(PWD)
 
 logs:
 	@mkdir -p logs
@@ -161,10 +220,15 @@ install:
 	@echo "→ Starting Kōan Setup Wizard..."
 	@$(PYTHON) -m venv $(VENV) 2>/dev/null || true
 	@$(VENV)/bin/pip install -q flask 2>/dev/null || pip3 install -q flask 2>/dev/null
-	@cd koan && KOAN_ROOT=$(PWD) PYTHONPATH=. ../$(PYTHON) app/setup_wizard.py
+	@$(KOAN_RUN) app/setup_wizard.py
 
 onboard: setup
-	@cd koan && KOAN_ROOT=$(PWD) PYTHONPATH=. ../$(PYTHON) -m app.onboarding $(ARGS)
+	@$(KOAN_RUN) -m app.onboarding $(ARGS)
+
+rename-project: setup
+	@test -n "$(old)" || (echo "Usage: make rename-project old=foo new=bar [apply=1]" && exit 1)
+	@test -n "$(new)" || (echo "Usage: make rename-project old=foo new=bar [apply=1]" && exit 1)
+	$(KOAN_RUN) -m app.rename_project $(old) $(new) $(if $(apply),--apply,)
 
 clean:
 	rm -rf $(VENV)

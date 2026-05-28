@@ -13,7 +13,7 @@ from app.mission_verifier import (
     VerifyResult,
     _is_analysis_mission,
     _is_code_mission,
-    _expects_tests,
+    expects_tests,
     check_commit_quality,
     check_diff_coherence,
     check_mission_alignment,
@@ -22,6 +22,15 @@ from app.mission_verifier import (
     format_verify_result,
     verify_mission,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_circuit_breaker():
+    """Reset the mission_runner circuit breaker between tests."""
+    from app.mission_runner import _breaker
+    _breaker.reset()
+    yield
+    _breaker.reset()
 
 
 # ---------------------------------------------------------------------------
@@ -51,12 +60,12 @@ class TestMissionTypeClassification:
         assert not _is_code_mission("hello world")
         assert not _is_analysis_mission("hello world")
 
-    def test_expects_tests(self):
-        assert _expects_tests("implement user login")
-        assert _expects_tests("fix the broken signup")
-        assert _expects_tests("add new feature for exports")
-        assert not _expects_tests("audit codebase")
-        assert not _expects_tests("document the API")
+    def testexpects_tests(self):
+        assert expects_tests("implement user login")
+        assert expects_tests("fix the broken signup")
+        assert expects_tests("add new feature for exports")
+        assert not expects_tests("audit codebase")
+        assert not expects_tests("document the API")
 
 
 # ---------------------------------------------------------------------------

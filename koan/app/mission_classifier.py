@@ -8,6 +8,8 @@ Pure logic — no file I/O, no side effects.
 
 import re
 
+from app.utils import PROJECT_TAG_STRIP_RE
+
 
 # Ordered by specificity: most specific types first.
 # "fix the implementation" → debug (not implement).
@@ -72,7 +74,7 @@ def classify_mission(title: str) -> str:
     line = title.split("\n")[0].strip()
     if line.startswith("- "):
         line = line[2:]
-    line = re.sub(r"\[projec?t:[a-zA-Z0-9_-]+\]\s*", "", line)
+    line = PROJECT_TAG_STRIP_RE.sub("", line)
 
     if not line.strip():
         return "general"

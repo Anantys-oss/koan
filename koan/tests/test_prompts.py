@@ -8,7 +8,9 @@ import pytest
 
 from app.prompts import (
     PROMPT_DIR,
+    _MAX_INCLUDE_DEPTH,
     _read_prompt_with_git_fallback,
+    _resolve_includes,
     _substitute,
     get_prompt_path,
     load_prompt,
@@ -45,6 +47,19 @@ class TestSubstitute:
 
     def test_empty_string_value(self):
         assert _substitute("x{V}y", {"V": ""}) == "xy"
+
+    def test_koan_python_default_placeholder(self):
+        import shlex
+        import sys
+
+        result = _substitute("{KOAN_PYTHON} -m app.issue_cli", {})
+        assert result == f"{shlex.quote(sys.executable or 'python3')} -m app.issue_cli"
+
+    def test_explicit_value_overrides_default_placeholder(self):
+        result = _substitute("{KOAN_PYTHON} -m app.issue_cli", {
+            "KOAN_PYTHON": "python3",
+        })
+        assert result == "python3 -m app.issue_cli"
 
 
 # ---------- load_prompt ----------
@@ -180,6 +195,104 @@ class TestLoadSkillPrompt:
                 for md_file in prompts.glob("*.md"):
                     result = load_skill_prompt(skill_dir, md_file.stem)
                     assert len(result) > 0, f"{skill_dir.name}/{md_file.stem} is empty"
+
+
+class TestPlanPromptVerificationCriteria:
+    """Plan prompt must include a Verification Criteria section."""
+
+    def test_plan_prompt_contains_verification_criteria(self):
+        skills_dir = Path(__file__).parent.parent / "skills" / "core" / "plan"
+        result = load_skill_prompt(skills_dir, "plan")
+        assert "Verification Criteria" in result
+
+
+class TestLoadSkillPromptCavemanInjection:
+    """``load_skill_prompt`` auto-appends the caveman directive only when the
+    skill has explicitly opted in (SKILL.md ``caveman: true`` or config
+    ``optimizations.caveman.include``)."""
+
+    @staticmethod
+    def _make_skill(tmp_path, name, *, caveman_flag=None, prompt="Body {VAR}"):
+        skill_dir = tmp_path / name
+        (skill_dir / "prompts").mkdir(parents=True)
+        (skill_dir / "prompts" / "p.md").write_text(prompt)
+        frontmatter_extra = ""
+        if caveman_flag is not None:
+            frontmatter_extra = f"\ncaveman: {'true' if caveman_flag else 'false'}"
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\nscope: core{frontmatter_extra}\n---\n"
+        )
+        return skill_dir
+
+    def test_caveman_skipped_by_default(self, tmp_path):
+        """No ``caveman:`` flag — opt-in default keeps caveman off."""
+        from unittest.mock import patch
+        skill_dir = self._make_skill(tmp_path, "myskill")
+        with patch("app.config._load_config", return_value={}):
+            with patch("app.prompts.load_prompt", return_value="CAVEMAN-X"):
+                result = load_skill_prompt(skill_dir, "p", VAR="ok")
+        assert "CAVEMAN-X" not in result
+        assert result == "Body ok"
+
+    def test_caveman_appended_when_skill_md_opts_in(self, tmp_path):
+        from unittest.mock import patch
+        skill_dir = self._make_skill(tmp_path, "myskill", caveman_flag=True)
+        with patch("app.config._load_config", return_value={}):
+            with patch("app.prompts.load_prompt", return_value="CAVEMAN-X"):
+                result = load_skill_prompt(skill_dir, "p", VAR="ok")
+        assert result.startswith("Body ok")
+        assert "CAVEMAN-X" in result
+
+    def test_caveman_skipped_when_skill_md_explicitly_opts_out(self, tmp_path):
+        from unittest.mock import patch
+        skill_dir = self._make_skill(tmp_path, "myskill", caveman_flag=False)
+        with patch("app.config._load_config", return_value={}):
+            with patch("app.prompts.load_prompt", return_value="CAVEMAN-X"):
+                result = load_skill_prompt(skill_dir, "p", VAR="ok")
+        assert "CAVEMAN-X" not in result
+        assert result == "Body ok"
+
+    def test_caveman_appended_when_in_config_include(self, tmp_path):
+        from unittest.mock import patch
+        skill_dir = self._make_skill(tmp_path, "myskill")
+        with patch("app.config._load_config", return_value={
+            "optimizations": {"caveman": {"include": ["myskill"]}}
+        }):
+            with patch("app.prompts.load_prompt", return_value="CAVEMAN-X"):
+                result = load_skill_prompt(skill_dir, "p", VAR="ok")
+        assert "CAVEMAN-X" in result
+
+    def test_config_include_overrides_skill_md_false(self, tmp_path):
+        """Operator's ``include:`` config overrides a SKILL.md ``caveman: false``."""
+        from unittest.mock import patch
+        skill_dir = self._make_skill(tmp_path, "myskill", caveman_flag=False)
+        with patch("app.config._load_config", return_value={
+            "optimizations": {"caveman": {"include": ["myskill"]}}
+        }):
+            with patch("app.prompts.load_prompt", return_value="CAVEMAN-X"):
+                result = load_skill_prompt(skill_dir, "p", VAR="ok")
+        assert "CAVEMAN-X" in result
+
+    def test_caveman_skipped_when_globally_disabled(self, tmp_path):
+        from unittest.mock import patch
+        skill_dir = self._make_skill(tmp_path, "myskill", caveman_flag=True)
+        with patch("app.config._load_config", return_value={
+            "optimizations": {"caveman": {"enabled": False}}
+        }):
+            with patch("app.prompts.load_prompt", return_value="CAVEMAN-X"):
+                result = load_skill_prompt(skill_dir, "p", VAR="ok")
+        assert "CAVEMAN-X" not in result
+
+    def test_no_skill_md_means_no_injection(self, tmp_path):
+        """A bare directory without SKILL.md is not treated as a skill — caveman not appended."""
+        from unittest.mock import patch
+        prompts_dir = tmp_path / "prompts"
+        prompts_dir.mkdir()
+        (prompts_dir / "p.md").write_text("Body")
+        with patch("app.config._load_config", return_value={}):
+            with patch("app.prompts.load_prompt", return_value="CAVEMAN-X"):
+                result = load_skill_prompt(tmp_path, "p")
+        assert result == "Body"
 
 
 # ---------- load_prompt_or_skill ----------
@@ -412,3 +525,335 @@ class TestGitFallback:
             with patch("app.prompts.subprocess.run", side_effect=alternating_se):
                 result = load_skill_prompt(skill_dir, "someprompt")
         assert result == "content from origin"
+
+
+# ---------- _resolve_includes ----------
+
+
+class TestResolveIncludes:
+    """Tests for {@include partial-name} directive resolution."""
+
+    def test_no_includes_passes_through(self):
+        """Template without includes is returned unchanged."""
+        template = "Hello world\nNo includes here"
+        assert _resolve_includes(template) == template
+
+    def test_global_partial_resolved(self, tmp_path):
+        """A global partial in system-prompts/_partials/ is resolved."""
+        partials = tmp_path / "_partials"
+        partials.mkdir()
+        (partials / "greeting.md").write_text("Hello from partial")
+        template = "Before\n{@include greeting}\nAfter"
+        with patch("app.prompts.PROMPT_DIR", tmp_path):
+            result = _resolve_includes(template)
+        assert result == "Before\nHello from partial\nAfter"
+
+    def test_skill_local_partial_overrides_global(self, tmp_path):
+        """Skill-local partial takes priority over global."""
+        # Global partial
+        global_dir = tmp_path / "global"
+        global_partials = global_dir / "_partials"
+        global_partials.mkdir(parents=True)
+        (global_partials / "rules.md").write_text("global rules")
+        # Skill-local partial
+        skill_dir = tmp_path / "skill"
+        skill_partials = skill_dir / "prompts" / "_partials"
+        skill_partials.mkdir(parents=True)
+        (skill_partials / "rules.md").write_text("skill-specific rules")
+
+        template = "Start\n{@include rules}\nEnd"
+        with patch("app.prompts.PROMPT_DIR", global_dir):
+            result = _resolve_includes(template, skill_dir=skill_dir)
+        assert result == "Start\nskill-specific rules\nEnd"
+
+    def test_falls_back_to_global_when_no_skill_partial(self, tmp_path):
+        """When skill has no local override, global partial is used."""
+        global_dir = tmp_path / "global"
+        global_partials = global_dir / "_partials"
+        global_partials.mkdir(parents=True)
+        (global_partials / "rules.md").write_text("global rules")
+        skill_dir = tmp_path / "skill"
+        skill_dir.mkdir()
+
+        template = "{@include rules}"
+        with patch("app.prompts.PROMPT_DIR", global_dir):
+            result = _resolve_includes(template, skill_dir=skill_dir)
+        assert result == "global rules"
+
+    def test_missing_partial_left_as_is(self, tmp_path):
+        """When a partial doesn't exist anywhere, the directive is preserved."""
+        global_dir = tmp_path / "global"
+        global_dir.mkdir()
+        template = "Before\n{@include nonexistent}\nAfter"
+        with patch("app.prompts.PROMPT_DIR", global_dir):
+            result = _resolve_includes(template)
+        assert result == "Before\n{@include nonexistent}\nAfter"
+
+    def test_recursive_includes(self, tmp_path):
+        """Partials can include other partials."""
+        partials = tmp_path / "_partials"
+        partials.mkdir()
+        (partials / "outer.md").write_text("outer-start\n{@include inner}\nouter-end")
+        (partials / "inner.md").write_text("inner-content")
+        template = "{@include outer}"
+        with patch("app.prompts.PROMPT_DIR", tmp_path):
+            result = _resolve_includes(template)
+        assert result == "outer-start\ninner-content\nouter-end"
+
+    def test_depth_limit_prevents_infinite_recursion(self, tmp_path):
+        """Recursive includes stop at _MAX_INCLUDE_DEPTH."""
+        partials = tmp_path / "_partials"
+        partials.mkdir()
+        # Create a self-referencing partial
+        (partials / "loop.md").write_text("level\n{@include loop}")
+        template = "{@include loop}"
+        with patch("app.prompts.PROMPT_DIR", tmp_path):
+            result = _resolve_includes(template)
+        # At depth 0: resolves loop -> "level\n{@include loop}"
+        # At depth 1: resolves inner loop -> "level\n{@include loop}"
+        # At depth 2: resolves inner loop -> "level\n{@include loop}"
+        # At depth 3: max depth reached, returns as-is
+        expected_levels = _MAX_INCLUDE_DEPTH
+        lines = result.split("\n")
+        assert lines.count("level") == expected_levels
+        # The deepest include is left unresolved
+        assert lines[-1] == "{@include loop}"
+
+    def test_multiple_includes_in_one_template(self, tmp_path):
+        """Multiple include directives in a single template are all resolved."""
+        partials = tmp_path / "_partials"
+        partials.mkdir()
+        (partials / "alpha.md").write_text("A-content")
+        (partials / "beta.md").write_text("B-content")
+        template = "start\n{@include alpha}\nmiddle\n{@include beta}\nend"
+        with patch("app.prompts.PROMPT_DIR", tmp_path):
+            result = _resolve_includes(template)
+        assert result == "start\nA-content\nmiddle\nB-content\nend"
+
+    def test_inline_include_not_matched(self):
+        """Include directives must be on their own line."""
+        template = "text {@include foo} more text"
+        # Should not be matched since it's not on its own line
+        assert _resolve_includes(template) == template
+
+    def test_include_with_trailing_whitespace(self, tmp_path):
+        """Trailing whitespace after the directive is tolerated."""
+        partials = tmp_path / "_partials"
+        partials.mkdir()
+        (partials / "ws.md").write_text("whitespace-ok")
+        template = "before\n{@include ws}   \nafter"
+        with patch("app.prompts.PROMPT_DIR", tmp_path):
+            result = _resolve_includes(template)
+        assert result == "before\nwhitespace-ok\nafter"
+
+    def test_include_preserves_surrounding_content(self, tmp_path):
+        """Lines before and after the include directive are preserved."""
+        partials = tmp_path / "_partials"
+        partials.mkdir()
+        (partials / "mid.md").write_text("included")
+        template = "line1\nline2\n{@include mid}\nline4\nline5"
+        with patch("app.prompts.PROMPT_DIR", tmp_path):
+            result = _resolve_includes(template)
+        assert result == "line1\nline2\nincluded\nline4\nline5"
+
+    def test_hyphenated_partial_name(self, tmp_path):
+        """Partial names with hyphens are valid."""
+        partials = tmp_path / "_partials"
+        partials.mkdir()
+        (partials / "pr-submit-fork.md").write_text("fork rules")
+        template = "{@include pr-submit-fork}"
+        with patch("app.prompts.PROMPT_DIR", tmp_path):
+            result = _resolve_includes(template)
+        assert result == "fork rules"
+
+    def test_placeholders_survive_include_resolution(self, tmp_path):
+        """Placeholders in partials are preserved for later _substitute()."""
+        partials = tmp_path / "_partials"
+        partials.mkdir()
+        (partials / "tmpl.md").write_text("Hello {NAME}")
+        template = "{@include tmpl}"
+        with patch("app.prompts.PROMPT_DIR", tmp_path):
+            result = _resolve_includes(template)
+        assert result == "Hello {NAME}"
+
+    def test_trailing_newline_stripped_from_partial(self, tmp_path):
+        """Trailing newline in partial file does not produce extra blank lines."""
+        partials = tmp_path / "_partials"
+        partials.mkdir()
+        # Write with trailing newline (as git-committed files normally have)
+        (partials / "note.md").write_text("included content\n")
+        template = "before\n{@include note}\nafter"
+        with patch("app.prompts.PROMPT_DIR", tmp_path):
+            result = _resolve_includes(template)
+        assert result == "before\nincluded content\nafter"
+
+
+class TestLoadPromptWithIncludes:
+    """Integration tests: load_prompt and load_skill_prompt resolve includes."""
+
+    def test_load_prompt_resolves_global_include(self, tmp_path):
+        """load_prompt resolves {@include} from system-prompts/_partials/."""
+        partials = tmp_path / "_partials"
+        partials.mkdir()
+        (partials / "sig.md").write_text("-- Koan")
+        (tmp_path / "test.md").write_text("Hello\n{@include sig}")
+        with patch("app.prompts.PROMPT_DIR", tmp_path):
+            result = load_prompt("test")
+        assert result == "Hello\n-- Koan"
+
+    def test_load_skill_prompt_resolves_skill_local_include(self, tmp_path):
+        """load_skill_prompt prefers skill-local partials."""
+        # Global
+        global_dir = tmp_path / "global"
+        global_partials = global_dir / "_partials"
+        global_partials.mkdir(parents=True)
+        (global_partials / "footer.md").write_text("global footer")
+        # Skill
+        skill_dir = tmp_path / "skill"
+        skill_prompts = skill_dir / "prompts"
+        skill_partials = skill_prompts / "_partials"
+        skill_partials.mkdir(parents=True)
+        (skill_partials / "footer.md").write_text("skill footer")
+        (skill_prompts / "main.md").write_text("body\n{@include footer}")
+        with patch("app.prompts.PROMPT_DIR", global_dir):
+            result = load_skill_prompt(skill_dir, "main")
+        assert result == "body\nskill footer"
+
+    def test_includes_resolved_before_substitution(self, tmp_path):
+        """Includes are expanded first, then {KEY} placeholders are substituted."""
+        partials = tmp_path / "_partials"
+        partials.mkdir()
+        (partials / "greeting.md").write_text("Hello {USER}")
+        (tmp_path / "test.md").write_text("{@include greeting}\nBye")
+        with patch("app.prompts.PROMPT_DIR", tmp_path):
+            result = load_prompt("test", USER="Alice")
+        assert result == "Hello Alice\nBye"
+
+    def test_real_partials_resolve_in_prompts(self):
+        """Existing {@include} directives in real prompt files resolve correctly."""
+        partials_dir = PROMPT_DIR / "_partials"
+        if not partials_dir.exists():
+            pytest.skip("No _partials directory yet")
+        # Verify that agent.md (which uses includes) loads without leftover directives
+        result = load_prompt("agent")
+        # No unresolved includes should remain (all partials exist)
+        import re
+        unresolved = re.findall(r"\{@include\s+[\w-]+\}", result)
+        assert unresolved == [], f"Unresolved includes in agent.md: {unresolved}"
+
+    def test_all_skill_prompts_resolve_includes(self):
+        """Every skill prompt with {@include} directives must resolve completely."""
+        import re
+        skills_dir = Path(__file__).parent.parent / "skills" / "core"
+        if not skills_dir.exists():
+            pytest.skip("skills/core not found")
+        failures = []
+        for skill_dir in sorted(skills_dir.iterdir()):
+            prompts = skill_dir / "prompts"
+            if not prompts.exists():
+                continue
+            for md_file in sorted(prompts.glob("*.md")):
+                result = load_skill_prompt(skill_dir, md_file.stem)
+                unresolved = re.findall(r"\{@include\s+[\w-]+\}", result)
+                if unresolved:
+                    failures.append(f"{skill_dir.name}/{md_file.stem}: {unresolved}")
+        assert failures == [], (
+            "Unresolved {@include} directives in skill prompts:\n"
+            + "\n".join(failures)
+        )
+
+    def test_implementation_workflow_partial_resolves(self):
+        """implementation-workflow partial resolves in both fix and implement prompts."""
+        import re
+
+        include_re = re.compile(r"\{@include\s+[\w-]+\}")
+        skills_root = PROMPT_DIR.parent / "skills" / "core"
+
+        fix_dir = skills_root / "fix"
+        impl_dir = skills_root / "implement"
+
+        fix_out = load_skill_prompt(fix_dir, "fix")
+        impl_out = load_skill_prompt(impl_dir, "implement")
+
+        # The partial itself must have been resolved (no raw directive remaining)
+        assert "{@include implementation-workflow}" not in fix_out, (
+            "implementation-workflow partial not resolved in fix.md"
+        )
+        assert "{@include implementation-workflow}" not in impl_out, (
+            "implementation-workflow partial not resolved in implement.md"
+        )
+
+        # The partial's content must be present in both rendered outputs
+        assert "Phase 3" in fix_out, "Phase 3 missing from rendered fix.md"
+        assert "Phase 3" in impl_out, "Phase 3 missing from rendered implement.md"
+
+        # No unresolved {@include ...} directives should remain in either output
+        fix_unresolved = include_re.findall(fix_out)
+        impl_unresolved = include_re.findall(impl_out)
+        assert fix_unresolved == [], f"Unresolved includes in fix.md: {fix_unresolved}"
+        assert impl_unresolved == [], f"Unresolved includes in implement.md: {impl_unresolved}"
+
+
+class TestDefaultPlaceholdersAlwaysResolved:
+    """Default placeholders (e.g. KOAN_PYTHON) must never leak as literal text.
+
+    The agent and skill prompts coach Claude to invoke
+    ``{KOAN_PYTHON} -m app.issue_cli ...``. If the placeholder ever survives
+    the loader (e.g. a future caller skipping _substitute), Claude will run
+    the literal token ``{KOAN_PYTHON}`` as a shell command, which would fail
+    with a hard-to-diagnose ``command not found``.
+    """
+
+    @staticmethod
+    def _contains_koan_python_placeholder(text: str) -> bool:
+        return "{KOAN_PYTHON}" in text
+
+    def test_load_prompt_resolves_koan_python(self):
+        """Every system prompt that mentions KOAN_PYTHON must resolve it."""
+        for md_file in PROMPT_DIR.glob("*.md"):
+            rendered = load_prompt(md_file.stem)
+            assert not self._contains_koan_python_placeholder(rendered), (
+                f"{md_file.name}: literal {{KOAN_PYTHON}} survived load_prompt()"
+            )
+
+    def test_load_skill_prompt_resolves_koan_python(self):
+        """Every skill prompt that mentions KOAN_PYTHON must resolve it."""
+        skills_dir = Path(__file__).parent.parent / "skills" / "core"
+        if not skills_dir.exists():
+            pytest.skip("skills/core not found")
+        leaks = []
+        for skill_dir in sorted(skills_dir.iterdir()):
+            prompts = skill_dir / "prompts"
+            if not prompts.exists():
+                continue
+            for md_file in sorted(prompts.glob("*.md")):
+                rendered = load_skill_prompt(skill_dir, md_file.stem)
+                if self._contains_koan_python_placeholder(rendered):
+                    leaks.append(f"{skill_dir.name}/{md_file.name}")
+        assert leaks == [], (
+            "Literal {KOAN_PYTHON} survived load_skill_prompt() in: "
+            + ", ".join(leaks)
+        )
+
+    def test_load_prompt_or_skill_resolves_koan_python(self):
+        """The unified loader resolves the placeholder via either branch."""
+        skills_dir = Path(__file__).parent.parent / "skills" / "core" / "implement"
+        rendered_skill = load_prompt_or_skill(skills_dir, "implement",
+                                              ISSUE_URL="", ISSUE_TITLE="",
+                                              PLAN="", CONTEXT="",
+                                              BRANCH_PREFIX="koan/",
+                                              ISSUE_NUMBER="",
+                                              PROJECT_MEMORY="")
+        assert "{KOAN_PYTHON}" not in rendered_skill
+
+        rendered_sys = load_prompt_or_skill(None, "agent",
+                                            SOUL="", MEMORY="")
+        assert "{KOAN_PYTHON}" not in rendered_sys
+
+    def test_substitute_injects_koan_python_without_explicit_kwarg(self):
+        """Callers that don't pass KOAN_PYTHON still get a resolved value."""
+        result = _substitute(
+            "Run: {KOAN_PYTHON} -m app.issue_cli fetch URL",
+            {"OTHER": "x"},
+        )
+        assert "{KOAN_PYTHON}" not in result

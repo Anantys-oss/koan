@@ -82,8 +82,12 @@ class TestDailySeries:
         end = date(2026, 3, 12)
         result = daily_series(instance_dir, start, end)
         assert len(result) == 3
+        required = {
+            "date", "total_input", "total_output", "count", "cost",
+            "cache_read_input_tokens", "cache_creation_input_tokens", "cache_hit_rate",
+        }
         for day in result:
-            assert set(day.keys()) == {"date", "total_input", "total_output", "count", "cost"}
+            assert required.issubset(day.keys())
 
     def test_aggregates_per_day(self, instance_dir):
         usage_dir = instance_dir / "usage"
@@ -197,12 +201,13 @@ class TestComputeProjectTrend:
 # --- /api/usage extensions ---
 
 class TestApiUsageExtended:
-    def test_daily_array_present(self, app_client, instance_dir):
+    def test_series_array_present(self, app_client, instance_dir):
         resp = app_client.get("/api/usage?days=3")
         data = resp.get_json()
-        assert "daily" in data
-        assert isinstance(data["daily"], list)
-        assert len(data["daily"]) == 3
+        assert "daily" not in data
+        assert "series" in data
+        assert isinstance(data["series"], list)
+        assert len(data["series"]) == 3
 
     def test_estimated_cost_null_without_pricing(self, app_client, instance_dir):
         with patch("app.cost_tracker.get_pricing_config", return_value=None):

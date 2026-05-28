@@ -183,28 +183,46 @@ class TestRunSanityChecks:
 # ---------------------------------------------------------------------------
 
 class TestCleanupMemory:
+    @patch("app.startup_manager._load_memory_config", return_value={
+        "learnings_max_lines": 100, "learnings_hard_cap": 200,
+        "global_personality_max": 150, "global_emotional_max": 100,
+        "compaction_interval_hours": 24, "log_horizon_days": 365,
+    })
     @patch("app.startup_manager._should_run_cleanup", return_value=True)
     @patch("app.startup_manager._write_cleanup_marker")
     @patch("app.memory_manager.MemoryManager")
-    def test_calls_run_cleanup(self, mock_mgr_cls, mock_write, mock_should, capsys):
+    def test_calls_run_cleanup(self, mock_mgr_cls, mock_write, mock_should, mock_cfg, capsys):
         from app.startup_manager import cleanup_memory
         mock_mgr = mock_mgr_cls.return_value
         mock_mgr.summary_path.exists.return_value = True
+        mock_mgr.run_cleanup.return_value = {}
         cleanup_memory("/tmp/instance")
         mock_mgr_cls.assert_called_once_with("/tmp/instance")
-        mock_mgr.run_cleanup.assert_called_once()
+        mock_mgr.run_cleanup.assert_called_once_with(
+            max_learnings_lines=200,
+            compact_learnings_lines=100,
+            global_personality_max=150,
+            global_emotional_max=100,
+            log_horizon_days=365,
+        )
         mock_write.assert_called_once()
         out = capsys.readouterr().out
         assert "Running memory cleanup" in out
 
+    @patch("app.startup_manager._load_memory_config", return_value={
+        "learnings_max_lines": 100, "learnings_hard_cap": 200,
+        "global_personality_max": 150, "global_emotional_max": 100,
+        "compaction_interval_hours": 24, "log_horizon_days": 365,
+    })
     @patch("app.startup_manager._should_run_cleanup", return_value=True)
     @patch("app.startup_manager._write_cleanup_marker")
     @patch("app.memory_manager.MemoryManager")
-    def test_hydrates_on_cold_boot(self, mock_mgr_cls, mock_write, mock_should, capsys):
+    def test_hydrates_on_cold_boot(self, mock_mgr_cls, mock_write, mock_should, mock_cfg, capsys):
         """When summary.md is missing but SNAPSHOT.md exists, hydrate first."""
         from app.startup_manager import cleanup_memory
         mock_mgr = mock_mgr_cls.return_value
         mock_mgr.summary_path.exists.return_value = False
+        mock_mgr.run_cleanup.return_value = {}
         snapshot_mock = type("P", (), {"exists": lambda s: True})()
         mock_mgr.memory_dir.__truediv__ = lambda s, x: snapshot_mock
         mock_mgr.instance_dir.__truediv__ = lambda s, x: type("P", (), {"exists": lambda s: False})()
@@ -215,10 +233,15 @@ class TestCleanupMemory:
         out = capsys.readouterr().out
         assert "Cold boot detected" in out
 
+    @patch("app.startup_manager._load_memory_config", return_value={
+        "learnings_max_lines": 100, "learnings_hard_cap": 200,
+        "global_personality_max": 150, "global_emotional_max": 100,
+        "compaction_interval_hours": 24, "log_horizon_days": 365,
+    })
     @patch("app.startup_manager._should_run_cleanup", return_value=False)
     @patch("app.startup_manager._cleanup_marker_path")
     @patch("app.memory_manager.MemoryManager")
-    def test_skips_when_recent(self, mock_mgr_cls, mock_marker_path, mock_should, tmp_path, capsys):
+    def test_skips_when_recent(self, mock_mgr_cls, mock_marker_path, mock_should, mock_cfg, tmp_path, capsys):
         """Cleanup should be skipped if it ran recently."""
         import time
         from app.startup_manager import cleanup_memory
@@ -271,6 +294,46 @@ class TestCleanupThrottle:
         assert marker.exists()
         ts = float(marker.read_text().strip())
         assert abs(ts - time.time()) < 5
+
+
+# ---------------------------------------------------------------------------
+# Test: _load_memory_config
+# ---------------------------------------------------------------------------
+
+class TestLoadMemoryConfig:
+    def test_defaults_when_no_config(self):
+        from app.startup_manager import _load_memory_config
+        with patch("app.utils.load_config", side_effect=Exception("no config")):
+            cfg = _load_memory_config()
+        assert cfg["learnings_max_lines"] == 100
+        assert cfg["learnings_hard_cap"] == 200
+        assert cfg["global_personality_max"] == 150
+        assert cfg["global_emotional_max"] == 100
+        assert cfg["compaction_interval_hours"] == 24
+
+    def test_overrides_from_config(self):
+        from app.startup_manager import _load_memory_config
+        mock_config = {
+            "memory": {
+                "learnings_max_lines": 50,
+                "learnings_hard_cap": 300,
+                "compaction_interval_hours": 12,
+            }
+        }
+        with patch("app.utils.load_config", return_value=mock_config):
+            cfg = _load_memory_config()
+        assert cfg["learnings_max_lines"] == 50
+        assert cfg["learnings_hard_cap"] == 300
+        assert cfg["compaction_interval_hours"] == 12
+        # Unset values use defaults
+        assert cfg["global_personality_max"] == 150
+        assert cfg["global_emotional_max"] == 100
+
+    def test_empty_memory_section(self):
+        from app.startup_manager import _load_memory_config
+        with patch("app.utils.load_config", return_value={"memory": None}):
+            cfg = _load_memory_config()
+        assert cfg["learnings_max_lines"] == 100
 
 
 # ---------------------------------------------------------------------------
@@ -345,26 +408,37 @@ class TestCheckHealth:
 # ---------------------------------------------------------------------------
 
 class TestCheckSelfReflection:
+    @patch("app.config.get_startup_reflection", return_value=False)
+    def test_disabled_by_default_skips_reflection(self, mock_cfg):
+        """When startup_reflection is false, self-reflection is never triggered."""
+        from app.startup_manager import check_self_reflection
+        with patch("app.self_reflection.should_reflect") as mock_should:
+            check_self_reflection("/tmp/instance")
+            mock_should.assert_not_called()
+
+    @patch("app.config.get_startup_reflection", return_value=True)
     @patch("app.self_reflection.should_reflect", return_value=False)
-    def test_not_due(self, mock_should, capsys):
+    def test_enabled_but_not_due(self, mock_should, mock_cfg, capsys):
         from app.startup_manager import check_self_reflection
         check_self_reflection("/tmp/instance")
         mock_should.assert_called_once()
 
+    @patch("app.config.get_startup_reflection", return_value=True)
     @patch("app.self_reflection.notify_outbox")
     @patch("app.self_reflection.save_reflection")
     @patch("app.self_reflection.run_reflection", return_value="Some observations")
     @patch("app.self_reflection.should_reflect", return_value=True)
-    def test_triggers_reflection(self, mock_should, mock_run, mock_save, mock_notify):
+    def test_enabled_triggers_reflection(self, mock_should, mock_run, mock_save, mock_notify, mock_cfg):
         from app.startup_manager import check_self_reflection
         check_self_reflection("/tmp/instance")
         mock_run.assert_called_once()
         mock_save.assert_called_once()
         mock_notify.assert_called_once()
 
+    @patch("app.config.get_startup_reflection", return_value=True)
     @patch("app.self_reflection.run_reflection", return_value="")
     @patch("app.self_reflection.should_reflect", return_value=True)
-    def test_empty_observations_skips_save(self, mock_should, mock_run):
+    def test_enabled_empty_observations_skips_save(self, mock_should, mock_run, mock_cfg):
         from app.startup_manager import check_self_reflection
         with patch("app.self_reflection.save_reflection") as mock_save:
             check_self_reflection("/tmp/instance")
@@ -441,6 +515,38 @@ class TestHandleStartOnPause:
         from app.startup_manager import handle_start_on_pause
         handle_start_on_pause(str(koan_root))
         assert (koan_root / ".koan-pause").exists()
+
+    @patch("app.utils.get_start_on_pause", return_value=True)
+    def test_skip_when_skip_file_exists(self, mock_config, koan_root, capsys):
+        """Fresh .koan-skip-start-pause prevents pause creation (/resume during startup)."""
+        import time as _time
+        (koan_root / ".koan-skip-start-pause").write_text(str(int(_time.time())))
+        from app.startup_manager import handle_start_on_pause
+        handle_start_on_pause(str(koan_root))
+        assert not (koan_root / ".koan-pause").exists()
+        assert not (koan_root / ".koan-skip-start-pause").exists()  # cleaned up
+        out = capsys.readouterr().out
+        assert "skipped" in out.lower()
+
+    @patch("app.utils.get_start_on_pause", return_value=True)
+    def test_stale_skip_file_ignored(self, mock_config, koan_root, capsys):
+        """Stale .koan-skip-start-pause (>5min) does not prevent pause."""
+        import time as _time
+        stale_ts = int(_time.time()) - 600  # 10 minutes ago
+        (koan_root / ".koan-skip-start-pause").write_text(str(stale_ts))
+        from app.startup_manager import handle_start_on_pause
+        handle_start_on_pause(str(koan_root))
+        assert (koan_root / ".koan-pause").exists()
+        assert not (koan_root / ".koan-skip-start-pause").exists()  # cleaned up
+
+    @patch("app.utils.get_start_on_pause", return_value=True)
+    def test_corrupt_skip_file_ignored(self, mock_config, koan_root):
+        """Corrupt .koan-skip-start-pause does not prevent pause."""
+        (koan_root / ".koan-skip-start-pause").write_text("not-a-number")
+        from app.startup_manager import handle_start_on_pause
+        handle_start_on_pause(str(koan_root))
+        assert (koan_root / ".koan-pause").exists()
+        assert not (koan_root / ".koan-skip-start-pause").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -545,6 +651,19 @@ class TestRunMorningRitual:
         mock_ritual.assert_called_once_with("morning", Path("/tmp/instance"))
         out = capsys.readouterr().out
         assert "Running morning ritual" in out
+
+    @patch("app.rituals.run_ritual", return_value=True)
+    def test_returns_true_on_success(self, mock_ritual):
+        """run_morning_ritual passes through run_ritual's bool return so the
+        caller can choose between 'complete' and 'skipped/failed' messaging.
+        """
+        from app.startup_manager import run_morning_ritual
+        assert run_morning_ritual("/tmp/instance") is True
+
+    @patch("app.rituals.run_ritual", return_value=False)
+    def test_returns_false_on_failure(self, mock_ritual):
+        from app.startup_manager import run_morning_ritual
+        assert run_morning_ritual("/tmp/instance") is False
 
 
 # ---------------------------------------------------------------------------
@@ -752,9 +871,16 @@ class TestRunStartup:
         # Should not raise IndexError
         result = run_startup("/tmp/koan", "/tmp/koan/instance", [("proj1", "/p1")])
         assert result == (10, 60, "koan/")
-        # Verify notification was sent with "none" as current project
-        call_args = mock_notify.call_args[0]
-        assert "Current: none" in call_args[1]
+        # Verify the "starting" notification was sent with "none" as current
+        # project. Other notifications (morning ritual progress) also fire,
+        # so search across all calls rather than relying on call_args (most
+        # recent only).
+        starting_msgs = [
+            c.args[1] for c in mock_notify.call_args_list
+            if "Kōan starting" in c.args[1]
+        ]
+        assert len(starting_msgs) == 1
+        assert "Current: none" in starting_msgs[0]
 
     @patch("app.startup_manager.run_morning_ritual")
     @patch("app.startup_manager.run_daily_report")
@@ -802,4 +928,209 @@ class TestRunStartup:
         assert "GitHub auth failed" in out
         # Later steps still ran
         mock_git_sync.assert_called_once()
-        mock_notify.assert_called_once()
+        # Startup banner went out (plus per-phase morning-ritual notifications).
+        starting_msgs = [
+            c for c in mock_notify.call_args_list
+            if "Kōan starting" in c.args[1]
+        ]
+        assert len(starting_msgs) == 1
+
+
+# ---------------------------------------------------------------------------
+# Test: startup-only Telegram visibility (morning ritual + auto-update)
+# ---------------------------------------------------------------------------
+
+
+class TestRunStartupNotifications:
+    """Per-phase Telegram messages during the ~1-2 min startup window so the
+    user can see what's happening before the first mission picks up.
+    Steady-state notifications are unaffected (this is run_startup, which
+    only fires once per process).
+    """
+
+    @patch("app.startup_manager.run_morning_ritual", return_value=True)
+    @patch("app.startup_manager.run_daily_report")
+    @patch("app.startup_manager.run_git_sync")
+    @patch("app.run._notify_raw")
+    @patch("app.run._notify")
+    @patch("app.run._build_startup_status", return_value="Active")
+    @patch("app.run.set_status")
+    @patch("app.startup_manager.setup_github_auth")
+    @patch("app.startup_manager.setup_git_identity")
+    @patch("app.startup_manager.handle_start_on_pause")
+    @patch("app.startup_manager.check_self_reflection")
+    @patch("app.startup_manager.check_health")
+    @patch("app.startup_manager.cleanup_mission_history")
+    @patch("app.startup_manager.cleanup_memory")
+    @patch("app.startup_manager.run_sanity_checks")
+    @patch("app.startup_manager.discover_workspace", return_value=[("proj1", "/p1")])
+    @patch("app.startup_manager.populate_github_urls")
+    @patch("app.startup_manager.run_migrations")
+    @patch("app.startup_manager.recover_crashed_missions")
+    @patch("app.banners.print_agent_banner")
+    @patch("app.utils.get_branch_prefix", return_value="koan/")
+    @patch("app.utils.get_cli_binary_for_shell", return_value="claude")
+    @patch("app.utils.get_interval_seconds", return_value=60)
+    @patch("app.utils.get_max_runs", return_value=10)
+    def test_morning_ritual_success_emits_start_and_complete(
+        self,
+        mock_max_runs, mock_interval, mock_cli, mock_prefix,
+        mock_banner,
+        mock_recover, mock_migrate, mock_gh_urls, mock_workspace,
+        mock_sanity, mock_memory, mock_history, mock_health,
+        mock_reflection, mock_pause, mock_git_id, mock_gh_auth,
+        mock_set_status, mock_build_status, mock_notify, mock_notify_raw,
+        mock_git_sync, mock_daily, mock_ritual,
+    ):
+        """When the morning ritual succeeds, both the start and complete
+        Telegram messages fire via _notify_raw (verbatim, no formatter)."""
+        from app.startup_manager import run_startup
+        run_startup("/tmp/koan", "/tmp/koan/instance", [("proj1", "/p1")])
+
+        msgs = [c.args[1] for c in mock_notify_raw.call_args_list]
+        joined = " | ".join(msgs)
+        assert "Running morning ritual" in joined
+        assert "Morning ritual complete" in joined
+        assert "skipped" not in joined
+        assert "failed" not in joined
+
+    @patch("app.startup_manager.run_morning_ritual", return_value=False)
+    @patch("app.startup_manager.run_daily_report")
+    @patch("app.startup_manager.run_git_sync")
+    @patch("app.run._notify_raw")
+    @patch("app.run._notify")
+    @patch("app.run._build_startup_status", return_value="Active")
+    @patch("app.run.set_status")
+    @patch("app.startup_manager.setup_github_auth")
+    @patch("app.startup_manager.setup_git_identity")
+    @patch("app.startup_manager.handle_start_on_pause")
+    @patch("app.startup_manager.check_self_reflection")
+    @patch("app.startup_manager.check_health")
+    @patch("app.startup_manager.cleanup_mission_history")
+    @patch("app.startup_manager.cleanup_memory")
+    @patch("app.startup_manager.run_sanity_checks")
+    @patch("app.startup_manager.discover_workspace", return_value=[("proj1", "/p1")])
+    @patch("app.startup_manager.populate_github_urls")
+    @patch("app.startup_manager.run_migrations")
+    @patch("app.startup_manager.recover_crashed_missions")
+    @patch("app.banners.print_agent_banner")
+    @patch("app.utils.get_branch_prefix", return_value="koan/")
+    @patch("app.utils.get_cli_binary_for_shell", return_value="claude")
+    @patch("app.utils.get_interval_seconds", return_value=60)
+    @patch("app.utils.get_max_runs", return_value=10)
+    def test_morning_ritual_skip_emits_skipped_message(
+        self,
+        mock_max_runs, mock_interval, mock_cli, mock_prefix,
+        mock_banner,
+        mock_recover, mock_migrate, mock_gh_urls, mock_workspace,
+        mock_sanity, mock_memory, mock_history, mock_health,
+        mock_reflection, mock_pause, mock_git_id, mock_gh_auth,
+        mock_set_status, mock_build_status, mock_notify, mock_notify_raw,
+        mock_git_sync, mock_daily, mock_ritual,
+    ):
+        """When the morning ritual returns False (skipped), the user
+        gets a neutral message — no alarming ⚠️ icon."""
+        from app.startup_manager import run_startup
+        run_startup("/tmp/koan", "/tmp/koan/instance", [("proj1", "/p1")])
+
+        msgs = [c.args[1] for c in mock_notify_raw.call_args_list]
+        joined = " | ".join(msgs)
+        assert "⏭️" in joined
+        assert "skipped" in joined
+        assert "Morning ritual complete" not in joined
+        assert "⚠️" not in joined
+
+    @patch("app.startup_manager.run_morning_ritual", side_effect=RuntimeError("CLI not found"))
+    @patch("app.startup_manager.run_daily_report")
+    @patch("app.startup_manager.run_git_sync")
+    @patch("app.run._notify_raw")
+    @patch("app.run._notify")
+    @patch("app.run._build_startup_status", return_value="Active")
+    @patch("app.run.set_status")
+    @patch("app.startup_manager.setup_github_auth")
+    @patch("app.startup_manager.setup_git_identity")
+    @patch("app.startup_manager.handle_start_on_pause")
+    @patch("app.startup_manager.check_self_reflection")
+    @patch("app.startup_manager.check_health")
+    @patch("app.startup_manager.cleanup_mission_history")
+    @patch("app.startup_manager.cleanup_memory")
+    @patch("app.startup_manager.run_sanity_checks")
+    @patch("app.startup_manager.discover_workspace", return_value=[("proj1", "/p1")])
+    @patch("app.startup_manager.populate_github_urls")
+    @patch("app.startup_manager.run_migrations")
+    @patch("app.startup_manager.recover_crashed_missions")
+    @patch("app.banners.print_agent_banner")
+    @patch("app.utils.get_branch_prefix", return_value="koan/")
+    @patch("app.utils.get_cli_binary_for_shell", return_value="claude")
+    @patch("app.utils.get_interval_seconds", return_value=60)
+    @patch("app.utils.get_max_runs", return_value=10)
+    def test_morning_ritual_exception_emits_warning_with_reason(
+        self,
+        mock_max_runs, mock_interval, mock_cli, mock_prefix,
+        mock_banner,
+        mock_recover, mock_migrate, mock_gh_urls, mock_workspace,
+        mock_sanity, mock_memory, mock_history, mock_health,
+        mock_reflection, mock_pause, mock_git_id, mock_gh_auth,
+        mock_set_status, mock_build_status, mock_notify, mock_notify_raw,
+        mock_git_sync, mock_daily, mock_ritual,
+    ):
+        """When the morning ritual raises an exception, the user gets a ⚠️
+        warning with the error reason — not a generic skip message."""
+        from app.startup_manager import run_startup
+        run_startup("/tmp/koan", "/tmp/koan/instance", [("proj1", "/p1")])
+
+        msgs = [c.args[1] for c in mock_notify_raw.call_args_list]
+        joined = " | ".join(msgs)
+        assert "⚠️" in joined
+        assert "failed" in joined
+        assert "CLI not found" in joined
+        assert "Morning ritual complete" not in joined
+
+    @patch("app.startup_manager.check_auto_update", return_value=True)
+    @patch("app.startup_manager.run_morning_ritual", return_value=True)
+    @patch("app.startup_manager.run_daily_report")
+    @patch("app.startup_manager.run_git_sync")
+    @patch("app.run._notify_raw")
+    @patch("app.run._notify")
+    @patch("app.run._build_startup_status", return_value="Active")
+    @patch("app.run.set_status")
+    @patch("app.startup_manager.setup_github_auth")
+    @patch("app.startup_manager.setup_git_identity")
+    @patch("app.startup_manager.handle_start_on_pause")
+    @patch("app.startup_manager.check_self_reflection")
+    @patch("app.startup_manager.check_health")
+    @patch("app.startup_manager.cleanup_mission_history")
+    @patch("app.startup_manager.cleanup_memory")
+    @patch("app.startup_manager.run_sanity_checks")
+    @patch("app.startup_manager.discover_workspace", return_value=[("proj1", "/p1")])
+    @patch("app.startup_manager.populate_github_urls")
+    @patch("app.startup_manager.run_migrations")
+    @patch("app.startup_manager.recover_crashed_missions")
+    @patch("app.banners.print_agent_banner")
+    @patch("app.utils.get_branch_prefix", return_value="koan/")
+    @patch("app.utils.get_cli_binary_for_shell", return_value="claude")
+    @patch("app.utils.get_interval_seconds", return_value=60)
+    @patch("app.utils.get_max_runs", return_value=10)
+    def test_auto_update_emits_restart_notification(
+        self,
+        mock_max_runs, mock_interval, mock_cli, mock_prefix,
+        mock_banner,
+        mock_recover, mock_migrate, mock_gh_urls, mock_workspace,
+        mock_sanity, mock_memory, mock_history, mock_health,
+        mock_reflection, mock_pause, mock_git_id, mock_gh_auth,
+        mock_set_status, mock_build_status, mock_notify, mock_notify_raw,
+        mock_git_sync, mock_daily, mock_ritual, mock_auto_update,
+    ):
+        """When auto-update pulls new commits, the user is told the agent is
+        restarting under updated code before sys.exit fires (via _notify_raw).
+        """
+        from app.startup_manager import run_startup
+        from app.restart_manager import RESTART_EXIT_CODE
+
+        with pytest.raises(SystemExit) as exc:
+            run_startup("/tmp/koan", "/tmp/koan/instance", [("proj1", "/p1")])
+
+        assert exc.value.code == RESTART_EXIT_CODE
+        msgs = [c.args[1] for c in mock_notify_raw.call_args_list]
+        joined = " | ".join(msgs)
+        assert "Auto-update pulled new commits" in joined

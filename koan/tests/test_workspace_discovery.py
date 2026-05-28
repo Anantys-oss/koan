@@ -2,10 +2,11 @@
 
 import os
 from pathlib import Path
+from unittest.mock import patch, PropertyMock
 
 import pytest
 
-from app.workspace_discovery import discover_workspace_projects
+from app.workspace_discovery import _validate_entry, discover_workspace_projects
 
 
 @pytest.fixture
@@ -127,3 +128,61 @@ def test_resolved_paths_are_absolute(workspace):
 
     result = discover_workspace_projects(str(workspace))
     assert Path(result[0][1]).is_absolute()
+
+
+class TestValidateEntryErrorPaths:
+    """Cover OSError/RuntimeError branches in _validate_entry."""
+
+    def test_is_file_oserror_continues_to_resolve(self, tmp_path):
+        """When is_file() raises OSError, entry should still be validated (lines 59-60)."""
+        entry = tmp_path / "tricky"
+        entry.mkdir()
+
+        with patch.object(Path, "is_file", side_effect=OSError("permission denied")):
+            result = _validate_entry(entry)
+        # Should still resolve successfully since entry is a real directory.
+        assert result == str(entry.resolve())
+
+    def test_resolve_oserror_returns_none(self, tmp_path):
+        """When resolve() raises OSError, returns None (lines 65-67)."""
+        entry = tmp_path / "bad-resolve"
+        entry.mkdir()
+
+        with patch.object(Path, "resolve", side_effect=OSError("ENOMEM")):
+            result = _validate_entry(entry)
+        assert result is None
+
+    def test_resolve_runtime_error_returns_none(self, tmp_path):
+        """When resolve() raises RuntimeError (e.g. loop), returns None."""
+        entry = tmp_path / "loopy"
+        entry.mkdir()
+
+        with patch.object(Path, "resolve", side_effect=RuntimeError("symlink loop")):
+            result = _validate_entry(entry)
+        assert result is None
+
+    def test_is_dir_oserror_returns_none(self, tmp_path):
+        """When resolved.is_dir() raises OSError, returns None (lines 74-76)."""
+        entry = tmp_path / "stat-fail"
+        entry.mkdir()
+
+        # We need is_file() to return False (so we proceed past line 57),
+        # resolve() to succeed, but resolved.is_dir() to raise OSError.
+        # Use a mock resolved path that raises on is_dir().
+        from unittest.mock import MagicMock
+        mock_resolved = MagicMock(spec=Path)
+        mock_resolved.is_dir.side_effect = OSError("stat failed")
+
+        with patch.object(Path, "is_file", return_value=False), \
+             patch.object(Path, "resolve", return_value=mock_resolved):
+            result = _validate_entry(entry)
+        assert result is None
+
+    def test_workspace_iterdir_oserror(self, tmp_path):
+        """When iterdir() raises OSError, returns empty list (lines 29-31)."""
+        ws = tmp_path / "workspace"
+        ws.mkdir()
+
+        with patch.object(Path, "iterdir", side_effect=OSError("permission denied")):
+            result = discover_workspace_projects(str(tmp_path))
+        assert result == []

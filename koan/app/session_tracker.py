@@ -24,7 +24,7 @@ from typing import Dict, List, Optional, Tuple
 
 
 # Maximum entries to keep in session_outcomes.json (rolling window)
-MAX_OUTCOMES = 200
+MAX_OUTCOMES = 2000
 
 # TTL cache for _count_commits_since() — avoids repeated git subprocess calls
 # Key: (project_path, since_iso), Value: (commit_count, monotonic_timestamp)
@@ -167,31 +167,72 @@ def _extract_summary(journal_content: str, max_chars: int = 120) -> str:
     return ""
 
 
+# Dispatch table for classify_mission_type(): (compiled regex, mission_type).
+# Applied in order on the lowercased mission title from the start.
+# Add new skills here when they are added to koan/skills/core/.
+# Old JSONL records without mission_type should be treated as "unknown" by readers.
+_MISSION_TYPE_DISPATCH = [
+    (re.compile(r"^/plan\b"), "plan"),
+    (re.compile(r"^/review\b"), "review"),
+    (re.compile(r"^/rebase\b"), "rebase"),
+    (re.compile(r"^/recreate\b"), "recreate"),
+    (re.compile(r"^/(?:implement|fix|ai)\b"), "implement"),
+    (re.compile(r"^/refactor\b"), "refactor"),
+    (re.compile(r"^/(?:audit|security_audit)\b"), "audit"),
+    (re.compile(r"^/(?:check|claudemd|config_check)\b"), "check"),
+    (re.compile(r"^/(?:chat|sparring|idea)\b"), "chat"),
+]
+
+
 def classify_mission_type(mission_title: str) -> str:
-    """Classify a mission into a type category for metrics tracking.
+    """Classify a mission into a granular type category for metrics tracking.
+
+    Uses a regex dispatch table applied in order on the slash-command prefix.
+    Unknown slash commands fall through to "freetext" rather than inflating
+    any named bucket with uncategorized commands.
+
+    NOTE: When adding new core skills, add a row to _MISSION_TYPE_DISPATCH above
+    so that their missions are categorized rather than falling through to "freetext".
 
     Categories:
-        "skill" — Skill command (/rebase, /implement, /review, etc.)
-        "autonomous" — Autonomous exploration (no mission title or "Autonomous ...")
-        "mission" — Free-text human-submitted mission
+        "plan"      — /plan
+        "review"    — /review
+        "rebase"    — /rebase
+        "recreate"  — /recreate
+        "implement" — /implement, /fix, /ai
+        "refactor"  — /refactor
+        "audit"     — /audit, /security_audit
+        "check"     — /check, /claudemd, /config_check
+        "chat"      — /chat, /sparring, /idea
+        "freetext"  — /mission, other /…, or human free-text
+        "autonomous"— Empty title or "Autonomous …" prefix
 
     Args:
         mission_title: The mission title string.
 
     Returns:
-        One of "skill", "autonomous", or "mission".
+        One of the category strings above.
     """
     if not mission_title or not mission_title.strip():
         return "autonomous"
     title = mission_title.strip()
-    if _PRODUCTIVE_SKILLS.search(title):
-        return "skill"
     if title.lower().startswith("autonomous "):
         return "autonomous"
-    return "mission"
+
+    # Only apply dispatch table to slash commands
+    if not title.startswith("/"):
+        return "freetext"
+
+    lower = title.lower()
+    for pattern, mission_type in _MISSION_TYPE_DISPATCH:
+        if pattern.match(lower):
+            return mission_type
+
+    # Unknown slash command — fall through to freetext
+    return "freetext"
 
 
-def _detect_pr_created(content: str) -> bool:
+def detect_pr_created(content: str) -> bool:
     """Detect whether a PR was created from journal/summary content."""
     if not content:
         return False
@@ -218,6 +259,8 @@ def record_outcome(
     duration_minutes: int,
     journal_content: str,
     mission_title: str = "",
+    mission_type: Optional[str] = None,
+    pipeline_timed_out: bool = False,
 ) -> dict:
     """Record a session outcome to session_outcomes.json.
 
@@ -228,6 +271,9 @@ def record_outcome(
         duration_minutes: Session duration in minutes.
         journal_content: The session's journal/pending content for classification.
         mission_title: The mission title for skill-aware classification.
+        mission_type: Explicit mission type override (e.g. "contemplative").
+            When provided, bypasses classify_mission_type().
+        pipeline_timed_out: Whether POST_MISSION_TIMEOUT fired during this session.
 
     Returns:
         The recorded outcome dict.
@@ -242,15 +288,16 @@ def record_outcome(
         "duration_minutes": duration_minutes,
         "outcome": outcome_type,
         "summary": summary,
-        "mission_type": classify_mission_type(mission_title),
-        "has_pr": _detect_pr_created(journal_content),
+        "mission_type": mission_type or classify_mission_type(mission_title),
+        "has_pr": detect_pr_created(journal_content),
         "has_branch": _detect_branch_pushed(journal_content),
+        "pipeline_timed_out": pipeline_timed_out,
     }
 
     outcomes_path = Path(instance_dir) / "session_outcomes.json"
 
     # Load existing outcomes
-    outcomes = _load_outcomes(outcomes_path)
+    outcomes = load_outcomes(outcomes_path)
 
     # Append and cap
     outcomes.append(entry)
@@ -267,7 +314,7 @@ def record_outcome(
     return entry
 
 
-def _load_outcomes(outcomes_path: Path) -> list:
+def load_outcomes(outcomes_path: Path) -> list:
     """Load outcomes from JSON file. Returns empty list on error."""
     if not outcomes_path.exists():
         return []
@@ -305,7 +352,7 @@ def get_recent_outcomes(
     """
     if _all_outcomes is None:
         outcomes_path = Path(instance_dir) / "session_outcomes.json"
-        _all_outcomes = _load_outcomes(outcomes_path)
+        _all_outcomes = load_outcomes(outcomes_path)
 
     project_outcomes = [o for o in _all_outcomes if o.get("project") == project]
     return project_outcomes[-limit:]
@@ -343,6 +390,74 @@ def get_staleness_score(
     return count
 
 
+def get_contemplative_productivity(
+    instance_dir: str,
+    project: str,
+    limit: int = 10,
+    _all_outcomes: Optional[list] = None,
+) -> Optional[float]:
+    """Compute productivity ratio for recent contemplative sessions.
+
+    Args:
+        instance_dir: Path to instance directory.
+        project: Project name to filter by.
+        limit: Maximum contemplative sessions to consider.
+        _all_outcomes: Pre-loaded outcomes list (avoids re-reading the file).
+
+    Returns:
+        Ratio of productive/total contemplative sessions (0.0-1.0),
+        or None if fewer than 5 contemplative samples exist.
+    """
+    if _all_outcomes is None:
+        outcomes_path = Path(instance_dir) / "session_outcomes.json"
+        _all_outcomes = load_outcomes(outcomes_path)
+
+    contemplative = [
+        o for o in _all_outcomes
+        if o.get("project") == project and o.get("mission_type") == "contemplative"
+    ]
+
+    # Take last N contemplative sessions
+    recent = contemplative[-limit:]
+
+    if len(recent) < 5:
+        return None  # Insufficient data
+
+    productive = sum(1 for o in recent if o.get("outcome") == "productive")
+    return productive / len(recent)
+
+
+def adapt_contemplative_chance(
+    base_chance: int,
+    instance_dir: str,
+    project: str,
+) -> int:
+    """Apply adaptive multiplier to contemplative probability.
+
+    Uses historical productivity of contemplative sessions to scale
+    the base chance up or down:
+    - ratio < 0.2: multiply by 0.4 (reduce waste)
+    - 0.2 <= ratio < 0.5: no change
+    - ratio >= 0.5: multiply by 1.5 (reward productive contemplation)
+    - Insufficient data: no change
+
+    Returns adapted chance, capped at 25%.
+    """
+    ratio = get_contemplative_productivity(instance_dir, project)
+    if ratio is None:
+        return base_chance
+
+    if ratio < 0.2:
+        multiplier = 0.4
+    elif ratio >= 0.5:
+        multiplier = 1.5
+    else:
+        multiplier = 1.0
+
+    adapted = int(base_chance * multiplier)
+    return min(adapted, 25)  # Cap at 25%
+
+
 def get_staleness_warning(instance_dir: str, project: str) -> str:
     """Generate a human-readable staleness warning if appropriate.
 
@@ -355,7 +470,7 @@ def get_staleness_warning(instance_dir: str, project: str) -> str:
     """
     # Load outcomes once for both staleness score and recent outcomes lookup
     outcomes_path = Path(instance_dir) / "session_outcomes.json"
-    all_outcomes = _load_outcomes(outcomes_path)
+    all_outcomes = load_outcomes(outcomes_path)
 
     score = get_staleness_score(instance_dir, project,
                                  _all_outcomes=all_outcomes)
@@ -399,9 +514,7 @@ def get_staleness_warning(instance_dir: str, project: str) -> str:
 
     if empty_summaries:
         lines.append("Recent non-productive sessions:")
-        for s in empty_summaries[-3:]:  # Show last 3
-            if s:
-                lines.append(f"  - {s[:100]}")
+        lines.extend(f"  - {s[:100]}" for s in empty_summaries[-3:] if s)
         lines.append("")
 
     return "\n".join(lines)
@@ -428,7 +541,7 @@ def get_project_freshness(
     """
     if _all_outcomes is None:
         outcomes_path = Path(instance_dir) / "session_outcomes.json"
-        _all_outcomes = _load_outcomes(outcomes_path)
+        _all_outcomes = load_outcomes(outcomes_path)
 
     weights = {}
     for name, _ in projects:
@@ -537,7 +650,7 @@ def get_project_drift(
     """
     if _all_outcomes is None:
         outcomes_path = Path(instance_dir) / "session_outcomes.json"
-        _all_outcomes = _load_outcomes(outcomes_path)
+        _all_outcomes = load_outcomes(outcomes_path)
 
     drift = {}
     for name, path in projects:
@@ -611,7 +724,7 @@ def get_drift_summary(
         pass
 
     summary_lines = [
-        f"### Project Drift Detected",
+        "### Project Drift Detected",
         "",
         f"**{count} commits** landed on main since your last session ({time_desc}).",
         "Review recent changes before starting work to avoid conflicts or duplication.",

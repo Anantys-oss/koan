@@ -2,6 +2,7 @@
 name: delete_project
 scope: core
 group: config
+emoji: 🗑️
 description: Remove a project from the workspace
 version: 1.0.0
 audience: bridge
@@ -10,6 +11,6 @@ commands:
   - name: delete_project
     description: Remove a project directory and optionally its projects.yaml entry
     usage: /delete_project <project-name>
-    aliases: [delete, del, deleteproject]
+    aliases: [delete, del, deleteproject, remove_project]
 handler: handler.py
 ---

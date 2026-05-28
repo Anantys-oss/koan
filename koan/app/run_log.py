@@ -22,8 +22,10 @@ Usage:
     print(bold_cyan("=== Run 1/5 ==="))
 """
 
+import contextlib
 import os
 import sys
+import time
 
 
 # ---------------------------------------------------------------------------
@@ -96,14 +98,19 @@ _CATEGORY_COLORS = {
 # ---------------------------------------------------------------------------
 
 def log(category: str, message: str):
-    """Print a colored log message."""
+    """Print a timestamped, colored log message.
+
+    Format: [HH:MM:SS][category] message
+    """
     if not _COLORS:
         _init_colors()
     color_spec = _CATEGORY_COLORS.get(category, "white")
     parts = color_spec.split("+")
     prefix = "".join(_COLORS.get(p, "") for p in parts)
     reset = _COLORS.get("reset", "")
-    print(f"{prefix}[{category}]{reset} {message}", flush=True)
+    dim = _COLORS.get("dim", "")
+    ts = time.strftime("%H:%M:%S")
+    print(f"{dim}[{ts}]{reset} {prefix}[{category}]{reset} {message}", flush=True)
 
 
 def _styled(text: str, *styles: str) -> str:
@@ -118,5 +125,37 @@ def bold_cyan(text: str) -> str:
     return _styled(text, "bold", "cyan")
 
 
+def log_safe(category: str, message: str, *, force_stderr: bool = False):
+    """Log with automatic fallback to stderr.
+
+    Modules that run both inside the agent loop (where ``log()`` is available)
+    and as CLI subprocesses (where colored output must stay off stdout) should
+    call ``log_safe`` instead of ``log``.
+
+    Args:
+        category: Log category (e.g. ``"error"``, ``"mission"``).
+        message: Human-readable log message.
+        force_stderr: When *True*, bypass ``log()`` entirely and print
+            directly to stderr.  Used by iteration_manager when running
+            in CLI subprocess mode (stdout carries JSON).
+    """
+    if force_stderr:
+        print(f"[{category}] {message}", file=sys.stderr)
+        return
+    try:
+        log(category, message)
+    except Exception:
+        print(f"[{category}] {message}", file=sys.stderr)
+
+
 def bold_green(text: str) -> str:
     return _styled(text, "bold", "green")
+
+
+@contextlib.contextmanager
+def suppress_logged(log_fn, level, message, *exceptions):
+    """Like contextlib.suppress but logs the exception."""
+    try:
+        yield
+    except (exceptions or (Exception,)) as exc:
+        log_fn(level, f"{message}: {exc}")

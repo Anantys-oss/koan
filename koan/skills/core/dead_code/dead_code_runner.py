@@ -17,22 +17,257 @@ CLI:
         --project-path <path> --project-name <name> --instance-dir <dir>
 """
 
+import ast
+import os
 import re
+from collections import Counter
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from app.prompts import load_prompt_or_skill
+
+# Extensions mapped to language names for inventory
+_EXT_LANG = {
+    ".py": "Python", ".js": "JavaScript", ".ts": "TypeScript",
+    ".tsx": "TypeScript (JSX)", ".jsx": "JavaScript (JSX)",
+    ".rb": "Ruby", ".go": "Go", ".rs": "Rust", ".java": "Java",
+    ".c": "C", ".cpp": "C++", ".h": "C/C++ Header",
+    ".php": "PHP", ".pl": "Perl", ".pm": "Perl",
+    ".sh": "Shell", ".md": "Markdown", ".yml": "YAML", ".yaml": "YAML",
+    ".json": "JSON", ".toml": "TOML", ".css": "CSS", ".html": "HTML",
+}
+
+# Directories to always skip during pre-scan
+_SKIP_DIRS = {
+    "node_modules", ".venv", "venv", "__pycache__", ".git", "dist",
+    "build", "vendor", ".tox", ".mypy_cache", ".pytest_cache",
+    "htmlcov", ".eggs", "egg-info",
+}
+
+
+def _prescan_project(project_path: str) -> str:
+    """Generate a lightweight project inventory in Python.
+
+    Walks the source tree (skipping vendored/build dirs) and produces:
+    - Language breakdown by file count
+    - Source directory structure (depth-limited)
+    - List of source files (capped for prompt size)
+
+    This saves Claude 3-5 orientation turns by providing the info upfront.
+    """
+    root = Path(project_path)
+    lang_counts: Counter = Counter()
+    source_files: list = []
+
+    for dirpath, dirnames, filenames in os.walk(root):
+        # Prune skipped directories in-place
+        dirnames[:] = [
+            d for d in dirnames
+            if d not in _SKIP_DIRS and not d.endswith(".egg-info")
+        ]
+
+        rel_dir = Path(dirpath).relative_to(root)
+        for fname in filenames:
+            ext = Path(fname).suffix.lower()
+            lang = _EXT_LANG.get(ext)
+            if lang:
+                lang_counts[lang] += 1
+                rel_path = str(rel_dir / fname)
+                if rel_path.startswith("."):
+                    rel_path = rel_path[2:]  # strip "./"
+                source_files.append(rel_path)
+
+    if not source_files:
+        return ""
+
+    # Build language breakdown
+    lines = ["## Pre-scan: Project Inventory", ""]
+    lines.append("### Language breakdown")
+    for lang, count in lang_counts.most_common(10):
+        lines.append(f"- {lang}: {count} files")
+
+    # Build source file listing (cap at 200 to avoid prompt bloat)
+    lines.append("")
+    lines.append(f"### Source files ({len(source_files)} total)")
+    source_files.sort()
+    if len(source_files) > 200:
+        lines.append(f"(showing first 200 of {len(source_files)})")
+    lines.extend(f"- {f}" for f in source_files[:200])
+
+    return "\n".join(lines)
+
+
+# Max files to analyze with AST — avoid spending too long on huge monorepos
+_MAX_AST_FILES = 500
+
+# Max candidates to report — keeps prompt size manageable
+_MAX_CANDIDATES = 40
+
+
+def _collect_python_symbols(
+    root: Path,
+) -> Tuple[Dict[str, List[Tuple[str, int, str]]], List[Tuple[str, str]]]:
+    """Parse Python files via AST to collect defined symbols and file contents.
+
+    Returns:
+        (defined, file_contents) where:
+        - defined maps symbol_name → [(rel_path, lineno, kind)]
+        - file_contents is [(rel_path, text)] for reference searching
+    """
+    defined: Dict[str, List[Tuple[str, int, str]]] = {}
+    file_contents: List[Tuple[str, str]] = []
+    file_count = 0
+
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [
+            d for d in dirnames
+            if d not in _SKIP_DIRS and not d.endswith(".egg-info")
+        ]
+        for fname in filenames:
+            if not fname.endswith(".py"):
+                continue
+            file_count += 1
+            if file_count > _MAX_AST_FILES:
+                return defined, file_contents
+
+            fpath = Path(dirpath) / fname
+            try:
+                text = fpath.read_text(errors="replace")
+            except OSError:
+                continue
+
+            rel = str(fpath.relative_to(root))
+            if rel.startswith("./"):
+                rel = rel[2:]
+            file_contents.append((rel, text))
+
+            try:
+                tree = ast.parse(text, filename=rel)
+            except SyntaxError:
+                continue
+
+            for node in ast.iter_child_nodes(tree):
+                # Only collect top-level definitions (not nested helpers)
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    name = node.name
+                    # Skip private/dunder, test functions, and common patterns
+                    if name.startswith("_") or name.startswith("test"):
+                        continue
+                    defined.setdefault(name, []).append((rel, node.lineno, "function"))
+                elif isinstance(node, ast.ClassDef):
+                    name = node.name
+                    if name.startswith("_"):
+                        continue
+                    defined.setdefault(name, []).append((rel, node.lineno, "class"))
+
+    return defined, file_contents
+
+
+def _find_unreferenced_symbols(
+    defined: Dict[str, List[Tuple[str, int, str]]],
+    file_contents: List[Tuple[str, str]],
+) -> List[Tuple[str, str, int, str]]:
+    """Cross-reference defined symbols against all file contents.
+
+    Returns list of (name, rel_path, lineno, kind) for symbols that appear
+    in no other file besides their definition file.
+    """
+    candidates = []
+
+    for name, locations in defined.items():
+        # Skip very short names (high false-positive rate)
+        if len(name) <= 2:
+            continue
+
+        # Files where this symbol is defined
+        def_files = {loc[0] for loc in locations}
+
+        # Check if the name appears in any non-definition file
+        found_elsewhere = False
+        for rel, text in file_contents:
+            if rel in def_files:
+                continue
+            if name in text:
+                found_elsewhere = True
+                break
+
+        if not found_elsewhere:
+            for rel, lineno, kind in locations:
+                candidates.append((name, rel, lineno, kind))
+
+    # Sort by file path then line number for readability
+    candidates.sort(key=lambda c: (c[1], c[2]))
+    return candidates[:_MAX_CANDIDATES]
+
+
+def _prescan_python_references(project_path: str) -> str:
+    """Analyze Python files to find symbols with no cross-file references.
+
+    Uses AST parsing for definitions and simple text search for references.
+    This pre-computation saves Claude 10-20+ turns of manual Grep work.
+    """
+    root = Path(project_path)
+    defined, file_contents = _collect_python_symbols(root)
+
+    if not defined:
+        return ""
+
+    candidates = _find_unreferenced_symbols(defined, file_contents)
+    if not candidates:
+        return ""
+
+    lines = [
+        "## Pre-scan: Candidate Dead Code (Python AST analysis)",
+        "",
+        f"Analyzed {len(file_contents)} Python files. "
+        f"Found {len(candidates)} public symbols defined but never "
+        f"referenced in any other source file:",
+        "",
+    ]
+    for name, rel, lineno, kind in candidates:
+        lines.append(f"- `{name}` ({kind}) — {rel}:{lineno}")
+
+    lines.append("")
+    lines.append(
+        "**Verification needed:** These candidates were found by text search. "
+        "Framework-registered code (routes, fixtures, signals, admin classes), "
+        "dynamic dispatch (`getattr`, `importlib`), `__all__` re-exports, "
+        "and same-file callers are NOT filtered. "
+        "Verify each before including in your report."
+    )
+
+    return "\n".join(lines)
 
 
 def build_dead_code_prompt(
     project_name: str,
+    project_path: Optional[str] = None,
     skill_dir: Optional[Path] = None,
 ) -> str:
-    """Build a prompt for Claude to scan for dead code."""
-    return load_prompt_or_skill(
+    """Build a prompt for Claude to scan for dead code.
+
+    If *project_path* is provided, a lightweight Python pre-scan is
+    prepended to the prompt so Claude can skip the orientation phase
+    and jump straight to dead-code analysis.
+    """
+    base_prompt = load_prompt_or_skill(
         skill_dir, "dead_code",
         PROJECT_NAME=project_name,
     )
+
+    if project_path:
+        sections = []
+        inventory = _prescan_project(project_path)
+        if inventory:
+            sections.append(inventory)
+        # Add Python-specific dead code candidates (AST analysis)
+        python_refs = _prescan_python_references(project_path)
+        if python_refs:
+            sections.append(python_refs)
+        if sections:
+            return base_prompt + "\n\n" + "\n\n".join(sections) + "\n"
+
+    return base_prompt
 
 
 def _run_claude_scan(prompt: str, project_path: str) -> str:
@@ -46,12 +281,12 @@ def _run_claude_scan(prompt: str, project_path: str) -> str:
         Claude's analysis text, or empty string on failure.
     """
     from app.cli_provider import run_command_streaming
-    from app.config import get_skill_timeout
+    from app.config import get_analysis_max_turns, get_skill_timeout
 
     return run_command_streaming(
         prompt, project_path,
         allowed_tools=["Read", "Glob", "Grep"],
-        max_turns=25,
+        max_turns=get_analysis_max_turns(),
         timeout=get_skill_timeout(),
     )
 
@@ -192,9 +427,11 @@ def run_dead_code(
 
     instance_path = Path(instance_dir)
 
-    # Step 1: Build prompt
+    # Step 1: Build prompt (with Python pre-scan for orientation context)
     notify_fn(f"\U0001f50d Scanning for dead code in {project_name}...")
-    prompt = build_dead_code_prompt(project_name, skill_dir=skill_dir)
+    prompt = build_dead_code_prompt(
+        project_name, project_path=project_path, skill_dir=skill_dir,
+    )
 
     # Step 2: Run Claude scan (read-only)
     try:

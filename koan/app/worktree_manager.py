@@ -12,6 +12,7 @@ them project-relative and easy to clean up. Each worktree gets a unique
 branch named <prefix>/session-<uuid>.
 """
 
+import contextlib
 import os
 import random
 import shutil
@@ -244,15 +245,13 @@ def remove_worktree(
             shutil.rmtree(str(wt), ignore_errors=True)
 
     # Prune any stale worktree references
-    try:
+    with contextlib.suppress(subprocess.CalledProcessError):
         subprocess.run(
             ["git", "worktree", "prune"],
             cwd=project_path,
             capture_output=True,
             text=True,
         )
-    except subprocess.CalledProcessError:
-        pass
 
     # Delete the branch if it still exists
     # (only session branches — don't delete user branches)

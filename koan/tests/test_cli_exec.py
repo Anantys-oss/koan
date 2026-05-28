@@ -12,6 +12,7 @@ from app.cli_exec import (
     prepare_prompt_file,
     run_cli,
     popen_cli,
+    stream_with_timeout,
     _cleanup_prompt_file,
 )
 
@@ -128,6 +129,49 @@ class TestPreparePromptFile:
     def test_copilot_provider_skips_stdin_passing(self, _mock):
         """Copilot provider should skip @stdin mechanism entirely."""
         cmd = ["copilot", "-p", "my prompt", "--allow-all-tools"]
+        new_cmd, path = prepare_prompt_file(cmd)
+        assert new_cmd is cmd
+        assert path is None
+
+    @patch("app.provider.get_provider_name", return_value="codex")
+    def test_codex_exec_prompt_uses_stdin_dash(self, _mock):
+        """Codex exec reads '-' from stdin, so the prompt stays out of argv."""
+        cmd = ["codex", "exec", "--sandbox", "workspace-write", "my prompt"]
+        new_cmd, path = prepare_prompt_file(cmd)
+        try:
+            assert path is not None
+            assert new_cmd == ["codex", "exec", "--sandbox", "workspace-write", "-"]
+            with open(path) as f:
+                assert f.read() == "my prompt"
+            mode = os.stat(path).st_mode & 0o777
+            assert mode == 0o600
+        finally:
+            _cleanup_prompt_file(path)
+
+    @patch("app.provider.get_provider_name", return_value="codex")
+    def test_codex_large_prompt_removed_from_argv(self, _mock):
+        """Regression for OSError: Argument list too long when using Codex."""
+        prompt = "x" * 200_000
+        cmd = ["codex", "exec", "--json", prompt]
+        new_cmd, path = prepare_prompt_file(cmd)
+        try:
+            assert new_cmd == ["codex", "exec", "--json", "-"]
+            assert prompt not in new_cmd
+            with open(path) as f:
+                assert f.read() == prompt
+        finally:
+            _cleanup_prompt_file(path)
+
+    @patch("app.provider.get_provider_name", return_value="codex")
+    def test_codex_existing_stdin_dash_returns_unchanged(self, _mock):
+        cmd = ["codex", "exec", "--json", "-"]
+        new_cmd, path = prepare_prompt_file(cmd)
+        assert new_cmd is cmd
+        assert path is None
+
+    @patch("app.provider.get_provider_name", return_value="codex")
+    def test_codex_without_prompt_returns_unchanged(self, _mock):
+        cmd = ["codex", "exec", "--json"]
         new_cmd, path = prepare_prompt_file(cmd)
         assert new_cmd is cmd
         assert path is None
@@ -313,3 +357,176 @@ class TestPopenCli:
         assert actual_cmd == ["copilot", "-p", "my prompt"]
         assert mock_popen.call_args[1]["stdin"] == subprocess.DEVNULL
         cleanup()
+
+
+# ---------------------------------------------------------------------------
+# stream_with_timeout
+# ---------------------------------------------------------------------------
+
+
+class _FakeStream:
+    def __init__(self, lines=None, read_text=""):
+        self._lines = list(lines or [])
+        self._read_text = read_text
+        self.closed = False
+
+    def __iter__(self):
+        return iter(self._lines)
+
+    def read(self):
+        return self._read_text
+
+    def close(self):
+        self.closed = True
+
+
+def _fake_proc(stdout_lines, stderr_text="", returncode=0, pid=99999):
+    proc = MagicMock()
+    proc.stdout = _FakeStream(lines=stdout_lines)
+    proc.stderr = _FakeStream(read_text=stderr_text)
+    proc.returncode = returncode
+    proc.pid = pid
+    proc.wait.return_value = returncode
+    return proc
+
+
+class TestStreamWithTimeout:
+    """Tests for stream_with_timeout — shared streaming + watchdog helper."""
+
+    def test_collects_stdout_lines(self):
+        proc = _fake_proc(["a\n", "b\n", "c\n"], returncode=0)
+        result = stream_with_timeout(proc, timeout=10)
+        assert result.stdout == "a\nb\nc"
+        assert result.stderr == ""
+        assert result.timed_out is False
+
+    def test_forwards_each_line_to_callback(self):
+        proc = _fake_proc(["one\n", "two\n", "three\n"], returncode=0)
+        seen = []
+        stream_with_timeout(proc, timeout=10, on_line=seen.append)
+        assert seen == ["one", "two", "three"]
+
+    def test_drains_stderr(self):
+        proc = _fake_proc(["ok\n"], stderr_text="oops", returncode=1)
+        result = stream_with_timeout(proc, timeout=10)
+        assert result.stderr == "oops"
+        assert result.timed_out is False
+
+    def test_closes_streams(self):
+        proc = _fake_proc(["ok\n"], returncode=0)
+        stream_with_timeout(proc, timeout=10)
+        assert proc.stdout.closed is True
+        assert proc.stderr.closed is True
+
+    def test_timeout_kills_process_group(self):
+        """When the watchdog fires it must SIGKILL the whole process group."""
+        import threading
+
+        killed = threading.Event()
+
+        class _BlockingStream:
+            def __iter__(self):
+                killed.wait(timeout=10)
+                return iter([])
+
+            def read(self):
+                return ""
+
+            def close(self):
+                return None
+
+        proc = MagicMock()
+        proc.stdout = _BlockingStream()
+        proc.stderr = _FakeStream(read_text="")
+        proc.returncode = -9
+        proc.pid = 12345
+        proc.wait.return_value = -9
+
+        with patch("app.subprocess_runner.os.killpg",
+                   side_effect=lambda *a, **kw: killed.set()) as killpg, \
+                patch("app.subprocess_runner.os.getpgid", return_value=12345):
+            result = stream_with_timeout(proc, timeout=0.5)
+
+        assert result.timed_out is True
+        killpg.assert_called_once()
+
+    def test_completed_flag_blocks_watchdog_race(self):
+        """If the watchdog Timer fires after stream EOF but before
+        ``watchdog.cancel()``, the kill must be skipped and ``timed_out``
+        must stay False — otherwise a clean completion gets reported as
+        a timeout."""
+        from app.cli_exec import stream_with_timeout as swt
+
+        proc = _fake_proc(["done\n"], returncode=0)
+
+        with patch("app.subprocess_runner.threading.Timer") as TimerMock:
+            timer_instance = MagicMock()
+            captured = {}
+
+            def factory(timeout, fn):
+                captured["fn"] = fn
+                return timer_instance
+
+            TimerMock.side_effect = factory
+
+            with patch("app.subprocess_runner.os.killpg") as killpg:
+                # Simulate the race: invoke the watchdog callback after
+                # stream consumption but before cancel() returns.
+                def fire_after_stream():
+                    captured["fn"]()
+                    return None
+                timer_instance.cancel.side_effect = fire_after_stream
+
+                result = swt(proc, timeout=10)
+
+            killpg.assert_not_called()
+            assert result.timed_out is False
+
+
+# ---------------------------------------------------------------------------
+# Non-UTF-8 resilience
+# ---------------------------------------------------------------------------
+
+
+class TestNonUtf8Resilience:
+    """Subprocess stdout containing invalid UTF-8 must not crash the reader.
+
+    Razor2-Client-Agent contains binary spam test data (0xff bytes).  When
+    Claude reads those files, the raw bytes can leak into CLI stdout.
+    Previously ``text=True`` without ``errors="replace"`` caused:
+      UnicodeDecodeError: 'utf-8' codec can't decode byte 0xff in position 8903
+    """
+
+    def test_stream_with_timeout_survives_invalid_utf8(self):
+        """Real subprocess emitting 0xff bytes must not crash stream_with_timeout."""
+        import sys
+
+        script = (
+            "import sys, os; "
+            "os.write(1, b'valid line\\n'); "
+            "os.write(1, b'bad byte \\xff here\\n'); "
+            "os.write(1, b'after bad\\n')"
+        )
+        proc = subprocess.Popen(
+            [sys.executable, "-c", script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            encoding="utf-8",
+            errors="replace",
+        )
+        result = stream_with_timeout(proc, timeout=10)
+        assert "valid line" in result.stdout
+        assert "after bad" in result.stdout
+        assert result.timed_out is False
+
+    def test_popen_cli_passes_errors_replace(self):
+        """popen_cli must forward errors='replace' to Popen."""
+        with patch("app.cli_exec.subprocess.Popen") as mock_popen:
+            mock_popen.return_value = MagicMock()
+            cmd = ["git", "status"]
+            proc, cleanup = popen_cli(
+                cmd, stdout=subprocess.PIPE, encoding="utf-8", errors="replace",
+            )
+            call_kwargs = mock_popen.call_args[1]
+            assert call_kwargs["errors"] == "replace"
+            cleanup()

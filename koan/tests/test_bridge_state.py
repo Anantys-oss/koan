@@ -168,6 +168,37 @@ class TestSkillRegistry:
 
         bs._reset_registry()
 
+    @patch("app.bridge_state.build_registry")
+    def test_get_registry_invalidates_on_mtime_change(self, mock_build, tmp_path, monkeypatch):
+        """_get_registry() rebuilds when skills directory mtime changes."""
+        import app.bridge_state as bs
+        bs._reset_registry()
+        monkeypatch.setattr(bs, "INSTANCE_DIR", tmp_path)
+
+        mock_registry_1 = MagicMock()
+        mock_registry_2 = MagicMock()
+        mock_build.side_effect = [mock_registry_1, mock_registry_2]
+
+        # First call builds the registry
+        result1 = bs._get_registry()
+        assert result1 is mock_registry_1
+        assert mock_build.call_count == 1
+
+        # Second call returns cached (same mtime)
+        result2 = bs._get_registry()
+        assert result2 is mock_registry_1
+        assert mock_build.call_count == 1
+
+        # Simulate skills directory change by bumping the stored mtime
+        bs._skill_registry_mtime -= 1.0
+
+        # Third call detects mtime change and rebuilds
+        result3 = bs._get_registry()
+        assert result3 is mock_registry_2
+        assert mock_build.call_count == 2
+
+        bs._reset_registry()
+
 
 class TestModuleLevelConstants:
     """Tests for module-level constant derivation."""

@@ -1,0 +1,19 @@
+---
+name: audit
+scope: core
+group: code
+emoji: 🔎
+description: Audit a project codebase and create tracker issues for each finding
+version: 1.0.0
+audience: hybrid
+caveman: false
+github_enabled: true
+github_context_aware: true
+commands:
+  - name: audit
+    description: Audit a project for optimizations, simplifications, and issues — creates tracker issues for findings
+    usage: /audit <project-name> [extra context] [limit=N]
+    aliases: []
+handler: handler.py
+worker: true
+---

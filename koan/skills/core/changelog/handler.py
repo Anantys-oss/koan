@@ -1,5 +1,6 @@
 """Koan changelog skill — generate release notes from commits and journals."""
 
+import contextlib
 import re
 import subprocess
 from collections import defaultdict
@@ -105,10 +106,8 @@ def _parse_args(args: str) -> Tuple[str, datetime, str]:
     for part in parts:
         if part.startswith("--since="):
             date_str = part[len("--since="):]
-            try:
+            with contextlib.suppress(ValueError):
                 since_date = datetime.strptime(date_str, "%Y-%m-%d")
-            except ValueError:
-                pass
         elif part.startswith("--format="):
             fmt = part[len("--format="):]
             if fmt in ("md", "markdown"):
@@ -279,8 +278,7 @@ def _format_markdown(
     if journal_entries:
         lines.append("### Context (from journal)")
         lines.append("")
-        for entry in journal_entries[:10]:
-            lines.append(f"- {_truncate(entry, 120)}")
+        lines.extend(f"- {_truncate(entry, 120)}" for entry in journal_entries[:10])
         lines.append("")
 
     total = sum(len(items) for items in sections.values())
@@ -316,7 +314,6 @@ def _format_telegram(
 
     if journal_entries:
         lines.append("Context:")
-        for entry in journal_entries[:5]:
-            lines.append(f"  {_truncate(entry, 80)}")
+        lines.extend(f"  {_truncate(entry, 80)}" for entry in journal_entries[:5])
 
     return "\n".join(lines)

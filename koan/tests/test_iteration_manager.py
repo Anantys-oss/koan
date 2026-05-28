@@ -15,20 +15,30 @@ from app.iteration_manager import (
     AutonomousDecision,
     FilterResult,
     _MODE_DOWNGRADE,
+    _MODE_RANK,
     _check_focus,
     _check_schedule,
     _decide_autonomous_action,
+    _downgrade_if_burning_fast,
     _downgrade_if_unaffordable,
+    _get_tier_cost_multiplier,
     _fallback_mission_extract,
     _filter_exploration_projects,
     _get_known_project_names,
-    _get_project_by_index,
     _get_usage_decision,
     _inject_recurring,
+    _is_diagnostic_on_cooldown,
+    _load_diagnostic_cooldowns,
+    _log_selection_audit,
     _make_result,
+    _maybe_inject_diagnostic_mission,
+    _maybe_warn_burn_rate,
     _pick_mission,
+    _read_session_pct_and_reset,
     _refresh_usage,
     _resolve_project_path,
+    _save_diagnostic_cooldown,
+    _select_diagnostic_type,
     _select_random_exploration_project,
     _should_contemplate,
     plan_iteration,
@@ -74,9 +84,9 @@ PROJECTS_LIST = [("koan", "/path/to/koan"), ("backend", "/path/to/backend"), ("w
 class TestResolveProjectPath:
 
     def test_finds_existing_project(self):
-        assert _resolve_project_path("koan", PROJECTS_LIST) == "/path/to/koan"
-        assert _resolve_project_path("backend", PROJECTS_LIST) == "/path/to/backend"
-        assert _resolve_project_path("webapp", PROJECTS_LIST) == "/path/to/webapp"
+        assert _resolve_project_path("koan", PROJECTS_LIST) == ("koan", "/path/to/koan")
+        assert _resolve_project_path("backend", PROJECTS_LIST) == ("backend", "/path/to/backend")
+        assert _resolve_project_path("webapp", PROJECTS_LIST) == ("webapp", "/path/to/webapp")
 
     def test_returns_none_for_unknown(self):
         assert _resolve_project_path("unknown", PROJECTS_LIST) is None
@@ -85,32 +95,14 @@ class TestResolveProjectPath:
         assert _resolve_project_path("koan", []) is None
 
     def test_single_project(self):
-        assert _resolve_project_path("only", [("only", "/single/path")]) == "/single/path"
+        assert _resolve_project_path("only", [("only", "/single/path")]) == ("only", "/single/path")
 
+    def test_case_insensitive_match(self):
+        """Project name matching should be case-insensitive."""
+        assert _resolve_project_path("Koan", PROJECTS_LIST) == ("koan", "/path/to/koan")
+        assert _resolve_project_path("BACKEND", PROJECTS_LIST) == ("backend", "/path/to/backend")
+        assert _resolve_project_path("WebApp", PROJECTS_LIST) == ("webapp", "/path/to/webapp")
 
-class TestGetProjectByIndex:
-
-    def test_first_project(self):
-        name, path = _get_project_by_index(PROJECTS_LIST, 0)
-        assert name == "koan"
-        assert path == "/path/to/koan"
-
-    def test_second_project(self):
-        name, path = _get_project_by_index(PROJECTS_LIST, 1)
-        assert name == "backend"
-        assert path == "/path/to/backend"
-
-    def test_index_clamped_high(self):
-        name, path = _get_project_by_index(PROJECTS_LIST, 99)
-        assert name == "webapp"  # Last project
-
-    def test_index_clamped_low(self):
-        name, path = _get_project_by_index(PROJECTS_LIST, -1)
-        assert name == "koan"  # First project
-
-    def test_empty_projects(self):
-        name, path = _get_project_by_index([], 0)
-        assert name == "default"
 
 
 class TestGetKnownProjectNames:
@@ -188,6 +180,53 @@ class TestRefreshUsage:
             _refresh_usage(tmp_path / "state", tmp_path / "usage.md", count=1)
 
 
+class TestReadSessionPctAndReset:
+    def test_reads_tokens_and_minutes_until_reset(self, tmp_path):
+        from datetime import datetime, timedelta
+
+        state = tmp_path / "usage_state.json"
+        state.write_text(json.dumps({
+            "session_tokens": 250,
+            "session_start": (datetime.now() - timedelta(minutes=30)).isoformat(),
+        }))
+
+        with (
+            patch("app.usage_estimator._get_limits", return_value=(1000, 10000)),
+            patch("app.utils.load_config", return_value={}),
+        ):
+            pct, minutes = _read_session_pct_and_reset(state)
+
+        assert pct == 25.0
+        assert minutes is not None
+        assert 0 < minutes <= 270
+
+    def test_invalid_json_returns_none_tuple(self, tmp_path):
+        state = tmp_path / "usage_state.json"
+        state.write_text("not-json")
+
+        assert _read_session_pct_and_reset(state) == (None, None)
+
+    def test_missing_session_start_returns_pct_without_reset(self, tmp_path):
+        state = tmp_path / "usage_state.json"
+        state.write_text(json.dumps({"session_tokens": 1500}))
+
+        with (
+            patch("app.usage_estimator._get_limits", return_value=(1000, 10000)),
+            patch("app.utils.load_config", return_value={}),
+        ):
+            assert _read_session_pct_and_reset(state) == (100.0, None)
+
+    def test_non_positive_session_limit_returns_none_tuple(self, tmp_path):
+        state = tmp_path / "usage_state.json"
+        state.write_text(json.dumps({"session_tokens": 100}))
+
+        with (
+            patch("app.usage_estimator._get_limits", return_value=(0, 10000)),
+            patch("app.utils.load_config", return_value={}),
+        ):
+            assert _read_session_pct_and_reset(state) == (None, None)
+
+
 # === Tests: _downgrade_if_unaffordable ===
 
 
@@ -246,6 +285,71 @@ class TestDowngradeIfUnaffordable:
             "review": "wait",
         }
 
+    def test_tier_multiplier_triggers_downgrade(self, tmp_path):
+        """A high tier multiplier forces downgrade even when base mode fits."""
+        # 50% used → 40% remaining, 10 runs → avg 5%/run
+        # implement = 5*1.0 = 5% ≤ 40% (affordable without tier)
+        # implement with tier_mult=2.0 = 5*1.0*2.0 = 10% ≤ 40% (still fits)
+        # deep = 5*2.0 = 10% ≤ 40% (affordable without tier)
+        # deep with tier_mult=2.0 = 5*2.0*2.0 = 20% ≤ 40% (still fits)
+        tracker = self._make_tracker(tmp_path, session_pct=50, runs=10)
+        assert _downgrade_if_unaffordable(tracker, "deep") == "deep"
+        assert _downgrade_if_unaffordable(tracker, "deep", tier_multiplier=2.0) == "deep"
+
+        # 80% used → 10% remaining, 10 runs → avg 8%/run
+        # deep = 8*2.0 = 16% > 10% → downgrade
+        # deep with tier_mult=1.5 = 8*2.0*1.5 = 24% > 10% → downgrade
+        # implement = 8*1.0 = 8% ≤ 10% (fits without tier)
+        # implement with tier_mult=1.5 = 8*1.0*1.5 = 12% > 10% → downgrade further
+        tracker2 = self._make_tracker(tmp_path, session_pct=80, runs=10)
+        assert _downgrade_if_unaffordable(tracker2, "deep") == "implement"
+        assert _downgrade_if_unaffordable(tracker2, "deep", tier_multiplier=1.5) == "review"
+
+    def test_tier_multiplier_one_is_noop(self, tmp_path):
+        """tier_multiplier=1.0 behaves identically to no multiplier."""
+        tracker = self._make_tracker(tmp_path, session_pct=80, runs=10)
+        assert (_downgrade_if_unaffordable(tracker, "deep", tier_multiplier=1.0)
+                == _downgrade_if_unaffordable(tracker, "deep"))
+
+
+# === Tests: _get_tier_cost_multiplier ===
+
+
+class TestGetTierCostMultiplier:
+
+    def test_none_tier_returns_one(self):
+        assert _get_tier_cost_multiplier(None) == 1.0
+
+    def test_empty_tier_returns_one(self):
+        assert _get_tier_cost_multiplier("") == 1.0
+
+    def test_returns_timeout_multiplier_from_config(self):
+        routing = {
+            "enabled": True,
+            "tiers": {
+                "complex": {"model": "opus", "max_turns": 500, "timeout_multiplier": 1.5},
+                "critical": {"model": "opus", "max_turns": 500, "timeout_multiplier": 2.0},
+            },
+        }
+        with patch(
+            "app.config.get_complexity_routing_config", return_value=routing,
+        ):
+            assert _get_tier_cost_multiplier("complex", "myproject") == 1.5
+            assert _get_tier_cost_multiplier("critical", "myproject") == 2.0
+
+    def test_missing_tier_falls_back_to_one(self):
+        routing = {"enabled": True, "tiers": {"trivial": {"timeout_multiplier": 0.5}}}
+        with patch(
+            "app.config.get_complexity_routing_config", return_value=routing,
+        ):
+            assert _get_tier_cost_multiplier("unknown_tier", "myproject") == 1.0
+
+    def test_routing_disabled_returns_one(self):
+        with patch(
+            "app.config.get_complexity_routing_config", return_value=None,
+        ):
+            assert _get_tier_cost_multiplier("complex", "myproject") == 1.0
+
 
 # === Tests: _get_usage_decision ===
 
@@ -271,6 +375,23 @@ class TestGetUsageDecision:
         assert "Session" in result["display_lines"][0]
         assert "Weekly" in result["display_lines"][1]
         assert result.get("tracker_error") is None
+
+    def test_returns_tracker_for_tier_recheck(self, tmp_path):
+        """Decision dict includes tracker for post-tier affordability recheck."""
+        usage_md = tmp_path / "usage.md"
+        usage_md.write_text(
+            "Session (5hr) : 30% (reset in 2h30m)\n"
+            "Weekly (7 day) : 20% (Resets in 5d)\n"
+        )
+        result = _get_usage_decision(usage_md, 3, PROJECTS_STR)
+        assert result.get("tracker") is not None
+        assert hasattr(result["tracker"], "can_afford_run")
+
+    def test_tracker_error_has_no_tracker(self, tmp_path):
+        """On tracker error, no tracker is returned."""
+        with patch("app.usage_tracker.UsageTracker", side_effect=ValueError("boom")):
+            result = _get_usage_decision(tmp_path / "x.md", 0, PROJECTS_STR)
+        assert result.get("tracker") is None
 
     def test_high_usage_returns_wait(self, tmp_path):
         usage_md = tmp_path / "usage.md"
@@ -429,7 +550,8 @@ class TestMakeResult:
             "action", "project_name", "project_path", "mission_title",
             "autonomous_mode", "focus_area", "available_pct", "decision_reason",
             "display_lines", "recurring_injected", "focus_remaining",
-            "schedule_mode", "error", "tracker_error",
+            "passive_remaining", "schedule_mode", "error", "tracker_error",
+            "cost_today", "mission_tier",
         }
         assert set(result.keys()) == expected_keys
 
@@ -1353,6 +1475,104 @@ projects:
         assert "bad yaml" in captured.err
 
 
+# === Tests: _filter_exploration_projects with focus mode ===
+
+
+class TestFilterExplorationProjectsFocus:
+
+    def test_filters_focused_projects(self, koan_root):
+        """Projects with focus: true are excluded from exploration."""
+        (koan_root / "projects.yaml").write_text("""
+projects:
+  koan:
+    path: /path/to/koan
+  backend:
+    path: /path/to/backend
+    focus: true
+  webapp:
+    path: /path/to/webapp
+""")
+        result = _filter_exploration_projects(PROJECTS_LIST, str(koan_root))
+        names = [name for name, _ in result.projects]
+        assert "koan" in names
+        assert "webapp" in names
+        assert "backend" not in names
+        assert "backend" in result.focus_gated
+
+    def test_returns_empty_when_all_focused(self, koan_root):
+        """All projects focused → empty list."""
+        (koan_root / "projects.yaml").write_text("""
+projects:
+  koan:
+    path: /path/to/koan
+    focus: true
+  backend:
+    path: /path/to/backend
+    focus: true
+  webapp:
+    path: /path/to/webapp
+    focus: true
+""")
+        result = _filter_exploration_projects(PROJECTS_LIST, str(koan_root))
+        assert result.projects == []
+        assert set(result.focus_gated) == {"koan", "backend", "webapp"}
+
+    def test_focused_projects_included_in_focus_gated_list(self, koan_root):
+        """Focus-gated projects are tracked separately in FilterResult."""
+        (koan_root / "projects.yaml").write_text("""
+projects:
+  koan:
+    path: /path/to/koan
+  backend:
+    path: /path/to/backend
+    focus: true
+  webapp:
+    path: /path/to/webapp
+    focus: true
+""")
+        result = _filter_exploration_projects(PROJECTS_LIST, str(koan_root))
+        assert result.focus_gated == ["backend", "webapp"]
+
+    def test_focus_flag_as_string(self, koan_root):
+        """Focus flag accepts string values like 'true' and 'yes'."""
+        (koan_root / "projects.yaml").write_text("""
+projects:
+  koan:
+    path: /path/to/koan
+    focus: "true"
+  backend:
+    path: /path/to/backend
+    focus: "yes"
+  webapp:
+    path: /path/to/webapp
+    focus: "false"
+""")
+        result = _filter_exploration_projects(PROJECTS_LIST, str(koan_root))
+        names = [name for name, _ in result.projects]
+        assert "webapp" in names
+        assert "koan" not in names
+        assert "backend" not in names
+
+    def test_defaults_focus_applies(self, koan_root):
+        """Defaults section focus: true applies to all unless overridden."""
+        (koan_root / "projects.yaml").write_text("""
+defaults:
+  focus: true
+projects:
+  koan:
+    path: /path/to/koan
+    focus: false
+  backend:
+    path: /path/to/backend
+  webapp:
+    path: /path/to/webapp
+""")
+        result = _filter_exploration_projects(PROJECTS_LIST, str(koan_root))
+        names = [name for name, _ in result.projects]
+        assert names == ["koan"]
+        assert set(result.focus_gated) == {"backend", "webapp"}
+
+
 # === Tests: _filter_exploration_projects with PR limits ===
 
 
@@ -1825,6 +2045,98 @@ projects:
         assert set(repos_arg) == {"owner/koan", "owner/backend"}
 
 
+# === Tests: _filter_exploration_projects with branch saturation ===
+
+
+class TestFilterExplorationProjectsBranchSaturation:
+
+    def setup_method(self):
+        self._batch_patcher = patch("app.github.batch_count_open_prs", return_value={})
+        self._batch_patcher.start()
+
+    def teardown_method(self):
+        self._batch_patcher.stop()
+
+    @patch("app.branch_limiter.count_pending_branches", return_value=5)
+    @patch("app.github.get_gh_username", return_value="koan-bot")
+    def test_under_limit_included(self, mock_user, mock_count, koan_root):
+        """Project under branch limit is included."""
+        (koan_root / "projects.yaml").write_text("""
+projects:
+  koan:
+    path: /path/to/koan
+    max_pending_branches: 10
+""")
+        result = _filter_exploration_projects(
+            [("koan", "/path/to/koan")], str(koan_root),
+        )
+        assert len(result.projects) == 1
+        assert result.branch_saturated == []
+
+    @patch("app.branch_limiter.count_pending_branches", return_value=10)
+    @patch("app.github.get_gh_username", return_value="koan-bot")
+    def test_at_limit_excluded(self, mock_user, mock_count, koan_root):
+        """Project at branch limit is excluded."""
+        (koan_root / "projects.yaml").write_text("""
+projects:
+  koan:
+    path: /path/to/koan
+    max_pending_branches: 10
+""")
+        result = _filter_exploration_projects(
+            [("koan", "/path/to/koan")], str(koan_root),
+        )
+        assert result.projects == []
+        assert result.branch_saturated == ["koan"]
+
+    @patch("app.branch_limiter.count_pending_branches", return_value=15)
+    @patch("app.github.get_gh_username", return_value="koan-bot")
+    def test_over_limit_excluded(self, mock_user, mock_count, koan_root):
+        """Project over branch limit is excluded."""
+        (koan_root / "projects.yaml").write_text("""
+projects:
+  koan:
+    path: /path/to/koan
+    max_pending_branches: 10
+""")
+        result = _filter_exploration_projects(
+            [("koan", "/path/to/koan")], str(koan_root),
+        )
+        assert result.projects == []
+        assert result.branch_saturated == ["koan"]
+
+    @patch("app.github.get_gh_username", return_value="koan-bot")
+    def test_zero_limit_means_unlimited(self, mock_user, koan_root):
+        """max_pending_branches: 0 means unlimited — no branch count check."""
+        (koan_root / "projects.yaml").write_text("""
+projects:
+  koan:
+    path: /path/to/koan
+    max_pending_branches: 0
+""")
+        result = _filter_exploration_projects(
+            [("koan", "/path/to/koan")], str(koan_root),
+        )
+        assert len(result.projects) == 1
+        assert result.branch_saturated == []
+
+    @patch("app.branch_limiter.count_pending_branches", side_effect=Exception("git error"))
+    @patch("app.github.get_gh_username", return_value="koan-bot")
+    def test_error_allows_project(self, mock_user, mock_count, koan_root):
+        """Branch count error → project allowed (fail-open)."""
+        (koan_root / "projects.yaml").write_text("""
+projects:
+  koan:
+    path: /path/to/koan
+    max_pending_branches: 5
+""")
+        result = _filter_exploration_projects(
+            [("koan", "/path/to/koan")], str(koan_root),
+        )
+        assert len(result.projects) == 1
+        assert result.branch_saturated == []
+
+
 # === Tests: _filter_exploration_projects with deep_hours PR limit relaxation ===
 
 
@@ -1939,7 +2251,7 @@ class TestPlanIterationExploration:
         """When one project is exploration-disabled, another is selected."""
         # Return only webapp (koan and backend filtered out)
         mock_filter.return_value = FilterResult(
-            projects=[("webapp", "/path/to/webapp")], pr_limited=[],
+            projects=[("webapp", "/path/to/webapp")], pr_limited=[], branch_saturated=[],
         )
 
         usage_md = instance_dir / "usage.md"
@@ -1966,7 +2278,7 @@ class TestPlanIterationExploration:
         instance_dir, koan_root, usage_state,
     ):
         """All projects exploration-disabled → exploration_wait action."""
-        mock_filter.return_value = FilterResult(projects=[], pr_limited=[])
+        mock_filter.return_value = FilterResult(projects=[], pr_limited=[], branch_saturated=[])
 
         usage_md = instance_dir / "usage.md"
         usage_md.write_text("Session (5hr) : 30% (reset in 3h)\nWeekly (7 day) : 20% (Resets in 5d)\n")
@@ -2031,7 +2343,7 @@ projects:
     ):
         """Contemplative sessions use exploration-filtered project list."""
         mock_filter.return_value = FilterResult(
-            projects=[("webapp", "/path/to/webapp")], pr_limited=[],
+            projects=[("webapp", "/path/to/webapp")], pr_limited=[], branch_saturated=[],
         )
 
         usage_md = instance_dir / "usage.md"
@@ -2062,7 +2374,7 @@ projects:
         """With mixed enabled/disabled, only enabled projects are selected."""
         mock_filter.return_value = FilterResult(
             projects=[("koan", "/path/to/koan"), ("webapp", "/path/to/webapp")],
-            pr_limited=[],
+            pr_limited=[], branch_saturated=[],
         )
 
         usage_md = instance_dir / "usage.md"
@@ -2099,7 +2411,7 @@ class TestPlanIterationPrLimit:
     ):
         """When all exploration-eligible projects are PR-limited, action is pr_limit_wait."""
         mock_filter.return_value = FilterResult(
-            projects=[], pr_limited=["koan", "backend"],
+            projects=[], pr_limited=["koan", "backend"], branch_saturated=[],
         )
 
         usage_md = instance_dir / "usage.md"
@@ -2130,7 +2442,7 @@ class TestPlanIterationPrLimit:
     ):
         """Explicit missions run even when projects are PR-limited."""
         # _filter_exploration_projects is never called for missions
-        mock_filter.return_value = FilterResult(projects=[], pr_limited=["koan"])
+        mock_filter.return_value = FilterResult(projects=[], pr_limited=["koan"], branch_saturated=[])
 
         usage_md = instance_dir / "usage.md"
         usage_md.write_text("Session (5hr) : 30% (reset in 3h)\nWeekly (7 day) : 20% (Resets in 5d)\n")
@@ -2160,7 +2472,7 @@ class TestPlanIterationPrLimit:
     ):
         """Mix of exploration-disabled and PR-limited returns pr_limit_wait."""
         mock_filter.return_value = FilterResult(
-            projects=[], pr_limited=["koan"],
+            projects=[], pr_limited=["koan"], branch_saturated=[],
         )
 
         usage_md = instance_dir / "usage.md"
@@ -2190,7 +2502,7 @@ class TestPlanIterationPrLimit:
         """When only some projects are PR-limited, remaining are still explored."""
         mock_filter.return_value = FilterResult(
             projects=[("webapp", "/path/to/webapp")],
-            pr_limited=["koan"],
+            pr_limited=["koan"], branch_saturated=[],
         )
 
         usage_md = instance_dir / "usage.md"
@@ -2220,7 +2532,7 @@ class TestPlanIterationPrLimit:
     ):
         """All disabled with no PR-limited → exploration_wait, not pr_limit_wait."""
         mock_filter.return_value = FilterResult(
-            projects=[], pr_limited=[],
+            projects=[], pr_limited=[], branch_saturated=[],
         )
 
         usage_md = instance_dir / "usage.md"
@@ -2237,6 +2549,115 @@ class TestPlanIterationPrLimit:
         )
 
         assert result["action"] == "exploration_wait"
+
+
+# === Tests: plan_iteration with branch saturation ===
+
+
+class TestPlanIterationBranchSaturation:
+
+    @patch("app.pick_mission.pick_mission", return_value="")
+    @patch("app.usage_estimator.cmd_refresh")
+    @patch("app.iteration_manager._filter_exploration_projects")
+    @patch("app.iteration_manager._check_focus", return_value=None)
+    @patch("random.randint", return_value=99)
+    def test_all_branch_saturated_returns_branch_saturated_wait(
+        self, mock_rand, mock_focus, mock_filter, mock_refresh, mock_pick,
+        instance_dir, koan_root, usage_state,
+    ):
+        """When all projects are branch-saturated, action is branch_saturated_wait."""
+        mock_filter.return_value = FilterResult(
+            projects=[], pr_limited=[], branch_saturated=["koan", "backend"],
+        )
+
+        usage_md = instance_dir / "usage.md"
+        usage_md.write_text("Session (5hr) : 30% (reset in 3h)\nWeekly (7 day) : 20% (Resets in 5d)\n")
+
+        result = plan_iteration(
+            instance_dir=str(instance_dir),
+            koan_root=str(koan_root),
+            run_num=2,
+            count=1,
+            projects=PROJECTS_LIST,
+            last_project="koan",
+            usage_state_path=str(usage_state),
+        )
+
+        assert result["action"] == "branch_saturated_wait"
+        assert "Branch limit" in result["decision_reason"]
+
+    @patch("app.branch_limiter.count_pending_branches", return_value=3)
+    @patch("app.pick_mission.pick_mission", return_value="koan:fix a bug")
+    @patch("app.usage_estimator.cmd_refresh")
+    def test_mission_allowed_when_under_limit(
+        self, mock_refresh, mock_pick, mock_count,
+        instance_dir, koan_root, usage_state,
+    ):
+        """Mission proceeds when project is under branch limit."""
+        (koan_root / "projects.yaml").write_text("""
+projects:
+  koan:
+    path: /path/to/koan
+    max_pending_branches: 10
+""")
+
+        usage_md = instance_dir / "usage.md"
+        usage_md.write_text("Session (5hr) : 30% (reset in 3h)\nWeekly (7 day) : 20% (Resets in 5d)\n")
+
+        result = plan_iteration(
+            instance_dir=str(instance_dir),
+            koan_root=str(koan_root),
+            run_num=2,
+            count=1,
+            projects=PROJECTS_LIST,
+            last_project="koan",
+            usage_state_path=str(usage_state),
+        )
+
+        assert result["action"] == "mission"
+        assert result["project_name"] == "koan"
+
+    @patch("app.branch_limiter.count_pending_branches", return_value=50)
+    @patch("app.pick_mission.pick_mission", return_value="koan:fix a bug")
+    @patch("app.usage_estimator.cmd_refresh")
+    def test_manual_mission_runs_despite_branch_saturation(
+        self, mock_refresh, mock_pick, mock_count,
+        instance_dir, koan_root, usage_state,
+    ):
+        """max_pending_branches is a self-throttle for autonomous exploration
+        only — explicit missions in missions.md must run regardless of how
+        many open PRs/unmerged branches the project has.
+
+        Regression: previously the picker post-check (commit 5fd621c) and
+        the saturated-projects loop (2b753ec) both returned
+        branch_saturated_wait for a mission whose project was over the limit.
+        A human queuing work should never be blocked by the agent's own
+        throttle.
+        """
+        (koan_root / "projects.yaml").write_text("""
+projects:
+  koan:
+    path: /path/to/koan
+    max_pending_branches: 5
+""")
+
+        usage_md = instance_dir / "usage.md"
+        usage_md.write_text("Session (5hr) : 30% (reset in 3h)\nWeekly (7 day) : 20% (Resets in 5d)\n")
+
+        result = plan_iteration(
+            instance_dir=str(instance_dir),
+            koan_root=str(koan_root),
+            run_num=2,
+            count=1,
+            projects=PROJECTS_LIST,
+            last_project="koan",
+            usage_state_path=str(usage_state),
+        )
+
+        # 50 >> 5 limit — but mission is manual, so it proceeds.
+        assert result["action"] == "mission"
+        assert result["project_name"] == "koan"
+        assert result["mission_title"] == "fix a bug"
 
 
 # === Tests: CLI interface ===
@@ -2368,6 +2789,83 @@ class TestSelectRandomExplorationProject:
         assert isinstance(result, tuple)
         assert len(result) == 2
 
+    @patch("app.config._load_config", return_value={
+        "prompt_caching": {"same_project_stickiness_percent": 100}
+    })
+    def test_cache_stickiness_can_keep_last_project(self, _mock_cfg):
+        """When stickiness is enabled, selection may intentionally keep last project."""
+        projects = [("koan", "/path/to/koan"), ("backend", "/path/to/backend")]
+        for _ in range(10):
+            name, _ = _select_random_exploration_project(projects, "koan")
+            assert name == "koan"
+
+    @patch("app.config._load_config", return_value={
+        "prompt_caching": {"same_project_stickiness_percent": 0}
+    })
+    def test_cache_stickiness_zero_preserves_anti_repeat(self, _mock_cfg):
+        """With stickiness=0, last_project must still be excluded when alternatives exist."""
+        projects = [("koan", "/path/to/koan"), ("backend", "/path/to/backend")]
+        for _ in range(50):
+            name, _ = _select_random_exploration_project(projects, "koan")
+            assert name != "koan"
+            assert name == "backend"
+
+    def test_weighted_selection_uses_freshness_drift_and_bandit(self, tmp_path):
+        projects = [("alpha", "/a"), ("beta", "/b"), ("gamma", "/g")]
+
+        def sample_for_project(_bandit, name):
+            return {"alpha": 0.2, "beta": 0.1, "gamma": 0.9}[name]
+
+        with (
+            patch("app.session_tracker.load_outcomes", return_value=[]),
+            patch("app.session_tracker.get_project_freshness", return_value={
+                "alpha": 3,
+                "beta": 10,
+                "gamma": 4,
+            }),
+            patch("app.session_tracker.get_project_drift", return_value={
+                "alpha": 0,
+                "beta": 0,
+                "gamma": 15,
+            }),
+            patch("app.mission_metrics.get_project_success_rates", return_value={
+                "alpha": 0.4,
+                "beta": 0.9,
+                "gamma": 0.6,
+            }),
+            patch("app.bandit.load_bandit_state", return_value={}),
+            patch("app.bandit.thompson_sample", side_effect=sample_for_project),
+            patch("app.iteration_manager._log_selection_audit") as mock_audit,
+        ):
+            selected = _select_random_exploration_project(
+                projects, instance_dir=str(tmp_path),
+            )
+
+        assert selected == ("gamma", "/g")
+        mock_audit.assert_called_once()
+
+    def test_weighted_selection_falls_back_when_bandit_errors(self, tmp_path):
+        projects = [("alpha", "/a"), ("beta", "/b")]
+
+        with (
+            patch("app.session_tracker.load_outcomes", return_value=[]),
+            patch("app.session_tracker.get_project_freshness", return_value={
+                "alpha": 1,
+                "beta": 9,
+            }),
+            patch("app.session_tracker.get_project_drift", return_value={}),
+            patch("app.mission_metrics.get_project_success_rates", return_value={}),
+            patch("app.bandit.load_bandit_state", side_effect=RuntimeError("bad state")),
+            patch("random.choices", return_value=[("beta", "/b")]) as mock_choices,
+            patch("app.iteration_manager._log_selection_audit"),
+        ):
+            selected = _select_random_exploration_project(
+                projects, instance_dir=str(tmp_path),
+            )
+
+        assert selected == ("beta", "/b")
+        mock_choices.assert_called_once()
+
 
 # === Tests: plan_iteration random project selection ===
 
@@ -2386,7 +2884,7 @@ class TestPlanIterationRandomSelection:
         """Autonomous mode should use random selection, not deterministic index."""
         mock_filter.return_value = FilterResult(
             projects=[("a", "/a"), ("b", "/b"), ("c", "/c")],
-            pr_limited=[],
+            pr_limited=[], branch_saturated=[],
         )
 
         usage_md = instance_dir / "usage.md"
@@ -2423,7 +2921,7 @@ class TestPlanIterationRandomSelection:
         """Autonomous mode should avoid the last project when multiple are available."""
         mock_filter.return_value = FilterResult(
             projects=[("koan", "/koan"), ("backend", "/backend")],
-            pr_limited=[],
+            pr_limited=[], branch_saturated=[],
         )
 
         usage_md = instance_dir / "usage.md"
@@ -2443,3 +2941,913 @@ class TestPlanIterationRandomSelection:
             )
             assert result["action"] == "autonomous"
             assert result["project_name"] == "backend"
+
+    @patch("app.config._load_config", return_value={
+        "prompt_caching": {"same_project_stickiness_percent": 100}
+    })
+    @patch("app.pick_mission.pick_mission", return_value="")
+    @patch("app.usage_estimator.cmd_refresh")
+    @patch("app.iteration_manager._filter_exploration_projects")
+    @patch("app.iteration_manager._check_focus", return_value=None)
+    @patch("random.randint", return_value=99)  # no contemplation
+    def test_autonomous_can_keep_last_project_with_stickiness(
+        self, mock_rand, mock_focus, mock_filter, mock_refresh, mock_pick, _mock_cfg,
+        instance_dir, koan_root, usage_state,
+    ):
+        """With stickiness=100, autonomous selection should keep the previous project."""
+        mock_filter.return_value = FilterResult(
+            projects=[("koan", "/koan"), ("backend", "/backend")],
+            pr_limited=[], branch_saturated=[],
+        )
+
+        usage_md = instance_dir / "usage.md"
+        usage_md.write_text(
+            "Session (5hr) : 30% (reset in 3h)\nWeekly (7 day) : 20% (Resets in 5d)\n"
+        )
+
+        result = plan_iteration(
+            instance_dir=str(instance_dir),
+            koan_root=str(koan_root),
+            run_num=1,
+            count=0,
+            projects=PROJECTS_LIST,
+            last_project="koan",
+            usage_state_path=str(usage_state),
+        )
+        assert result["action"] == "autonomous"
+        assert result["project_name"] == "koan"
+
+
+# === Tests: focus mode (config-level permanent focus) ===
+
+
+class TestFocusModeContemplate:
+    """_should_contemplate should return False under focus mode."""
+
+    @patch("random.randint", return_value=0)  # roll would otherwise succeed
+    def test_focus_skips_contemplation_with_ample_budget(self, mock_rand):
+        assert _should_contemplate(
+            "deep", False, 100, focus_mode=True,
+        ) is False
+
+    @patch("random.randint", return_value=0)
+    def test_focus_skips_contemplation_in_implement(self, mock_rand):
+        assert _should_contemplate(
+            "implement", False, 100, focus_mode=True,
+        ) is False
+
+    @patch("random.randint", return_value=0)
+    def test_non_focus_still_contemplates(self, mock_rand):
+        """Sanity check: non-focus path still rolls."""
+        assert _should_contemplate(
+            "deep", False, 100, focus_mode=False,
+        ) is True
+
+
+class TestFocusModePlanIteration:
+    """plan_iteration behavior under config-level focus mode."""
+
+    @patch("app.config.is_focus_mode", return_value=True)
+    @patch("app.pick_mission.pick_mission", return_value="")
+    @patch("app.usage_estimator.cmd_refresh")
+    @patch("app.iteration_manager._check_focus", return_value=None)
+    @patch("app.iteration_manager._check_schedule", return_value=None)
+    def test_no_mission_returns_focus_wait(
+        self, mock_schedule, mock_focus, mock_refresh, mock_pick, mock_focus_mode,
+        instance_dir, koan_root, usage_state,
+    ):
+        """Focus mode + no pending mission → focus_wait action."""
+        usage_md = instance_dir / "usage.md"
+        usage_md.write_text(
+            "Session (5hr) : 30% (reset in 3h)\nWeekly (7 day) : 20% (Resets in 5d)\n"
+        )
+
+        result = plan_iteration(
+            instance_dir=str(instance_dir),
+            koan_root=str(koan_root),
+            run_num=2,
+            count=1,
+            projects=PROJECTS_LIST,
+            last_project="koan",
+            usage_state_path=str(usage_state),
+        )
+
+        assert result["action"] == "focus_wait"
+        assert result["mission_title"] == ""
+        # DEEP is capped to implement under focus mode
+        assert result["autonomous_mode"] == "implement"
+        assert "focus" in result["decision_reason"].lower()
+
+    @patch("app.iteration_manager._filter_exploration_projects")
+    @patch("app.config.is_focus_mode", return_value=True)
+    @patch("app.pick_mission.pick_mission", return_value="")
+    @patch("app.usage_estimator.cmd_refresh")
+    @patch("app.iteration_manager._check_focus", return_value=None)
+    @patch("app.iteration_manager._check_schedule", return_value=None)
+    def test_focus_mode_skips_exploration_filter(
+        self, mock_schedule, mock_focus, mock_refresh, mock_pick, mock_focus_mode,
+        mock_filter, instance_dir, koan_root, usage_state,
+    ):
+        """Focus mode should short-circuit before calling exploration filter."""
+        usage_md = instance_dir / "usage.md"
+        usage_md.write_text(
+            "Session (5hr) : 30% (reset in 3h)\nWeekly (7 day) : 20% (Resets in 5d)\n"
+        )
+
+        result = plan_iteration(
+            instance_dir=str(instance_dir),
+            koan_root=str(koan_root),
+            run_num=2,
+            count=1,
+            projects=PROJECTS_LIST,
+            last_project="koan",
+            usage_state_path=str(usage_state),
+        )
+
+        assert result["action"] == "focus_wait"
+        mock_filter.assert_not_called()
+
+    @patch("app.config.is_focus_mode", return_value=True)
+    @patch("app.pick_mission.pick_mission", return_value="koan:Fix auth bug")
+    @patch("app.usage_estimator.cmd_refresh")
+    def test_queued_mission_still_runs_under_focus(
+        self, mock_refresh, mock_pick, mock_focus_mode,
+        instance_dir, koan_root, usage_state,
+    ):
+        """Focus mode never blocks an already-queued mission."""
+        usage_md = instance_dir / "usage.md"
+        usage_md.write_text(
+            "Session (5hr) : 30% (reset in 3h)\nWeekly (7 day) : 20% (Resets in 5d)\n"
+        )
+
+        result = plan_iteration(
+            instance_dir=str(instance_dir),
+            koan_root=str(koan_root),
+            run_num=2,
+            count=1,
+            projects=PROJECTS_LIST,
+            last_project="koan",
+            usage_state_path=str(usage_state),
+        )
+
+        assert result["action"] == "mission"
+        assert result["mission_title"] == "Fix auth bug"
+        assert result["project_name"] == "koan"
+        # Mode still capped at implement (ample budget)
+        assert result["autonomous_mode"] == "implement"
+
+    @patch("app.config.is_focus_mode", return_value=True)
+    @patch("app.pick_mission.pick_mission", return_value="")
+    @patch("app.usage_estimator.cmd_refresh")
+    @patch("app.iteration_manager._check_focus", return_value=None)
+    @patch("app.iteration_manager._check_schedule", return_value=None)
+    @patch("random.randint", return_value=0)  # contemplation would normally fire
+    def test_focus_mode_blocks_contemplative(
+        self, mock_rand, mock_schedule, mock_focus, mock_refresh, mock_pick,
+        mock_focus_mode, instance_dir, koan_root, usage_state,
+    ):
+        """Focus mode prevents contemplative action even on a 0-roll."""
+        usage_md = instance_dir / "usage.md"
+        usage_md.write_text(
+            "Session (5hr) : 30% (reset in 3h)\nWeekly (7 day) : 20% (Resets in 5d)\n"
+        )
+
+        result = plan_iteration(
+            instance_dir=str(instance_dir),
+            koan_root=str(koan_root),
+            run_num=2,
+            count=1,
+            projects=PROJECTS_LIST,
+            last_project="koan",
+            usage_state_path=str(usage_state),
+        )
+
+        assert result["action"] == "focus_wait"
+
+    @patch("app.iteration_manager._inject_recurring")
+    @patch("app.config.is_focus_mode", return_value=True)
+    @patch("app.pick_mission.pick_mission", return_value="")
+    @patch("app.usage_estimator.cmd_refresh")
+    @patch("app.iteration_manager._check_focus", return_value=None)
+    @patch("app.iteration_manager._check_schedule", return_value=None)
+    def test_recurring_injection_still_runs(
+        self, mock_schedule, mock_focus, mock_refresh, mock_pick, mock_focus_mode,
+        mock_recurring, instance_dir, koan_root, usage_state,
+    ):
+        """Recurring missions are still injected under focus mode."""
+        mock_recurring.return_value = ["recurring: Daily housekeeping"]
+        usage_md = instance_dir / "usage.md"
+        usage_md.write_text(
+            "Session (5hr) : 30% (reset in 3h)\nWeekly (7 day) : 20% (Resets in 5d)\n"
+        )
+
+        result = plan_iteration(
+            instance_dir=str(instance_dir),
+            koan_root=str(koan_root),
+            run_num=2,
+            count=1,
+            projects=PROJECTS_LIST,
+            last_project="koan",
+            usage_state_path=str(usage_state),
+        )
+
+        mock_recurring.assert_called_once()
+        assert result["recurring_injected"] == ["recurring: Daily housekeeping"]
+
+
+class TestFocusModeConfigHelper:
+    """Tests for app.config.is_focus_mode()."""
+
+    def test_env_var_true(self, monkeypatch):
+        from app.config import is_focus_mode
+        monkeypatch.setenv("KOAN_FOCUS", "1")
+        assert is_focus_mode() is True
+
+    def test_env_var_false_overrides_config(self, monkeypatch):
+        """Env var false should override config.yaml = true."""
+        from app.config import is_focus_mode
+        monkeypatch.setenv("KOAN_FOCUS", "0")
+        with patch("app.config._load_config", return_value={"focus": True}):
+            assert is_focus_mode() is False
+
+    def test_config_true_when_env_unset(self, monkeypatch):
+        from app.config import is_focus_mode
+        monkeypatch.delenv("KOAN_FOCUS", raising=False)
+        with patch("app.config._load_config", return_value={"focus": True}):
+            assert is_focus_mode() is True
+
+    def test_default_false(self, monkeypatch):
+        from app.config import is_focus_mode
+        monkeypatch.delenv("KOAN_FOCUS", raising=False)
+        with patch("app.config._load_config", return_value={}):
+            assert is_focus_mode() is False
+
+
+class TestFocusModePromptOverride:
+    """Tests for prompt_builder focus mode override."""
+
+    def test_github_section_replaced_when_focus(self):
+        from app.prompt_builder import _apply_focus_mode_override
+        sample = (
+            "# Mission\n\n"
+            "## GitHub Issue Selection (IMPLEMENT and DEEP modes)\n\n"
+            "When you choose to work on a GitHub issue...\n"
+            "more text here\n\n"
+            "# Autonomy\n\n"
+            "some autonomy content\n"
+        )
+        with patch("app.prompt_builder._is_focus_mode", return_value=True):
+            result = _apply_focus_mode_override(sample)
+        assert "Focus Mode" in result
+        assert "GitHub Issue Selection" not in result
+        assert "# Autonomy" in result  # downstream content preserved
+
+    def test_github_section_intact_when_not_focus(self):
+        from app.prompt_builder import _apply_focus_mode_override
+        sample = (
+            "## GitHub Issue Selection (IMPLEMENT and DEEP modes)\n\n"
+            "content\n\n"
+            "# Autonomy\n"
+        )
+        with patch("app.prompt_builder._is_focus_mode", return_value=False):
+            result = _apply_focus_mode_override(sample)
+        assert result == sample
+
+
+# === Tests: _log_selection_audit ===
+
+
+class TestLogSelectionAudit:
+
+    def test_writes_audit_entry(self, instance_dir):
+        """Audit log should write a structured entry to .selection-audit.json."""
+        candidates = [("koan", "/koan"), ("backend", "/backend")]
+        _log_selection_audit(
+            str(instance_dir), candidates,
+            candidate_weights=[10, 8],
+            freshness={"koan": 10, "backend": 8},
+            drift={"koan": 5, "backend": 0},
+            success_rates={"koan": 0.8, "backend": 0.4},
+            ts_samples={"koan": 0.75, "backend": 0.45},
+            combined=[7.5, 3.6],
+            selected="koan",
+        )
+        audit_path = instance_dir / ".selection-audit.json"
+        assert audit_path.exists()
+        entries = json.loads(audit_path.read_text())
+        assert len(entries) == 1
+        assert entries[0]["selected"] == "koan"
+        assert "koan" in entries[0]["candidates"]
+        assert "backend" in entries[0]["candidates"]
+        koan_entry = entries[0]["candidates"]["koan"]
+        assert koan_entry["weight"] == 10
+        assert koan_entry["freshness"] == 10
+        assert koan_entry["drift"] == 5
+        assert koan_entry["success_rate"] == 0.8
+        assert koan_entry["ts_sample"] == 0.75
+
+    def test_appends_to_existing(self, instance_dir):
+        """Multiple audit entries should accumulate."""
+        audit_path = instance_dir / ".selection-audit.json"
+        audit_path.write_text('[{"selected": "old", "candidates": {}}]')
+
+        candidates = [("koan", "/koan")]
+        _log_selection_audit(
+            str(instance_dir), candidates,
+            candidate_weights=[10],
+            freshness=None, drift=None, success_rates=None,
+            ts_samples={"koan": 0.5}, combined=[5.0],
+            selected="koan",
+        )
+        entries = json.loads(audit_path.read_text())
+        assert len(entries) == 2
+        assert entries[0]["selected"] == "old"
+        assert entries[1]["selected"] == "koan"
+
+    def test_caps_at_max_entries(self, instance_dir):
+        """Ring buffer should cap at _MAX_SELECTION_AUDIT_ENTRIES."""
+        from app.iteration_manager import _MAX_SELECTION_AUDIT_ENTRIES
+
+        audit_path = instance_dir / ".selection-audit.json"
+        existing = [{"selected": f"p{i}", "candidates": {}}
+                     for i in range(_MAX_SELECTION_AUDIT_ENTRIES)]
+        audit_path.write_text(json.dumps(existing))
+
+        candidates = [("new", "/new")]
+        _log_selection_audit(
+            str(instance_dir), candidates,
+            candidate_weights=[10],
+            freshness=None, drift=None, success_rates=None,
+            ts_samples={"new": 0.5}, combined=[5.0],
+            selected="new",
+        )
+        entries = json.loads(audit_path.read_text())
+        assert len(entries) == _MAX_SELECTION_AUDIT_ENTRIES
+        assert entries[-1]["selected"] == "new"
+        # First entry should have been evicted
+        assert entries[0]["selected"] == "p1"
+
+    def test_handles_none_signals_gracefully(self, instance_dir):
+        """With all signals None, audit entry still records weights and selection."""
+        candidates = [("koan", "/koan")]
+        _log_selection_audit(
+            str(instance_dir), candidates,
+            candidate_weights=[10],
+            freshness=None, drift=None, success_rates=None,
+            ts_samples={}, combined=[],
+            selected="koan",
+        )
+        audit_path = instance_dir / ".selection-audit.json"
+        entries = json.loads(audit_path.read_text())
+        koan_data = entries[0]["candidates"]["koan"]
+        assert koan_data["freshness"] is None
+        assert koan_data["drift"] is None
+        assert koan_data["success_rate"] is None
+
+
+class TestSelectionNoDoubleCountingSuccessRate:
+    """Verify that success_rate no longer influences candidate weights.
+
+    The Thompson Sampling bandit encodes productive/non-productive outcomes
+    via its Beta distribution.  Adding a success-rate bonus in the weight
+    computation double-counts the signal.  These tests confirm the fix.
+    """
+
+    @patch("app.iteration_manager._log_selection_audit")
+    def test_high_success_rate_does_not_boost_weight(self, mock_audit):
+        """success_rate >= 0.7 should NOT add to candidate weights."""
+        projects = [("a", "/a"), ("b", "/b")]
+        # Mock freshness and Thompson Sampling to be deterministic
+        with patch("app.session_tracker.load_outcomes", return_value=[]), \
+             patch("app.session_tracker.get_project_freshness",
+                   return_value={"a": 10, "b": 10}), \
+             patch("app.session_tracker.get_project_drift",
+                   return_value={"a": 0, "b": 0}), \
+             patch("app.mission_metrics.get_project_success_rates",
+                   return_value={"a": 0.9, "b": 0.1}), \
+             patch("app.bandit.load_bandit_state") as mock_bandit, \
+             patch("app.bandit.thompson_sample", return_value=0.5):
+
+            _select_random_exploration_project(projects, "", "/fake/instance")
+
+            # Check the weights passed to audit — both should be 10
+            # (freshness only, no success_rate adjustment)
+            if mock_audit.called:
+                call_kwargs = mock_audit.call_args
+                weights_arg = call_kwargs[0][2]  # candidate_weights positional
+                assert weights_arg == [10, 10], (
+                    f"Weights should be equal (freshness only), got {weights_arg}"
+                )
+
+
+
+# === Tests: autonomous health config ===
+
+
+class TestAutonomousHealthConfig:
+    """Tests for get_autonomous_health_config()."""
+
+    @patch("app.config._load_config", return_value={})
+    def test_defaults(self, _mock):
+        from app.config import get_autonomous_health_config
+        cfg = get_autonomous_health_config()
+        assert cfg["enabled"] is False
+        assert cfg["success_rate_floor"] == 0.25
+        assert cfg["staleness_floor"] == 3
+        assert cfg["cooldown_days"] == 21
+        assert cfg["min_mode"] == "implement"
+
+    @patch("app.config._load_config", return_value={
+        "autonomous_health": {
+            "enabled": True,
+            "success_rate_floor": 0.4,
+            "staleness_floor": 5,
+            "cooldown_days": 14,
+            "min_mode": "deep",
+        }
+    })
+    def test_custom_values(self, _mock):
+        from app.config import get_autonomous_health_config
+        cfg = get_autonomous_health_config()
+        assert cfg["enabled"] is True
+        assert cfg["success_rate_floor"] == 0.4
+        assert cfg["staleness_floor"] == 5
+        assert cfg["cooldown_days"] == 14
+        assert cfg["min_mode"] == "deep"
+
+    @patch("app.config._load_config", return_value={
+        "autonomous_health": False
+    })
+    def test_false_disables(self, _mock):
+        from app.config import get_autonomous_health_config
+        cfg = get_autonomous_health_config()
+        assert cfg["enabled"] is False
+
+    @patch("app.config._load_config", return_value={
+        "autonomous_health": {
+            "staleness_floor": -1,
+            "cooldown_days": 0,
+            "success_rate_floor": 2.0,
+            "min_mode": "invalid",
+        }
+    })
+    def test_clamping_and_validation(self, _mock):
+        from app.config import get_autonomous_health_config
+        cfg = get_autonomous_health_config()
+        assert cfg["staleness_floor"] == 1  # clamped to 1
+        assert cfg["cooldown_days"] == 1  # clamped to 1
+        assert cfg["success_rate_floor"] == 1.0  # clamped to [0, 1]
+        assert cfg["min_mode"] == "implement"  # fallback to default
+
+
+# === Tests: diagnostic type selection ===
+
+
+class TestSelectDiagnosticType:
+    """Tests for _select_diagnostic_type()."""
+
+    @patch("app.mission_metrics.compute_project_trend", return_value="declining")
+    def test_declining_trend_selects_tech_debt(self, _mock_trend):
+        result = _select_diagnostic_type("/fake/instance", "koan")
+        assert result == "tech_debt"
+
+    @patch("app.mission_metrics.compute_project_trend", return_value="stable")
+    @patch("app.mission_metrics.compute_project_metrics", return_value={
+        "total_sessions": 10, "empty": 7, "blocked": 1, "productive": 2,
+    })
+    def test_majority_empty_selects_dead_code(self, _mock_metrics, _mock_trend):
+        result = _select_diagnostic_type("/fake/instance", "koan")
+        assert result == "dead_code"
+
+    @patch("app.mission_metrics.compute_project_trend", return_value="stable")
+    @patch("app.mission_metrics.compute_project_metrics", return_value={
+        "total_sessions": 10, "empty": 3, "blocked": 5, "productive": 2,
+    })
+    def test_blocked_heavy_selects_audit(self, _mock_metrics, _mock_trend):
+        result = _select_diagnostic_type("/fake/instance", "koan")
+        assert result == "audit"
+
+    @patch("app.mission_metrics.compute_project_trend", side_effect=ImportError)
+    def test_import_error_falls_back_to_audit(self, _mock_trend):
+        result = _select_diagnostic_type("/fake/instance", "koan")
+        assert result == "audit"
+
+
+# === Tests: diagnostic cooldown helpers ===
+
+
+class TestDiagnosticCooldown:
+    """Tests for cooldown load/save/check helpers."""
+
+    def test_load_empty(self, instance_dir):
+        assert _load_diagnostic_cooldowns(str(instance_dir)) == {}
+
+    def test_save_and_load(self, instance_dir):
+        _save_diagnostic_cooldown(str(instance_dir), "koan")
+        cooldowns = _load_diagnostic_cooldowns(str(instance_dir))
+        assert "koan" in cooldowns
+
+    def test_cooldown_active(self, instance_dir):
+        _save_diagnostic_cooldown(str(instance_dir), "koan")
+        assert _is_diagnostic_on_cooldown(str(instance_dir), "koan", 21) is True
+
+    def test_cooldown_not_active_for_other_project(self, instance_dir):
+        _save_diagnostic_cooldown(str(instance_dir), "koan")
+        assert _is_diagnostic_on_cooldown(str(instance_dir), "backend", 21) is False
+
+    def test_expired_cooldown(self, instance_dir):
+        """Cooldown of 0 days should make any past timestamp expired."""
+        from datetime import datetime, timedelta
+        cooldown_path = instance_dir / ".diagnostic-cooldowns.json"
+        old_ts = (datetime.now() - timedelta(days=2)).isoformat()
+        cooldown_path.write_text(json.dumps({"koan": old_ts}))
+        assert _is_diagnostic_on_cooldown(str(instance_dir), "koan", 1) is False
+
+
+# === Tests: _maybe_inject_diagnostic_mission ===
+
+
+class TestMaybeInjectDiagnosticMission:
+    """Tests for the diagnostic injection gate."""
+
+    def _make_missions_file(self, instance_dir):
+        """Create a minimal missions.md."""
+        missions = instance_dir / "missions.md"
+        missions.write_text(
+            "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n"
+        )
+        return missions
+
+    @patch("app.config._load_config", return_value={
+        "autonomous_health": {"enabled": False}
+    })
+    def test_disabled_returns_none(self, _mock_cfg, instance_dir):
+        result = _maybe_inject_diagnostic_mission(
+            "koan", str(instance_dir), "deep",
+        )
+        assert result is None
+
+    @patch("app.config._load_config", return_value={
+        "autonomous_health": {"enabled": True, "min_mode": "deep"}
+    })
+    def test_mode_gate_blocks_low_mode(self, _mock_cfg, instance_dir):
+        """implement mode should be blocked when min_mode is deep."""
+        result = _maybe_inject_diagnostic_mission(
+            "koan", str(instance_dir), "implement",
+        )
+        assert result is None
+
+    @patch("app.config._load_config", return_value={
+        "autonomous_health": {"enabled": True, "min_mode": "implement"}
+    })
+    @patch("app.mission_metrics.get_project_success_rates",
+           return_value={"koan": 0.7})
+    def test_high_success_rate_skips(self, _mock_rates, _mock_cfg, instance_dir):
+        result = _maybe_inject_diagnostic_mission(
+            "koan", str(instance_dir), "deep",
+        )
+        assert result is None
+
+    @patch("app.config._load_config", return_value={
+        "autonomous_health": {"enabled": True, "min_mode": "implement"}
+    })
+    @patch("app.mission_metrics.get_project_success_rates",
+           return_value={"koan": 0.5})
+    def test_neutral_rate_skips(self, _mock_rates, _mock_cfg, instance_dir):
+        """Neutral 0.5 (insufficient data) should not trigger diagnostics."""
+        result = _maybe_inject_diagnostic_mission(
+            "koan", str(instance_dir), "deep",
+        )
+        assert result is None
+
+    @patch("app.config._load_config", return_value={
+        "autonomous_health": {
+            "enabled": True, "min_mode": "implement",
+            "success_rate_floor": 0.25, "staleness_floor": 3,
+            "cooldown_days": 21,
+        }
+    })
+    @patch("app.mission_metrics.get_project_success_rates",
+           return_value={"koan": 0.15})
+    @patch("app.session_tracker.get_staleness_score", return_value=1)
+    def test_low_staleness_skips(self, _mock_stale, _mock_rates, _mock_cfg,
+                                  instance_dir):
+        """Staleness below floor should not trigger diagnostics."""
+        result = _maybe_inject_diagnostic_mission(
+            "koan", str(instance_dir), "deep",
+        )
+        assert result is None
+
+    @patch("app.config._load_config", return_value={
+        "autonomous_health": {
+            "enabled": True, "min_mode": "implement",
+            "success_rate_floor": 0.25, "staleness_floor": 3,
+            "cooldown_days": 21,
+        }
+    })
+    @patch("app.mission_metrics.get_project_success_rates",
+           return_value={"koan": 0.15})
+    @patch("app.session_tracker.get_staleness_score", return_value=5)
+    @patch("app.mission_metrics.compute_project_trend", return_value="declining")
+    def test_all_gates_pass_injects_mission(
+        self, _mock_trend, _mock_stale, _mock_rates, _mock_cfg, instance_dir,
+    ):
+        self._make_missions_file(instance_dir)
+        result = _maybe_inject_diagnostic_mission(
+            "koan", str(instance_dir), "deep",
+        )
+        assert result is not None
+        assert "[autonomous:health]" in result
+        assert "[project:koan]" in result
+        assert "/tech_debt" in result
+
+        # Verify mission was written to missions.md
+        content = (instance_dir / "missions.md").read_text()
+        assert "[autonomous:health]" in content
+
+        # Verify cooldown was set
+        assert _is_diagnostic_on_cooldown(str(instance_dir), "koan", 21) is True
+
+    @patch("app.config._load_config", return_value={
+        "autonomous_health": {
+            "enabled": True, "min_mode": "implement",
+            "success_rate_floor": 0.25, "staleness_floor": 3,
+            "cooldown_days": 21,
+        }
+    })
+    @patch("app.mission_metrics.get_project_success_rates",
+           return_value={"koan": 0.15})
+    @patch("app.session_tracker.get_staleness_score", return_value=5)
+    @patch("app.mission_metrics.compute_project_trend", return_value="stable")
+    @patch("app.mission_metrics.compute_project_metrics", return_value={
+        "total_sessions": 10, "empty": 8, "blocked": 1, "productive": 1,
+    })
+    def test_empty_heavy_injects_dead_code(
+        self, _mock_metrics, _mock_trend, _mock_stale, _mock_rates,
+        _mock_cfg, instance_dir,
+    ):
+        self._make_missions_file(instance_dir)
+        result = _maybe_inject_diagnostic_mission(
+            "koan", str(instance_dir), "deep",
+        )
+        assert result is not None
+        assert "/dead_code" in result
+
+    @patch("app.config._load_config", return_value={
+        "autonomous_health": {
+            "enabled": True, "min_mode": "implement",
+            "success_rate_floor": 0.25, "staleness_floor": 3,
+            "cooldown_days": 21,
+        }
+    })
+    @patch("app.mission_metrics.get_project_success_rates",
+           return_value={"koan": 0.15})
+    @patch("app.session_tracker.get_staleness_score", return_value=5)
+    @patch("app.mission_metrics.compute_project_trend", return_value="declining")
+    def test_cooldown_prevents_second_injection(
+        self, _mock_trend, _mock_stale, _mock_rates, _mock_cfg, instance_dir,
+    ):
+        self._make_missions_file(instance_dir)
+
+        # First injection should succeed
+        result1 = _maybe_inject_diagnostic_mission(
+            "koan", str(instance_dir), "deep",
+        )
+        assert result1 is not None
+
+        # Second injection should be blocked by cooldown
+        result2 = _maybe_inject_diagnostic_mission(
+            "koan", str(instance_dir), "deep",
+        )
+        assert result2 is None
+
+    @patch("app.config._load_config", return_value={
+        "autonomous_health": {
+            "enabled": True, "min_mode": "implement",
+            "success_rate_floor": 0.25, "staleness_floor": 3,
+            "cooldown_days": 21,
+        }
+    })
+    @patch("app.mission_metrics.get_project_success_rates",
+           return_value={"koan": 0.15})
+    @patch("app.session_tracker.get_staleness_score", return_value=5)
+    @patch("app.mission_metrics.compute_project_trend", return_value="declining")
+    def test_different_project_not_blocked_by_cooldown(
+        self, _mock_trend, _mock_stale, _mock_rates, _mock_cfg, instance_dir,
+    ):
+        """Cooldown for project A should not block project B."""
+        self._make_missions_file(instance_dir)
+        _save_diagnostic_cooldown(str(instance_dir), "backend")
+
+        result = _maybe_inject_diagnostic_mission(
+            "koan", str(instance_dir), "deep",
+        )
+        assert result is not None
+        assert "[project:koan]" in result
+
+
+# === Tests: _MODE_RANK ===
+
+
+class TestModeRank:
+    """Validate the mode rank hierarchy."""
+
+    def test_hierarchy(self):
+        assert _MODE_RANK["wait"] < _MODE_RANK["review"]
+        assert _MODE_RANK["review"] < _MODE_RANK["implement"]
+        assert _MODE_RANK["implement"] < _MODE_RANK["deep"]
+
+
+# === Tests: _downgrade_if_burning_fast ===
+
+
+class TestDowngradeIfBurningFast:
+
+    def test_wait_mode_not_downgraded(self):
+        mode, prev = _downgrade_if_burning_fast(Path("/tmp"), 50.0, "wait")
+        assert mode == "wait"
+        assert prev is None
+
+    def test_unknown_mode_not_downgraded(self):
+        mode, prev = _downgrade_if_burning_fast(Path("/tmp"), 50.0, "unknown")
+        assert mode == "unknown"
+        assert prev is None
+
+    @patch("app.burn_rate.BurnRateSnapshot", side_effect=ImportError)
+    def test_import_error_returns_unchanged(self, _mock):
+        mode, prev = _downgrade_if_burning_fast(Path("/tmp"), 50.0, "deep")
+        assert mode == "deep"
+        assert prev is None
+
+    @patch("app.burn_rate.BurnRateSnapshot")
+    def test_no_downgrade_when_tte_above_threshold(self, mock_snap_cls):
+        mock_snap = MagicMock()
+        mock_snap.time_to_exhaustion.return_value = 120.0
+        mock_snap_cls.return_value = mock_snap
+        mode, prev = _downgrade_if_burning_fast(Path("/tmp"), 50.0, "deep")
+        assert mode == "deep"
+        assert prev is None
+
+    @patch("app.burn_rate.BurnRateSnapshot")
+    def test_no_downgrade_when_tte_is_none(self, mock_snap_cls):
+        mock_snap = MagicMock()
+        mock_snap.time_to_exhaustion.return_value = None
+        mock_snap_cls.return_value = mock_snap
+        mode, prev = _downgrade_if_burning_fast(Path("/tmp"), 50.0, "deep")
+        assert mode == "deep"
+        assert prev is None
+
+    @patch("app.burn_rate.BurnRateSnapshot")
+    def test_downgrade_deep_to_implement(self, mock_snap_cls):
+        mock_snap = MagicMock()
+        mock_snap.time_to_exhaustion.return_value = 10.0
+        mock_snap_cls.return_value = mock_snap
+        mode, prev = _downgrade_if_burning_fast(Path("/tmp"), 50.0, "deep")
+        assert mode == _MODE_DOWNGRADE["deep"]
+        assert prev == "deep"
+
+    @patch("app.burn_rate.BurnRateSnapshot")
+    def test_downgrade_implement_to_review(self, mock_snap_cls):
+        mock_snap = MagicMock()
+        mock_snap.time_to_exhaustion.return_value = 5.0
+        mock_snap_cls.return_value = mock_snap
+        mode, prev = _downgrade_if_burning_fast(Path("/tmp"), 80.0, "implement")
+        assert mode == _MODE_DOWNGRADE["implement"]
+        assert prev == "implement"
+
+
+# === Tests: _maybe_warn_burn_rate ===
+
+
+class TestMaybeWarnBurnRate:
+
+    def test_no_warning_when_no_usage_state(self, tmp_path):
+        inst = tmp_path / "inst"
+        inst.mkdir()
+        usage = tmp_path / "usage_state.json"
+        _maybe_warn_burn_rate(inst, usage)
+        outbox = inst / "outbox.md"
+        assert not outbox.exists()
+
+    @patch("app.iteration_manager._read_session_pct_and_reset", return_value=(None, None))
+    def test_no_warning_when_session_pct_none(self, _mock, tmp_path):
+        inst = tmp_path / "inst"
+        inst.mkdir()
+        usage = tmp_path / "usage_state.json"
+        usage.write_text("{}")
+        _maybe_warn_burn_rate(inst, usage)
+        assert not (inst / "outbox.md").exists()
+
+    @patch("app.utils.append_to_outbox")
+    @patch("app.burn_rate.mark_warned")
+    @patch("app.burn_rate.BurnRateSnapshot")
+    @patch("app.iteration_manager._read_session_pct_and_reset", return_value=(60.0, 300.0))
+    def test_fires_warning_when_tte_below_threshold(self, _pct, mock_snap_cls,
+                                                      mock_mark, mock_outbox,
+                                                      tmp_path):
+        mock_snap = MagicMock()
+        mock_snap.last_warned_at = None
+        mock_snap.time_to_exhaustion.return_value = 20.0
+        mock_snap.burn_rate_pct_per_minute.return_value = 0.5
+        mock_snap_cls.return_value = mock_snap
+        inst = tmp_path / "inst"
+        inst.mkdir()
+        _maybe_warn_burn_rate(inst, tmp_path / "usage.json")
+        mock_outbox.assert_called_once()
+        msg = mock_outbox.call_args[0][1]
+        assert "Burn-rate alert" in msg
+        assert "30.0%/h" in msg
+        mock_mark.assert_called_once_with(inst)
+
+    @patch("app.utils.append_to_outbox")
+    @patch("app.burn_rate.BurnRateSnapshot")
+    @patch("app.iteration_manager._read_session_pct_and_reset", return_value=(60.0, 300.0))
+    def test_no_warning_when_tte_above_threshold(self, _pct, mock_snap_cls,
+                                                   mock_outbox, tmp_path):
+        mock_snap = MagicMock()
+        mock_snap.last_warned_at = None
+        mock_snap.time_to_exhaustion.return_value = 120.0
+        mock_snap_cls.return_value = mock_snap
+        inst = tmp_path / "inst"
+        inst.mkdir()
+        _maybe_warn_burn_rate(inst, tmp_path / "usage.json")
+        mock_outbox.assert_not_called()
+
+    @patch("app.utils.append_to_outbox")
+    @patch("app.burn_rate.BurnRateSnapshot")
+    @patch("app.iteration_manager._read_session_pct_and_reset", return_value=(60.0, 60.0))
+    def test_no_warning_when_reset_imminent(self, _pct, mock_snap_cls,
+                                              mock_outbox, tmp_path):
+        mock_snap = MagicMock()
+        mock_snap.last_warned_at = None
+        mock_snap.time_to_exhaustion.return_value = 20.0
+        mock_snap_cls.return_value = mock_snap
+        inst = tmp_path / "inst"
+        inst.mkdir()
+        _maybe_warn_burn_rate(inst, tmp_path / "usage.json")
+        mock_outbox.assert_not_called()
+
+    @patch("app.utils.append_to_outbox")
+    @patch("app.burn_rate.BurnRateSnapshot")
+    @patch("app.iteration_manager._read_session_pct_and_reset", return_value=(60.0, 300.0))
+    def test_no_duplicate_warning_when_already_warned(self, _pct, mock_snap_cls,
+                                                        mock_outbox, tmp_path):
+        from datetime import datetime, timezone, timedelta
+        session_start = datetime.now(timezone.utc) - timedelta(minutes=30)
+        warned_at = session_start + timedelta(minutes=10)
+        mock_snap = MagicMock()
+        mock_snap.last_warned_at = warned_at
+        mock_snap.time_to_exhaustion.return_value = 20.0
+        mock_snap_cls.return_value = mock_snap
+        inst = tmp_path / "inst"
+        inst.mkdir()
+        usage = tmp_path / "usage.json"
+        usage.write_text(json.dumps({
+            "session_start": session_start.isoformat(),
+        }))
+        _maybe_warn_burn_rate(inst, usage)
+        mock_outbox.assert_not_called()
+
+    @patch("app.burn_rate.clear_warning")
+    @patch("app.utils.append_to_outbox")
+    @patch("app.burn_rate.mark_warned")
+    @patch("app.burn_rate.BurnRateSnapshot")
+    @patch("app.iteration_manager._read_session_pct_and_reset", return_value=(60.0, 300.0))
+    def test_clears_stale_warning_from_previous_session(self, _pct, mock_snap_cls,
+                                                          mock_mark, mock_outbox,
+                                                          mock_clear, tmp_path):
+        from datetime import datetime, timezone, timedelta
+        old_warn = datetime.now(timezone.utc) - timedelta(hours=5)
+        new_session = datetime.now(timezone.utc) - timedelta(minutes=10)
+        mock_snap = MagicMock()
+        mock_snap.last_warned_at = old_warn
+        mock_snap.time_to_exhaustion.return_value = 15.0
+        mock_snap.burn_rate_pct_per_minute.return_value = 0.8
+        mock_snap_cls.return_value = mock_snap
+        inst = tmp_path / "inst"
+        inst.mkdir()
+        usage = tmp_path / "usage.json"
+        usage.write_text(json.dumps({
+            "session_start": new_session.isoformat(),
+        }))
+        _maybe_warn_burn_rate(inst, usage)
+        mock_clear.assert_called_once_with(inst)
+        mock_outbox.assert_called_once()
+        mock_mark.assert_called_once()
+
+    @patch("app.utils.append_to_outbox", side_effect=OSError("write failed"))
+    @patch("app.burn_rate.mark_warned")
+    @patch("app.burn_rate.BurnRateSnapshot")
+    @patch("app.iteration_manager._read_session_pct_and_reset", return_value=(60.0, 300.0))
+    def test_outbox_write_failure_does_not_mark_warned(self, _pct, mock_snap_cls,
+                                                         mock_mark, _outbox,
+                                                         tmp_path):
+        mock_snap = MagicMock()
+        mock_snap.last_warned_at = None
+        mock_snap.time_to_exhaustion.return_value = 10.0
+        mock_snap.burn_rate_pct_per_minute.return_value = 1.0
+        mock_snap_cls.return_value = mock_snap
+        inst = tmp_path / "inst"
+        inst.mkdir()
+        _maybe_warn_burn_rate(inst, tmp_path / "usage.json")
+        mock_mark.assert_not_called()

@@ -51,6 +51,33 @@ If your reflection surfaces a genuine insight about yourself, the project, or th
 
 ## Option 2: Mission Proposal
 If you identify work that should be done:
+
+{GITHUB_CHECK_BLOCK_START}
+**Before writing the proposal**, if your idea explicitly references a GitHub issue number,
+you MUST run the following checks (skip them only if the proposal has no issue number):
+
+1. **Assignment check** — run:
+   ```
+   gh issue view <N> --json assignees --jq '.assignees[].login'
+   ```
+   The proposal is only valid if the output is empty (unassigned) **or** contains `{GITHUB_NICKNAME}`.
+   If the issue is assigned to someone else, discard this proposal and choose a different output option.
+
+2. **Open PR check** — run:
+   ```
+   gh pr list --state open --json title,headRefName,body
+   ```
+   Search the output for the issue number (e.g. `#<N>` or `/<N>`). If an open PR already
+   addresses this issue, discard the proposal and choose a different output option.
+
+If either `gh` command fails (not authenticated, no GitHub remote, etc.), skip the proposal
+rather than guess — choose Option 1, 3, or 4 instead.
+
+These checks only apply when the proposal references a specific issue number.
+Free-form proposals with no issue reference do not require them.
+{GITHUB_CHECK_BLOCK_END}
+
+Once the checks pass (or are not required):
 - Write a clear mission description to `{INSTANCE}/outbox.md`
 - Format: "🎯 Mission idea: [description]. [Why it matters]."
 - Do NOT add it to missions.md yourself — propose it, let your human decide

@@ -367,7 +367,7 @@ class TestRunAgent:
             prompt="Just answer",
             base_url="http://localhost:11434/v1",
             model="test-model",
-            disallowed_tools=["Read", "Write", "Edit", "Glob", "Grep", "Bash"],
+            disallowed_tools=["Read", "Write", "Edit", "Glob", "Grep", "Bash", "Skill"],
         )
         call_kwargs = mock_api.call_args
         tools = call_kwargs.kwargs.get("tools") or call_kwargs[1].get("tools")
@@ -570,7 +570,7 @@ class TestToolDefinitions:
 
     def test_all_koan_tools_mapped(self):
         """Every Koan canonical tool has a mapping."""
-        for tool in ["Read", "Write", "Edit", "Glob", "Grep", "Bash"]:
+        for tool in ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "Skill"]:
             assert tool in TOOL_NAME_MAP
 
     def test_all_mapped_tools_exist(self):
@@ -775,7 +775,7 @@ class TestToolEdgeCases:
     def test_shell_output_truncation(self):
         """Shell output >30K chars is truncated."""
         result = _tool_shell(
-            {"command": f"python3 -c \"print('x' * 35000)\""},
+            {"command": "python3 -c \"print('x' * 35000)\""},
             self.tmpdir,
         )
         assert len(result) <= 31000
@@ -895,6 +895,7 @@ class TestCallApi:
             mock.side_effect = error
             with pytest.raises(RuntimeError, match="API error 500"):
                 _call_api("http://localhost/v1", "model", [])
+            error.close()
 
     def test_url_error_raises_runtime(self):
         """URLError is wrapped in RuntimeError with connection hint."""

@@ -135,6 +135,86 @@ class TestDetectProjectFromText:
         assert project == "web"
         assert text == "deploy changes"
 
+    def test_alias_fallback(self):
+        from app.utils import detect_project_from_text
+        with patch("app.utils.get_known_projects", return_value=[("koan", "/p1")]), \
+             patch("app.utils.load_project_aliases", return_value={"tt": "Template2"}):
+            project, text = detect_project_from_text("tt fix the bug")
+        assert project == "Template2"
+        assert text == "fix the bug"
+
+    def test_alias_not_used_when_project_matches(self):
+        from app.utils import detect_project_from_text
+        with patch("app.utils.get_known_projects", return_value=[("koan", "/p1")]), \
+             patch("app.utils.load_project_aliases", return_value={"koan": "ShouldNotUse"}):
+            project, text = detect_project_from_text("koan fix the bug")
+        assert project == "koan"
+        assert text == "fix the bug"
+
+    def test_alias_case_insensitive(self):
+        from app.utils import detect_project_from_text
+        with patch("app.utils.get_known_projects", return_value=[]), \
+             patch("app.utils.load_project_aliases", return_value={"tt": "Template2"}):
+            project, text = detect_project_from_text("TT fix it")
+        assert project == "Template2"
+        assert text == "fix it"
+
+    def test_alias_only_no_remaining_text(self):
+        from app.utils import detect_project_from_text
+        with patch("app.utils.get_known_projects", return_value=[]), \
+             patch("app.utils.load_project_aliases", return_value={"tt": "Template2"}):
+            project, text = detect_project_from_text("tt")
+        assert project == "Template2"
+        assert text == ""
+
+
+class TestLoadProjectAliases:
+    def test_loads_from_file(self, tmp_path):
+        from app.utils import load_project_aliases
+        aliases_path = tmp_path / "instance" / ".project-aliases.json"
+        aliases_path.parent.mkdir(parents=True)
+        aliases_path.write_text('{"tt": "Template2", "k": "koan"}')
+        with patch("app.utils.KOAN_ROOT", tmp_path):
+            result = load_project_aliases()
+        assert result == {"tt": "Template2", "k": "koan"}
+
+    def test_returns_empty_when_no_file(self, tmp_path):
+        from app.utils import load_project_aliases
+        with patch("app.utils.KOAN_ROOT", tmp_path):
+            result = load_project_aliases()
+        assert result == {}
+
+    def test_returns_empty_on_bad_json(self, tmp_path):
+        from app.utils import load_project_aliases
+        aliases_path = tmp_path / "instance" / ".project-aliases.json"
+        aliases_path.parent.mkdir(parents=True)
+        aliases_path.write_text("not json")
+        with patch("app.utils.KOAN_ROOT", tmp_path):
+            result = load_project_aliases()
+        assert result == {}
+
+
+class TestResolveProjectAlias:
+    def test_resolves_known_alias(self):
+        from app.utils import resolve_project_alias
+        with patch("app.utils.load_project_aliases", return_value={"tt": "Template2"}):
+            assert resolve_project_alias("tt") == "Template2"
+
+    def test_resolves_case_insensitive(self):
+        from app.utils import resolve_project_alias
+        with patch("app.utils.load_project_aliases", return_value={"tt": "Template2"}):
+            assert resolve_project_alias("TT") == "Template2"
+
+    def test_returns_none_for_unknown(self):
+        from app.utils import resolve_project_alias
+        with patch("app.utils.load_project_aliases", return_value={"tt": "Template2"}):
+            assert resolve_project_alias("xyz") is None
+
+    def test_returns_none_when_no_aliases(self):
+        from app.utils import resolve_project_alias
+        with patch("app.utils.load_project_aliases", return_value={}):
+            assert resolve_project_alias("tt") is None
+
 
 class TestInsertPendingMission:
     def test_inserts_into_existing_file(self, tmp_path):
@@ -253,6 +333,49 @@ class TestInsertPendingMission:
 
         temp_files = list(tmp_path.glob(".missions-*"))
         assert temp_files == [], f"Temp files left behind after error: {temp_files}"
+
+    def test_returns_true_when_inserted(self, tmp_path):
+        from app.utils import insert_pending_mission
+        missions = tmp_path / "missions.md"
+        missions.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
+
+        result = insert_pending_mission(
+            missions, "- [project:koan] /rebase https://github.com/o/r/pull/1"
+        )
+        assert result is True
+        assert "/rebase" in missions.read_text()
+
+    def test_returns_false_on_duplicate(self, tmp_path):
+        from app.utils import insert_pending_mission
+        missions = tmp_path / "missions.md"
+        missions.write_text(
+            "# Missions\n\n## Pending\n\n"
+            "- [project:koan] /rebase https://github.com/o/r/pull/1 ⏳(2026-05-16T10:00)\n\n"
+            "## In Progress\n\n## Done\n"
+        )
+
+        result = insert_pending_mission(
+            missions, "- [project:koan] /rebase https://github.com/o/r/pull/1"
+        )
+        assert result is False
+        # File unchanged — no double entry
+        content = missions.read_text()
+        assert content.count("/rebase https://github.com/o/r/pull/1") == 1
+
+    def test_non_github_mission_always_inserted(self, tmp_path):
+        from app.utils import insert_pending_mission
+        missions = tmp_path / "missions.md"
+        missions.write_text(
+            "# Missions\n\n## Pending\n\n"
+            "- [project:koan] Fix the login bug\n\n"
+            "## In Progress\n\n## Done\n"
+        )
+
+        result = insert_pending_mission(
+            missions, "- [project:koan] Fix the login bug"
+        )
+        # Non-GitHub missions are not deduped (no signature)
+        assert result is True
 
     def test_modify_missions_file_returns_new_content(self, tmp_path):
         """modify_missions_file should return the transformed content."""
@@ -795,6 +918,74 @@ class TestTruncateText:
         assert truncate_text("", 100) == ""
 
 
+class TestTruncateDiff:
+    """Tests for truncate_diff() — file-aware diff truncation."""
+
+    def _make_file_block(self, filename, lines=10):
+        """Build a realistic unified diff block for one file."""
+        header = f"diff --git a/{filename} b/{filename}\n"
+        header += f"--- a/{filename}\n+++ b/{filename}\n"
+        header += "@@ -1,5 +1,5 @@\n"
+        body = "".join(f"+line {i}\n" for i in range(lines))
+        return header + body
+
+    def test_small_diff_unchanged(self):
+        from app.utils import truncate_diff
+        diff = self._make_file_block("a.py", lines=3)
+        assert truncate_diff(diff, 10000) == diff
+
+    def test_empty_diff(self):
+        from app.utils import truncate_diff
+        assert truncate_diff("", 100) == ""
+
+    def test_preserves_whole_file_blocks(self):
+        from app.utils import truncate_diff
+        # Use a small first block and a large second block so the budget
+        # comfortably fits block_a + footer but not block_b.
+        block_a = self._make_file_block("a.py", lines=3)
+        block_b = self._make_file_block("b.py", lines=50)
+        diff = block_a + block_b
+        # Budget: block_a (~87) + 120 for footer, well under block_b (~387)
+        budget = len(block_a) + 120
+        assert budget < len(diff), "budget must be less than full diff"
+        result = truncate_diff(diff, budget)
+        assert "a.py" in result
+        assert "b.py" in result  # listed in omitted summary
+        assert "omitted" in result
+        # b.py's diff block must not be in result (only in omitted summary)
+        assert "diff --git a/b.py" not in result
+
+    def test_lists_omitted_files(self):
+        from app.utils import truncate_diff
+        block_a = self._make_file_block("src/a.py", lines=3)
+        block_b = self._make_file_block("src/b.py", lines=50)
+        block_c = self._make_file_block("src/c.py", lines=50)
+        diff = block_a + block_b + block_c
+        # Budget fits first block + footer, but not second/third blocks
+        budget = len(block_a) + 150
+        assert budget < len(block_a) + len(block_b), "budget must exclude block_b"
+        result = truncate_diff(diff, budget)
+        assert "2 file(s) omitted" in result
+        assert "src/b.py" in result
+        assert "src/c.py" in result
+
+    def test_all_files_fit(self):
+        from app.utils import truncate_diff
+        block_a = self._make_file_block("a.py", lines=3)
+        block_b = self._make_file_block("b.py", lines=3)
+        diff = block_a + block_b
+        result = truncate_diff(diff, len(diff) + 100)
+        assert result == diff
+        assert "omitted" not in result
+
+    def test_falls_back_on_unparseable_diff(self):
+        from app.utils import truncate_diff
+        weird = "not a real diff " * 100
+        result = truncate_diff(weird, 50)
+        assert len(result) < 100
+        assert "truncated" in result
+
+
 class TestIsKnownProject:
     """Tests for is_known_project() shared utility."""
 
@@ -900,3 +1091,362 @@ class TestGetContemplativeChance:
         (config_dir / "config.yaml").write_text("contemplative_chance: 0\n")
         from app.utils import get_contemplative_chance
         assert get_contemplative_chance() == 0
+
+
+# ---------------------------------------------------------------------------
+# filter_diff_by_ignore
+# ---------------------------------------------------------------------------
+
+_FIXTURE_DIFF = """\
+diff --git a/src/main.py b/src/main.py
+index abc..def 100644
+--- a/src/main.py
++++ b/src/main.py
+@@ -1,3 +1,4 @@
+ import os
++import sys
+ def main():
+     pass
+diff --git a/vendor/lib.js b/vendor/lib.js
+index 111..222 100644
+--- a/vendor/lib.js
++++ b/vendor/lib.js
+@@ -1,2 +1,3 @@
+ // vendored
++// updated
+diff --git a/package-lock.json b/package-lock.json
+index 333..444 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -1 +1,2 @@
+ {}
++{"lock": true}
+"""
+
+
+class TestFilterDiffByIgnore:
+    """Tests for filter_diff_by_ignore()."""
+
+    def _import(self):
+        from app.utils import filter_diff_by_ignore
+        return filter_diff_by_ignore
+
+    def test_no_patterns_returns_original(self):
+        fn = self._import()
+        result, skipped = fn(_FIXTURE_DIFF, [], [])
+        assert result == _FIXTURE_DIFF
+        assert skipped == []
+
+    def test_empty_diff_returns_empty(self):
+        fn = self._import()
+        result, skipped = fn("", ["*.lock"], [])
+        assert result == ""
+        assert skipped == []
+
+    def test_glob_pattern_without_slash_matches_basename(self):
+        """*.lock matches package-lock.json at any depth."""
+        fn = self._import()
+        result, skipped = fn(_FIXTURE_DIFF, ["*.json"], [])
+        assert "package-lock.json" not in result
+        assert "package-lock.json" in skipped
+
+    def test_glob_pattern_with_slash_matches_full_path(self):
+        """vendor/** matches vendor/lib.js."""
+        fn = self._import()
+        result, skipped = fn(_FIXTURE_DIFF, ["vendor/**"], [])
+        assert "vendor/lib.js" not in result
+        assert "vendor/lib.js" in skipped
+        assert "src/main.py" in result
+
+    def test_regex_pattern_matches_full_path(self):
+        fn = self._import()
+        result, skipped = fn(_FIXTURE_DIFF, [], [r"^vendor/"])
+        assert "vendor/lib.js" not in result
+        assert "vendor/lib.js" in skipped
+
+    def test_multiple_patterns_remove_multiple_files(self):
+        fn = self._import()
+        result, skipped = fn(_FIXTURE_DIFF, ["vendor/**", "*.json"], [])
+        assert "vendor/lib.js" in skipped
+        assert "package-lock.json" in skipped
+        assert "src/main.py" in result
+
+    def test_all_files_ignored_returns_empty_diff(self):
+        fn = self._import()
+        result, skipped = fn(_FIXTURE_DIFF, ["**"], [])
+        # All 3 files should be removed
+        assert len(skipped) == 3
+        assert result.strip() == ""
+
+    def test_no_matching_patterns_preserves_all(self):
+        fn = self._import()
+        result, skipped = fn(_FIXTURE_DIFF, ["*.rb"], [r"^nonexistent/"])
+        assert result == _FIXTURE_DIFF
+        assert skipped == []
+
+    def test_malformed_regex_is_skipped_without_exception(self):
+        fn = self._import()
+        # Should not raise — bad pattern is logged and skipped
+        result, skipped = fn(_FIXTURE_DIFF, [], [r"[invalid(regex"])
+        # No crash; all files preserved
+        assert "src/main.py" in result
+        assert skipped == []
+
+    def test_non_matching_regex_preserves_all(self):
+        fn = self._import()
+        result, skipped = fn(_FIXTURE_DIFF, [], [r"^generated/"])
+        assert result == _FIXTURE_DIFF
+        assert skipped == []
+
+    def test_binary_file_hunk_handled_correctly(self):
+        """Binary file entries still start with diff --git, must be handled."""
+        binary_diff = (
+            "diff --git a/src/main.py b/src/main.py\n"
+            "index abc..def 100644\n"
+            "--- a/src/main.py\n"
+            "+++ b/src/main.py\n"
+            "@@ -1 +1 @@\n"
+            " x\n"
+            "diff --git a/image.png b/image.png\n"
+            "index 000..111 100644\n"
+            "Binary files a/image.png and b/image.png differ\n"
+        )
+        fn = self._import()
+        result, skipped = fn(binary_diff, ["*.png"], [])
+        assert "image.png" in skipped
+        assert "src/main.py" in result
+
+
+class TestReadTimestampFile:
+
+    def test_reads_valid_float(self, tmp_path):
+        from app.utils import read_timestamp_file
+        f = tmp_path / "ts"
+        f.write_text("1700000000.123\n")
+        assert read_timestamp_file(f) == pytest.approx(1700000000.123)
+
+    def test_reads_valid_int(self, tmp_path):
+        from app.utils import read_timestamp_file
+        f = tmp_path / "ts"
+        f.write_text("1700000000\n")
+        assert read_timestamp_file(f) == 1700000000.0
+
+    def test_missing_file(self, tmp_path):
+        from app.utils import read_timestamp_file
+        assert read_timestamp_file(tmp_path / "nope") is None
+
+    def test_corrupt_content(self, tmp_path):
+        from app.utils import read_timestamp_file
+        f = tmp_path / "ts"
+        f.write_text("not a number")
+        assert read_timestamp_file(f) is None
+
+    def test_empty_file(self, tmp_path):
+        from app.utils import read_timestamp_file
+        f = tmp_path / "ts"
+        f.write_text("")
+        assert read_timestamp_file(f) is None
+
+    def test_accepts_string_path(self, tmp_path):
+        from app.utils import read_timestamp_file
+        f = tmp_path / "ts"
+        f.write_text("1700000000.0")
+        assert read_timestamp_file(str(f)) == 1700000000.0
+
+
+class TestGetFileAgeSeconds:
+
+    def test_recent_file(self, tmp_path):
+        import time
+        from app.utils import get_file_age_seconds
+        f = tmp_path / "ts"
+        f.write_text(str(time.time()))
+        age = get_file_age_seconds(f)
+        assert age is not None
+        assert 0 <= age < 2
+
+    def test_old_file(self, tmp_path):
+        import time
+        from app.utils import get_file_age_seconds
+        f = tmp_path / "ts"
+        f.write_text(str(time.time() - 300))
+        age = get_file_age_seconds(f)
+        assert age is not None
+        assert 298 <= age <= 302
+
+    def test_missing_file(self, tmp_path):
+        from app.utils import get_file_age_seconds
+        assert get_file_age_seconds(tmp_path / "nope") is None
+
+    def test_corrupt_file(self, tmp_path):
+        from app.utils import get_file_age_seconds
+        f = tmp_path / "ts"
+        f.write_text("garbage")
+        assert get_file_age_seconds(f) is None
+
+
+class TestResolveViaForkParent:
+    """Tests for _resolve_via_fork_parent — GitHub fork resolution."""
+
+    @patch("app.utils.KOAN_ROOT", Path("/tmp/fake"))
+    def test_resolves_fork_to_parent_project(self):
+        """Fork URL resolves to a project whose github_url matches the parent."""
+        import subprocess as sp
+        from app.utils import _resolve_via_fork_parent
+
+        fake_result = sp.CompletedProcess(
+            args=[], returncode=0, stdout="upstream-org/my-toolkit\n", stderr=""
+        )
+        config = {
+            "projects": {
+                "my-toolkit": {
+                    "path": "/home/user/my-toolkit",
+                    "github_url": "upstream-org/my-toolkit",
+                }
+            }
+        }
+        with patch("app.utils.subprocess.run", return_value=fake_result), \
+             patch("app.projects_config.load_projects_config", return_value=config):
+            result = _resolve_via_fork_parent(
+                "contributor/my-toolkit", [("my-toolkit", "/home/user/my-toolkit")]
+            )
+        assert result == "/home/user/my-toolkit"
+
+    @patch("app.utils.KOAN_ROOT", Path("/tmp/fake"))
+    def test_resolves_fork_via_github_urls(self):
+        """Fork parent matches a project's github_urls list (not primary url)."""
+        import subprocess as sp
+        from app.utils import _resolve_via_fork_parent
+
+        fake_result = sp.CompletedProcess(
+            args=[], returncode=0, stdout="upstream-org/repo\n", stderr=""
+        )
+        config = {
+            "projects": {
+                "myrepo": {
+                    "path": "/home/user/repo",
+                    "github_url": "my-fork/repo",
+                    "github_urls": ["my-fork/repo", "upstream-org/repo"],
+                }
+            }
+        }
+        with patch("app.utils.subprocess.run", return_value=fake_result), \
+             patch("app.projects_config.load_projects_config", return_value=config):
+            result = _resolve_via_fork_parent(
+                "contributor/repo", [("myrepo", "/home/user/repo")]
+            )
+        assert result == "/home/user/repo"
+
+    @patch("app.utils.KOAN_ROOT", Path("/tmp/fake"))
+    def test_returns_none_when_not_a_fork(self):
+        """Non-fork repos (no parent) return None."""
+        import subprocess as sp
+        from app.utils import _resolve_via_fork_parent
+
+        fake_result = sp.CompletedProcess(
+            args=[], returncode=0, stdout="\n", stderr=""
+        )
+        with patch("app.utils.subprocess.run", return_value=fake_result):
+            result = _resolve_via_fork_parent(
+                "someuser/repo", [("repo", "/home/user/repo")]
+            )
+        assert result is None
+
+    @patch("app.utils.KOAN_ROOT", Path("/tmp/fake"))
+    def test_returns_none_when_gh_fails(self):
+        """gh CLI errors (e.g., network failure) return None gracefully."""
+        import subprocess as sp
+        from app.utils import _resolve_via_fork_parent
+
+        fake_result = sp.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="error"
+        )
+        with patch("app.utils.subprocess.run", return_value=fake_result):
+            result = _resolve_via_fork_parent(
+                "someuser/repo", [("repo", "/home/user/repo")]
+            )
+        assert result is None
+
+    @patch("app.utils.KOAN_ROOT", Path("/tmp/fake"))
+    def test_returns_none_on_timeout(self):
+        """Subprocess timeout returns None without crashing."""
+        import subprocess as sp
+        from app.utils import _resolve_via_fork_parent
+
+        with patch(
+            "app.utils.subprocess.run",
+            side_effect=sp.TimeoutExpired(cmd="gh", timeout=10),
+        ):
+            result = _resolve_via_fork_parent(
+                "someuser/repo", [("repo", "/home/user/repo")]
+            )
+        assert result is None
+
+    @patch("app.utils.KOAN_ROOT", Path("/tmp/fake"))
+    def test_returns_none_when_parent_not_in_projects(self):
+        """Fork parent exists on GitHub but doesn't match any local project."""
+        import subprocess as sp
+        from app.utils import _resolve_via_fork_parent
+
+        fake_result = sp.CompletedProcess(
+            args=[], returncode=0, stdout="unknown-org/repo\n", stderr=""
+        )
+        config = {
+            "projects": {
+                "myrepo": {
+                    "path": "/home/user/repo",
+                    "github_url": "different-org/different-repo",
+                }
+            }
+        }
+        with patch("app.utils.subprocess.run", return_value=fake_result), \
+             patch("app.projects_config.load_projects_config", return_value=config):
+            result = _resolve_via_fork_parent(
+                "contributor/repo", [("myrepo", "/home/user/repo")]
+            )
+        assert result is None
+
+    @patch("app.utils.KOAN_ROOT", Path("/tmp/fake"))
+    def test_case_insensitive_parent_match(self):
+        """Parent slug comparison is case-insensitive."""
+        import subprocess as sp
+        from app.utils import _resolve_via_fork_parent
+
+        fake_result = sp.CompletedProcess(
+            args=[], returncode=0, stdout="Upstream-Org/My-Toolkit\n", stderr=""
+        )
+        config = {
+            "projects": {
+                "my-toolkit": {
+                    "path": "/home/user/my-toolkit",
+                    "github_url": "upstream-org/my-toolkit",
+                }
+            }
+        }
+        with patch("app.utils.subprocess.run", return_value=fake_result), \
+             patch("app.projects_config.load_projects_config", return_value=config):
+            result = _resolve_via_fork_parent(
+                "contributor/my-toolkit", [("my-toolkit", "/home/user/my-toolkit")]
+            )
+        assert result == "/home/user/my-toolkit"
+
+    @patch("app.utils.KOAN_ROOT", Path("/tmp/fake"))
+    def test_falls_back_to_memory_cache(self):
+        """Falls back to in-memory cache for workspace projects."""
+        import subprocess as sp
+        from app.utils import _resolve_via_fork_parent
+
+        fake_result = sp.CompletedProcess(
+            args=[], returncode=0, stdout="cached-org/repo\n", stderr=""
+        )
+        config = {"projects": {}}
+        with patch("app.utils.subprocess.run", return_value=fake_result), \
+             patch("app.projects_config.load_projects_config", return_value=config), \
+             patch(
+                 "app.projects_merged.get_github_url_cache",
+                 return_value={"myrepo": "cached-org/repo"},
+             ):
+            result = _resolve_via_fork_parent(
+                "contributor/repo", [("myrepo", "/home/user/repo")]
+            )
+        assert result == "/home/user/repo"

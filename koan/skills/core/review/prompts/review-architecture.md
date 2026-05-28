@@ -12,12 +12,12 @@ respect boundaries, manage dependencies, and uphold design principles.
 ### PR Description
 
 {BODY}
-
+{PROJECT_MEMORY}
 ---
 
 ## Current Diff
 
-```diff
+{SKIPPED_FILES}```diff
 {DIFF}
 ```
 

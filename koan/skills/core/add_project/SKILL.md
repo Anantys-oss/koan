@@ -2,6 +2,7 @@
 name: add_project
 scope: core
 group: config
+emoji: ➕
 description: Add a project from a GitHub URL
 version: 1.0.0
 audience: bridge

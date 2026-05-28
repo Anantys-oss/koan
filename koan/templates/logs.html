@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% block title %}Kōan — Logs{% endblock %}
+{% block content %}
+<h1>Logs</h1>
+<div class="card" style="margin-bottom:1rem;">
+    <div style="display:flex;gap:0.75rem;align-items:center;flex-wrap:wrap;">
+        <div>
+            <label style="font-size:0.8rem;color:var(--text-muted);margin-right:0.4rem;">Source</label>
+            <select id="source-select" style="padding:0.35rem 0.5rem;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:0.85rem;cursor:pointer;">
+                <option value="all">All</option>
+                <option value="run">run</option>
+                <option value="awake">awake</option>
+            </select>
+        </div>
+        <div style="flex:1;min-width:160px;">
+            <input type="text" id="filter-input" placeholder="Filter lines..." style="width:100%;">
+        </div>
+        <div>
+            <label style="font-size:0.8rem;color:var(--text-muted);margin-right:0.4rem;">Lines</label>
+            <select id="limit-select" style="padding:0.35rem 0.5rem;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:0.85rem;cursor:pointer;">
+                <option value="100">100</option>
+                <option value="200" selected>200</option>
+                <option value="500">500</option>
+                <option value="2000">2000</option>
+            </select>
+        </div>
+        <label style="display:flex;align-items:center;gap:0.35rem;font-size:0.85rem;cursor:pointer;">
+            <input type="checkbox" id="autoscroll-toggle" checked style="cursor:pointer;">
+            Auto-scroll
+        </label>
+        <span id="line-badge" class="badge badge-muted" style="margin-left:auto;">0 lines</span>
+    </div>
+</div>
+
+<div class="card" style="padding:0;">
+    <pre id="log-output" style="padding:1rem 1.25rem;max-height:70vh;overflow-y:auto;margin:0;"></pre>
+</div>
+
+<script>
+(function() {
+    var sourceEl  = document.getElementById('source-select');
+    var filterEl  = document.getElementById('filter-input');
+    var limitEl   = document.getElementById('limit-select');
+    var autoEl    = document.getElementById('autoscroll-toggle');
+    var output    = document.getElementById('log-output');
+    var badge     = document.getElementById('line-badge');
+    var debounceT = null;
+
+    function sourceClass(src) {
+        return src === 'run' ? 'color:var(--accent)' : 'color:var(--text-muted)';
+    }
+
+    function highlight(text) {
+        // Highlight error/fail keywords in red, warn in orange
+        text = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        text = text.replace(/(error|fail|exception|traceback)/gi,
+            '<span style="color:var(--red)">$1</span>');
+        text = text.replace(/(warn|warning)/gi,
+            '<span style="color:var(--orange)">$1</span>');
+        return text;
+    }
+
+    function render(lines) {
+        if (!lines.length) {
+            output.innerHTML = '<span style="color:var(--text-muted)">No log lines found.</span>';
+            badge.textContent = '0 lines';
+            return;
+        }
+        var html = '';
+        for (var i = 0; i < lines.length; i++) {
+            var e = lines[i];
+            var prefix = lines.length > 1 && sourceEl.value === 'all'
+                ? '<span style="' + sourceClass(e.source) + ';user-select:none;">[' + e.source + '] </span>'
+                : '';
+            html += prefix + highlight(e.text) + '\n';
+        }
+        output.innerHTML = html;
+        badge.textContent = lines.length + ' line' + (lines.length === 1 ? '' : 's');
+        if (autoEl.checked) {
+            output.scrollTop = output.scrollHeight;
+        }
+    }
+
+    function load() {
+        var params = new URLSearchParams();
+        params.set('source', sourceEl.value);
+        params.set('limit', limitEl.value);
+        var q = filterEl.value.trim();
+        if (q) params.set('q', q);
+
+        fetch('/api/logs?' + params.toString())
+            .then(function(r) { return r.json(); })
+            .then(function(data) { render(data.lines || []); })
+            .catch(function() {
+                output.innerHTML = '<span style="color:var(--red)">Failed to load logs.</span>';
+            });
+    }
+
+    function scheduleLoad() {
+        clearTimeout(debounceT);
+        debounceT = setTimeout(load, 300);
+    }
+
+    sourceEl.addEventListener('change', load);
+    limitEl.addEventListener('change', load);
+    filterEl.addEventListener('input', scheduleLoad);
+
+    load();
+})();
+</script>
+{% endblock %}

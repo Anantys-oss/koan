@@ -105,14 +105,24 @@ class TestCodexProvider:
         result = self.provider.build_model_args(fallback="gpt-5.4-mini")
         assert result == []
 
-    # -- Output args (no-op) --
+    # -- Output args --
 
     def test_output_args_json(self):
-        """Codex output format is a no-op (uses plain text for Kōan compat)."""
-        assert self.provider.build_output_args("json") == []
+        """Codex emits --json for json / stream-json formats (JSONL events)."""
+        assert self.provider.build_output_args("json") == ["--json"]
+        assert self.provider.build_output_args("stream-json") == ["--json"]
 
     def test_output_args_empty(self):
+        """Plain text is the default; no flag emitted when format is unset."""
         assert self.provider.build_output_args() == []
+        assert self.provider.build_output_args("") == []
+
+    def test_last_message_file_args(self):
+        assert self.provider.supports_last_message_file() is True
+        assert self.provider.build_last_message_file_args("/tmp/out.txt") == [
+            "--output-last-message",
+            "/tmp/out.txt",
+        ]
 
     # -- Max turns (no-op) --
 
@@ -143,13 +153,15 @@ class TestCodexProvider:
 
     # -- Permission args --
 
-    def test_permission_args_yolo(self):
-        """skip_permissions=True maps to --yolo."""
-        assert self.provider.build_permission_args(True) == ["--yolo"]
+    def test_permission_args_full_access(self):
+        """skip_permissions=True bypasses Codex approvals and sandbox."""
+        assert self.provider.build_permission_args(True) == [
+            "--dangerously-bypass-approvals-and-sandbox"
+        ]
 
-    def test_permission_args_full_auto(self):
-        """skip_permissions=False maps to --full-auto."""
-        assert self.provider.build_permission_args(False) == ["--full-auto"]
+    def test_permission_args_sandbox(self):
+        """skip_permissions=False maps to --sandbox workspace-write."""
+        assert self.provider.build_permission_args(False) == ["--sandbox", "workspace-write"]
 
 
 # ---------------------------------------------------------------------------
@@ -164,17 +176,18 @@ class TestCodexBuildCommand:
 
     def test_minimal(self):
         cmd = self.provider.build_command(prompt="hello")
-        # Default: codex --full-auto exec "hello"
+        # Default: codex exec --sandbox workspace-write "hello"
         assert cmd[0] == "codex"
-        assert "--full-auto" in cmd
+        assert "--sandbox" in cmd
+        assert "workspace-write" in cmd
         assert "exec" in cmd
         assert "hello" in cmd
 
     def test_with_skip_permissions(self):
         cmd = self.provider.build_command(prompt="hello", skip_permissions=True)
         assert cmd[0] == "codex"
-        assert "--yolo" in cmd
-        assert "--full-auto" not in cmd
+        assert "--dangerously-bypass-approvals-and-sandbox" in cmd
+        assert "--sandbox" not in cmd
         assert "exec" in cmd
         assert "hello" in cmd
 
@@ -184,19 +197,19 @@ class TestCodexBuildCommand:
         idx = cmd.index("--model")
         assert cmd[idx + 1] == "gpt-5.4"
 
-    def test_model_before_exec(self):
-        """Global flags (--model) must appear before 'exec' subcommand."""
+    def test_model_after_exec(self):
+        """Exec-level flags (--model) must appear after 'exec' subcommand."""
         cmd = self.provider.build_command(prompt="do stuff", model="gpt-5.4")
         model_idx = cmd.index("--model")
         exec_idx = cmd.index("exec")
-        assert model_idx < exec_idx
+        assert model_idx > exec_idx
 
-    def test_yolo_before_exec(self):
-        """Permission flags must appear before 'exec'."""
+    def test_full_access_after_exec(self):
+        """Permission flags must appear after 'exec'."""
         cmd = self.provider.build_command(prompt="hello", skip_permissions=True)
-        yolo_idx = cmd.index("--yolo")
+        full_access_idx = cmd.index("--dangerously-bypass-approvals-and-sandbox")
         exec_idx = cmd.index("exec")
-        assert yolo_idx < exec_idx
+        assert full_access_idx > exec_idx
 
     def test_system_prompt_prepended(self):
         """System prompt is prepended to user prompt (no native flag)."""
@@ -204,9 +217,8 @@ class TestCodexBuildCommand:
             prompt="do the thing",
             system_prompt="You are helpful.",
         )
-        # Find the prompt argument (after 'exec')
-        exec_idx = cmd.index("exec")
-        prompt_text = cmd[exec_idx + 1]
+        # Prompt is the last element (after exec + flags)
+        prompt_text = cmd[-1]
         assert prompt_text.startswith("You are helpful.")
         assert "do the thing" in prompt_text
 
@@ -258,12 +270,11 @@ class TestCodexBuildCommand:
             system_prompt="Be concise.",
         )
         assert cmd[0] == "codex"
-        assert "--yolo" in cmd
+        assert cmd[1] == "exec"
+        assert "--dangerously-bypass-approvals-and-sandbox" in cmd
         assert "--model" in cmd
-        assert "exec" in cmd
-        # Prompt should contain both system prompt and user prompt
-        exec_idx = cmd.index("exec")
-        prompt_text = cmd[exec_idx + 1]
+        # Prompt is the last element and contains both system + user prompt
+        prompt_text = cmd[-1]
         assert "Be concise." in prompt_text
         assert "implement feature X" in prompt_text
 

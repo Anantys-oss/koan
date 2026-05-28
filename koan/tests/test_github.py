@@ -10,7 +10,12 @@ from app.github import (
     SSOAuthRequired, _is_sso_error,
     run_gh, pr_create, issue_create, api,
     get_gh_username, count_open_prs, cached_count_open_prs,
-    batch_count_open_prs, fetch_issue_with_comments, detect_parent_repo,
+    batch_count_open_prs, fetch_issue_state, fetch_issue_with_comments,
+    detect_parent_repo, resolve_target_repo, _config_target_repo,
+    _upstream_remote_repo,
+    origin_repo, _parse_remote_url,
+    sanitize_github_comment,
+    find_bot_comment,
 )
 import app.github as github_module
 
@@ -118,6 +123,42 @@ class TestRunGh:
             run_gh("api", "repos/org/repo")
         assert mock_run.call_count == 1
         mock_sleep.assert_not_called()
+
+    @patch("app.retry.time.sleep")
+    @patch("app.github.subprocess.run")
+    def test_secondary_rate_limit_never_retried_even_when_idempotent(self, mock_run, mock_sleep):
+        """Secondary rate limits are never retried — retrying escalates GitHub's response."""
+        mock_run.return_value = MagicMock(
+            returncode=1, stderr="You have exceeded a secondary rate limit"
+        )
+        with pytest.raises(RuntimeError, match="secondary rate limit"):
+            run_gh("api", "repos/o/r", idempotent=True)
+        assert mock_run.call_count == 1
+        mock_sleep.assert_not_called()
+
+    @patch("app.retry.time.sleep")
+    @patch("app.github.subprocess.run")
+    def test_secondary_rate_limit_never_retried_when_not_idempotent(self, mock_run, mock_sleep):
+        """Secondary rate limits are NOT retried when idempotent=False."""
+        mock_run.return_value = MagicMock(
+            returncode=1, stderr="You have exceeded a secondary rate limit"
+        )
+        with pytest.raises(RuntimeError, match="secondary rate limit"):
+            run_gh("pr", "create", "--title", "T", "--body", "B", idempotent=False)
+        assert mock_run.call_count == 1
+        mock_sleep.assert_not_called()
+
+    @patch("app.retry.time.sleep")
+    @patch("app.github.subprocess.run")
+    def test_retry_after_header_respected(self, mock_run, mock_sleep):
+        """When gh reports a Retry-After value, that delay is used instead of backoff."""
+        # 429 matches transient keywords; Retry-After: 30 provides the delay
+        mock_run.side_effect = [
+            MagicMock(returncode=1, stderr="429 too many requests — Retry-After: 30"),
+            MagicMock(returncode=0, stdout="ok\n"),
+        ]
+        assert run_gh("api", "repos/o/r") == "ok"
+        mock_sleep.assert_called_once_with(30.0)
 
 
 # ---------------------------------------------------------------------------
@@ -532,6 +573,26 @@ class TestRunGhStdinData:
 # ---------------------------------------------------------------------------
 
 
+class TestFetchIssueState:
+
+    @patch("app.github.api", return_value='"closed"')
+    def test_returns_closed(self, mock_api):
+        assert fetch_issue_state("o", "r", 42) == "closed"
+        mock_api.assert_called_once()
+
+    @patch("app.github.api", return_value='"open"')
+    def test_returns_open(self, mock_api):
+        assert fetch_issue_state("o", "r", 42) == "open"
+
+    @patch("app.github.api", return_value="unexpected")
+    def test_unknown_state_defaults_open(self, mock_api):
+        assert fetch_issue_state("o", "r", 42) == "open"
+
+    @patch("app.github.api", side_effect=RuntimeError("gh failed"))
+    def test_api_error_defaults_open(self, mock_api):
+        assert fetch_issue_state("o", "r", 42) == "open"
+
+
 class TestFetchIssueWithComments:
 
     @patch("app.github.api")
@@ -690,6 +751,183 @@ class TestDetectParentRepo:
 
 
 # ---------------------------------------------------------------------------
+# resolve_target_repo — fork detection with upstream remote fallback
+# ---------------------------------------------------------------------------
+
+
+class TestResolveTargetRepo:
+
+    @patch("app.github.detect_parent_repo", return_value="upstream/repo")
+    def test_prefers_github_parent(self, mock_detect):
+        assert resolve_target_repo("/proj") == "upstream/repo"
+
+    @patch("app.github.detect_parent_repo", return_value=None)
+    @patch("app.github._upstream_remote_repo", return_value="org/repo")
+    def test_falls_back_to_upstream_remote(self, mock_remote, mock_detect):
+        assert resolve_target_repo("/proj") == "org/repo"
+
+    @patch("app.github.detect_parent_repo", return_value=None)
+    @patch("app.github._upstream_remote_repo", return_value=None)
+    def test_returns_none_when_no_upstream(self, mock_remote, mock_detect):
+        assert resolve_target_repo("/proj") is None
+
+    @patch("app.github._config_target_repo")
+    @patch("app.github.detect_parent_repo")
+    def test_config_override_skips_fork_detection(self, mock_detect, mock_cfg):
+        from app.github import _UNSET
+        mock_cfg.return_value = None  # origin IS canonical
+        result = resolve_target_repo("/proj", project_name="XML-Parser")
+        assert result is None
+        mock_detect.assert_not_called()
+
+    @patch("app.github._config_target_repo")
+    @patch("app.github.detect_parent_repo")
+    def test_config_override_returns_different_repo(self, mock_detect, mock_cfg):
+        mock_cfg.return_value = "other-owner/repo"
+        result = resolve_target_repo("/proj", project_name="my-fork")
+        assert result == "other-owner/repo"
+        mock_detect.assert_not_called()
+
+    @patch("app.github._config_target_repo")
+    @patch("app.github.detect_parent_repo", return_value="parent/repo")
+    def test_no_config_falls_through_to_fork_detection(self, mock_detect, mock_cfg):
+        from app.github import _UNSET
+        mock_cfg.return_value = _UNSET
+        result = resolve_target_repo("/proj", project_name="unconfigured")
+        assert result == "parent/repo"
+
+
+class TestConfigTargetRepo:
+
+    @patch("app.github._get_remote_url", return_value="https://github.com/cpan-authors/XML-Parser.git")
+    @patch("app.projects_config.load_projects_config", return_value={"projects": {}})
+    @patch("app.projects_config.get_project_submit_to_repository",
+           return_value={"repo": "cpan-authors/XML-Parser"})
+    def test_origin_matches_config_returns_none(self, mock_submit, mock_cfg, mock_url):
+        with patch.dict("os.environ", {"KOAN_ROOT": "/tmp/koan"}):
+            result = _config_target_repo("/proj", "XML-Parser")
+            assert result is None
+
+    @patch("app.github._get_remote_url", return_value="https://github.com/my-fork/repo.git")
+    @patch("app.projects_config.load_projects_config", return_value={"projects": {}})
+    @patch("app.projects_config.get_project_submit_to_repository",
+           return_value={"repo": "upstream/repo"})
+    def test_origin_differs_from_config_returns_config(self, mock_submit, mock_cfg, mock_url):
+        with patch.dict("os.environ", {"KOAN_ROOT": "/tmp/koan"}):
+            result = _config_target_repo("/proj", "my-fork")
+            assert result == "upstream/repo"
+
+    def test_no_koan_root_returns_unset(self):
+        from app.github import _UNSET
+        with patch.dict("os.environ", {}, clear=True):
+            result = _config_target_repo("/proj", "test")
+            assert result is _UNSET
+
+    @patch("app.projects_config.load_projects_config", return_value=None)
+    def test_no_config_returns_unset(self, mock_cfg):
+        from app.github import _UNSET
+        with patch.dict("os.environ", {"KOAN_ROOT": "/tmp/koan"}):
+            result = _config_target_repo("/proj", "test")
+            assert result is _UNSET
+
+    @patch("app.projects_config.load_projects_config", return_value={"projects": {}})
+    @patch("app.projects_config.get_project_submit_to_repository", return_value={})
+    def test_no_submit_repo_returns_unset(self, mock_submit, mock_cfg):
+        from app.github import _UNSET
+        with patch.dict("os.environ", {"KOAN_ROOT": "/tmp/koan"}):
+            result = _config_target_repo("/proj", "test")
+            assert result is _UNSET
+
+
+class TestUpstreamRemoteRepo:
+
+    @patch("app.github._get_remote_url")
+    def test_returns_upstream_when_different_from_origin(self, mock_url):
+        mock_url.side_effect = lambda path, remote: {
+            "upstream": "git@github.com:upstream-org/my-toolkit.git",
+            "origin": "https://github.com/fork-owner/my-toolkit.git",
+        }.get(remote)
+        assert _upstream_remote_repo("/proj") == "upstream-org/my-toolkit"
+
+    @patch("app.github._get_remote_url")
+    def test_returns_none_when_same_as_origin(self, mock_url):
+        mock_url.side_effect = lambda path, remote: {
+            "upstream": "git@github.com:owner/repo.git",
+            "origin": "https://github.com/owner/repo.git",
+        }.get(remote)
+        assert _upstream_remote_repo("/proj") is None
+
+    @patch("app.github._get_remote_url")
+    def test_returns_none_when_no_upstream(self, mock_url):
+        mock_url.side_effect = lambda path, remote: {
+            "origin": "https://github.com/owner/repo.git",
+        }.get(remote)
+        assert _upstream_remote_repo("/proj") is None
+
+    @patch("app.github._get_remote_url")
+    def test_returns_upstream_when_no_origin(self, mock_url):
+        mock_url.side_effect = lambda path, remote: {
+            "upstream": "git@github.com:org/repo.git",
+        }.get(remote)
+        assert _upstream_remote_repo("/proj") == "org/repo"
+
+
+class TestOriginRepo:
+
+    @patch("app.github._get_remote_url",
+            return_value="https://github.com/fork-owner/my-toolkit.git")
+    def test_returns_origin_slug(self, mock_url):
+        assert origin_repo("/proj") == "fork-owner/my-toolkit"
+
+    @patch("app.github._get_remote_url", return_value=None)
+    def test_returns_none_when_no_origin(self, mock_url):
+        assert origin_repo("/proj") is None
+
+    @patch("app.github._get_remote_url", return_value="git@gitlab.com:o/r.git")
+    def test_returns_none_for_non_github(self, mock_url):
+        assert origin_repo("/proj") is None
+
+
+class TestParseRemoteUrl:
+
+    def test_https_url(self):
+        assert _parse_remote_url("https://github.com/owner/repo.git") == "owner/repo"
+
+    def test_ssh_url(self):
+        assert _parse_remote_url("git@github.com:owner/repo.git") == "owner/repo"
+
+    def test_https_without_git_suffix(self):
+        assert _parse_remote_url("https://github.com/owner/repo") == "owner/repo"
+
+    def test_non_github_url(self):
+        assert _parse_remote_url("https://gitlab.com/owner/repo.git") is None
+
+
+# ---------------------------------------------------------------------------
+# issue_create — repo parameter
+# ---------------------------------------------------------------------------
+
+
+class TestIssueCreateRepo:
+
+    @patch("app.github.run_gh", return_value="https://github.com/org/repo/issues/1")
+    @patch("app.leak_detector.scan_and_redact", side_effect=lambda x, **kw: x)
+    def test_passes_repo_flag(self, mock_redact, mock_gh):
+        issue_create("title", "body", repo="upstream/repo")
+        args = mock_gh.call_args[0]
+        assert "--repo" in args
+        idx = args.index("--repo")
+        assert args[idx + 1] == "upstream/repo"
+
+    @patch("app.github.run_gh", return_value="https://github.com/org/repo/issues/1")
+    @patch("app.leak_detector.scan_and_redact", side_effect=lambda x, **kw: x)
+    def test_omits_repo_when_none(self, mock_redact, mock_gh):
+        issue_create("title", "body")
+        args = mock_gh.call_args[0]
+        assert "--repo" not in args
+
+
+# ---------------------------------------------------------------------------
 # pr_create — repo and head parameters
 # ---------------------------------------------------------------------------
 
@@ -782,3 +1020,213 @@ class TestCachedCountOpenPrs:
         mock_time.return_value = 1299.0
         cached_count_open_prs("owner/repo", "koan-bot")
         mock_count.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# sanitize_github_comment
+# ---------------------------------------------------------------------------
+
+class TestSanitizeGithubComment:
+    def test_bare_lowercase(self):
+        assert sanitize_github_comment("Hi @copilot please review") == "Hi `@copilot` please review"
+
+    def test_bare_capitalized(self):
+        assert sanitize_github_comment("Hi @Copilot please review") == "Hi `@Copilot` please review"
+
+    def test_bare_uppercase(self):
+        assert sanitize_github_comment("@COPILOT look at this") == "`@COPILOT` look at this"
+
+    def test_already_escaped_not_double_escaped(self):
+        assert sanitize_github_comment("`@copilot` is already escaped") == "`@copilot` is already escaped"
+
+    def test_no_partial_match(self):
+        assert sanitize_github_comment("@copilotx is not copilot") == "@copilotx is not copilot"
+
+    def test_no_mention(self):
+        assert sanitize_github_comment("no mention here") == "no mention here"
+
+    def test_empty_string(self):
+        assert sanitize_github_comment("") == ""
+
+    def test_none_passthrough(self):
+        assert sanitize_github_comment(None) is None
+
+    def test_multiple_occurrences(self):
+        result = sanitize_github_comment("@copilot and @Copilot and @COPILOT")
+        assert result == "`@copilot` and `@Copilot` and `@COPILOT`"
+
+    def test_in_quote_header(self):
+        text = "> @copilot: can you fix this?\n\nSure, here's how."
+        result = sanitize_github_comment(text)
+        assert "`@copilot`" in result
+        assert "@copilot:" not in result.split("`@copilot`")[0]
+
+    def test_bare_dependabot(self):
+        assert sanitize_github_comment("Thanks @dependabot") == "Thanks `@dependabot`"
+
+    def test_bare_dependabot_capitalized(self):
+        assert sanitize_github_comment("@Dependabot updated") == "`@Dependabot` updated"
+
+    def test_dependabot_already_escaped(self):
+        assert sanitize_github_comment("`@dependabot` is fine") == "`@dependabot` is fine"
+
+    def test_dependabot_no_partial_match(self):
+        assert sanitize_github_comment("@dependabot-preview is different") == "@dependabot-preview is different"
+
+    def test_bare_github_actions(self):
+        assert sanitize_github_comment("See @github-actions run") == "See `@github-actions` run"
+
+    def test_github_actions_capitalized(self):
+        assert sanitize_github_comment("@GitHub-Actions failed") == "`@GitHub-Actions` failed"
+
+    def test_github_actions_already_escaped(self):
+        assert sanitize_github_comment("`@github-actions` ok") == "`@github-actions` ok"
+
+    def test_mixed_bots(self):
+        text = "@copilot and @dependabot and @github-actions"
+        result = sanitize_github_comment(text)
+        assert result == "`@copilot` and `@dependabot` and `@github-actions`"
+
+
+# ---------------------------------------------------------------------------
+# find_bot_comment
+# ---------------------------------------------------------------------------
+
+class TestFindBotComment:
+    """Tests for find_bot_comment — searches PR issue comments for a marker."""
+
+    MARKER = "<!-- koan-summary -->"
+
+    def _make_comment(self, comment_id, body, user="koan-bot"):
+        return json.dumps({"id": comment_id, "body": body, "user": user})
+
+    @patch("app.github.run_gh")
+    def test_returns_comment_when_marker_found(self, mock_gh):
+        raw = self._make_comment(101, f"{self.MARKER}\n## Review\n\nLooks good.")
+        mock_gh.return_value = raw
+        result = find_bot_comment("owner", "repo", 42, self.MARKER)
+        assert result is not None
+        assert result["id"] == 101
+        assert self.MARKER in result["body"]
+
+    @patch("app.github.run_gh")
+    def test_returns_none_when_marker_absent(self, mock_gh):
+        raw = self._make_comment(101, "This comment has no koan marker.")
+        mock_gh.return_value = raw
+        result = find_bot_comment("owner", "repo", 42, self.MARKER)
+        assert result is None
+
+    @patch("app.github.run_gh")
+    def test_returns_first_match_when_multiple_comments_match(self, mock_gh):
+        """When multiple comments have the marker, first one wins."""
+        line1 = self._make_comment(101, f"{self.MARKER} first match")
+        line2 = self._make_comment(202, f"{self.MARKER} second match")
+        mock_gh.return_value = f"{line1}\n{line2}"
+        result = find_bot_comment("owner", "repo", 42, self.MARKER)
+        assert result["id"] == 101
+
+    @patch("app.github.run_gh")
+    def test_returns_none_on_empty_response(self, mock_gh):
+        mock_gh.return_value = ""
+        result = find_bot_comment("owner", "repo", 42, self.MARKER)
+        assert result is None
+
+    @patch("app.github.run_gh", side_effect=RuntimeError("API error"))
+    def test_returns_none_on_api_error(self, mock_gh):
+        result = find_bot_comment("owner", "repo", 42, self.MARKER)
+        assert result is None
+
+    @patch("app.github.run_gh")
+    def test_calls_correct_endpoint(self, mock_gh):
+        mock_gh.return_value = ""
+        find_bot_comment("myowner", "myrepo", 99, self.MARKER)
+        mock_gh.assert_called_once_with(
+            "api",
+            "repos/myowner/myrepo/issues/99/comments",
+            "--paginate",
+            "--jq", r'.[] | {id: .id, body: .body, user: .user.login}',
+            timeout=30,
+        )
+
+    @patch("app.github.run_gh")
+    def test_skips_malformed_json_lines(self, mock_gh):
+        """Malformed JSON lines are skipped; valid ones are still searched."""
+        good = self._make_comment(55, "no marker here")
+        marked = self._make_comment(66, f"{self.MARKER} found it")
+        mock_gh.return_value = f"{{not valid json}}\n{good}\n{marked}"
+        result = find_bot_comment("owner", "repo", 42, self.MARKER)
+        assert result["id"] == 66
+
+    @patch("app.github.run_gh")
+    def test_bot_username_skips_other_bots_comment(self, mock_gh):
+        """When bot_username is given, a marked comment by a different account
+        is not returned.
+
+        Reproduces the bot-switch bug: a first bot (other-bot) posts the
+        review summary, then a second bot (koan-bot) runs the review. Matching
+        by marker alone would return other-bot's comment, and koan-bot would
+        then PATCH it — which GitHub rejects with a 403. The current bot must
+        only treat its OWN comment as the existing one.
+        """
+        raw = self._make_comment(
+            101, f"{self.MARKER}\n## Review", user="other-bot",
+        )
+        mock_gh.return_value = raw
+        result = find_bot_comment(
+            "owner", "repo", 42, self.MARKER, bot_username="koan-bot",
+        )
+        assert result is None
+
+    @patch("app.github.run_gh")
+    def test_bot_username_returns_own_comment(self, mock_gh):
+        """When bot_username matches the comment author, it is returned."""
+        raw = self._make_comment(
+            101, f"{self.MARKER}\n## Review", user="koan-bot",
+        )
+        mock_gh.return_value = raw
+        result = find_bot_comment(
+            "owner", "repo", 42, self.MARKER, bot_username="koan-bot",
+        )
+        assert result is not None
+        assert result["id"] == 101
+
+    @patch("app.github.run_gh")
+    def test_bot_username_match_is_case_insensitive(self, mock_gh):
+        """Author matching ignores case (GitHub logins are case-insensitive)."""
+        raw = self._make_comment(
+            101, f"{self.MARKER}\n## Review", user="Koan-Bot",
+        )
+        mock_gh.return_value = raw
+        result = find_bot_comment(
+            "owner", "repo", 42, self.MARKER, bot_username="koan-bot",
+        )
+        assert result is not None
+        assert result["id"] == 101
+
+    @patch("app.github.run_gh")
+    def test_bot_username_picks_own_over_other_bot(self, mock_gh):
+        """With multiple marked comments, returns the one by the current bot,
+        not merely the first one."""
+        other = self._make_comment(
+            101, f"{self.MARKER} by other", user="other-bot",
+        )
+        mine = self._make_comment(
+            202, f"{self.MARKER} by me", user="koan-bot",
+        )
+        mock_gh.return_value = f"{other}\n{mine}"
+        result = find_bot_comment(
+            "owner", "repo", 42, self.MARKER, bot_username="koan-bot",
+        )
+        assert result["id"] == 202
+
+    @patch("app.github.run_gh")
+    def test_no_bot_username_keeps_first_match_behavior(self, mock_gh):
+        """Without bot_username (unconfigured), falls back to first marker match
+        regardless of author — preserves backward compatibility."""
+        other = self._make_comment(
+            101, f"{self.MARKER} by other", user="other-bot",
+        )
+        mock_gh.return_value = other
+        result = find_bot_comment("owner", "repo", 42, self.MARKER)
+        assert result is not None
+        assert result["id"] == 101

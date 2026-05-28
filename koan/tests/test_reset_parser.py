@@ -1,7 +1,9 @@
 """Tests for reset_parser.py — quota reset time parsing."""
 
-import pytest
+import contextlib
 from datetime import datetime, timedelta
+
+import pytest
 
 from tests._helpers import run_module
 
@@ -545,10 +547,8 @@ class TestCLIMainBlock:
         out = StringIO()
         with patch.object(sys, "argv", ["reset_parser", "parse", "resets 5pm (Europe/Paris)"]):
             with patch("sys.stdout", out):
-                try:
+                with contextlib.suppress(SystemExit):
                     run_module("app.reset_parser", run_name="__main__")
-                except SystemExit:
-                    pass
 
         output = out.getvalue()
         assert "|" in output
@@ -564,10 +564,8 @@ class TestCLIMainBlock:
         out = StringIO()
         with patch.object(sys, "argv", ["reset_parser", "parse"]):
             with patch("sys.stdout", out):
-                try:
+                with contextlib.suppress(SystemExit):
                     run_module("app.reset_parser", run_name="__main__")
-                except SystemExit:
-                    pass
 
         output = out.getvalue()
         assert output.startswith("|")
@@ -629,10 +627,8 @@ class TestCLIMainBlock:
         out = StringIO()
         with patch.object(sys, "argv", ["reset_parser", "until", future_ts]):
             with patch("sys.stdout", out):
-                try:
+                with contextlib.suppress(SystemExit):
                     run_module("app.reset_parser", run_name="__main__")
-                except SystemExit:
-                    pass
 
         output = out.getvalue().strip()
         assert "h" in output or "m" in output
@@ -647,10 +643,8 @@ class TestCLIMainBlock:
         out = StringIO()
         with patch.object(sys, "argv", ["reset_parser", "until", "bad"]):
             with patch("sys.stdout", out):
-                try:
+                with contextlib.suppress(SystemExit):
                     run_module("app.reset_parser", run_name="__main__")
-                except SystemExit:
-                    pass
 
         assert "unknown" in out.getvalue()
 
@@ -664,10 +658,8 @@ class TestCLIMainBlock:
         out = StringIO()
         with patch.object(sys, "argv", ["reset_parser", "until"]):
             with patch("sys.stdout", out):
-                try:
+                with contextlib.suppress(SystemExit):
                     run_module("app.reset_parser", run_name="__main__")
-                except SystemExit:
-                    pass
 
         assert "unknown" in out.getvalue()
 

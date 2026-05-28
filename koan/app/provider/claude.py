@@ -1,6 +1,5 @@
 """Claude Code CLI provider implementation."""
 
-import subprocess
 from typing import List, Optional, Tuple
 
 from app.provider.base import CLIProvider
@@ -14,6 +13,17 @@ class ClaudeProvider(CLIProvider):
     def binary(self) -> str:
         return "claude"
 
+    def supports_session_resume(self) -> bool:
+        return True
+
+    def build_resume_args(self, session_id: str) -> List[str]:
+        if session_id:
+            return ["--resume", session_id]
+        return []
+
+    def supports_stream_json(self) -> bool:
+        return True
+
     def build_permission_args(self, skip_permissions: bool = False) -> List[str]:
         if skip_permissions:
             return ["--dangerously-skip-permissions"]
@@ -22,6 +32,17 @@ class ClaudeProvider(CLIProvider):
     def build_system_prompt_args(self, system_prompt: str) -> List[str]:
         if system_prompt:
             return ["--append-system-prompt", system_prompt]
+        return []
+
+    def supports_system_prompt_file(self) -> bool:
+        # Claude Code CLI supports --append-system-prompt-file in print mode
+        # (-p), which is the only mode Kōan uses.  See
+        # docs/providers/claude-cli-commands-official.md.
+        return True
+
+    def build_system_prompt_file_args(self, path: str) -> List[str]:
+        if path:
+            return ["--append-system-prompt-file", path]
         return []
 
     def build_prompt_args(self, prompt: str) -> List[str]:
@@ -36,7 +57,7 @@ class ClaudeProvider(CLIProvider):
         if allowed_tools:
             flags.extend(["--allowedTools", ",".join(allowed_tools)])
         if disallowed_tools:
-            flags.extend(["--disallowedTools"] + disallowed_tools)
+            flags.extend(["--disallowedTools", ",".join(disallowed_tools)])
         return flags
 
     def build_model_args(self, model: str = "", fallback: str = "") -> List[str]:
@@ -48,14 +69,36 @@ class ClaudeProvider(CLIProvider):
         return flags
 
     def build_output_args(self, fmt: str = "") -> List[str]:
-        if fmt:
-            return ["--output-format", fmt]
-        return []
+        if not fmt:
+            return []
+        # Claude CLI requires --verbose alongside --output-format stream-json
+        # in print mode; the events are otherwise suppressed.
+        if fmt == "stream-json":
+            return ["--output-format", fmt, "--verbose"]
+        return ["--output-format", fmt]
 
     def build_max_turns_args(self, max_turns: int = 0) -> List[str]:
         if max_turns > 0:
             return ["--max-turns", str(max_turns)]
         return []
+
+    # Valid effort levels for Claude Code CLI --effort flag.
+    _EFFORT_LEVELS = {"low", "medium", "high", "max"}
+
+    def build_effort_args(self, effort: str = "") -> List[str]:
+        if effort and effort in self._EFFORT_LEVELS:
+            return ["--effort", effort]
+        return []
+
+    def build_thinking_args(
+        self, enabled: bool = False, budget_tokens: int = 0,
+    ) -> List[str]:
+        if not enabled:
+            return []
+        # Claude Code CLI activates extended thinking via --effort max.
+        # budget_tokens is not directly supported by the CLI — the API-level
+        # token budget is managed by the Claude backend, not the CLI flag.
+        return ["--effort", "max"]
 
     def build_mcp_args(self, configs: Optional[List[str]] = None) -> List[str]:
         if not configs:
@@ -63,6 +106,24 @@ class ClaudeProvider(CLIProvider):
         flags = ["--mcp-config"]
         flags.extend(configs)
         return flags
+
+    def detect_quota_exhaustion(
+        self,
+        stdout_text: str = "",
+        stderr_text: str = "",
+        exit_code: int = 0,
+    ) -> bool:
+        """Detect Claude/Anthropic quota failures.
+
+        Preserve the legacy split behavior: stderr is trusted for all quota
+        patterns, while stdout only matches strict provider error phrases so
+        normal assistant discussion of rate limits does not pause Koan.
+        """
+        from app.quota_handler import _QUOTA_RE, _STRICT_QUOTA_RE
+
+        return bool(_QUOTA_RE.search(stderr_text or "")) or bool(
+            _STRICT_QUOTA_RE.search(stdout_text or "")
+        )
 
     def build_plugin_args(self, plugin_dirs: Optional[List[str]] = None) -> List[str]:
         if not plugin_dirs:
@@ -73,28 +134,13 @@ class ClaudeProvider(CLIProvider):
         return flags
 
     def check_quota_available(self, project_path: str, timeout: int = 15) -> Tuple[bool, str]:
-        """Check Claude API quota via ``claude usage`` (no tokens consumed).
+        """Check Claude API quota availability.
 
-        Runs ``claude usage`` and checks the output for quota exhaustion
-        signals. Unlike a prompt-based probe, this costs zero tokens.
+        Note: ``claude usage`` is not a real subcommand — it would be
+        interpreted as a prompt and hang.  Instead, we always return
+        True and rely on quota_handler.py to detect exhaustion from
+        the actual CLI output after each run.
         """
-        cmd = [self.binary(), "usage"]
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                cwd=project_path,
-            )
-            combined = (result.stderr or "") + "\n" + (result.stdout or "")
-            from app.quota_handler import detect_quota_exhaustion
-            if detect_quota_exhaustion(combined):
-                return False, combined
-            return True, ""
-        except subprocess.TimeoutExpired:
-            # Timeout — proceed optimistically
-            return True, ""
-        except (subprocess.SubprocessError, OSError, ImportError):
-            # Non-quota error — proceed optimistically
-            return True, ""
+        # No lightweight zero-cost probe exists in the Claude CLI.
+        # Quota exhaustion is detected post-run by quota_handler.py.
+        return True, ""

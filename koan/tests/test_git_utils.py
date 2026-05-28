@@ -255,3 +255,20 @@ class TestOrderedRemotes:
 
     def test_preferred_empty_string(self):
         assert ordered_remotes("") == ["origin", "upstream"]
+
+    @patch("app.git_utils.run_git", return_value=(0, "origin\n", ""))
+    def test_discovers_single_origin_remote(self, mock_run):
+        assert ordered_remotes(cwd="/repo") == ["origin"]
+        mock_run.assert_called_once_with("remote", cwd="/repo", timeout=10)
+
+    @patch("app.git_utils.run_git", return_value=(0, "origin\nfork\n", ""))
+    def test_discovered_preferred_remote_first(self, mock_run):
+        assert ordered_remotes("fork", cwd="/repo") == ["fork", "origin"]
+
+    @patch("app.git_utils.run_git", return_value=(0, "origin\n", ""))
+    def test_missing_preferred_is_not_injected_when_discovered(self, mock_run):
+        assert ordered_remotes("upstream", cwd="/repo") == ["origin"]
+
+    @patch("app.git_utils.run_git", return_value=(1, "", "fatal"))
+    def test_discovery_failure_falls_back_to_legacy_order(self, mock_run):
+        assert ordered_remotes("fork", cwd="/repo") == ["fork", "origin", "upstream"]

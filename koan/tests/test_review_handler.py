@@ -5,11 +5,10 @@ from unittest.mock import patch, MagicMock
 
 from skills.core.review.handler import (
     handle,
-    _parse_repo_url,
-    _parse_limit,
     _list_open_prs,
     _handle_batch,
 )
+from app.github_skill_helpers import parse_repo_url, parse_limit
 from app.skills import SkillContext
 
 
@@ -22,37 +21,37 @@ _HANDLER = "skills.core.review.handler"
 
 class TestParseRepoUrl:
     def test_plain_repo_url(self):
-        result = _parse_repo_url("https://github.com/owner/repo")
+        result = parse_repo_url("https://github.com/owner/repo")
         assert result == ("https://github.com/owner/repo", "owner", "repo")
 
     def test_repo_url_with_dot_git(self):
-        result = _parse_repo_url("https://github.com/owner/repo.git")
+        result = parse_repo_url("https://github.com/owner/repo.git")
         assert result == ("https://github.com/owner/repo", "owner", "repo")
 
     def test_repo_url_with_limit(self):
-        result = _parse_repo_url("https://github.com/owner/repo --limit=5")
+        result = parse_repo_url("https://github.com/owner/repo --limit=5")
         assert result is not None
         assert result[1] == "owner"
         assert result[2] == "repo"
 
     def test_issue_url_returns_none(self):
-        result = _parse_repo_url("https://github.com/owner/repo/issues/42")
+        result = parse_repo_url("https://github.com/owner/repo/issues/42")
         assert result is None
 
     def test_pr_url_returns_none(self):
-        result = _parse_repo_url("https://github.com/owner/repo/pull/10")
+        result = parse_repo_url("https://github.com/owner/repo/pull/10")
         assert result is None
 
     def test_no_url_returns_none(self):
-        result = _parse_repo_url("just some text")
+        result = parse_repo_url("just some text")
         assert result is None
 
     def test_rejects_sub_paths(self):
-        result = _parse_repo_url("https://github.com/owner/issues")
+        result = parse_repo_url("https://github.com/owner/issues")
         assert result is None
 
     def test_rejects_pulls_path(self):
-        result = _parse_repo_url("https://github.com/owner/pull")
+        result = parse_repo_url("https://github.com/owner/pull")
         assert result is None
 
 
@@ -62,16 +61,16 @@ class TestParseRepoUrl:
 
 class TestParseLimit:
     def test_limit_equals(self):
-        assert _parse_limit("https://github.com/o/r --limit=5") == 5
+        assert parse_limit("https://github.com/o/r --limit=5") == 5
 
     def test_limit_space(self):
-        assert _parse_limit("https://github.com/o/r --limit 10") == 10
+        assert parse_limit("https://github.com/o/r --limit 10") == 10
 
     def test_no_limit(self):
-        assert _parse_limit("https://github.com/o/r") is None
+        assert parse_limit("https://github.com/o/r") is None
 
     def test_case_insensitive(self):
-        assert _parse_limit("--LIMIT=3") == 3
+        assert parse_limit("--LIMIT=3") == 3
 
 
 # ---------------------------------------------------------------------------
@@ -262,3 +261,32 @@ class TestHandleRouting:
         result = handle(ctx)
 
         mock_batch.assert_called_once()
+
+    @patch(f"{_HANDLER}.handle_github_skill")
+    def test_now_flag_passed_to_single_mode(self, mock_single):
+        """--now flag is extracted and passed as urgent=True to handle_github_skill."""
+        mock_single.return_value = "Review queued (priority)"
+        ctx = self._make_ctx("--now https://github.com/owner/repo/pull/42")
+        result = handle(ctx)
+
+        mock_single.assert_called_once()
+        assert mock_single.call_args[1]["urgent"] is True
+
+    @patch(f"{_HANDLER}.handle_github_skill")
+    def test_now_flag_stripped_from_args(self, mock_single):
+        """--now is removed from ctx.args before delegating."""
+        mock_single.return_value = "Review queued"
+        ctx = self._make_ctx("--now https://github.com/owner/repo/pull/42")
+        handle(ctx)
+
+        # ctx.args should have --now stripped
+        assert "--now" not in ctx.args
+
+    @patch(f"{_HANDLER}.handle_github_skill")
+    def test_without_now_flag_not_urgent(self, mock_single):
+        """Without --now, urgent defaults to False."""
+        mock_single.return_value = "Review queued"
+        ctx = self._make_ctx("https://github.com/owner/repo/pull/42")
+        handle(ctx)
+
+        assert mock_single.call_args[1].get("urgent", False) is False

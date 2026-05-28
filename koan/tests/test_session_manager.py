@@ -193,6 +193,11 @@ class TestGetMaxParallelSessions:
         mock_config.return_value = {"max_parallel_sessions": 0}
         assert get_max_parallel_sessions() == 1
 
+    @patch("app.utils.load_config", side_effect=ValueError("bad config"))
+    def test_config_error_returns_default(self, mock_config, capsys):
+        assert get_max_parallel_sessions() == 2
+        assert "config read error" in capsys.readouterr().err
+
 
 class TestPollSessions:
     def test_detects_completed(self, registry, sample_session):
@@ -254,6 +259,29 @@ class TestPollSessions:
         results = poll_sessions([sample_session], registry)
         assert len(results) == 0
 
+    def test_cleanup_error_is_logged_but_result_is_returned(
+        self, registry, sample_session, tmp_path, capsys,
+    ):
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 0
+        sample_session._proc = mock_proc
+        sample_session._cleanup = MagicMock(side_effect=RuntimeError("cleanup boom"))
+
+        stdout = tmp_path / "stdout.txt"
+        stderr = tmp_path / "stderr.txt"
+        stdout.write_text("ok")
+        stderr.write_text("warn")
+        sample_session.stdout_file = str(stdout)
+        sample_session.stderr_file = str(stderr)
+
+        registry.register(sample_session)
+        results = poll_sessions([sample_session], registry)
+
+        assert len(results) == 1
+        assert results[0].stdout == "ok"
+        assert results[0].stderr == "warn"
+        assert "cleanup error" in capsys.readouterr().err
+
 
 class TestKillSession:
     def test_kills_process_and_updates_registry(self, registry, sample_session):
@@ -288,6 +316,42 @@ class TestKillSession:
 
         assert sample_session.status == "failed"
 
+    def test_kills_by_pid_when_proc_reference_missing(self, registry, sample_session):
+        sample_session.pid = 12345
+        registry.register(sample_session)
+
+        with (
+            patch("os.kill") as mock_kill,
+            patch("app.session_manager.remove_worktree"),
+        ):
+            kill_session(sample_session, registry)
+
+        mock_kill.assert_called_once()
+        assert mock_kill.call_args.args[0] == 12345
+
+    def test_timeout_escalates_to_sigkill(self, registry, sample_session):
+        import signal
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 22222
+        mock_proc.poll.return_value = None
+        mock_proc.wait.side_effect = [
+            subprocess.TimeoutExpired(cmd="agent", timeout=5),
+            None,
+        ]
+        sample_session._proc = mock_proc
+        registry.register(sample_session)
+
+        with (
+            patch("os.getpgid", return_value=22222),
+            patch("os.killpg") as mock_killpg,
+            patch("app.session_manager.remove_worktree"),
+        ):
+            kill_session(sample_session, registry)
+
+        assert mock_killpg.call_args_list[0].args == (22222, signal.SIGTERM)
+        assert mock_killpg.call_args_list[1].args == (22222, signal.SIGKILL)
+
 
 class TestSpawnSessionFileHandleLeak:
     """Verify file handles are closed when spawn_session fails."""
@@ -310,7 +374,7 @@ class TestSpawnSessionFileHandleLeak:
             opened_files.append(f)
             return f
 
-        with patch("app.mission_runner.build_mission_command", return_value=["echo"]), \
+        with patch("app.mission_runner.build_mission_command", return_value=(["echo"], [])), \
              patch("builtins.open", side_effect=tracking_open), \
              patch("app.cli_exec.popen_cli", side_effect=RuntimeError("boom")):
             with pytest.raises(RuntimeError, match="boom"):
@@ -349,7 +413,7 @@ class TestSpawnSessionFileHandleLeak:
             opened_files.append(f)
             return f
 
-        with patch("app.mission_runner.build_mission_command", return_value=["echo"]), \
+        with patch("app.mission_runner.build_mission_command", return_value=(["echo"], [])), \
              patch("builtins.open", side_effect=open_fail_second):
             with pytest.raises(OSError, match="disk full"):
                 spawn_session(
@@ -400,3 +464,18 @@ class TestRecoverStaleSessions:
 
         retrieved = registry.get("nopid")
         assert retrieved.status == "failed"
+
+    def test_permission_error_leaves_session_running(self, registry):
+        s = Session(id="permission", mission_text="m", project_name="p",
+                    project_path="/tmp/fake", worktree_path="/tmp/fake/wt",
+                    branch_name="b", status="running", pid=123)
+        registry.register(s)
+
+        with (
+            patch("app.session_manager.prune_worktrees"),
+            patch("os.kill", side_effect=PermissionError),
+        ):
+            recover_stale_sessions(registry)
+
+        retrieved = registry.get("permission")
+        assert retrieved.status == "running"

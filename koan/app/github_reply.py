@@ -18,7 +18,7 @@ import re
 from typing import Optional
 
 from app.cli_provider import run_command
-from app.github import api
+from app.github import api, sanitize_github_comment
 from app.prompts import load_prompt
 from app.utils import truncate_text
 
@@ -65,8 +65,16 @@ def fetch_thread_context(
     owner: str,
     repo: str,
     issue_number: str,
+    bot_username: str = "",
 ) -> dict:
     """Fetch issue/PR context for reply generation.
+
+    Args:
+        owner: Repository owner.
+        repo: Repository name.
+        issue_number: Issue/PR number.
+        bot_username: If provided, comments from this user are excluded
+            from the context to prevent self-reply loops.
 
     Returns:
         Dict with keys: title, body, comments, is_pr, diff_summary.
@@ -101,9 +109,11 @@ def fetch_thread_context(
         )
         comments = json.loads(raw) if raw else []
         if isinstance(comments, list):
+            bot_lower = bot_username.lower() if bot_username else ""
             context["comments"] = [
                 {"author": c.get("author", "?"), "body": truncate_text(c.get("body", ""), 500)}
                 for c in comments
+                if not (bot_lower and c.get("author", "").lower() == bot_lower)
             ]
     except (RuntimeError, json.JSONDecodeError):
         pass
@@ -117,12 +127,11 @@ def fetch_thread_context(
             )
             files = json.loads(raw) if raw else []
             if isinstance(files, list):
-                lines = []
-                for f in files[:30]:  # Cap at 30 files
-                    lines.append(
-                        f"  {f.get('status', '?')} {f.get('filename', '?')} "
-                        f"(+{f.get('additions', 0)}/-{f.get('deletions', 0)})"
-                    )
+                lines = [
+                    f"  {f.get('status', '?')} {f.get('filename', '?')} "
+                    f"(+{f.get('additions', 0)}/-{f.get('deletions', 0)})"
+                    for f in files[:30]
+                ]
                 context["diff_summary"] = "\n".join(lines)
         except (RuntimeError, json.JSONDecodeError):
             pass
@@ -160,9 +169,7 @@ def build_reply_prompt(
     # Format comments for context
     comments_text = ""
     if comments:
-        comment_lines = []
-        for c in comments:
-            comment_lines.append(f"@{c['author']}: {c['body']}")
+        comment_lines = [f"@{c['author']}: {c['body']}" for c in comments]
         comments_text = "\n\n".join(comment_lines)
 
     return load_prompt(
@@ -212,8 +219,9 @@ def generate_reply(
             project_path=project_path,
             allowed_tools=["Read", "Glob", "Grep"],
             model_key="chat",
-            max_turns=1,
-            timeout=120,
+            max_turns=5,
+            timeout=300,
+            max_turns_source=None,
         )
         return clean_reply(reply) if reply else None
     except Exception as e:
@@ -239,10 +247,11 @@ def post_reply(
         True if posted successfully.
     """
     try:
+        safe_body = sanitize_github_comment(body)
         api(
             f"repos/{owner}/{repo}/issues/{issue_number}/comments",
             method="POST",
-            extra_args=["-f", f"body={body}"],
+            extra_args=["-f", f"body={safe_body}"],
         )
         return True
     except RuntimeError as e:

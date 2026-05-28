@@ -25,6 +25,7 @@ E-stop levels:
   PROJECT_FREEZE — block specific projects while others continue
 """
 
+import contextlib
 import json
 import os
 import time
@@ -181,10 +182,8 @@ def deactivate_estop(koan_root: str) -> None:
     """
     for name in (ESTOP_STATE_FILE, ESTOP_SIGNAL_FILE):
         path = os.path.join(koan_root, name)
-        try:
+        with contextlib.suppress(FileNotFoundError):
             os.remove(path)
-        except FileNotFoundError:
-            pass
 
 
 def unfreeze_project(koan_root: str, project_name: str) -> Optional[EstopState]:

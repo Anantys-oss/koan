@@ -20,10 +20,14 @@ are automatically surfaced to the agent without additional wiring.
 
 import hashlib
 import json
+import logging
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
+
+log = logging.getLogger(__name__)
 
 
 def fetch_pr_reviews(
@@ -106,66 +110,93 @@ def fetch_pr_reviews(
         pr["reviews"] = reviews
         pr["review_comments"] = comments
         pr["was_merged"] = bool(pr.get("mergedAt"))
+
+        if not pr["was_merged"]:
+            pr["issue_comments"] = _fetch_issue_comments_for_pr(project_path, num)
+        else:
+            pr["issue_comments"] = []
+
         enriched.append(pr)
 
     return enriched
 
 
-def _fetch_reviews_for_pr(project_path: str, pr_number: int) -> List[dict]:
-    """Fetch review submissions for a single PR."""
+def _fetch_gh_jsonl(
+    project_path: str,
+    endpoint: str,
+    jq_filter: str,
+    pr_number: int,
+    label: str,
+) -> List[dict]:
+    """Fetch a GitHub API endpoint and parse newline-delimited JSON.
+
+    Shared helper for review and comment fetching — handles the run_gh call,
+    JSONL parsing, and error handling in one place.
+
+    Args:
+        project_path: Path to the git repository.
+        endpoint: API endpoint template (use {owner}/{repo} placeholders).
+        jq_filter: jq expression to reshape each item.
+        pr_number: PR number (for error messages).
+        label: Human-readable label for error context (e.g. "reviews").
+
+    Returns:
+        List of parsed JSON objects, or empty list on failure.
+    """
     try:
         from app.github import run_gh
         raw = run_gh(
-            "api",
-            f"repos/{{owner}}/{{repo}}/pulls/{pr_number}/reviews",
-            "--jq", ".[].{state: .state, body: .body, user: .user.login}",
-            cwd=project_path,
-            timeout=10,
+            "api", endpoint, "--jq", jq_filter,
+            cwd=project_path, timeout=10,
         )
         if not raw.strip():
             return []
-        # gh --jq outputs one JSON object per line
-        reviews = []
+        results = []
         for line in raw.strip().split("\n"):
             line = line.strip()
             if line:
                 try:
-                    reviews.append(json.loads(line))
+                    results.append(json.loads(line))
                 except json.JSONDecodeError:
-                    pass
-        return reviews
-    except Exception as e:
-        print(f"[pr_review_learning] Reviews fetch failed for #{pr_number}: {e}",
+                    log.warning("Malformed JSON in %s for PR #%d: %s", label, pr_number, line)
+        return results
+    except (RuntimeError, subprocess.TimeoutExpired) as e:
+        print(f"[pr_review_learning] {label.capitalize()} fetch failed for #{pr_number}: {e}",
               file=sys.stderr)
         return []
+
+
+def _fetch_reviews_for_pr(project_path: str, pr_number: int) -> List[dict]:
+    """Fetch review submissions for a single PR."""
+    return _fetch_gh_jsonl(
+        project_path,
+        f"repos/{{owner}}/{{repo}}/pulls/{pr_number}/reviews",
+        ".[].{state: .state, body: .body, user: .user.login}",
+        pr_number,
+        "reviews",
+    )
 
 
 def _fetch_review_comments_for_pr(project_path: str, pr_number: int) -> List[dict]:
     """Fetch inline review comments for a single PR."""
-    try:
-        from app.github import run_gh
-        raw = run_gh(
-            "api",
-            f"repos/{{owner}}/{{repo}}/pulls/{pr_number}/comments",
-            "--jq", ".[].{body: .body, path: .path, user: .user.login}",
-            cwd=project_path,
-            timeout=10,
-        )
-        if not raw.strip():
-            return []
-        comments = []
-        for line in raw.strip().split("\n"):
-            line = line.strip()
-            if line:
-                try:
-                    comments.append(json.loads(line))
-                except json.JSONDecodeError:
-                    pass
-        return comments
-    except Exception as e:
-        print(f"[pr_review_learning] Comments fetch failed for #{pr_number}: {e}",
-              file=sys.stderr)
-        return []
+    return _fetch_gh_jsonl(
+        project_path,
+        f"repos/{{owner}}/{{repo}}/pulls/{pr_number}/comments",
+        ".[].{body: .body, path: .path, user: .user.login}",
+        pr_number,
+        "review comments",
+    )
+
+
+def _fetch_issue_comments_for_pr(project_path: str, pr_number: int) -> List[dict]:
+    """Fetch issue-thread comments for a PR (GitHub treats PRs as issues)."""
+    return _fetch_gh_jsonl(
+        project_path,
+        f"repos/{{owner}}/{{repo}}/issues/{pr_number}/comments",
+        ".[].{body: .body, user: .user.login, created_at: .created_at}",
+        pr_number,
+        "issue comments",
+    )
 
 
 def format_reviews_for_analysis(prs: List[dict]) -> str:
@@ -204,6 +235,13 @@ def format_reviews_for_analysis(prs: List[dict]) -> str:
             user = comment.get("user", "")
             if body:
                 lines.append(f"  Inline on {path} by {user}: {body}")
+
+        if not pr.get("was_merged"):
+            for comment in pr.get("issue_comments", []):
+                body = (comment.get("body") or "").strip()
+                user = comment.get("user", "")
+                if body:
+                    lines.append(f"  Comment by {user}: {body}")
 
         # Only include PRs that have actual review content
         if len(lines) > 1:
@@ -269,17 +307,86 @@ def _compute_review_hash(prs: List[dict]) -> str:
     parts = []
     for pr in sorted(prs, key=lambda p: p.get("number", 0)):
         parts.append(str(pr.get("number", "")))
-        for review in pr.get("reviews", []):
-            parts.append(review.get("body") or "")
-        for comment in pr.get("review_comments", []):
-            parts.append(comment.get("body") or "")
+        parts.extend(review.get("body") or "" for review in pr.get("reviews", []))
+        parts.extend(comment.get("body") or "" for comment in pr.get("review_comments", []))
+        parts.extend(comment.get("body") or "" for comment in pr.get("issue_comments", []))
     content = "|".join(parts)
-    return hashlib.sha256(content.encode()).hexdigest()[:16]
+    return hashlib.sha256(content.encode()).hexdigest()
 
 
 def _get_cache_path(instance_dir: str) -> Path:
     """Get the path to the review learning cache file."""
     return Path(instance_dir) / ".koan-review-learning-hash"
+
+
+# ─── Consecutive failure tracking ───────────────────────────────────────
+
+_FAILURE_COUNTER_FILE = ".koan-pr-review-analysis-failures"
+_FAILURE_ALERT_THRESHOLD = 3
+
+
+def _get_failure_counter_path(instance_dir: str) -> Path:
+    """Get the path to the analysis failure counter file."""
+    return Path(instance_dir) / _FAILURE_COUNTER_FILE
+
+
+def _read_failure_count(instance_dir: str) -> int:
+    """Read the current consecutive failure count. Returns 0 if no file."""
+    path = _get_failure_counter_path(instance_dir)
+    if not path.exists():
+        return 0
+    try:
+        return int(path.read_text().strip())
+    except (OSError, ValueError):
+        return 0
+
+
+def _increment_failure_count(instance_dir: str) -> int:
+    """Increment and persist the consecutive failure counter. Returns new count.
+
+    Note: read-modify-write is not atomic, but this is only called from the
+    single-threaded agent loop (learn_from_reviews), so no locking is needed.
+    """
+    count = _read_failure_count(instance_dir) + 1
+    try:
+        from app.utils import atomic_write
+        atomic_write(_get_failure_counter_path(instance_dir), str(count) + "\n")
+    except OSError as e:
+        print(f"[pr_review_learning] Failure counter write failed: {e}",
+              file=sys.stderr)
+    return count
+
+
+def _reset_failure_count(instance_dir: str) -> None:
+    """Reset the failure counter (on successful analysis)."""
+    path = _get_failure_counter_path(instance_dir)
+    if path.exists():
+        try:
+            path.unlink()
+        except OSError as e:
+            log.warning("Failure counter reset failed: %s", e)
+
+
+def _notify_analysis_failures(instance_dir: str, count: int) -> None:
+    """Send outbox alert when consecutive failures reach threshold."""
+    if count < _FAILURE_ALERT_THRESHOLD:
+        return
+    # Only alert on exact threshold to avoid spamming every subsequent failure
+    if count != _FAILURE_ALERT_THRESHOLD:
+        return
+    try:
+        from app.utils import append_to_outbox
+        from app.notify import NotificationPriority
+        outbox_path = Path(instance_dir) / "outbox.md"
+        msg = (
+            f"⚠️ PR review learning has failed {count} times in a row — "
+            f"learnings have stopped accumulating. "
+            f"Possible causes: CLI quota, API errors, or no actionable review content.\n"
+        )
+        append_to_outbox(outbox_path, msg, priority=NotificationPriority.WARNING)
+    except (OSError, ImportError) as e:
+        print(f"[pr_review_learning] Failed to send failure alert: {e}",
+              file=sys.stderr)
 
 
 def _is_cache_fresh(instance_dir: str, current_hash: str) -> bool:
@@ -304,17 +411,123 @@ def _write_cache(instance_dir: str, review_hash: str) -> None:
         print(f"[pr_review_learning] Cache write failed: {e}", file=sys.stderr)
 
 
+def _is_write_time_dedup_enabled() -> bool:
+    """Return ``memory.write_time_dedup`` from ``config.yaml`` (default True).
+
+    Lookup failures default to True — the dedup pass is the safer
+    behaviour, and operators can opt out explicitly via config.
+    """
+    try:
+        from app.utils import load_config
+        cfg = load_config() or {}
+        mem = cfg.get("memory", {}) or {}
+        flag = mem.get("write_time_dedup", True)
+        return bool(flag)
+    except (ImportError, OSError, ValueError, KeyError, TypeError) as e:
+        print(f"[pr_review_learning] dedup config lookup failed: {e}", file=sys.stderr)
+        return True
+
+
+def _dedup_lessons_with_cli(
+    new_lessons_text: str,
+    existing_content: str,
+    project_path: str,
+    timeout: int = 15,
+) -> Optional[str]:
+    """Filter ``new_lessons_text`` against ``existing_content`` via Claude CLI.
+
+    Returns the filtered lesson list on success, or ``None`` on CLI
+    failure / timeout. Callers should fall back to the existing
+    exact-string dedup when this returns ``None``.
+
+    The timeout is intentionally short (15s) — this runs on the write
+    hot path after each agent loop iteration; we'd rather skip the
+    smart dedup than block the loop.
+    """
+    if not existing_content.strip() or not new_lessons_text.strip():
+        return new_lessons_text
+
+    from app.cli_provider import build_full_command
+    from app.config import get_model_config
+    from app.prompts import load_prompt
+
+    try:
+        prompt = load_prompt(
+            "learnings-dedup",
+            EXISTING_CONTENT=existing_content,
+            NEW_LESSONS=new_lessons_text,
+        )
+    except (OSError, FileNotFoundError) as e:
+        print(f"[pr_review_learning] dedup prompt load failed: {e}", file=sys.stderr)
+        return None
+
+    models = get_model_config()
+    cmd = build_full_command(
+        prompt=prompt,
+        allowed_tools=[],
+        model=models.get("lightweight", "haiku"),
+        fallback=models.get("fallback", "sonnet"),
+        max_turns=1,
+    )
+
+    from app.cli_exec import run_cli_with_retry
+
+    try:
+        # max_attempts=1: honor the 15s hot-path budget literally. The
+        # exact-string fallback is good enough when this fails — we'd
+        # rather skip the smart pass than burn 60s+ on retry backoff
+        # (worst case with the default 3 attempts × 15s + 2+5+10s sleep).
+        result = run_cli_with_retry(
+            cmd,
+            capture_output=True, text=True,
+            timeout=timeout, cwd=project_path,
+            max_attempts=1,
+        )
+        if result.returncode != 0:
+            print(
+                f"[pr_review_learning] dedup CLI failed (rc={result.returncode}): "
+                f"{result.stderr[:200]}",
+                file=sys.stderr,
+            )
+            return None
+        return result.stdout.strip()
+    except (subprocess.TimeoutExpired, OSError, RuntimeError) as e:
+        print(f"[pr_review_learning] dedup CLI error: {e}", file=sys.stderr)
+        return None
+
+
 def _append_lessons_to_learnings(
     instance_dir: str,
     project_name: str,
     lessons_text: str,
+    section_header: str = "PR review learnings",
+    project_path: Optional[str] = None,
 ) -> int:
     """Append new lessons to the project's learnings.md, skipping duplicates.
+
+    Two dedup passes happen in order:
+
+    1. **Exact-string** dedup against existing lines (cheap, deterministic).
+       Drops any candidate whose stripped line already appears verbatim.
+    2. Optional **semantic** dedup via lightweight Claude CLI when
+       ``memory.write_time_dedup`` is enabled (default), run only on
+       candidates that survived pass 1. Catches paraphrases the
+       exact-string pass would miss. Falls back transparently on CLI
+       failure or timeout. A final exact-string sweep is applied to the
+       CLI output to absorb any echoed existing lines.
+
+    Running exact-string dedup first means the CLI call is skipped
+    entirely when every candidate is an obvious duplicate (the common
+    case in a quiet cycle) — keeps the agent loop hot path lean.
 
     Args:
         instance_dir: Path to the instance directory.
         project_name: Project name for scoping.
         lessons_text: Markdown bullet list from Claude analysis.
+        section_header: Section title prefix (date is appended automatically).
+        project_path: Project repo path used as cwd for the dedup CLI call.
+            When ``None`` (or write-time dedup disabled) only exact-string
+            dedup runs.
 
     Returns:
         Number of new lines appended.
@@ -339,12 +552,35 @@ def _append_lessons_to_learnings(
         except (OSError, UnicodeDecodeError) as e:
             print(f"[pr_review_learning] Error reading learnings: {e}", file=sys.stderr)
 
-    # Filter out duplicate lessons
-    new_lines = []
-    for line in lessons_text.splitlines():
-        stripped = line.strip()
-        if stripped and stripped not in existing_lines:
-            new_lines.append(line)
+    # Pass 1: exact-string dedup (cheap, always runs).
+    new_lines = [
+        line for line in lessons_text.splitlines()
+        if line.strip() and line.strip() not in existing_lines
+    ]
+
+    if not new_lines:
+        return 0
+
+    # Pass 2 (optional): semantic dedup via CLI, run only on the survivors.
+    # Skipped when:
+    #   - existing learnings file is empty (nothing to dedup against)
+    #   - operator disabled it via memory.write_time_dedup = false
+    #   - project_path is unknown (no cwd for the CLI call)
+    if (
+        project_path
+        and existing_content.strip()
+        and _is_write_time_dedup_enabled()
+    ):
+        filtered = _dedup_lessons_with_cli(
+            "\n".join(new_lines), existing_content, project_path,
+        )
+        if filtered is not None:
+            # Re-apply exact-string dedup to the CLI output in case the
+            # model echoed an existing line back unchanged.
+            new_lines = [
+                line for line in filtered.splitlines()
+                if line.strip() and line.strip() not in existing_lines
+            ]
 
     if not new_lines:
         return 0
@@ -354,7 +590,7 @@ def _append_lessons_to_learnings(
 
     # Build new content
     date_str = datetime.now().strftime("%Y-%m-%d")
-    section = f"\n## PR review learnings ({date_str})\n\n" + "\n".join(new_lines) + "\n"
+    section = f"\n## {section_header} ({date_str})\n\n" + "\n".join(new_lines) + "\n"
 
     if existing_content:
         new_content = existing_content.rstrip("\n") + "\n" + section
@@ -362,6 +598,17 @@ def _append_lessons_to_learnings(
         new_content = f"# Learnings — {project_name}\n" + section
 
     atomic_write(learnings_path, new_content)
+
+    # Mirror each lesson to the JSONL truth log (one entry per lesson line)
+    try:
+        from app.memory_manager import append_memory_entry
+        for line in new_lines:
+            stripped = line.strip()
+            if stripped:
+                append_memory_entry(instance_dir, "learning", project_name, stripped)
+    except Exception as e:
+        log.warning("JSONL append failed: %s", e)
+
     return len(new_lines)
 
 
@@ -402,26 +649,140 @@ def learn_from_reviews(
         result["skipped_reason"] = "cache_fresh"
         return result
 
-    # Format reviews for analysis
-    review_text = format_reviews_for_analysis(prs)
-    if not review_text:
+    # Split into merged and rejected PRs
+    merged_prs = [pr for pr in prs if pr.get("was_merged")]
+    rejected_prs = [pr for pr in prs if not pr.get("was_merged")]
+
+    total_added = 0
+    any_analyzed = False
+    any_empty = False
+
+    # Analyze merged PRs with the standard prompt
+    if merged_prs:
+        merged_text = format_reviews_for_analysis(merged_prs)
+        if merged_text:
+            lessons = analyze_reviews_with_cli(merged_text, project_path)
+            any_analyzed = True
+            if lessons:
+                total_added += _append_lessons_to_learnings(
+                    instance_dir, project_name, lessons,
+                    project_path=project_path)
+            else:
+                any_empty = True
+
+    # Analyze rejected PRs with the dedicated rejection prompt
+    if rejected_prs:
+        rejected_text = format_reviews_for_analysis(rejected_prs)
+        if rejected_text:
+            lessons = _analyze_rejection_with_cli(rejected_text, project_path)
+            any_analyzed = True
+            if lessons:
+                added = _append_lessons_to_learnings(
+                    instance_dir, project_name, lessons,
+                    section_header="Rejected PR learnings",
+                    project_path=project_path)
+                total_added += added
+                _write_rejection_journal_entries(
+                    instance_dir, project_name, rejected_prs, lessons)
+            else:
+                any_empty = True
+
+    result["analyzed"] = any_analyzed
+
+    if not any_analyzed:
         result["skipped_reason"] = "no_review_content"
         return result
 
-    # Analyze with Claude CLI
-    lessons_text = analyze_reviews_with_cli(review_text, project_path)
-    result["analyzed"] = True
-    if not lessons_text:
+    if total_added == 0 and any_empty:
         result["skipped_reason"] = "empty_analysis"
+        count = _increment_failure_count(instance_dir)
+        _notify_analysis_failures(instance_dir, count)
         return result
 
-    # Persist to learnings.md
-    added = _append_lessons_to_learnings(instance_dir, project_name, lessons_text)
-    result["lessons_added"] = added
+    # At least some analysis succeeded — reset failure counter
+    if total_added > 0:
+        _reset_failure_count(instance_dir)
 
-    # Update cache
+    result["lessons_added"] = total_added
     _write_cache(instance_dir, review_hash)
     return result
+
+
+def _analyze_rejection_with_cli(
+    review_text: str,
+    project_path: str,
+) -> str:
+    """Use Claude CLI with the rejection-specific prompt to extract lessons."""
+    from app.cli_provider import build_full_command
+    from app.config import get_model_config
+    from app.prompts import load_prompt
+
+    prompt = load_prompt("rejection-learning", REVIEW_DATA=review_text)
+    models = get_model_config()
+
+    cmd = build_full_command(
+        prompt=prompt,
+        allowed_tools=[],
+        model=models.get("lightweight", "haiku"),
+        fallback=models.get("fallback", "sonnet"),
+        max_turns=1,
+    )
+
+    from app.cli_exec import run_cli_with_retry
+
+    try:
+        result = run_cli_with_retry(
+            cmd,
+            capture_output=True, text=True,
+            timeout=60, cwd=project_path,
+        )
+        if result.returncode != 0:
+            print(
+                f"[pr_review_learning] Rejection analysis failed: {result.stderr[:200]}",
+                file=sys.stderr,
+            )
+            return ""
+        return result.stdout.strip()
+    except Exception as e:
+        print(f"[pr_review_learning] Rejection analysis error: {e}", file=sys.stderr)
+        return ""
+
+
+def _write_rejection_journal_entries(
+    instance_dir: str,
+    project_name: str,
+    rejected_prs: List[dict],
+    lessons_text: str,
+) -> None:
+    """Write journal entries for rejected PRs."""
+    try:
+        from app.journal import append_to_journal
+    except ImportError:
+        return
+
+    first_lesson = ""
+    for line in lessons_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("- "):
+            first_lesson = stripped[2:]
+            break
+
+    now = datetime.now().strftime("%H:%M")
+    for pr in rejected_prs:
+        title = pr.get("title", "untitled")
+        number = pr.get("number", "?")
+        reason = first_lesson or "No specific reason extracted"
+        content = (
+            f"## Rejected PR — {now}\n\n"
+            f"PR #{number}: {title}\n"
+            f"Reason: {reason}\n"
+            f"Learning recorded in memory/projects/{project_name}/learnings.md\n"
+        )
+        try:
+            append_to_journal(Path(instance_dir), project_name, content)
+        except Exception as e:
+            print(f"[pr_review_learning] Journal write failed for PR #{number}: {e}",
+                  file=sys.stderr)
 
 
 def _parse_iso(dt_str: str) -> Optional[datetime]:

@@ -15,9 +15,12 @@ Usage:
     make dashboard
 """
 
+import collections
+import contextlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -53,10 +56,20 @@ from app.missions import (
     reorder_mission,
 )
 from app.utils import (
+    PROJECT_TAG_FULL_RE,
     modify_missions_file,
     parse_project,
     insert_pending_mission,
     get_known_projects,
+)
+from app.automation_rules import (
+    KNOWN_ACTIONS,
+    KNOWN_EVENTS,
+    add_rule,
+    load_rules,
+    remove_rule,
+    toggle_rule,
+    update_rule_params,
 )
 
 # ---------------------------------------------------------------------------
@@ -82,19 +95,16 @@ app = Flask(
 )
 
 
-_PROJECT_TAG_RE = re.compile(r'\s*\[(?:project|projet):([a-zA-Z0-9_-]+)\]\s*')
-
-
 @app.template_filter('strip_project_tag')
 def strip_project_tag_filter(text: str) -> str:
     """Remove [project:name] tag from mission text for display."""
-    return _PROJECT_TAG_RE.sub(' ', text).strip()
+    return PROJECT_TAG_FULL_RE.sub(' ', text).strip()
 
 
 @app.template_filter('project_badge')
 def project_badge_filter(text: str) -> str:
     """Extract project tag and return badge HTML, or empty string."""
-    m = _PROJECT_TAG_RE.search(text)
+    m = PROJECT_TAG_FULL_RE.search(text)
     if m:
         name = m.group(1)
         return f'<span class="badge badge-blue">{name}</span> '
@@ -203,10 +213,8 @@ def get_agent_state() -> dict:
     project_file = KOAN_ROOT / PROJECT_FILE
     project = ""
     if project_file.exists():
-        try:
+        with contextlib.suppress(OSError):
             project = project_file.read_text().strip()
-        except OSError:
-            pass
 
     # Read focus state
     focus = None
@@ -349,11 +357,10 @@ def get_journal_entries(limit: int = 7) -> list:
         # Check nested structure
         nested = JOURNAL_DIR / d
         if nested.is_dir():
-            for f in sorted(nested.glob("*.md")):
-                day_entries.append({
-                    "project": f.stem,
-                    "content": f.read_text(),
-                })
+            day_entries.extend(
+                {"project": f.stem, "content": f.read_text()}
+                for f in sorted(nested.glob("*.md"))
+            )
         # Check flat structure
         flat = JOURNAL_DIR / f"{d}.md"
         if flat.is_file():
@@ -408,6 +415,34 @@ def _build_dashboard_prompt(text: str, *, lite: bool = False) -> str:
     )
 
 
+def _compute_dashboard_skill_metrics(selected_project: str = "") -> dict:
+    """Compute skill metrics summaries for dashboard display.
+
+    Returns dict mapping project names to their summary dicts.
+    If selected_project is set, only returns that project.
+    """
+    from app.skill_metrics import compute_summary
+
+    projects_dir = INSTANCE_DIR / "memory" / "projects"
+    if not projects_dir.exists():
+        return {}
+
+    result = {}
+    for project_dir in sorted(projects_dir.iterdir()):
+        if not project_dir.is_dir():
+            continue
+        pname = project_dir.name
+        if selected_project and pname != selected_project:
+            continue
+        metrics_file = project_dir / "skill-metrics.md"
+        if not metrics_file.exists():
+            continue
+        summary = compute_summary(str(INSTANCE_DIR), pname, days=30)
+        if summary["plan_total"] > 0 or summary["pr_total"] > 0:
+            result[pname] = summary
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -438,6 +473,9 @@ def index():
     elif tpl_state == "sleeping":
         tpl_state = "running"
 
+    # Per-project skill metrics (plan approval + CI pass rates)
+    skill_metrics = _compute_dashboard_skill_metrics(selected_project)
+
     return render_template("dashboard.html",
         state=tpl_state,
         state_label=agent_state["label"],
@@ -449,6 +487,7 @@ def index():
         done_count=len(filtered["done"]),
         selected_project=selected_project,
         project_stats=project_stats,
+        skill_metrics=skill_metrics,
     )
 
 
@@ -734,21 +773,144 @@ def usage_page():
     return render_template("usage.html")
 
 
+def _bucket_by_week(series: list) -> list:
+    """Aggregate daily series into ISO-week buckets."""
+    buckets: dict = {}
+    for entry in series:
+        d = date.fromisoformat(entry["date"])
+        iso_year, iso_week, _ = d.isocalendar()
+        key = (iso_year, iso_week)
+        if key not in buckets:
+            monday = d - timedelta(days=d.weekday())
+            sunday = monday + timedelta(days=6)
+            bucket: dict = {
+                "week": f"{iso_year}-W{iso_week:02d}",
+                "date": monday.isoformat(),
+                "start": monday.isoformat(),
+                "end": sunday.isoformat(),
+                "total_input": 0,
+                "total_output": 0,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "count": 0,
+                "cost": None,
+            }
+            if "by_project" in entry:
+                bucket["by_project"] = {}
+            buckets[key] = bucket
+        b = buckets[key]
+        b["total_input"] += entry.get("total_input", 0)
+        b["total_output"] += entry.get("total_output", 0)
+        b["cache_creation_input_tokens"] += entry.get("cache_creation_input_tokens", 0)
+        b["cache_read_input_tokens"] += entry.get("cache_read_input_tokens", 0)
+        b["count"] += entry.get("count", 0)
+        entry_cost = entry.get("cost")
+        if entry_cost is not None:
+            b["cost"] = (b["cost"] or 0.0) + entry_cost
+        if "by_project" in entry and "by_project" in b:
+            for proj, pdata in entry["by_project"].items():
+                if proj not in b["by_project"]:
+                    b["by_project"][proj] = {"total_input": 0, "total_output": 0, "count": 0}
+                bp = b["by_project"][proj]
+                bp["total_input"] += pdata.get("total_input", 0)
+                bp["total_output"] += pdata.get("total_output", 0)
+                bp["count"] += pdata.get("count", 0)
+    return [buckets[k] for k in sorted(buckets.keys())]
+
+
+def _bucket_by_month(series: list) -> list:
+    """Aggregate daily series into calendar-month buckets."""
+    buckets: dict = {}
+    for entry in series:
+        d = date.fromisoformat(entry["date"])
+        key = (d.year, d.month)
+        if key not in buckets:
+            bucket: dict = {
+                "month": f"{d.year}-{d.month:02d}",
+                "date": f"{d.year}-{d.month:02d}-01",
+                "total_input": 0,
+                "total_output": 0,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "count": 0,
+                "cost": None,
+            }
+            if "by_project" in entry:
+                bucket["by_project"] = {}
+            buckets[key] = bucket
+        b = buckets[key]
+        b["total_input"] += entry.get("total_input", 0)
+        b["total_output"] += entry.get("total_output", 0)
+        b["cache_creation_input_tokens"] += entry.get("cache_creation_input_tokens", 0)
+        b["cache_read_input_tokens"] += entry.get("cache_read_input_tokens", 0)
+        b["count"] += entry.get("count", 0)
+        entry_cost = entry.get("cost")
+        if entry_cost is not None:
+            b["cost"] = (b["cost"] or 0.0) + entry_cost
+        if "by_project" in entry and "by_project" in b:
+            for proj, pdata in entry["by_project"].items():
+                if proj not in b["by_project"]:
+                    b["by_project"][proj] = {"total_input": 0, "total_output": 0, "count": 0}
+                bp = b["by_project"][proj]
+                bp["total_input"] += pdata.get("total_input", 0)
+                bp["total_output"] += pdata.get("total_output", 0)
+                bp["count"] += pdata.get("count", 0)
+    return [buckets[k] for k in sorted(buckets.keys())]
+
+
 @app.route("/api/usage")
 def api_usage():
     """JSON usage data for the specified time range."""
-    from app.cost_tracker import summarize_range, get_pricing_config, estimate_cost, daily_series
+    from app.cost_tracker import (
+        summarize_range,
+        get_pricing_config,
+        estimate_cost,
+        estimate_cache_savings,
+        daily_series,
+    )
+    import calendar as _calendar
 
     days = request.args.get("days", "7", type=str)
     selected_project = request.args.get("project", "")
+    groupby = request.args.get("groupby", "")
+    granularity = request.args.get("granularity", "day")
+    if granularity not in ("day", "week", "month"):
+        granularity = "day"
+    stacked = request.args.get("stacked", "false").lower() in ("true", "1", "yes")
+    offset_raw = request.args.get("offset", "0", type=str)
+
     try:
         days = int(days)
         days = max(1, min(days, 90))
     except (ValueError, TypeError):
         days = 7
 
-    end = date.today()
-    start = end - timedelta(days=days - 1)
+    try:
+        offset = int(offset_raw)
+        offset = max(0, offset)
+    except (ValueError, TypeError):
+        offset = 0
+
+    today = date.today()
+    if granularity == "week":
+        # Shift by offset ISO weeks (7 days each)
+        end = today - timedelta(weeks=offset)
+        start = end - timedelta(days=days - 1)
+    elif granularity == "month":
+        # Shift end date back by offset calendar months
+        year, month = today.year, today.month
+        month -= offset
+        while month <= 0:
+            month += 12
+            year -= 1
+        last_day = _calendar.monthrange(year, month)[1]
+        end = date(year, month, min(today.day, last_day))
+        start = end - timedelta(days=days - 1)
+    else:
+        # day: shift by offset * days
+        end = today - timedelta(days=offset * days)
+        start = end - timedelta(days=days - 1)
+
     summary = summarize_range(INSTANCE_DIR, start, end)
 
     by_project = summary["by_project"]
@@ -772,22 +934,50 @@ def api_usage():
                 total_cost += c
         estimated_cost = total_cost
 
-    # Per-day time series for charts
-    daily = daily_series(INSTANCE_DIR, start, end, project=selected_project or None)
+    # Per-day time series, optionally with per-project breakdown
+    series = daily_series(
+        INSTANCE_DIR, start, end,
+        project=selected_project or None,
+        include_by_project=stacked,
+    )
 
-    return jsonify({
+    # Bucket into weeks or months if requested
+    if granularity == "week":
+        series = _bucket_by_week(series)
+    elif granularity == "month":
+        series = _bucket_by_month(series)
+
+    estimated_cache_savings = estimate_cache_savings(summary, pricing)
+
+    response_data: dict = {
         "days": days,
         "start": start.isoformat(),
         "end": end.isoformat(),
         "total_input": summary["total_input"],
         "total_output": summary["total_output"],
+        "cache_creation_input_tokens": summary["cache_creation_input_tokens"],
+        "cache_read_input_tokens": summary["cache_read_input_tokens"],
+        "cache_hit_rate": summary["cache_hit_rate"],
         "count": summary["count"],
         "by_project": by_project,
         "by_model": summary["by_model"],
         "has_pricing": pricing is not None,
         "estimated_cost": estimated_cost,
-        "daily": daily,
-    })
+        "estimated_cache_savings": estimated_cache_savings,
+        "series": series,
+        "granularity": granularity,
+        "offset": offset,
+    }
+
+    if groupby == "type":
+        if selected_project:
+            proj_and_type = summary.get("by_project_and_type", {})
+            response_data["by_type"] = proj_and_type.get(selected_project, {})
+        else:
+            response_data["by_type"] = summary.get("by_type", {})
+        response_data["by_project_and_type"] = summary.get("by_project_and_type", {})
+
+    return jsonify(response_data)
 
 
 @app.route("/api/metrics")
@@ -819,6 +1009,13 @@ def api_metrics():
             str(INSTANCE_DIR), proj, days=days
         )
     return jsonify(metrics)
+
+
+@app.route("/api/skill-metrics")
+def api_skill_metrics():
+    """JSON skill metrics (plan approval + CI pass rates) per project."""
+    selected_project = request.args.get("project", "")
+    return jsonify(_compute_dashboard_skill_metrics(selected_project))
 
 
 @app.route("/journal")
@@ -1250,6 +1447,382 @@ def api_status():
         },
         "agent_state": get_agent_state(),
     })
+
+
+# ---------------------------------------------------------------------------
+# Agent introspection — memory, skills, soul, config
+# ---------------------------------------------------------------------------
+
+# Simple 30-second TTL cache for skills registry (file I/O per SKILL.md is
+# non-trivial when many custom skills are installed).
+_agent_skills_cache: dict = {}
+_AGENT_SKILLS_CACHE_TTL = 30  # seconds
+
+_SENSITIVE_KEY_RE = re.compile(
+    r'(?m)^(\s*(?:token|password|api_key|secret|private_key)\s*:\s*)\S+',
+    re.IGNORECASE,
+)
+
+
+def _mask_sensitive(yaml_text: str) -> str:
+    """Replace sensitive YAML values with <redacted>."""
+    return _SENSITIVE_KEY_RE.sub(r'\1<redacted>', yaml_text)
+
+
+def _read_capped(path: Path, cap: int = 10_000) -> dict:
+    """Read a file, capping at `cap` chars and flagging truncation."""
+    if not path.exists():
+        return {"content": None, "path": str(path.relative_to(KOAN_ROOT)), "truncated": False}
+    text = path.read_text(errors="replace")
+    truncated = len(text) > cap
+    return {
+        "content": text[:cap],
+        "path": str(path.relative_to(KOAN_ROOT)),
+        "truncated": truncated,
+        "total_chars": len(text) if truncated else None,
+    }
+
+
+@app.route("/agent")
+def agent_page():
+    """Agent introspection page — memory, skills, soul, config."""
+    return render_template("agent.html")
+
+
+@app.route("/api/agent/soul")
+def api_agent_soul():
+    """Return soul.md content."""
+    soul_path = INSTANCE_DIR / "soul.md"
+    data = _read_capped(soul_path)
+    return jsonify(data)
+
+
+@app.route("/api/agent/memory")
+def api_agent_memory():
+    """Return a structured tree of memory files."""
+    memory_dir = INSTANCE_DIR / "memory"
+
+    if not memory_dir.exists():
+        return jsonify({"summary": None, "global": [], "projects": {}})
+
+    summary = _read_capped(memory_dir / "summary.md")
+
+    # Global context files under memory/global/
+    global_files = []
+    global_dir = memory_dir / "global"
+    if global_dir.is_dir():
+        global_files.extend(
+            {**_read_capped(f), "name": f.name}
+            for f in sorted(global_dir.iterdir())
+            if f.is_file() and f.suffix in (".md", ".txt")
+        )
+
+    # Per-project files under memory/projects/{name}/
+    projects: dict = {}
+    projects_dir = memory_dir / "projects"
+    if projects_dir.is_dir():
+        for proj_dir in sorted(projects_dir.iterdir()):
+            if not proj_dir.is_dir():
+                continue
+            files = [
+                {**_read_capped(f), "name": f.name}
+                for f in sorted(proj_dir.iterdir())
+                if f.is_file() and f.suffix in (".md", ".txt")
+            ]
+            if files:
+                projects[proj_dir.name] = files
+
+    return jsonify({"summary": summary, "global": global_files, "projects": projects})
+
+
+@app.route("/api/agent/skills")
+def api_agent_skills():
+    """Return skill registry metadata."""
+    from app.skills import build_registry
+
+    now = time.time()
+    if "ts" in _agent_skills_cache and now - _agent_skills_cache["ts"] < _AGENT_SKILLS_CACHE_TTL:
+        return jsonify(_agent_skills_cache["data"])
+
+    extra_dirs = []
+    instance_skills = INSTANCE_DIR / "skills"
+    if instance_skills.is_dir():
+        extra_dirs.append(instance_skills)
+
+    registry = build_registry(extra_dirs)
+
+    skills_list = []
+    for skill in registry.list_all():
+        commands = [
+            {
+                "name": cmd.name,
+                "aliases": list(cmd.aliases) if cmd.aliases else [],
+                "description": cmd.description or "",
+            }
+            for cmd in skill.commands
+        ]
+        skills_list.append({
+            "name": skill.name,
+            "scope": skill.scope,
+            "group": skill.group,
+            "description": skill.description or "",
+            "commands": commands,
+            "audience": skill.audience,
+            "worker": skill.worker,
+            "github_enabled": skill.github_enabled,
+        })
+
+    data = {
+        "scopes": registry.scopes(),
+        "groups": registry.groups(),
+        "skills": skills_list,
+    }
+    _agent_skills_cache["ts"] = now
+    _agent_skills_cache["data"] = data
+    return jsonify(data)
+
+
+@app.route("/api/agent/config")
+def api_agent_config():
+    """Return config.yaml and projects.yaml contents (sensitive values masked)."""
+    config_path = KOAN_ROOT / "instance" / "config.yaml"
+    projects_path = KOAN_ROOT / "projects.yaml"
+
+    def read_yaml(path: Path):
+        if not path.exists():
+            return None
+        return _mask_sensitive(path.read_text(errors="replace"))
+
+    return jsonify({
+        "config_yaml": read_yaml(config_path),
+        "projects_yaml": read_yaml(projects_path),
+    })
+
+
+# ---------------------------------------------------------------------------
+# Automation rules routes
+# ---------------------------------------------------------------------------
+
+def _get_rule_history(limit: int = 50) -> list:
+    """Read [automation_rule]-tagged journal lines, capped at `limit` entries."""
+    entries = []
+    if not JOURNAL_DIR.exists():
+        return entries
+
+    journal_dates = sorted(
+        (d for d in JOURNAL_DIR.iterdir() if d.is_dir() and re.match(r"\d{4}-\d{2}-\d{2}", d.name)),
+        reverse=True,
+    )
+
+    for day_dir in journal_dates:
+        auto_file = day_dir / "automation.md"
+        if not auto_file.exists():
+            continue
+        for line in reversed(auto_file.read_text().splitlines()):
+            if "[automation_rule]" in line:
+                entries.append({"date": day_dir.name, "line": line.strip()})
+                if len(entries) >= limit:
+                    return entries
+    return entries
+
+
+@app.route("/rules")
+def rules_page():
+    """Automation rules management page."""
+    rules = load_rules(str(INSTANCE_DIR))
+    history = _get_rule_history()
+    return render_template(
+        "rules.html",
+        rules=rules,
+        history=history,
+        known_events=sorted(KNOWN_EVENTS),
+        known_actions=sorted(KNOWN_ACTIONS),
+    )
+
+
+@app.route("/api/rules", methods=["GET"])
+def api_rules_list():
+    """Return all automation rules as JSON."""
+    rules = load_rules(str(INSTANCE_DIR))
+    return jsonify([r.to_dict() for r in rules])
+
+
+@app.route("/api/rules", methods=["POST"])
+def api_rules_create():
+    """Create a new automation rule."""
+    data = request.get_json(force=True) or {}
+    event = data.get("event", "")
+    action = data.get("action", "")
+
+    if event not in KNOWN_EVENTS:
+        return jsonify({"error": f"Unknown event '{event}'. Valid: {sorted(KNOWN_EVENTS)}"}), 400
+    if action not in KNOWN_ACTIONS:
+        return jsonify({"error": f"Unknown action '{action}'. Valid: {sorted(KNOWN_ACTIONS)}"}), 400
+
+    rule = add_rule(
+        str(INSTANCE_DIR),
+        event=event,
+        action=action,
+        params=data.get("params") or {},
+        enabled=bool(data.get("enabled", True)),
+    )
+    return jsonify(rule.to_dict()), 201
+
+
+@app.route("/api/rules/<rule_id>", methods=["PATCH"])
+def api_rules_update(rule_id):
+    """Toggle enabled state or update params of a rule."""
+    data = request.get_json(force=True) or {}
+
+    updated = None
+    if "enabled" in data:
+        updated = toggle_rule(str(INSTANCE_DIR), rule_id, enabled=bool(data["enabled"]))
+    if "params" in data and updated is None:
+        updated = update_rule_params(str(INSTANCE_DIR), rule_id, data["params"])
+    elif "params" in data and updated is not None:
+        updated = update_rule_params(str(INSTANCE_DIR), rule_id, data["params"])
+
+    if updated is None:
+        return jsonify({"error": "Rule not found"}), 404
+    return jsonify(updated.to_dict())
+
+
+@app.route("/api/rules/<rule_id>", methods=["DELETE"])
+def api_rules_delete(rule_id):
+    """Delete a rule by id."""
+    removed = remove_rule(str(INSTANCE_DIR), rule_id)
+    if not removed:
+        return jsonify({"error": "Rule not found"}), 404
+    return jsonify({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# Logs viewer
+# ---------------------------------------------------------------------------
+
+_LOG_MAX_LINE_LENGTH = 2000
+_LOG_DEFAULT_LIMIT = 200
+_LOG_MAX_LIMIT = 2000
+
+
+def _tail_log(log_path: Path, limit: int) -> list[dict]:
+    """Return up to *limit* lines from *log_path* as dicts with text and n.
+
+    Uses a deque to avoid loading the full file into memory.
+    Returns [] if the file does not exist or cannot be read.
+    """
+    if not log_path.exists():
+        return []
+    buf: collections.deque = collections.deque(maxlen=limit)
+    try:
+        with open(log_path, "r", encoding="utf-8", errors="replace") as fh:
+            for n, line in enumerate(fh, start=1):
+                buf.append((n, line.rstrip("\n")))
+    except OSError:
+        pass
+    return [
+        {"n": n, "text": text[:_LOG_MAX_LINE_LENGTH]}
+        for n, text in buf
+    ]
+
+
+@app.route("/api/logs")
+def api_logs():
+    """Return recent log lines from run.log and/or awake.log.
+
+    Query params:
+      source  — "run", "awake", or "all" (default "all")
+      limit   — max lines to return per source (default 200, max 2000)
+      q       — optional substring filter (case-insensitive)
+    """
+    source = request.args.get("source", "all").lower()
+    try:
+        limit = max(1, min(int(request.args.get("limit", _LOG_DEFAULT_LIMIT)), _LOG_MAX_LIMIT))
+    except (ValueError, TypeError):
+        limit = _LOG_DEFAULT_LIMIT
+    q = request.args.get("q", "").lower()
+
+    logs_dir = KOAN_ROOT / "logs"
+
+    sources_to_read: list[str]
+    if source == "run":
+        sources_to_read = ["run"]
+    elif source == "awake":
+        sources_to_read = ["awake"]
+    else:
+        sources_to_read = ["run", "awake"]
+
+    lines: list[dict] = []
+    for src in sources_to_read:
+        log_path = logs_dir / f"{src}.log"
+        for entry in _tail_log(log_path, limit):
+            entry["source"] = src
+            lines.append(entry)
+
+    # When merging multiple sources the deques are already in file order;
+    # sort combined list by (source, n) so run lines come before awake lines
+    # within each interleaved block — simple stable ordering is fine here.
+    if len(sources_to_read) > 1:
+        lines.sort(key=lambda e: (e["source"], e["n"]))
+
+    if q:
+        lines = [e for e in lines if q in e["text"].lower()]
+
+    # Apply final limit across merged result
+    lines = lines[-limit:]
+
+    return jsonify({"lines": lines, "total": len(lines)})
+
+
+@app.route("/logs")
+def logs_page():
+    """Log viewer page."""
+    return render_template("logs.html")
+
+
+# ---------------------------------------------------------------------------
+# Health check
+# ---------------------------------------------------------------------------
+
+_DISK_WARN_PCT = 85
+_DISK_ERROR_PCT = 95
+
+
+def _check_process_alive(koan_root: Path, process_name: str) -> dict:
+    """Check whether a Kōan process is alive via its PID file."""
+    from app.signals import pid_file
+    pid_path = koan_root / pid_file(process_name)
+    if not pid_path.exists():
+        return {"alive": False, "status": "warn"}
+    try:
+        pid = int(pid_path.read_text().strip())
+        os.kill(pid, 0)  # signal 0: existence check only
+        return {"alive": True, "status": "ok"}
+    except (ValueError, OSError, ProcessLookupError, PermissionError):
+        return {"alive": False, "status": "warn"}
+
+
+@app.route("/api/health")
+def api_health():
+    """Aggregate health check: disk usage + process liveness."""
+    # Disk
+    try:
+        usage = shutil.disk_usage(str(KOAN_ROOT))
+        used_pct = int(usage.used * 100 / usage.total) if usage.total else 0
+        if used_pct >= _DISK_ERROR_PCT:
+            disk_status = "error"
+        elif used_pct >= _DISK_WARN_PCT:
+            disk_status = "warn"
+        else:
+            disk_status = "ok"
+        disk = {"used_pct": used_pct, "status": disk_status}
+    except OSError:
+        disk = {"used_pct": None, "status": "error"}
+
+    run_health = _check_process_alive(KOAN_ROOT, "run")
+    awake_health = _check_process_alive(KOAN_ROOT, "awake")
+
+    return jsonify({"disk": disk, "run": run_health, "awake": awake_health})
 
 
 # ---------------------------------------------------------------------------

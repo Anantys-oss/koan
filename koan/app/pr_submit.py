@@ -2,7 +2,7 @@
 
 Used by fix_runner.py and implement_runner.py to avoid duplicating
 the post-execution PR submission pipeline (branch check, push,
-fork detection, PR creation, issue comment).
+fork detection, PR creation, tracker issue comment).
 """
 
 import logging
@@ -16,7 +16,7 @@ from app.git_utils import (
     get_current_branch as _git_get_current_branch,
     run_git_strict,
 )
-from app.github import detect_parent_repo, run_gh, pr_create
+from app.github import origin_repo, resolve_target_repo, run_gh, pr_create
 from app.projects_config import resolve_base_branch
 
 logger = logging.getLogger(__name__)
@@ -44,7 +44,19 @@ def get_commit_subjects(project_path: str, base_branch: str = "main") -> List[st
 
 
 def get_fork_owner(project_path: str) -> str:
-    """Return the GitHub owner login of the current repo."""
+    """Return the GitHub owner login of the PR head (the push target).
+
+    Derived from the ``origin`` git remote — the branch is pushed there, so
+    the cross-fork ``--head <owner>:<branch>`` must name the same owner.
+    ``gh repo view`` is NOT used as the primary source: when an ``upstream``
+    remote exists it resolves to the upstream/base repo and reports the
+    *upstream* owner, which would point ``--head`` at a branch that doesn't
+    exist on upstream and silently land the PR on the fork instead.
+    """
+    slug = origin_repo(project_path)
+    if slug:
+        return slug.split("/", 1)[0]
+    # Fallback for setups without a parseable origin URL (e.g. gh-only auth).
     try:
         return run_gh(
             "repo", "view", "--json", "owner", "--jq", ".owner.login",
@@ -65,7 +77,7 @@ def resolve_submit_target(
 
     Resolution order:
     1. submit_to_repository in projects.yaml config
-    2. Auto-detect fork parent via gh
+    2. Auto-detect upstream (gh fork parent, then ``upstream`` git remote)
     3. Fall back to issue's owner/repo
 
     Returns dict with 'repo' (owner/repo) and 'is_fork' (bool).
@@ -80,9 +92,12 @@ def resolve_submit_target(
             if submit_cfg.get("repo"):
                 return {"repo": submit_cfg["repo"], "is_fork": True}
 
-    parent = detect_parent_repo(project_path)
-    if parent:
-        return {"repo": parent, "is_fork": True}
+    # resolve_target_repo falls back to the `upstream` git remote when the
+    # GitHub fork-parent lookup comes back empty (e.g. gh resolved the local
+    # repo to the upstream itself, which reports no parent).
+    upstream = resolve_target_repo(project_path)
+    if upstream:
+        return {"repo": upstream, "is_fork": True}
 
     return {"repo": f"{owner}/{repo}", "is_fork": False}
 
@@ -96,6 +111,7 @@ def submit_draft_pr(
     pr_title: str,
     pr_body: str,
     issue_url: Optional[str] = None,
+    base_branch: Optional[str] = None,
 ) -> Optional[str]:
     """Push branch and create a draft PR.
 
@@ -105,17 +121,20 @@ def submit_draft_pr(
     3. Push branch to origin
     4. Resolve submit target (config, fork detection, fallback)
     5. Create draft PR
-    6. Comment on the issue (if issue_url provided)
+    6. Comment on the tracker issue (if issue_url provided)
 
     Args:
         project_path: Local path to the project repository.
         project_name: Project name for config lookups.
         owner: GitHub repo owner (from the issue URL).
         repo: GitHub repo name (from the issue URL).
-        issue_number: Issue number for the cross-link comment.
+        issue_number: Legacy issue identifier kept for caller compatibility.
         pr_title: Full PR title string (caller builds it).
         pr_body: Full PR body markdown (caller builds it).
         issue_url: Optional issue URL for the cross-link comment.
+        base_branch: Optional target branch for the PR (e.g. "11.126").
+            When set, overrides the auto-resolved base branch for both
+            commit diffing and the PR's --base flag.
 
     Returns:
         PR URL on success, or None on failure.
@@ -138,8 +157,8 @@ def submit_draft_pr(
         logger.debug("No existing PR found (or check failed): %s", e)
 
     # Verify we have commits to submit
-    base_branch = resolve_base_branch(project_name, project_path)
-    commits = get_commit_subjects(project_path, base_branch=base_branch)
+    effective_base = base_branch or resolve_base_branch(project_name, project_path)
+    commits = get_commit_subjects(project_path, base_branch=effective_base)
     if not commits:
         logger.info("No commits on branch — skipping PR creation")
         return None
@@ -164,6 +183,9 @@ def submit_draft_pr(
         "cwd": project_path,
     }
 
+    if base_branch:
+        pr_kwargs["base"] = base_branch
+
     if target["is_fork"]:
         pr_kwargs["repo"] = target["repo"]
         fork_owner = get_fork_owner(project_path)
@@ -176,16 +198,20 @@ def submit_draft_pr(
         logger.warning("Failed to create PR: %s", e)
         return None
 
-    # Comment on the issue with the PR link
+    # Comment on the source issue with the PR link. The issue may live in
+    # GitHub or Jira, so use the provider-neutral issue tracker service.
     if issue_url:
         try:
-            run_gh(
-                "issue", "comment", str(issue_number),
-                "--repo", f"{owner}/{repo}",
-                "--body", f"Draft PR submitted: {pr_url}",
-                cwd=project_path, timeout=15,
+            from app.issue_tracker import add_comment
+
+            add_comment(
+                issue_url,
+                f"Draft PR submitted: {pr_url}",
+                project_name=project_name,
+                project_path=project_path,
             )
-        except (RuntimeError, OSError, subprocess.SubprocessError) as e:
+        except (RuntimeError, OSError, ValueError,
+                subprocess.SubprocessError) as e:
             logger.debug("Failed to comment on issue: %s", e)
 
     return pr_url

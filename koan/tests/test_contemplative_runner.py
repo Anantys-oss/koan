@@ -137,6 +137,7 @@ class TestBuildContemplativeCommand:
             instance="/my/instance",
             project_name="myproject",
             session_info="my info",
+            github_nickname="",
         )
 
     @patch("app.config.get_contemplative_tools")
@@ -537,6 +538,34 @@ class TestRunContemplativeSessionEdgeCases:
         )
 
         assert mock_run_claude.call_args.kwargs["timeout"] == 300
+
+
+class TestBuildContemplativeCommandNicknameFailure:
+    """Cover the exception path when GitHub nickname resolution fails (L61-63)."""
+
+    @patch("app.config.get_contemplative_tools")
+    @patch("app.prompt_builder.build_contemplative_prompt")
+    @patch("app.github_config.get_github_nickname", side_effect=RuntimeError("config missing"))
+    def test_nickname_load_error_falls_back_to_empty(
+        self, mock_nick, mock_prompt, mock_tools, capsys,
+    ):
+        """When get_github_nickname raises, nickname defaults to empty string."""
+        mock_prompt.return_value = "test prompt"
+        mock_tools.return_value = "Read,Write"
+        # github_nickname=None triggers the auto-load path
+        build_contemplative_command(
+            instance="/path/instance",
+            project_name="koan",
+            session_info="test session",
+            github_nickname=None,
+        )
+        # Prompt builder should have been called with empty nickname
+        mock_prompt.assert_called_once()
+        assert mock_prompt.call_args.kwargs["github_nickname"] == ""
+        # Error message printed to stderr
+        captured = capsys.readouterr()
+        assert "Could not load GitHub nickname" in captured.err
+        assert "config missing" in captured.err
 
 
 class TestCLIShouldRunEdgeCases:

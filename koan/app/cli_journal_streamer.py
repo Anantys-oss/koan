@@ -12,6 +12,7 @@ Usage::
     stop_journal_stream(stream, exit_code, stderr_file)
 """
 
+import contextlib
 import os
 import sys
 import threading
@@ -90,10 +91,9 @@ def _tail_loop(
                     chunk = leftover + raw
                     text, leftover = _decode_safe(chunk)
                     if text:
-                        try:
+                        # non-critical; avoid log spam in tight loop
+                        with contextlib.suppress(OSError):
                             append(instance_dir, project_name, text)
-                        except OSError:
-                            pass  # non-critical; avoid log spam in tight loop
         except OSError:
             pass  # file may not exist yet
 

@@ -280,6 +280,37 @@ class TestValidation:
         assert "no commands" in err
 
 
+class TestScaffoldApprovalGate:
+    """Audit finding §3: the Claude-generated handler.py must be quarantined
+    until the operator approves it. Mirrors the /skill install gate."""
+
+    def test_marker_written_after_scaffold(self, tmp_path):
+        from app.skill_approval import MARKER_NAME, compute_fingerprint
+
+        ctx = _make_ctx(tmp_path, "myteam deploy Deploy to production")
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = _SAMPLE_CLAUDE_RESPONSE
+        mock_result.stderr = ""
+
+        with patch("app.cli_exec.run_cli", return_value=mock_result), \
+             patch("app.cli_provider.build_full_command", return_value=["claude"]), \
+             patch("app.config.get_fast_reply_model", return_value=""):
+            result = handle(ctx)
+
+        target_dir = ctx.instance_dir / "skills" / "myteam" / "deploy"
+        marker = target_dir / MARKER_NAME
+        assert marker.is_file(), "scaffold must write .koan-pending"
+        stored = marker.read_text().strip()
+        assert stored == compute_fingerprint(target_dir)
+
+        # Reply must echo the fingerprint and the precise approve command
+        short_fp = stored[:12]
+        assert "pending approval" in result
+        assert short_fp in result
+        assert f"/skill approve myteam/deploy {short_fp}" in result
+
+
 class TestFilesWritten:
     """Tests for file writing."""
 

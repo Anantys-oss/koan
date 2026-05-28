@@ -2,6 +2,7 @@
 name: doctor
 scope: core
 group: status
+emoji: 🩺
 description: Run diagnostic self-checks on Kōan configuration and health
 version: 1.0.0
 audience: bridge
@@ -10,6 +11,6 @@ commands:
   - name: doctor
     description: Run diagnostic self-checks
     usage: /doctor [--full]
-    aliases: [diag, checkup]
+    aliases: [diag]
 handler: handler.py
 ---

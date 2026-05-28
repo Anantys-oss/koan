@@ -25,12 +25,35 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Optional, Tuple
 
-# Patterns that indicate quota exhaustion in CLI output.
-# Shared across providers (Claude, Copilot, etc.).
-QUOTA_PATTERNS = [
-    # Claude-specific
+# Strict patterns: specific enough to match safely in both stdout and stderr.
+# These are actual CLI error messages, not terms that appear in normal text.
+_STRICT_QUOTA_PATTERNS = [
+    # Claude-specific error messages
     r"out of extra usage",
     r"quota.*reached",
+    r"quota.*exhausted",
+    r'"?quota_exhausted"?\s*:\s*true',
+    # Claude Code structured stream events for five-hour/session limits.
+    r"rate_limit_event",
+    r'"?rateLimitType"?\s*:',
+    r'"?resetsAt"?\s*:',
+    # Credit/billing limit messages from the Anthropic API and Claude Code CLI.
+    # These are specific enough to be safe in stdout (Claude's code output won't
+    # contain "credit balance is too low" or "billing period limit").
+    r"credit.*balance.*(?:too low|exhausted|zero|empty)",
+    r"your credit balance",
+    r"out of.*credits?",
+    r"credits?.*(?:exhausted|depleted|expired|insufficient)",
+    r"insufficient.*credits?",
+    r"billing.*(?:limit|period.*exceeded)",
+    r"usage.*cap.*(?:reached|exceeded|hit)",
+    # Claude Code CLI: "You've hit your session limit · resets 6pm (UTC)"
+    r"(?:you'?ve\s+)?hit\s+(?:your|the)\s+(?:session\s+)?limit",
+]
+
+# Loose patterns: generic terms that may appear in Claude's response text
+# (e.g., a plan discussing API rate limiting).  Only safe to match in stderr.
+_LOOSE_QUOTA_PATTERNS = [
     # Generic / shared
     r"rate limit",
     # Copilot / GitHub API
@@ -43,13 +66,19 @@ QUOTA_PATTERNS = [
     r"retry[\s-]+after",
 ]
 
-# Compiled regex for performance
+# Combined list for backward-compatible use in detect_quota_exhaustion()
+QUOTA_PATTERNS = _STRICT_QUOTA_PATTERNS + _LOOSE_QUOTA_PATTERNS
+
+# Compiled regexes
 _QUOTA_RE = re.compile("|".join(QUOTA_PATTERNS), re.IGNORECASE)
+_STRICT_QUOTA_RE = re.compile("|".join(_STRICT_QUOTA_PATTERNS), re.IGNORECASE)
+_LOOSE_QUOTA_RE = re.compile("|".join(_LOOSE_QUOTA_PATTERNS), re.IGNORECASE)
 
 # Pattern to extract reset info from output.
 # Claude: "resets 10am (Europe/Paris)"
 # Copilot/GitHub: "Retry-After: 60" or "retry after 60 seconds" or "try again in X minutes"
 _RESET_RE = re.compile(r"resets\s+.+", re.IGNORECASE)
+_RESETS_AT_RE = re.compile(r'"?resetsAt"?\s*:?\s*(\d{9,})', re.IGNORECASE)
 _RETRY_AFTER_RE = re.compile(
     r"(?:retry[\s-]+after[\s:]+(\d+))|(?:try again in\s+(\d+)\s*(seconds?|minutes?|hours?))",
     re.IGNORECASE,
@@ -59,7 +88,7 @@ _RETRY_AFTER_RE = re.compile(
 _MAX_RETRY_SECONDS = 86400  # 24 hours
 _MAX_RETRY_MINUTES = 1440   # 24 hours in minutes
 _MAX_RETRY_HOURS = 24       # 24 hours
-_DEFAULT_RETRY_SECONDS = 3600  # 1 hour fallback for zero/negative values
+_DEFAULT_RETRY_SECONDS = 5 * 60 * 60  # 5 hour fallback for zero/negative values
 
 # Sentinel returned when quota check is unreliable (both log files unreadable).
 # Callers should check `result is QUOTA_CHECK_UNRELIABLE` to distinguish from
@@ -70,7 +99,7 @@ QUOTA_CHECK_UNRELIABLE = ("__unreliable__", "Quota check failed: could not read 
 def _clamp_retry_seconds(seconds: int) -> int:
     """Clamp retry seconds to sane bounds.
 
-    Zero or negative values are treated as unknown and default to 1 hour.
+    Zero or negative values are treated as unknown and default to 5 hours.
     Values above 24 hours are capped to 24 hours.
     """
     if seconds <= 0:
@@ -93,6 +122,47 @@ def detect_quota_exhaustion(text: str) -> bool:
     return bool(_QUOTA_RE.search(text))
 
 
+def _detect_quota_for_provider(
+    stdout_text: str,
+    stderr_text: str,
+    provider_name: str = "",
+    exit_code: int = 0,
+) -> bool:
+    """Detect quota using the provider that produced the output.
+
+    Empty provider names use the legacy detector for backward-compatible CLI
+    and tests. Unknown provider names or provider-side exceptions also fall
+    back to the legacy detector so quota protection degrades conservatively
+    instead of disappearing.
+    """
+    if provider_name:
+        try:
+            from app.provider import get_provider_by_name
+
+            provider = get_provider_by_name(provider_name)
+            return provider.detect_quota_exhaustion(
+                stdout_text=stdout_text,
+                stderr_text=stderr_text,
+                exit_code=exit_code,
+            )
+        except KeyError as e:
+            print(
+                f"[quota_handler] unknown provider {provider_name!r}: {e}; "
+                "using legacy quota detector",
+                file=sys.stderr,
+            )
+        except Exception as e:
+            print(
+                f"[quota_handler] provider quota detector failed "
+                f"for {provider_name!r}: {e}; using legacy quota detector",
+                file=sys.stderr,
+            )
+
+    return bool(_QUOTA_RE.search(stderr_text or "")) or bool(
+        _STRICT_QUOTA_RE.search(stdout_text or "")
+    )
+
+
 def extract_reset_info(text: str) -> str:
     """Extract the reset info string from CLI output.
 
@@ -109,6 +179,11 @@ def extract_reset_info(text: str) -> str:
     match = _RESET_RE.search(text)
     if match:
         return match.group(0).strip()
+
+    # Claude Code JSON stream: {"rate_limit_info": {"resetsAt": 1779937200}}
+    resets_at_match = _RESETS_AT_RE.search(text)
+    if resets_at_match:
+        return f"resetsAt {resets_at_match.group(1)}"
 
     # Copilot/GitHub-style: "Retry-After: 60" or "try again in 5 minutes"
     retry_match = _RETRY_AFTER_RE.search(text)
@@ -178,14 +253,20 @@ def compute_resume_info(
     """
     if reset_timestamp is not None:
         from app.reset_parser import time_until_reset
+        from app.pause_manager import QUOTA_RESET_BUFFER_SECONDS
 
-        until = time_until_reset(reset_timestamp)
-        return reset_timestamp, f"Auto-resume at reset time (~{until})"
+        effective_ts = reset_timestamp + QUOTA_RESET_BUFFER_SECONDS
+        until = time_until_reset(effective_ts)
+        buffer_display = _seconds_to_human(QUOTA_RESET_BUFFER_SECONDS)
+        return (
+            effective_ts,
+            f"Auto-resume {buffer_display} after reset time (~{until})",
+        )
 
-    # Fallback: current time + 1h retry
+    # Fallback: current time + 5h retry
     from app.pause_manager import QUOTA_RETRY_SECONDS
     fallback_ts = int(datetime.now().timestamp()) + QUOTA_RETRY_SECONDS
-    return fallback_ts, "Auto-resume in ~1h (reset time unknown)"
+    return fallback_ts, "Auto-resume in ~5h (reset time unknown)"
 
 
 def write_quota_journal(
@@ -224,14 +305,25 @@ def handle_quota_exhaustion(
     instance_dir: str,
     project_name: str,
     run_count: int,
-    stdout_file: str,
-    stderr_file: str,
+    stdout_file: str = "",
+    stderr_file: str = "",
+    *,
+    stdout_text: str = "",
+    stderr_text: str = "",
+    provider_name: str = "",
+    exit_code: int = 0,
 ) -> Optional[Tuple[str, str]]:
     """Full quota exhaustion handler.
 
     Checks CLI output for quota signals, parses reset time,
     writes journal, and creates pause state.  Works for any
     provider (Claude, Copilot, etc.).
+
+    Output can be provided as file paths (``stdout_file``/``stderr_file``)
+    or as pre-read strings (``stdout_text``/``stderr_text``).  When text
+    params are supplied the corresponding file is not read, which allows
+    callers that already have the content in memory (e.g. skill dispatch)
+    to skip the filesystem round-trip.
 
     Args:
         koan_root: Path to koan root directory
@@ -240,31 +332,55 @@ def handle_quota_exhaustion(
         run_count: Number of completed runs
         stdout_file: Path to CLI stdout capture file
         stderr_file: Path to CLI stderr capture file
+        stdout_text: Pre-read stdout content (skips file read when non-empty)
+        stderr_text: Pre-read stderr content (skips file read when non-empty)
+        provider_name: CLI provider that produced the output. Empty string
+            preserves legacy Claude/general detection.
+        exit_code: CLI exit code, used by providers that only trust stdout
+            quota text after provider-level failures.
 
     Returns:
         (reset_display, resume_message) if quota exhausted, None otherwise
     """
-    # Read output files (stderr first, then stdout — matches original bash order)
-    parts = []
+    # Read output files separately — stderr is trusted (CLI error messages),
+    # stdout may contain Claude's response text which can mention "rate limit"
+    # etc. in normal discussion (e.g., a plan about API rate limiting).
+    # When callers provide text directly, skip the file read.
     read_failures = 0
-    for filepath in [stderr_file, stdout_file]:
+    if not stderr_text and stderr_file:
         try:
-            parts.append(Path(filepath).read_text())
+            stderr_text = Path(stderr_file).read_text()
         except OSError:
             read_failures += 1
-    if read_failures == 2:
+    if not stdout_text and stdout_file:
+        try:
+            stdout_text = Path(stdout_file).read_text()
+        except OSError:
+            read_failures += 1
+    if not stderr_text and not stdout_text and read_failures == 2:
         print(
             f"[quota_handler] WARNING: could not read stdout ({stdout_file}) "
             f"or stderr ({stderr_file}) — quota check unreliable",
             file=sys.stderr,
         )
         return QUOTA_CHECK_UNRELIABLE
-    combined = "\n".join(parts)
 
-    if not detect_quota_exhaustion(combined):
+    # Check stderr with ALL patterns (both strict and loose) — stderr
+    # contains CLI error messages, not user content.
+    # Check stdout with STRICT patterns only — loose patterns like
+    # "rate limit" cause false positives when Claude's response discusses
+    # API rate limiting.
+    quota_detected = _detect_quota_for_provider(
+        stdout_text=stdout_text,
+        stderr_text=stderr_text,
+        provider_name=provider_name,
+        exit_code=exit_code,
+    )
+    if not quota_detected:
         return None
 
-    # Extract and parse reset info
+    # Extract and parse reset info (from both sources — reset times are safe)
+    combined = stderr_text + "\n" + stdout_text
     reset_info = extract_reset_info(combined)
     reset_timestamp, reset_display = parse_reset_time(reset_info)
     effective_ts, resume_message = compute_resume_info(reset_timestamp, reset_display)
@@ -282,7 +398,10 @@ def handle_quota_exhaustion(
     return reset_display, resume_message
 
 
-_CLI_USAGE = "Usage: quota_handler.py check <koan_root> <instance> <project_name> <run_count> <stdout_file> <stderr_file>"
+_CLI_USAGE = (
+    "Usage: quota_handler.py check <koan_root> <instance> <project_name> "
+    "<run_count> <stdout_file> <stderr_file> [provider]"
+)
 
 
 # CLI interface
@@ -307,6 +426,7 @@ if __name__ == "__main__":
         run_count=run_count,
         stdout_file=sys.argv[6],
         stderr_file=sys.argv[7],
+        provider_name=sys.argv[8] if len(sys.argv) > 8 else "",
     )
     if result is QUOTA_CHECK_UNRELIABLE:
         print("UNRELIABLE: could not read log files", file=sys.stderr)

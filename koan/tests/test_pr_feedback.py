@@ -1,7 +1,7 @@
 """Tests for pr_feedback.py — PR merge feedback loop for topic alignment."""
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -29,6 +29,11 @@ def _mock_gh_success(data):
 def _mock_gh_failure(msg="gh failed"):
     """Create a MagicMock simulating failed gh CLI output."""
     return MagicMock(returncode=1, stdout="", stderr=msg)
+
+
+def _iso_hours_ago(hours: int) -> str:
+    """Return an ISO UTC timestamp `hours` ago from now."""
+    return (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 # ─── categorize_pr ───────────────────────────────────────────────────────
@@ -249,15 +254,15 @@ class TestFetchMergedPrs:
             {
                 "number": 1,
                 "title": "fix: something",
-                "createdAt": "2026-02-20T10:00:00Z",
-                "mergedAt": "2026-02-20T14:00:00Z",
+                "createdAt": _iso_hours_ago(8),
+                "mergedAt": _iso_hours_ago(4),
                 "headRefName": "koan/fix-something",
             },
             {
                 "number": 2,
                 "title": "feat: other thing",
-                "createdAt": "2026-02-20T10:00:00Z",
-                "mergedAt": "2026-02-20T14:00:00Z",
+                "createdAt": _iso_hours_ago(8),
+                "mergedAt": _iso_hours_ago(4),
                 "headRefName": "feature/other-thing",
             },
         ])
@@ -272,8 +277,8 @@ class TestFetchMergedPrs:
         mock_run.return_value = _mock_gh_success([{
             "number": 1,
             "title": "fix: something",
-            "createdAt": "2026-02-20T10:00:00Z",
-            "mergedAt": "2026-02-21T10:00:00Z",
+            "createdAt": _iso_hours_ago(28),
+            "mergedAt": _iso_hours_ago(4),
             "headRefName": "koan/fix-something",
         }])
 
@@ -286,8 +291,8 @@ class TestFetchMergedPrs:
         mock_run.return_value = _mock_gh_success([{
             "number": 1,
             "title": "test: add coverage",
-            "createdAt": "2026-02-20T10:00:00Z",
-            "mergedAt": "2026-02-20T14:00:00Z",
+            "createdAt": _iso_hours_ago(8),
+            "mergedAt": _iso_hours_ago(4),
             "headRefName": "koan/test-coverage",
         }])
 
@@ -331,12 +336,16 @@ class TestFetchMergedPrs:
     @patch("subprocess.run")
     def test_filters_by_days_cutoff(self, mock_run, _prefix):
         """PRs merged before the days cutoff are excluded."""
+        # Use dates relative to "now" so the test doesn't go stale
+        now = datetime.now(timezone.utc)
+        recent_merged = (now - timedelta(days=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        recent_created = (now - timedelta(days=6)).strftime("%Y-%m-%dT%H:%M:%SZ")
         mock_run.return_value = _mock_gh_success([
             {
                 "number": 1,
                 "title": "fix: recent",
-                "createdAt": "2026-02-25T10:00:00Z",
-                "mergedAt": "2026-02-26T10:00:00Z",
+                "createdAt": recent_created,
+                "mergedAt": recent_merged,
                 "headRefName": "koan/fix-recent",
             },
             {
@@ -357,11 +366,14 @@ class TestFetchMergedPrs:
     @patch("subprocess.run")
     def test_days_parameter_respected(self, mock_run, _prefix):
         """Different days values produce different filtering."""
+        now = datetime.now(timezone.utc)
+        merged = (now - timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        created = (now - timedelta(days=11)).strftime("%Y-%m-%dT%H:%M:%SZ")
         mock_run.return_value = _mock_gh_success([{
             "number": 1,
             "title": "fix: something",
-            "createdAt": "2026-02-25T10:00:00Z",
-            "mergedAt": "2026-02-26T10:00:00Z",
+            "createdAt": created,
+            "mergedAt": merged,
             "headRefName": "koan/fix-something",
         }])
 
@@ -371,7 +383,7 @@ class TestFetchMergedPrs:
 
         # With days=0 — only PRs merged today
         result = fetch_merged_prs("/fake/path", days=0)
-        # The PR from Feb 26 is far in the past, so should be excluded
+        # The PR from 10 days ago should be excluded
         assert len(result) == 0
 
 

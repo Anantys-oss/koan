@@ -1,5 +1,6 @@
 """Tests for update_manager.py — git operations for code updates."""
 
+import time
 from pathlib import Path
 from unittest.mock import patch, MagicMock, call
 
@@ -12,7 +13,7 @@ from app.update_manager import (
     _get_current_branch,
     _get_short_sha,
     _is_dirty,
-    _find_upstream_remote,
+    find_upstream_remote,
     _count_commits_between,
 )
 
@@ -108,32 +109,32 @@ class TestIsDirty:
 
 
 class TestFindUpstreamRemote:
-    """Tests for _find_upstream_remote()."""
+    """Tests for find_upstream_remote()."""
 
     @patch("app.update_manager._run_git")
     def test_prefers_upstream(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0, stdout="origin\nupstream\n")
-        assert _find_upstream_remote(Path("/repo")) == "upstream"
+        assert find_upstream_remote(Path("/repo")) == "upstream"
 
     @patch("app.update_manager._run_git")
     def test_falls_back_to_origin(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0, stdout="origin\n")
-        assert _find_upstream_remote(Path("/repo")) == "origin"
+        assert find_upstream_remote(Path("/repo")) == "origin"
 
     @patch("app.update_manager._run_git")
     def test_returns_first_remote(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0, stdout="fork\n")
-        assert _find_upstream_remote(Path("/repo")) == "fork"
+        assert find_upstream_remote(Path("/repo")) == "fork"
 
     @patch("app.update_manager._run_git")
     def test_returns_none_on_failure(self, mock_run):
         mock_run.return_value = MagicMock(returncode=1, stdout="")
-        assert _find_upstream_remote(Path("/repo")) is None
+        assert find_upstream_remote(Path("/repo")) is None
 
     @patch("app.update_manager._run_git")
     def test_returns_none_when_no_remotes(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0, stdout="")
-        assert _find_upstream_remote(Path("/repo")) is None
+        assert find_upstream_remote(Path("/repo")) is None
 
 
 class TestCountCommitsBetween:
@@ -158,7 +159,7 @@ class TestPullUpstream:
         """Happy path: clean repo, on main, upstream exists, pull succeeds."""
         mock_run.side_effect = [
             MagicMock(returncode=0, stdout="abc1234\n"),   # _get_short_sha (old)
-            MagicMock(returncode=0, stdout="origin\nupstream\n"),  # _find_upstream_remote
+            MagicMock(returncode=0, stdout="origin\nupstream\n"),  # find_upstream_remote
             MagicMock(returncode=0, stdout=""),              # _is_dirty (clean)
             MagicMock(returncode=0, stdout="main\n"),        # _get_current_branch
             MagicMock(returncode=0, stdout=""),               # fetch upstream
@@ -178,7 +179,7 @@ class TestPullUpstream:
         """No new commits — same SHA before and after."""
         mock_run.side_effect = [
             MagicMock(returncode=0, stdout="abc1234\n"),   # _get_short_sha (old)
-            MagicMock(returncode=0, stdout="upstream\n"),  # _find_upstream_remote
+            MagicMock(returncode=0, stdout="upstream\n"),  # find_upstream_remote
             MagicMock(returncode=0, stdout=""),              # _is_dirty
             MagicMock(returncode=0, stdout="main\n"),        # _get_current_branch
             MagicMock(returncode=0, stdout=""),               # fetch
@@ -195,7 +196,7 @@ class TestPullUpstream:
     def test_no_remote_found(self, mock_run):
         mock_run.side_effect = [
             MagicMock(returncode=0, stdout="abc1234\n"),   # _get_short_sha
-            MagicMock(returncode=1, stdout=""),              # _find_upstream_remote fails
+            MagicMock(returncode=1, stdout=""),              # find_upstream_remote fails
         ]
 
         result = pull_upstream(Path("/repo"))
@@ -207,7 +208,7 @@ class TestPullUpstream:
         """Dirty working tree gets stashed before checkout."""
         mock_run.side_effect = [
             MagicMock(returncode=0, stdout="abc1234\n"),   # _get_short_sha
-            MagicMock(returncode=0, stdout="upstream\n"),  # _find_upstream_remote
+            MagicMock(returncode=0, stdout="upstream\n"),  # find_upstream_remote
             MagicMock(returncode=0, stdout=" M dirty.py\n"),  # _is_dirty = True
             MagicMock(returncode=0, stdout=""),               # stash push
             MagicMock(returncode=0, stdout="koan/feature\n"), # _get_current_branch (not main)
@@ -285,7 +286,7 @@ class TestPullUpstream:
     def test_skips_checkout_when_already_on_main(self, mock_run):
         """No checkout command issued when already on main."""
         calls = []
-        def track_calls(args, cwd=None):
+        def track_calls(args, cwd=None, **kwargs):
             calls.append(args)
             if args == ["rev-parse", "--short", "HEAD"]:
                 return MagicMock(returncode=0, stdout="abc1234\n")
@@ -312,7 +313,7 @@ class TestPullUpstream:
     def test_restores_branch_on_fetch_failure(self, mock_run):
         """When fetch fails on a non-main branch, checkout back to original."""
         calls = []
-        def track_calls(args, cwd=None):
+        def track_calls(args, cwd=None, **kwargs):
             calls.append(args)
             if args == ["rev-parse", "--short", "HEAD"]:
                 return MagicMock(returncode=0, stdout="abc1234\n")
@@ -337,3 +338,44 @@ class TestPullUpstream:
         # Should have attempted to restore original branch
         checkout_restore = [c for c in calls if c == ["checkout", "koan/feature"]]
         assert len(checkout_restore) == 1
+
+    @patch("app.update_manager._run_git")
+    def test_overall_timeout_aborts_operation(self, mock_run):
+        """When overall timeout expires, operation returns timeout error."""
+        # Mock time.monotonic to simulate deadline expiry before fetch
+        base = time.monotonic()
+        monotonic_calls = [0]
+
+        def fake_monotonic():
+            monotonic_calls[0] += 1
+            # First call: deadline calculation in pull_upstream
+            if monotonic_calls[0] <= 1:
+                return base
+            # All subsequent calls: past deadline
+            return base + 200
+
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="abc1234\n"),   # _get_short_sha
+            MagicMock(returncode=0, stdout="upstream\n"),   # find_upstream_remote
+            MagicMock(returncode=0, stdout=""),              # _is_dirty (clean)
+            MagicMock(returncode=0, stdout="main\n"),        # _get_current_branch
+            # fetch never called — timeout triggers first
+        ]
+
+        with patch("app.update_manager.time") as mock_time:
+            mock_time.monotonic = fake_monotonic
+            result = pull_upstream(Path("/repo"), timeout=5)
+
+        assert result.success is False
+        assert "timed out" in result.error.lower()
+
+    @patch("app.update_manager._run_git")
+    def test_timeout_parameter_is_accepted(self, mock_run):
+        """pull_upstream accepts a timeout parameter without error."""
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="abc1234\n"),
+            MagicMock(returncode=1, stdout=""),  # no remote
+        ]
+
+        result = pull_upstream(Path("/repo"), timeout=30)
+        assert result.success is False

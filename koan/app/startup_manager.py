@@ -8,6 +8,7 @@ Called from run.py's main_loop() during process initialization.
 """
 
 import os
+import time
 from pathlib import Path
 
 from app.run_log import log
@@ -16,6 +17,20 @@ from app.run_log import log
 # ---------------------------------------------------------------------------
 # Individual startup steps
 # ---------------------------------------------------------------------------
+
+def migrate_memory_to_jsonl(instance: str):
+    """One-shot migration from markdown memory to JSONL truth log.
+
+    Gated by a sentinel file — subsequent calls are no-ops.
+    """
+    from app.memory_manager import MemoryManager
+    mgr = MemoryManager(instance)
+    result = mgr.migrate_markdown_to_jsonl()
+    if not result.get("skipped"):
+        sessions = result.get("sessions", 0)
+        learnings = result.get("learnings", 0)
+        log("init", f"[memory] Migrated to JSONL: {sessions} sessions, {learnings} learnings")
+
 
 def recover_crashed_missions(instance: str):
     """Check for and recover missions left in-progress by a crash."""
@@ -38,6 +53,14 @@ def populate_github_urls(koan_root: str):
     gh_msgs = ensure_github_urls(koan_root)
     for msg in gh_msgs:
         log("init", f"[github-urls] {msg}")
+
+
+def detect_renamed_remotes(koan_root: str, projects: list):
+    """Detect GitHub repos that were renamed and fix stale origin URLs."""
+    from app.remote_rename_detector import detect_and_fix_renamed_remotes
+    msgs = detect_and_fix_renamed_remotes(projects, koan_root)
+    for msg in msgs:
+        log("init", f"[remote-rename] {msg}")
 
 
 def discover_workspace(koan_root: str, projects: list) -> list:
@@ -73,11 +96,14 @@ def discover_workspace(koan_root: str, projects: list) -> list:
 
 
 def validate_config(koan_root: str):
-    """Validate config.yaml keys and types, warn on typos or bad values."""
+    """Validate config.yaml keys and types, warn on typos or bad values.
+
+    Also detects config drift (keys in the template but missing from user config).
+    """
     from app.utils import load_config
     from app.config_validator import validate_and_warn
     config = load_config()
-    validate_and_warn(config)
+    validate_and_warn(config, koan_root=koan_root)
 
 
 def run_sanity_checks(instance: str):
@@ -102,16 +128,11 @@ def _should_run_cleanup(max_age_hours: int = 24) -> bool:
     Returns True if cleanup should run (marker missing, corrupt, or older
     than max_age_hours).
     """
-    marker = _cleanup_marker_path()
-    if not marker.exists():
+    from app.utils import get_file_age_seconds
+    age = get_file_age_seconds(_cleanup_marker_path())
+    if age is None:
         return True
-    try:
-        timestamp = float(marker.read_text().strip())
-    except (ValueError, OSError):
-        return True
-    import time
-    elapsed_hours = (time.time() - timestamp) / 3600
-    return elapsed_hours >= max_age_hours
+    return age / 3600 >= max_age_hours
 
 
 def _write_cleanup_marker():
@@ -125,20 +146,42 @@ def _write_cleanup_marker():
         pass
 
 
+def _load_memory_config() -> dict:
+    """Load the memory: section from config.yaml with defaults."""
+    try:
+        from app.utils import load_config
+        config = load_config()
+    except Exception as e:
+        import sys
+        print(f"[startup_manager] load_config error: {e}", file=sys.stderr)
+        config = {}
+    mem_cfg = config.get("memory", {}) or {}
+    return {
+        "learnings_max_lines": mem_cfg.get("learnings_max_lines", 100),
+        "learnings_hard_cap": mem_cfg.get("learnings_hard_cap", 200),
+        "global_personality_max": mem_cfg.get("global_personality_max", 150),
+        "global_emotional_max": mem_cfg.get("global_emotional_max", 100),
+        "compaction_interval_hours": mem_cfg.get("compaction_interval_hours", 24),
+        "log_horizon_days": mem_cfg.get("log_horizon_days", 365),
+    }
+
+
 def cleanup_memory(instance: str):
     """Run memory compaction and cleanup.
 
-    Throttled to once per 24 hours to avoid redundant work on fast restart
-    cycles. On cold boot (summary.md missing but SNAPSHOT.md exists),
-    hydrates memory from snapshot before running cleanup.
+    Throttled based on compaction_interval_hours (default 24h) to avoid
+    redundant work on fast restart cycles. On cold boot (summary.md missing
+    but SNAPSHOT.md exists), hydrates memory from snapshot before running cleanup.
     """
-    if not _should_run_cleanup():
-        import time
-        marker = _cleanup_marker_path()
-        try:
-            elapsed = (time.time() - float(marker.read_text().strip())) / 3600
-            log("health", f"Memory cleanup skipped (last run {elapsed:.0f}h ago)")
-        except (ValueError, OSError):
+    mem_cfg = _load_memory_config()
+    interval = mem_cfg["compaction_interval_hours"]
+
+    if not _should_run_cleanup(max_age_hours=interval):
+        from app.utils import get_file_age_seconds
+        age = get_file_age_seconds(_cleanup_marker_path())
+        if age is not None:
+            log("health", f"Memory cleanup skipped (last run {age / 3600:.0f}h ago)")
+        else:
             log("health", "Memory cleanup skipped (recent run)")
         return
 
@@ -158,8 +201,23 @@ def cleanup_memory(instance: str):
         if restored:
             log("health", f"Hydrated {len(restored)} file(s) from snapshot")
 
-    mgr.run_cleanup()
+    stats = mgr.run_cleanup(
+        max_learnings_lines=mem_cfg["learnings_hard_cap"],
+        compact_learnings_lines=mem_cfg["learnings_max_lines"],
+        global_personality_max=mem_cfg["global_personality_max"],
+        global_emotional_max=mem_cfg["global_emotional_max"],
+        log_horizon_days=mem_cfg["log_horizon_days"],
+    )
     _write_cleanup_marker()
+
+    # Log notable compaction stats
+    for key, value in stats.items():
+        if key.startswith("learnings_compacted_"):
+            project = key[len("learnings_compacted_"):]
+            log("health", f"Learnings compacted for {project}: {value}")
+        elif key.startswith("global_capped_"):
+            name = key[len("global_capped_"):]
+            log("health", f"Global memory capped: {name} ({value} lines removed)")
 
 
 def prune_missions_done(instance: str):
@@ -196,7 +254,16 @@ def check_health(koan_root: str, max_age: int = 120):
 
 
 def check_self_reflection(instance: str):
-    """Trigger periodic self-reflection if due."""
+    """Trigger periodic self-reflection if due and enabled in config.
+
+    Controlled by the ``startup_reflection`` config key (default: false).
+    When disabled, reflection is skipped at startup — it can still be
+    triggered manually via the CLI entry point.
+    """
+    from app.config import get_startup_reflection
+    if not get_startup_reflection():
+        return
+
     log("health", "Checking self-reflection trigger...")
     from app.self_reflection import (
         should_reflect, run_reflection, save_reflection, notify_outbox,
@@ -216,12 +283,29 @@ def handle_start_on_pause(koan_root: str):
     to prevent auto-resume from a previous session. Preserves
     manual pauses (user explicitly requested via /pause).
 
-    Skipped when KOAN_SKIP_START_PAUSE=1 (set by /resume auto-restart
-    to avoid immediately re-pausing the freshly launched runner).
+    Skipped when:
+    - KOAN_SKIP_START_PAUSE=1 (set by /resume auto-restart to avoid
+      immediately re-pausing the freshly launched runner).
+    - .koan-skip-start-pause file exists with a recent timestamp (set by
+      /resume during startup to prevent the race where handle_start_on_pause
+      re-creates the pause file after /resume removed it).
     """
     if os.environ.get("KOAN_SKIP_START_PAUSE") == "1":
         log("pause", "start_on_pause skipped (KOAN_SKIP_START_PAUSE=1)")
         return
+
+    from app.signals import SKIP_START_PAUSE_FILE
+
+    from app.utils import get_file_age_seconds
+
+    skip_file = Path(koan_root) / SKIP_START_PAUSE_FILE
+    if skip_file.exists():
+        age = get_file_age_seconds(skip_file)
+        if age is not None and age < 300:  # Fresh (< 5 min) — /resume was sent during startup
+            skip_file.unlink(missing_ok=True)
+            log("pause", "start_on_pause skipped (/resume requested during startup)")
+            return
+        skip_file.unlink(missing_ok=True)
 
     from app.utils import get_start_on_pause
 
@@ -240,6 +324,27 @@ def handle_start_on_pause(koan_root: str):
     else:
         log("pause", "start_on_pause=true in config. Entering pause mode.")
         create_pause(koan_root, "start_on_pause")
+
+
+def handle_start_passive(koan_root: str):
+    """Enter passive mode on startup if configured.
+
+    When start_passive=true in config.yaml, creates .koan-passive with no
+    duration (indefinite). Requires explicit /active to resume.
+    No-op if already passive.
+    """
+    from app.config import get_start_passive
+
+    if not get_start_passive():
+        return
+
+    from app.passive_manager import is_passive, create_passive
+
+    if is_passive(koan_root):
+        return  # already passive, don't overwrite
+
+    log("passive", "start_passive=true in config. Entering passive mode.")
+    create_passive(koan_root, duration=0, reason="start_passive")
 
 
 def setup_git_identity():
@@ -276,6 +381,17 @@ def run_git_sync(instance: str, projects: list):
             log("error", f"Git sync failed for {name}: {e}")
 
 
+def check_remote_heads(koan_root: str, instance: str, projects: list):
+    """Detect remote HEAD branch changes (e.g. master → main) and update."""
+    from app.head_tracker import check_all_projects, format_changes_report
+    changes = check_all_projects(projects, instance, koan_root)
+    if changes:
+        report = format_changes_report(changes)
+        log("git", report)
+        from app.run import _notify
+        _notify(instance, f"🔀 {report}")
+
+
 def run_daily_report():
     """Send daily report if due."""
     from app.daily_report import send_daily_report
@@ -291,11 +407,20 @@ def check_auto_update(koan_root: str, instance: str) -> bool:
     return perform_auto_update(koan_root, instance)
 
 
-def run_morning_ritual(instance: str):
-    """Execute the morning ritual."""
+def track_koan_commits(koan_root: str, instance: str):
+    """Record Kōan's own HEAD and report changes since last startup."""
+    from app.auto_update import record_and_report
+    message = record_and_report(koan_root, instance)
+    if message:
+        from app.run import _notify_raw
+        _notify_raw(instance, message)
+
+
+def run_morning_ritual(instance: str) -> bool:
+    """Execute the morning ritual. Returns True on success, False otherwise."""
     log("init", "Running morning ritual...")
     from app.rituals import run_ritual
-    run_ritual("morning", Path(instance))
+    return run_ritual("morning", Path(instance))
 
 
 # ---------------------------------------------------------------------------
@@ -349,11 +474,14 @@ def run_startup(koan_root: str, instance: str, projects: list):
         _safe_run("Config validation", validate_config, koan_root)
         _safe_run("Crash recovery", recover_crashed_missions, instance)
         _safe_run("Projects migration", run_migrations, koan_root)
+        _safe_run("Memory JSONL migration", migrate_memory_to_jsonl, instance)
         _safe_run("GitHub URL population", populate_github_urls, koan_root)
 
         result = _safe_run("Workspace discovery", discover_workspace, koan_root, projects)
         if result is not None:
             projects = result
+
+        _safe_run("Renamed remote detection", detect_renamed_remotes, koan_root, projects)
 
         _safe_run("Sanity checks", run_sanity_checks, instance)
         _safe_run("Memory cleanup", cleanup_memory, instance)
@@ -364,8 +492,9 @@ def run_startup(koan_root: str, instance: str, projects: list):
     with protected_phase("Self-reflection check"):
         _safe_run("Self-reflection check", check_self_reflection, instance)
 
-    # Start on pause
+    # Start on pause / passive
     _safe_run("Start on pause", handle_start_on_pause, koan_root)
+    _safe_run("Start passive", handle_start_passive, koan_root)
 
     # Git identity and GitHub auth
     _safe_run("Git identity", setup_git_identity)
@@ -375,7 +504,7 @@ def run_startup(koan_root: str, instance: str, projects: list):
     log("init", f"Starting. Max runs: {max_runs}, interval: {interval}s")
 
     # Import status/notify helpers lazily from run
-    from app.run import set_status, _build_startup_status, _notify
+    from app.run import set_status, _build_startup_status, _notify, _notify_raw
 
     project_list = "\n".join(f"  • {n}" for n, _ in sorted(projects))
     current_project = projects[0][0] if projects else "none"
@@ -390,11 +519,19 @@ def run_startup(koan_root: str, instance: str, projects: list):
 
     with protected_phase("Git sync"):
         run_git_sync(instance, projects)
+        _safe_run("Remote HEAD check", check_remote_heads, koan_root, instance, projects)
+
+    # Track Kōan's own commits (after sync so HEAD is current)
+    _safe_run("Commit tracker", track_koan_commits, koan_root, instance)
 
     # Auto-update check (before daily report / morning ritual)
     updated = _safe_run("Auto-update check", check_auto_update, koan_root, instance)
     if updated:
-        # Restart signal has been set — exit to let wrapper restart us
+        # Restart signal has been set — notify so the human knows the agent
+        # is restarting under newer code, then exit to let wrapper restart us.
+        # Use _notify_raw so the verbatim text + 🔄 marker survive (skipping
+        # the Claude-CLI personality reformatter).
+        _notify_raw(instance, "🔄 Auto-update pulled new commits — restarting under updated code...")
         import sys
         from app.restart_manager import RESTART_EXIT_CODE
         sys.exit(RESTART_EXIT_CODE)
@@ -402,8 +539,24 @@ def run_startup(koan_root: str, instance: str, projects: list):
     # Daily report
     _safe_run("Daily report", run_daily_report)
 
+    # Startup-status pings use _notify_raw so the 🌅/⚠️ markers and exact
+    # wording reach Telegram intact (no Claude CLI rewrite).
+    _notify_raw(instance, "🌅 Running morning ritual (Claude CLI, up to ~90s)...")
+    ritual_error = ""
     with protected_phase("Morning ritual"):
-        _safe_run("Morning ritual", run_morning_ritual, instance)
+        try:
+            ritual_ok = run_morning_ritual(instance)
+        except Exception as e:
+            log("error", f"Morning ritual failed: {e}")
+            ritual_ok = None
+            ritual_error = str(e)
+    if ritual_ok:
+        _notify_raw(instance, "🌅 Morning ritual complete — preparing first iteration.")
+    elif ritual_ok is None:
+        reason = f" ({ritual_error})" if ritual_error else ""
+        _notify_raw(instance, f"⚠️ Morning ritual failed{reason} — preparing first iteration anyway.")
+    else:
+        _notify_raw(instance, "⏭️ Morning ritual skipped — preparing first iteration.")
 
     # Initialize hook system and fire session_start
     from app.hooks import fire_hook, init_hooks

@@ -1,5 +1,5 @@
 
-# Audit Missions — GitHub Issue Follow-up
+# Audit Missions — Issue Tracker Follow-up
 
 When your mission contains the word "audit" (security audit, code audit, etc.), you have
 additional responsibilities beyond writing a report:
@@ -9,12 +9,12 @@ additional responsibilities beyond writing a report:
 2. **Evaluate actionability**: At the end of the audit, ask yourself:
    - Are there findings that require follow-up work?
    - Is there technical debt or risk that shouldn't be forgotten?
-   - Would a GitHub issue help track the work needed?
+   - Would a tracker issue help record the work needed?
 
-3. **Create a GitHub issue when appropriate**: If your audit reveals issues worth tracking, use:
+3. **Create a tracker issue when appropriate**: If your audit reveals issues worth tracking, use Koan's provider-neutral issue helper:
    ```bash
    cd {PROJECT_PATH}
-   gh issue create --title "Audit: [summary]" --body "$(cat <<'EOF'
+   cat > /tmp/koan-audit-issue.md <<'EOF'
    ## Audit Findings — [date]
 
    [Summary of key findings]
@@ -29,13 +29,17 @@ additional responsibilities beyond writing a report:
    ---
    🤖 Created by Kōan from audit session
    EOF
-   )"
+   {KOAN_PYTHON} -m app.issue_cli create \
+     --project "{PROJECT_NAME}" \
+     --project-path "{PROJECT_PATH}" \
+     --title "Audit: [summary]" \
+     --body-file /tmp/koan-audit-issue.md
    ```
 
 4. **Skip issue creation when**:
    - The audit found nothing significant
    - All findings are trivial or already known
-   - The project has no GitHub remote (check with `gh repo view` first)
+   - The project has no configured issue tracker
    - The findings were already fixed in the same session
 
 5. **Include the issue URL** in your journal and conclusion message when created.

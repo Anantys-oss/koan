@@ -20,6 +20,7 @@ from app.usage_estimator import (
     cmd_refresh,
     cmd_reset_session,
     cmd_reset_time,
+    cmd_set_used,
     SESSION_DURATION_HOURS,
 )
 
@@ -239,8 +240,8 @@ class TestWriteUsageMd:
         _write_usage_md(state, usage_md, config)
 
         content = usage_md.read_text()
-        assert "Session (5hr) : 25%" in content
-        assert "Weekly (7 day) : 25%" in content
+        assert "Session (5hr) : ~25%" in content
+        assert "Weekly (7 day) : ~25%" in content
         assert "reset in" in content
 
     def test_caps_at_100_percent(self, tmp_path, usage_md):
@@ -256,6 +257,37 @@ class TestWriteUsageMd:
 
         content = usage_md.read_text()
         assert "100%" in content
+
+    def test_includes_cache_line_when_available(self, tmp_path, usage_md):
+        state = {
+            "session_start": datetime.now().isoformat(),
+            "session_tokens": 100000,
+            "weekly_start": datetime.now().isoformat(),
+            "weekly_tokens": 100000,
+            "runs": 3,
+        }
+        config = {"usage": {"session_token_limit": 500000, "weekly_token_limit": 5000000}}
+        with patch(
+            "app.usage_estimator._get_today_cache_line",
+            return_value="Cache: 45% hit rate (12.3k read / 8.1k created)",
+        ):
+            _write_usage_md(state, usage_md, config)
+        content = usage_md.read_text()
+        assert "Cache: 45% hit rate" in content
+
+    def test_no_cache_line_when_empty(self, tmp_path, usage_md):
+        state = {
+            "session_start": datetime.now().isoformat(),
+            "session_tokens": 100000,
+            "weekly_start": datetime.now().isoformat(),
+            "weekly_tokens": 100000,
+            "runs": 3,
+        }
+        config = {"usage": {"session_token_limit": 500000, "weekly_token_limit": 5000000}}
+        with patch("app.usage_estimator._get_today_cache_line", return_value=""):
+            _write_usage_md(state, usage_md, config)
+        content = usage_md.read_text()
+        assert "Cache" not in content
 
 
 class TestCmdUpdate:
@@ -300,8 +332,8 @@ class TestCmdRefresh:
         cmd_refresh(state_file, usage_md)
 
         content = usage_md.read_text()
-        assert "Session (5hr) : 10%" in content
-        assert "Weekly (7 day) : 5%" in content
+        assert "Session (5hr) : ~10%" in content
+        assert "Weekly (7 day) : ~5%" in content
 
     @patch("app.usage_estimator.load_config", return_value={})
     def test_fresh_state_if_no_file(self, mock_config, state_file, usage_md):
@@ -641,7 +673,7 @@ class TestCmdResetSession:
         cmd_reset_session(state_file, usage_md)
 
         content = usage_md.read_text()
-        assert "Session (5hr) : 0%" in content
+        assert "Session (5hr) : ~0%" in content
 
     @patch("app.usage_estimator.load_config", return_value={
         "usage": {"session_token_limit": 500000, "weekly_token_limit": 5000000}
@@ -689,7 +721,7 @@ class TestCmdResetSession:
 
         # Now usage.md should show 0% session, which means mode != "wait"
         content = usage_md.read_text()
-        assert "Session (5hr) : 0%" in content
+        assert "Session (5hr) : ~0%" in content
 
     @patch("app.usage_estimator.load_config", return_value={})
     def test_cli_reset_session(self, mock_config, tmp_path):
@@ -721,3 +753,112 @@ class TestCmdResetSession:
             with pytest.raises(SystemExit) as exc_info:
                 main()
             assert exc_info.value.code == 1
+
+
+# ---------------------------------------------------------------------------
+# cmd_set_used — manual quota override
+# ---------------------------------------------------------------------------
+
+class TestCmdSetUsed:
+    """Test cmd_set_used for /quota <N> override."""
+
+    def test_sets_session_tokens_for_used(self, state_file, tmp_path):
+        """32% used → 160k tokens (with 500k limit)."""
+        usage_md = tmp_path / "usage.md"
+        # Seed a state with high tokens
+        state_file.write_text(json.dumps({
+            "session_start": datetime.now().isoformat(),
+            "session_tokens": 450_000,
+            "weekly_start": datetime.now().isoformat(),
+            "weekly_tokens": 2_000_000,
+            "runs": 10,
+        }))
+
+        with patch("app.usage_estimator.load_config", return_value={}):
+            cmd_set_used(32, state_file, usage_md)
+
+        state = json.loads(state_file.read_text())
+        # Default limit 500k, 32% used = 160k
+        assert state["session_tokens"] == 160_000
+
+    def test_resets_session_start(self, state_file, tmp_path):
+        """Session start is reset to now so the 5h window restarts."""
+        usage_md = tmp_path / "usage.md"
+        old_start = (datetime.now() - timedelta(hours=4)).isoformat()
+        state_file.write_text(json.dumps({
+            "session_start": old_start,
+            "session_tokens": 400_000,
+            "weekly_start": datetime.now().isoformat(),
+            "weekly_tokens": 1_000_000,
+            "runs": 8,
+        }))
+
+        with patch("app.usage_estimator.load_config", return_value={}):
+            cmd_set_used(50, state_file, usage_md)
+
+        state = json.loads(state_file.read_text())
+        new_start = datetime.fromisoformat(state["session_start"])
+        assert (datetime.now() - new_start).total_seconds() < 5
+
+    def test_writes_usage_md(self, state_file, tmp_path):
+        """usage.md is updated with the new percentage."""
+        usage_md = tmp_path / "usage.md"
+        state_file.write_text(json.dumps(_fresh_state()))
+
+        with patch("app.usage_estimator.load_config", return_value={}):
+            cmd_set_used(25, state_file, usage_md)
+
+        content = usage_md.read_text()
+        assert "25%" in content  # 25% used
+
+    def test_clamps_to_zero(self, state_file, tmp_path):
+        """Negative values are clamped to 0% used."""
+        usage_md = tmp_path / "usage.md"
+        state_file.write_text(json.dumps(_fresh_state()))
+
+        with patch("app.usage_estimator.load_config", return_value={}):
+            cmd_set_used(-10, state_file, usage_md)
+
+        state = json.loads(state_file.read_text())
+        assert state["session_tokens"] == 0  # 0% used
+
+    def test_clamps_to_hundred(self, state_file, tmp_path):
+        """Values above 100 are clamped to 100% used."""
+        usage_md = tmp_path / "usage.md"
+        state_file.write_text(json.dumps(_fresh_state()))
+
+        with patch("app.usage_estimator.load_config", return_value={}):
+            cmd_set_used(200, state_file, usage_md)
+
+        state = json.loads(state_file.read_text())
+        assert state["session_tokens"] == 500_000  # 100% used
+
+    def test_preserves_weekly_tokens(self, state_file, tmp_path):
+        """Override only affects session tokens, not weekly."""
+        usage_md = tmp_path / "usage.md"
+        state_file.write_text(json.dumps({
+            "session_start": datetime.now().isoformat(),
+            "session_tokens": 400_000,
+            "weekly_start": datetime.now().isoformat(),
+            "weekly_tokens": 3_000_000,
+            "runs": 5,
+        }))
+
+        with patch("app.usage_estimator.load_config", return_value={}):
+            cmd_set_used(50, state_file, usage_md)
+
+        state = json.loads(state_file.read_text())
+        assert state["weekly_tokens"] == 3_000_000
+
+    def test_respects_custom_limits(self, state_file, tmp_path):
+        """Custom session_token_limit from config is respected."""
+        usage_md = tmp_path / "usage.md"
+        state_file.write_text(json.dumps(_fresh_state()))
+        config = {"usage": {"session_token_limit": 1_000_000}}
+
+        with patch("app.usage_estimator.load_config", return_value=config):
+            cmd_set_used(30, state_file, usage_md)
+
+        state = json.loads(state_file.read_text())
+        # 30% of 1M = 300k
+        assert state["session_tokens"] == 300_000

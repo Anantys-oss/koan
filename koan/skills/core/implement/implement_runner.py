@@ -9,15 +9,23 @@ an optional user-provided context (e.g. "Phase 1 to 3").
 CLI:
     python3 -m skills.core.implement.implement_runner --project-path <path> --issue-url <url>
     python3 -m skills.core.implement.implement_runner --project-path <path> --issue-url <url> --context "Phase 1 to 3"
+    python3 -m skills.core.implement.implement_runner --project-path <path> --project-name <name> --issue-url <url>
 """
 
+import hashlib
 import logging
 import re
+import subprocess
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Union
 
-from app.github import fetch_issue_with_comments
-from app.github_url_parser import parse_github_url, parse_issue_url
+from app.issue_tracker import (
+    UnresolvedJiraProjectError,
+    add_comment,
+    fetch_issue,
+    project_name_for_path,
+)
+from app.issue_tracker.config import resolve_code_repository
 from app.pr_submit import (
     get_current_branch,
     guess_project_name,
@@ -26,6 +34,9 @@ from app.pr_submit import (
 from app.prompts import load_prompt_or_skill
 
 logger = logging.getLogger(__name__)
+
+# Path to the plan skill directory (used for loading the plan-review prompt)
+_PLAN_SKILL_DIR = Path(__file__).resolve().parent.parent / "plan"
 
 
 # Regex pattern matching plan structure markers
@@ -41,6 +52,9 @@ def run_implement(
     context: Optional[str] = None,
     notify_fn=None,
     skill_dir: Optional[Path] = None,
+    base_branch: Optional[str] = None,
+    project_name: str = "",
+    instance_dir: str = "",
 ) -> Tuple[bool, str]:
     """Execute the implement pipeline.
 
@@ -61,44 +75,84 @@ def run_implement(
         from app.notify import send_telegram
         notify_fn = send_telegram
 
-    # Parse issue or PR URL (GitHub's issues API works for PRs too)
-    try:
-        owner, repo, _url_type, issue_number = parse_github_url(issue_url)
-    except ValueError as e:
-        return False, str(e)
-
     context_label = f" ({context})" if context else ""
-    notify_fn(
-        f"\U0001f528 Implementing issue #{issue_number} "
-        f"({owner}/{repo}){context_label}..."
-    )
+    project_name = project_name or project_name_for_path(project_path)
 
-    # Fetch issue content
+    print(f"[implement] Fetching tracker issue {issue_url}", flush=True)
+
+    # The tracker (GitHub or Jira) resolves itself from the URL — the runner
+    # never branches on provider.
     try:
-        title, body, comments = fetch_issue_with_comments(
-            owner, repo, issue_number
+        issue = fetch_issue(
+            issue_url, project_name=project_name, project_path=project_path,
         )
+    except UnresolvedJiraProjectError as e:
+        msg = str(e)
+        notify_fn(f"❌ {msg}")
+        return False, msg
     except Exception as e:
         return False, f"Failed to fetch issue: {str(e)[:300]}"
+
+    ref = issue.ref
+    title = issue.title
+    body = issue.body
+    comments = issue.comments
+    issue_number = ref.key
+    label = ref.label
+    provider = ref.provider
+
+    # Resolve the GitHub repo that PRs target: the issue's own repo for
+    # GitHub, the configured code repo for a Jira-tracked project.
+    owner = repo = None
+    repo_slug = ref.repo or resolve_code_repository(project_name, project_path)
+    if repo_slug and "/" in repo_slug:
+        owner, repo = repo_slug.split("/", 1)
+
+    notify_fn(
+        f"\U0001f528 Implementing {provider} issue "
+        f"{label}{context_label}..."
+    )
 
     # Extract the most recent plan
     plan = _extract_latest_plan(body, comments)
     if not plan:
         return False, (
-            f"No plan found in issue #{issue_number}. "
+            f"No plan found in issue {label}. "
             "The issue should contain implementation phases."
         )
 
+    # Plan-review quality gate with autonomous improvement loop
+    gate_result = _run_plan_review_gate(
+        plan, project_path, notify_fn=notify_fn, issue_url=issue_url,
+        project_name=project_name,
+    )
+    improvement_context = ""
+    if isinstance(gate_result, _GateImproved):
+        plan = gate_result.plan
+        improvement_context = (
+            "\n\n## Plan Improvement Notes\n\n"
+            "The plan was autonomously improved before implementation. "
+            "The original plan had these issues that were addressed:\n"
+            f"{gate_result.issues_fixed}\n\n"
+            "The plan above is the corrected version. Pay attention to the "
+            "specific file paths and details added during improvement."
+        )
+    elif gate_result is not None:
+        return gate_result
+
     # Invoke Claude with the plan
+    effective_context = (context or "Implement the full plan.") + improvement_context
     try:
         output = _execute_implementation(
             project_path=project_path,
             issue_url=issue_url,
             issue_title=title,
             plan=plan,
-            context=context or "Implement the full plan.",
+            context=effective_context,
             skill_dir=skill_dir,
             issue_number=str(issue_number),
+            project_name=project_name,
+            instance_dir=instance_dir,
         )
     except Exception as e:
         return False, f"Implementation failed: {str(e)[:300]}"
@@ -106,48 +160,53 @@ def run_implement(
     if not output:
         return False, "Claude returned empty output."
 
-    # Post-implementation: submit draft PR
+    # Post-implementation: submit draft PR (only for GitHub issues with repo info)
     pr_url = None
-    try:
-        pr_url = _submit_implement_pr(
-            project_path=project_path,
-            owner=owner,
-            repo=repo,
-            issue_number=str(issue_number),
-            issue_title=title,
-            issue_url=issue_url,
-            skill_dir=skill_dir,
-        )
-    except Exception as e:
-        logger.warning("PR submission failed: %s", e)
+    if owner and repo:
+        try:
+            pr_url = _submit_implement_pr(
+                project_path=project_path,
+                owner=owner,
+                repo=repo,
+                issue_number=str(issue_number),
+                issue_title=title,
+                issue_url=issue_url,
+                skill_dir=skill_dir,
+                base_branch=base_branch,
+                project_name=project_name,
+            )
+        except (RuntimeError, OSError, ValueError,
+                subprocess.SubprocessError) as e:
+            logger.warning("PR submission failed: %s", e)
 
     # Build notification and summary
     branch = get_current_branch(project_path)
     if pr_url:
         notify_fn(
-            f"\u2705 Implementation complete for issue #{issue_number}"
+            f"\u2705 Implementation complete for issue {label}"
             f"{context_label}\nDraft PR: {pr_url}"
         )
         summary = (
-            f"Implementation complete for #{issue_number}{context_label}"
+            f"Implementation complete for {label}{context_label}"
             f"\nDraft PR: {pr_url}"
         )
     elif branch not in ("main", "master"):
         notify_fn(
-            f"\u2705 Implementation complete for issue #{issue_number}"
-            f"{context_label}\nBranch: {branch} (PR creation failed)"
+            f"\u2705 Implementation complete for issue {label}"
+            f"{context_label}\nBranch: {branch}"
+            f"{'' if pr_url else ' (PR creation skipped)' if provider != 'github' else ' (PR creation failed)'}"
         )
         summary = (
-            f"Implementation complete for #{issue_number}{context_label}"
+            f"Implementation complete for {label}{context_label}"
             f"\nBranch: {branch}"
         )
     else:
         notify_fn(
-            f"\u26a0\ufe0f Implementation complete for issue #{issue_number}"
+            f"\u26a0\ufe0f Implementation complete for issue {label}"
             f"{context_label} \u2014 changes landed on {branch}, no PR created"
         )
         summary = (
-            f"Implementation complete for #{issue_number}{context_label}"
+            f"Implementation complete for {label}{context_label}"
             f" (on {branch}, no PR)"
         )
 
@@ -168,7 +227,7 @@ def _is_plan_content(text: str) -> bool:
     return bool(_PLAN_MARKER_RE.search(text))
 
 
-def _extract_latest_plan(body: str, comments: List[dict]) -> str:
+def _extract_latest_plan(body: Optional[str], comments: List[dict]) -> str:
     """Extract the most recent plan from issue body and comments.
 
     Strategy: scan comments from newest to oldest. The first comment
@@ -193,8 +252,164 @@ def _extract_latest_plan(body: str, comments: List[dict]) -> str:
         return body
 
     # If no plan markers found, assume the entire body is the plan
-    # (allows non-standard plan formats)
-    return body.strip()
+    # (allows non-standard plan formats). Body may be None for issues
+    # with an empty body — GitHub returns body=null in that case.
+    return (body or "").strip()
+
+
+def _plan_hash(plan: str) -> str:
+    """SHA-256 hex digest of the plan text (stripped)."""
+    return hashlib.sha256(plan.strip().encode()).hexdigest()
+
+
+def _plan_review_cache_path(project_path: str, project_name: str = "") -> Path:
+    """Per-project cache file for the plan-review gate hash."""
+    project_name = project_name or guess_project_name(project_path)
+    from app.utils import KOAN_ROOT
+    return KOAN_ROOT / "instance" / f".plan-review-hash-{project_name}"
+
+
+def _is_plan_cache_fresh(
+    project_path: str, current_hash: str, project_name: str = "",
+) -> bool:
+    """Return True if the cached plan hash matches — review can be skipped."""
+    cache_path = _plan_review_cache_path(project_path, project_name)
+    if not cache_path.exists():
+        return False
+    try:
+        return cache_path.read_text().strip() == current_hash
+    except OSError:
+        return False
+
+
+def _write_plan_cache(
+    project_path: str, plan_hash_hex: str, project_name: str = "",
+) -> None:
+    """Persist the reviewed plan hash so identical re-runs skip review."""
+    try:
+        cache_path = _plan_review_cache_path(project_path, project_name)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        from app.utils import atomic_write
+        atomic_write(cache_path, plan_hash_hex + "\n")
+    except OSError as e:
+        logger.warning("Plan-review cache write failed: %s", e)
+
+
+class _GateImproved:
+    """Result when the gate self-healed the plan."""
+
+    __slots__ = ("plan", "issues_fixed")
+
+    def __init__(self, plan: str, issues_fixed: str):
+        self.plan = plan
+        self.issues_fixed = issues_fixed
+
+
+def _run_plan_review_gate(
+    plan: str,
+    project_path: str,
+    notify_fn=None,
+    issue_url: str = "",
+    project_name: str = "",
+) -> Union[None, _GateImproved, Tuple[bool, str]]:
+    """Run plan-review gate with autonomous improvement loop.
+
+    Returns:
+        None — proceed with original plan (simple/cached/disabled).
+        _GateImproved — proceed with improved plan + context about what was fixed.
+        (False, msg) — block (only on catastrophic internal error).
+    """
+    from app.plan_runner import improve_plan, is_simple_plan, review_plan
+
+    if is_simple_plan(plan):
+        logger.debug("Plan is simple — skipping review gate")
+        return None
+
+    from app.config import get_plan_review_config
+
+    review_cfg = get_plan_review_config()
+    if not review_cfg.get("implement_gate", True):
+        return None
+
+    current_hash = _plan_hash(plan)
+    if _is_plan_cache_fresh(project_path, current_hash, project_name):
+        logger.info("Plan-review gate: cache hit — skipping review")
+        return None
+
+    max_rounds = review_cfg.get("max_rounds", 3)
+    current_plan = plan
+    all_issues: List[str] = []
+
+    for round_num in range(1, max_rounds + 1):
+        logger.info("Plan-review gate: round %d/%d...", round_num, max_rounds)
+        approved, issues = review_plan(current_plan, project_path, _PLAN_SKILL_DIR)
+
+        if approved:
+            logger.info("Plan-review gate: APPROVED (round %d)", round_num)
+            final_hash = _plan_hash(current_plan)
+            _write_plan_cache(project_path, final_hash, project_name)
+            if current_plan != plan:
+                _post_improved_plan(current_plan, issue_url, notify_fn)
+                return _GateImproved(current_plan, "\n".join(all_issues))
+            return None
+
+        all_issues.append(issues)
+        logger.info(
+            "Plan-review gate: ISSUES_FOUND (round %d) — improving...",
+            round_num,
+        )
+
+        if notify_fn and round_num == 1:
+            try:
+                notify_fn(
+                    f"🔧 Plan review found issues — auto-improving "
+                    f"(up to {max_rounds} rounds):\n{issues}"
+                )
+            except Exception:
+                logger.debug("Failed to send improvement notification", exc_info=True)
+
+        if round_num < max_rounds:
+            current_plan = improve_plan(
+                current_plan, issues, project_path, _PLAN_SKILL_DIR
+            )
+
+    # Exhausted all rounds — fail open, use best available plan
+    logger.warning(
+        "Plan-review gate: exhausted %d rounds — proceeding with best plan (fail open)",
+        max_rounds,
+    )
+    if notify_fn:
+        try:
+            notify_fn(
+                f"⚠️ Plan review couldn't fully resolve issues after {max_rounds} "
+                "rounds — proceeding with implementation anyway (fail open)."
+            )
+        except Exception:
+            logger.debug("Failed to send exhaustion notification", exc_info=True)
+
+    if current_plan != plan:
+        _post_improved_plan(current_plan, issue_url, notify_fn)
+        return _GateImproved(current_plan, "\n".join(all_issues))
+    return None
+
+
+def _post_improved_plan(
+    improved_plan: str, issue_url: str, notify_fn=None,
+) -> None:
+    """Post the autonomously improved plan as a new comment on the issue."""
+    if not issue_url:
+        return
+    try:
+        comment_body = (
+            "### 🔧 Plan Improved (auto)\n\n"
+            "The plan-review gate found issues and autonomously fixed them. "
+            "Proceeding with this improved version:\n\n"
+            f"{improved_plan}"
+        )
+        # The tracker resolves itself from the URL — GitHub or Jira alike.
+        add_comment(issue_url, comment_body)
+    except Exception:
+        logger.debug("Failed to post improved plan to issue tracker", exc_info=True)
 
 
 def _build_prompt(
@@ -205,6 +420,7 @@ def _build_prompt(
     skill_dir: Optional[Path] = None,
     branch_prefix: str = "koan/",
     issue_number: str = "",
+    project_memory: str = "",
 ) -> str:
     """Build the implementation prompt from the issue and plan."""
     template_vars = dict(
@@ -214,6 +430,7 @@ def _build_prompt(
         CONTEXT=context,
         BRANCH_PREFIX=branch_prefix,
         ISSUE_NUMBER=issue_number,
+        PROJECT_MEMORY=project_memory,
     )
 
     return load_prompt_or_skill(skill_dir, "implement", **template_vars)
@@ -249,6 +466,7 @@ def _generate_pr_summary(
             model_key="lightweight",
             max_turns=1,
             timeout=300,
+            max_turns_source=None,
         )
         return output.strip() if output and output.strip() else fallback
     except Exception as e:
@@ -264,15 +482,26 @@ def _execute_implementation(
     context: str,
     skill_dir: Optional[Path] = None,
     issue_number: str = "",
+    project_name: str = "",
+    instance_dir: str = "",
 ) -> str:
     """Execute the implementation via Claude CLI."""
     from app.config import get_branch_prefix
+    from app.skill_memory import build_memory_block_for_skill
+
     branch_prefix = get_branch_prefix()
+    project_memory = build_memory_block_for_skill(
+        project_path,
+        f"{issue_title}\n{plan}",
+        project_name=project_name,
+        instance_dir=instance_dir,
+    )
 
     prompt = _build_prompt(
         issue_url, issue_title, plan, context, skill_dir,
         branch_prefix=branch_prefix,
         issue_number=issue_number,
+        project_memory=project_memory,
     )
 
     from app.cli_provider import CLAUDE_TOOLS, run_command_streaming
@@ -296,14 +525,16 @@ def _submit_implement_pr(
     issue_title: str,
     issue_url: str,
     skill_dir: Optional[Path] = None,
+    base_branch: Optional[str] = None,
+    project_name: str = "",
 ) -> Optional[str]:
     """Build implement-specific PR title/body and delegate to shared submit."""
     from app.pr_submit import get_commit_subjects
     from app.projects_config import resolve_base_branch
 
-    project_name = guess_project_name(project_path)
-    base_branch = resolve_base_branch(project_name, project_path)
-    commits = get_commit_subjects(project_path, base_branch=base_branch)
+    project_name = project_name or guess_project_name(project_path)
+    effective_base = base_branch or resolve_base_branch(project_name, project_path)
+    commits = get_commit_subjects(project_path, base_branch=effective_base)
 
     summary = _generate_pr_summary(
         project_path, issue_title, issue_url, commits, skill_dir,
@@ -317,6 +548,18 @@ def _submit_implement_pr(
     )
 
     try:
+        from app.describe_pr import describe_pr, format_description
+        desc = describe_pr(project_path, effective_base)
+        if desc:
+            pr_body = (
+                f"{format_description(desc)}\n\n"
+                f"Closes {issue_url}\n\n"
+                f"---\n*Generated by Kōan /implement*"
+            )
+    except Exception as e:
+        logger.warning("describe_pr failed, using fallback body: %s", e)
+
+    try:
         return submit_draft_pr(
             project_path=project_path,
             project_name=project_name,
@@ -326,6 +569,7 @@ def _submit_implement_pr(
             pr_title=pr_title,
             pr_body=pr_body,
             issue_url=issue_url,
+            base_branch=base_branch,
         )
     except Exception as e:
         logger.warning("PR submission failed: %s", e)
@@ -356,6 +600,21 @@ def main(argv=None):
         help="Additional context (e.g. 'Phase 1 to 3')",
         default=None,
     )
+    parser.add_argument(
+        "--base-branch",
+        help="Target branch for the PR (e.g. '11.126')",
+        default=None,
+    )
+    parser.add_argument(
+        "--project-name",
+        help="Koan project name for memory and tracker configuration",
+        default="",
+    )
+    parser.add_argument(
+        "--instance-dir",
+        help="Koan instance directory for project memory",
+        default="",
+    )
     cli_args = parser.parse_args(argv)
 
     skill_dir = Path(__file__).resolve().parent
@@ -365,6 +624,9 @@ def main(argv=None):
         issue_url=cli_args.issue_url,
         context=cli_args.context,
         skill_dir=skill_dir,
+        base_branch=cli_args.base_branch,
+        project_name=cli_args.project_name,
+        instance_dir=cli_args.instance_dir,
     )
     print(summary)
     return 0 if success else 1
