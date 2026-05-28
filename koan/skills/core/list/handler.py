@@ -7,8 +7,10 @@ from app.utils import PROJECT_NAME_CHARS
 
 _MISSION_PREFIX = "📋"
 
-# Trailing marker appended by GitHub @mention missions.
+# Trailing markers appended by GitHub/Jira @mention missions.
 _GITHUB_ORIGIN_MARKER = "📬"
+_JIRA_ORIGIN_MARKER = "🎫"
+_ORIGIN_MARKERS = (_GITHUB_ORIGIN_MARKER, _JIRA_ORIGIN_MARKER)
 
 # Extract slash command from raw mission line (after optional "- " and [project:X]).
 # Project character class is sourced from utils.PROJECT_NAME_CHARS so it stays
@@ -145,6 +147,22 @@ def _humanize_timestamps(text: str, now: datetime = None) -> str:
     return f"{clean} {emoji}{friendly}"
 
 
+def _detect_origin_marker(raw_line: str) -> str:
+    """Return the leading origin marker for a mission, or empty string."""
+    for marker in _ORIGIN_MARKERS:
+        if marker in raw_line:
+            return marker
+    return ""
+
+
+def _strip_origin_markers(text: str) -> str:
+    """Remove origin markers from display text to avoid duplication."""
+    for marker in _ORIGIN_MARKERS:
+        text = text.replace(marker, "")
+    parts = text.split()
+    return " ".join(parts)
+
+
 def handle(ctx):
     """Handle /list command -- display numbered mission list."""
     # Reset emoji cache on each /list invocation to pick up new skills.
@@ -176,7 +194,8 @@ def handle(ctx):
         for i, m in enumerate(in_progress, 1):
             prefix = mission_prefix(m)
             display = _humanize_timestamps(clean_mission_display(m), now)
-            origin = _GITHUB_ORIGIN_MARKER if _GITHUB_ORIGIN_MARKER in m else ""
+            origin = _detect_origin_marker(m)
+            display = _strip_origin_markers(display)
             if prefix:
                 parts.append(f"  {i}. {origin}{prefix} {display}")
             else:
@@ -188,7 +207,8 @@ def handle(ctx):
         for i, m in enumerate(pending, 1):
             prefix = mission_prefix(m)
             display = _humanize_timestamps(clean_mission_display(m), now)
-            origin = _GITHUB_ORIGIN_MARKER if _GITHUB_ORIGIN_MARKER in m else ""
+            origin = _detect_origin_marker(m)
+            display = _strip_origin_markers(display)
             if prefix:
                 parts.append(f"  {i}. {origin}{prefix} {display}")
             else:

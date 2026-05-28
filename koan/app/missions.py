@@ -1289,10 +1289,12 @@ def clean_mission_display(text: str, max_length: int = 120) -> str:
         text = PROJECT_TAG_STRIP_RE.sub('', text)
         text = f"[{project}] {text}"
 
-    # Strip trailing GitHub origin marker (displayed by /list as a leading hint)
+    # Strip trailing origin markers (displayed by /list as a leading hint)
     text = text.rstrip()
-    if text.endswith("📬"):
-        text = text[:-1].rstrip()
+    for _marker in ("📬", "🎫"):
+        if text.endswith(_marker):
+            text = text[:-len(_marker)].rstrip()
+            break
 
     # Truncate for readability
     if len(text) > max_length:

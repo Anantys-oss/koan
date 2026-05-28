@@ -427,6 +427,12 @@ class TestCleanMission:
         assert "📬" not in result
         assert result == "[koan] /rebase https://github.com/o/r/pull/1"
 
+    def test_jira_origin_marker_stripped(self):
+        from app.missions import clean_mission_display
+        result = clean_mission_display("- [project:koan] /fix https://jira.example.com/FOO-123 🎫")
+        assert "🎫" not in result
+        assert result == "[koan] /fix https://jira.example.com/FOO-123"
+
     def test_no_marker_unchanged(self):
         from app.missions import clean_mission_display
         result = clean_mission_display("- [project:koan] /plan add feature")
@@ -509,6 +515,72 @@ class TestGithubOriginMarker:
         ctx = self._make_ctx(tmp_path, missions)
         result = handle(ctx)
         assert "📬🔍" in result
+
+    def test_no_duplicate_github_marker_with_timestamp(self, tmp_path):
+        """The 📬 marker should only appear once (leading), not duplicated before ⏳."""
+        from skills.core.list.handler import handle
+
+        missions = textwrap.dedent("""\
+            # Missions
+
+            ## Pending
+
+            - [project:koan] /plan https://github.com/o/r/issues/164 📬 ⏳(2026-05-27T22:44)
+
+            ## In Progress
+
+            ## Done
+        """)
+        ctx = self._make_ctx(tmp_path, missions)
+        result = handle(ctx)
+        lines = result.split("\n")
+        plan_line = [l for l in lines if "/plan" in l][0]
+        assert plan_line.count("📬") == 1
+        assert plan_line.strip().startswith("1. 📬")
+
+    def test_jira_marker_as_leading_icon(self, tmp_path):
+        """The 🎫 Jira origin marker should appear as a leading icon only."""
+        from skills.core.list.handler import handle
+
+        missions = textwrap.dedent("""\
+            # Missions
+
+            ## Pending
+
+            - [project:koan] /fix https://jira.example.com/FOO-123 🎫
+
+            ## In Progress
+
+            ## Done
+        """)
+        ctx = self._make_ctx(tmp_path, missions)
+        result = handle(ctx)
+        lines = result.split("\n")
+        fix_line = [l for l in lines if "/fix" in l][0]
+        assert "🎫" in fix_line
+        assert fix_line.count("🎫") == 1
+        assert fix_line.strip().startswith("1. 🎫")
+
+    def test_jira_marker_no_duplicate_with_timestamp(self, tmp_path):
+        """The 🎫 marker should not duplicate when timestamps are present."""
+        from skills.core.list.handler import handle
+
+        missions = textwrap.dedent("""\
+            # Missions
+
+            ## Pending
+
+            - [project:koan] /implement https://jira.example.com/FOO-456 🎫 ⏳(2026-05-27T10:00)
+
+            ## In Progress
+
+            ## Done
+        """)
+        ctx = self._make_ctx(tmp_path, missions)
+        result = handle(ctx)
+        lines = result.split("\n")
+        impl_line = [l for l in lines if "/implement" in l][0]
+        assert impl_line.count("🎫") == 1
 
 
 # ---------------------------------------------------------------------------
