@@ -2093,6 +2093,31 @@ class TestComputeQuotaResetTs:
         assert reset_ts == 9999999999 + QUOTA_RESET_BUFFER_SECONDS
         assert "4h30m" in reset_display
 
+    @patch("app.usage_estimator.cmd_reset_time", return_value=9999999999)
+    @patch("app.usage_estimator._load_state", return_value={"session_start": ""})
+    @patch("app.usage_estimator._estimate_reset_time", return_value="?")
+    @patch("app.run.log")
+    def test_compute_quota_reset_ts_delegates_buffer_to_quota_handler(
+        self, mock_log, mock_estimate, mock_state, mock_reset
+    ):
+        """Buffer math must come from quota_handler.compute_resume_info.
+
+        Regression guard for Phase 7: the buffer policy used to be duplicated
+        as a literal ``reset_ts += QUOTA_RESET_BUFFER_SECONDS``. Centralizing
+        it on compute_resume_info means the test stops working if a future
+        change re-adds the inline arithmetic.
+        """
+        from unittest.mock import patch as _patch
+        from app.run import _compute_quota_reset_ts
+
+        with _patch("app.quota_handler.compute_resume_info",
+                    return_value=(1234, "msg")) as mock_resume:
+            reset_ts, _ = _compute_quota_reset_ts("/tmp/x")
+
+        mock_resume.assert_called_once()
+        # Whatever compute_resume_info returns is exactly what we propagate.
+        assert reset_ts == 1234
+
 
 # ---------------------------------------------------------------------------
 # Test: quota spam loop regression tests (session 220 fixes)

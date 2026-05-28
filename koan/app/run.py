@@ -2538,21 +2538,25 @@ def _handle_iteration_error(
 def _compute_quota_reset_ts(instance: str):
     """Compute quota reset timestamp and display string.
 
-    Returns (reset_ts: int, reset_display: str). Adds the quota reset buffer
-    to known reset times and falls back to QUOTA_RETRY_SECONDS from now if
-    estimation fails.
+    Returns (reset_ts: int, reset_display: str). Delegates the buffer
+    math (QUOTA_RESET_BUFFER_SECONDS) to
+    :func:`app.quota_handler.compute_resume_info` so the buffer policy
+    lives in exactly one place. Falls back to QUOTA_RETRY_SECONDS from
+    now if estimation fails.
     """
     reset_ts = None
     reset_display = ""
     try:
         from app.usage_estimator import cmd_reset_time, _estimate_reset_time, _load_state
-        from app.pause_manager import QUOTA_RESET_BUFFER_SECONDS
+        from app.quota_handler import compute_resume_info
         usage_state_path = Path(instance, "usage_state.json")
-        reset_ts = cmd_reset_time(usage_state_path)
-        if reset_ts is not None:
-            reset_ts += QUOTA_RESET_BUFFER_SECONDS
+        raw_reset_ts = cmd_reset_time(usage_state_path)
         state = _load_state(usage_state_path)
         reset_display = f"session reset in ~{_estimate_reset_time(state.get('session_start', ''), 5)}"
+        if raw_reset_ts is not None:
+            # compute_resume_info applies the canonical buffer; we keep the
+            # estimator-derived display string instead of its resume message.
+            reset_ts, _ = compute_resume_info(raw_reset_ts, reset_display)
     except Exception as e:
         log("error", f"Reset time estimation failed: {e}")
     if reset_ts is None:
