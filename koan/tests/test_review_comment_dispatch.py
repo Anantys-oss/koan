@@ -40,6 +40,21 @@ class TestComputeCommentFingerprint:
         after = [{"id": 1}, {"id": 2}, {"id": 3}]
         assert compute_comment_fingerprint(before) != compute_comment_fingerprint(after)
 
+    def test_changes_on_edited_body(self):
+        from app.review_comment_dispatch import compute_comment_fingerprint
+
+        before = [{"id": 1, "body": "original feedback"}]
+        after = [{"id": 1, "body": "updated feedback with more detail"}]
+        assert compute_comment_fingerprint(before) != compute_comment_fingerprint(after)
+
+    def test_ignores_body_past_200_chars(self):
+        from app.review_comment_dispatch import compute_comment_fingerprint
+
+        base = "x" * 200
+        a = [{"id": 1, "body": base + "extra-a"}]
+        b = [{"id": 1, "body": base + "extra-b"}]
+        assert compute_comment_fingerprint(a) == compute_comment_fingerprint(b)
+
 
 class TestFormatCommentSummary:
     """Summary text for mission descriptions."""

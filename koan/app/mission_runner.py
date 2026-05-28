@@ -1019,6 +1019,7 @@ _RESULT_ALERT_REGEX = re.compile(
 # registry once per process. Rebuild requires a restart, matching how skill
 # registration works elsewhere.
 _skill_registry_cache: Optional[Any] = None
+_skill_registry_lock = threading.Lock()
 
 
 def _resolve_forward_result_markers() -> list:
@@ -1031,15 +1032,16 @@ def _resolve_forward_result_markers() -> list:
     """
     global _skill_registry_cache
     try:
-        if _skill_registry_cache is None:
-            from app.skills import build_registry
-            extra_dirs = []
-            koan_root = os.environ.get("KOAN_ROOT")
-            if koan_root:
-                instance_skills = Path(koan_root) / "instance" / "skills"
-                if instance_skills.is_dir():
-                    extra_dirs.append(instance_skills)
-            _skill_registry_cache = build_registry(extra_dirs)
+        with _skill_registry_lock:
+            if _skill_registry_cache is None:
+                from app.skills import build_registry
+                extra_dirs = []
+                koan_root = os.environ.get("KOAN_ROOT")
+                if koan_root:
+                    instance_skills = Path(koan_root) / "instance" / "skills"
+                    if instance_skills.is_dir():
+                        extra_dirs.append(instance_skills)
+                _skill_registry_cache = build_registry(extra_dirs)
         from app.skills import collect_forward_result_markers
         return collect_forward_result_markers(_skill_registry_cache)
     except Exception as e:

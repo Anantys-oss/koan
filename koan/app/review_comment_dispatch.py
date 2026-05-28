@@ -195,9 +195,11 @@ def fetch_review_body_comments(
 # ---------------------------------------------------------------------------
 
 def compute_comment_fingerprint(comments: List[dict]) -> str:
-    """SHA-256 of sorted comment IDs — changes when comments are added/removed."""
-    ids = sorted(str(c.get("id", "")) for c in comments)
-    return hashlib.sha256("|".join(ids).encode()).hexdigest()[:16]
+    """SHA-256 of sorted comment ID+body pairs — detects additions, removals, and edits."""
+    parts = sorted(
+        f"{c.get('id', '')}:{c.get('body', '')[:200]}" for c in comments
+    )
+    return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
 
 
 # ---------------------------------------------------------------------------
