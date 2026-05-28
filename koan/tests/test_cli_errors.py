@@ -105,6 +105,22 @@ class TestClassifyCliError:
             1, stderr="You've hit your limit · resets 6pm (UTC)")
         assert result == ErrorCategory.QUOTA
 
+    def test_session_limit_stdout_is_quota(self):
+        result = classify_cli_error(
+            1,
+            stdout="You've hit your session limit · resets 3am (UTC)",
+            provider_name="claude",
+        )
+        assert result == ErrorCategory.QUOTA
+
+    def test_structured_rate_limit_stdout_is_quota(self):
+        payload = (
+            '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected",'
+            '"resetsAt":1779937200,"rateLimitType":"five_hour"}}'
+        )
+        result = classify_cli_error(1, stdout=payload, provider_name="claude")
+        assert result == ErrorCategory.QUOTA
+
     # -- Unknown errors ---------------------------------------------------------
 
     def test_unknown_for_unrecognized_error(self):

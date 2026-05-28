@@ -37,7 +37,7 @@ class ClaudeProvider(CLIProvider):
     def supports_system_prompt_file(self) -> bool:
         # Claude Code CLI supports --append-system-prompt-file in print mode
         # (-p), which is the only mode Kōan uses.  See
-        # docs/claude-cli-commands-official.md.
+        # docs/providers/claude-cli-commands-official.md.
         return True
 
     def build_system_prompt_file_args(self, path: str) -> List[str]:

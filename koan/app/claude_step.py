@@ -30,20 +30,36 @@ class StepResult:
 
     Behaves as a bool (truthy when a commit was created) for backward
     compatibility, while also carrying the Claude CLI output text for
-    callers that need it (e.g. extracting change summaries).
+    callers that need it (e.g. extracting change summaries).  Failed steps
+    also expose quota classification so CI loops can stop as transient quota
+    exhaustion instead of treating the result as "no changes".
     """
 
-    __slots__ = ("committed", "output")
+    __slots__ = ("committed", "error", "output", "quota_exhausted")
 
-    def __init__(self, committed: bool, output: str = ""):
+    def __init__(
+        self,
+        committed: bool,
+        output: str = "",
+        *,
+        quota_exhausted: bool = False,
+        error: str = "",
+    ):
         self.committed = committed
         self.output = output
+        self.quota_exhausted = quota_exhausted
+        self.error = error
 
     def __bool__(self) -> bool:
         return self.committed
 
     def __repr__(self) -> str:
-        return f"StepResult(committed={self.committed!r}, output={self.output[:60]!r}...)"
+        return (
+            "StepResult("
+            f"committed={self.committed!r}, "
+            f"quota_exhausted={self.quota_exhausted!r}, "
+            f"output={self.output[:60]!r}...)"
+        )
 
 
 # Backward-compatible alias — callers should import from app.cli_provider
@@ -62,6 +78,7 @@ def _run_git(cmd: list, cwd: str = None, timeout: int = 60) -> str:
 
 
 _REBASE_EXCEPTIONS = (RuntimeError, subprocess.TimeoutExpired, OSError)
+CI_QUOTA_STOP_ACTION = "CI fix stopped: API quota exhausted"
 
 
 def _fetch_branch(remote: str, branch: str, cwd: str = None, timeout: int = 60) -> str:
@@ -310,6 +327,7 @@ def run_claude(cmd: list, cwd: str, timeout: int = 600) -> dict:
             "success": False,
             "output": stdout_text,
             "error": f"Exit code {returncode}: {stderr_snippet}",
+            "exit_code": returncode,
         }
 
     log_event(SUBPROCESS_EXEC, details={
@@ -321,6 +339,7 @@ def run_claude(cmd: list, cwd: str, timeout: int = 600) -> dict:
         "success": True,
         "output": stdout_text,
         "error": "",
+        "exit_code": returncode,
     }
 
 
@@ -404,7 +423,31 @@ def run_claude_step(
             stdout_snippet = result["output"][-300:]
             error_detail = f"{error_detail} | stdout: {stdout_snippet}"
         actions_log.append(f"{failure_label}: {error_detail}")
-    return StepResult(committed=False, output=cleaned_output)
+
+    quota_exhausted = False
+    try:
+        from app.cli_errors import ErrorCategory, classify_cli_error
+        from app.provider import get_provider_name
+
+        quota_exhausted = (
+            classify_cli_error(
+                int(result.get("exit_code") or 1),
+                stdout=result.get("output", ""),
+                stderr=result.get("error", ""),
+                provider_name=get_provider_name(),
+            )
+            == ErrorCategory.QUOTA
+        )
+    except Exception as exc:
+        logging.warning("Failed to classify Claude step error: %s", exc)
+        quota_exhausted = False
+
+    return StepResult(
+        committed=False,
+        output=cleaned_output,
+        quota_exhausted=quota_exhausted,
+        error=result.get("error", ""),
+    )
 
 
 def run_project_tests(project_path: str, test_cmd: str = "make test",
@@ -838,6 +881,10 @@ def run_ci_fix_loop(
             timeout=get_skill_timeout(),
             use_convention_subject=bool(commit_conventions),
         )
+
+        if getattr(fixed, "quota_exhausted", False):
+            actions_log.append(CI_QUOTA_STOP_ACTION)
+            return False, ci_logs
 
         if not fixed:
             actions_log.append("Claude produced no changes — giving up")

@@ -405,7 +405,7 @@ def step_messaging(state: OnboardingState) -> OnboardingState:
     if provider_idx == 1:
         # Slack setup
         print(f"\n  {bold('Slack setup')}")
-        print(f"  {dim('See docs/messaging-slack.md for setup instructions.')}")
+        print(f"  {dim('See docs/messaging/slack.md for setup instructions.')}")
         print()
 
         bot_token = ask("Slack Bot Token (xoxb-...)")
@@ -424,7 +424,7 @@ def step_messaging(state: OnboardingState) -> OnboardingState:
     elif provider_idx == 2:
         # Matrix setup
         print(f"\n  {bold('Matrix setup')}")
-        print(f"  {dim('See docs/messaging-matrix.md for setup instructions.')}")
+        print(f"  {dim('See docs/messaging/matrix.md for setup instructions.')}")
         print()
 
         homeserver = ask("Matrix Homeserver URL (https://matrix.org)")

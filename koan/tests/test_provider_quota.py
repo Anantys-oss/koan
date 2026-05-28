@@ -78,6 +78,31 @@ class TestClaudeProviderQuota:
         assert ok is True
         assert detail == ""
 
+    def test_detects_session_limit_stdout(self):
+        assert self.provider.detect_quota_exhaustion(
+            stdout_text="You've hit your session limit · resets 3am (UTC)",
+            stderr_text="",
+            exit_code=1,
+        ) is True
+
+    def test_detects_structured_rate_limit_stdout(self):
+        payload = (
+            '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected",'
+            '"resetsAt":1779937200,"rateLimitType":"five_hour"}}'
+        )
+        assert self.provider.detect_quota_exhaustion(
+            stdout_text=payload,
+            stderr_text="",
+            exit_code=1,
+        ) is True
+
+    def test_ignores_generic_rate_limit_stdout(self):
+        assert self.provider.detect_quota_exhaustion(
+            stdout_text="Plan: add API rate limit handling to this endpoint.",
+            stderr_text="",
+            exit_code=1,
+        ) is False
+
 
 class TestLocalProviderQuota:
     """Local/Ollama providers have no quota concept."""

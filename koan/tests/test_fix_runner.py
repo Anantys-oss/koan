@@ -317,6 +317,28 @@ class TestRunFix:
         assert "already closed" in notification_text.lower()
         assert "⏭" in notification_text
 
+    @patch(f"{_FIX_MODULE}._submit_fix_pr", return_value="https://github.com/o/r/pull/1")
+    @patch(f"{_FIX_MODULE}.get_current_branch", return_value="koan/fix-42")
+    @patch(f"{_FIX_MODULE}._execute_fix", return_value="Done")
+    @patch(f"{_FIX_MODULE}.fetch_issue")
+    def test_explicit_project_name_reaches_tracker_and_memory(
+        self, mock_fetch, mock_execute, mock_branch, mock_pr,
+    ):
+        mock_fetch.return_value = _github_issue()
+
+        run_fix(
+            project_path="/workspace/webpros-shield",
+            issue_url="https://github.com/o/r/issues/42",
+            notify_fn=MagicMock(),
+            project_name="webpros-shield",
+            instance_dir="/koan/instance",
+        )
+
+        assert mock_fetch.call_args.kwargs["project_name"] == "webpros-shield"
+        assert mock_execute.call_args.kwargs["project_name"] == "webpros-shield"
+        assert mock_execute.call_args.kwargs["instance_dir"] == "/koan/instance"
+        assert mock_pr.call_args.kwargs["project_name"] == "webpros-shield"
+
 
 # ---------------------------------------------------------------------------
 # main (CLI entry point)
@@ -342,3 +364,15 @@ class TestMain:
         ])
         _, kwargs = mock_run.call_args
         assert kwargs.get("context") == "backend only" or mock_run.call_args[0][2] == "backend only"
+
+    @patch(f"{_FIX_MODULE}.run_fix", return_value=(True, "Done"))
+    def test_project_identity_args_passed(self, mock_run):
+        main([
+            "--project-path", "/path",
+            "--issue-url", "https://github.com/o/r/issues/1",
+            "--project-name", "webpros-shield",
+            "--instance-dir", "/koan/instance",
+        ])
+        _, kwargs = mock_run.call_args
+        assert kwargs["project_name"] == "webpros-shield"
+        assert kwargs["instance_dir"] == "/koan/instance"

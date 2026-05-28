@@ -368,18 +368,18 @@ def build_memory_block(
 
 
 def _resolve_project_name_from_path(koan_root: str, project_path: str) -> str:
-    """Reverse-resolve ``project_path`` to the project name in ``projects.yaml``.
+    """Reverse-resolve ``project_path`` to the merged Koan project name.
 
     The agent loop receives ``project_name`` from ``projects.yaml`` while
-    skill runners only have the repo path on disk. If we trust the
+    skill runners may only have the repo path on disk. If we trust the
     basename here, operators whose configured project slug differs from
     the repo directory name (common: ``path: ~/code/koan-fork`` mapped to
     name ``koan``) silently get no memory injected.
 
     Strategy:
-        1. Load ``projects.yaml``; for each ``(name, path)`` entry, expand
-           ``~`` and resolve symlinks on both sides.
-        2. Return the configured ``name`` whose resolved path matches.
+        1. Load the merged project registry (``projects.yaml`` plus
+           workspace-discovered projects) and normalize paths.
+        2. Return the configured/workspace ``name`` whose path matches.
         3. On any failure (no config, lookup error, no match) fall back
            to ``Path(project_path).name`` — same behaviour as before, so
            operators relying on basename-matching see no regression.
@@ -389,28 +389,19 @@ def _resolve_project_name_from_path(koan_root: str, project_path: str) -> str:
         return basename
 
     try:
-        from app.projects_config import get_projects_from_config, load_projects_config
-        config = load_projects_config(koan_root)
-        if not config:
-            return basename
-        try:
-            target = Path(project_path).expanduser().resolve()
-        except OSError:
-            return basename
-        for name, path in get_projects_from_config(config):
-            try:
-                candidate = Path(path).expanduser().resolve()
-            except OSError:
-                continue
-            if candidate == target:
-                return name
-        # Loop completed without a match — projects.yaml loaded fine but
-        # the path on disk isn't registered. This is the silent-drift case:
-        # the basename fallback may point at a memory/projects/<slug>/ that
-        # doesn't exist, in which case memory loads as empty with no clue
-        # for the operator. Emit a warning so it shows up in logs.
+        from app.utils import find_known_project_name_for_path
+
+        name = find_known_project_name_for_path(project_path, koan_root=koan_root)
+        if name:
+            return name
+
+        # The path on disk isn't in either projects.yaml or workspace/. This
+        # is the silent-drift case: the basename fallback may point at a
+        # memory/projects/<slug>/ that doesn't exist, in which case memory
+        # loads as empty with no clue for the operator.
         logger.warning(
-            "[skill_memory] project_path=%r not found in projects.yaml — "
+            "[skill_memory] project_path=%r not found in known projects "
+            "(projects.yaml or workspace/) — "
             "using basename %r; memory may not load if your project slug "
             "differs from the directory name",
             project_path, basename,
@@ -421,7 +412,14 @@ def _resolve_project_name_from_path(koan_root: str, project_path: str) -> str:
     return basename
 
 
-def build_memory_block_for_skill(project_path: str, task_text: str, **kwargs) -> str:
+def build_memory_block_for_skill(
+    project_path: str,
+    task_text: str,
+    *,
+    project_name: str = "",
+    instance_dir: str = "",
+    **kwargs,
+) -> str:
     """Resolve instance + project_name from environment and delegate.
 
     Convenience wrapper used by skill runners (`/fix`, `/plan`, `/implement`,
@@ -430,20 +428,21 @@ def build_memory_block_for_skill(project_path: str, task_text: str, **kwargs) ->
     (i.e. the skill is being invoked outside a Kōan instance, e.g. from a
     standalone test or one-off CLI invocation).
 
-    The project name is resolved by matching ``project_path`` against
-    ``projects.yaml`` first (matching the agent loop), then falling back
-    to ``Path(project_path).name`` if no match is found. Pre-existing
-    setups where the configured name equals the repo directory name keep
-    working unchanged.
+    When provided, ``project_name`` is used directly. Otherwise the project
+    name is resolved by matching ``project_path`` against the merged project
+    registry (``projects.yaml`` plus workspace-discovered projects), then
+    falling back to ``Path(project_path).name`` if no match is found.
     """
     koan_root = os.environ.get("KOAN_ROOT", "")
-    if not koan_root:
+    if not koan_root and not instance_dir:
         logger.info(
             "[skill_memory] KOAN_ROOT unset — skipping memory injection "
             "(standalone invocation for project_path=%r)",
             project_path,
         )
         return ""
-    instance = str(Path(koan_root) / "instance")
-    project_name = _resolve_project_name_from_path(koan_root, project_path)
-    return build_memory_block(instance, project_name, task_text, **kwargs)
+    instance = instance_dir or str(Path(koan_root) / "instance")
+    effective_project_name = project_name or _resolve_project_name_from_path(
+        koan_root, project_path,
+    )
+    return build_memory_block(instance, effective_project_name, task_text, **kwargs)

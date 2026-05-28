@@ -43,6 +43,8 @@ def run_plan(
     notify_fn=None,
     skill_dir: Optional[Path] = None,
     context: Optional[str] = None,
+    project_name: str = "",
+    instance_dir: str = "",
 ) -> Tuple[bool, str]:
     """Execute the plan pipeline.
 
@@ -67,10 +69,12 @@ def run_plan(
     if issue_url:
         return _run_issue_plan(
             project_path, issue_url, notify_fn, skill_dir, context=context,
+            project_name=project_name, instance_dir=instance_dir,
         )
     elif idea:
         return _run_new_plan(
             project_path, idea, notify_fn, skill_dir, context=context,
+            project_name=project_name, instance_dir=instance_dir,
         )
     else:
         return False, "No idea or issue URL provided."
@@ -82,12 +86,14 @@ def _run_new_plan(
     notify_fn,
     skill_dir: Optional[Path],
     context: Optional[str] = None,
+    project_name: str = "",
+    instance_dir: str = "",
 ) -> Tuple[bool, str]:
     """Generate a plan for a new idea, reusing an existing issue if found."""
     notify_fn(f"\U0001f9e0 Planning: {idea[:100]}{'...' if len(idea) > 100 else ''}")
     print(f"[plan] New plan for: {idea[:80]}", flush=True)
 
-    project_name = project_name_for_path(project_path)
+    project_name = project_name or project_name_for_path(project_path)
 
     existing = find_existing_plan_issue(project_name, project_path, idea)
     if existing:
@@ -97,12 +103,14 @@ def _run_new_plan(
         )
         return _run_issue_plan(
             project_path, existing.url, notify_fn, skill_dir, context=context,
+            project_name=project_name, instance_dir=instance_dir,
         )
 
     print("[plan] Invoking Claude for plan generation", flush=True)
     try:
         plan = _generate_plan(
             project_path, idea, context=context or "", skill_dir=skill_dir,
+            project_name=project_name, instance_dir=instance_dir,
         )
     except Exception as e:
         return False, f"Plan generation failed: {str(e)[:300]}"
@@ -144,9 +152,11 @@ def _run_issue_plan(
     notify_fn,
     skill_dir: Optional[Path],
     context: Optional[str] = None,
+    project_name: str = "",
+    instance_dir: str = "",
 ) -> Tuple[bool, str]:
     """Read an existing issue/PR + comments, generate updated plan, post comment."""
-    project_name = project_name_for_path(project_path)
+    project_name = project_name or project_name_for_path(project_path)
 
     # Resolve the reference first (no network) for a useful heartbeat and to
     # validate the URL; the tracker then handles fetch/comment generically.
@@ -186,7 +196,8 @@ def _run_issue_plan(
     print("[plan] Invoking Claude for plan generation", flush=True)
     try:
         plan = _generate_iteration_plan(
-            project_path, issue_context, skill_dir=skill_dir
+            project_path, issue_context, skill_dir=skill_dir,
+            project_name=project_name, instance_dir=instance_dir,
         )
     except Exception as e:
         return False, f"Plan generation failed: {str(e)[:300]}"
@@ -354,6 +365,8 @@ def _review_loop(
     max_rounds: int = 3,
     is_iteration: bool = False,
     issue_context: str = "",
+    project_name: str = "",
+    instance_dir: str = "",
 ) -> str:
     """Iteratively review and re-generate a plan until approved or rounds exhausted.
 
@@ -380,7 +393,7 @@ def _review_loop(
 
         if approved:
             print(f"[plan_runner] Review round {round_num}: APPROVED", file=sys.stderr)
-            _record_plan_metric(project_path, True, round_num, "")
+            _record_plan_metric(project_path, True, round_num, "", project_name)
             return current_plan
 
         print(f"[plan_runner] Review round {round_num}: ISSUES_FOUND", file=sys.stderr)
@@ -393,7 +406,9 @@ def _review_loop(
                 "posting best version with warning",
                 file=sys.stderr,
             )
-            _record_plan_metric(project_path, False, round_num, issues or "")
+            _record_plan_metric(
+                project_path, False, round_num, issues or "", project_name,
+            )
             return current_plan + _review_warning_note(issues, max_rounds)
 
         # Note if the same issues recur
@@ -410,7 +425,12 @@ def _review_loop(
         try:
             from app.skill_memory import build_memory_block_for_skill
             if is_iteration:
-                project_memory = build_memory_block_for_skill(project_path, issue_context)
+                project_memory = build_memory_block_for_skill(
+                    project_path,
+                    issue_context,
+                    project_name=project_name,
+                    instance_dir=instance_dir,
+                )
                 new_plan = _run_claude_plan(
                     load_prompt_or_skill(
                         skill_dir, "plan-iterate",
@@ -420,7 +440,12 @@ def _review_loop(
                     project_path,
                 )
             else:
-                project_memory = build_memory_block_for_skill(project_path, idea)
+                project_memory = build_memory_block_for_skill(
+                    project_path,
+                    idea,
+                    project_name=project_name,
+                    instance_dir=instance_dir,
+                )
                 new_plan = _run_claude_plan(
                     load_prompt_or_skill(
                         skill_dir, "plan", IDEA=idea, CONTEXT=feedback_context,
@@ -430,7 +455,10 @@ def _review_loop(
                 )
         except Exception as e:
             print(f"[plan_runner] Re-generation failed: {e} — keeping previous plan", file=sys.stderr)
-            _record_plan_metric(project_path, False, final_round, "re-generation failed")
+            _record_plan_metric(
+                project_path, False, final_round, "re-generation failed",
+                project_name,
+            )
             return current_plan
 
         if new_plan:
@@ -438,7 +466,9 @@ def _review_loop(
         else:
             print("[plan_runner] Re-generation returned empty — keeping previous plan", file=sys.stderr)
 
-    _record_plan_metric(project_path, False, final_round, "loop exhausted")
+    _record_plan_metric(
+        project_path, False, final_round, "loop exhausted", project_name,
+    )
     return current_plan
 
 
@@ -447,12 +477,13 @@ def _record_plan_metric(
     approved: bool,
     rounds: int,
     issues_summary: str,
+    project_name: str = "",
 ) -> None:
     """Record a plan-review metric (fire-and-forget)."""
     try:
         import os
         instance_dir = os.path.join(os.environ.get("KOAN_ROOT", ""), "instance")
-        project_name = Path(project_path).name
+        project_name = project_name or project_name_for_path(project_path)
         from app.skill_metrics import record_plan_metric
         record_plan_metric(instance_dir, project_name, approved, rounds, issues_summary)
     except Exception as e:
@@ -468,12 +499,21 @@ def _review_warning_note(issues: str, max_rounds: int) -> str:
     )
 
 
-def _generate_plan(project_path, idea, context="", skill_dir=None):
+def _generate_plan(
+    project_path,
+    idea,
+    context="",
+    skill_dir=None,
+    project_name: str = "",
+    instance_dir: str = "",
+):
     """Run Claude to generate a structured plan for a new idea."""
     from app.config import get_plan_review_config
     from app.skill_memory import build_memory_block_for_skill
 
-    project_memory = build_memory_block_for_skill(project_path, idea)
+    project_memory = build_memory_block_for_skill(
+        project_path, idea, project_name=project_name, instance_dir=instance_dir,
+    )
     prompt = load_prompt_or_skill(
         skill_dir, "plan", IDEA=idea, CONTEXT=context, PROJECT_MEMORY=project_memory,
     )
@@ -484,17 +524,29 @@ def _generate_plan(project_path, idea, context="", skill_dir=None):
         plan = _review_loop(
             plan, project_path, idea=idea, context=context, skill_dir=skill_dir,
             max_rounds=review_cfg["max_rounds"],
+            project_name=project_name, instance_dir=instance_dir,
         )
 
     return plan
 
 
-def _generate_iteration_plan(project_path, issue_context, skill_dir=None):
+def _generate_iteration_plan(
+    project_path,
+    issue_context,
+    skill_dir=None,
+    project_name: str = "",
+    instance_dir: str = "",
+):
     """Run Claude to generate an updated plan based on issue + comments."""
     from app.config import get_plan_review_config
     from app.skill_memory import build_memory_block_for_skill
 
-    project_memory = build_memory_block_for_skill(project_path, issue_context)
+    project_memory = build_memory_block_for_skill(
+        project_path,
+        issue_context,
+        project_name=project_name,
+        instance_dir=instance_dir,
+    )
     prompt = load_prompt_or_skill(
         skill_dir, "plan-iterate",
         ISSUE_CONTEXT=issue_context,
@@ -508,6 +560,7 @@ def _generate_iteration_plan(project_path, issue_context, skill_dir=None):
             plan, project_path, idea="", context="", skill_dir=skill_dir,
             max_rounds=review_cfg["max_rounds"],
             is_iteration=True, issue_context=issue_context,
+            project_name=project_name, instance_dir=instance_dir,
         )
 
     return plan
@@ -697,6 +750,16 @@ def main(argv=None):
         "--context",
         help="Additional user context (e.g. 'Focus on phase 2')",
     )
+    parser.add_argument(
+        "--project-name",
+        default="",
+        help="Koan project name for memory and tracker configuration",
+    )
+    parser.add_argument(
+        "--instance-dir",
+        default="",
+        help="Koan instance directory for project memory",
+    )
     cli_args = parser.parse_args(argv)
 
     skill_dir = Path(__file__).resolve().parent.parent / "skills" / "core" / "plan"
@@ -707,6 +770,8 @@ def main(argv=None):
         issue_url=cli_args.issue_url,
         skill_dir=skill_dir,
         context=cli_args.context,
+        project_name=cli_args.project_name,
+        instance_dir=cli_args.instance_dir,
     )
     print(summary)
     return 0 if success else 1

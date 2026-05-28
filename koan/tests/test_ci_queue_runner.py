@@ -155,6 +155,22 @@ class TestMainErrorHandling:
         stdout = capsys.readouterr().out
         result = json.loads(stdout)
         assert result["success"] is True
+        assert result["quota_exhausted"] is False
+
+    def test_main_marks_quota_exhausted(self, capsys):
+        from app.ci_queue_runner import main
+
+        with patch(
+            "app.ci_queue_runner.run_ci_check_and_fix",
+            return_value=(False, "Actions:\n- CI fix stopped: API quota exhausted"),
+        ):
+            exit_code = main([PR_URL, "--project-path", PROJECT_PATH])
+
+        assert exit_code == 1
+        stdout = capsys.readouterr().out
+        result = json.loads(stdout)
+        assert result["success"] is False
+        assert result["quota_exhausted"] is True
 
 
 class TestDrainOneErrorHandling:
@@ -557,6 +573,42 @@ class TestAttemptCiFixes:
 
         assert result is False
         assert any("no changes" in a.lower() for a in actions_log)
+
+    def test_quota_stop_does_not_report_exhausted_attempts(self):
+        """Quota during CI fix stops as quota, not as persistent CI failure."""
+        from app.ci_queue_runner import _attempt_ci_fixes
+        from app.claude_step import CI_QUOTA_STOP_ACTION, StepResult
+
+        with (
+            patch("app.claude_step._run_git", return_value=""),
+            patch("app.rebase_pr._build_ci_fix_prompt", return_value="fix this"),
+            patch(
+                "app.claude_step.run_claude_step",
+                return_value=StepResult(
+                    committed=False,
+                    output="You've hit your session limit",
+                    quota_exhausted=True,
+                ),
+            ),
+        ):
+            actions_log = []
+            result = _attempt_ci_fixes(
+                branch="fix-branch",
+                base="main",
+                full_repo="owner/repo",
+                pr_number="42",
+                pr_url=PR_URL,
+                project_path=PROJECT_PATH,
+                context={"url": PR_URL},
+                ci_logs="Error: test failed",
+                actions_log=actions_log,
+                max_attempts=5,
+            )
+
+        assert result is False
+        assert CI_QUOTA_STOP_ACTION in actions_log
+        assert not any("no changes" in a.lower() for a in actions_log)
+        assert not any("still failing after" in a.lower() for a in actions_log)
 
     def test_build_ci_fix_prompt_loads_without_error(self):
         """_build_ci_fix_prompt must load ci_fix.md without FileNotFoundError.

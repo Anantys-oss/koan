@@ -994,6 +994,18 @@ class TestMainCLI:
             assert kwargs["idea"] == "Add feature"
             assert kwargs["context"] == "Must support dark mode"
 
+    def test_project_identity_flags_passed_to_run_plan(self):
+        with patch("app.plan_runner.run_plan", return_value=(True, "ok")) as mock:
+            main([
+                "--project-path", "/project",
+                "--issue-url", "https://github.com/o/r/issues/1",
+                "--project-name", "webpros-shield",
+                "--instance-dir", "/koan/instance",
+            ])
+            _, kwargs = mock.call_args
+            assert kwargs["project_name"] == "webpros-shield"
+            assert kwargs["instance_dir"] == "/koan/instance"
+
 
 # ---------------------------------------------------------------------------
 # _is_simple_plan

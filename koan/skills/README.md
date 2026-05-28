@@ -398,7 +398,7 @@ caveman: true
 ---
 ```
 
-Operators can override on a per-instance basis with `optimizations.caveman.include: [my_skill]` in `config.yaml`. The operator's `include:` list overrides a SKILL.md `caveman: false`, giving instance owners final authority. See `docs/user-manual.md` → "Caveman Output Optimization" for the full resolution rules.
+Operators can override on a per-instance basis with `optimizations.caveman.include: [my_skill]` in `config.yaml`. The operator's `include:` list overrides a SKILL.md `caveman: false`, giving instance owners final authority. See `docs/users/user-manual.md` → "Caveman Output Optimization" for the full resolution rules.
 
 Skills that produce rich prose (design exploration, code review, security analysis, conversation, documentation) should leave the flag off entirely, or set `caveman: false` explicitly to document intent.
 
