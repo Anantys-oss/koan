@@ -62,6 +62,12 @@ _error_replies: BoundedSet = BoundedSet(maxlen=_MAX_TRACKED_ENTRIES)
 # Per-user rate tracking for AI replies — persisted to survive restarts.
 _REPLY_RATE_FILE = ".reply-rate-limits.json"
 
+# Notification outcome annotation key set on the notification dict.
+# loop_manager uses this to decide whether to count/log as mission creation.
+NOTIFICATION_OUTCOME_KEY = "_koan_notification_outcome"
+NOTIFICATION_OUTCOME_QUEUED = "queued"
+NOTIFICATION_OUTCOME_HANDLED_NOOP = "handled_noop"
+
 
 def _load_reply_timestamps(instance_dir: str) -> Dict[str, List[float]]:
     """Load reply timestamps from disk, discarding entries older than 1 hour."""
@@ -955,7 +961,7 @@ def _try_assignment_notification(
     - review_requested → /review <PR URL>
     - assign → /implement <issue URL>
 
-    Returns True if a mission was queued.
+    Returns True if the notification was handled (queued or deduplicated/no-op).
     """
     import os
     from pathlib import Path
@@ -980,6 +986,7 @@ def _try_assignment_notification(
     ):
         log.debug("GitHub assign: notification %s already tracked, skipping", notif_id)
         mark_notification_read(notif_id)
+        notification[NOTIFICATION_OUTCOME_KEY] = NOTIFICATION_OUTCOME_HANDLED_NOOP
         return True
 
     # Validate the command is registered and github_enabled
@@ -1043,6 +1050,7 @@ def _try_assignment_notification(
             reason, thread_key,
         )
         mark_notification_read(notif_id)
+        notification[NOTIFICATION_OUTCOME_KEY] = NOTIFICATION_OUTCOME_HANDLED_NOOP
         return True
 
     # Skip closed/merged subjects (reuse the already-fetched subject_info)
@@ -1092,6 +1100,7 @@ def _try_assignment_notification(
                 mark_notification_read(notif_id)
                 if instance_dir and thread_key:
                     track_thread(instance_dir, thread_key)
+                notification[NOTIFICATION_OUTCOME_KEY] = NOTIFICATION_OUTCOME_HANDLED_NOOP
                 return True  # Already handled — not an error
     except OSError:
         pass  # If we can't read, proceed with insertion (worst case: a dup)
@@ -1104,7 +1113,7 @@ def _try_assignment_notification(
     )
 
     try:
-        insert_pending_mission(missions_path, mission_entry)
+        inserted = insert_pending_mission(missions_path, mission_entry)
     except OSError as e:
         log.warning("GitHub assign: failed to insert mission: %s", e)
         mark_notification_read(notif_id)
@@ -1113,6 +1122,9 @@ def _try_assignment_notification(
     mark_notification_read(notif_id)
     if instance_dir and thread_key:
         track_thread(instance_dir, thread_key)
+    notification[NOTIFICATION_OUTCOME_KEY] = (
+        NOTIFICATION_OUTCOME_QUEUED if inserted else NOTIFICATION_OUTCOME_HANDLED_NOOP
+    )
     return True
 
 
@@ -1139,6 +1151,9 @@ def process_single_notification(
     Returns:
         Tuple of (success, error_message). error_message is None on success.
     """
+    # Default to "handled without queue" unless a queueing path overrides it.
+    notification[NOTIFICATION_OUTCOME_KEY] = NOTIFICATION_OUTCOME_HANDLED_NOOP
+
     # Early exit checks + fetch comment (single API call)
     comment = _fetch_and_filter_comment(notification, bot_username, max_age_hours)
     if not comment:
@@ -1332,6 +1347,7 @@ def process_single_notification(
         # handler's reply text is logged but not posted back to GitHub — the
         # cp handlers return a short status like "Fix queued for X" that is
         # already surfaced via Telegram's mission-queued notification.
+        notification[NOTIFICATION_OUTCOME_KEY] = NOTIFICATION_OUTCOME_QUEUED
         return True, None
 
     # Build and insert mission BEFORE reacting (so crash doesn't lose command)
@@ -1373,9 +1389,12 @@ def process_single_notification(
         command_name, mission_entry, project_name,
     )
 
+    inserted_any = False
     try:
         for entry in mission_entries:
-            insert_pending_mission(missions_path, entry, urgent=urgent)
+            inserted_any = insert_pending_mission(
+                missions_path, entry, urgent=urgent,
+            ) or inserted_any
     except OSError as e:
         log.warning("GitHub: failed to insert mission: %s", e)
         # Mark notification as read to prevent infinite re-processing
@@ -1400,7 +1419,15 @@ def process_single_notification(
     notification["_koan_command"] = command_name
     notification["_koan_author"] = comment_author
 
-    log.info("GitHub: created mission from @%s: %s", comment_author, command_name)
+    notification[NOTIFICATION_OUTCOME_KEY] = (
+        NOTIFICATION_OUTCOME_QUEUED
+        if inserted_any
+        else NOTIFICATION_OUTCOME_HANDLED_NOOP
+    )
+    if inserted_any:
+        log.info("GitHub: created mission from @%s: %s", comment_author, command_name)
+    else:
+        log.debug("GitHub: mission already pending for @%s: %s", comment_author, command_name)
     return True, None
 
 
@@ -1511,7 +1538,8 @@ def _try_subscription_notification(
     - notification reason is 'subscribed' or 'author'
     - no @mention was found (standard command path returned None)
 
-    Returns True if a /reply mission was queued.
+    Returns True if the notification was handled and /reply is already pending
+    or newly queued.
     """
     import os
     from pathlib import Path
@@ -1575,13 +1603,17 @@ def _try_subscription_notification(
 
     missions_path = Path(koan_root) / "instance" / "missions.md"
     try:
-        insert_pending_mission(missions_path, mission_entry)
+        inserted = insert_pending_mission(missions_path, mission_entry)
     except OSError as e:
         log.warning("GitHub subscribe: failed to insert mission: %s", e)
         return False
 
-    # Mark as pending to prevent duplicate missions
-    set_pending_mission(instance_dir, thread_key, True)
+    # Mark as pending to prevent duplicate missions.
+    if inserted:
+        set_pending_mission(instance_dir, thread_key, True)
+        notification[NOTIFICATION_OUTCOME_KEY] = NOTIFICATION_OUTCOME_QUEUED
+    else:
+        notification[NOTIFICATION_OUTCOME_KEY] = NOTIFICATION_OUTCOME_HANDLED_NOOP
     return True
 
 
