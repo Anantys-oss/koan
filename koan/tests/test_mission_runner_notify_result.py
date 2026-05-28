@@ -518,3 +518,52 @@ class TestNotifyMissionResult:
 
         content = (instance_dir / "outbox.md").read_text()
         assert "already closed" in content
+
+
+class TestResolveForwardResultMarkersThreadSafety:
+    """Lazy init of _skill_registry_cache must be thread-safe."""
+
+    def test_concurrent_calls_build_registry_once(self, monkeypatch):
+        import app.mission_runner as mr
+        import app.skills as skills_mod
+        import threading
+        import time
+
+        monkeypatch.setattr(mr, "_skill_registry_cache", None)
+        call_count = 0
+
+        class FakeRegistry:
+            pass
+
+        original_build = getattr(skills_mod, "build_registry", None)
+
+        def fake_build_registry(extra_dirs):
+            nonlocal call_count
+            call_count += 1
+            time.sleep(0.05)
+            return FakeRegistry()
+
+        monkeypatch.setattr(skills_mod, "build_registry", fake_build_registry)
+        monkeypatch.setattr(
+            skills_mod, "collect_forward_result_markers", lambda reg: ["/test"]
+        )
+
+        results = []
+        start_event = threading.Event()
+
+        def run():
+            start_event.wait()
+            r = mr._resolve_forward_result_markers()
+            results.append(r)
+
+        threads = [threading.Thread(target=run) for _ in range(4)]
+        for t in threads:
+            t.start()
+        start_event.set()
+        for t in threads:
+            t.join(timeout=10)
+
+        assert call_count == 1
+        assert all(r == ["/test"] for r in results)
+
+        monkeypatch.setattr(mr, "_skill_registry_cache", None)
