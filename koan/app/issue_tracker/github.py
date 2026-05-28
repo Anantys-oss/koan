@@ -2,6 +2,7 @@
 
 import json
 import re
+import subprocess
 import sys
 from typing import Optional
 
@@ -95,7 +96,8 @@ class GitHubIssueTracker(IssueTracker):
                 ],
             )
             results = json.loads(raw)
-        except Exception as e:
+        except (RuntimeError, OSError, ValueError,
+                subprocess.SubprocessError, json.JSONDecodeError) as e:
             print(
                 f"[issue_tracker.github] plan-issue search failed: {e}",
                 file=sys.stderr,

@@ -15,6 +15,7 @@ CLI:
 import hashlib
 import logging
 import re
+import subprocess
 from pathlib import Path
 from typing import List, Optional, Tuple, Union
 
@@ -174,7 +175,8 @@ def run_implement(
                 base_branch=base_branch,
                 project_name=project_name,
             )
-        except Exception as e:
+        except (RuntimeError, OSError, ValueError,
+                subprocess.SubprocessError) as e:
             logger.warning("PR submission failed: %s", e)
 
     # Build notification and summary

@@ -210,7 +210,8 @@ def submit_draft_pr(
                 project_name=project_name,
                 project_path=project_path,
             )
-        except Exception as e:
+        except (RuntimeError, OSError, ValueError,
+                subprocess.SubprocessError) as e:
             logger.debug("Failed to comment on issue: %s", e)
 
     return pr_url

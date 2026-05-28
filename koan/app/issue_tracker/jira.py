@@ -1,10 +1,13 @@
 """Jira issue tracker client."""
 
+import logging
 from typing import Optional
 
 from app.github_url_parser import parse_jira_url
 from app.issue_tracker.base import IssueTracker
 from app.issue_tracker.types import IssueContent, IssueRef
+
+logger = logging.getLogger(__name__)
 
 
 class JiraIssueTracker(IssueTracker):
@@ -66,7 +69,14 @@ class JiraIssueTracker(IssueTracker):
             return None
         from app.jira_notifications import jira_search_issues
 
-        hits = jira_search_issues(self.project_key, idea, limit=5)
+        try:
+            hits = jira_search_issues(self.project_key, idea, limit=5)
+        except (RuntimeError, OSError, ValueError) as e:
+            logger.warning(
+                "[issue_tracker.jira] plan-issue search failed for %s: %s",
+                self.project_key, e,
+            )
+            return None
         if not hits:
             return None
         first = hits[0]

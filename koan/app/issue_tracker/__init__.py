@@ -35,7 +35,7 @@ def project_name_for_path(project_path: str) -> str:
         from app.utils import project_name_for_path as _project_name_for_path
 
         return _project_name_for_path(project_path)
-    except Exception:
+    except (ImportError, OSError, ValueError):
         return Path(project_path).name if project_path else ""
 
 
@@ -85,7 +85,7 @@ def _resolve_github_project_context(
         resolved_path = resolve_project_path(repo, owner=owner)
         if resolved_path:
             return _project_name_for_path(resolved_path), project_path or resolved_path
-    except Exception:
+    except (ImportError, OSError, ValueError):
         pass
 
     return project_name, project_path
