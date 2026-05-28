@@ -38,7 +38,9 @@ Bridge state that would otherwise create circular imports lives in
   handles completion, failure, reflection, and auto-merge.
 - `loop_manager.py` handles focus, pending-file setup, project validation, and
   interruptible sleeps.
-- `quota_handler.py` detects quota exhaustion and writes pause state.
+- `quota_handler.py` detects quota exhaustion and writes pause state. Hard
+  quota hits requeue the active mission, pause until the provider reset time
+  plus 10 minutes, or fall back to a 5-hour pause when no reset time is known.
 
 The loop writes real-time state to status files so the bridge, dashboard, and
 commands can report progress without directly controlling the runner.

@@ -32,6 +32,7 @@ _STRICT_QUOTA_PATTERNS = [
     r"out of extra usage",
     r"quota.*reached",
     r"quota.*exhausted",
+    r'"?quota_exhausted"?\s*:\s*true',
     # Claude Code structured stream events for five-hour/session limits.
     r"rate_limit_event",
     r'"?rateLimitType"?\s*:',
@@ -87,7 +88,7 @@ _RETRY_AFTER_RE = re.compile(
 _MAX_RETRY_SECONDS = 86400  # 24 hours
 _MAX_RETRY_MINUTES = 1440   # 24 hours in minutes
 _MAX_RETRY_HOURS = 24       # 24 hours
-_DEFAULT_RETRY_SECONDS = 3600  # 1 hour fallback for zero/negative values
+_DEFAULT_RETRY_SECONDS = 5 * 60 * 60  # 5 hour fallback for zero/negative values
 
 # Sentinel returned when quota check is unreliable (both log files unreadable).
 # Callers should check `result is QUOTA_CHECK_UNRELIABLE` to distinguish from
@@ -98,7 +99,7 @@ QUOTA_CHECK_UNRELIABLE = ("__unreliable__", "Quota check failed: could not read 
 def _clamp_retry_seconds(seconds: int) -> int:
     """Clamp retry seconds to sane bounds.
 
-    Zero or negative values are treated as unknown and default to 1 hour.
+    Zero or negative values are treated as unknown and default to 5 hours.
     Values above 24 hours are capped to 24 hours.
     """
     if seconds <= 0:
@@ -252,14 +253,20 @@ def compute_resume_info(
     """
     if reset_timestamp is not None:
         from app.reset_parser import time_until_reset
+        from app.pause_manager import QUOTA_RESET_BUFFER_SECONDS
 
-        until = time_until_reset(reset_timestamp)
-        return reset_timestamp, f"Auto-resume at reset time (~{until})"
+        effective_ts = reset_timestamp + QUOTA_RESET_BUFFER_SECONDS
+        until = time_until_reset(effective_ts)
+        buffer_display = _seconds_to_human(QUOTA_RESET_BUFFER_SECONDS)
+        return (
+            effective_ts,
+            f"Auto-resume {buffer_display} after reset time (~{until})",
+        )
 
-    # Fallback: current time + 1h retry
+    # Fallback: current time + 5h retry
     from app.pause_manager import QUOTA_RETRY_SECONDS
     fallback_ts = int(datetime.now().timestamp()) + QUOTA_RETRY_SECONDS
-    return fallback_ts, "Auto-resume in ~1h (reset time unknown)"
+    return fallback_ts, "Auto-resume in ~5h (reset time unknown)"
 
 
 def write_quota_journal(

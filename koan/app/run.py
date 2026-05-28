@@ -1348,7 +1348,6 @@ def _handle_skill_dispatch(
                 create_pause(koan_root, "quota", reset_ts, reset_display or _disp)
             log("quota", f"Quota reached during skill post-mission. {reset_display}")
 
-            _finalize_mission(instance, mission_title, project_name, exit_code)
             _requeue_mission_in_file(instance, mission_title)
             _commit_instance(instance, f"koan: quota exhausted {time.strftime('%Y-%m-%d-%H:%M')}")
             _notify(instance, (
@@ -2262,26 +2261,41 @@ def _run_iteration(
                 ))
                 return True  # consumed API budget before quota hit
 
-        # Complete/fail mission in missions.md (safety net — idempotent if Claude already did it)
-        # Done BEFORE post-mission pipeline so quota exhaustion can't skip it.
-        # Use original_mission_title because that's the needle in "In Progress".
-        # cli_skill translation may have changed mission_title to a different string.
+        # Check quota for all CLI outcomes before mission finalization. Some
+        # provider wrappers emit a quota payload with exit 0, and classifying
+        # only non-zero exits can move quota-hit work to Done before the pause.
         if original_mission_title:
-            _finalize_mission(instance, original_mission_title, project_name, claude_exit)
+            from app.quota_handler import handle_quota_exhaustion, QUOTA_CHECK_UNRELIABLE
+            quota_result = handle_quota_exhaustion(
+                koan_root=koan_root,
+                instance_dir=instance,
+                project_name=project_name,
+                run_count=run_num,
+                stdout_file=stdout_file,
+                stderr_file=stderr_file,
+                provider_name=provider_name,
+                exit_code=claude_exit,
+            )
+            if quota_result is not None and quota_result is not QUOTA_CHECK_UNRELIABLE:
+                reset_display, resume_msg = quota_result
+                log("quota", "API quota exhausted — requeueing mission to Pending")
+                _requeue_mission_in_file(instance, original_mission_title)
+                _commit_instance(instance, f"koan: quota exhausted {time.strftime('%Y-%m-%d-%H:%M')}")
+                _notify(instance, (
+                    f"⏸️ API quota exhausted.{(' ' + reset_display) if reset_display else ''}\n"
+                    f"Mission '{original_mission_title[:60]}' moved back to Pending.\n"
+                    f"{resume_msg} or use /resume to restart manually."
+                ))
+                return True
 
-        # --- Clean up checkpoint after mission finalization ---
-        # Delete on both success and failure to prevent orphaned checkpoint files.
-        # Recovery only matters for in-progress missions (crash); once finalized,
-        # the checkpoint is no longer needed.
-        if original_mission_title:
+        # If mission was aborted, notify and skip heavy post-mission pipeline
+        if _last_mission_aborted and original_mission_title:
+            _finalize_mission(instance, original_mission_title, project_name, claude_exit)
             try:
                 from app.checkpoint_manager import delete_checkpoint
                 delete_checkpoint(instance, original_mission_title)
             except Exception as e:
                 log("error", f"Checkpoint cleanup failed (non-blocking): {e}")
-
-        # If mission was aborted, notify and skip heavy post-mission pipeline
-        if _last_mission_aborted and original_mission_title:
             log("koan", f"Mission aborted: {original_mission_title[:60]}")
             _notify(instance, f"⏭️ [{project_name}] Mission aborted: {original_mission_title[:60]}")
             return True  # count as productive so loop continues immediately
@@ -2331,9 +2345,9 @@ def _run_iteration(
                     create_pause(koan_root, "quota", reset_ts, reset_display or _disp)
                 log("quota", f"Quota reached. {reset_display}")
 
-                # Requeue mission: _finalize_mission already moved it to Failed,
-                # but quota failures are transient — move it back to Pending
-                # so it gets retried after the pause ends.
+                # Requeue mission before normal finalization. Quota failures
+                # are transient, so the mission should remain Pending and get
+                # retried after the pause ends.
                 if original_mission_title:
                     log("quota", "Requeueing mission to Pending (quota is transient)")
                     _requeue_mission_in_file(instance, original_mission_title)
@@ -2347,6 +2361,22 @@ def _run_iteration(
                 return True  # ran Claude before quota hit — productive
         except Exception as e:
             log("error", f"Post-mission processing error: {e}\n{traceback.format_exc()}")
+
+        # Complete/fail mission in missions.md after quota handling has had a
+        # chance to requeue transient quota failures.
+        if original_mission_title:
+            _finalize_mission(instance, original_mission_title, project_name, claude_exit)
+
+        # --- Clean up checkpoint after mission finalization ---
+        # Delete on both success and failure to prevent orphaned checkpoint files.
+        # Recovery only matters for in-progress missions (crash); once finalized,
+        # the checkpoint is no longer needed.
+        if original_mission_title:
+            try:
+                from app.checkpoint_manager import delete_checkpoint
+                delete_checkpoint(instance, original_mission_title)
+            except Exception as e:
+                log("error", f"Checkpoint cleanup failed (non-blocking): {e}")
     finally:
         _cleanup_temp(stdout_file, stderr_file)
         if cmd_cleanup_paths:
@@ -2477,15 +2507,19 @@ def _handle_iteration_error(
 def _compute_quota_reset_ts(instance: str):
     """Compute quota reset timestamp and display string.
 
-    Returns (reset_ts: int, reset_display: str). Falls back to
-    QUOTA_RETRY_SECONDS from now if estimation fails.
+    Returns (reset_ts: int, reset_display: str). Adds the quota reset buffer
+    to known reset times and falls back to QUOTA_RETRY_SECONDS from now if
+    estimation fails.
     """
     reset_ts = None
     reset_display = ""
     try:
         from app.usage_estimator import cmd_reset_time, _estimate_reset_time, _load_state
+        from app.pause_manager import QUOTA_RESET_BUFFER_SECONDS
         usage_state_path = Path(instance, "usage_state.json")
         reset_ts = cmd_reset_time(usage_state_path)
+        if reset_ts is not None:
+            reset_ts += QUOTA_RESET_BUFFER_SECONDS
         state = _load_state(usage_state_path)
         reset_display = f"session reset in ~{_estimate_reset_time(state.get('session_start', ''), 5)}"
     except Exception as e:
@@ -2499,8 +2533,9 @@ def _compute_quota_reset_ts(instance: str):
 def _compute_preflight_reset_ts(error_output: str):
     """Compute quota reset timestamp from preflight probe error output.
 
-    Returns (reset_ts: int, reset_display: str). Falls back to
-    QUOTA_RETRY_SECONDS from now if extraction fails.
+    Returns (reset_ts: int, reset_display: str). Adds the quota reset buffer
+    to known reset times and falls back to QUOTA_RETRY_SECONDS from now if
+    extraction fails.
     """
     reset_ts = None
     reset_display = ""

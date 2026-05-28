@@ -342,12 +342,12 @@ class TestExtractResetInfoCopilot:
 class TestExtractResetInfoBoundsChecking:
     """Test bounds checking in extract_reset_info — zero/negative/huge values."""
 
-    def test_retry_after_zero_defaults_to_1h(self):
+    def test_retry_after_zero_defaults_to_5h(self):
         from app.quota_handler import extract_reset_info
 
         text = "Retry-After: 0"
         result = extract_reset_info(text)
-        assert result == "resets in 1h"
+        assert result == "resets in 5h"
 
     def test_retry_after_huge_value_capped_to_24h(self):
         from app.quota_handler import extract_reset_info
@@ -370,12 +370,12 @@ class TestExtractResetInfoBoundsChecking:
         result = extract_reset_info(text)
         assert result == "resets in 24h"
 
-    def test_try_again_in_0_minutes_defaults_to_1h(self):
+    def test_try_again_in_0_minutes_defaults_to_5h(self):
         from app.quota_handler import extract_reset_info
 
         text = "try again in 0 minutes"
         result = extract_reset_info(text)
-        assert result == "resets in 1h"
+        assert result == "resets in 5h"
 
     def test_try_again_in_huge_hours_capped(self):
         from app.quota_handler import extract_reset_info
@@ -384,12 +384,12 @@ class TestExtractResetInfoBoundsChecking:
         result = extract_reset_info(text)
         assert result == "resets in 24h"
 
-    def test_try_again_in_0_seconds_defaults_to_1h(self):
+    def test_try_again_in_0_seconds_defaults_to_5h(self):
         from app.quota_handler import extract_reset_info
 
         text = "try again in 0 seconds"
         result = extract_reset_info(text)
-        assert result == "resets in 1h"
+        assert result == "resets in 5h"
 
     def test_try_again_in_2000_minutes_capped(self):
         from app.quota_handler import extract_reset_info
@@ -426,12 +426,12 @@ class TestClampRetrySeconds:
     def test_zero_returns_default(self):
         from app.quota_handler import _clamp_retry_seconds
 
-        assert _clamp_retry_seconds(0) == 3600
+        assert _clamp_retry_seconds(0) == 5 * 3600
 
     def test_negative_returns_default(self):
         from app.quota_handler import _clamp_retry_seconds
 
-        assert _clamp_retry_seconds(-10) == 3600
+        assert _clamp_retry_seconds(-10) == 5 * 3600
 
     def test_normal_value_unchanged(self):
         from app.quota_handler import _clamp_retry_seconds
@@ -520,14 +520,15 @@ class TestComputeResumeInfo:
 
     def test_with_valid_timestamp(self):
         from app.quota_handler import compute_resume_info
+        from app.pause_manager import QUOTA_RESET_BUFFER_SECONDS
 
         # A timestamp 2 hours from now
         import time
 
         future_ts = int(time.time()) + 7200
         effective_ts, msg = compute_resume_info(future_ts, "resets 10am")
-        assert effective_ts == future_ts
-        assert "Auto-resume at reset time" in msg
+        assert effective_ts == future_ts + QUOTA_RESET_BUFFER_SECONDS
+        assert "Auto-resume 10m after reset time" in msg
 
     def test_with_none_timestamp_uses_fallback(self):
         from app.quota_handler import compute_resume_info
@@ -539,8 +540,40 @@ class TestComputeResumeInfo:
         effective_ts, msg = compute_resume_info(None, "unknown")
         after = int(time.time()) + QUOTA_RETRY_SECONDS + 10
         assert before <= effective_ts <= after
-        assert "1h" in msg
+        assert "5h" in msg
         assert "reset time unknown" in msg
+
+
+class TestQuotaPauseTiming:
+    """Quota pauses should use reset + buffer, or 5h when unknown."""
+
+    def test_resets_at_pause_uses_buffer(self, tmp_path):
+        from app.quota_handler import handle_quota_exhaustion
+        from app.pause_manager import QUOTA_RESET_BUFFER_SECONDS
+
+        instance = str(tmp_path / "instance")
+        os.makedirs(instance)
+        reset_ts = 1_779_937_200
+        payload = (
+            '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected",'
+            f'"resetsAt":{reset_ts},"rateLimitType":"five_hour"}}'
+        )
+
+        with patch("app.pause_manager.create_pause") as mock_pause:
+            result = handle_quota_exhaustion(
+                str(tmp_path),
+                instance,
+                "koan",
+                3,
+                stdout_text=payload,
+                stderr_text="",
+                provider_name="claude",
+                exit_code=1,
+            )
+
+        assert result is not None
+        mock_pause.assert_called_once()
+        assert mock_pause.call_args[0][2] == reset_ts + QUOTA_RESET_BUFFER_SECONDS
 
 
 class TestWriteQuotaJournal:
@@ -793,7 +826,7 @@ class TestHandleQuotaExhaustion:
         )
         assert result is not None
         _, resume_msg = result
-        assert "1h" in resume_msg
+        assert "5h" in resume_msg
 
     def test_pause_reason_is_quota(self, tmp_path):
         from app.quota_handler import handle_quota_exhaustion

@@ -2087,8 +2087,10 @@ class TestComputeQuotaResetTs:
     ):
         """When usage_estimator works, uses its output."""
         from app.run import _compute_quota_reset_ts
+        from app.pause_manager import QUOTA_RESET_BUFFER_SECONDS
+
         reset_ts, reset_display = _compute_quota_reset_ts("/tmp/test-instance")
-        assert reset_ts == 9999999999
+        assert reset_ts == 9999999999 + QUOTA_RESET_BUFFER_SECONDS
         assert "4h30m" in reset_display
 
 
@@ -4932,7 +4934,7 @@ class TestSkillDispatchAuthQuota(TestRunSkillMissionEnv):
             )
 
         assert handled is True
-        mock_finalize.assert_called_once()
+        mock_finalize.assert_not_called()
         mock_requeue.assert_called_once()
         # Pause already created by handle_quota_exhaustion inside
         # run_post_mission — outer layer should not overwrite
@@ -6379,7 +6381,7 @@ class TestRunIterationPaths:
     # --- Post-mission quota exhaustion ---
 
     def test_post_mission_quota_exhaustion_creates_pause(self, tmp_path):
-        """Quota hit during post-mission → create pause and return True."""
+        """Quota hit during post-mission → requeue and return True."""
         plan = self._make_plan("mission", mission_title="big task")
         with self._patched_iteration(
             tmp_path, plan,
@@ -6391,9 +6393,26 @@ class TestRunIterationPaths:
             with patch("app.run._compute_quota_reset_ts", return_value=(int(time.time()) + 3600, "1h")):
                 with patch("app.pause_manager.create_pause"):
                     result = self._call(tmp_path)
-            # Should still have finalized mission before post-processing
-            mocks["_finalize_mission"].assert_called_once()
+            # Post-mission quota handling should requeue before normal
+            # finalization can move the mission to Done/Failed.
+            mocks["_finalize_mission"].assert_not_called()
             # Should return True (ran Claude before quota hit)
+            assert result is True
+
+    def test_zero_exit_quota_output_requeues_before_finalize(self, tmp_path):
+        """Quota text with exit 0 must pause/requeue before normal finalization."""
+        plan = self._make_plan("mission", mission_title="big task")
+        with self._patched_iteration(tmp_path, plan) as mocks:
+            with patch(
+                "app.quota_handler.handle_quota_exhaustion",
+                return_value=("resets 3am (UTC)", "Auto-resume 10m after reset time"),
+            ):
+                with patch("app.run._requeue_mission_in_file") as mock_requeue:
+                    result = self._call(tmp_path)
+
+            mock_requeue.assert_called_once()
+            mocks["_finalize_mission"].assert_not_called()
+            mocks["run_post_mission"].assert_not_called()
             assert result is True
 
     # --- Max runs triggers pause ---

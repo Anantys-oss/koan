@@ -879,6 +879,11 @@ Kōan automatically adapts its work intensity based on remaining API quota:
 
 You don't need to manage this — Kōan adjusts automatically. Use `/quota` to see the current mode. If the internal estimate drifts from reality, use `/quota <N>` to override (e.g., `/quota 50` tells Kōan it has 50% remaining).
 
+When the provider reports a hard quota/session limit, Kōan pauses immediately,
+moves the current mission back to Pending, and resumes 10 minutes after the
+reported reset time. If the reset time cannot be parsed, Kōan pauses for 5
+hours.
+
 ### Exploration Mode
 
 When exploration is enabled, Kōan may autonomously explore a project's codebase between missions — discovering improvements, noting issues, and building context.

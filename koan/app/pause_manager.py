@@ -32,9 +32,13 @@ from app.signals import PAUSE_FILE
 # Default cooldown for non-quota pauses (max_runs, manual)
 DEFAULT_COOLDOWN_SECONDS = 5 * 60 * 60  # 5 hours
 
+# Buffer added after a provider-reported quota reset time before auto-resume.
+# Provider reset timestamps can be rounded or slightly early; the buffer avoids
+# immediately re-entering the quota loop.
+QUOTA_RESET_BUFFER_SECONDS = 10 * 60  # 10 minutes
+
 # Retry interval for quota pauses when reset time is unknown.
-# Shorter than DEFAULT_COOLDOWN_SECONDS to discover quota resets faster.
-QUOTA_RETRY_SECONDS = 3600  # 1 hour
+QUOTA_RETRY_SECONDS = 5 * 60 * 60  # 5 hours
 
 
 @dataclass
