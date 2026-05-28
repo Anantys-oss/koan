@@ -1906,6 +1906,69 @@ class TestIdleWaitConfig:
         # Verify status was set with focus info
         status_calls = [c for c in mock_status.call_args_list if "Focus mode" in str(c)]
         assert len(status_calls) >= 1
+        log_messages = " | ".join(str(c.args[1]) for c in mock_log.call_args_list)
+        assert "waiting for missions" in log_messages
+        assert "no missions pending, sleeping" not in log_messages
+
+    @patch("app.run.interruptible_sleep", return_value=None)
+    @patch("app.run.set_status")
+    @patch("app.run.log")
+    @patch("app.run.plan_iteration")
+    def test_focus_wait_zero_interval_uses_minimum_breath(
+        self, mock_plan, mock_log, mock_status, mock_sleep, tmp_path,
+    ):
+        """focus_wait with interval=0 must not tight-loop through planning."""
+        from app.run import _run_iteration
+
+        mock_plan.return_value = self._make_plan("focus_wait", focus_remaining="2h")
+        instance = str(tmp_path / "instance")
+        os.makedirs(instance, exist_ok=True)
+        (tmp_path / ".koan-project").write_text("koan")
+
+        with patch("app.github_config.get_github_commands_enabled", return_value=False), \
+             patch("app.jira_config.get_jira_enabled", return_value=False):
+            _run_iteration(
+                koan_root=str(tmp_path),
+                instance=instance,
+                projects=[("koan", "/tmp/koan")],
+                count=0, max_runs=10, interval=0, git_sync_interval=5,
+            )
+
+        mock_sleep.assert_called_once_with(
+            10, str(tmp_path), instance, wake_on_mission=True,
+        )
+
+    @patch("app.run.interruptible_sleep", return_value=None)
+    @patch("app.run.set_status")
+    @patch("app.run.log")
+    @patch("app.run.plan_iteration")
+    def test_focus_wait_zero_interval_uses_notification_due_time(
+        self, mock_plan, mock_log, mock_status, mock_sleep, tmp_path,
+    ):
+        """When notification polling is active, idle waits until the next poll."""
+        from app.run import _run_iteration
+
+        mock_plan.return_value = self._make_plan("focus_wait", focus_remaining="2h")
+        instance = str(tmp_path / "instance")
+        os.makedirs(instance, exist_ok=True)
+        (tmp_path / ".koan-project").write_text("koan")
+
+        with patch("app.github_config.get_github_commands_enabled", return_value=True), \
+             patch("app.jira_config.get_jira_enabled", return_value=False), \
+             patch("app.loop_manager.process_github_notifications", return_value=0), \
+             patch("app.loop_manager.was_github_notification_check_throttled", return_value=True), \
+             patch("app.loop_manager.get_github_notification_check_due_in", return_value=300), \
+             patch("app.run._notify_raw"):
+            _run_iteration(
+                koan_root=str(tmp_path),
+                instance=instance,
+                projects=[("koan", "/tmp/koan")],
+                count=1, max_runs=10, interval=0, git_sync_interval=5,
+            )
+
+        mock_sleep.assert_called_once_with(
+            300, str(tmp_path), instance, wake_on_mission=True,
+        )
 
     @patch("app.run.interruptible_sleep", return_value=None)
     @patch("app.run.set_status")

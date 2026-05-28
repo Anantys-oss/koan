@@ -42,6 +42,11 @@ Bridge state that would otherwise create circular imports lives in
   quota hits requeue the active mission, pause until the provider reset time
   plus 10 minutes, or fall back to a 5-hour pause when no reset time is known.
 
+Idle actions use the same interruptible sleep path even when `auto_pause` is
+disabled. If `interval_seconds` is set to `0`, the runner waits until the next
+configured GitHub/Jira notification poll is due, or a small minimum breath when
+notification polling is disabled, so always-on instances do not hot-loop.
+
 The loop writes real-time state to status files so the bridge, dashboard, and
 commands can report progress without directly controlling the runner.
 

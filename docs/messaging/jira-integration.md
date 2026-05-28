@@ -264,7 +264,9 @@ Two-tier approach matching the GitHub integration pattern:
 | 2 consecutive empty | 4x base interval |
 | 3+ consecutive empty | `max_check_interval_seconds` cap (default: 300s) |
 
-Backoff resets immediately when any mention is found.
+Backoff resets immediately when any mention is found. When `auto_pause` is
+disabled and there is no work, the agent loop parks on the same backoff instead
+of repeatedly re-planning before the next Jira poll is due.
 
 ## Jira Issue Context in Skills
 

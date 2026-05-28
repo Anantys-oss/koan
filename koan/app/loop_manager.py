@@ -631,6 +631,18 @@ def _get_effective_check_interval() -> int:
         return _get_effective_check_interval_locked()
 
 
+def _seconds_until_next_github_check_locked() -> int:
+    """Return live seconds until the next GitHub notification poll is due."""
+    if _last_github_check <= 0:
+        return 0
+    remaining = _get_effective_check_interval_locked() - (
+        time.time() - _last_github_check
+    )
+    if remaining <= 0:
+        return 0
+    return max(1, int(remaining + 0.999))
+
+
 def was_github_notification_check_throttled() -> bool:
     """Return whether the last GitHub notification call skipped due to throttle."""
     with _github_state_lock:
@@ -640,7 +652,7 @@ def was_github_notification_check_throttled() -> bool:
 def get_github_notification_check_due_in() -> int:
     """Return seconds until the next GitHub notification check is allowed."""
     with _github_state_lock:
-        return _last_github_check_due_in
+        return _seconds_until_next_github_check_locked()
 
 
 def _check_sso_failures() -> None:
@@ -1290,10 +1302,22 @@ def was_jira_notification_check_throttled() -> bool:
         return _last_jira_check_throttled
 
 
+def _seconds_until_next_jira_check_locked() -> int:
+    """Return live seconds until the next Jira notification poll is due."""
+    if _last_jira_check <= 0:
+        return 0
+    remaining = _get_effective_jira_interval_locked() - (
+        time.time() - _last_jira_check
+    )
+    if remaining <= 0:
+        return 0
+    return max(1, int(remaining + 0.999))
+
+
 def get_jira_notification_check_due_in() -> int:
     """Return seconds until the next Jira notification check is allowed."""
     with _jira_state_lock:
-        return _last_jira_check_due_in
+        return _seconds_until_next_jira_check_locked()
 
 
 def _load_processed_jira_tracker(instance_dir: str):

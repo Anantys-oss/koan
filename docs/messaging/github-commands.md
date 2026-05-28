@@ -223,7 +223,8 @@ shared setting is `notification_polling.max_check_interval_seconds: 300`, which
 lets always-on instances stay ready without polling GitHub more than once every
 five minutes during quiet periods. Legacy `github.check_interval_seconds` and
 `github.max_check_interval_seconds` settings still work as GitHub-only
-overrides.
+overrides. If `auto_pause` is disabled and there is no work, the agent loop also
+parks on this backoff so it does not flood logs while waiting for the next poll.
 
 ### Error handling
 

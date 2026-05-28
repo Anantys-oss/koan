@@ -76,7 +76,8 @@ interval_seconds: 300
 
 # Notification polling — shared protection for always-on instances.
 # Provider-specific github/jira polling settings below can still override these
-# values, but this shared section is the recommended default.
+# values, but this shared section is the recommended default. When auto_pause is
+# false, quiet idle loops still wait on this backoff instead of hot-looping.
 # notification_polling:
 #   check_interval_seconds: 60       # Base polling interval (default: 60, min: 10)
 #   max_check_interval_seconds: 300  # Idle backoff cap (default: 300, min: 30)

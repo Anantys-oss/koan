@@ -32,6 +32,10 @@ RESULT_FORWARD_MAX_CHARS = 4000
 # Minimum seconds between CI queue checks during interruptible sleep.
 CI_QUEUE_SLEEP_INTERVAL = 30
 
+# Minimum wait for idle loop states when the configured run interval is
+# disabled. Prevents always-on mode from hot-looping through planning/logging.
+IDLE_LOOP_BREATH_SECONDS = 10
+
 # ---------------------------------------------------------------------------
 # GitHub notifications  (loop_manager.py)
 # ---------------------------------------------------------------------------

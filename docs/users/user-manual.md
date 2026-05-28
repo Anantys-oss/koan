@@ -1055,6 +1055,8 @@ enable_multiple_instances: false
 
 # Shared GitHub/Jira notification polling guard. Provider-specific
 # github/jira settings can override this, but the shared setting is preferred.
+# When auto_pause is false, quiet idle loops still wait for this backoff
+# instead of repeatedly re-planning with no work.
 notification_polling:
   check_interval_seconds: 60
   max_check_interval_seconds: 300

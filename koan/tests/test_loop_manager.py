@@ -665,7 +665,8 @@ class TestInterruptibleSleep:
             # Don't actually sleep — just track
 
         with patch("app.loop_manager.time.sleep", side_effect=tracking_sleep), \
-             patch("app.loop_manager.process_github_notifications", return_value=0):
+             patch("app.loop_manager.process_github_notifications", return_value=0), \
+             patch("app.loop_manager.process_jira_notifications", return_value=0):
             result = interruptible_sleep(
                 interval=25,
                 koan_root=koan_root,
@@ -2214,6 +2215,62 @@ class TestConfigurableCheckInterval:
         """The check interval has a floor of 10 seconds."""
         from app.github_config import get_github_check_interval
         assert get_github_check_interval({"github": {"check_interval_seconds": 3}}) == 10
+
+    def test_github_due_in_is_live_after_claimed_check(self):
+        """Due time is available immediately after a real poll, not only throttle skips."""
+        import time
+        import app.loop_manager as lm
+
+        old = (
+            lm._GITHUB_CHECK_INTERVAL,
+            lm._GITHUB_MAX_CHECK_INTERVAL,
+            lm._consecutive_empty_checks,
+            lm._last_github_check,
+        )
+        try:
+            lm._GITHUB_CHECK_INTERVAL = 60
+            lm._GITHUB_MAX_CHECK_INTERVAL = 300
+            lm._consecutive_empty_checks = 0
+            lm._last_github_check = time.time()
+
+            due = lm.get_github_notification_check_due_in()
+        finally:
+            (
+                lm._GITHUB_CHECK_INTERVAL,
+                lm._GITHUB_MAX_CHECK_INTERVAL,
+                lm._consecutive_empty_checks,
+                lm._last_github_check,
+            ) = old
+
+        assert 0 < due <= 60
+
+    def test_jira_due_in_is_live_after_claimed_check(self):
+        """Jira exposes the same live due-time behavior as GitHub."""
+        import time
+        import app.loop_manager as lm
+
+        old = (
+            lm._JIRA_CHECK_INTERVAL,
+            lm._JIRA_MAX_CHECK_INTERVAL,
+            lm._consecutive_jira_empty,
+            lm._last_jira_check,
+        )
+        try:
+            lm._JIRA_CHECK_INTERVAL = 60
+            lm._JIRA_MAX_CHECK_INTERVAL = 300
+            lm._consecutive_jira_empty = 0
+            lm._last_jira_check = time.time()
+
+            due = lm.get_jira_notification_check_due_in()
+        finally:
+            (
+                lm._JIRA_CHECK_INTERVAL,
+                lm._JIRA_MAX_CHECK_INTERVAL,
+                lm._consecutive_jira_empty,
+                lm._last_jira_check,
+            ) = old
+
+        assert 0 < due <= 60
 
     @patch("app.loop_manager._load_github_config")
     @patch("app.loop_manager._build_skill_registry")

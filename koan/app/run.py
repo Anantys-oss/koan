@@ -30,6 +30,7 @@ import traceback
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+from app.constants import IDLE_LOOP_BREATH_SECONDS
 from app.iteration_manager import plan_iteration
 from app.loop_manager import check_pending_missions, interruptible_sleep
 from app.pid_manager import acquire_pidfile, release_pidfile
@@ -1013,6 +1014,50 @@ def _sleep_between_runs(
             set_status(koan_root, f"Run {run_num}/{max_runs} — done, new mission detected")
 
 
+def _next_notification_due_in(
+    github_enabled: bool,
+    jira_enabled: bool,
+) -> int:
+    """Return the earliest known notification poll due time."""
+    due_times = []
+    if github_enabled:
+        try:
+            from app.loop_manager import get_github_notification_check_due_in
+            due = get_github_notification_check_due_in()
+            if due > 0:
+                due_times.append(due)
+        except Exception as e:
+            log("warning", f"GitHub notification due-time check failed: {e}")
+    if jira_enabled:
+        try:
+            from app.loop_manager import get_jira_notification_check_due_in
+            due = get_jira_notification_check_due_in()
+            if due > 0:
+                due_times.append(due)
+        except Exception as e:
+            log("warning", f"Jira notification due-time check failed: {e}")
+    return min(due_times) if due_times else 0
+
+
+def _resolve_idle_wait_interval(
+    configured_interval: int,
+    github_enabled: bool,
+    jira_enabled: bool,
+) -> int:
+    """Pick a nonzero idle wait without changing normal configured sleeps."""
+    try:
+        interval = max(0, int(configured_interval))
+    except (TypeError, ValueError):
+        interval = 0
+    if interval > 0:
+        return interval
+
+    notification_due = _next_notification_due_in(github_enabled, jira_enabled)
+    if notification_due > 0:
+        return max(IDLE_LOOP_BREATH_SECONDS, notification_due)
+    return IDLE_LOOP_BREATH_SECONDS
+
+
 def _handle_contemplative(
     plan: dict,
     run_num: int,
@@ -1840,7 +1885,7 @@ def _run_iteration(
             f"👁️ Passive — read-only ({p.get('passive_remaining', 'indefinite')})",
         ),
         "focus_wait": lambda p: (
-            f"Focus mode active ({p.get('focus_remaining', 'permanent')}) — no missions pending, sleeping",
+            f"Focus mode active ({p.get('focus_remaining', 'permanent')}) — waiting for missions",
             f"Focus mode — waiting for missions ({p.get('focus_remaining', 'permanent')})",
         ),
         "schedule_wait": lambda _: (
@@ -1864,6 +1909,9 @@ def _run_iteration(
         log_msg, status_msg = _IDLE_WAIT_CONFIG[action](plan)
         log("koan", log_msg)
         set_status(koan_root, status_msg)
+        idle_interval = _resolve_idle_wait_interval(
+            interval, github_enabled, jira_enabled,
+        )
         # branch_saturated_wait: the pending missions ARE the blocker
         # (the picked mission's project is over its PR limit), so waking
         # on pending missions would just tight-loop back into the same
@@ -1873,7 +1921,7 @@ def _run_iteration(
         wake_on_mission = action not in ("branch_saturated_wait", "passive_wait")
         with protected_phase(status_msg):
             wake = interruptible_sleep(
-                interval, koan_root, instance,
+                idle_interval, koan_root, instance,
                 wake_on_mission=wake_on_mission,
             )
         if wake == "mission":
