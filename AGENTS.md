@@ -22,6 +22,21 @@ When existing docs or code mention Claude, treat that as Koan's Claude provider
 or legacy Claude Code workflow unless the task explicitly asks to use Claude
 Code.
 
+## Documentation First
+
+- Before planning or implementing a feature or important refactor, inspect the
+  relevant documentation with `grep`, `find`, or equivalent search. Start at
+  `docs/README.md`, then read the matching pages under `docs/architecture/`,
+  `docs/users/`, `docs/providers/`, `docs/messaging/`, or `docs/operations/`.
+- Treat docs as context to verify against code, not as unquestioned truth. If
+  code and docs disagree, preserve current code behavior unless the task says
+  otherwise, and update the docs to match the resulting behavior.
+- After changing user behavior, configuration, daemon flow, provider behavior,
+  shared state, safety boundaries, or an important implementation decision,
+  update the relevant docs in the same branch.
+- For core skill changes, update both `docs/users/user-manual.md` and
+  `docs/users/skills.md`.
+
 ## Commands
 
 ```bash
@@ -200,7 +215,7 @@ When adding a new core skill, do all of the following:
 3. If the skill runs through the agent loop, register it in `_SKILL_RUNNERS` in
    `skill_dispatch.py`, and add any needed command builder or validation.
 4. Update the core skills list in `CLAUDE.md`.
-5. Update `docs/user-manual.md`.
+5. Update `docs/users/user-manual.md` and `docs/users/skills.md`.
 6. Run the relevant tests, including core skill group enforcement.
 
 Skill names, aliases, and directories must use underscores, not hyphens.
@@ -246,7 +261,7 @@ Skill names, aliases, and directories must use underscores, not hyphens.
 - System prompts must be generic and must not reference private instance
   details such as owner names.
 - When adding, removing, or changing a core skill, update
-  `docs/user-manual.md`.
+  `docs/users/user-manual.md` and `docs/users/skills.md`.
 - Every core skill must have a `group:` field in `SKILL.md`; allowed groups are
   `missions`, `code`, `pr`, `status`, `config`, `ideas`, and `system`.
 - Custom integration skills should use `group: integrations`.
@@ -297,6 +312,11 @@ it in the same branch.
 ## Documentation Maintenance
 
 When adding or modifying a feature, update the corresponding section in
-`README.md` or the relevant file under `docs/`. If no documentation file exists
-for the feature, create one under `docs/`. Public-facing documentation must stay
+`README.md` or the relevant file under `docs/`. Use the nested docs layout
+described in `docs/README.md`: user-facing behavior belongs under `docs/users/`,
+daemon design under `docs/architecture/`, provider setup under
+`docs/providers/`, messaging and tracker integrations under `docs/messaging/`,
+operations under `docs/operations/`, and durable decisions under `docs/design/`.
+If no documentation file exists for the feature, create one in the matching
+directory. Public-facing documentation and implementation references must stay
 in sync with code behavior.

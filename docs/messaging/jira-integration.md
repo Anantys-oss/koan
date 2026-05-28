@@ -62,6 +62,11 @@ projects:
       default_branch: "11.126"      # Optional PR target branch
 ```
 
+The project path can either be declared with `path:` or discovered from
+`KOAN_ROOT/workspace/<project-name>`. Jira ownership still belongs in
+`projects.yaml`, but workspace-discovered projects do not need a duplicate
+path entry as long as the project name matches the workspace directory.
+
 You can inspect or update this from Telegram:
 
 ```
@@ -201,6 +206,7 @@ jira_notifications.py        ← Fetches & filters Jira comments, parses @mentio
 jira_command_handler.py      ← Validates commands, checks permissions, creates missions
   ↓
 issue_tracker/config.py      ← Reads projects.yaml tracker ownership + branches
+projects_merged.py           ← Merges projects.yaml with workspace/ projects
   ↓
 skills.py                    ← Skill flags: github_enabled (reused for Jira)
 ```
@@ -383,7 +389,7 @@ Both can trigger the same set of commands. The difference is the context URL att
 The 🎫 mission was written to `missions.md`. Check:
 - `instance/missions.md` — the mission should be in the Pending section
 - Agent loop logs — the mission will be picked up in the next iteration
-- Project name resolution — the `repo:` override or project mapping must point to a valid Koan project in `projects.yaml`
+- Project name resolution — the `repo:` override or project mapping must point to a valid Koan project in `projects.yaml` or `KOAN_ROOT/workspace/`
 
 ### "No valid project keys after sanitization"
 
@@ -396,8 +402,8 @@ Expected behavior. The in-memory processed set is lost on restart, but the persi
 ## Related
 
 - [GitHub Notification Commands](github-commands.md) — GitHub @mention integration (complementary)
-- [Messaging: Telegram](messaging-telegram.md) — Primary command interface
-- [Messaging: Slack](messaging-slack.md) — Alternative messaging provider
-- [Messaging: Matrix](messaging-matrix.md) — Alternative messaging provider
-- [Skills Reference](skills.md) — Full skill documentation
-- [User Manual](user-manual.md) — Complete usage guide
+- [Messaging: Telegram](telegram.md) — Primary command interface
+- [Messaging: Slack](slack.md) — Alternative messaging provider
+- [Messaging: Matrix](matrix.md) — Alternative messaging provider
+- [Skills Reference](../users/skills.md) — Full skill documentation
+- [User Manual](../users/user-manual.md) — Complete usage guide

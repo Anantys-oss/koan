@@ -1,0 +1,39 @@
+# GitHub And Trackers
+
+Koan integrates with GitHub for notifications, PR workflows, CI feedback, and
+issue-style command routing. Jira can be used as an issue tracker while GitHub
+remains the code review and PR surface.
+
+## Notification Flow
+
+GitHub and Jira notification modules fetch events, filter authorized users,
+parse commands, deduplicate work, and enqueue missions. GitHub mention handling
+can react to comments to mark that a command was accepted.
+
+Context-aware skills can receive issue, PR, branch, project, and URL context
+from the originating notification.
+
+## PR Workflows
+
+Koan-created work normally lands in branch-prefixed draft PRs. PR helpers cover
+creation, review, rebasing, recreating, squashing, CI fixing, and PR quality
+checks. Auto-merge is configurable and should remain guarded by project config,
+security review, and sync state.
+
+## Trackers
+
+Tracker files in `instance/` prevent duplicate work across daemon iterations.
+Examples include:
+
+- GitHub notification and reaction tracking.
+- Review comment dispatch fingerprints.
+- CI dispatch fingerprints keyed by PR, SHA, and job.
+- Remote rename and default-branch tracking.
+- Burn-rate and quota-related state.
+
+Use the existing tracker module for a behavior when one exists. If a new tracker
+is needed, keep its state local to `instance/`, make keys stable, and document
+the deduplication rule.
+
+User setup lives in [GitHub commands](../messaging/github-commands.md) and
+[Jira integration](../messaging/jira-integration.md).

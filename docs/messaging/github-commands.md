@@ -269,7 +269,7 @@ The helper is `app.external_skill_dispatch.try_dispatch_custom_handler`. It also
 
 Non-core skills should set `group: integrations` so they render in a dedicated **Integrations** section at the bottom of `@bot help`, separate from the core command groups (code, pr, missions, …).
 
-See [koan/skills/README.md](../koan/skills/README.md) for the full skill authoring guide.
+See [koan/skills/README.md](../../koan/skills/README.md) for the full skill authoring guide.
 
 ## Security Model
 
@@ -336,9 +336,9 @@ See [Jira Integration](jira-integration.md) for full setup instructions and the 
 ## Related
 
 - [Jira Integration](jira-integration.md) — Jira @mention integration (complementary)
-- [Skills README](../koan/skills/README.md) — Skill authoring guide with `github_enabled` flag documentation
-- [Messaging: Telegram](messaging-telegram.md) — Alternative command interface via Telegram
-- [Messaging: Slack](messaging-slack.md) — Alternative command interface via Slack
-- [Messaging: Matrix](messaging-matrix.md) — Alternative command interface via Matrix
+- [Skills README](../../koan/skills/README.md) — Skill authoring guide with `github_enabled` flag documentation
+- [Messaging: Telegram](telegram.md) — Alternative command interface via Telegram
+- [Messaging: Slack](slack.md) — Alternative command interface via Slack
+- [Messaging: Matrix](matrix.md) — Alternative command interface via Matrix
 - [PR #251](https://github.com/sukria/koan/pull/251) — Original implementation
 - [Issue #243](https://github.com/sukria/koan/issues/243) — Feature request and design plan

@@ -4,7 +4,7 @@
 
 This manual is organized in three progressive tiers. Start with the basics, then unlock more advanced workflows as you grow comfortable.
 
-> **New here?** Make sure you've completed the [Quick Start](../README.md#quick-start) or [Full Install Guide](../INSTALL.md) first. This manual assumes Kōan is already running.
+> **New here?** Make sure you've completed the [Quick Start](../../README.md#quick-start) or [Full Install Guide](../../INSTALL.md) first. This manual assumes Kōan is already running.
 
 ---
 
@@ -278,7 +278,7 @@ Kōan can manage multiple projects simultaneously. It rotates between them based
 
 This controls where `/plan` creates new tracker issues and how Jira-origin `/fix` and `/implement` resolve the target repo and branch.
 
-Jira project keys are registered per project in `projects.yaml`. The old `instance/config.yaml jira.projects` mapping is ignored; `/config_check` reports it as a migration warning.
+Jira project keys are registered per project in `projects.yaml`. The project path can be configured there with `path:` or discovered from `KOAN_ROOT/workspace/<project-name>`. The old `instance/config.yaml jira.projects` mapping is ignored; `/config_check` reports it as a migration warning.
 
 **`/alias`** — Create short aliases for project names. Once set, typing `/<shortcut> <text>` queues a mission tagged with the aliased project.
 
@@ -430,6 +430,12 @@ The master tracking issue then synthesizes the set with three optional sections:
 - `/plan https://myorg.atlassian.net/browse/PROJ-123` — Iterate on a Jira issue's plan
 - `/plan webapp Add rate limiting to public API endpoints` — Target a specific project
 </details>
+
+For URL-based `/plan`, `/implement`, and `/fix`, Kōan resolves the project
+from the issue URL and the known project registry. Known projects include both
+`projects.yaml` entries and repositories discovered under `KOAN_ROOT/workspace/`,
+so an explicit project prefix is not required when the URL maps to one of
+those projects.
 
 **`/deepplan`** — Spec-first design with Socratic exploration of 2-3 approaches before planning. For complex missions where design matters more than speed.
 
@@ -1163,7 +1169,11 @@ optimizations:
 
 ### Per-Project Overrides
 
-Projects are configured in `projects.yaml` at `KOAN_ROOT`. Each project can override defaults:
+Projects are configured in `projects.yaml` at `KOAN_ROOT`. Repositories under
+`KOAN_ROOT/workspace/<name>` are also discovered automatically as projects;
+add a `projects.yaml` entry when you need overrides such as model selection,
+tracker routing, or a project name that differs from the directory name. Each
+project can override defaults:
 
 ```yaml
 defaults:
@@ -1229,7 +1239,7 @@ projects:
       severity_threshold: medium
 ```
 
-See [docs/security-review.md](security-review.md) for the full list of detected patterns, risk scoring details, and pipeline integration.
+See [docs/security/security-review.md](../security/security-review.md) for the full list of detected patterns, risk scoring details, and pipeline integration.
 
 ### Custom Skills
 
@@ -1296,7 +1306,7 @@ Instead of writing SKILL.md and handler.py by hand, use `/scaffold_skill` to gen
 
 This invokes Claude to produce a valid SKILL.md + handler.py stub in `instance/skills/myteam/deploy/`, validated against the parser before writing. Restart the bridge to load the new skill.
 
-See [koan/skills/README.md](../koan/skills/README.md) for the full authoring guide.
+See [koan/skills/README.md](../../koan/skills/README.md) for the full authoring guide.
 
 ### GitHub @mention Integration
 
@@ -1315,7 +1325,7 @@ Ten skills can be triggered by commenting `@koan-bot <command>` on GitHub issues
 | `/plan` | `@koan-bot /plan <idea>` on an issue |
 | `/profile` | `@koan-bot /profile` on a PR or issue |
 
-Setup requires configuring `github_nickname` and `github_commands_enabled` in `config.yaml`. See [docs/github-commands.md](github-commands.md) for full setup and configuration details.
+Setup requires configuring `github_nickname` and `github_commands_enabled` in `config.yaml`. See [docs/messaging/github-commands.md](../messaging/github-commands.md) for full setup and configuration details.
 
 ### CLI Providers
 
@@ -1323,10 +1333,10 @@ Kōan supports multiple CLI backends. Configure globally via `KOAN_CLI_PROVIDER`
 
 | Provider | Best for | Docs |
 |----------|----------|------|
-| **Claude Code** (default) | Full-featured agent, best reasoning | [provider-claude.md](provider-claude.md) |
-| **OpenAI Codex** | ChatGPT users who want Codex models | [provider-codex.md](provider-codex.md) |
-| **GitHub Copilot** | Teams with existing Copilot licenses | [provider-copilot.md](provider-copilot.md) |
-| **Local LLM** | Offline, privacy, zero API cost | [provider-local.md](provider-local.md) |
+| **Claude Code** (default) | Full-featured agent, best reasoning | [claude.md](../providers/claude.md) |
+| **OpenAI Codex** | ChatGPT users who want Codex models | [codex.md](../providers/codex.md) |
+| **GitHub Copilot** | Teams with existing Copilot licenses | [copilot.md](../providers/copilot.md) |
+| **Local LLM** | Offline, privacy, zero API cost | [local.md](../providers/local.md) |
 
 #### Provider-specific model config
 
@@ -1498,7 +1508,7 @@ auto_update:
   notify: true             # Notify via Telegram when updating
 ```
 
-See [docs/auto-update.md](auto-update.md) for details.
+See [docs/operations/auto-update.md](../operations/auto-update.md) for details.
 
 ### Adding New Projects
 
@@ -1723,9 +1733,9 @@ The dashboard binds to `localhost` only — not accessible from the network.
 
 For advanced deployment scenarios, see the existing documentation:
 
-- [Docker deployment](docker.md)
-- [SSH tunnel setup](ssh-setup.md)
-- [Always-up Railway deployment](spec-always-up-railway.md)
+- [Docker deployment](../setup/docker.md)
+- [SSH tunnel setup](../setup/ssh-setup.md)
+- [Always-up Railway deployment](../design/spec-always-up-railway.md)
 
 ---
 
@@ -1824,10 +1834,10 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/spec_audit [project]` | `/sa`, `/drift` | P | Audit docs/code alignment, queue fix missions |
 | `/incident <error>` | — | P | Triage a production error |
 | `/scaffold_skill <scope> <name> <desc>` | `/scaffold`, `/new_skill` | P | Generate SKILL.md + handler.py for a new custom skill |
-| `/rtk [setup\|uninstall\|gain\|on\|off]` | — | P | Manage optional [rtk](https://github.com/rtk-ai/rtk) integration for compressed tool output (60-90 % token savings on Bash commands). See [docs/rtk.md](rtk.md). |
+| `/rtk [setup\|uninstall\|gain\|on\|off]` | — | P | Manage optional [rtk](https://github.com/rtk-ai/rtk) integration for compressed tool output (60-90 % token savings on Bash commands). See [docs/operations/rtk.md](../operations/rtk.md). |
 
-Skills marked with GitHub @mention support: `/audit`, `/doc`, `/security_audit`, `/brainstorm`, `/plan`, `/implement`, `/fix`, `/review`, `/rebase`, `/recreate`, `/refactor`, `/profile`, `/gh_request`. See [GitHub Commands](github-commands.md) for details.
+Skills marked with GitHub @mention support: `/audit`, `/doc`, `/security_audit`, `/brainstorm`, `/plan`, `/implement`, `/fix`, `/review`, `/rebase`, `/recreate`, `/refactor`, `/profile`, `/gh_request`. See [GitHub Commands](../messaging/github-commands.md) for details.
 
 ---
 
-*This manual covers all 45 core skills. For the full command reference with tabular format, see [docs/skills.md](skills.md). For skill authoring, see [koan/skills/README.md](../koan/skills/README.md).*
+*This manual covers all 45 core skills. For the full command reference with tabular format, see [docs/users/skills.md](skills.md). For skill authoring, see [koan/skills/README.md](../../koan/skills/README.md).*

@@ -2,7 +2,7 @@
 
 > Docker provides isolated environments and simplified deployment — ideal for
 > VPS/server hosting or keeping Koan sandboxed on your machine. For running
-> Koan directly (no container), see [INSTALL.md](../INSTALL.md).
+> Koan directly (no container), see [INSTALL.md](../../INSTALL.md).
 
 ## Prerequisites
 
@@ -11,7 +11,7 @@
   - **ANTHROPIC_API_KEY** in `.env` — for API billing accounts ([console.anthropic.com](https://console.anthropic.com/settings/keys))
   - **`claude setup-token`** — for Claude subscription users (requires Claude CLI on host: `npm install -g @anthropic-ai/claude-code`)
 - **GitHub CLI (`gh`)** authenticated on the host (for PR/issue operations)
-- A messaging platform configured (**Telegram** or **Slack** — see [INSTALL.md](../INSTALL.md#2-set-up-a-messaging-platform))
+- A messaging platform configured (**Telegram** or **Slack** — see [INSTALL.md](../../INSTALL.md#2-set-up-a-messaging-platform))
 
 ## Quick Start
 

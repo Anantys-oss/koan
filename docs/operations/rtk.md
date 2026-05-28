@@ -1,6 +1,6 @@
 # RTK integration
 
-Kōan can optionally lean on [`rtk`](https://github.com/rtk-ai/rtk) — a Rust CLI proxy that compresses common dev-command output (`git`, `ls`, `cat`, `grep`, `pytest`, `cargo`, `gh`, `docker`, …) by 60–90 % before it reaches Claude. Strictly complementary to the [caveman optimisation](../instance.example/config.yaml): caveman trims what Claude **writes**; rtk trims what Claude **reads**.
+Kōan can optionally lean on [`rtk`](https://github.com/rtk-ai/rtk) — a Rust CLI proxy that compresses common dev-command output (`git`, `ls`, `cat`, `grep`, `pytest`, `cargo`, `gh`, `docker`, …) by 60–90 % before it reaches Claude. Strictly complementary to the [caveman optimisation](../../instance.example/config.yaml): caveman trims what Claude **writes**; rtk trims what Claude **reads**.
 
 `rtk` is **never** a Kōan dependency. If it isn't installed, nothing changes.
 

@@ -56,10 +56,13 @@ Two public entry points:
   builder, used by the agent loop via `prompt_builder._get_learnings_section`.
 - `build_memory_block_for_skill(project_path, task_text, **kwargs)` —
   convenience wrapper used by skill runners. Resolves `KOAN_ROOT` from the
-  environment and **reverse-resolves `project_path` against `projects.yaml`**
-  so operators whose configured slug differs from the repo directory name
-  (e.g. `path: ~/code/koan-fork` mapped to `name: koan`) still get memory
-  injected.
+  environment and accepts an explicit `project_name` from skill dispatch when
+  available. Without one, it **reverse-resolves `project_path` against Koan's
+  merged project registry**: `projects.yaml` plus dynamically discovered
+  `KOAN_ROOT/workspace/<project>` directories. Operators whose configured slug
+  differs from the repo directory name (e.g. `path: ~/code/koan-fork` mapped
+  to `name: koan`) still get memory injected, and workspace-only projects are
+  treated as first-class memory scopes.
 
 Source rules:
 
@@ -199,8 +202,9 @@ memory:
   dedup prevents lessons.md from drifting into "five ways to say the same
   thing" between 24h compaction cycles.
 - **Cross-instance portability for project slugs.** The reverse-lookup
-  against `projects.yaml` means forks/clones whose directory name doesn't
-  match the configured project name still get memory injected.
+  against the merged project registry means forks/clones whose directory name
+  doesn't match the configured project name still get memory injected, while
+  repos discovered from `workspace/` work without a `projects.yaml` path entry.
 - **Better Jaccard signal for `/review`.** Scoring against title + body +
   diff slice (not branch name) means the right lessons surface for the right
   PRs, not whichever lessons happen to share a word with `koan/fix-issue-N`.

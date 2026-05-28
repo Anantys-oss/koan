@@ -5,7 +5,7 @@
 Complete reference for all Koan slash commands. Use these via Telegram, Slack, or GitHub @mentions.
 
 > **Extensible:** Drop a `SKILL.md` in `instance/skills/` or install from a Git repo with `/skill install <url>`.
-> See [koan/skills/README.md](../koan/skills/README.md) for the authoring guide.
+> See [koan/skills/README.md](../../koan/skills/README.md) for the authoring guide.
 
 ---
 
@@ -45,7 +45,7 @@ Complete reference for all Koan slash commands. Use these via Telegram, Slack, o
 | `/claudemd [project]` | `/claude`, `/claude.md` | Refresh or create a project's CLAUDE.md | — |
 | `/doc <project> [cats]` | `/docs` | Extract structured documentation to docs/ | Yes |
 
-Skills marked **GitHub @mention** can be triggered by commenting `@koan-bot <command>` on a PR or issue. See [github-commands.md](github-commands.md).
+Skills marked **GitHub @mention** can be triggered by commenting `@koan-bot <command>` on a PR or issue. See [GitHub commands](../messaging/github-commands.md).
 
 ## Exploration & Analysis
 
@@ -123,4 +123,4 @@ with the fingerprint shown in the install reply. Inspect the cloned files
 before approving. Set `skills.allowed_hosts` in `config.yaml` to restrict
 which Git hosts `/skill install` can fetch from.
 
-Or create your own in `instance/skills/<scope>/<name>/` with a `SKILL.md` file. See [koan/skills/README.md](../koan/skills/README.md) for the full authoring guide.
+Or create your own in `instance/skills/<scope>/<name>/` with a `SKILL.md` file. See [koan/skills/README.md](../../koan/skills/README.md) for the full authoring guide.

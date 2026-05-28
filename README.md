@@ -11,8 +11,9 @@
 
 <p align="center">
   <a href="INSTALL.md"><strong>Install Guide</strong></a> &bull;
-  <a href="docs/user-manual.md"><strong>User Manual</strong></a> &bull;
-  <a href="docs/skills.md"><strong>Skills Reference</strong></a> &bull;
+  <a href="docs/README.md"><strong>Docs</strong></a> &bull;
+  <a href="docs/users/user-manual.md"><strong>User Manual</strong></a> &bull;
+  <a href="docs/users/skills.md"><strong>Skills Reference</strong></a> &bull;
   <a href="#quick-start">Quick Start</a> &bull;
   <a href="#how-it-works">How It Works</a> &bull;
   <a href="#features">Features</a> &bull;
@@ -28,7 +29,7 @@
 
 ---
 
-> **New here?** Start with the [Install Guide](INSTALL.md) to get running in minutes, then read the [User Manual](docs/user-manual.md) for the full walkthrough. All 44 commands are documented in the [Skills Reference](docs/skills.md).
+> **New here?** Start with the [Install Guide](INSTALL.md) to get running in minutes, then read the [User Manual](docs/users/user-manual.md) for the full walkthrough. The [documentation index](docs/README.md) maps setup, provider, messaging, architecture, and operations docs.
 
 ---
 
@@ -137,6 +138,8 @@ Two processes run in parallel:
 
 Communication happens through shared markdown files in `instance/` — atomic writes, file locks, no database needed.
 
+For implementation details, see the [architecture reference](docs/architecture/overview.md) and [daemon runtime](docs/architecture/daemon.md).
+
 ## Features
 
 ### Core
@@ -163,9 +166,9 @@ Communication happens through shared markdown files in `instance/` — atomic wr
 - **Auto-merge** — Configurable per-project merge strategies (squash/merge/rebase)
 - **Security review** — Automatic diff analysis for dangerous patterns (eval, shell injection, hardcoded secrets, etc.) before auto-merge. Configurable risk threshold and blocking behavior per project
 - **Git sync awareness** — Tracks branch state, detects merges, reports sync status
-- **GitHub integration** — Draft PRs, issue creation, PR reviews, rebasing — all via `gh` CLI. [Docs](docs/github-commands.md)
+- **GitHub integration** — Draft PRs, issue creation, PR reviews, rebasing — all via `gh` CLI. [Docs](docs/messaging/github-commands.md)
 - **Issue tracker routing** — Each project can use GitHub or Jira for issues via `projects.yaml` while still creating GitHub draft PRs for code review.
-- **Jira integration** — Respond to @mentions in Jira issue comments to queue missions. Runs alongside GitHub. [Docs](docs/jira-integration.md)
+- **Jira integration** — Respond to @mentions in Jira issue comments to queue missions. Runs alongside GitHub. [Docs](docs/messaging/jira-integration.md)
 - **PR review comment forwarding** — When reviewers leave comments on Koan-created PRs, the check loop auto-creates missions to address them (fingerprint-deduped, bot-filtered)
 - **GitHub @mention triggers** — Koan responds to @mentions on issues and PRs
 
@@ -246,9 +249,9 @@ Skills are pluggable commands — some are instant, others spawn Claude work ses
 | `/gha_audit` | Scan GitHub Actions for security vulnerabilities |
 | `/incident` | Log an incident |
 
-**[User Manual →](docs/user-manual.md)** — From beginner to power user, everything Kōan can do.
+**[User Manual →](docs/users/user-manual.md)** — From beginner to power user, everything Kōan can do.
 
-**[Full skills reference →](docs/skills.md)** — all 44 commands with aliases, descriptions, and usage details.
+**[Full skills reference →](docs/users/skills.md)** — all 44 commands with aliases, descriptions, and usage details.
 
 Skills are extensible — drop a `SKILL.md` in `instance/skills/` or install from a Git repo with `/skill install <url>`. See [koan/skills/README.md](koan/skills/README.md) for the authoring guide.
 
@@ -318,12 +321,14 @@ Koan isn't locked to Claude. Swap the backend per-project:
 | **Local LLM** | Offline, privacy, zero API cost |
 
 See provider guides:
-- [docs/provider-claude.md](docs/provider-claude.md)
-- [docs/provider-codex.md](docs/provider-codex.md)
-- [docs/provider-copilot.md](docs/provider-copilot.md)
-- [docs/provider-local.md](docs/provider-local.md)
+- [docs/providers/claude.md](docs/providers/claude.md)
+- [docs/providers/codex.md](docs/providers/codex.md)
+- [docs/providers/copilot.md](docs/providers/copilot.md)
+- [docs/providers/local.md](docs/providers/local.md)
 
 ## Architecture
+
+The full current-design reference lives under [docs/architecture/](docs/architecture/), with durable design rules in [docs/design/decisions.md](docs/design/decisions.md).
 
 ```
 koan/

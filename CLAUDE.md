@@ -6,6 +6,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Kōan is an autonomous background agent that uses idle Claude API quota to work on local projects. It runs as a continuous loop, pulling missions from a shared file, executing them via Claude Code CLI, and communicating progress via Telegram. Philosophy: "The agent proposes. The human decides." — no unsupervised code modifications.
 
+## Documentation first
+
+- Before planning or implementing a feature or important refactor, inspect the relevant documentation with `grep`, `find`, or equivalent search. Start at `docs/README.md`, then read the matching pages under `docs/architecture/`, `docs/users/`, `docs/providers/`, `docs/messaging/`, or `docs/operations/`.
+- Treat docs as context to verify against code, not as unquestioned truth. If code and docs disagree, preserve current code behavior unless the task says otherwise, and update the docs to match the resulting behavior.
+- After changing user behavior, configuration, daemon flow, provider behavior, shared state, safety boundaries, or an important implementation decision, update the relevant docs in the same branch.
+- For core skill changes, update both `docs/users/user-manual.md` and `docs/users/skills.md`.
+
 ## Commands
 
 ```bash
@@ -186,7 +193,7 @@ All Python code must pass **ruff** (`make lint`) before committing. The ruff con
       ```
       Must return empty. The `^+` filter restricts to lines being added on the current branch, so pre-existing leaks on `main` don't false-positive. Keeping the pattern list outside the public repo prevents this convention bullet from itself becoming a leak.
     - **If you find a pre-existing leak on `main`** while working in adjacent code, scrub it in the same branch — don't leave it as someone else's problem.
-- **User manual maintenance** — When adding, removing, or modifying a core skill, update `docs/user-manual.md` accordingly: add the skill to the appropriate tier section and the quick-reference appendix. The manual must stay in sync with `koan/skills/core/`.
+- **User manual maintenance** — When adding, removing, or modifying a core skill, update `docs/users/user-manual.md` and `docs/users/skills.md` accordingly: add the skill to the appropriate tier section and the quick-reference appendix. The manual and skills reference must stay in sync with `koan/skills/core/`.
 - **Help group enforcement** — Every core skill MUST have a `group:` field in its SKILL.md frontmatter (one of: missions, code, pr, status, config, ideas, system). This ensures commands are discoverable via `/help`. If adding a new hardcoded core command (not skill-based), add it to `_CORE_COMMAND_HELP` in `command_handlers.py`. The test suite enforces this — `TestCoreSkillGroupEnforcement` will fail if a core skill is missing its group. The `integrations` group is reserved for custom skills under `instance/skills/<scope>/` (team-specific integrations) — not for core skills.
 - **Custom skills on GitHub/Jira** — Skills under `instance/skills/<scope>/` can be exposed to GitHub and Jira @mentions with a single `github_enabled: true` flag (Jira reuses it; there is no separate `jira_enabled`). Custom skills with a `handler.py` are dispatched **in-process** by `koan/app/external_skill_dispatch.py` — the helper synthesizes a `SkillContext`, auto-feeds the originating Jira key when the author omits one, and calls `execute_skill()` directly. This avoids queueing a `/cmd …` slash mission that has no registered runner. Set `group: integrations` so they render in the dedicated help section.
 - **No hyphens in skill names or aliases** — Skill command names, aliases, and directory names MUST use underscores (`_`), never hyphens (`-`). Hyphens break Telegram command parsing because Telegram treats the hyphen as a word boundary, cutting the command short. Example: use `dead_code` not `dead-code`, `scaffold_skill` not `scaffold-skill`.
@@ -194,7 +201,7 @@ All Python code must pass **ruff** (`make lint`) before committing. The ruff con
   1. **Skill directory**: Create `koan/skills/core/<skill_name>/SKILL.md` with frontmatter including `name`, `description`, `group` (one of: missions, code, pr, status, config, ideas, system), `commands`, and `audience`. Add `handler.py` if the skill needs Python logic (omit for prompt-only skills).
   2. **Runner registration** (if the skill runs via the agent loop): Add an entry in `_SKILL_RUNNERS` dict in `skill_dispatch.py` mapping the command name to its runner module. Also add any needed command builder in `_COMMAND_BUILDERS` and validation in `validate_skill_args()`.
   3. **CLAUDE.md skill list**: Update the "Core skills" line in the Skills system section to include the new skill name (keep alphabetical order).
-  4. **User manual**: Update `docs/user-manual.md` — add the skill to the appropriate tier section and the quick-reference appendix.
+  4. **User manual and skills reference**: Update `docs/users/user-manual.md` and `docs/users/skills.md` — add the skill to the appropriate tier section and the quick-reference appendix.
   5. **Tests**: The `TestCoreSkillGroupEnforcement` test will fail if the SKILL.md is missing or lacks a `group:` field — run the test suite to verify.
   See `koan/skills/README.md` for the full SKILL.md format and handler conventions.
-- **Documentation maintenance** — When adding or modifying a feature, update the corresponding section in `README.md` and/or the relevant `docs/*.md` file (e.g., `docs/user-manual.md`, `docs/skills.md`, `docs/auto-update.md`). If no documentation file exists for the feature, create one under `docs/`. Public-facing documentation must stay in sync with the codebase — undocumented features are invisible to users.
+- **Documentation maintenance** — When adding or modifying a feature, update the corresponding section in `README.md` and/or the relevant docs file. Use the nested docs layout in `docs/README.md`: user behavior in `docs/users/`, daemon design in `docs/architecture/`, providers in `docs/providers/`, messaging and tracker integrations in `docs/messaging/`, operations in `docs/operations/`, and durable decisions in `docs/design/`. If no documentation file exists for the feature, create one in the matching directory. Public-facing documentation and implementation references must stay in sync with the codebase — undocumented features are invisible to users.
