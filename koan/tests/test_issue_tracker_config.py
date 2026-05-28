@@ -180,7 +180,6 @@ projects:
                 "default_branch": "release/11.126",
             },
         )
-        invalidate_projects_config_cache()
 
         config = load_projects_config(str(tmp_path))
         section = config["projects"]["myapp"]["issue_tracker"]
@@ -190,6 +189,43 @@ projects:
             "jira_issue_type": "Bug",
             "default_branch": "release/11.126",
         }
+
+    def test_set_project_tracker_invalidates_cache(self, tmp_path):
+        """Subsequent reads must see the new tracker without manual invalidation.
+
+        Regression: when the cache invalidation lived in the /tracker skill
+        handler, any other caller of set_project_tracker would observe stale
+        config until the file's mtime ticked over. Invalidation now lives in
+        the library itself.
+        """
+        _write_yaml(
+            tmp_path,
+            """
+projects:
+  myapp:
+    path: /tmp/myapp
+    issue_tracker:
+      provider: github
+      repo: acme/myapp
+""",
+        )
+
+        # Prime the cache with the original config so a stale read would
+        # return the GitHub tracker.
+        before = load_projects_config(str(tmp_path))
+        assert before["projects"]["myapp"]["issue_tracker"]["provider"] == "github"
+
+        set_project_tracker(
+            str(tmp_path),
+            "myapp",
+            {"provider": "jira", "jira_project": "FOO"},
+        )
+
+        # No manual invalidate_projects_config_cache() between the write and
+        # the read — set_project_tracker is responsible for it.
+        after = load_projects_config(str(tmp_path))
+        assert after["projects"]["myapp"]["issue_tracker"]["provider"] == "jira"
+        assert after["projects"]["myapp"]["issue_tracker"]["jira_project"] == "FOO"
 
     def test_resolve_code_repository_prefers_submit_target(self, tmp_path, monkeypatch):
         _write_yaml(

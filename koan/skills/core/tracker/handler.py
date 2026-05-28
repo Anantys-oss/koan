@@ -88,16 +88,11 @@ def _set_tracker(ctx, args: str) -> str:
         tracker["default_branch"] = tokens["branch"]
 
     try:
+        # set_project_tracker writes projects.yaml and invalidates the
+        # in-process projects.yaml cache so the next command sees the update.
         set_project_tracker(str(ctx.koan_root), project_name, tracker)
     except (OSError, ValueError) as e:
         return f"Failed to update projects.yaml: {e}"
-
-    # Invalidate project config cache so the next command sees the update.
-    try:
-        from app.projects_config import invalidate_projects_config_cache
-        invalidate_projects_config_cache()
-    except Exception:
-        pass
 
     os.environ.setdefault("KOAN_ROOT", str(ctx.koan_root))
     return _format_set_result(project_name, tracker)

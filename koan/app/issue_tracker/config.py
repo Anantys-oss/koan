@@ -8,6 +8,7 @@ from typing import Dict, Optional
 from app.projects_config import (
     get_project_config,
     get_project_submit_to_repository,
+    invalidate_projects_config_cache,
     load_projects_config,
     save_projects_config,
 )
@@ -244,3 +245,8 @@ def set_project_tracker(
     project["issue_tracker"] = section
     Path(koan_root).mkdir(parents=True, exist_ok=True)
     save_projects_config(koan_root, config)
+    # Drop the in-process projects.yaml cache so the next reader sees the
+    # write immediately. Without this, callers within the same mtime second
+    # would observe the pre-write config and silently route to the old
+    # tracker.
+    invalidate_projects_config_cache()
