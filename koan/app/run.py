@@ -1284,108 +1284,52 @@ def _handle_skill_dispatch(
             cleanup_skill_temp_files(skill_cmd)
 
         _skill_provider_name, _skill_provider_label = _provider_identity()
+        _skill_stdout = skill_result.get("stdout", "")
+        _skill_stderr = skill_result.get("stderr", "")
+        _skill_hqe = dict(
+            stdout_text=_skill_stdout,
+            stderr_text=_skill_stderr,
+            exit_code=exit_code,
+        )
 
-        # --- Auth / quota classification (mirrors regular mission path) ---
-        if exit_code != 0:
-            from app.cli_errors import ErrorCategory, classify_cli_error
-            _err_cat = classify_cli_error(
-                exit_code,
-                skill_result.get("stdout", ""),
-                skill_result.get("stderr", ""),
-                provider_name=_skill_provider_name,
-            )
-            if _err_cat == ErrorCategory.AUTH:
-                log("error", f"{_skill_provider_label} is logged out — requeueing skill mission to Pending")
-                _requeue_mission_in_file(instance, mission_title)
-                from app.pause_manager import create_pause
-                create_pause(koan_root, "auth")
-                _notify(instance, (
-                    f"🔐 {_skill_provider_label} is logged out. Please re-authenticate the provider CLI.\n\n"
-                    "The current mission has been moved back to Pending. "
-                    "Use /resume after logging in."
-                ))
-                return True, mission_title
-            elif _err_cat == ErrorCategory.QUOTA:
-                log("quota", "API quota exhausted during skill — requeueing mission to Pending")
-                _requeue_mission_in_file(instance, mission_title)
-                from app.quota_handler import handle_quota_exhaustion, QUOTA_CHECK_UNRELIABLE
-                quota_result = handle_quota_exhaustion(
-                    koan_root=koan_root,
-                    instance_dir=instance,
-                    project_name=project_name,
-                    run_count=run_num,
-                    stdout_text=skill_result.get("stdout", ""),
-                    stderr_text=skill_result.get("stderr", ""),
-                    provider_name=_skill_provider_name,
-                    exit_code=exit_code,
-                )
-                reset_display = ""
-                if quota_result and quota_result is not QUOTA_CHECK_UNRELIABLE:
-                    reset_display = quota_result[0]
-                else:
-                    reset_ts, reset_display = _compute_quota_reset_ts(instance)
-                    from app.pause_manager import create_pause
-                    create_pause(koan_root, "quota", reset_ts, reset_display)
-                _notify(instance, (
-                    f"⏸️ API quota exhausted.{(' ' + reset_display) if reset_display else ''}\n"
-                    f"Skill mission '{mission_title[:60]}' moved back to Pending.\n"
-                    f"Use /resume after quota resets."
-                ))
-                return True, mission_title
+        # --- Auth / quota classification ---
+        if _classify_and_handle_cli_error(
+            exit_code, _skill_stdout, _skill_stderr,
+            provider_name=_skill_provider_name,
+            provider_label=_skill_provider_label,
+            koan_root=koan_root,
+            instance=instance,
+            project_name=project_name,
+            mission_title=mission_title,
+            run_num=run_num,
+            hqe_kwargs=_skill_hqe,
+        ):
+            return True, mission_title
 
         # --- Exit-0 quota probe ---
-        # Some provider wrappers emit quota payloads with exit 0 (the wrapped
-        # subprocess succeeded but the underlying CLI text shows quota
-        # exhaustion).  Without this probe, the mission would be finalized to
-        # Done before any pause fires.  Mirror the pre-finalize probe in
-        # _run_iteration so the skill path treats transient quota events the
-        # same way.
         if exit_code == 0 and not skill_result.get("quota_exhausted"):
-            from app.quota_handler import handle_quota_exhaustion, QUOTA_CHECK_UNRELIABLE
-            probe = handle_quota_exhaustion(
-                koan_root=koan_root,
-                instance_dir=instance,
-                project_name=project_name,
-                run_count=run_num,
-                stdout_text=skill_result.get("stdout", ""),
-                stderr_text=skill_result.get("stderr", ""),
+            if _probe_exit0_quota(
                 provider_name=_skill_provider_name,
-                exit_code=exit_code,
-            )
-            if probe is not None and probe is not QUOTA_CHECK_UNRELIABLE:
-                reset_display, resume_msg = probe
-                log("quota", f"Exit-0 quota probe matched. {reset_display}")
-                _requeue_mission_in_file(instance, mission_title)
-                _commit_instance(instance, f"koan: quota exhausted {time.strftime('%Y-%m-%d-%H:%M')}")
-                _notify(instance, (
-                    f"⏸️ {_skill_provider_label} quota exhausted.{(' ' + reset_display) if reset_display else ''}\n"
-                    f"Skill mission '{mission_title[:60]}' moved back to Pending.\n"
-                    f"{resume_msg} or use /resume to restart manually."
-                ))
+                provider_label=_skill_provider_label,
+                koan_root=koan_root,
+                instance=instance,
+                mission_title=mission_title,
+                run_num=run_num,
+                hqe_kwargs=_skill_hqe,
+                project_name=project_name,
+            ):
                 return True, mission_title
 
         # --- Post-mission quota exhaustion (detected during pipeline) ---
-        # handle_quota_exhaustion() inside run_post_mission already wrote the
-        # journal entry and created the pause state with accurate reset timing.
-        # Only create a fallback pause when quota_info is missing.
         if skill_result.get("quota_exhausted"):
-            quota_info = skill_result.get("quota_info")
-            if quota_info and isinstance(quota_info, (list, tuple)) and len(quota_info) >= 2:
-                reset_display, resume_msg = quota_info[0], quota_info[1]
-            else:
-                reset_display, resume_msg = "", "Auto-resume in ~5h"
-                reset_ts, _disp = _compute_quota_reset_ts(instance)
-                from app.pause_manager import create_pause
-                create_pause(koan_root, "quota", reset_ts, reset_display or _disp)
-            log("quota", f"Quota reached during skill post-mission. {reset_display}")
-
-            _requeue_mission_in_file(instance, mission_title)
-            _commit_instance(instance, f"koan: quota exhausted {time.strftime('%Y-%m-%d-%H:%M')}")
-            _notify(instance, (
-                f"⚠️ {_skill_provider_label} quota exhausted. {reset_display}\n\n"
-                f"Skill mission '{mission_title[:60]}' moved back to Pending.\n"
-                f"{resume_msg} or use /resume to restart manually."
-            ))
+            _handle_pipeline_quota_flag(
+                provider_label=_skill_provider_label,
+                koan_root=koan_root,
+                instance=instance,
+                mission_title=mission_title,
+                count=run_num,
+                quota_info=skill_result.get("quota_info"),
+            )
             return True, mission_title
 
         # Suppress redundant notification when the skill already notified
@@ -2232,91 +2176,49 @@ def _run_iteration(
                 log("error", f"Checkpoint update failed (non-blocking): {e}")
 
         # --- Auth / Quota error detection (before finalizing mission) ---
-        # Both require requeueing the mission so it isn't permanently lost:
-        # - AUTH: provider CLI is logged out, needs human re-login
-        # - QUOTA: API quota exhausted, auto-resumes after reset
         if claude_exit != 0 and original_mission_title:
-            from app.cli_errors import ErrorCategory, classify_cli_error
             try:
-                _auth_stdout = Path(stdout_file).read_text()
+                _cli_stdout = Path(stdout_file).read_text()
             except OSError:
-                _auth_stdout = ""
+                _cli_stdout = ""
             try:
-                _auth_stderr = Path(stderr_file).read_text()
+                _cli_stderr = Path(stderr_file).read_text()
             except OSError:
-                _auth_stderr = ""
-            _auth_category = classify_cli_error(
-                claude_exit,
-                _auth_stdout,
-                _auth_stderr,
+                _cli_stderr = ""
+            if _classify_and_handle_cli_error(
+                claude_exit, _cli_stdout, _cli_stderr,
                 provider_name=provider_name,
-            )
-            if _auth_category == ErrorCategory.AUTH:
-                log("error", f"{provider_label} is logged out — requeueing mission to Pending")
-                _requeue_mission_in_file(instance, original_mission_title)
-                from app.pause_manager import create_pause
-                create_pause(koan_root, "auth")
-                _notify(instance, (
-                    f"🔐 {provider_label} is logged out. Please re-authenticate the provider CLI.\n\n"
-                    "The current mission has been moved back to Pending. "
-                    "Use /resume after logging in."
-                ))
-                return True  # consumed API budget before auth expired
-            elif _auth_category == ErrorCategory.QUOTA:
-                log("quota", "API quota exhausted — requeueing mission to Pending")
-                _requeue_mission_in_file(instance, original_mission_title)
-                from app.quota_handler import handle_quota_exhaustion, QUOTA_CHECK_UNRELIABLE
-                quota_result = handle_quota_exhaustion(
-                    koan_root=koan_root,
-                    instance_dir=instance,
-                    project_name=project_name,
-                    run_count=run_num,
+                provider_label=provider_label,
+                koan_root=koan_root,
+                instance=instance,
+                project_name=project_name,
+                mission_title=original_mission_title,
+                run_num=run_num,
+                hqe_kwargs=dict(
                     stdout_file=stdout_file,
                     stderr_file=stderr_file,
-                    provider_name=provider_name,
                     exit_code=claude_exit,
-                )
-                reset_display = ""
-                if quota_result and quota_result is not QUOTA_CHECK_UNRELIABLE:
-                    # handle_quota_exhaustion already created the pause with reset info
-                    reset_display = quota_result[0]
-                else:
-                    # Pattern analysis inconclusive — create fallback pause
-                    reset_ts, reset_display = _compute_quota_reset_ts(instance)
-                    from app.pause_manager import create_pause
-                    create_pause(koan_root, "quota", reset_ts, reset_display)
-                _notify(instance, (
-                    f"⏸️ API quota exhausted.{(' ' + reset_display) if reset_display else ''}\n"
-                    f"Mission '{original_mission_title[:60]}' moved back to Pending.\n"
-                    f"Use /resume after quota resets."
-                ))
-                return True  # consumed API budget before quota hit
+                ),
+            ):
+                return True
 
-        # Check quota for all CLI outcomes before mission finalization. Some
-        # provider wrappers emit a quota payload with exit 0, and classifying
-        # only non-zero exits can move quota-hit work to Done before the pause.
+        # Exit-0 quota probe — check all CLI outcomes before finalization.
         if original_mission_title:
-            from app.quota_handler import handle_quota_exhaustion, QUOTA_CHECK_UNRELIABLE
-            quota_result = handle_quota_exhaustion(
-                koan_root=koan_root,
-                instance_dir=instance,
-                project_name=project_name,
-                run_count=run_num,
+            _exit0_hqe = dict(
                 stdout_file=stdout_file,
                 stderr_file=stderr_file,
-                provider_name=provider_name,
                 exit_code=claude_exit,
             )
-            if quota_result is not None and quota_result is not QUOTA_CHECK_UNRELIABLE:
-                reset_display, resume_msg = quota_result
-                log("quota", "API quota exhausted — requeueing mission to Pending")
-                _requeue_mission_in_file(instance, original_mission_title)
-                _commit_instance(instance, f"koan: quota exhausted {time.strftime('%Y-%m-%d-%H:%M')}")
-                _notify(instance, (
-                    f"⏸️ API quota exhausted.{(' ' + reset_display) if reset_display else ''}\n"
-                    f"Mission '{original_mission_title[:60]}' moved back to Pending.\n"
-                    f"{resume_msg} or use /resume to restart manually."
-                ))
+            if _probe_exit0_quota(
+                provider_name=provider_name,
+                provider_label=provider_label,
+                koan_root=koan_root,
+                instance=instance,
+                mission_title=original_mission_title,
+                run_num=run_num,
+                hqe_kwargs=_exit0_hqe,
+                project_name=project_name,
+            ):
                 return True
 
         # If mission was aborted, notify and skip heavy post-mission pipeline
@@ -2361,34 +2263,14 @@ def _run_iteration(
                 log("git", f"Auto-merge checked for {post_result['auto_merge_branch']}")
 
             if post_result.get("quota_exhausted"):
-                # quota_info is a (reset_display, resume_message) tuple
-                # populated by handle_quota_exhaustion() inside run_post_mission,
-                # which already wrote the journal entry and created the pause state.
-                quota_info = post_result.get("quota_info")
-                if quota_info and isinstance(quota_info, (list, tuple)) and len(quota_info) >= 2:
-                    reset_display, resume_msg = quota_info[0], quota_info[1]
-                else:
-                    reset_display, resume_msg = "", "Auto-resume in ~5h"
-                    # No quota_info means handle_quota_exhaustion didn't fire
-                    # (unreliable output or no quota signal) — create pause as fallback.
-                    reset_ts, _disp = _compute_quota_reset_ts(instance)
-                    from app.pause_manager import create_pause
-                    create_pause(koan_root, "quota", reset_ts, reset_display or _disp)
-                log("quota", f"Quota reached. {reset_display}")
-
-                # Requeue mission before normal finalization. Quota failures
-                # are transient, so the mission should remain Pending and get
-                # retried after the pause ends.
-                if original_mission_title:
-                    log("quota", "Requeueing mission to Pending (quota is transient)")
-                    _requeue_mission_in_file(instance, original_mission_title)
-
-                _commit_instance(instance, f"koan: quota exhausted {time.strftime('%Y-%m-%d-%H:%M')}")
-                _notify(instance, (
-                    f"⚠️ {provider_label} quota exhausted. {reset_display}\n\n"
-                    f"Mission '{original_mission_title[:60]}' moved back to Pending.\n"
-                    f"Kōan paused after {count} runs. {resume_msg} or use /resume to restart manually."
-                ))
+                _handle_pipeline_quota_flag(
+                    provider_label=provider_label,
+                    koan_root=koan_root,
+                    instance=instance,
+                    mission_title=original_mission_title,
+                    count=count,
+                    quota_info=post_result.get("quota_info"),
+                )
                 return True  # ran Claude before quota hit — productive
         except Exception as e:
             log("error", f"Post-mission processing error: {e}\n{traceback.format_exc()}")
@@ -2585,6 +2467,215 @@ def _compute_preflight_reset_ts(error_output: str):
         from app.pause_manager import QUOTA_RETRY_SECONDS
         reset_ts = int(time.time()) + QUOTA_RETRY_SECONDS
     return reset_ts, reset_display
+
+
+# ---------------------------------------------------------------------------
+# Shared quota / auth error handling
+# ---------------------------------------------------------------------------
+# run.py had 3 nearly-identical code paths for auth/quota errors:
+#   1. skill dispatch CLI error   (_handle_skill_dispatch)
+#   2. regular mission CLI error  (_run_iteration)
+#   3. exit-0 quota probe         (both paths)
+# Factoring the shared logic here eliminates the synchronization burden.
+
+
+def _handle_auth_error(
+    *,
+    provider_label: str,
+    koan_root: str,
+    instance: str,
+    mission_title: str,
+) -> None:
+    """Requeue mission, enter auth pause, and notify on auth failure."""
+    log("error", f"{provider_label} is logged out — requeueing mission to Pending")
+    _requeue_mission_in_file(instance, mission_title)
+    from app.pause_manager import create_pause
+    create_pause(koan_root, "auth")
+    _notify(instance, (
+        f"🔐 {provider_label} is logged out. Please re-authenticate the provider CLI.\n\n"
+        "The current mission has been moved back to Pending. "
+        "Use /resume after logging in."
+    ))
+
+
+def _handle_quota_error(
+    *,
+    provider_name: str,
+    provider_label: str,
+    koan_root: str,
+    instance: str,
+    project_name: str,
+    mission_title: str,
+    run_num: int,
+    hqe_kwargs: dict,
+) -> None:
+    """Requeue mission, detect reset time, pause, and notify on quota exhaustion.
+
+    *hqe_kwargs* are forwarded to :func:`handle_quota_exhaustion` — callers
+    pass either ``stdout_text``/``stderr_text`` (skill path) or
+    ``stdout_file``/``stderr_file`` (regular mission path).
+    """
+    log("quota", "API quota exhausted — requeueing mission to Pending")
+    _requeue_mission_in_file(instance, mission_title)
+    from app.quota_handler import handle_quota_exhaustion, QUOTA_CHECK_UNRELIABLE
+    quota_result = handle_quota_exhaustion(
+        koan_root=koan_root,
+        instance_dir=instance,
+        project_name=project_name,
+        run_count=run_num,
+        provider_name=provider_name,
+        **hqe_kwargs,
+    )
+    reset_display = ""
+    if quota_result and quota_result is not QUOTA_CHECK_UNRELIABLE:
+        reset_display = quota_result[0]
+    else:
+        reset_ts, reset_display = _compute_quota_reset_ts(instance)
+        from app.pause_manager import create_pause
+        create_pause(koan_root, "quota", reset_ts, reset_display)
+    _notify(instance, (
+        f"⏸️ API quota exhausted.{(' ' + reset_display) if reset_display else ''}\n"
+        f"Mission '{mission_title[:60]}' moved back to Pending.\n"
+        f"Use /resume after quota resets."
+    ))
+
+
+def _classify_and_handle_cli_error(
+    exit_code: int,
+    stdout_text: str,
+    stderr_text: str,
+    *,
+    provider_name: str,
+    provider_label: str,
+    koan_root: str,
+    instance: str,
+    project_name: str,
+    mission_title: str,
+    run_num: int,
+    hqe_kwargs: dict,
+) -> bool:
+    """Classify a non-zero CLI exit and handle AUTH / QUOTA errors.
+
+    Shared by both the skill dispatch and regular mission paths.
+
+    Args:
+        exit_code: CLI process exit code.
+        stdout_text / stderr_text: CLI output for error classification.
+        hqe_kwargs: Forwarded to :func:`handle_quota_exhaustion` (text or file).
+
+    Returns:
+        True if an auth/quota error was handled (caller should return True).
+    """
+    if exit_code == 0:
+        return False
+
+    from app.cli_errors import ErrorCategory, classify_cli_error
+    category = classify_cli_error(
+        exit_code, stdout_text, stderr_text,
+        provider_name=provider_name,
+    )
+    if category == ErrorCategory.AUTH:
+        _handle_auth_error(
+            provider_label=provider_label,
+            koan_root=koan_root,
+            instance=instance,
+            mission_title=mission_title,
+        )
+        return True
+    if category == ErrorCategory.QUOTA:
+        _handle_quota_error(
+            provider_name=provider_name,
+            provider_label=provider_label,
+            koan_root=koan_root,
+            instance=instance,
+            project_name=project_name,
+            mission_title=mission_title,
+            run_num=run_num,
+            hqe_kwargs=hqe_kwargs,
+        )
+        return True
+    return False
+
+
+def _probe_exit0_quota(
+    *,
+    provider_name: str,
+    provider_label: str,
+    koan_root: str,
+    instance: str,
+    mission_title: str,
+    run_num: int,
+    hqe_kwargs: dict,
+    project_name: str = "",
+) -> bool:
+    """Probe for quota exhaustion when CLI exited successfully (exit 0).
+
+    Some provider wrappers emit quota payloads with exit 0.  Without this
+    check the mission would be finalized to Done before any pause fires.
+
+    Returns True if quota was detected and handled.
+    """
+    from app.quota_handler import handle_quota_exhaustion, QUOTA_CHECK_UNRELIABLE
+    probe = handle_quota_exhaustion(
+        koan_root=koan_root,
+        instance_dir=instance,
+        project_name=project_name,
+        run_count=run_num,
+        provider_name=provider_name,
+        **hqe_kwargs,
+    )
+    if probe is None or probe is QUOTA_CHECK_UNRELIABLE:
+        return False
+    reset_display, resume_msg = probe
+    log("quota", f"Exit-0 quota probe matched. {reset_display}")
+    _requeue_mission_in_file(instance, mission_title)
+    _commit_instance(instance, f"koan: quota exhausted {time.strftime('%Y-%m-%d-%H:%M')}")
+    _notify(instance, (
+        f"⏸️ {provider_label} quota exhausted.{(' ' + reset_display) if reset_display else ''}\n"
+        f"Mission '{mission_title[:60]}' moved back to Pending.\n"
+        f"{resume_msg} or use /resume to restart manually."
+    ))
+    return True
+
+
+def _handle_pipeline_quota_flag(
+    *,
+    provider_label: str,
+    koan_root: str,
+    instance: str,
+    mission_title: str,
+    count: int,
+    quota_info,
+) -> bool:
+    """Handle the ``quota_exhausted`` flag from :func:`run_post_mission`.
+
+    ``handle_quota_exhaustion()`` inside ``run_post_mission`` already wrote
+    the journal entry and created the pause state with accurate timing.
+    This function handles the notification + requeue + fallback pause when
+    ``quota_info`` is missing or incomplete.
+
+    Returns True if quota was handled.
+    """
+    if quota_info and isinstance(quota_info, (list, tuple)) and len(quota_info) >= 2:
+        reset_display, resume_msg = quota_info[0], quota_info[1]
+    else:
+        reset_display, resume_msg = "", "Auto-resume in ~5h"
+        reset_ts, _disp = _compute_quota_reset_ts(instance)
+        from app.pause_manager import create_pause
+        create_pause(koan_root, "quota", reset_ts, reset_display or _disp)
+    log("quota", f"Quota reached. {reset_display}")
+
+    if mission_title:
+        log("quota", "Requeueing mission to Pending (quota is transient)")
+        _requeue_mission_in_file(instance, mission_title)
+
+    _commit_instance(instance, f"koan: quota exhausted {time.strftime('%Y-%m-%d-%H:%M')}")
+    _notify(instance, (
+        f"⚠️ {provider_label} quota exhausted. {reset_display}\n\n"
+        f"Mission '{mission_title[:60]}' moved back to Pending.\n"
+        f"Kōan paused after {count} runs. {resume_msg} or use /resume to restart manually."
+    ))
+    return True
 
 
 def _reset_usage_session(instance: str):
