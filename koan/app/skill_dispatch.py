@@ -299,8 +299,9 @@ def mission_command_name(mission_text: str) -> str:
         skill = build_registry().find_by_command(command)
         if skill:
             return skill.name
-    except Exception:
-        pass
+    except Exception as e:
+        from app.debug import debug_log
+        debug_log(f"[skill_dispatch] mission_command_name registry lookup failed: {e}")
     return canonical
 
 
