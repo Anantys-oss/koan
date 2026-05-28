@@ -182,12 +182,25 @@ class TestPROwnership:
         ctx.args = "https://github.com/sukria/koan/pull/42"
         with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
              patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
+             patch.object(handler, "is_rebase_foreign_prs_allowed", return_value=False), \
              patch("app.github_skill_helpers.is_own_pr", return_value=(False, "other-bot/fix-thing")), \
              patch("app.utils.insert_pending_mission") as mock_insert:
             result = handler.handle(ctx)
             assert "Not my PR" in result
             assert "other-bot/fix-thing" in result
             mock_insert.assert_not_called()
+
+    def test_accepts_foreign_pr_when_config_enabled(self, handler, ctx):
+        """Allow rebase for foreign branch when config override is enabled."""
+        ctx.args = "https://github.com/sukria/koan/pull/42"
+        with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
+             patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
+             patch.object(handler, "is_rebase_foreign_prs_allowed", return_value=True), \
+             patch("app.github_skill_helpers.is_own_pr", return_value=(False, "other-bot/fix-thing")), \
+             patch("app.utils.insert_pending_mission") as mock_insert:
+            result = handler.handle(ctx)
+            assert "queued" in result.lower()
+            mock_insert.assert_called_once()
 
     def test_accepts_pr_from_own_instance(self, handler, ctx):
         """Allow rebase when the PR branch matches our prefix."""

@@ -636,6 +636,15 @@ def get_rebase_ci_max_duration() -> int:
     return _safe_int(config.get("rebase_ci_max_duration", fallback), fallback)
 
 
+def is_rebase_foreign_prs_allowed() -> bool:
+    """Allow Telegram /rebase to target PRs from other branch prefixes.
+
+    Config key: allow_rebase_foreign_prs (default: False).
+    """
+    config = _load_config()
+    return bool(config.get("allow_rebase_foreign_prs", False))
+
+
 def get_skill_max_turns() -> int:
     """Get max turns for skill execution (fix, implement, incident).
 

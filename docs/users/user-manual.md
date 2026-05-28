@@ -541,6 +541,10 @@ Use this before `/plan` when the idea is architecturally complex, when you want 
 - **Aliases:** `/rb`
 - **GitHub @mention:** `@koan-bot /rebase` on a PR
 
+By default, Telegram `/rebase` only queues PRs created by this instance
+(branch prefix match). Set `allow_rebase_foreign_prs: true` in
+`instance/config.yaml` to allow rebasing other writable PRs.
+
 When `/rebase` runs long, Kōan now uses activity-aware limits for review and CI-fix phases: it allows long sessions when CLI output keeps flowing, but still aborts stalled phases after inactivity or a max-duration cap. If the review-feedback step *stalls* (idle/max-duration timeout) or hits a *provider quota limit*, the rebase is stopped so you can re-run it later. Any other (transient) feedback error is treated as best-effort: the already-completed rebase is still pushed, with a note that review feedback could not be applied — so a flaky feedback step never discards a clean rebase.
 
 After completion, Kōan posts a structured comment on the PR with these sections:
@@ -1082,6 +1086,7 @@ rebase_review_idle_timeout: 1800   # /rebase review phase: kill on inactivity
 rebase_review_max_duration: 10800  # /rebase review phase: absolute cap
 rebase_ci_idle_timeout: 1800       # /rebase CI-fix phase: kill on inactivity
 rebase_ci_max_duration: 7200       # /rebase CI-fix phase: absolute cap
+allow_rebase_foreign_prs: false    # Telegram /rebase can target non-instance PRs
 skill_max_turns: 200          # Max agentic turns for heavy skills
 
 # Stagnation detection — kill Claude sessions stuck in a loop early

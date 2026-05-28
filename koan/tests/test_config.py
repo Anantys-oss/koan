@@ -286,6 +286,23 @@ class TestGetSkipPermissions:
             assert get_skip_permissions() is False
 
 
+# --- is_rebase_foreign_prs_allowed ---
+
+
+class TestIsRebaseForeignPrsAllowed:
+    def test_default_false(self):
+        from app.config import is_rebase_foreign_prs_allowed
+
+        with _mock_config({}):
+            assert is_rebase_foreign_prs_allowed() is False
+
+    def test_enabled(self):
+        from app.config import is_rebase_foreign_prs_allowed
+
+        with _mock_config({"allow_rebase_foreign_prs": True}):
+            assert is_rebase_foreign_prs_allowed() is True
+
+
 # --- get_debug_enabled ---
 
 

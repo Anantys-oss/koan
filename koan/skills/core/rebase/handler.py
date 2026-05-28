@@ -1,5 +1,6 @@
 """Kōan rebase skill -- queue a PR rebase mission."""
 
+from app.config import is_rebase_foreign_prs_allowed
 from app.github_url_parser import parse_pr_url
 from app.missions import extract_now_flag
 import app.github_skill_helpers as _gh_helpers
@@ -58,7 +59,7 @@ def handle(ctx):
     except Exception as e:
         return f"\u274c Failed to check PR ownership: {str(e)[:200]}"
 
-    if not owned:
+    if not owned and not is_rebase_foreign_prs_allowed():
         return (
             f"\u274c Not my PR \u2014 branch `{head_branch}` was not created by "
             f"this instance. I only rebase my own pull requests."
