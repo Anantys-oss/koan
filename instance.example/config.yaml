@@ -345,7 +345,7 @@ models:
 # models_for_codex:
 #   mission: "gpt-5.5"       # Main mission execution
 #   chat: "gpt-5.5"          # Chat responses
-#   lightweight: "gpt-5.5"   # Low-cost calls
+#   lightweight: "gpt-5.4-mini"   # Low-cost calls
 #   fallback: ""             # Empty = use provider default
 #   review_mode: "gpt-5.3-codex"  # Cheaper model for REVIEW mode audits
 #   reflect: "gpt-5.5"       # Model for review reflection pass

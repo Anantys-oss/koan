@@ -1354,7 +1354,7 @@ cli_provider: "codex"
 models_for_codex:
   mission: "gpt-5.5"
   chat: "gpt-5.5"
-  lightweight: "gpt-5.5"
+  lightweight: "gpt-5.4-mini"
   fallback: ""              # empty = use provider default
   review_mode: "gpt-5.3-codex"
   reflect: "gpt-5.5"
