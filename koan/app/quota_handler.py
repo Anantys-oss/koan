@@ -31,6 +31,11 @@ _STRICT_QUOTA_PATTERNS = [
     # Claude-specific error messages
     r"out of extra usage",
     r"quota.*reached",
+    r"quota.*exhausted",
+    # Claude Code structured stream events for five-hour/session limits.
+    r"rate_limit_event",
+    r'"?rateLimitType"?\s*:',
+    r'"?resetsAt"?\s*:',
     # Credit/billing limit messages from the Anthropic API and Claude Code CLI.
     # These are specific enough to be safe in stdout (Claude's code output won't
     # contain "credit balance is too low" or "billing period limit").
@@ -41,8 +46,8 @@ _STRICT_QUOTA_PATTERNS = [
     r"insufficient.*credits?",
     r"billing.*(?:limit|period.*exceeded)",
     r"usage.*cap.*(?:reached|exceeded|hit)",
-    # Claude Code CLI: "You've hit your limit · resets 6pm (UTC)"
-    r"(?:you'?ve\s+)?hit\s+(?:your|the)\s+limit",
+    # Claude Code CLI: "You've hit your session limit · resets 6pm (UTC)"
+    r"(?:you'?ve\s+)?hit\s+(?:your|the)\s+(?:session\s+)?limit",
 ]
 
 # Loose patterns: generic terms that may appear in Claude's response text
@@ -72,6 +77,7 @@ _LOOSE_QUOTA_RE = re.compile("|".join(_LOOSE_QUOTA_PATTERNS), re.IGNORECASE)
 # Claude: "resets 10am (Europe/Paris)"
 # Copilot/GitHub: "Retry-After: 60" or "retry after 60 seconds" or "try again in X minutes"
 _RESET_RE = re.compile(r"resets\s+.+", re.IGNORECASE)
+_RESETS_AT_RE = re.compile(r'"?resetsAt"?\s*:?\s*(\d{9,})', re.IGNORECASE)
 _RETRY_AFTER_RE = re.compile(
     r"(?:retry[\s-]+after[\s:]+(\d+))|(?:try again in\s+(\d+)\s*(seconds?|minutes?|hours?))",
     re.IGNORECASE,
@@ -172,6 +178,11 @@ def extract_reset_info(text: str) -> str:
     match = _RESET_RE.search(text)
     if match:
         return match.group(0).strip()
+
+    # Claude Code JSON stream: {"rate_limit_info": {"resetsAt": 1779937200}}
+    resets_at_match = _RESETS_AT_RE.search(text)
+    if resets_at_match:
+        return f"resetsAt {resets_at_match.group(1)}"
 
     # Copilot/GitHub-style: "Retry-After: 60" or "try again in 5 minutes"
     retry_match = _RETRY_AFTER_RE.search(text)

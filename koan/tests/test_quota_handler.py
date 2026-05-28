@@ -59,6 +59,22 @@ Your quota resets 10am (Europe/Paris)."""
 
         assert detect_quota_exhaustion("You've hit your limit · resets 6pm (UTC)") is True
 
+    def test_detects_hit_your_session_limit(self):
+        from app.quota_handler import detect_quota_exhaustion
+
+        assert detect_quota_exhaustion(
+            "You've hit your session limit · resets 3am (UTC)"
+        ) is True
+
+    def test_detects_claude_rate_limit_event_json(self):
+        from app.quota_handler import detect_quota_exhaustion
+
+        payload = (
+            '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected",'
+            '"resetsAt":1779937200,"rateLimitType":"five_hour"}}'
+        )
+        assert detect_quota_exhaustion(payload) is True
+
     def test_detects_hit_your_limit_without_contraction(self):
         from app.quota_handler import detect_quota_exhaustion
 
@@ -207,6 +223,12 @@ class TestExtractResetInfo:
         result = extract_reset_info(text)
         assert "resets" in result
         assert "Feb 4" in result
+
+    def test_extracts_resets_at_timestamp(self):
+        from app.quota_handler import extract_reset_info
+
+        text = '{"rate_limit_info":{"resetsAt":1779937200}}'
+        assert extract_reset_info(text) == "resetsAt 1779937200"
 
     def test_returns_empty_on_no_match(self):
         from app.quota_handler import extract_reset_info
@@ -483,6 +505,14 @@ class TestParseResetTime:
 
         ts, display = parse_reset_time("")
         assert ts is None
+
+    def test_parses_resets_at_timestamp(self):
+        from app.quota_handler import parse_reset_time
+
+        ts, display = parse_reset_time("resetsAt 1779937200")
+
+        assert ts == 1779937200
+        assert "UTC" in display
 
 
 class TestComputeResumeInfo:

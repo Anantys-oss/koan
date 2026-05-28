@@ -29,7 +29,7 @@ from typing import List, Optional, Tuple
 from app.github_url_parser import ISSUE_URL_PATTERN, JIRA_ISSUE_URL_PATTERN, PR_URL_PATTERN
 from app.missions import extract_now_flag, strip_timestamps
 from app.run_log import log_safe as _log_skill, suppress_logged
-from app.utils import PROJECT_TAG_PREFIX_RE, is_known_project
+from app.utils import PROJECT_TAG_PREFIX_RE, is_known_project, project_name_for_path
 
 # Module-level registry cache for the run process.
 # bridge_state.py caches via _get_registry(), but translate_cli_skill_mission()
@@ -318,6 +318,8 @@ def build_skill_command(
 
     python = sys.executable
     base_cmd = [python, "-m", runner_module]
+    if not project_name and project_path:
+        project_name = project_name_for_path(project_path)
 
     # Resolve alias to canonical name so the builder dict only needs
     # canonical entries — no duplication for aliases (#1094, #1096).
@@ -327,9 +329,15 @@ def build_skill_command(
     _COMMAND_BUILDERS = {
         "brainstorm": lambda: _build_brainstorm_cmd(base_cmd, args, project_path),
         "deepplan": lambda: _build_deepplan_cmd(base_cmd, args, project_path),
-        "plan": lambda: _build_plan_cmd(base_cmd, args, project_path),
-        "implement": lambda: _build_implement_cmd(base_cmd, args, project_path),
-        "fix": lambda: _build_implement_cmd(base_cmd, args, project_path),
+        "plan": lambda: _build_plan_cmd(
+            base_cmd, args, project_name, project_path, instance_dir,
+        ),
+        "implement": lambda: _build_implement_cmd(
+            base_cmd, args, project_name, project_path, instance_dir,
+        ),
+        "fix": lambda: _build_implement_cmd(
+            base_cmd, args, project_name, project_path, instance_dir,
+        ),
         "rebase": lambda: _build_rebase_cmd(base_cmd, args, project_path),
         "recreate": lambda: _build_pr_url_cmd(base_cmd, args, project_path),
         "squash": lambda: _build_pr_url_cmd(base_cmd, args, project_path),
@@ -444,7 +452,11 @@ def _build_deepplan_cmd(
 
 
 def _build_url_context_cmd(
-    base_cmd: List[str], args: str, project_path: str,
+    base_cmd: List[str],
+    args: str,
+    project_name: str,
+    project_path: str,
+    instance_dir: str,
     *, idea_fallback: bool = False,
 ) -> Optional[List[str]]:
     """Build command for skills that accept a URL with optional branch and context.
@@ -460,6 +472,10 @@ def _build_url_context_cmd(
             when no URL is found (used by /implement, /fix).
     """
     cmd = base_cmd + ["--project-path", project_path]
+    if project_name:
+        cmd.extend(["--project-name", project_name])
+    if instance_dir:
+        cmd.extend(["--instance-dir", instance_dir])
 
     url_and_context = _extract_pr_or_issue_url_and_context(args)
     if url_and_context:
@@ -482,11 +498,16 @@ def _build_url_context_cmd(
 
 
 def _build_plan_cmd(
-    base_cmd: List[str], args: str, project_path: str,
+    base_cmd: List[str],
+    args: str,
+    project_name: str,
+    project_path: str,
+    instance_dir: str,
 ) -> List[str]:
     """Build plan_runner command."""
     return _build_url_context_cmd(
-        base_cmd, args, project_path, idea_fallback=True,
+        base_cmd, args, project_name, project_path, instance_dir,
+        idea_fallback=True,
     )
 
 
@@ -524,14 +545,20 @@ def _extract_branch_token(context: str) -> Tuple[Optional[str], str]:
 
 
 def _build_implement_cmd(
-    base_cmd: List[str], args: str, project_path: str,
+    base_cmd: List[str],
+    args: str,
+    project_name: str,
+    project_path: str,
+    instance_dir: str,
 ) -> Optional[List[str]]:
     """Build implement_runner command.
 
     Expects an issue or PR URL and optional context text after it.
     GitHub's issues API works for PRs too, so both URL types are valid.
     """
-    return _build_url_context_cmd(base_cmd, args, project_path)
+    return _build_url_context_cmd(
+        base_cmd, args, project_name, project_path, instance_dir,
+    )
 
 
 def _build_pr_url_cmd(
@@ -1107,7 +1134,7 @@ def dispatch_skill_mission(
         return None
 
     # Use parsed project-id as fallback when caller's project_name is empty
-    effective_project = project_name or parsed_project
+    effective_project = project_name or parsed_project or project_name_for_path(project_path)
 
     result = build_skill_command(
         command=command,

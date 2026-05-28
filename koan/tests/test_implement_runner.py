@@ -823,6 +823,26 @@ class TestRunImplement:
             second_msg = notify.call_args_list[1][0][0]
             assert "#42" in second_msg
 
+    def test_explicit_project_name_reaches_tracker_and_memory(self):
+        notify = MagicMock()
+        body = "### Summary\nPlan\n#### Phase 1: Do it"
+        with patch(f"{_IMPL_MODULE}.fetch_issue",
+                    return_value=_github_issue(title="Title", body=body)) as fetch, \
+             patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
+             patch(f"{_IMPL_MODULE}._execute_implementation",
+                   return_value="Done") as execute:
+            run_implement(
+                "/workspace/webpros-shield",
+                "https://github.com/o/r/issues/42",
+                notify_fn=notify,
+                project_name="webpros-shield",
+                instance_dir="/koan/instance",
+            )
+
+        assert fetch.call_args.kwargs["project_name"] == "webpros-shield"
+        assert execute.call_args.kwargs["project_name"] == "webpros-shield"
+        assert execute.call_args.kwargs["instance_dir"] == "/koan/instance"
+
 
 # ---------------------------------------------------------------------------
 # guess_project_name (shared via app.pr_submit)
@@ -1306,3 +1326,16 @@ class TestMain:
             ])
             _, kwargs = mock.call_args
             assert kwargs["context"] is None
+
+    def test_project_identity_args_passed(self):
+        with patch(f"{_IMPL_MODULE}.run_implement",
+                    return_value=(True, "ok")) as mock:
+            main([
+                "--project-path", "/project",
+                "--issue-url", "https://github.com/o/r/issues/1",
+                "--project-name", "webpros-shield",
+                "--instance-dir", "/koan/instance",
+            ])
+            _, kwargs = mock.call_args
+            assert kwargs["project_name"] == "webpros-shield"
+            assert kwargs["instance_dir"] == "/koan/instance"

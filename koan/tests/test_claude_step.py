@@ -704,6 +704,34 @@ class TestRunClaudeStep:
         assert "Fix failed" in actions[0]
         assert "crash" in actions[0]
 
+    @patch("app.provider.get_provider_name", return_value="claude")
+    @patch("app.claude_step.run_claude")
+    @patch("app.claude_step.build_full_command", return_value=["claude", "-p", "test"])
+    @patch(
+        "app.claude_step.get_model_config",
+        return_value={"mission": "", "fallback": "", "chat": "", "lightweight": "", "review_mode": ""},
+    )
+    def test_failure_marks_quota_exhausted(
+        self, mock_config, mock_flags, mock_claude, mock_provider,
+    ):
+        mock_claude.return_value = {
+            "success": False,
+            "output": "You've hit your session limit · resets 3am (UTC)",
+            "error": "Exit code 1: no stderr",
+            "exit_code": 1,
+        }
+        result = run_claude_step(
+            prompt="fix bug",
+            project_path="/project",
+            commit_msg="fix: bug",
+            success_label="Fixed",
+            failure_label="Fix failed",
+            actions_log=[],
+        )
+
+        assert result.quota_exhausted is True
+        assert not result
+
     @patch("app.claude_step.run_claude")
     @patch("app.claude_step.build_full_command", return_value=["claude", "-p", "test"])
     @patch(
@@ -1482,6 +1510,32 @@ class TestRunCiFixLoop:
         assert success is False
         assert any("no changes" in a.lower() for a in actions)
         mock_step.assert_called_once()
+
+    @patch("app.claude_step._run_git", return_value="")
+    @patch(
+        "app.claude_step.run_claude_step",
+        return_value=StepResult(
+            committed=False,
+            output="You've hit your session limit",
+            quota_exhausted=True,
+        ),
+    )
+    def test_quota_stop_does_not_report_no_changes(self, mock_step, mock_git):
+        from app.claude_step import CI_QUOTA_STOP_ACTION, run_ci_fix_loop
+
+        actions = []
+        success, logs = run_ci_fix_loop(
+            "fix-branch", "main", "owner/repo", "/project",
+            "Error: test failed", actions,
+            max_attempts=2,
+            prompt_builder=lambda logs, diff: "fix this",
+        )
+
+        assert success is False
+        assert logs == "Error: test failed"
+        assert CI_QUOTA_STOP_ACTION in actions
+        assert not any("no changes" in a.lower() for a in actions)
+        assert not any("still failing after" in a.lower() for a in actions)
 
     @patch("app.claude_step.check_existing_ci", return_value=("success", 457, ""))
     @patch("app.claude_step._force_push")

@@ -494,19 +494,12 @@ def modify_missions_file(missions_path: Path, transform):
     return _locked_missions_rw(missions_path, transform)
 
 
-def get_known_projects() -> list:
-    """Return sorted list of (name, path) tuples.
-
-    Resolution order:
-    1. Merged registry: projects.yaml + workspace/ (if either exists)
-    2. KOAN_PROJECTS env var (fallback)
-
-    Returns empty list if none is configured.
-    """
+def _get_known_projects_for_root(koan_root: Path) -> list:
+    """Return sorted list of (name, path) tuples for a specific Koan root."""
     # 1. Try merged registry (projects.yaml + workspace/)
     try:
         from app.projects_merged import get_all_projects
-        result = get_all_projects(str(KOAN_ROOT))
+        result = get_all_projects(str(koan_root))
         if result:
             return result
     except Exception as e:
@@ -515,7 +508,7 @@ def get_known_projects() -> list:
     # 2. Try projects.yaml alone (fallback if merged module fails)
     try:
         from app.projects_config import load_projects_config, get_projects_from_config
-        config = load_projects_config(str(KOAN_ROOT))
+        config = load_projects_config(str(koan_root))
         if config is not None:
             return get_projects_from_config(config)
     except Exception as e:
@@ -535,6 +528,18 @@ def get_known_projects() -> list:
     return []
 
 
+def get_known_projects() -> list:
+    """Return sorted list of (name, path) tuples.
+
+    Resolution order:
+    1. Merged registry: projects.yaml + workspace/ (if either exists)
+    2. KOAN_PROJECTS env var (fallback)
+
+    Returns empty list if none is configured.
+    """
+    return _get_known_projects_for_root(KOAN_ROOT)
+
+
 def is_known_project(name: str) -> bool:
     """Check if a name matches a known project (case-insensitive)."""
     try:
@@ -544,15 +549,57 @@ def is_known_project(name: str) -> bool:
         return False
 
 
+def _normalise_project_path_for_match(project_path: str) -> Optional[Path]:
+    """Normalize a project path for identity comparisons."""
+    if not project_path:
+        return None
+    try:
+        return Path(project_path).expanduser().resolve(strict=False)
+    except (OSError, RuntimeError):
+        return None
+
+
+def find_known_project_name_for_path(
+    project_path: str,
+    koan_root: Optional[str] = None,
+) -> Optional[str]:
+    """Return the configured or workspace project name for a local path.
+
+    Unlike ``project_name_for_path``, returns ``None`` when there is no merged
+    registry match so callers can decide whether to warn before falling back.
+    """
+    target = _normalise_project_path_for_match(project_path)
+    if target is None:
+        return None
+
+    root = Path(koan_root) if koan_root else KOAN_ROOT
+    for name, path in _get_known_projects_for_root(root):
+        candidate = _normalise_project_path_for_match(path)
+        if candidate == target:
+            return name
+
+    workspace = _normalise_project_path_for_match(str(root / "workspace"))
+    if workspace is not None:
+        try:
+            relative = target.relative_to(workspace)
+        except ValueError:
+            relative = None
+        if relative is not None and len(relative.parts) == 1:
+            name = relative.parts[0]
+            if name and not name.startswith("."):
+                return name
+    return None
+
+
 def project_name_for_path(project_path: str) -> str:
     """Get the project name for a given local path.
 
     Checks known projects first; falls back to the directory basename.
     """
-    for name, path in get_known_projects():
-        if path == project_path:
-            return name
-    return Path(project_path).name
+    known = find_known_project_name_for_path(project_path)
+    if known:
+        return known
+    return Path(project_path).name if project_path else ""
 
 
 def _find_partial_name_candidates(

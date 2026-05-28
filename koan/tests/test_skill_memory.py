@@ -259,6 +259,68 @@ class TestSkillWrapper:
         assert "guard the auth boundary" in result
         assert "<memory-context>" in result
 
+    def test_resolves_workspace_project_without_projects_yaml_warning(
+        self, memory_dirs, monkeypatch, caplog,
+    ):
+        """Workspace-discovered projects are first-class known projects."""
+        koan_root = Path(memory_dirs["instance"]).parent
+        monkeypatch.setenv("KOAN_ROOT", str(koan_root))
+
+        repo_dir = koan_root / "workspace" / memory_dirs["project_name"]
+        repo_dir.mkdir(parents=True)
+        _write(memory_dirs, "learnings.md", "- load workspace memory\n")
+
+        with caplog.at_level(logging.WARNING, logger="app.skill_memory"):
+            result = build_memory_block_for_skill(str(repo_dir), "task")
+
+        assert "load workspace memory" in result
+        assert not [
+            r for r in caplog.records
+            if "not found in known projects" in r.getMessage()
+        ]
+
+    def test_resolves_direct_workspace_path_when_registry_is_empty(
+        self, memory_dirs, monkeypatch, caplog,
+    ):
+        koan_root = Path(memory_dirs["instance"]).parent
+        monkeypatch.setenv("KOAN_ROOT", str(koan_root))
+
+        repo_dir = koan_root / "workspace" / memory_dirs["project_name"]
+        repo_dir.mkdir(parents=True)
+        _write(memory_dirs, "learnings.md", "- direct workspace fallback\n")
+
+        with (
+            caplog.at_level(logging.WARNING, logger="app.skill_memory"),
+            patch("app.utils._get_known_projects_for_root", return_value=[]),
+        ):
+            result = build_memory_block_for_skill(str(repo_dir), "task")
+
+        assert "direct workspace fallback" in result
+        assert not [
+            r for r in caplog.records
+            if "not found in known projects" in r.getMessage()
+        ]
+
+    def test_explicit_project_name_skips_path_reverse_lookup(
+        self, memory_dirs, monkeypatch, caplog,
+    ):
+        koan_root = Path(memory_dirs["instance"]).parent
+        monkeypatch.setenv("KOAN_ROOT", str(koan_root))
+        unregistered_dir = koan_root / "code" / "unregistered"
+        unregistered_dir.mkdir(parents=True)
+        _write(memory_dirs, "learnings.md", "- trust explicit project\n")
+
+        with caplog.at_level(logging.WARNING, logger="app.skill_memory"):
+            result = build_memory_block_for_skill(
+                str(unregistered_dir), "task", project_name="demo",
+            )
+
+        assert "trust explicit project" in result
+        assert not [
+            r for r in caplog.records
+            if "not found in known projects" in r.getMessage()
+        ]
+
     def test_falls_back_to_basename_when_projects_yaml_missing(
         self, memory_dirs, monkeypatch,
     ):
@@ -485,10 +547,10 @@ class TestObservability:
         warnings = [
             r for r in caplog.records
             if r.levelno == logging.WARNING
-            and "not found in projects.yaml" in r.getMessage()
+            and "not found in known projects" in r.getMessage()
         ]
         assert warnings, (
-            "expected a WARNING when projects.yaml lookup found no match; "
+            "expected a WARNING when known-project lookup found no match; "
             f"got {[r.getMessage() for r in caplog.records]!r}"
         )
         msg = warnings[0].getMessage()

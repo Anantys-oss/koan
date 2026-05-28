@@ -160,6 +160,10 @@ class TestBuildSkillCommand:
         assert cmd is not None
         assert "--issue-url" in cmd
         assert url in cmd
+        assert "--project-name" in cmd
+        assert self.PROJECT in cmd
+        assert "--instance-dir" in cmd
+        assert self.INSTANCE in cmd
 
     def test_plan_with_issue_url_and_context(self):
         args = "https://github.com/sukria/koan/issues/42 Focus on phase 2"
@@ -305,6 +309,10 @@ class TestBuildSkillCommand:
         assert "--issue-url" in cmd
         assert url in cmd
         assert "--project-path" in cmd
+        assert "--project-name" in cmd
+        assert self.PROJECT in cmd
+        assert "--instance-dir" in cmd
+        assert self.INSTANCE in cmd
 
     def test_implement_with_context(self):
         url = "https://github.com/sukria/koan/issues/42"
@@ -359,6 +367,10 @@ class TestBuildSkillCommand:
         assert "--issue-url" in cmd
         assert url in cmd
         assert "--project-path" in cmd
+        assert "--project-name" in cmd
+        assert self.PROJECT in cmd
+        assert "--instance-dir" in cmd
+        assert self.INSTANCE in cmd
 
     def test_fix_with_context(self):
         url = "https://github.com/Anantys/investmindr/issues/42"
@@ -377,6 +389,19 @@ class TestBuildSkillCommand:
         url = "https://github.com/Anantys/investmindr/issues/99"
         cmd = self._build("fix", url)
         assert "--context" not in cmd
+
+    def test_url_skill_command_resolves_project_name_from_path_when_missing(self):
+        cmd = build_skill_command(
+            command="fix",
+            args="https://github.com/webpros-cpanel/webpros-shield/issues/150",
+            project_name="",
+            project_path="/home/user/koan/workspace/webpros-shield",
+            koan_root=self.KOAN_ROOT,
+            instance_dir=self.INSTANCE,
+        )
+        assert cmd is not None
+        assert "--project-name" in cmd
+        assert "webpros-shield" in cmd
 
     def test_python_path(self):
         """Commands should use sys.executable (works in venv and Docker)."""
@@ -444,6 +469,18 @@ class TestDispatchSkillMission:
         assert "skills.core.implement.implement_runner" in cmd
         assert "--context" in cmd
         assert "Phase 1 to 3" in cmd
+
+    def test_url_skill_uses_path_basename_when_project_name_missing(self):
+        cmd = self._dispatch(
+            "/fix https://github.com/webpros-cpanel/webpros-shield/issues/150",
+            project_name="",
+            project_path="/home/user/koan/workspace/webpros-shield",
+        )
+        assert cmd is not None
+        assert "--project-name" in cmd
+        assert "webpros-shield" in cmd
+        assert "--instance-dir" in cmd
+        assert self.INSTANCE in cmd
 
     def test_ci_check_dispatch(self):
         """ci_check missions injected by ci_queue_runner must dispatch correctly."""

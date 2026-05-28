@@ -9,6 +9,7 @@ full pipeline: understand, plan, test, fix, and submit a PR.
 CLI:
     python3 -m skills.core.fix.fix_runner --project-path <path> --issue-url <url>
     python3 -m skills.core.fix.fix_runner --project-path <path> --issue-url <url> --context "backend only"
+    python3 -m skills.core.fix.fix_runner --project-path <path> --project-name <name> --issue-url <url>
 """
 
 import logging
@@ -34,6 +35,8 @@ def run_fix(
     notify_fn=None,
     skill_dir: Optional[Path] = None,
     base_branch: Optional[str] = None,
+    project_name: str = "",
+    instance_dir: str = "",
 ) -> Tuple[bool, str]:
     """Execute the fix pipeline.
 
@@ -56,7 +59,7 @@ def run_fix(
 
     print("[fix] Starting fix runner", flush=True)
     context_label = f" ({context})" if context else ""
-    project_name = project_name_for_path(project_path)
+    project_name = project_name or project_name_for_path(project_path)
     print(f"[fix] Fetching tracker issue {issue_url}", flush=True)
 
     # The tracker (GitHub or Jira) resolves itself from the URL — the runner
@@ -110,6 +113,8 @@ def run_fix(
             context=context or "Fix the issue completely.",
             skill_dir=skill_dir,
             issue_number=str(issue_number),
+            project_name=project_name,
+            instance_dir=instance_dir,
         )
     except Exception as e:
         return False, f"Fix failed: {str(e)[:300]}"
@@ -128,6 +133,7 @@ def run_fix(
             issue_title=title,
             issue_url=issue_url,
             base_branch=base_branch,
+            project_name=project_name,
         )
 
     # Build notification and summary
@@ -197,6 +203,8 @@ def _execute_fix(
     context: str,
     skill_dir: Optional[Path] = None,
     issue_number: str = "",
+    project_name: str = "",
+    instance_dir: str = "",
 ) -> str:
     """Execute the fix via Claude CLI."""
     from app.config import get_branch_prefix
@@ -204,7 +212,10 @@ def _execute_fix(
 
     branch_prefix = get_branch_prefix()
     project_memory = build_memory_block_for_skill(
-        project_path, f"{issue_title}\n{issue_body}",
+        project_path,
+        f"{issue_title}\n{issue_body}",
+        project_name=project_name,
+        instance_dir=instance_dir,
     )
 
     prompt = _build_prompt(
@@ -259,12 +270,13 @@ def _submit_fix_pr(
     issue_title: str,
     issue_url: str,
     base_branch: Optional[str] = None,
+    project_name: str = "",
 ) -> Optional[str]:
     """Build fix-specific PR title/body and delegate to shared submit."""
     from app.pr_submit import get_commit_subjects
     from app.projects_config import resolve_base_branch
 
-    project_name = guess_project_name(project_path)
+    project_name = project_name or guess_project_name(project_path)
     effective_base = base_branch or resolve_base_branch(project_name, project_path)
     commits = get_commit_subjects(project_path, base_branch=effective_base)
     commits_text = "\n".join(f"- {s}" for s in commits)
@@ -335,6 +347,16 @@ def main(argv=None):
         help="Target branch for the PR (e.g. '11.126')",
         default=None,
     )
+    parser.add_argument(
+        "--project-name",
+        help="Koan project name for memory and tracker configuration",
+        default="",
+    )
+    parser.add_argument(
+        "--instance-dir",
+        help="Koan instance directory for project memory",
+        default="",
+    )
     cli_args = parser.parse_args(argv)
 
     skill_dir = Path(__file__).resolve().parent
@@ -345,6 +367,8 @@ def main(argv=None):
         context=cli_args.context,
         skill_dir=skill_dir,
         base_branch=cli_args.base_branch,
+        project_name=cli_args.project_name,
+        instance_dir=cli_args.instance_dir,
     )
     print(summary)
     return 0 if success else 1

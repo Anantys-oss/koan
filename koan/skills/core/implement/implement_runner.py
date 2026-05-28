@@ -9,6 +9,7 @@ an optional user-provided context (e.g. "Phase 1 to 3").
 CLI:
     python3 -m skills.core.implement.implement_runner --project-path <path> --issue-url <url>
     python3 -m skills.core.implement.implement_runner --project-path <path> --issue-url <url> --context "Phase 1 to 3"
+    python3 -m skills.core.implement.implement_runner --project-path <path> --project-name <name> --issue-url <url>
 """
 
 import hashlib
@@ -46,6 +47,8 @@ def run_implement(
     notify_fn=None,
     skill_dir: Optional[Path] = None,
     base_branch: Optional[str] = None,
+    project_name: str = "",
+    instance_dir: str = "",
 ) -> Tuple[bool, str]:
     """Execute the implement pipeline.
 
@@ -67,7 +70,7 @@ def run_implement(
         notify_fn = send_telegram
 
     context_label = f" ({context})" if context else ""
-    project_name = project_name_for_path(project_path)
+    project_name = project_name or project_name_for_path(project_path)
 
     print(f"[implement] Fetching tracker issue {issue_url}", flush=True)
 
@@ -111,6 +114,7 @@ def run_implement(
     # Plan-review quality gate with autonomous improvement loop
     gate_result = _run_plan_review_gate(
         plan, project_path, notify_fn=notify_fn, issue_url=issue_url,
+        project_name=project_name,
     )
     improvement_context = ""
     if isinstance(gate_result, _GateImproved):
@@ -137,6 +141,8 @@ def run_implement(
             context=effective_context,
             skill_dir=skill_dir,
             issue_number=str(issue_number),
+            project_name=project_name,
+            instance_dir=instance_dir,
         )
     except Exception as e:
         return False, f"Implementation failed: {str(e)[:300]}"
@@ -157,6 +163,7 @@ def run_implement(
                 issue_url=issue_url,
                 skill_dir=skill_dir,
                 base_branch=base_branch,
+                project_name=project_name,
             )
         except Exception as e:
             logger.warning("PR submission failed: %s", e)
@@ -244,16 +251,18 @@ def _plan_hash(plan: str) -> str:
     return hashlib.sha256(plan.strip().encode()).hexdigest()
 
 
-def _plan_review_cache_path(project_path: str) -> Path:
+def _plan_review_cache_path(project_path: str, project_name: str = "") -> Path:
     """Per-project cache file for the plan-review gate hash."""
-    project_name = guess_project_name(project_path)
+    project_name = project_name or guess_project_name(project_path)
     from app.utils import KOAN_ROOT
     return KOAN_ROOT / "instance" / f".plan-review-hash-{project_name}"
 
 
-def _is_plan_cache_fresh(project_path: str, current_hash: str) -> bool:
+def _is_plan_cache_fresh(
+    project_path: str, current_hash: str, project_name: str = "",
+) -> bool:
     """Return True if the cached plan hash matches — review can be skipped."""
-    cache_path = _plan_review_cache_path(project_path)
+    cache_path = _plan_review_cache_path(project_path, project_name)
     if not cache_path.exists():
         return False
     try:
@@ -262,10 +271,12 @@ def _is_plan_cache_fresh(project_path: str, current_hash: str) -> bool:
         return False
 
 
-def _write_plan_cache(project_path: str, plan_hash_hex: str) -> None:
+def _write_plan_cache(
+    project_path: str, plan_hash_hex: str, project_name: str = "",
+) -> None:
     """Persist the reviewed plan hash so identical re-runs skip review."""
     try:
-        cache_path = _plan_review_cache_path(project_path)
+        cache_path = _plan_review_cache_path(project_path, project_name)
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         from app.utils import atomic_write
         atomic_write(cache_path, plan_hash_hex + "\n")
@@ -288,6 +299,7 @@ def _run_plan_review_gate(
     project_path: str,
     notify_fn=None,
     issue_url: str = "",
+    project_name: str = "",
 ) -> Union[None, _GateImproved, Tuple[bool, str]]:
     """Run plan-review gate with autonomous improvement loop.
 
@@ -309,7 +321,7 @@ def _run_plan_review_gate(
         return None
 
     current_hash = _plan_hash(plan)
-    if _is_plan_cache_fresh(project_path, current_hash):
+    if _is_plan_cache_fresh(project_path, current_hash, project_name):
         logger.info("Plan-review gate: cache hit — skipping review")
         return None
 
@@ -324,7 +336,7 @@ def _run_plan_review_gate(
         if approved:
             logger.info("Plan-review gate: APPROVED (round %d)", round_num)
             final_hash = _plan_hash(current_plan)
-            _write_plan_cache(project_path, final_hash)
+            _write_plan_cache(project_path, final_hash, project_name)
             if current_plan != plan:
                 _post_improved_plan(current_plan, issue_url, notify_fn)
                 return _GateImproved(current_plan, "\n".join(all_issues))
@@ -459,6 +471,8 @@ def _execute_implementation(
     context: str,
     skill_dir: Optional[Path] = None,
     issue_number: str = "",
+    project_name: str = "",
+    instance_dir: str = "",
 ) -> str:
     """Execute the implementation via Claude CLI."""
     from app.config import get_branch_prefix
@@ -466,7 +480,10 @@ def _execute_implementation(
 
     branch_prefix = get_branch_prefix()
     project_memory = build_memory_block_for_skill(
-        project_path, f"{issue_title}\n{plan}",
+        project_path,
+        f"{issue_title}\n{plan}",
+        project_name=project_name,
+        instance_dir=instance_dir,
     )
 
     prompt = _build_prompt(
@@ -498,12 +515,13 @@ def _submit_implement_pr(
     issue_url: str,
     skill_dir: Optional[Path] = None,
     base_branch: Optional[str] = None,
+    project_name: str = "",
 ) -> Optional[str]:
     """Build implement-specific PR title/body and delegate to shared submit."""
     from app.pr_submit import get_commit_subjects
     from app.projects_config import resolve_base_branch
 
-    project_name = guess_project_name(project_path)
+    project_name = project_name or guess_project_name(project_path)
     effective_base = base_branch or resolve_base_branch(project_name, project_path)
     commits = get_commit_subjects(project_path, base_branch=effective_base)
 
@@ -576,6 +594,16 @@ def main(argv=None):
         help="Target branch for the PR (e.g. '11.126')",
         default=None,
     )
+    parser.add_argument(
+        "--project-name",
+        help="Koan project name for memory and tracker configuration",
+        default="",
+    )
+    parser.add_argument(
+        "--instance-dir",
+        help="Koan instance directory for project memory",
+        default="",
+    )
     cli_args = parser.parse_args(argv)
 
     skill_dir = Path(__file__).resolve().parent
@@ -586,6 +614,8 @@ def main(argv=None):
         context=cli_args.context,
         skill_dir=skill_dir,
         base_branch=cli_args.base_branch,
+        project_name=cli_args.project_name,
+        instance_dir=cli_args.instance_dir,
     )
     print(summary)
     return 0 if success else 1

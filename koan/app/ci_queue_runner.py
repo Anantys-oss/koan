@@ -524,6 +524,11 @@ def _attempt_ci_fixes(
     return success
 
 
+def _summary_indicates_quota_exhausted(summary: str) -> bool:
+    """Return True when the CI-fix summary represents a provider quota stop."""
+    return "API quota exhausted" in (summary or "")
+
+
 def main(argv=None):
     """CLI entry point for ci_queue_runner."""
     import argparse
@@ -557,6 +562,7 @@ def main(argv=None):
     result = {
         "success": success,
         "summary": summary,
+        "quota_exhausted": _summary_indicates_quota_exhausted(summary),
     }
     print(json.dumps(result))
 

@@ -4768,6 +4768,60 @@ class TestSkillDispatchAuthQuota(TestRunSkillMissionEnv):
         notify_text = mock_notify.call_args_list[-1][0][1]
         assert "quota" in notify_text.lower()
 
+    def test_stdout_session_limit_requeues_and_pauses(self, tmp_path):
+        """Claude session-limit text on stdout should classify as quota."""
+        from app.run import _handle_skill_dispatch
+
+        koan_root = str(tmp_path)
+        instance = str(tmp_path / "instance")
+        (tmp_path / "instance").mkdir()
+        (tmp_path / "instance" / "journal").mkdir(parents=True)
+        (tmp_path / "koan").mkdir()
+
+        mock_proc = self._make_mock_popen(
+            returncode=1,
+            stdout_lines=["You've hit your session limit · resets 3am (UTC)\n"],
+            stderr_content="",
+        )
+
+        with patch("app.run.subprocess.Popen", side_effect=mock_proc._side_effect), \
+             patch("app.run._get_koan_branch", return_value="main"), \
+             patch("app.run._restore_koan_branch"), \
+             patch("app.run._reset_terminal"), \
+             patch("app.run.protected_phase", return_value=MagicMock(
+                 __enter__=MagicMock(), __exit__=MagicMock(return_value=False)
+             )), \
+             patch("app.run._notify") as mock_notify, \
+             patch("app.run._notify_mission_end"), \
+             patch("app.run._finalize_mission") as mock_finalize, \
+             patch("app.run._requeue_mission_in_file") as mock_requeue, \
+             patch("app.run._commit_instance"), \
+             patch("app.run._sleep_between_runs"), \
+             patch("app.run.set_status"), \
+             patch("app.run.log"), \
+             patch("app.skill_dispatch.dispatch_skill_mission",
+                   return_value=["python3", "-m", "app.plan_runner"]), \
+             patch("app.mission_runner.run_post_mission"), \
+             patch("app.pause_manager.create_pause") as mock_pause:
+            handled, _ = _handle_skill_dispatch(
+                mission_title="/plan test",
+                project_name="test",
+                project_path=str(tmp_path),
+                koan_root=koan_root,
+                instance=instance,
+                run_num=1,
+                max_runs=20,
+                autonomous_mode="implement",
+                interval=30,
+            )
+
+        assert handled is True
+        mock_requeue.assert_called_once()
+        mock_finalize.assert_not_called()
+        mock_pause.assert_called()
+        notify_text = mock_notify.call_args_list[-1][0][1]
+        assert "quota" in notify_text.lower()
+
     def test_auth_error_requeues_and_pauses(self, tmp_path):
         """Auth error during skill should requeue mission and create auth pause."""
         from app.run import _handle_skill_dispatch
