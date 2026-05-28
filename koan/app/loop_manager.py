@@ -1592,8 +1592,8 @@ def interruptible_sleep(
 ) -> str:
     """Sleep for a given interval, waking early on events.
 
-    Checks for stop, pause, restart, shutdown files, pending missions,
-    and GitHub notifications every check_interval seconds.
+    Checks for stop, pause, run-targeted restart, shutdown files, pending
+    missions, and GitHub notifications every check_interval seconds.
 
     Args:
         interval: Total sleep duration in seconds.
@@ -1618,7 +1618,8 @@ def interruptible_sleep(
             return "stop"
         if _check_signal_file(koan_root, ".koan-pause"):
             return "pause"
-        if _check_signal_file(koan_root, ".koan-restart"):
+        from app.restart_manager import check_restart
+        if check_restart(koan_root, target="run"):
             return "restart"
         if _check_signal_file(koan_root, ".koan-shutdown"):
             return "shutdown"

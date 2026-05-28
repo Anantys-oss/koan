@@ -438,7 +438,7 @@ class TestInterruptibleSleep:
         )
         assert result == "pause"
 
-    def test_restart_file_wakes(self, tmp_path):
+    def test_run_restart_file_wakes(self, tmp_path):
         from app.loop_manager import interruptible_sleep
 
         koan_root = str(tmp_path / "root")
@@ -446,8 +446,8 @@ class TestInterruptibleSleep:
         os.makedirs(koan_root, exist_ok=True)
         os.makedirs(instance, exist_ok=True)
 
-        # Pre-create restart file
-        Path(os.path.join(koan_root, ".koan-restart")).touch()
+        # Pre-create run-targeted restart file
+        Path(os.path.join(koan_root, ".koan-restart-run")).touch()
 
         result = interruptible_sleep(
             interval=60,
@@ -456,6 +456,36 @@ class TestInterruptibleSleep:
             check_interval=1,
         )
         assert result == "restart"
+
+    def test_legacy_restart_file_does_not_wake_run_sleep(self, tmp_path):
+        """A stale legacy restart marker must not break idle sleep loops."""
+        from app.loop_manager import interruptible_sleep
+
+        koan_root = str(tmp_path / "root")
+        instance = str(tmp_path / "instance")
+        os.makedirs(koan_root, exist_ok=True)
+        os.makedirs(instance, exist_ok=True)
+
+        Path(os.path.join(koan_root, ".koan-restart")).touch()
+
+        sleep_calls = []
+
+        def tracking_sleep(secs):
+            sleep_calls.append(secs)
+
+        with patch("app.loop_manager.time.sleep", side_effect=tracking_sleep), \
+             patch("app.loop_manager.process_github_notifications", return_value=0), \
+             patch("app.loop_manager.process_jira_notifications", return_value=0):
+            result = interruptible_sleep(
+                interval=1,
+                koan_root=koan_root,
+                instance_dir=instance,
+                check_interval=1,
+            )
+
+        assert result == "timeout"
+        assert len(sleep_calls) == 1
+        assert 0 < sleep_calls[0] <= 1
 
     def test_shutdown_file_wakes(self, tmp_path):
         from app.loop_manager import interruptible_sleep

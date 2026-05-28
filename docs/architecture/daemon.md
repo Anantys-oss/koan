@@ -46,6 +46,8 @@ Idle actions use the same interruptible sleep path even when `auto_pause` is
 disabled. If `interval_seconds` is set to `0`, the runner waits until the next
 configured GitHub/Jira notification poll is due, or a small minimum breath when
 notification polling is disabled, so always-on instances do not hot-loop.
+During those idle waits, the runner only wakes for the run-targeted restart
+marker (`.koan-restart-run`); stale legacy `.koan-restart` markers are ignored.
 
 The loop writes real-time state to status files so the bridge, dashboard, and
 commands can report progress without directly controlling the runner.
