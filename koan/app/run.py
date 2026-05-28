@@ -1333,6 +1333,37 @@ def _handle_skill_dispatch(
                 ))
                 return True, mission_title
 
+        # --- Exit-0 quota probe ---
+        # Some provider wrappers emit quota payloads with exit 0 (the wrapped
+        # subprocess succeeded but the underlying CLI text shows quota
+        # exhaustion).  Without this probe, the mission would be finalized to
+        # Done before any pause fires.  Mirror the pre-finalize probe in
+        # _run_iteration so the skill path treats transient quota events the
+        # same way.
+        if exit_code == 0 and not skill_result.get("quota_exhausted"):
+            from app.quota_handler import handle_quota_exhaustion, QUOTA_CHECK_UNRELIABLE
+            probe = handle_quota_exhaustion(
+                koan_root=koan_root,
+                instance_dir=instance,
+                project_name=project_name,
+                run_count=run_num,
+                stdout_text=skill_result.get("stdout", ""),
+                stderr_text=skill_result.get("stderr", ""),
+                provider_name=_skill_provider_name,
+                exit_code=exit_code,
+            )
+            if probe is not None and probe is not QUOTA_CHECK_UNRELIABLE:
+                reset_display, resume_msg = probe
+                log("quota", f"Exit-0 quota probe matched. {reset_display}")
+                _requeue_mission_in_file(instance, mission_title)
+                _commit_instance(instance, f"koan: quota exhausted {time.strftime('%Y-%m-%d-%H:%M')}")
+                _notify(instance, (
+                    f"⏸️ {_skill_provider_label} quota exhausted.{(' ' + reset_display) if reset_display else ''}\n"
+                    f"Skill mission '{mission_title[:60]}' moved back to Pending.\n"
+                    f"{resume_msg} or use /resume to restart manually."
+                ))
+                return True, mission_title
+
         # --- Post-mission quota exhaustion (detected during pipeline) ---
         # handle_quota_exhaustion() inside run_post_mission already wrote the
         # journal entry and created the pause state with accurate reset timing.

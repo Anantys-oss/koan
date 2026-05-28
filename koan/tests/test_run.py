@@ -4996,6 +4996,73 @@ class TestSkillDispatchAuthQuota(TestRunSkillMissionEnv):
         # No quota_info → fallback pause should be created
         mock_pause.assert_called_once()
 
+    def test_exit_zero_quota_probe_requeues(self, tmp_path):
+        """Quota patterns on stdout with exit 0 should requeue, not finalize.
+
+        Some provider wrappers emit a quota payload and exit successfully.
+        Without the exit-0 probe, the mission would be marked Done before any
+        pause fires.
+        """
+        from app.run import _handle_skill_dispatch
+
+        koan_root = str(tmp_path)
+        instance = str(tmp_path / "instance")
+        (tmp_path / "instance").mkdir()
+        (tmp_path / "instance" / "journal").mkdir(parents=True)
+        (tmp_path / "koan").mkdir()
+
+        # Skill exits with 0 but stdout shows quota exhaustion
+        mock_proc = self._make_mock_popen(
+            returncode=0,
+            stdout_lines=["You've hit your session limit · resets 4pm (UTC)\n"],
+            stderr_content="",
+        )
+
+        # run_post_mission returns without flagging quota_exhausted (the
+        # subprocess wrapper didn't detect it self-reportedly)
+        mock_post_result = {
+            "success": True,
+            "quota_exhausted": False,
+            "quota_info": None,
+        }
+
+        with patch("app.run.subprocess.Popen", side_effect=mock_proc._side_effect), \
+             patch("app.run._get_koan_branch", return_value="main"), \
+             patch("app.run._restore_koan_branch"), \
+             patch("app.run._reset_terminal"), \
+             patch("app.run.protected_phase", return_value=MagicMock(
+                 __enter__=MagicMock(), __exit__=MagicMock(return_value=False)
+             )), \
+             patch("app.run._notify") as mock_notify, \
+             patch("app.run._notify_mission_end"), \
+             patch("app.run._finalize_mission") as mock_finalize, \
+             patch("app.run._requeue_mission_in_file") as mock_requeue, \
+             patch("app.run._commit_instance"), \
+             patch("app.run._sleep_between_runs"), \
+             patch("app.run.set_status"), \
+             patch("app.run.log"), \
+             patch("app.skill_dispatch.dispatch_skill_mission",
+                   return_value=["python3", "-m", "app.plan_runner"]), \
+             patch("app.mission_runner.run_post_mission", return_value=mock_post_result), \
+             patch("app.pause_manager.create_pause"):
+            handled, _ = _handle_skill_dispatch(
+                mission_title="/plan test",
+                project_name="test",
+                project_path=str(tmp_path),
+                koan_root=koan_root,
+                instance=instance,
+                run_num=1,
+                max_runs=20,
+                autonomous_mode="implement",
+                interval=30,
+            )
+
+        assert handled is True
+        mock_requeue.assert_called_once()
+        mock_finalize.assert_not_called()
+        notify_text = mock_notify.call_args_list[-1][0][1]
+        assert "quota" in notify_text.lower()
+
     def test_mission_tier_passed_to_post_mission(self, tmp_path):
         """mission_tier is forwarded from _handle_skill_dispatch to run_post_mission."""
         from app.run import _handle_skill_dispatch
