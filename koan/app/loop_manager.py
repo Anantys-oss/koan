@@ -995,6 +995,9 @@ def _process_one_notification(
     file writes for missions).
     """
     from app.github_command_handler import (
+        NOTIFICATION_OUTCOME_HANDLED_NOOP,
+        NOTIFICATION_OUTCOME_KEY,
+        NOTIFICATION_OUTCOME_QUEUED,
         process_single_notification,
         resolve_project_from_notification,
     )
@@ -1033,6 +1036,10 @@ def _process_one_notification(
             github_config.get("bot_username", ""),
             github_config.get("max_age", 24),
         )
+        outcome = notif.get(
+            NOTIFICATION_OUTCOME_KEY,
+            NOTIFICATION_OUTCOME_QUEUED if success else NOTIFICATION_OUTCOME_HANDLED_NOOP,
+        )
 
         # Cache immediately after processing: prevents re-processing on
         # next cycle. Must happen before the error reply attempt so that
@@ -1048,12 +1055,20 @@ def _process_one_notification(
         if thread_id:
             mark_notification_read(thread_id)
 
-        if success:
+        if success and outcome == NOTIFICATION_OUTCOME_QUEUED:
             repo = notif.get("repository", {}).get("full_name", "?")
             title = notif.get("subject", {}).get("title", "?")
             _github_log(f"Mission queued from @mention on {repo}: {title}")
             _notify_mission_from_mention(notif)
             return True
+        if success and outcome == NOTIFICATION_OUTCOME_HANDLED_NOOP:
+            repo = notif.get("repository", {}).get("full_name", "?")
+            title = notif.get("subject", {}).get("title", "?")
+            log.debug(
+                "GitHub: handled notification without queuing mission on %s: %s",
+                repo, title,
+            )
+            return False
         if error:
             repo = notif.get("repository", {}).get("full_name", "?")
             _github_log(f"Notification error for {repo}: {error[:100]}", "warning")

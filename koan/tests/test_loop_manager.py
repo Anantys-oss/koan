@@ -1780,6 +1780,46 @@ class TestProcessNotificationsConsoleOutput:
         assert "[github]" in captured.out
         assert "Permission denied" in captured.out
 
+    @patch("app.loop_manager._load_github_config")
+    @patch("app.loop_manager._build_skill_registry")
+    @patch("app.loop_manager._get_known_repos_from_projects")
+    @patch("app.utils.load_config")
+    def test_success_noop_notification_not_counted_or_logged_as_queued(
+        self, mock_config, mock_repos, mock_registry, mock_gh_config, tmp_path, capsys
+    ):
+        from app.github_notifications import FetchResult
+        from app.loop_manager import process_github_notifications
+
+        mock_config.return_value = {}
+        mock_gh_config.return_value = {"nickname": "bot", "bot_username": "bot", "max_age": 24}
+        mock_registry.return_value = MagicMock()
+        mock_repos.return_value = set()
+
+        fake_notif = {
+            "id": "3",
+            "repository": {"full_name": "sukria/koan"},
+            "subject": {"url": "https://api.github.com/repos/sukria/koan/pulls/3",
+                        "title": "Already handled", "type": "PullRequest"},
+            "updated_at": "2026-02-19T12:00:00Z",
+        }
+
+        def _noop_success(notif, *_args, **_kwargs):
+            notif["_koan_notification_outcome"] = "handled_noop"
+            return True, None
+
+        with patch("app.projects_config.load_projects_config", return_value={}), \
+             patch("app.github_notifications.fetch_unread_notifications", return_value=FetchResult([fake_notif], [])), \
+             patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=("koan", "sukria", "koan")), \
+             patch("app.github_command_handler.process_single_notification", side_effect=_noop_success), \
+             patch("app.loop_manager._notify_mission_from_mention") as mock_notify:
+            result = process_github_notifications(str(tmp_path), str(tmp_path))
+
+        assert result == 0
+        mock_notify.assert_not_called()
+        captured = capsys.readouterr()
+        assert "Mission queued" not in captured.out
+
 
 # --- Test fetch_unread_notifications enhanced logging ---
 

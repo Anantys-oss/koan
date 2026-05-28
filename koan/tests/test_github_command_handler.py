@@ -7,6 +7,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.github_command_handler import (
+    NOTIFICATION_OUTCOME_HANDLED_NOOP,
+    NOTIFICATION_OUTCOME_KEY,
+    NOTIFICATION_OUTCOME_QUEUED,
     _ASSIGNMENT_REASON_TO_COMMAND,
     _REPLY_RATE_FILE,
     _error_replies,
@@ -3369,6 +3372,7 @@ class TestTryAssignmentNotification:
             )
 
         assert result is True
+        assert review_notification[NOTIFICATION_OUTCOME_KEY] == NOTIFICATION_OUTCOME_QUEUED
         content = missions_path.read_text()
         assert "/review https://github.com/sukria/koan/pull/99" in content
         assert "[project:koan]" in content
@@ -3422,6 +3426,7 @@ class TestTryAssignmentNotification:
             result = _try_assignment_notification(bumped, review_registry, {})
 
         assert result is True  # idempotent — handled, not failed
+        assert bumped[NOTIFICATION_OUTCOME_KEY] == NOTIFICATION_OUTCOME_HANDLED_NOOP
         content = missions_path.read_text()
         assert content.count("/implement https://github.com/sukria/koan/issues/55") == 1
 
@@ -3541,6 +3546,7 @@ class TestTryAssignmentNotification:
 
         assert first is True
         assert second is True  # idempotent — handled, not failed
+        assert review_notification[NOTIFICATION_OUTCOME_KEY] == NOTIFICATION_OUTCOME_HANDLED_NOOP
         content = missions_path.read_text()
         # Exactly one mission line for this URL across the whole file
         assert content.count("/review https://github.com/sukria/koan/pull/99") == 1
