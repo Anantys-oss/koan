@@ -326,6 +326,23 @@ See provider guides:
 - [docs/providers/copilot.md](docs/providers/copilot.md)
 - [docs/providers/local.md](docs/providers/local.md)
 
+### Dashboard Configuration
+
+The web dashboard (`make dashboard`) binds to `127.0.0.1:5001` by default (local-only access). To expose it on your network or change the port:
+
+**Via environment variables** (add to `.env`):
+```bash
+KOAN_DASHBOARD_HOST=0.0.0.0   # Bind to all interfaces
+KOAN_DASHBOARD_PORT=5001      # Custom port (optional)
+```
+
+**Via command-line arguments**:
+```bash
+python3 koan/app/dashboard.py --host 0.0.0.0 --port 8080
+```
+
+**Security note**: The dashboard has no authentication. Only expose it to trusted networks.
+
 ## Architecture
 
 The full current-design reference lives under [docs/architecture/](docs/architecture/), with durable design rules in [docs/design/decisions.md](docs/design/decisions.md).
@@ -368,7 +385,7 @@ instance/                 # Your private data (gitignored)
 | `make logs` | Tail live output from all processes |
 | `make stop` | Stop all processes |
 | `make status` | Show running process status |
-| `make dashboard` | Web UI (port 5001) |
+| `make dashboard` | Web UI (default: http://127.0.0.1:5001) |
 | `make test` | Run test suite |
 | `make say m="..."` | Send a test message |
 | `make rename-project old=X new=Y` | Rename a project everywhere (dry-run by default, add `apply=1` to execute) |

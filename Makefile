@@ -116,7 +116,7 @@ migrate: setup
 	$(KOAN_RUN) app/migrate_memory.py
 
 dashboard: setup
-	$(KOAN_RUN) app/dashboard.py
+	$(KOAN_RUN) app/dashboard.py $(if $(KOAN_DASHBOARD_HOST),--host $(KOAN_DASHBOARD_HOST),) $(if $(KOAN_DASHBOARD_PORT),--port $(KOAN_DASHBOARD_PORT),)
 
 restart:
 	$(MAKE) stop
