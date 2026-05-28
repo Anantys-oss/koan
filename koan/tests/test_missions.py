@@ -31,6 +31,7 @@ from app.missions import (
     QUARANTINE_MAX_BYTES,
     reorder_mission,
     reorder_missions_bulk,
+    _collect_item_ranges,
     _collect_item_start_indices,
     _find_insertion_index,
     requeue_mission,
@@ -896,8 +897,35 @@ class TestReorderMission:
 
 
 # ---------------------------------------------------------------------------
-# _collect_item_start_indices / _find_insertion_index helpers
+# _collect_item_ranges / _collect_item_start_indices / _find_insertion_index
 # ---------------------------------------------------------------------------
+
+class TestCollectItemRanges:
+    def test_simple_items(self):
+        lines = ["## Pending", "- first", "- second", "- third"]
+        result = _collect_item_ranges(lines, 0, 4)
+        assert result == [(1, 2), (2, 3), (3, 4)]
+
+    def test_multiline_items(self):
+        lines = ["## Pending", "- first", "  continuation", "- second"]
+        result = _collect_item_ranges(lines, 0, 4)
+        assert result == [(1, 3), (3, 4)]
+
+    def test_empty_section(self):
+        lines = ["## Pending", ""]
+        result = _collect_item_ranges(lines, 0, 2)
+        assert result == []
+
+    def test_blank_lines_between_items(self):
+        lines = ["## Pending", "", "- first", "", "- second"]
+        result = _collect_item_ranges(lines, 0, 5)
+        assert result == [(2, 3), (4, 5)]
+
+    def test_multiple_continuation_lines(self):
+        lines = ["## Pending", "- first", "  line2", "  line3", "- second"]
+        result = _collect_item_ranges(lines, 0, 5)
+        assert result == [(1, 4), (4, 5)]
+
 
 class TestCollectItemStartIndices:
     def test_simple_items(self):

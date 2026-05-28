@@ -921,25 +921,7 @@ def cancel_pending_missions_bulk(
 
     start, end = boundaries["pending"]
 
-    # Collect pending items as (start_line_idx, end_line_idx) tuples
-    items: List[Tuple[int, int]] = []
-    i = start + 1
-    while i < end:
-        stripped = lines[i].strip()
-        if stripped.startswith("- "):
-            item_start = i
-            i += 1
-            while i < end:
-                next_stripped = lines[i].strip()
-                if (next_stripped.startswith("- ") or
-                        next_stripped.startswith("## ") or
-                        next_stripped.startswith("### ") or
-                        next_stripped == ""):
-                    break
-                i += 1
-            items.append((item_start, i))
-        else:
-            i += 1
+    items = _collect_item_ranges(lines, start, end)
 
     if not items:
         raise ValueError("No pending missions to cancel.")
@@ -1329,24 +1311,32 @@ def find_section_boundaries(lines: List[str]) -> Dict[str, Tuple[int, int]]:
     return boundaries
 
 
-def _collect_item_start_indices(
+def _collect_item_ranges(
     lines: List[str], section_start: int, section_end: int
-) -> List[int]:
-    """Return start-line indices for each '- ' item within a section."""
-    items: List[int] = []
+) -> List[Tuple[int, int]]:
+    """Return (start, end) line-index ranges for each '- ' item in a section."""
+    items: List[Tuple[int, int]] = []
     i = section_start + 1  # Skip ## header
     while i < section_end:
         if lines[i].strip().startswith("- "):
-            items.append(i)
+            item_start = i
             i += 1
             while i < section_end:
                 s = lines[i].strip()
                 if s.startswith("- ") or s.startswith("## ") or s.startswith("### ") or s == "":
                     break
                 i += 1
+            items.append((item_start, i))
         else:
             i += 1
     return items
+
+
+def _collect_item_start_indices(
+    lines: List[str], section_start: int, section_end: int
+) -> List[int]:
+    """Return start-line indices for each '- ' item within a section."""
+    return [start for start, _ in _collect_item_ranges(lines, section_start, section_end)]
 
 
 def _find_insertion_index(
@@ -1398,26 +1388,7 @@ def reorder_mission(content: str, position: int, target: int = 1) -> Tuple[str, 
 
     start, end = boundaries["pending"]
 
-    # Collect pending items as (start_line_idx, end_line_idx) tuples
-    items = []
-    i = start + 1  # Skip the ## header line
-    while i < end:
-        stripped = lines[i].strip()
-        if stripped.startswith("- "):
-            item_start = i
-            i += 1
-            # Include continuation lines (indented, not a new item or header)
-            while i < end:
-                next_stripped = lines[i].strip()
-                if (next_stripped.startswith("- ") or
-                        next_stripped.startswith("## ") or
-                        next_stripped.startswith("### ") or
-                        next_stripped == ""):
-                    break
-                i += 1
-            items.append((item_start, i))
-        else:
-            i += 1
+    items = _collect_item_ranges(lines, start, end)
 
     if not items:
         raise ValueError("No pending missions to reorder.")
@@ -1490,25 +1461,7 @@ def reorder_missions_bulk(
 
     start, end = boundaries["pending"]
 
-    # Collect pending items as (start_line_idx, end_line_idx) tuples
-    items: List[Tuple[int, int]] = []
-    i = start + 1
-    while i < end:
-        stripped = lines[i].strip()
-        if stripped.startswith("- "):
-            item_start = i
-            i += 1
-            while i < end:
-                next_stripped = lines[i].strip()
-                if (next_stripped.startswith("- ") or
-                        next_stripped.startswith("## ") or
-                        next_stripped.startswith("### ") or
-                        next_stripped == ""):
-                    break
-                i += 1
-            items.append((item_start, i))
-        else:
-            i += 1
+    items = _collect_item_ranges(lines, start, end)
 
     if not items:
         raise ValueError("No pending missions to reorder.")
@@ -1584,25 +1537,7 @@ def edit_pending_mission(content: str, position: int, new_text: str) -> Tuple[st
 
     start, end = boundaries["pending"]
 
-    # Collect pending items as (start_line_idx, end_line_idx) tuples
-    items = []
-    i = start + 1
-    while i < end:
-        stripped = lines[i].strip()
-        if stripped.startswith("- "):
-            item_start = i
-            i += 1
-            while i < end:
-                next_stripped = lines[i].strip()
-                if (next_stripped.startswith("- ") or
-                        next_stripped.startswith("## ") or
-                        next_stripped.startswith("### ") or
-                        next_stripped == ""):
-                    break
-                i += 1
-            items.append((item_start, i))
-        else:
-            i += 1
+    items = _collect_item_ranges(lines, start, end)
 
     if not items:
         raise ValueError("No pending missions to edit.")
@@ -1653,25 +1588,7 @@ def prune_done_section(content: str, keep: int = 50) -> Tuple[str, int]:
 
     start, end = boundaries["done"]
 
-    # Collect done items as line ranges
-    items = []  # list of (item_start, item_end) tuples
-    i = start + 1  # skip ## header
-    while i < end:
-        stripped = lines[i].strip()
-        if stripped.startswith("- "):
-            item_start = i
-            i += 1
-            while i < end:
-                next_stripped = lines[i].strip()
-                if (next_stripped.startswith("- ") or
-                        next_stripped.startswith("## ") or
-                        next_stripped.startswith("### ") or
-                        next_stripped == ""):
-                    break
-                i += 1
-            items.append((item_start, i))
-        else:
-            i += 1
+    items = _collect_item_ranges(lines, start, end)
 
     if len(items) <= keep:
         return content, 0
