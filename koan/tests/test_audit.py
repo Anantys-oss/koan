@@ -1234,6 +1234,17 @@ class TestSeverityAtOrAbove:
         for sev in ("critical", "high", "medium", "low"):
             assert severity_at_or_above(sev, "low")
 
+    def test_unknown_threshold_fails_closed(self):
+        """An unrecognized threshold must NOT accept every finding.
+
+        Previously the code defaulted unknown ranks to 99 on both sides,
+        which meant `severity_at_or_above("critical", "totally-typoed")`
+        returned True. Now both unknown severity *and* unknown threshold
+        fail closed.
+        """
+        for sev in ("critical", "high", "medium", "low"):
+            assert not severity_at_or_above(sev, "totally-typoed")
+
 
 # ---------------------------------------------------------------------------
 # queue_auto_fix_missions

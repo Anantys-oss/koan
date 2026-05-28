@@ -211,6 +211,39 @@ class TestGitHubIssueTracker:
             ref = GitHubIssueTracker(repo="o/r").find_existing_plan_issue("idea")
         assert ref is None
 
+    def test_find_existing_plan_issue_strips_search_operators(self):
+        """Bare AND/OR/NOT tokens must not appear in the GitHub search query.
+
+        GitHub search treats those as Booleans; leaving them in lets an idea
+        like "OR add not found" silently widen the result set.
+        """
+        from app.issue_tracker.github import _extract_search_keywords
+
+        keywords = _extract_search_keywords("OR add not found error")
+        # "or"/"not" are stripped; "add" is a stop word; "found" and "error"
+        # survive.
+        assert "or" not in keywords.split()
+        assert "not" not in keywords.split()
+        assert "and" not in keywords.split()
+        assert "found" in keywords
+        assert "error" in keywords
+
+        results = json.dumps([])
+        with patch(f"{_GH}.api", return_value=results) as mock_api:
+            GitHubIssueTracker(repo="o/r").find_existing_plan_issue(
+                "OR add not found error",
+            )
+        # The query string passed to gh must not contain bare Booleans.
+        passed_args = mock_api.call_args[1]["extra_args"]
+        query = next(
+            (passed_args[i + 1] for i, v in enumerate(passed_args) if v == "-f" and
+             i + 1 < len(passed_args) and passed_args[i + 1].startswith("q=")),
+            "",
+        )
+        assert " OR " not in query.upper()
+        assert " AND " not in query.upper()
+        assert " NOT " not in query.upper()
+
 
 # ---------------------------------------------------------------------------
 # JiraIssueTracker

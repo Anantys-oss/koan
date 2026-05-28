@@ -118,6 +118,14 @@ class GitHubIssueTracker(IssueTracker):
         )
 
 
+# GitHub code-search Boolean operators and qualifier keywords. The tokenizer
+# below produces only alphabetic words, so qualifiers with a colon (`label:`,
+# `state:`, ...) never survive — but the bare Booleans `AND`/`OR`/`NOT` do,
+# and they re-shape the query semantics. Stripping them keeps an idea like
+# "OR add not found" from turning into a wide-open OR search.
+_GITHUB_SEARCH_OPERATORS = {"and", "or", "not"}
+
+
 def _extract_search_keywords(idea: str) -> str:
     stop_words = {
         "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
@@ -128,4 +136,7 @@ def _extract_search_keywords(idea: str) -> str:
         "your", "need", "want", "add", "make", "use",
     }
     words = re.findall(r"\b[a-zA-Z]{2,}\b", (idea or "").lower())
-    return " ".join(w for w in words if w not in stop_words)[:80]
+    return " ".join(
+        w for w in words
+        if w not in stop_words and w not in _GITHUB_SEARCH_OPERATORS
+    )[:80]

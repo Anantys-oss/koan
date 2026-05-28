@@ -700,11 +700,17 @@ AUTO_FIX_DEFAULT_THRESHOLD = "high"  # critical + high
 def severity_at_or_above(severity: str, threshold: str) -> bool:
     """Return True if *severity* is at or above *threshold*.
 
-    Uses the same ``_SEVERITY_ORDER`` as finding prioritization.
+    Uses the same ``_SEVERITY_ORDER`` as finding prioritization. Both an
+    unknown severity *and* an unknown threshold fail closed (return False):
+    if we don't know how the finding ranks, we don't auto-fix it; if we
+    don't know what the operator meant by ``threshold=foo``, we also don't
+    auto-fix it. The previous implementation defaulted both to 99, which
+    made every unknown threshold accept every unknown severity — the worst
+    of both worlds.
     """
-    finding_rank = _SEVERITY_ORDER.get(severity, 99)
-    threshold_rank = _SEVERITY_ORDER.get(threshold, 99)
-    return finding_rank <= threshold_rank
+    if severity not in _SEVERITY_ORDER or threshold not in _SEVERITY_ORDER:
+        return False
+    return _SEVERITY_ORDER[severity] <= _SEVERITY_ORDER[threshold]
 
 
 def queue_auto_fix_missions(
