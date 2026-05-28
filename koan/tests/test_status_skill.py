@@ -117,6 +117,66 @@ class TestHandleStatus:
         result = _handle_status(ctx)
         assert "Stopping" in result
 
+    def test_paused_shows_in_progress_mission(self, tmp_path):
+        """When paused with in-progress mission, status shows what's finishing."""
+        instance = tmp_path / "instance"
+        instance.mkdir()
+        (tmp_path / ".koan-pause").touch()
+        missions = instance / "missions.md"
+        missions.write_text(
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "## In Progress\n\n"
+            "- [project:koan] /rebase https://github.com/org/repo/pull/42\n\n"
+            "## Done\n"
+        )
+        from skills.core.status.handler import _handle_status
+        ctx = _make_ctx("status", instance, tmp_path)
+        result = _handle_status(ctx)
+        assert "Paused" in result
+        assert "Finishing" in result
+        assert "/rebase" in result
+        assert "[koan]" in result
+
+    def test_paused_no_in_progress_no_finishing_line(self, tmp_path):
+        """When paused with no in-progress missions, no Finishing line."""
+        instance = tmp_path / "instance"
+        instance.mkdir()
+        (tmp_path / ".koan-pause").touch()
+        missions = instance / "missions.md"
+        missions.write_text(
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- some task\n\n"
+            "## In Progress\n\n"
+            "## Done\n"
+        )
+        from skills.core.status.handler import _handle_status
+        ctx = _make_ctx("status", instance, tmp_path)
+        result = _handle_status(ctx)
+        assert "Paused" in result
+        assert "Finishing" not in result
+
+    def test_stopping_shows_in_progress_mission(self, tmp_path):
+        """When stopping with in-progress mission, status shows what's finishing."""
+        instance = tmp_path / "instance"
+        instance.mkdir()
+        (tmp_path / ".koan-stop").touch()
+        missions = instance / "missions.md"
+        missions.write_text(
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "## In Progress\n\n"
+            "- [project:webapp] /review PR #99\n\n"
+            "## Done\n"
+        )
+        from skills.core.status.handler import _handle_status
+        ctx = _make_ctx("status", instance, tmp_path)
+        result = _handle_status(ctx)
+        assert "Stopping" in result
+        assert "Finishing" in result
+        assert "/review" in result
+
     def test_stop_takes_precedence_over_pause(self, tmp_path):
         """If both stop and pause exist, stop wins."""
         instance = tmp_path / "instance"
@@ -253,6 +313,56 @@ class TestHandleStatus:
 # ---------------------------------------------------------------------------
 # _truncate()
 # ---------------------------------------------------------------------------
+
+class TestGetInProgressMissions:
+    """Test the _get_in_progress_missions() helper."""
+
+    def test_no_file(self, tmp_path):
+        from skills.core.status.handler import _get_in_progress_missions
+        assert _get_in_progress_missions(tmp_path / "missing.md") == ""
+
+    def test_no_in_progress(self, tmp_path):
+        f = tmp_path / "missions.md"
+        f.write_text("## Pending\n\n- task\n\n## In Progress\n\n## Done\n")
+        from skills.core.status.handler import _get_in_progress_missions
+        assert _get_in_progress_missions(f) == ""
+
+    def test_single_mission_with_project(self, tmp_path):
+        f = tmp_path / "missions.md"
+        f.write_text("## In Progress\n\n- [project:koan] /rebase PR #5\n\n## Done\n")
+        from skills.core.status.handler import _get_in_progress_missions
+        result = _get_in_progress_missions(f)
+        assert "/rebase PR #5" in result
+        assert "[koan]" in result
+
+    def test_single_mission_without_project(self, tmp_path):
+        f = tmp_path / "missions.md"
+        f.write_text("## In Progress\n\n- fix the bug\n\n## Done\n")
+        from skills.core.status.handler import _get_in_progress_missions
+        result = _get_in_progress_missions(f)
+        assert "fix the bug" in result
+        assert "[" not in result
+
+    def test_multiple_missions(self, tmp_path):
+        f = tmp_path / "missions.md"
+        f.write_text(
+            "## In Progress\n\n"
+            "- [project:a] task one\n"
+            "- [project:b] task two\n\n"
+            "## Done\n"
+        )
+        from skills.core.status.handler import _get_in_progress_missions
+        result = _get_in_progress_missions(f)
+        assert "task one" in result
+        assert "task two" in result
+
+    def test_long_mission_truncated(self, tmp_path):
+        f = tmp_path / "missions.md"
+        f.write_text(f"## In Progress\n\n- {'x' * 80}\n\n## Done\n")
+        from skills.core.status.handler import _get_in_progress_missions
+        result = _get_in_progress_missions(f)
+        assert "…" in result
+
 
 class TestTruncate:
     """Test the _truncate() helper."""

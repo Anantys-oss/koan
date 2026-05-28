@@ -61,6 +61,34 @@ def _truncate(text: str, max_len: int = 60) -> str:
     return text[:max_len - 1].rstrip() + "…"
 
 
+def _get_in_progress_missions(missions_file) -> str:
+    """Return a short display of in-progress missions, or empty string."""
+    from pathlib import Path
+    from app.missions import parse_sections
+    from app.utils import parse_project
+
+    path = Path(missions_file)
+    if not path.exists():
+        return ""
+    try:
+        content = path.read_text()
+        sections = parse_sections(content)
+        in_progress = sections.get("in_progress", [])
+        if not in_progress:
+            return ""
+        summaries = []
+        for m in in_progress[:2]:
+            project, text = parse_project(m)
+            text = _truncate(text.strip().lstrip("- "), 40)
+            if project:
+                summaries.append(f"{text} [{project}]")
+            else:
+                summaries.append(text)
+        return ", ".join(summaries)
+    except Exception:
+        return ""
+
+
 def _format_mission_display(mission: str) -> str:
     """Format a mission for display: strip tags, add timing, truncate.
 
@@ -119,6 +147,9 @@ def _handle_status(ctx) -> str:
 
     if stop_file.exists():
         parts.append("\n⛔ Mode: Stopping")
+        in_flight = _get_in_progress_missions(missions_file)
+        if in_flight:
+            parts.append(f"  ⏳ Finishing: {in_flight}")
     elif pause_file.exists():
         from app.pause_manager import get_pause_state
         state = get_pause_state(str(koan_root))
@@ -146,6 +177,9 @@ def _handle_status(ctx) -> str:
             parts.append("\n⏸️ Mode: Paused (max runs reached)")
         else:
             parts.append("\n⏸️ Mode: Paused")
+        in_flight = _get_in_progress_missions(missions_file)
+        if in_flight:
+            parts.append(f"  ⏳ Finishing: {in_flight}")
         parts.append("  /resume to unpause")
     else:
         # Check passive mode before showing "Working"
