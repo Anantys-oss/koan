@@ -733,6 +733,11 @@ def jira_search_issues(
         return []
     base_url, auth_header = _jira_auth_from_config()
 
+    # JQL injection safety: `text` is sanitized to tokens matching
+    # [A-Za-z][A-Za-z0-9_-]{2,} — no quote, backslash, or whitespace within a
+    # token. The joined `query` therefore cannot break out of the surrounding
+    # `"..."` literal. If the token regex is ever widened, replace this with a
+    # proper JQL escape or a parameterized search call.
     words = re.findall(r"\b[A-Za-z][A-Za-z0-9_-]{2,}\b", text or "")
     query = " ".join(words[:4])
     if query:

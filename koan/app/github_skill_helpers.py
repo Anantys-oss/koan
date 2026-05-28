@@ -12,7 +12,7 @@ Common utilities for skills that interact with GitHub PRs and issues:
 import re
 from typing import Callable, Optional, Tuple
 
-from app.github_url_parser import JIRA_ISSUE_URL_PATTERN
+from app.github_url_parser import JIRA_ISSUE_URL_PATTERN, is_jira_url
 
 
 _LIMIT_PATTERN = re.compile(r'--limit[=\s]+(\d+)', re.IGNORECASE)
@@ -329,7 +329,7 @@ def handle_github_skill(
 
     url, context = result
 
-    if "atlassian.net/browse/" in url:
+    if is_jira_url(url):
         from app.issue_tracker import resolve_issue_ref
 
         try:
