@@ -792,3 +792,68 @@ class TestLoadPromptWithIncludes:
         impl_unresolved = include_re.findall(impl_out)
         assert fix_unresolved == [], f"Unresolved includes in fix.md: {fix_unresolved}"
         assert impl_unresolved == [], f"Unresolved includes in implement.md: {impl_unresolved}"
+
+
+class TestDefaultPlaceholdersAlwaysResolved:
+    """Default placeholders (e.g. KOAN_PYTHON) must never leak as literal text.
+
+    The agent and skill prompts coach Claude to invoke
+    ``{KOAN_PYTHON} -m app.issue_cli ...``. If the placeholder ever survives
+    the loader (e.g. a future caller skipping _substitute), Claude will run
+    the literal token ``{KOAN_PYTHON}`` as a shell command, which would fail
+    with a hard-to-diagnose ``command not found``.
+    """
+
+    @staticmethod
+    def _contains_koan_python_placeholder(text: str) -> bool:
+        return "{KOAN_PYTHON}" in text
+
+    def test_load_prompt_resolves_koan_python(self):
+        """Every system prompt that mentions KOAN_PYTHON must resolve it."""
+        for md_file in PROMPT_DIR.glob("*.md"):
+            rendered = load_prompt(md_file.stem)
+            assert not self._contains_koan_python_placeholder(rendered), (
+                f"{md_file.name}: literal {{KOAN_PYTHON}} survived load_prompt()"
+            )
+
+    def test_load_skill_prompt_resolves_koan_python(self):
+        """Every skill prompt that mentions KOAN_PYTHON must resolve it."""
+        skills_dir = Path(__file__).parent.parent / "skills" / "core"
+        if not skills_dir.exists():
+            pytest.skip("skills/core not found")
+        leaks = []
+        for skill_dir in sorted(skills_dir.iterdir()):
+            prompts = skill_dir / "prompts"
+            if not prompts.exists():
+                continue
+            for md_file in sorted(prompts.glob("*.md")):
+                rendered = load_skill_prompt(skill_dir, md_file.stem)
+                if self._contains_koan_python_placeholder(rendered):
+                    leaks.append(f"{skill_dir.name}/{md_file.name}")
+        assert leaks == [], (
+            "Literal {KOAN_PYTHON} survived load_skill_prompt() in: "
+            + ", ".join(leaks)
+        )
+
+    def test_load_prompt_or_skill_resolves_koan_python(self):
+        """The unified loader resolves the placeholder via either branch."""
+        skills_dir = Path(__file__).parent.parent / "skills" / "core" / "implement"
+        rendered_skill = load_prompt_or_skill(skills_dir, "implement",
+                                              ISSUE_URL="", ISSUE_TITLE="",
+                                              PLAN="", CONTEXT="",
+                                              BRANCH_PREFIX="koan/",
+                                              ISSUE_NUMBER="",
+                                              PROJECT_MEMORY="")
+        assert "{KOAN_PYTHON}" not in rendered_skill
+
+        rendered_sys = load_prompt_or_skill(None, "agent",
+                                            SOUL="", MEMORY="")
+        assert "{KOAN_PYTHON}" not in rendered_sys
+
+    def test_substitute_injects_koan_python_without_explicit_kwarg(self):
+        """Callers that don't pass KOAN_PYTHON still get a resolved value."""
+        result = _substitute(
+            "Run: {KOAN_PYTHON} -m app.issue_cli fetch URL",
+            {"OTHER": "x"},
+        )
+        assert "{KOAN_PYTHON}" not in result

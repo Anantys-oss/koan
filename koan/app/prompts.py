@@ -120,6 +120,23 @@ def _substitute(template: str, kwargs: dict) -> str:
 
 
 def _default_placeholders() -> dict:
+    """Placeholders that every prompt rendered through this module gets.
+
+    Default placeholders are merged with caller-supplied kwargs in
+    :func:`_substitute` and applied to every prompt that flows through
+    :func:`load_prompt`, :func:`load_skill_prompt`, and
+    :func:`load_prompt_or_skill`. Any future caller that concatenates raw
+    prompt markdown without going through these helpers will *not* get the
+    substitution — and the literal ``{KOAN_PYTHON}`` token would land in
+    Claude's prompt and execute as a shell command. The regression test
+    :class:`TestDefaultPlaceholdersAlwaysResolved` in ``test_prompts.py``
+    guards against this by walking every system + skill prompt.
+
+    Keys currently injected:
+        * ``KOAN_PYTHON`` — quoted absolute path to the Python interpreter
+          running this process, so prompts can advise Claude to invoke
+          ``{KOAN_PYTHON} -m app.issue_cli ...`` and inherit the same venv.
+    """
     return {"KOAN_PYTHON": shlex.quote(sys.executable or "python3")}
 
 
