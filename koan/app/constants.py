@@ -37,10 +37,9 @@ CI_QUEUE_SLEEP_INTERVAL = 30
 # ---------------------------------------------------------------------------
 
 # Default polling intervals (seconds).  Overridden at runtime from
-# ``github.check_interval_seconds`` / ``github.max_check_interval_seconds``
-# in config.yaml.
+# ``notification_polling.*`` or ``github.*`` in config.yaml.
 GITHUB_CHECK_INTERVAL_DEFAULT = 60
-GITHUB_MAX_CHECK_INTERVAL_DEFAULT = 180
+GITHUB_MAX_CHECK_INTERVAL_DEFAULT = 300
 
 # Notification dedup cache parameters.
 NOTIF_CACHE_TTL = 86400          # 24 hours
@@ -58,10 +57,9 @@ MAX_DRAIN_PER_CYCLE = 30
 # ---------------------------------------------------------------------------
 
 # Default polling intervals (seconds).  Overridden at runtime from
-# ``jira.check_interval_seconds`` / ``jira.max_check_interval_seconds``
-# in config.yaml.
+# ``notification_polling.*`` or ``jira.*`` in config.yaml.
 JIRA_CHECK_INTERVAL_DEFAULT = 60
-JIRA_MAX_CHECK_INTERVAL_DEFAULT = 180
+JIRA_MAX_CHECK_INTERVAL_DEFAULT = 300
 
 # ---------------------------------------------------------------------------
 # Burn rate / budget  (iteration_manager.py)

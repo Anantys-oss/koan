@@ -7,6 +7,7 @@ from app.github_config import (
     get_github_check_interval,
     get_github_commands_enabled,
     get_github_max_age_hours,
+    get_github_max_check_interval,
     get_github_natural_language,
     get_github_nickname,
     get_github_reply_authorized_users,
@@ -182,6 +183,17 @@ class TestGetGithubCheckInterval:
     def test_custom(self):
         assert get_github_check_interval({"github": {"check_interval_seconds": 120}}) == 120
 
+    def test_shared_notification_polling(self):
+        config = {"notification_polling": {"check_interval_seconds": 300}}
+        assert get_github_check_interval(config) == 300
+
+    def test_provider_override_wins_over_shared(self):
+        config = {
+            "notification_polling": {"check_interval_seconds": 300},
+            "github": {"check_interval_seconds": 90},
+        }
+        assert get_github_check_interval(config) == 90
+
     def test_none_section(self):
         assert get_github_check_interval({"github": None}) == 60
 
@@ -199,6 +211,32 @@ class TestGetGithubCheckInterval:
 
     def test_large_value(self):
         assert get_github_check_interval({"github": {"check_interval_seconds": 600}}) == 600
+
+
+class TestGetGithubMaxCheckInterval:
+    def test_default(self):
+        assert get_github_max_check_interval({}) == 300
+
+    def test_shared_notification_polling(self):
+        config = {"notification_polling": {"max_check_interval_seconds": 600}}
+        assert get_github_max_check_interval(config) == 600
+
+    def test_provider_override_wins_over_shared(self):
+        config = {
+            "notification_polling": {"max_check_interval_seconds": 600},
+            "github": {"max_check_interval_seconds": 120},
+        }
+        assert get_github_max_check_interval(config) == 120
+
+    def test_invalid_value(self):
+        assert get_github_max_check_interval(
+            {"github": {"max_check_interval_seconds": "bad"}}
+        ) == 300
+
+    def test_floor_at_30(self):
+        assert get_github_max_check_interval(
+            {"github": {"max_check_interval_seconds": 5}}
+        ) == 30
 
 
 class TestValidateGithubConfig:

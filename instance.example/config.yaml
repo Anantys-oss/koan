@@ -74,6 +74,13 @@ interval_seconds: 300
 # Useful when you have scheduled recurring tasks that must fire reliably.
 # auto_pause: true
 
+# Notification polling — shared protection for always-on instances.
+# Provider-specific github/jira polling settings below can still override these
+# values, but this shared section is the recommended default.
+# notification_polling:
+#   check_interval_seconds: 60       # Base polling interval (default: 60, min: 10)
+#   max_check_interval_seconds: 300  # Idle backoff cap (default: 300, min: 30)
+
 # Prompt caching behavior
 # Keep consecutive autonomous runs on the same project to preserve
 # prompt-prefix cache warmth across iterations.
@@ -512,8 +519,8 @@ usage:
 #   max_age_hours: 24                # Ignore notifications older than this (default: 24)
 #   stale_drain_hours: 48            # Multi-instance: drain unregistered-repo notifications
 #                                    # older than this (default: 48). Set to 0 to disable.
-#   check_interval_seconds: 60       # Base polling interval (default: 60, min: 10)
-#   max_check_interval_seconds: 180  # Backoff cap when idle (default: 180, min: 30)
+#   check_interval_seconds: 60       # Optional override; otherwise notification_polling
+#   max_check_interval_seconds: 300  # Optional override; otherwise notification_polling
 #   reply_enabled: false             # AI replies to non-command @mentions (default: false)
 #                                    # When enabled, the bot replies to questions/requests
 #                                    # from authorized users with contextual AI-generated answers.
@@ -545,8 +552,8 @@ usage:
 #   commands_enabled: false              # Reserved for future per-command filtering (default: false)
 #   authorized_users: ["*"]             # "*" = all users, or list of Jira account emails
 #   max_age_hours: 24                    # Ignore comments older than this (default: 24)
-#   check_interval_seconds: 60           # Base polling interval (default: 60, min: 10)
-#   max_check_interval_seconds: 180      # Backoff cap when idle (default: 180, min: 30)
+#   check_interval_seconds: 60           # Optional override; otherwise notification_polling
+#   max_check_interval_seconds: 300      # Optional override; otherwise notification_polling
 #   max_issues_per_cycle: 200            # Cap on issues inspected per check (default: 200, min: 1).
 #                                        # Each inspected issue triggers a separate /comment API call,
 #                                        # so this directly bounds cold-start API consumption.

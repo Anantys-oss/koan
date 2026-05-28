@@ -138,6 +138,17 @@ class TestGetJiraCheckInterval:
         cfg = {"jira": {"check_interval_seconds": 120}}
         assert get_jira_check_interval(cfg) == 120
 
+    def test_shared_notification_polling(self):
+        cfg = {"notification_polling": {"check_interval_seconds": 300}}
+        assert get_jira_check_interval(cfg) == 300
+
+    def test_provider_override_wins_over_shared(self):
+        cfg = {
+            "notification_polling": {"check_interval_seconds": 300},
+            "jira": {"check_interval_seconds": 90},
+        }
+        assert get_jira_check_interval(cfg) == 90
+
     def test_floor_at_10(self):
         cfg = {"jira": {"check_interval_seconds": 5}}
         assert get_jira_check_interval(cfg) == 10
@@ -145,11 +156,22 @@ class TestGetJiraCheckInterval:
 
 class TestGetJiraMaxCheckInterval:
     def test_default(self):
-        assert get_jira_max_check_interval({}) == 180
+        assert get_jira_max_check_interval({}) == 300
 
     def test_custom(self):
-        cfg = {"jira": {"max_check_interval_seconds": 300}}
-        assert get_jira_max_check_interval(cfg) == 300
+        cfg = {"jira": {"max_check_interval_seconds": 600}}
+        assert get_jira_max_check_interval(cfg) == 600
+
+    def test_shared_notification_polling(self):
+        cfg = {"notification_polling": {"max_check_interval_seconds": 600}}
+        assert get_jira_max_check_interval(cfg) == 600
+
+    def test_provider_override_wins_over_shared(self):
+        cfg = {
+            "notification_polling": {"max_check_interval_seconds": 600},
+            "jira": {"max_check_interval_seconds": 120},
+        }
+        assert get_jira_max_check_interval(cfg) == 120
 
     def test_floor_at_30(self):
         cfg = {"jira": {"max_check_interval_seconds": 10}}

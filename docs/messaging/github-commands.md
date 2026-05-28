@@ -21,6 +21,10 @@ Kōan polls GitHub notifications, detects the `@mention`, validates the command 
 In `instance/config.yaml`:
 
 ```yaml
+notification_polling:
+  check_interval_seconds: 60       # Base polling interval shared by GitHub/Jira
+  max_check_interval_seconds: 300  # Quiet-period backoff cap
+
 github:
   nickname: "koan-bot"          # Your bot's GitHub username (required)
   commands_enabled: true         # Master switch
@@ -209,12 +213,17 @@ Notifications are checked during the agent's interruptible sleep cycle, with exp
 
 | Condition | Check interval |
 |-----------|---------------|
-| Notifications found | 60 seconds (base) |
-| 1 empty check | 120 seconds |
-| 2 consecutive empty | 240 seconds |
-| 3+ consecutive empty | 300 seconds (cap) |
+| Notifications found | `check_interval_seconds` (default: 60s) |
+| 1 empty check | 2x base interval |
+| 2 consecutive empty | 4x base interval |
+| 3+ consecutive empty | `max_check_interval_seconds` cap (default: 300s) |
 
-Backoff resets immediately when any notification is found. This reduces unnecessary API calls during quiet periods while maintaining fast response when activity resumes.
+Backoff resets immediately when any notification is found. The recommended
+shared setting is `notification_polling.max_check_interval_seconds: 300`, which
+lets always-on instances stay ready without polling GitHub more than once every
+five minutes during quiet periods. Legacy `github.check_interval_seconds` and
+`github.max_check_interval_seconds` settings still work as GitHub-only
+overrides.
 
 ### Error handling
 

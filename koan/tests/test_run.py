@@ -2824,6 +2824,58 @@ class TestRunIterationGitHubPreCheck:
 
         mock_gh_notif.assert_called_once_with(str(koan_root), instance, force=False)
 
+    @patch("app.jira_config.get_jira_enabled", return_value=False)
+    @patch("app.github_config.get_github_commands_enabled", return_value=True)
+    @patch("app.loop_manager.was_github_notification_check_throttled", return_value=True)
+    @patch("app.run.log")
+    @patch("app.run.plan_iteration")
+    @patch("app.run._notify")
+    @patch("app.loop_manager.process_github_notifications", return_value=0)
+    def test_throttled_github_check_does_not_log_poll_or_empty_result(
+        self,
+        mock_gh_notif,
+        mock_notify,
+        mock_plan,
+        mock_log,
+        mock_throttled,
+        mock_gh_enabled,
+        mock_jira_enabled,
+        koan_root,
+    ):
+        """A throttled pre-iteration check should not look like an API poll."""
+        from app.run import _run_iteration
+
+        mock_plan.return_value = {
+            "action": "error",
+            "error": "test-stop",
+            "project_name": "test",
+            "project_path": str(koan_root),
+            "mission_title": "",
+            "autonomous_mode": "implement",
+            "focus_area": "",
+            "available_pct": 50,
+            "decision_reason": "Default",
+            "display_lines": [],
+            "recurring_injected": [],
+        }
+
+        instance = str(koan_root / "instance")
+
+        with patch("app.utils.get_known_projects", return_value=[("test", str(koan_root))]):
+            _run_iteration(
+                koan_root=str(koan_root),
+                instance=instance,
+                projects=[("test", str(koan_root))],
+                count=1,
+                max_runs=5,
+                interval=10,
+                git_sync_interval=5,
+            )
+
+        messages = " | ".join(str(c.args[1]) for c in mock_log.call_args_list)
+        assert "Checking GitHub notifications" not in messages
+        assert "No new GitHub notifications" not in messages
+
     @patch("app.run.plan_iteration")
     @patch("app.run._notify")
     @patch("app.loop_manager.process_github_notifications")

@@ -141,7 +141,11 @@ class TestValidConfigProducesNoWarnings:
                 "reply_enabled": False,
                 "max_age_hours": 24,
                 "check_interval_seconds": 60,
-                "max_check_interval_seconds": 180,
+                "max_check_interval_seconds": 300,
+            },
+            "notification_polling": {
+                "check_interval_seconds": 60,
+                "max_check_interval_seconds": 300,
             },
             "schedule": {"deep_hours": "0-6", "work_hours": "8-20"},
             "logs": {"max_backups": 3, "max_size_mb": 50, "compress": True},

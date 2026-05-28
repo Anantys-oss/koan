@@ -4,6 +4,9 @@ Reads GitHub-specific settings from config.yaml (global) and projects.yaml
 (per-project override) for the notification-driven commands feature.
 
 Config schema in config.yaml:
+    notification_polling:
+      check_interval_seconds: 60
+      max_check_interval_seconds: 300
     github:
       nickname: "koan-bot"
       commands_enabled: true
@@ -12,7 +15,7 @@ Config schema in config.yaml:
       reply_enabled: false
       reply_authorized_users: ["*"]   # separate from command permissions
       reply_rate_limit: 5             # max replies per user per hour
-      check_interval_seconds: 60
+      check_interval_seconds: 60       # optional provider override
 
 Per-project override in projects.yaml:
     projects:
@@ -174,26 +177,20 @@ def get_github_check_interval(config: dict) -> int:
     Controls throttling of GitHub API calls for notification polling.
     Default: 60 seconds.
     """
-    github = config.get("github") or {}
-    try:
-        val = int(github.get("check_interval_seconds", 60))
-        return max(10, val)  # Floor at 10s to prevent API abuse
-    except (ValueError, TypeError):
-        return 60
+    from app.notification_config import get_notification_check_interval
+
+    return get_notification_check_interval(config, "github")
 
 
 def get_github_max_check_interval(config: dict) -> int:
     """Get the maximum backoff interval in seconds for notification checks.
 
     When consecutive checks find no notifications, the interval grows
-    exponentially up to this cap.  Default: 180 seconds (3 minutes).
+    exponentially up to this cap. Default: 300 seconds (5 minutes).
     """
-    github = config.get("github") or {}
-    try:
-        val = int(github.get("max_check_interval_seconds", 180))
-        return max(30, val)  # Floor at 30s — below that backoff is pointless
-    except (ValueError, TypeError):
-        return 180
+    from app.notification_config import get_notification_max_check_interval
+
+    return get_notification_max_check_interval(config, "github")
 
 
 def get_github_parallel_workers(config: dict) -> int:

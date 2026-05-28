@@ -1706,15 +1706,17 @@ def _run_iteration(
     # so plan_iteration() sees them immediately instead of waiting for sleep)
     gh_missions = 0
     if github_enabled:
-        log("koan", "Checking GitHub notifications...")
         if is_first_iteration:
             _notify_raw(instance, "🔍 Scanning GitHub notifications (cold start, may take ~1 min)...")
-        from app.loop_manager import process_github_notifications
+        from app.loop_manager import (
+            process_github_notifications,
+            was_github_notification_check_throttled,
+        )
         try:
             gh_missions = process_github_notifications(koan_root, instance, force=force_notif_check)
             if gh_missions > 0:
                 log("github", f"Pre-iteration: {gh_missions} mission(s) created from GitHub notifications")
-            else:
+            elif not was_github_notification_check_throttled():
                 log("koan", "No new GitHub notifications")
         except Exception as e:
             log("error", f"Pre-iteration GitHub notification check failed: {e}")
@@ -1723,7 +1725,6 @@ def _run_iteration(
     # so plan_iteration() sees them immediately instead of waiting for sleep)
     jira_missions = 0
     if jira_enabled:
-        log("koan", "Checking Jira notifications...")
         # One first-iteration banner that combines the GitHub roll-up (when
         # applicable) with the cold-start latency hint. Avoids the prior
         # double-message ("🔍 Scanning Jira..." immediately followed by
@@ -1738,12 +1739,15 @@ def _run_iteration(
                 # Boot without GitHub, or resume from pause: emit a single
                 # cold-start banner so the human sees Jira IS being scanned.
                 _notify_raw(instance, f"🔍 Scanning Jira notifications{cold}...")
-        from app.loop_manager import process_jira_notifications
+        from app.loop_manager import (
+            process_jira_notifications,
+            was_jira_notification_check_throttled,
+        )
         try:
             jira_missions = process_jira_notifications(koan_root, instance, force=force_notif_check)
             if jira_missions > 0:
                 log("jira", f"Pre-iteration: {jira_missions} mission(s) created from Jira notifications")
-            else:
+            elif not was_jira_notification_check_throttled():
                 log("koan", "No new Jira notifications")
         except Exception as e:
             log("error", f"Pre-iteration Jira notification check failed: {e}")

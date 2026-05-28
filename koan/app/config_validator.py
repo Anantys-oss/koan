@@ -69,6 +69,7 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "auto_update": _NESTED,
     "dashboard": _NESTED,
     "notifications": _NESTED,
+    "notification_polling": _NESTED,
     "prompt_caching": _NESTED,
     "prompt_guard": _NESTED,
     "plan_review": _NESTED,
@@ -178,6 +179,10 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
     },
     "notifications": {
         "min_priority": "str",
+    },
+    "notification_polling": {
+        "check_interval_seconds": "int",
+        "max_check_interval_seconds": "int",
     },
     "prompt_caching": {
         "same_project_stickiness_percent": "int",

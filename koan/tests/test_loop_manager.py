@@ -844,7 +844,7 @@ class TestGitHubNotificationBackoff:
         lm._consecutive_empty_checks = 1
         assert lm._get_effective_check_interval() == 120
         lm._consecutive_empty_checks = 2
-        assert lm._get_effective_check_interval() == 180  # capped at default max (180)
+        assert lm._get_effective_check_interval() == 240
 
     def test_effective_interval_capped_at_max(self):
         import app.loop_manager as lm
@@ -942,6 +942,8 @@ class TestGitHubNotificationBackoff:
         assert result == 0
         # Counter stays at 1 (throttled, didn't actually check)
         assert lm._consecutive_empty_checks == 1
+        assert lm.was_github_notification_check_throttled() is True
+        assert lm.get_github_notification_check_due_in() > 0
 
     @patch("app.loop_manager._load_github_config")
     @patch("app.loop_manager._build_skill_registry")
@@ -967,8 +969,8 @@ class TestGitHubNotificationBackoff:
                 process_github_notifications(str(tmp_path), str(tmp_path))
 
         assert lm._consecutive_empty_checks == 4
-        # After 4 empty: 60 * 2^4 = 960 → capped at 180
-        assert lm._get_effective_check_interval() == 180
+        # After 4 empty: 60 * 2^4 = 960 -> capped at 300
+        assert lm._get_effective_check_interval() == 300
 
     def test_config_disabled_does_not_affect_backoff(self, tmp_path):
         import app.loop_manager as lm
@@ -2217,6 +2219,31 @@ class TestConfigurableCheckInterval:
     @patch("app.loop_manager._build_skill_registry")
     @patch("app.loop_manager._get_known_repos_from_projects")
     @patch("app.utils.load_config")
+    def test_loads_shared_interval_from_config(
+        self, mock_config, mock_repos, mock_registry, mock_gh_config, tmp_path
+    ):
+        """On first call, loads shared notification_polling interval."""
+        import app.loop_manager as lm
+        from app.github_notifications import FetchResult
+        from app.loop_manager import process_github_notifications
+
+        mock_config.return_value = {
+            "notification_polling": {"check_interval_seconds": 300}
+        }
+        mock_gh_config.return_value = {"bot_username": "bot", "max_age": 24}
+        mock_registry.return_value = MagicMock()
+        mock_repos.return_value = set()
+
+        with patch("app.projects_config.load_projects_config", return_value={}), \
+             patch("app.github_notifications.fetch_unread_notifications", return_value=FetchResult([], [])):
+            process_github_notifications(str(tmp_path), str(tmp_path))
+
+        assert lm._GITHUB_CHECK_INTERVAL == 300
+
+    @patch("app.loop_manager._load_github_config")
+    @patch("app.loop_manager._build_skill_registry")
+    @patch("app.loop_manager._get_known_repos_from_projects")
+    @patch("app.utils.load_config")
     def test_interval_only_loaded_once(
         self, mock_config, mock_repos, mock_registry, mock_gh_config, tmp_path
     ):
@@ -2264,7 +2291,7 @@ class TestConfigurableMaxCheckInterval:
 
     def test_get_github_max_check_interval_default(self):
         from app.github_config import get_github_max_check_interval
-        assert get_github_max_check_interval({}) == 180
+        assert get_github_max_check_interval({}) == 300
 
     def test_get_github_max_check_interval_custom(self):
         from app.github_config import get_github_max_check_interval
@@ -2276,7 +2303,9 @@ class TestConfigurableMaxCheckInterval:
 
     def test_get_github_max_check_interval_invalid(self):
         from app.github_config import get_github_max_check_interval
-        assert get_github_max_check_interval({"github": {"max_check_interval_seconds": "bad"}}) == 180
+        assert get_github_max_check_interval(
+            {"github": {"max_check_interval_seconds": "bad"}}
+        ) == 300
 
     @patch("app.loop_manager._load_github_config")
     @patch("app.loop_manager._build_skill_registry")
@@ -2292,6 +2321,31 @@ class TestConfigurableMaxCheckInterval:
 
         config = {"github": {"max_check_interval_seconds": 600}}
         mock_config.return_value = config
+        mock_gh_config.return_value = {"bot_username": "bot", "max_age": 24}
+        mock_registry.return_value = MagicMock()
+        mock_repos.return_value = set()
+
+        with patch("app.projects_config.load_projects_config", return_value={}), \
+             patch("app.github_notifications.fetch_unread_notifications", return_value=FetchResult([], [])):
+            process_github_notifications(str(tmp_path), str(tmp_path))
+
+        assert lm._GITHUB_MAX_CHECK_INTERVAL == 600
+
+    @patch("app.loop_manager._load_github_config")
+    @patch("app.loop_manager._build_skill_registry")
+    @patch("app.loop_manager._get_known_repos_from_projects")
+    @patch("app.utils.load_config")
+    def test_shared_max_interval_loaded_from_config(
+        self, mock_config, mock_repos, mock_registry, mock_gh_config, tmp_path
+    ):
+        """On first call, loads shared max_check_interval_seconds from config."""
+        import app.loop_manager as lm
+        from app.github_notifications import FetchResult
+        from app.loop_manager import process_github_notifications
+
+        mock_config.return_value = {
+            "notification_polling": {"max_check_interval_seconds": 600}
+        }
         mock_gh_config.return_value = {"bot_username": "bot", "max_age": 24}
         mock_registry.return_value = MagicMock()
         mock_repos.return_value = set()

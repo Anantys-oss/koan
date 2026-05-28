@@ -240,6 +240,8 @@ _last_github_check: float = 0
 # notifications (auto-read by GitHub web UI) are still returned.
 _last_github_check_iso: str = ""
 _consecutive_empty_checks: int = 0
+_last_github_check_throttled: bool = False
+_last_github_check_due_in: int = 0
 # Track whether we've logged the first config status (avoids repeating every check)
 _github_config_logged: bool = False
 # Track whether we've loaded the configured interval from config.yaml
@@ -629,6 +631,18 @@ def _get_effective_check_interval() -> int:
         return _get_effective_check_interval_locked()
 
 
+def was_github_notification_check_throttled() -> bool:
+    """Return whether the last GitHub notification call skipped due to throttle."""
+    with _github_state_lock:
+        return _last_github_check_throttled
+
+
+def get_github_notification_check_due_in() -> int:
+    """Return seconds until the next GitHub notification check is allowed."""
+    with _github_state_lock:
+        return _last_github_check_due_in
+
+
 def _check_sso_failures() -> None:
     """After a notification cycle, update consecutive counter and escalate if needed."""
     from app.github_notifications import (
@@ -658,12 +672,17 @@ def _check_sso_failures() -> None:
 
 def reset_github_backoff() -> None:
     """Reset backoff state. Useful for tests and when external events suggest activity."""
-    global _last_github_check, _last_github_check_iso, _consecutive_empty_checks, _github_config_logged, _github_interval_loaded
+    global _last_github_check, _last_github_check_iso
+    global _consecutive_empty_checks, _last_github_check_throttled
+    global _last_github_check_due_in
+    global _github_config_logged, _github_interval_loaded
     global _github_config_cache, _github_config_cache_mtime
     with _github_state_lock:
         _last_github_check = 0
         _last_github_check_iso = ""
         _consecutive_empty_checks = 0
+        _last_github_check_throttled = False
+        _last_github_check_due_in = 0
         _github_config_logged = False
         _github_interval_loaded = False
         _github_config_cache = _GITHUB_CONFIG_UNSET
@@ -732,7 +751,9 @@ def process_github_notifications(
     Returns:
         Number of missions created.
     """
-    global _last_github_check, _last_github_check_iso, _consecutive_empty_checks, _GITHUB_CHECK_INTERVAL, _GITHUB_MAX_CHECK_INTERVAL, _github_interval_loaded
+    global _last_github_check, _last_github_check_iso, _consecutive_empty_checks
+    global _last_github_check_throttled, _last_github_check_due_in
+    global _GITHUB_CHECK_INTERVAL, _GITHUB_MAX_CHECK_INTERVAL, _github_interval_loaded
 
     # Load configured intervals on first call (lazy, avoids import-time config reads)
     with _github_state_lock:
@@ -741,7 +762,10 @@ def process_github_notifications(
     if need_interval_load:
         try:
             from app.utils import load_config
-            from app.github_config import get_github_check_interval, get_github_max_check_interval
+            from app.github_config import (
+                get_github_check_interval,
+                get_github_max_check_interval,
+            )
             cfg = load_config()
             with _github_state_lock:
                 _GITHUB_CHECK_INTERVAL = get_github_check_interval(cfg)
@@ -757,8 +781,17 @@ def process_github_notifications(
             _consecutive_empty_checks = 0
         effective_interval = _get_effective_check_interval_locked()
         if not force and now - _last_github_check < effective_interval:
+            remaining = effective_interval - (now - _last_github_check)
+            _last_github_check_throttled = True
+            _last_github_check_due_in = max(1, int(remaining + 0.999))
+            log.debug(
+                "GitHub: notification check skipped; next check in %ds",
+                _last_github_check_due_in,
+            )
             return 0
         _last_github_check = now
+        _last_github_check_throttled = False
+        _last_github_check_due_in = 0
 
     if force:
         _github_log("Forced notification check (via /check_notifications)")
@@ -770,6 +803,8 @@ def process_github_notifications(
         # persistent comment tracker, so clearing is safe.
         with _notif_cache_lock:
             _notif_cache.clear()
+    else:
+        _github_log("Checking notifications...")
 
     # Retry any previously failed error replies before processing new ones.
     _retry_failed_replies()
@@ -1220,6 +1255,8 @@ def _post_error_for_notification(notif: dict, error: str) -> None:
 _last_jira_check: float = 0
 _last_jira_check_iso: str = ""
 _consecutive_jira_empty: int = 0
+_last_jira_check_throttled: bool = False
+_last_jira_check_due_in: int = 0
 _jira_interval_loaded: bool = False
 _jira_config_logged: bool = False
 _jira_legacy_config_warned: bool = False
@@ -1245,6 +1282,18 @@ def _get_effective_jira_interval_locked() -> int:
         _JIRA_CHECK_INTERVAL * (2 ** _consecutive_jira_empty),
         _JIRA_MAX_CHECK_INTERVAL,
     )
+
+
+def was_jira_notification_check_throttled() -> bool:
+    """Return whether the last Jira notification call skipped due to throttle."""
+    with _jira_state_lock:
+        return _last_jira_check_throttled
+
+
+def get_jira_notification_check_due_in() -> int:
+    """Return seconds until the next Jira notification check is allowed."""
+    with _jira_state_lock:
+        return _last_jira_check_due_in
 
 
 def _load_processed_jira_tracker(instance_dir: str):
@@ -1306,6 +1355,7 @@ def process_jira_notifications(
         Number of missions created.
     """
     global _last_jira_check, _last_jira_check_iso, _consecutive_jira_empty
+    global _last_jira_check_throttled, _last_jira_check_due_in
     global _JIRA_CHECK_INTERVAL, _JIRA_MAX_CHECK_INTERVAL, _jira_interval_loaded
     global _jira_config_logged
 
@@ -1332,11 +1382,22 @@ def process_jira_notifications(
             _consecutive_jira_empty = 0
         effective_interval = _get_effective_jira_interval_locked()
         if not force and now - _last_jira_check < effective_interval:
+            remaining = effective_interval - (now - _last_jira_check)
+            _last_jira_check_throttled = True
+            _last_jira_check_due_in = max(1, int(remaining + 0.999))
+            log.debug(
+                "Jira: notification check skipped; next check in %ds",
+                _last_jira_check_due_in,
+            )
             return 0
         _last_jira_check = now
+        _last_jira_check_throttled = False
+        _last_jira_check_due_in = 0
 
     if force:
         _jira_log("Forced notification check (via /check_notifications)")
+    else:
+        _jira_log("Checking notifications...")
 
     try:
         from app.jira_config import (

@@ -1053,6 +1053,12 @@ start_on_pause: false
 # warnings about @mentions on repos not in this instance's projects.yaml.
 enable_multiple_instances: false
 
+# Shared GitHub/Jira notification polling guard. Provider-specific
+# github/jira settings can override this, but the shared setting is preferred.
+notification_polling:
+  check_interval_seconds: 60
+  max_check_interval_seconds: 300
+
 # Schedule (when Kōan is allowed to work)
 schedule:
   timezone: UTC

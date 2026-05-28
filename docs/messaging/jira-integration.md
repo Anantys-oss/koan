@@ -104,8 +104,10 @@ All settings live under the `jira:` key in `instance/config.yaml`.
 | `commands_enabled` | bool | `false` | Reserved for future per-command filtering |
 | `authorized_users` | list | `[]` | `["*"]` = all users, or list of Jira account emails |
 | `max_age_hours` | int | `24` | Ignore comments older than this (stale protection) |
-| `check_interval_seconds` | int | `60` | Base polling interval in seconds (min: 10) |
-| `max_check_interval_seconds` | int | `180` | Maximum backoff interval when idle (min: 30) |
+| `notification_polling.check_interval_seconds` | int | `60` | Shared base polling interval in seconds (min: 10) |
+| `notification_polling.max_check_interval_seconds` | int | `300` | Shared maximum backoff interval when idle (min: 30) |
+| `jira.check_interval_seconds` | int | unset | Optional Jira-only override for the shared base interval |
+| `jira.max_check_interval_seconds` | int | unset | Optional Jira-only override for the shared backoff cap |
 | `max_issues_per_cycle` | int | `200` | Per-cycle cap on issues inspected for @mentions (min: 1). Each inspected issue triggers a separate `/comment` API call, so this directly bounds cold-start API consumption. A WARNING logs when the cap fires |
 | `projects` | dict | `{}` | Deprecated and ignored. Use `projects.yaml issue_tracker.jira_project` instead. |
 
@@ -260,7 +262,7 @@ Two-tier approach matching the GitHub integration pattern:
 | Mentions found | `check_interval_seconds` (default: 60s) |
 | 1 empty check | 2x base interval |
 | 2 consecutive empty | 4x base interval |
-| 3+ consecutive empty | `max_check_interval_seconds` cap (default: 180s) |
+| 3+ consecutive empty | `max_check_interval_seconds` cap (default: 300s) |
 
 Backoff resets immediately when any mention is found.
 

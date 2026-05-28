@@ -4,6 +4,9 @@ Reads Jira-specific settings from config.yaml (global) for the
 notification-driven commands feature.
 
 Config schema in config.yaml:
+    notification_polling:
+      check_interval_seconds: 60
+      max_check_interval_seconds: 300
     jira:
       enabled: false
       base_url: "https://myorg.atlassian.net"
@@ -13,8 +16,8 @@ Config schema in config.yaml:
       commands_enabled: false
       authorized_users: ["*"]     # Jira account emails or ["*"]
       max_age_hours: 24
-      check_interval_seconds: 60
-      max_check_interval_seconds: 180
+      check_interval_seconds: 60  # optional provider override
+      max_check_interval_seconds: 300
       max_issues_per_cycle: 200   # Cap on issues inspected per check; floor: 1
 
 Jira project ownership is configured in projects.yaml under each project's
@@ -98,26 +101,20 @@ def get_jira_check_interval(config: dict) -> int:
     Controls throttling of Jira API calls.
     Default: 60 seconds.
     """
-    jira = config.get("jira") or {}
-    try:
-        val = int(jira.get("check_interval_seconds", 60))
-        return max(10, val)  # Floor at 10s to prevent API abuse
-    except (ValueError, TypeError):
-        return 60
+    from app.notification_config import get_notification_check_interval
+
+    return get_notification_check_interval(config, "jira")
 
 
 def get_jira_max_check_interval(config: dict) -> int:
     """Get the maximum backoff interval in seconds for Jira notification checks.
 
     When consecutive checks find no notifications, the interval grows
-    exponentially up to this cap. Default: 180 seconds (3 minutes).
+    exponentially up to this cap. Default: 300 seconds (5 minutes).
     """
-    jira = config.get("jira") or {}
-    try:
-        val = int(jira.get("max_check_interval_seconds", 180))
-        return max(30, val)  # Floor at 30s
-    except (ValueError, TypeError):
-        return 180
+    from app.notification_config import get_notification_max_check_interval
+
+    return get_notification_max_check_interval(config, "jira")
 
 
 def get_jira_max_issues_per_cycle(config: dict) -> int:
