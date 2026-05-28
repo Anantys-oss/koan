@@ -244,7 +244,14 @@ def strip_cli_noise(text: str) -> str:
     return "\n".join(lines).strip()
 
 
-def run_claude(cmd: list, cwd: str, timeout: int = 600) -> dict:
+def run_claude(
+    cmd: list,
+    cwd: str,
+    timeout: int = 600,
+    *,
+    idle_timeout: Optional[int] = None,
+    max_duration: Optional[int] = None,
+) -> dict:
     """Run a Claude Code CLI command, streaming stdout in real time.
 
     Thin wrapper around :func:`app.cli_exec.stream_with_timeout`. Each
@@ -294,6 +301,8 @@ def run_claude(cmd: list, cwd: str, timeout: int = 600) -> dict:
             proc,
             timeout=timeout,
             on_line=lambda line: print(line, flush=True),
+            idle_timeout=idle_timeout,
+            max_duration=max_duration,
         )
     finally:
         cleanup()
@@ -302,6 +311,14 @@ def run_claude(cmd: list, cwd: str, timeout: int = 600) -> dict:
     stderr_text = stream_result.stderr
 
     if stream_result.timed_out:
+        timeout_kind = getattr(stream_result, "timeout_kind", "")
+        if timeout_kind == "idle":
+            timeout_error = f"Timeout (idle {idle_timeout}s)"
+        elif timeout_kind == "max_duration":
+            max_duration_value = max_duration if max_duration is not None else timeout
+            timeout_error = f"Timeout (max duration {max_duration_value}s)"
+        else:
+            timeout_error = f"Timeout ({timeout}s)"
         log_event(SUBPROCESS_EXEC, details={
             "cmd": _redact_list(cmd),
             "cwd": cwd,
@@ -309,7 +326,8 @@ def run_claude(cmd: list, cwd: str, timeout: int = 600) -> dict:
         return {
             "success": False,
             "output": stdout_text,
-            "error": f"Timeout ({timeout}s)",
+            "error": timeout_error,
+            "timeout_kind": timeout_kind or "timeout",
         }
 
     returncode = proc.returncode
@@ -372,6 +390,8 @@ def run_claude_step(
     actions_log: List[str],
     max_turns: int = 20,
     timeout: int = 600,
+    idle_timeout: Optional[int] = None,
+    max_duration: Optional[int] = None,
     use_skill: bool = False,
     use_convention_subject: bool = False,
 ) -> StepResult:
@@ -405,7 +425,13 @@ def run_claude_step(
 
     from app.commit_conventions import parse_commit_subject
 
-    result = run_claude(cmd, project_path, timeout=timeout)
+    result = run_claude(
+        cmd,
+        project_path,
+        timeout=timeout,
+        idle_timeout=idle_timeout,
+        max_duration=max_duration,
+    )
     cleaned_output = strip_cli_noise(result.get("output", ""))
     if result["success"]:
         effective_msg = commit_msg
@@ -810,6 +836,38 @@ def _force_push(remote: str, branch: str, project_path: str) -> None:
         )
 
 
+def _default_ci_fix_step_runner(
+    *,
+    prompt: str,
+    project_path: str,
+    commit_msg: str,
+    success_label: str,
+    failure_label: str,
+    actions_log: List[str],
+    use_convention_subject: bool,
+) -> Tuple[object, bool, int]:
+    """Default CI-fix step runner: a single plain ``run_claude_step`` call.
+
+    Returns ``(step_result, timed_out, attempts_used)`` to match the pluggable
+    ``step_runner`` contract.  The plain runner never reports a timeout, so the
+    middle element is always ``False`` and ``attempts_used`` is always ``1``.
+    """
+    from app.config import get_skill_max_turns, get_skill_timeout
+
+    result = run_claude_step(
+        prompt=prompt,
+        project_path=project_path,
+        commit_msg=commit_msg,
+        success_label=success_label,
+        failure_label=failure_label,
+        actions_log=actions_log,
+        max_turns=get_skill_max_turns(),
+        timeout=get_skill_timeout(),
+        use_convention_subject=use_convention_subject,
+    )
+    return result, False, 1
+
+
 def run_ci_fix_loop(
     branch: str,
     base: str,
@@ -824,11 +882,17 @@ def run_ci_fix_loop(
     prompt_builder: Callable[[str, str], str],
     commit_msg_template: str = "fix: resolve CI failures (attempt {attempt})",
     base_remote: str = "origin",
+    step_runner: Optional[Callable[..., Tuple[object, bool, int]]] = None,
+    push_fn: Optional[Callable[[str, str], None]] = None,
+    recheck_fn: Optional[Callable[[str, str], Tuple[str, object, str]]] = None,
+    outcome: Optional[dict] = None,
 ) -> Tuple[bool, str]:
     """Core CI fix loop: diff-fetch -> prompt -> Claude step -> push -> recheck.
 
-    Extracts the repeated pattern shared by ``_attempt_ci_fixes`` (ci_queue_runner)
-    and ``_run_ci_check_and_fix`` (rebase_pr) into a single function.
+    Single source of truth for the CI-fix retry loop shared by
+    ``_attempt_ci_fixes`` (ci_queue_runner) and ``_run_ci_check_and_fix``
+    (rebase_pr).  Callers tune behaviour through the injectable hooks below
+    rather than re-implementing the loop.
 
     Args:
         branch: Git branch to fix.
@@ -840,19 +904,64 @@ def run_ci_fix_loop(
         max_attempts: Maximum fix attempts.
         commit_conventions: Project commit convention guidance.
         use_polling: If True, use ``wait_for_ci`` (blocking poll); else use
-            ``check_existing_ci`` after a brief sleep (non-blocking).
+            ``check_existing_ci`` after a brief sleep (non-blocking). Ignored
+            when *recheck_fn* is supplied.
         prompt_builder: ``(ci_logs, diff) -> prompt`` callable. Keeps
             caller-specific prompt logic out of this module.
         commit_msg_template: Template with ``{attempt}`` placeholder.
         base_remote: Remote name for diff base (default ``"origin"``).
+        step_runner: Optional ``(**kwargs) -> (step_result, timed_out,
+            attempts_used)`` callable that runs one CI-fix Claude step. Lets
+            callers add activity-aware timeouts, heartbeats, or retries. When
+            omitted, a single plain ``run_claude_step`` is used.
+        push_fn: Optional ``(branch, project_path) -> None`` callable used to
+            push a fix. Defaults to a force-push of ``origin/<branch>``.
+        recheck_fn: Optional ``(branch, full_repo) -> (status, run_id, logs)``
+            callable used to re-read CI status after a push. Overrides
+            *use_polling* when provided.
+        outcome: Optional mutable dict populated with a structured result for
+            callers that need richer reporting than ``(success, logs)``. Keys:
+            ``result`` (one of ``fixed``/``quota``/``timeout``/``no_changes``/
+            ``push_failed``/``blocked_approval``/``pending``/``exhausted``),
+            ``attempt``, ``total_step_attempts``, ``last_logs``, and (for
+            ``push_failed``) ``push_error``.
 
     Returns:
         ``(success, last_ci_logs)`` — *success* is True if CI passes or a fix
         was pushed and CI is pending/running. Callers decide what to do with
         the pending state (e.g. re-enqueue for monitoring).
     """
-    from app.config import get_skill_max_turns, get_skill_timeout
     from app.utils import truncate_diff
+
+    if step_runner is None:
+        step_runner = _default_ci_fix_step_runner
+
+    def _do_push(b: str, p: str) -> None:
+        if push_fn is not None:
+            push_fn(b, p)
+        else:
+            _force_push("origin", b, p)
+
+    def _do_recheck(b: str, repo: str) -> Tuple[str, object, str]:
+        if recheck_fn is not None:
+            return recheck_fn(b, repo)
+        if use_polling:
+            return wait_for_ci(b, repo)
+        time.sleep(15)
+        return check_existing_ci(b, repo)
+
+    total_step_attempts = 0
+
+    def _set_outcome(result: str, attempt: int, last_logs: str, **extra) -> None:
+        if outcome is None:
+            return
+        outcome.update({
+            "result": result,
+            "attempt": attempt,
+            "total_step_attempts": total_step_attempts,
+            "last_logs": last_logs,
+        })
+        outcome.update(extra)
 
     for attempt in range(1, max_attempts + 1):
         print(f"[claude_step] CI fix attempt {attempt}/{max_attempts}", file=sys.stderr)
@@ -869,65 +978,80 @@ def run_ci_fix_loop(
             print(f"[claude_step] diff fetch failed: {e}", file=sys.stderr)
         diff = truncate_diff(diff, 32000)
 
-        # Build prompt and run Claude
+        # Build prompt and run one CI-fix step (possibly with retry/heartbeat)
         prompt = prompt_builder(ci_logs, diff)
 
-        fixed = run_claude_step(
+        fixed, timed_out, step_attempts = step_runner(
             prompt=prompt,
             project_path=project_path,
             commit_msg=commit_msg_template.format(attempt=attempt),
             success_label=f"Applied CI fix (attempt {attempt})",
             failure_label=f"CI fix step failed (attempt {attempt})",
             actions_log=actions_log,
-            max_turns=get_skill_max_turns(),
-            timeout=get_skill_timeout(),
             use_convention_subject=bool(commit_conventions),
         )
+        total_step_attempts += step_attempts
 
         if getattr(fixed, "quota_exhausted", False):
             actions_log.append(CI_QUOTA_STOP_ACTION)
+            _set_outcome("quota", attempt, ci_logs)
             return False, ci_logs
 
         if not fixed:
+            if timed_out:
+                actions_log.append(
+                    f"CI fix timed out after {total_step_attempts} CI-fix step(s)"
+                )
+                _set_outcome("timeout", attempt, ci_logs)
+                return False, ci_logs
             actions_log.append("Claude produced no changes — giving up")
+            _set_outcome("no_changes", attempt, ci_logs)
             break
 
         # Force-push the fix
         try:
-            _force_push("origin", branch, project_path)
+            _do_push(branch, project_path)
         except Exception as e:
             actions_log.append(f"Push failed: {str(e)[:100]}")
-            break
+            _set_outcome("push_failed", attempt, ci_logs, push_error=str(e))
+            return False, ci_logs
 
         actions_log.append(f"Pushed CI fix (attempt {attempt})")
 
         # Recheck CI
-        if use_polling:
-            status, _run_id, new_logs = wait_for_ci(branch, full_repo)
-        else:
-            time.sleep(15)
-            status, _run_id, new_logs = check_existing_ci(branch, full_repo)
+        status, _run_id, new_logs = _do_recheck(branch, full_repo)
 
         if status == "success":
             actions_log.append(f"CI passed after fix attempt {attempt}")
+            _set_outcome("fixed", attempt, new_logs)
             return True, new_logs
 
         if status == CI_STATUS_BLOCKED_APPROVAL:
             actions_log.append(
                 f"CI waiting for approval after fix attempt {attempt} — stopping"
             )
+            _set_outcome("blocked_approval", attempt, new_logs)
             return False, new_logs
 
         # Polling path: timeout/none are terminal — fix was pushed, can't confirm
-        if use_polling and status in ("timeout", "none"):
+        if use_polling and recheck_fn is None and status in ("timeout", "none"):
             actions_log.append(f"CI {status} after fix attempt {attempt}")
+            _set_outcome("pending", attempt, new_logs)
+            return True, new_logs
+
+        # recheck_fn path mirrors the polling semantics: a fix was pushed but
+        # CI could not be confirmed as passing/failing.
+        if recheck_fn is not None and status in ("timeout", "none"):
+            actions_log.append(f"CI {status} after fix attempt {attempt}")
+            _set_outcome("pending", attempt, new_logs)
             return True, new_logs
 
         # Non-polling path: pending means CI is running with our fix
-        if not use_polling and status == "pending":
+        if not use_polling and recheck_fn is None and status == "pending":
             actions_log.append(
                 f"CI running after fix push (attempt {attempt})"
             )
+            _set_outcome("pending", attempt, new_logs)
             return True, new_logs
 
         # Failure — update logs for next attempt
@@ -935,6 +1059,8 @@ def run_ci_fix_loop(
             ci_logs = new_logs
 
     actions_log.append(f"CI still failing after {max_attempts} fix attempts")
+    if outcome is not None and "result" not in outcome:
+        _set_outcome("exhausted", max_attempts, ci_logs)
     return False, ci_logs
 
 

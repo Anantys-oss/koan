@@ -125,6 +125,34 @@ fast_reply: false
 # Default: 7200 (2 hours). Previous default was 3600 (60 minutes).
 skill_timeout: 7200
 
+# First output timeout — kill skill subprocesses that stay silent too long.
+# Default: 600 (10 min). Set 0 to disable.
+# first_output_timeout: 600
+
+# Rebase first output timeout — optional override for /rebase skill runs.
+# Useful for large PRs where "Applying review feedback" can be quiet for longer.
+# Falls back to first_output_timeout when unset.
+# rebase_first_output_timeout: 1800
+
+# Rebase review phase inactivity timeout — if no real CLI/tool output is seen
+# for this long during review-feedback application, abort as stalled.
+# Defaults to rebase_first_output_timeout.
+# rebase_review_idle_timeout: 1800
+
+# Rebase review phase hard cap — maximum total seconds allowed for review
+# feedback application even when activity continues.
+# Defaults to skill_timeout.
+# rebase_review_max_duration: 10800
+
+# Rebase CI-fix inactivity timeout — same semantics as review idle timeout,
+# applied to CI-fix attempts in /rebase flow.
+# Defaults to rebase_first_output_timeout.
+# rebase_ci_idle_timeout: 1800
+
+# Rebase CI-fix hard cap — maximum total seconds allowed for a CI-fix step.
+# Defaults to skill_timeout.
+# rebase_ci_max_duration: 7200
+
 # Skill max turns — maximum agentic turns for heavy skill execution
 # Controls how many back-and-forth turns Claude CLI is allowed during
 # /implement, /fix, and /incident invocations. Complex multi-step plans

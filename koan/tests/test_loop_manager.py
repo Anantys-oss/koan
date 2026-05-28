@@ -473,9 +473,21 @@ class TestInterruptibleSleep:
         def tracking_sleep(secs):
             sleep_calls.append(secs)
 
+        # Isolate the sleep loop from its I/O side-effect collaborators so the
+        # only time.sleep exercised is the loop's own interval sleep. Patching
+        # app.loop_manager.time.sleep replaces the process-global time.sleep,
+        # so without this isolation any sleep performed by a helper (or a
+        # library it triggers) would pollute sleep_calls and make the count
+        # environment-dependent.
         with patch("app.loop_manager.time.sleep", side_effect=tracking_sleep), \
              patch("app.loop_manager.process_github_notifications", return_value=0), \
-             patch("app.loop_manager.process_jira_notifications", return_value=0):
+             patch("app.loop_manager.process_jira_notifications", return_value=0), \
+             patch("app.loop_manager._drain_ci_queue_during_sleep"), \
+             patch("app.health_check.write_run_heartbeat"), \
+             patch("app.feature_tips.maybe_send_feature_tip"), \
+             patch("app.update_hint.maybe_send_update_hint"), \
+             patch("app.heartbeat.run_stale_mission_check"), \
+             patch("app.heartbeat.run_disk_space_check"):
             result = interruptible_sleep(
                 interval=1,
                 koan_root=koan_root,
@@ -483,6 +495,8 @@ class TestInterruptibleSleep:
                 check_interval=1,
             )
 
+        # The legacy marker must be ignored (timeout, not "restart") and the
+        # loop must perform exactly one normal interval sleep.
         assert result == "timeout"
         assert len(sleep_calls) == 1
         assert 0 < sleep_calls[0] <= 1

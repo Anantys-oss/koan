@@ -1614,6 +1614,74 @@ class TestRunCiFixLoop:
         assert "upstream/main" in str(diff_call)
 
     @patch("app.claude_step._run_git", return_value="")
+    def test_injected_step_runner_push_recheck_and_outcome(self, mock_git):
+        """Injected step_runner/push_fn/recheck_fn drive the loop and the
+        outcome dict captures a structured result."""
+        from app.claude_step import StepResult, run_ci_fix_loop
+
+        calls = {"steps": 0, "pushes": 0, "rechecks": 0}
+
+        def fake_step_runner(**kwargs):
+            calls["steps"] += 1
+            return StepResult(committed=True, output="done"), False, 1
+
+        def fake_push(branch, project_path):
+            calls["pushes"] += 1
+
+        def fake_recheck(branch, full_repo):
+            calls["rechecks"] += 1
+            return "success", 1, ""
+
+        actions = []
+        outcome = {}
+        success, _logs = run_ci_fix_loop(
+            "fix-branch", "main", "owner/repo", "/project",
+            "Error: test failed", actions,
+            max_attempts=2,
+            use_polling=True,
+            prompt_builder=lambda logs, diff: "fix this",
+            step_runner=fake_step_runner,
+            push_fn=fake_push,
+            recheck_fn=fake_recheck,
+            outcome=outcome,
+        )
+
+        assert success is True
+        assert calls == {"steps": 1, "pushes": 1, "rechecks": 1}
+        assert outcome["result"] == "fixed"
+        assert outcome["attempt"] == 1
+        assert outcome["total_step_attempts"] == 1
+
+    @patch("app.claude_step._run_git", return_value="")
+    def test_injected_step_runner_timeout_populates_outcome(self, mock_git):
+        """A timed-out step (not committed, timed_out=True) yields a 'timeout'
+        outcome and stops without pushing."""
+        from app.claude_step import StepResult, run_ci_fix_loop
+
+        def fake_step_runner(**kwargs):
+            return StepResult(committed=False, output=""), True, 2
+
+        pushed = []
+        actions = []
+        outcome = {}
+        success, _logs = run_ci_fix_loop(
+            "fix-branch", "main", "owner/repo", "/project",
+            "Error", actions,
+            max_attempts=2,
+            use_polling=True,
+            prompt_builder=lambda logs, diff: "fix",
+            step_runner=fake_step_runner,
+            push_fn=lambda b, p: pushed.append(b),
+            recheck_fn=lambda b, r: ("success", 1, ""),
+            outcome=outcome,
+        )
+
+        assert success is False
+        assert outcome["result"] == "timeout"
+        assert outcome["total_step_attempts"] == 2
+        assert pushed == []
+
+    @patch("app.claude_step._run_git", return_value="")
     @patch("app.claude_step.run_claude_step", return_value=False)
     def test_prompt_builder_receives_logs_and_diff(self, mock_step, mock_git):
         """The prompt_builder callback receives CI logs and truncated diff."""

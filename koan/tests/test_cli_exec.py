@@ -450,6 +450,70 @@ class TestStreamWithTimeout:
         assert result.timed_out is True
         killpg.assert_called_once()
 
+    def test_idle_timeout_sets_timeout_kind(self):
+        import threading
+
+        killed = threading.Event()
+
+        class _BlockingStream:
+            def __iter__(self):
+                killed.wait(timeout=10)
+                return iter([])
+
+            def read(self):
+                return ""
+
+            def close(self):
+                return None
+
+        proc = MagicMock()
+        proc.stdout = _BlockingStream()
+        proc.stderr = _FakeStream(read_text="")
+        proc.returncode = -9
+        proc.pid = 12345
+        proc.wait.return_value = -9
+
+        with patch("app.subprocess_runner.os.killpg",
+                   side_effect=lambda *a, **kw: killed.set()), \
+                patch("app.subprocess_runner.os.getpgid", return_value=12345):
+            result = stream_with_timeout(
+                proc, timeout=10, idle_timeout=0.5, max_duration=20,
+            )
+
+        assert result.timed_out is True
+        assert result.timeout_kind == "idle"
+
+    def test_max_duration_timeout_sets_timeout_kind(self):
+        import threading
+
+        killed = threading.Event()
+
+        class _BlockingStream:
+            def __iter__(self):
+                killed.wait(timeout=10)
+                return iter([])
+
+            def read(self):
+                return ""
+
+            def close(self):
+                return None
+
+        proc = MagicMock()
+        proc.stdout = _BlockingStream()
+        proc.stderr = _FakeStream(read_text="")
+        proc.returncode = -9
+        proc.pid = 12345
+        proc.wait.return_value = -9
+
+        with patch("app.subprocess_runner.os.killpg",
+                   side_effect=lambda *a, **kw: killed.set()), \
+                patch("app.subprocess_runner.os.getpgid", return_value=12345):
+            result = stream_with_timeout(proc, timeout=10, max_duration=0.5)
+
+        assert result.timed_out is True
+        assert result.timeout_kind == "max_duration"
+
     def test_completed_flag_blocks_watchdog_race(self):
         """If the watchdog Timer fires after stream EOF but before
         ``watchdog.cancel()``, the kill must be skipped and ``timed_out``

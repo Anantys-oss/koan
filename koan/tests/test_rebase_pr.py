@@ -36,6 +36,7 @@ from app.rebase_pr import (
     _rebase_with_conflict_resolution,
     check_pr_state,
     _run_ci_check_and_fix,
+    _run_ci_fix_step_with_timeout_retry,
     _safe_checkout,
     _UNMERGED_STATUSES,
     MAX_CI_FIX_ATTEMPTS,
@@ -1606,6 +1607,31 @@ class TestApplyReviewFeedback:
         assert call_kwargs["success_label"] == "Applied review feedback"
         assert summary == "Changed things."
 
+    @patch("app.rebase_pr.get_rebase_review_max_duration", return_value=10800)
+    @patch("app.rebase_pr.get_rebase_review_idle_timeout", return_value=1800)
+    @patch("app.rebase_pr.get_skill_timeout", return_value=7200)
+    @patch("app.rebase_pr.get_skill_max_turns", return_value=200)
+    @patch("app.rebase_pr.run_claude_step")
+    def test_passes_activity_based_review_timeouts(
+        self, mock_step, mock_turns, mock_timeout, mock_idle, mock_max_duration,
+    ):
+        from app.claude_step import StepResult
+
+        mock_step.return_value = StepResult(committed=True, output="Changed things.")
+        context = {
+            "title": "Fix", "body": "", "branch": "br", "base": "main",
+            "diff": "+code", "review_comments": "fix this",
+            "reviews": "", "issue_comments": "",
+        }
+        actions = []
+        _apply_review_feedback(
+            context, "42", "/project", actions, skill_dir=REBASE_SKILL_DIR,
+        )
+        call_kwargs = mock_step.call_args.kwargs
+        assert call_kwargs["timeout"] == 7200
+        assert call_kwargs["idle_timeout"] == 1800
+        assert call_kwargs["max_duration"] == 10800
+
     @patch("app.rebase_pr.run_claude_step")
     def test_passes_success_label(self, mock_step):
         from app.claude_step import StepResult
@@ -1640,6 +1666,78 @@ class TestApplyReviewFeedback:
             skill_dir=REBASE_SKILL_DIR,
         )
         assert summary == ""
+
+    @patch("app.rebase_pr.run_claude_step")
+    def test_sets_feedback_timeout_metadata(self, mock_step):
+        from app.claude_step import StepResult
+
+        mock_step.return_value = StepResult(
+            committed=False, output="", error="Timeout (600s)",
+        )
+        context = {
+            "title": "Fix", "body": "", "branch": "br", "base": "main",
+            "diff": "+code", "review_comments": "fix this",
+            "reviews": "", "issue_comments": "",
+        }
+        actions = []
+        meta = {}
+        summary = _apply_review_feedback(
+            context, "42", "/project", actions,
+            skill_dir=REBASE_SKILL_DIR,
+            result_meta=meta,
+        )
+        assert summary == ""
+        assert meta["status"] == "feedback_timeout"
+        assert "timed out" in actions[-1].lower()
+
+    @patch("app.rebase_pr.run_claude_step")
+    def test_sets_feedback_failed_metadata(self, mock_step):
+        from app.claude_step import StepResult
+
+        mock_step.return_value = StepResult(
+            committed=False, output="", error="Exit code 1: no stderr",
+        )
+        context = {
+            "title": "Fix", "body": "", "branch": "br", "base": "main",
+            "diff": "+code", "review_comments": "fix this",
+            "reviews": "", "issue_comments": "",
+        }
+        actions = []
+        meta = {}
+        summary = _apply_review_feedback(
+            context, "42", "/project", actions,
+            skill_dir=REBASE_SKILL_DIR,
+            result_meta=meta,
+        )
+        assert summary == ""
+        assert meta["status"] == "feedback_failed"
+        assert "feedback failed" in actions[-1].lower()
+
+    @patch("app.rebase_pr.run_claude_step")
+    def test_sets_feedback_quota_metadata(self, mock_step):
+        from app.claude_step import StepResult
+
+        mock_step.return_value = StepResult(
+            committed=False,
+            output="You've hit your session limit",
+            quota_exhausted=True,
+            error="quota exhausted",
+        )
+        context = {
+            "title": "Fix", "body": "", "branch": "br", "base": "main",
+            "diff": "+code", "review_comments": "fix this",
+            "reviews": "", "issue_comments": "",
+        }
+        actions = []
+        meta = {}
+        summary = _apply_review_feedback(
+            context, "42", "/project", actions,
+            skill_dir=REBASE_SKILL_DIR,
+            result_meta=meta,
+        )
+        assert summary == ""
+        assert meta["status"] == "feedback_quota"
+        assert "quota" in actions[-1].lower()
 
 
 # ---------------------------------------------------------------------------
@@ -1799,6 +1897,120 @@ class TestRunRebaseClaude:
             ]
             assert len(restore_calls) == 0  # no restoration needed
 
+    @patch("app.rebase_pr._safe_checkout")
+    @patch("app.rebase_pr._apply_review_feedback")
+    @patch(
+        "app.rebase_pr._build_rebase_recovery_guidance",
+        return_value="Recovery hints:\n- next: git rebase --continue",
+    )
+    @patch("app.rebase_pr.fetch_pr_context")
+    def test_feedback_timeout_returns_classified_failure(
+        self, mock_ctx, mock_guidance, mock_apply, mock_safe,
+    ):
+        mock_ctx.return_value = {
+            "title": "Fix auth", "body": "", "branch": "feat",
+            "base": "main", "state": "", "author": "", "url": "",
+            "diff": "+code", "review_comments": "@reviewer: fix this",
+            "reviews": "", "issue_comments": "",
+        }
+
+        def _apply_side_effect(*args, **kwargs):
+            kwargs["result_meta"]["status"] = "feedback_timeout"
+            kwargs["result_meta"]["error"] = "Timeout (600s)"
+            return ""
+
+        mock_apply.side_effect = _apply_side_effect
+        notify = MagicMock()
+        with patch("app.rebase_pr._check_if_already_solved", return_value=(False, None)), \
+             patch("app.rebase_pr._get_current_branch", return_value="main"), \
+             patch("app.rebase_pr._checkout_pr_branch"), \
+             patch("app.rebase_pr._rebase_with_conflict_resolution", return_value="origin"):
+            success, summary = run_rebase(
+                "o", "r", "1", "/p", notify_fn=notify, skill_dir=REBASE_SKILL_DIR,
+            )
+
+        assert success is False
+        assert "[feedback_timeout]" in summary
+        assert "Recovery hints" in summary
+
+    @patch("app.rebase_pr._safe_checkout")
+    @patch("app.rebase_pr._apply_review_feedback")
+    @patch(
+        "app.rebase_pr._build_rebase_recovery_guidance",
+        return_value="Recovery hints:\n- next: git status",
+    )
+    @patch("app.rebase_pr.fetch_pr_context")
+    def test_feedback_quota_returns_classified_failure(
+        self, mock_ctx, mock_guidance, mock_apply, mock_safe,
+    ):
+        mock_ctx.return_value = {
+            "title": "Fix auth", "body": "", "branch": "feat",
+            "base": "main", "state": "", "author": "", "url": "",
+            "diff": "+code", "review_comments": "@reviewer: fix this",
+            "reviews": "", "issue_comments": "",
+        }
+
+        def _apply_side_effect(*args, **kwargs):
+            kwargs["result_meta"]["status"] = "feedback_quota"
+            kwargs["result_meta"]["error"] = "quota exhausted"
+            return ""
+
+        mock_apply.side_effect = _apply_side_effect
+        notify = MagicMock()
+        with patch("app.rebase_pr._check_if_already_solved", return_value=(False, None)), \
+             patch("app.rebase_pr._get_current_branch", return_value="main"), \
+             patch("app.rebase_pr._checkout_pr_branch"), \
+             patch("app.rebase_pr._rebase_with_conflict_resolution", return_value="origin"):
+            success, summary = run_rebase(
+                "o", "r", "1", "/p", notify_fn=notify, skill_dir=REBASE_SKILL_DIR,
+            )
+
+        assert success is False
+        assert "[feedback_quota]" in summary
+        assert "Recovery hints" in summary
+
+    @patch("app.rebase_pr._fix_existing_ci_failures", return_value=False)
+    @patch("app.rebase_pr._run_ci_check_and_fix", return_value="")
+    @patch("app.rebase_pr._safe_checkout")
+    @patch("app.rebase_pr.run_gh")
+    @patch("app.rebase_pr._apply_review_feedback")
+    @patch("app.rebase_pr.fetch_pr_context")
+    def test_feedback_failed_pushes_rebase_best_effort(
+        self, mock_ctx, mock_apply, mock_gh, mock_safe, mock_ci_check, mock_fix_ci,
+    ):
+        """A non-timeout, non-quota feedback error must not discard a clean
+        rebase — the rebase should still be pushed, with a note."""
+        mock_ctx.return_value = {
+            "title": "Fix auth", "body": "", "branch": "feat",
+            "base": "main", "state": "", "author": "", "url": "",
+            "diff": "+code", "review_comments": "@reviewer: fix this",
+            "reviews": "", "issue_comments": "",
+        }
+
+        def _apply_side_effect(*args, **kwargs):
+            kwargs["result_meta"]["status"] = "feedback_failed"
+            kwargs["result_meta"]["error"] = "Exit code 1: no stderr"
+            return ""
+
+        mock_apply.side_effect = _apply_side_effect
+        notify = MagicMock()
+        push_mock = MagicMock(return_value={
+            "success": True, "actions": ["Force-pushed"], "error": "",
+        })
+        with patch("app.rebase_pr._check_if_already_solved", return_value=(False, None)), \
+             patch("app.rebase_pr._get_current_branch", return_value="feat"), \
+             patch("app.rebase_pr._checkout_pr_branch"), \
+             patch("app.rebase_pr._rebase_with_conflict_resolution", return_value="origin"), \
+             patch("app.rebase_pr._push_with_fallback", push_mock):
+            success, summary = run_rebase(
+                "o", "r", "1", "/p", notify_fn=notify, skill_dir=REBASE_SKILL_DIR,
+            )
+
+        assert success is True
+        assert "[feedback_failed]" not in summary
+        # The rebase was still pushed despite the feedback error.
+        push_mock.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # main() CLI entry point
@@ -1924,6 +2136,10 @@ class TestMain:
             mock_recreate.assert_called_once()
     def test_detects_conflict_message(self):
         msg = "Rebase conflict on `main` (tried origin and upstream). Manual resolution required."
+        assert _is_conflict_failure(msg) is True
+
+    def test_detects_classified_conflict_tag(self):
+        msg = "[conflict_unresolved] Rebase failed on `main`."
         assert _is_conflict_failure(msg) is True
 
     def test_rejects_non_conflict(self):
@@ -2444,43 +2660,147 @@ class TestRunCiCheckAndFix:
         assert "No CI runs found" in actions
 
     @patch("app.rebase_pr.check_pr_state", return_value=("OPEN", "MERGEABLE"))
-    @patch("app.rebase_pr.run_ci_fix_loop")
-    @patch("app.rebase_pr.wait_for_ci", return_value=("failure", 456, "test_foo FAILED"))
-    def test_ci_fails_then_fixed(self, mock_wait, mock_loop, mock_state):
-        def _fix_side_effect(*a, **kw):
-            kw["actions_log"].append("CI passed after fix attempt 1")
-            return (True, "")
-        mock_loop.side_effect = _fix_side_effect
+    @patch("app.rebase_pr._force_push")
+    @patch("app.rebase_pr._run_ci_fix_step_with_timeout_retry")
+    @patch("app.rebase_pr.wait_for_ci", side_effect=[
+        ("failure", 456, "test_foo FAILED"),
+        ("success", 457, ""),
+    ])
+    def test_ci_fails_then_fixed(self, mock_wait, mock_fix_step, mock_push, mock_state):
+        from app.claude_step import StepResult
+
+        mock_fix_step.return_value = (StepResult(committed=True, output="done"), False, 1)
         actions = []
         result = _run_ci_check_and_fix(
             "koan/fix", "main", "owner/repo", "42", "/project",
             self._make_context(), actions, lambda m: None,
         )
         assert "fixed on attempt 1" in result
-        mock_loop.assert_called_once()
+        mock_fix_step.assert_called_once()
+        mock_push.assert_called_once()
 
     @patch("app.rebase_pr.check_pr_state", return_value=("OPEN", "MERGEABLE"))
-    @patch("app.rebase_pr.run_ci_fix_loop", return_value=(False, "persistent error"))
-    @patch("app.rebase_pr.wait_for_ci", return_value=("failure", 456, "persistent error"))
-    def test_ci_fails_exhausts_retries(self, mock_wait, mock_loop, mock_state):
+    @patch("app.rebase_pr._force_push")
+    @patch("app.rebase_pr._run_ci_fix_step_with_timeout_retry")
+    @patch("app.rebase_pr.wait_for_ci", side_effect=[
+        ("failure", 456, "persistent error"),
+        ("failure", 457, "persistent error"),
+        ("failure", 458, "persistent error"),
+    ])
+    def test_ci_fails_exhausts_retries(self, mock_wait, mock_fix_step, mock_push, mock_state):
+        from app.claude_step import StepResult
+
+        mock_fix_step.return_value = (StepResult(committed=True, output="done"), False, 1)
         actions = []
         result = _run_ci_check_and_fix(
             "koan/fix", "main", "owner/repo", "42", "/project",
             self._make_context(), actions, lambda m: None,
         )
         assert f"after {MAX_CI_FIX_ATTEMPTS} fix attempts" in result
+        assert mock_fix_step.call_count == MAX_CI_FIX_ATTEMPTS
+        assert mock_push.call_count == MAX_CI_FIX_ATTEMPTS
 
     @patch("app.rebase_pr.check_pr_state", return_value=("OPEN", "MERGEABLE"))
-    @patch("app.rebase_pr.run_ci_fix_loop", return_value=(False, "error"))
+    @patch("app.rebase_pr._run_ci_fix_step_with_timeout_retry")
     @patch("app.rebase_pr.wait_for_ci", return_value=("failure", 456, "error"))
-    def test_ci_fails_claude_no_changes(self, mock_wait, mock_loop, mock_state):
-        """When run_ci_fix_loop fails, result reflects exhausted retries."""
+    def test_ci_fails_claude_no_changes(self, mock_wait, mock_fix_step, mock_state):
+        """When CI fix step produces no changes, loop stops quickly."""
+        from app.claude_step import StepResult
+
+        mock_fix_step.return_value = (StepResult(committed=False, output=""), False, 1)
         actions = []
         result = _run_ci_check_and_fix(
             "koan/fix", "main", "owner/repo", "42", "/project",
             self._make_context(), actions, lambda m: None,
         )
-        mock_loop.assert_called_once()
+        assert f"after {MAX_CI_FIX_ATTEMPTS} fix attempts" in result
+        mock_fix_step.assert_called_once()
+
+    @patch("app.rebase_pr.check_pr_state", return_value=("OPEN", "MERGEABLE"))
+    @patch("app.rebase_pr._run_ci_fix_step_with_timeout_retry")
+    @patch("app.rebase_pr.wait_for_ci", return_value=("failure", 456, "error"))
+    def test_ci_fix_timeout_returns_actionable_message(
+        self, mock_wait, mock_fix_step, mock_state,
+    ):
+        from app.claude_step import StepResult
+
+        mock_fix_step.return_value = (StepResult(committed=False, output=""), True, 2)
+        actions = []
+        result = _run_ci_check_and_fix(
+            "koan/fix", "main", "owner/repo", "42", "/project",
+            self._make_context(), actions, lambda m: None,
+        )
+        assert "timed out during `/rebase`" in result
+        assert "/rebase https://github.com/owner/repo/pull/42" in result
+
+
+class TestCiFixTimeoutRetry:
+    @patch("app.rebase_pr.get_skill_timeout", return_value=999)
+    @patch("app.rebase_pr.get_skill_max_turns", return_value=77)
+    @patch("app.rebase_pr.get_rebase_ci_max_duration", return_value=8888)
+    @patch("app.rebase_pr.get_rebase_ci_idle_timeout", return_value=555)
+    @patch("app.rebase_pr.run_claude_step")
+    def test_timeout_retries_once_with_tight_prompt(
+        self, mock_step, mock_idle, mock_max_duration, mock_turns, mock_timeout,
+    ):
+        from app.claude_step import StepResult
+
+        mock_step.side_effect = [
+            StepResult(committed=False, output="", error="Timeout (999s)"),
+            StepResult(committed=True, output="fixed", error=""),
+        ]
+        actions = []
+        result, timed_out, attempts = _run_ci_fix_step_with_timeout_retry(
+            prompt="base prompt",
+            project_path="/project",
+            commit_msg="fix: test",
+            success_label="ok",
+            failure_label="failed",
+            actions_log=actions,
+            use_convention_subject=False,
+        )
+
+        assert result.committed is True
+        assert timed_out is False
+        assert attempts == 2
+        assert mock_step.call_count == 2
+        first_prompt = mock_step.call_args_list[0].kwargs["prompt"]
+        second_prompt = mock_step.call_args_list[1].kwargs["prompt"]
+        assert first_prompt == "base prompt"
+        assert "Retry Constraints" in second_prompt
+        assert mock_step.call_args_list[0].kwargs["timeout"] == 999
+        assert mock_step.call_args_list[0].kwargs["max_turns"] == 77
+        assert mock_step.call_args_list[0].kwargs["idle_timeout"] == 555
+        assert mock_step.call_args_list[0].kwargs["max_duration"] == 8888
+
+    @patch("app.rebase_pr.get_skill_timeout", return_value=999)
+    @patch("app.rebase_pr.get_skill_max_turns", return_value=77)
+    @patch("app.rebase_pr.get_rebase_ci_max_duration", return_value=8888)
+    @patch("app.rebase_pr.get_rebase_ci_idle_timeout", return_value=555)
+    @patch("app.rebase_pr.run_claude_step")
+    def test_non_timeout_failure_does_not_retry(
+        self, mock_step, mock_idle, mock_max_duration, mock_turns, mock_timeout,
+    ):
+        from app.claude_step import StepResult
+
+        mock_step.return_value = StepResult(
+            committed=False, output="", error="Exit code 1: no stderr",
+        )
+        actions = []
+        result, timed_out, attempts = _run_ci_fix_step_with_timeout_retry(
+            prompt="base prompt",
+            project_path="/project",
+            commit_msg="fix: test",
+            success_label="ok",
+            failure_label="failed",
+            actions_log=actions,
+            use_convention_subject=False,
+        )
+
+        assert result.committed is False
+        assert timed_out is False
+        assert attempts == 1
+        mock_step.assert_called_once()
 
 
 class TestCiCheckAndFixPrLink:
@@ -2506,9 +2826,16 @@ class TestCiCheckAndFixPrLink:
         assert any("owner/repo/pull/42" in m for m in messages)
 
     @patch("app.rebase_pr.check_pr_state", return_value=("OPEN", "MERGEABLE"))
-    @patch("app.rebase_pr.run_ci_fix_loop", return_value=(True, ""))
-    @patch("app.rebase_pr.wait_for_ci", return_value=("failure", 456, "test FAILED"))
-    def test_fix_attempt_includes_pr_link(self, mock_wait, mock_loop, mock_state):
+    @patch("app.rebase_pr._force_push")
+    @patch("app.rebase_pr._run_ci_fix_step_with_timeout_retry")
+    @patch("app.rebase_pr.wait_for_ci", side_effect=[
+        ("failure", 456, "test FAILED"),
+        ("success", 457, ""),
+    ])
+    def test_fix_attempt_includes_pr_link(self, mock_wait, mock_fix_step, mock_push, mock_state):
+        from app.claude_step import StepResult
+
+        mock_fix_step.return_value = (StepResult(committed=True, output=""), False, 1)
         messages = []
         _run_ci_check_and_fix(
             "koan/fix", "main", "owner/repo", "42", "/project",
@@ -2556,20 +2883,25 @@ class TestCiCheckAndFixAbortOnMerged:
         assert any("conflict" in a.lower() for a in actions)
 
     @patch("app.rebase_pr.check_pr_state", return_value=("OPEN", "MERGEABLE"))
-    @patch("app.rebase_pr.run_ci_fix_loop")
-    @patch("app.rebase_pr.wait_for_ci", return_value=("failure", 456, "test FAILED"))
-    def test_proceeds_when_pr_open_and_mergeable(self, mock_wait, mock_loop, mock_state):
-        def _fix_side_effect(*a, **kw):
-            kw["actions_log"].append("CI passed after fix attempt 1")
-            return (True, "")
-        mock_loop.side_effect = _fix_side_effect
+    @patch("app.rebase_pr._force_push")
+    @patch("app.rebase_pr._run_ci_fix_step_with_timeout_retry")
+    @patch("app.rebase_pr.wait_for_ci", side_effect=[
+        ("failure", 456, "test FAILED"),
+        ("success", 457, ""),
+    ])
+    def test_proceeds_when_pr_open_and_mergeable(
+        self, mock_wait, mock_fix_step, mock_push, mock_state,
+    ):
+        from app.claude_step import StepResult
+
+        mock_fix_step.return_value = (StepResult(committed=True, output=""), False, 1)
         actions = []
         result = _run_ci_check_and_fix(
             "koan/fix", "main", "owner/repo", "42", "/project",
             self._make_context(), actions, lambda m: None,
         )
         assert "fixed on attempt 1" in result
-        mock_loop.assert_called_once()
+        mock_fix_step.assert_called_once()
 
 
 class TestCheckPrState:

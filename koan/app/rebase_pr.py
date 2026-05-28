@@ -18,8 +18,10 @@ import json
 import re
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from app.claude_step import (
     CI_STATUS_BLOCKED_APPROVAL,
@@ -40,7 +42,14 @@ from app.claude_step import (
     run_claude_step,
     wait_for_ci,
 )
-from app.config import get_skill_max_turns
+from app.config import (
+    get_rebase_ci_idle_timeout,
+    get_rebase_ci_max_duration,
+    get_rebase_review_idle_timeout,
+    get_rebase_review_max_duration,
+    get_skill_max_turns,
+    get_skill_timeout,
+)
 from app.git_utils import ordered_remotes as _ordered_remotes
 from app.github import run_gh, sanitize_github_comment
 from app.prompts import load_prompt, load_prompt_or_skill, load_skill_prompt  # noqa: F401 — safety import
@@ -142,6 +151,16 @@ def severity_at_or_above(min_severity: str) -> List[str]:
 
 
 _DIFF_TOO_LARGE_MARKERS = ("HTTP 406", "too_large", "exceeded the maximum")
+_REBASE_FEEDBACK_HEARTBEAT_SECONDS = 45
+_REBASE_CI_FIX_HEARTBEAT_SECONDS = 45
+_REBASE_CI_FIX_TIMEOUT_RETRIES = 1
+_REBASE_CI_FIX_TIGHT_RETRY_SUFFIX = (
+    "\n\n## Retry Constraints\n"
+    "- Keep edits minimal and focused only on failing checks.\n"
+    "- Prefer direct file fixes over broad refactors.\n"
+    "- Do not spend tokens on long explanations.\n"
+    "- Stop after implementing the smallest viable patch."
+)
 
 
 def _diff_too_large(error_message: str) -> bool:
@@ -676,9 +695,11 @@ def run_rebase(
         _safe_checkout(original_branch, project_path)
         attempted_remotes = _ordered_remotes(base_remote, cwd=project_path)
         attempted = ", ".join(attempted_remotes) if attempted_remotes else "none"
+        guidance = _build_rebase_recovery_guidance(project_path)
         return False, (
+            "[conflict_unresolved] "
             f"Rebase failed on `{base}` (tried: {attempted}). "
-            "Could not resolve conflicts."
+            f"Could not resolve conflicts.\n{guidance}"
         )
 
     # ── Step 4: Analyze review comments and apply changes ──────────────
@@ -690,12 +711,46 @@ def run_rebase(
             severity_hint = f" (severity filter: {', '.join(included)})"
         print(f"[rebase] Applying review feedback (Claude){severity_hint}", flush=True)
         notify_fn(f"Analyzing review comments on `{branch}`{severity_hint}...")
+        feedback_meta: Dict[str, str] = {"status": "unknown", "error": ""}
         change_summary = _apply_review_feedback(
             context, pr_number, project_path, actions_log,
             skill_dir=skill_dir,
             commit_conventions=commit_conventions,
             min_severity=min_severity,
+            result_meta=feedback_meta,
         )
+        feedback_status = feedback_meta.get("status", "")
+        if feedback_status == "feedback_timeout":
+            _safe_checkout(original_branch, project_path)
+            guidance = _build_rebase_recovery_guidance(project_path)
+            return False, (
+                "[feedback_timeout] Rebase stopped while applying review feedback.\n"
+                f"{guidance}"
+            )
+        if feedback_status == "feedback_quota":
+            # Provider quota is exhausted — no point pushing a half-applied
+            # review, and the loop should back off until quota resets.
+            _safe_checkout(original_branch, project_path)
+            guidance = _build_rebase_recovery_guidance(project_path)
+            return False, (
+                "[feedback_quota] Rebase paused while applying review feedback: "
+                "provider quota exhausted. Retry /rebase after quota reset.\n"
+                f"{guidance}"
+            )
+        if feedback_status == "feedback_failed":
+            # The git rebase itself already succeeded; a transient feedback
+            # error should not discard it. Push the rebase as-is and flag that
+            # review feedback was not applied so the human can re-run /rebase.
+            error_detail = feedback_meta.get("error", "").strip()
+            suffix = f" ({error_detail})" if error_detail else ""
+            actions_log.append(
+                f"Review feedback step errored{suffix}; "
+                "pushing rebase without feedback changes"
+            )
+            notify_fn(
+                f"Could not apply review feedback on `{branch}`{suffix}; "
+                "pushing the rebase without feedback changes."
+            )
 
         # Claude may switch branches during feedback — ensure we're still
         # on the expected branch before pushing.
@@ -737,7 +792,7 @@ def run_rebase(
     if not push_result["success"]:
         _safe_checkout(original_branch, project_path)
         return False, (
-            f"Push failed: {push_result.get('error', 'unknown')}\n\n"
+            f"[push_failure] Push failed: {push_result.get('error', 'unknown')}\n\n"
             f"Actions completed:\n" +
             "\n".join(f"- {a}" for a in actions_log)
         )
@@ -1240,21 +1295,26 @@ def _fix_existing_ci_failures(
         commit_conventions=commit_conventions,
     )
 
-    fixed = run_claude_step(
+    fixed, timed_out, attempts_used = _run_ci_fix_step_with_timeout_retry(
         prompt=ci_fix_prompt,
         project_path=project_path,
         commit_msg=f"fix: resolve pre-existing CI failures on #{pr_number}",
         success_label="Applied pre-push CI fix",
         failure_label="Pre-push CI fix step produced no changes",
         actions_log=actions_log,
-        max_turns=get_skill_max_turns(),
         use_convention_subject=bool(commit_conventions),
     )
 
     if fixed:
-        actions_log.append("Pre-push CI fix applied")
+        if attempts_used > 1:
+            actions_log.append("Pre-push CI fix applied after timeout retry")
+        else:
+            actions_log.append("Pre-push CI fix applied")
     else:
-        actions_log.append("Pre-push CI fix: no changes needed or Claude found nothing to fix")
+        if timed_out:
+            actions_log.append("Pre-push CI fix timed out")
+        else:
+            actions_log.append("Pre-push CI fix: no changes needed or Claude found nothing to fix")
 
     return fixed
 
@@ -1318,8 +1378,8 @@ def _run_ci_check_and_fix(
 ) -> str:
     """Poll CI after push, attempt fixes if failing. Returns CI section for PR comment.
 
-    Delegates the fix loop to :func:`app.claude_step.run_ci_fix_loop` with
-    polling-based CI recheck.
+    Uses a bounded local fix loop with heartbeat output and timeout-aware
+    single retry, then polls CI after each pushed fix attempt.
     """
     pr_url = context.get("url") or f"https://github.com/{full_repo}/pull/{pr_number}"
 
@@ -1361,7 +1421,12 @@ def _run_ci_check_and_fix(
             commit_conventions=commit_conventions,
         )
 
-    success, last_ci_logs = run_ci_fix_loop(
+    # Delegate the shared diff -> fix -> push -> recheck loop to the canonical
+    # implementation, injecting the activity-aware (heartbeat + timeout-retry)
+    # step runner so long-but-active CI fixes keep running while stalled ones
+    # are killed. The structured ``outcome`` drives the PR-comment summary.
+    outcome: Dict[str, object] = {}
+    _success, last_ci_logs = run_ci_fix_loop(
         branch=branch,
         base=base,
         full_repo=full_repo,
@@ -1372,32 +1437,41 @@ def _run_ci_check_and_fix(
         commit_conventions=commit_conventions,
         use_polling=True,
         prompt_builder=_build_prompt,
-        commit_msg_template=f"fix: resolve CI failures on #{pr_number} (attempt {{attempt}})",
+        commit_msg_template=(
+            f"fix: resolve CI failures on #{pr_number} (attempt {{attempt}})"
+        ),
+        step_runner=_run_ci_fix_step_with_timeout_retry,
+        push_fn=lambda b, p: _force_push("origin", b, p),
+        recheck_fn=lambda b, repo: wait_for_ci(b, repo),
+        outcome=outcome,
     )
 
-    if success:
-        # Find which attempt succeeded
-        for action in reversed(actions_log):
-            if "CI passed after fix attempt" in action:
-                attempt_num = action.split("attempt ")[-1]
-                return f"CI failed initially, fixed on attempt {attempt_num}."
-            if "CI " in action and "after fix attempt" in action:
-                # timeout/none after fix push
-                attempt_match = action.split("attempt ")[-1].rstrip(")")
-                return f"CI fix pushed (attempt {attempt_match}), CI status: check pending."
-        return "CI fix applied."
+    result = str(outcome.get("result", "exhausted"))
+    attempt = outcome.get("attempt", MAX_CI_FIX_ATTEMPTS)
 
-    # Check for blocked approval
-    if any("approval" in a.lower() and "stopping" in a.lower() for a in actions_log):
-        for action in reversed(actions_log):
-            if "approval" in action.lower() and "stopping" in action.lower():
-                attempt_num = action.split("attempt ")[-1].split(" ")[0]
-                return (
-                    f"CI fix pushed (attempt {attempt_num}), but new run is waiting "
-                    "for maintainer approval."
-                )
+    if result == "fixed":
+        return f"CI failed initially, fixed on attempt {attempt}."
+    if result == "quota":
+        return "CI fix paused due to provider quota; retry after quota reset."
+    if result == "timeout":
+        return (
+            f"CI fix timed out during `/rebase` "
+            f"(attempt {attempt}/{MAX_CI_FIX_ATTEMPTS}). "
+            f"Next: run `/rebase {pr_url}` again or inspect locally with "
+            "`git status` and `git log -1`."
+        )
+    if result == "blocked_approval":
+        return (
+            f"CI fix pushed (attempt {attempt}), but the new run is waiting "
+            "for maintainer approval."
+        )
+    if result == "pending":
+        return f"CI fix pushed (attempt {attempt}), CI status: check pending."
+    if result == "push_failed":
+        push_error = str(outcome.get("push_error", ""))[:120]
+        return f"CI fix was applied but push failed: {push_error}"
 
-    # Exhausted retries — report failure with log excerpt
+    # no_changes / exhausted — report failure with log excerpt
     log_excerpt = last_ci_logs[:2000] if last_ci_logs else "(no logs available)"
     return (
         f"CI still failing after {MAX_CI_FIX_ATTEMPTS} fix attempts.\n\n"
@@ -1430,6 +1504,128 @@ def _build_ci_fix_prompt(
         COMMIT_SUBJECT_INSTRUCTION=commit_subject_instruction,
     )
     return load_prompt_or_skill(skill_dir, "ci_fix", **kwargs)
+
+
+def _emit_phase_heartbeat(
+    stop_event: threading.Event, interval_seconds: int, phase_label: str,
+) -> None:
+    """Emit periodic progress lines to keep the parent liveness watchdog alive."""
+    started = time.monotonic()
+    while not stop_event.wait(interval_seconds):
+        elapsed = int(time.monotonic() - started)
+        print(
+            f"[rebase] {phase_label} still running ({elapsed}s elapsed)",
+            flush=True,
+        )
+
+
+def _run_claude_step_with_heartbeat(
+    *,
+    phase_label: str,
+    heartbeat_seconds: int,
+    prompt: str,
+    project_path: str,
+    commit_msg: str,
+    success_label: str,
+    failure_label: str,
+    actions_log: List[str],
+    max_turns: int,
+    timeout: int,
+    use_convention_subject: bool,
+    idle_timeout: Optional[int] = None,
+    max_duration: Optional[int] = None,
+):
+    """Run ``run_claude_step`` while emitting periodic heartbeat lines."""
+    stop_heartbeat = threading.Event()
+    heartbeat_thread = threading.Thread(
+        target=_emit_phase_heartbeat,
+        args=(stop_heartbeat, heartbeat_seconds, phase_label),
+        daemon=True,
+    )
+    heartbeat_thread.start()
+    try:
+        return run_claude_step(
+            prompt=prompt,
+            project_path=project_path,
+            commit_msg=commit_msg,
+            success_label=success_label,
+            failure_label=failure_label,
+            actions_log=actions_log,
+            max_turns=max_turns,
+            timeout=timeout,
+            idle_timeout=idle_timeout,
+            max_duration=max_duration,
+            use_convention_subject=use_convention_subject,
+        )
+    finally:
+        stop_heartbeat.set()
+        heartbeat_thread.join(timeout=1)
+
+
+def _run_ci_fix_step_with_timeout_retry(
+    *,
+    prompt: str,
+    project_path: str,
+    commit_msg: str,
+    success_label: str,
+    failure_label: str,
+    actions_log: List[str],
+    use_convention_subject: bool,
+) -> Tuple[object, bool, int]:
+    """Run one CI-fix Claude step with one timeout-specific retry.
+
+    Returns ``(step_result, timed_out, attempts_used)``.
+    ``timed_out`` is True only when the final result is timeout-shaped.
+    """
+    timeout = get_skill_timeout()
+    max_turns = get_skill_max_turns()
+    idle_timeout = get_rebase_ci_idle_timeout()
+    max_duration = get_rebase_ci_max_duration()
+    step = _run_claude_step_with_heartbeat(
+        phase_label="Applying CI fix",
+        heartbeat_seconds=_REBASE_CI_FIX_HEARTBEAT_SECONDS,
+        prompt=prompt,
+        project_path=project_path,
+        commit_msg=commit_msg,
+        success_label=success_label,
+        failure_label=failure_label,
+        actions_log=actions_log,
+        max_turns=max_turns,
+        timeout=timeout,
+        idle_timeout=idle_timeout,
+        max_duration=max_duration,
+        use_convention_subject=use_convention_subject,
+    )
+    step_error = str(getattr(step, "error", "") or "").strip()
+    if step or not _is_feedback_timeout_error(step_error):
+        return step, False, 1
+
+    actions_log.append("CI fix attempt timed out")
+    if _REBASE_CI_FIX_TIMEOUT_RETRIES <= 0:
+        return step, True, 1
+
+    actions_log.append("Retrying CI fix once with tighter prompt after timeout")
+    retry_prompt = prompt + _REBASE_CI_FIX_TIGHT_RETRY_SUFFIX
+    retry_step = _run_claude_step_with_heartbeat(
+        phase_label="Retrying CI fix",
+        heartbeat_seconds=_REBASE_CI_FIX_HEARTBEAT_SECONDS,
+        prompt=retry_prompt,
+        project_path=project_path,
+        commit_msg=f"{commit_msg} (retry after timeout)",
+        success_label=success_label,
+        failure_label=failure_label,
+        actions_log=actions_log,
+        max_turns=max_turns,
+        timeout=timeout,
+        idle_timeout=idle_timeout,
+        max_duration=max_duration,
+        use_convention_subject=use_convention_subject,
+    )
+    retry_error = str(getattr(retry_step, "error", "") or "").strip()
+    retry_timed_out = _is_feedback_timeout_error(retry_error)
+    if retry_timed_out:
+        actions_log.append("CI fix retry timed out")
+    return retry_step, retry_timed_out, 2
 
 
 def _build_rebase_prompt(
@@ -1475,6 +1671,7 @@ def _apply_review_feedback(
     skill_dir: Optional[Path] = None,
     commit_conventions: str = "",
     min_severity: Optional[str] = None,
+    result_meta: Optional[dict] = None,
 ) -> str:
     """Analyze review comments via Claude and apply requested changes.
 
@@ -1494,7 +1691,9 @@ def _apply_review_feedback(
         min_severity=min_severity,
     )
 
-    step = run_claude_step(
+    step = _run_claude_step_with_heartbeat(
+        phase_label="Applying review feedback",
+        heartbeat_seconds=_REBASE_FEEDBACK_HEARTBEAT_SECONDS,
         prompt=prompt,
         project_path=project_path,
         commit_msg=f"rebase: apply review feedback on #{pr_number}",
@@ -1502,11 +1701,31 @@ def _apply_review_feedback(
         failure_label="Review feedback step failed",
         actions_log=actions_log,
         max_turns=get_skill_max_turns(),
+        timeout=get_skill_timeout(),
+        idle_timeout=get_rebase_review_idle_timeout(),
+        max_duration=get_rebase_review_max_duration(),
         use_convention_subject=bool(commit_conventions),
     )
 
     if not step.committed:
+        status = "no_changes"
+        error_text = (step.error or "").strip()
+        if getattr(step, "quota_exhausted", False):
+            status = "feedback_quota"
+            actions_log.append("Review feedback halted due to quota exhaustion")
+        elif error_text and _is_feedback_timeout_error(error_text):
+            status = "feedback_timeout"
+            actions_log.append("Review feedback timed out")
+        elif error_text:
+            status = "feedback_failed"
+            actions_log.append("Review feedback failed (continuing with rebase)")
+        if result_meta is not None:
+            result_meta["status"] = status
+            result_meta["error"] = error_text
         return ""
+    if result_meta is not None:
+        result_meta["status"] = "committed"
+        result_meta["error"] = ""
 
     # Extract change summary from Claude's output for the PR comment
     change_summary = step.output.strip()
@@ -1519,6 +1738,47 @@ def _apply_review_feedback(
         change_summary = change_summary[-1000:]
 
     return change_summary
+
+
+def _is_feedback_timeout_error(error_text: str) -> bool:
+    """Return True when Claude step error indicates timeout."""
+    lowered = error_text.lower()
+    return "timeout (" in lowered or "timed out" in lowered
+
+
+def _build_rebase_recovery_guidance(project_path: str) -> str:
+    """Return deterministic cleanup hints after a rebase failure."""
+    branch = "unknown"
+    with contextlib.suppress(Exception):
+        branch = _get_current_branch(project_path)
+
+    rebase_in_progress = _has_rebase_in_progress(project_path)
+    dirty = "unknown"
+    try:
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            cwd=project_path,
+        )
+        dirty = "yes" if status.stdout.strip() else "no"
+    except Exception as e:
+        print(f"[rebase_pr] recovery-guidance git status failed: {e}", file=sys.stderr)
+
+    if rebase_in_progress:
+        next_step = "git rebase --continue (or git rebase --abort if the resolution is wrong)"
+    else:
+        next_step = "git status (then commit or stash local changes before retrying /rebase)"
+
+    return (
+        "Recovery hints:\n"
+        f"- branch: {branch}\n"
+        f"- rebase_in_progress: {'yes' if rebase_in_progress else 'no'}\n"
+        f"- working_tree_dirty: {dirty}\n"
+        f"- next: {next_step}"
+    )
 
 
 
@@ -1758,7 +2018,11 @@ def _extract_change_items(
 
 def _is_conflict_failure(summary: str) -> bool:
     """Check if a rebase failure summary indicates a git conflict."""
-    return "Rebase conflict" in summary or "Could not resolve conflicts" in summary
+    return (
+        "Rebase conflict" in summary
+        or "Could not resolve conflicts" in summary
+        or "[conflict_unresolved]" in summary
+    )
 
 
 # ---------------------------------------------------------------------------

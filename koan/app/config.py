@@ -575,6 +575,67 @@ def get_first_output_timeout() -> int:
     return _safe_int(config.get("first_output_timeout", 600), 600)
 
 
+def get_rebase_first_output_timeout() -> int:
+    """Get first-output timeout override for /rebase skill missions.
+
+    Uses ``rebase_first_output_timeout`` when configured, otherwise falls
+    back to ``first_output_timeout``.
+    """
+    config = _load_config()
+    default_timeout = _safe_int(config.get("first_output_timeout", 600), 600)
+    return _safe_int(config.get("rebase_first_output_timeout", default_timeout), default_timeout)
+
+
+def get_rebase_review_idle_timeout() -> int:
+    """Get inactivity timeout for /rebase review-feedback Claude step.
+
+    If no real CLI/tool output appears for this long, the step is
+    considered stalled and is aborted.
+
+    Config key: rebase_review_idle_timeout.
+    Fallback: rebase_first_output_timeout.
+    """
+    config = _load_config()
+    fallback = get_rebase_first_output_timeout()
+    return _safe_int(config.get("rebase_review_idle_timeout", fallback), fallback)
+
+
+def get_rebase_review_max_duration() -> int:
+    """Get hard wall-clock cap for /rebase review-feedback Claude step.
+
+    Allows long active reviews to continue while still enforcing an upper
+    bound on total runtime.
+
+    Config key: rebase_review_max_duration.
+    Fallback: skill_timeout.
+    """
+    config = _load_config()
+    fallback = get_skill_timeout()
+    return _safe_int(config.get("rebase_review_max_duration", fallback), fallback)
+
+
+def get_rebase_ci_idle_timeout() -> int:
+    """Get inactivity timeout for /rebase CI-fix Claude steps.
+
+    Config key: rebase_ci_idle_timeout.
+    Fallback: rebase_first_output_timeout.
+    """
+    config = _load_config()
+    fallback = get_rebase_first_output_timeout()
+    return _safe_int(config.get("rebase_ci_idle_timeout", fallback), fallback)
+
+
+def get_rebase_ci_max_duration() -> int:
+    """Get hard wall-clock cap for /rebase CI-fix Claude steps.
+
+    Config key: rebase_ci_max_duration.
+    Fallback: skill_timeout.
+    """
+    config = _load_config()
+    fallback = get_skill_timeout()
+    return _safe_int(config.get("rebase_ci_max_duration", fallback), fallback)
+
+
 def get_skill_max_turns() -> int:
     """Get max turns for skill execution (fix, implement, incident).
 

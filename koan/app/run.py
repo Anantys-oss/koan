@@ -2989,8 +2989,12 @@ def _run_skill_mission(
 
         watchdog = ProcessWatchdog(proc, skill_timeout).start()
 
-        from app.config import get_first_output_timeout
-        first_output_timeout = get_first_output_timeout()
+        from app.config import get_first_output_timeout, get_rebase_first_output_timeout
+        mission_text = (mission_title or "").strip().lower()
+        if mission_text.startswith("/rebase "):
+            first_output_timeout = get_rebase_first_output_timeout()
+        else:
+            first_output_timeout = get_first_output_timeout()
         liveness = None
         if first_output_timeout > 0:
             liveness = LivenessWatchdog(
