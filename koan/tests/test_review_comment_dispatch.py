@@ -133,6 +133,13 @@ class TestFetchKoanOpenPrs:
 
         assert fetch_koan_open_prs("/project") == []
 
+    @patch("app.review_comment_dispatch._get_branch_prefix", return_value="koan/")
+    @patch("app.review_comment_dispatch.run_gh", return_value="not-json")
+    def test_handles_malformed_json(self, _, __):
+        from app.review_comment_dispatch import fetch_koan_open_prs
+
+        assert fetch_koan_open_prs("/project") == []
+
 
 class TestFetchUnresolvedReviewComments:
     """fetch_unresolved_review_comments filters bot comments."""
@@ -183,6 +190,69 @@ class TestFetchReviewBodyComments:
         comments = fetch_review_body_comments("owner/repo", 1)
         assert len(comments) == 2
         assert {c["user"] for c in comments} == {"alice", "carol"}
+
+    @patch("app.review_comment_dispatch.run_gh")
+    def test_filters_configured_bot_username_and_malformed_lines(self, mock_gh):
+        from app.review_comment_dispatch import fetch_review_body_comments
+
+        mock_gh.return_value = "\n".join([
+            json.dumps({"id": 20, "user": "MyBot", "body": "self", "state": "COMMENTED", "user_type": "User"}),
+            "not-json",
+            json.dumps({"id": 21, "user": "alice", "body": "needs tests", "state": "COMMENTED", "user_type": "User"}),
+            json.dumps({"user": "broken", "body": "missing id", "state": "COMMENTED", "user_type": "User"}),
+        ])
+
+        comments = fetch_review_body_comments("owner/repo", 1, bot_username="mybot")
+
+        assert comments == [{"id": 21, "user": "alice", "body": "needs tests"}]
+
+
+class TestReviewDispatchConfigHelpers:
+    @patch("app.utils.load_config")
+    def test_get_review_dispatch_config_from_config(self, mock_config):
+        from app.review_comment_dispatch import _get_review_dispatch_config
+
+        mock_config.return_value = {
+            "review_dispatch": {"enabled": 1, "cooldown_minutes": "5"},
+        }
+
+        assert _get_review_dispatch_config() == {
+            "enabled": True,
+            "cooldown_minutes": 5,
+        }
+
+    @patch("app.utils.load_config", side_effect=ValueError("bad"))
+    def test_get_review_dispatch_config_falls_back_on_error(self, mock_config):
+        from app.review_comment_dispatch import _get_review_dispatch_config
+
+        assert _get_review_dispatch_config() == {
+            "enabled": False,
+            "cooldown_minutes": 30,
+        }
+
+    @patch("app.config.get_branch_prefix", side_effect=OSError("bad"))
+    def test_branch_prefix_falls_back_to_koan(self, mock_prefix):
+        from app.review_comment_dispatch import _get_branch_prefix
+
+        assert _get_branch_prefix() == "koan/"
+
+    @patch("app.utils.load_config", return_value={"github": {"nickname": " koan-bot "}})
+    def test_bot_username_is_stripped(self, mock_config):
+        from app.review_comment_dispatch import _get_bot_username
+
+        assert _get_bot_username() == "koan-bot"
+
+    @patch("app.utils.load_config", side_effect=OSError("bad"))
+    def test_bot_username_falls_back_empty_on_error(self, mock_config):
+        from app.review_comment_dispatch import _get_bot_username
+
+        assert _get_bot_username() == ""
+
+    @patch("app.review_comment_dispatch.run_gh", return_value="\n")
+    def test_resolve_full_repo_blank_output_returns_none(self, mock_gh):
+        from app.review_comment_dispatch import _resolve_full_repo
+
+        assert _resolve_full_repo("/project") is None
 
 
 class TestCheckAndDispatch:

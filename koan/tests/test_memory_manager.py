@@ -2,7 +2,7 @@
 
 import contextlib
 from datetime import date, timedelta
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -524,6 +524,133 @@ class TestRunCleanup:
 
         # cap_learnings should still run as safety net
         assert stats.get("learnings_capped_koan", 0) == 250
+
+
+class TestSecurityLearningsCompaction:
+    def _write_security_learnings(self, tmp_path, lines):
+        path = tmp_path / "memory" / "projects" / "koan" / "security_learnings.md"
+        path.parent.mkdir(parents=True)
+        path.write_text("# Security Intelligence\n\n" + "\n".join(lines) + "\n")
+        return path
+
+    def test_missing_security_file_skips(self, tmp_path):
+        mgr = MemoryManager(str(tmp_path))
+
+        result = mgr.compact_security_learnings("koan", max_lines=5)
+
+        assert result == {"original_lines": 0, "compacted_lines": 0, "skipped": True}
+
+    def test_security_compaction_cli_failure_truncates(self, tmp_path):
+        path = self._write_security_learnings(
+            tmp_path,
+            [f"- finding {i}" for i in range(5)],
+        )
+        mgr = MemoryManager(str(tmp_path))
+
+        with patch.object(
+            MemoryManager,
+            "_run_security_compaction_cli",
+            side_effect=RuntimeError("cli down"),
+        ):
+            result = mgr.compact_security_learnings("koan", max_lines=2)
+
+        assert result["fallback"] is True
+        assert result["compacted_lines"] == 2
+        content = path.read_text()
+        assert "- finding 3" in content
+        assert "- finding 4" in content
+        assert "- finding 0" not in content
+
+    def test_security_compaction_success_writes_marker_and_state(self, tmp_path):
+        path = self._write_security_learnings(
+            tmp_path,
+            [f"- finding {i}" for i in range(5)],
+        )
+        mgr = MemoryManager(str(tmp_path))
+
+        with patch.object(
+            MemoryManager,
+            "_run_security_compaction_cli",
+            return_value="- merged finding",
+        ):
+            result = mgr.compact_security_learnings("koan", max_lines=2)
+
+        assert result["method"] == "semantic"
+        assert result["compacted_lines"] == 1
+        content = path.read_text()
+        assert "compacted from 5 to 1 lines" in content
+        assert "- merged finding" in content
+        assert (tmp_path / ".koan-security-compact-hash-koan").exists()
+
+    def test_security_compaction_empty_cli_output_skips(self, tmp_path):
+        self._write_security_learnings(tmp_path, [f"- finding {i}" for i in range(5)])
+        mgr = MemoryManager(str(tmp_path))
+
+        with patch.object(MemoryManager, "_run_security_compaction_cli", return_value=""):
+            result = mgr.compact_security_learnings("koan", max_lines=2)
+
+        assert result["skipped"] is True
+        assert result["compacted_lines"] == 5
+
+
+class TestMemoryManagerProjectHelpers:
+    def test_get_file_tree_without_project_path(self, tmp_path):
+        mgr = MemoryManager(str(tmp_path))
+
+        assert mgr._get_file_tree(None) == "(project path not available)"
+
+    def test_get_file_tree_from_git_ls_files(self, tmp_path):
+        mgr = MemoryManager(str(tmp_path))
+        result = MagicMock(returncode=0, stdout="app.py\nREADME.md\n")
+
+        with patch("subprocess.run", return_value=result):
+            assert mgr._get_file_tree("/repo") == "app.py\nREADME.md"
+
+    def test_get_file_tree_timeout_returns_fallback(self, tmp_path):
+        import subprocess
+
+        mgr = MemoryManager(str(tmp_path))
+
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("git", 10)):
+            assert mgr._get_file_tree("/repo") == "(file tree not available)"
+
+    def test_resolve_project_path_without_koan_root_returns_none(self, tmp_path):
+        mgr = MemoryManager(str(tmp_path))
+
+        with patch.dict("os.environ", {}, clear=True):
+            assert mgr._resolve_project_path("koan") is None
+
+    def test_resolve_project_path_matches_case_insensitively(self, tmp_path):
+        mgr = MemoryManager(str(tmp_path))
+
+        with (
+            patch.dict("os.environ", {"KOAN_ROOT": str(tmp_path)}),
+            patch("app.projects_config.load_projects_config", return_value={"projects": {}}),
+            patch("app.projects_config.get_projects_from_config", return_value=[("Koan", "/repo/koan")]),
+        ):
+            assert mgr._resolve_project_path("koan") == "/repo/koan"
+
+    def test_export_snapshot_includes_summary_global_project_and_soul(self, tmp_path):
+        mgr = MemoryManager(str(tmp_path))
+        (tmp_path / "memory" / "global").mkdir(parents=True)
+        (tmp_path / "memory" / "projects" / "koan").mkdir(parents=True)
+        (tmp_path / "memory" / "summary.md").write_text(
+            "# Summary\n\n## 2026-01-01\n\nSession 1 (project: koan) : did work\n"
+        )
+        (tmp_path / "memory" / "global" / "strategy.md").write_text("Prefer tests.")
+        (tmp_path / "memory" / "projects" / "koan" / "learnings.md").write_text(
+            "# Learnings\n\n- Keep tests focused\n"
+        )
+        (tmp_path / "soul.md").write_text("# Soul\nBe direct.\n")
+
+        snapshot_path = mgr.export_snapshot()
+
+        content = snapshot_path.read_text()
+        assert "Kōan Memory Snapshot" in content
+        assert "Session 1" in content
+        assert "Prefer tests." in content
+        assert "Keep tests focused" in content
+        assert "Be direct." in content
 
 
 # ---------------------------------------------------------------------------

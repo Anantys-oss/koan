@@ -409,6 +409,126 @@ class TestCheckPrStateSafe:
             assert _check_pr_state_safe("42", "owner/repo") == "UNKNOWN"
 
 
+class TestLegacyJsonQueueMigration:
+    """Legacy .ci-queue.json migration into missions.md."""
+
+    def _write_missions(self, tmp_path):
+        missions = tmp_path / "missions.md"
+        missions.write_text("# Missions\n\n## CI\n\n## Pending\n\n## Done\n")
+        return missions
+
+    def test_no_legacy_file_is_noop(self, tmp_path):
+        from app.ci_queue_runner import _maybe_migrate_json_queue
+
+        missions = self._write_missions(tmp_path)
+        _maybe_migrate_json_queue(str(tmp_path), missions)
+
+        assert missions.read_text() == "# Missions\n\n## CI\n\n## Pending\n\n## Done\n"
+
+    def test_invalid_json_is_removed_without_touching_missions(self, tmp_path):
+        from app.ci_queue_runner import _maybe_migrate_json_queue
+
+        missions = self._write_missions(tmp_path)
+        legacy = tmp_path / ".ci-queue.json"
+        legacy.write_text("not-json")
+
+        _maybe_migrate_json_queue(str(tmp_path), missions)
+
+        assert not legacy.exists()
+        assert "## CI" in missions.read_text()
+        assert PR_URL not in missions.read_text()
+
+    def test_valid_entries_are_migrated_and_lock_removed(self, tmp_path):
+        from app.ci_queue_runner import _maybe_migrate_json_queue
+
+        missions = self._write_missions(tmp_path)
+        legacy = tmp_path / ".ci-queue.json"
+        lock = tmp_path / ".ci-queue.lock"
+        lock.write_text("")
+        legacy.write_text(json.dumps([
+            {
+                "pr_url": PR_URL,
+                "branch": "fix-branch",
+                "full_repo": "owner/repo",
+                "pr_number": "42",
+                "project_path": "/repos/my-toolkit",
+            },
+            {"pr_url": "https://github.com/owner/repo/pull/99"},
+        ]))
+
+        with patch("app.utils.load_config", return_value={"ci_fix_max_attempts": 7}):
+            _maybe_migrate_json_queue(str(tmp_path), missions)
+
+        content = missions.read_text()
+        assert PR_URL in content
+        assert "fix-branch" in content
+        assert "owner/repo" in content
+        assert "attempt 0/7" in content
+        assert "pull/99" not in content
+        assert not legacy.exists()
+        assert not lock.exists()
+
+    def test_non_list_json_is_removed(self, tmp_path):
+        from app.ci_queue_runner import _maybe_migrate_json_queue
+
+        missions = self._write_missions(tmp_path)
+        legacy = tmp_path / ".ci-queue.json"
+        legacy.write_text(json.dumps({"pr_url": PR_URL}))
+
+        _maybe_migrate_json_queue(str(tmp_path), missions)
+
+        assert not legacy.exists()
+        assert PR_URL not in missions.read_text()
+
+
+class TestReenqueueForMonitoring:
+    def test_missing_koan_root_returns_without_write(self, capsys):
+        from app.ci_queue_runner import _reenqueue_for_monitoring
+
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("app.utils.modify_missions_file") as mock_modify,
+        ):
+            _reenqueue_for_monitoring(
+                PR_URL, "fix-branch", "owner/repo", "42", PROJECT_PATH,
+            )
+
+        assert "KOAN_ROOT not set" in capsys.readouterr().err
+        mock_modify.assert_not_called()
+
+    def test_modify_failure_is_logged_not_raised(self, tmp_path, capsys):
+        from app.ci_queue_runner import _reenqueue_for_monitoring
+
+        root = tmp_path / "koan"
+        (root / "instance").mkdir(parents=True)
+
+        with (
+            patch.dict("os.environ", {"KOAN_ROOT": str(root)}),
+            patch("app.utils.load_config", return_value={"ci_fix_max_attempts": 5}),
+            patch("app.utils.modify_missions_file", side_effect=OSError("locked")),
+        ):
+            _reenqueue_for_monitoring(
+                PR_URL, "fix-branch", "owner/repo", "42", PROJECT_PATH,
+            )
+
+        assert "Failed to re-enqueue" in capsys.readouterr().err
+
+
+class TestCiQueueSmallHelpers:
+    def test_project_name_from_path_empty(self):
+        from app.ci_queue_runner import _project_name_from_path
+
+        assert _project_name_from_path("") == ""
+
+    def test_write_outbox_failure_is_logged(self, capsys):
+        from app.ci_queue_runner import _write_outbox
+
+        with patch("app.utils.append_to_outbox", side_effect=OSError("full")):
+            _write_outbox("/tmp/instance", "message")
+
+        assert "Failed to write outbox" in capsys.readouterr().err
+
+
 class TestAttemptCiFixes:
     """Verify the fix pipeline attempts Claude-based fixes correctly."""
 

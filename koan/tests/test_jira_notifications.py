@@ -539,3 +539,245 @@ class TestFetchJiraMentions:
         assert result.mentions == []
         inspected_keys = [call.args[2] for call in mock_comments.call_args_list]
         assert inspected_keys == [f"FOO-{i:03}" for i in range(5)]
+
+
+class TestJiraHttpHelpers:
+    """Low-level HTTP helpers stay pure with mocked urllib boundaries."""
+
+    class _Response:
+        def __init__(self, body):
+            self.body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return self.body
+
+    def test_make_auth_header_uses_basic_auth_encoding(self):
+        from app.jira_notifications import _make_auth_header
+
+        assert _make_auth_header("bot@example.com", "secret") == (
+            "Basic Ym90QGV4YW1wbGUuY29tOnNlY3JldA=="
+        )
+
+    def test_jira_get_success_encodes_params(self):
+        from app.jira_notifications import _jira_get
+
+        response = self._Response(b'{"ok": true}')
+        with patch("urllib.request.urlopen", return_value=response) as mock_open:
+            result = _jira_get(
+                "https://test.atlassian.net",
+                "Basic token",
+                "/rest/api/3/search",
+                {"jql": "project = FOO"},
+            )
+
+        assert result == {"ok": True}
+        request = mock_open.call_args.args[0]
+        assert request.full_url.endswith("jql=project+%3D+FOO")
+
+    def test_jira_get_failure_returns_none(self):
+        from app.jira_notifications import _jira_get
+
+        with patch("urllib.request.urlopen", side_effect=OSError("network")):
+            assert _jira_get("https://test", "Basic token", "/rest") is None
+
+    def test_jira_post_success_sets_method_and_body(self):
+        from app.jira_notifications import _jira_post
+
+        response = self._Response(b'{"id": "10001"}')
+        with patch("urllib.request.urlopen", return_value=response) as mock_open:
+            result = _jira_post(
+                "https://test.atlassian.net",
+                "Basic token",
+                "/rest/api/3/issue",
+                {"fields": {"summary": "Test"}},
+            )
+
+        assert result == {"id": "10001"}
+        request = mock_open.call_args.args[0]
+        assert request.get_method() == "POST"
+        assert json.loads(request.data.decode("utf-8"))["fields"]["summary"] == "Test"
+
+    def test_jira_post_empty_response_returns_none(self):
+        from app.jira_notifications import _jira_post
+
+        with patch("urllib.request.urlopen", return_value=self._Response(b"")):
+            assert _jira_post("https://test", "Basic token", "/rest", {}) is None
+
+
+class TestJiraIssueHelpers:
+    def _patch_enabled_config(self):
+        return (
+            patch("app.utils.load_config", return_value={"jira": {"enabled": True}}),
+            patch("app.jira_config.get_jira_enabled", return_value=True),
+            patch("app.jira_config.validate_jira_config", return_value=None),
+            patch("app.jira_config.get_jira_base_url", return_value="https://test.atlassian.net"),
+            patch("app.jira_config.get_jira_email", return_value="bot@example.com"),
+            patch("app.jira_config.get_jira_api_token", return_value="secret"),
+        )
+
+    def test_text_to_adf_splits_blank_lines_into_paragraphs(self):
+        from app.jira_notifications import _text_to_adf
+
+        adf = _text_to_adf("first line\nstill first\n\nsecond paragraph")
+
+        assert adf["type"] == "doc"
+        assert len(adf["content"]) == 2
+        assert adf["content"][0]["content"][0]["text"] == "first line\nstill first"
+        assert adf["content"][1]["content"][0]["text"] == "second paragraph"
+
+    def test_resolve_branch_from_jira_key(self):
+        from app.jira_notifications import resolve_branch_from_jira_key
+
+        assert resolve_branch_from_jira_key("foo-123", {"FOO": "develop"}) == "develop"
+        assert resolve_branch_from_jira_key("NO_DASH", {"NO": "main"}) is None
+
+    def test_auth_from_config_disabled_raises(self):
+        from app.jira_notifications import _jira_auth_from_config
+
+        with (
+            patch("app.utils.load_config", return_value={"jira": {"enabled": False}}),
+            patch("app.jira_config.get_jira_enabled", return_value=False),
+            pytest.raises(RuntimeError, match="not enabled"),
+        ):
+            _jira_auth_from_config()
+
+    def test_fetch_jira_issue_returns_title_description_and_comments(self):
+        from contextlib import ExitStack
+
+        from app.jira_notifications import fetch_jira_issue
+
+        issue = {
+            "fields": {
+                "summary": "Fix widget",
+                "description": {
+                    "type": "doc",
+                    "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Details"}]}],
+                },
+            }
+        }
+        comments = {
+            "comments": [
+                {
+                    "author": {"displayName": "Reviewer"},
+                    "body": {
+                        "type": "doc",
+                        "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Please fix"}]}],
+                    },
+                },
+                {"author": {"emailAddress": "empty@example.com"}, "body": ""},
+            ],
+            "total": 2,
+        }
+
+        def get_side_effect(base_url, auth_header, path, params=None):
+            if path == "/rest/api/3/issue/FOO-1":
+                return issue
+            if path == "/rest/api/3/issue/FOO-1/comment":
+                return comments
+            return None
+
+        with ExitStack() as stack:
+            for cm in self._patch_enabled_config():
+                stack.enter_context(cm)
+            stack.enter_context(
+                patch("app.jira_notifications._jira_get", side_effect=get_side_effect)
+            )
+            title, body, fetched_comments = fetch_jira_issue("FOO-1")
+
+        assert title == "Fix widget"
+        assert "Details" in body
+        assert fetched_comments == [{"author": "Reviewer", "body": "Please fix"}]
+
+    def test_fetch_jira_issue_api_failure_raises(self):
+        from contextlib import ExitStack
+
+        from app.jira_notifications import fetch_jira_issue
+
+        with ExitStack() as stack:
+            for cm in self._patch_enabled_config():
+                stack.enter_context(cm)
+            stack.enter_context(patch("app.jira_notifications._jira_get", return_value=None))
+            with pytest.raises(RuntimeError, match="Failed to fetch"):
+                fetch_jira_issue("FOO-404")
+
+    def test_jira_add_comment_posts_adf(self):
+        from app.jira_notifications import jira_add_comment
+
+        with (
+            patch("app.jira_notifications._jira_auth_from_config", return_value=("https://test", "Basic token")),
+            patch("app.jira_notifications._jira_post", return_value={"id": "1"}) as mock_post,
+        ):
+            assert jira_add_comment("FOO-1", "hello\n\nworld") is True
+
+        payload = mock_post.call_args.args[3]
+        assert payload["body"]["type"] == "doc"
+        assert len(payload["body"]["content"]) == 2
+
+    def test_jira_create_issue_rejects_invalid_project_key(self):
+        from app.jira_notifications import jira_create_issue
+
+        with pytest.raises(RuntimeError, match="Invalid Jira project key"):
+            jira_create_issue("FOO;DROP", "title", "body")
+
+    def test_jira_create_issue_returns_browse_url(self):
+        from app.jira_notifications import jira_create_issue
+
+        with (
+            patch("app.jira_notifications._jira_auth_from_config", return_value=("https://test", "Basic token")),
+            patch("app.jira_notifications._jira_post", return_value={"key": "FOO-123"}) as mock_post,
+        ):
+            url = jira_create_issue("FOO", "Title", "Body", issue_type="Bug")
+
+        assert url == "https://test/browse/FOO-123"
+        payload = mock_post.call_args.args[3]
+        assert payload["fields"]["issuetype"]["name"] == "Bug"
+        assert payload["fields"]["project"]["key"] == "FOO"
+
+    def test_jira_search_issues_rejects_unsafe_project_key(self):
+        from app.jira_notifications import jira_search_issues
+
+        assert jira_search_issues("FOO;DROP", "widget") == []
+
+    def test_jira_search_issues_maps_results_and_skips_missing_keys(self):
+        from app.jira_notifications import jira_search_issues
+
+        result_payload = {
+            "issues": [
+                {"key": "FOO-1", "fields": {"summary": "One"}},
+                {"fields": {"summary": "Missing key"}},
+                {"key": "FOO-2", "fields": None},
+            ]
+        }
+        with (
+            patch("app.jira_notifications._jira_auth_from_config", return_value=("https://test", "Basic token")),
+            patch("app.jira_notifications._jira_post", return_value=result_payload) as mock_post,
+        ):
+            matches = jira_search_issues("FOO", "fix widget quickly please now", limit=0)
+
+        assert matches == [
+            {"key": "FOO-1", "title": "One", "url": "https://test/browse/FOO-1"},
+            {"key": "FOO-2", "title": "", "url": "https://test/browse/FOO-2"},
+        ]
+        payload = mock_post.call_args.args[3]
+        assert payload["maxResults"] == 1
+        assert 'project = "FOO"' in payload["jql"]
+
+    def test_search_issues_ignores_invalid_project_keys(self):
+        from datetime import datetime, timezone
+
+        from app.jira_notifications import _search_issues_with_comments
+
+        with patch("app.jira_notifications._jira_post") as mock_post:
+            result = _search_issues_with_comments(
+                "https://test", "Basic token", ["FOO-BAD", "also_bad"],
+                datetime.now(timezone.utc),
+            )
+
+        assert result == []
+        mock_post.assert_not_called()

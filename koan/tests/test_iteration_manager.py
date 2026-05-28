@@ -34,6 +34,7 @@ from app.iteration_manager import (
     _maybe_inject_diagnostic_mission,
     _maybe_warn_burn_rate,
     _pick_mission,
+    _read_session_pct_and_reset,
     _refresh_usage,
     _resolve_project_path,
     _save_diagnostic_cooldown,
@@ -177,6 +178,53 @@ class TestRefreshUsage:
         with patch("app.usage_estimator.cmd_refresh", side_effect=OSError("boom")):
             # Should not raise
             _refresh_usage(tmp_path / "state", tmp_path / "usage.md", count=1)
+
+
+class TestReadSessionPctAndReset:
+    def test_reads_tokens_and_minutes_until_reset(self, tmp_path):
+        from datetime import datetime, timedelta
+
+        state = tmp_path / "usage_state.json"
+        state.write_text(json.dumps({
+            "session_tokens": 250,
+            "session_start": (datetime.now() - timedelta(minutes=30)).isoformat(),
+        }))
+
+        with (
+            patch("app.usage_estimator._get_limits", return_value=(1000, 10000)),
+            patch("app.utils.load_config", return_value={}),
+        ):
+            pct, minutes = _read_session_pct_and_reset(state)
+
+        assert pct == 25.0
+        assert minutes is not None
+        assert 0 < minutes <= 270
+
+    def test_invalid_json_returns_none_tuple(self, tmp_path):
+        state = tmp_path / "usage_state.json"
+        state.write_text("not-json")
+
+        assert _read_session_pct_and_reset(state) == (None, None)
+
+    def test_missing_session_start_returns_pct_without_reset(self, tmp_path):
+        state = tmp_path / "usage_state.json"
+        state.write_text(json.dumps({"session_tokens": 1500}))
+
+        with (
+            patch("app.usage_estimator._get_limits", return_value=(1000, 10000)),
+            patch("app.utils.load_config", return_value={}),
+        ):
+            assert _read_session_pct_and_reset(state) == (100.0, None)
+
+    def test_non_positive_session_limit_returns_none_tuple(self, tmp_path):
+        state = tmp_path / "usage_state.json"
+        state.write_text(json.dumps({"session_tokens": 100}))
+
+        with (
+            patch("app.usage_estimator._get_limits", return_value=(0, 10000)),
+            patch("app.utils.load_config", return_value={}),
+        ):
+            assert _read_session_pct_and_reset(state) == (None, None)
 
 
 # === Tests: _downgrade_if_unaffordable ===
@@ -2761,6 +2809,62 @@ class TestSelectRandomExplorationProject:
             name, _ = _select_random_exploration_project(projects, "koan")
             assert name != "koan"
             assert name == "backend"
+
+    def test_weighted_selection_uses_freshness_drift_and_bandit(self, tmp_path):
+        projects = [("alpha", "/a"), ("beta", "/b"), ("gamma", "/g")]
+
+        def sample_for_project(_bandit, name):
+            return {"alpha": 0.2, "beta": 0.1, "gamma": 0.9}[name]
+
+        with (
+            patch("app.session_tracker.load_outcomes", return_value=[]),
+            patch("app.session_tracker.get_project_freshness", return_value={
+                "alpha": 3,
+                "beta": 10,
+                "gamma": 4,
+            }),
+            patch("app.session_tracker.get_project_drift", return_value={
+                "alpha": 0,
+                "beta": 0,
+                "gamma": 15,
+            }),
+            patch("app.mission_metrics.get_project_success_rates", return_value={
+                "alpha": 0.4,
+                "beta": 0.9,
+                "gamma": 0.6,
+            }),
+            patch("app.bandit.load_bandit_state", return_value={}),
+            patch("app.bandit.thompson_sample", side_effect=sample_for_project),
+            patch("app.iteration_manager._log_selection_audit") as mock_audit,
+        ):
+            selected = _select_random_exploration_project(
+                projects, instance_dir=str(tmp_path),
+            )
+
+        assert selected == ("gamma", "/g")
+        mock_audit.assert_called_once()
+
+    def test_weighted_selection_falls_back_when_bandit_errors(self, tmp_path):
+        projects = [("alpha", "/a"), ("beta", "/b")]
+
+        with (
+            patch("app.session_tracker.load_outcomes", return_value=[]),
+            patch("app.session_tracker.get_project_freshness", return_value={
+                "alpha": 1,
+                "beta": 9,
+            }),
+            patch("app.session_tracker.get_project_drift", return_value={}),
+            patch("app.mission_metrics.get_project_success_rates", return_value={}),
+            patch("app.bandit.load_bandit_state", side_effect=RuntimeError("bad state")),
+            patch("random.choices", return_value=[("beta", "/b")]) as mock_choices,
+            patch("app.iteration_manager._log_selection_audit"),
+        ):
+            selected = _select_random_exploration_project(
+                projects, instance_dir=str(tmp_path),
+            )
+
+        assert selected == ("beta", "/b")
+        mock_choices.assert_called_once()
 
 
 # === Tests: plan_iteration random project selection ===

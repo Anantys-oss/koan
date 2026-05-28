@@ -3,6 +3,7 @@
 import json
 import os
 import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -152,6 +153,84 @@ class TestInputHelpers:
             call_arg = mock_input.call_args[0][0]
             assert "Press Enter to begin" in call_arg
 
+    def test_ask_interactive_returns_typed_value(self):
+        from app.onboarding import ask
+
+        with (
+            patch("app.onboarding._is_interactive", True),
+            patch("builtins.input", return_value="  hello  "),
+        ):
+            assert ask("prompt", default="fallback") == "hello"
+
+    def test_ask_interactive_empty_uses_default(self):
+        from app.onboarding import ask
+
+        with (
+            patch("app.onboarding._is_interactive", True),
+            patch("builtins.input", return_value=""),
+        ):
+            assert ask("prompt", default="fallback") == "fallback"
+
+    def test_ask_handles_eof_and_keyboard_interrupt(self):
+        from app.onboarding import ask
+
+        with (
+            patch("app.onboarding._is_interactive", True),
+            patch("builtins.input", side_effect=EOFError),
+        ):
+            assert ask("prompt", default="fallback") == "fallback"
+        with (
+            patch("app.onboarding._is_interactive", True),
+            patch("builtins.input", side_effect=KeyboardInterrupt),
+        ):
+            assert ask("prompt") == ""
+
+    def test_ask_yes_no_interactive_variants(self):
+        from app.onboarding import ask_yes_no
+
+        with patch("app.onboarding._is_interactive", True):
+            with patch("builtins.input", return_value=""):
+                assert ask_yes_no("ok?", default=True) is True
+            with patch("builtins.input", return_value="n"):
+                assert ask_yes_no("ok?", default=True) is False
+            with patch("builtins.input", return_value="yes"):
+                assert ask_yes_no("ok?", default=False) is True
+
+    def test_ask_choice_interactive_valid_invalid_and_interrupts(self):
+        from app.onboarding import ask_choice
+
+        with patch("app.onboarding._is_interactive", True):
+            with patch("builtins.input", return_value="2"):
+                assert ask_choice("pick", ["a", "b"], default=0) == 1
+            with patch("builtins.input", return_value="bad"):
+                assert ask_choice("pick", ["a", "b"], default=1) == 1
+            with patch("builtins.input", side_effect=KeyboardInterrupt):
+                assert ask_choice("pick", ["a", "b"], default=1) == 1
+
+    def test_ask_path_expands_and_validates(self, tmp_path):
+        from app.onboarding import ask_path
+
+        existing = tmp_path / "project"
+        existing.mkdir()
+        with (
+            patch("app.onboarding._is_interactive", True),
+            patch("builtins.input", return_value=str(existing)),
+        ):
+            assert ask_path("path") == str(existing)
+
+        missing = tmp_path / "missing"
+        with (
+            patch("app.onboarding._is_interactive", True),
+            patch("builtins.input", return_value=str(missing)),
+        ):
+            assert ask_path("path", must_exist=True) == ""
+
+        with (
+            patch("app.onboarding._is_interactive", True),
+            patch("builtins.input", return_value=str(missing)),
+        ):
+            assert ask_path("path", must_exist=False) == str(missing)
+
 
 class TestColorHelpers:
     """Tests for terminal color helpers."""
@@ -260,6 +339,57 @@ class TestStepInstanceInit:
             state = onb.OnboardingState()
             result = onb.step_instance_init(state)
             # Should succeed without errors
+
+
+class TestStepVenv:
+    def test_skips_when_marker_exists(self, onboarding_root):
+        import app.onboarding as onb
+
+        root = Path(onboarding_root)
+        marker = root / ".venv" / ".installed"
+        marker.parent.mkdir()
+        marker.write_text("")
+
+        with patch.object(onb, "KOAN_ROOT", root), patch("app.onboarding.pause") as mock_pause:
+            result = onb.step_venv(onb.OnboardingState())
+
+        assert isinstance(result, onb.OnboardingState)
+        mock_pause.assert_called_once()
+
+    def test_make_setup_success(self, onboarding_root):
+        import app.onboarding as onb
+
+        root = Path(onboarding_root)
+        proc = MagicMock(returncode=0)
+
+        with (
+            patch.object(onb, "KOAN_ROOT", root),
+            patch("subprocess.run", return_value=proc) as mock_run,
+            patch("app.onboarding.pause"),
+        ):
+            onb.step_venv(onb.OnboardingState())
+
+        mock_run.assert_called_once_with(["make", "setup"], cwd=str(root), timeout=300)
+
+    def test_make_setup_timeout_is_handled(self, onboarding_root):
+        import app.onboarding as onb
+
+        with (
+            patch.object(onb, "KOAN_ROOT", Path(onboarding_root)),
+            patch("subprocess.run", side_effect=subprocess.TimeoutExpired("make", 300)),
+            patch("app.onboarding.pause"),
+        ):
+            onb.step_venv(onb.OnboardingState())
+
+    def test_make_missing_is_handled(self, onboarding_root):
+        import app.onboarding as onb
+
+        with (
+            patch.object(onb, "KOAN_ROOT", Path(onboarding_root)),
+            patch("subprocess.run", side_effect=FileNotFoundError),
+            patch("app.onboarding.pause"),
+        ):
+            onb.step_venv(onb.OnboardingState())
 
 
 class TestStepMessaging:

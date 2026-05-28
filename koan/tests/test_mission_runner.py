@@ -2975,3 +2975,123 @@ class TestCostTrackingFailedFlag:
 
         captured = capsys.readouterr()
         assert "COST_TRACKING_FAILED" in captured.err
+
+
+class TestMissionRunnerFireAndForgetMetrics:
+    def test_record_skill_metric_records_fix_pr_with_failed_ci(self):
+        from app.mission_runner import _record_skill_metric
+
+        pending = "Created PR: https://github.com/owner/repo/pull/12"
+        quality = {"tests": {"passed": False, "skipped": False}}
+
+        with (
+            patch("app.session_tracker.classify_mission_type", return_value="implement"),
+            patch("app.session_tracker.detect_pr_created", return_value=True),
+            patch("app.skill_metrics.record_pr_metric") as mock_record,
+        ):
+            _record_skill_metric(
+                "/instance", "koan", "/fix broken widget", 0, pending, quality,
+            )
+
+        mock_record.assert_called_once_with(
+            "/instance", "koan", "fix",
+            "https://github.com/owner/repo/pull/12", "fail",
+        )
+
+    def test_record_skill_metric_skips_non_implement_missions(self):
+        from app.mission_runner import _record_skill_metric
+
+        with (
+            patch("app.session_tracker.classify_mission_type", return_value="review"),
+            patch("app.skill_metrics.record_pr_metric") as mock_record,
+        ):
+            _record_skill_metric(
+                "/instance", "koan", "review this", 0, "PR text", None,
+            )
+
+        mock_record.assert_not_called()
+
+    def test_record_cost_event_uses_preparsed_tokens(self):
+        from app.mission_runner import _record_cost_event
+
+        tokens = {
+            "model": "opus",
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "cache_creation_input_tokens": 3,
+            "cache_read_input_tokens": 7,
+            "cost_usd": 0.12,
+        }
+
+        with patch("app.cost_tracker.record_usage") as mock_record:
+            _record_cost_event(
+                "/instance", "", "/tmp/out.json", "deep", "mission",
+                mission_type="fix", tokens=tokens,
+            )
+
+        kwargs = mock_record.call_args.kwargs
+        assert kwargs["project"] == "_global"
+        assert kwargs["model"] == "opus"
+        assert kwargs["mission_type"] == "fix"
+        assert kwargs["cache_read_input_tokens"] == 7
+
+    def test_log_activity_usage_uses_preparsed_tokens(self):
+        from app.mission_runner import _log_activity_usage
+
+        tokens = {
+            "model": "sonnet",
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "cache_read_input_tokens": 10,
+            "cache_creation_input_tokens": 5,
+            "cost_usd": 0.05,
+        }
+
+        with patch("app.activity_usage_logger.log_activity_usage") as mock_log:
+            _log_activity_usage(
+                "/instance", "koan", "/tmp/out.json", "implement",
+                "", duration_seconds=9, tokens=tokens,
+            )
+
+        kwargs = mock_log.call_args.kwargs
+        assert kwargs["project"] == "koan"
+        assert kwargs["activity_type"] == "implement"
+        assert kwargs["duration_seconds"] == 9
+        assert kwargs["cache_creation_tokens"] == 5
+
+
+class TestMissionRunnerLintBlocking:
+    def test_lint_blocking_false_when_config_missing(self):
+        from app.mission_runner import _is_lint_blocking
+
+        assert _is_lint_blocking("/instance", "koan", projects_config={}) is False
+
+    def test_lint_blocking_respects_project_lint_config(self):
+        from app.mission_runner import _is_lint_blocking
+
+        with patch(
+            "app.lint_gate.get_project_lint_config",
+            return_value={"enabled": True, "blocking": False},
+        ):
+            assert _is_lint_blocking(
+                "/instance", "koan", projects_config={"projects": {}},
+            ) is False
+
+        with patch(
+            "app.lint_gate.get_project_lint_config",
+            return_value={"enabled": True, "blocking": True},
+        ):
+            assert _is_lint_blocking(
+                "/instance", "koan", projects_config={"projects": {}},
+            ) is True
+
+    def test_lint_blocking_errors_return_false(self):
+        from app.mission_runner import _is_lint_blocking
+
+        with patch(
+            "app.lint_gate.get_project_lint_config",
+            side_effect=RuntimeError("bad lint config"),
+        ):
+            assert _is_lint_blocking(
+                "/instance", "koan", projects_config={"projects": {}},
+            ) is False

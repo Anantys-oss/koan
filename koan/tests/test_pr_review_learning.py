@@ -419,6 +419,39 @@ class TestWriteTimeSemanticDedup:
         assert mock_run.call_count == 1
         assert mock_run.call_args.kwargs.get("max_attempts") == 1
 
+    @patch("app.prompts.load_prompt", side_effect=OSError("missing prompt"))
+    def test_dedup_cli_prompt_load_failure_returns_none(self, mock_prompt):
+        from app.pr_review_learning import _dedup_lessons_with_cli
+
+        assert _dedup_lessons_with_cli("- new", "- old", "/fake/path") is None
+
+    def test_dedup_cli_skips_when_inputs_empty(self):
+        from app.pr_review_learning import _dedup_lessons_with_cli
+
+        assert _dedup_lessons_with_cli("- new", "", "/fake/path") == "- new"
+        assert _dedup_lessons_with_cli("", "- old", "/fake/path") == ""
+
+
+class TestWriteTimeDedupConfig:
+    @patch("app.utils.load_config", return_value={"memory": {"write_time_dedup": False}})
+    def test_disabled_by_config(self, mock_config):
+        from app.pr_review_learning import _is_write_time_dedup_enabled
+
+        assert _is_write_time_dedup_enabled() is False
+
+    @patch("app.utils.load_config", return_value={})
+    def test_defaults_enabled(self, mock_config):
+        from app.pr_review_learning import _is_write_time_dedup_enabled
+
+        assert _is_write_time_dedup_enabled() is True
+
+    @patch("app.utils.load_config", side_effect=OSError("config unreadable"))
+    def test_config_lookup_failure_defaults_enabled(self, mock_config, capsys):
+        from app.pr_review_learning import _is_write_time_dedup_enabled
+
+        assert _is_write_time_dedup_enabled() is True
+        assert "dedup config lookup failed" in capsys.readouterr().err
+
 
 # ─── analyze_reviews_with_cli ────────────────────────────────────────────
 
@@ -456,6 +489,107 @@ class TestAnalyzeReviewsWithCli:
 
         result = analyze_reviews_with_cli("review text", "/fake/path")
         assert result == ""
+
+
+class TestAnalyzeRejectionWithCli:
+    @patch("app.cli_exec.run_cli_with_retry")
+    @patch("app.cli_provider.build_full_command")
+    @patch("app.config.get_model_config")
+    @patch("app.prompts.load_prompt")
+    def test_returns_stdout_on_success(
+        self, mock_prompt, mock_models, mock_build, mock_run,
+    ):
+        mock_prompt.return_value = "reject prompt"
+        mock_models.return_value = {"lightweight": "haiku", "fallback": "sonnet"}
+        mock_build.return_value = ["claude", "-p", "..."]
+        mock_run.return_value = MagicMock(returncode=0, stdout="- Too broad\n", stderr="")
+
+        assert _analyze_rejection_with_cli("review text", "/fake/path") == "- Too broad"
+
+    @patch("app.cli_exec.run_cli_with_retry")
+    @patch("app.cli_provider.build_full_command")
+    @patch("app.config.get_model_config")
+    @patch("app.prompts.load_prompt")
+    def test_returns_empty_on_nonzero_exit(
+        self, mock_prompt, mock_models, mock_build, mock_run, capsys,
+    ):
+        mock_prompt.return_value = "reject prompt"
+        mock_models.return_value = {"lightweight": "haiku", "fallback": "sonnet"}
+        mock_build.return_value = ["claude", "-p", "..."]
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="quota")
+
+        assert _analyze_rejection_with_cli("review text", "/fake/path") == ""
+        assert "Rejection analysis failed" in capsys.readouterr().err
+
+    @patch("app.cli_exec.run_cli_with_retry", side_effect=RuntimeError("boom"))
+    @patch("app.cli_provider.build_full_command", return_value=["claude"])
+    @patch("app.config.get_model_config", return_value={"lightweight": "haiku"})
+    @patch("app.prompts.load_prompt", return_value="reject prompt")
+    def test_returns_empty_on_exception(
+        self, mock_prompt, mock_models, mock_build, mock_run, capsys,
+    ):
+        assert _analyze_rejection_with_cli("review text", "/fake/path") == ""
+        assert "Rejection analysis error" in capsys.readouterr().err
+
+
+class TestFailureNotifications:
+    @patch("app.utils.append_to_outbox")
+    def test_notify_skips_below_threshold(self, mock_outbox, tmp_path):
+        _notify_analysis_failures(str(tmp_path), _FAILURE_ALERT_THRESHOLD - 1)
+
+        mock_outbox.assert_not_called()
+
+    @patch("app.utils.append_to_outbox")
+    def test_notify_only_on_exact_threshold(self, mock_outbox, tmp_path):
+        _notify_analysis_failures(str(tmp_path), _FAILURE_ALERT_THRESHOLD + 1)
+
+        mock_outbox.assert_not_called()
+
+    @patch("app.utils.append_to_outbox")
+    def test_notify_exact_threshold_writes_warning(self, mock_outbox, tmp_path):
+        _notify_analysis_failures(str(tmp_path), _FAILURE_ALERT_THRESHOLD)
+
+        mock_outbox.assert_called_once()
+        assert "failed" in mock_outbox.call_args.args[1]
+
+    def test_reset_failure_count_unlink_error_is_logged(self, tmp_path, caplog):
+        from app.pr_review_learning import _get_failure_counter_path
+
+        path = _get_failure_counter_path(str(tmp_path))
+        path.write_text("3")
+
+        with patch.object(Path, "unlink", side_effect=OSError("locked")):
+            _reset_failure_count(str(tmp_path))
+
+        assert "Failure counter reset failed" in caplog.text
+
+
+class TestRejectedPrJournalEntries:
+    @patch("app.journal.append_to_journal")
+    def test_writes_one_entry_per_rejected_pr(self, mock_append, tmp_path):
+        rejected = [
+            {"number": 10, "title": "feat: too much"},
+            {"number": 11, "title": "fix: risky"},
+        ]
+
+        _write_rejection_journal_entries(
+            str(tmp_path), "myproject", rejected, "- Keep PRs smaller\n- Add tests",
+        )
+
+        assert mock_append.call_count == 2
+        first_entry = mock_append.call_args_list[0].args[2]
+        assert "PR #10" in first_entry
+        assert "Keep PRs smaller" in first_entry
+
+    @patch("app.journal.append_to_journal", side_effect=OSError("disk"))
+    def test_journal_write_error_is_logged(self, mock_append, tmp_path, capsys):
+        _write_rejection_journal_entries(
+            str(tmp_path), "myproject",
+            [{"number": 10, "title": "feat: rejected"}],
+            "",
+        )
+
+        assert "Journal write failed" in capsys.readouterr().err
 
     @patch("app.cli_exec.run_cli_with_retry")
     @patch("app.cli_provider.build_full_command")

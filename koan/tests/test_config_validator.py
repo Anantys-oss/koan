@@ -353,6 +353,75 @@ class TestValidateConfigJiraMigration:
         )
 
 
+class TestValidateOptimizationsNested:
+    def test_rtk_nested_accepts_valid_values(self):
+        warnings = validate_config({
+            "optimizations": {
+                "rtk": {
+                    "enabled": "auto",
+                    "awareness": True,
+                    "require_jq": False,
+                }
+            }
+        })
+
+        assert warnings == []
+
+    def test_rtk_nested_reports_unknown_type_and_bad_enabled_value(self):
+        warnings = validate_config({
+            "optimizations": {
+                "rtk": {
+                    "enabled": "yse",
+                    "awareness": "yes",
+                    "requre_jq": True,
+                }
+            }
+        })
+
+        by_path = {path: msg for path, msg in warnings}
+        assert "optimizations.rtk.enabled" in by_path
+        assert "one of" in by_path["optimizations.rtk.enabled"]
+        assert "optimizations.rtk.awareness" in by_path
+        assert "should be bool" in by_path["optimizations.rtk.awareness"]
+        assert "optimizations.rtk.requre_jq" in by_path
+        assert "did you mean 'optimizations.rtk.require_jq'" in by_path[
+            "optimizations.rtk.requre_jq"
+        ]
+
+    def test_caveman_nested_reports_non_string_include_items(self):
+        warnings = validate_config({
+            "optimizations": {
+                "caveman": {"enabled": True, "include": ["fix", 123]},
+            }
+        })
+
+        assert (
+            "optimizations.caveman.include[1]",
+            "'optimizations.caveman.include[1]' should be str, got int",
+        ) in warnings
+
+    def test_review_compressor_nested_reports_unknown_and_type_errors(self):
+        warnings = validate_config({
+            "optimizations": {
+                "review_compressor": {
+                    "enabled": "yes",
+                    "enabledd": True,
+                }
+            }
+        })
+
+        by_path = {path: msg for path, msg in warnings}
+        assert "optimizations.review_compressor.enabled" in by_path
+        assert "should be bool" in by_path["optimizations.review_compressor.enabled"]
+        assert "optimizations.review_compressor.enabledd" in by_path
+        assert "did you mean 'optimizations.review_compressor.enabled'" in by_path[
+            "optimizations.review_compressor.enabledd"
+        ]
+
+    def test_effort_scalar_shorthand_is_allowed(self):
+        assert validate_config({"effort": "high"}) == []
+
+
 # ---------------------------------------------------------------------------
 # validate_and_warn
 # ---------------------------------------------------------------------------
@@ -574,6 +643,22 @@ class TestDetectConfigDrift:
         missing = detect_config_drift(str(tmp_path), user_config={})
         assert "debug" in missing
 
+    def test_invalid_template_yaml_returns_empty(self, tmp_path):
+        (tmp_path / "instance.example").mkdir()
+        (tmp_path / "instance.example" / "config.yaml").write_text("foo: [unclosed")
+
+        assert detect_config_drift(str(tmp_path), user_config={}) == []
+
+    def test_invalid_user_yaml_returns_empty_when_loading_from_file(self, tmp_path):
+        self._setup_configs(tmp_path, {"debug": False}, user_config_text="foo: [unclosed")
+
+        assert detect_config_drift(str(tmp_path)) == []
+
+    def test_non_mapping_user_config_returns_empty(self, tmp_path):
+        self._setup_configs(tmp_path, {"debug": False})
+
+        assert detect_config_drift(str(tmp_path), user_config=["not", "a", "dict"]) == []
+
 
 # ---------------------------------------------------------------------------
 # find_extra_config_keys
@@ -684,3 +769,21 @@ class TestFindExtraConfigKeys:
         user = {"max_runs_per_day": 20, "totally_unknown": 1}
         extras = find_extra_config_keys(str(tmp_path), user_config=user)
         assert extras == ["totally_unknown"]
+
+    def test_invalid_template_yaml_returns_empty(self, tmp_path):
+        (tmp_path / "instance.example").mkdir(exist_ok=True)
+        (tmp_path / "instance.example" / "config.yaml").write_text("foo: [unclosed")
+
+        assert find_extra_config_keys(str(tmp_path), user_config={"extra": True}) == []
+
+    def test_invalid_user_yaml_returns_empty_when_loading_from_file(self, tmp_path):
+        self._setup_template(tmp_path, {"max_runs_per_day": 20})
+        (tmp_path / "instance").mkdir()
+        (tmp_path / "instance" / "config.yaml").write_text("foo: [unclosed")
+
+        assert find_extra_config_keys(str(tmp_path)) == []
+
+    def test_non_mapping_user_config_returns_empty(self, tmp_path):
+        self._setup_template(tmp_path, {"max_runs_per_day": 20})
+
+        assert find_extra_config_keys(str(tmp_path), user_config=["bad"]) == []
