@@ -119,10 +119,16 @@ class ClaudeProvider(CLIProvider):
         patterns, while stdout only matches strict provider error phrases so
         normal assistant discussion of rate limits does not pause Koan.
         """
-        from app.quota_handler import _QUOTA_RE, _STRICT_QUOTA_RE
+        from app.quota_handler import (
+            _QUOTA_RE,
+            _rate_limit_exhausted,
+            _strict_quota_match,
+        )
 
-        return bool(_QUOTA_RE.search(stderr_text or "")) or bool(
-            _STRICT_QUOTA_RE.search(stdout_text or "")
+        return (
+            bool(_QUOTA_RE.search(stderr_text or ""))
+            or _rate_limit_exhausted(stderr_text or "")
+            or _strict_quota_match(stdout_text or "")
         )
 
     def build_plugin_args(self, plugin_dirs: Optional[List[str]] = None) -> List[str]:

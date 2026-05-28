@@ -41,6 +41,10 @@ Bridge state that would otherwise create circular imports lives in
 - `quota_handler.py` detects quota exhaustion and writes pause state. Hard
   quota hits requeue the active mission, pause until the provider reset time
   plus 10 minutes, or fall back to a 5-hour pause when no reset time is known.
+  Claude Code's structured `rate_limit_event` stream events are matched
+  status-aware: only a *rejected* status pauses Koan. The newer CLI also emits
+  informational `rate_limit_event`s (status `allowed`) on every session, so
+  matching the bare event type would otherwise pause Koan on successful runs.
 
 Idle actions use the same interruptible sleep path even when `auto_pause` is
 disabled. If `interval_seconds` is set to `0`, the runner waits until the next

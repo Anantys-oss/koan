@@ -85,6 +85,48 @@ Your quota resets 10am (Europe/Paris)."""
 
         assert detect_quota_exhaustion("hit the limit") is True
 
+    def test_informational_rate_limit_event_json_does_not_trigger(self):
+        """An 'allowed' rate_limit_event is informational, not exhaustion.
+
+        The newer Claude Code CLI emits these on every session; matching the
+        bare event type paused Koan on successful runs (the bug being fixed).
+        """
+        from app.quota_handler import detect_quota_exhaustion
+
+        payload = (
+            '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed",'
+            '"resetsAt":1779937200,"rateLimitType":"five_hour"}}'
+        )
+        assert detect_quota_exhaustion(payload) is False
+
+    def test_bare_resets_at_does_not_trigger(self):
+        """resetsAt / rateLimitType alone (no rejection) must not trigger."""
+        from app.quota_handler import detect_quota_exhaustion
+
+        assert detect_quota_exhaustion('{"resetsAt":1779937200}') is False
+        assert detect_quota_exhaustion('"rateLimitType":"five_hour"') is False
+
+    def test_summarized_rate_limit_event_line_safe_in_stdout(self):
+        """The informational summary line is safe under stdout (strict) checks.
+
+        ``detect_quota_exhaustion`` (combined text) still matches the loose
+        'rate limit' substring, but stdout is only ever checked with the strict
+        matcher — which must not fire on an informational summary line.
+        """
+        from app.quota_handler import _strict_quota_match
+
+        assert _strict_quota_match(
+            "[cli] rate limit ok: allowed (five_hour)"
+        ) is False
+
+    def test_summarized_rejected_marker_triggers(self):
+        """The summarizer's rejection marker must be detected."""
+        from app.quota_handler import _strict_quota_match, detect_quota_exhaustion
+
+        line = "[cli] rate_limit_rejected (five_hour) resetsAt 1779937200"
+        assert _strict_quota_match(line) is True
+        assert detect_quota_exhaustion(line) is True
+
 
 class TestDetectQuotaExhaustionCopilot:
     """Test detect_quota_exhaustion with Copilot/GitHub-style messages."""
@@ -1010,6 +1052,60 @@ class TestStdoutFalsePositives:
             str(tmp_path), instance, "koan", 13, stdout_file, stderr_file
         )
         assert result is None, "Loose pattern 'rate limit' in stdout should not trigger"
+
+    def test_informational_rate_limit_event_in_stdout_does_not_trigger(self, tmp_path):
+        """Repro for the mission: a successful run whose stdout carried an
+        informational rate_limit_event (status allowed) must not pause Koan.
+
+        Covers both the streaming summary line and the raw JSON event.
+        """
+        from app.quota_handler import handle_quota_exhaustion
+
+        for stdout_content in (
+            "[cli] result: success\n[cli] rate limit ok: allowed (five_hour)",
+            '{"type":"rate_limit_event","rate_limit_info":'
+            '{"status":"allowed","resetsAt":1779937200,"rateLimitType":"five_hour"}}',
+        ):
+            stdout_file = str(tmp_path / "stdout")
+            stderr_file = str(tmp_path / "stderr")
+            with open(stdout_file, "w") as f:
+                f.write(stdout_content)
+            with open(stderr_file, "w") as f:
+                f.write("")
+
+            instance = str(tmp_path / "instance")
+            os.makedirs(instance, exist_ok=True)
+
+            result = handle_quota_exhaustion(
+                str(tmp_path), instance, "koan", 1, stdout_file, stderr_file,
+                provider_name="claude",
+            )
+            assert result is None, (
+                f"Informational rate_limit_event should not trigger: {stdout_content!r}"
+            )
+
+    def test_rejected_rate_limit_event_in_stdout_triggers(self, tmp_path):
+        """A genuine rejected rate_limit_event in stdout still pauses Koan."""
+        from app.quota_handler import handle_quota_exhaustion
+
+        stdout_file = str(tmp_path / "stdout")
+        stderr_file = str(tmp_path / "stderr")
+        with open(stdout_file, "w") as f:
+            f.write(
+                '{"type":"rate_limit_event","rate_limit_info":'
+                '{"status":"rejected","resetsAt":1779937200,"rateLimitType":"five_hour"}}'
+            )
+        with open(stderr_file, "w") as f:
+            f.write("")
+
+        instance = str(tmp_path / "instance")
+        os.makedirs(instance)
+
+        result = handle_quota_exhaustion(
+            str(tmp_path), instance, "koan", 1, stdout_file, stderr_file,
+            provider_name="claude",
+        )
+        assert result is not None, "Rejected rate_limit_event should trigger quota pause"
 
     def test_retry_after_in_code_review_does_not_trigger(self, tmp_path):
         from app.quota_handler import handle_quota_exhaustion

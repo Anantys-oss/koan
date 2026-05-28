@@ -33,10 +33,12 @@ _STRICT_QUOTA_PATTERNS = [
     r"quota.*reached",
     r"quota.*exhausted",
     r'"?quota_exhausted"?\s*:\s*true',
-    # Claude Code structured stream events for five-hour/session limits.
-    r"rate_limit_event",
-    r'"?rateLimitType"?\s*:',
-    r'"?resetsAt"?\s*:',
+    # NOTE: Claude Code's structured ``rate_limit_event`` stream events are
+    # deliberately NOT matched here. The newer CLI emits *informational*
+    # rate_limit_event events (status "allowed") on every session, so matching
+    # the bare event type / ``resetsAt`` / ``rateLimitType`` fields produced
+    # false-positive quota pauses on successful runs. Those events are handled
+    # status-aware by ``_rate_limit_exhausted()`` instead.
     # Credit/billing limit messages from the Anthropic API and Claude Code CLI.
     # These are specific enough to be safe in stdout (Claude's code output won't
     # contain "credit balance is too low" or "billing period limit").
@@ -73,6 +75,53 @@ QUOTA_PATTERNS = _STRICT_QUOTA_PATTERNS + _LOOSE_QUOTA_PATTERNS
 _QUOTA_RE = re.compile("|".join(QUOTA_PATTERNS), re.IGNORECASE)
 _STRICT_QUOTA_RE = re.compile("|".join(_STRICT_QUOTA_PATTERNS), re.IGNORECASE)
 _LOOSE_QUOTA_RE = re.compile("|".join(_LOOSE_QUOTA_PATTERNS), re.IGNORECASE)
+
+# Status-aware ``rate_limit_event`` detection.
+#
+# The Claude Code CLI emits ``rate_limit_event`` stream events with a
+# ``rate_limit_info.status`` field. Only a *rejection* status means the quota
+# is actually exhausted; the CLI also emits these events informationally
+# (status "allowed") on every session. Matching the bare event type therefore
+# paused Koan on successful runs — the false positive this guards against.
+_REJECTED_RATE_LIMIT_STATUSES = ("rejected", "exceeded", "blocked", "throttled")
+_RATE_LIMIT_EVENT_RE = re.compile(r"rate_limit_event", re.IGNORECASE)
+_RATE_LIMIT_REJECTED_STATUS_RE = re.compile(
+    r'"?status"?\s*:\s*"?(?:' + "|".join(_REJECTED_RATE_LIMIT_STATUSES) + r')"?',
+    re.IGNORECASE,
+)
+# Marker the stream-json summarizer emits for genuine rejections. The streaming
+# skill path only surfaces summarized ``[cli] …`` lines (not raw JSON), so the
+# summarizer collapses a rejected rate_limit_event to this token, which the
+# detector below recognizes.
+_RATE_LIMIT_REJECTED_MARKER_RE = re.compile(r"rate[_\s]limit[_\s]rejected", re.IGNORECASE)
+
+
+def _rate_limit_exhausted(text: str) -> bool:
+    """True only for a *rejected* rate_limit_event, never an informational one.
+
+    Matches either the summarizer's ``rate_limit_rejected`` marker or a raw
+    ``rate_limit_event`` JSON blob whose status is a rejection.
+    """
+    if not text:
+        return False
+    if _RATE_LIMIT_REJECTED_MARKER_RE.search(text):
+        return True
+    return bool(
+        _RATE_LIMIT_EVENT_RE.search(text)
+        and _RATE_LIMIT_REJECTED_STATUS_RE.search(text)
+    )
+
+
+def _strict_quota_match(text: str) -> bool:
+    """Strict (stdout-safe) quota detection.
+
+    Combines the strict human-text patterns with status-aware rate-limit
+    detection. Safe to run against stdout because it never matches the loose
+    patterns (e.g. a plan that merely discusses "rate limit").
+    """
+    if not text:
+        return False
+    return bool(_STRICT_QUOTA_RE.search(text)) or _rate_limit_exhausted(text)
 
 # Pattern to extract reset info from output.
 # Claude: "resets 10am (Europe/Paris)"
@@ -119,7 +168,7 @@ def detect_quota_exhaustion(text: str) -> bool:
     Returns:
         True if quota exhaustion detected
     """
-    return bool(_QUOTA_RE.search(text))
+    return bool(_QUOTA_RE.search(text)) or _rate_limit_exhausted(text)
 
 
 def _detect_quota_for_provider(
@@ -158,8 +207,10 @@ def _detect_quota_for_provider(
                 file=sys.stderr,
             )
 
-    return bool(_QUOTA_RE.search(stderr_text or "")) or bool(
-        _STRICT_QUOTA_RE.search(stdout_text or "")
+    return (
+        bool(_QUOTA_RE.search(stderr_text or ""))
+        or _rate_limit_exhausted(stderr_text or "")
+        or _strict_quota_match(stdout_text or "")
     )
 
 

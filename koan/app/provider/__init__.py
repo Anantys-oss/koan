@@ -500,6 +500,22 @@ def _summarize_stream_event(event: Dict[str, Any]) -> str:
             return f"[cli] result: {subtype or '?'} ({int(duration_ms) // 1000}s)"
         return f"[cli] result: {subtype or '?'}"
 
+    if etype == "rate_limit_event":
+        # The new CLI emits these informationally (status "allowed") on every
+        # session, plus on genuine exhaustion (status "rejected"). Only the
+        # latter must pause Koan. Collapse to a status-aware summary line so the
+        # quota detector — which sees only this summary, not the raw JSON — can
+        # tell them apart. See quota_handler._rate_limit_exhausted.
+        info = event.get("rate_limit_info") or {}
+        status = str(info.get("status", "")).strip().lower()
+        rtype = str(info.get("rateLimitType") or "").strip()
+        label = f" ({rtype})" if rtype else ""
+        if status in {"rejected", "exceeded", "blocked", "throttled"}:
+            resets = info.get("resetsAt")
+            suffix = f" resetsAt {resets}" if resets else ""
+            return f"[cli] rate_limit_rejected{label}{suffix}"
+        return f"[cli] rate limit ok: {status or 'unknown'}{label}"
+
     item = event.get("item")
     if isinstance(item, dict):
         item_type = item.get("type", "")

@@ -1249,6 +1249,34 @@ class TestSummarizeStreamEvent:
         })
         assert "45s" in line
 
+    def test_informational_rate_limit_event_has_no_quota_trigger(self):
+        """An 'allowed' rate_limit_event must summarize without tripping the
+        strict quota detector (the false-positive this fixes)."""
+        from app.provider import _summarize_stream_event
+        from app.quota_handler import _strict_quota_match
+        line = _summarize_stream_event({
+            "type": "rate_limit_event",
+            "rate_limit_info": {"status": "allowed", "rateLimitType": "five_hour"},
+        })
+        assert "rate limit ok" in line
+        assert _strict_quota_match(line) is False
+
+    def test_rejected_rate_limit_event_is_detected_from_summary(self):
+        """A 'rejected' rate_limit_event must summarize to a line the quota
+        detector recognizes, since the streaming path only sees summaries."""
+        from app.provider import _summarize_stream_event
+        from app.quota_handler import _strict_quota_match
+        line = _summarize_stream_event({
+            "type": "rate_limit_event",
+            "rate_limit_info": {
+                "status": "rejected",
+                "rateLimitType": "five_hour",
+                "resetsAt": 1779937200,
+            },
+        })
+        assert "rate_limit_rejected" in line
+        assert _strict_quota_match(line) is True
+
 
 class TestClaudeProviderStreamJsonRequiresVerbose:
     def test_stream_json_adds_verbose(self):
