@@ -1,5 +1,6 @@
 """Tests for OpenAI Codex CLI provider (app.provider.codex)."""
 
+import json
 import os
 from unittest.mock import patch, MagicMock
 
@@ -366,6 +367,57 @@ class TestCodexQuotaCheck:
         mock_run.side_effect = OSError("codex not found")
         available, detail = self.provider.check_quota_available("/tmp/project")
         assert available is True
+
+
+# ---------------------------------------------------------------------------
+# detect_quota_exhaustion
+# ---------------------------------------------------------------------------
+
+class TestCodexQuotaDetection:
+    """Tests for CodexProvider.detect_quota_exhaustion()."""
+
+    def setup_method(self):
+        self.provider = CodexProvider()
+
+    def test_detects_quota_in_stderr(self):
+        assert self.provider.detect_quota_exhaustion(
+            stdout_text="",
+            stderr_text="HTTP 429 insufficient_quota",
+            exit_code=1,
+        ) is True
+
+    def test_detects_structured_error_event(self):
+        stdout = json.dumps({
+            "type": "error",
+            "error": {"message": "rate limit exceeded", "status_code": 429},
+        })
+        assert self.provider.detect_quota_exhaustion(
+            stdout_text=stdout,
+            stderr_text="",
+            exit_code=0,
+        ) is True
+
+    def test_does_not_treat_turn_completed_usage_as_quota(self):
+        stdout = json.dumps({
+            "type": "turn.completed",
+            "usage": {
+                "input_tokens": 26549,
+                "cached_input_tokens": 22272,
+                "output_tokens": 1590,
+            },
+        })
+        assert self.provider.detect_quota_exhaustion(
+            stdout_text=stdout,
+            stderr_text="",
+            exit_code=0,
+        ) is False
+
+    def test_ignores_plain_quota_words_on_success_stdout(self):
+        assert self.provider.detect_quota_exhaustion(
+            stdout_text="discussion: keep quota low and handle retries",
+            stderr_text="",
+            exit_code=0,
+        ) is False
 
 
 # ---------------------------------------------------------------------------

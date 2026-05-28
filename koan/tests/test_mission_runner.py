@@ -2944,6 +2944,38 @@ class TestCostTrackingFailedFlag:
         assert "cost tracking failed" in captured.err
         assert "exit_code=1" in captured.err
 
+    @patch("app.mission_runner.commit_instance")
+    @patch("app.mission_runner.check_auto_merge", return_value=None)
+    @patch("app.mission_runner.trigger_reflection", return_value=False)
+    @patch("app.mission_runner.archive_pending", return_value=False)
+    @patch("app.quota_handler.handle_quota_exhaustion", return_value=None)
+    @patch("app.mission_runner.update_usage", return_value=True)
+    @patch("app.token_parser.extract_tokens", return_value=None)
+    def test_codex_warning_mentions_quota_detection_still_runs(
+        self, mock_tokens, mock_usage, mock_quota, mock_archive,
+        mock_reflect, mock_merge, mock_commit, tmp_path, capsys,
+    ):
+        """Codex warning clarifies accounting failure is separate from quota checks."""
+        from app.mission_runner import run_post_mission
+
+        instance_dir = str(tmp_path / "instance")
+        os.makedirs(instance_dir, exist_ok=True)
+
+        result = run_post_mission(
+            instance_dir=instance_dir,
+            project_name="koan",
+            project_path=str(tmp_path),
+            run_num=1,
+            exit_code=0,
+            stdout_file="/tmp/out.json",
+            stderr_file="/tmp/err.txt",
+            provider_name="codex",
+        )
+
+        assert result["cost_tracking_failed"] is True
+        captured = capsys.readouterr()
+        assert "quota detection still ran" in captured.err
+
     @patch("app.mission_runner.run_post_mission")
     def test_cli_emits_cost_tracking_failed_signal(self, mock_run, tmp_path, capsys):
         """COST_TRACKING_FAILED emitted to stderr in CLI mode."""

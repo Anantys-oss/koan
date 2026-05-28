@@ -1039,6 +1039,12 @@ budget:
   warn_at_percent: 20         # Warn when quota drops below
   stop_at_percent: 5          # Stop working below this
 
+# Usage estimation mode
+usage:
+  session_token_limit: 500000 # Tokens per 5h window
+  weekly_token_limit: 5000000 # Tokens per 7-day window
+  budget_mode: session_only   # full | session_only | disabled
+
 # Tool restrictions (limit what the agent can do)
 tools:
   allowed: []                 # Whitelist (empty = all allowed)
@@ -1096,6 +1102,10 @@ optimizations:
 ```
 
 See `instance.example/config.yaml` for all available options.
+
+`usage.budget_mode: disabled` turns off Koan's internal token-budget gating.
+Hard provider quota/session-limit errors are still detected from CLI output and
+will still pause and requeue missions.
 
 **`/models`** (alias `/model`) — Show the resolved model configuration for the active CLI provider. Useful when debugging model-routing issues — displays which model wins for each of the 6 slots (`mission`, `chat`, `lightweight`, `fallback`, `review_mode`, `reflect`) after applying the full resolution chain: per-project `models:` → `models_for_{provider}:` → global `models:` → built-in defaults.
 

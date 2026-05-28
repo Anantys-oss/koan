@@ -402,6 +402,7 @@ git_auto_merge:
 usage:
   session_token_limit: 500000   # Tokens per 5h session window
   weekly_token_limit: 5000000   # Tokens per 7-day window
+  budget_mode: session_only     # full | session_only | disabled
 
 # Per-project overrides are now configured in projects.yaml.
 # Supported per-project settings:

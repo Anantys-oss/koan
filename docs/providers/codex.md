@@ -107,6 +107,24 @@ Codex event shapes for the final answer.
 | Output format (JSON)   | ✅            | Used for live progress; final text is read from `--output-last-message` |
 | Quota check            | ✅            | Minimal probe via `codex exec "ok"`     |
 
+### Usage Estimation And Internal Budget Gates
+
+Koan tracks token usage from Codex JSON output when available. This internal
+estimate drives autonomous mode downgrades (`deep` -> `implement` -> `review`
+-> `wait`) but is separate from hard provider quota detection.
+
+For Codex subscription accounts where you want to ignore internal estimates and
+only react to real provider quota/session-limit errors, set:
+
+```yaml
+usage:
+  budget_mode: disabled
+```
+
+With `budget_mode: disabled`, Koan still detects provider quota exhaustion from
+Codex stderr and structured error events, and will still pause + requeue on
+hard quota failures.
+
 ## Per-Project Override
 
 You can use Codex for specific projects while keeping Claude as the
@@ -159,7 +177,9 @@ Re-authenticate: `codex login --device-auth`
 Codex shares quota with your ChatGPT subscription. If you hit limits,
 Kōan's quota detection will pause and notify you. Codex quota detection is
 provider-specific: Kōan trusts Codex/OpenAI error events and stderr, but does
-not scan normal command output for generic billing or credit words.
+not scan normal command output for generic billing or credit words. Token
+accounting failures and quota detection are separate: if usage extraction
+fails for a mission, Koan still runs quota detection for that mission.
 
 ### Tool restrictions not working
 

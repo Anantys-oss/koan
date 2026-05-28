@@ -1,9 +1,9 @@
 """
-Token Parser — Single source of truth for Claude JSON output token extraction.
+Token Parser — Single source of truth for provider JSON token extraction.
 
-Parses Claude CLI JSON output files to extract token usage, cache metrics,
-model info, and cost data. All modules that need token data should import
-from here rather than implementing their own parsing.
+Parses provider JSON/JSONL output files (Claude and Codex) to extract token
+usage, cache metrics, model info, and cost data. All modules that need token
+data should import from here rather than implementing their own parsing.
 """
 
 import json
@@ -14,7 +14,7 @@ from typing import Optional
 
 @dataclass
 class TokenResult:
-    """Structured token usage extracted from Claude JSON output."""
+    """Structured token usage extracted from provider output."""
 
     input_tokens: int = 0
     output_tokens: int = 0
@@ -103,13 +103,17 @@ def _extract_tokens_from_jsonl(raw: str) -> Optional[TokenResult]:
         if not isinstance(event, dict):
             continue
         result = _extract_tokens_from_dict(event)
-        if result is not None and result.total_tokens > 0:
+        if result is not None and _has_usage(result):
             last_result = result
     return last_result
 
 
 def _extract_tokens_from_dict(data: dict) -> Optional[TokenResult]:
     """Extract token info from one JSON object/event."""
+    codex_result = _extract_codex_token_count(data)
+    if codex_result is not None:
+        return codex_result
+
     model = data.get("model", "unknown")
 
     # Try top-level fields
@@ -136,6 +140,60 @@ def _extract_tokens_from_dict(data: dict) -> Optional[TokenResult]:
                 return _build_result(inp, out, model, data)
 
     return None
+
+
+def _has_usage(result: TokenResult) -> bool:
+    """Return True when any token bucket is populated."""
+    return (
+        result.input_tokens > 0
+        or result.output_tokens > 0
+        or result.cache_creation_input_tokens > 0
+        or result.cache_read_input_tokens > 0
+    )
+
+
+def _extract_codex_token_count(data: dict) -> Optional[TokenResult]:
+    """Extract token usage from Codex token_count rollout events.
+
+    Codex rollout JSONL can include usage details as:
+    {
+      "type": "event_msg",
+      "payload": {
+        "type": "token_count",
+        "info": {"total_token_usage": {...}}
+      }
+    }
+    """
+    payload = data.get("payload")
+    if not (
+        isinstance(payload, dict)
+        and data.get("type") == "event_msg"
+        and payload.get("type") == "token_count"
+    ):
+        return None
+
+    info = payload.get("info")
+    if not isinstance(info, dict):
+        return None
+    total = info.get("total_token_usage")
+    if not isinstance(total, dict):
+        return None
+
+    input_tokens = int(total.get("input_tokens", 0) or 0)
+    output_tokens = int(total.get("output_tokens", 0) or 0)
+    cached_input = int(total.get("cached_input_tokens", 0) or 0)
+
+    # Align with the rest of Koan accounting: input_tokens excludes cache hits.
+    if cached_input > 0:
+        input_tokens = max(0, input_tokens - cached_input)
+
+    model = info.get("model") or data.get("model") or "unknown"
+    return TokenResult(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        model=str(model),
+        cache_read_input_tokens=cached_input,
+    )
 
 
 def _build_result(

@@ -141,6 +141,80 @@ class TestExtractTokens:
         assert result.cache_read_input_tokens == 2650240
         assert result.output_tokens == 16146
 
+    def test_codex_rollout_token_count_total_usage(self, tmp_path):
+        f = tmp_path / "codex-rollout.jsonl"
+        f.write_text("\n".join([
+            json.dumps({"type": "thread.started"}),
+            json.dumps({
+                "type": "event_msg",
+                "payload": {
+                    "type": "token_count",
+                    "info": {
+                        "total_token_usage": {
+                            "input_tokens": 26549,
+                            "cached_input_tokens": 22272,
+                            "output_tokens": 1590,
+                            "reasoning_output_tokens": 1152,
+                            "total_tokens": 28139,
+                        }
+                    },
+                },
+            }),
+        ]))
+
+        result = extract_tokens(f)
+
+        assert result is not None
+        assert result.input_tokens == 4277
+        assert result.cache_read_input_tokens == 22272
+        assert result.output_tokens == 1590
+
+    def test_codex_jsonl_last_usage_event_wins(self, tmp_path):
+        f = tmp_path / "codex-mixed.jsonl"
+        f.write_text("\n".join([
+            json.dumps({
+                "type": "turn.completed",
+                "usage": {
+                    "input_tokens": 1010,
+                    "cached_input_tokens": 1000,
+                    "output_tokens": 11,
+                },
+            }),
+            json.dumps({"type": "item.completed", "item": {"type": "agent_message"}}),
+            json.dumps({
+                "type": "event_msg",
+                "payload": {
+                    "type": "token_count",
+                    "info": {
+                        "total_token_usage": {
+                            "input_tokens": 2000,
+                            "cached_input_tokens": 1500,
+                            "output_tokens": 400,
+                        }
+                    },
+                },
+            }),
+        ]))
+
+        result = extract_tokens(f)
+
+        assert result is not None
+        assert result.input_tokens == 500
+        assert result.cache_read_input_tokens == 1500
+        assert result.output_tokens == 400
+
+    def test_codex_rollout_without_total_usage_returns_none(self, tmp_path):
+        f = tmp_path / "codex-empty-token-count.jsonl"
+        f.write_text("\n".join([
+            json.dumps({"type": "thread.started"}),
+            json.dumps({
+                "type": "event_msg",
+                "payload": {"type": "token_count", "info": None},
+            }),
+        ]))
+
+        assert extract_tokens(f) is None
+
 
 class TestCacheHitRate:
     def test_basic_hit_rate(self):

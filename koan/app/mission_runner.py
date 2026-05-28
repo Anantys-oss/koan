@@ -1339,12 +1339,21 @@ def run_post_mission(
         except Exception as e:
             _log_runner("error", f"Session ID extraction failed: {e}")
 
-        # Flag silent cost-tracking gaps so operators can detect them
+        # Flag silent cost-tracking gaps so operators can detect them.
+        # Quota detection is a separate path and still runs below.
         if _tokens is None:
             result["cost_tracking_failed"] = True
+            provider_key = (provider_name or "").strip().lower()
+            if provider_key == "codex":
+                detail = (
+                    "Codex token extraction returned None; "
+                    "quota detection still ran"
+                )
+            else:
+                detail = "token extraction returned None"
             print(
                 "[mission_runner] WARNING: cost tracking failed — "
-                "token extraction returned None"
+                f"{detail}"
                 f" (exit_code={exit_code})",
                 file=sys.stderr,
             )
