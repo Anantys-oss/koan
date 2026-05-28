@@ -1,0 +1,41 @@
+name: 🔍 Request Review
+on:
+  pull_request:
+    types: [opened]
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  assign:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.BOT_TOKEN }}
+          script: |
+            const bot = 'Koan-Bot';
+            const author = context.payload.pull_request.user.login;
+            let commented = false;
+
+            if (author !== bot) {
+              try {
+                await github.rest.pulls.requestReviewers({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: context.issue.number,
+                  reviewers: [bot]
+                });
+                commented = true;
+              } catch (e) {}
+            }
+
+            if (!commented) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: '@Koan-Bot review'
+              });
+            }
