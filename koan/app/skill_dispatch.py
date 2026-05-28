@@ -272,6 +272,38 @@ def parse_skill_mission(mission_text: str) -> Tuple[str, str, str]:
     return project_id, raw_command, args
 
 
+def mission_command_name(mission_text: str) -> str:
+    """Resolve a mission's canonical skill command name.
+
+    Normalizes across every dispatch path so callers don't have to match
+    raw prefixes:
+        - ``/rebase <url>``        (GitHub-triggered)      -> "rebase"
+        - ``/core.rebase <url>``   (Telegram-queued)       -> "rebase"
+        - ``/rb <url>`` / ``/core.rb`` (SKILL.md alias)    -> "rebase"
+        - ``[project:koan] /rebase`` (project prefix)      -> "rebase"
+
+    Hardcoded aliases (``_COMMAND_ALIASES``) are resolved cheaply with no
+    I/O; SKILL.md-declared aliases (e.g. ``rb``) fall back to the skill
+    registry. Returns "" when the mission is not a recognised skill command.
+    """
+    _, command, _ = parse_skill_mission(mission_text or "")
+    if not command:
+        return ""
+    canonical = _resolve_canonical(command)
+    if canonical in _CANONICAL_RUNNERS:
+        return canonical
+    # SKILL.md-declared aliases (not in _COMMAND_ALIASES) resolve via the
+    # registry — e.g. /rb is declared only in rebase/SKILL.md frontmatter.
+    try:
+        from app.skills import build_registry
+        skill = build_registry().find_by_command(command)
+        if skill:
+            return skill.name
+    except Exception:
+        pass
+    return canonical
+
+
 def build_skill_command(
     command: str,
     args: str,

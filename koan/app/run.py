@@ -2990,8 +2990,10 @@ def _run_skill_mission(
         watchdog = ProcessWatchdog(proc, skill_timeout).start()
 
         from app.config import get_first_output_timeout, get_rebase_first_output_timeout
-        mission_text = (mission_title or "").strip().lower()
-        if mission_text.startswith("/rebase "):
+        from app.skill_dispatch import mission_command_name
+        # Resolve the canonical command so the rebase override applies to all
+        # dispatch paths: /rebase (GitHub), /core.rebase (Telegram), /rb alias.
+        if mission_command_name(mission_title) == "rebase":
             first_output_timeout = get_rebase_first_output_timeout()
         else:
             first_output_timeout = get_first_output_timeout()

@@ -4257,6 +4257,56 @@ class TestRunSkillMissionEnv:
         for call in all_calls[1:]:
             assert call[0][0] == 1800, "Liveness timers should use rebase override"
 
+    @pytest.mark.parametrize("mission_title", [
+        "/core.rebase https://github.com/o/r/pull/1",   # Telegram-queued form
+        "[project:test] /core.rebase https://github.com/o/r/pull/1",  # with prefix
+        "/rb https://github.com/o/r/pull/1",            # SKILL.md alias
+    ])
+    def test_rebase_override_applies_across_dispatch_paths(self, tmp_path, mission_title):
+        """rebase_first_output_timeout applies to all rebase dispatch forms.
+
+        Telegram-queued missions arrive as ``/core.rebase`` and the ``/rb``
+        alias also resolves to rebase — the override must not be limited to
+        the GitHub-triggered ``/rebase `` prefix.
+        """
+        from app.run import _run_skill_mission
+
+        koan_root = str(tmp_path)
+        instance = str(tmp_path / "instance")
+        (tmp_path / "instance").mkdir()
+        (tmp_path / "instance" / "journal").mkdir(parents=True)
+        (tmp_path / "koan").mkdir()
+
+        mock_proc = self._make_mock_popen(stdout_lines=["ok\n"])
+        mock_timer = MagicMock()
+
+        with patch("app.run.subprocess.Popen", side_effect=mock_proc._side_effect), \
+             patch("app.run._get_koan_branch", return_value="main"), \
+             patch("app.run._restore_koan_branch"), \
+             patch("app.run._reset_terminal"), \
+             patch("app.config.get_skill_timeout", return_value=7200), \
+             patch("app.config.get_first_output_timeout", return_value=600), \
+             patch("app.config.get_rebase_first_output_timeout", return_value=1800), \
+             patch("app.run.threading.Timer", return_value=mock_timer) as mock_timer_cls, \
+             patch("app.mission_runner.run_post_mission"):
+            _run_skill_mission(
+                skill_cmd=["python3", "--help"],
+                koan_root=koan_root,
+                instance=instance,
+                project_name="test",
+                project_path=str(tmp_path),
+                run_num=1,
+                mission_title=mission_title,
+                autonomous_mode="implement",
+            )
+
+        all_calls = mock_timer_cls.call_args_list
+        assert all_calls[0][0][0] == 7200, "First timer should be watchdog"
+        for call in all_calls[1:]:
+            assert call[0][0] == 1800, (
+                f"Liveness timers should use rebase override for {mission_title!r}"
+            )
+
     def test_skill_timeout_default_is_7200(self, tmp_path):
         """Default skill timeout should be 7200s (2 hours)."""
         from app.run import _run_skill_mission

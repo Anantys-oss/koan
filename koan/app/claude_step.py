@@ -1008,7 +1008,13 @@ def run_ci_fix_loop(
             _set_outcome("no_changes", attempt, ci_logs)
             break
 
-        # Force-push the fix
+        # Force-push the fix.
+        # On failure we return immediately (rather than exhausting the
+        # remaining attempts) so the "push_failed" outcome surfaces an
+        # accurate message instead of the generic "CI still failing".
+        # Re-running the loop would just rebuild the same diff and hit the
+        # same push error. Callers (rebase_pr via outcome["result"],
+        # ci_queue_runner via the success bool) handle this terminal state.
         try:
             _do_push(branch, project_path)
         except Exception as e:

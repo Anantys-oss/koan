@@ -6,6 +6,7 @@ import pytest
 from app.skill_dispatch import (
     is_skill_mission,
     parse_skill_mission,
+    mission_command_name,
     build_skill_command,
     dispatch_skill_mission,
     strip_passthrough_command,
@@ -46,6 +47,35 @@ class TestIsSkillMission:
 
     def test_not_at_start(self):
         assert is_skill_mission("Fix /plan bug") is False
+
+
+# ---------------------------------------------------------------------------
+# mission_command_name
+# ---------------------------------------------------------------------------
+
+class TestMissionCommandName:
+    @pytest.mark.parametrize("text", [
+        "/rebase https://github.com/o/r/pull/1",          # GitHub-triggered
+        "/core.rebase https://github.com/o/r/pull/1",     # Telegram-queued
+        "[project:koan] /rebase https://github.com/o/r/pull/1",
+        "[project:koan] /core.rebase https://github.com/o/r/pull/1",
+        "/rb https://github.com/o/r/pull/1",              # SKILL.md alias
+    ])
+    def test_resolves_rebase_across_dispatch_paths(self, text):
+        assert mission_command_name(text) == "rebase"
+
+    def test_resolves_canonical_alias(self):
+        # /docs is a hardcoded alias for the doc skill.
+        assert mission_command_name("/docs koan") == "doc"
+
+    def test_plain_command(self):
+        assert mission_command_name("/plan Add dark mode") == "plan"
+
+    def test_non_skill_mission_returns_empty(self):
+        assert mission_command_name("Fix the login bug") == ""
+
+    def test_empty_returns_empty(self):
+        assert mission_command_name("") == ""
 
 
 # ---------------------------------------------------------------------------
