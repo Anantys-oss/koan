@@ -88,8 +88,10 @@ def _resolve_github_project_context(
 
     # Result is keyed on (owner, repo) only — when the caller already supplies
     # a project_name we return early above, so the cache never collides
-    # different name/path pairs.
-    cache_key = (owner, repo)
+    # different name/path pairs. Lowercase the tuple because GitHub repo
+    # identifiers are case-insensitive — two URLs differing only in casing
+    # should hit the same cache entry.
+    cache_key = (owner.lower(), repo.lower())
     with _GITHUB_CONTEXT_LOCK:
         cached = _GITHUB_CONTEXT_CACHE.get(cache_key)
     if cached is not None:
