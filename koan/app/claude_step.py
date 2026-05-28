@@ -143,7 +143,9 @@ def _prefetch_all_remotes(
     starts, so that ancestry checks and --onto calculations use fresh data.
     Failures are logged but never prevent the rebase attempt.
     """
-    remotes_to_fetch: List[str] = list(_ordered_remotes(preferred_remote))
+    remotes_to_fetch: List[str] = list(
+        _ordered_remotes(preferred_remote, cwd=project_path)
+    )
     if head_remote and head_remote not in remotes_to_fetch:
         remotes_to_fetch.append(head_remote)
     for remote in remotes_to_fetch:
@@ -185,7 +187,7 @@ def _rebase_onto_target(
     """
     _prefetch_all_remotes(base, project_path, preferred_remote, head_remote)
 
-    for remote in _ordered_remotes(preferred_remote):
+    for remote in _ordered_remotes(preferred_remote, cwd=project_path):
         if head_remote and head_remote != remote:
             # Only use --onto when the fork has genuinely diverged from
             # upstream (i.e. has commits that upstream doesn't).  When the

@@ -264,6 +264,25 @@ class TestCheckoutPrBranch:
         fork_fetches = [c for c in fetch_cmds if c[2] == "fork-someuser"]
         assert len(fork_fetches) == 1
 
+    def test_origin_only_repo_does_not_try_upstream(self):
+        """When only origin is configured, checkout must not probe upstream."""
+        calls = []
+
+        def mock_run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd[:2] == ["git", "fetch"]:
+                raise RuntimeError("remote ref not found")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("app.rebase_pr._ordered_remotes", return_value=["origin"]), \
+             patch("app.claude_step.subprocess.run", side_effect=mock_run):
+            with pytest.raises(RuntimeError, match="not found on"):
+                _checkout_pr_branch("feat/missing", "/project")
+
+        fetch_cmds = [c for c in calls if c[:2] == ["git", "fetch"]]
+        assert len(fetch_cmds) == 1
+        assert fetch_cmds[0][2] == "origin"
+
 
 # ---------------------------------------------------------------------------
 # _get_conflicted_files
@@ -1205,6 +1224,26 @@ class TestPushWithFallback:
             assert result["success"] is False
             assert push_count[0] == 4  # 2 remotes x 2 strategies
 
+    def test_origin_only_repo_does_not_try_upstream(self):
+        """When only origin exists, push fallback must stop after origin attempts."""
+        push_count = [0]
+
+        def mock_run(cmd, **kwargs):
+            if cmd[:2] == ["git", "push"]:
+                push_count[0] += 1
+                raise RuntimeError("rejected")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("app.rebase_pr._ordered_remotes", return_value=["origin"]), \
+             patch("app.claude_step.subprocess.run", side_effect=mock_run):
+            result = _push_with_fallback(
+                "koan/fix", "main", "sukria/koan", "42",
+                {"title": "Fix", "url": ""}, "/project"
+            )
+
+        assert result["success"] is False
+        assert push_count[0] == 2  # origin: --force-with-lease + --force
+
 
 # ---------------------------------------------------------------------------
 # run_rebase — integration tests
@@ -1325,6 +1364,25 @@ class TestRunRebase:
             assert success is False
             assert "conflict" in summary.lower()
             mock_safe.assert_called_with("original", "/p")
+
+    @patch("app.rebase_pr._safe_checkout")
+    @patch("app.rebase_pr.fetch_pr_context")
+    def test_rebase_conflict_lists_actual_attempted_remotes(self, mock_ctx, mock_safe):
+        mock_ctx.return_value = {
+            "title": "T", "body": "", "branch": "feat",
+            "base": "main", "state": "", "author": "", "url": "",
+            "diff": "", "review_comments": "", "reviews": "", "issue_comments": "",
+        }
+        notify = MagicMock()
+        with patch("app.rebase_pr._get_current_branch", return_value="original"), \
+             patch("app.rebase_pr._checkout_pr_branch"), \
+             patch("app.rebase_pr._ordered_remotes", return_value=["origin"]), \
+             patch("app.rebase_pr._rebase_with_conflict_resolution", return_value=None):
+            success, summary = run_rebase("o", "r", "1", "/p", notify_fn=notify)
+
+        assert success is False
+        assert "tried: origin" in summary
+        assert "upstream" not in summary
 
     @patch("app.rebase_pr._fix_existing_ci_failures", return_value=False)
     @patch("app.rebase_pr._run_ci_check_and_fix", return_value="")

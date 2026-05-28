@@ -395,6 +395,16 @@ class TestPrefetchAllRemotes:
         captured = capsys.readouterr()
         assert "Pre-fetch" in captured.err
 
+    @patch("app.claude_step._ordered_remotes", return_value=["origin"])
+    @patch("app.claude_step._run_git")
+    def test_origin_only_repo_skips_upstream(self, mock_git, mock_remotes):
+        _prefetch_all_remotes("main", "/project")
+        mock_remotes.assert_called_once_with(None, cwd="/project")
+        mock_git.assert_called_once_with(
+            ["git", "fetch", "origin", "+refs/heads/main:refs/remotes/origin/main"],
+            cwd="/project", timeout=60,
+        )
+
 
 
 # ---------- run_claude ----------

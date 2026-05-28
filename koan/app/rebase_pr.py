@@ -674,7 +674,12 @@ def run_rebase(
         actions_log.append(f"Rebased `{branch}` onto `{rebase_remote}/{base}`")
     else:
         _safe_checkout(original_branch, project_path)
-        return False, f"Rebase failed on `{base}` (tried origin and upstream). Could not resolve conflicts."
+        attempted_remotes = _ordered_remotes(base_remote, cwd=project_path)
+        attempted = ", ".join(attempted_remotes) if attempted_remotes else "none"
+        return False, (
+            f"Rebase failed on `{base}` (tried: {attempted}). "
+            "Could not resolve conflicts."
+        )
 
     # ── Step 4: Analyze review comments and apply changes ──────────────
     change_summary = ""
@@ -1547,7 +1552,7 @@ def _checkout_pr_branch(
         The remote name used for the fetch (e.g. ``"origin"`` or ``"upstream"``).
     """
     # Build ordered list of remotes to try: head_remote first, then origin/upstream
-    remotes = _ordered_remotes(head_remote)
+    remotes = _ordered_remotes(head_remote, cwd=project_path)
 
     for remote in remotes:
         try:
@@ -1612,7 +1617,7 @@ def _push_with_fallback(
     Uses ``--force-with-lease`` first, then plain ``--force`` as fallback.
     """
     actions: List[str] = []
-    remotes = _ordered_remotes(head_remote)
+    remotes = _ordered_remotes(head_remote, cwd=project_path)
     last_error = ""
     for remote in remotes:
         try:
