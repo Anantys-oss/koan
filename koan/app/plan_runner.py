@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 from app.issue_tracker import (
+    UnresolvedJiraProjectError,
     add_comment,
     create_issue,
     fetch_issue,
@@ -164,6 +165,10 @@ def _run_issue_plan(
         ref = resolve_issue_ref(
             issue_url, project_name=project_name, project_path=project_path,
         )
+    except UnresolvedJiraProjectError as e:
+        msg = str(e)
+        notify_fn(f"❌ {msg}")
+        return False, msg
     except Exception as e:
         return False, f"Failed to fetch issue: {str(e)[:300]}"
 
@@ -174,6 +179,10 @@ def _run_issue_plan(
         content = fetch_issue(
             issue_url, project_name=project_name, project_path=project_path,
         )
+    except UnresolvedJiraProjectError as e:
+        msg = str(e)
+        notify_fn(f"❌ {msg}")
+        return False, msg
     except Exception as e:
         return False, f"Failed to fetch issue: {str(e)[:300]}"
 

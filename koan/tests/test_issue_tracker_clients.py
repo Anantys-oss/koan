@@ -8,7 +8,11 @@ existing plan issue — without the caller knowing which backend is used.
 import json
 from unittest.mock import patch
 
-from app.issue_tracker import client_for_project, client_for_url
+from app.issue_tracker import (
+    UnresolvedJiraProjectError,
+    client_for_project,
+    client_for_url,
+)
 from app.issue_tracker.base import IssueTracker
 from app.issue_tracker.github import GitHubIssueTracker
 from app.issue_tracker.jira import JiraIssueTracker
@@ -97,6 +101,16 @@ class TestIssueTrackerFactories:
         assert client.issue_type == "Story"
         assert client.default_branch == "main"
         assert client.repo == "acme/app"
+
+    def test_client_for_url_jira_raises_when_project_mapping_missing(self):
+        with patch(f"{_FACADE}.find_project_for_jira_key", return_value=""):
+            try:
+                client_for_url("https://org.atlassian.net/browse/PROJ-42")
+                raise AssertionError("Expected UnresolvedJiraProjectError")
+            except UnresolvedJiraProjectError as exc:
+                msg = str(exc)
+                assert "PROJ-42" in msg
+                assert "projects.yaml" in msg
 
     def test_client_for_url_resolves_github_project_context_when_possible(self):
         with patch("app.utils.resolve_project_path", return_value="/tmp/myapp"), \

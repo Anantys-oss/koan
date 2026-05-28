@@ -18,7 +18,12 @@ import re
 from pathlib import Path
 from typing import List, Optional, Tuple, Union
 
-from app.issue_tracker import add_comment, fetch_issue, project_name_for_path
+from app.issue_tracker import (
+    UnresolvedJiraProjectError,
+    add_comment,
+    fetch_issue,
+    project_name_for_path,
+)
 from app.issue_tracker.config import resolve_code_repository
 from app.pr_submit import (
     get_current_branch,
@@ -80,6 +85,10 @@ def run_implement(
         issue = fetch_issue(
             issue_url, project_name=project_name, project_path=project_path,
         )
+    except UnresolvedJiraProjectError as e:
+        msg = str(e)
+        notify_fn(f"❌ {msg}")
+        return False, msg
     except Exception as e:
         return False, f"Failed to fetch issue: {str(e)[:300]}"
 

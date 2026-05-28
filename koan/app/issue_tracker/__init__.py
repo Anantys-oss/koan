@@ -17,6 +17,10 @@ from app.issue_tracker.jira import JiraIssueTracker
 from app.issue_tracker.types import IssueContent, IssueRef
 
 
+class UnresolvedJiraProjectError(ValueError):
+    """Raised when a Jira issue key is not mapped to a Koan project."""
+
+
 def _koan_root() -> str:
     return os.environ.get("KOAN_ROOT", "")
 
@@ -113,6 +117,16 @@ def _jira_client_for_url(
         issue_key,
         koan_root=_koan_root(),
     )
+    if not resolved_project:
+        project_key = issue_key.split("-", 1)[0].upper()
+        raise UnresolvedJiraProjectError(
+            "Unmapped Jira issue "
+            f"'{issue_key}': no Koan project was resolved. "
+            "Add this mapping in projects.yaml under "
+            "projects.<name>.issue_tracker with "
+            "provider: jira and jira_project: "
+            f"{project_key}."
+        )
     tracker = _tracker_for_project(resolved_project)
     repo = tracker.get("repo") or resolve_code_repository(
         resolved_project, project_path,
