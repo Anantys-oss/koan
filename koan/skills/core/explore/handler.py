@@ -17,19 +17,13 @@ def handle(ctx):
 
     # No args → show status (include workspace projects in display)
     if not args:
-        if not projects:
-            return "❌ No projects configured in projects.yaml."
-        return _show_status(config, projects)
+        return _show_status(config, koan_root)
 
     # /explore all or /explore none
     lower_args = args.lower()
     if lower_args == "all":
-        if not projects:
-            return "❌ No projects configured in projects.yaml."
         return _set_all(koan_root, config, projects, True)
     if lower_args == "none":
-        if not projects:
-            return "❌ No projects configured in projects.yaml."
         return _set_all(koan_root, config, projects, False)
 
     # /explore <project> or /noexplore <project>
@@ -66,14 +60,28 @@ def _get_exploration_status(config, project_name):
     return get_project_exploration(config, project_name)
 
 
-def _show_status(config, projects):
-    """Show exploration status for all projects."""
+def _show_status(config, koan_root):
+    """Show exploration status for all projects (yaml + workspace)."""
+    from app.projects_merged import get_all_projects
+
+    all_projects = get_all_projects(koan_root)
+    yaml_projects = config.get("projects") or {}
+
+    # Build combined name set: merged projects + yaml-only entries
+    merged_names = {name for name, _ in all_projects}
+    yaml_only_names = set(yaml_projects.keys())
+    all_names = merged_names | yaml_only_names
+
+    if not all_names:
+        return "❌ No projects found (projects.yaml or workspace/)."
+
     lines = ["🔭 Exploration status:"]
-    for name in sorted(projects, key=str.lower):
+    for name in sorted(all_names, key=str.lower):
         enabled = _get_exploration_status(config, name)
         icon = "✅" if enabled else "❌"
         state = "ON" if enabled else "OFF"
-        lines.append(f"  {icon} {name}: {state}")
+        suffix = " (workspace)" if name not in yaml_only_names else ""
+        lines.append(f"  {icon} {name}: {state}{suffix}")
 
     lines.append("")
     lines.append("/explore <project> to enable")
@@ -89,7 +97,10 @@ def _set_exploration(koan_root, config, projects, name, enable):
         canonical = _try_workspace_project(koan_root, config, projects, name)
 
     if canonical is None:
-        known = ", ".join(sorted(projects.keys(), key=str.lower))
+        from app.projects_merged import get_all_projects
+
+        all_names = [n for n, _ in get_all_projects(koan_root)]
+        known = ", ".join(sorted(all_names, key=str.lower))
         return f"❌ Unknown project: '{name}'. Known projects: {known}"
 
     current = _get_exploration_status(config, canonical)
@@ -112,14 +123,29 @@ def _set_exploration(koan_root, config, projects, name, enable):
 
 
 def _set_all(koan_root, config, projects, enable):
-    """Enable or disable exploration for all projects."""
+    """Enable or disable exploration for all projects (yaml + workspace)."""
+    from app.projects_merged import get_all_projects
+
+    all_projects = get_all_projects(koan_root)
+
+    # Build combined name set: merged projects + yaml-only entries (e.g. None entries)
+    all_names = {name for name, _ in all_projects}
+    all_names.update(projects.keys())
+
+    if not all_names:
+        return "❌ No projects found (projects.yaml or workspace/)."
+
+    # Build path lookup from merged projects
+    path_by_name = dict(all_projects)
+
     changed = 0
-    for name in projects:
+    for name in sorted(all_names, key=str.lower):
         current = _get_exploration_status(config, name)
         if current != enable:
             project_entry = projects.get(name)
             if project_entry is None:
-                projects[name] = {}
+                path = path_by_name.get(name, "")
+                projects[name] = {"path": path} if path else {}
                 project_entry = projects[name]
             project_entry["exploration"] = enable
             changed += 1

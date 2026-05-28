@@ -104,33 +104,36 @@ class TestLoadConfig:
 class TestShowStatus:
     def test_all_enabled(self, handler):
         config = _make_config("alpha", "beta")
-        projects = config["projects"]
+        all_projects = [("alpha", "/workspace/alpha"), ("beta", "/workspace/beta")]
 
-        with patch.object(handler, "_get_exploration_status", return_value=True):
-            result = handler._show_status(config, projects)
+        with patch("app.projects_merged.get_all_projects", return_value=all_projects), \
+             patch.object(handler, "_get_exploration_status", return_value=True):
+            result = handler._show_status(config, "/some/root")
 
         assert "alpha: ON" in result
         assert "beta: ON" in result
 
     def test_mixed_status(self, handler):
         config = _make_config("alpha", "beta")
-        projects = config["projects"]
+        all_projects = [("alpha", "/workspace/alpha"), ("beta", "/workspace/beta")]
 
         def mock_status(cfg, name):
             return name == "alpha"
 
-        with patch.object(handler, "_get_exploration_status", side_effect=mock_status):
-            result = handler._show_status(config, projects)
+        with patch("app.projects_merged.get_all_projects", return_value=all_projects), \
+             patch.object(handler, "_get_exploration_status", side_effect=mock_status):
+            result = handler._show_status(config, "/some/root")
 
         assert "alpha: ON" in result
         assert "beta: OFF" in result
 
     def test_sorted_alphabetically(self, handler):
         config = _make_config("zeta", "alpha", "middle")
-        projects = config["projects"]
+        all_projects = [("alpha", "/a"), ("middle", "/m"), ("zeta", "/z")]
 
-        with patch.object(handler, "_get_exploration_status", return_value=True):
-            result = handler._show_status(config, projects)
+        with patch("app.projects_merged.get_all_projects", return_value=all_projects), \
+             patch.object(handler, "_get_exploration_status", return_value=True):
+            result = handler._show_status(config, "/some/root")
 
         lines = result.split("\n")
         project_lines = [l for l in lines if ":" in l and ("ON" in l or "OFF" in l)]
@@ -139,13 +142,34 @@ class TestShowStatus:
 
     def test_includes_usage_hints(self, handler):
         config = _make_config("koan")
-        projects = config["projects"]
+        all_projects = [("koan", "/workspace/koan")]
 
-        with patch.object(handler, "_get_exploration_status", return_value=True):
-            result = handler._show_status(config, projects)
+        with patch("app.projects_merged.get_all_projects", return_value=all_projects), \
+             patch.object(handler, "_get_exploration_status", return_value=True):
+            result = handler._show_status(config, "/some/root")
 
         assert "/explore" in result
         assert "/noexplore" in result
+
+    def test_workspace_projects_shown_with_suffix(self, handler):
+        config = _make_config("koan")
+        all_projects = [("koan", "/workspace/koan"), ("myapp", "/workspace/myapp")]
+
+        with patch("app.projects_merged.get_all_projects", return_value=all_projects), \
+             patch.object(handler, "_get_exploration_status", return_value=True):
+            result = handler._show_status(config, "/some/root")
+
+        assert "koan: ON" in result
+        assert "myapp: ON (workspace)" in result
+        assert "(workspace)" not in result.split("koan: ON")[0]
+
+    def test_no_projects_returns_error(self, handler):
+        config = {"projects": {}}
+
+        with patch("app.projects_merged.get_all_projects", return_value=[]):
+            result = handler._show_status(config, "/some/root")
+
+        assert "No projects found" in result
 
 
 # ===========================================================================
@@ -204,10 +228,12 @@ class TestSetExploration:
     def test_unknown_project(self, handler, tmp_path):
         config = _make_config("koan")
         projects = config["projects"]
+        all_projects = [("koan", "/workspace/koan")]
 
-        result = handler._set_exploration(str(tmp_path), config, projects, "unknown", True)
+        with patch("app.projects_merged.get_all_projects", return_value=all_projects):
+            result = handler._set_exploration(str(tmp_path), config, projects, "unknown", True)
         assert "Unknown project" in result
-        assert "koan" in result  # known projects listed
+        assert "koan" in result
 
     def test_case_insensitive_name(self, handler, tmp_path):
         config = _make_config("Koan")
@@ -260,11 +286,13 @@ class TestSetExploration:
         """Project not in yaml AND not in workspace should still fail."""
         config = _make_config("koan")
         projects = config["projects"]
+        all_projects = [("koan", "/workspace/koan")]
 
         # Create workspace dir but no matching project
         (tmp_path / "workspace").mkdir()
 
-        result = handler._set_exploration(str(tmp_path), config, projects, "ghost", True)
+        with patch("app.projects_merged.get_all_projects", return_value=all_projects):
+            result = handler._set_exploration(str(tmp_path), config, projects, "ghost", True)
         assert "Unknown project" in result
 
 
@@ -277,8 +305,10 @@ class TestSetAll:
     def test_enable_all(self, handler, tmp_path):
         config = _make_config("alpha", "beta")
         projects = config["projects"]
+        all_projects = [("alpha", "/workspace/alpha"), ("beta", "/workspace/beta")]
 
-        with patch.object(handler, "_get_exploration_status", return_value=False), \
+        with patch("app.projects_merged.get_all_projects", return_value=all_projects), \
+             patch.object(handler, "_get_exploration_status", return_value=False), \
              patch.object(handler, "_save_config") as mock_save:
             result = handler._set_all(str(tmp_path), config, projects, True)
 
@@ -289,8 +319,10 @@ class TestSetAll:
     def test_disable_all(self, handler, tmp_path):
         config = _make_config("alpha", "beta")
         projects = config["projects"]
+        all_projects = [("alpha", "/workspace/alpha"), ("beta", "/workspace/beta")]
 
-        with patch.object(handler, "_get_exploration_status", return_value=True), \
+        with patch("app.projects_merged.get_all_projects", return_value=all_projects), \
+             patch.object(handler, "_get_exploration_status", return_value=True), \
              patch.object(handler, "_save_config") as mock_save:
             result = handler._set_all(str(tmp_path), config, projects, False)
 
@@ -300,8 +332,10 @@ class TestSetAll:
     def test_all_already_enabled(self, handler, tmp_path):
         config = _make_config("alpha", "beta")
         projects = config["projects"]
+        all_projects = [("alpha", "/workspace/alpha"), ("beta", "/workspace/beta")]
 
-        with patch.object(handler, "_get_exploration_status", return_value=True), \
+        with patch("app.projects_merged.get_all_projects", return_value=all_projects), \
+             patch.object(handler, "_get_exploration_status", return_value=True), \
              patch.object(handler, "_save_config") as mock_save:
             result = handler._set_all(str(tmp_path), config, projects, True)
 
@@ -311,15 +345,40 @@ class TestSetAll:
     def test_partial_change(self, handler, tmp_path):
         config = _make_config("alpha", "beta")
         projects = config["projects"]
+        all_projects = [("alpha", "/workspace/alpha"), ("beta", "/workspace/beta")]
 
         def mock_status(cfg, name):
-            return name == "alpha"  # alpha already enabled, beta not
+            return name == "alpha"
 
-        with patch.object(handler, "_get_exploration_status", side_effect=mock_status), \
+        with patch("app.projects_merged.get_all_projects", return_value=all_projects), \
+             patch.object(handler, "_get_exploration_status", side_effect=mock_status), \
              patch.object(handler, "_save_config"):
             result = handler._set_all(str(tmp_path), config, projects, True)
 
         assert "1 project(s)" in result
+
+    def test_includes_workspace_projects(self, handler, tmp_path):
+        config = _make_config("koan")
+        projects = config["projects"]
+        all_projects = [("koan", "/workspace/koan"), ("myapp", "/workspace/myapp")]
+
+        with patch("app.projects_merged.get_all_projects", return_value=all_projects), \
+             patch.object(handler, "_get_exploration_status", return_value=False), \
+             patch.object(handler, "_save_config"):
+            result = handler._set_all(str(tmp_path), config, projects, True)
+
+        assert "2 project(s)" in result
+        assert "myapp" in projects
+        assert projects["myapp"]["path"] == "/workspace/myapp"
+
+    def test_no_projects_returns_error(self, handler, tmp_path):
+        config = {"projects": {}}
+        projects = config["projects"]
+
+        with patch("app.projects_merged.get_all_projects", return_value=[]):
+            result = handler._set_all(str(tmp_path), config, projects, True)
+
+        assert "No projects found" in result
 
 
 # ===========================================================================
@@ -333,14 +392,20 @@ class TestHandle:
             result = handler.handle(ctx)
         assert "No projects.yaml" in result
 
-    def test_empty_projects_returns_error(self, handler, ctx):
-        with patch.object(handler, "_load_config", return_value={"projects": {}}):
+    def test_empty_projects_shows_workspace(self, handler, ctx):
+        all_projects = [("myapp", "/workspace/myapp")]
+        with patch.object(handler, "_load_config", return_value={"projects": {}}), \
+             patch("app.projects_merged.get_all_projects", return_value=all_projects), \
+             patch.object(handler, "_get_exploration_status", return_value=True):
             result = handler.handle(ctx)
-        assert "No projects configured" in result
+        assert "myapp" in result
+        assert "(workspace)" in result
 
     def test_no_args_shows_status(self, handler, ctx):
         config = _make_config("koan")
+        all_projects = [("koan", "/workspace/koan")]
         with patch.object(handler, "_load_config", return_value=config), \
+             patch("app.projects_merged.get_all_projects", return_value=all_projects), \
              patch.object(handler, "_get_exploration_status", return_value=True):
             result = handler.handle(ctx)
         assert "Exploration status" in result
@@ -371,8 +436,10 @@ class TestHandle:
 
     def test_explore_all(self, handler, ctx):
         config = _make_config("alpha", "beta")
+        all_projects = [("alpha", "/workspace/alpha"), ("beta", "/workspace/beta")]
         ctx.args = "all"
         with patch.object(handler, "_load_config", return_value=config), \
+             patch("app.projects_merged.get_all_projects", return_value=all_projects), \
              patch.object(handler, "_get_exploration_status", return_value=False), \
              patch.object(handler, "_save_config"):
             result = handler.handle(ctx)
@@ -381,8 +448,10 @@ class TestHandle:
 
     def test_explore_none(self, handler, ctx):
         config = _make_config("alpha", "beta")
+        all_projects = [("alpha", "/workspace/alpha"), ("beta", "/workspace/beta")]
         ctx.args = "none"
         with patch.object(handler, "_load_config", return_value=config), \
+             patch("app.projects_merged.get_all_projects", return_value=all_projects), \
              patch.object(handler, "_get_exploration_status", return_value=True), \
              patch.object(handler, "_save_config"):
             result = handler.handle(ctx)
@@ -390,8 +459,10 @@ class TestHandle:
 
     def test_explore_all_case_insensitive(self, handler, ctx):
         config = _make_config("koan")
+        all_projects = [("koan", "/workspace/koan")]
         ctx.args = "ALL"
         with patch.object(handler, "_load_config", return_value=config), \
+             patch("app.projects_merged.get_all_projects", return_value=all_projects), \
              patch.object(handler, "_get_exploration_status", return_value=False), \
              patch.object(handler, "_save_config"):
             result = handler.handle(ctx)
@@ -399,16 +470,20 @@ class TestHandle:
 
     def test_empty_args_string(self, handler, ctx):
         config = _make_config("koan")
+        all_projects = [("koan", "/workspace/koan")]
         ctx.args = "   "
         with patch.object(handler, "_load_config", return_value=config), \
+             patch("app.projects_merged.get_all_projects", return_value=all_projects), \
              patch.object(handler, "_get_exploration_status", return_value=True):
             result = handler.handle(ctx)
         assert "Exploration status" in result
 
     def test_none_args(self, handler, ctx):
         config = _make_config("koan")
+        all_projects = [("koan", "/workspace/koan")]
         ctx.args = None
         with patch.object(handler, "_load_config", return_value=config), \
+             patch("app.projects_merged.get_all_projects", return_value=all_projects), \
              patch.object(handler, "_get_exploration_status", return_value=True):
             result = handler.handle(ctx)
         assert "Exploration status" in result
