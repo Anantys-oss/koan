@@ -13,6 +13,13 @@ can react to comments to mark that a command was accepted.
 Context-aware skills can receive issue, PR, branch, project, and URL context
 from the originating notification.
 
+For Jira issue URLs used by `/plan`, `/fix`, and `/implement`, Koan requires a
+resolved Koan project identity before continuing. Resolution order is:
+1) explicit `--project-name`/mission project context, then 2) Jira key mapping
+from `projects.yaml` (`projects.<name>.issue_tracker.provider: jira` with
+`jira_project`). If neither resolves, the runner fails fast with an actionable
+error instead of falling back to directory basename heuristics.
+
 ## PR Workflows
 
 Koan-created work normally lands in branch-prefixed draft PRs. PR helpers cover

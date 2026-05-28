@@ -11,6 +11,7 @@ from skills.core.fix.fix_runner import (
     main,
 )
 from app.issue_tracker.types import IssueContent, IssueRef
+from app.issue_tracker import UnresolvedJiraProjectError
 
 # Shared helpers imported via app.pr_submit
 from app.pr_submit import (
@@ -253,6 +254,26 @@ class TestRunFix:
             notify_fn=notify,
         )
         assert success is False
+
+    @patch(
+        f"{_FIX_MODULE}.fetch_issue",
+        side_effect=UnresolvedJiraProjectError(
+            "Unmapped Jira issue 'PROJ-42': no Koan project was resolved. "
+            "Add this mapping in projects.yaml under projects.<name>.issue_tracker "
+            "with provider: jira and jira_project: PROJ.",
+        ),
+    )
+    def test_unmapped_jira_project_notifies_and_fails(self, _mock_fetch):
+        notify = MagicMock()
+        success, summary = run_fix(
+            project_path="/path",
+            issue_url="https://org.atlassian.net/browse/PROJ-42",
+            notify_fn=notify,
+        )
+        assert success is False
+        assert "projects.yaml" in summary
+        assert "PROJ-42" in summary
+        notify.assert_called_once()
 
     @patch(f"{_FIX_MODULE}.fetch_issue")
     def test_empty_issue(self, mock_fetch):

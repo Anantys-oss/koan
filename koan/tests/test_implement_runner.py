@@ -6,6 +6,7 @@ from unittest.mock import patch, MagicMock
 
 from app.github import fetch_issue_with_comments, detect_parent_repo
 from app.issue_tracker.types import IssueContent, IssueRef
+from app.issue_tracker import UnresolvedJiraProjectError
 from app.projects_config import get_project_submit_to_repository
 from skills.core.implement.implement_runner import (
     run_implement,
@@ -694,6 +695,26 @@ class TestRunImplement:
         ok, msg = run_implement("/project", "not-a-url", notify_fn=MagicMock())
         assert not ok
         assert "Invalid" in msg
+
+    def test_unmapped_jira_project_notifies_and_fails(self):
+        notify = MagicMock()
+        with patch(
+            f"{_IMPL_MODULE}.fetch_issue",
+            side_effect=UnresolvedJiraProjectError(
+                "Unmapped Jira issue 'PROJ-42': no Koan project was resolved. "
+                "Add this mapping in projects.yaml under projects.<name>.issue_tracker "
+                "with provider: jira and jira_project: PROJ.",
+            ),
+        ):
+            ok, msg = run_implement(
+                "/project",
+                "https://org.atlassian.net/browse/PROJ-42",
+                notify_fn=notify,
+            )
+            assert not ok
+            assert "projects.yaml" in msg
+            assert "PROJ-42" in msg
+            notify.assert_called_once()
 
     def test_no_plan_found(self):
         notify = MagicMock()

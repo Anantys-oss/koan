@@ -25,6 +25,7 @@ from app.plan_runner import (
     is_simple_plan,
 )
 from app.issue_tracker.types import IssueContent, IssueRef
+from app.issue_tracker import UnresolvedJiraProjectError
 
 pytestmark = pytest.mark.slow
 
@@ -319,6 +320,26 @@ class TestRunIssuePlan:
             ok, msg = _run_issue_plan("/project", url, notify, None)
             assert not ok
             assert "Failed to fetch" in msg
+
+    def test_unmapped_jira_project_resolve_notifies_and_fails(self):
+        notify = MagicMock()
+        with patch(
+            "app.plan_runner.resolve_issue_ref",
+            side_effect=UnresolvedJiraProjectError(
+                "Unmapped Jira issue 'PROJ-42': no Koan project was resolved. "
+                "Add this mapping in projects.yaml under projects.<name>.issue_tracker "
+                "with provider: jira and jira_project: PROJ.",
+            ),
+        ):
+            ok, msg = _run_issue_plan(
+                "/project",
+                "https://org.atlassian.net/browse/PROJ-42",
+                notify,
+                None,
+            )
+        assert not ok
+        assert "projects.yaml" in msg
+        notify.assert_called_once()
 
     def test_plan_generation_failure(self):
         notify = MagicMock()
