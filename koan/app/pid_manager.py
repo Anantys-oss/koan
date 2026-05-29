@@ -686,6 +686,15 @@ def stop_processes(koan_root: Path, timeout: float = 5.0) -> dict:
     stop_file = koan_root / STOP_FILE
     atomic_write(stop_file, "STOP")
 
+    # Notify Telegram before killing processes
+    any_running = any(check_pidfile(koan_root, n) for n in PROCESS_NAMES)
+    if any_running:
+        try:
+            from app.notify import send_telegram
+            send_telegram("🛑 Shutting down — operator requested stop.")
+        except Exception as e:
+            print(f"[pid_manager] stop notification failed: {e}", file=sys.stderr)
+
     # Bootout any launchd-managed services first to prevent respawn
     for name in PROCESS_NAMES:
         _bootout_launchd_service(name)
