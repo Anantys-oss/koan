@@ -1334,10 +1334,9 @@ def run_review(
         _triage_summary = ", ".join(
             f"{t.path} ({t.reason})" for t in _triaged_files
         )
-        print(
-            f"[review_runner] Triaged {len(_triaged_files)} trivial file(s): "
-            f"{_triage_summary}",
-            file=sys.stderr,
+        log(
+            "review",
+            f"Triaged {len(_triaged_files)} trivial file(s): {_triage_summary}",
         )
         context = {**context, "diff": _triaged_diff}
 
