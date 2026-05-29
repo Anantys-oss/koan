@@ -384,12 +384,11 @@ models:
 #
 # Codex (OpenAI) provider defaults (uncomment and set to override):
 # models_for_codex:
-#   mission: "gpt-5.5"       # Main mission execution
-#   chat: "gpt-5.5"          # Chat responses
-#   lightweight: "gpt-5.4-mini"   # Low-cost calls
-#   fallback: ""             # Empty = use provider default
-#   review_mode: "gpt-5.3-codex"  # Cheaper model for REVIEW mode audits
-#   reflect: "gpt-5.5"       # Model for review reflection pass
+#   mission: "gpt-5.3-codex"      # complex implementation
+#   chat: "gpt-5.5"               # general discussion / planning
+#   lightweight: "gpt-5.5"        # simple tasks if cost is acceptable
+#   review_mode: "gpt-5.3-codex"  # serious code review
+#   reflect: "gpt-5.5"            # summarize / reason about result
 
 # Branch cleanup — automatic deletion of merged branches during git sync
 # Every git_sync_interval iterations, Kōan detects merged branches (both
