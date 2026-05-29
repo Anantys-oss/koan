@@ -303,6 +303,7 @@ def build_review_prompt(
     repliable_comments: Optional[List[dict]] = None,
     plan_body: Optional[str] = None,
     project_path: Optional[str] = None,
+    triaged_files: Optional[list] = None,
 ) -> str:
     """Build a prompt for Claude to review a PR.
 
@@ -364,6 +365,16 @@ def build_review_prompt(
                 f"> ⚠️ Diff compressed — {len(compressed.skipped_files)} file(s) omitted"
                 f" due to size: {skipped_list}\n\n"
             )
+
+    if triaged_files:
+        triaged_list = ", ".join(
+            f"`{t.path}` ({t.reason})" for t in triaged_files
+        )
+        triage_note = (
+            f"> ℹ️ Triaged {len(triaged_files)} trivial file(s)"
+            f" (not reviewed): {triaged_list}\n\n"
+        )
+        skipped_note = skipped_note + triage_note
 
     kwargs: dict = dict(
         TITLE=context["title"],
@@ -1311,6 +1322,25 @@ def run_review(
             )
         context = {**context, "diff": filtered_diff}
 
+    # Step 1a′: Content-aware triage — skip trivial file changes
+    from app.config import get_review_triage_config
+    from app.diff_triage import triage_diff_files
+
+    _triage_config = get_review_triage_config()
+    _triaged_diff, _triaged_files = triage_diff_files(
+        context.get("diff", ""), _triage_config,
+    )
+    if _triaged_files:
+        _triage_summary = ", ".join(
+            f"{t.path} ({t.reason})" for t in _triaged_files
+        )
+        print(
+            f"[review_runner] Triaged {len(_triaged_files)} trivial file(s): "
+            f"{_triage_summary}",
+            file=sys.stderr,
+        )
+        context = {**context, "diff": _triaged_diff}
+
     if not context.get("diff"):
         if context.get("diff_error"):
             return (
@@ -1358,6 +1388,7 @@ def run_review(
         context, skill_dir=skill_dir, architecture=architecture,
         comments=comments, repliable_comments=repliable_comments,
         plan_body=plan_body or None, project_path=project_path,
+        triaged_files=_triaged_files,
     )
 
     # Step 3: Run provider review (read-only)

@@ -1271,6 +1271,44 @@ def get_review_reflect_config() -> dict:
     return {"threshold": max(0, min(10, threshold))}
 
 
+def get_review_triage_config() -> dict:
+    """Get review triage configuration from config.yaml.
+
+    Content-aware triage classifies each file in a PR diff as trivial or
+    worth reviewing.  Trivial files (lockfiles, whitespace-only changes,
+    renames with no content delta, generated code) are filtered before
+    the main review prompt, saving tokens on the expensive model call.
+
+    Config key: review_triage::
+
+        review_triage:
+          enabled: true
+          skip_lockfiles: true
+          skip_generated: true
+          skip_whitespace_only: true
+          skip_renames: true
+
+    Returns:
+        Dict with boolean flags.  All keys always present; defaults shown above.
+    """
+    config = _load_config()
+    triage = config.get("review_triage", {}) or {}
+    if not isinstance(triage, dict):
+        triage = {}
+
+    def _bool(key: str, default: bool) -> bool:
+        val = triage.get(key, default)
+        return bool(val) if isinstance(val, bool) else default
+
+    return {
+        "enabled": _bool("enabled", False),
+        "skip_lockfiles": _bool("skip_lockfiles", True),
+        "skip_generated": _bool("skip_generated", True),
+        "skip_whitespace_only": _bool("skip_whitespace_only", True),
+        "skip_renames": _bool("skip_renames", True),
+    }
+
+
 def is_caveman_mode() -> bool:
     """Check if caveman output optimization is enabled.
 

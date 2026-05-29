@@ -2512,6 +2512,73 @@ class TestReviewIgnoreConfig:
         assert cfg["glob"] == ["123", "True"]
 
 
+class TestReviewTriageConfig:
+    """Tests for get_review_triage_config() in app.config."""
+
+    def test_defaults_when_no_config(self):
+        from app.config import get_review_triage_config
+
+        with patch("app.config._load_config", return_value={}):
+            cfg = get_review_triage_config()
+
+        assert cfg == {
+            "enabled": False,
+            "skip_lockfiles": True,
+            "skip_generated": True,
+            "skip_whitespace_only": True,
+            "skip_renames": True,
+        }
+
+    def test_enabled_with_defaults(self):
+        from app.config import get_review_triage_config
+
+        with patch("app.config._load_config", return_value={
+            "review_triage": {"enabled": True},
+        }):
+            cfg = get_review_triage_config()
+
+        assert cfg["enabled"] is True
+        assert cfg["skip_lockfiles"] is True
+
+    def test_selective_disable(self):
+        from app.config import get_review_triage_config
+
+        with patch("app.config._load_config", return_value={
+            "review_triage": {
+                "enabled": True,
+                "skip_lockfiles": False,
+                "skip_whitespace_only": False,
+            },
+        }):
+            cfg = get_review_triage_config()
+
+        assert cfg["enabled"] is True
+        assert cfg["skip_lockfiles"] is False
+        assert cfg["skip_whitespace_only"] is False
+        assert cfg["skip_generated"] is True
+
+    def test_non_dict_config_returns_defaults(self):
+        from app.config import get_review_triage_config
+
+        with patch("app.config._load_config", return_value={
+            "review_triage": "invalid",
+        }):
+            cfg = get_review_triage_config()
+
+        assert cfg["enabled"] is False
+
+    def test_non_bool_values_use_defaults(self):
+        from app.config import get_review_triage_config
+
+        with patch("app.config._load_config", return_value={
+            "review_triage": {"enabled": "yes", "skip_lockfiles": 42},
+        }):
+            cfg = get_review_triage_config()
+
+        assert cfg["enabled"] is False
+        assert cfg["skip_lockfiles"] is True
+
+
 # ---------------------------------------------------------------------------
 # run_review with review_ignore filtering (from config.yaml)
 # ---------------------------------------------------------------------------
@@ -2661,6 +2728,113 @@ class TestRunReviewWithIgnoreFilter:
 
         prompt_sent = mock_claude.call_args[0][0]
         assert "vendor/lodash.js" in prompt_sent
+
+
+# ---------------------------------------------------------------------------
+# run_review with triage filtering (content-aware)
+# ---------------------------------------------------------------------------
+
+
+class TestRunReviewWithTriageFilter:
+    """Tests that review_triage classification is applied in run_review()."""
+
+    _TRIAGE_DIFF = (
+        "diff --git a/src/app.py b/src/app.py\n"
+        "index abc..def 100644\n"
+        "--- a/src/app.py\n"
+        "+++ b/src/app.py\n"
+        "@@ -1 +1,2 @@\n"
+        " x = 1\n"
+        "+y = 2\n"
+        "diff --git a/package-lock.json b/package-lock.json\n"
+        "index 111..222 100644\n"
+        "--- a/package-lock.json\n"
+        "+++ b/package-lock.json\n"
+        "@@ -1 +1,2 @@\n"
+        ' "v": "1"\n'
+        '+  "v": "2"\n'
+    )
+
+    def _make_pr_context(self, diff=None):
+        return {
+            "title": "Test PR",
+            "body": "",
+            "branch": "feature",
+            "base": "main",
+            "state": "OPEN",
+            "author": "dev",
+            "url": "https://github.com/owner/repo/pull/1",
+            "diff": diff or self._TRIAGE_DIFF,
+            "review_comments": "",
+            "reviews": "",
+            "issue_comments": "",
+        }
+
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
+    @patch("app.review_runner.find_bot_comment", return_value=None)
+    @patch("app.config.get_review_ignore_config", return_value={"glob": [], "regex": []})
+    @patch("app.config.get_review_triage_config", return_value={
+        "enabled": True,
+        "skip_lockfiles": True,
+        "skip_generated": True,
+        "skip_whitespace_only": True,
+        "skip_renames": True,
+    })
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_triage_filters_lockfile_from_prompt(
+        self, mock_fetch, mock_claude, mock_gh, mock_repliable,
+        mock_triage_cfg, mock_ignore, mock_find_bot, _mock_shas,
+        review_skill_dir,
+    ):
+        """Lock files are triaged out of the diff before Claude prompt."""
+        mock_fetch.return_value = self._make_pr_context()
+        mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
+
+        run_review(
+            "owner", "repo", "1", "/tmp/project",
+            notify_fn=MagicMock(),
+            skill_dir=review_skill_dir,
+        )
+
+        prompt_sent = mock_claude.call_args[0][0]
+        assert "diff --git a/package-lock.json" not in prompt_sent
+        assert "Triaged 1 trivial" in prompt_sent
+        assert "src/app.py" in prompt_sent
+
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
+    @patch("app.review_runner.find_bot_comment", return_value=None)
+    @patch("app.config.get_review_ignore_config", return_value={"glob": [], "regex": []})
+    @patch("app.config.get_review_triage_config", return_value={
+        "enabled": False,
+        "skip_lockfiles": True,
+        "skip_generated": True,
+        "skip_whitespace_only": True,
+        "skip_renames": True,
+    })
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_triage_disabled_keeps_all_files(
+        self, mock_fetch, mock_claude, mock_gh, mock_repliable,
+        mock_triage_cfg, mock_ignore, mock_find_bot, _mock_shas,
+        review_skill_dir,
+    ):
+        """When triage is disabled, lock files remain in the diff."""
+        mock_fetch.return_value = self._make_pr_context()
+        mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
+
+        run_review(
+            "owner", "repo", "1", "/tmp/project",
+            notify_fn=MagicMock(),
+            skill_dir=review_skill_dir,
+        )
+
+        prompt_sent = mock_claude.call_args[0][0]
+        assert "package-lock.json" in prompt_sent
 
 
 # Severity filter hint in review output

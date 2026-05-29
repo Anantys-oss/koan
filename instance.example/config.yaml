@@ -630,6 +630,19 @@ usage:
 #   regex:
 #     - '.*\.pb\.go$'       # protobuf-generated Go files (full path regex)
 
+# Review triage — content-aware pre-filtering of trivial file changes
+# Analyzes each file's diff content to classify it as trivial or worth
+# reviewing. Trivial files (lockfiles, generated code, whitespace-only
+# changes, renames with no content delta) are removed from the diff before
+# the expensive Claude review call, saving tokens. Disabled by default;
+# enable for projects with mixed trivial + meaningful changes in PRs.
+# review_triage:
+#   enabled: true               # Master switch (default: false)
+#   skip_lockfiles: true        # Skip package-lock.json, yarn.lock, etc.
+#   skip_generated: true        # Skip .min.js, .map, .pb.go, _pb2.py, etc.
+#   skip_whitespace_only: true  # Skip files with only indentation/blank changes
+#   skip_renames: true          # Skip file renames with no content delta
+
 # Review concurrency — parallel GitHub API calls during code reviews
 # When enabled, PR context and comment fetching run concurrently using a
 # ThreadPoolExecutor. The LLM call (Claude CLI) is always sequential.
