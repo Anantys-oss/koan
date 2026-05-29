@@ -95,6 +95,16 @@ interval_seconds: 300
 # Faster response, lower cost, but simpler answers
 fast_reply: false
 
+# Worktree isolation — run each mission in an isolated git worktree to prevent
+# dirty-state conflicts. Creates a temp worktree from HEAD, executes there,
+# and cleans up after. Branches/commits persist in the main repo via shared
+# git object store. Orphaned worktrees from crashed sessions are cleaned on startup.
+# worktree_isolation: false
+
+# Dependency directories to symlink into worktrees (avoids redundant copies).
+# Only used when worktree_isolation is true.
+# worktree_shared_deps: ["node_modules", ".venv", "vendor"]
+
 # Debug mode — write detailed mission execution logs to .koan-debug.log
 # Use `tail -f .koan-debug.log` to watch dispatch decisions, commands, and errors
 # debug: false

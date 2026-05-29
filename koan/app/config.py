@@ -395,6 +395,30 @@ def get_skip_permissions() -> bool:
     return bool(config.get("skip_permissions", False))
 
 
+def get_worktree_isolation() -> bool:
+    """Check if worktree isolation is enabled for mission execution.
+
+    When True, each mission runs in an isolated git worktree instead of
+    the project's main working directory — prevents dirty-state conflicts.
+    Default: False (opt-in via ``worktree_isolation: true`` in config.yaml).
+    """
+    config = _load_config()
+    return bool(config.get("worktree_isolation", False))
+
+
+def get_worktree_shared_deps() -> list:
+    """Get dependency directories to symlink into worktrees.
+
+    Heavy directories like node_modules or .venv are symlinked rather than
+    copied. Default: ["node_modules", ".venv", "vendor"].
+    """
+    config = _load_config()
+    deps = config.get("worktree_shared_deps")
+    if isinstance(deps, list):
+        return deps
+    return ["node_modules", ".venv", "vendor"]
+
+
 def get_debug_enabled() -> bool:
     """Check if debug mode is enabled in config.yaml.
 

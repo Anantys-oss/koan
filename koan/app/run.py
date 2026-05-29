@@ -2075,6 +2075,8 @@ def _run_iteration(
     provider_label = "Provider"
     plugin_dir = None  # generated plugin dir for Skill tool (cleaned up in finally)
     cmd_cleanup_paths: List[str] = []  # temp files created by build_mission_command
+    worktree_info = None  # WorktreeInfo when worktree isolation is active
+    effective_cwd = project_path  # may be overridden by worktree path
     try:
         provider_name, provider_label = _provider_identity()
         # Build CLI command (provider-agnostic with per-project overrides)
@@ -2132,17 +2134,38 @@ def _run_iteration(
         )
 
         cmd_display = [c[:100] + '...' if len(c) > 100 else c for c in cmd[:6]]
-        _debug_log(f"[run] cli: cmd={' '.join(cmd_display)}... cwd={project_path}")
+
+        # --- Worktree isolation: run Claude CLI in an isolated worktree ---
+        worktree_info = None
+        effective_cwd = project_path
+        try:
+            from app.config import get_worktree_isolation, get_worktree_shared_deps
+            if get_worktree_isolation():
+                from app.worktree_manager import create_worktree, inject_worktree_claude_md, setup_shared_deps
+                wt = create_worktree(project_path, base_branch="main")
+                worktree_info = wt
+                effective_cwd = wt.path
+                inject_worktree_claude_md(wt.path, mission_title or "autonomous exploration")
+                shared_deps = get_worktree_shared_deps()
+                if shared_deps:
+                    setup_shared_deps(wt.path, project_path, shared_deps)
+                log("worktree", f"Created worktree {wt.session_id} on branch {wt.branch}")
+        except Exception as e:
+            log("warning", f"Worktree creation failed, falling back to project dir: {e}")
+            worktree_info = None
+            effective_cwd = project_path
+
+        _debug_log(f"[run] cli: cmd={' '.join(cmd_display)}... cwd={effective_cwd}")
 
         # Capture git HEAD before execution for retry safety check
-        pre_head = _get_git_head(project_path)
+        pre_head = _get_git_head(effective_cwd)
 
         # Snapshot core files before execution for integrity check
         from app.core_files import snapshot_core_files, check_core_files, log_integrity_warnings
         core_snapshot = snapshot_core_files(koan_root, project_path)
 
         claude_exit = run_claude_task(
-            cmd, stdout_file, stderr_file, cwd=project_path,
+            cmd, stdout_file, stderr_file, cwd=effective_cwd,
             instance_dir=instance, project_name=project_name, run_num=run_num,
         )
         _debug_log(f"[run] cli: exit_code={claude_exit}")
@@ -2158,7 +2181,7 @@ def _run_iteration(
                 stdout_file=stdout_file,
                 stderr_file=stderr_file,
                 cmd=cmd,
-                project_path=project_path,
+                project_path=effective_cwd,
                 pre_head=pre_head,
                 instance=instance,
                 project_name=project_name,
@@ -2217,7 +2240,7 @@ def _run_iteration(
                     update_checkpoint, update_from_pending, update_from_stdout,
                 )
                 from app.git_sync import run_git as _cp_run_git
-                _cp_branch = _cp_run_git(project_path, "rev-parse", "--abbrev-ref", "HEAD")
+                _cp_branch = _cp_run_git(effective_cwd, "rev-parse", "--abbrev-ref", "HEAD")
                 if _cp_branch:
                     update_checkpoint(instance, original_mission_title, branch=_cp_branch)
                 update_from_pending(instance, original_mission_title)
@@ -2343,6 +2366,17 @@ def _run_iteration(
             except Exception as e:
                 log("error", f"Checkpoint cleanup failed (non-blocking): {e}")
     finally:
+        if worktree_info:
+            try:
+                from app.worktree_manager import remove_worktree
+                remove_worktree(
+                    project_path,
+                    session_id=worktree_info.session_id,
+                    force=True,
+                )
+                log("worktree", f"Cleaned up worktree {worktree_info.session_id}")
+            except Exception as e:
+                log("warning", f"Worktree cleanup failed: {e}")
         _cleanup_temp(stdout_file, stderr_file)
         if cmd_cleanup_paths:
             try:

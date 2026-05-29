@@ -423,6 +423,20 @@ def run_morning_ritual(instance: str) -> bool:
     return run_ritual("morning", Path(instance))
 
 
+def _cleanup_orphaned_worktrees(projects: list):
+    """Remove orphaned worktrees left by crashed sessions across all projects."""
+    from app.config import get_worktree_isolation
+    if not get_worktree_isolation():
+        return
+    from app.worktree_manager import cleanup_stale_worktrees, prune_worktrees
+    for name, path in projects:
+        try:
+            prune_worktrees(path)
+            cleanup_stale_worktrees(path, active_session_ids=[])
+        except Exception as e:
+            log("warning", f"Worktree cleanup failed for {name}: {e}")
+
+
 # ---------------------------------------------------------------------------
 # Safe step runner
 # ---------------------------------------------------------------------------
@@ -488,6 +502,7 @@ def run_startup(koan_root: str, instance: str, projects: list):
         _safe_run("Missions pruning", prune_missions_done, instance)
         _safe_run("Mission history cleanup", cleanup_mission_history, instance)
         _safe_run("Health check", check_health, koan_root)
+        _safe_run("Worktree cleanup", _cleanup_orphaned_worktrees, projects)
 
     with protected_phase("Self-reflection check"):
         _safe_run("Self-reflection check", check_self_reflection, instance)

@@ -991,6 +991,29 @@ git worktree list    # See all worktrees
 git worktree prune   # Remove stale references
 ```
 
+### Worktree Isolation (Single-Mission)
+
+Even without parallel sessions, you can enable **worktree isolation** so every mission runs in a clean, isolated checkout. This prevents dirty-state conflicts when a previous mission leaves uncommitted changes, a file is open in an editor, or another process touches the working tree.
+
+#### Configuration
+
+```yaml
+# instance/config.yaml
+worktree_isolation: true
+
+# Dependency directories to symlink into worktrees (optional)
+worktree_shared_deps: ["node_modules", ".venv", "vendor"]
+```
+
+When enabled:
+- Each mission creates a temporary worktree from HEAD
+- The Claude CLI runs inside the worktree, not the main project directory
+- Branches and commits persist in the main repository (shared git object store)
+- The worktree is cleaned up after the mission completes (success or failure)
+- Orphaned worktrees from crashed sessions are cleaned up at startup
+
+This feature is **opt-in** and defaults to `false`. Existing behavior is unchanged when disabled.
+
 ### Deep Exploration
 
 **`/ai`** — Queue an AI exploration mission. Runs as a full agent mission with codebase access — deeper and more thorough than `/magic`.

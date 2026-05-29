@@ -28,6 +28,20 @@ project tags such as `[project:name]`.
 6. Post-mission reflection, journal writing, PR creation, security review, and
    auto-merge checks run only when their conditions apply.
 
+## Worktree Isolation
+
+When `worktree_isolation: true` in `config.yaml`, each mission runs in an
+isolated git worktree instead of the main project directory. This prevents
+dirty-state conflicts from prior missions or external processes.
+
+Flow: `create_worktree()` → run CLI in worktree → cleanup in `finally` block.
+Branches created in the worktree are visible from the main repo because
+worktrees share the git object store. The feature falls back gracefully to the
+main project directory if worktree creation fails.
+
+At startup, `_cleanup_orphaned_worktrees()` in `startup_manager.py` removes
+any `.worktrees/` entries left by crashed sessions.
+
 ## Direct Skill Missions
 
 `skill_dispatch.py` detects slash-command missions that can run without a full
