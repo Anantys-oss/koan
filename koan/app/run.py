@@ -1352,7 +1352,16 @@ def _handle_skill_dispatch(
             return True, mission_title
 
         # --- Exit-0 quota probe ---
+        # For skill dispatches, only check stderr (which IS CLI output).
+        # Skill stdout contains summarized runner text where assistant
+        # responses can mention "quota" or "hit your limit" and trip
+        # false-positive detection.  (Fixes #1618)
         if exit_code == 0 and not skill_result.get("quota_exhausted"):
+            _skill_hqe_stderr_only = dict(
+                stdout_text="",
+                stderr_text=_skill_stderr,
+                exit_code=exit_code,
+            )
             if _probe_exit0_quota(
                 provider_name=_skill_provider_name,
                 provider_label=_skill_provider_label,
@@ -1360,7 +1369,7 @@ def _handle_skill_dispatch(
                 instance=instance,
                 mission_title=mission_title,
                 run_num=run_num,
-                hqe_kwargs=_skill_hqe,
+                hqe_kwargs=_skill_hqe_stderr_only,
                 project_name=project_name,
             ):
                 return True, mission_title
@@ -3230,6 +3239,7 @@ def _run_skill_mission(
             ),
             mission_tier=mission_tier,
             provider_name=_skill_provider_name,
+            is_skill_dispatch=True,
         )
         if isinstance(post_result, dict) and post_result.get("quota_exhausted"):
             skill_result["quota_exhausted"] = True

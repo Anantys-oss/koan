@@ -18,8 +18,11 @@ STATS_CACHE_PATH = Path.home() / ".claude" / "stats-cache.json"
 
 
 def handle(ctx):
-    """Check LLM quota live, or override remaining % if argument given."""
+    """Check LLM quota live, override remaining %, or reset estimates."""
     args = (ctx.args or "").strip()
+
+    if args.lower() == "reset":
+        return _handle_reset(ctx)
 
     # --- Override mode: /quota <N> ---
     if args:
@@ -29,12 +32,44 @@ def handle(ctx):
     return _handle_display(ctx)
 
 
+def _handle_reset(ctx):
+    """Reset all quota estimates to sane defaults."""
+    instance_dir = ctx.instance_dir
+    koan_root = ctx.koan_root
+
+    from app.usage_estimator import cmd_reset_session
+    state_file = instance_dir / "usage_state.json"
+    usage_md = instance_dir / "usage.md"
+    cmd_reset_session(state_file, usage_md)
+
+    # Clear burn-rate history so stale rates don't re-trigger warnings
+    burn_rate_file = instance_dir / ".burn-rate.json"
+    if burn_rate_file.exists():
+        burn_rate_file.unlink(missing_ok=True)
+
+    # If paused for quota, clear the pause
+    unpaused = False
+    from app.pause_manager import is_paused, get_pause_state, remove_pause
+    if is_paused(str(koan_root)):
+        state = get_pause_state(str(koan_root))
+        if state and state.is_quota:
+            remove_pause(str(koan_root))
+            unpaused = True
+
+    msg = "Quota estimates reset (session tokens → 0, burn rate cleared)."
+    if unpaused:
+        msg += "\nQuota pause cleared — agent will resume on next iteration."
+    return msg
+
+
 def _handle_override(ctx, args):
     """Override internal quota estimation with human-provided used %."""
     try:
         used_pct = int(args)
     except ValueError:
-        return "Usage: /quota <used_%>\nExample: /quota 5 (= 5% used, 95% remaining)"
+        return ("Usage: /quota <used_%> or /quota reset\n"
+                "Example: /quota 5 (= 5% used, 95% remaining)\n"
+                "         /quota reset (clear all estimates)")
 
     if used_pct < 0 or used_pct > 100:
         return "Used percentage must be between 0 and 100."

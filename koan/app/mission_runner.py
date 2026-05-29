@@ -1240,6 +1240,7 @@ def run_post_mission(
     status_callback: Optional[Callable[[str], None]] = None,
     mission_tier: Optional[str] = None,
     provider_name: str = "",
+    is_skill_dispatch: bool = False,
 ) -> dict:
     """Run the complete post-mission processing pipeline.
 
@@ -1260,6 +1261,9 @@ def run_post_mission(
             Called with a short description of the current step.
         provider_name: CLI provider that produced stdout/stderr. Used for
             provider-specific quota detection.
+        is_skill_dispatch: When True, stdout_file contains skill runner text
+            (not Claude CLI JSON). Skips token extraction warnings and
+            quota detection (the caller handles quota independently).
 
     Returns:
         Dict with keys:
@@ -1342,8 +1346,9 @@ def run_post_mission(
             _log_runner("error", f"Session ID extraction failed: {e}")
 
         # Flag silent cost-tracking gaps so operators can detect them.
-        # Quota detection is a separate path and still runs below.
-        if _tokens is None:
+        # Skill dispatches produce runner text (not CLI JSON) in stdout_file,
+        # so token extraction is expected to fail — suppress the warning.
+        if _tokens is None and not is_skill_dispatch:
             result["cost_tracking_failed"] = True
             provider_key = (provider_name or "").strip().lower()
             if provider_key == "codex":
@@ -1402,64 +1407,71 @@ def run_post_mission(
         )
 
         # 3. Check for quota exhaustion
-        _report("checking quota")
-        from app.quota_handler import handle_quota_exhaustion, QUOTA_CHECK_UNRELIABLE
+        # Skill dispatches skip this — their stdout is runner text (not CLI
+        # output), causing false-positive pattern matches. The caller in
+        # run.py handles quota detection independently via _probe_exit0_quota
+        # and _classify_and_handle_cli_error.
+        if is_skill_dispatch:
+            tracker.record("quota_check", "skipped", "skill dispatch — caller handles quota")
+        else:
+            _report("checking quota")
+            from app.quota_handler import handle_quota_exhaustion, QUOTA_CHECK_UNRELIABLE
 
-        quota_result = handle_quota_exhaustion(
-            koan_root=_koan_root,
-            instance_dir=instance_dir,
-            project_name=project_name,
-            run_count=run_num,
-            stdout_file=stdout_file,
-            stderr_file=stderr_file,
-            provider_name=provider_name,
-            exit_code=exit_code,
-        )
-        if quota_result is QUOTA_CHECK_UNRELIABLE:
-            _log_runner("quota", f"⚠️  Quota check unreliable for {project_name} — "
-                        "could not read log files, skipping quota detection")
-            tracker.record("quota_check", "skipped", "unreliable — log files unreadable")
-            result["quota_check_unreliable"] = True
-            try:
-                from app.utils import append_to_outbox
-                from app.notify import NotificationPriority
-                outbox_path = Path(instance_dir) / "outbox.md"
-                append_to_outbox(
-                    outbox_path,
-                    f"⚠️ [{project_name}] Quota protection disabled — "
-                    f"could not read CLI output files after mission '{mission_title[:50]}'. "
-                    f"Quota exhaustion will be invisible until files are readable again.\n",
-                    priority=NotificationPriority.WARNING,
-                )
-            except Exception as e:
-                _log_runner("error", f"Quota unreliable notification failed: {e}")
-        elif quota_result is not None:
-            result["quota_exhausted"] = True
-            result["quota_info"] = quota_result
-            tracker.record("quota_check", "success", "quota exhausted — early return")
-            # Record session outcome BEFORE early return so the session tracker
-            # doesn't lose visibility on quota-limited sessions (which biases
-            # staleness calculations toward "stale" for productive projects).
-            pending_content = _read_pending_content(instance_dir)
-            if not pending_content.strip():
-                pending_content = _read_stdout_summary(stdout_file)
-            _record_session_outcome(
-                instance_dir, project_name, autonomous_mode,
-                duration_minutes, pending_content,
-                mission_title=mission_title,
-            )
-            # Fire post_mission hooks before early return so hooks see quota events
-            _fire_post_mission_hook(
-                instance_dir, project_name, project_path,
-                exit_code, mission_title, duration_minutes, result,
+            quota_result = handle_quota_exhaustion(
+                koan_root=_koan_root,
+                instance_dir=instance_dir,
+                project_name=project_name,
+                run_count=run_num,
                 stdout_file=stdout_file,
+                stderr_file=stderr_file,
+                provider_name=provider_name,
+                exit_code=exit_code,
             )
-            result["pipeline_steps"] = tracker.to_dict()
-            _write_pipeline_summary(
-                instance_dir, project_name, tracker, mission_title,
-                mission_tier=mission_tier, tokens=_tokens,
-            )
-            return result  # Early return — no further processing on quota exhaustion
+            if quota_result is QUOTA_CHECK_UNRELIABLE:
+                _log_runner("quota", f"⚠️  Quota check unreliable for {project_name} — "
+                            "could not read log files, skipping quota detection")
+                tracker.record("quota_check", "skipped", "unreliable — log files unreadable")
+                result["quota_check_unreliable"] = True
+                try:
+                    from app.utils import append_to_outbox
+                    from app.notify import NotificationPriority
+                    outbox_path = Path(instance_dir) / "outbox.md"
+                    append_to_outbox(
+                        outbox_path,
+                        f"⚠️ [{project_name}] Quota protection disabled — "
+                        f"could not read CLI output files after mission '{mission_title[:50]}'. "
+                        f"Quota exhaustion will be invisible until files are readable again.\n",
+                        priority=NotificationPriority.WARNING,
+                    )
+                except Exception as e:
+                    _log_runner("error", f"Quota unreliable notification failed: {e}")
+            elif quota_result is not None:
+                result["quota_exhausted"] = True
+                result["quota_info"] = quota_result
+                tracker.record("quota_check", "success", "quota exhausted — early return")
+                # Record session outcome BEFORE early return so the session tracker
+                # doesn't lose visibility on quota-limited sessions (which biases
+                # staleness calculations toward "stale" for productive projects).
+                pending_content = _read_pending_content(instance_dir)
+                if not pending_content.strip():
+                    pending_content = _read_stdout_summary(stdout_file)
+                _record_session_outcome(
+                    instance_dir, project_name, autonomous_mode,
+                    duration_minutes, pending_content,
+                    mission_title=mission_title,
+                )
+                # Fire post_mission hooks before early return so hooks see quota events
+                _fire_post_mission_hook(
+                    instance_dir, project_name, project_path,
+                    exit_code, mission_title, duration_minutes, result,
+                    stdout_file=stdout_file,
+                )
+                result["pipeline_steps"] = tracker.to_dict()
+                _write_pipeline_summary(
+                    instance_dir, project_name, tracker, mission_title,
+                    mission_tier=mission_tier, tokens=_tokens,
+                )
+                return result  # Early return — no further processing on quota exhaustion
         tracker.record("quota_check", "success", "no exhaustion")
 
         # 4. Archive pending.md if agent didn't clean up

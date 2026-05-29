@@ -3,13 +3,13 @@ name: quota
 scope: core
 group: status
 emoji: 📊
-description: Check LLM quota or override used %
-version: 1.1.0
+description: Check LLM quota, override used %, or reset estimates
+version: 1.2.0
 audience: bridge
 commands:
   - name: quota
-    description: Live quota metrics, or override used % to fix drift
-    usage: /quota [used_%]
+    description: Live quota metrics, override used %, or reset estimates
+    usage: /quota [used_%|reset]
     aliases: [q]
 handler: handler.py
 ---

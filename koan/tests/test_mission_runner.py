@@ -3009,6 +3009,72 @@ class TestCostTrackingFailedFlag:
         assert "COST_TRACKING_FAILED" in captured.err
 
 
+class TestSkillDispatchPostMission:
+    """is_skill_dispatch=True skips quota detection and cost_tracking warning."""
+
+    @patch("app.mission_runner.commit_instance")
+    @patch("app.mission_runner.check_auto_merge", return_value=None)
+    @patch("app.mission_runner.trigger_reflection", return_value=False)
+    @patch("app.mission_runner.archive_pending", return_value=False)
+    @patch("app.mission_runner.update_usage", return_value=True)
+    @patch("app.token_parser.extract_tokens", return_value=None)
+    def test_no_cost_tracking_warning(
+        self, mock_tokens, mock_usage, mock_archive,
+        mock_reflect, mock_merge, mock_commit, tmp_path, capsys,
+    ):
+        """Skill dispatch suppresses cost_tracking_failed when tokens=None."""
+        from app.mission_runner import run_post_mission
+
+        instance_dir = str(tmp_path / "instance")
+        os.makedirs(instance_dir, exist_ok=True)
+
+        result = run_post_mission(
+            instance_dir=instance_dir,
+            project_name="koan",
+            project_path=str(tmp_path),
+            run_num=1,
+            exit_code=0,
+            stdout_file="/tmp/out.json",
+            stderr_file="/tmp/err.txt",
+            is_skill_dispatch=True,
+        )
+
+        assert result.get("cost_tracking_failed", False) is False
+        captured = capsys.readouterr()
+        assert "cost tracking failed" not in captured.err
+
+    @patch("app.mission_runner.commit_instance")
+    @patch("app.mission_runner.check_auto_merge", return_value=None)
+    @patch("app.mission_runner.trigger_reflection", return_value=False)
+    @patch("app.mission_runner.archive_pending", return_value=False)
+    @patch("app.mission_runner.update_usage", return_value=True)
+    @patch("app.token_parser.extract_tokens", return_value=None)
+    def test_quota_detection_skipped(
+        self, mock_tokens, mock_usage, mock_archive,
+        mock_reflect, mock_merge, mock_commit, tmp_path,
+    ):
+        """Skill dispatch skips handle_quota_exhaustion inside pipeline."""
+        from app.mission_runner import run_post_mission
+
+        instance_dir = str(tmp_path / "instance")
+        os.makedirs(instance_dir, exist_ok=True)
+
+        with patch("app.quota_handler.handle_quota_exhaustion") as mock_hqe:
+            result = run_post_mission(
+                instance_dir=instance_dir,
+                project_name="koan",
+                project_path=str(tmp_path),
+                run_num=1,
+                exit_code=0,
+                stdout_file="/tmp/out.json",
+                stderr_file="/tmp/err.txt",
+                is_skill_dispatch=True,
+            )
+
+        mock_hqe.assert_not_called()
+        assert result["quota_exhausted"] is False
+
+
 class TestMissionRunnerFireAndForgetMetrics:
     def test_record_skill_metric_records_fix_pr_with_failed_ci(self):
         from app.mission_runner import _record_skill_metric
