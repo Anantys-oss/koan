@@ -178,7 +178,7 @@ def _drain_ci_queue_during_sleep(instance_dir: str, elapsed: float):
         if msg:
             log.info("CI queue (sleep): %s", msg)
     except (ImportError, OSError, ValueError) as e:
-        log.warning("CI queue drain error during sleep: %s", e)
+        log.warning("CI queue drain error during sleep: %s", e, exc_info=True)
 
 
 # --- Pending.md creation ---
@@ -553,7 +553,7 @@ def _get_known_repos_from_projects(koan_root: str) -> Optional[set]:
         try:
             populate_workspace_github_urls(koan_root)
         except Exception as e:
-            log.warning("workspace github-url refresh failed: %s", e)
+            log.warning("workspace github-url refresh failed: %s", e, exc_info=True)
 
         for url in get_github_url_cache().values():
             if url:
@@ -975,7 +975,7 @@ def process_github_notifications(
                 )
                 missions_created += review_dispatched
         except (ImportError, OSError, RuntimeError) as e:
-            log.warning("Review comment dispatch failed: %s", e)
+            log.warning("Review comment dispatch failed: %s", e, exc_info=True)
 
         # Update backoff state
         with _github_state_lock:
@@ -993,7 +993,7 @@ def process_github_notifications(
         return missions_created
 
     except (ImportError, OSError, ValueError, RuntimeError, subprocess.SubprocessError) as e:
-        log.warning("GitHub notification check failed: %s", e)
+        log.warning("GitHub notification check failed: %s", e, exc_info=True)
         return 0
 
 
@@ -1095,7 +1095,7 @@ def _process_one_notification(
     except Exception as e:
         # A crash in one worker must not block the others. Log and move on.
         repo = notif.get("repository", {}).get("full_name", "?")
-        log.warning("GitHub: notification worker for %s failed: %s", repo, e)
+        log.warning("GitHub: notification worker for %s failed: %s", repo, e, exc_info=True)
         return False
 
 
@@ -1165,7 +1165,7 @@ def _drain_notifications(notifications: list) -> int:
                 mark_notification_read(thread_id)
                 drained += 1
             except Exception:
-                log.warning("GitHub: failed to mark notification %s as read", thread_id)
+                log.warning("GitHub: failed to mark notification %s as read", thread_id, exc_info=True)
     return drained
 
 
@@ -1201,7 +1201,7 @@ def _drain_stale_foreign_notifications(notifications: list, config: dict) -> int
                 mark_notification_read(thread_id)
                 drained += 1
             except Exception:
-                log.warning("GitHub: failed to drain stale notification %s", thread_id)
+                log.warning("GitHub: failed to drain stale notification %s", thread_id, exc_info=True)
     return drained
 
 
@@ -1575,7 +1575,7 @@ def process_jira_notifications(
         return missions_created
 
     except (ImportError, OSError, ValueError, RuntimeError) as e:
-        log.warning("Jira notification check failed: %s", e)
+        log.warning("Jira notification check failed: %s", e, exc_info=True)
         return 0
 
 
