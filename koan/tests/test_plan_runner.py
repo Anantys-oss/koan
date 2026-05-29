@@ -24,6 +24,7 @@ from app.plan_runner import (
     _review_loop,
     is_simple_plan,
 )
+from app.url_skill_args import merge_context_with_base_branch
 from app.issue_tracker.types import IssueContent, IssueRef
 from app.issue_tracker import UnresolvedJiraProjectError
 
@@ -1037,6 +1038,31 @@ class TestMainCLI:
             _, kwargs = mock.call_args
             assert kwargs["project_name"] == "webpros-shield"
             assert kwargs["instance_dir"] == "/koan/instance"
+
+    def test_base_branch_flag_passed_to_run_plan(self):
+        with patch("app.plan_runner.run_plan", return_value=(True, "ok")) as mock:
+            main([
+                "--project-path", "/project",
+                "--issue-url", "https://github.com/o/r/issues/1",
+                "--base-branch", "main",
+            ])
+            _, kwargs = mock.call_args
+            assert kwargs["base_branch"] == "main"
+
+
+class TestMergeContextWithBaseBranch:
+    def test_returns_context_when_no_branch(self):
+        result = merge_context_with_base_branch("Focus on API", None)
+        assert result == "Focus on API"
+
+    def test_returns_branch_hint_when_context_empty(self):
+        result = merge_context_with_base_branch("", "main")
+        assert result == "Target base branch: `main`."
+
+    def test_combines_context_and_branch_hint(self):
+        result = merge_context_with_base_branch("Phase 1 only", "11.126")
+        assert "Phase 1 only" in result
+        assert "Target base branch: `11.126`." in result
 
 
 # ---------------------------------------------------------------------------

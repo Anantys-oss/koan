@@ -379,6 +379,32 @@ class TestProcessJiraMention:
         assert error is not None
         assert "denied" in error.lower()
 
+    def test_pr_only_command_rejected_for_jira_issue_url(
+        self, tmp_path, monkeypatch, mention, skill_registry, basic_config,
+    ):
+        """Jira issue URLs should not queue PR-only commands like /rebase."""
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        missions_path = instance_dir / "missions.md"
+        missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+
+        rebase_mention = dict(mention, body_text="@koan-bot rebase")
+
+        with patch("app.jira_command_handler.get_jira_nickname", return_value="koan-bot"), \
+             patch("app.jira_command_handler.get_jira_authorized_users", return_value=["*"]), \
+             patch("app.jira_config.get_jira_max_age_hours", return_value=24):
+            processed_set = set()
+            success, error = process_jira_mention(
+                rebase_mention, skill_registry, basic_config, processed_set,
+            )
+
+        assert success is False
+        assert error is not None
+        assert "/rebase requires a PR URL" in error
+        assert rebase_mention["comment_id"] in processed_set
+        assert "🎫" not in missions_path.read_text()
+
     def test_missing_comment_id_skipped(
         self, skill_registry, basic_config
     ):

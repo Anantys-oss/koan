@@ -22,6 +22,7 @@ from app.issue_tracker import (
     tracker_supports_labels,
 )
 from app.prompts import load_prompt_or_skill
+from app.url_skill_args import merge_context_with_base_branch
 
 # Maximum spec review iterations before posting best-effort result
 _MAX_REVIEW_ROUNDS = 5
@@ -36,6 +37,9 @@ def run_deepplan(
     notify_fn=None,
     skill_dir: Optional[Path] = None,
     issue_url: Optional[str] = None,
+    context: Optional[str] = None,
+    base_branch: Optional[str] = None,
+    project_name: str = "",
 ) -> Tuple[bool, str]:
     """Execute the deep plan pipeline.
 
@@ -53,6 +57,9 @@ def run_deepplan(
         issue_url: Optional issue URL to fetch context from.
             When provided, the issue title/body/comments are fetched
             and used to enrich the idea context for exploration.
+        context: Optional additional user instructions.
+        base_branch: Optional base-branch hint for downstream planning.
+        project_name: Optional resolved project name from dispatcher.
 
     Returns:
         (success, summary) tuple.
@@ -61,14 +68,30 @@ def run_deepplan(
         from app.notify import send_telegram
         notify_fn = send_telegram
 
+    project_name = project_name or project_name_for_path(project_path)
+    user_context = merge_context_with_base_branch(context, base_branch)
+
     # When issue_url is provided, fetch issue context and enrich the idea
     issue_context = ""
     if issue_url:
-        idea, issue_context = _enrich_idea_from_issue(idea, issue_url, notify_fn)
+        idea, issue_context = _enrich_idea_from_issue(
+            idea,
+            issue_url,
+            notify_fn,
+            project_name=project_name,
+            project_path=project_path,
+        )
+        if user_context:
+            issue_context = (
+                f"{issue_context}\n\n## User Instructions\n\n{user_context}"
+                if issue_context
+                else f"## User Instructions\n\n{user_context}"
+            )
+    elif user_context:
+        issue_context = f"## User Instructions\n\n{user_context}"
 
     notify_fn(f"\U0001f9e0 Deep planning: {idea[:100]}{'...' if len(idea) > 100 else ''}")
 
-    project_name = project_name_for_path(project_path)
     if not tracker_is_configured(project_name, project_path):
         return False, "No issue tracker configured for this project."
 
@@ -115,7 +138,14 @@ def run_deepplan(
     return True, summary
 
 
-def _enrich_idea_from_issue(idea, issue_url, notify_fn):
+def _enrich_idea_from_issue(
+    idea,
+    issue_url,
+    notify_fn,
+    *,
+    project_name: str = "",
+    project_path: str = "",
+):
     """Fetch issue context from the configured tracker and enrich the idea.
 
     Args:
@@ -129,7 +159,11 @@ def _enrich_idea_from_issue(idea, issue_url, notify_fn):
     notify_fn("\U0001f50d Fetching issue context from tracker...")
 
     try:
-        issue = fetch_issue(issue_url)
+        issue = fetch_issue(
+            issue_url,
+            project_name=project_name or None,
+            project_path=project_path or None,
+        )
         title = issue.title
         body = issue.body
         comments = issue.comments
@@ -350,6 +384,7 @@ def _strip_title_line(spec_text):
 def main(argv=None):
     """CLI entry point for deepplan_runner."""
     import argparse
+    from app.url_skill_args import add_url_skill_common_args
 
     parser = argparse.ArgumentParser(
         description="Spec-first design: explore approaches, review, post spec as tracker issue."
@@ -367,6 +402,11 @@ def main(argv=None):
         "--issue-url",
         help="Issue URL to use as context for the design exploration",
     )
+    # --project-path, --idea, and --issue-url are declared above; the shared
+    # helper adds --context, --base-branch, --project-name, and --instance-dir.
+    # Keep these sets disjoint — adding an overlapping flag here would make
+    # argparse raise a conflict at runtime.
+    add_url_skill_common_args(parser)
     cli_args = parser.parse_args(argv)
 
     skill_dir = Path(__file__).resolve().parent
@@ -376,6 +416,9 @@ def main(argv=None):
         project_path=cli_args.project_path,
         idea=idea,
         issue_url=cli_args.issue_url,
+        context=cli_args.context,
+        base_branch=cli_args.base_branch,
+        project_name=cli_args.project_name,
         skill_dir=skill_dir,
     )
     print(summary)

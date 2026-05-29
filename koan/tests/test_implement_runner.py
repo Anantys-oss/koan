@@ -1399,3 +1399,14 @@ class TestMain:
             _, kwargs = mock.call_args
             assert kwargs["project_name"] == "webpros-shield"
             assert kwargs["instance_dir"] == "/koan/instance"
+
+    def test_base_branch_arg_passed(self):
+        with patch(f"{_IMPL_MODULE}.run_implement",
+                    return_value=(True, "ok")) as mock:
+            main([
+                "--project-path", "/project",
+                "--issue-url", "https://github.com/o/r/issues/1",
+                "--base-branch", "main",
+            ])
+            _, kwargs = mock.call_args
+            assert kwargs["base_branch"] == "main"

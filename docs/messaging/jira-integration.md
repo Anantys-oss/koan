@@ -123,7 +123,8 @@ When `jira.enabled: true`, Koan validates the configuration at startup and warns
 
 ## Available Commands
 
-Jira reuses the same `github_enabled: true` skill flag for command discovery — **both GitHub and Jira dispatch the exact same set of commands**. No separate Jira flag is needed.
+Jira reuses the same `github_enabled: true` skill flag for command discovery — **both GitHub and Jira discover the same command set**. No separate Jira flag is needed.
+Argument validation still applies per command, so PR-only or comment-URL-only skills require a matching GitHub URL in the Jira comment context.
 
 > **Custom skills under `instance/skills/<scope>/`** (e.g. a team-specific integration shipping `/my_fix` and `/my_plan`) are exposed here the same way: set `github_enabled: true` and `group: integrations` in their SKILL.md. Such skills with a `handler.py` are dispatched **in-process** by the Jira bridge — not queued as slash missions — and the handler automatically receives the originating Jira issue key in `ctx.args` when the commenter omitted one. See `koan/skills/README.md` for the full pattern.
 
@@ -145,6 +146,8 @@ Jira reuses the same `github_enabled: true` skill flag for command discovery —
 | `reviewrebase` | `rr` | Review then rebase combo | **Yes** |
 | `security_audit` | `security`, `secu` | Security-focused audit | **Yes** |
 | `squash` | `sq` | Squash all PR commits into one | **Yes** |
+
+For commands that require GitHub PR/comment URLs (for example `rebase`, `recreate`, `review`, `squash`, `ask`), include that GitHub URL explicitly in the Jira comment context.
 
 ### Context-aware commands
 

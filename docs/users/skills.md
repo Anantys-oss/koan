@@ -45,6 +45,9 @@ Complete reference for all Koan slash commands. Use these via Telegram, Slack, o
 | `/claudemd [project]` | `/claude`, `/claude.md` | Refresh or create a project's CLAUDE.md | — |
 | `/doc <project> [cats]` | `/docs` | Extract structured documentation to docs/ | Yes |
 
+For URL-based `/plan`, `/implement`, and `/fix`, append `branch:<name>` to
+override the base branch for that mission.
+
 Skills marked **GitHub @mention** can be triggered by commenting `@koan-bot <command>` on a PR or issue. See [GitHub commands](../messaging/github-commands.md).
 
 ## Exploration & Analysis

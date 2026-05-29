@@ -619,6 +619,7 @@ def _submit_implement_pr(
 def main(argv=None):
     """CLI entry point for implement_runner."""
     import argparse
+    from app.url_skill_args import add_url_skill_common_args
 
     parser = argparse.ArgumentParser(
         description="Implement a plan from a GitHub issue."
@@ -631,26 +632,7 @@ def main(argv=None):
         "--issue-url", required=True,
         help="GitHub issue URL containing the plan",
     )
-    parser.add_argument(
-        "--context",
-        help="Additional context (e.g. 'Phase 1 to 3')",
-        default=None,
-    )
-    parser.add_argument(
-        "--base-branch",
-        help="Target branch for the PR (e.g. '11.126')",
-        default=None,
-    )
-    parser.add_argument(
-        "--project-name",
-        help="Koan project name for memory and tracker configuration",
-        default="",
-    )
-    parser.add_argument(
-        "--instance-dir",
-        help="Koan instance directory for project memory",
-        default="",
-    )
+    add_url_skill_common_args(parser)
     cli_args = parser.parse_args(argv)
 
     skill_dir = Path(__file__).resolve().parent

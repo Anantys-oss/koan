@@ -439,6 +439,28 @@ class TestSkillDispatch:
         assert "https://github.com/owner/repo/issues/42" in cmd
         assert "--idea" not in cmd
 
+    def test_build_deepplan_cmd_with_issue_url_branch_and_context(self, tmp_path):
+        from app.skill_dispatch import build_skill_command
+        cmd = build_skill_command(
+            command="deepplan",
+            args=(
+                "https://github.com/owner/repo/issues/42 "
+                "branch:main focus on rollout"
+            ),
+            project_name="koan",
+            project_path=str(tmp_path),
+            koan_root=str(tmp_path),
+            instance_dir=str(tmp_path),
+        )
+        assert cmd is not None
+        assert "--issue-url" in cmd
+        assert "--base-branch" in cmd
+        base_idx = cmd.index("--base-branch")
+        assert cmd[base_idx + 1] == "main"
+        assert "--context" in cmd
+        ctx_idx = cmd.index("--context")
+        assert cmd[ctx_idx + 1] == "focus on rollout"
+
     def test_build_deepplan_cmd_free_text_no_issue_url(self, tmp_path):
         from app.skill_dispatch import build_skill_command
         cmd = build_skill_command(
@@ -582,6 +604,43 @@ class TestRunnerWithIssueUrl:
         assert "bob" in context
         assert "Memcached" in context
 
+    def test_issue_url_includes_user_context_and_branch_hint(self, runner, tmp_path):
+        valid_spec = (
+            "Design spec title\n\n"
+            "### Summary\n\nSpec body\n\n"
+            "### Alternatives Considered\n\nA\n\n"
+            "### Recommended Approach\n\nB\n\n"
+            "### Scope\n\nC\n\n"
+            "### Out of Scope\n\nD\n\n"
+            "### Open Questions\n\nNone."
+        )
+
+        with patch.object(runner, "tracker_is_configured", return_value=True), \
+             patch.object(runner, "tracker_supports_labels", return_value=True), \
+             patch.object(runner, "create_issue",
+                          return_value="https://github.com/o/r/issues/1"), \
+             patch.object(runner, "fetch_issue",
+                          return_value=_issue_content(
+                              title="Fix caching bug", body="The cache is broken")), \
+             patch.object(runner, "_explore_design", return_value=valid_spec) as mock_explore, \
+             patch.object(runner, "_review_spec", return_value=(True, "")), \
+             patch.object(runner, "_queue_plan_mission"), \
+             patch("app.notify.send_telegram"):
+            success, _summary = runner.run_deepplan(
+                project_path=str(tmp_path),
+                idea="https://github.com/owner/repo/issues/99",
+                issue_url="https://github.com/owner/repo/issues/99",
+                context="Focus phase 1",
+                base_branch="11.126",
+                project_name="koan",
+                skill_dir=RUNNER_PATH.parent,
+            )
+
+        assert success is True
+        issue_context = mock_explore.call_args.kwargs["issue_context"]
+        assert "Focus phase 1" in issue_context
+        assert "Target base branch: `11.126`." in issue_context
+
     def test_issue_fetch_failure_falls_back(self, runner, tmp_path):
         """Runner falls back gracefully when issue fetch fails."""
         with patch.object(runner, "fetch_issue",
@@ -612,3 +671,21 @@ class TestExploreDesignMaxTurns:
             result = runner._explore_design("/tmp/proj", "idea")
 
         assert mock_run.call_args[1]["max_turns"] == 42
+
+
+class TestDeepplanMainCli:
+    def test_main_passes_context_and_base_branch(self, runner):
+        with patch.object(runner, "run_deepplan", return_value=(True, "ok")) as mock_run:
+            code = runner.main([
+                "--project-path", "/project",
+                "--issue-url", "https://github.com/o/r/issues/1",
+                "--context", "Focus phase 1",
+                "--base-branch", "main",
+                "--project-name", "koan",
+            ])
+
+        assert code == 0
+        _, kwargs = mock_run.call_args
+        assert kwargs["context"] == "Focus phase 1"
+        assert kwargs["base_branch"] == "main"
+        assert kwargs["project_name"] == "koan"

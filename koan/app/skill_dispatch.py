@@ -361,7 +361,9 @@ def build_skill_command(
     # Dispatch to command-specific builder (canonical names only).
     _COMMAND_BUILDERS = {
         "brainstorm": lambda: _build_brainstorm_cmd(base_cmd, args, project_path),
-        "deepplan": lambda: _build_deepplan_cmd(base_cmd, args, project_path),
+        "deepplan": lambda: _build_deepplan_cmd(
+            base_cmd, args, project_name, project_path, instance_dir,
+        ),
         "plan": lambda: _build_plan_cmd(
             base_cmd, args, project_name, project_path, instance_dir,
         ),
@@ -470,18 +472,28 @@ def _build_brainstorm_cmd(
 
 
 def _build_deepplan_cmd(
-    base_cmd: List[str], args: str, project_path: str,
+    base_cmd: List[str],
+    args: str,
+    project_name: str,
+    project_path: str,
+    instance_dir: str,
 ) -> List[str]:
     """Build deepplan_runner command.
 
-    Detects GitHub issue URLs in args and passes them as --issue-url.
-    Falls back to --idea for free-text input.
+    Reuses shared URL/context/branch parsing:
+    - URL mode: --issue-url [--base-branch] [--context]
+    - Idea mode: --idea
     """
-    url_and_context = _extract_pr_or_issue_url_and_context(args)
-    if url_and_context:
-        issue_url, _context = url_and_context
-        return base_cmd + ["--project-path", project_path, "--issue-url", issue_url]
-    return base_cmd + ["--project-path", project_path, "--idea", args.strip()]
+    # idea_fallback=True guarantees a non-None command: when no URL is found,
+    # _build_url_context_cmd falls back to --idea internally.
+    return _build_url_context_cmd(
+        base_cmd,
+        args,
+        project_name,
+        project_path,
+        instance_dir,
+        idea_fallback=True,
+    )
 
 
 def _build_url_context_cmd(
@@ -974,9 +986,8 @@ def validate_skill_args(command: str, args: str) -> Optional[str]:
                 f"https://org.atlassian.net/browse/PROJ-123)"
             )
     elif canonical == "check":
-        if not (_PR_URL_RE.search(args) or _ISSUE_URL_RE.search(args)
-                or _JIRA_URL_RE.search(args)):
-            return "/check requires a GitHub URL (PR or issue) or Jira URL"
+        if not (_PR_URL_RE.search(args) or _ISSUE_URL_RE.search(args)):
+            return "/check requires a GitHub URL (PR or issue)"
     elif canonical == "check_need":
         if not (_PR_URL_RE.search(args) or _ISSUE_URL_RE.search(args)):
             return (

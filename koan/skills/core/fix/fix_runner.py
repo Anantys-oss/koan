@@ -363,6 +363,7 @@ def _submit_fix_pr(
 def main(argv=None):
     """CLI entry point for fix_runner."""
     import argparse
+    from app.url_skill_args import add_url_skill_common_args
 
     parser = argparse.ArgumentParser(
         description="Fix a GitHub or Jira issue end-to-end."
@@ -375,26 +376,7 @@ def main(argv=None):
         "--issue-url", required=True,
         help="GitHub or Jira issue URL to fix",
     )
-    parser.add_argument(
-        "--context",
-        help="Additional context (e.g. 'backend only')",
-        default=None,
-    )
-    parser.add_argument(
-        "--base-branch",
-        help="Target branch for the PR (e.g. '11.126')",
-        default=None,
-    )
-    parser.add_argument(
-        "--project-name",
-        help="Koan project name for memory and tracker configuration",
-        default="",
-    )
-    parser.add_argument(
-        "--instance-dir",
-        help="Koan instance directory for project memory",
-        default="",
-    )
+    add_url_skill_common_args(parser)
     cli_args = parser.parse_args(argv)
 
     skill_dir = Path(__file__).resolve().parent

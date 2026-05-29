@@ -205,6 +205,17 @@ class TestBuildSkillCommand:
         ctx_idx = cmd.index("--context")
         assert cmd[ctx_idx + 1] == "Focus on phase 2"
 
+    def test_plan_with_issue_url_and_branch_override(self):
+        args = "https://github.com/sukria/koan/issues/42 branch:main Focus on phase 2"
+        cmd = self._build("plan", args)
+        assert cmd is not None
+        assert "--base-branch" in cmd
+        base_idx = cmd.index("--base-branch")
+        assert cmd[base_idx + 1] == "main"
+        assert "--context" in cmd
+        ctx_idx = cmd.index("--context")
+        assert cmd[ctx_idx + 1] == "Focus on phase 2"
+
     def test_plan_with_issue_url_no_context(self):
         """Issue URL with no trailing text should not include --context."""
         url = "https://github.com/sukria/koan/issues/42"
@@ -238,6 +249,26 @@ class TestBuildSkillCommand:
         assert "--context" in cmd
         ctx_idx = cmd.index("--context")
         assert cmd[ctx_idx + 1] == "focus on security"
+
+    def test_deepplan_with_issue_url_and_branch_override(self):
+        args = "https://github.com/sukria/koan/issues/42 branch:main focus phase 1"
+        cmd = self._build("deepplan", args)
+        assert cmd is not None
+        assert "skills.core.deepplan.deepplan_runner" in cmd
+        assert "--issue-url" in cmd
+        assert "--base-branch" in cmd
+        base_idx = cmd.index("--base-branch")
+        assert cmd[base_idx + 1] == "main"
+        assert "--context" in cmd
+        ctx_idx = cmd.index("--context")
+        assert cmd[ctx_idx + 1] == "focus phase 1"
+
+    def test_deepplan_with_idea_falls_back_to_idea_flag(self):
+        cmd = self._build("deepplan", "Refactor auth middleware")
+        assert cmd is not None
+        assert "skills.core.deepplan.deepplan_runner" in cmd
+        assert "--idea" in cmd
+        assert "Refactor auth middleware" in cmd
 
     def test_rebase(self):
         url = "https://github.com/sukria/koan/pull/42"
@@ -353,6 +384,17 @@ class TestBuildSkillCommand:
         assert "--context" in cmd
         assert "Phase 1 to 3" in cmd
 
+    def test_implement_with_branch_override(self):
+        url = "https://github.com/sukria/koan/issues/42"
+        cmd = self._build("implement", f"{url} branch:11.126 Phase 1 to 3")
+        assert cmd is not None
+        assert "--base-branch" in cmd
+        base_idx = cmd.index("--base-branch")
+        assert cmd[base_idx + 1] == "11.126"
+        assert "--context" in cmd
+        ctx_idx = cmd.index("--context")
+        assert cmd[ctx_idx + 1] == "Phase 1 to 3"
+
     def test_implement_with_pr_url(self):
         """PR URLs accepted — GitHub issues API works for PRs."""
         url = "https://github.com/sukria/koan/pull/61"
@@ -410,6 +452,17 @@ class TestBuildSkillCommand:
         assert url in cmd
         assert "--context" in cmd
         assert "backend only" in cmd
+
+    def test_fix_with_branch_override(self):
+        url = "https://github.com/Anantys/investmindr/issues/42"
+        cmd = self._build("fix", f"{url} branch:main backend only")
+        assert cmd is not None
+        assert "--base-branch" in cmd
+        base_idx = cmd.index("--base-branch")
+        assert cmd[base_idx + 1] == "main"
+        assert "--context" in cmd
+        ctx_idx = cmd.index("--context")
+        assert cmd[ctx_idx + 1] == "backend only"
 
     def test_fix_no_url(self):
         cmd = self._build("fix", "just fix the login bug")
@@ -1189,6 +1242,11 @@ class TestValidateSkillArgs:
 
     def test_check_no_url(self):
         err = validate_skill_args("check", "no url here")
+        assert err is not None
+        assert "/check requires a GitHub URL" in err
+
+    def test_check_jira_url_rejected(self):
+        err = validate_skill_args("check", "https://org.atlassian.net/browse/PROJ-123")
         assert err is not None
         assert "/check requires a GitHub URL" in err
 

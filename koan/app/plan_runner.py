@@ -13,6 +13,7 @@ Issue-centric workflow:
 CLI:
     python3 -m app.plan_runner --project-path <path> --idea "Add dark mode"
     python3 -m app.plan_runner --project-path <path> --issue-url <url>
+    python3 -m app.plan_runner --project-path <path> --issue-url <url> --base-branch main
 """
 
 import re
@@ -32,6 +33,7 @@ from app.issue_tracker import (
     tracker_supports_labels,
 )
 from app.prompts import load_prompt_or_skill
+from app.url_skill_args import merge_context_with_base_branch
 
 # Label used to tag plan issues for searchability
 _PLAN_LABEL = "plan"
@@ -44,6 +46,7 @@ def run_plan(
     notify_fn=None,
     skill_dir: Optional[Path] = None,
     context: Optional[str] = None,
+    base_branch: Optional[str] = None,
     project_name: str = "",
     instance_dir: str = "",
 ) -> Tuple[bool, str]:
@@ -70,11 +73,13 @@ def run_plan(
     if issue_url:
         return _run_issue_plan(
             project_path, issue_url, notify_fn, skill_dir, context=context,
+            base_branch=base_branch,
             project_name=project_name, instance_dir=instance_dir,
         )
     elif idea:
         return _run_new_plan(
             project_path, idea, notify_fn, skill_dir, context=context,
+            base_branch=base_branch,
             project_name=project_name, instance_dir=instance_dir,
         )
     else:
@@ -87,6 +92,7 @@ def _run_new_plan(
     notify_fn,
     skill_dir: Optional[Path],
     context: Optional[str] = None,
+    base_branch: Optional[str] = None,
     project_name: str = "",
     instance_dir: str = "",
 ) -> Tuple[bool, str]:
@@ -104,13 +110,16 @@ def _run_new_plan(
         )
         return _run_issue_plan(
             project_path, existing.url, notify_fn, skill_dir, context=context,
+            base_branch=base_branch,
             project_name=project_name, instance_dir=instance_dir,
         )
+
+    effective_context = merge_context_with_base_branch(context, base_branch)
 
     print("[plan] Invoking Claude for plan generation", flush=True)
     try:
         plan = _generate_plan(
-            project_path, idea, context=context or "", skill_dir=skill_dir,
+            project_path, idea, context=effective_context, skill_dir=skill_dir,
             project_name=project_name, instance_dir=instance_dir,
         )
     except Exception as e:
@@ -153,6 +162,7 @@ def _run_issue_plan(
     notify_fn,
     skill_dir: Optional[Path],
     context: Optional[str] = None,
+    base_branch: Optional[str] = None,
     project_name: str = "",
     instance_dir: str = "",
 ) -> Tuple[bool, str]:
@@ -198,8 +208,9 @@ def _run_issue_plan(
         context_parts.append(f"\n\n## Discussion Comments\n\n{comments_text}")
     else:
         context_parts.append("\n\n*No comments yet on this issue.*")
-    if context:
-        context_parts.append(f"\n\n## User Instructions\n\n{context}")
+    effective_context = merge_context_with_base_branch(context, base_branch)
+    if effective_context:
+        context_parts.append(f"\n\n## User Instructions\n\n{effective_context}")
     issue_context = "\n".join(context_parts)
 
     print("[plan] Invoking Claude for plan generation", flush=True)
@@ -739,7 +750,7 @@ def main(argv=None):
     Returns exit code (0 = success, 1 = failure).
     """
     import argparse
-    import sys
+    from app.url_skill_args import add_url_skill_common_args
 
     parser = argparse.ArgumentParser(
         description="Generate a structured plan and post as GitHub issue/comment."
@@ -757,20 +768,7 @@ def main(argv=None):
         "--issue-url",
         help="GitHub issue URL to iterate on",
     )
-    parser.add_argument(
-        "--context",
-        help="Additional user context (e.g. 'Focus on phase 2')",
-    )
-    parser.add_argument(
-        "--project-name",
-        default="",
-        help="Koan project name for memory and tracker configuration",
-    )
-    parser.add_argument(
-        "--instance-dir",
-        default="",
-        help="Koan instance directory for project memory",
-    )
+    add_url_skill_common_args(parser)
     cli_args = parser.parse_args(argv)
 
     skill_dir = Path(__file__).resolve().parent.parent / "skills" / "core" / "plan"
@@ -781,6 +779,7 @@ def main(argv=None):
         issue_url=cli_args.issue_url,
         skill_dir=skill_dir,
         context=cli_args.context,
+        base_branch=cli_args.base_branch,
         project_name=cli_args.project_name,
         instance_dir=cli_args.instance_dir,
     )

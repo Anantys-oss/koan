@@ -428,14 +428,19 @@ The master tracking issue then synthesizes the set with three optional sections:
 - `/plan Add WebSocket support for real-time notifications` — Get a phased plan before writing any code
 - `/plan https://github.com/org/repo/issues/42` — Iterate on an existing issue's plan
 - `/plan https://myorg.atlassian.net/browse/PROJ-123` — Iterate on a Jira issue's plan
+- `/plan https://myorg.atlassian.net/browse/PROJ-123 branch:main` — Iterate with an explicit base-branch hint
 - `/plan webapp Add rate limiting to public API endpoints` — Target a specific project
 </details>
 
-For URL-based `/plan`, `/implement`, and `/fix`, Kōan resolves the project
+For URL-based `/plan`, `/deepplan`, `/implement`, and `/fix`, Kōan resolves the project
 from the issue URL and the known project registry. Known projects include both
 `projects.yaml` entries and repositories discovered under `KOAN_ROOT/workspace/`,
 so an explicit project prefix is not required when the URL maps to one of
 those projects.
+
+For URL-based `/plan`, `/deepplan`, `/implement`, and `/fix`, you can append
+`branch:<name>` to override the base branch for that mission (for `/plan` and
+`/deepplan`, this is passed as a planning hint in the generated context).
 
 **`/deepplan`** — Spec-first design with Socratic exploration of 2-3 approaches before planning. For complex missions where design matters more than speed.
 

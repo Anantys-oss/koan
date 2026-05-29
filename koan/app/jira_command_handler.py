@@ -353,6 +353,22 @@ def process_jira_mention(
         _notify_mission_from_jira(mention, command_name)
         return True, None
 
+    # Validate arguments before queueing. This catches command/url mismatches
+    # early (for example Jira issue URLs on PR-only commands) and avoids
+    # inserting missions that are guaranteed to fail in run.py.
+    from app.skill_dispatch import validate_skill_args
+    validation_parts = []
+    if issue_url:
+        validation_parts.append(issue_url)
+    if target_branch:
+        validation_parts.append(f"branch:{target_branch}")
+    if context and skill.github_context_aware:
+        validation_parts.append(context)
+    arg_error = validate_skill_args(command_name, " ".join(validation_parts))
+    if arg_error:
+        mark_jira_comment_processed(comment_id, processed_set)
+        return False, arg_error
+
     # Build mission entry
     mission_entry = build_jira_mission(
         skill, command_name, context, issue_key, issue_url, project_name,
