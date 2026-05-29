@@ -2994,7 +2994,12 @@ class TestCostTrackingFailedFlag:
         self, mock_tokens, mock_usage, mock_quota, mock_archive,
         mock_reflect, mock_merge, mock_commit, tmp_path, capsys,
     ):
-        """cost_tracking_failed=True when token extraction returns None on success."""
+        """cost_tracking_failed=True when token extraction returns None on success.
+
+        Successful missions (exit_code=0) routinely lack token data because
+        the CLI output format omits it — no stderr warning is emitted to
+        avoid log noise.
+        """
         from app.mission_runner import run_post_mission
 
         instance_dir = str(tmp_path / "instance")
@@ -3012,7 +3017,7 @@ class TestCostTrackingFailedFlag:
 
         assert result["cost_tracking_failed"] is True
         captured = capsys.readouterr()
-        assert "cost tracking failed" in captured.err
+        assert "cost tracking failed" not in captured.err
 
     @patch("app.mission_runner.commit_instance")
     @patch("app.mission_runner.check_auto_merge", return_value=None)
@@ -3057,7 +3062,7 @@ class TestCostTrackingFailedFlag:
         self, mock_tokens, mock_usage, mock_quota, mock_archive,
         mock_reflect, mock_merge, mock_commit, tmp_path, capsys,
     ):
-        """Codex warning clarifies accounting failure is separate from quota checks."""
+        """Codex warning on failure clarifies accounting failure is separate from quota checks."""
         from app.mission_runner import run_post_mission
 
         instance_dir = str(tmp_path / "instance")
@@ -3068,7 +3073,7 @@ class TestCostTrackingFailedFlag:
             project_name="koan",
             project_path=str(tmp_path),
             run_num=1,
-            exit_code=0,
+            exit_code=1,
             stdout_file="/tmp/out.json",
             stderr_file="/tmp/err.txt",
             provider_name="codex",

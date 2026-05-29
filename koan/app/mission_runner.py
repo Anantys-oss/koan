@@ -1473,12 +1473,16 @@ def run_post_mission(
                 )
             else:
                 detail = "token extraction returned None"
-            print(
-                "[mission_runner] WARNING: cost tracking failed — "
-                f"{detail}"
-                f" (exit_code={exit_code})",
-                file=sys.stderr,
-            )
+            # Only warn on stderr for failed missions — successful missions
+            # routinely lack token data (CLI output format omits it) and the
+            # WARNING was firing 100+ times/day as noise.
+            if exit_code != 0:
+                print(
+                    "[mission_runner] WARNING: cost tracking failed — "
+                    f"{detail}"
+                    f" (exit_code={exit_code})",
+                    file=sys.stderr,
+                )
 
         # Pre-load projects config once — reused by quality gate, lint gate,
         # and auto-merge instead of loading projects.yaml 3 times.
