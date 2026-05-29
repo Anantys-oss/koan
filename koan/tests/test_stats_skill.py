@@ -694,7 +694,7 @@ class TestTokenOverview:
 
         assert "(+2 more)" in result
 
-    def test_no_cost_column_without_pricing(self, tmp_path):
+    def test_no_cost_column_without_cost_data(self, tmp_path):
         ctx = _make_ctx(tmp_path)
         outcomes = [_make_outcome(outcome="productive", hours_ago=1)]
         _write_outcomes(ctx.instance_dir, outcomes)
@@ -709,21 +709,26 @@ class TestTokenOverview:
 
         assert "cost($)" not in result
 
-    def test_cost_column_present_with_pricing(self, tmp_path):
+    def test_cost_column_present_with_cost_data(self, tmp_path):
         ctx = _make_ctx(tmp_path)
         outcomes = [_make_outcome(outcome="productive", hours_ago=1)]
         _write_outcomes(ctx.instance_dir, outcomes)
 
-        by_project = {"alpha": {"input_tokens": 5000, "output_tokens": 1000, "count": 1}}
-        pricing = {"sonnet": {"input": 3.0, "output": 15.0}}
+        by_project = {
+            "alpha": {
+                "input_tokens": 5000, "output_tokens": 1000,
+                "total_cost_usd": 0.42, "count": 1,
+            },
+        }
         with patch("app.cost_tracker.summarize_by_project", return_value=by_project), \
-             patch("app.cost_tracker.get_pricing_config", return_value=pricing):
+             patch("app.cost_tracker.get_pricing_config", return_value=None):
             from skills.core.stats import handler as h
             import importlib
             importlib.reload(h)
             result = h.handle(ctx)
 
         assert "cost($)" in result
+        assert "0.42" in result
 
 
 # ---------------------------------------------------------------------------
@@ -829,3 +834,286 @@ class TestMonthFlag:
             importlib.reload(h)
             result = h.handle(ctx)
         assert "No session data yet" in result
+
+
+# ---------------------------------------------------------------------------
+# Tests: Cost & cache summary in overview
+# ---------------------------------------------------------------------------
+
+class TestCostCacheSummary:
+    def _mock_range_summary(self, **kwargs):
+        """Build a mock summary dict for summarize_range."""
+        defaults = {
+            "total_input": 50000, "total_output": 10000, "count": 5,
+            "cache_creation_input_tokens": 8000,
+            "cache_read_input_tokens": 5000,
+            "cache_hit_rate": 0.08,
+            "total_cost_usd": 1.25,
+            "by_project": {}, "by_model": {},
+            "by_type": {}, "by_project_and_type": {},
+        }
+        defaults.update(kwargs)
+        return defaults
+
+    def test_cost_and_cache_in_overview(self, tmp_path):
+        ctx = _make_ctx(tmp_path)
+        outcomes = [_make_outcome(outcome="productive", hours_ago=1)]
+        _write_outcomes(ctx.instance_dir, outcomes)
+
+        summary = self._mock_range_summary(total_cost_usd=2.50, cache_hit_rate=0.15)
+        with patch("app.cost_tracker.summarize_by_project", return_value={}), \
+             patch("app.cost_tracker.get_pricing_config", return_value=None), \
+             patch("app.cost_tracker.summarize_range", return_value=summary):
+            from skills.core.stats import handler as h
+            import importlib
+            importlib.reload(h)
+            result = h.handle(ctx)
+
+        assert "$2.50" in result
+        assert "cache 15% hit" in result
+
+    def test_cost_only_no_cache(self, tmp_path):
+        ctx = _make_ctx(tmp_path)
+        outcomes = [_make_outcome(outcome="productive", hours_ago=1)]
+        _write_outcomes(ctx.instance_dir, outcomes)
+
+        summary = self._mock_range_summary(
+            total_cost_usd=0.75,
+            cache_read_input_tokens=0, cache_creation_input_tokens=0,
+        )
+        with patch("app.cost_tracker.summarize_by_project", return_value={}), \
+             patch("app.cost_tracker.get_pricing_config", return_value=None), \
+             patch("app.cost_tracker.summarize_range", return_value=summary):
+            from skills.core.stats import handler as h
+            import importlib
+            importlib.reload(h)
+            result = h.handle(ctx)
+
+        assert "$0.75" in result
+        assert "cache" not in result
+
+    def test_cache_only_no_cost(self, tmp_path):
+        ctx = _make_ctx(tmp_path)
+        outcomes = [_make_outcome(outcome="productive", hours_ago=1)]
+        _write_outcomes(ctx.instance_dir, outcomes)
+
+        summary = self._mock_range_summary(
+            total_cost_usd=0.0,
+            cache_read_input_tokens=5000, cache_creation_input_tokens=2000,
+            cache_hit_rate=0.09,
+        )
+        with patch("app.cost_tracker.summarize_by_project", return_value={}), \
+             patch("app.cost_tracker.get_pricing_config", return_value=None), \
+             patch("app.cost_tracker.summarize_range", return_value=summary):
+            from skills.core.stats import handler as h
+            import importlib
+            importlib.reload(h)
+            result = h.handle(ctx)
+
+        assert "cache 9% hit" in result
+        assert "$" not in result.split("cache")[0]
+
+    def test_no_usage_data_no_line(self, tmp_path):
+        ctx = _make_ctx(tmp_path)
+        outcomes = [_make_outcome(outcome="productive", hours_ago=1)]
+        _write_outcomes(ctx.instance_dir, outcomes)
+
+        empty_summary = self._mock_range_summary(count=0, total_cost_usd=0.0)
+        with patch("app.cost_tracker.summarize_by_project", return_value={}), \
+             patch("app.cost_tracker.get_pricing_config", return_value=None), \
+             patch("app.cost_tracker.summarize_range", return_value=empty_summary):
+            from skills.core.stats import handler as h
+            import importlib
+            importlib.reload(h)
+            result = h.handle(ctx)
+
+        assert "cache" not in result.lower()
+
+
+# ---------------------------------------------------------------------------
+# Tests: Project cost in detail view
+# ---------------------------------------------------------------------------
+
+class TestProjectCost:
+    def test_cost_per_session_shown(self, tmp_path):
+        ctx = _make_ctx(tmp_path, args="koan")
+        outcomes = [
+            _make_outcome(outcome="productive", hours_ago=2),
+            _make_outcome(outcome="productive", hours_ago=1),
+            _make_outcome(outcome="empty", hours_ago=0),
+        ]
+        _write_outcomes(ctx.instance_dir, outcomes)
+
+        by_project = {
+            "koan": {
+                "input_tokens": 30000, "output_tokens": 5000,
+                "cache_creation_input_tokens": 2000,
+                "cache_read_input_tokens": 4000,
+                "total_cost_usd": 0.90, "count": 3,
+            },
+        }
+        with patch("app.cost_tracker.summarize_by_project", return_value=by_project), \
+             patch("app.cost_tracker.get_pricing_config", return_value=None), \
+             patch("app.cost_tracker.summarize_by_project_and_type", return_value={}):
+            from skills.core.stats import handler as h
+            import importlib
+            importlib.reload(h)
+            result = h.handle(ctx)
+
+        assert "Cost:" in result
+        assert "$0.90" in result
+        assert "$0.30/session" in result
+        assert "$0.45/productive" in result
+        assert "cache" in result.lower()
+
+    def test_no_cost_when_zero(self, tmp_path):
+        ctx = _make_ctx(tmp_path, args="koan")
+        outcomes = [_make_outcome(outcome="productive", hours_ago=1)]
+        _write_outcomes(ctx.instance_dir, outcomes)
+
+        by_project = {
+            "koan": {
+                "input_tokens": 30000, "output_tokens": 5000,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "total_cost_usd": 0.0, "count": 1,
+            },
+        }
+        with patch("app.cost_tracker.summarize_by_project", return_value=by_project), \
+             patch("app.cost_tracker.get_pricing_config", return_value=None), \
+             patch("app.cost_tracker.summarize_by_project_and_type", return_value={}):
+            from skills.core.stats import handler as h
+            import importlib
+            importlib.reload(h)
+            result = h.handle(ctx)
+
+        assert "Cost:" not in result
+
+    def test_case_insensitive_project_match(self, tmp_path):
+        ctx = _make_ctx(tmp_path, args="Koan")
+        outcomes = [_make_outcome(project="koan", outcome="productive", hours_ago=1)]
+        _write_outcomes(ctx.instance_dir, outcomes)
+
+        by_project = {
+            "koan": {
+                "input_tokens": 10000, "output_tokens": 2000,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "total_cost_usd": 0.50, "count": 1,
+            },
+        }
+        with patch("app.cost_tracker.summarize_by_project", return_value=by_project), \
+             patch("app.cost_tracker.get_pricing_config", return_value=None), \
+             patch("app.cost_tracker.summarize_by_project_and_type", return_value={}):
+            from skills.core.stats import handler as h
+            import importlib
+            importlib.reload(h)
+            result = h.handle(ctx)
+
+        assert "$0.50" in result
+
+
+# ---------------------------------------------------------------------------
+# Tests: Token overview with cost totals
+# ---------------------------------------------------------------------------
+
+class TestTokenOverviewCostTotals:
+    def test_total_row_shown_with_cost(self, tmp_path):
+        ctx = _make_ctx(tmp_path)
+        outcomes = [_make_outcome(outcome="productive", hours_ago=1)]
+        _write_outcomes(ctx.instance_dir, outcomes)
+
+        by_project = {
+            "alpha": {
+                "input_tokens": 5000, "output_tokens": 1000,
+                "total_cost_usd": 0.30, "count": 2,
+            },
+            "beta": {
+                "input_tokens": 3000, "output_tokens": 500,
+                "total_cost_usd": 0.15, "count": 1,
+            },
+        }
+        with patch("app.cost_tracker.summarize_by_project", return_value=by_project), \
+             patch("app.cost_tracker.get_pricing_config", return_value=None):
+            from skills.core.stats import handler as h
+            import importlib
+            importlib.reload(h)
+            result = h.handle(ctx)
+
+        assert "TOTAL" in result
+        assert "0.45" in result
+
+    def test_no_total_row_without_cost(self, tmp_path):
+        ctx = _make_ctx(tmp_path)
+        outcomes = [_make_outcome(outcome="productive", hours_ago=1)]
+        _write_outcomes(ctx.instance_dir, outcomes)
+
+        by_project = {
+            "alpha": {"input_tokens": 5000, "output_tokens": 1000, "count": 2},
+        }
+        with patch("app.cost_tracker.summarize_by_project", return_value=by_project), \
+             patch("app.cost_tracker.get_pricing_config", return_value=None):
+            from skills.core.stats import handler as h
+            import importlib
+            importlib.reload(h)
+            result = h.handle(ctx)
+
+        assert "TOTAL" not in result
+
+
+# ---------------------------------------------------------------------------
+# Tests: Type breakdown with cost column
+# ---------------------------------------------------------------------------
+
+class TestTypeBreakdownCost:
+    def test_cost_column_in_type_breakdown(self, tmp_path):
+        ctx = _make_ctx(tmp_path, args="koan")
+        outcomes = [_make_outcome(outcome="productive", hours_ago=1)]
+        _write_outcomes(ctx.instance_dir, outcomes)
+
+        by_project_and_type = {
+            "koan": {
+                "implement": {
+                    "input_tokens": 5000, "output_tokens": 1000,
+                    "total_cost_usd": 0.25, "count": 3,
+                },
+                "review": {
+                    "input_tokens": 2000, "output_tokens": 500,
+                    "total_cost_usd": 0.10, "count": 2,
+                },
+            }
+        }
+        with patch("app.cost_tracker.summarize_by_project_and_type", return_value=by_project_and_type), \
+             patch("app.cost_tracker.get_pricing_config", return_value=None), \
+             patch("app.cost_tracker.summarize_by_project", return_value={}):
+            from skills.core.stats import handler as h
+            import importlib
+            importlib.reload(h)
+            result = h.handle(ctx)
+
+        assert "cost($)" in result
+        assert "0.25" in result
+        assert "0.10" in result
+
+    def test_no_cost_column_when_zero_cost(self, tmp_path):
+        ctx = _make_ctx(tmp_path, args="koan")
+        outcomes = [_make_outcome(outcome="productive", hours_ago=1)]
+        _write_outcomes(ctx.instance_dir, outcomes)
+
+        by_project_and_type = {
+            "koan": {
+                "implement": {
+                    "input_tokens": 5000, "output_tokens": 1000,
+                    "total_cost_usd": 0.0, "count": 3,
+                },
+            }
+        }
+        with patch("app.cost_tracker.summarize_by_project_and_type", return_value=by_project_and_type), \
+             patch("app.cost_tracker.get_pricing_config", return_value=None), \
+             patch("app.cost_tracker.summarize_by_project", return_value={}):
+            from skills.core.stats import handler as h
+            import importlib
+            importlib.reload(h)
+            result = h.handle(ctx)
+
+        assert "cost($)" not in result

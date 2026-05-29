@@ -2,8 +2,9 @@
 
 import json
 from collections import Counter
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import Optional
 
 
 def handle(ctx):
@@ -107,6 +108,11 @@ def _format_overview(outcomes: list, instance_dir: Path, days: int) -> str:
     if streak >= 2:
         lines.append(f"  Streak: {streak} productive in a row")
 
+    # Cost & cache summary line
+    cost_cache_line = _format_cost_cache_summary(instance_dir, days)
+    if cost_cache_line:
+        lines.append(cost_cache_line)
+
     # Time-based breakdowns
     now = datetime.now()
     today_line = _format_period_line(
@@ -144,7 +150,7 @@ def _format_overview(outcomes: list, instance_dir: Path, days: int) -> str:
 
     lines.append("")
 
-    # Phase 2: token spend overview
+    # Token spend overview
     token_block = _format_token_overview(instance_dir, days)
     if token_block:
         lines.append(token_block)
@@ -193,6 +199,11 @@ def _format_project_detail(project: str, outcomes: list,
     if streak >= 2:
         lines.append(f"  Streak: {streak} productive in a row")
 
+    # Cost & cache for this project
+    cost_line = _format_project_cost(instance_dir, project, days, total, productive)
+    if cost_line:
+        lines.append(cost_line)
+
     # Time-based breakdowns
     now = datetime.now()
     today_line = _format_period_line(
@@ -226,7 +237,7 @@ def _format_project_detail(project: str, outcomes: list,
     if avg_duration > 0:
         lines.append(f"\nAvg duration: {avg_duration} min")
 
-    # Phase 3: tokens by mission type
+    # Tokens by mission type
     type_block = _format_type_breakdown(instance_dir, project, days)
     if type_block:
         lines.append("")
@@ -268,9 +279,6 @@ def _format_token_overview(instance_dir: Path, days: int) -> str:
     if not by_project:
         return ""
 
-    pricing = cost_tracker.get_pricing_config()
-    show_cost = pricing is not None
-
     total_tokens = sum(
         v["input_tokens"] + v["output_tokens"]
         for v in by_project.values()
@@ -278,6 +286,9 @@ def _format_token_overview(instance_dir: Path, days: int) -> str:
     )
     if total_tokens == 0:
         return ""
+
+    total_cost = sum(v.get("total_cost_usd", 0.0) for v in by_project.values())
+    show_cost = total_cost > 0
 
     # Sort by descending total tokens, cap at 10
     sorted_projects = sorted(
@@ -303,10 +314,14 @@ def _format_token_overview(instance_dir: Path, days: int) -> str:
         name = proj_name[:12] + ("…" if len(proj_name) > 12 else "")
         row = f"{name:<13} {tok_k:>8.1f}  {pct:>3}%"
         if show_cost:
-            # Estimate cost using the model breakdown from the project entry
-            # cost_usd not stored per project in summarize_by_project, so omit
-            row += "       -"
+            proj_cost = data.get("total_cost_usd", 0.0)
+            row += f"  {proj_cost:>7.2f}"
         table_lines.append(row)
+
+    if show_cost:
+        table_lines.append(sep)
+        total_k = total_tokens / 1000
+        table_lines.append(f"{'TOTAL':<13} {total_k:>8.1f}  100%  {total_cost:>7.2f}")
 
     if overflow > 0:
         table_lines.append(f"(+{overflow} more)")
@@ -347,12 +362,18 @@ def _format_type_breakdown(instance_dir: Path, project: str, days: int) -> str:
     if total_tokens == 0:
         return ""
 
+    total_cost = sum(v.get("total_cost_usd", 0.0) for v in type_data.values())
+    show_cost = total_cost > 0
+
     sorted_types = sorted(
         type_data.items(),
         key=lambda x: -(x[1]["input_tokens"] + x[1]["output_tokens"]),
     )[:10]
 
-    header = "type          count  tokens(K)   %"
+    header_parts = ["type          count  tokens(K)   %"]
+    if show_cost:
+        header_parts.append("  cost($)")
+    header = "".join(header_parts)
     sep = "-" * len(header)
     table_lines = [header, sep]
     for mtype, data in sorted_types:
@@ -361,7 +382,11 @@ def _format_type_breakdown(instance_dir: Path, project: str, days: int) -> str:
         count = data["count"]
         pct = int(tok / max(1, total_tokens) * 100)
         name = mtype[:13] + ("…" if len(mtype) > 13 else "")
-        table_lines.append(f"{name:<14} {count:>5}  {tok_k:>8.1f}  {pct:>3}%")
+        row = f"{name:<14} {count:>5}  {tok_k:>8.1f}  {pct:>3}%"
+        if show_cost:
+            type_cost = data.get("total_cost_usd", 0.0)
+            row += f"  {type_cost:>7.2f}"
+        table_lines.append(row)
 
     inner = "\n".join(table_lines)
     window_label = "30d" if days == 30 else "7d"
@@ -445,3 +470,103 @@ def _format_period_line(outcomes: list, label: str,
     productive = sum(1 for o in outcomes if o.get("outcome") == "productive")
     pct = int(productive / max(1, total) * 100)
     return f"  {label}: {total} sessions ({pct}% productive)"
+
+
+def _format_cost_cache_summary(instance_dir: Path, days: int) -> str:
+    """Build a one-line cost + cache summary for the overview header.
+
+    Returns empty string when no usage data exists.
+    """
+    try:
+        from app import cost_tracker
+    except ImportError:
+        return ""
+
+    summary = _get_range_summary(instance_dir, days)
+    if not summary or summary["count"] == 0:
+        return ""
+
+    parts = []
+
+    total_cost = summary.get("total_cost_usd", 0.0)
+    if total_cost > 0:
+        parts.append(f"${total_cost:.2f}")
+
+    cache_read = summary.get("cache_read_input_tokens", 0)
+    cache_create = summary.get("cache_creation_input_tokens", 0)
+    if cache_read or cache_create:
+        hit_rate = summary.get("cache_hit_rate", 0.0)
+        parts.append(f"cache {hit_rate:.0%} hit")
+
+    if not parts:
+        return ""
+
+    return "  " + " | ".join(parts)
+
+
+def _format_project_cost(instance_dir: Path, project: str,
+                         days: int, total_sessions: int,
+                         productive_sessions: int) -> str:
+    """Build a cost + cache line for a project detail view.
+
+    Returns empty string when no cost data exists for the project.
+    """
+    try:
+        from app import cost_tracker
+    except ImportError:
+        return ""
+
+    by_project = cost_tracker.summarize_by_project(instance_dir, days=days)
+    if not by_project:
+        return ""
+
+    project_lower = project.lower()
+    data = None
+    for key, val in by_project.items():
+        if key.lower() == project_lower:
+            data = val
+            break
+
+    if not data:
+        return ""
+
+    total_cost = data.get("total_cost_usd", 0.0)
+    cache_read = data.get("cache_read_input_tokens", 0)
+    cache_create = data.get("cache_creation_input_tokens", 0)
+
+    if total_cost <= 0 and not cache_read and not cache_create:
+        return ""
+
+    parts = []
+    if total_cost > 0:
+        cost_str = f"${total_cost:.2f}"
+        if total_sessions > 0:
+            avg = total_cost / total_sessions
+            cost_str += f" (${avg:.2f}/session"
+            if productive_sessions > 0:
+                cost_per_prod = total_cost / productive_sessions
+                cost_str += f", ${cost_per_prod:.2f}/productive"
+            cost_str += ")"
+        parts.append(cost_str)
+
+    if cache_read or cache_create:
+        from app.token_parser import compute_cache_hit_rate
+        inp = data.get("input_tokens", 0)
+        hit_rate = compute_cache_hit_rate(inp, cache_read, cache_create)
+        parts.append(f"cache {hit_rate:.0%} hit")
+
+    if not parts:
+        return ""
+
+    return "  Cost: " + " | ".join(parts)
+
+
+def _get_range_summary(instance_dir: Path, days: int) -> Optional[dict]:
+    """Load the aggregated usage summary for a date range."""
+    try:
+        from app import cost_tracker
+        end = date.today()
+        start = end - timedelta(days=days - 1)
+        return cost_tracker.summarize_range(instance_dir, start, end)
+    except (ImportError, Exception):
+        return None

@@ -274,6 +274,25 @@ class TestSummarize:
         assert result["koan"]["count"] == 2
         assert result["other"]["count"] == 1
 
+    def test_summarize_by_project_includes_cost_and_cache(self, instance_dir):
+        record_usage(
+            instance_dir, "koan", "sonnet", 1000, 500,
+            cache_creation_input_tokens=200,
+            cache_read_input_tokens=800,
+            cost_usd=0.15,
+        )
+        record_usage(
+            instance_dir, "koan", "sonnet", 500, 200,
+            cache_creation_input_tokens=100,
+            cache_read_input_tokens=400,
+            cost_usd=0.08,
+        )
+        result = summarize_by_project(instance_dir, days=1)
+        koan = result["koan"]
+        assert koan["total_cost_usd"] == pytest.approx(0.23, abs=0.001)
+        assert koan["cache_creation_input_tokens"] == 300
+        assert koan["cache_read_input_tokens"] == 1200
+
     def test_summarize_by_model(self, instance_dir):
         record_usage(instance_dir, "koan", "claude-sonnet-4-20250514", 1000, 500)
         record_usage(instance_dir, "koan", "claude-opus-4-20250514", 2000, 800)

@@ -254,9 +254,19 @@ def _aggregate(entries: list) -> dict:
 
         # By project
         if project not in result["by_project"]:
-            result["by_project"][project] = {"input_tokens": 0, "output_tokens": 0, "count": 0}
+            result["by_project"][project] = {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "total_cost_usd": 0.0,
+                "count": 0,
+            }
         result["by_project"][project]["input_tokens"] += inp
         result["by_project"][project]["output_tokens"] += out
+        result["by_project"][project]["cache_creation_input_tokens"] += cache_create
+        result["by_project"][project]["cache_read_input_tokens"] += cache_read
+        result["by_project"][project]["total_cost_usd"] += cost
         result["by_project"][project]["count"] += 1
 
         # By model
