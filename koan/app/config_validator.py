@@ -110,6 +110,7 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
         "chat": "str",
         "lightweight": "str",
         "fallback": "str",
+        "reflect": "str",
         "review_mode": "str",
     },
     "git_auto_merge": {
