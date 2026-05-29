@@ -324,7 +324,8 @@ def improve_plan(
 
     The improver explores the codebase to resolve ambiguities identified by
     the reviewer (missing file paths, vague descriptions, etc.) and returns
-    a corrected plan.
+    a corrected plan. Uses mission model (not lightweight) because it needs
+    full reasoning to fix structural plan issues, not just spot-check reviews.
 
     Args:
         plan_text: The plan that failed review.
@@ -349,7 +350,7 @@ def improve_plan(
         output = run_command(
             prompt, project_path,
             allowed_tools=["Read", "Glob", "Grep"],
-            model_key="chat",
+            model_key="mission",
             max_turns=5,
             timeout=180,
             max_turns_source=None,
@@ -635,6 +636,7 @@ def _run_claude_plan(prompt, project_path):
     output = run_command_streaming(
         prompt, project_path,
         allowed_tools=["Read", "Glob", "Grep", "WebFetch"],
+        model_key="mission",
         max_turns=get_skill_max_turns(), timeout=get_skill_timeout(),
     )
     if _is_error_output(output):

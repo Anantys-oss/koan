@@ -550,8 +550,19 @@ class TestRunClaudePlan:
         mock_cmd.assert_called_once_with(
             "test prompt", "/project",
             allowed_tools=["Read", "Glob", "Grep", "WebFetch"],
+            model_key="mission",
             max_turns=50, timeout=3600,
         )
+
+    @patch("app.config.get_skill_max_turns", return_value=10)
+    @patch("app.config.get_skill_timeout", return_value=300)
+    @patch("app.cli_provider.run_command_streaming", return_value="plan output")
+    def test_uses_mission_model_key(self, mock_cmd, mock_timeout, mock_turns):
+        """Regression test for issue #1614: plan should use mission model, not haiku."""
+        _run_claude_plan("plan prompt", "/project")
+        # Verify that model_key="mission" is passed, not default "chat" (haiku)
+        call_kwargs = mock_cmd.call_args[1]
+        assert call_kwargs["model_key"] == "mission"
 
     @patch("app.cli_provider.run_command_streaming",
            side_effect=RuntimeError("CLI invocation failed: error msg"))
