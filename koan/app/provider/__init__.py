@@ -514,7 +514,12 @@ def _summarize_stream_event(event: Dict[str, Any]) -> str:
             resets = info.get("resetsAt")
             suffix = f" resetsAt {resets}" if resets else ""
             return f"[cli] rate_limit_rejected{label}{suffix}"
-        return f"[cli] rate limit ok: {status or 'unknown'}{label}"
+        # NOTE: underscored ``rate_limit_ok`` (not "rate limit ok") — the
+        # space-separated form collides with the loose ``rate limit`` quota
+        # pattern, so a summary that leaks into a stderr-trusted buffer would
+        # falsely pause Koan. Mirror the underscored ``rate_limit_rejected``
+        # marker above. See quota_handler._rate_limit_exhausted.
+        return f"[cli] rate_limit_ok: {status or 'unknown'}{label}"
 
     item = event.get("item")
     if isinstance(item, dict):

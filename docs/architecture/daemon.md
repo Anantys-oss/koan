@@ -45,6 +45,12 @@ Bridge state that would otherwise create circular imports lives in
   status-aware: only a *rejected* status pauses Koan. The newer CLI also emits
   informational `rate_limit_event`s (status `allowed`) on every session, so
   matching the bare event type would otherwise pause Koan on successful runs.
+  The rejected status must co-occur with the event on the same stream-json line
+  — an unanchored whole-text match would pair the always-present informational
+  event with any unrelated `"status":"exceeded"` JSON elsewhere in the output
+  (e.g. CI / check-run payloads that `/ci_check` inspects). The informational
+  summary line is rendered as `[cli] rate_limit_ok:` (underscored) so it never
+  collides with the loose `rate limit` quota pattern.
 
 Idle actions use the same interruptible sleep path even when `auto_pause` is
 disabled. If `interval_seconds` is set to `0`, the runner waits until the next

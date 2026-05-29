@@ -1250,16 +1250,23 @@ class TestSummarizeStreamEvent:
         assert "45s" in line
 
     def test_informational_rate_limit_event_has_no_quota_trigger(self):
-        """An 'allowed' rate_limit_event must summarize without tripping the
-        strict quota detector (the false-positive this fixes)."""
+        """An 'allowed' rate_limit_event must summarize without tripping ANY
+        quota detector.
+
+        Regression: the summary line must not read as quota exhaustion under
+        either the strict matcher (stdout) OR the combined detector (used for
+        stderr / general text). The earlier '[cli] rate limit ok' wording
+        contained the loose 'rate limit' substring, so a summary that leaked
+        into a stderr-trusted buffer paused Koan on a successful run.
+        """
         from app.provider import _summarize_stream_event
-        from app.quota_handler import _strict_quota_match
+        from app.quota_handler import _strict_quota_match, detect_quota_exhaustion
         line = _summarize_stream_event({
             "type": "rate_limit_event",
             "rate_limit_info": {"status": "allowed", "rateLimitType": "five_hour"},
         })
-        assert "rate limit ok" in line
         assert _strict_quota_match(line) is False
+        assert detect_quota_exhaustion(line) is False
 
     def test_rejected_rate_limit_event_is_detected_from_summary(self):
         """A 'rejected' rate_limit_event must summarize to a line the quota

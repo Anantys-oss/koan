@@ -100,15 +100,22 @@ def _rate_limit_exhausted(text: str) -> bool:
     """True only for a *rejected* rate_limit_event, never an informational one.
 
     Matches either the summarizer's ``rate_limit_rejected`` marker or a raw
-    ``rate_limit_event`` JSON blob whose status is a rejection.
+    ``rate_limit_event`` JSON blob whose *own* status is a rejection.
+
+    The rejected status must co-occur with the ``rate_limit_event`` token on
+    the **same line** (Claude stream-json emits one JSON object per line). A
+    whole-text ``AND`` would pair the always-present informational event with
+    any unrelated ``"status":"exceeded"`` elsewhere in the output — e.g. CI /
+    check-run JSON that ``/ci_check`` feeds into the session — and falsely
+    pause Koan.
     """
     if not text:
         return False
     if _RATE_LIMIT_REJECTED_MARKER_RE.search(text):
         return True
-    return bool(
-        _RATE_LIMIT_EVENT_RE.search(text)
-        and _RATE_LIMIT_REJECTED_STATUS_RE.search(text)
+    return any(
+        _RATE_LIMIT_EVENT_RE.search(line) and _RATE_LIMIT_REJECTED_STATUS_RE.search(line)
+        for line in text.splitlines()
     )
 
 

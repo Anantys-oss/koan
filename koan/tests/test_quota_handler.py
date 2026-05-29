@@ -106,18 +106,19 @@ Your quota resets 10am (Europe/Paris)."""
         assert detect_quota_exhaustion('{"resetsAt":1779937200}') is False
         assert detect_quota_exhaustion('"rateLimitType":"five_hour"') is False
 
-    def test_summarized_rate_limit_event_line_safe_in_stdout(self):
-        """The informational summary line is safe under stdout (strict) checks.
+    def test_summarized_rate_limit_event_line_safe(self):
+        """The informational summary line is safe under BOTH matchers.
 
-        ``detect_quota_exhaustion`` (combined text) still matches the loose
-        'rate limit' substring, but stdout is only ever checked with the strict
-        matcher — which must not fire on an informational summary line.
+        The underscored ``rate_limit_ok`` wording must not fire on the strict
+        matcher (stdout) nor the combined detector (stderr / general text) —
+        the latter being where the old space-separated wording collided with
+        the loose 'rate limit' pattern.
         """
-        from app.quota_handler import _strict_quota_match
+        from app.quota_handler import _strict_quota_match, detect_quota_exhaustion
 
-        assert _strict_quota_match(
-            "[cli] rate limit ok: allowed (five_hour)"
-        ) is False
+        line = "[cli] rate_limit_ok: allowed (five_hour)"
+        assert _strict_quota_match(line) is False
+        assert detect_quota_exhaustion(line) is False
 
     def test_summarized_rejected_marker_triggers(self):
         """The summarizer's rejection marker must be detected."""
@@ -126,6 +127,38 @@ Your quota resets 10am (Europe/Paris)."""
         line = "[cli] rate_limit_rejected (five_hour) resetsAt 1779937200"
         assert _strict_quota_match(line) is True
         assert detect_quota_exhaustion(line) is True
+
+    def test_informational_event_with_unrelated_rejected_status_is_safe(self):
+        """An informational rate_limit_event must not be promoted to exhaustion
+        just because some *unrelated* JSON elsewhere in the output carries a
+        rejected-style status.
+
+        Since the newer CLI emits a ``rate_limit_event`` (status "allowed") on
+        every session, an unanchored search that pairs the always-present event
+        token with any free-floating ``"status":"exceeded"`` falsely pauses Koan.
+        This bites ``/ci_check`` in particular: it feeds CI / check-run JSON —
+        full of ``"status"`` fields — into the session.
+        """
+        from app.quota_handler import _rate_limit_exhausted, _strict_quota_match
+
+        text = (
+            '{"type":"rate_limit_event","rate_limit_info":'
+            '{"status":"allowed","rateLimitType":"five_hour"}}\n'
+            'CI check-run result: {"job":"deploy","status":"exceeded"}'
+        )
+        assert _rate_limit_exhausted(text) is False
+        assert _strict_quota_match(text) is False
+
+    def test_rejected_event_on_same_line_still_triggers(self):
+        """A genuine rejection (status on the rate_limit_event itself) must
+        still be detected — anchoring must not lose true positives."""
+        from app.quota_handler import _rate_limit_exhausted
+
+        text = (
+            '{"type":"rate_limit_event","rate_limit_info":'
+            '{"status":"rejected","resetsAt":1779937200}}'
+        )
+        assert _rate_limit_exhausted(text) is True
 
 
 class TestDetectQuotaExhaustionCopilot:
@@ -1062,7 +1095,7 @@ class TestStdoutFalsePositives:
         from app.quota_handler import handle_quota_exhaustion
 
         for stdout_content in (
-            "[cli] result: success\n[cli] rate limit ok: allowed (five_hour)",
+            "[cli] result: success\n[cli] rate_limit_ok: allowed (five_hour)",
             '{"type":"rate_limit_event","rate_limit_info":'
             '{"status":"allowed","resetsAt":1779937200,"rateLimitType":"five_hour"}}',
         ):
