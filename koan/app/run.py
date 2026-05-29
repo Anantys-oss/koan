@@ -2789,7 +2789,7 @@ def _update_mission_in_file(
     callers should surface this rather than let it loop silently.
     """
     try:
-        from app.missions import complete_mission, fail_mission
+        from app.missions import complete_mission, fail_mission, prune_completed_sections
         from app.utils import modify_missions_file
         missions_path = Path(instance, "missions.md")
         if not missions_path.exists():
@@ -2806,7 +2806,9 @@ def _update_mission_in_file(
 
         def tracked(content):
             before[0] = content
-            return transform(content)
+            result = transform(content)
+            result, _ = prune_completed_sections(result)
+            return result
 
         after = modify_missions_file(missions_path, tracked)
         if before[0] is not None and after == before[0]:

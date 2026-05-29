@@ -221,23 +221,24 @@ def cleanup_memory(instance: str):
 
 
 def prune_missions_done(instance: str):
-    """Prune old Done items from missions.md to keep file size bounded.
+    """Prune old Done and Failed items from missions.md to keep file size bounded.
 
     missions.md grows unbounded as completed missions accumulate. At 190KB+,
-    the agent wastes context tokens reading it. Keep only the last 50 Done items.
+    the agent wastes context tokens reading it. Keep only the last 50 Done
+    and 30 Failed items.
     """
     missions_path = Path(instance) / "missions.md"
     if not missions_path.exists():
         return
 
-    from app.missions import prune_done_section
+    from app.missions import prune_completed_sections
     from app.utils import atomic_write
 
     content = missions_path.read_text()
-    new_content, pruned = prune_done_section(content, keep=50)
+    new_content, pruned = prune_completed_sections(content)
     if pruned > 0:
         atomic_write(missions_path, new_content)
-        log("health", f"Pruned {pruned} old Done items from missions.md")
+        log("health", f"Pruned {pruned} old Done/Failed items from missions.md")
 
 
 def cleanup_mission_history(instance: str):
