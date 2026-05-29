@@ -1,4 +1,4 @@
-"""Kōan /doctor skill — diagnostic self-checks."""
+"""Kōan /doctor skill — diagnostic self-checks with optional auto-repair."""
 
 # Severity display mapping
 _SEVERITY_ICONS = {
@@ -23,12 +23,18 @@ _MAX_MESSAGE_LEN = 4000
 
 def handle(ctx):
     """Run all diagnostic checks and format results."""
-    from diagnostics import run_all
+    from diagnostics import run_all, fix_all
 
     koan_root = str(ctx.koan_root)
     instance_dir = str(ctx.instance_dir)
     args = (ctx.args or "").strip()
     full = "--full" in args
+    do_fix = "--fix" in args
+
+    # Run fixes first if requested
+    fix_results = []
+    if do_fix:
+        fix_results = fix_all(koan_root, instance_dir)
 
     all_results = run_all(koan_root, instance_dir, full=full)
 
@@ -36,6 +42,7 @@ def handle(ctx):
     ok_count = 0
     warn_count = 0
     error_count = 0
+    fixable_count = 0
 
     for _module, checks in all_results:
         for check in checks:
@@ -43,6 +50,8 @@ def handle(ctx):
                 ok_count += 1
             elif check.severity == "warn":
                 warn_count += 1
+                if check.fixable:
+                    fixable_count += 1
             elif check.severity == "error":
                 error_count += 1
 
@@ -55,10 +64,20 @@ def handle(ctx):
         parts.append(f"{warn_count} warning(s)")
     if error_count:
         parts.append(f"{error_count} error(s)")
-    summary = f"🩺 Doctor — {total} checks: {', '.join(parts)}"
+    summary = f"\U0001fa7a Doctor — {total} checks: {', '.join(parts)}"
 
     # Build sections
     sections = [summary, ""]
+
+    # Show fix results first if any
+    if fix_results:
+        fix_lines = ["▸ Repairs"]
+        for _module, fixes in fix_results:
+            for fr in fixes:
+                icon = "✅" if fr.success else "❌"
+                fix_lines.append(f"  {icon} {fr.message}")
+        sections.append("\n".join(fix_lines))
+
     for module_name, checks in all_results:
         display_name = _MODULE_NAMES.get(module_name, module_name)
         section_lines = [f"▸ {display_name}"]
@@ -72,8 +91,13 @@ def handle(ctx):
 
         sections.append("\n".join(section_lines))
 
+    footer_parts = []
     if not full:
-        sections.append("Run /doctor --full for connectivity checks")
+        footer_parts.append("/doctor --full for connectivity checks")
+    if fixable_count and not do_fix:
+        footer_parts.append(f"/doctor --fix to auto-repair {fixable_count} issue(s)")
+    if footer_parts:
+        sections.append(" | ".join(footer_parts))
 
     output = "\n\n".join(sections)
 

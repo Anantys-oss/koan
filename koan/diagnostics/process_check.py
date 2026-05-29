@@ -9,7 +9,7 @@ import shutil
 from pathlib import Path
 from typing import List
 
-from diagnostics import CheckResult
+from diagnostics import CheckResult, FixResult
 
 
 def run(koan_root: str, instance_dir: str) -> List[CheckResult]:
@@ -37,6 +37,7 @@ def run(koan_root: str, instance_dir: str) -> List[CheckResult]:
                     severity="warn",
                     message=f"Stale PID file for {process_name} (process not alive)",
                     hint=f"Remove {pid_file} or run 'make start'",
+                    fixable=True,
                 ))
             else:
                 results.append(CheckResult(
@@ -143,4 +144,33 @@ def run(koan_root: str, instance_dir: str) -> List[CheckResult]:
             message=f"Could not check disk space: {e}",
         ))
 
+    return results
+
+
+def fix(koan_root: str, instance_dir: str) -> List[FixResult]:
+    """Remove stale PID files for dead processes."""
+    results = []
+    root = Path(koan_root)
+    from app.pid_manager import check_pidfile
+
+    for process_name in ("run", "awake", "ollama", "dashboard"):
+        pid_file = root / f".koan-pid-{process_name}"
+        if not pid_file.exists():
+            continue
+        pid = check_pidfile(root, process_name)
+        if pid:
+            continue
+        try:
+            pid_file.unlink()
+            results.append(FixResult(
+                name=f"process_{process_name}",
+                success=True,
+                message=f"Removed stale PID file for {process_name}",
+            ))
+        except OSError as e:
+            results.append(FixResult(
+                name=f"process_{process_name}",
+                success=False,
+                message=f"Failed to remove stale PID file for {process_name}: {e}",
+            ))
     return results

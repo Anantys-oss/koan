@@ -74,6 +74,7 @@ Skills marked **GitHub @mention** can be triggered by commenting `@koan-bot <com
 | `/status` | `/st`, `/ping`, `/usage`, `/metrics` | Show agent status, missions, and loop health |
 | `/live` | `/progress` | Show live progress from the current run |
 | `/quota` | `/q` | Check LLM quota (live, no cache) |
+| `/doctor` | `/diag` | Diagnostic self-checks; `--fix` auto-repairs, `--full` adds connectivity |
 
 ## Configuration
 

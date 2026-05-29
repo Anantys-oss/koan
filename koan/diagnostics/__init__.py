@@ -26,6 +26,14 @@ class CheckResult(NamedTuple):
     severity: str    # "ok", "warn", or "error"
     message: str     # Human-readable description
     hint: str = ""   # Optional remediation hint
+    fixable: bool = False  # True if --fix can auto-repair this
+
+
+class FixResult(NamedTuple):
+    """Result of an auto-repair action."""
+    name: str        # Which check was fixed
+    success: bool    # Whether the fix succeeded
+    message: str     # What was done (or what failed)
 
 
 def discover_checks() -> List[str]:
@@ -37,6 +45,35 @@ def discover_checks() -> List[str]:
         if not info.ispkg
     ]
     return sorted(modules)
+
+
+def fix_all(koan_root: str, instance_dir: str) -> List[Tuple[str, List["FixResult"]]]:
+    """Run auto-repair on all diagnostic modules that support it.
+
+    Only modules that expose a ``fix(koan_root, instance_dir)`` function
+    are included.  Each fix function receives the same paths as ``run()``
+    and returns a list of FixResult tuples describing what was repaired.
+
+    Returns:
+        List of (module_name, fix_results) tuples.
+    """
+    results = []
+    for name in discover_checks():
+        module = importlib.import_module(f"diagnostics.{name}")
+        fix_fn = getattr(module, "fix", None)
+        if fix_fn is None:
+            continue
+        try:
+            fix_results = fix_fn(koan_root, instance_dir)
+        except Exception as e:
+            fix_results = [FixResult(
+                name=f"{name}_fix_error",
+                success=False,
+                message=f"Fix module '{name}' crashed: {e}",
+            )]
+        if fix_results:
+            results.append((name, fix_results))
+    return results
 
 
 def run_all(koan_root: str, instance_dir: str, full: bool = False) -> List[Tuple[str, List[CheckResult]]]:

@@ -1149,6 +1149,24 @@ Run it after every Kōan update to stay in sync:
 
 The same check runs automatically as part of `/doctor` — use `/config_check` when you only want the config slice without the rest of the diagnostic report.
 
+### Health Check & Auto-Repair
+
+**`/doctor`** — Run diagnostic self-checks on configuration, environment, instance structure, processes, projects, and connectivity.
+
+```
+/doctor           # Quick diagnostics
+/doctor --full    # Include connectivity checks (Telegram, GitHub, CLI)
+/doctor --fix     # Auto-repair common issues
+```
+
+The `--fix` mode safely repairs:
+- **Stale PID files** — removes orphaned PID files when the process is no longer alive
+- **Missions.md structural issues** — fixes duplicate headers, foreign sections
+- **Stale in-progress missions** — recovers stuck missions back to Pending
+- **Missing directories** — creates missing `memory/` and `journal/` directories
+
+When `--fix` is not used, fixable issues are flagged with a hint to re-run with `--fix`.
+
 ### Remote HEAD Rescan
 
 **`/rescan`** — Re-check all project workspaces for remote default branch changes (e.g. when a repository renames its default branch from `master` to `main`).
