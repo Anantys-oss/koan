@@ -6950,17 +6950,17 @@ class TestRunIterationPaths:
             mock_pause.assert_called_once()
             assert result is True
 
-    # --- Dedup guard error returns False ---
+    # --- Dedup guard error proceeds ---
 
-    def test_dedup_guard_error_returns_false(self, tmp_path):
-        """Dedup error → return False, don't proceed with execution."""
+    def test_dedup_guard_error_proceeds_with_mission(self, tmp_path):
+        """Dedup error → proceed with mission (running extra is safer than skipping)."""
         plan = self._make_plan("mission", mission_title="task with dedup error")
         with self._patched_iteration(tmp_path, plan) as mocks:
             with patch("app.mission_history.should_skip_mission", side_effect=RuntimeError("unexpected")):
                 result = self._call(tmp_path)
-            # Should NOT execute — dedup error is non-productive
-            mocks["run_claude_task"].assert_not_called()
-            assert result is False
+            # Should proceed — running once extra is cheaper than silently dropping
+            mocks["run_claude_task"].assert_called_once()
+            assert result is True
 
     # --- Project state written ---
 

@@ -1929,8 +1929,9 @@ def _run_iteration(
                 _commit_instance(instance)
                 return False  # dedup skip — not productive
         except Exception as e:
-            log("error", f"Dedup guard error: {e}")
-            return False  # dedup error — not productive, don't proceed
+            log("warning", f"Dedup guard error (proceeding anyway): {e}")
+            # Don't skip — running a mission once extra is cheaper than
+            # silently dropping it every iteration.
 
     # Set project state
     atomic_write(Path(koan_root, PROJECT_FILE), project_name)
