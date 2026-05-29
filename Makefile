@@ -1,6 +1,8 @@
 -include .env
 export
 
+# a simple test
+
 .PHONY: install onboard setup start stop status restart
 .PHONY: clean say migrate test test-skills test-strict coverage lint sync-instance rename-project release
 .PHONY: awake run errand-run errand-awake dashboard
