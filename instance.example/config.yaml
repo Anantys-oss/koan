@@ -387,6 +387,7 @@ models:
 #   mission: "gpt-5.3-codex"      # complex implementation
 #   chat: "gpt-5.5"               # general discussion / planning
 #   lightweight: "gpt-5.5"        # simple tasks if cost is acceptable
+#   fallback: ""                   # empty = use provider default
 #   review_mode: "gpt-5.3-codex"  # serious code review
 #   reflect: "gpt-5.5"            # summarize / reason about result
 
