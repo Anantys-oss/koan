@@ -277,3 +277,38 @@ class TestWriteEventFile:
         p1 = write_event_file(events_dir, run_at, "Mission one")
         p2 = write_event_file(events_dir, run_at, "Mission two")
         assert p1 != p2
+
+    def test_concurrent_writes_no_collision(self, tmp_path):
+        """Concurrent write_event_file calls with same timestamp don't collide."""
+        import threading
+        from app.event_scheduler import write_event_file
+
+        events_dir = tmp_path / "events"
+        run_at = datetime(2026, 5, 24, 9, 0)
+        results = []
+        errors = []
+
+        def write(idx):
+            try:
+                p = write_event_file(events_dir, run_at, f"Mission {idx}")
+                results.append(p)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=write, args=(i,)) for i in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"Unexpected errors: {errors}"
+        assert len(set(results)) == 5, "Each call must produce a unique path"
+
+    def test_first_filename_has_no_counter_suffix(self, tmp_path):
+        """First event file uses clean name without counter suffix."""
+        import re
+        from app.event_scheduler import write_event_file
+        events_dir = tmp_path / "events"
+        run_at = datetime(2026, 5, 24, 9, 0)
+        p = write_event_file(events_dir, run_at, "First")
+        assert re.match(r"event_\d+\.json$", p.name), f"Unexpected name: {p.name}"

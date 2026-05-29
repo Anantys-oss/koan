@@ -9,10 +9,10 @@ from app.issue_tracker import add_comment, create_issue, fetch_issue
 
 def _read_body(path: str) -> str:
     p = Path(path)
-    if not p.exists():
+    if not p.is_file():
         print(f"Error: body file not found: {path}", file=sys.stderr)
         raise SystemExit(1)
-    return p.read_text()
+    return p.read_text(encoding="utf-8")
 
 
 def main(argv=None) -> int:

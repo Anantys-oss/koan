@@ -24,6 +24,9 @@ _providers: Dict[str, Type[MessagingProvider]] = {}
 _instance: Optional[MessagingProvider] = None
 _instance_lock = threading.Lock()
 
+# Guards one-time module loading in _ensure_providers_loaded()
+_load_lock = threading.Lock()
+
 # Set to True after ``_ensure_providers_loaded`` walks ``_PROVIDER_MODULES``
 # once.  Tracking loop completion explicitly — rather than inferring it from
 # ``bool(_providers)`` — avoids skipping unloaded modules when something
@@ -124,7 +127,8 @@ def get_messaging_provider(provider_name_override: Optional[str] = None) -> Mess
 def reset_provider():
     """Reset the singleton (for testing)."""
     global _instance
-    _instance = None
+    with _instance_lock:
+        _instance = None
 
 
 def _resolve_provider_name() -> str:
@@ -163,10 +167,13 @@ def _ensure_providers_loaded():
     global _modules_loaded
     if _modules_loaded:
         return
-    for module_name in _PROVIDER_MODULES:
-        with contextlib.suppress(ImportError):
-            __import__(module_name)
-    _modules_loaded = True
+    with _load_lock:
+        if _modules_loaded:
+            return
+        for module_name in _PROVIDER_MODULES:
+            with contextlib.suppress(ImportError):
+                __import__(module_name)
+        _modules_loaded = True
 
 
 __all__ = [

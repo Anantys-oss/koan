@@ -18,6 +18,7 @@ Only ``type: "once"`` is supported.  Additional types may be added later.
 """
 
 import json
+import os
 import re
 import shutil
 import time
@@ -154,16 +155,21 @@ def write_event_file(events_dir: Path, run_at: datetime, mission: str) -> Path:
     """
     events_dir.mkdir(parents=True, exist_ok=True)
     ts = int(run_at.timestamp() * 1000)  # millisecond precision for uniqueness
-    path = events_dir / f"event_{ts}.json"
-    # Guard against timestamp collision on rapid calls
-    counter = 0
-    while path.exists():
-        counter += 1
-        path = events_dir / f"event_{ts}_{counter}.json"
     payload = {
         "type": "once",
         "run_at": run_at.strftime("%Y-%m-%dT%H:%M:%S"),
         "mission": mission,
     }
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    return path
+    content = json.dumps(payload, indent=2, ensure_ascii=False)
+    # Use O_CREAT|O_EXCL for atomic create — avoids TOCTOU race vs exists() loop
+    for counter in range(100):
+        suffix = f"_{counter}" if counter else ""
+        candidate = events_dir / f"event_{ts}{suffix}.json"
+        try:
+            fd = os.open(str(candidate), os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+        except FileExistsError:
+            continue
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        return candidate
+    raise RuntimeError(f"Failed to create unique event file after 100 attempts: {ts}")

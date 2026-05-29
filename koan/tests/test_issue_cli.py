@@ -16,6 +16,28 @@ def _make_issue_content(title="Test Issue", body="Issue body", comments=None):
     return IssueContent(ref=ref, title=title, body=body, comments=comments or [])
 
 
+class TestReadBody:
+    def test_missing_file_exits(self, tmp_path):
+        from app.issue_cli import _read_body
+
+        with pytest.raises(SystemExit):
+            _read_body(str(tmp_path / "nonexistent.md"))
+
+    def test_reads_existing_file(self, tmp_path):
+        from app.issue_cli import _read_body
+
+        body_file = tmp_path / "body.md"
+        body_file.write_text("Hello world", encoding="utf-8")
+        assert _read_body(str(body_file)) == "Hello world"
+
+    def test_reads_utf8(self, tmp_path):
+        from app.issue_cli import _read_body
+
+        body_file = tmp_path / "body.md"
+        body_file.write_text("café ñ 日本語", encoding="utf-8")
+        assert _read_body(str(body_file)) == "café ñ 日本語"
+
+
 class TestIssueCLIFetch:
     def test_fetch_prints_title_and_body(self, capsys):
         content = _make_issue_content()

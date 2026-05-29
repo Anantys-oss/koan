@@ -415,3 +415,90 @@ class TestSendTypingBase:
         """Base class send_typing is a no-op that returns True."""
         provider = MockProvider()
         assert provider.send_typing() is True
+
+
+# ---------------------------------------------------------------------------
+# Thread-safety — _ensure_providers_loaded, reset_provider
+# ---------------------------------------------------------------------------
+
+
+class TestThreadSafety:
+    def test_ensure_providers_loaded_uses_lock(self):
+        """_ensure_providers_loaded acquires _load_lock."""
+        import app.messaging as m
+
+        original = m._modules_loaded
+        try:
+            m._modules_loaded = False
+            assert hasattr(m, "_load_lock")
+            acquired = m._load_lock.acquire(blocking=False)
+            if acquired:
+                m._load_lock.release()
+        finally:
+            m._modules_loaded = original
+
+    def test_reset_provider_uses_lock(self, clean_registry):
+        """reset_provider acquires _instance_lock."""
+        import app.messaging as m
+        from app.messaging import register_provider, get_messaging_provider, reset_provider
+
+        @register_provider("telegram")
+        class MockTelegram(MockProvider):
+            pass
+
+        with patch.dict(os.environ, {"KOAN_MESSAGING_PROVIDER": "telegram"}):
+            get_messaging_provider()
+            assert m._instance is not None
+
+            # Hold the lock — reset_provider should block
+            m._instance_lock.acquire()
+            import threading
+            result = {"done": False}
+
+            def do_reset():
+                reset_provider()
+                result["done"] = True
+
+            t = threading.Thread(target=do_reset)
+            t.start()
+            t.join(timeout=0.1)
+            assert not result["done"], "reset_provider should have blocked on held lock"
+            m._instance_lock.release()
+            t.join(timeout=1)
+            assert result["done"]
+            assert m._instance is None
+
+    def test_concurrent_ensure_providers_loaded(self):
+        """Multiple threads calling _ensure_providers_loaded converge."""
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        koan_pkg = Path(__file__).resolve().parents[1]
+        script = (
+            "import threading\n"
+            "from app.messaging import _ensure_providers_loaded, _providers\n"
+            "import app.messaging as m\n"
+            "m._modules_loaded = False\n"
+            "m._providers.clear()\n"
+            "threads = [threading.Thread(target=_ensure_providers_loaded) for _ in range(10)]\n"
+            "for t in threads: t.start()\n"
+            "for t in threads: t.join()\n"
+            "missing = {'telegram', 'slack', 'matrix'} - set(_providers)\n"
+            "assert not missing, f'missing after concurrent load: {missing}'\n"
+        )
+        env = {
+            **os.environ,
+            "PYTHONPATH": str(koan_pkg),
+            "KOAN_ROOT": os.environ.get("KOAN_ROOT", "/tmp/test-koan"),
+        }
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            env=env,
+        )
+        assert result.returncode == 0, (
+            f"subprocess failed:\nstdout={result.stdout}\nstderr={result.stderr}"
+        )
