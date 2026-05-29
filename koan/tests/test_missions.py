@@ -40,7 +40,9 @@ from app.missions import (
     stamp_started,
     start_mission,
     strip_timestamps,
+    prune_completed_sections,
     prune_done_section,
+    prune_failed_section,
     _enforce_quarantine_cap,
     _flush_in_progress_to_done,
     DEFAULT_SKELETON,
@@ -2987,6 +2989,119 @@ class TestPruneDoneSection:
         )
         result, pruned = prune_done_section(content, keep=5)
         assert pruned == 0
+
+
+class TestPruneFailedSection:
+    """Tests for prune_failed_section() — keeps Failed section bounded."""
+
+    def test_no_pruning_when_under_limit(self):
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "## Failed\n"
+            "- Task 1 ❌\n"
+            "- Task 2 ❌\n"
+        )
+        result, pruned = prune_failed_section(content, keep=5)
+        assert pruned == 0
+        assert result == content
+
+    def test_prunes_excess_failed_items(self):
+        failed_items = "\n".join(f"- Failed {i} ❌" for i in range(10))
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "## Failed\n"
+            f"{failed_items}\n"
+        )
+        result, pruned = prune_failed_section(content, keep=3)
+        assert pruned == 7
+        sections = parse_sections(result)
+        assert len(sections["failed"]) == 3
+        assert "Failed 0" in sections["failed"][0]
+        assert "Failed 2" in sections["failed"][2]
+
+    def test_no_failed_section(self):
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- Task\n"
+        )
+        result, pruned = prune_failed_section(content, keep=5)
+        assert pruned == 0
+
+    def test_preserves_done_section(self):
+        failed_items = "\n".join(f"- Failed {i}" for i in range(10))
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "## Done\n"
+            "- Done task ✅\n\n"
+            "## Failed\n"
+            f"{failed_items}\n"
+        )
+        result, pruned = prune_failed_section(content, keep=2)
+        assert pruned == 8
+        sections = parse_sections(result)
+        assert len(sections["failed"]) == 2
+        assert len(sections["done"]) == 1
+
+
+class TestPruneCompletedSections:
+    """Tests for prune_completed_sections() — prunes Done and Failed together."""
+
+    def test_prunes_both_sections(self):
+        done_items = "\n".join(f"- Done {i} ✅" for i in range(10))
+        failed_items = "\n".join(f"- Failed {i} ❌" for i in range(8))
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- Pending task\n\n"
+            "## In Progress\n\n"
+            "## Done\n"
+            f"{done_items}\n\n"
+            "## Failed\n"
+            f"{failed_items}\n"
+        )
+        result, total = prune_completed_sections(content, done_keep=3, failed_keep=2)
+        assert total == 7 + 6  # 13 pruned total
+        sections = parse_sections(result)
+        assert len(sections["done"]) == 3
+        assert len(sections["failed"]) == 2
+        assert len(sections["pending"]) == 1
+
+    def test_nothing_to_prune(self):
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "## Done\n"
+            "- Done 1 ✅\n\n"
+            "## Failed\n"
+            "- Failed 1 ❌\n"
+        )
+        result, total = prune_completed_sections(content, done_keep=50, failed_keep=30)
+        assert total == 0
+        assert result == content
+
+    def test_only_done_needs_pruning(self):
+        done_items = "\n".join(f"- Done {i}" for i in range(10))
+        content = (
+            "# Missions\n\n"
+            "## Done\n"
+            f"{done_items}\n\n"
+            "## Failed\n"
+            "- One failure\n"
+        )
+        result, total = prune_completed_sections(content, done_keep=3, failed_keep=30)
+        assert total == 7
+        sections = parse_sections(result)
+        assert len(sections["done"]) == 3
+        assert len(sections["failed"]) == 1
+
+    def test_missing_sections(self):
+        content = "# Missions\n\n## Pending\n\n- Task\n"
+        result, total = prune_completed_sections(content)
+        assert total == 0
 
 
 # ---------------------------------------------------------------------------

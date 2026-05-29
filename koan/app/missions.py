@@ -1567,6 +1567,50 @@ def edit_pending_mission(content: str, position: int, new_text: str) -> Tuple[st
     return normalize_content("\n".join(new_lines)), display
 
 
+def _prune_section(content: str, section_key: str, keep: int) -> Tuple[str, int]:
+    """Prune a section to keep only the most recent items.
+
+    Generic implementation shared by prune_done_section and
+    prune_failed_section.
+
+    Args:
+        content: Full missions.md content.
+        section_key: Section key (e.g. "done", "failed").
+        keep: Number of most recent items to keep.
+
+    Returns:
+        (new_content, pruned_count) tuple.
+    """
+    lines = content.splitlines()
+    boundaries = find_section_boundaries(lines)
+
+    if section_key not in boundaries:
+        return content, 0
+
+    start, end = boundaries[section_key]
+
+    items = _collect_item_ranges(lines, start, end)
+
+    if len(items) <= keep:
+        return content, 0
+
+    pruned_count = len(items) - keep
+    keep_items = items[:keep]
+
+    keep_lines = set()
+    for item_start, item_end in keep_items:
+        for j in range(item_start, item_end):
+            keep_lines.add(j)
+
+    new_lines = lines[:start + 1]
+    for j in range(start + 1, end):
+        if j in keep_lines or lines[j].strip() == "":
+            new_lines.append(lines[j])
+    new_lines.extend(lines[end:])
+
+    return normalize_content("\n".join(new_lines)), pruned_count
+
+
 def prune_done_section(content: str, keep: int = 50) -> Tuple[str, int]:
     """Prune the Done section to keep only the most recent items.
 
@@ -1580,38 +1624,38 @@ def prune_done_section(content: str, keep: int = 50) -> Tuple[str, int]:
     Returns:
         (new_content, pruned_count) tuple.
     """
-    lines = content.splitlines()
-    boundaries = find_section_boundaries(lines)
+    return _prune_section(content, "done", keep)
 
-    if "done" not in boundaries:
-        return content, 0
 
-    start, end = boundaries["done"]
+def prune_failed_section(content: str, keep: int = 30) -> Tuple[str, int]:
+    """Prune the Failed section to keep only the most recent items.
 
-    items = _collect_item_ranges(lines, start, end)
+    Same rationale as prune_done_section — old failures accumulate
+    and inflate file size.
 
-    if len(items) <= keep:
-        return content, 0
+    Args:
+        content: Full missions.md content.
+        keep: Number of most recent Failed items to keep.
 
-    pruned_count = len(items) - keep
-    # Keep the last `keep` items (most recent are at the top of Done)
-    keep_items = items[:keep]
+    Returns:
+        (new_content, pruned_count) tuple.
+    """
+    return _prune_section(content, "failed", keep)
 
-    # Build the set of lines to keep from the Done section
-    keep_lines = set()
-    for item_start, item_end in keep_items:
-        for j in range(item_start, item_end):
-            keep_lines.add(j)
 
-    # Rebuild: header + kept items + everything after Done section
-    new_lines = lines[:start + 1]  # everything before and including ## Done
-    for j in range(start + 1, end):
-        if j in keep_lines or lines[j].strip() == "":
-            new_lines.append(lines[j])
-            # Only keep the first blank line after a removed block
-    new_lines.extend(lines[end:])  # everything after Done section
+def prune_completed_sections(
+    content: str,
+    done_keep: int = 50,
+    failed_keep: int = 30,
+) -> Tuple[str, int]:
+    """Prune both Done and Failed sections in a single pass.
 
-    return normalize_content("\n".join(new_lines)), pruned_count
+    Returns:
+        (new_content, total_pruned) tuple.
+    """
+    content, done_pruned = prune_done_section(content, keep=done_keep)
+    content, failed_pruned = prune_failed_section(content, keep=failed_keep)
+    return content, done_pruned + failed_pruned
 
 
 # ---------------------------------------------------------------------------
