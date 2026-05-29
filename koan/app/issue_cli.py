@@ -1,13 +1,18 @@
 """Small provider-neutral issue tracker CLI for prompts and subprocesses."""
 
 import argparse
+import sys
 from pathlib import Path
 
 from app.issue_tracker import add_comment, create_issue, fetch_issue
 
 
 def _read_body(path: str) -> str:
-    return Path(path).read_text()
+    p = Path(path)
+    if not p.exists():
+        print(f"Error: body file not found: {path}", file=sys.stderr)
+        raise SystemExit(1)
+    return p.read_text()
 
 
 def main(argv=None) -> int:
@@ -33,35 +38,45 @@ def main(argv=None) -> int:
 
     args = parser.parse_args(argv)
 
-    if args.command == "fetch":
-        content = fetch_issue(args.url, args.project, args.project_path)
-        print(f"# {content.ref.label}: {content.title}\n")
-        print(content.body)
-        if content.comments:
-            print("\n## Comments")
-            for comment in content.comments:
-                author = comment.get("author", "unknown")
-                body = comment.get("body", "")
-                print(f"\n### {author}\n{body}")
-        return 0
+    try:
+        if args.command == "fetch":
+            content = fetch_issue(args.url, args.project, args.project_path)
+            print(f"# {content.ref.label}: {content.title}\n")
+            print(content.body)
+            if content.comments:
+                print("\n## Comments")
+                for comment in content.comments:
+                    author = comment.get("author", "unknown")
+                    body = comment.get("body", "")
+                    print(f"\n### {author}\n{body}")
+            return 0
 
-    if args.command == "comment":
-        add_comment(
-            args.url,
-            _read_body(args.body_file),
-            project_name=args.project,
-            project_path=args.project_path,
-        )
-        return 0
+        if args.command == "comment":
+            add_comment(
+                args.url,
+                _read_body(args.body_file),
+                project_name=args.project,
+                project_path=args.project_path,
+            )
+            return 0
 
-    url = create_issue(
-        args.project,
-        args.project_path,
-        args.title,
-        _read_body(args.body_file),
-    )
-    print(url)
-    return 0
+        if args.command == "create":
+            url = create_issue(
+                args.project,
+                args.project_path,
+                args.title,
+                _read_body(args.body_file),
+            )
+            print(url)
+            return 0
+
+    except SystemExit:
+        raise
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    return 1
 
 
 if __name__ == "__main__":
