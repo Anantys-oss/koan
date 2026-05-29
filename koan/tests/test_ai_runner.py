@@ -416,6 +416,20 @@ class TestRunExploration:
     @patch("app.ai_runner.gather_project_structure", return_value="Directories: src/")
     @patch("app.ai_runner.gather_git_activity", return_value="Recent commits: abc")
     @patch("app.ai_runner.load_skill_prompt", return_value="Explore myapp")
+    def test_uses_mission_model_key(
+        self, mock_prompt, mock_git, mock_struct, mock_missions, mock_claude,
+        tmp_path
+    ):
+        """AI exploration is mission-level reasoning (like /plan) and must use
+        the configured mission model, not silently fall back to 'chat'."""
+        run_exploration(str(tmp_path), "myapp", str(tmp_path), notify_fn=MagicMock())
+        assert mock_claude.call_args.kwargs["model_key"] == "mission"
+
+    @patch("app.cli_provider.run_command_streaming", return_value="Found 3 issues")
+    @patch("app.ai_runner.get_missions_context", return_value="No active missions.")
+    @patch("app.ai_runner.gather_project_structure", return_value="Directories: src/")
+    @patch("app.ai_runner.gather_git_activity", return_value="Recent commits: abc")
+    @patch("app.ai_runner.load_skill_prompt", return_value="Explore myapp")
     def test_success_returns_true(
         self, mock_prompt, mock_git, mock_struct, mock_missions, mock_claude,
         tmp_path

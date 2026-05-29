@@ -137,3 +137,12 @@ class TestGenerateSpec:
         with patch.dict("sys.modules", {"app.cli_provider": None}):
             result = generate_spec(str(tmp_path), "test mission", str(tmp_path))
             assert result is None
+
+    def test_uses_lightweight_model_key(self, tmp_path):
+        """Spec generation must request the lightweight model role explicitly,
+        not silently fall back to the 'chat' default — so it honors the user's
+        configured lightweight model (matches the module's documented intent)."""
+        with patch("app.prompts.load_prompt", return_value="prompt"), \
+             patch("app.cli_provider.run_command", return_value="## Goal\nx") as mock_run:
+            generate_spec(str(tmp_path), "test mission", str(tmp_path))
+        assert mock_run.call_args.kwargs["model_key"] == "lightweight"

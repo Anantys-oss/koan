@@ -240,6 +240,7 @@ def run_exploration(
         result = run_command_streaming(
             prompt, project_path,
             allowed_tools=["Read", "Glob", "Grep", "Bash"],
+            model_key="mission",
             max_turns=get_skill_max_turns(),
             timeout=get_skill_timeout(),
         )
