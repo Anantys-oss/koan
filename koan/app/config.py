@@ -636,6 +636,17 @@ def get_rebase_ci_max_duration() -> int:
     return _safe_int(config.get("rebase_ci_max_duration", fallback), fallback)
 
 
+def get_rebase_include_bot_feedback() -> bool:
+    """Whether /rebase review feedback should include bot-authored comments.
+
+    When true (default), rebase feedback prompts include bot-authored
+    review/issue comments. Set false to keep noisy CI/bot output out of the
+    prompt and use only human-authored feedback.
+    """
+    config = _load_config()
+    return bool(config.get("rebase_include_bot_feedback", True))
+
+
 def is_rebase_foreign_prs_allowed() -> bool:
     """Allow Telegram /rebase to target PRs from other branch prefixes.
 

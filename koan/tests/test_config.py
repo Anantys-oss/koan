@@ -609,6 +609,20 @@ class TestGetRebaseCiMaxDuration:
             assert get_rebase_ci_max_duration() == 9000
 
 
+class TestGetRebaseIncludeBotFeedback:
+    def test_default_true(self):
+        from app.config import get_rebase_include_bot_feedback
+
+        with _mock_config({}):
+            assert get_rebase_include_bot_feedback() is True
+
+    def test_uses_override(self):
+        from app.config import get_rebase_include_bot_feedback
+
+        with _mock_config({"rebase_include_bot_feedback": False}):
+            assert get_rebase_include_bot_feedback() is False
+
+
 # --- get_skill_max_turns ---
 
 

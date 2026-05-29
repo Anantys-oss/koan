@@ -43,6 +43,7 @@ from app.claude_step import (
     wait_for_ci,
 )
 from app.config import (
+    get_rebase_include_bot_feedback,
     get_rebase_ci_idle_timeout,
     get_rebase_ci_max_duration,
     get_rebase_review_idle_timeout,
@@ -56,10 +57,12 @@ from app.prompts import load_prompt, load_prompt_or_skill, load_skill_prompt  # 
 from app.retry import retry_with_backoff
 from app.utils import _GITHUB_REMOTE_RE, truncate_diff, truncate_text
 
-def _resolve_bot_login() -> str:
-    """Resolve the bot's GitHub login from config.
+def _resolve_own_login() -> str:
+    """Resolve our own GitHub login (the configured ``github.nickname``).
 
-    Returns empty string if not configured.
+    This identity is exempt from bot-comment filtering so feedback Kōan left
+    on a previous review/rebase iteration is preserved. Returns empty string
+    if not configured.
     """
     try:
         from app.utils import load_config
@@ -67,8 +70,71 @@ def _resolve_bot_login() -> str:
         github = config.get("github") or {}
         return str(github.get("nickname", "")).strip()
     except Exception as e:
-        print(f"[rebase_pr] could not resolve bot login: {e}", file=sys.stderr)
+        print(f"[rebase_pr] could not resolve own login: {e}", file=sys.stderr)
         return ""
+
+
+def _is_bot_login(login: str, own_login: str = "") -> bool:
+    """Return True when *login* is a third-party bot whose comments may be
+    filtered from rebase feedback.
+
+    Our own identity (*own_login*, the configured ``github.nickname``) is
+    never treated as a bot: comments Kōan authored on a previous review or
+    rebase iteration are preserved so a combined review+rebase flow can act
+    on its own earlier feedback — even if that identity is a GitHub App whose
+    login ends in ``[bot]``.
+    """
+    normalized = (login or "").strip().lower()
+    if not normalized:
+        return False
+    own = (own_login or "").strip().lower()
+    if own and normalized == own:
+        return False
+    return normalized.endswith("[bot]")
+
+
+def _extract_issue_comment_author(line: str) -> Optional[str]:
+    """Extract ``@author`` from issue-comment formatted lines."""
+    if not line.startswith("@") or ": " not in line:
+        return None
+    return line[1:].split(":", 1)[0].strip()
+
+
+def _extract_review_author(line: str) -> Optional[str]:
+    """Extract ``@author`` from PR review summary formatted lines."""
+    match = re.match(r"^@([^\s:(]+)\s+\([^)]*\):\s", line)
+    if match:
+        return match.group(1)
+    return None
+
+
+def _extract_inline_review_author(line: str) -> Optional[str]:
+    """Extract ``@author`` from inline review-comment formatted lines."""
+    match = re.match(r"^\[[^\]]+\]\s+@([^:\s]+):\s", line)
+    if match:
+        return match.group(1)
+    return None
+
+
+def _filter_bot_comment_blocks(
+    raw: str,
+    author_extractor,
+) -> str:
+    """Remove bot-authored multi-line comment blocks from formatted text."""
+    if not raw:
+        return raw
+
+    own_login = _resolve_own_login()
+    lines = raw.split("\n")
+    filtered: list = []
+    skip = False
+    for line in lines:
+        author = author_extractor(line)
+        if author is not None:
+            skip = _is_bot_login(author, own_login)
+        if not skip:
+            filtered.append(line)
+    return "\n".join(filtered)
 
 
 def _filter_bot_issue_comments(raw: str) -> str:
@@ -78,21 +144,17 @@ def _filter_bot_issue_comments(raw: str) -> str:
     Bot comments (rebase summaries, review results) are verbose and push
     human feedback out of the truncation window.
     """
-    bot_login = _resolve_bot_login()
-    if not bot_login or not raw:
-        return raw
+    return _filter_bot_comment_blocks(raw, _extract_issue_comment_author)
 
-    bot_prefix = f"@{bot_login.lower()}:"
-    lines = raw.split("\n")
-    filtered: list = []
-    skip = False
-    for line in lines:
-        if line.startswith("@") and ": " in line:
-            # New comment block — check if it's from the bot
-            skip = line.lower().startswith(bot_prefix)
-        if not skip:
-            filtered.append(line)
-    return "\n".join(filtered)
+
+def _filter_bot_reviews(raw: str) -> str:
+    """Remove bot-authored PR review summaries."""
+    return _filter_bot_comment_blocks(raw, _extract_review_author)
+
+
+def _filter_bot_review_comments(raw: str) -> str:
+    """Remove bot-authored inline PR review comments."""
+    return _filter_bot_comment_blocks(raw, _extract_inline_review_author)
 
 
 def _truncate_recent(text: str, max_chars: int) -> str:
@@ -450,16 +512,22 @@ def fetch_pr_context(
     except RuntimeError:
         issue_comments = ""
 
-    # Filter out bot's own comments to preserve budget for human feedback.
-    # Bot replies (rebase summaries, review results) are verbose and push
-    # human comments out of the truncation window.
-    issue_comments = _filter_bot_issue_comments(issue_comments)
+    # Count inline comments BEFORE bot-filtering: pending-review detection
+    # compares against the API's total review-comment count (which includes
+    # bot comments), so filtering here would skew it into false positives.
+    fetched_comment_count = len(comments_json.strip().splitlines()) if comments_json.strip() else 0
+
+    # By default bot comments are included; when disabled, drop them so noisy
+    # CI/bot output does not inflate prompt size and stall the feedback phase.
+    if not get_rebase_include_bot_feedback():
+        comments_json = _filter_bot_review_comments(comments_json)
+        reviews_json = _filter_bot_reviews(reviews_json)
+        issue_comments = _filter_bot_issue_comments(issue_comments)
 
     # Detect pending (unsubmitted) reviews: GitHub counts pending review
     # comments in the PR metadata but the API doesn't return them to other
     # users.  When the count is positive but fetched comments are empty,
     # there are invisible pending reviews.
-    fetched_comment_count = len(comments_json.strip().splitlines()) if comments_json.strip() else 0
     has_pending_reviews = api_review_comment_count > 0 and fetched_comment_count == 0
 
     return {
@@ -702,6 +770,20 @@ def run_rebase(
             f"Could not resolve conflicts.\n{guidance}"
         )
 
+    # Save the clean rebased state before optional review-feedback edits.
+    # If feedback application stalls, we can safely reset to this point
+    # and still push a correct rebase.
+    rebase_checkpoint = ""
+    try:
+        rebase_checkpoint = _run_git(
+            ["git", "rev-parse", "HEAD"], cwd=project_path, timeout=30,
+        ).strip()
+    except Exception as e:
+        print(
+            f"[rebase_pr] could not capture rebase checkpoint: {e}",
+            file=sys.stderr,
+        )
+
     # ── Step 4: Analyze review comments and apply changes ──────────────
     change_summary = ""
     if _has_review_feedback(context):
@@ -721,11 +803,42 @@ def run_rebase(
         )
         feedback_status = feedback_meta.get("status", "")
         if feedback_status == "feedback_timeout":
-            _safe_checkout(original_branch, project_path)
-            guidance = _build_rebase_recovery_guidance(project_path)
-            return False, (
-                "[feedback_timeout] Rebase stopped while applying review feedback.\n"
-                f"{guidance}"
+            timeout_error = feedback_meta.get("error", "").strip()
+            if _get_current_branch(project_path) != branch:
+                _safe_checkout(branch, project_path)
+
+            recovered = False
+            if rebase_checkpoint:
+                try:
+                    _run_git(
+                        ["git", "reset", "--hard", rebase_checkpoint],
+                        cwd=project_path, timeout=30,
+                    )
+                    recovered = True
+                except Exception as e:
+                    print(
+                        "[rebase_pr] feedback-timeout recovery reset failed: "
+                        f"{e}",
+                        file=sys.stderr,
+                    )
+
+            if not recovered:
+                _safe_checkout(original_branch, project_path)
+                guidance = _build_rebase_recovery_guidance(project_path)
+                return False, (
+                    "[feedback_timeout] Rebase feedback timed out and automatic "
+                    "recovery to the clean rebased state failed.\n"
+                    f"{guidance}"
+                )
+
+            suffix = f" ({timeout_error})" if timeout_error else ""
+            actions_log.append(
+                "Review feedback timed out; restored clean rebased state and "
+                "continuing with rebase-only push"
+            )
+            notify_fn(
+                f"Review feedback timed out on `{branch}`{suffix}; "
+                "pushing the clean rebase without feedback edits."
             )
         if feedback_status == "feedback_quota":
             # Provider quota is exhausted — no point pushing a half-applied
@@ -1917,8 +2030,8 @@ def _build_rebase_comment(
     4. Actions — pipeline steps performed
     5. CI — test / CI status
     """
-    has_feedback = _has_review_feedback(context) and any(
-        "feedback" in a.lower() for a in actions_log
+    has_feedback = bool(change_summary.strip()) or any(
+        "applied review feedback" in a.lower() for a in actions_log
     )
     has_conflicts = any("conflict" in a.lower() for a in actions_log)
 

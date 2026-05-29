@@ -45,6 +45,7 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "rebase_review_max_duration": "int",
     "rebase_ci_idle_timeout": "int",
     "rebase_ci_max_duration": "int",
+    "rebase_include_bot_feedback": "bool",
     "allow_rebase_foreign_prs": "bool",
     "post_mission_timeout": "int",
     "contemplative_chance": "int",

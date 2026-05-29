@@ -549,8 +549,14 @@ Use this before `/plan` when the idea is architecturally complex, when you want 
 By default, Telegram `/rebase` only queues PRs created by this instance
 (branch prefix match). Set `allow_rebase_foreign_prs: true` in
 `instance/config.yaml` to allow rebasing other writable PRs.
+By default, `/rebase` feedback analysis includes bot-authored comments
+(`rebase_include_bot_feedback: true`). Set it to `false` to keep noisy
+third-party CI/bot output out of the feedback prompt. Kōan's own comments
+are always kept (never treated as bot output), so review feedback it left on
+a previous iteration is available to a later rebase — important for combined
+review + rebase flows.
 
-When `/rebase` runs long, Kōan now uses activity-aware limits for review and CI-fix phases: it allows long sessions when CLI output keeps flowing, but still aborts stalled phases after inactivity or a max-duration cap. If the review-feedback step *stalls* (idle/max-duration timeout) or hits a *provider quota limit*, the rebase is stopped so you can re-run it later. Any other (transient) feedback error is treated as best-effort: the already-completed rebase is still pushed, with a note that review feedback could not be applied — so a flaky feedback step never discards a clean rebase.
+When `/rebase` runs long, Kōan uses activity-aware limits for review and CI-fix phases: it allows long sessions when CLI output keeps flowing, but still aborts stalled phases after inactivity or a max-duration cap. If the review-feedback step *stalls* (idle/max-duration timeout), Kōan now restores the clean rebased checkpoint and still pushes the rebase (without partial feedback edits), so timeout noise does not discard a valid rebase. If the feedback step hits a *provider quota limit*, the rebase still stops so you can retry after quota reset. Any other transient feedback error remains best-effort and does not block pushing the rebase.
 
 After completion, Kōan posts a structured comment on the PR with these sections:
 
@@ -1091,6 +1097,7 @@ rebase_review_idle_timeout: 1800   # /rebase review phase: kill on inactivity
 rebase_review_max_duration: 10800  # /rebase review phase: absolute cap
 rebase_ci_idle_timeout: 1800       # /rebase CI-fix phase: kill on inactivity
 rebase_ci_max_duration: 7200       # /rebase CI-fix phase: absolute cap
+rebase_include_bot_feedback: true  # Include bot-authored PR comments in feedback analysis (set false to filter them out)
 allow_rebase_foreign_prs: false    # Telegram /rebase can target non-instance PRs
 skill_max_turns: 200          # Max agentic turns for heavy skills
 

@@ -592,6 +592,17 @@ class TestBuildRebaseComment:
         assert "## Rebase with requested adjustments" in result
         assert "review feedback was applied" in result
 
+    def test_feedback_timeout_note_does_not_count_as_adjustments(self):
+        result = _build_rebase_comment(
+            "42", "koan/fix", "main",
+            [
+                "Rebased onto origin/main",
+                "Review feedback timed out; restored clean rebased state and continuing with rebase-only push",
+            ],
+            {"title": "Fix bug", "review_comments": "please fix the typo"},
+        )
+        assert "## Simple rebase" in result
+
     def test_conflict_resolution_noted(self):
         result = _build_rebase_comment(
             "42", "koan/fix", "main",
@@ -833,6 +844,93 @@ class TestFetchPrContext:
         assert context["review_comments"] == ""
         assert context["reviews"] == ""
         assert context["issue_comments"] == ""
+
+    @patch("app.rebase_pr.get_rebase_include_bot_feedback", return_value=False)
+    @patch("app.github.subprocess.run")
+    def test_filters_bot_feedback_when_disabled(self, mock_run, _mock_include_bots):
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout=json.dumps({
+                "title": "PR", "headRefName": "br", "baseRefName": "main",
+                "state": "OPEN", "author": {"login": "dev"},
+                "url": "https://github.com/o/r/pull/1",
+            })),
+            MagicMock(returncode=0, stdout="0"),
+            MagicMock(returncode=0, stdout="+diff"),
+            MagicMock(
+                returncode=0,
+                stdout=(
+                    "[f.py:10] @github-actions[bot]: bot inline\n"
+                    "[f.py:11] @alice: human inline"
+                ),
+            ),
+            MagicMock(
+                returncode=0,
+                stdout=(
+                    "@github-actions[bot] (COMMENTED): bot review\n"
+                    "@alice (COMMENTED): human review"
+                ),
+            ),
+            MagicMock(
+                returncode=0,
+                stdout=(
+                    "@github-actions[bot]: bot issue line 1\n"
+                    "bot continuation\n"
+                    "@alice: human issue"
+                ),
+            ),
+        ]
+        context = fetch_pr_context("o", "r", "1")
+        assert "@github-actions[bot]" not in context["review_comments"]
+        assert "@github-actions[bot]" not in context["reviews"]
+        assert "@github-actions[bot]" not in context["issue_comments"]
+        assert "@alice: human issue" in context["issue_comments"]
+        assert "@alice (COMMENTED): human review" in context["reviews"]
+        assert "@alice: human inline" in context["review_comments"]
+
+    @patch("app.rebase_pr.get_rebase_include_bot_feedback", return_value=True)
+    @patch("app.github.subprocess.run")
+    def test_can_include_bot_feedback_when_enabled(self, mock_run, _mock_include_bots):
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout=json.dumps({
+                "title": "PR", "headRefName": "br", "baseRefName": "main",
+                "state": "OPEN", "author": {"login": "dev"},
+                "url": "https://github.com/o/r/pull/1",
+            })),
+            MagicMock(returncode=0, stdout="0"),
+            MagicMock(returncode=0, stdout="+diff"),
+            MagicMock(returncode=0, stdout="[f.py:10] @github-actions[bot]: bot inline"),
+            MagicMock(returncode=0, stdout="@github-actions[bot] (COMMENTED): bot review"),
+            MagicMock(returncode=0, stdout="@github-actions[bot]: bot issue"),
+        ]
+        context = fetch_pr_context("o", "r", "1")
+        assert "@github-actions[bot]" in context["review_comments"]
+        assert "@github-actions[bot]" in context["reviews"]
+        assert "@github-actions[bot]" in context["issue_comments"]
+
+    @patch("app.rebase_pr.get_rebase_include_bot_feedback", return_value=False)
+    @patch("app.github.subprocess.run")
+    def test_pending_reviews_not_triggered_by_filtered_bot_comments(
+        self, mock_run, _mock_include_bots,
+    ):
+        # The API reports inline review comments (count > 0), but they are all
+        # bot-authored and get filtered out of the prompt. Pending-review
+        # detection must count the raw comments so it does not false-positive.
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout=json.dumps({
+                "title": "PR", "headRefName": "br", "baseRefName": "main",
+                "state": "OPEN", "author": {"login": "dev"},
+                "url": "https://github.com/o/r/pull/1",
+            })),
+            MagicMock(returncode=0, stdout="1"),  # .review_comments count
+            MagicMock(returncode=0, stdout="+diff"),
+            MagicMock(returncode=0, stdout="[f.py:10] @github-actions[bot]: bot inline"),
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout=""),
+        ]
+        context = fetch_pr_context("o", "r", "1")
+        # Bot comment filtered from the prompt, but no false pending warning.
+        assert "@github-actions[bot]" not in context["review_comments"]
+        assert context["has_pending_reviews"] is False
 
     @patch("app.github.subprocess.run")
     def test_detects_pending_reviews(self, mock_run):
@@ -1899,13 +1997,9 @@ class TestRunRebaseClaude:
 
     @patch("app.rebase_pr._safe_checkout")
     @patch("app.rebase_pr._apply_review_feedback")
-    @patch(
-        "app.rebase_pr._build_rebase_recovery_guidance",
-        return_value="Recovery hints:\n- next: git rebase --continue",
-    )
     @patch("app.rebase_pr.fetch_pr_context")
-    def test_feedback_timeout_returns_classified_failure(
-        self, mock_ctx, mock_guidance, mock_apply, mock_safe,
+    def test_feedback_timeout_pushes_rebase_without_feedback(
+        self, mock_ctx, mock_apply, mock_safe,
     ):
         mock_ctx.return_value = {
             "title": "Fix auth", "body": "", "branch": "feat",
@@ -1924,13 +2018,66 @@ class TestRunRebaseClaude:
         with patch("app.rebase_pr._check_if_already_solved", return_value=(False, None)), \
              patch("app.rebase_pr._get_current_branch", return_value="main"), \
              patch("app.rebase_pr._checkout_pr_branch"), \
-             patch("app.rebase_pr._rebase_with_conflict_resolution", return_value="origin"):
+             patch("app.rebase_pr._rebase_with_conflict_resolution", return_value="origin"), \
+             patch("app.rebase_pr._run_git", side_effect=["abc123\n", ""]), \
+             patch("app.rebase_pr._fix_existing_ci_failures", return_value=False), \
+             patch("app.rebase_pr._enqueue_ci_check", return_value="CI queued"), \
+             patch("app.rebase_pr._push_with_fallback", return_value={
+                 "success": True, "actions": ["Force-pushed"], "error": "",
+             }) as mock_push, \
+             patch("app.rebase_pr.run_gh"):
+            success, summary = run_rebase(
+                "o", "r", "1", "/p", notify_fn=notify, skill_dir=REBASE_SKILL_DIR,
+            )
+
+        assert success is True
+        assert "Review feedback timed out" in summary
+        assert "rebase-only push" in summary
+        mock_push.assert_called_once()
+
+    @patch("app.rebase_pr._safe_checkout")
+    @patch("app.rebase_pr._apply_review_feedback")
+    @patch(
+        "app.rebase_pr._build_rebase_recovery_guidance",
+        return_value="Recovery hints:\n- next: git status",
+    )
+    @patch("app.rebase_pr.fetch_pr_context")
+    def test_feedback_timeout_recovery_failure_returns_error(
+        self, mock_ctx, _mock_guidance, mock_apply, mock_safe,
+    ):
+        mock_ctx.return_value = {
+            "title": "Fix auth", "body": "", "branch": "feat",
+            "base": "main", "state": "", "author": "", "url": "",
+            "diff": "+code", "review_comments": "@reviewer: fix this",
+            "reviews": "", "issue_comments": "",
+        }
+
+        def _apply_side_effect(*args, **kwargs):
+            kwargs["result_meta"]["status"] = "feedback_timeout"
+            kwargs["result_meta"]["error"] = "Timeout (600s)"
+            return ""
+
+        mock_apply.side_effect = _apply_side_effect
+        notify = MagicMock()
+
+        def _run_git_side_effect(cmd, **kwargs):
+            if cmd[:2] == ["git", "rev-parse"]:
+                return "abc123\n"
+            if cmd[:3] == ["git", "reset", "--hard"]:
+                raise RuntimeError("reset failed")
+            return ""
+
+        with patch("app.rebase_pr._check_if_already_solved", return_value=(False, None)), \
+             patch("app.rebase_pr._get_current_branch", return_value="main"), \
+             patch("app.rebase_pr._checkout_pr_branch"), \
+             patch("app.rebase_pr._rebase_with_conflict_resolution", return_value="origin"), \
+             patch("app.rebase_pr._run_git", side_effect=_run_git_side_effect):
             success, summary = run_rebase(
                 "o", "r", "1", "/p", notify_fn=notify, skill_dir=REBASE_SKILL_DIR,
             )
 
         assert success is False
-        assert "[feedback_timeout]" in summary
+        assert "automatic recovery" in summary
         assert "Recovery hints" in summary
 
     @patch("app.rebase_pr._safe_checkout")
@@ -3508,31 +3655,55 @@ class TestMainMinSeverity:
 class TestFilterBotIssueComments:
     """Tests for _filter_bot_issue_comments."""
 
-    def test_removes_bot_comments(self):
+    def test_removes_third_party_bot_comments(self):
         raw = (
             "@human: Please fix this bug\n"
-            "@koan-bot: ## Rebase with requested adjustments\n"
-            "Branch was rebased onto main.\n"
+            "@github-actions[bot]: ## CI run results\n"
+            "All checks passed.\n"
             "### Stats\n"
             "7 files changed\n"
             "@human: Now add config option\n"
             "@human: @koan-bot rebase"
         )
-        with patch("app.rebase_pr._resolve_bot_login", return_value="koan-bot"):
+        with patch("app.rebase_pr._resolve_own_login", return_value="koan-bot"):
             result = _filter_bot_issue_comments(raw)
         assert "@human: Please fix this bug" in result
         assert "@human: Now add config option" in result
-        assert "@koan-bot:" not in result
-        assert "Branch was rebased" not in result
+        assert "@github-actions[bot]:" not in result
+        assert "All checks passed" not in result
 
-    def test_no_bot_login_returns_original(self):
+    def test_keeps_own_identity_comments(self):
+        # Our own prior review/rebase feedback must survive filtering so a
+        # later rebase can act on it (review + rebase flow).
+        raw = (
+            "@human: Please fix this bug\n"
+            "@koan-bot: ## Review feedback from last iteration\n"
+            "Consider renaming the helper.\n"
+            "@github-actions[bot]: CI noise"
+        )
+        with patch("app.rebase_pr._resolve_own_login", return_value="koan-bot"):
+            result = _filter_bot_issue_comments(raw)
+        assert "@koan-bot: ## Review feedback from last iteration" in result
+        assert "Consider renaming the helper." in result
+        assert "@github-actions[bot]: CI noise" not in result
+
+    def test_keeps_own_identity_even_with_bot_suffix(self):
+        # If our configured identity is a GitHub App (login ends in [bot]),
+        # it is still exempt from filtering; other [bot] authors are removed.
+        raw = "@koan-app[bot]: our prior feedback\n@other[bot]: third-party noise"
+        with patch("app.rebase_pr._resolve_own_login", return_value="koan-app[bot]"):
+            result = _filter_bot_issue_comments(raw)
+        assert "@koan-app[bot]: our prior feedback" in result
+        assert "@other[bot]: third-party noise" not in result
+
+    def test_no_own_login_keeps_non_bot_authors(self):
         raw = "@bot: some text\n@human: other text"
-        with patch("app.rebase_pr._resolve_bot_login", return_value=""):
+        with patch("app.rebase_pr._resolve_own_login", return_value=""):
             result = _filter_bot_issue_comments(raw)
         assert result == raw
 
     def test_empty_input(self):
-        with patch("app.rebase_pr._resolve_bot_login", return_value="bot"):
+        with patch("app.rebase_pr._resolve_own_login", return_value="koan-bot"):
             assert _filter_bot_issue_comments("") == ""
 
 
