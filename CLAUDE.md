@@ -8,7 +8,7 @@ Kōan is an autonomous background agent that uses idle Claude API quota to work 
 
 ## Documentation first
 
-- Before planning or implementing a feature or important refactor, inspect the relevant documentation with `grep`, `find`, or equivalent search. Start at `docs/README.md`, then read the matching pages under `docs/architecture/`, `docs/users/`, `docs/providers/`, `docs/messaging/`, or `docs/operations/`.
+- Before planning or implementing a feature or important refactor, inspect the relevant documentation with `grep`, `find`, or equivalent search. Start at `docs/README.md`, then read the matching pages under `docs/architecture/`, `docs/users/`, `docs/providers/`, `docs/messaging/`, `docs/operations/`, `docs/design/`, `docs/security/`, or `docs/setup/`.
 - Treat docs as context to verify against code, not as unquestioned truth. If code and docs disagree, preserve current code behavior unless the task says otherwise, and update the docs to match the resulting behavior.
 - After changing user behavior, configuration, daemon flow, provider behavior, shared state, safety boundaries, or an important implementation decision, update the relevant docs in the same branch.
 - For core skill changes, update both `docs/users/user-manual.md` and `docs/users/skills.md`.
@@ -118,6 +118,16 @@ Communication between processes happens through shared files in `instance/` with
 - **`remote_rename_detector.py`** — Detects and fixes renamed GitHub remotes in workspace projects
 - **`head_tracker.py`** — Detects remote HEAD branch changes (e.g. master → main) and updates local workspace. State persisted in `instance/.head-tracker.json`, throttled to once per 12h. Integrated into startup, manual trigger via `/rescan`.
 
+**Issue tracking** (`koan/app/issue_tracker/`):
+- **`issue_tracker/base.py`** — `IssueTracker` ABC: provider-neutral contract for fetch/comment/create operations
+- **`issue_tracker/config.py`** — Per-project tracker routing (`get_tracker_for_project()`), Jira key → project mapping, code repository resolution. Configured via `tracker:` section in `projects.yaml` per-project overrides.
+- **`issue_tracker/github.py`** — `GitHubIssueTracker` — GitHub Issues/PRs backend via `gh` CLI
+- **`issue_tracker/jira.py`** — `JiraIssueTracker` — Jira backend via REST API
+- **`issue_tracker/types.py`** — Shared data types (`IssueRef`, `IssueContent`)
+- **`issue_tracker/__init__.py`** — Service layer: `fetch_issue()`, `add_comment()`, `create_issue()`, `find_existing_plan_issue()`. Callers use these instead of branching on GitHub vs Jira.
+- **`issue_cli.py`** — CLI entry point for issue tracker operations (fetch, comment, create) — used by prompts and subprocesses
+- **`notification_config.py`** — Shared notification polling configuration helpers (interval resolution across GitHub/Jira providers)
+
 **Other:**
 - **`memory_manager.py`** — Per-project memory isolation, compaction, and cleanup. Includes semantic learnings compaction (Claude-powered dedup/merge), global memory file rotation, and configurable thresholds via `config.yaml` `memory:` section
 - **`usage_tracker.py`** — Budget tracking; decides autonomous mode (REVIEW/IMPLEMENT/DEEP/WAIT) based on quota percentage. Pure parser + threshold class — burn-rate-driven downgrades live in `iteration_manager._downgrade_if_burning_fast` next to the existing affordability downgrade.
@@ -204,4 +214,4 @@ All Python code must pass **ruff** (`make lint`) before committing. The ruff con
   4. **User manual and skills reference**: Update `docs/users/user-manual.md` and `docs/users/skills.md` — add the skill to the appropriate tier section and the quick-reference appendix.
   5. **Tests**: The `TestCoreSkillGroupEnforcement` test will fail if the SKILL.md is missing or lacks a `group:` field — run the test suite to verify.
   See `koan/skills/README.md` for the full SKILL.md format and handler conventions.
-- **Documentation maintenance** — When adding or modifying a feature, update the corresponding section in `README.md` and/or the relevant docs file. Use the nested docs layout in `docs/README.md`: user behavior in `docs/users/`, daemon design in `docs/architecture/`, providers in `docs/providers/`, messaging and tracker integrations in `docs/messaging/`, operations in `docs/operations/`, and durable decisions in `docs/design/`. If no documentation file exists for the feature, create one in the matching directory. Public-facing documentation and implementation references must stay in sync with the codebase — undocumented features are invisible to users.
+- **Documentation maintenance** — When adding or modifying a feature, update the corresponding section in `README.md` and/or the relevant docs file. Use the nested docs layout in `docs/README.md`: user behavior in `docs/users/`, daemon design in `docs/architecture/`, providers in `docs/providers/`, messaging and tracker integrations in `docs/messaging/`, operations in `docs/operations/`, durable decisions in `docs/design/`, threat models and audit docs in `docs/security/`, and deployment guides in `docs/setup/`. If no documentation file exists for the feature, create one in the matching directory. Public-facing documentation and implementation references must stay in sync with the codebase — undocumented features are invisible to users.
