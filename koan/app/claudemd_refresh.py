@@ -107,6 +107,12 @@ def _has_changes(project_path: str) -> bool:
         ["git", "status", "--porcelain"],
         capture_output=True, text=True, cwd=project_path, timeout=30,
     )
+    if result.returncode != 0:
+        print(
+            f"[claudemd] git status failed (rc={result.returncode}): "
+            f"{result.stderr.strip()}", file=sys.stderr,
+        )
+        return False
     return bool(result.stdout.strip())
 
 

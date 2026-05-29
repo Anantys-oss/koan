@@ -22,6 +22,7 @@ from app.rebase_pr import (
     _build_ci_fix_prompt,
     _build_rebase_comment,
     _build_rebase_prompt,
+    _build_rebase_recovery_guidance,
     _checkout_pr_branch,
     _check_if_already_solved,
     _close_pr_as_duplicate,
@@ -3559,3 +3560,47 @@ class TestTruncateRecent:
         text = bot_noise + "\n" + user_request
         result = _truncate_recent(text, 3000)
         assert "review_compressor" in result
+
+
+# ---------------------------------------------------------------------------
+# _build_rebase_recovery_guidance
+# ---------------------------------------------------------------------------
+
+class TestBuildRebaseRecoveryGuidance:
+    def test_includes_branch_and_dirty_state(self):
+        with patch("app.rebase_pr._get_current_branch", return_value="koan/fix-auth"), \
+             patch("app.rebase_pr._has_rebase_in_progress", return_value=False), \
+             patch("app.rebase_pr.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0, stdout=" M file.py\n",
+            )
+            result = _build_rebase_recovery_guidance("/project")
+            assert "koan/fix-auth" in result
+            assert "dirty: yes" in result.lower() or "yes" in result
+
+    def test_rebase_in_progress_guidance(self):
+        with patch("app.rebase_pr._get_current_branch", return_value="main"), \
+             patch("app.rebase_pr._has_rebase_in_progress", return_value=True), \
+             patch("app.rebase_pr.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="")
+            result = _build_rebase_recovery_guidance("/project")
+            assert "rebase --continue" in result or "rebase --abort" in result
+
+    def test_branch_detection_failure_logs_error(self, capsys):
+        with patch("app.rebase_pr._get_current_branch", side_effect=RuntimeError("git broke")), \
+             patch("app.rebase_pr._has_rebase_in_progress", return_value=False), \
+             patch("app.rebase_pr.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="")
+            result = _build_rebase_recovery_guidance("/project")
+            assert "unknown" in result
+            captured = capsys.readouterr()
+            assert "branch detection failed" in captured.err
+
+    def test_git_status_timeout_logs_error(self, capsys):
+        with patch("app.rebase_pr._get_current_branch", return_value="main"), \
+             patch("app.rebase_pr._has_rebase_in_progress", return_value=False), \
+             patch("app.rebase_pr.subprocess.run", side_effect=subprocess.TimeoutExpired("git", 15)):
+            result = _build_rebase_recovery_guidance("/project")
+            assert "unknown" in result.lower() or "dirty" in result.lower()
+            captured = capsys.readouterr()
+            assert "git status failed" in captured.err

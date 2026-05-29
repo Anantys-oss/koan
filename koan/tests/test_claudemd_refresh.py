@@ -195,6 +195,41 @@ class TestBuildGitContext:
 
 
 # ---------------------------------------------------------------------------
+# _has_changes
+# ---------------------------------------------------------------------------
+
+class TestHasChanges:
+    def test_returns_true_when_changes_exist(self):
+        with patch("app.claudemd_refresh.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0, stdout=" M koan/app/run.py\n",
+            )
+            assert _has_changes("/project") is True
+
+    def test_returns_false_when_clean(self):
+        with patch("app.claudemd_refresh.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="")
+            assert _has_changes("/project") is False
+
+    def test_returns_false_on_git_error(self):
+        with patch("app.claudemd_refresh.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=128, stdout="", stderr="fatal: not a git repository",
+            )
+            assert _has_changes("/project") is False
+
+    def test_logs_stderr_on_git_error(self, capsys):
+        with patch("app.claudemd_refresh.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=128, stdout="", stderr="fatal: not a git repository",
+            )
+            _has_changes("/project")
+            captured = capsys.readouterr()
+            assert "git status failed" in captured.err
+            assert "rc=128" in captured.err
+
+
+# ---------------------------------------------------------------------------
 # run_refresh
 # ---------------------------------------------------------------------------
 

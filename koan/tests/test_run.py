@@ -3433,6 +3433,50 @@ class TestRunIterationProjectRefresh:
         call_kwargs = mock_plan.call_args[1]
         assert call_kwargs["projects"] == original_projects
 
+    @patch("app.run.plan_iteration")
+    @patch("app.run._notify")
+    def test_missing_project_warning_only_once(self, mock_notify, mock_plan, koan_root, capsys):
+        """Missing-project warning logged once per project, not every iteration."""
+        import app.run as run_mod
+        from app.run import _run_iteration
+
+        # Reset the dedup set so the test is isolated
+        run_mod._warned_missing_projects.clear()
+
+        refreshed = [("test", str(koan_root)), ("gone", "/tmp/nonexistent-xyz")]
+
+        mock_plan.return_value = {
+            "action": "error",
+            "error": "test-stop",
+            "project_name": "test",
+            "project_path": str(koan_root),
+            "mission_title": "",
+            "autonomous_mode": "implement",
+            "focus_area": "",
+            "available_pct": 50,
+            "decision_reason": "Default",
+            "display_lines": [],
+            "recurring_injected": [],
+        }
+
+        instance = str(koan_root / "instance")
+
+        with patch("app.utils.get_known_projects", return_value=refreshed), \
+             patch("app.loop_manager.process_github_notifications", return_value=0):
+            for i in range(3):
+                _run_iteration(
+                    koan_root=str(koan_root),
+                    instance=instance,
+                    projects=[("test", str(koan_root))],
+                    count=i,
+                    max_runs=5,
+                    interval=10,
+                    git_sync_interval=5,
+                )
+
+        captured = capsys.readouterr()
+        assert captured.out.count("directory missing") == 1
+
 
 class TestClaudeExitInit:
     """claude_exit must be initialized before the try block so that

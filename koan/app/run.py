@@ -1496,6 +1496,8 @@ _startup_notified = False
 # When resume produces new missions, the count-bearing variants still fire.
 _boot_notified = False
 
+_warned_missing_projects: set = set()
+
 
 def _get_git_head(project_path: str) -> str:
     """Get current git HEAD SHA for retry safety check."""
@@ -1653,11 +1655,13 @@ def _run_iteration(
     refreshed = get_known_projects()
     if refreshed:
         # Filter out projects whose directories no longer exist
+        global _warned_missing_projects
         valid = []
         for name, path in refreshed:
             if Path(path).is_dir():
                 valid.append((name, path))
-            else:
+            elif name not in _warned_missing_projects:
+                _warned_missing_projects.add(name)
                 log("warn", f"Project '{name}' directory missing: {path} — skipping. "
                     f"Remove it from projects.yaml to silence this warning.")
         if valid:

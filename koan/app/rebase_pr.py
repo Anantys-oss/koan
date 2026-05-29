@@ -1749,8 +1749,11 @@ def _is_feedback_timeout_error(error_text: str) -> bool:
 def _build_rebase_recovery_guidance(project_path: str) -> str:
     """Return deterministic cleanup hints after a rebase failure."""
     branch = "unknown"
-    with contextlib.suppress(Exception):
+    try:
         branch = _get_current_branch(project_path)
+    except (RuntimeError, OSError, subprocess.SubprocessError) as e:
+        print(f"[rebase_pr] recovery-guidance branch detection failed: {e}",
+              file=sys.stderr)
 
     rebase_in_progress = _has_rebase_in_progress(project_path)
     dirty = "unknown"
@@ -1764,7 +1767,7 @@ def _build_rebase_recovery_guidance(project_path: str) -> str:
             cwd=project_path,
         )
         dirty = "yes" if status.stdout.strip() else "no"
-    except Exception as e:
+    except (subprocess.TimeoutExpired, OSError) as e:
         print(f"[rebase_pr] recovery-guidance git status failed: {e}", file=sys.stderr)
 
     if rebase_in_progress:
