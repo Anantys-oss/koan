@@ -127,7 +127,8 @@ projects:
 ### Container layout
 
 The Docker image packages everything Koan needs: Python, Node.js, Claude CLI
-(installed via npm), GitHub CLI (`gh`), and git. No host binaries are mounted.
+(installed via npm), GitHub CLI (`gh`), git, and developer tools (ripgrep, fd,
+bat, ruff, jq, etc.). No host binaries are mounted.
 
 Two processes run inside a single container, supervised by the entrypoint
 script:
@@ -138,6 +139,29 @@ script:
 | `run.py` | Agent loop — picks missions, executes via Claude CLI |
 
 If either process crashes, the entrypoint restarts it automatically.
+
+### Recommended dev packages
+
+The Docker image ships with developer-friendly tools pre-installed. These
+improve the agent's productivity when working inside the container:
+
+| Package | Binary | Purpose |
+|---------|--------|---------|
+| `ripgrep` | `rg` | Fast recursive grep — used by Claude Code and rtk |
+| `fd-find` | `fd` | Fast file finder (alternative to `find`) |
+| `bat` | `bat` | Syntax-highlighted file viewer (alternative to `cat`) |
+| `jq` | `jq` | JSON processor for API responses and config files |
+| `ruff` | `ruff` | Fast Python linter/formatter (installed via pip) |
+| `less` | `less` | Pager for browsing large output |
+| `tree` | `tree` | Directory structure visualization |
+| `patch` | `patch` | Apply unified diffs |
+| `file` | `file` | File type identification |
+
+> **Note:** Debian names `bat` as `batcat` and `fd-find` as `fdfind`. The
+> Dockerfile creates symlinks so both the Debian and standard names work.
+
+If you need additional packages, add them to the `apt-get install` line in the
+Dockerfile and rebuild (`docker compose up --build`).
 
 ### Authentication
 

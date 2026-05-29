@@ -11,6 +11,8 @@
 FROM python:3.12-slim
 
 # System dependencies + Node.js (for Claude CLI) + gh (GitHub CLI)
+# Dev tools (ripgrep, fd-find, bat, etc.) improve agent productivity inside
+# the container — see docs/setup/docker.md "Recommended dev packages".
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     jq \
@@ -22,6 +24,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     make \
     nodejs \
     npm \
+    ripgrep \
+    fd-find \
+    bat \
+    less \
+    tree \
+    patch \
+    file \
     && install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
        -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
@@ -30,6 +39,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
        > /etc/apt/sources.list.d/github-cli.list \
     && apt-get update && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
+
+# Debian names these batcat/fdfind — symlink to the standard names
+RUN ln -sf /usr/bin/batcat /usr/local/bin/bat \
+    && ln -sf /usr/bin/fdfind /usr/local/bin/fd
 
 # Install Claude CLI via npm (can't mount host binary across architectures)
 RUN npm install -g @anthropic-ai/claude-code
@@ -56,7 +69,7 @@ WORKDIR /app
 # Python dependencies (cached layer — changes rarely)
 COPY koan/requirements.txt /app/koan/requirements.txt
 RUN pip install --no-cache-dir -r /app/koan/requirements.txt \
-    && pip install --no-cache-dir pytest supervisor
+    && pip install --no-cache-dir pytest supervisor ruff
 
 # Copy application code
 COPY koan/ /app/koan/
