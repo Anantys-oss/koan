@@ -3010,6 +3010,60 @@ class TestCostTrackingFailedFlag:
 
 
 class TestMissionRunnerFireAndForgetMetrics:
+    def test_publish_jira_outcome_passes_branch_override(self):
+        from app.mission_runner import _publish_jira_outcome
+
+        with patch(
+            "app.jira_outcome_publish.publish_jira_mission_outcome",
+            return_value={"published": "false", "reason": "test"},
+        ) as mock_publish:
+            _publish_jira_outcome(
+                mission_title="/fix https://org.atlassian.net/browse/PROJ-1 branch:main",
+                pending_content="Draft PR: https://github.com/o/r/pull/1",
+                exit_code=0,
+            )
+
+        kwargs = mock_publish.call_args.kwargs
+        assert kwargs["base_branch"] == "main"
+
+    @patch("app.mission_runner._publish_jira_outcome", return_value={"published": "true", "reason": "created"})
+    @patch("app.mission_runner._record_session_outcome")
+    @patch("app.mission_runner.check_auto_merge", return_value=None)
+    @patch("app.mission_runner.trigger_reflection", return_value=False)
+    @patch("app.mission_runner.archive_pending", return_value=False)
+    @patch("app.quota_handler.handle_quota_exhaustion", return_value=None)
+    @patch("app.mission_runner.update_usage", return_value=True)
+    def test_run_post_mission_invokes_jira_outcome_publish(
+        self,
+        mock_usage,
+        mock_quota,
+        mock_archive,
+        mock_reflect,
+        mock_merge,
+        mock_record,
+        mock_publish,
+        tmp_path,
+    ):
+        from app.mission_runner import run_post_mission
+
+        instance_dir = str(tmp_path / "instance")
+        os.makedirs(instance_dir, exist_ok=True)
+
+        result = run_post_mission(
+            instance_dir=instance_dir,
+            project_name="koan",
+            project_path=str(tmp_path),
+            run_num=1,
+            exit_code=0,
+            stdout_file="/tmp/out.json",
+            stderr_file="/tmp/err.txt",
+            mission_title="/fix https://org.atlassian.net/browse/PROJ-1",
+            autonomous_mode="implement",
+        )
+
+        mock_publish.assert_called_once()
+        assert result["jira_outcome_publish"]["published"] == "true"
+
     def test_record_skill_metric_records_fix_pr_with_failed_ci(self):
         from app.mission_runner import _record_skill_metric
 

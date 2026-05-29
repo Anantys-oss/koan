@@ -317,7 +317,9 @@ class TestSubmitDraftPr:
             assert mock_gh.call_count == 1
             mock_comment.assert_not_called()
 
-    def test_issue_comment_for_non_github_url_uses_tracker_service(self):
+    def test_jira_comment_uses_shared_upsert_with_issue_key(self):
+        # Jira comments route through the marker-based upsert (keyed by issue
+        # key + skill), not the generic tracker add_comment path.
         with patch(f"{_M}.get_current_branch", return_value="feat"), \
              patch(f"{_M}.resolve_base_branch", return_value="main"), \
              patch(f"{_M}.run_gh", return_value="") as mock_gh, \
@@ -326,13 +328,72 @@ class TestSubmitDraftPr:
              patch(f"{_M}.resolve_submit_target",
                     return_value={"repo": "o/r", "is_fork": False}), \
              patch(f"{_M}.pr_create", return_value="https://pr/1"), \
-             patch("app.issue_tracker.add_comment") as mock_comment:
+             patch("app.issue_tracker.add_comment") as mock_tracker, \
+             patch("app.jira_outcome_publish.upsert_jira_comment",
+                   return_value=(True, "created")) as mock_upsert:
             submit_draft_pr(
                 "/p", "proj", "o", "r", "PROJ-42",
                 pr_title="T", pr_body="B",
                 issue_url="https://org.atlassian.net/browse/PROJ-42",
+                skill_name="fix",
             )
-            mock_comment.assert_called_once()
-            assert mock_comment.call_args.args[0].endswith("/PROJ-42")
-            # Jira issues are not commented through `gh issue comment`.
+            mock_upsert.assert_called_once()
+            assert mock_upsert.call_args.args[0] == "PROJ-42"
+            assert mock_upsert.call_args.args[1] == "fix"
+            # Jira issues are not commented through the generic tracker path
+            # nor through `gh issue comment`.
+            mock_tracker.assert_not_called()
             assert mock_gh.call_count == 1
+
+    def test_jira_success_comment_includes_mission_and_pr_link(self):
+        with patch(f"{_M}.get_current_branch", return_value="feat"), \
+             patch(f"{_M}.resolve_base_branch", return_value="main"), \
+             patch(f"{_M}.run_gh", return_value=""), \
+             patch(f"{_M}.get_commit_subjects", return_value=["c1"]), \
+             patch(f"{_M}.run_git_strict"), \
+             patch(f"{_M}.resolve_submit_target",
+                    return_value={"repo": "o/r", "is_fork": False}), \
+             patch(f"{_M}.pr_create", return_value="https://pr/1"), \
+             patch("app.jira_outcome_publish.upsert_jira_comment",
+                   return_value=(True, "created")) as mock_upsert:
+            submit_draft_pr(
+                "/p", "proj", "o", "r", "PROJ-42",
+                pr_title="fix: bug",
+                pr_body=(
+                    "## Summary\n\n- Updated parser\n\n"
+                    "## Why\n\nNeeded for Jira flow"
+                ),
+                issue_url="https://org.atlassian.net/browse/PROJ-42",
+                base_branch="main",
+                skill_name="fix",
+            )
+
+        comment_text = mock_upsert.call_args.args[2]
+        assert "Mission: /fix" in comment_text
+        assert "Pull request: https://pr/1" in comment_text
+        assert "Target branch: main" in comment_text
+        assert "What changed:" in comment_text
+        assert "Why: Needed for Jira flow" in comment_text
+
+    def test_jira_push_failure_posts_failure_comment(self):
+        notify = MagicMock()
+        with patch(f"{_M}.get_current_branch", return_value="feat"), \
+             patch(f"{_M}.resolve_base_branch", return_value="main"), \
+             patch(f"{_M}.run_gh", return_value=""), \
+             patch(f"{_M}.get_commit_subjects", return_value=["c1"]), \
+             patch(f"{_M}.run_git_strict", side_effect=RuntimeError("auth denied")), \
+             patch("app.jira_outcome_publish.upsert_jira_comment",
+                   return_value=(True, "created")) as mock_upsert:
+            result = submit_draft_pr(
+                "/p", "proj", "o", "r", "PROJ-42", "T", "B",
+                issue_url="https://org.atlassian.net/browse/PROJ-42",
+                notify_fn=notify,
+                skill_name="implement",
+            )
+
+        assert result is None
+        notify.assert_called_once()
+        comment_text = mock_upsert.call_args.args[2]
+        assert "Pull request creation failed" in comment_text
+        assert "Mission: /implement" in comment_text
+        assert "auth denied" in comment_text

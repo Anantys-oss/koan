@@ -345,6 +345,7 @@ def _submit_fix_pr(
             issue_url=issue_url,
             base_branch=base_branch,
             notify_fn=notify_fn,
+            skill_name="fix",
         )
     except Exception as e:
         logger.warning("PR submission failed: %s", e)

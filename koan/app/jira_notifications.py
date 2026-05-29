@@ -110,6 +110,27 @@ def _jira_post(base_url: str, auth_header: str, path: str, body: Dict[str, Any])
         return None
 
 
+def _jira_put(base_url: str, auth_header: str, path: str, body: Dict[str, Any]) -> Optional[dict]:
+    """Make a PUT request to the Jira REST API."""
+    try:
+        import urllib.request
+
+        url = base_url + path
+        data = json.dumps(body).encode("utf-8")
+
+        req = urllib.request.Request(url, data=data, method="PUT")
+        req.add_header("Authorization", auth_header)
+        req.add_header("Accept", "application/json")
+        req.add_header("Content-Type", "application/json")
+
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            raw = resp.read().decode("utf-8")
+            return json.loads(raw) if raw else {}
+    except Exception as e:
+        log.warning("Jira API PUT %s failed: %s", path, e)
+        return None
+
+
 def _adf_to_text(node: Any) -> str:
     """Recursively extract plain text from an Atlassian Document Format (ADF) node.
 
@@ -693,6 +714,62 @@ def jira_add_comment(issue_key: str, body_text: str) -> bool:
         base_url,
         auth_header,
         f"/rest/api/3/issue/{issue_key}/comment",
+        {"body": _text_to_adf(body_text)},
+    )
+    return result is not None
+
+
+def jira_list_comments(issue_key: str) -> List[dict]:
+    """Fetch all comments for a Jira issue (id + extracted plain text body)."""
+    base_url, auth_header = _jira_auth_from_config()
+    all_comments: List[dict] = []
+    start_at = 0
+    max_results = 100
+
+    while True:
+        params = {
+            "startAt": start_at,
+            "maxResults": max_results,
+            "orderBy": "created",
+        }
+        data = _jira_get(
+            base_url,
+            auth_header,
+            f"/rest/api/3/issue/{issue_key}/comment",
+            params,
+        )
+        if not data or not isinstance(data, dict):
+            break
+
+        batch = data.get("comments", [])
+        if not batch:
+            break
+
+        for comment in batch:
+            comment_id = str(comment.get("id", "")).strip()
+            if not comment_id:
+                continue
+            body_node = comment.get("body")
+            body_text = _adf_to_text(body_node) if body_node else ""
+            all_comments.append({"id": comment_id, "body": body_text})
+
+        total = data.get("total", 0)
+        start_at += len(batch)
+        if start_at >= total or len(batch) < max_results:
+            break
+
+    return all_comments
+
+
+def jira_edit_comment(issue_key: str, comment_id: str, body_text: str) -> bool:
+    """Edit a Jira issue comment body."""
+    if not str(comment_id).strip():
+        return False
+    base_url, auth_header = _jira_auth_from_config()
+    result = _jira_put(
+        base_url,
+        auth_header,
+        f"/rest/api/3/issue/{issue_key}/comment/{comment_id}",
         {"body": _text_to_adf(body_text)},
     )
     return result is not None

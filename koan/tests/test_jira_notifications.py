@@ -719,6 +719,48 @@ class TestJiraIssueHelpers:
         assert payload["body"]["type"] == "doc"
         assert len(payload["body"]["content"]) == 2
 
+    def test_jira_edit_comment_posts_adf_via_put(self):
+        from app.jira_notifications import jira_edit_comment
+
+        with (
+            patch("app.jira_notifications._jira_auth_from_config", return_value=("https://test", "Basic token")),
+            patch("app.jira_notifications._jira_put", return_value={"id": "1"}) as mock_put,
+        ):
+            assert jira_edit_comment("FOO-1", "123", "hello\n\nworld") is True
+
+        payload = mock_put.call_args.args[3]
+        assert payload["body"]["type"] == "doc"
+        assert "/rest/api/3/issue/FOO-1/comment/123" in mock_put.call_args.args[2]
+
+    def test_jira_list_comments_returns_id_and_body(self):
+        from app.jira_notifications import jira_list_comments
+
+        payload = {
+            "comments": [
+                {
+                    "id": "100",
+                    "body": {
+                        "type": "doc",
+                        "content": [
+                            {
+                                "type": "paragraph",
+                                "content": [{"type": "text", "text": "hello marker"}],
+                            },
+                        ],
+                    },
+                },
+            ],
+            "total": 1,
+        }
+
+        with (
+            patch("app.jira_notifications._jira_auth_from_config", return_value=("https://test", "Basic token")),
+            patch("app.jira_notifications._jira_get", return_value=payload),
+        ):
+            comments = jira_list_comments("FOO-1")
+
+        assert comments == [{"id": "100", "body": "hello marker"}]
+
     def test_jira_create_issue_rejects_invalid_project_key(self):
         from app.jira_notifications import jira_create_issue
 

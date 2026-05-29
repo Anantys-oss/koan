@@ -288,6 +288,20 @@ Skills that accept GitHub issue/PR URLs also accept Jira browse URLs:
 
 When the source is Jira, Koan fetches the Jira context through the issue tracker abstraction, creates the GitHub draft PR against the mapped project repo, and comments the PR link back on the Jira issue. Configure the repo with `github_url` or `submit_to_repository.repo` in `projects.yaml`.
 
+For Jira-linked missions, Koan publishes a final Jira status update at mission end:
+- if a GitHub PR URL is present in the mission outcome, Koan posts/updates a PR status comment
+- if the mission fails, Koan posts/updates a failure status comment
+
+This end-of-mission publisher is authoritative and covers both PRs created by Koan helper code and PRs created directly by the LLM during mission execution.
+
+For PR outcomes, the Jira status comment includes:
+- mission name
+- PR link
+- target branch (if set)
+- concise What/How/Why/Validation summary (when available from the generated PR body)
+
+For Jira `/plan` updates, Koan posts human-readable plan comments (plain text adapted for Jira rendering) and posts an explicit failure status comment when plan generation fails.
+
 ## Security Model
 
 ### Authentication

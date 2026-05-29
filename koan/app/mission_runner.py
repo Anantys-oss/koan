@@ -510,6 +510,32 @@ def _record_skill_metric(
         _log_runner("error", f"Skill metric recording failed: {e}")
 
 
+def _publish_jira_outcome(
+    mission_title: str,
+    pending_content: str,
+    exit_code: int,
+) -> Dict[str, str]:
+    """Publish end-of-mission Jira status for Jira-linked missions.
+
+    Returns a status dict (best-effort). Failures are swallowed to avoid
+    breaking the post-mission pipeline.
+    """
+    try:
+        from app.jira_outcome_publish import publish_jira_mission_outcome
+
+        base_match = re.search(r"\bbranch:([^\s]+)", mission_title or "")
+        base_branch = base_match.group(1).strip() if base_match else None
+        return publish_jira_mission_outcome(
+            mission_title=mission_title,
+            pending_content=pending_content,
+            exit_code=exit_code,
+            base_branch=base_branch,
+        )
+    except Exception as e:
+        _log_runner("error", f"Jira outcome publish failed: {e}")
+        return {"published": "false", "reason": f"error: {type(e).__name__}"}
+
+
 def _record_cost_event(
     instance_dir: str,
     project_name: str,
@@ -1591,6 +1617,16 @@ def run_post_mission(
             instance_dir, project_name, mission_title,
             exit_code, pending_content, quality_report,
         )
+
+        # 7a-ter. Publish Jira mission outcome after the full mission run.
+        # This is the authoritative "end of mission" notifier and covers
+        # both helper-created PRs and PRs created directly by the LLM.
+        jira_outcome = _publish_jira_outcome(
+            mission_title=mission_title,
+            pending_content=pending_content,
+            exit_code=exit_code,
+        )
+        result["jira_outcome_publish"] = jira_outcome
 
         # 7a. Update Thompson Sampling bandit with mission outcome.
         # Non-zero exit is always a failure; for zero-exit, classify via

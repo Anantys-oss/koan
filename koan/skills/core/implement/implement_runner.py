@@ -601,6 +601,7 @@ def _submit_implement_pr(
             issue_url=issue_url,
             base_branch=base_branch,
             notify_fn=notify_fn,
+            skill_name="implement",
         )
     except Exception as e:
         logger.warning("PR submission failed: %s", e)
