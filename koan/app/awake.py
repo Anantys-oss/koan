@@ -50,7 +50,7 @@ from app.command_handlers import (
 )
 from app.health_check import write_heartbeat
 from app.language_preference import get_language_instruction
-from app.notify import TypingIndicator, reset_flood_state, send_telegram
+from app.notify import TypingIndicator, reset_flood_state, send_telegram, set_reply_context, clear_reply_context
 from app.outbox_manager import OutboxManager, parse_outbox_priority
 from app.shutdown_manager import is_shutdown_requested, clear_shutdown
 from app.config import (
@@ -137,6 +137,28 @@ def is_command(text: str) -> bool:
 def parse_project(text: str) -> Tuple[Optional[str], str]:
     """Extract [project:name] or [projet:name] from message."""
     return _parse_project(text)
+
+
+def _strip_bot_mention_from_text(text: str, msg: dict) -> str:
+    """Strip @bot_username mentions from non-command messages.
+
+    In group chats, users often address the bot with ``@BotName hello``.
+    This strips the mention so the downstream handlers receive clean text.
+    Commands (``/cmd@BotName``) are already handled by ``_strip_bot_mention``
+    in command_handlers.py — this covers plain-text mentions.
+    """
+    if text.startswith("/"):
+        return text
+    entities = msg.get("entities", [])
+    if not entities:
+        return text
+    # Process entities in reverse offset order so earlier offsets stay valid
+    for entity in sorted(entities, key=lambda e: e.get("offset", 0), reverse=True):
+        if entity.get("type") == "mention":
+            offset = entity.get("offset", 0)
+            length = entity.get("length", 0)
+            text = text[:offset] + text[offset + length:]
+    return text.strip()
 
 
 # ---------------------------------------------------------------------------
@@ -510,13 +532,28 @@ _worker_lock = threading.Lock()
 
 
 def _run_in_worker(fn, *args):
-    """Run fn(*args) in a background thread. One worker at a time."""
+    """Run fn(*args) in a background thread. One worker at a time.
+
+    Captures the current reply context so that send_telegram() calls
+    inside the worker thread reply to the correct message in groups.
+    """
+    from app.notify import get_reply_context
+
     global _worker_thread
+    reply_to = get_reply_context()
+
+    def _wrapper():
+        set_reply_context(reply_to)
+        try:
+            fn(*args)
+        finally:
+            clear_reply_context()
+
     with _worker_lock:
         if _worker_thread is not None and _worker_thread.is_alive():
             send_telegram("⏳ Busy with a previous message. Try again in a moment.")
             return
-        _worker_thread = threading.Thread(target=fn, args=args, daemon=True)
+        _worker_thread = threading.Thread(target=_wrapper, daemon=True)
         _worker_thread.start()
 
 
@@ -616,6 +653,31 @@ def handle_message(text: str):
         _run_in_worker(handle_chat, text)
 
 
+def _check_group_chat_mode(provider) -> None:
+    """Detect group chats and warn about Telegram Bot Privacy Mode.
+
+    In groups, bots with privacy mode enabled (the default) only receive
+    /commands, @mentions, and replies — not regular messages.
+    """
+    import requests
+
+    if provider.get_provider_name() != "telegram":
+        return
+    try:
+        api_base = provider._api_base
+        resp = requests.get(f"{api_base}/getChat", params={"chat_id": provider._chat_id}, timeout=5)
+        data = resp.json()
+        if not data.get("ok"):
+            return
+        chat = data.get("result", {})
+        chat_type = chat.get("type", "")
+        if chat_type in ("group", "supergroup"):
+            log("init", f"Chat type: {chat_type} — group mode active")
+            log("init", "TIP: Disable Bot Privacy Mode via @BotFather (/setprivacy → Disable) to receive all group messages")
+    except Exception as e:
+        log("warn", f"Group chat detection failed: {e}")
+
+
 def _ensure_runner_alive() -> None:
     """Start the runner if it's not running.
 
@@ -703,6 +765,9 @@ def main():
         log("error", "Failed to initialize messaging provider")
         sys.exit(1)
 
+    # Detect group chat and warn about privacy mode
+    _check_group_chat_mode(provider)
+
     log("init", f"Polling every {POLL_INTERVAL}s (chat mode: fast reply)")
     offset = None
     first_poll = True
@@ -733,7 +798,10 @@ def main():
                 text = msg.get("text", "")
                 chat_id = str(msg.get("chat", {}).get("id", ""))
                 if chat_id == CHAT_ID and text:
+                    message_id = msg.get("message_id", 0)
+                    text = _strip_bot_mention_from_text(text, msg)
                     log("chat", f"Received: {text[:60]}")
+                    set_reply_context(message_id)
                     try:
                         handle_message(text)
                     except Exception as e:
@@ -742,6 +810,8 @@ def main():
                             send_telegram(f"⚠️ Error processing message: {type(e).__name__}: {e}")
                         except Exception as notify_err:
                             print(f"[bridge] error notification also failed: {notify_err}", file=sys.stderr)
+                    finally:
+                        clear_reply_context()
 
             # After the first poll cycle, clear any stale signal files
             # left from a previous incarnation.  During the first poll
