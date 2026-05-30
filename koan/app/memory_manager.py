@@ -1119,12 +1119,15 @@ class MemoryManager:
         atomic_write(snapshot_path, snapshot_content)
         return snapshot_path
 
-    def hydrate_from_snapshot(self) -> Dict[str, bool]:
+    def hydrate_from_snapshot(self, force: bool = False) -> Dict[str, bool]:
         """Rebuild memory files from SNAPSHOT.md.
 
         Looks for SNAPSHOT.md in memory/ first, then instance root as fallback.
-        Parses structured sections and recreates missing files. Never overwrites
-        existing files.
+        Parses structured sections and recreates missing files.
+
+        When force=False (default), existing files are skipped. When force=True,
+        all files are written unconditionally via atomic_write (temp+rename), so
+        the write itself is race-free on POSIX even under concurrent access.
 
         Returns dict mapping restored file paths (relative) to True, or empty
         if no snapshot found.
@@ -1147,7 +1150,7 @@ class MemoryManager:
 
         # Restore summary
         if "Summary" in sections:
-            if not self.summary_path.exists():
+            if force or not self.summary_path.exists():
                 self.memory_dir.mkdir(parents=True, exist_ok=True)
                 atomic_write(self.summary_path, sections["Summary"])
                 restored["memory/summary.md"] = True
@@ -1158,7 +1161,7 @@ class MemoryManager:
             if key.startswith("Global / "):
                 stem = key[len("Global / "):]
                 filepath = global_dir / f"{stem}.md"
-                if not filepath.exists():
+                if force or not filepath.exists():
                     global_dir.mkdir(parents=True, exist_ok=True)
                     atomic_write(filepath, text)
                     restored[f"memory/global/{stem}.md"] = True
@@ -1168,7 +1171,7 @@ class MemoryManager:
             if key.startswith("Projects / ") and key.endswith(" / learnings"):
                 project_name = key[len("Projects / "):-len(" / learnings")]
                 learnings_path = self._learnings_path(project_name)
-                if not learnings_path.exists():
+                if force or not learnings_path.exists():
                     learnings_path.parent.mkdir(parents=True, exist_ok=True)
                     atomic_write(learnings_path, text)
                     restored[f"memory/projects/{project_name}/learnings.md"] = True
@@ -1176,14 +1179,14 @@ class MemoryManager:
         # Restore soul.md
         if "Soul" in sections:
             soul_path = self.instance_dir / "soul.md"
-            if not soul_path.exists():
+            if force or not soul_path.exists():
                 atomic_write(soul_path, sections["Soul"])
                 restored["soul.md"] = True
 
         # Restore shared journal
         if "Shared Journal" in sections:
             journal_path = self.instance_dir / "shared-journal.md"
-            if not journal_path.exists():
+            if force or not journal_path.exists():
                 atomic_write(journal_path, sections["Shared Journal"])
                 restored["shared-journal.md"] = True
 

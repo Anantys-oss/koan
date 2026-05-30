@@ -380,6 +380,63 @@ class TestRoundTrip:
 
 
 # ---------------------------------------------------------------------------
+# Force hydration tests
+# ---------------------------------------------------------------------------
+
+class TestHydrateForce:
+    """Test that force=True overwrites existing files."""
+
+    def test_force_overwrites_existing(self, tmp_path):
+        instance = _populate_instance(tmp_path)
+        mgr = MemoryManager(str(instance))
+
+        mgr.export_snapshot()
+
+        # Overwrite soul.md with different content
+        (instance / "soul.md").write_text("# Modified Soul\n", encoding="utf-8")
+
+        # Default (force=False) should NOT overwrite
+        restored = mgr.hydrate_from_snapshot()
+        assert "soul.md" not in restored
+        assert "Modified Soul" in (instance / "soul.md").read_text(encoding="utf-8")
+
+        # force=True MUST overwrite
+        restored = mgr.hydrate_from_snapshot(force=True)
+        assert "soul.md" in restored
+        soul = (instance / "soul.md").read_text(encoding="utf-8")
+        assert "I am Kōan." in soul
+
+    def test_force_overwrites_summary(self, tmp_path):
+        instance = _populate_instance(tmp_path)
+        mgr = MemoryManager(str(instance))
+
+        mgr.export_snapshot()
+
+        original = (instance / "memory" / "summary.md").read_text(encoding="utf-8")
+        (instance / "memory" / "summary.md").write_text("# Corrupted\n", encoding="utf-8")
+
+        restored = mgr.hydrate_from_snapshot(force=True)
+        assert "memory/summary.md" in restored
+        restored_text = (instance / "memory" / "summary.md").read_text(encoding="utf-8")
+        # Verify original content restored (snapshot parser may normalize whitespace)
+        assert "Session 1 (projet: koan)" in restored_text
+        assert "# Corrupted" not in restored_text
+
+    def test_force_false_is_default(self, tmp_path):
+        """force=False is the default — existing files untouched."""
+        instance = _populate_instance(tmp_path)
+        mgr = MemoryManager(str(instance))
+
+        mgr.export_snapshot()
+        (instance / "soul.md").write_text("# Keep Me\n", encoding="utf-8")
+
+        # Call without force keyword — should preserve existing file
+        restored = mgr.hydrate_from_snapshot()
+        assert "soul.md" not in restored
+        assert "Keep Me" in (instance / "soul.md").read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
 # Phase 3: cleanup integration test
 # ---------------------------------------------------------------------------
 
