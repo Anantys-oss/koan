@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Kōan — Missions{% endblock %}
+{% block page_title %}Missions{% endblock %}
 {% block content %}
 <style>
     .pending-item {
@@ -74,11 +75,12 @@
     }
     .tag-dropdown {
         position: absolute;
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: 4px;
+        background: var(--surface-2);
+        border: 1px solid var(--border-strong);
+        border-radius: var(--radius-md);
+        box-shadow: var(--shadow-lg);
         padding: 0.25rem 0;
-        z-index: 10;
+        z-index: 100;
         min-width: 120px;
     }
     .tag-dropdown div {
@@ -86,7 +88,7 @@
         cursor: pointer;
         font-size: 0.8rem;
     }
-    .tag-dropdown div:hover { background: rgba(88, 166, 255, 0.1); }
+    .tag-dropdown div:hover { background: var(--brand-subtle); }
     .in-progress-item {
         display: flex;
         align-items: center;
@@ -116,8 +118,8 @@
         z-index: 100;
         animation: toast-in 0.3s ease;
     }
-    .toast.success { background: rgba(63, 185, 80, 0.2); border: 1px solid var(--green); color: var(--green); }
-    .toast.error { background: rgba(248, 81, 73, 0.2); border: 1px solid var(--red); color: var(--red); }
+    .toast.success { background: var(--success-bg); border: 1px solid var(--success); color: var(--success); }
+    .toast.error { background: var(--danger-bg); border: 1px solid var(--danger); color: var(--danger); }
     @keyframes toast-in { from { opacity: 0; transform: translateY(1rem); } to { opacity: 1; transform: translateY(0); } }
     .empty-state {
         color: var(--text-muted);
@@ -131,15 +133,13 @@
     }
 </style>
 
-<h1>Missions</h1>
-
 <div class="card">
-    <h2 style="margin-bottom:0.5rem;">New mission</h2>
+    <h2 style="margin-top:0;margin-bottom:0.5rem;">New mission</h2>
     <form method="POST" action="/missions/add">
         <input type="text" name="mission" placeholder="Mission description..." required>
         <div class="form-row">
             <input type="text" name="project" placeholder="Project (optional)" style="max-width:200px;">
-            <button type="submit">Add</button>
+            <button type="submit" class="k-btn k-btn--primary">Add</button>
         </div>
     </form>
 </div>

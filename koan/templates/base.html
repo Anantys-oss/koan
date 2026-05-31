@@ -1,56 +1,112 @@
 <!DOCTYPE html>
-<html lang="fr">
+<html lang="en">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}Kōan{% endblock %}</title>
-    <!-- Apply saved theme before paint to avoid flash -->
-    <script>try{var t=localStorage.getItem('koan_theme');if(t==='light')document.documentElement.dataset.theme='light';}catch(e){}</script>
+    <!-- No-flash theme: stored choice, else OS preference, else dark. -->
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem('koan-theme');
+          if (t !== 'light' && t !== 'dark') {
+            var legacy = localStorage.getItem('koan_theme');
+            t = (legacy === 'light' || legacy === 'dark') ? legacy : null;
+          }
+          if (!t) {
+            t = (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark';
+          }
+          document.documentElement.setAttribute('data-theme', t);
+        } catch (e) {
+          document.documentElement.setAttribute('data-theme', 'dark');
+        }
+      })();
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/koan.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
     <link id="favicon" rel="icon" href="{{ url_for('static', filename='favicon/default.svg') }}" type="image/svg+xml" data-base="{{ url_for('static', filename='favicon/') }}">
+    {% block extra_head %}{% endblock %}
 </head>
 <body>
-    <nav>
-        <a href="/" class="logo">Kōan</a>
-        <a href="/" {% if request.path == '/' %}class="active"{% endif %} id="nav-dashboard">Dashboard<span id="nav-attention-badge" class="nav-attention-badge" style="display:none;"></span></a>
-        <a href="/missions" {% if request.path == '/missions' %}class="active"{% endif %}>Missions</a>
-        <a href="/chat" {% if request.path == '/chat' %}class="active"{% endif %}>Chat</a>
-        <a href="/usage" {% if request.path == '/usage' %}class="active"{% endif %}>Usage</a>
-        <a href="/prs" {% if request.path == '/prs' %}class="active"{% endif %}>PRs</a>
-        <a href="/plans" {% if request.path == '/plans' %}class="active"{% endif %}>Plans</a>
-        <a href="/progress" {% if request.path == '/progress' %}class="active"{% endif %}>Progress</a>
-        <a href="/journal" {% if request.path == '/journal' %}class="active"{% endif %}>Journal</a>
-        <a href="/logs" {% if request.path == '/logs' %}class="active"{% endif %}>Logs</a>
-        <a href="/agent" {% if request.path.startswith('/agent') %}class="active"{% endif %} data-shortcut="a">Agent</a>
-        <a href="/rules" {% if request.path == '/rules' %}class="active"{% endif %}>Rules</a>
-        <button id="theme-toggle" title="Toggle theme">☀️</button>
-        <select id="project-filter">
-            <option value="">All projects</option>
-        </select>
-    </nav>
-    <main>
-        {% block content %}{% endblock %}
-    </main>
+    <div class="k-app" id="app-shell">
+        <div class="sidebar-scrim" id="sidebar-scrim"></div>
+        <aside class="k-app__sidebar" id="sidebar">
+            <div class="sidebar-brand">
+                <a href="/" class="logo">Kōan</a>
+            </div>
+            <nav class="k-nav" id="main-nav">
+                <a href="/" class="k-nav__item {% if request.path == '/' %}active{% endif %}" id="nav-dashboard">
+                    <i data-lucide="layout-dashboard"></i><span>Dashboard</span>
+                    <span id="nav-attention-badge" class="k-badge k-badge--danger nav-attention-badge" style="margin-left:auto;display:none;"></span>
+                </a>
+                <a href="/missions" class="k-nav__item {% if request.path == '/missions' %}active{% endif %}"><i data-lucide="target"></i><span>Missions</span></a>
+                <a href="/chat" class="k-nav__item {% if request.path == '/chat' %}active{% endif %}"><i data-lucide="message-square"></i><span>Chat</span></a>
+                <a href="/usage" class="k-nav__item {% if request.path == '/usage' %}active{% endif %}"><i data-lucide="bar-chart-3"></i><span>Usage</span></a>
+                <a href="/prs" class="k-nav__item {% if request.path == '/prs' %}active{% endif %}"><i data-lucide="git-pull-request"></i><span>PRs</span></a>
+                <a href="/plans" class="k-nav__item {% if request.path == '/plans' %}active{% endif %}"><i data-lucide="clipboard-list"></i><span>Plans</span></a>
+                <a href="/progress" class="k-nav__item {% if request.path == '/progress' %}active{% endif %}"><i data-lucide="activity"></i><span>Progress</span></a>
+                <a href="/journal" class="k-nav__item {% if request.path == '/journal' %}active{% endif %}"><i data-lucide="book-open"></i><span>Journal</span></a>
+                <a href="/logs" class="k-nav__item {% if request.path == '/logs' %}active{% endif %}"><i data-lucide="scroll-text"></i><span>Logs</span></a>
+                <a href="/agent" class="k-nav__item {% if request.path.startswith('/agent') %}active{% endif %}"><i data-lucide="bot"></i><span>Agent</span></a>
+                <a href="/rules" class="k-nav__item {% if request.path == '/rules' %}active{% endif %}"><i data-lucide="sliders-horizontal"></i><span>Rules</span></a>
+            </nav>
+            <div class="sidebar-footer">
+                <select id="project-filter" class="k-select" aria-label="Filter by project">
+                    <option value="">All projects</option>
+                </select>
+                <div class="sidebar-footer-row">
+                    <button id="theme-toggle" class="k-btn k-btn--ghost k-btn--icon" title="Toggle theme" aria-label="Toggle theme" onclick="koanToggleTheme()">
+                        <i data-lucide="sun" class="theme-icon-sun"></i>
+                        <i data-lucide="moon" class="theme-icon-moon"></i>
+                    </button>
+                    <button class="k-btn k-btn--ghost k-btn--icon" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts" id="shortcuts-open">
+                        <i data-lucide="keyboard"></i>
+                    </button>
+                </div>
+            </div>
+        </aside>
 
-    <!-- Keyboard shortcuts overlay -->
-    <div id="shortcuts-help" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
-        <div id="shortcuts-help-box">
-            <h3>Keyboard shortcuts</h3>
-            <div class="shortcut-row"><span>Dashboard</span><span class="shortcut-key">d</span></div>
-            <div class="shortcut-row"><span>Missions</span><span class="shortcut-key">m</span></div>
-            <div class="shortcut-row"><span>Chat</span><span class="shortcut-key">c</span></div>
-            <div class="shortcut-row"><span>Usage</span><span class="shortcut-key">u</span></div>
-            <div class="shortcut-row"><span>PRs</span><span class="shortcut-key">p</span></div>
-            <div class="shortcut-row"><span>Plans</span><span class="shortcut-key">l</span></div>
-            <div class="shortcut-row"><span>Progress</span><span class="shortcut-key">g</span></div>
-            <div class="shortcut-row"><span>Journal</span><span class="shortcut-key">j</span></div>
-            <div class="shortcut-row"><span>Agent</span><span class="shortcut-key">a</span></div>
-            <div class="shortcut-row"><span>Rules</span><span class="shortcut-key">r</span></div>
-            <div class="shortcut-row"><span>Show shortcuts</span><span class="shortcut-key">?</span></div>
-            <span class="shortcut-close">Press Esc or click outside to close</span>
+        <div class="k-app__main">
+            <header class="k-topbar">
+                <button class="k-btn k-btn--ghost k-btn--icon sidebar-toggle" id="sidebar-toggle" aria-label="Toggle navigation">
+                    <i data-lucide="menu"></i>
+                </button>
+                <h1 class="topbar-title k-heading-sm">{% block page_title %}Kōan{% endblock %}</h1>
+                <span class="k-spacer"></span>
+                <div class="topbar-actions">{% block topbar_actions %}{% endblock %}</div>
+            </header>
+            <main class="k-app__content">
+                {% block content %}{% endblock %}
+            </main>
         </div>
     </div>
 
+    <!-- Keyboard shortcuts overlay -->
+    <div id="shortcuts-help" class="k-scrim" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" style="display:none;">
+        <div id="shortcuts-help-box" class="k-modal">
+            <div class="k-modal__header"><h3 class="k-modal__title">Keyboard shortcuts</h3></div>
+            <div class="k-modal__body">
+                <div class="shortcut-row"><span>Dashboard</span><kbd>d</kbd></div>
+                <div class="shortcut-row"><span>Missions</span><kbd>m</kbd></div>
+                <div class="shortcut-row"><span>Chat</span><kbd>c</kbd></div>
+                <div class="shortcut-row"><span>Usage</span><kbd>u</kbd></div>
+                <div class="shortcut-row"><span>PRs</span><kbd>p</kbd></div>
+                <div class="shortcut-row"><span>Plans</span><kbd>l</kbd></div>
+                <div class="shortcut-row"><span>Progress</span><kbd>g</kbd></div>
+                <div class="shortcut-row"><span>Journal</span><kbd>j</kbd></div>
+                <div class="shortcut-row"><span>Agent</span><kbd>a</kbd></div>
+                <div class="shortcut-row"><span>Rules</span><kbd>r</kbd></div>
+                <div class="shortcut-row"><span>Show shortcuts</span><kbd>?</kbd></div>
+            </div>
+            <div class="k-modal__footer"><span class="k-caption">Press Esc or click outside to close</span></div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="{{ url_for('static', filename='js/koan.js') }}"></script>
     <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
     {% block scripts %}{% endblock %}
 </body>

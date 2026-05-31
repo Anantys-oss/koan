@@ -1,110 +1,58 @@
 {% extends "base.html" %}
 {% block title %}Kōan — Progress{% endblock %}
+{% block page_title %}Live Progress{% endblock %}
+{% block topbar_actions %}
+<span class="k-status" id="progress-status"><span class="k-status__dot"></span> Connecting…</span>
+{% endblock %}
 {% block content %}
-<div style="display:flex; align-items:center; gap:1rem; margin-bottom:1.5rem;">
-    <h1 style="margin-bottom:0;">Live Progress</h1>
-    <span id="status-badge" class="badge badge-muted">connecting...</span>
-</div>
-
-<div id="idle-state" class="card" style="display:none;">
-    <p style="color:var(--text-muted);">No active mission. Waiting for pending.md to appear...</p>
-</div>
-
-<div id="progress-container" class="card" style="display:none; padding:0;">
-    <div id="progress-header" style="padding:0.75rem 1.25rem; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center;">
-        <span id="mission-title" style="font-weight:600; font-size:0.9rem;"></span>
-        <label style="font-size:0.75rem; color:var(--text-muted); cursor:pointer;">
-            <input type="checkbox" id="autoscroll" checked style="margin-right:0.3rem;">
-            Auto-scroll
+<div class="k-card">
+    <div class="k-card__header">
+        <h2 class="k-card__title" style="margin:0;">Current run output</h2>
+        <label class="k-check">
+            <input type="checkbox" id="autoscroll" checked> Auto-scroll
         </label>
     </div>
-    <pre id="progress-content" style="padding:1.25rem; max-height:calc(100vh - 280px); overflow-y:auto; margin:0;"></pre>
+    <pre id="progress-output" class="k-terminal" style="min-height:400px;max-height:600px;">Waiting for output…</pre>
 </div>
 
 <script>
 (function() {
-    const badge = document.getElementById('status-badge');
-    const idleState = document.getElementById('idle-state');
-    const container = document.getElementById('progress-container');
-    const contentEl = document.getElementById('progress-content');
-    const titleEl = document.getElementById('mission-title');
-    const autoscrollEl = document.getElementById('autoscroll');
-    let evtSource = null;
+    const output = document.getElementById('progress-output');
+    const status = document.getElementById('progress-status');
+    const autoscroll = document.getElementById('autoscroll');
 
-    function extractTitle(text) {
-        // First non-empty line starting with "# " is the mission title
-        const lines = text.split('\n');
-        for (const line of lines) {
-            if (line.startsWith('# ')) {
-                return line.slice(2).trim();
-            }
-        }
-        return 'Mission in progress';
+    function setStatus(text, kind) {
+        status.textContent = '';
+        const dot = document.createElement('span');
+        dot.className = 'k-status__dot';
+        status.className = 'k-status k-status--' + kind;
+        status.appendChild(dot);
+        status.appendChild(document.createTextNode(' ' + text));
     }
 
-    function formatContent(text) {
-        // Strip the header block (everything before the first "---" separator + the separator)
-        const sepIdx = text.indexOf('\n---\n');
-        if (sepIdx !== -1) {
-            return text.slice(sepIdx + 5).trim();
-        }
-        return text.trim();
-    }
+    function connectSSE() {
+        const source = new EventSource('/api/progress/stream');
 
-    function renderProgress(data) {
-        if (data.active && data.content) {
-            idleState.style.display = 'none';
-            container.style.display = 'block';
-            titleEl.textContent = extractTitle(data.content);
-            contentEl.textContent = formatContent(data.content);
-            badge.className = 'badge badge-green';
-            badge.textContent = 'active';
-            if (autoscrollEl.checked) {
-                contentEl.scrollTop = contentEl.scrollHeight;
-            }
-        } else {
-            container.style.display = 'none';
-            idleState.style.display = 'block';
-            badge.className = 'badge badge-muted';
-            badge.textContent = 'idle';
-        }
-    }
+        source.onopen = function() { setStatus('Connected', 'success'); };
 
-    function connect() {
-        if (evtSource) {
-            evtSource.close();
-        }
-        badge.className = 'badge badge-blue';
-        badge.textContent = 'connecting...';
-
-        evtSource = new EventSource('/api/progress/stream');
-
-        evtSource.onmessage = function(e) {
-            try {
-                const data = JSON.parse(e.data);
-                renderProgress(data);
-            } catch(err) {
-                console.error('SSE parse error:', err);
+        source.onmessage = function(event) {
+            const data = JSON.parse(event.data);
+            if (data.content !== undefined) {
+                output.textContent = data.content || 'Waiting for output…';
+                if (autoscroll.checked) {
+                    output.scrollTop = output.scrollHeight;
+                }
             }
         };
 
-        evtSource.onerror = function() {
-            badge.className = 'badge badge-red';
-            badge.textContent = 'disconnected';
-            evtSource.close();
-            evtSource = null;
-            // Reconnect after 3s
-            setTimeout(connect, 3000);
+        source.onerror = function() {
+            setStatus('Disconnected — reconnecting…', 'queued');
+            source.close();
+            setTimeout(connectSSE, 3000);
         };
     }
 
-    // Initial load via JSON endpoint (don't wait for first SSE event)
-    fetch('/api/progress')
-        .then(r => r.json())
-        .then(renderProgress)
-        .catch(() => {});
-
-    connect();
+    connectSSE();
 })();
 </script>
 {% endblock %}

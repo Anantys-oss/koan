@@ -1,18 +1,14 @@
 {% extends "base.html" %}
 {% block title %}Koan — Pull Requests{% endblock %}
+{% block page_title %}Pull Requests{% endblock %}
+{% block topbar_actions %}
+<label style="font-size:var(--fs-body-sm);color:var(--text-secondary);display:flex;align-items:center;gap:0.4rem;">
+    <input type="checkbox" id="author-toggle" checked style="accent-color:var(--brand);">
+    Koan-authored only
+</label>
+<button id="refresh-btn" class="k-btn k-btn--secondary k-btn--sm"><i data-lucide="refresh-cw"></i> Refresh</button>
+{% endblock %}
 {% block content %}
-<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem;">
-    <h1 style="margin-bottom:0;">Pull Requests</h1>
-    <div style="display:flex;align-items:center;gap:0.75rem;">
-        <label style="font-size:0.8rem;color:var(--text-muted);display:flex;align-items:center;gap:0.4rem;">
-            <input type="checkbox" id="author-toggle" checked style="accent-color:var(--accent);">
-            Koan-authored only
-        </label>
-        <button id="refresh-btn" class="btn-secondary" style="font-size:0.8rem;padding:0.3rem 0.75rem;">
-            Refresh
-        </button>
-    </div>
-</div>
 
 <div class="grid" id="pr-stats">
     <div class="card">

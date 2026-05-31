@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Koan — Usage{% endblock %}
+{% block page_title %}Usage{% endblock %}
 {% block content %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.9/dist/chart.umd.min.js"></script>
 
@@ -12,9 +13,9 @@
     font-weight: 600;
     white-space: nowrap;
 }
-.trend-improving { color: var(--green); background: rgba(63,185,80,0.12); }
-.trend-declining { color: var(--orange); background: rgba(210,153,34,0.12); }
-.trend-stable    { color: var(--text-muted); background: rgba(139,148,158,0.12); }
+.trend-improving { color: var(--success); background: var(--success-bg); }
+.trend-declining { color: var(--warning); background: var(--warning-bg); }
+.trend-stable    { color: var(--text-muted); background: var(--surface-3); }
 .project-link { color: var(--accent); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
 .project-link:hover { color: var(--text); }
 .chart-container { position: relative; width: 100%; }
@@ -35,8 +36,6 @@
 .sortable-header:hover { color: var(--text); }
 .sort-indicator { font-size: 0.7rem; margin-left: 0.2rem; }
 </style>
-
-<h1>Usage</h1>
 
 <div class="filter-bar">
     <select id="range-select" style="padding:0.4rem;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;">

@@ -1,11 +1,12 @@
 {% extends "base.html" %}
 {% block title %}Kōan — Journal{% endblock %}
+{% block page_title %}Journal{% endblock %}
 {% block content %}
-<h1>Journal</h1>
-
 {% if not entries %}
-<div class="card">
-    <p style="color: var(--text-muted);">Aucune entrée de journal trouvée.</p>
+<div class="k-empty">
+    <div class="k-empty__icon"><i data-lucide="book-open"></i></div>
+    <div class="k-empty__title">No journal entries yet</div>
+    <div class="k-empty__body">Entries appear here as the agent works and reflects on its missions.</div>
 </div>
 {% endif %}
 
@@ -18,4 +19,7 @@
 </div>
 {% endfor %}
 {% endfor %}
+{% endblock %}
+{% block scripts %}
+<script>if (window.lucide) lucide.createIcons();</script>
 {% endblock %}

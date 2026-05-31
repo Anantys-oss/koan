@@ -1,37 +1,26 @@
-/* Kōan Dashboard — shared JavaScript */
+/* Kōan Dashboard — shared JavaScript
+   Theme handling lives in koan.js (window.koanToggleTheme) + the no-flash boot
+   script in base.html. This file owns dashboard chrome: mobile sidebar, SSE
+   attention badge + favicon, project filter, and keyboard shortcuts. */
 
-/* ========== Theme Toggle ========== */
+/* ========== Mobile sidebar drawer ========== */
 (function () {
-    var THEME_KEY = 'koan_theme';
-
-    function applyTheme(theme) {
-        document.documentElement.dataset.theme = theme || '';
-        var btn = document.getElementById('theme-toggle');
-        if (btn) btn.textContent = theme === 'light' ? '🌙' : '☀️';
-    }
-
-    function initTheme() {
-        var saved;
-        try { saved = localStorage.getItem(THEME_KEY); } catch (e) { saved = null; }
-        applyTheme(saved === 'light' ? 'light' : '');
-    }
-
-    function toggleTheme() {
-        var current = document.documentElement.dataset.theme;
-        var next = current === 'light' ? '' : 'light';
-        applyTheme(next);
-        try { localStorage.setItem(THEME_KEY, next || 'dark'); } catch (e) {}
-    }
-
-    initTheme();
-
     document.addEventListener('DOMContentLoaded', function () {
-        var btn = document.getElementById('theme-toggle');
-        if (btn) btn.addEventListener('click', toggleTheme);
+        var shell = document.getElementById('app-shell');
+        var toggle = document.getElementById('sidebar-toggle');
+        var scrim = document.getElementById('sidebar-scrim');
+        if (!shell) return;
+        function close() { shell.classList.remove('sidebar-open'); }
+        if (toggle) toggle.addEventListener('click', function () { shell.classList.toggle('sidebar-open'); });
+        if (scrim) scrim.addEventListener('click', close);
+        // Close after navigating on mobile
+        shell.querySelectorAll('.k-nav__item').forEach(function (a) {
+            a.addEventListener('click', close);
+        });
     });
 })();
 
-/* ========== Nav Attention Badge (SSE) ========== */
+/* ========== Nav Attention Badge + Favicon (SSE) ========== */
 (function () {
     var badge = null;
     var faviconEl = null;
@@ -63,7 +52,6 @@
         var file = map[status] || 'default.svg';
         faviconEl.href = base + file;
 
-        // Also update document title prefix
         var titleMap = { 'green.svg': '🟢', 'orange.svg': '🟡', 'red.svg': '🔴', 'default.svg': '⚪' };
         var prefix = titleMap[file] || '';
         var title = document.title.replace(/^[🟢🟡🔴⚪]\s*/, '');
@@ -85,7 +73,6 @@
         };
         src.onerror = function () {
             src.close();
-            // Revert favicon to default on connection loss
             updateFavicon('');
             setTimeout(connectAttentionSSE, 5000);
         };
@@ -108,8 +95,7 @@
             .then(function (r) { return r.json(); })
             .then(function (data) {
                 var projects = data.projects || [];
-                if (projects.length < 2) return;
-                sel.style.display = '';
+                if (projects.length < 2) { sel.style.display = 'none'; return; }
                 projects.forEach(function (p) {
                     var opt = document.createElement('option');
                     opt.value = p;
@@ -172,7 +158,6 @@
         var overlay = document.getElementById('shortcuts-help');
         if (overlay) overlay.classList.add('visible');
     }
-
     function hideHelp() {
         var overlay = document.getElementById('shortcuts-help');
         if (overlay) overlay.classList.remove('visible');
@@ -183,16 +168,12 @@
         if (e.ctrlKey || e.metaKey || e.altKey) return;
 
         var key = e.key.toLowerCase();
-
         if (key === '?' || (e.shiftKey && e.key === '?')) {
             e.preventDefault();
             showHelp();
             return;
         }
-        if (key === 'escape') {
-            hideHelp();
-            return;
-        }
+        if (key === 'escape') { hideHelp(); return; }
 
         var dest = SHORTCUTS[key];
         if (dest) {
@@ -202,7 +183,8 @@
     });
 
     document.addEventListener('DOMContentLoaded', function () {
-        // Close overlay on outside click
+        var openBtn = document.getElementById('shortcuts-open');
+        if (openBtn) openBtn.addEventListener('click', showHelp);
         var overlay = document.getElementById('shortcuts-help');
         if (overlay) {
             overlay.addEventListener('click', function (e) {
