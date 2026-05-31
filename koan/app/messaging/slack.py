@@ -108,7 +108,7 @@ class SlackProvider(MessagingProvider):
     def get_channel_id(self) -> str:
         return self._channel_id
 
-    def send_message(self, text: str) -> bool:
+    def send_message(self, text: str, reply_to_message_id: int = 0) -> bool:
         """Send a message to the configured Slack channel with rate limiting.
         
         Applies rate limiting between chunks to comply with Slack's ~1 msg/sec limit.

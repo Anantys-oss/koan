@@ -109,6 +109,9 @@ class TelegramProvider(MessagingProvider):
     def get_provider_name(self) -> str:
         return "telegram"
 
+    def get_api_base(self) -> str:
+        return self._api_base
+
     def get_channel_id(self) -> str:
         return self._chat_id
 

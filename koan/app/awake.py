@@ -664,10 +664,11 @@ def _check_group_chat_mode(provider) -> None:
     if provider.get_provider_name() != "telegram":
         return
     try:
-        api_base = provider._api_base
-        resp = requests.get(f"{api_base}/getChat", params={"chat_id": provider._chat_id}, timeout=5)
+        api_base = provider.get_api_base()
+        resp = requests.get(f"{api_base}/getChat", params={"chat_id": provider.get_channel_id()}, timeout=5)
         data = resp.json()
         if not data.get("ok"):
+            log("warn", f"getChat failed: {data.get('description', 'unknown')}")
             return
         chat = data.get("result", {})
         chat_type = chat.get("type", "")

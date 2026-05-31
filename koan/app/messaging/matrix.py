@@ -118,7 +118,7 @@ class MatrixProvider(MessagingProvider):
     def get_channel_id(self) -> str:
         return self._room_id
 
-    def send_message(self, text: str) -> bool:
+    def send_message(self, text: str, reply_to_message_id: int = 0) -> bool:
         """Send a message to the configured Matrix room, chunked if needed.
 
         Empty text is treated as a no-op success (matches Telegram behavior
