@@ -808,13 +808,19 @@ def process_github_notifications(
     if force:
         _github_log("Forced notification check (via /check_notifications)")
         # A forced poll is the user's "look again, fresh" lever — typically
-        # invoked after editing projects.yaml. Clear the in-process
-        # notification cache so previously-cached foreign-repo skips are
-        # re-evaluated against the current project list. Already-processed
-        # owned notifications stay protected by GitHub reactions and the
-        # persistent comment tracker, so clearing is safe.
+        # invoked after editing projects.yaml or exiting passive mode.
+        # Clear the in-process notification cache so previously-cached
+        # foreign-repo skips are re-evaluated against the current project list.
+        # Already-processed owned notifications stay protected by GitHub
+        # reactions and the persistent comment tracker, so clearing is safe.
         with _notif_cache_lock:
             _notif_cache.clear()
+        # Reset the ISO timestamp so the next fetch uses the cold-start window
+        # (now - max_age_hours) rather than the stale "last checked" time.
+        # Without this, notifications posted during passive mode are invisible
+        # to /check_notifications because the since= window skips them entirely.
+        with _github_state_lock:
+            _last_github_check_iso = ""
     else:
         _github_log("Checking notifications...")
 

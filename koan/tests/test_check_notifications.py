@@ -76,6 +76,67 @@ class TestForceNotificationCheck:
     @patch("app.loop_manager._get_known_repos_from_projects")
     @patch("app.utils.load_config")
     @patch("app.github_notifications.mark_notification_read")
+    def test_github_force_resets_since_timestamp(
+        self, mock_mark, mock_config, mock_repos, mock_registry, mock_gh_config, tmp_path
+    ):
+        """force=True should reset _last_github_check_iso so the cold-start window is used.
+
+        Without this, /check_notifications after passive mode polls with since=now and
+        misses notifications posted during the passive period.
+        """
+        import app.loop_manager as lm
+        from app.github_notifications import FetchResult
+        from app.loop_manager import process_github_notifications, reset_github_backoff
+
+        reset_github_backoff()
+
+        mock_config.return_value = {}
+        mock_gh_config.return_value = {"bot_username": "bot", "max_age": 24}
+        mock_registry.return_value = MagicMock()
+        mock_repos.return_value = set()
+
+        with patch("app.projects_config.load_projects_config", return_value={}), \
+             patch("app.github_notifications.fetch_unread_notifications",
+                   return_value=FetchResult([], [])):
+            # Normal call sets _last_github_check_iso to now
+            process_github_notifications(str(tmp_path), str(tmp_path))
+
+        with lm._github_state_lock:
+            assert lm._last_github_check_iso != ""
+
+        # Advance time to bypass throttle, then force=True
+        with lm._github_state_lock:
+            lm._last_github_check = 0
+
+        with patch("app.projects_config.load_projects_config", return_value={}), \
+             patch("app.github_notifications.fetch_unread_notifications",
+                   return_value=FetchResult([], [])) as mock_fetch:
+            captured_since: list = []
+
+            def capture_since(*args, **kwargs):
+                captured_since.append(kwargs.get("since"))
+                return FetchResult([], [])
+
+            mock_fetch.side_effect = capture_since
+            process_github_notifications(str(tmp_path), str(tmp_path), force=True)
+
+        # The since value used must be further back than "just now" — confirming
+        # the cold-start window was used (not the recent _last_github_check_iso).
+        from datetime import datetime, timedelta, timezone
+        assert len(captured_since) == 1
+        since_dt = datetime.strptime(captured_since[0], "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc
+        )
+        # Cold-start uses now - max_age_hours (24h); stale window was a few ms ago.
+        # If _last_github_check_iso was NOT reset, since would be close to now and
+        # the assertion below would fail.
+        assert since_dt < datetime.now(timezone.utc) - timedelta(hours=1)
+
+    @patch("app.loop_manager._load_github_config")
+    @patch("app.loop_manager._build_skill_registry")
+    @patch("app.loop_manager._get_known_repos_from_projects")
+    @patch("app.utils.load_config")
+    @patch("app.github_notifications.mark_notification_read")
     def test_github_force_resets_backoff(
         self, mock_mark, mock_config, mock_repos, mock_registry, mock_gh_config, tmp_path
     ):
