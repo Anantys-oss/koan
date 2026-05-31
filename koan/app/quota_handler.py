@@ -109,7 +109,7 @@ _RATE_LIMIT_REJECTED_MARKER_RE = re.compile(r"\[cli\]\s+rate_limit_rejected", re
 # agent may also quote as data), this exact phrasing is emitted by the CLI
 # runtime, so it is safe to honor even when scanning an agent transcript.
 _CLI_SESSION_LIMIT_RE = re.compile(
-    r"(?:you'?ve\s+)?hit\s+(?:your|the)\s+(?:session\s+)?limit", re.IGNORECASE
+    r"(?:you'?ve\s+)?hit\s+(?:your|the)\s+session\s+limit", re.IGNORECASE
 )
 
 

@@ -217,6 +217,14 @@ class TestCliRuntimeQuotaSignal:
         )
         assert cli_runtime_quota_signal(transcript) is False
 
+    def test_non_session_limit_prose_is_safe(self):
+        """'hit your limit' without 'session' must not false-fire on stdout."""
+        from app.quota_handler import cli_runtime_quota_signal
+
+        assert cli_runtime_quota_signal("hit your limit for retries") is False
+        assert cli_runtime_quota_signal("hit the limit on max connections") is False
+        assert cli_runtime_quota_signal("You've hit your limit already") is False
+
     def test_empty_text_is_safe(self):
         from app.quota_handler import cli_runtime_quota_signal
 
