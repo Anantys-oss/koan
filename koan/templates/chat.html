@@ -1,21 +1,23 @@
 {% extends "base.html" %}
 {% block title %}Kōan — Chat{% endblock %}
+{% block page_title %}Chat{% endblock %}
 {% block content %}
-<h1>Chat</h1>
-
 <div class="chat-container">
     <div class="chat-messages" id="messages">
         <div class="chat-msg koan">
             <div class="sender">Kōan</div>
-            <div>Salut. Envoie un message ou une mission.</div>
+            <div>Hi. Send a message or a mission.</div>
         </div>
     </div>
-
     <div class="chat-input">
-        <textarea id="input" placeholder="Écris ici..." onkeydown="handleKey(event)"></textarea>
+        <textarea id="input" class="k-textarea" placeholder="Type here..." onkeydown="handleKey(event)"></textarea>
         <div class="actions">
-            <button onclick="send('chat')">Envoyer</button>
-            <button class="btn-secondary" onclick="send('mission')">Mission</button>
+            <button class="k-btn k-btn--primary" onclick="send('chat')">
+                <i data-lucide="send"></i> Send
+            </button>
+            <button class="k-btn k-btn--secondary" onclick="send('mission')">
+                <i data-lucide="plus"></i> Mission
+            </button>
         </div>
     </div>
 </div>
@@ -23,6 +25,20 @@
 <script>
 const messages = document.getElementById('messages');
 const input = document.getElementById('input');
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function addMessage(sender, text, cls) {
+    const div = document.createElement('div');
+    div.className = 'chat-msg ' + cls;
+    div.innerHTML = '<div class="sender">' + escapeHtml(sender) + '</div><div>' + escapeHtml(text) + '</div>';
+    messages.appendChild(div);
+    messages.scrollTop = messages.scrollHeight;
+}
 
 function handleKey(e) {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -35,38 +51,24 @@ function handleKey(e) {
     }
 }
 
-function addMessage(sender, text, cls) {
-    const div = document.createElement('div');
-    div.className = `chat-msg ${cls}`;
-    div.innerHTML = `<div class="sender">${sender}</div><div>${escapeHtml(text)}</div>`;
-    messages.appendChild(div);
-    messages.scrollTop = messages.scrollHeight;
-}
-
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
-
 async function send(mode) {
     const text = input.value.trim();
     if (!text) return;
 
-    addMessage('Vous', text, 'human');
+    addMessage('You', text, 'human');
     input.value = '';
 
     if (mode === 'mission') {
-        addMessage('Kōan', 'Mission ajoutée.', 'koan');
+        addMessage('Kōan', 'Mission added.', 'koan');
     }
 
-    // Show loading
+    // Show loading indicator for chat replies
     const loadingId = 'loading-' + Date.now();
     if (mode === 'chat') {
         const div = document.createElement('div');
         div.className = 'chat-msg koan loading';
         div.id = loadingId;
-        div.innerHTML = '<div class="sender">Kōan</div><div><span class="spinner"></span> Réflexion...</div>';
+        div.innerHTML = '<div class="sender">Kōan</div><div><span class="spinner"></span> Thinking...</div>';
         messages.appendChild(div);
         messages.scrollTop = messages.scrollHeight;
     }
@@ -79,22 +81,23 @@ async function send(mode) {
         const resp = await fetch('/chat/send', { method: 'POST', body: form });
         const data = await resp.json();
 
-        // Remove loading
         const loader = document.getElementById(loadingId);
         if (loader) loader.remove();
 
         if (data.ok && data.type === 'chat') {
             addMessage('Kōan', data.response, 'koan');
         } else if (data.ok && data.type === 'mission') {
-            // Already showed confirmation
+            // Confirmation already shown above
         } else if (data.error) {
-            addMessage('Kōan', `Erreur: ${data.error}`, 'koan');
+            addMessage('Kōan', 'Error: ' + data.error, 'koan');
         }
     } catch (e) {
         const loader = document.getElementById(loadingId);
         if (loader) loader.remove();
-        addMessage('Kōan', 'Erreur de connexion.', 'koan');
+        addMessage('Kōan', 'Connection error.', 'koan');
     }
 }
+
+if (window.lucide) lucide.createIcons();
 </script>
 {% endblock %}

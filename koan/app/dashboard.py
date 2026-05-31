@@ -107,7 +107,7 @@ def project_badge_filter(text: str) -> str:
     m = PROJECT_TAG_FULL_RE.search(text)
     if m:
         name = m.group(1)
-        return f'<span class="badge badge-blue">{name}</span> '
+        return f'<span class="k-badge k-badge--brand">{name}</span> '
     return ''
 
 

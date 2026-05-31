@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Kōan — Automation Rules{% endblock %}
+{% block page_title %}Automation Rules{% endblock %}
 {% block content %}
 <style>
     .rules-page { max-width: 900px; margin: 0 auto; padding: 1.5rem 1rem; }
@@ -29,29 +30,29 @@
     .badge-event {
         display: inline-block;
         padding: 0.15rem 0.4rem;
-        border-radius: 3px;
+        border-radius: var(--radius-sm);
         font-size: 0.75rem;
         font-family: var(--mono);
-        background: var(--badge-blue-bg, #1e3a5f);
-        color: var(--badge-blue-fg, #60b0f4);
+        background: var(--info-bg);
+        color: var(--info);
     }
     .badge-action {
         display: inline-block;
         padding: 0.15rem 0.4rem;
-        border-radius: 3px;
+        border-radius: var(--radius-sm);
         font-size: 0.75rem;
         font-family: var(--mono);
-        background: var(--badge-green-bg, #1a3d2b);
-        color: var(--badge-green-fg, #4caf7d);
+        background: var(--success-bg);
+        color: var(--success);
     }
     .badge-action.action-pause,
     .badge-action.action-resume {
-        background: var(--badge-orange-bg, #3d2a10);
-        color: var(--badge-orange-fg, #f0a040);
+        background: var(--warning-bg);
+        color: var(--warning);
     }
     .badge-action.action-auto_merge {
-        background: var(--badge-purple-bg, #2d1a40);
-        color: var(--badge-purple-fg, #b07ef0);
+        background: var(--brand-subtle);
+        color: var(--brand);
     }
 
     .params-summary {
@@ -89,7 +90,7 @@
         border-radius: 50%;
         transition: transform 0.2s;
     }
-    .toggle-switch input:checked + .toggle-track { background: var(--accent, #4c9eeb); }
+    .toggle-switch input:checked + .toggle-track { background: var(--brand); }
     .toggle-switch input:checked + .toggle-track::before { transform: translateX(16px); }
 
     .delete-btn {
@@ -101,11 +102,11 @@
         cursor: pointer;
         font-size: 0.75rem;
     }
-    .delete-btn:hover { border-color: #c0392b; color: #c0392b; }
+    .delete-btn:hover { border-color: var(--danger); color: var(--danger); }
 
     /* Rule builder form */
     .rule-builder {
-        background: var(--card-bg, var(--bg-secondary, #1a1a1a));
+        background: var(--surface-1);
         border: 1px solid var(--border);
         border-radius: 6px;
         padding: 1rem;
@@ -134,8 +135,8 @@
     #rule-params-fields { display: flex; gap: 0.5rem; flex-wrap: wrap; }
     .save-btn {
         padding: 0.35rem 1rem;
-        background: var(--accent, #4c9eeb);
-        color: white;
+        background: var(--brand);
+        color: var(--on-brand);
         border: none;
         border-radius: 4px;
         cursor: pointer;

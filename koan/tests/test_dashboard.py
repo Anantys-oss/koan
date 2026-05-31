@@ -117,7 +117,7 @@ class TestRoutes:
     def test_chat_page(self, app_client):
         resp = app_client.get("/chat")
         assert resp.status_code == 200
-        assert b"Envoyer" in resp.data
+        assert b"Send" in resp.data
 
     def test_api_status(self, app_client):
         resp = app_client.get("/api/status")

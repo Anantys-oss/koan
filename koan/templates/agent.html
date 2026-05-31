@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Kōan — Agent{% endblock %}
+{% block page_title %}Agent{% endblock %}
 {% block content %}
-<h1>Agent</h1>
 <p style="color: var(--text-muted); margin-bottom: 1.5rem;">Read-only introspection of the agent's internal state.</p>
 
 <!-- Soul -->
@@ -195,7 +195,7 @@
         const tbody = document.createElement('tbody');
         skills.forEach((s, i) => {
             const tr = document.createElement('tr');
-            tr.style.background = i % 2 === 0 ? '' : 'var(--bg-subtle, rgba(0,0,0,0.03))';
+            tr.style.background = i % 2 === 0 ? '' : 'var(--surface-2)';
             const cmds = s.commands.map(c => {
                 const aliases = c.aliases && c.aliases.length ? ` (${c.aliases.join(', ')})` : '';
                 return `/${c.name}${aliases}`;
