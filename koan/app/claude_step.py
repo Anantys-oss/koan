@@ -327,6 +327,7 @@ def run_claude(
             "success": False,
             "output": stdout_text,
             "error": timeout_error,
+            "stderr": stderr_text,
             "timeout_kind": timeout_kind or "timeout",
         }
 
@@ -347,6 +348,7 @@ def run_claude(
             "success": False,
             "output": stdout_text,
             "error": f"Exit code {returncode}: {stderr_snippet}",
+            "stderr": stderr_text,
             "exit_code": returncode,
         }
 
@@ -359,6 +361,7 @@ def run_claude(
         "success": True,
         "output": stdout_text,
         "error": "",
+        "stderr": stderr_text,
         "exit_code": returncode,
     }
 
@@ -456,15 +459,26 @@ def run_claude_step(
     try:
         from app.cli_errors import ErrorCategory, classify_cli_error
         from app.provider import get_provider_name
+        from app.quota_handler import cli_runtime_quota_signal
 
+        # ``result["output"]`` is the assistant's response transcript (plain
+        # ``-p`` mode). It is DATA: a CI-fix step legitimately quotes failing
+        # tests, CI logs, and source identifiers — which on this project carry
+        # quota phrases ("out of extra usage", "rate_limit_rejected"). Scanning
+        # the transcript with the generic quota patterns falsely reported
+        # "API quota exhausted" and paused the daemon for hours. Trust the
+        # stderr channel for the full pattern set; from the transcript only
+        # honor signals the CLI runtime itself emits.
+        stderr_text = result.get("stderr", result.get("error", ""))
         quota_exhausted = (
             classify_cli_error(
                 int(result.get("exit_code") or 1),
-                stdout=result.get("output", ""),
-                stderr=result.get("error", ""),
+                stdout="",
+                stderr=stderr_text,
                 provider_name=get_provider_name(),
             )
             == ErrorCategory.QUOTA
+            or cli_runtime_quota_signal(result.get("output", ""))
         )
     except Exception as exc:
         logging.warning("Failed to classify Claude step error: %s", exc)

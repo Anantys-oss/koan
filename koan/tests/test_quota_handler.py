@@ -160,6 +160,68 @@ Your quota resets 10am (Europe/Paris)."""
         )
         assert _rate_limit_exhausted(text) is True
 
+    def test_bare_marker_identifier_in_prose_is_safe(self):
+        """The ``rate_limit_rejected`` token is a source identifier in this very
+        project. When an agent transcript merely *mentions* it (fixing a quota
+        test, quoting CI logs), it must not be read as exhaustion — the marker
+        is only valid as the summarizer's ``[cli] rate_limit_rejected`` line."""
+        from app.quota_handler import (
+            _rate_limit_exhausted,
+            _strict_quota_match,
+            detect_quota_exhaustion,
+        )
+
+        prose = (
+            "The failing test asserts that a rate_limit_rejected event pauses "
+            "Koan. I updated _RATE_LIMIT_REJECTED_MARKER_RE accordingly."
+        )
+        assert _rate_limit_exhausted(prose) is False
+        assert _strict_quota_match(prose) is False
+        assert detect_quota_exhaustion(prose) is False
+
+
+class TestCliRuntimeQuotaSignal:
+    """``cli_runtime_quota_signal`` — quota signals safe against agent transcripts."""
+
+    def test_summarizer_marker_line_triggers(self):
+        from app.quota_handler import cli_runtime_quota_signal
+
+        assert cli_runtime_quota_signal(
+            "[cli] rate_limit_rejected (five_hour) resetsAt 1779937200"
+        ) is True
+
+    def test_raw_rejected_event_triggers(self):
+        from app.quota_handler import cli_runtime_quota_signal
+
+        assert cli_runtime_quota_signal(
+            '{"type":"rate_limit_event","rate_limit_info":'
+            '{"status":"rejected","resetsAt":1779937200}}'
+        ) is True
+
+    def test_session_limit_line_triggers(self):
+        from app.quota_handler import cli_runtime_quota_signal
+
+        assert cli_runtime_quota_signal(
+            "You've hit your session limit · resets 3am (UTC)"
+        ) is True
+
+    def test_quoted_quota_identifiers_are_safe(self):
+        """Agent prose quoting quota terms / source identifiers is DATA — the
+        runtime-signal check must ignore it."""
+        from app.quota_handler import cli_runtime_quota_signal
+
+        transcript = (
+            "Fixed the test that checks rate_limit_rejected detection. The "
+            "fixture covers 'out of extra usage' and 'quota reached' too.\n"
+            "COMMIT_SUBJECT: fix: quota marker regex"
+        )
+        assert cli_runtime_quota_signal(transcript) is False
+
+    def test_empty_text_is_safe(self):
+        from app.quota_handler import cli_runtime_quota_signal
+
+        assert cli_runtime_quota_signal("") is False
+
 
 class TestDetectQuotaExhaustionCopilot:
     """Test detect_quota_exhaustion with Copilot/GitHub-style messages."""

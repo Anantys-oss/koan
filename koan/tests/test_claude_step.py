@@ -742,6 +742,83 @@ class TestRunClaudeStep:
         assert result.quota_exhausted is True
         assert not result
 
+    @patch("app.provider.get_provider_name", return_value="claude")
+    @patch("app.claude_step.run_claude")
+    @patch("app.claude_step.build_full_command", return_value=["claude", "-p", "test"])
+    @patch(
+        "app.claude_step.get_model_config",
+        return_value={"mission": "", "fallback": "", "chat": "", "lightweight": "", "review_mode": ""},
+    )
+    def test_no_false_quota_from_agent_transcript_quoting_quota_terms(
+        self, mock_config, mock_flags, mock_claude, mock_provider,
+    ):
+        """A CI-fix transcript that *quotes* quota strings must not be read as
+        a real quota stop.
+
+        The ``-p`` agent transcript is DATA: when fixing CI on a project whose
+        own tests assert on quota detection (e.g. Kōan itself), the assistant's
+        stdout legitimately echoes the failing-test output and source
+        identifiers — ``rate_limit_rejected``, ``out of extra usage``,
+        ``quota reached``. These must not promote a plain non-quota failure
+        (exit 1 from a failed test run, reported on stderr) into a false
+        "API quota exhausted" stop that pauses Kōan for hours.
+        """
+        agent_stdout = (
+            "I inspected the failing CI run. The failing test is "
+            "test_summarized_rejected_marker in test_quota_handler.py; it "
+            "asserts that a line containing rate_limit_rejected is detected, "
+            "while an informational event is not. The fixture also covers the "
+            "'out of extra usage' and 'quota reached' phrases. I corrected the "
+            "regex and re-ran the suite.\nCOMMIT_SUBJECT: fix: quota marker regex"
+        )
+        mock_claude.return_value = {
+            "success": False,
+            "output": agent_stdout,
+            "error": "Exit code 1: AssertionError: 1 test failed",
+            "stderr": "AssertionError: 1 test failed",
+            "exit_code": 1,
+        }
+        result = run_claude_step(
+            prompt="fix CI",
+            project_path="/project",
+            commit_msg="fix: ci",
+            success_label="Fixed",
+            failure_label="Fix failed",
+            actions_log=[],
+        )
+
+        assert result.quota_exhausted is False
+
+    @patch("app.provider.get_provider_name", return_value="claude")
+    @patch("app.claude_step.run_claude")
+    @patch("app.claude_step.build_full_command", return_value=["claude", "-p", "test"])
+    @patch(
+        "app.claude_step.get_model_config",
+        return_value={"mission": "", "fallback": "", "chat": "", "lightweight": "", "review_mode": ""},
+    )
+    def test_genuine_quota_on_stderr_still_detected(
+        self, mock_config, mock_flags, mock_claude, mock_provider,
+    ):
+        """A real quota failure reported on stderr is still caught even though
+        the stdout transcript is treated as untrusted data."""
+        mock_claude.return_value = {
+            "success": False,
+            "output": "Working on the fix...",
+            "error": "Exit code 1: Your credit balance is too low",
+            "stderr": "Your credit balance is too low to access the Anthropic API",
+            "exit_code": 1,
+        }
+        result = run_claude_step(
+            prompt="fix CI",
+            project_path="/project",
+            commit_msg="fix: ci",
+            success_label="Fixed",
+            failure_label="Fix failed",
+            actions_log=[],
+        )
+
+        assert result.quota_exhausted is True
+
     @patch("app.claude_step.run_claude")
     @patch("app.claude_step.build_full_command", return_value=["claude", "-p", "test"])
     @patch(

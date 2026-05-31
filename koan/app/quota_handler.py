@@ -93,7 +93,24 @@ _RATE_LIMIT_REJECTED_STATUS_RE = re.compile(
 # skill path only surfaces summarized ``[cli] …`` lines (not raw JSON), so the
 # summarizer collapses a rejected rate_limit_event to this token, which the
 # detector below recognizes.
-_RATE_LIMIT_REJECTED_MARKER_RE = re.compile(r"rate[_\s]limit[_\s]rejected", re.IGNORECASE)
+#
+# The match is anchored to the summarizer's ``[cli] `` prefix on purpose. The
+# bare token ``rate_limit_rejected`` is also a *source identifier* in this very
+# codebase (and appears in CI logs and test fixtures). An unanchored search
+# therefore false-fired whenever an agent transcript merely *mentioned* it —
+# e.g. Kōan fixing its own quota tests — falsely pausing the daemon. Only the
+# summarizer ever emits the prefixed form, so requiring it keeps the true
+# positive while rejecting quoted data. See ``provider._summarize_stream_event``.
+_RATE_LIMIT_REJECTED_MARKER_RE = re.compile(r"\[cli\]\s+rate_limit_rejected", re.IGNORECASE)
+
+# The Claude CLI's own session-limit abort line, e.g.
+# "You've hit your session limit · resets 6pm (UTC)". Unlike the generic
+# billing/credit phrases (which the Anthropic API returns on stderr but an
+# agent may also quote as data), this exact phrasing is emitted by the CLI
+# runtime, so it is safe to honor even when scanning an agent transcript.
+_CLI_SESSION_LIMIT_RE = re.compile(
+    r"(?:you'?ve\s+)?hit\s+(?:your|the)\s+(?:session\s+)?limit", re.IGNORECASE
+)
 
 
 def _rate_limit_exhausted(text: str) -> bool:
@@ -117,6 +134,28 @@ def _rate_limit_exhausted(text: str) -> bool:
         _RATE_LIMIT_EVENT_RE.search(line) and _RATE_LIMIT_REJECTED_STATUS_RE.search(line)
         for line in text.splitlines()
     )
+
+
+def cli_runtime_quota_signal(text: str) -> bool:
+    """True only for quota signals the CLI *runtime* emits.
+
+    Safe to run against an agent transcript (plain ``-p`` stdout), which is
+    DATA: a CI-fix step legitimately quotes failing-test output, source
+    identifiers, and CI logs — content that on this project includes quota
+    phrases ("out of extra usage", "rate_limit_rejected"). Scanning a
+    transcript with the generic billing/credit patterns produced false
+    "API quota exhausted" stops, so callers that hold a transcript use this
+    narrow check instead and keep the full pattern set for the trusted stderr
+    channel.
+
+    Recognizes:
+    - the stream-json summarizer's ``[cli] rate_limit_rejected`` line,
+    - a raw rejected ``rate_limit_event`` JSON line,
+    - the CLI's own "hit your session limit" abort message.
+    """
+    if not text:
+        return False
+    return _rate_limit_exhausted(text) or bool(_CLI_SESSION_LIMIT_RE.search(text))
 
 
 def _strict_quota_match(text: str) -> bool:
