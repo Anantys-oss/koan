@@ -8,6 +8,7 @@ import pytest
 from app.auto_update import (
     _load_auto_update_config,
     _get_latest_tag,
+    _is_tag_ancestor_of_head,
     _read_last_notified_tag,
     _write_last_notified_tag,
     check_for_new_release_tag,
@@ -397,12 +398,40 @@ class TestLastNotifiedTag:
         assert _read_last_notified_tag(str(tmp_path)) == "v2.0.0"
 
 
+class TestIsTagAncestorOfHead:
+    """Tests for _is_tag_ancestor_of_head()."""
+
+    def test_tag_is_ancestor(self):
+        mock_result = MagicMock(returncode=0)
+        with patch("app.auto_update._run_git", return_value=mock_result):
+            assert _is_tag_ancestor_of_head("v1.0.0", Path("/fake")) is True
+
+    def test_tag_is_not_ancestor(self):
+        mock_result = MagicMock(returncode=1)
+        with patch("app.auto_update._run_git", return_value=mock_result):
+            assert _is_tag_ancestor_of_head("v1.0.0", Path("/fake")) is False
+
+
 class TestCheckForNewReleaseTag:
     """Tests for check_for_new_release_tag()."""
 
+    def _mock_git(self, tag_output, ancestor_rc=1):
+        """Build a side_effect that returns tag list then merge-base result."""
+        tag_result = MagicMock(returncode=0, stdout=tag_output)
+        ancestor_result = MagicMock(returncode=ancestor_rc)
+
+        def side_effect(args, cwd):
+            if args[0] == "tag":
+                return tag_result
+            if args[0] == "merge-base":
+                return ancestor_result
+            return MagicMock(returncode=1)
+
+        return side_effect
+
     def test_new_tag_detected(self, tmp_path):
-        mock_result = MagicMock(returncode=0, stdout="v1.5.0\nv1.4.0\n")
-        with patch("app.auto_update._run_git", return_value=mock_result):
+        with patch("app.auto_update._run_git",
+                    side_effect=self._mock_git("v1.5.0\nv1.4.0\n", ancestor_rc=1)):
             result = check_for_new_release_tag("/fake", str(tmp_path))
         assert result == "v1.5.0"
 
@@ -413,10 +442,10 @@ class TestCheckForNewReleaseTag:
             result = check_for_new_release_tag("/fake", str(tmp_path))
         assert result is None
 
-    def test_newer_tag_than_cached(self, tmp_path):
+    def test_newer_tag_than_cached_not_yet_on_head(self, tmp_path):
         _write_last_notified_tag(str(tmp_path), "v1.4.0")
-        mock_result = MagicMock(returncode=0, stdout="v1.5.0\nv1.4.0\n")
-        with patch("app.auto_update._run_git", return_value=mock_result):
+        with patch("app.auto_update._run_git",
+                    side_effect=self._mock_git("v1.5.0\nv1.4.0\n", ancestor_rc=1)):
             result = check_for_new_release_tag("/fake", str(tmp_path))
         assert result == "v1.5.0"
 
@@ -425,6 +454,23 @@ class TestCheckForNewReleaseTag:
         with patch("app.auto_update._run_git", return_value=mock_result):
             result = check_for_new_release_tag("/fake", str(tmp_path))
         assert result is None
+
+    def test_tag_already_on_head_suppresses_notification(self, tmp_path):
+        """No notification when HEAD already includes the tag."""
+        with patch("app.auto_update._run_git",
+                    side_effect=self._mock_git("v1.5.0\nv1.4.0\n", ancestor_rc=0)):
+            result = check_for_new_release_tag("/fake", str(tmp_path))
+        assert result is None
+        assert _read_last_notified_tag(str(tmp_path)) == "v1.5.0"
+
+    def test_tag_on_head_with_extra_commits_suppresses_notification(self, tmp_path):
+        """No notification when HEAD is ahead of the tag (extra commits on top)."""
+        _write_last_notified_tag(str(tmp_path), "v1.4.0")
+        with patch("app.auto_update._run_git",
+                    side_effect=self._mock_git("v1.5.0\nv1.4.0\n", ancestor_rc=0)):
+            result = check_for_new_release_tag("/fake", str(tmp_path))
+        assert result is None
+        assert _read_last_notified_tag(str(tmp_path)) == "v1.5.0"
 
 
 class TestNotifyNewReleaseTag:
