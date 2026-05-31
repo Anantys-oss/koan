@@ -141,11 +141,20 @@ def _write_last_notified_tag(instance_dir: str, tag: str) -> None:
     tag_file.write_text(tag)
 
 
+def _head_includes_tag(koan_path: Path, tag: str) -> bool:
+    """Check if HEAD already includes the given tag (tag is ancestor of HEAD)."""
+    result = _run_git(["merge-base", "--is-ancestor", tag, "HEAD"], koan_path)
+    return result.returncode == 0
+
+
 def check_for_new_release_tag(koan_root: str, instance_dir: str) -> Optional[str]:
     """Check if upstream has a new release tag we haven't notified about.
 
     Returns the new tag name if one is found, None otherwise.
     Assumes tags have already been fetched by check_for_updates().
+
+    Suppresses notification when HEAD already includes the tagged commit
+    (e.g. we're on the tag or ahead of it with extra commits).
     """
     koan_path = Path(koan_root)
     latest_tag = _get_latest_tag(koan_path)
@@ -154,6 +163,11 @@ def check_for_new_release_tag(koan_root: str, instance_dir: str) -> Optional[str
 
     last_notified = _read_last_notified_tag(instance_dir)
     if latest_tag == last_notified:
+        return None
+
+    if _head_includes_tag(koan_path, latest_tag):
+        _write_last_notified_tag(instance_dir, latest_tag)
+        log("update", f"HEAD already includes tag {latest_tag}, skipping notification")
         return None
 
     return latest_tag

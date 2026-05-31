@@ -8,6 +8,7 @@ import pytest
 from app.auto_update import (
     _load_auto_update_config,
     _get_latest_tag,
+    _head_includes_tag,
     _read_last_notified_tag,
     _write_last_notified_tag,
     check_for_new_release_tag,
@@ -397,12 +398,32 @@ class TestLastNotifiedTag:
         assert _read_last_notified_tag(str(tmp_path)) == "v2.0.0"
 
 
+class TestHeadIncludesTag:
+    """Tests for _head_includes_tag()."""
+
+    def test_tag_is_ancestor(self):
+        mock_result = MagicMock(returncode=0)
+        with patch("app.auto_update._run_git", return_value=mock_result):
+            assert _head_includes_tag(Path("/fake"), "v1.0.0") is True
+
+    def test_tag_is_not_ancestor(self):
+        mock_result = MagicMock(returncode=1)
+        with patch("app.auto_update._run_git", return_value=mock_result):
+            assert _head_includes_tag(Path("/fake"), "v2.0.0") is False
+
+
 class TestCheckForNewReleaseTag:
     """Tests for check_for_new_release_tag()."""
 
     def test_new_tag_detected(self, tmp_path):
-        mock_result = MagicMock(returncode=0, stdout="v1.5.0\nv1.4.0\n")
-        with patch("app.auto_update._run_git", return_value=mock_result):
+        def mock_git(args, cwd):
+            if args[0] == "tag":
+                return MagicMock(returncode=0, stdout="v1.5.0\nv1.4.0\n")
+            if args[0] == "merge-base":
+                return MagicMock(returncode=1)  # not ancestor
+            return MagicMock(returncode=1)
+
+        with patch("app.auto_update._run_git", side_effect=mock_git):
             result = check_for_new_release_tag("/fake", str(tmp_path))
         assert result == "v1.5.0"
 
@@ -415,8 +436,15 @@ class TestCheckForNewReleaseTag:
 
     def test_newer_tag_than_cached(self, tmp_path):
         _write_last_notified_tag(str(tmp_path), "v1.4.0")
-        mock_result = MagicMock(returncode=0, stdout="v1.5.0\nv1.4.0\n")
-        with patch("app.auto_update._run_git", return_value=mock_result):
+
+        def mock_git(args, cwd):
+            if args[0] == "tag":
+                return MagicMock(returncode=0, stdout="v1.5.0\nv1.4.0\n")
+            if args[0] == "merge-base":
+                return MagicMock(returncode=1)  # not ancestor
+            return MagicMock(returncode=1)
+
+        with patch("app.auto_update._run_git", side_effect=mock_git):
             result = check_for_new_release_tag("/fake", str(tmp_path))
         assert result == "v1.5.0"
 
@@ -425,6 +453,34 @@ class TestCheckForNewReleaseTag:
         with patch("app.auto_update._run_git", return_value=mock_result):
             result = check_for_new_release_tag("/fake", str(tmp_path))
         assert result is None
+
+    def test_head_already_on_tag_suppresses_notification(self, tmp_path):
+        """No notification when HEAD is exactly on the latest tag."""
+        def mock_git(args, cwd):
+            if args[0] == "tag":
+                return MagicMock(returncode=0, stdout="v1.5.0\nv1.4.0\n")
+            if args[0] == "merge-base":
+                return MagicMock(returncode=0)  # tag IS ancestor of HEAD
+            return MagicMock(returncode=1)
+
+        with patch("app.auto_update._run_git", side_effect=mock_git):
+            result = check_for_new_release_tag("/fake", str(tmp_path))
+        assert result is None
+        assert _read_last_notified_tag(str(tmp_path)) == "v1.5.0"
+
+    def test_head_ahead_of_tag_suppresses_notification(self, tmp_path):
+        """No notification when HEAD has extra commits on top of the tag."""
+        def mock_git(args, cwd):
+            if args[0] == "tag":
+                return MagicMock(returncode=0, stdout="v1.5.0\nv1.4.0\n")
+            if args[0] == "merge-base":
+                return MagicMock(returncode=0)  # tag IS ancestor
+            return MagicMock(returncode=1)
+
+        with patch("app.auto_update._run_git", side_effect=mock_git):
+            result = check_for_new_release_tag("/fake", str(tmp_path))
+        assert result is None
+        assert _read_last_notified_tag(str(tmp_path)) == "v1.5.0"
 
 
 class TestNotifyNewReleaseTag:
