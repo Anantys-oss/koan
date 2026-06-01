@@ -203,7 +203,7 @@ def _project_name_from_path(project_path: str) -> str:
     """Derive project name from its filesystem path.
 
     Uses the projects.yaml registry to return the canonical project name
-    (e.g. "backend") rather than the directory basename (e.g. "investmindr").
+    rather than the directory basename.
     Falls back to basename when the path isn't in the registry.
     """
     if not project_path:
