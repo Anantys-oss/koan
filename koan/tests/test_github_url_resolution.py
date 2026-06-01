@@ -790,9 +790,11 @@ class TestResolveProjectPathWithOwner:
         )
         monkeypatch.setenv("KOAN_PROJECTS", "koan:/home/koan;web:/home/web")
 
-        with patch("app.utils.get_all_github_remotes", return_value=[]):
-            from app.utils import resolve_project_path
-            assert resolve_project_path("nope") is None
+        # No owner passed → target is None, so every remote-dependent strategy
+        # is short-circuited; None comes from no name/basename/alias match plus
+        # the multi-project list disabling the single-project fallback.
+        from app.utils import resolve_project_path
+        assert resolve_project_path("nope") is None
 
     def test_fork_scenario(self, tmp_path, monkeypatch):
         """Fork workflow: owner in URL differs from owner in github_url."""
