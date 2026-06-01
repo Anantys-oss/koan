@@ -36,9 +36,14 @@ def handle(ctx):
 
 def _queue_dead_code(ctx, project_name, no_queue):
     """Queue a dead code scan mission."""
-    from app.utils import insert_pending_mission, resolve_project_path
+    from app.utils import (
+        insert_pending_mission, resolve_project_alias, resolve_project_path,
+    )
 
     if project_name:
+        canonical = resolve_project_alias(project_name)
+        if canonical:
+            project_name = canonical
         path = resolve_project_path(project_name)
         if not path:
             from app.utils import get_known_projects
