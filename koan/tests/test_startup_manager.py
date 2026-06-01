@@ -228,7 +228,7 @@ class TestCleanupMemory:
         mock_mgr.instance_dir.__truediv__ = lambda s, x: type("P", (), {"exists": lambda s: False})()
         mock_mgr.hydrate_from_snapshot.return_value = {"memory/summary.md": True}
         cleanup_memory("/tmp/instance")
-        mock_mgr.hydrate_from_snapshot.assert_called_once()
+        mock_mgr.hydrate_from_snapshot.assert_called_once_with(force=True)
         mock_mgr.run_cleanup.assert_called_once()
         out = capsys.readouterr().out
         assert "Cold boot detected" in out

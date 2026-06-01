@@ -197,7 +197,7 @@ def cleanup_memory(instance: str):
     )
     if summary_missing and snapshot_exists:
         log("health", "Cold boot detected — hydrating from SNAPSHOT.md...")
-        restored = mgr.hydrate_from_snapshot()
+        restored = mgr.hydrate_from_snapshot(force=True)
         if restored:
             log("health", f"Hydrated {len(restored)} file(s) from snapshot")
 

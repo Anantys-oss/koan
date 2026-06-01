@@ -422,6 +422,45 @@ class TestHydrateForce:
         assert "Session 1 (projet: koan)" in restored_text
         assert "# Corrupted" not in restored_text
 
+    def test_force_overwrites_global(self, tmp_path):
+        instance = _populate_instance(tmp_path)
+        mgr = MemoryManager(str(instance))
+
+        mgr.export_snapshot()
+
+        global_file = instance / "memory" / "global" / "genesis.md"
+        global_file.write_text("# Tampered\n", encoding="utf-8")
+
+        restored = mgr.hydrate_from_snapshot(force=True)
+        assert "memory/global/genesis.md" in restored
+        assert "I was created." in global_file.read_text(encoding="utf-8")
+
+    def test_force_overwrites_learnings(self, tmp_path):
+        instance = _populate_instance(tmp_path)
+        mgr = MemoryManager(str(instance))
+
+        mgr.export_snapshot()
+
+        learnings = instance / "memory" / "projects" / "koan" / "learnings.md"
+        learnings.write_text("# Wrong\n", encoding="utf-8")
+
+        restored = mgr.hydrate_from_snapshot(force=True)
+        assert "memory/projects/koan/learnings.md" in restored
+        assert "Use atomic writes" in learnings.read_text(encoding="utf-8")
+
+    def test_force_overwrites_shared_journal(self, tmp_path):
+        instance = _populate_instance(tmp_path)
+        mgr = MemoryManager(str(instance))
+
+        mgr.export_snapshot()
+
+        journal = instance / "shared-journal.md"
+        journal.write_text("# Overwritten\n", encoding="utf-8")
+
+        restored = mgr.hydrate_from_snapshot(force=True)
+        assert "shared-journal.md" in restored
+        assert "First reflection" in journal.read_text(encoding="utf-8")
+
     def test_force_false_is_default(self, tmp_path):
         """force=False is the default — existing files untouched."""
         instance = _populate_instance(tmp_path)

@@ -1629,7 +1629,8 @@ if __name__ == "__main__":
         print(f"Snapshot exported to {path} ({size} bytes)")
 
     elif command == "hydrate":
-        restored = mgr.hydrate_from_snapshot()
+        force = "--force" in sys.argv
+        restored = mgr.hydrate_from_snapshot(force=force)
         if restored:
             for p in sorted(restored.keys()):
                 print(f"  Restored: {p}")
