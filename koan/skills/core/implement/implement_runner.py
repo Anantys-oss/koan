@@ -179,7 +179,6 @@ def run_implement(
         logger.info(
             "[implement] First pass produced no committed changes — running escalated retry"
         )
-        print("[implement] First pass produced no committed changes — retrying with escalation", flush=True)
         try:
             output = _execute_implementation(
                 project_path=project_path,
