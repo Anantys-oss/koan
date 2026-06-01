@@ -1,6 +1,6 @@
 """Kōan plan+implement combo skill -- queue /plan then /implement for an issue."""
 
-from app.github_url_parser import parse_github_url
+from app.github_url_parser import is_jira_url, parse_github_url
 from app.github_skill_helpers import (
     extract_issue_tracker_url,
     format_project_not_found_error,
@@ -8,6 +8,7 @@ from app.github_skill_helpers import (
     queue_github_mission,
     resolve_project_for_repo,
 )
+from app.issue_tracker import resolve_issue_ref
 
 
 def handle(ctx):
@@ -38,7 +39,6 @@ def handle(ctx):
 
     issue_url, context = result
 
-    from app.github_url_parser import is_jira_url
     if is_jira_url(issue_url):
         return _handle_jira(ctx, issue_url, context)
 
@@ -57,11 +57,11 @@ def handle(ctx):
     impl_ok = queue_github_mission(ctx, "implement", issue_url, project_name, context)
 
     target = format_success_message(type_label, number, owner, repo)
-    if not plan_ok and not impl_ok:
+    if plan_ok is False and impl_ok is False:
         return f"⚠️ Both /plan and /implement already queued or running for {target}."
-    if not plan_ok:
+    if plan_ok is False:
         return f"Implement queued for {target} (plan already queued/running)."
-    if not impl_ok:
+    if impl_ok is False:
         return f"Plan queued for {target} (implement already queued/running)."
 
     return f"\U0001f9e0\U0001f528 Plan + implement combo queued for {target}"
@@ -69,8 +69,6 @@ def handle(ctx):
 
 def _handle_jira(ctx, issue_url, context):
     """Handle Jira issue URLs for plan+implement combo."""
-    from app.issue_tracker import resolve_issue_ref
-
     try:
         ref = resolve_issue_ref(issue_url)
     except ValueError as e:
@@ -86,11 +84,11 @@ def _handle_jira(ctx, issue_url, context):
     impl_ok = queue_github_mission(ctx, "implement", issue_url, ref.project_name, context)
 
     label = f"Jira issue {ref.key}"
-    if not plan_ok and not impl_ok:
+    if plan_ok is False and impl_ok is False:
         return f"⚠️ Both /plan and /implement already queued or running for {label}."
-    if not plan_ok:
+    if plan_ok is False:
         return f"Implement queued for {label} (plan already queued/running)."
-    if not impl_ok:
+    if impl_ok is False:
         return f"Plan queued for {label} (implement already queued/running)."
 
     return f"\U0001f9e0\U0001f528 Plan + implement combo queued for {label}"
