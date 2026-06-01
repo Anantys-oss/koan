@@ -210,7 +210,7 @@ class TestNotifyFacadeDelegation:
             from app.notify import send_telegram
             result = send_telegram("test message")
 
-        mock_provider.send_message.assert_called_once_with("test message")
+        mock_provider.send_message.assert_called_once_with("test message", reply_to_message_id=0)
         assert result is True
 
     def test_send_telegram_falls_back_on_exit(self):
@@ -220,7 +220,7 @@ class TestNotifyFacadeDelegation:
             from app.notify import send_telegram
             result = send_telegram("fallback test")
 
-        mock_direct.assert_called_once_with("fallback test")
+        mock_direct.assert_called_once_with("fallback test", reply_to=0)
         assert result is True
 
 

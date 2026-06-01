@@ -26,6 +26,28 @@ log = logging.getLogger(__name__)
 
 from app.utils import load_dotenv
 
+# Thread-local reply context for group chat threading.
+# Set by the bridge main loop before dispatching a message handler;
+# read by send_telegram() to include reply_to_message_id in the API call.
+# Each thread has its own value, so the main loop and worker threads
+# don't interfere with each other.
+_reply_local = threading.local()
+
+
+def set_reply_context(message_id: int):
+    """Set the reply-to message ID for the current thread."""
+    _reply_local.reply_to = message_id
+
+
+def clear_reply_context():
+    """Clear the reply context for the current thread."""
+    _reply_local.reply_to = 0
+
+
+def get_reply_context() -> int:
+    """Get the reply-to message ID for the current thread."""
+    return getattr(_reply_local, "reply_to", 0)
+
 
 class NotificationPriority(Enum):
     """Four-level notification priority system.
@@ -198,7 +220,7 @@ def _send_raw_bypass_flood(text: str) -> bool:
         return _direct_send(text)
 
 
-def _direct_send(text: str) -> bool:
+def _direct_send(text: str, reply_to: int = 0) -> bool:
     """Direct Telegram API send (standalone fallback when provider unavailable).
 
     Retries each chunk up to 3 times with exponential backoff (1s/2s/4s)
@@ -233,10 +255,11 @@ def _direct_send(text: str) -> bool:
     total = len(chunks)
     sent = 0
     failed = 0
-    for chunk in chunks:
+    for i, chunk in enumerate(chunks):
+        chunk_reply = reply_to if i == 0 else 0
         try:
             if retry_with_backoff(
-                lambda c=chunk, pm=parse_mode: _direct_send_chunk(api_base, chat_id, c, pm),
+                lambda c=chunk, pm=parse_mode, rt=chunk_reply: _direct_send_chunk(api_base, chat_id, c, pm, rt),
                 retryable=(requests.RequestException, ValueError),
                 label="telegram direct send",
             ):
@@ -260,13 +283,15 @@ def _direct_send(text: str) -> bool:
 
 
 def _direct_send_chunk(api_base: str, chat_id: str, chunk: str,
-                       parse_mode: str = None) -> bool:
+                       parse_mode: str = None, reply_to: int = 0) -> bool:
     """Send a single message chunk via Telegram API. Raises on network error."""
     import requests
 
     payload = {"chat_id": chat_id, "text": chunk}
     if parse_mode:
         payload["parse_mode"] = parse_mode
+    if reply_to:
+        payload["reply_parameters"] = {"message_id": reply_to}
     resp = requests.post(
         f"{api_base}/sendMessage",
         json=payload,
@@ -332,12 +357,14 @@ def send_telegram(text: str,
     # Prepend priority emoji for urgent and warning messages (idempotent)
     text = _apply_priority_emoji(text, priority)
 
+    reply_to = get_reply_context()
+
     try:
         from app.messaging import get_messaging_provider
         provider = get_messaging_provider()
-        return provider.send_message(text)
+        return provider.send_message(text, reply_to_message_id=reply_to)
     except SystemExit:
-        return _direct_send(text)
+        return _direct_send(text, reply_to=reply_to)
 
 
 def _get_file_mtime(path: Path) -> float:

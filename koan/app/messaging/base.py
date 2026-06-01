@@ -48,11 +48,12 @@ class MessagingProvider(ABC):
     """
 
     @abstractmethod
-    def send_message(self, text: str) -> bool:
+    def send_message(self, text: str, reply_to_message_id: int = 0) -> bool:
         """Send a message with provider-specific chunking.
 
         Args:
             text: Message text to send
+            reply_to_message_id: If non-zero, reply to this message (group threading)
 
         Returns:
             True if all chunks sent successfully

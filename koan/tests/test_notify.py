@@ -37,7 +37,7 @@ class TestSendTelegram:
         mock_provider.send_message.return_value = True
         mock_get_provider.return_value = mock_provider
         assert send_telegram("hello") is True
-        mock_provider.send_message.assert_called_once_with("hello")
+        mock_provider.send_message.assert_called_once_with("hello", reply_to_message_id=0)
 
     @patch("app.messaging.get_messaging_provider")
     def test_returns_false_on_failure(self, mock_get_provider):
@@ -51,7 +51,7 @@ class TestSendTelegram:
     def test_falls_back_to_direct_send(self, mock_direct, mock_get_provider):
         """If provider unavailable, falls back to direct Telegram API."""
         assert send_telegram("test") is True
-        mock_direct.assert_called_once_with("test")
+        mock_direct.assert_called_once_with("test", reply_to=0)
 
     @patch("app.messaging.get_messaging_provider", side_effect=SystemExit(1))
     def test_no_token_via_fallback(self, mock_get_provider, monkeypatch):

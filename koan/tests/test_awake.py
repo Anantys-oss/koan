@@ -25,6 +25,7 @@ from app.awake import (
     _clean_chat_response,
     _run_in_worker,
     _flush_outbox_async,
+    _strip_bot_mention_from_text,
     get_updates,
     check_config,
 )
@@ -3261,3 +3262,102 @@ class TestBuildChatPromptHardTruncation:
 
         assert "[truncated]" not in prompt
         assert short_text in prompt
+
+
+# ---------------------------------------------------------------------------
+# _strip_bot_mention_from_text
+# ---------------------------------------------------------------------------
+
+
+class TestStripBotMentionFromText:
+    """Test @bot_username stripping from non-command messages."""
+
+    def test_no_entities(self):
+        assert _strip_bot_mention_from_text("hello world", {}) == "hello world"
+
+    def test_no_mention_entities(self):
+        msg = {"entities": [{"type": "bold", "offset": 0, "length": 5}]}
+        assert _strip_bot_mention_from_text("hello world", msg) == "hello world"
+
+    def test_mention_at_start(self):
+        msg = {"entities": [{"type": "mention", "offset": 0, "length": 8}]}
+        assert _strip_bot_mention_from_text("@BotName hello world", msg) == "hello world"
+
+    def test_mention_at_end(self):
+        msg = {"entities": [{"type": "mention", "offset": 6, "length": 8}]}
+        assert _strip_bot_mention_from_text("hello @BotName", msg) == "hello"
+
+    def test_multiple_mentions(self):
+        msg = {"entities": [
+            {"type": "mention", "offset": 0, "length": 4},
+            {"type": "mention", "offset": 11, "length": 5},
+        ]}
+        assert _strip_bot_mention_from_text("@Bot hello @User world", msg) == "hello  world"
+
+    def test_command_not_stripped(self):
+        msg = {"entities": [{"type": "bot_command", "offset": 0, "length": 15}]}
+        assert _strip_bot_mention_from_text("/start@BotName", msg) == "/start@BotName"
+
+    def test_empty_text(self):
+        assert _strip_bot_mention_from_text("", {}) == ""
+
+    def test_mention_only(self):
+        msg = {"entities": [{"type": "mention", "offset": 0, "length": 8}]}
+        assert _strip_bot_mention_from_text("@BotName", msg) == ""
+
+
+# ---------------------------------------------------------------------------
+# Reply context threading
+# ---------------------------------------------------------------------------
+
+
+class TestReplyContext:
+    """Test thread-local reply context for group chat threading."""
+
+    def test_default_is_zero(self):
+        from app.notify import get_reply_context, clear_reply_context
+        clear_reply_context()
+        assert get_reply_context() == 0
+
+    def test_set_and_get(self):
+        from app.notify import set_reply_context, get_reply_context, clear_reply_context
+        set_reply_context(42)
+        assert get_reply_context() == 42
+        clear_reply_context()
+
+    def test_clear(self):
+        from app.notify import set_reply_context, get_reply_context, clear_reply_context
+        set_reply_context(99)
+        clear_reply_context()
+        assert get_reply_context() == 0
+
+    def test_worker_inherits_context(self):
+        """_run_in_worker should propagate reply context to worker thread."""
+        import threading
+        from app.notify import set_reply_context, get_reply_context, clear_reply_context
+
+        captured = [None]
+        done_event = threading.Event()
+
+        def capture_context():
+            captured[0] = get_reply_context()
+            done_event.set()
+
+        set_reply_context(123)
+        _run_in_worker(capture_context)
+        done_event.wait(timeout=5)
+        assert captured[0] == 123
+        clear_reply_context()
+
+    def test_send_telegram_passes_reply_to(self):
+        """send_telegram should pass reply_to_message_id from thread-local."""
+        from app.notify import set_reply_context, clear_reply_context, send_telegram
+
+        mock_provider = MagicMock()
+        mock_provider.send_message.return_value = True
+
+        set_reply_context(456)
+        with patch("app.messaging.get_messaging_provider", return_value=mock_provider):
+            send_telegram("test")
+        mock_provider.send_message.assert_called_once_with("test", reply_to_message_id=456)
+        clear_reply_context()
