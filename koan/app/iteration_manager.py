@@ -531,6 +531,17 @@ def _resolve_project_path(
     for name, path in projects:
         if name.lower() == lower:
             return (name, path)
+
+    # Fall back to user-defined aliases (.project-aliases.json) so a mission
+    # tagged with a shortcut (e.g. [project:kn]) resolves to its canonical
+    # project. Skill handlers may queue missions using the alias verbatim.
+    from app.utils import resolve_project_alias
+    canonical = resolve_project_alias(project_name)
+    if canonical:
+        canonical_lower = canonical.lower()
+        for name, path in projects:
+            if name.lower() == canonical_lower:
+                return (name, path)
     return None
 
 

@@ -7,6 +7,7 @@ Covers:
 - Skill handler owner passthrough
 """
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -759,6 +760,39 @@ class TestResolveProjectPathWithOwner:
 
         from app.utils import resolve_project_path
         assert resolve_project_path("koan") == "/home/workspace/koan"
+
+    def test_user_alias_match(self, tmp_path, monkeypatch):
+        """A user alias from .project-aliases.json resolves to its project path.
+
+        Regression: /audit and other skills returned "Unknown project" when
+        given an alias instead of the exact project name, because
+        resolve_project_path ignored .project-aliases.json. The single-project
+        fallback masked this; with multiple projects the alias resolved to None.
+        """
+        from app import utils
+        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+        (tmp_path / "instance").mkdir()
+        (tmp_path / "instance" / ".project-aliases.json").write_text(
+            json.dumps({"kn": "koan"})
+        )
+        monkeypatch.setenv("KOAN_PROJECTS", "koan:/home/koan;web:/home/web")
+
+        from app.utils import resolve_project_path
+        assert resolve_project_path("kn") == "/home/koan"
+
+    def test_unknown_alias_returns_none(self, tmp_path, monkeypatch):
+        """A name that is neither a project nor an alias returns None."""
+        from app import utils
+        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+        (tmp_path / "instance").mkdir()
+        (tmp_path / "instance" / ".project-aliases.json").write_text(
+            json.dumps({"kn": "koan"})
+        )
+        monkeypatch.setenv("KOAN_PROJECTS", "koan:/home/koan;web:/home/web")
+
+        with patch("app.utils.get_all_github_remotes", return_value=[]):
+            from app.utils import resolve_project_path
+            assert resolve_project_path("nope") is None
 
     def test_fork_scenario(self, tmp_path, monkeypatch):
         """Fork workflow: owner in URL differs from owner in github_url."""

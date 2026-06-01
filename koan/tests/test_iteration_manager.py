@@ -103,6 +103,22 @@ class TestResolveProjectPath:
         assert _resolve_project_path("BACKEND", PROJECTS_LIST) == ("backend", "/path/to/backend")
         assert _resolve_project_path("WebApp", PROJECTS_LIST) == ("webapp", "/path/to/webapp")
 
+    def test_resolves_user_alias(self, monkeypatch):
+        """A mission tagged with a user alias resolves to its canonical project."""
+        import app.utils as utils
+        monkeypatch.setattr(
+            utils, "resolve_project_alias",
+            lambda n: {"be": "backend", "kn": "koan"}.get(n.lower()),
+        )
+        assert _resolve_project_path("be", PROJECTS_LIST) == ("backend", "/path/to/backend")
+        assert _resolve_project_path("KN", PROJECTS_LIST) == ("koan", "/path/to/koan")
+
+    def test_unknown_alias_still_none(self, monkeypatch):
+        """A non-alias, non-project name still resolves to None."""
+        import app.utils as utils
+        monkeypatch.setattr(utils, "resolve_project_alias", lambda n: None)
+        assert _resolve_project_path("ghost", PROJECTS_LIST) is None
+
 
 
 class TestGetKnownProjectNames:
