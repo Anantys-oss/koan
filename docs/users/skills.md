@@ -38,6 +38,7 @@ Complete reference for all Koan slash commands. Use these via Telegram, Slack, o
 | `/fix <issue>` | — | Understand → plan → test → implement → submit PR | Yes |
 | `/review <PR>` | `/rv` | Review a pull request | Yes |
 | `/rebase <PR>` | `/rb` | Rebase a PR onto its base branch | Yes |
+| `/planimplement <issue>` | `/planimp`, `/planimpl`, `/planit`, `/plandoit` | Plan then implement an issue (combo: /plan → /implement) | Yes |
 | `/recreate <PR>` | `/rc` | Re-implement a PR from scratch on a fresh branch | Yes |
 | `/refactor <desc>` | `/rf` | Targeted refactoring mission | Yes |
 | `/check <project>` | `/inspect` | Run project health checks (rebase, review, plan) | — |

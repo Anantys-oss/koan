@@ -587,6 +587,19 @@ After completion, Kōan posts a structured comment on the PR with these sections
 - Extra context after the URL is passed to the review step (e.g., `/rr <url> focus on error handling`)
 </details>
 
+**`/planimplement`** — Plan an issue then implement it, so plan insights feed the implementation.
+
+- **Usage:** `/planimplement <issue-url>`
+- **Aliases:** `/planimp`, `/planimpl`, `/planit`, `/plandoit`
+- **GitHub @mention:** `@koan-bot /planit` on an issue
+
+<details>
+<summary>Use cases</summary>
+
+- `/planit https://github.com/org/repo/issues/42` — Queues `/plan` then `/implement` in sequence
+- Extra context after the URL is passed to both steps (e.g., `/planit <url> phase 1 only`)
+</details>
+
 **`/squash`** — Squash all PR commits into a single clean commit.
 
 - **Usage:** `/squash <pr-url>`
@@ -1388,6 +1401,7 @@ Ten skills can be triggered by commenting `@koan-bot <command>` on GitHub issues
 | `/review` | `@koan-bot /review` on a PR |
 | `/rebase` | `@koan-bot /rebase` on a PR |
 | `/reviewrebase` | `@koan-bot /rr` on a PR |
+| `/planimplement` | `@koan-bot /planit` on an issue |
 | `/recreate` | `@koan-bot /recreate` on a PR |
 | `/refactor` | `@koan-bot /refactor` on a PR or issue |
 | `/plan` | `@koan-bot /plan <idea>` on an issue |
@@ -1848,6 +1862,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/ask <comment-url>` | — | I | Ask a question about a PR/issue — posts AI reply to GitHub |
 | `/rebase <PR>` | `/rb` | I | Rebase a PR onto its base branch |
 | `/reviewrebase <PR>` | `/rr` | I | Review then rebase a PR (combo) |
+| `/planimplement <issue>` | `/planimp`, `/planimpl`, `/planit`, `/plandoit` | I | Plan then implement an issue (combo) |
 | `/squash <PR>` | `/sq` | I | Squash all PR commits into one clean commit |
 | `/recreate <PR>` | `/rc` | I | Re-implement a PR from scratch |
 | `/pr <PR>` | — | I | Review and update a GitHub PR |
