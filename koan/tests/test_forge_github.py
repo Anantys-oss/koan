@@ -5,7 +5,14 @@ from unittest.mock import patch
 
 import pytest
 
-from app.forge.base import FEATURE_PR, FEATURE_ISSUES, FEATURE_CI_STATUS
+from app.forge.base import (
+    FEATURE_CI_STATUS,
+    FEATURE_ISSUES,
+    FEATURE_NOTIFICATIONS,
+    FEATURE_PR,
+    FEATURE_PR_REVIEW_COMMENTS,
+    FEATURE_REACTIONS,
+)
 from app.forge.github import GitHubForge
 
 
@@ -311,13 +318,10 @@ class TestDetectFork:
 class TestSupports:
     def test_supports_implemented_features(self):
         forge = _make_forge()
-        for feature in (FEATURE_PR, FEATURE_ISSUES, FEATURE_CI_STATUS):
+        for feature in (FEATURE_PR, FEATURE_ISSUES, FEATURE_CI_STATUS,
+                        FEATURE_NOTIFICATIONS, FEATURE_REACTIONS,
+                        FEATURE_PR_REVIEW_COMMENTS):
             assert forge.supports(feature) is True, f"Expected supports({feature!r}) to be True"
-
-    def test_does_not_support_unimplemented_features(self):
-        forge = _make_forge()
-        assert forge.supports("notifications") is False
-        assert forge.supports("reactions") is False
 
     def test_does_not_support_unknown_feature(self):
         forge = _make_forge()

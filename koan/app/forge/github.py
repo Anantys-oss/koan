@@ -214,11 +214,13 @@ class GitHubForge(ForgeProvider):
     # Feature matrix
     # ------------------------------------------------------------------
 
-    # Features actually implemented by GitHubForge.
     _SUPPORTED_FEATURES = frozenset({
         "pr",
         "issues",
+        "notifications",
         "ci_status",
+        "reactions",
+        "pr_review_comments",
     })
 
     def supports(self, feature: str) -> bool:
