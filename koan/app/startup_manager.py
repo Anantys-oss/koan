@@ -289,7 +289,9 @@ def handle_start_on_pause(koan_root: str):
       immediately re-pausing the freshly launched runner).
     - .koan-skip-start-pause file exists with a recent timestamp (set by
       /resume during startup to prevent the race where handle_start_on_pause
-      re-creates the pause file after /resume removed it).
+      re-creates the pause file after /resume removed it). Honoring a fresh
+      skip file also sets KOAN_SKIP_START_PAUSE=1 so the intent survives an
+      in-process auto-update restart (which re-runs this step).
     """
     if os.environ.get("KOAN_SKIP_START_PAUSE") == "1":
         log("pause", "start_on_pause skipped (KOAN_SKIP_START_PAUSE=1)")
@@ -304,6 +306,13 @@ def handle_start_on_pause(koan_root: str):
         age = get_file_age_seconds(skip_file)
         if age is not None and age < 300:  # Fresh (< 5 min) — /resume was sent during startup
             skip_file.unlink(missing_ok=True)
+            # Make the resume intent sticky for the life of this process.
+            # Auto-update restarts the runner *in-process* (run.py's main()
+            # re-calls main_loop on RESTART_EXIT_CODE), so this step runs again
+            # on the next pass. The skip file is one-shot (consumed just above);
+            # without this env flag the second pass would re-create the
+            # start_on_pause pause and silently discard the user's early /resume.
+            os.environ["KOAN_SKIP_START_PAUSE"] = "1"
             log("pause", "start_on_pause skipped (/resume requested during startup)")
             return
         skip_file.unlink(missing_ok=True)
