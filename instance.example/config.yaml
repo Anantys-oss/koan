@@ -512,6 +512,27 @@ usage:
 #   enabled: false          # Include dashboard in managed processes (default: false)
 #   port: 5001              # HTTP port (default: 5001)
 
+# REST API — HTTP control layer for programmatic access
+# Disabled by default. Requires a bearer token to operate (fail-closed).
+#
+# Authentication:
+#   Set KOAN_API_TOKEN=<secret> in your environment (.env) — preferred.
+#   Alternatively, set api.token in this file (less secure — in the config tree).
+#
+# Security:
+#   - Binds to 127.0.0.1 by default — safe for local use.
+#   - When binding to a non-loopback address, a warning is emitted.
+#     Use a reverse proxy (nginx, Caddy) for TLS termination and rate limiting.
+#   - Token comparison uses hmac.compare_digest to prevent timing attacks.
+#   - Per-request audit log written to logs/api.log (method, path, status, IP).
+#
+# api:
+#   enabled: false          # Include API in managed processes (default: false)
+#   host: "127.0.0.1"       # Bind address (default: 127.0.0.1)
+#   port: 8420              # HTTP port (default: 8420)
+#   threads: 8              # waitress worker threads (default: 8)
+#   # token: ""             # Bearer token fallback (prefer KOAN_API_TOKEN env var)
+
 # Automation suggestions — context-aware recurring task proposals
 # When the agent is idle (no pending missions, not in focus mode), it can
 # generate personalized suggestions for recurring tasks the user should set up.

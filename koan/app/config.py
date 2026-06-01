@@ -437,6 +437,75 @@ def get_dashboard_port() -> int:
     return 5001
 
 
+def is_api_enabled() -> bool:
+    """Check if REST API is enabled for managed startup.
+
+    When True, ``make start`` / ``make stop`` also manage the API process.
+    Disabled by default — must be explicitly opted in.
+
+    Config key: api.enabled (default: False)
+    """
+    config = _load_config()
+    api_cfg = config.get("api", {})
+    if isinstance(api_cfg, dict):
+        return bool(api_cfg.get("enabled", False))
+    return False
+
+
+def get_api_host() -> str:
+    """Return the API bind host (default: 127.0.0.1).
+
+    Config key: api.host (default: 127.0.0.1)
+    """
+    config = _load_config()
+    api_cfg = config.get("api", {})
+    if isinstance(api_cfg, dict):
+        return str(api_cfg.get("host", "127.0.0.1"))
+    return "127.0.0.1"
+
+
+def get_api_port() -> int:
+    """Return the API listen port (default: 8420).
+
+    Config key: api.port (default: 8420)
+    """
+    config = _load_config()
+    api_cfg = config.get("api", {})
+    if isinstance(api_cfg, dict):
+        return _safe_int(api_cfg.get("port", 8420), 8420)
+    return 8420
+
+
+def get_api_token() -> str:
+    """Resolve the API bearer token.
+
+    Resolution order:
+    1. KOAN_API_TOKEN env var
+    2. api.token in config.yaml
+    3. Empty string (fail-closed at server startup)
+    """
+    token = os.environ.get("KOAN_API_TOKEN", "").strip()
+    if token:
+        return token
+    config = _load_config()
+    api_cfg = config.get("api", {})
+    if isinstance(api_cfg, dict):
+        return str(api_cfg.get("token", "")).strip()
+    return ""
+
+
+def get_api_threads() -> int:
+    """Return the number of waitress worker threads (default: 8).
+
+    Config key: api.threads (default: 8)
+    """
+    config = _load_config()
+    api_cfg = config.get("api", {})
+    if isinstance(api_cfg, dict):
+        return _safe_int(api_cfg.get("threads", 8), 8)
+    return 8
+
+
 def get_cli_output_journal() -> bool:
     """Check if CLI output journal streaming is enabled.
 
