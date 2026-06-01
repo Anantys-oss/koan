@@ -255,7 +255,7 @@ def check_pidfile(koan_root: Path, process_name: str) -> Optional[int]:
     return None
 
 
-PROCESS_NAMES = ("run", "awake", "ollama", "dashboard")
+PROCESS_NAMES = ("run", "awake", "ollama", "dashboard", "api")
 
 # Process startup verification timeouts
 DEFAULT_VERIFY_TIMEOUT = 3.0
@@ -407,6 +407,24 @@ def start_dashboard(koan_root: Path, verify_timeout: float = DEFAULT_VERIFY_TIME
     return _launch_python_process(koan_root, "app/dashboard.py", "dashboard", verify_timeout)
 
 
+def start_api(koan_root: Path, verify_timeout: float = DEFAULT_VERIFY_TIMEOUT) -> tuple:
+    """Start the REST API server (api/server.py) as a detached subprocess.
+
+    Only launched when ``api.enabled: true`` in config.yaml.
+    Returns (success: bool, message: str).
+    """
+    return _launch_python_process(koan_root, "app/api/server.py", "api", verify_timeout)
+
+
+def _is_api_enabled() -> bool:
+    """Check if REST API is enabled in config.yaml."""
+    try:
+        from app.config import is_api_enabled
+        return is_api_enabled()
+    except (ImportError, OSError, ValueError):
+        return False
+
+
 def _is_dashboard_enabled() -> bool:
     """Check if dashboard is enabled in config.yaml."""
     try:
@@ -424,11 +442,14 @@ def get_status_processes(koan_root: Path) -> tuple:
     """
     provider = _detect_provider(koan_root)
     dashboard = _is_dashboard_enabled()
+    api = _is_api_enabled()
     names = list(PROCESS_NAMES)
     if not _needs_ollama(provider):
         names.remove("ollama")
     if not dashboard:
         names.remove("dashboard")
+    if not api:
+        names.remove("api")
     return tuple(names)
 
 
@@ -611,6 +632,11 @@ def start_all(koan_root: Path, provider: str = None) -> dict:
     if _is_dashboard_enabled():
         ok, msg = start_dashboard(koan_root)
         results["dashboard"] = (ok, msg)
+
+    # 5. Start REST API if enabled
+    if _is_api_enabled():
+        ok, msg = start_api(koan_root)
+        results["api"] = (ok, msg)
 
     return results
 

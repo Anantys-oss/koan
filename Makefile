@@ -3,7 +3,7 @@ export
 
 .PHONY: install onboard setup start stop status restart
 .PHONY: clean say migrate test test-skills test-strict coverage lint sync-instance rename-project release
-.PHONY: awake run errand-run errand-awake dashboard
+.PHONY: awake run errand-run errand-awake dashboard api
 .PHONY: ollama logs ssh-forward
 .PHONY: install-systemctl-service uninstall-systemctl-service
 .PHONY: install-launchd-service uninstall-launchd-service
@@ -117,6 +117,9 @@ migrate: setup
 
 dashboard: setup
 	$(KOAN_RUN) app/dashboard.py $(if $(KOAN_DASHBOARD_HOST),--host $(KOAN_DASHBOARD_HOST),) $(if $(KOAN_DASHBOARD_PORT),--port $(KOAN_DASHBOARD_PORT),)
+
+api: setup
+	$(KOAN_RUN) app/api/server.py $(if $(KOAN_API_HOST),--host $(KOAN_API_HOST),) $(if $(KOAN_API_PORT),--port $(KOAN_API_PORT),)
 
 restart:
 	$(MAKE) stop

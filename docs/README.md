@@ -37,7 +37,7 @@ memory, or integration changes:
 - `setup/` - installation and host runtime setup.
 - `providers/` - CLI and local model provider setup and behavior.
 - `messaging/` - messaging and issue-tracker integration setup.
-- `operations/` - maintenance, self-update, and optional operational tools.
+- `operations/` - maintenance, self-update, and optional operational tools (dashboard, REST API, auto-update, RTK).
 - `architecture/` - current daemon design and implementation references.
 - `security/` - security review docs and threat models.
 - `design/` - durable decisions, design notes, and larger specs.

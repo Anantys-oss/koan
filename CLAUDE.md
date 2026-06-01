@@ -142,6 +142,18 @@ Communication between processes happens through shared files in `instance/` with
 - **`security_review.py`** — Differential security review on mission diffs: blast radius analysis, risk classification, journal logging. Runs before auto-merge decisions.
 - **`rename_project.py`** — CLI tool to rename a project across `projects.yaml` and all `instance/` files (missions, memory dir, journal files, JSON references). Dry-run by default, `--apply` to execute. Invoked via `make rename-project old=X new=Y [apply=1]`.
 
+**REST API** (`koan/app/api/`):
+- **`api/__init__.py`** — `create_app()` Flask factory; registers blueprints, health endpoint, JSON error handlers, per-request audit logging.
+- **`api/auth.py`** — `require_token` decorator (Bearer parse + `hmac.compare_digest`); token resolution (env → config).
+- **`api/mission_index.py`** — Sidecar reader/writer for `instance/.api-missions.json` (atomic via `utils.atomic_write_json`). `record_mission()`, `get_mission()`, `list_missions()`, `reconcile()` (maps stored text → current `missions.md` section), `cancel_mission()`.
+- **`api/routes_missions.py`** — `GET/POST /v1/missions`, `GET/DELETE /v1/missions/{id}`.
+- **`api/routes_projects.py`** — `GET /v1/projects`, `POST /v1/projects`, `DELETE /v1/projects/{name}`.
+- **`api/routes_status.py`** — `GET /v1/status` (agent state + mission counts from signal files).
+- **`api/routes_admin.py`** — `POST /v1/pause`, `POST /v1/resume`, `GET /v1/config` (secrets masked), `POST /v1/restart`, `POST /v1/shutdown`, `POST /v1/update`.
+- **`api/server.py`** — Runnable entrypoint (`make api`); validates token at startup (fail-closed), warns on non-loopback bind, calls `waitress.serve(create_app(), ...)`.
+
+Config additions in `config.py`: `is_api_enabled()`, `get_api_host()` (default `127.0.0.1`), `get_api_port()` (default `8420`), `get_api_token()` (env `KOAN_API_TOKEN` → `api.token` → `""`), `get_api_threads()` (default `8`). `pid_manager.py` adds `"api"` to `PROCESS_NAMES` and provides `start_api()` / `_is_api_enabled()`. See `docs/operations/rest-api.md`.
+
 ### Skills system (`koan/skills/`)
 
 Extensible command plugin system. Each skill lives in `skills/<scope>/<skill-name>/` with a `SKILL.md` (YAML frontmatter defining commands, aliases, metadata) and an optional `handler.py`.
