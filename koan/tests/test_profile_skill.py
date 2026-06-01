@@ -94,8 +94,7 @@ class TestProjectNameQueuing:
     def test_alias_resolves_to_canonical(self, handler, ctx):
         ctx.args = "be"
         with patch("app.utils.insert_pending_mission") as mock_insert, \
-             patch("app.utils.resolve_project_path", return_value="/home/backend"), \
-             patch("app.utils.resolve_project_alias", return_value="backend"):
+             patch("app.utils.resolve_project_name_and_path", return_value=("backend", "/home/backend")):
             result = handler.handle(ctx)
             assert "Profile queued" in result
             assert "backend" in result

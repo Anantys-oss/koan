@@ -52,14 +52,10 @@ def handle(ctx):
 def _queue_doc(ctx, project_name, categories, mode):
     """Queue a documentation extraction mission."""
     from app.utils import (
-        insert_pending_mission, resolve_project_alias, resolve_project_path,
+        insert_pending_mission, resolve_project_name_and_path,
     )
 
-    canonical = resolve_project_alias(project_name)
-    if canonical:
-        project_name = canonical
-
-    path = resolve_project_path(project_name)
+    project_name, path = resolve_project_name_and_path(project_name)
     if not path:
         from app.utils import get_known_projects
 

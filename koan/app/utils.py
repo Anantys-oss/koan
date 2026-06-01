@@ -864,6 +864,17 @@ def resolve_project_path(repo_name: str, owner: Optional[str] = None) -> Optiona
     return None
 
 
+def resolve_project_name_and_path(
+    name: str,
+) -> Tuple[str, Optional[str]]:
+    """Resolve alias and find project path in one call.
+
+    Returns (canonical_name, path_or_none).
+    """
+    canonical = resolve_project_alias(name) or name
+    return canonical, resolve_project_path(canonical)
+
+
 def append_to_outbox(outbox_path: Path, content: str, priority=None):
     """Append content to outbox.md with file locking.
 

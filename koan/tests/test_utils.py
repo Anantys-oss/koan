@@ -237,6 +237,32 @@ class TestResolveProjectPathAlias:
             mock_alias.assert_not_called()
 
 
+class TestResolveProjectNameAndPath:
+    def test_alias_returns_canonical_and_path(self):
+        from app.utils import resolve_project_name_and_path
+        with patch("app.utils.resolve_project_alias", return_value="backend"), \
+             patch("app.utils.resolve_project_path", return_value="/path/backend"):
+            name, path = resolve_project_name_and_path("be")
+            assert name == "backend"
+            assert path == "/path/backend"
+
+    def test_canonical_name_passes_through(self):
+        from app.utils import resolve_project_name_and_path
+        with patch("app.utils.resolve_project_alias", return_value=None), \
+             patch("app.utils.resolve_project_path", return_value="/path/backend"):
+            name, path = resolve_project_name_and_path("backend")
+            assert name == "backend"
+            assert path == "/path/backend"
+
+    def test_unknown_returns_name_and_none(self):
+        from app.utils import resolve_project_name_and_path
+        with patch("app.utils.resolve_project_alias", return_value=None), \
+             patch("app.utils.resolve_project_path", return_value=None):
+            name, path = resolve_project_name_and_path("unknown")
+            assert name == "unknown"
+            assert path is None
+
+
 class TestInsertPendingMission:
     def test_inserts_into_existing_file(self, tmp_path):
         from app.utils import insert_pending_mission

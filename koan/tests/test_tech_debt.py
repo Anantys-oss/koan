@@ -103,10 +103,9 @@ class TestHandleQueueMission:
         assert "nonexistent" in result
         assert "web" in result
 
-    @patch("app.utils.resolve_project_path", return_value="/path/backend")
-    @patch("app.utils.resolve_project_alias", return_value="backend")
+    @patch("app.utils.resolve_project_name_and_path", return_value=("backend", "/path/backend"))
     @patch("app.utils.insert_pending_mission")
-    def test_alias_resolves_to_canonical(self, mock_insert, mock_alias, mock_resolve, handler, ctx):
+    def test_alias_resolves_to_canonical(self, mock_insert, mock_resolve, handler, ctx):
         ctx.args = "be"
         result = handler.handle(ctx)
 
