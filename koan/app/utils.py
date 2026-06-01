@@ -798,15 +798,6 @@ def resolve_project_path(repo_name: str, owner: Optional[str] = None) -> Optiona
         if Path(path).name.lower() == repo_name.lower():
             return path
 
-    # 3a. User-defined project alias (.project-aliases.json). Resolve the
-    #     shortcut to its canonical project name, then match that. Explicit
-    #     aliases outrank the fuzzy suffix heuristic below.
-    canonical = resolve_project_alias(repo_name)
-    if canonical:
-        for name, path in projects:
-            if name.lower() == canonical.lower():
-                return path
-
     # 3b. Partial name match + remote validation
     #     Handles aliased clones: repo "perl-Convert-ASN1" cloned as "Convert-ASN1".
     #     Checks if a project name/basename is a suffix of the repo name (or vice
