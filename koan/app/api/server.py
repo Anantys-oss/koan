@@ -78,7 +78,7 @@ def main() -> None:
         from app.pid_manager import acquire_pid
         acquire_pid(koan_root, "api", os.getpid())
     except Exception as e:
-        print(f"[api/server] PID file error (non-fatal): {e}", file=sys.stderr)
+        print(f"WARNING: PID file error (non-fatal): {e}", file=sys.stderr)
 
     print(f"Kōan REST API listening on http://{host}:{port}/v1", flush=True)
     print(f"  threads={threads}  koan_root={koan_root}", flush=True)

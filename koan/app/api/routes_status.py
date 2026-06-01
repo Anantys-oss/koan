@@ -1,6 +1,7 @@
 """REST API status routes."""
 
 import contextlib
+import logging
 import os
 import re
 import time
@@ -9,6 +10,8 @@ from pathlib import Path
 from flask import Blueprint, current_app, jsonify
 
 from app.api.auth import require_token
+
+log = logging.getLogger("koan.api")
 
 bp = Blueprint("status", __name__)
 
@@ -120,7 +123,7 @@ def _mission_counts() -> dict:
             "failed": len(sections.get("failed", [])),
         }
     except Exception as e:
-        print(f"[api/status] mission count error: {e}", file=__import__("sys").stderr)
+        log.error("mission count error: %s", e)
         return {"pending": 0, "in_progress": 0, "done": 0, "failed": 0}
 
 

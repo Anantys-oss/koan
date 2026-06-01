@@ -19,7 +19,13 @@ api:
   # token: ""         # Bearer token fallback (prefer KOAN_API_TOKEN env var)
 ```
 
-Set the bearer token in `.env` (preferred — keeps secrets out of the config tree):
+Generate a random token and configure it:
+
+```bash
+make api-token    # prints a random token + setup instructions
+```
+
+Or set manually in `.env` (preferred — keeps secrets out of the config tree):
 
 ```bash
 KOAN_API_TOKEN=your-secret-token

@@ -18,6 +18,7 @@ with where the entry now lives in missions.md.
 """
 
 import json
+import logging
 import os
 import time
 import uuid
@@ -25,6 +26,8 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from app.utils import atomic_write_json
+
+log = logging.getLogger("koan.api")
 
 
 _INDEX_FILENAME = ".api-missions.json"
@@ -42,8 +45,9 @@ def _load_index(instance_dir: Path) -> List[dict]:
         data = json.loads(path.read_text())
         if isinstance(data, list):
             return data
-    except (json.JSONDecodeError, OSError):
-        pass
+        log.warning("mission index is not a list, ignoring: %s", path)
+    except (json.JSONDecodeError, OSError) as e:
+        log.error("failed to load mission index %s: %s", path, e)
     return []
 
 
@@ -123,7 +127,8 @@ def reconcile(instance_dir: Path, missions_file: Path, mission_id: str) -> dict:
         content = missions_file.read_text() if missions_file.exists() else ""
         sections = parse_sections(content)
     except Exception as e:
-        print(f"[mission_index] reconcile error: {e}", file=__import__("sys").stderr)
+        log.error("reconcile error for mission %s: %s", mission_id, e)
+        target["reconcile_error"] = str(e)
         return target
 
     stored_text = target.get("text", "")

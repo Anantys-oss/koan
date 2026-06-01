@@ -83,8 +83,8 @@ def create_app(koan_root: Path = None, instance_dir: Path = None) -> Flask:
             try:
                 with open(_audit_log_path, "a") as fh:
                     fh.write(line)
-            except OSError:
-                pass
+            except OSError as e:
+                log.warning("audit log write failed (%s): %s", _audit_log_path, e)
         return response
 
     return app

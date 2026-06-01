@@ -3,7 +3,7 @@ export
 
 .PHONY: install onboard setup start stop status restart
 .PHONY: clean say migrate test test-skills test-strict coverage lint sync-instance rename-project release
-.PHONY: awake run errand-run errand-awake dashboard api
+.PHONY: awake run errand-run errand-awake dashboard api api-token
 .PHONY: ollama logs ssh-forward
 .PHONY: install-systemctl-service uninstall-systemctl-service
 .PHONY: install-launchd-service uninstall-launchd-service
@@ -120,6 +120,19 @@ dashboard: setup
 
 api: setup
 	$(KOAN_RUN) app/api/server.py $(if $(KOAN_API_HOST),--host $(KOAN_API_HOST),) $(if $(KOAN_API_PORT),--port $(KOAN_API_PORT),)
+
+api-token:
+	@token=$$(python3 -c "import secrets; print(secrets.token_urlsafe(32))") && \
+		echo "Generated API token:" && \
+		echo "" && \
+		echo "  $$token" && \
+		echo "" && \
+		echo "Add to your .env file:" && \
+		echo "  echo 'KOAN_API_TOKEN=$$token' >> .env" && \
+		echo "" && \
+		echo "Or set in instance/config.yaml:" && \
+		echo "  api:" && \
+		echo "    token: \"$$token\""
 
 restart:
 	$(MAKE) stop

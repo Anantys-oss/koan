@@ -97,5 +97,3 @@ All third-party assets are **vendored** so the local-only dashboard works fully 
 - Design system: `docs/design-system/` (and its `docs/developer-handoff.md`)
 - Shared state files: see `docs/architecture/`
 - REST API: [`docs/operations/rest-api.md`](rest-api.md) — programmatic HTTP control layer
-
-- REST API: [](rest-api.md) — programmatic HTTP control layer

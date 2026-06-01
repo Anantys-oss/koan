@@ -55,7 +55,7 @@ class TestAddProject:
         assert resp.status_code == 422
 
     def test_add_project_calls_skill(self, api_client):
-        with patch("app.api.routes_projects._run_skill", return_value="Project added") as mock_skill:
+        with patch("app.api.routes_projects._run_skill", return_value=(True, "Project added")) as mock_skill:
             resp = api_client.post(
                 "/v1/projects",
                 json={"github_url": "https://github.com/org/repo"},
@@ -67,7 +67,7 @@ class TestAddProject:
         assert "result" in data
 
     def test_add_project_with_name(self, api_client):
-        with patch("app.api.routes_projects._run_skill", return_value="ok") as mock_skill:
+        with patch("app.api.routes_projects._run_skill", return_value=(True, "ok")) as mock_skill:
             api_client.post(
                 "/v1/projects",
                 json={"github_url": "https://github.com/org/repo", "name": "myrepo"},
@@ -75,12 +75,28 @@ class TestAddProject:
             )
         mock_skill.assert_called_once_with("add_project", "https://github.com/org/repo myrepo")
 
+    def test_add_project_skill_failure_returns_500(self, api_client):
+        with patch("app.api.routes_projects._run_skill", return_value=(False, "Error running skill: boom")):
+            resp = api_client.post(
+                "/v1/projects",
+                json={"github_url": "https://github.com/org/repo"},
+                headers=_AUTH,
+            )
+        assert resp.status_code == 500
+        assert "error" in resp.get_json()
+
 
 class TestDeleteProject:
     def test_delete_project_calls_skill(self, api_client):
-        with patch("app.api.routes_projects._run_skill", return_value="Deleted") as mock_skill:
+        with patch("app.api.routes_projects._run_skill", return_value=(True, "Deleted")) as mock_skill:
             resp = api_client.delete("/v1/projects/alpha", headers=_AUTH)
         assert resp.status_code == 200
         mock_skill.assert_called_once_with("delete_project", "alpha")
         data = resp.get_json()
         assert "result" in data
+
+    def test_delete_project_skill_failure_returns_500(self, api_client):
+        with patch("app.api.routes_projects._run_skill", return_value=(False, "Skill 'delete_project' not found")):
+            resp = api_client.delete("/v1/projects/alpha", headers=_AUTH)
+        assert resp.status_code == 500
+        assert "error" in resp.get_json()
