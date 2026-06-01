@@ -14,7 +14,7 @@ update the relevant docs in the same change.
 - [Onboarding](users/onboarding.md) - first-run setup and configuration flow.
 - [Skills Reference](users/skills.md) - built-in command reference.
 - [Provider Setup](providers/) - Claude, Codex, Copilot, and local providers.
-- [Messaging Setup](messaging/) - Telegram, Slack, Matrix, GitHub, and Jira.
+- [Messaging Setup](messaging/) - Telegram, Slack, Matrix, Discord, GitHub, and Jira.
 
 ## Implementation Reference
 

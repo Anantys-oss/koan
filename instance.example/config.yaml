@@ -302,12 +302,15 @@ telegram:
 # Matrix supports config.yaml directly:
 #
 # messaging:
-#   provider: "telegram"  # "telegram" (default), "slack", or "matrix"
+#   provider: "telegram"  # "telegram" (default), "slack", "matrix", or "discord"
 #   matrix:
 #     homeserver: "https://matrix.org"
 #     user_id: "@koan:matrix.org"
 #     room_id: "!abcdefghijk:matrix.org"
 #     access_token: "syt_your_token_here"
+#   discord:
+#     bot_token: "Bot token from Discord Developer Portal"  # or KOAN_DISCORD_BOT_TOKEN env var
+#     channel_id: "123456789012345678"                      # or KOAN_DISCORD_CHANNEL_ID env var
 
 # Usage thresholds
 budget:

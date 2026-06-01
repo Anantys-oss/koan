@@ -700,17 +700,35 @@ class TestInterruptibleSleep:
         os.makedirs(koan_root, exist_ok=True)
         os.makedirs(instance, exist_ok=True)
 
-        import time as _time
-        real_sleep = _time.sleep
-        total_slept = [0.0]
+        # Replace loop_manager's `time` reference with a fake clock so the only
+        # sleeps counted are the loop's own interval sleeps. Patching
+        # `app.loop_manager.time.sleep` mutates the shared, process-global
+        # `time` module — a background daemon thread from another test (e.g. a
+        # poller or stagnation monitor) sleeping during this window would land
+        # in the same counter and make the assertion flaky (observed ~41s).
+        # A module-local fake leaves the real `time` module, and every other
+        # thread, untouched.
+        class _FakeClock:
+            def __init__(self):
+                self.total = 0.0
 
-        def tracking_sleep(secs):
-            total_slept[0] += secs
-            # Don't actually sleep — just track
+            def sleep(self, secs):
+                self.total += secs
 
-        with patch("app.loop_manager.time.sleep", side_effect=tracking_sleep), \
+            def monotonic(self):
+                return 0.0
+
+        fake_clock = _FakeClock()
+
+        with patch("app.loop_manager.time", fake_clock), \
              patch("app.loop_manager.process_github_notifications", return_value=0), \
-             patch("app.loop_manager.process_jira_notifications", return_value=0):
+             patch("app.loop_manager.process_jira_notifications", return_value=0), \
+             patch("app.loop_manager._drain_ci_queue_during_sleep"), \
+             patch("app.health_check.write_run_heartbeat"), \
+             patch("app.feature_tips.maybe_send_feature_tip"), \
+             patch("app.update_hint.maybe_send_update_hint"), \
+             patch("app.heartbeat.run_stale_mission_check"), \
+             patch("app.heartbeat.run_disk_space_check"):
             result = interruptible_sleep(
                 interval=25,
                 koan_root=koan_root,
@@ -720,7 +738,7 @@ class TestInterruptibleSleep:
 
         assert result == "timeout"
         # Total sleep should not exceed requested interval
-        assert total_slept[0] <= 25.0
+        assert fake_clock.total <= 25.0
 
     def test_mission_detected_immediately_without_sleep(self, tmp_path):
         """A pending mission should be detected before any sleep call."""

@@ -246,7 +246,7 @@ class TestEnsureProvidersLoaded:
             "from app.messaging import _ensure_providers_loaded, _providers\n"
             "assert sorted(_providers) == ['telegram'], sorted(_providers)\n"
             "_ensure_providers_loaded()\n"
-            "missing = {'telegram', 'slack', 'matrix'} - set(_providers)\n"
+            "missing = {'telegram', 'slack', 'matrix', 'discord'} - set(_providers)\n"
             "assert not missing, f'missing providers after load: {missing}'\n"
         )
         env = {
@@ -393,6 +393,10 @@ class TestDefaultMaxMessageSize:
         from app.messaging.slack import MAX_MESSAGE_SIZE
         assert MAX_MESSAGE_SIZE == DEFAULT_MAX_MESSAGE_SIZE
 
+    def test_discord_uses_2000_limit(self):
+        from app.messaging.discord import MAX_MESSAGE_SIZE as discord_max
+        assert discord_max == 2000
+
     def test_chunk_message_default_matches_constant(self):
         """Base class chunk_message default matches DEFAULT_MAX_MESSAGE_SIZE."""
         provider = MockProvider()
@@ -484,7 +488,7 @@ class TestThreadSafety:
             "threads = [threading.Thread(target=_ensure_providers_loaded) for _ in range(10)]\n"
             "for t in threads: t.start()\n"
             "for t in threads: t.join()\n"
-            "missing = {'telegram', 'slack', 'matrix'} - set(_providers)\n"
+            "missing = {'telegram', 'slack', 'matrix', 'discord'} - set(_providers)\n"
             "assert not missing, f'missing after concurrent load: {missing}'\n"
         )
         env = {

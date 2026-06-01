@@ -1,7 +1,7 @@
 """Messaging provider abstraction layer.
 
 Decouples Kōan's communication logic from any specific messaging platform.
-Supports Telegram (default) and Slack providers.
+Supports Telegram (default), Slack, Matrix, and Discord providers.
 
 Usage:
     from app.messaging import get_messaging_provider
@@ -38,6 +38,7 @@ _PROVIDER_MODULES = [
     "app.messaging.telegram",
     "app.messaging.slack",
     "app.messaging.matrix",
+    "app.messaging.discord",
 ]
 
 
