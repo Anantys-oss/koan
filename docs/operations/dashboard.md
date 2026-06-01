@@ -69,9 +69,9 @@ override), layout primitives, and the `k-`-prefixed component library
 (`.k-app`, `.k-nav`, `.k-card`, `.k-stat`, `.k-badge`, `.k-table`, `.k-btn`,
 `.k-progress`, `.k-empty`, …). `koan.js` provides `window.koanToggleTheme()`.
 
-> **Updating the design system:** edit the canonical files under
-> `docs/design-system/assets/` and re-copy them into `koan/static/`. The vendored
-> copies carry a header comment noting this. Do not edit the vendored copies directly.
+> **Updating the design system:** edit the files under `koan/static/css/` and
+> `koan/static/js/` directly — they are the source of truth the dashboard serves,
+> with no separate copy to keep in sync.
 
 `koan/static/css/dashboard.css` is a **thin application layer** on top of the system: it
 aliases a few legacy dashboard variables (`--bg`, `--accent`, `--green`, …) onto design
@@ -79,7 +79,7 @@ tokens so existing markup follows the theme, defines the app-shell chrome (sideb
 topbar, mobile drawer), and restyles dashboard-specific components (chat, attention zone,
 activity dots). It does **not** redefine design tokens — `koan.css` owns those.
 
-Fonts (Space Grotesk, Inter, JetBrains Mono) and Lucide icons are loaded from CDNs.
+All third-party assets are **vendored** so the local-only dashboard works fully offline: Lucide icons ship as `koan/static/js/lucide.min.js` (pinned) and the Space Grotesk, Inter and JetBrains Mono webfonts (latin `.woff2` subset) are self-hosted in `koan/static/fonts/`, declared via `@font-face` in `koan/static/css/koan-fonts.css` with `font-display: swap` and system-font fallbacks.
 
 ## Architecture
 

@@ -22,9 +22,7 @@
         }
       })();
     </script>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/koan-fonts.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/koan.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
     <link id="favicon" rel="icon" href="{{ url_for('static', filename='favicon/default.svg') }}" type="image/svg+xml" data-base="{{ url_for('static', filename='favicon/') }}">
@@ -105,7 +103,7 @@
         </div>
     </div>
 
-    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="{{ url_for('static', filename='js/lucide.min.js') }}"></script>
     <script src="{{ url_for('static', filename='js/koan.js') }}"></script>
     <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
     {% block scripts %}{% endblock %}

@@ -52,10 +52,15 @@
     // Copy-to-clipboard for [data-copy]
     document.querySelectorAll('[data-copy]').forEach(function (btn) {
       btn.addEventListener('click', function () {
-        navigator.clipboard && navigator.clipboard.writeText(btn.getAttribute('data-copy'));
+        if (!navigator.clipboard || !navigator.clipboard.writeText) return;
         const old = btn.getAttribute('aria-label');
-        btn.setAttribute('aria-label', 'Copied!');
-        setTimeout(function () { btn.setAttribute('aria-label', old || 'Copy'); }, 1400);
+        navigator.clipboard.writeText(btn.getAttribute('data-copy')).then(function () {
+          btn.setAttribute('aria-label', 'Copied!');
+          setTimeout(function () { btn.setAttribute('aria-label', old || 'Copy'); }, 1400);
+        }).catch(function () {
+          btn.setAttribute('aria-label', 'Copy failed');
+          setTimeout(function () { btn.setAttribute('aria-label', old || 'Copy'); }, 1400);
+        });
       });
     });
   });
