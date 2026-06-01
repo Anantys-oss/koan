@@ -190,7 +190,7 @@ def run_brainstorm(
     )
 
     # Build master issue
-    master_title = f"[{tag}] {_extract_master_title(topic)}"
+    master_title = f"📣 [{tag}] {_extract_master_title(topic)}"
     master_body = _build_master_body(
         topic, master_summary, created_issues,
         top_ranked=top_ranked,
