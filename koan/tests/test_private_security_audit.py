@@ -104,6 +104,18 @@ class TestHandleQueueMission:
         mission_entry = mock_insert.call_args[0][1]
         assert "limit=" not in mission_entry
 
+    @patch("app.utils.resolve_project_path", return_value="/path/backend")
+    @patch("app.utils.resolve_project_alias", return_value="backend")
+    @patch("app.utils.insert_pending_mission")
+    def test_alias_resolves_to_canonical(self, mock_insert, mock_alias, mock_resolve, handler, ctx):
+        ctx.args = "be"
+        result = handler.handle(ctx)
+
+        assert "queued" in result.lower()
+        assert "backend" in result
+        mission_entry = mock_insert.call_args[0][1]
+        assert "[project:backend]" in mission_entry
+
     @patch("app.utils.resolve_project_path", return_value=None)
     @patch("app.utils.get_known_projects", return_value=[("web", "/path/web")])
     def test_unknown_project(self, mock_projects, mock_resolve, handler, ctx):

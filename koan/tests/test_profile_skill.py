@@ -91,6 +91,17 @@ class TestProjectNameQueuing:
             assert "\u274c" in result
             assert "nonexistent" in result
 
+    def test_alias_resolves_to_canonical(self, handler, ctx):
+        ctx.args = "be"
+        with patch("app.utils.insert_pending_mission") as mock_insert, \
+             patch("app.utils.resolve_project_path", return_value="/home/backend"), \
+             patch("app.utils.resolve_project_alias", return_value="backend"):
+            result = handler.handle(ctx)
+            assert "Profile queued" in result
+            assert "backend" in result
+            entry = mock_insert.call_args[0][1]
+            assert "[project:backend]" in entry
+
     def test_unknown_project_lists_known(self, handler, ctx):
         ctx.args = "nonexistent"
         with patch("app.utils.resolve_project_path", return_value=None), \

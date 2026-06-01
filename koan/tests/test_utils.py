@@ -216,6 +216,27 @@ class TestResolveProjectAlias:
             assert resolve_project_alias("tt") is None
 
 
+class TestResolveProjectPathAlias:
+    def test_resolves_alias_to_project_path(self):
+        from app.utils import resolve_project_path
+        with patch("app.utils.get_known_projects", return_value=[("backend", "/path/backend")]), \
+             patch("app.utils.resolve_project_alias", return_value="backend"):
+            assert resolve_project_path("be") == "/path/backend"
+
+    def test_canonical_name_still_works(self):
+        from app.utils import resolve_project_path
+        with patch("app.utils.get_known_projects", return_value=[("backend", "/path/backend")]), \
+             patch("app.utils.resolve_project_alias", return_value=None):
+            assert resolve_project_path("backend") == "/path/backend"
+
+    def test_alias_skipped_when_owner_provided(self):
+        from app.utils import resolve_project_path
+        with patch("app.utils.get_known_projects", return_value=[("backend", "/path/backend")]), \
+             patch("app.utils.resolve_project_alias") as mock_alias:
+            resolve_project_path("be", owner="someowner")
+            mock_alias.assert_not_called()
+
+
 class TestInsertPendingMission:
     def test_inserts_into_existing_file(self, tmp_path):
         from app.utils import insert_pending_mission

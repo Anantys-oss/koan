@@ -39,7 +39,13 @@ def handle(ctx):
 
 def _queue_project_profile(ctx, project_name):
     """Queue a profile mission for a named project."""
-    from app.utils import insert_pending_mission, resolve_project_path
+    from app.utils import (
+        insert_pending_mission, resolve_project_alias, resolve_project_path,
+    )
+
+    canonical = resolve_project_alias(project_name)
+    if canonical:
+        project_name = canonical
 
     project_path = resolve_project_path(project_name)
     if not project_path:

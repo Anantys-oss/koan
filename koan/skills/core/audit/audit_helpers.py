@@ -36,7 +36,13 @@ def queue_audit_mission(ctx, project_name, extra_context,
     emoji : str
         The emoji prefix for the confirmation message.
     """
-    from app.utils import insert_pending_mission, resolve_project_path
+    from app.utils import (
+        insert_pending_mission, resolve_project_alias, resolve_project_path,
+    )
+
+    canonical = resolve_project_alias(project_name)
+    if canonical:
+        project_name = canonical
 
     path = resolve_project_path(project_name)
     if not path:

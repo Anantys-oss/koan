@@ -782,6 +782,12 @@ def resolve_project_path(repo_name: str, owner: Optional[str] = None) -> Optiona
         except Exception as e:
             print(f"[utils] GitHub URL cache lookup failed: {e}", file=sys.stderr)
 
+    # 1b. Alias resolution — translate alias to canonical name before matching
+    if not owner:
+        canonical = resolve_project_alias(repo_name)
+        if canonical:
+            repo_name = canonical
+
     # 2. Exact match on project name
     for name, path in projects:
         if name.lower() == repo_name.lower():

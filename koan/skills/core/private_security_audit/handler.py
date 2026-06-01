@@ -44,7 +44,13 @@ def handle(ctx):
 
 def _queue_audit(ctx, project_name, extra_context, max_issues=DEFAULT_MAX_ISSUES):
     """Queue a journal-only security audit mission."""
-    from app.utils import insert_pending_mission, resolve_project_path
+    from app.utils import (
+        insert_pending_mission, resolve_project_alias, resolve_project_path,
+    )
+
+    canonical = resolve_project_alias(project_name)
+    if canonical:
+        project_name = canonical
 
     path = resolve_project_path(project_name)
     if not path:
