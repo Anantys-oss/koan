@@ -819,6 +819,55 @@ def _parse_review_json(raw_output: str) -> Optional[dict]:
     return data
 
 
+def _safe_code_fence(content: str) -> str:
+    """Return a backtick fence long enough to not conflict with content."""
+    max_run = 0
+    run = 0
+    for ch in content:
+        if ch == "`":
+            run += 1
+            if run > max_run:
+                max_run = run
+        else:
+            run = 0
+    return "`" * max(3, max_run + 1)
+
+
+def _fix_nested_fences(text: str) -> str:
+    """Re-fence code blocks whose content contains backtick runs that break them."""
+    lines = text.split("\n")
+    result: list = []
+    i = 0
+    while i < len(lines):
+        m = re.match(r"^(`{3,})(.*)", lines[i])
+        if m:
+            fence_len = len(m.group(1))
+            lang = m.group(2)
+            content_lines: list = []
+            i += 1
+            closed = False
+            while i < len(lines):
+                if re.match(r"^`{" + str(fence_len) + r",}\s*$", lines[i]):
+                    closed = True
+                    break
+                content_lines.append(lines[i])
+                i += 1
+            if closed:
+                content = "\n".join(content_lines)
+                fence = _safe_code_fence(content)
+                result.append(f"{fence}{lang}")
+                result.extend(content_lines)
+                result.append(fence)
+                i += 1
+            else:
+                result.append(f"{m.group(1)}{lang}")
+                result.extend(content_lines)
+        else:
+            result.append(lines[i])
+            i += 1
+    return "\n".join(result)
+
+
 _SEVERITY_EMOJI = {
     "critical": "🔴",
     "warning": "🟡",
@@ -914,12 +963,13 @@ def _format_review_as_markdown(review_data: dict, title: str = "", bot_username:
             lines.append(summary_line)
             lines.append("</summary>")
             lines.append("")
-            lines.append(item["comment"])
+            lines.append(_fix_nested_fences(item["comment"]))
             if item.get("code_snippet"):
+                fence = _safe_code_fence(item["code_snippet"])
                 lines.append("")
-                lines.append("```")
+                lines.append(fence)
                 lines.append(item["code_snippet"])
-                lines.append("```")
+                lines.append(fence)
             lines.append("")
             lines.append("</details>")
             lines.append("")

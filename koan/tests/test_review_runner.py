@@ -25,6 +25,8 @@ from app.review_runner import (
     _post_review_comment,
     _post_comment_replies,
     _fetch_pr_commit_shas,
+    _safe_code_fence,
+    _fix_nested_fences,
 )
 
 
@@ -2879,6 +2881,85 @@ class TestSeverityFilterHint:
         }
         md = _format_review_as_markdown(data)
         assert "/rebase" not in md
+
+
+# ---------------------------------------------------------------------------
+# _safe_code_fence / _fix_nested_fences
+# ---------------------------------------------------------------------------
+
+class TestSafeCodeFence:
+    def test_no_backticks_returns_triple(self):
+        assert _safe_code_fence("print('hello')") == "```"
+
+    def test_triple_backtick_in_content(self):
+        assert _safe_code_fence("some ```bash\ncode\n```") == "````"
+
+    def test_quad_backtick_in_content(self):
+        assert _safe_code_fence("````python\ncode\n````") == "`````"
+
+
+class TestFixNestedFences:
+    def test_no_fences_unchanged(self):
+        text = "Plain text\nwith no fences"
+        assert _fix_nested_fences(text) == text
+
+    def test_simple_fence_unchanged(self):
+        text = "```python\nprint('hi')\n```"
+        assert _fix_nested_fences(text) == text
+
+    def test_nested_backticks_get_upgraded(self):
+        text = "```bash\necho '```'\n```"
+        result = _fix_nested_fences(text)
+        assert result.startswith("````bash\n")
+        assert result.endswith("\n````")
+        assert "echo '```'" in result
+
+    def test_deeply_nested_backticks(self):
+        text = "```\ncode with ````inside\n```"
+        result = _fix_nested_fences(text)
+        assert result.startswith("`````\n")
+        assert result.endswith("\n`````")
+
+    def test_multiple_fences_independently_fixed(self):
+        text = "text\n```\nclean\n```\nmore\n```\nhas ``` inside\n```"
+        result = _fix_nested_fences(text)
+        lines = result.split("\n")
+        assert lines[0] == "text"
+        assert lines[1] == "```"
+        assert lines[3] == "```"
+        assert lines[5] == "````"
+        assert lines[7] == "````"
+
+
+class TestNestedFencesInReview:
+    def test_code_snippet_with_backticks(self):
+        data = {
+            "file_comments": [
+                {"file": "readme.md", "line_start": 5, "line_end": 5,
+                 "severity": "warning", "title": "Bad fence",
+                 "comment": "Fix this",
+                 "code_snippet": "```bash\necho hello\n```"},
+            ],
+            "review_summary": {"lgtm": False, "summary": "Fix.",
+                               "checklist": []},
+        }
+        md = _format_review_as_markdown(data)
+        assert "````" in md
+        assert md.count("````") % 2 == 0
+
+    def test_comment_with_nested_fences(self):
+        data = {
+            "file_comments": [
+                {"file": "app.py", "line_start": 1, "line_end": 1,
+                 "severity": "critical", "title": "Issue",
+                 "comment": "Use this pattern:\n\n```python\nx = '```'\n```",
+                 "code_snippet": ""},
+            ],
+            "review_summary": {"lgtm": False, "summary": "Fix.",
+                               "checklist": []},
+        }
+        md = _format_review_as_markdown(data)
+        assert "````python" in md
 
 
 # ---------------------------------------------------------------------------
