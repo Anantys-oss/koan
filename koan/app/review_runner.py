@@ -842,8 +842,10 @@ _UNPARSEABLE_REVIEW_NOTICE = (
 def _format_review_as_markdown(review_data: dict, title: str = "", bot_username: str = "") -> str:
     """Convert validated review JSON into the markdown format for GitHub.
 
-    Produces the standard ## PR Review format with an optional plan alignment
-    section (when present), followed by severity sections, checklist, and summary.
+    Produces the standard ## PR Review format: the summary as the lead
+    paragraph under the header, an optional plan alignment section (when
+    present), then severity sections and the checklist. The summary is emitted
+    only once — at the top — to avoid duplicating it in a trailing section.
     """
     comments = review_data["file_comments"]
     summary_data = review_data["review_summary"]
@@ -944,12 +946,10 @@ def _format_review_as_markdown(review_data: dict, title: str = "", bot_username:
             lines.append(f"- [{mark}] {ci['item']}{ref}")
         lines.append("")
 
-    # Summary (always present)
-    lines.append("---")
-    lines.append("")
-    lines.append("### Summary")
-    lines.append("")
-    lines.append(summary_data["summary"])
+    # NOTE: The summary paragraph is intentionally emitted only once, as the
+    # lead paragraph directly under the header (see above). A second labelled
+    # "### Summary" section used to repeat ``summary_data["summary"]`` verbatim,
+    # which rendered the identical text twice in posted reviews.
 
     # Severity filter hint — only show when there are findings at multiple
     # severity levels so the hint is actually useful.

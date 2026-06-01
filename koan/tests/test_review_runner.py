@@ -618,10 +618,23 @@ class TestFormatReviewAsMarkdown:
         assert "Missing validation" in md
         assert "`auth.py`" in md
         assert "L42" in md
-        assert "### Summary" in md
         assert "<details>" in md
         assert "<summary>" in md
         assert "</details>" in md
+
+    def test_summary_rendered_once(self):
+        """Regression: the summary paragraph must appear exactly once.
+
+        Previously _format_review_as_markdown emitted summary_data["summary"]
+        both as the lead paragraph and again under a trailing "### Summary"
+        heading, so posted reviews showed the identical text twice (see
+        esphome/esphome#15346). It must now render only once.
+        """
+        summary_text = VALID_REVIEW_JSON["review_summary"]["summary"]
+        md = _format_review_as_markdown(VALID_REVIEW_JSON, title="Fix auth")
+        assert md.count(summary_text) == 1
+        # The redundant trailing heading is gone.
+        assert "### Summary" not in md
 
     def test_lgtm_review(self):
         md = _format_review_as_markdown(LGTM_REVIEW_JSON)
