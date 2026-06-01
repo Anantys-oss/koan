@@ -1456,13 +1456,12 @@ def _enqueue_ci_check(
     pr_url = context.get("url") or f"https://github.com/{full_repo}/pull/{pr_number}"
 
     try:
-        from app.ci_queue_runner import _project_name_from_path
         from app.missions import add_ci_item
-        from app.utils import load_config, modify_missions_file
+        from app.utils import load_config, modify_missions_file, project_name_for_path
 
         config = load_config()
         max_attempts = config.get("ci_fix_max_attempts", 5)
-        project_name = _project_name_from_path(project_path)
+        project_name = project_name_for_path(project_path)
         missions_path = Path(instance_dir) / "missions.md"
 
         modify_missions_file(

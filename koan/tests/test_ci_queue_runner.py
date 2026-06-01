@@ -536,6 +536,30 @@ class TestCiQueueSmallHelpers:
 
         assert _project_name_from_path("") == ""
 
+    def test_project_name_from_path_uses_registry_name(self):
+        """When dir basename differs from project name in registry, use registry name.
+
+        Reproduces the bug where a repo cloned as 'investmindr' but registered
+        as 'backend' in projects.yaml would tag CI missions with the wrong name.
+        """
+        from app.ci_queue_runner import _project_name_from_path
+
+        with patch(
+            "app.utils.find_known_project_name_for_path",
+            return_value="backend",
+        ):
+            assert _project_name_from_path("/workspace/investmindr") == "backend"
+
+    def test_project_name_from_path_falls_back_to_basename(self):
+        """When path is not in the registry, fall back to directory basename."""
+        from app.ci_queue_runner import _project_name_from_path
+
+        with patch(
+            "app.utils.find_known_project_name_for_path",
+            return_value=None,
+        ):
+            assert _project_name_from_path("/workspace/my-repo") == "my-repo"
+
     def test_write_outbox_failure_is_logged(self, capsys):
         from app.ci_queue_runner import _write_outbox
 
