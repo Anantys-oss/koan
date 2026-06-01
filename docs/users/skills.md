@@ -34,7 +34,7 @@ Complete reference for all Koan slash commands. Use these via Telegram, Slack, o
 | Command | Aliases | Description | GitHub @mention |
 |---------|---------|-------------|:-:|
 | `/plan <desc>` | — | Deep-think an idea, create a tracker issue with structured plan | — |
-| `/implement <issue>` | `/impl` | Queue implementation for a GitHub or Jira issue | Yes |
+| `/implement <issue>` | `/impl` | Queue implementation for a GitHub or Jira issue; never bails — resolves ambiguity with simplest viable solution, retries once before surfacing a problem | Yes |
 | `/fix <issue>` | — | Understand → plan → test → implement → submit PR | Yes |
 | `/review <PR>` | `/rv` | Review a pull request | Yes |
 | `/rebase <PR>` | `/rb` | Rebase a PR onto its base branch | Yes |

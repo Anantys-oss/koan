@@ -27,6 +27,7 @@ from app.issue_tracker import (
 )
 from app.issue_tracker.config import resolve_code_repository
 from app.pr_submit import (
+    get_commit_subjects,
     get_current_branch,
     guess_project_name,
     submit_draft_pr,
@@ -166,8 +167,46 @@ def run_implement(
     except Exception as e:
         return False, f"Implementation failed: {str(e)[:300]}"
 
-    if not output:
-        return False, "Claude returned empty output."
+    # Detect whether real work landed: commits exist and we are on a feature branch.
+    # An empty output or no commits signals a bail-out — run one escalated retry.
+    def _work_landed() -> bool:
+        branch = get_current_branch(project_path)
+        on_base = branch in (effective_base_branch, "main", "master")
+        commits = get_commit_subjects(project_path, base_branch=effective_base_branch)
+        return bool(commits) and not on_base
+
+    if not output or not _work_landed():
+        logger.info(
+            "[implement] First pass produced no committed changes — running escalated retry"
+        )
+        print("[implement] First pass produced no committed changes — retrying with escalation", flush=True)
+        try:
+            output = _execute_implementation(
+                project_path=project_path,
+                issue_url=issue_url,
+                issue_title=title,
+                plan=plan,
+                context=effective_context,
+                skill_dir=skill_dir,
+                issue_number=str(issue_number),
+                project_name=project_name,
+                instance_dir=instance_dir,
+                base_branch=effective_base_branch,
+                escalate=True,
+            )
+        except Exception as e:
+            logger.warning("[implement] Escalated retry failed: %s", e)
+            output = ""
+
+        if not output or not _work_landed():
+            msg = (
+                f"⚠️ /implement could not auto-implement issue {label}{context_label} "
+                "after two passes. The plan may need a human review before retrying."
+            )
+            notify_fn(msg)
+            return False, (
+                f"No committed changes after two passes for {label}{context_label}."
+            )
 
     # Post-implementation: submit draft PR (only for GitHub issues with repo info)
     pr_url = None
@@ -508,6 +547,7 @@ def _execute_implementation(
     project_name: str = "",
     instance_dir: str = "",
     base_branch: Optional[str] = None,
+    escalate: bool = False,
 ) -> str:
     """Execute the implementation via Claude CLI."""
     from app.config import get_branch_prefix
@@ -525,8 +565,13 @@ def _execute_implementation(
         instance_dir=instance_dir,
     )
 
+    effective_context = context
+    if escalate:
+        escalation_preamble = load_prompt_or_skill(skill_dir, "implement_retry_context")
+        effective_context = escalation_preamble + "\n\n" + context
+
     prompt = _build_prompt(
-        issue_url, issue_title, plan, context, skill_dir,
+        issue_url, issue_title, plan, effective_context, skill_dir,
         branch_prefix=branch_prefix,
         issue_number=issue_number,
         project_memory=project_memory,

@@ -464,7 +464,7 @@ Use this before `/plan` when the idea is architecturally complex, when you want 
 - `/deepplan Redesign the mission queue for concurrent execution` — Surface trade-offs for a complex architectural change
 </details>
 
-**`/implement`** — Queue an implementation mission for a GitHub or Jira issue.
+**`/implement`** — Queue an implementation mission for a GitHub or Jira issue. Never bails on ambiguity — resolves blockers with the simplest viable solution and retries once before surfacing a problem.
 
 - **Usage:** `/implement <issue-url> [additional context]`
 - **Aliases:** `/impl`
@@ -477,6 +477,8 @@ Use this before `/plan` when the idea is architecturally complex, when you want 
 - `/implement https://github.com/org/repo/issues/42 Focus on the backend only` — Add guidance
 - `/implement https://myorg.atlassian.net/browse/PROJ-123 phase 1 only` — Implement a Jira-backed plan and post the PR link back to Jira
 </details>
+
+> **Blocker handling:** When the plan is ambiguous or under-specified, `/implement` chooses the simplest interpretation consistent with existing code patterns, documents the assumption in a commit message, and delivers a draft PR. If the first pass produces no committed changes, an escalated retry pass runs automatically. Only a genuine hard impossibility (no repo access, no actionable plan) results in a soft failure notification.  
 
 **`/fix`** — Fix a GitHub or Jira issue end-to-end: understand, plan, test, implement, and submit a PR.
 

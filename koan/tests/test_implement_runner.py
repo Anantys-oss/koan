@@ -358,6 +358,10 @@ class TestPlanReviewGate:
                     return_value=gate_result), \
              patch(f"{_IMPL_MODULE}._execute_implementation",
                     return_value="done") as mock_exec, \
+             patch(f"{_IMPL_MODULE}.get_commit_subjects",
+                    return_value=["feat: implement plan"]), \
+             patch(f"{_IMPL_MODULE}.get_current_branch",
+                    return_value="koan/implement-42"), \
              patch(f"{_IMPL_MODULE}._submit_implement_pr", return_value=None):
             ok, msg = run_implement(
                 "/project",
@@ -771,7 +775,11 @@ class TestRunImplement:
                     return_value=_github_issue(title="Title", body=body)), \
              patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
              patch(f"{_IMPL_MODULE}._execute_implementation",
-                    return_value="Done"):
+                    return_value="Done"), \
+             patch(f"{_IMPL_MODULE}.get_commit_subjects",
+                    return_value=["feat: implement plan"]), \
+             patch(f"{_IMPL_MODULE}.get_current_branch",
+                    return_value="koan/implement-42"):
             ok, msg = run_implement(
                 "/project",
                 "https://github.com/o/r/issues/42",
@@ -787,7 +795,11 @@ class TestRunImplement:
                     return_value=_github_issue(title="Title", body=body)), \
              patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
              patch(f"{_IMPL_MODULE}._execute_implementation",
-                    return_value="Done") as mock_run:
+                    return_value="Done") as mock_run, \
+             patch(f"{_IMPL_MODULE}.get_commit_subjects",
+                    return_value=["feat: implement plan"]), \
+             patch(f"{_IMPL_MODULE}.get_current_branch",
+                    return_value="koan/implement-42"):
             ok, msg = run_implement(
                 "/project",
                 "https://github.com/o/r/issues/42",
@@ -828,21 +840,27 @@ class TestRunImplement:
             assert not ok
             assert "Implementation failed" in msg
 
-    def test_empty_claude_output(self):
+    def test_empty_claude_output_triggers_retry_then_soft_failure(self):
+        """Empty output from both passes → soft failure notification, no blocker keywords."""
         notify = MagicMock()
         body = "### Summary\nPlan\n#### Phase 1: Do it"
         with patch(f"{_IMPL_MODULE}.fetch_issue",
                     return_value=_github_issue(title="Title", body=body)), \
              patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
-             patch(f"{_IMPL_MODULE}._execute_implementation",
-                    return_value=""):
+             patch(f"{_IMPL_MODULE}._execute_implementation", return_value=""), \
+             patch(f"{_IMPL_MODULE}.get_commit_subjects", return_value=[]), \
+             patch(f"{_IMPL_MODULE}.get_current_branch", return_value="main"):
             ok, msg = run_implement(
                 "/project",
                 "https://github.com/o/r/issues/1",
                 notify_fn=notify,
             )
             assert not ok
-            assert "empty output" in msg
+            # Soft failure — no harsh blocker-keyword phrases
+            all_notified = " ".join(c.args[0] for c in notify.call_args_list)
+            assert "BLOCKED" not in all_notified
+            assert "could not execute" not in all_notified.lower()
+            assert "no PR" not in all_notified
 
     def test_default_context_when_none(self):
         notify = MagicMock()
@@ -851,7 +869,11 @@ class TestRunImplement:
                     return_value=_github_issue(title="Title", body=body)), \
              patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
              patch(f"{_IMPL_MODULE}._execute_implementation",
-                    return_value="Done") as mock_run:
+                    return_value="Done") as mock_run, \
+             patch(f"{_IMPL_MODULE}.get_commit_subjects",
+                    return_value=["feat: implement plan"]), \
+             patch(f"{_IMPL_MODULE}.get_current_branch",
+                    return_value="koan/implement-42"):
             run_implement(
                 "/project",
                 "https://github.com/o/r/issues/42",
@@ -868,6 +890,10 @@ class TestRunImplement:
              patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
              patch(f"{_IMPL_MODULE}._execute_implementation",
                     return_value="Done"), \
+             patch(f"{_IMPL_MODULE}.get_commit_subjects",
+                    return_value=["feat: implement plan"]), \
+             patch(f"{_IMPL_MODULE}.get_current_branch",
+                    return_value="koan/implement-42"), \
              patch(f"{_IMPL_MODULE}._submit_implement_pr", return_value=None):
             run_implement(
                 "/project",
@@ -890,7 +916,11 @@ class TestRunImplement:
                     return_value=_github_issue(title="Title", body=body)) as fetch, \
              patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
              patch(f"{_IMPL_MODULE}._execute_implementation",
-                   return_value="Done") as execute:
+                   return_value="Done") as execute, \
+             patch(f"{_IMPL_MODULE}.get_commit_subjects",
+                   return_value=["feat: implement plan"]), \
+             patch(f"{_IMPL_MODULE}.get_current_branch",
+                   return_value="koan/implement-42"):
             run_implement(
                 "/workspace/webpros-shield",
                 "https://github.com/o/r/issues/42",
@@ -1280,9 +1310,11 @@ class TestRunImplementWithPR:
                     return_value=_github_issue(title="Title", body=body)), \
              patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
              patch(f"{_IMPL_MODULE}._execute_implementation", return_value="Done"), \
+             patch(f"{_IMPL_MODULE}.get_commit_subjects",
+                    return_value=["feat: implement plan"]), \
+             patch(f"{_IMPL_MODULE}.get_current_branch", return_value="koan/feat"), \
              patch(f"{_IMPL_MODULE}._submit_implement_pr",
-                    return_value="https://github.com/o/r/pull/99"), \
-             patch(f"{_IMPL_MODULE}.get_current_branch", return_value="koan/feat"):
+                    return_value="https://github.com/o/r/pull/99"):
             ok, msg = run_implement(
                 "/project",
                 "https://github.com/o/r/issues/42",
@@ -1298,8 +1330,10 @@ class TestRunImplementWithPR:
                     return_value=_github_issue(title="Title", body=body)), \
              patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
              patch(f"{_IMPL_MODULE}._execute_implementation", return_value="Done"), \
-             patch(f"{_IMPL_MODULE}._submit_implement_pr", return_value=None), \
-             patch(f"{_IMPL_MODULE}.get_current_branch", return_value="koan/impl-42"):
+             patch(f"{_IMPL_MODULE}.get_commit_subjects",
+                    return_value=["feat: implement plan"]), \
+             patch(f"{_IMPL_MODULE}.get_current_branch", return_value="koan/impl-42"), \
+             patch(f"{_IMPL_MODULE}._submit_implement_pr", return_value=None):
             ok, msg = run_implement(
                 "/project",
                 "https://github.com/o/r/issues/42",
@@ -1308,22 +1342,25 @@ class TestRunImplementWithPR:
             assert ok
             assert "koan/impl-42" in msg
 
-    def test_warning_when_on_main(self):
+    def test_warning_when_on_main_with_commits(self):
+        """When commits land on the base branch, trigger retry then soft failure."""
         notify = MagicMock()
         body = "### Summary\nPlan\n#### Phase 1: Do it"
         with patch(f"{_IMPL_MODULE}.fetch_issue",
                     return_value=_github_issue(title="Title", body=body)), \
              patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
              patch(f"{_IMPL_MODULE}._execute_implementation", return_value="Done"), \
-             patch(f"{_IMPL_MODULE}._submit_implement_pr", return_value=None), \
+             patch(f"{_IMPL_MODULE}.get_commit_subjects", return_value=[]), \
              patch(f"{_IMPL_MODULE}.get_current_branch", return_value="main"):
             ok, msg = run_implement(
                 "/project",
                 "https://github.com/o/r/issues/42",
                 notify_fn=notify,
             )
-            assert ok
-            assert "no PR" in msg
+            # No work on a feature branch → retry → still none → soft failure
+            assert not ok
+            all_notified = " ".join(c.args[0] for c in notify.call_args_list)
+            assert "BLOCKED" not in all_notified
 
     def test_pr_submission_exception_does_not_fail_mission(self):
         notify = MagicMock()
@@ -1332,9 +1369,11 @@ class TestRunImplementWithPR:
                     return_value=_github_issue(title="Title", body=body)), \
              patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
              patch(f"{_IMPL_MODULE}._execute_implementation", return_value="Done"), \
+             patch(f"{_IMPL_MODULE}.get_commit_subjects",
+                    return_value=["feat: implement plan"]), \
+             patch(f"{_IMPL_MODULE}.get_current_branch", return_value="koan/feat"), \
              patch(f"{_IMPL_MODULE}._submit_implement_pr",
-                    side_effect=RuntimeError("unexpected")), \
-             patch(f"{_IMPL_MODULE}.get_current_branch", return_value="koan/feat"):
+                    side_effect=RuntimeError("unexpected")):
             ok, msg = run_implement(
                 "/project",
                 "https://github.com/o/r/issues/42",
@@ -1410,3 +1449,130 @@ class TestMain:
             ])
             _, kwargs = mock.call_args
             assert kwargs["base_branch"] == "main"
+
+
+# ---------------------------------------------------------------------------
+# Escalated retry — work_landed detection
+# ---------------------------------------------------------------------------
+
+class TestEscalatedRetry:
+    """Tests for the mechanical fallback retry pass when no work lands."""
+
+    _BODY = "### Summary\nPlan\n#### Phase 1: Do it"
+
+    def _base_patches(self, notify):
+        """Common patches for run_implement that resolve issue + gate cleanly."""
+        return [
+            patch(f"{_IMPL_MODULE}.fetch_issue",
+                  return_value=_github_issue(title="Title", body=self._BODY)),
+            patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None),
+            patch(f"{_IMPL_MODULE}._submit_implement_pr", return_value=None),
+        ]
+
+    def test_escalated_retry_invoked_when_first_pass_leaves_no_commits(self):
+        """First pass → no commits; second pass → commits. Retry runs exactly once."""
+        notify = MagicMock()
+        exec_mock = MagicMock(return_value="Done")
+        # _work_landed() is called twice (once per pass).
+        # Each call reads get_current_branch then get_commit_subjects.
+        # Pass 1: branch=main, commits=[] → False
+        # Pass 2 (after retry): branch=koan/implement-42, commits=["feat"] → True
+        # Final get_current_branch call for the summary notification = 3rd call.
+        branch_side_effect = ["main", "koan/implement-42", "koan/implement-42"]
+        commit_subjects_side_effect = [[], ["feat: add X"]]
+
+        with patch(f"{_IMPL_MODULE}.fetch_issue",
+                    return_value=_github_issue(title="Title", body=self._BODY)), \
+             patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
+             patch(f"{_IMPL_MODULE}._execute_implementation", exec_mock), \
+             patch(f"{_IMPL_MODULE}.get_commit_subjects",
+                    side_effect=commit_subjects_side_effect), \
+             patch(f"{_IMPL_MODULE}.get_current_branch",
+                    side_effect=branch_side_effect), \
+             patch(f"{_IMPL_MODULE}._submit_implement_pr", return_value=None):
+            ok, msg = run_implement(
+                "/project",
+                "https://github.com/o/r/issues/42",
+                notify_fn=notify,
+            )
+
+        assert ok
+        assert exec_mock.call_count == 2
+        # Second call must have escalate=True
+        second_call_kwargs = exec_mock.call_args_list[1][1]
+        assert second_call_kwargs.get("escalate") is True
+
+    def test_no_retry_when_first_pass_lands_commits(self):
+        """First pass → commits on feature branch → no retry pass."""
+        notify = MagicMock()
+        exec_mock = MagicMock(return_value="Done")
+
+        with patch(f"{_IMPL_MODULE}.fetch_issue",
+                    return_value=_github_issue(title="Title", body=self._BODY)), \
+             patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
+             patch(f"{_IMPL_MODULE}._execute_implementation", exec_mock), \
+             patch(f"{_IMPL_MODULE}.get_commit_subjects",
+                    return_value=["feat: add X"]), \
+             patch(f"{_IMPL_MODULE}.get_current_branch",
+                    return_value="koan/implement-42"), \
+             patch(f"{_IMPL_MODULE}._submit_implement_pr", return_value=None):
+            ok, _ = run_implement(
+                "/project",
+                "https://github.com/o/r/issues/42",
+                notify_fn=notify,
+            )
+
+        assert ok
+        assert exec_mock.call_count == 1
+
+    def test_soft_notification_when_both_passes_fail(self):
+        """Both passes produce no committed changes → soft notification, no blocker words."""
+        notify = MagicMock()
+
+        with patch(f"{_IMPL_MODULE}.fetch_issue",
+                    return_value=_github_issue(title="Title", body=self._BODY)), \
+             patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
+             patch(f"{_IMPL_MODULE}._execute_implementation", return_value="Done"), \
+             patch(f"{_IMPL_MODULE}.get_commit_subjects", return_value=[]), \
+             patch(f"{_IMPL_MODULE}.get_current_branch", return_value="main"):
+            ok, msg = run_implement(
+                "/project",
+                "https://github.com/o/r/issues/42",
+                notify_fn=notify,
+            )
+
+        assert not ok
+        # Must not raise — function returns cleanly
+        all_notified = " ".join(c.args[0] for c in notify.call_args_list)
+        # Soft wording — none of the _RESULT_ALERT_REGEX trigger phrases
+        assert "BLOCKED" not in all_notified
+        assert "could not execute" not in all_notified.lower()
+        assert "no code changes" not in all_notified.lower()
+        # Should mention the issue label
+        assert "#42" in all_notified
+
+    def test_escalated_retry_injects_escalation_preamble_into_context(self):
+        """_execute_implementation with escalate=True prepends the retry-context fragment."""
+        escalation_text = "## Escalated Retry — Committed Changes Required"
+        base_context = "Implement the full plan."
+
+        with patch(f"{_IMPL_MODULE}._build_prompt", return_value="prompt") as mock_build, \
+             patch("app.cli_provider.run_command_streaming", return_value="output"), \
+             patch(f"{_IMPL_MODULE}.load_prompt_or_skill",
+                    return_value=escalation_text) as mock_load:
+            _execute_implementation(
+                "/project", "http://url", "Title", "Plan", base_context,
+                escalate=True,
+            )
+
+        # load_prompt_or_skill must be called for the escalation fragment
+        escalation_calls = [
+            c for c in mock_load.call_args_list
+            if len(c.args) >= 2 and c.args[1] == "implement_retry_context"
+        ]
+        assert len(escalation_calls) == 1
+
+        # The context passed to _build_prompt must include the escalation preamble
+        build_context_arg = mock_build.call_args.kwargs.get("context") or mock_build.call_args[0][3]
+        assert escalation_text in build_context_arg
+        assert base_context in build_context_arg
