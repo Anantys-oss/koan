@@ -525,6 +525,18 @@ class TestResumeDuringStartupRace:
     re-created.
     """
 
+    @pytest.fixture(autouse=True)
+    def _isolate_skip_env(self, monkeypatch):
+        """Clear the sticky KOAN_SKIP_START_PAUSE that handle_start_on_pause sets.
+
+        handle_start_on_pause sets this process-scoped env var when it honors a
+        fresh skip file. Without isolation it leaks into later passes/tests and
+        short-circuits pause creation (the assertion that a pause file exists
+        then fails). delenv removes leaked values at setup and undoes any set
+        during the test at teardown.
+        """
+        monkeypatch.delenv("KOAN_SKIP_START_PAUSE", raising=False)
+
     @patch("app.utils.get_start_on_pause", return_value=True)
     def test_resume_before_start_on_pause_prevents_repause(
         self, mock_config, mock_alive, patch_bridge_state, mock_send

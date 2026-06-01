@@ -306,12 +306,7 @@ def handle_start_on_pause(koan_root: str):
         age = get_file_age_seconds(skip_file)
         if age is not None and age < 300:  # Fresh (< 5 min) — /resume was sent during startup
             skip_file.unlink(missing_ok=True)
-            # Make the resume intent sticky for the life of this process.
-            # Auto-update restarts the runner *in-process* (run.py's main()
-            # re-calls main_loop on RESTART_EXIT_CODE), so this step runs again
-            # on the next pass. The skip file is one-shot (consumed just above);
-            # without this env flag the second pass would re-create the
-            # start_on_pause pause and silently discard the user's early /resume.
+            # Sticky for in-process restart — skip file is one-shot but env survives.
             os.environ["KOAN_SKIP_START_PAUSE"] = "1"
             log("pause", "start_on_pause skipped (/resume requested during startup)")
             return

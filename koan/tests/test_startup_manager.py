@@ -527,10 +527,9 @@ class TestHandleStartOnPause:
         assert (koan_root / ".koan-pause").exists()
 
     @patch("app.utils.get_start_on_pause", return_value=True)
-    def test_skip_when_skip_file_exists(self, mock_config, koan_root, monkeypatch, capsys):
+    def test_skip_when_skip_file_exists(self, mock_config, koan_root, capsys):
         """Fresh .koan-skip-start-pause prevents pause creation (/resume during startup)."""
         import time as _time
-        monkeypatch.delenv("KOAN_SKIP_START_PAUSE", raising=False)
         (koan_root / ".koan-skip-start-pause").write_text(str(int(_time.time())))
         from app.startup_manager import handle_start_on_pause
         handle_start_on_pause(str(koan_root))
@@ -542,7 +541,7 @@ class TestHandleStartOnPause:
         assert "skipped" in out.lower()
 
     @patch("app.utils.get_start_on_pause", return_value=True)
-    def test_resume_survives_inprocess_restart(self, mock_config, koan_root, monkeypatch):
+    def test_resume_survives_inprocess_restart(self, mock_config, koan_root):
         """An early /resume must survive an in-process auto-update restart.
 
         Auto-update restarts the runner *in-process* (run.py's main() re-calls
@@ -552,7 +551,6 @@ class TestHandleStartOnPause:
         start_on_pause pause, silently discarding the user's early /resume.
         """
         import time as _time
-        monkeypatch.delenv("KOAN_SKIP_START_PAUSE", raising=False)
         # /resume during startup wrote the skip file (fresh).
         (koan_root / ".koan-skip-start-pause").write_text(str(int(_time.time())))
         from app.startup_manager import handle_start_on_pause
