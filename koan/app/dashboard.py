@@ -554,7 +554,9 @@ def add_mission():
     if not text:
         return redirect(url_for("missions_page"))
 
-    # Prepend skill command when a skill is selected
+    if skill and skill not in _get_mission_skill_commands():
+        skill = ""
+
     if skill:
         text = f"/{skill} {text}"
 
