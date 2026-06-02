@@ -99,7 +99,7 @@
 </div>
 
 {% if project_stats %}
-<h2 style="display:flex;align-items:center;gap:var(--space-3);">Projects{% if selected_project %} <a href="/" style="font-size:var(--fs-body-sm);font-weight:normal;color:var(--accent);">View all</a>{% endif %}</h2>
+<h2 style="display:flex;align-items:center;gap:var(--space-3);">Projects{% if selected_project %} <a href="/?project=" style="font-size:var(--fs-body-sm);font-weight:normal;color:var(--accent);">View all</a>{% endif %}</h2>
 <div class="grid">
 {% for pname, pdata in project_stats.items() %}
     <a href="/?project={{ pname }}" class="card project-card{% if selected_project == pname %} card-active{% endif %}" style="text-decoration:none;color:var(--text-primary);">

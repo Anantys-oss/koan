@@ -106,7 +106,13 @@
                 try { saved = localStorage.getItem(KEY) || ''; } catch (e) { saved = ''; }
                 var params = new URLSearchParams(window.location.search);
                 var current = params.get('project') || '';
-                if (current) {
+                var hasProjectParam = params.has('project');
+                if (hasProjectParam && !current) {
+                    try { localStorage.removeItem(KEY); } catch (e) {}
+                    if (window.location.search) {
+                        window.location.href = window.location.pathname;
+                    }
+                } else if (current) {
                     sel.value = current;
                     try { localStorage.setItem(KEY, current); } catch (e) {}
                 } else if (saved) {
