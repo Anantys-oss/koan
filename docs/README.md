@@ -29,6 +29,7 @@ memory, or integration changes:
 - [Skills System](architecture/skills-system.md)
 - [Memory Architecture](architecture/memory.md)
 - [GitHub And Trackers](architecture/github-and-trackers.md)
+- [GitHub Webhooks](messaging/github-webhooks.md)
 - [Design Decisions](design/decisions.md)
 
 ## Directory Map

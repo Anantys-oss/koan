@@ -570,6 +570,18 @@ def _get_known_repos_from_projects(koan_root: str) -> Optional[set]:
     return known_repos or None
 
 
+def get_known_repos_from_projects(koan_root: str) -> Optional[set]:
+    """Public entry point for the known-repo set.
+
+    Used by the webhook receiver (``github_webhook._resolve_known_repos``) so
+    production code does not reach across module boundaries for a private,
+    underscore-prefixed helper. Returns the same value as the internal
+    implementation: a set of ``owner/repo`` strings, or None when no projects
+    are configured (meaning "do not filter by repo").
+    """
+    return _get_known_repos_from_projects(koan_root)
+
+
 def _warn_unregistered_mention_repos(
     skipped_mention_repos: dict,
     instance_dir: str,

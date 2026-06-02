@@ -226,6 +226,8 @@ five minutes during quiet periods. Legacy `github.check_interval_seconds` and
 overrides. If `auto_pause` is disabled and there is no work, the agent loop also
 parks on this backoff so it does not flood logs while waiting for the next poll.
 
+> **Want faster responses?** The polling delay can be collapsed to a few seconds with the opt-in **push-based webhook receiver** — see [docs/messaging/github-webhooks.md](github-webhooks.md). Webhooks trigger an immediate poll; polling stays on as the reliability fallback.
+
 ### Error handling
 
 When a command fails validation (unknown command, permission denied), Kōan:

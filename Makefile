@@ -3,7 +3,7 @@ export
 
 .PHONY: install onboard setup start stop status restart
 .PHONY: clean say migrate test test-skills test-strict coverage lint sync-instance rename-project release
-.PHONY: awake run errand-run errand-awake dashboard api api-token
+.PHONY: awake run errand-run errand-awake dashboard api api-token webhook
 .PHONY: ollama logs ssh-forward
 .PHONY: install-systemctl-service uninstall-systemctl-service
 .PHONY: install-launchd-service uninstall-launchd-service
@@ -133,6 +133,11 @@ api-token:
 		echo "Or set in instance/config.yaml:" && \
 		echo "  api:" && \
 		echo "    token: \"$$token\""
+
+# Standalone GitHub webhook receiver (alternative to the bridge-embedded one).
+# Requires KOAN_GITHUB_WEBHOOK_SECRET. Front with a tunnel (smee/cloudflared).
+webhook: setup
+	cd koan && KOAN_ROOT=$(PWD) PYTHONPATH=. ../$(PYTHON) -m app.github_webhook
 
 restart:
 	$(MAKE) stop

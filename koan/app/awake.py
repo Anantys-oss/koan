@@ -769,6 +769,19 @@ def main():
     # Detect group chat and warn about privacy mode
     _check_group_chat_mode(provider)
 
+    # Optional GitHub webhook receiver — push-based notification triggering.
+    # Defaults off; only starts when github.webhook.enabled and a secret are set.
+    try:
+        from app.github_webhook import maybe_start_from_config
+        if maybe_start_from_config(str(KOAN_ROOT)) is not None:
+            log("init", "GitHub webhook receiver started (push-based triggering)")
+    except Exception as e:
+        # Keep the bridge alive on webhook failure, but log the full traceback —
+        # a bare {e} loses the context needed to diagnose startup failures.
+        import traceback
+        log("error",
+            f"GitHub webhook receiver failed to start: {e}\n{traceback.format_exc()}")
+
     log("init", f"Polling every {POLL_INTERVAL}s (chat mode: fast reply)")
     offset = None
     first_poll = True
