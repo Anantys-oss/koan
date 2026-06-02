@@ -26,7 +26,7 @@ from app.projects_config import (
 # Fields requested from gh pr list
 _PR_FIELDS = (
     "number,title,author,headRefName,isDraft,url,"
-    "createdAt,reviewDecision,statusCheckRollup,state"
+    "createdAt,updatedAt,reviewDecision,statusCheckRollup,state"
 )
 
 # ---------------------------------------------------------------------------
@@ -155,8 +155,11 @@ def fetch_all_prs(
                 print(f"[pr_tracker] error fetching PRs: {e}", file=sys.stderr)
                 had_errors = True
 
-    # Sort by creation date descending (newest first)
-    all_prs.sort(key=lambda pr: pr.get("createdAt", ""), reverse=True)
+    # Sort by last activity descending (fallback to creation date).
+    all_prs.sort(
+        key=lambda pr: (pr.get("updatedAt") or pr.get("createdAt") or ""),
+        reverse=True,
+    )
 
     return {
         "prs": all_prs,

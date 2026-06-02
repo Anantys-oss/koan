@@ -3859,6 +3859,58 @@ class TestRunSkillMissionEnv:
         assert "env" in call_kwargs
         assert call_kwargs["env"]["PYTHONPATH"] == str(tmp_path / "koan")
 
+    def test_appends_stream_usage_to_stdout_file_for_post_mission(self, tmp_path):
+        """Skill stream usage sidecar is appended to stdout file for token parsing."""
+        from app.run import _run_skill_mission
+
+        koan_root = str(tmp_path)
+        instance = str(tmp_path / "instance")
+        (tmp_path / "instance").mkdir()
+        (tmp_path / "instance" / "journal").mkdir(parents=True)
+        (tmp_path / "koan").mkdir()
+
+        mock_proc = self._make_mock_popen(stdout_lines=["step 1\n"])
+        stream_usage_paths = []
+        captured_stdout = []
+
+        def _popen_with_usage(*args, **kwargs):
+            usage_path = kwargs.get("env", {}).get("KOAN_STREAM_USAGE_FILE", "")
+            assert usage_path
+            stream_usage_paths.append(usage_path)
+            Path(usage_path).write_text(
+                '{"model":"codex-mini","input_tokens":11,'
+                '"output_tokens":7,"cache_read_input_tokens":3,'
+                '"cache_creation_input_tokens":0}'
+            )
+            return mock_proc._side_effect(*args, **kwargs)
+
+        def _capture_post_mission(**kwargs):
+            with open(kwargs["stdout_file"]) as f:
+                captured_stdout.append(f.read())
+
+        with patch("app.run.subprocess.Popen", side_effect=_popen_with_usage), \
+             patch("app.run._get_koan_branch", return_value="main"), \
+             patch("app.run._restore_koan_branch"), \
+             patch("app.run._reset_terminal"), \
+             patch("app.mission_runner.run_post_mission", side_effect=_capture_post_mission):
+            result = _run_skill_mission(
+                skill_cmd=["python3", "--help"],
+                koan_root=koan_root,
+                instance=instance,
+                project_name="test",
+                project_path=str(tmp_path),
+                run_num=1,
+                mission_title="/plan test",
+                autonomous_mode="implement",
+            )
+
+        assert result["exit_code"] == 0
+        assert len(stream_usage_paths) == 1
+        assert Path(stream_usage_paths[0]).exists() is False
+        assert len(captured_stdout) == 1
+        assert "step 1" in captured_stdout[0]
+        assert '"model":"codex-mini"' in captured_stdout[0]
+
     def test_restores_branch_after_skill_execution(self, tmp_path):
         """_run_skill_mission calls _restore_koan_branch after execution."""
         from app.run import _run_skill_mission
