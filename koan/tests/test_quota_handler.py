@@ -52,6 +52,31 @@ Error: You have run out of extra usage for claude-opus-4-20250514.
 Your quota resets 10am (Europe/Paris)."""
         assert detect_quota_exhaustion(text) is True
 
+    def test_quota_exhausted_field_name_does_not_trigger(self):
+        """Kōan's own ``quota_exhausted`` identifier is DATA, not a signal.
+
+        ``/ci_check`` always emits a JSON result line carrying the field
+        ``"quota_exhausted": false``. The strict ``quota.*exhausted`` pattern
+        matched the snake_case field name regardless of its value, so every
+        non-zero ci_check run was misread as a quota stop and paused the
+        daemon. The detector must ignore the bare identifier while still
+        honoring genuine prose and the explicit ``"quota_exhausted": true``
+        signal.
+        """
+        from app.quota_handler import _strict_quota_match, detect_quota_exhaustion
+
+        ci_check_line = (
+            '{"success": false, "summary": "CI still failing after 5 fix '
+            'attempts", "quota_exhausted": false}'
+        )
+        assert _strict_quota_match(ci_check_line) is False
+        assert detect_quota_exhaustion(ci_check_line) is False
+
+        # Genuine signals must still fire.
+        assert _strict_quota_match('{"quota_exhausted": true}') is True
+        assert detect_quota_exhaustion("Your quota has been exhausted") is True
+        assert detect_quota_exhaustion("API quota exhausted") is True
+
 
     def test_detects_hit_your_limit(self):
         """Detect 'You've hit your limit' message from Claude Code CLI."""

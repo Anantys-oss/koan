@@ -1338,6 +1338,12 @@ def _handle_skill_dispatch(
         )
 
         # --- Auth / quota classification ---
+        # Skill stdout is a summarized agent transcript (DATA): it quotes CI
+        # logs, failing tests, and Kōan's own identifiers — e.g. /ci_check
+        # always prints ``"quota_exhausted": false``. Scanning it for quota
+        # falsely paused the daemon, so classify from stderr only. Genuine
+        # skill quota arrives via the structured ``quota_exhausted`` field
+        # below, not from the transcript.
         if _classify_and_handle_cli_error(
             exit_code, _skill_stdout, _skill_stderr,
             provider_name=_skill_provider_name,
@@ -1348,6 +1354,7 @@ def _handle_skill_dispatch(
             mission_title=mission_title,
             run_num=run_num,
             hqe_kwargs=_skill_hqe,
+            trust_stdout=False,
         ):
             return True, mission_title
 
@@ -2619,6 +2626,7 @@ def _classify_and_handle_cli_error(
     mission_title: str,
     run_num: int,
     hqe_kwargs: dict,
+    trust_stdout: bool = True,
 ) -> bool:
     """Classify a non-zero CLI exit and handle AUTH / QUOTA errors.
 
@@ -2628,6 +2636,14 @@ def _classify_and_handle_cli_error(
         exit_code: CLI process exit code.
         stdout_text / stderr_text: CLI output for error classification.
         hqe_kwargs: Forwarded to :func:`handle_quota_exhaustion` (text or file).
+        trust_stdout: When False, stdout is treated as DATA and excluded from
+            classification — only stderr (the trusted CLI channel) is scanned.
+            Skill dispatches set this: their stdout is a summarized agent
+            transcript that legitimately quotes CI logs and source identifiers
+            (e.g. ``/ci_check`` always prints ``"quota_exhausted": false``),
+            which otherwise tripped a false QUOTA classification and paused the
+            daemon. Genuine skill quota propagates via the structured
+            ``quota_exhausted`` result field, not via transcript scanning.
 
     Returns:
         True if an auth/quota error was handled (caller should return True).
@@ -2637,9 +2653,22 @@ def _classify_and_handle_cli_error(
 
     from app.cli_errors import ErrorCategory, classify_cli_error
     category = classify_cli_error(
-        exit_code, stdout_text, stderr_text,
+        exit_code,
+        stdout_text if trust_stdout else "",
+        stderr_text,
         provider_name=provider_name,
     )
+    # When stdout is DATA (a skill's summarized agent transcript) the broad
+    # human-prose quota patterns are excluded above — they match content the
+    # transcript merely quotes (CI logs, Kōan's own ``quota_exhausted`` field).
+    # The CLI *runtime's* own signals, however, are safe to honor even in a
+    # transcript: the "hit your session limit" abort line and a rejected
+    # ``rate_limit_event`` are emitted by the runtime, not quotable prose.
+    if category != ErrorCategory.QUOTA and not trust_stdout:
+        from app.quota_handler import cli_runtime_quota_signal
+
+        if cli_runtime_quota_signal(stdout_text):
+            category = ErrorCategory.QUOTA
     if category == ErrorCategory.AUTH:
         _handle_auth_error(
             provider_label=provider_label,

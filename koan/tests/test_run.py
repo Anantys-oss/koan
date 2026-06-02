@@ -7020,3 +7020,85 @@ class TestRunIterationPaths:
             # Env vars should be set
             assert os.environ.get("KOAN_CURRENT_PROJECT") == "testproj"
             assert os.environ.get("KOAN_CURRENT_PROJECT_PATH") == "/tmp/testproj"
+
+
+# ---------------------------------------------------------------------------
+# Test: skill-dispatch quota classification trusts stderr only
+# ---------------------------------------------------------------------------
+
+class TestClassifyTrustStdout:
+    """``_classify_and_handle_cli_error`` must treat skill stdout as DATA.
+
+    A skill's stdout is a summarized agent transcript that legitimately quotes
+    CI logs and Kōan identifiers (``/ci_check`` always prints
+    ``"quota_exhausted": false``). Scanning it for quota falsely paused the
+    daemon. With ``trust_stdout=False`` only stderr — the trusted CLI channel
+    — drives classification.
+    """
+
+    _COMMON = dict(
+        provider_name="claude",
+        provider_label="Claude",
+        koan_root="/tmp/k",
+        instance="/tmp/k/instance",
+        project_name="proj",
+        mission_title="/ci_check https://example/pull/42",
+        run_num=1,
+        hqe_kwargs={},
+    )
+
+    def test_skill_stdout_quota_phrase_ignored(self):
+        from app import run
+
+        # A genuine quota phrase quoted in the transcript would, if trusted,
+        # classify as QUOTA and pause. With trust_stdout=False it must not.
+        transcript = "Reviewed the quota path. Output: API quota exhausted\n"
+        with patch.object(run, "_handle_quota_error") as quota, \
+             patch.object(run, "_handle_auth_error") as auth:
+            handled = run._classify_and_handle_cli_error(
+                1, transcript, "", trust_stdout=False, **self._COMMON
+            )
+        assert handled is False
+        quota.assert_not_called()
+        auth.assert_not_called()
+
+    def test_default_trusts_stdout(self):
+        from app import run
+
+        transcript = "Output: API quota exhausted\n"
+        with patch.object(run, "_handle_quota_error") as quota, \
+             patch.object(run, "_handle_auth_error"):
+            handled = run._classify_and_handle_cli_error(
+                1, transcript, "", **self._COMMON
+            )
+        assert handled is True
+        quota.assert_called_once()
+
+    def test_stderr_quota_still_detected_when_untrusted_stdout(self):
+        from app import run
+
+        # Genuine quota on the trusted stderr channel must still fire even
+        # when stdout is excluded.
+        with patch.object(run, "_handle_quota_error") as quota, \
+             patch.object(run, "_handle_auth_error"):
+            handled = run._classify_and_handle_cli_error(
+                1, "", "Error: out of extra usage",
+                trust_stdout=False, **self._COMMON
+            )
+        assert handled is True
+        quota.assert_called_once()
+
+    def test_runtime_session_limit_in_stdout_still_honored(self):
+        from app import run
+
+        # The CLI's own session-limit abort line is a runtime signal, not
+        # quotable prose — it must still classify as quota from stdout even
+        # when broad patterns are excluded.
+        transcript = "You've hit your session limit · resets 3am (UTC)\n"
+        with patch.object(run, "_handle_quota_error") as quota, \
+             patch.object(run, "_handle_auth_error"):
+            handled = run._classify_and_handle_cli_error(
+                1, transcript, "", trust_stdout=False, **self._COMMON
+            )
+        assert handled is True
+        quota.assert_called_once()

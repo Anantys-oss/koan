@@ -30,8 +30,17 @@ from typing import Optional, Tuple
 _STRICT_QUOTA_PATTERNS = [
     # Claude-specific error messages
     r"out of extra usage",
-    r"quota.*reached",
-    r"quota.*exhausted",
+    # Match human prose ("quota reached", "your quota has been exhausted") but
+    # NOT the snake_case identifier ``quota_exhausted``. That field name is
+    # emitted by Kōan's own ``/ci_check`` JSON result (``"quota_exhausted":
+    # false``) and appears throughout this codebase — and the detector
+    # re-scans agent transcripts that quote it. ``quota\b`` fails on
+    # ``quota_`` (no word boundary between two word chars), and ``[^_\n]``
+    # keeps the gap to whitespace-separated words on one line, so the bare
+    # identifier never trips a false quota pause. The explicit ``: true``
+    # pattern below still catches a genuine ``"quota_exhausted": true`` stop.
+    r"quota\b[^_\n]{0,40}?\breached",
+    r"quota\b[^_\n]{0,40}?\bexhausted",
     r'"?quota_exhausted"?\s*:\s*true',
     # NOTE: Claude Code's structured ``rate_limit_event`` stream events are
     # deliberately NOT matched here. The newer CLI emits *informational*
