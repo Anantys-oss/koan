@@ -1432,6 +1432,23 @@ class TestPlansPage:
         assert len(linked) == 1
         assert "/plan" in linked[0]
 
+    def test_get_project_repo_loads_config_dict(self):
+        """_get_project_repo must load projects.yaml, not pass KOAN_ROOT as config."""
+        fake_cfg = {"defaults": {}, "projects": {
+            "myproj": {"github_url": "https://github.com/owner/repo"}
+        }}
+        with patch("app.projects_config.load_projects_config", return_value=fake_cfg), \
+             patch.object(dashboard, "KOAN_ROOT", Path("/fake/root")):
+            result = dashboard._get_project_repo("myproj")
+        assert result == "owner/repo"
+
+    def test_get_project_repo_returns_none_when_no_config(self):
+        """_get_project_repo returns None when projects.yaml can't be loaded."""
+        with patch("app.projects_config.load_projects_config", return_value=None), \
+             patch.object(dashboard, "KOAN_ROOT", Path("/fake/root")):
+            result = dashboard._get_project_repo("myproj")
+        assert result is None
+
 
 # ---------------------------------------------------------------------------
 # Automation rules routes

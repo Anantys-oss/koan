@@ -1269,10 +1269,13 @@ def _parse_plan_progress(markdown: str) -> dict:
 
 def _get_project_repo(project_name: str) -> str | None:
     """Return owner/repo string for a project, or None if not available."""
-    from app.projects_config import get_project_config
+    from app.projects_config import get_project_config, load_projects_config
     from app.github_url_parser import parse_github_url
 
-    config = get_project_config(str(KOAN_ROOT), project_name)
+    projects_cfg = load_projects_config(str(KOAN_ROOT))
+    if projects_cfg is None:
+        return None
+    config = get_project_config(projects_cfg, project_name)
     github_url = config.get("github_url", "")
     if not github_url:
         return None
