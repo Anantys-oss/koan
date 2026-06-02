@@ -69,6 +69,17 @@
     </div>
 </div>
 
+<div id="provider-card" class="card" style="display:none;">
+    <h2 style="margin-top:0;">Provider &amp; Models</h2>
+    <div style="display:flex;gap:var(--space-6);flex-wrap:wrap;font-size:var(--fs-body-sm);align-items:flex-start;">
+        <div style="display:flex;align-items:center;gap:var(--space-2);">
+            <span class="activity-dot" id="provider-dot" style="background:var(--text-muted);"></span>
+            <span>Provider: <strong id="provider-name">—</strong></span>
+        </div>
+        <div id="provider-models" style="display:flex;gap:var(--space-4);flex-wrap:wrap;"></div>
+    </div>
+</div>
+
 <div id="health-card" class="card" style="display:none;">
     <h2 style="margin-top:0;">Health</h2>
     <div style="display:flex;gap:var(--space-6);flex-wrap:wrap;font-size:var(--fs-body-sm);">
@@ -386,6 +397,50 @@
 
     loadAttention();
     setInterval(loadAttention, 30000);
+})();
+</script>
+
+<script>
+// Provider & Models card — polls /api/provider every 60s
+(function() {
+    var SLOT_LABELS = {
+        mission: 'Mission', chat: 'Chat', lightweight: 'Lightweight',
+        fallback: 'Fallback', review_mode: 'Review', reflect: 'Reflect'
+    };
+
+    function loadProvider() {
+        fetch('/api/provider')
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                var card = document.getElementById('provider-card');
+                if (card) card.style.display = '';
+
+                var dot = document.getElementById('provider-dot');
+                if (dot) dot.style.background = data.provider !== 'unknown' ? 'var(--success)' : 'var(--danger)';
+
+                var nameEl = document.getElementById('provider-name');
+                if (nameEl) nameEl.textContent = data.provider;
+
+                var container = document.getElementById('provider-models');
+                if (container && data.models) {
+                    container.innerHTML = '';
+                    data.models.forEach(function(m) {
+                        var label = SLOT_LABELS[m.slot] || m.slot;
+                        var el = document.createElement('span');
+                        el.textContent = label + ': ' + m.model;
+                        el.style.cssText = 'white-space:nowrap;';
+                        container.appendChild(el);
+                    });
+                }
+            })
+            .catch(function() {});
+    }
+
+    loadProvider();
+    function scheduleProvider() {
+        setTimeout(function() { loadProvider(); scheduleProvider(); }, 60000);
+    }
+    scheduleProvider();
 })();
 </script>
 

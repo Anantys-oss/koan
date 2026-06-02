@@ -1839,6 +1839,27 @@ def _check_process_alive(koan_root: Path, process_name: str) -> dict:
         return {"alive": False, "status": "warn"}
 
 
+@app.route("/api/provider")
+def api_provider():
+    """Return active CLI provider and resolved model config."""
+    try:
+        from app.provider import get_provider_name
+        provider = get_provider_name()
+    except Exception:
+        provider = "unknown"
+    try:
+        from app.config import get_model_config
+        models = get_model_config()
+    except Exception:
+        models = {}
+    slot_order = ["mission", "chat", "lightweight", "fallback", "review_mode", "reflect"]
+    model_list = []
+    for slot in slot_order:
+        value = models.get(slot, "")
+        model_list.append({"slot": slot, "model": value or "(provider default)"})
+    return jsonify({"provider": provider, "models": model_list})
+
+
 @app.route("/api/health")
 def api_health():
     """Aggregate health check: disk usage + process liveness."""
