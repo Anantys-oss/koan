@@ -32,12 +32,6 @@
     <h2 style="margin-bottom:0.75rem;">Memory</h2>
     <div id="memory-content" style="color: var(--text-muted);">Loading…</div>
 </div>
-
-<!-- Config -->
-<div class="card" id="section-config">
-    <h2 style="margin-bottom:0.75rem;">Config</h2>
-    <div id="config-content" style="color: var(--text-muted);">Loading…</div>
-</div>
 {% endblock %}
 
 {% block scripts %}
@@ -193,47 +187,6 @@
     }
 
     loadMemory();
-
-    /* Config                                                               */
-    /* ------------------------------------------------------------------ */
-    function loadConfig() {
-        const el = document.getElementById('config-content');
-        el.textContent = 'Loading…';
-        fetch('/api/agent/config')
-            .then(r => r.json())
-            .then(data => {
-                el.innerHTML = '';
-
-                function configBlock(label, content) {
-                    const div = document.createElement('div');
-                    div.style.marginBottom = '1rem';
-                    const h = document.createElement('div');
-                    h.style.cssText = 'font-weight:600;margin-bottom:0.3rem;';
-                    h.textContent = label;
-                    div.appendChild(h);
-                    if (content === null) {
-                        const note = document.createElement('span');
-                        note.style.color = 'var(--text-muted)';
-                        note.textContent = label.includes('projects') ?
-                            'projects.yaml not found; project config comes from KOAN_PROJECTS env var.' :
-                            `${label} not found.`;
-                        div.appendChild(note);
-                    } else {
-                        const pre = document.createElement('pre');
-                        pre.style.cssText = 'white-space:pre-wrap;font-size:0.82rem;margin:0;';
-                        pre.textContent = content;
-                        div.appendChild(pre);
-                    }
-                    return div;
-                }
-
-                el.appendChild(configBlock('config.yaml', data.config_yaml));
-                el.appendChild(configBlock('projects.yaml', data.projects_yaml));
-            })
-            .catch(() => { el.textContent = 'Error loading config.'; });
-    }
-
-    loadConfig();
 
     /* ------------------------------------------------------------------ */
     /* Shared utilities                                                     */
