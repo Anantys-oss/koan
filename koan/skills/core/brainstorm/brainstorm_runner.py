@@ -528,10 +528,15 @@ def _ensure_label(tag, project_path, repo=None):
         run_gh(*args, cwd=project_path, timeout=15)
 
 
+_URL_RE = re.compile(r'https?://\S+')
+
+
 def _extract_master_title(topic: str) -> str:
     """Extract a concise title from the topic for the master issue."""
-    # Take first sentence or first 100 chars
-    first_sentence = re.split(r'[.!?]', topic)[0].strip()
+    # Strip URLs before splitting — dots in URLs (github.com) break sentence detection
+    cleaned = _URL_RE.sub('', topic).strip()
+    cleaned = re.sub(r'\s{2,}', ' ', cleaned)
+    first_sentence = re.split(r'[.!?]', cleaned)[0].strip()
     if len(first_sentence) > 100:
         first_sentence = first_sentence[:97] + "..."
     return first_sentence or "Brainstorm"

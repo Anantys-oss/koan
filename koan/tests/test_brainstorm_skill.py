@@ -648,6 +648,22 @@ class TestExtractMasterTitle:
     def test_empty_topic(self):
         assert _extract_master_title("") == "Brainstorm"
 
+    def test_url_stripped_from_title(self):
+        topic = "Improve caching for https://github.com/Org/repo"
+        result = _extract_master_title(topic)
+        assert "https://github" not in result
+        assert result == "Improve caching for"
+
+    def test_url_only_topic_falls_back(self):
+        result = _extract_master_title("https://github.com/Org/repo/issues/42")
+        assert result == "Brainstorm"
+
+    def test_url_in_middle_of_topic(self):
+        topic = "Review https://github.com/Org/repo/pull/10 for security issues"
+        result = _extract_master_title(topic)
+        assert result == "Review for security issues"
+        assert "https://" not in result
+
 
 class TestCoerceTopRanked:
     def test_drops_non_list(self):
