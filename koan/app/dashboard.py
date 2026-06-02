@@ -99,6 +99,23 @@ app = Flask(
 
 
 _URL_RE = re.compile(r'(https?://[^\s<>)\]]+)')
+_GITHUB_ISSUE_PR_RE = re.compile(
+    r'^https?://github\.com/[^/]+/[^/]+/(?:issues|pull)/(\d+)(?:[?#].*)?$'
+)
+_JIRA_BROWSE_RE = re.compile(
+    r'^https?://[^/]+/browse/([A-Z][A-Z0-9_]+-\d+)(?:[?#].*)?$'
+)
+
+
+def _shorten_url(url: str) -> str:
+    """Return a short display label for known URL patterns, or the URL itself."""
+    m = _GITHUB_ISSUE_PR_RE.match(url)
+    if m:
+        return f'#{m.group(1)}'
+    m = _JIRA_BROWSE_RE.match(url)
+    if m:
+        return m.group(1)
+    return url
 
 
 @app.template_filter('strip_project_tag')
@@ -125,7 +142,8 @@ def linkify_filter(text: str) -> str:
     out = []
     for i, part in enumerate(parts):
         if i % 2 == 1:
-            out.append(f'<a href="{part}" target="_blank" rel="noopener noreferrer">{part}</a>')
+            label = _shorten_url(part)
+            out.append(f'<a href="{part}" target="_blank" rel="noopener noreferrer">{label}</a>')
         else:
             out.append(part)
     return Markup(''.join(out))

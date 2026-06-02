@@ -1125,6 +1125,25 @@ class TestProjectFiltering:
         result = dashboard.linkify_filter("See https://jira.example.com/PROJ-123 and https://github.com/org/repo/issues/5")
         assert result.count("<a ") == 2
 
+    def test_linkify_shortens_github_issue_url(self):
+        result = dashboard.linkify_filter("Fix https://github.com/org/repo/issues/123 done")
+        assert 'href="https://github.com/org/repo/issues/123"' in result
+        assert ">#123</a>" in result
+
+    def test_linkify_shortens_github_pull_url(self):
+        result = dashboard.linkify_filter("See https://github.com/org/repo/pull/42")
+        assert 'href="https://github.com/org/repo/pull/42"' in result
+        assert ">#42</a>" in result
+
+    def test_linkify_shortens_jira_url(self):
+        result = dashboard.linkify_filter("Fix https://jira.example.com/browse/PROJ-456 now")
+        assert 'href="https://jira.example.com/browse/PROJ-456"' in result
+        assert ">PROJ-456</a>" in result
+
+    def test_linkify_preserves_plain_url(self):
+        result = dashboard.linkify_filter("See https://example.com/docs")
+        assert ">https://example.com/docs</a>" in result
+
 
 # ---------------------------------------------------------------------------
 # Mission queue API endpoints

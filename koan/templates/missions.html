@@ -309,9 +309,18 @@
         return d.innerHTML;
     }
 
+    function shortenUrl(url) {
+        var m = url.match(/^https?:\/\/github\.com\/[^/]+\/[^/]+\/(?:issues|pull)\/(\d+)(?:[?#].*)?$/);
+        if (m) return '#' + m[1];
+        m = url.match(/^https?:\/\/[^/]+\/browse\/([A-Z][A-Z0-9_]+-\d+)(?:[?#].*)?$/);
+        if (m) return m[1];
+        return url;
+    }
+
     function linkifyText(t) {
-        return escapeHtml(t).replace(/(https?:\/\/[^\s<>)\]]+)/g,
-            '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>');
+        return escapeHtml(t).replace(/(https?:\/\/[^\s<>)\]]+)/g, function(_, url) {
+            return '<a href="' + url + '" target="_blank" rel="noopener noreferrer">' + shortenUrl(url) + '</a>';
+        });
     }
 
     // --- Drag and Drop ---
