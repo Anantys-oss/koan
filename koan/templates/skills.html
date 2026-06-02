@@ -1,0 +1,153 @@
+{% extends "base.html" %}
+{% block title %}Kōan — Skills{% endblock %}
+{% block page_title %}Skills{% endblock %}
+{% block content %}
+<div style="display:flex; align-items:center; gap:0.75rem; flex-wrap:wrap; margin-bottom:1rem;">
+    <select id="skills-group-filter" class="k-select" style="font-size:0.85rem; padding:0.2rem 0.4rem; min-width:120px;">
+        <option value="">All groups</option>
+    </select>
+    <input type="search" id="skills-search" class="k-input" placeholder="Search name / description…"
+           style="font-size:0.85rem; padding:0.2rem 0.5rem; flex:1; min-width:180px;">
+    <span id="skills-count" style="color:var(--text-muted);font-size:0.82rem;"></span>
+</div>
+<div id="skills-content" style="color: var(--text-muted);">Loading…</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+    const GROUP_COLORS = {
+        code: 'blue', config: 'purple', status: 'green', pr: 'orange',
+        missions: 'teal', system: 'red', ideas: 'yellow', integrations: 'muted'
+    };
+
+    let _allSkills = [];
+    let _sortCol = 'name';
+    let _sortAsc = true;
+
+    function escHtml(str) {
+        return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    function groupBadge(group) {
+        if (!group) return '';
+        const color = GROUP_COLORS[group] || 'muted';
+        return '<span class="badge badge-' + color + '">' + escHtml(group) + '</span>';
+    }
+
+    function sortSkills(skills, col, asc) {
+        return skills.slice().sort((a, b) => {
+            let va, vb;
+            if (col === 'worker' || col === 'github_enabled') {
+                va = a[col] ? 1 : 0;
+                vb = b[col] ? 1 : 0;
+            } else if (col === 'commands') {
+                va = (a.commands[0] || {}).name || '';
+                vb = (b.commands[0] || {}).name || '';
+            } else {
+                va = (a[col] || '').toLowerCase();
+                vb = (b[col] || '').toLowerCase();
+            }
+            if (va < vb) return asc ? -1 : 1;
+            if (va > vb) return asc ? 1 : -1;
+            return 0;
+        });
+    }
+
+    function renderSkillsTable(skills) {
+        const el = document.getElementById('skills-content');
+        document.getElementById('skills-count').textContent = skills.length + ' skill(s)';
+        if (skills.length === 0) {
+            el.innerHTML = '<span style="color:var(--text-muted)">No skills match.</span>';
+            return;
+        }
+
+        const sorted = sortSkills(skills, _sortCol, _sortAsc);
+
+        const columns = [
+            { key: 'name', label: 'Name', align: 'left' },
+            { key: 'scope', label: 'Scope', align: 'left' },
+            { key: 'group', label: 'Group', align: 'left' },
+            { key: 'description', label: 'Description', align: 'left' },
+            { key: 'commands', label: 'Commands', align: 'left' },
+            { key: 'audience', label: 'Audience', align: 'left' },
+            { key: 'worker', label: 'Worker', align: 'center' },
+            { key: 'github_enabled', label: 'GitHub', align: 'center' },
+        ];
+
+        let html = '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:0.83rem;"><thead><tr>';
+        columns.forEach(c => {
+            const arrow = _sortCol === c.key
+                ? '<span class="sort-arrow active">' + (_sortAsc ? '▲' : '▼') + '</span>'
+                : '<span class="sort-arrow">▲</span>';
+            html += '<th class="sortable-th" data-col="' + c.key + '" style="text-align:' + c.align + ';padding:0.3rem 0.5rem;border-bottom:1px solid var(--border)">'
+                + c.label + ' ' + arrow + '</th>';
+        });
+        html += '</tr></thead><tbody>';
+
+        sorted.forEach((s, i) => {
+            const bg = i % 2 === 0 ? '' : 'background:var(--surface-2);';
+            const cmds = s.commands.map(c => {
+                const aliases = c.aliases && c.aliases.length ? ' <span style="color:var(--text-muted)">(' + c.aliases.map(escHtml).join(', ') + ')</span>' : '';
+                return '/' + escHtml(c.name) + aliases;
+            }).join('<br>');
+            html += '<tr style="' + bg + '">'
+                + '<td style="padding:0.3rem 0.5rem;font-weight:500;">' + escHtml(s.name) + '</td>'
+                + '<td style="padding:0.3rem 0.5rem;"><span class="badge badge-blue">' + escHtml(s.scope) + '</span></td>'
+                + '<td style="padding:0.3rem 0.5rem;">' + groupBadge(s.group) + '</td>'
+                + '<td style="padding:0.3rem 0.5rem;color:var(--text-muted);">' + escHtml(s.description) + '</td>'
+                + '<td style="padding:0.3rem 0.5rem;font-family:monospace;font-size:0.78rem;">' + cmds + '</td>'
+                + '<td style="padding:0.3rem 0.5rem;">' + escHtml(s.audience || '') + '</td>'
+                + '<td style="padding:0.3rem 0.5rem;text-align:center;">' + (s.worker ? '✓' : '') + '</td>'
+                + '<td style="padding:0.3rem 0.5rem;text-align:center;">' + (s.github_enabled ? '✓' : '') + '</td>'
+                + '</tr>';
+        });
+        html += '</tbody></table></div>';
+        el.innerHTML = html;
+
+        el.querySelectorAll('.sortable-th').forEach(th => {
+            th.addEventListener('click', () => {
+                const col = th.dataset.col;
+                if (_sortCol === col) { _sortAsc = !_sortAsc; }
+                else { _sortCol = col; _sortAsc = true; }
+                filterSkills();
+            });
+        });
+    }
+
+    function filterSkills() {
+        const group = document.getElementById('skills-group-filter').value;
+        const q = document.getElementById('skills-search').value.toLowerCase();
+        const filtered = _allSkills.filter(s => {
+            if (group && s.group !== group) return false;
+            if (q && !s.name.toLowerCase().includes(q) && !(s.description || '').toLowerCase().includes(q)) return false;
+            return true;
+        });
+        renderSkillsTable(filtered);
+    }
+
+    function loadSkills() {
+        const el = document.getElementById('skills-content');
+        el.textContent = 'Loading…';
+        fetch('/api/agent/skills')
+            .then(r => r.json())
+            .then(data => {
+                _allSkills = data.skills;
+                const gf = document.getElementById('skills-group-filter');
+                data.groups.forEach(g => {
+                    const opt = document.createElement('option');
+                    opt.value = g;
+                    opt.textContent = g;
+                    gf.appendChild(opt);
+                });
+                renderSkillsTable(_allSkills);
+            })
+            .catch(() => { el.textContent = 'Error loading skills.'; });
+    }
+
+    document.getElementById('skills-group-filter').addEventListener('change', filterSkills);
+    document.getElementById('skills-search').addEventListener('input', filterSkills);
+    loadSkills();
+})();
+</script>
+{% endblock %}
