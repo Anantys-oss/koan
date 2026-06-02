@@ -42,7 +42,7 @@
 {% endif %}
 
 <div id="agent-controls" class="card" style="display:flex;align-items:center;gap:var(--space-3);flex-wrap:wrap;padding:var(--space-3) var(--space-4);">
-    <div id="ctrl-pause-group" style="display:flex;align-items:center;gap:var(--space-2);" {% if agent_state.state == 'paused' or agent_state.state == 'stopped' %}class="hidden"{% endif %}>
+    <div id="ctrl-pause-group" style="{% if agent_state.state == 'paused' or agent_state.state == 'stopped' %}display:none;{% else %}display:flex;{% endif %}align-items:center;gap:var(--space-2);">
         <button id="ctrl-pause" class="btn btn-sm btn-secondary" onclick="agentAction('pause')">Pause</button>
         <input id="ctrl-pause-duration" type="text" placeholder="e.g. 2h" style="width:6rem;font-size:var(--fs-body-sm);padding:var(--space-1) var(--space-2);border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-secondary);color:var(--text-primary);">
     </div>

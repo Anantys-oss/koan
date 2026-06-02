@@ -1295,7 +1295,10 @@ def api_agent_pause():
     """Pause the agent loop, optionally for a duration (e.g. '2h', '30m')."""
     from app.pause_manager import create_pause, parse_duration
 
-    data = request.get_json(silent=True) or {}
+    try:
+        data = request.get_json() or {}
+    except Exception:
+        return jsonify({"ok": False, "error": "Invalid JSON body"}), 400
     duration_str = (data.get("duration") or "").strip()
 
     timestamp = None

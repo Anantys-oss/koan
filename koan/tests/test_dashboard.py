@@ -1959,8 +1959,7 @@ class TestAgentControls:
 
     def test_pause_button_hidden_when_paused(self, app_client, tmp_path):
         (tmp_path / ".koan-pause").write_text("manual\n")
-        with patch.object(dashboard, "KOAN_ROOT", tmp_path):
-            resp = app_client.get("/")
+        resp = app_client.get("/")
         html = resp.data.decode()
         assert 'id="ctrl-resume"' in html
         assert 'id="ctrl-pause"' in html
