@@ -125,7 +125,7 @@
 <h2>In Progress</h2>
 {% for m in missions.in_progress %}
 <div class="card">
-    <div class="mission-item">{% if not selected_project %}{{ m|project_badge|safe }}{% endif %}{{ m|strip_project_tag }}</div>
+    <div class="mission-item">{% if not selected_project %}{{ m|project_badge|safe }}{% endif %}{{ m|strip_project_tag|linkify }}</div>
 </div>
 {% endfor %}
 {% endif %}
@@ -134,7 +134,7 @@
 <h2>Pending</h2>
 {% for m in missions.pending %}
 <div class="card">
-    <div class="mission-item">{% if not selected_project %}{{ m|project_badge|safe }}{% endif %}{{ m|strip_project_tag }}</div>
+    <div class="mission-item">{% if not selected_project %}{{ m|project_badge|safe }}{% endif %}{{ m|strip_project_tag|linkify }}</div>
 </div>
 {% endfor %}
 {% endif %}

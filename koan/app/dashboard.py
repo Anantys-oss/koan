@@ -95,6 +95,9 @@ app = Flask(
 )
 
 
+_URL_RE = re.compile(r'(https?://[^\s<>)\]]+)')
+
+
 @app.template_filter('strip_project_tag')
 def strip_project_tag_filter(text: str) -> str:
     """Remove [project:name] tag from mission text for display."""
@@ -109,6 +112,20 @@ def project_badge_filter(text: str) -> str:
         name = m.group(1)
         return f'<span class="k-badge k-badge--brand">{name}</span> '
     return ''
+
+
+@app.template_filter('linkify')
+def linkify_filter(text: str) -> str:
+    """Convert URLs in text to clickable links that open in a new tab."""
+    from markupsafe import Markup, escape
+    parts = _URL_RE.split(str(escape(text)))
+    out = []
+    for i, part in enumerate(parts):
+        if i % 2 == 1:
+            out.append(f'<a href="{part}" target="_blank" rel="noopener noreferrer">{part}</a>')
+        else:
+            out.append(part)
+    return Markup(''.join(out))
 
 
 # ---------------------------------------------------------------------------

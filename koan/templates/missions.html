@@ -151,7 +151,7 @@
 <div class="card">
     <div class="in-progress-item">
         <span class="pulse"></span>
-        <pre style="flex:1;">{% if not selected_project %}{{ m|project_badge|safe }}{% endif %}{{ m|strip_project_tag }}</pre>
+        <pre style="flex:1;">{% if not selected_project %}{{ m|project_badge|safe }}{% endif %}{{ m|strip_project_tag|linkify }}</pre>
     </div>
 </div>
 {% endfor %}
@@ -166,7 +166,7 @@
     <div class="pending-item" draggable="true" data-position="{{ loop.index }}">
         <span class="drag-handle" title="Drag to reorder">&#x2630;</span>
         <span class="position-num">#{{ loop.index }}</span>
-        <span class="mission-text" title="Click to edit">{% if not selected_project %}{{ m|project_badge|safe }}{% endif %}{{ m|strip_project_tag }}</span>
+        <span class="mission-text" title="Click to edit">{% if not selected_project %}{{ m|project_badge|safe }}{% endif %}{{ m|strip_project_tag|linkify }}</span>
         <span class="actions">
             {% if loop.index != 1 %}
             <button class="action-btn promote-btn" title="Move to top" data-action="promote" data-position="{{ loop.index }}">&#x2191;</button>
@@ -189,7 +189,7 @@
 {% for m in missions.done[:20] %}
     <div class="mission-item" style="color: var(--text-muted);">
         {% if '❌' in m %}<span class="badge badge-red">failed</span> {% elif '✅' in m %}<span class="badge badge-green">done</span> {% endif %}
-        {% if not selected_project %}{{ m|project_badge|safe }}{% endif %}{{ m|strip_project_tag }}
+        {% if not selected_project %}{{ m|project_badge|safe }}{% endif %}{{ m|strip_project_tag|linkify }}
     </div>
 {% endfor %}
 {% if missions.done|length > 20 %}
@@ -269,7 +269,7 @@
             html += '<div class="pending-item" draggable="true" data-position="' + pos + '">'
                 + '<span class="drag-handle" title="Drag to reorder">&#x2630;</span>'
                 + '<span class="position-num">#' + pos + '</span>'
-                + '<span class="mission-text" title="Click to edit">' + badge + escapeHtml(stripped) + '</span>'
+                + '<span class="mission-text" title="Click to edit">' + badge + linkifyText(stripped) + '</span>'
                 + '<span class="actions">'
                 + promoteBtn
                 + '<button class="action-btn tag-btn" title="Tag project" data-action="tag" data-position="' + pos + '">&#x1F3F7;</button>'
@@ -294,6 +294,11 @@
         const d = document.createElement('div');
         d.textContent = t;
         return d.innerHTML;
+    }
+
+    function linkifyText(t) {
+        return escapeHtml(t).replace(/(https?:\/\/[^\s<>)\]]+)/g,
+            '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>');
     }
 
     // --- Drag and Drop ---
@@ -448,6 +453,7 @@
 
     // --- Inline Edit ---
     function onEditClick(e) {
+        if (e.target.tagName === 'A') return;
         if (isEditing) return;
         isEditing = true;
 
