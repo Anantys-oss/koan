@@ -167,6 +167,18 @@ h2 { font-size: var(--fs-heading-sm); font-weight: var(--fw-semibold); color: va
 .badge-red    { background: var(--danger-bg);  color: var(--danger); }
 .badge-blue   { background: var(--brand-subtle); color: var(--brand); }
 .badge-muted  { background: var(--surface-3);  color: var(--text-muted); }
+.badge-purple { background: rgba(139, 92, 246, .14); color: #a78bfa; }
+.badge-teal   { background: rgba(20, 184, 166, .14); color: #2dd4bf; }
+.badge-yellow { background: rgba(234, 179, 8, .14);  color: #eab308; }
+[data-theme="light"] .badge-purple { background: rgba(139, 92, 246, .12); color: #7c3aed; }
+[data-theme="light"] .badge-teal   { background: rgba(20, 184, 166, .12); color: #0d9488; }
+[data-theme="light"] .badge-yellow { background: rgba(234, 179, 8, .12);  color: #a16207; }
+
+/* Sortable table headers */
+.sortable-th { cursor: pointer; user-select: none; white-space: nowrap; }
+.sortable-th:hover { color: var(--brand); }
+.sortable-th .sort-arrow { display: inline-block; width: 1em; text-align: center; opacity: 0.3; }
+.sortable-th .sort-arrow.active { opacity: 1; }
 
 /* Missions */
 .mission-item { font-family: var(--font-mono); font-size: var(--fs-body-sm); color: var(--text-secondary); }

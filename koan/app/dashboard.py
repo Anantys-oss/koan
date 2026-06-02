@@ -1604,9 +1604,15 @@ def _read_capped(path: Path, cap: int = 10_000) -> dict:
     }
 
 
+@app.route("/skills")
+def skills_page():
+    """Dedicated skills registry page."""
+    return render_template("skills.html")
+
+
 @app.route("/agent")
 def agent_page():
-    """Agent introspection page — memory, skills, soul, config."""
+    """Agent introspection page — memory, soul, config."""
     return render_template("agent.html")
 
 
