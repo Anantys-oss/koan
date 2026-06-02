@@ -2,7 +2,7 @@
 
 Control Kōan directly from GitHub PR and issue comments using `@mention` commands.
 
-> **Introduced in**: [PR #251](https://github.com/sukria/koan/pull/251) — 10 commits, 6 new modules, 102 tests.
+> **Introduced in**: [PR #251](https://github.com/Anantys-oss/koan/pull/251) — 10 commits, 6 new modules, 102 tests.
 
 ## Overview
 
@@ -350,5 +350,5 @@ See [Jira Integration](jira-integration.md) for full setup instructions and the 
 - [Messaging: Telegram](telegram.md) — Alternative command interface via Telegram
 - [Messaging: Slack](slack.md) — Alternative command interface via Slack
 - [Messaging: Matrix](matrix.md) — Alternative command interface via Matrix
-- [PR #251](https://github.com/sukria/koan/pull/251) — Original implementation
-- [Issue #243](https://github.com/sukria/koan/issues/243) — Feature request and design plan
+- [PR #251](https://github.com/Anantys-oss/koan/pull/251) — Original implementation
+- [Issue #243](https://github.com/Anantys-oss/koan/issues/243) — Feature request and design plan

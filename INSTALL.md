@@ -10,7 +10,7 @@ Kōan has two branches you can track:
 Track stable:
 
 ```bash
-git clone -b stable https://github.com/sukria/koan.git
+git clone -b stable https://github.com/Anantys-oss/koan.git
 cd koan
 # update later with:
 git pull origin stable
@@ -31,7 +31,7 @@ See [docs/maint.md](docs/maint.md) for the release procedure and cadence philoso
 The easiest way to set up Kōan is with the interactive wizard:
 
 ```bash
-git clone https://github.com/sukria/koan.git
+git clone https://github.com/Anantys-oss/koan.git
 cd koan
 make setup
 make install
@@ -78,7 +78,7 @@ per-project configuration via `projects.yaml`.
 ### 1. Clone and create your instance
 
 ```bash
-git clone https://github.com/sukria/koan.git
+git clone https://github.com/Anantys-oss/koan.git
 cd koan
 cp -r instance.example instance
 ```

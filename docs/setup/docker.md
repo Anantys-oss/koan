@@ -17,7 +17,7 @@
 
 ```bash
 # 1. Clone and enter the repo
-git clone https://github.com/sukria/koan.git
+git clone https://github.com/Anantys-oss/koan.git
 cd koan
 
 # 2. Create your instance directory
