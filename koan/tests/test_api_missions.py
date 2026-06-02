@@ -226,3 +226,51 @@ class TestListMissions:
         data = resp.get_json()
         assert len(data) == 1
         assert data[0]["project"] == "alpha"
+
+
+class TestCancelByText:
+    def test_cancel_by_text_marks_removed(self, instance_dir):
+        from app.api.mission_index import record_mission, cancel_by_text, get_mission
+        mid = record_mission(instance_dir, "- Fix bug", None)
+        result = cancel_by_text(instance_dir, "- Fix bug")
+        assert result is True
+        rec = get_mission(instance_dir, mid)
+        assert rec["status"] == "removed"
+
+    def test_cancel_by_text_no_match_returns_false(self, instance_dir):
+        from app.api.mission_index import cancel_by_text
+        result = cancel_by_text(instance_dir, "- Nonexistent mission")
+        assert result is False
+
+    def test_cancel_by_text_only_matches_pending(self, instance_dir):
+        from app.api.mission_index import record_mission, cancel_mission, cancel_by_text, get_mission
+        mid = record_mission(instance_dir, "- Already done", None)
+        cancel_mission(instance_dir, mid)
+        result = cancel_by_text(instance_dir, "- Already done")
+        assert result is False
+
+    def test_cancel_by_text_substring_match(self, instance_dir):
+        from app.api.mission_index import record_mission, cancel_by_text, get_mission
+        mid = record_mission(instance_dir, "- [project:koan] Fix something", "koan")
+        result = cancel_by_text(instance_dir, "Fix something")
+        assert result is True
+        assert get_mission(instance_dir, mid)["status"] == "removed"
+
+
+class TestRecordMissionDedup:
+    def test_record_mission_dedup_returns_same_id(self, instance_dir):
+        from app.api.mission_index import record_mission, list_missions
+        id1 = record_mission(instance_dir, "- Fix bug", None)
+        id2 = record_mission(instance_dir, "- Fix bug", None)
+        assert id1 == id2
+        records = list_missions(instance_dir)
+        assert len(records) == 1
+
+    def test_record_mission_no_dedup_across_status(self, instance_dir):
+        from app.api.mission_index import record_mission, cancel_mission, list_missions
+        id1 = record_mission(instance_dir, "- Repeat task", None)
+        cancel_mission(instance_dir, id1)
+        id2 = record_mission(instance_dir, "- Repeat task", None)
+        assert id1 != id2
+        records = list_missions(instance_dir)
+        assert len(records) == 2

@@ -145,6 +145,52 @@ class TestRoutes:
         data = resp.get_json()
         assert data["ok"] is False
 
+    def test_add_mission_records_in_index(self, app_client, instance_dir):
+        resp = app_client.post("/missions/add", data={
+            "mission": "Indexed mission",
+            "project": "koan",
+        }, follow_redirects=True)
+        assert resp.status_code == 200
+        sidecar = instance_dir / ".api-missions.json"
+        assert sidecar.exists()
+        records = json.loads(sidecar.read_text())
+        matches = [r for r in records if "Indexed mission" in r.get("text", "")]
+        assert len(matches) == 1
+        assert matches[0]["status"] == "pending"
+        assert matches[0]["project"] == "koan"
+        assert "id" in matches[0]
+
+    def test_add_mission_duplicate_no_double_index(self, app_client, instance_dir):
+        for _ in range(2):
+            app_client.post("/missions/add", data={
+                "mission": "Unique task",
+                "project": "",
+            }, follow_redirects=True)
+        sidecar = instance_dir / ".api-missions.json"
+        if sidecar.exists():
+            records = json.loads(sidecar.read_text())
+            matches = [r for r in records if "Unique task" in r.get("text", "")]
+            assert len(matches) == 1
+
+    def test_cancel_mission_updates_index(self, app_client, instance_dir):
+        app_client.post("/missions/add", data={
+            "mission": "To be cancelled",
+            "project": "",
+        }, follow_redirects=True)
+        sidecar = instance_dir / ".api-missions.json"
+        assert sidecar.exists()
+
+        # Fixture has 2 pending missions; new one appended at position 3 (1-indexed)
+        resp = app_client.post("/api/missions/cancel", json={"position": 3})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["ok"] is True
+
+        records = json.loads(sidecar.read_text())
+        matches = [r for r in records if "To be cancelled" in r.get("text", "")]
+        assert len(matches) == 1
+        assert matches[0]["status"] == "removed"
+
 
 class TestUsageApi:
     def test_api_usage_exposes_cache_metrics(self, app_client):

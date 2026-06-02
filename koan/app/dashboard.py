@@ -566,7 +566,13 @@ def add_mission():
     else:
         entry = f"- {text}"
 
-    insert_pending_mission(MISSIONS_FILE, entry)
+    inserted = insert_pending_mission(MISSIONS_FILE, entry)
+    if inserted:
+        try:
+            from app.api.mission_index import record_mission
+            record_mission(INSTANCE_DIR, entry, project or None)
+        except Exception as exc:
+            print(f"[dashboard] record_mission failed (non-fatal): {exc}", file=sys.stderr)
     return redirect(url_for("missions_page"))
 
 
@@ -598,7 +604,13 @@ def chat_send():
         else:
             entry = f"- {mission_text}"
 
-        insert_pending_mission(MISSIONS_FILE, entry)
+        inserted = insert_pending_mission(MISSIONS_FILE, entry)
+        if inserted:
+            try:
+                from app.api.mission_index import record_mission
+                record_mission(INSTANCE_DIR, entry, project or None)
+            except Exception as exc:
+                print(f"[dashboard] record_mission failed (non-fatal): {exc}", file=sys.stderr)
         return jsonify({"ok": True, "type": "mission", "text": mission_text})
 
     else:
@@ -1149,10 +1161,17 @@ def api_missions_cancel():
             return new_content
 
         modify_missions_file(MISSIONS_FILE, transform)
+        cancelled_text = result.get("cancelled", "")
+        if cancelled_text:
+            try:
+                from app.api.mission_index import cancel_by_text
+                cancel_by_text(INSTANCE_DIR, cancelled_text)
+            except Exception as exc:
+                print(f"[dashboard] cancel_by_text failed (non-fatal): {exc}", file=sys.stderr)
         missions = parse_missions()
         return jsonify({
             "ok": True,
-            "cancelled": result.get("cancelled", ""),
+            "cancelled": cancelled_text,
             "pending": missions["pending"],
         })
     except (ValueError, TypeError) as e:
