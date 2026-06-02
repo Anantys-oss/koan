@@ -271,9 +271,9 @@ class TestGetAttentionItems:
             items2 = attention.get_attention_items(koan_root)
         assert all(i["id"] != item_id for i in items2)
 
-    def test_sorted_by_severity_then_age(self, tmp_path):
+    def test_sorted_by_recency_then_severity(self, tmp_path):
         koan_root = _make_koan_root(tmp_path)
-        # Quota warning + failed mission (critical)
+        # Failed missions have age_seconds=0 and created_at="", quota also has 0
         missions_file = Path(koan_root) / "instance" / "missions.md"
         missions_file.write_text(
             "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n\n## Failed\n"
@@ -282,7 +282,8 @@ class TestGetAttentionItems:
         (Path(koan_root) / ".koan-quota-reset").write_text("1")
         with patch("app.pr_tracker.fetch_all_prs", return_value={"prs": []}):
             items = attention.get_attention_items(koan_root)
-        # critical should come before warning
+        # Both have age_seconds=0, so severity is the tiebreaker:
+        # critical before warning
         severities = [i["severity"] for i in items]
         critical_idx = next((i for i, s in enumerate(severities) if s == "critical"), None)
         warning_idx = next((i for i, s in enumerate(severities) if s == "warning"), None)
@@ -448,3 +449,63 @@ class TestAttentionRoutes:
         data = resp.get_json()
         assert data["ok"] is True
         assert "test123" in attention.load_dismissed(koan_root)
+
+    def test_dismiss_all_returns_count(self, client):
+        c, koan_root = client
+        missions_file = Path(koan_root) / "instance" / "missions.md"
+        missions_file.write_text(
+            "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n\n## Failed\n"
+            "- Bug A ❌ (2024-01-01 12:00)\n"
+            "- Bug B ❌ (2024-01-02 12:00)\n"
+        )
+        attention_module._attention_cache = None
+        with patch("app.pr_tracker.fetch_all_prs", return_value={"prs": []}):
+            resp = c.post("/api/attention/dismiss-all",
+                          data=json.dumps({}),
+                          content_type="application/json")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["ok"] is True
+        assert data["dismissed"] == 2
+
+    def test_dismiss_all_empty(self, client):
+        c, koan_root = client
+        missions_file = Path(koan_root) / "instance" / "missions.md"
+        missions_file.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n\n## Failed\n")
+        attention_module._attention_cache = None
+        with patch("app.pr_tracker.fetch_all_prs", return_value={"prs": []}):
+            resp = c.post("/api/attention/dismiss-all",
+                          data=json.dumps({}),
+                          content_type="application/json")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["dismissed"] == 0
+
+
+class TestDismissAll:
+    def setup_method(self):
+        attention_module._attention_cache = None
+
+    def test_dismiss_all_marks_all_items(self, tmp_path):
+        koan_root = _make_koan_root(tmp_path)
+        missions_file = Path(koan_root) / "instance" / "missions.md"
+        missions_file.write_text(
+            "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n\n## Failed\n"
+            "- Task 1 ❌ (2024-01-01 12:00)\n"
+            "- Task 2 ❌ (2024-01-02 12:00)\n"
+        )
+        with patch("app.pr_tracker.fetch_all_prs", return_value={"prs": []}):
+            count = attention.dismiss_all(koan_root)
+        assert count == 2
+        attention_module._attention_cache = None
+        with patch("app.pr_tracker.fetch_all_prs", return_value={"prs": []}):
+            remaining = attention.get_attention_items(koan_root)
+        assert remaining == []
+
+    def test_dismiss_all_returns_zero_when_empty(self, tmp_path):
+        koan_root = _make_koan_root(tmp_path)
+        missions_file = Path(koan_root) / "instance" / "missions.md"
+        missions_file.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n\n## Failed\n")
+        with patch("app.pr_tracker.fetch_all_prs", return_value={"prs": []}):
+            count = attention.dismiss_all(koan_root)
+        assert count == 0

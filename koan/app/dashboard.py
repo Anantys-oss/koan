@@ -1189,6 +1189,17 @@ def api_attention_dismiss():
     return jsonify({"ok": True})
 
 
+@app.route("/api/attention/dismiss-all", methods=["POST"])
+def api_attention_dismiss_all():
+    """Dismiss all current attention items at once."""
+    from app.attention import dismiss_all
+
+    data = request.get_json(silent=True) or {}
+    project = data.get("project", "")
+    count = dismiss_all(str(KOAN_ROOT), project_filter=project)
+    return jsonify({"ok": True, "dismissed": count})
+
+
 @app.route("/prs")
 def prs_page():
     """PR tracking page — open PRs across all projects."""

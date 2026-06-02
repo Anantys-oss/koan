@@ -89,6 +89,18 @@ def dismiss_item(koan_root: str, item_id: str) -> None:
     save_dismissed(koan_root, dismissed)
 
 
+def dismiss_all(koan_root: str, project_filter: str = "") -> int:
+    """Dismiss all current attention items. Returns the count dismissed."""
+    items = get_attention_items(koan_root, project_filter=project_filter)
+    if not items:
+        return 0
+    dismissed = load_dismissed(koan_root)
+    for item in items:
+        dismissed.add(item["id"])
+    save_dismissed(koan_root, dismissed)
+    return len(items)
+
+
 # ---------------------------------------------------------------------------
 # Source aggregators
 # ---------------------------------------------------------------------------
@@ -337,9 +349,9 @@ def get_attention_items(koan_root: str, project_filter: str = "") -> list:
     dismissed = load_dismissed(koan_root)
     filtered = [item for item in raw_items if item["id"] not in dismissed]
 
-    # Sort: critical first, then warning, then info; within severity by age desc
+    # Sort: most recent first (lowest age_seconds), then by severity as tiebreaker
     filtered.sort(
-        key=lambda x: (_SEVERITY_ORDER.get(x["severity"], 99), -x["age_seconds"])
+        key=lambda x: (x["age_seconds"], _SEVERITY_ORDER.get(x["severity"], 99))
     )
 
     return filtered[:20]

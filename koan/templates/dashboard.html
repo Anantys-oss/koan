@@ -331,6 +331,15 @@
         }
         zone.style.display = '';
 
+        if (items.length > 1) {
+            const header = document.createElement('div');
+            header.className = 'attention-header';
+            header.innerHTML =
+                `<span class="attention-header-count">${items.length} notification${items.length > 1 ? 's' : ''}</span>` +
+                `<button class="attention-ack-all" id="ack-all-btn">Acknowledge All</button>`;
+            zone.appendChild(header);
+        }
+
         const visible = items.slice(0, MAX_VISIBLE);
         const hidden = items.slice(MAX_VISIBLE);
 
@@ -366,7 +375,28 @@
         }).catch(() => {});
     }
 
+    function dismissAll() {
+        const params = new URLSearchParams(window.location.search);
+        const project = params.get('project') || '';
+        const body = project ? {project: project} : {};
+        const btn = document.getElementById('ack-all-btn');
+        if (btn) { btn.disabled = true; btn.textContent = 'Dismissing…'; }
+        fetch('/api/attention/dismiss-all', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(body),
+        }).then(() => {
+            zone.querySelectorAll('.attention-item').forEach(el => { el.style.opacity = '0'; });
+            setTimeout(() => { zone.innerHTML = ''; zone.style.display = 'none'; }, 300);
+        }).catch(() => { if (btn) { btn.disabled = false; btn.textContent = 'Acknowledge All'; } });
+    }
+
     zone.addEventListener('click', function(e) {
+        if (e.target.closest('.attention-ack-all')) {
+            e.preventDefault();
+            dismissAll();
+            return;
+        }
         const btn = e.target.closest('.attention-item-dismiss');
         if (btn) {
             e.preventDefault();
