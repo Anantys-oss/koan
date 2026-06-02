@@ -659,6 +659,65 @@ def _is_stream_json_max_turns(event: Dict[str, Any]) -> bool:
     return subtype in _STREAM_JSON_MAX_TURNS_SUBTYPES
 
 
+def _usage_snapshot_from_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Extract token usage snapshot from a stream event when present."""
+    if not isinstance(event, dict):
+        return None
+
+    usage = event.get("usage")
+    if isinstance(usage, dict):
+        input_tokens = int(usage.get("input_tokens", 0) or 0)
+        output_tokens = int(usage.get("output_tokens", 0) or 0)
+        cached_input = int(usage.get("cached_input_tokens", 0) or 0)
+        if cached_input > 0:
+            input_tokens = max(0, input_tokens - cached_input)
+        if input_tokens or output_tokens or cached_input:
+            return {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "cache_read_input_tokens": cached_input,
+                "cache_creation_input_tokens": 0,
+                "model": str(event.get("model") or "unknown"),
+            }
+
+    payload = event.get("payload")
+    if (
+        isinstance(payload, dict)
+        and event.get("type") == "event_msg"
+        and payload.get("type") == "token_count"
+    ):
+        info = payload.get("info")
+        if isinstance(info, dict):
+            total = info.get("total_token_usage")
+            if isinstance(total, dict):
+                input_tokens = int(total.get("input_tokens", 0) or 0)
+                output_tokens = int(total.get("output_tokens", 0) or 0)
+                cached_input = int(total.get("cached_input_tokens", 0) or 0)
+                if cached_input > 0:
+                    input_tokens = max(0, input_tokens - cached_input)
+                if input_tokens or output_tokens or cached_input:
+                    return {
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                        "cache_read_input_tokens": cached_input,
+                        "cache_creation_input_tokens": 0,
+                        "model": str(info.get("model") or event.get("model") or "unknown"),
+                    }
+
+    return None
+
+
+def _persist_stream_usage_snapshot(snapshot: Optional[Dict[str, Any]]) -> None:
+    """Persist usage snapshot for skill-dispatch post-mission accounting."""
+    if not snapshot:
+        return
+    target = os.environ.get("KOAN_STREAM_USAGE_FILE", "").strip()
+    if not target:
+        return
+    with contextlib.suppress(OSError):
+        Path(target).write_text(json.dumps(snapshot, separators=(",", ":")))
+
+
 def run_command_streaming(
     prompt: str,
     project_path: str,
@@ -723,6 +782,7 @@ def run_command_streaming(
     raw_lines: List[str] = []  # for error reporting (full transcript)
     text_lines: List[str] = []  # fallback return value when no result event
     final_result: Optional[str] = None
+    usage_snapshot: Optional[Dict[str, Any]] = None
     saw_max_turns_event = False
     stderr_text = ""
     try:
@@ -754,6 +814,9 @@ def run_command_streaming(
                         event = None
                 if event is not None:
                     print(_summarize_stream_event(event), flush=True)
+                    event_usage = _usage_snapshot_from_event(event)
+                    if event_usage is not None:
+                        usage_snapshot = event_usage
                     # Accumulate assistant text blocks so a stream that dies
                     # before the final ``result`` event (timeout, watchdog
                     # kill, SIGPIPE) still returns whatever the provider managed
@@ -804,6 +867,7 @@ def run_command_streaming(
             if hit_max_turns:
                 _warn_max_turns(max_turns, max_turns_source)
                 from app.claude_step import strip_cli_noise
+                _persist_stream_usage_snapshot(usage_snapshot)
                 return strip_cli_noise(return_text.strip())
             raise RuntimeError(
                 _format_cli_error(proc.returncode, raw_stdout, stderr_text)
@@ -813,6 +877,7 @@ def run_command_streaming(
             _warn_max_turns(max_turns, max_turns_source)
 
         from app.claude_step import strip_cli_noise
+        _persist_stream_usage_snapshot(usage_snapshot)
         return strip_cli_noise(return_text.strip())
     finally:
         if last_message_path:

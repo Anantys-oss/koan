@@ -1127,6 +1127,45 @@ class TestRunCommandStreaming:
         assert captured_kwargs.get("output_format") == "stream-json"
         assert out == "codex answer"
 
+    def test_stream_usage_sidecar_persists_usage_snapshot(self, tmp_path):
+        """When configured, stream usage is persisted for skill post-processing."""
+        import json
+        from app.provider import run_command_streaming
+
+        usage_file = tmp_path / "stream-usage.json"
+        events = [
+            json.dumps({
+                "type": "turn.completed",
+                "model": "claude-sonnet-4-20250514",
+                "usage": {
+                    "input_tokens": 1200,
+                    "cached_input_tokens": 900,
+                    "output_tokens": 80,
+                },
+            }) + "\n",
+            json.dumps({
+                "type": "result",
+                "subtype": "success",
+                "result": "ok",
+            }) + "\n",
+        ]
+        proc = self._make_proc(events)
+        cleanup = MagicMock()
+
+        with patch.dict(os.environ, {"KOAN_STREAM_USAGE_FILE": str(usage_file)}), \
+             patch("app.config.get_model_config", return_value={"chat": "m", "fallback": "f"}), \
+             patch("app.provider.get_provider_name", return_value="claude"), \
+             patch("app.provider.build_full_command", return_value=["fake"]), \
+             patch("app.cli_exec.popen_cli", return_value=(proc, cleanup)), \
+             patch("app.claude_step.strip_cli_noise", side_effect=lambda s: s):
+            out = run_command_streaming("hi", "/tmp", [])
+
+        assert out == "ok"
+        payload = json.loads(usage_file.read_text())
+        assert payload["input_tokens"] == 300
+        assert payload["cache_read_input_tokens"] == 900
+        assert payload["output_tokens"] == 80
+
     def test_codex_turn_complete_returns_last_agent_message(self):
         import json
         from app.provider import run_command_streaming

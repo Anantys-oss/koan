@@ -27,14 +27,32 @@ config) and exposes a JSON/SSE API under `/api/*`.
 | `/` | Dashboard — agent status, mission counts, attention zone, health, projects |
 | `/missions` | Pending / in-progress / done missions, with drag-reorder, edit, cancel |
 | `/chat` | Chat with the agent or queue a mission |
-| `/usage` | Token usage analytics (Chart.js): spend, by project, outcomes, types |
-| `/prs` | Open pull requests across projects with CI and review status |
+| `/usage` | Token usage analytics (Chart.js): spend, by project, outcomes, types, and daily mission activity from `instance/usage/*.jsonl` |
+| `/prs` | Open pull requests across projects with CI and review status, sorted by last activity (`updatedAt`, fallback `createdAt`) |
 | `/plans` | Plan issues with phase progress |
 | `/progress` | Live stream of the current run's output (SSE) |
 | `/journal` | Journal entries grouped by date and project |
 | `/logs` | Recent log lines with source filter and search |
 | `/agent` | Read-only introspection: soul, memory, skills, config |
 | `/rules` | Automation rules CRUD |
+
+### Usage activity backfill
+
+`/usage` reads daily mission activity solely from `instance/usage/*.jsonl`. Runs whose token
+usage cannot be extracted (e.g. some skill-dispatch missions) are now recorded with a
+placeholder row so activity stays visible. To reconstruct activity for **historical** days that
+predate that fix, run the one-shot backfill from `instance/session_outcomes.json`:
+
+```bash
+# dry-run (default) — shows per-day counts that would be written
+python -m app.backfill_usage --start 2026-05-30
+# apply
+python -m app.backfill_usage --start 2026-05-30 --apply
+```
+
+Synthetic rows carry a `"backfill": true` marker (zero tokens/cost — counts only, since token
+data is unrecoverable) and the tool is idempotent: re-running writes nothing already present and
+credits any real rows so days are never over-counted.
 
 ## Layout
 
