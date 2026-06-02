@@ -135,10 +135,23 @@
 
 <div class="card">
     <h2 style="margin-top:0;margin-bottom:0.5rem;">New mission</h2>
-    <form method="POST" action="/missions/add">
-        <input type="text" name="mission" placeholder="Mission description..." required>
+    <form method="POST" action="/missions/add" id="new-mission-form">
+        <div class="form-row" style="margin-bottom:0.5rem;">
+            <select name="project" id="mission-project-select" style="max-width:220px;">
+                <option value="">All projects</option>
+                {% for p in projects|sort(case_sensitive=false) %}
+                <option value="{{ p }}">{{ p }}</option>
+                {% endfor %}
+            </select>
+            <select name="skill" id="mission-skill-select" style="max-width:220px;">
+                <option value="">Mission</option>
+                {% for cmd in skills_commands %}
+                <option value="{{ cmd }}">/{{ cmd }}</option>
+                {% endfor %}
+            </select>
+        </div>
         <div class="form-row">
-            <input type="text" name="project" placeholder="Project (optional)" style="max-width:200px;">
+            <input type="text" name="mission" placeholder="Mission description..." required style="flex:1;">
             <button type="submit" class="k-btn k-btn--primary">Add</button>
         </div>
     </form>
@@ -536,6 +549,34 @@
     }
 
     refreshTimer = setInterval(refreshMissions, 10000);
+
+    // --- LocalStorage persistence for project & skill selects ---
+    const projectSelect = document.getElementById('mission-project-select');
+    const skillSelect = document.getElementById('mission-skill-select');
+    const STORAGE_KEY_PROJECT = 'koan-mission-project';
+    const STORAGE_KEY_SKILL = 'koan-mission-skill';
+
+    const savedProject = localStorage.getItem(STORAGE_KEY_PROJECT);
+    if (savedProject && projectSelect) {
+        const opt = projectSelect.querySelector('option[value="' + CSS.escape(savedProject) + '"]');
+        if (opt) projectSelect.value = savedProject;
+    }
+    const savedSkill = localStorage.getItem(STORAGE_KEY_SKILL);
+    if (savedSkill && skillSelect) {
+        const opt = skillSelect.querySelector('option[value="' + CSS.escape(savedSkill) + '"]');
+        if (opt) skillSelect.value = savedSkill;
+    }
+
+    if (projectSelect) {
+        projectSelect.addEventListener('change', () => {
+            localStorage.setItem(STORAGE_KEY_PROJECT, projectSelect.value);
+        });
+    }
+    if (skillSelect) {
+        skillSelect.addEventListener('change', () => {
+            localStorage.setItem(STORAGE_KEY_SKILL, skillSelect.value);
+        });
+    }
 
     // --- Init ---
     attachDnD();

@@ -355,6 +355,25 @@ def _get_all_project_names() -> list:
     return sorted(names, key=str.lower)
 
 
+def _get_mission_skill_commands() -> list:
+    """Return sorted list of skill command names usable as missions."""
+    from app.skills import build_registry
+
+    extra_dirs = []
+    instance_skills = INSTANCE_DIR / "skills"
+    if instance_skills.is_dir():
+        extra_dirs.append(instance_skills)
+
+    registry = build_registry(extra_dirs)
+    commands = set()
+    for skill in registry.list_all():
+        if skill.audience not in ("agent", "hybrid"):
+            continue
+        for cmd in skill.commands:
+            commands.add(cmd.name)
+    return sorted(commands, key=str.lower)
+
+
 def get_journal_entries(limit: int = 7) -> list:
     """Get recent journal entries."""
     entries = []
@@ -515,8 +534,10 @@ def missions_page():
     missions = parse_missions()
     filtered = _filter_missions_by_project(missions, selected_project)
     projects = [name for name, _path in get_known_projects()]
+    skills_commands = _get_mission_skill_commands()
     return render_template("missions.html", missions=filtered,
-                           selected_project=selected_project, projects=projects)
+                           selected_project=selected_project, projects=projects,
+                           skills_commands=skills_commands)
 
 
 @app.route("/missions/add", methods=["POST"])
@@ -526,8 +547,13 @@ def add_mission():
 
     text = sanitize_mission_text(request.form.get("mission", ""))
     project = request.form.get("project", "").strip()
+    skill = request.form.get("skill", "").strip()
     if not text:
         return redirect(url_for("missions_page"))
+
+    # Prepend skill command when a skill is selected
+    if skill:
+        text = f"/{skill} {text}"
 
     # Format entry
     if project:
