@@ -1697,7 +1697,8 @@ def api_config_restart():
     try:
         request_restart(str(KOAN_ROOT))
         return jsonify({"ok": True})
-    except Exception:
+    except Exception as e:
+        print(f"[dashboard] restart signal failed: {e}", file=sys.stderr)
         return jsonify({"ok": False, "error": "Failed to send restart signal"}), 500
 
 
