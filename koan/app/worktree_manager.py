@@ -70,6 +70,7 @@ def git_retry(
     max_retries: int = GIT_RETRY_MAX,
     min_delay: float = GIT_RETRY_MIN_DELAY,
     max_delay: float = GIT_RETRY_MAX_DELAY,
+    timeout: int = 60,
 ) -> subprocess.CompletedProcess:
     """Run a git command with retry logic for lock contention.
 
@@ -87,6 +88,7 @@ def git_retry(
                 capture_output=True,
                 text=True,
                 check=True,
+                timeout=timeout,
             )
         except subprocess.CalledProcessError as e:
             last_error = e
