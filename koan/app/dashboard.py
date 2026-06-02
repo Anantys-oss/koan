@@ -377,39 +377,41 @@ def _get_mission_skill_commands() -> list:
     return sorted(commands, key=str.lower)
 
 
-def get_journal_entries(limit: int = 7) -> list:
-    """Get recent journal entries."""
-    entries = []
+def _get_journal_dates(limit: int = 7) -> list[str]:
+    """Return up to *limit* most recent journal date strings (YYYY-MM-DD), newest first."""
     if not JOURNAL_DIR.exists():
-        return entries
-
-    # Collect all journal dates (both flat and nested)
-    dates = set()
-    for item in sorted(JOURNAL_DIR.iterdir(), reverse=True):
+        return []
+    dates: set[str] = set()
+    for item in JOURNAL_DIR.iterdir():
         if item.is_dir() and re.match(r"\d{4}-\d{2}-\d{2}", item.name):
             dates.add(item.name)
         elif item.suffix == ".md" and re.match(r"\d{4}-\d{2}-\d{2}", item.stem):
             dates.add(item.stem)
+    return sorted(dates, reverse=True)[:limit]
 
-    for d in sorted(dates, reverse=True)[:limit]:
-        day_entries = []
-        # Check nested structure
-        nested = JOURNAL_DIR / d
-        if nested.is_dir():
-            day_entries.extend(
-                {"project": f.stem, "content": f.read_text()}
-                for f in sorted(nested.glob("*.md"))
-            )
-        # Check flat structure
-        flat = JOURNAL_DIR / f"{d}.md"
-        if flat.is_file():
-            day_entries.append({
-                "project": "general",
-                "content": flat.read_text(),
-            })
+
+def _get_journal_day(day: str) -> list[dict]:
+    """Load journal entries for a single date string."""
+    day_entries: list[dict] = []
+    nested = JOURNAL_DIR / day
+    if nested.is_dir():
+        day_entries.extend(
+            {"project": f.stem, "content": f.read_text()}
+            for f in sorted(nested.glob("*.md"))
+        )
+    flat = JOURNAL_DIR / f"{day}.md"
+    if flat.is_file():
+        day_entries.append({"project": "general", "content": flat.read_text()})
+    return day_entries
+
+
+def get_journal_entries(limit: int = 7) -> list:
+    """Get recent journal entries."""
+    entries = []
+    for d in _get_journal_dates(limit):
+        day_entries = _get_journal_day(d)
         if day_entries:
             entries.append({"date": d, "entries": day_entries})
-
     return entries
 
 
@@ -1066,17 +1068,36 @@ def api_skill_metrics():
 
 @app.route("/journal")
 def journal_page():
-    """Journal viewer."""
+    """Journal viewer — shows today by default, with day selector for last 7 days."""
+    dates = _get_journal_dates(limit=7)
+    selected_date = request.args.get("date", "")
+    if selected_date and selected_date not in dates:
+        selected_date = ""
+    if not selected_date and dates:
+        selected_date = dates[0]
     selected_project = request.args.get("project", "")
-    entries = get_journal_entries(limit=14)
+    entries = _get_journal_day(selected_date) if selected_date else []
     if selected_project:
-        filtered = []
-        for day in entries:
-            day_filtered = [e for e in day["entries"] if e["project"] == selected_project]
-            if day_filtered:
-                filtered.append({"date": day["date"], "entries": day_filtered})
-        entries = filtered
-    return render_template("journal.html", entries=entries, selected_project=selected_project)
+        entries = [e for e in entries if e["project"] == selected_project]
+    return render_template(
+        "journal.html",
+        dates=dates,
+        selected_date=selected_date,
+        entries=entries,
+        selected_project=selected_project,
+    )
+
+
+@app.route("/api/journal/<day>")
+def api_journal_day(day):
+    """Return journal entries for a single date (on-demand loading)."""
+    if not re.match(r"\d{4}-\d{2}-\d{2}$", day):
+        return jsonify({"error": "invalid date format"}), 400
+    project = request.args.get("project", "")
+    entries = _get_journal_day(day)
+    if project:
+        entries = [e for e in entries if e["project"] == project]
+    return jsonify({"date": day, "entries": entries})
 
 
 @app.route("/api/projects")

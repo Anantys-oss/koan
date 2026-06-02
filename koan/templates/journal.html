@@ -1,25 +1,181 @@
 {% extends "base.html" %}
 {% block title %}Kōan — Journal{% endblock %}
 {% block page_title %}Journal{% endblock %}
+{% block extra_head %}
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github-dark.min.css"
+      media="(prefers-color-scheme: dark)" id="hljs-dark">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github.min.css"
+      media="(prefers-color-scheme: light)" id="hljs-light">
+<style>
+.journal-day-nav { display:flex; gap:var(--space-1); flex-wrap:wrap; margin-bottom:var(--space-4); }
+.journal-day-btn { background:var(--surface-1); border:1px solid var(--border); border-radius:var(--radius-sm);
+  padding:var(--space-1) var(--space-3); font-size:var(--fs-body-sm); color:var(--text-secondary);
+  cursor:pointer; transition:background .15s,color .15s; }
+.journal-day-btn:hover { background:var(--surface-3); color:var(--text-primary); }
+.journal-day-btn[aria-current="true"] { background:var(--brand); color:var(--on-brand); border-color:transparent; }
+.journal-entry-card { margin-bottom:var(--space-3); }
+.journal-entry-card .journal-body { padding:var(--space-3); font-size:var(--fs-body-sm); line-height:1.6; }
+.journal-body h1,.journal-body h2,.journal-body h3 { margin:var(--space-3) 0 var(--space-1); color:var(--text-primary); }
+.journal-body h1 { font-size:var(--fs-heading-md); }
+.journal-body h2 { font-size:var(--fs-body-lg); }
+.journal-body h3 { font-size:var(--fs-body-md); font-weight:var(--fw-semibold); }
+.journal-body p { margin:var(--space-1) 0; }
+.journal-body ul,.journal-body ol { margin:var(--space-1) 0; padding-left:var(--space-5); }
+.journal-body pre { background:var(--surface-2); border:1px solid var(--border); border-radius:var(--radius-sm);
+  padding:var(--space-3); overflow-x:auto; margin:var(--space-2) 0; }
+.journal-body code { font-family:var(--font-mono); font-size:0.9em; }
+.journal-body :not(pre)>code { background:var(--surface-2); padding:0.15em 0.35em; border-radius:var(--radius-xs); }
+.journal-body hr { border:none; border-top:1px solid var(--border); margin:var(--space-3) 0; }
+.journal-body blockquote { border-left:3px solid var(--brand); margin:var(--space-2) 0; padding:var(--space-1) var(--space-3);
+  color:var(--text-secondary); background:var(--surface-1); border-radius:0 var(--radius-sm) var(--radius-sm) 0; }
+.journal-body strong { color:var(--text-primary); }
+.journal-body a { color:var(--brand); }
+.journal-loading { text-align:center; padding:var(--space-6); color:var(--text-muted); }
+</style>
+{% endblock %}
 {% block content %}
-{% if not entries %}
+{% if not dates %}
 <div class="k-empty">
     <div class="k-empty__icon"><i data-lucide="book-open"></i></div>
     <div class="k-empty__title">No journal entries yet</div>
     <div class="k-empty__body">Entries appear here as the agent works and reflects on its missions.</div>
 </div>
-{% endif %}
+{% else %}
+<nav class="journal-day-nav" id="day-nav" aria-label="Journal dates">
+{% for d in dates %}
+    <button class="journal-day-btn" data-date="{{ d }}"
+            {% if d == selected_date %}aria-current="true"{% endif %}>{{ d }}</button>
+{% endfor %}
+</nav>
 
-{% for day in entries %}
-<div class="journal-date">{{ day.date }}</div>
-{% for entry in day.entries %}
-<div class="card">
+<div id="journal-content">
+{% if entries %}
+{% for entry in entries %}
+<div class="card journal-entry-card">
     <div class="journal-project">{{ entry.project }}</div>
-    <pre>{{ entry.content }}</pre>
+    <div class="journal-body" data-raw="{{ entry.content | e }}"></div>
 </div>
 {% endfor %}
-{% endfor %}
+{% else %}
+<div class="k-empty">
+    <div class="k-empty__icon"><i data-lucide="file-x"></i></div>
+    <div class="k-empty__title">No entries for {{ selected_date }}</div>
+</div>
+{% endif %}
+</div>
+{% endif %}
 {% endblock %}
 {% block scripts %}
-<script>if (window.lucide) lucide.createIcons();</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/15.0.7/marked.min.js"></script>
+<script>
+(function(){
+  if (window.lucide) lucide.createIcons();
+
+  /* ---- highlight.js theme sync ---- */
+  function syncHljsTheme() {
+    var t = document.documentElement.getAttribute('data-theme');
+    var dk = document.getElementById('hljs-dark');
+    var lt = document.getElementById('hljs-light');
+    if (dk) dk.media = (t === 'dark') ? 'all' : 'not all';
+    if (lt) lt.media = (t === 'light') ? 'all' : 'not all';
+  }
+  syncHljsTheme();
+  new MutationObserver(syncHljsTheme).observe(document.documentElement, {attributes:true, attributeFilter:['data-theme']});
+
+  /* ---- marked + hljs setup ---- */
+  if (window.marked && window.hljs) {
+    marked.setOptions({
+      highlight: function(code, lang) {
+        if (lang && hljs.getLanguage(lang)) {
+          return hljs.highlight(code, {language: lang}).value;
+        }
+        return hljs.highlightAuto(code).value;
+      },
+      breaks: true,
+      gfm: true
+    });
+  }
+
+  function renderEntries() {
+    document.querySelectorAll('.journal-body[data-raw]').forEach(function(el) {
+      var raw = el.getAttribute('data-raw');
+      if (raw && window.marked) {
+        el.innerHTML = marked.parse(raw);
+      } else if (raw) {
+        el.textContent = raw;
+      }
+      el.removeAttribute('data-raw');
+    });
+  }
+  renderEntries();
+
+  /* ---- day navigation ---- */
+  var nav = document.getElementById('day-nav');
+  var content = document.getElementById('journal-content');
+  if (!nav || !content) return;
+
+  var projectFilter = document.getElementById('project-filter');
+  var cache = {};
+
+  nav.addEventListener('click', function(e) {
+    var btn = e.target.closest('.journal-day-btn');
+    if (!btn) return;
+    var day = btn.getAttribute('data-date');
+
+    nav.querySelectorAll('.journal-day-btn').forEach(function(b) {
+      b.setAttribute('aria-current', b === btn ? 'true' : 'false');
+    });
+
+    var project = projectFilter ? projectFilter.value : '';
+    var cacheKey = day + '|' + project;
+
+    if (cache[cacheKey]) {
+      renderDay(cache[cacheKey]);
+      return;
+    }
+
+    content.innerHTML = '<div class="journal-loading">Loading…</div>';
+    var url = '/api/journal/' + day;
+    if (project) url += '?project=' + encodeURIComponent(project);
+
+    fetch(url)
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        cache[cacheKey] = data;
+        renderDay(data);
+      })
+      .catch(function() {
+        content.innerHTML = '<div class="journal-loading">Failed to load entries.</div>';
+      });
+  });
+
+  function renderDay(data) {
+    if (!data.entries || data.entries.length === 0) {
+      content.innerHTML = '<div class="k-empty"><div class="k-empty__icon"><i data-lucide="file-x"></i></div>'
+        + '<div class="k-empty__title">No entries for ' + escapeHtml(data.date) + '</div></div>';
+      if (window.lucide) lucide.createIcons();
+      return;
+    }
+    var html = '';
+    data.entries.forEach(function(entry) {
+      var rendered = window.marked ? marked.parse(entry.content) : escapeHtml(entry.content);
+      html += '<div class="card journal-entry-card">'
+        + '<div class="journal-project">' + escapeHtml(entry.project) + '</div>'
+        + '<div class="journal-body">' + rendered + '</div></div>';
+    });
+    content.innerHTML = html;
+    content.querySelectorAll('pre code').forEach(function(block) {
+      if (window.hljs) hljs.highlightElement(block);
+    });
+    if (window.lucide) lucide.createIcons();
+  }
+
+  function escapeHtml(s) {
+    var d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  }
+})();
+</script>
 {% endblock %}
