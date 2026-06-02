@@ -99,10 +99,10 @@
 </div>
 
 {% if project_stats %}
-<h2>Projects</h2>
+<h2 style="display:flex;align-items:center;gap:var(--space-3);">Projects{% if selected_project %} <a href="/" style="font-size:var(--fs-body-sm);font-weight:normal;color:var(--accent);">View all</a>{% endif %}</h2>
 <div class="grid">
 {% for pname, pdata in project_stats.items() %}
-    <a href="/?project={{ pname }}" class="card project-card" style="text-decoration:none;color:var(--text-primary);">
+    <a href="/?project={{ pname }}" class="card project-card{% if selected_project == pname %} card-active{% endif %}" style="text-decoration:none;color:var(--text-primary);">
         <div style="font-weight:var(--fw-semibold);margin-bottom:var(--space-2);">{{ "untagged" if pname == "default" else pname }}</div>
         <div style="font-size:var(--fs-body-sm);color:var(--text-muted);">
             <span>{{ pdata.pending }} pending</span>
