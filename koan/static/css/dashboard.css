@@ -147,6 +147,12 @@ h2 { font-size: var(--fs-heading-sm); font-weight: var(--fw-semibold); color: va
 }
 .stat-detail { font-size: var(--fs-caption); color: var(--text-muted); margin-top: var(--space-1); }
 
+/* PR filter cards — clickable stat cards */
+.pr-filter-card { cursor: pointer; transition: border-color var(--dur-base), box-shadow var(--dur-base); user-select: none; }
+.pr-filter-card:hover { border-color: var(--border-strong); }
+.pr-filter-card:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.pr-filter-card.pr-filter-active { border-color: var(--brand); box-shadow: 0 0 0 1px var(--brand); }
+
 /* Badges — legacy color names mapped to DS badge intents */
 .badge {
     display: inline-flex; align-items: center; gap: 5px;
