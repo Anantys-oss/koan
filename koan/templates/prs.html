@@ -121,9 +121,9 @@ function matchesFilter(pr, filter) {
     if (filter === 'all') return true;
     var ci = ciSummary(pr.statusCheckRollup);
     var rv = reviewBadge(pr.reviewDecision);
-    if (filter === 'ci-passing') return ci.badge === 'green';
-    if (filter === 'needs-review') return rv.badge === 'orange';
-    if (filter === 'approved') return rv.badge === 'green';
+    if (filter === 'ci-passing') return ci.label === 'passing';
+    if (filter === 'needs-review') return rv.label === 'pending';
+    if (filter === 'approved') return rv.label === 'approved';
     return true;
 }
 
@@ -172,6 +172,9 @@ function populateProjectFilter(prs) {
         sel.appendChild(opt);
     }
     sel.value = projectFilter;
+    if (sel.value !== projectFilter) {
+        projectFilter = '';
+    }
 }
 
 function renderTable() {
@@ -250,9 +253,9 @@ function updateStats(prs) {
     for (var j = 0; j < subset.length; j++) {
         var ci = ciSummary(subset[j].statusCheckRollup);
         var rv = reviewBadge(subset[j].reviewDecision);
-        if (ci.badge === 'green') ciPassCount++;
-        if (rv.badge === 'orange') reviewPendingCount++;
-        if (rv.badge === 'green') approvedCount++;
+        if (ci.label === 'passing') ciPassCount++;
+        if (rv.label === 'pending') reviewPendingCount++;
+        if (rv.label === 'approved') approvedCount++;
     }
     document.getElementById('stat-total').textContent = subset.length;
     document.getElementById('stat-ci-pass').textContent = ciPassCount;
