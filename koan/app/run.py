@@ -3437,6 +3437,16 @@ def _cleanup_worktree(worktree_info, project_path: str):
     need to be pushed to the remote before the worktree is destroyed.
     """
     wt_path = worktree_info.path
+
+    # If worktree directory is already gone, just clean up git refs
+    if not Path(wt_path).is_dir():
+        try:
+            from app.worktree_manager import remove_worktree
+            remove_worktree(project_path, session_id=worktree_info.session_id, force=True)
+        except Exception:
+            pass
+        return
+
     push_failed = False
 
     # Push any branches the agent created in the worktree
