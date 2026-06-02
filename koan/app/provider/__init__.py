@@ -714,8 +714,10 @@ def _persist_stream_usage_snapshot(snapshot: Optional[Dict[str, Any]]) -> None:
     target = os.environ.get("KOAN_STREAM_USAGE_FILE", "").strip()
     if not target:
         return
-    with contextlib.suppress(OSError):
+    try:
         Path(target).write_text(json.dumps(snapshot, separators=(",", ":")))
+    except OSError as exc:
+        print(f"[provider] WARNING: stream usage sidecar write failed: {exc}", file=sys.stderr)
 
 
 def run_command_streaming(
