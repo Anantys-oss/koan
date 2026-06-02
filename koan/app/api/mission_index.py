@@ -66,7 +66,7 @@ def record_mission(instance_dir: Path, text: str, project: Optional[str]) -> str
     for rec in records:
         if rec.get("status") == "pending":
             stored = rec.get("text", "").lstrip("- ").strip()
-            if stored == needle:
+            if stored == needle and rec.get("project") == project:
                 return rec["id"]
     mission_id = str(uuid.uuid4())
     records.append(
@@ -197,9 +197,8 @@ def cancel_mission(instance_dir: Path, mission_id: str) -> bool:
 def cancel_by_text(instance_dir: Path, text: str) -> bool:
     """Mark the first pending record matching text as removed.
 
-    Uses substring matching (needle in stored text) to tolerate minor
-    formatting differences between what record_mission stored and what
-    cancel_pending_mission returns.
+    Uses exact match after normalization (strip leading ``- `` and
+    whitespace) to avoid false positives from short substrings.
     """
     needle = text.lstrip("- ").strip()
     records = _load_index(instance_dir)
@@ -207,7 +206,7 @@ def cancel_by_text(instance_dir: Path, text: str) -> bool:
         if rec.get("status") != "pending":
             continue
         stored = rec.get("text", "").lstrip("- ").strip()
-        if needle in stored or stored in needle:
+        if stored == needle:
             records[i]["status"] = "removed"
             _save_index(instance_dir, records)
             return True

@@ -249,12 +249,18 @@ class TestCancelByText:
         result = cancel_by_text(instance_dir, "- Already done")
         assert result is False
 
-    def test_cancel_by_text_substring_match(self, instance_dir):
+    def test_cancel_by_text_exact_match_after_strip(self, instance_dir):
         from app.api.mission_index import record_mission, cancel_by_text, get_mission
         mid = record_mission(instance_dir, "- [project:koan] Fix something", "koan")
-        result = cancel_by_text(instance_dir, "Fix something")
+        result = cancel_by_text(instance_dir, "- [project:koan] Fix something")
         assert result is True
         assert get_mission(instance_dir, mid)["status"] == "removed"
+
+    def test_cancel_by_text_rejects_substring(self, instance_dir):
+        from app.api.mission_index import record_mission, cancel_by_text
+        record_mission(instance_dir, "- [project:koan] Fix something", "koan")
+        result = cancel_by_text(instance_dir, "Fix")
+        assert result is False
 
 
 class TestRecordMissionDedup:
@@ -265,6 +271,14 @@ class TestRecordMissionDedup:
         assert id1 == id2
         records = list_missions(instance_dir)
         assert len(records) == 1
+
+    def test_record_mission_dedup_different_project_creates_new(self, instance_dir):
+        from app.api.mission_index import record_mission, list_missions
+        id1 = record_mission(instance_dir, "- Fix bug", "alpha")
+        id2 = record_mission(instance_dir, "- Fix bug", "beta")
+        assert id1 != id2
+        records = list_missions(instance_dir)
+        assert len(records) == 2
 
     def test_record_mission_no_dedup_across_status(self, instance_dir):
         from app.api.mission_index import record_mission, cancel_mission, list_missions
