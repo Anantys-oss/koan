@@ -288,7 +288,7 @@ function loadProjects() {
                 sel.appendChild(opt);
             });
         })
-        .catch(() => {});
+        .catch(err => { console.error('Failed to load projects:', err); });
 }
 
 function renderDailyChart(series, hasPricing, granularity) {
