@@ -20,6 +20,7 @@ with where the entry now lives in missions.md.
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from pathlib import Path
@@ -194,18 +195,27 @@ def cancel_mission(instance_dir: Path, mission_id: str) -> bool:
     return False
 
 
+_LIFECYCLE_TS = re.compile(r"\s*[⏳▶✅❌]\s*\([^)]*\)")
+
+
+def _normalize_for_match(text: str) -> str:
+    """Strip leading ``- ``, lifecycle timestamps, and whitespace."""
+    text = text.lstrip("- ").strip()
+    return _LIFECYCLE_TS.sub("", text).strip()
+
+
 def cancel_by_text(instance_dir: Path, text: str) -> bool:
     """Mark the first pending record matching text as removed.
 
-    Uses exact match after normalization (strip leading ``- `` and
-    whitespace) to avoid false positives from short substrings.
+    Uses exact match after normalization (strip leading ``- ``,
+    lifecycle timestamps, and whitespace) to avoid false positives.
     """
-    needle = text.lstrip("- ").strip()
+    needle = _normalize_for_match(text)
     records = _load_index(instance_dir)
     for i, rec in enumerate(records):
         if rec.get("status") != "pending":
             continue
-        stored = rec.get("text", "").lstrip("- ").strip()
+        stored = _normalize_for_match(rec.get("text", ""))
         if stored == needle:
             records[i]["status"] = "removed"
             _save_index(instance_dir, records)
