@@ -385,10 +385,13 @@
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify(body),
-        }).then(() => {
-            zone.querySelectorAll('.attention-item').forEach(el => { el.style.opacity = '0'; });
+        }).then(resp => {
+            if (!resp.ok) throw new Error(resp.status);
+            zone.querySelectorAll('.attention-item, .attention-header').forEach(el => { el.style.opacity = '0'; });
             setTimeout(() => { zone.innerHTML = ''; zone.style.display = 'none'; }, 300);
-        }).catch(() => { if (btn) { btn.disabled = false; btn.textContent = 'Acknowledge All'; } });
+        }).catch(() => {
+            if (btn) { btn.disabled = false; btn.textContent = 'Acknowledge All'; btn.style.borderColor = 'var(--danger)'; }
+        });
     }
 
     zone.addEventListener('click', function(e) {
