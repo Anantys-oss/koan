@@ -47,7 +47,7 @@
         <input id="ctrl-pause-duration" type="text" placeholder="e.g. 2h" style="width:6rem;font-size:var(--fs-body-sm);padding:var(--space-1) var(--space-2);border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-secondary);color:var(--text-primary);">
     </div>
     <button id="ctrl-resume" class="btn btn-sm btn-secondary" onclick="agentAction('resume')" style="{% if agent_state.state != 'paused' %}display:none;{% endif %}">Resume</button>
-    <button id="ctrl-restart" class="btn btn-sm btn-secondary" onclick="agentAction('restart')" {% if agent_state.state == 'stopped' %}style="display:none;"{% endif %}>Restart</button>
+    <button id="ctrl-restart" class="btn btn-sm btn-secondary" onclick="agentAction('restart')" style="{% if agent_state.state == 'stopped' %}display:none;{% endif %}">Restart</button>
 </div>
 
 <div id="state-detail" class="card state-detail" {% if agent_state.state == 'idle' %}style="display:none;"{% endif %}>
@@ -323,6 +323,9 @@
             .then(data => {
                 if (!data.ok) {
                     alert('Error: ' + (data.error || 'unknown'));
+                } else if (action === 'pause') {
+                    const durInput = document.getElementById('ctrl-pause-duration');
+                    if (durInput) durInput.value = '';
                 }
             })
             .catch(e => alert('Request failed: ' + e))
