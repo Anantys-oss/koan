@@ -1297,7 +1297,8 @@ def api_agent_pause():
 
     try:
         data = request.get_json() or {}
-    except Exception:
+    except Exception as exc:
+        print(f"[dashboard] api_agent_pause: invalid JSON: {exc}", file=sys.stderr)
         return jsonify({"ok": False, "error": "Invalid JSON body"}), 400
     duration_str = (data.get("duration") or "").strip()
 
