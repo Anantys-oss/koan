@@ -1,0 +1,331 @@
+{% extends "base.html" %}
+{% block title %}Kōan — Config{% endblock %}
+{% block page_title %}Config{% endblock %}
+{% block content %}
+<p style="color: var(--text-muted); margin-bottom: 1.5rem;">View and edit instance configuration files.</p>
+
+<!-- config.yaml -->
+<div class="card" id="section-config-yaml">
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:0.75rem; flex-wrap:wrap; gap:0.5rem;">
+        <h2 style="margin:0;">config.yaml</h2>
+        <div style="display:flex; gap:0.5rem; align-items:center;">
+            <span id="config-yaml-status" style="font-size:0.82rem;"></span>
+            <button class="btn-small" id="config-yaml-edit" title="Edit">Edit</button>
+            <button class="btn-small" id="config-yaml-save" style="display:none;">Save</button>
+            <button class="btn-small" id="config-yaml-cancel" style="display:none;">Cancel</button>
+        </div>
+    </div>
+    <div id="config-yaml-view">
+        <pre id="config-yaml-pre" class="yaml-highlighted" style="white-space:pre-wrap;margin:0;font-size:0.82rem;tab-size:2;overflow-x:auto;"></pre>
+    </div>
+    <div id="config-yaml-editor" style="display:none;">
+        <textarea id="config-yaml-textarea" style="width:100%;min-height:400px;font-family:var(--font-mono,'Fira Code',monospace);font-size:0.82rem;background:var(--surface-2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:0.75rem;resize:vertical;tab-size:2;" spellcheck="false"></textarea>
+        <div id="config-yaml-error" style="display:none;color:var(--danger);font-size:0.82rem;margin-top:0.5rem;padding:0.5rem;background:var(--surface-2);border-radius:4px;font-family:var(--font-mono,'Fira Code',monospace);"></div>
+    </div>
+</div>
+
+<!-- projects.yaml -->
+<div class="card" id="section-projects-yaml">
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:0.75rem; flex-wrap:wrap; gap:0.5rem;">
+        <h2 style="margin:0;">projects.yaml</h2>
+        <div style="display:flex; gap:0.5rem; align-items:center;">
+            <span id="projects-yaml-status" style="font-size:0.82rem;"></span>
+            <button class="btn-small" id="projects-yaml-edit" title="Edit">Edit</button>
+            <button class="btn-small" id="projects-yaml-save" style="display:none;">Save</button>
+            <button class="btn-small" id="projects-yaml-cancel" style="display:none;">Cancel</button>
+        </div>
+    </div>
+    <div id="projects-yaml-view">
+        <pre id="projects-yaml-pre" class="yaml-highlighted" style="white-space:pre-wrap;margin:0;font-size:0.82rem;tab-size:2;overflow-x:auto;"></pre>
+    </div>
+    <div id="projects-yaml-editor" style="display:none;">
+        <textarea id="projects-yaml-textarea" style="width:100%;min-height:300px;font-family:var(--font-mono,'Fira Code',monospace);font-size:0.82rem;background:var(--surface-2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:0.75rem;resize:vertical;tab-size:2;" spellcheck="false"></textarea>
+        <div id="projects-yaml-error" style="display:none;color:var(--danger);font-size:0.82rem;margin-top:0.5rem;padding:0.5rem;background:var(--surface-2);border-radius:4px;font-family:var(--font-mono,'Fira Code',monospace);"></div>
+    </div>
+</div>
+
+<!-- Restart -->
+<div class="card" id="section-restart">
+    <div style="display:flex; align-items:center; justify-content:space-between;">
+        <div>
+            <h2 style="margin:0 0 0.25rem 0;">Service Control</h2>
+            <p style="color:var(--text-muted);margin:0;font-size:0.85rem;">Restart the main agent service to apply configuration changes.</p>
+        </div>
+        <button class="btn-small" id="restart-btn" style="background:var(--warning);color:#000;font-weight:600;">Restart Service</button>
+    </div>
+    <div id="restart-status" style="display:none;margin-top:0.75rem;font-size:0.85rem;padding:0.5rem;border-radius:4px;"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+    var _configRaw = null;
+    var _projectsRaw = null;
+
+    /* ------------------------------------------------------------------ */
+    /* YAML syntax highlighting (pure JS, no dependencies)                 */
+    /* ------------------------------------------------------------------ */
+    function highlightYaml(text) {
+        if (!text) return '';
+        return text.split('\n').map(function (line) {
+            // Comment lines
+            if (/^\s*#/.test(line)) {
+                return '<span class="hl-comment">' + escHtml(line) + '</span>';
+            }
+            // Key: value lines
+            var m = line.match(/^(\s*)([\w][\w.\-]*)\s*(:)(.*)/);
+            if (m) {
+                var indent = escHtml(m[1]);
+                var key = '<span class="hl-key">' + escHtml(m[2]) + '</span>';
+                var colon = '<span class="hl-colon">:</span>';
+                var val = highlightValue(m[4]);
+                return indent + key + colon + val;
+            }
+            // List items
+            var listMatch = line.match(/^(\s*)(- )(.*)/);
+            if (listMatch) {
+                var li = escHtml(listMatch[1]) + '<span class="hl-list">- </span>';
+                var rest = listMatch[3];
+                // list item with key:value
+                var kvMatch = rest.match(/^([\w][\w.\-]*)\s*(:)(.*)/);
+                if (kvMatch) {
+                    li += '<span class="hl-key">' + escHtml(kvMatch[1]) + '</span>';
+                    li += '<span class="hl-colon">:</span>';
+                    li += highlightValue(kvMatch[3]);
+                } else {
+                    li += highlightValue(' ' + rest).substring(1);
+                }
+                return li;
+            }
+            return escHtml(line);
+        }).join('\n');
+    }
+
+    function highlightValue(val) {
+        if (!val || !val.trim()) return escHtml(val);
+        var trimmed = val.trim();
+        // <redacted>
+        if (trimmed === '<redacted>') {
+            return escHtml(val.substring(0, val.indexOf(trimmed))) + '<span class="hl-redacted">' + escHtml(trimmed) + '</span>';
+        }
+        // Booleans
+        if (/^(true|false|yes|no|on|off)$/i.test(trimmed)) {
+            return escHtml(val.substring(0, val.indexOf(trimmed))) + '<span class="hl-bool">' + escHtml(trimmed) + '</span>';
+        }
+        // Numbers
+        if (/^-?\d+(\.\d+)?$/.test(trimmed)) {
+            return escHtml(val.substring(0, val.indexOf(trimmed))) + '<span class="hl-num">' + escHtml(trimmed) + '</span>';
+        }
+        // Null
+        if (/^(null|~)$/i.test(trimmed)) {
+            return escHtml(val.substring(0, val.indexOf(trimmed))) + '<span class="hl-null">' + escHtml(trimmed) + '</span>';
+        }
+        // Quoted strings
+        if (/^["'].*["']$/.test(trimmed)) {
+            return escHtml(val.substring(0, val.indexOf(trimmed))) + '<span class="hl-string">' + escHtml(trimmed) + '</span>';
+        }
+        // Inline comment
+        var commentIdx = val.indexOf(' #');
+        if (commentIdx > 0) {
+            return '<span class="hl-value">' + escHtml(val.substring(0, commentIdx)) + '</span><span class="hl-comment">' + escHtml(val.substring(commentIdx)) + '</span>';
+        }
+        return '<span class="hl-value">' + escHtml(val) + '</span>';
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Load config files                                                    */
+    /* ------------------------------------------------------------------ */
+    function loadConfig() {
+        document.getElementById('config-yaml-pre').textContent = 'Loading…';
+        document.getElementById('projects-yaml-pre').textContent = 'Loading…';
+        fetch('/api/agent/config')
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                _configRaw = data.config_yaml;
+                _projectsRaw = data.projects_yaml;
+                renderYaml('config-yaml', _configRaw, 'config.yaml');
+                renderYaml('projects-yaml', _projectsRaw, 'projects.yaml');
+            })
+            .catch(function () {
+                document.getElementById('config-yaml-pre').textContent = 'Error loading config.';
+                document.getElementById('projects-yaml-pre').textContent = 'Error loading projects config.';
+            });
+    }
+
+    function renderYaml(prefix, content, label) {
+        var pre = document.getElementById(prefix + '-pre');
+        if (content === null) {
+            pre.innerHTML = '<span style="color:var(--text-muted)">' + escHtml(label) + ' not found.</span>';
+        } else {
+            pre.innerHTML = highlightYaml(content);
+        }
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Edit / Save / Cancel for each config file                           */
+    /* ------------------------------------------------------------------ */
+    function setupEditor(prefix, getContent, apiField) {
+        var editBtn = document.getElementById(prefix + '-edit');
+        var saveBtn = document.getElementById(prefix + '-save');
+        var cancelBtn = document.getElementById(prefix + '-cancel');
+        var viewEl = document.getElementById(prefix + '-view');
+        var editorEl = document.getElementById(prefix + '-editor');
+        var textarea = document.getElementById(prefix + '-textarea');
+        var errorEl = document.getElementById(prefix + '-error');
+        var statusEl = document.getElementById(prefix + '-status');
+
+        editBtn.addEventListener('click', function () {
+            var raw = getContent();
+            if (raw === null) {
+                textarea.value = '';
+            } else {
+                textarea.value = raw;
+            }
+            viewEl.style.display = 'none';
+            editorEl.style.display = 'block';
+            editBtn.style.display = 'none';
+            saveBtn.style.display = '';
+            cancelBtn.style.display = '';
+            errorEl.style.display = 'none';
+            statusEl.textContent = '';
+        });
+
+        cancelBtn.addEventListener('click', function () {
+            viewEl.style.display = '';
+            editorEl.style.display = 'none';
+            editBtn.style.display = '';
+            saveBtn.style.display = 'none';
+            cancelBtn.style.display = 'none';
+            errorEl.style.display = 'none';
+            statusEl.textContent = '';
+        });
+
+        saveBtn.addEventListener('click', function () {
+            var content = textarea.value;
+            saveBtn.disabled = true;
+            saveBtn.textContent = 'Validating…';
+            errorEl.style.display = 'none';
+            statusEl.textContent = '';
+
+            fetch('/api/config/' + apiField, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ content: content })
+            })
+                .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+                .then(function (res) {
+                    saveBtn.disabled = false;
+                    saveBtn.textContent = 'Save';
+                    if (res.data.ok) {
+                        // Update raw cache and re-render highlighted view
+                        if (apiField === 'config') { _configRaw = content; }
+                        else { _projectsRaw = content; }
+                        renderYaml(prefix, content, apiField + '.yaml');
+                        viewEl.style.display = '';
+                        editorEl.style.display = 'none';
+                        editBtn.style.display = '';
+                        saveBtn.style.display = 'none';
+                        cancelBtn.style.display = 'none';
+                        statusEl.innerHTML = '<span style="color:var(--success);">✓ Saved</span>';
+                        setTimeout(function () { statusEl.textContent = ''; }, 3000);
+                    } else {
+                        errorEl.textContent = res.data.error || 'Validation failed.';
+                        errorEl.style.display = 'block';
+                    }
+                })
+                .catch(function () {
+                    saveBtn.disabled = false;
+                    saveBtn.textContent = 'Save';
+                    errorEl.textContent = 'Network error — could not save.';
+                    errorEl.style.display = 'block';
+                });
+        });
+
+        // Tab key inserts spaces in textarea
+        textarea.addEventListener('keydown', function (e) {
+            if (e.key === 'Tab') {
+                e.preventDefault();
+                var start = this.selectionStart;
+                var end = this.selectionEnd;
+                this.value = this.value.substring(0, start) + '  ' + this.value.substring(end);
+                this.selectionStart = this.selectionEnd = start + 2;
+            }
+        });
+    }
+
+    setupEditor('config-yaml', function () { return _configRaw; }, 'config');
+    setupEditor('projects-yaml', function () { return _projectsRaw; }, 'projects');
+
+    /* ------------------------------------------------------------------ */
+    /* Restart button                                                      */
+    /* ------------------------------------------------------------------ */
+    document.getElementById('restart-btn').addEventListener('click', function () {
+        if (!confirm('Restart the Kōan agent service?')) return;
+        var btn = this;
+        var statusEl = document.getElementById('restart-status');
+        btn.disabled = true;
+        btn.textContent = 'Restarting…';
+        statusEl.style.display = 'none';
+
+        fetch('/api/config/restart', { method: 'POST' })
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                btn.disabled = false;
+                btn.textContent = 'Restart Service';
+                statusEl.style.display = 'block';
+                if (data.ok) {
+                    statusEl.style.background = 'var(--surface-2)';
+                    statusEl.style.color = 'var(--success)';
+                    statusEl.textContent = '✓ Restart signal sent. The agent will restart shortly.';
+                } else {
+                    statusEl.style.color = 'var(--danger)';
+                    statusEl.textContent = data.error || 'Failed to send restart signal.';
+                }
+                setTimeout(function () { statusEl.style.display = 'none'; }, 8000);
+            })
+            .catch(function () {
+                btn.disabled = false;
+                btn.textContent = 'Restart Service';
+                statusEl.style.display = 'block';
+                statusEl.style.color = 'var(--danger)';
+                statusEl.textContent = 'Network error — could not restart.';
+            });
+    });
+
+    /* ------------------------------------------------------------------ */
+    /* Shared                                                              */
+    /* ------------------------------------------------------------------ */
+    function escHtml(str) {
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
+    loadConfig();
+})();
+</script>
+
+<style>
+    .yaml-highlighted { line-height: 1.5; }
+    .hl-comment { color: var(--text-muted); font-style: italic; }
+    .hl-key { color: #7eb6ff; font-weight: 500; }
+    .hl-colon { color: var(--text-muted); }
+    .hl-value { color: var(--text); }
+    .hl-string { color: #a8d8a8; }
+    .hl-bool { color: #d8a8e8; }
+    .hl-num { color: #e8c87e; }
+    .hl-null { color: #d8a8e8; font-style: italic; }
+    .hl-list { color: var(--text-muted); }
+    .hl-redacted { color: var(--warning); font-style: italic; }
+
+    [data-theme="light"] .hl-key { color: #0550ae; }
+    [data-theme="light"] .hl-string { color: #1a7f37; }
+    [data-theme="light"] .hl-bool { color: #8250df; }
+    [data-theme="light"] .hl-num { color: #953800; }
+    [data-theme="light"] .hl-null { color: #8250df; }
+    [data-theme="light"] .hl-redacted { color: #b35900; }
+</style>
+{% endblock %}
