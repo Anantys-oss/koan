@@ -589,13 +589,22 @@ class TestAggregateByType:
         assert result["by_type"]["review"]["output_tokens"] == 200
         assert result["by_type"]["implement"]["count"] == 1
 
-    def test_missing_mission_type_defaults_to_unknown(self):
+    def test_missing_mission_type_reclassified_from_mission(self):
+        entries = [
+            {"input_tokens": 100, "output_tokens": 50, "project": "p", "model": "m",
+             "mission": "/review https://example.com/pr/1"},
+        ]
+        result = _aggregate(entries)
+        assert "review" in result["by_type"]
+        assert result["by_type"]["review"]["count"] == 1
+
+    def test_missing_mission_type_no_mission_becomes_autonomous(self):
         entries = [
             {"input_tokens": 100, "output_tokens": 50, "project": "p", "model": "m"},
         ]
         result = _aggregate(entries)
-        assert "unknown" in result["by_type"]
-        assert result["by_type"]["unknown"]["count"] == 1
+        assert "autonomous" in result["by_type"]
+        assert result["by_type"]["autonomous"]["count"] == 1
 
     def test_empty_entries_has_by_type(self):
         result = _aggregate([])
@@ -629,7 +638,7 @@ class TestSummarizeByType:
         result = summarize_by_type(instance_dir, days=1)
         assert result["review"]["count"] == 1
         assert result["implement"]["count"] == 1
-        assert result["unknown"]["count"] == 1
+        assert result["autonomous"]["count"] == 1
 
     def test_empty_returns_empty(self, instance_dir):
         result = summarize_by_type(instance_dir, days=1)
@@ -656,17 +665,17 @@ class TestSummarizeByProjectAndType:
         assert result["other"]["review"]["count"] == 1
         assert result["other"]["review"]["input_tokens"] == 300
 
-    def test_missing_type_grouped_as_unknown(self, instance_dir, usage_dir):
+    def test_missing_type_reclassified(self, instance_dir, usage_dir):
         today = date.today()
         entries = [
             {"input_tokens": 100, "output_tokens": 50, "project": "p", "model": "m",
-             "ts": today.isoformat()},
+             "mission": "/rebase https://example.com/pr/1", "ts": today.isoformat()},
         ]
         jsonl_path = usage_dir / f"{today.isoformat()}.jsonl"
         jsonl_path.write_text(json.dumps(entries[0]) + "\n")
 
         result = summarize_by_project_and_type(instance_dir, days=1)
-        assert result["p"]["unknown"]["count"] == 1
+        assert result["p"]["rebase"]["count"] == 1
 
     def test_empty_returns_empty(self, instance_dir):
         result = summarize_by_project_and_type(instance_dir, days=1)

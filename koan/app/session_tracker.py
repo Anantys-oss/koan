@@ -172,15 +172,21 @@ def _extract_summary(journal_content: str, max_chars: int = 120) -> str:
 # Add new skills here when they are added to koan/skills/core/.
 # Old JSONL records without mission_type should be treated as "unknown" by readers.
 _MISSION_TYPE_DISPATCH = [
+    (re.compile(r"^/(?:plan_implement|deepplan)\b"), "plan"),
     (re.compile(r"^/plan\b"), "plan"),
+    (re.compile(r"^/(?:review_rebase)\b"), "review"),
     (re.compile(r"^/review\b"), "review"),
     (re.compile(r"^/rebase\b"), "rebase"),
+    (re.compile(r"^/(?:squash)\b"), "rebase"),
     (re.compile(r"^/recreate\b"), "recreate"),
     (re.compile(r"^/(?:implement|fix|ai)\b"), "implement"),
     (re.compile(r"^/refactor\b"), "refactor"),
-    (re.compile(r"^/(?:audit|security_audit)\b"), "audit"),
-    (re.compile(r"^/(?:check|claudemd|config_check)\b"), "check"),
-    (re.compile(r"^/(?:chat|sparring|idea)\b"), "chat"),
+    (re.compile(r"^/(?:audit|security_audit|private_security_audit|gha_audit)\b"), "audit"),
+    (re.compile(r"^/(?:check|check_need|claudemd|config_check|ci_check)\b"), "check"),
+    (re.compile(r"^/(?:doc|dead_code|tech_debt|spec_audit|profile)\b"), "maintenance"),
+    (re.compile(r"^/pr\b"), "pr"),
+    (re.compile(r"^/(?:chat|sparring|idea|brainstorm|ask|explore)\b"), "chat"),
+    (re.compile(r"^/(?:incident|diagnose)\b"), "incident"),
 ]
 
 
@@ -195,17 +201,20 @@ def classify_mission_type(mission_title: str) -> str:
     so that their missions are categorized rather than falling through to "freetext".
 
     Categories:
-        "plan"      — /plan
-        "review"    — /review
-        "rebase"    — /rebase
-        "recreate"  — /recreate
-        "implement" — /implement, /fix, /ai
-        "refactor"  — /refactor
-        "audit"     — /audit, /security_audit
-        "check"     — /check, /claudemd, /config_check
-        "chat"      — /chat, /sparring, /idea
-        "freetext"  — /mission, other /…, or human free-text
-        "autonomous"— Empty title or "Autonomous …" prefix
+        "plan"        — /plan, /plan_implement, /deepplan
+        "review"      — /review, /review_rebase
+        "rebase"      — /rebase, /squash
+        "recreate"    — /recreate
+        "implement"   — /implement, /fix, /ai
+        "refactor"    — /refactor
+        "audit"       — /audit, /security_audit, /private_security_audit, /gha_audit
+        "check"       — /check, /check_need, /claudemd, /config_check, /ci_check
+        "maintenance" — /doc, /dead_code, /tech_debt, /spec_audit, /profile
+        "pr"          — /pr
+        "chat"        — /chat, /sparring, /idea, /brainstorm, /ask, /explore
+        "incident"    — /incident, /diagnose
+        "freetext"    — /mission, other /…, or human free-text
+        "autonomous"  — Empty title or "Autonomous …" prefix
 
     Args:
         mission_title: The mission title string.

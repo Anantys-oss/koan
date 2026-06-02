@@ -236,6 +236,8 @@ def _aggregate(entries: list) -> dict:
         "by_project_and_type": {},
     }
 
+    _classify = None
+
     for entry in entries:
         inp = entry.get("input_tokens", 0)
         out = entry.get("output_tokens", 0)
@@ -286,8 +288,13 @@ def _aggregate(entries: list) -> dict:
         result["by_model"][model]["total_cost_usd"] += cost
         result["by_model"][model]["count"] += 1
 
-        # By mission type
-        mission_type = entry.get("mission_type", "unknown")
+        # By mission type — reclassify old records that predate the field
+        mission_type = entry.get("mission_type", "")
+        if not mission_type:
+            if _classify is None:
+                from app.session_tracker import classify_mission_type
+                _classify = classify_mission_type
+            mission_type = _classify(entry.get("mission", ""))
         if mission_type not in result["by_type"]:
             result["by_type"][mission_type] = {
                 "input_tokens": 0,

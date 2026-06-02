@@ -986,13 +986,12 @@ def api_usage():
         "offset": offset,
     }
 
-    if groupby == "type":
-        if selected_project:
-            proj_and_type = summary.get("by_project_and_type", {})
-            response_data["by_type"] = proj_and_type.get(selected_project, {})
-        else:
-            response_data["by_type"] = summary.get("by_type", {})
-        response_data["by_project_and_type"] = summary.get("by_project_and_type", {})
+    if selected_project:
+        proj_and_type = summary.get("by_project_and_type", {})
+        response_data["by_type"] = proj_and_type.get(selected_project, {})
+    else:
+        response_data["by_type"] = summary.get("by_type", {})
+    response_data["by_project_and_type"] = summary.get("by_project_and_type", {})
 
     return jsonify(response_data)
 

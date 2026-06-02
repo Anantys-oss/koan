@@ -243,7 +243,7 @@ class TestUsageApi:
         assert "review" in data["by_type"]
         assert data["by_type"]["implement"]["count"] == 1
 
-    def test_api_usage_groupby_type_absent_without_param(self, app_client):
+    def test_api_usage_always_includes_by_type(self, app_client):
         fake_summary = {
             "total_input": 0, "total_output": 0,
             "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
@@ -259,7 +259,8 @@ class TestUsageApi:
             resp = app_client.get("/api/usage?days=7")
 
         data = resp.get_json()
-        assert "by_type" not in data
+        assert "by_type" in data
+        assert data["by_type"]["implement"]["count"] == 1
 
     def test_api_usage_granularity_week_buckets_series(self, app_client):
         fake_daily = [

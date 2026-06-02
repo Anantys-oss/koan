@@ -35,9 +35,16 @@
 .sortable-header { cursor: pointer; user-select: none; }
 .sortable-header:hover { color: var(--text); }
 .sort-indicator { font-size: 0.7rem; margin-left: 0.2rem; }
+.type-bar-container { display: flex; align-items: center; gap: 0.5rem; }
+.type-bar-track { flex: 1; height: 6px; background: var(--surface-3); border-radius: 3px; overflow: hidden; }
+.type-bar-fill { height: 100%; border-radius: 3px; transition: width 0.3s; }
+.type-pct { font-size: 0.75rem; color: var(--text-muted); min-width: 3rem; text-align: right; }
 </style>
 
 <div class="filter-bar">
+    <select id="project-select" style="padding:0.4rem;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;">
+        <option value="">All Projects</option>
+    </select>
     <select id="range-select" style="padding:0.4rem;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;">
         <option value="1">Today</option>
         <option value="7" selected>Last 7 days</option>
@@ -51,10 +58,6 @@
     <button class="nav-btn" id="prev-btn">&#8592; Prev</button>
     <span id="window-label" style="font-size:0.85rem;color:var(--text-muted);"></span>
     <button class="nav-btn" id="next-btn" disabled>Next &#8594;</button>
-    <span id="filter-label" style="display:none;color:var(--text-muted);font-size:0.85rem;">
-        Filtering: <strong id="filter-project"></strong>
-        <a href="#" id="clear-filter" style="color:var(--accent);margin-left:0.5rem;">clear</a>
-    </span>
 </div>
 
 <div class="grid" id="totals">
@@ -96,6 +99,33 @@
     <div class="empty-state" id="stacked-empty" style="display:none;">No project data for this period.</div>
 </div>
 
+<h2>Spend by Skill Type</h2>
+<div class="card" style="display:flex;align-items:flex-start;gap:2rem;flex-wrap:wrap;">
+    <div style="flex:0 0 220px;">
+        <div class="chart-container" style="width:220px;height:220px;">
+            <canvas id="type-chart"></canvas>
+        </div>
+        <div class="empty-state" id="type-empty" style="display:none;">No type data.</div>
+    </div>
+    <div style="flex:1;min-width:320px;overflow-x:auto;">
+        <table id="by-type-table" style="width:100%;border-collapse:collapse;font-family:var(--mono);font-size:0.85rem;">
+            <thead id="by-type-thead">
+                <tr style="color:var(--text-muted);text-align:left;">
+                    <th class="sortable-header" data-col="type" style="padding:0.5rem 0;">Type <span class="sort-indicator">&#8597;</span></th>
+                    <th class="sortable-header" data-col="runs" style="padding:0.5rem 0;text-align:right;">Runs <span class="sort-indicator">&#8597;</span></th>
+                    <th class="sortable-header" data-col="input" style="padding:0.5rem 0;text-align:right;">Input <span class="sort-indicator">&#8597;</span></th>
+                    <th class="sortable-header" data-col="output" style="padding:0.5rem 0;text-align:right;">Output <span class="sort-indicator">&#8597;</span></th>
+                    <th class="sortable-header" data-col="total" style="padding:0.5rem 0;text-align:right;">Total <span class="sort-indicator">&#8597;</span></th>
+                    <th class="sortable-header" data-col="cost" style="padding:0.5rem 0;text-align:right;">Cost <span class="sort-indicator">&#8597;</span></th>
+                    <th style="padding:0.5rem 0;text-align:right;min-width:120px;">Share</th>
+                </tr>
+            </thead>
+            <tbody id="by-type-tbody"></tbody>
+        </table>
+        <div class="empty-state" id="type-table-empty" style="display:none;">No type data available.</div>
+    </div>
+</div>
+
 <h2>Mission Outcomes</h2>
 <div class="card" style="display:flex;align-items:center;gap:2rem;flex-wrap:wrap;">
     <div class="chart-container" style="width:200px;height:200px;flex-shrink:0;">
@@ -103,28 +133,6 @@
     </div>
     <div id="outcome-legend" style="font-size:0.85rem;"></div>
     <div class="empty-state" id="outcome-empty" style="display:none;width:100%;">No mission data available.</div>
-</div>
-
-<h2>Mission Types</h2>
-<div class="card" style="display:flex;align-items:flex-start;gap:2rem;flex-wrap:wrap;">
-    <div style="flex:0 0 200px;">
-        <div class="chart-container" style="width:200px;height:200px;">
-            <canvas id="type-chart"></canvas>
-        </div>
-        <div class="empty-state" id="type-empty" style="display:none;">No type data.</div>
-    </div>
-    <div style="flex:1;min-width:280px;">
-        <table id="by-type-table" style="width:100%;border-collapse:collapse;font-family:var(--mono);font-size:0.85rem;">
-            <thead id="by-type-thead">
-                <tr style="color:var(--text-muted);text-align:left;">
-                    <th class="sortable-header" data-col="type" style="padding:0.5rem 0;">Type <span class="sort-indicator">&#8597;</span></th>
-                    <th class="sortable-header" data-col="total" style="padding:0.5rem 0;text-align:right;">Total <span class="sort-indicator">&#8597;</span></th>
-                </tr>
-            </thead>
-            <tbody id="by-type-tbody"></tbody>
-        </table>
-        <div class="empty-state" id="type-table-empty" style="display:none;">No type data available.</div>
-    </div>
 </div>
 
 <h2>By Project</h2>
@@ -169,7 +177,6 @@ let typeChart = null;
 let currentProject = '';
 let windowOffset = 0;
 
-// Project colour palette (consistent across charts)
 const PROJECT_COLORS = [
     'rgba(88,166,255,0.8)',
     'rgba(63,185,80,0.8)',
@@ -180,6 +187,31 @@ const PROJECT_COLORS = [
     'rgba(87,220,188,0.8)',
     'rgba(255,107,139,0.8)',
 ];
+const TYPE_COLORS = {
+    review:      'rgba(88,166,255,0.8)',
+    implement:   'rgba(63,185,80,0.8)',
+    rebase:      'rgba(210,153,34,0.8)',
+    plan:        'rgba(188,140,255,0.8)',
+    audit:       'rgba(248,81,73,0.8)',
+    check:       'rgba(255,168,87,0.8)',
+    maintenance: 'rgba(87,220,188,0.8)',
+    refactor:    'rgba(255,107,139,0.8)',
+    pr:          'rgba(130,180,255,0.8)',
+    chat:        'rgba(160,160,160,0.8)',
+    incident:    'rgba(255,80,80,0.8)',
+    recreate:    'rgba(180,130,255,0.8)',
+    autonomous:  'rgba(100,120,140,0.6)',
+    freetext:    'rgba(140,140,140,0.6)',
+    unknown:     'rgba(80,80,80,0.5)',
+};
+let _fallbackColorIdx = 0;
+function typeColor(name) {
+    if (TYPE_COLORS[name]) return TYPE_COLORS[name];
+    TYPE_COLORS[name] = PROJECT_COLORS[_fallbackColorIdx % PROJECT_COLORS.length];
+    _fallbackColorIdx++;
+    return TYPE_COLORS[name];
+}
+
 const _projectColorMap = {};
 let _colorIdx = 0;
 function projectColor(name) {
@@ -194,6 +226,16 @@ function fmtTokens(n) {
     if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
     if (n >= 1e3) return (n / 1e3).toFixed(1) + 'k';
     return n.toString();
+}
+
+function fmtCost(v) {
+    if (v === null || v === undefined || v === 0) return '-';
+    if (v < 0.01) return '<$0.01';
+    return '$' + v.toFixed(2);
+}
+
+function capitalize(s) {
+    return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 function shortModel(id) {
@@ -212,18 +254,12 @@ function trendBadge(trend) {
 function seriesLabel(entry, granularity) {
     if (granularity === 'week') return entry.week || entry.date.slice(5);
     if (granularity === 'month') return entry.month || entry.date.slice(0, 7);
-    return entry.date.slice(5); // MM-DD
+    return entry.date.slice(5);
 }
 
 function setProjectFilter(project) {
     currentProject = project;
-    const label = document.getElementById('filter-label');
-    if (project) {
-        document.getElementById('filter-project').textContent = project;
-        label.style.display = '';
-    } else {
-        label.style.display = 'none';
-    }
+    document.getElementById('project-select').value = project;
     updateURL();
     loadAll();
 }
@@ -236,6 +272,23 @@ function updateURL() {
     if (granularity !== 'day') params.set('granularity', granularity);
     const str = params.toString();
     history.replaceState(null, '', str ? '?' + str : location.pathname);
+}
+
+function loadProjects() {
+    fetch('/api/projects')
+        .then(r => r.json())
+        .then(data => {
+            const sel = document.getElementById('project-select');
+            const projects = (data.projects || []).sort();
+            projects.forEach(p => {
+                const opt = document.createElement('option');
+                opt.value = p;
+                opt.textContent = p;
+                if (p === currentProject) opt.selected = true;
+                sel.appendChild(opt);
+            });
+        })
+        .catch(() => {});
 }
 
 function renderDailyChart(series, hasPricing, granularity) {
@@ -324,7 +377,6 @@ function renderStackedChart(series, granularity) {
     const canvas = document.getElementById('stacked-chart');
     const emptyEl = document.getElementById('stacked-empty');
 
-    // Collect all project names across all series entries
     const projectSet = new Set();
     series.forEach(entry => {
         if (entry.by_project) Object.keys(entry.by_project).forEach(p => projectSet.add(p));
@@ -420,7 +472,7 @@ function renderOutcomeChart(metrics) {
     });
 }
 
-function renderTypeChart(byType) {
+function renderTypeChart(byType, hasPricing) {
     const canvas = document.getElementById('type-chart');
     const emptyEl = document.getElementById('type-empty');
     const tableEmptyEl = document.getElementById('type-table-empty');
@@ -440,34 +492,65 @@ function renderTypeChart(byType) {
 
     const entries = Object.entries(byType)
         .sort((a, b) => (b[1].input_tokens + b[1].output_tokens) - (a[1].input_tokens + a[1].output_tokens));
-    const labels = entries.map(([k]) => k);
+    const labels = entries.map(([k]) => capitalize(k));
     const values = entries.map(([, v]) => v.input_tokens + v.output_tokens);
-    const typeColors = entries.map((_, i) => PROJECT_COLORS[i % PROJECT_COLORS.length]);
+    const colors = entries.map(([k]) => typeColor(k));
+    const grandTotal = values.reduce((s, v) => s + v, 0);
 
     if (typeChart) typeChart.destroy();
     typeChart = new Chart(canvas, {
         type: 'doughnut',
-        data: {labels, datasets: [{data: values, backgroundColor: typeColors, borderWidth: 0}]},
+        data: {labels, datasets: [{data: values, backgroundColor: colors, borderWidth: 0}]},
         options: {
             responsive: true,
             maintainAspectRatio: true,
-            plugins: {legend: {display: false}},
+            plugins: {
+                legend: {display: false},
+                tooltip: {
+                    callbacks: {
+                        label: function(ctx) {
+                            const v = ctx.raw;
+                            const pct = grandTotal > 0 ? ((v / grandTotal) * 100).toFixed(1) : '0';
+                            return ctx.label + ': ' + fmtTokens(v) + ' (' + pct + '%)';
+                        }
+                    }
+                }
+            },
             cutout: '55%',
         },
     });
 
-    // Render breakdown table
     tbody.innerHTML = '';
     for (const [typeName, typeData] of entries) {
         const total = typeData.input_tokens + typeData.output_tokens;
-        tbody.innerHTML += '<tr style="border-top:1px solid var(--border);">' +
-            '<td style="padding:0.4rem 0;">' + typeName + '</td>' +
+        const pct = grandTotal > 0 ? ((total / grandTotal) * 100) : 0;
+        const costCell = hasPricing ? fmtCost(typeData.total_cost_usd || 0) : '-';
+        const color = typeColor(typeName);
+        tbody.innerHTML += '<tr style="border-top:1px solid var(--border);" data-type="' + typeName + '"' +
+            ' data-runs="' + typeData.count + '"' +
+            ' data-input="' + typeData.input_tokens + '"' +
+            ' data-output="' + typeData.output_tokens + '"' +
+            ' data-total="' + total + '"' +
+            ' data-cost="' + (typeData.total_cost_usd || 0) + '">' +
+            '<td style="padding:0.4rem 0;">' +
+                '<span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:' + color + ';margin-right:0.5rem;vertical-align:middle;"></span>' +
+                capitalize(typeName) +
+            '</td>' +
+            '<td style="padding:0.4rem 0;text-align:right;">' + typeData.count + '</td>' +
+            '<td style="padding:0.4rem 0;text-align:right;">' + fmtTokens(typeData.input_tokens) + '</td>' +
+            '<td style="padding:0.4rem 0;text-align:right;">' + fmtTokens(typeData.output_tokens) + '</td>' +
             '<td style="padding:0.4rem 0;text-align:right;">' + fmtTokens(total) + '</td>' +
+            '<td style="padding:0.4rem 0;text-align:right;">' + costCell + '</td>' +
+            '<td style="padding:0.4rem 0;">' +
+                '<div class="type-bar-container">' +
+                    '<div class="type-bar-track"><div class="type-bar-fill" style="width:' + pct.toFixed(1) + '%;background:' + color + ';"></div></div>' +
+                    '<span class="type-pct">' + pct.toFixed(1) + '%</span>' +
+                '</div>' +
+            '</td>' +
             '</tr>';
     }
 }
 
-// Type table sort state
 let typeSortCol = 'total';
 let typeSortAsc = false;
 
@@ -490,20 +573,13 @@ function resortTypeTable() {
     const tbody = document.getElementById('by-type-tbody');
     const rows = Array.from(tbody.querySelectorAll('tr'));
     rows.sort((a, b) => {
-        const cells = [a, b].map(r => r.querySelectorAll('td'));
         if (typeSortCol === 'type') {
-            const va = cells[0][0] ? cells[0][0].textContent : '';
-            const vb = cells[1][0] ? cells[1][0].textContent : '';
+            const va = a.dataset.type || '';
+            const vb = b.dataset.type || '';
             return typeSortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
         }
-        // total column — parse display value back to number
-        const parseVal = txt => {
-            if (txt.endsWith('M')) return parseFloat(txt) * 1e6;
-            if (txt.endsWith('k')) return parseFloat(txt) * 1e3;
-            return parseFloat(txt) || 0;
-        };
-        const va = cells[0][1] ? parseVal(cells[0][1].textContent) : 0;
-        const vb = cells[1][1] ? parseVal(cells[1][1].textContent) : 0;
+        const va = parseFloat(a.dataset[typeSortCol]) || 0;
+        const vb = parseFloat(b.dataset[typeSortCol]) || 0;
         return typeSortAsc ? va - vb : vb - va;
     });
     rows.forEach(r => tbody.appendChild(r));
@@ -516,22 +592,18 @@ function loadAll() {
     const offsetParam = windowOffset > 0 ? '&offset=' + windowOffset : '';
     const granularityParam = granularity !== 'day' ? '&granularity=' + granularity : '';
 
-    // Update Next button state
     document.getElementById('next-btn').disabled = windowOffset === 0;
 
-    // Update window label
     const labelEl = document.getElementById('window-label');
     labelEl.textContent = windowOffset > 0 ? 'offset: ' + windowOffset : '';
 
-    // Fetch usage data with stacked=true for per-project chart
-    fetch('/api/usage?days=' + days + projParam + offsetParam + granularityParam + '&stacked=true&groupby=type')
+    fetch('/api/usage?days=' + days + projParam + offsetParam + granularityParam + '&stacked=true')
         .then(r => r.json())
         .then(data => {
             document.getElementById('total-tokens').textContent =
                 fmtTokens(data.total_input + data.total_output);
             document.getElementById('total-count').textContent = data.count;
 
-            // Cost card
             const costCard = document.getElementById('cost-card');
             if (data.estimated_cost !== null && data.estimated_cost !== undefined) {
                 costCard.style.display = '';
@@ -540,7 +612,6 @@ function loadAll() {
                 costCard.style.display = 'none';
             }
 
-            // Cache cards
             const hitRate = (data.cache_hit_rate || 0) * 100;
             document.getElementById('cache-hit-rate').textContent = hitRate.toFixed(1) + '%';
 
@@ -553,16 +624,10 @@ function loadAll() {
                 savingsCard.style.display = 'none';
             }
 
-            // Token spend chart
             renderDailyChart(data.series || [], data.has_pricing, data.granularity || 'day');
-
-            // Stacked by-project chart
             renderStackedChart(data.series || [], data.granularity || 'day');
+            renderTypeChart(data.by_type || {}, data.has_pricing);
 
-            // Mission type donut + table
-            renderTypeChart(data.by_type || {});
-
-            // Update window label with actual date range
             if (data.start && data.end) {
                 labelEl.textContent = data.start + ' — ' + data.end;
             }
@@ -592,7 +657,6 @@ function loadAll() {
                     '</tr>';
             }
 
-            // Attach click handlers to project links
             document.querySelectorAll('.project-link').forEach(el => {
                 el.addEventListener('click', () => setProjectFilter(el.dataset.project));
             });
@@ -618,13 +682,11 @@ function loadAll() {
         })
         .catch(() => {});
 
-    // Fetch metrics data (for outcome chart and project trends)
     fetch('/api/metrics?days=' + days + projParam + offsetParam)
         .then(r => r.json())
         .then(metrics => {
             renderOutcomeChart(metrics);
 
-            // Merge trend/success data into project table if available
             if (metrics.by_project) {
                 document.querySelectorAll('#by-project tbody tr').forEach(row => {
                     const linkEl = row.querySelector('.project-link');
@@ -642,6 +704,13 @@ function loadAll() {
         })
         .catch(() => {});
 }
+
+document.getElementById('project-select').addEventListener('change', function() {
+    currentProject = this.value;
+    windowOffset = 0;
+    updateURL();
+    loadAll();
+});
 
 document.getElementById('range-select').addEventListener('change', () => {
     windowOffset = 0;
@@ -669,17 +738,10 @@ document.getElementById('next-btn').addEventListener('click', () => {
     }
 });
 
-document.getElementById('clear-filter').addEventListener('click', e => {
-    e.preventDefault();
-    setProjectFilter('');
-});
-
 // Init from URL params
 const params = new URLSearchParams(location.search);
 if (params.get('project')) {
     currentProject = params.get('project');
-    document.getElementById('filter-project').textContent = currentProject;
-    document.getElementById('filter-label').style.display = '';
 }
 if (params.get('offset')) {
     windowOffset = Math.max(0, parseInt(params.get('offset')) || 0);
@@ -691,6 +753,7 @@ if (params.get('granularity')) {
     }
 }
 
+loadProjects();
 initTypeSortHandlers();
 loadAll();
 </script>
