@@ -94,7 +94,7 @@
                     li += '<span class="hl-colon">:</span>';
                     li += highlightValue(kvMatch[3]);
                 } else {
-                    li += highlightValue(' ' + rest).substring(1);
+                    li += highlightValue(' ' + rest).replace(/^./, '');
                 }
                 return li;
             }
@@ -147,7 +147,8 @@
                 renderYaml('config-yaml', _configRaw, 'config.yaml');
                 renderYaml('projects-yaml', _projectsRaw, 'projects.yaml');
             })
-            .catch(function () {
+            .catch(function (err) {
+                console.error('Config load failed:', err);
                 document.getElementById('config-yaml-pre').textContent = 'Error loading config.';
                 document.getElementById('projects-yaml-pre').textContent = 'Error loading projects config.';
             });
@@ -213,7 +214,12 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ content: content })
             })
-                .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+                .then(function (r) {
+                    if (!r.ok && r.headers.get('content-type') && r.headers.get('content-type').indexOf('application/json') === -1) {
+                        throw new Error('Server error (HTTP ' + r.status + ')');
+                    }
+                    return r.json().then(function (d) { return { ok: r.ok, data: d }; });
+                })
                 .then(function (res) {
                     saveBtn.disabled = false;
                     saveBtn.textContent = 'Save';
@@ -234,10 +240,11 @@
                         errorEl.style.display = 'block';
                     }
                 })
-                .catch(function () {
+                .catch(function (err) {
+                    console.error('Config save failed:', err);
                     saveBtn.disabled = false;
                     saveBtn.textContent = 'Save';
-                    errorEl.textContent = 'Network error — could not save.';
+                    errorEl.textContent = err.message || 'Network error — could not save.';
                     errorEl.style.display = 'block';
                 });
         });

@@ -1668,17 +1668,25 @@ def api_config_save(target: str):
     if target not in paths:
         return jsonify({"ok": False, "error": f"Unknown config target: {target}"}), 404
 
-    data = request.get_json(silent=True) or {}
+    data = request.get_json(silent=True)
+    if data is None:
+        return jsonify({"ok": False, "error": "Invalid or missing JSON body"}), 400
     content = data.get("content")
     if content is None:
         return jsonify({"ok": False, "error": "Missing content"}), 400
+
+    if _SENSITIVE_KEY_RE.search(content) and "<redacted>" in content:
+        return jsonify({"ok": False, "error": "Content contains <redacted> placeholders — cannot save masked values"}), 422
 
     error = _validate_yaml(content)
     if error:
         return jsonify({"ok": False, "error": f"Invalid YAML: {error}"}), 422
 
     path = paths[target]
-    atomic_write(path, content)
+    try:
+        atomic_write(path, content)
+    except OSError as e:
+        return jsonify({"ok": False, "error": f"Write failed: {e}"}), 500
     return jsonify({"ok": True})
 
 
@@ -1689,8 +1697,8 @@ def api_config_restart():
     try:
         request_restart(str(KOAN_ROOT))
         return jsonify({"ok": True})
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+    except Exception:
+        return jsonify({"ok": False, "error": "Failed to send restart signal"}), 500
 
 
 # ---------------------------------------------------------------------------

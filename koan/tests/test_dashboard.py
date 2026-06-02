@@ -1797,6 +1797,27 @@ class TestConfigPage:
         assert resp.get_json()["ok"] is True
         assert "/new" in projects_path.read_text()
 
+    def test_put_config_rejects_redacted_values(self, app_client):
+        resp = app_client.put(
+            "/api/config/config",
+            json={"content": "token: <redacted>\nname: ok\n"},
+        )
+        assert resp.status_code == 422
+        data = resp.get_json()
+        assert data["ok"] is False
+        assert "redacted" in data["error"].lower()
+
+    def test_put_config_invalid_json_body(self, app_client):
+        resp = app_client.put(
+            "/api/config/config",
+            data="not json",
+            content_type="application/json",
+        )
+        assert resp.status_code == 400
+        data = resp.get_json()
+        assert data["ok"] is False
+        assert "JSON" in data["error"]
+
     def test_restart_endpoint(self, app_client):
         with patch("app.restart_manager.request_restart") as mock_restart:
             resp = app_client.post("/api/config/restart")
@@ -1805,8 +1826,10 @@ class TestConfigPage:
         mock_restart.assert_called_once()
 
     def test_restart_endpoint_error(self, app_client):
-        with patch("app.restart_manager.request_restart", side_effect=OSError("fail")):
+        with patch("app.restart_manager.request_restart", side_effect=OSError("internal detail")):
             resp = app_client.post("/api/config/restart")
         assert resp.status_code == 500
         data = resp.get_json()
         assert data["ok"] is False
+        assert "internal detail" not in data["error"]
+        assert "restart" in data["error"].lower()
