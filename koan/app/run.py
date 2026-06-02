@@ -3185,7 +3185,7 @@ def _run_skill_mission(
         # Provider stream mode can persist token usage to a sidecar file.
         # Append that JSON payload to stdout capture so token_parser can
         # account for skill-dispatch sessions in run_post_mission.
-        with suppress_logged(log, "debug", "Skill stream usage read failed", OSError, json.JSONDecodeError):
+        with suppress_logged(log, "warning", "Skill stream usage read failed", OSError, json.JSONDecodeError):
             raw_usage = Path(stream_usage_file).read_text().strip()
             if raw_usage:
                 usage_payload = json.loads(raw_usage)

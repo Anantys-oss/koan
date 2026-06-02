@@ -55,9 +55,19 @@ def load_outcomes(outcomes_path: Path) -> list:
         return []
     try:
         data = json.loads(outcomes_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError) as exc:
+        print(
+            f"WARNING: {outcomes_path} exists but cannot be read: {exc}",
+            file=sys.stderr,
+        )
         return []
-    return data if isinstance(data, list) else []
+    if not isinstance(data, list):
+        print(
+            f"WARNING: {outcomes_path} is not a JSON array — skipping",
+            file=sys.stderr,
+        )
+        return []
+    return data
 
 
 def _outcome_date(outcome: dict) -> Optional[date]:
@@ -204,12 +214,18 @@ def run_backfill(
             jsonl_path = usage_dir / f"{p['date'].isoformat()}.jsonl"
             if append_rows(jsonl_path, p["entries"]):
                 written += len(p["entries"])
+            else:
+                print(
+                    f"  WARNING {p['date']}: write failed for {jsonl_path}"
+                )
 
     total_to_write = sum(max(0, p["to_write"]) for p in plans)
+    failed = total_to_write - written if not dry_run else 0
     return {
         "plans": plans,
         "total_to_write": total_to_write,
         "written": written,
+        "failed_days": failed,
         "over_backfilled_days": over,
         "dry_run": dry_run,
     }
@@ -233,6 +249,11 @@ def _print_summary(summary: dict) -> None:
         )
     else:
         print(f"Wrote {summary['written']} synthetic row(s).")
+        if summary.get("failed_days"):
+            print(
+                f"WARNING: {summary['failed_days']} row(s) failed to write",
+                file=sys.stderr,
+            )
 
 
 def _parse_date(value: str) -> date:
