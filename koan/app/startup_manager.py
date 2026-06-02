@@ -518,6 +518,12 @@ def run_startup(koan_root: str, instance: str, projects: list):
     _safe_run("Start on pause", handle_start_on_pause, koan_root)
     _safe_run("Start passive", handle_start_passive, koan_root)
 
+    # Load .env before git identity so KOAN_EMAIL is available.
+    # run.py does not source .env itself; without this, GIT_AUTHOR_EMAIL is
+    # never set and git falls back to the global ~/.gitconfig identity.
+    from app.utils import load_dotenv
+    load_dotenv()
+
     # Git identity and GitHub auth
     _safe_run("Git identity", setup_git_identity)
     _safe_run("GitHub auth", setup_github_auth)
