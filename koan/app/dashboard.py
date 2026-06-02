@@ -1612,7 +1612,7 @@ def skills_page():
 
 @app.route("/agent")
 def agent_page():
-    """Agent introspection page — memory, soul, config."""
+    """Agent introspection page — soul and memory."""
     return render_template("agent.html")
 
 
