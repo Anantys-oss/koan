@@ -100,7 +100,7 @@ app = Flask(
 
 _URL_RE = re.compile(r'(https?://[^\s<>)\]]+)')
 _GITHUB_ISSUE_PR_RE = re.compile(
-    r'^https?://github\.com/[^/]+/[^/]+/(?:issues|pull)/(\d+)(?:[?#].*)?$'
+    r'^https?://(?:[^/]+\.)?github\.com/[^/]+/[^/]+/(?:issues|pull)/(\d+)(?:[?#].*)?$'
 )
 _JIRA_BROWSE_RE = re.compile(
     r'^https?://[^/]+/browse/([A-Z][A-Z0-9_]+-\d+)(?:[?#].*)?$'
