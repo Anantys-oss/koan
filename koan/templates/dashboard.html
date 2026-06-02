@@ -410,7 +410,7 @@
 
     function loadProvider() {
         fetch('/api/provider')
-            .then(function(r) { return r.json(); })
+            .then(function(r) { if (!r.ok) throw new Error(r.status); return r.json(); })
             .then(function(data) {
                 var card = document.getElementById('provider-card');
                 if (card) card.style.display = '';
@@ -433,7 +433,11 @@
                     });
                 }
             })
-            .catch(function() {});
+            .catch(function(err) {
+                console.warn('provider fetch failed', err);
+                var dot = document.getElementById('provider-dot');
+                if (dot) dot.style.background = 'var(--text-muted)';
+            });
     }
 
     loadProvider();

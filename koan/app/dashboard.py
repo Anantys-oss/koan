@@ -16,6 +16,7 @@ Usage:
 """
 
 import collections
+import logging
 import contextlib
 import json
 import os
@@ -86,6 +87,8 @@ JOURNAL_DIR = INSTANCE_DIR / "journal"
 PENDING_FILE = JOURNAL_DIR / "pending.md"
 CONVERSATION_HISTORY_FILE = INSTANCE_DIR / "conversation-history.jsonl"
 CHAT_TIMEOUT = int(os.environ.get("KOAN_CHAT_TIMEOUT", "180"))
+
+logger = logging.getLogger(__name__)
 
 app = Flask(
     __name__,
@@ -1846,11 +1849,13 @@ def api_provider():
         from app.provider import get_provider_name
         provider = get_provider_name()
     except Exception:
+        logger.warning("provider lookup failed", exc_info=True)
         provider = "unknown"
     try:
         from app.config import get_model_config
         models = get_model_config()
     except Exception:
+        logger.warning("model config lookup failed", exc_info=True)
         models = {}
     slot_order = ["mission", "chat", "lightweight", "fallback", "review_mode", "reflect"]
     model_list = []
