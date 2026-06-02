@@ -170,7 +170,7 @@ def _extract_summary(journal_content: str, max_chars: int = 120) -> str:
 # Dispatch table for classify_mission_type(): (compiled regex, mission_type).
 # Applied in order on the lowercased mission title from the start.
 # Add new skills here when they are added to koan/skills/core/.
-# Old JSONL records without mission_type should be treated as "unknown" by readers.
+# Old JSONL records without mission_type are reclassified at read time via classify_mission_type().
 _MISSION_TYPE_DISPATCH = [
     (re.compile(r"^/(?:plan_implement|deepplan)\b"), "plan"),
     (re.compile(r"^/plan\b"), "plan"),

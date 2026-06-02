@@ -214,7 +214,7 @@ class TestUsageApi:
         assert data["has_pricing"] is False
         assert data["estimated_cache_savings"] is None
 
-    def test_api_usage_groupby_type_returns_by_type(self, app_client):
+    def test_api_usage_includes_by_type(self, app_client):
         fake_summary = {
             "total_input": 500,
             "total_output": 200,
@@ -234,7 +234,7 @@ class TestUsageApi:
              patch("app.cost_tracker.get_pricing_config", return_value=None), \
              patch("app.cost_tracker.estimate_cache_savings", return_value=None), \
              patch("app.cost_tracker.daily_series", return_value=[]):
-            resp = app_client.get("/api/usage?days=7&groupby=type")
+            resp = app_client.get("/api/usage?days=7")
 
         assert resp.status_code == 200
         data = resp.get_json()

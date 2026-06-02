@@ -889,7 +889,6 @@ def api_usage():
 
     days = request.args.get("days", "7", type=str)
     selected_project = request.args.get("project", "")
-    groupby = request.args.get("groupby", "")
     granularity = request.args.get("granularity", "day")
     if granularity not in ("day", "week", "month"):
         granularity = "day"
