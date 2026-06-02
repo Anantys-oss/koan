@@ -638,6 +638,24 @@ class TestFormatReviewAsMarkdown:
         # The redundant trailing heading is gone.
         assert "### Summary" not in md
 
+    def test_summary_preserves_paragraphs_and_bullets(self):
+        """A structured summary (verdict + blank line + bullets) must survive
+        formatting intact, so readers get skimmable output instead of one
+        dense block. The formatter passes the summary through verbatim, so the
+        blank-line break and bullet markers must appear in the rendered body.
+        """
+        data = {
+            "file_comments": [],
+            "review_summary": {
+                "lgtm": False,
+                "summary": "Needs work before merge.\n\n- Missing input validation\n- No test coverage",
+                "checklist": [],
+            },
+        }
+        md = _format_review_as_markdown(data)
+        assert "Needs work before merge.\n\n- Missing input validation" in md
+        assert "- No test coverage" in md
+
     def test_lgtm_review(self):
         md = _format_review_as_markdown(LGTM_REVIEW_JSON)
         assert "## PR Review" in md

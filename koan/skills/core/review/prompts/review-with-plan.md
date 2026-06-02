@@ -114,13 +114,13 @@ Your ENTIRE response must be a single valid JSON object (no markdown, no code fe
       "line_end": 42,
       "severity": "critical",
       "title": "Short issue title",
-      "comment": "Detailed explanation of the issue and suggested fix.",
+      "comment": "Detailed explanation of the issue and suggested fix. Use short paragraphs and bullet points where it aids readability.",
       "code_snippet": "relevant code or empty string"
     }
   ],
   "review_summary": {
     "lgtm": false,
-    "summary": "Final assessment paragraph.",
+    "summary": "One-line verdict (TL;DR).\n\n- Key point one\n- Key point two\n- Key point three",
     "checklist": [
       {
         "item": "No hardcoded secrets",
