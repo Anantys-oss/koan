@@ -22,6 +22,7 @@ from typing import Optional, Tuple
 
 from app.github import issue_edit, run_gh
 from app.issue_tracker import (
+    client_for_project,
     create_issue,
     project_name_for_path,
     tracker_is_configured,
@@ -142,10 +143,13 @@ def run_brainstorm(
             flush=True,
         )
 
+    # Resolve the target repo once for label/edit operations that need --repo.
+    target_repo = client_for_project(project_name, project_path).repo or None
+
     # Ensure label exists when the tracker supports labels (GitHub).
     supports_labels = tracker_supports_labels(project_name, project_path)
     if supports_labels:
-        _ensure_label(tag, project_path)
+        _ensure_label(tag, project_path, repo=target_repo)
 
     # Create sub-issues — each entry is (number, title, url, original_pos)
     # where original_pos is the 1-based index from the decomposition, so
@@ -187,6 +191,7 @@ def run_brainstorm(
     _replace_sub_placeholders(
         created_issues, issues, project_path,
         tracker_provider(project_name, project_path),
+        repo=target_repo,
     )
 
     # Build master issue
@@ -224,6 +229,7 @@ def run_brainstorm(
 
 def _replace_sub_placeholders(
     created_issues, original_issues, project_path, provider="github",
+    repo=None,
 ):
     """Replace SUB-N placeholders in created issue bodies with real #numbers.
 
@@ -248,7 +254,7 @@ def _replace_sub_placeholders(
         updated = _apply_sub_replacements(body, ordinal_to_number)
         if updated != body:
             try:
-                issue_edit(number, updated, cwd=project_path)
+                issue_edit(number, updated, cwd=project_path, repo=repo)
             except (RuntimeError, OSError) as e:
                 print(
                     f"[brainstorm_runner] Failed to update issue #{number}: {e}",
@@ -509,16 +515,17 @@ def _coerce_overall_assessment(value):
     return None
 
 
-def _ensure_label(tag, project_path):
+def _ensure_label(tag, project_path, repo=None):
     """Create the GitHub label if it doesn't exist."""
-    # Label creation failed — issues will be created without it
+    args = [
+        "label", "create", tag,
+        "--description", f"Brainstorm: {tag}",
+        "--force",
+    ]
+    if repo:
+        args.extend(["--repo", repo])
     with contextlib.suppress(RuntimeError, OSError):
-        run_gh(
-            "label", "create", tag,
-            "--description", f"Brainstorm: {tag}",
-            "--force",
-            cwd=project_path, timeout=15,
-        )
+        run_gh(*args, cwd=project_path, timeout=15)
 
 
 def _extract_master_title(topic: str) -> str:

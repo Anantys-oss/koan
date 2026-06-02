@@ -1230,3 +1230,24 @@ class TestFindBotComment:
         result = find_bot_comment("owner", "repo", 42, self.MARKER)
         assert result is not None
         assert result["id"] == 101
+
+
+class TestIssueEdit:
+    def test_passes_repo_flag_when_provided(self):
+        with patch("app.github.run_gh") as mock_gh, \
+             patch("app.leak_detector.scan_and_redact", side_effect=lambda b, **kw: b):
+            from app.github import issue_edit
+
+            issue_edit(42, "new body", cwd="/fake", repo="upstream/app")
+            args = list(mock_gh.call_args.args)
+            assert "--repo" in args
+            assert args[args.index("--repo") + 1] == "upstream/app"
+
+    def test_omits_repo_flag_when_none(self):
+        with patch("app.github.run_gh") as mock_gh, \
+             patch("app.leak_detector.scan_and_redact", side_effect=lambda b, **kw: b):
+            from app.github import issue_edit
+
+            issue_edit(42, "new body", cwd="/fake")
+            args = list(mock_gh.call_args.args)
+            assert "--repo" not in args

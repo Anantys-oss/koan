@@ -43,7 +43,10 @@ class TestIssueTrackerConfig:
         assert tracker["repo"] == "acme/myapp"
         assert tracker["default_branch"] == "main"
 
-    def test_github_tracker_falls_back_to_project_github_url(self):
+    def test_github_tracker_ignores_project_github_url(self):
+        """github_url (auto-populated from origin) must NOT be used as the
+        tracker repo — it points at the fork in fork workflows. Fork
+        detection in resolve_code_repository handles the upstream lookup."""
         config = {
             "projects": {
                 "myapp": {
@@ -55,7 +58,7 @@ class TestIssueTrackerConfig:
         tracker = get_project_issue_tracker(config, "myapp")
 
         assert tracker["provider"] == "github"
-        assert tracker["repo"] == "acme/myapp"
+        assert tracker["repo"] == ""
 
     def test_jira_tracker_reads_project_key_type_and_branch(self):
         config = {
@@ -244,6 +247,59 @@ projects:
         monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
 
         assert resolve_code_repository("myapp") == "upstream/myapp"
+
+
+    def test_resolve_code_repository_fork_detection_before_github_url(
+        self, tmp_path, monkeypatch,
+    ):
+        """When github_url points to a fork, resolve_code_repository must
+        detect the upstream via resolve_target_repo before falling back
+        to the fork's github_url."""
+        _write_yaml(
+            tmp_path,
+            """
+projects:
+  myapp:
+    github_url: fork-owner/myapp
+    path: /some/path
+""",
+        )
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        monkeypatch.setattr(
+            "app.issue_tracker.config.get_project_submit_to_repository",
+            lambda *a, **kw: {},
+        )
+
+        from unittest.mock import patch
+
+        with patch(
+            "app.github.resolve_target_repo",
+            return_value="upstream-owner/myapp",
+        ):
+            result = resolve_code_repository("myapp", "/some/path")
+        assert result == "upstream-owner/myapp"
+
+    def test_resolve_code_repository_falls_back_to_github_url_when_no_fork(
+        self, tmp_path, monkeypatch,
+    ):
+        """When resolve_target_repo returns None (not a fork),
+        github_url is used as last resort."""
+        _write_yaml(
+            tmp_path,
+            """
+projects:
+  myapp:
+    github_url: acme/myapp
+    path: /some/path
+""",
+        )
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+
+        from unittest.mock import patch
+
+        with patch("app.github.resolve_target_repo", return_value=None):
+            result = resolve_code_repository("myapp", "/some/path")
+        assert result == "acme/myapp"
 
 
 def test_normalize_github_repo_accepts_owner_repo_and_urls():

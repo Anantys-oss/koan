@@ -246,6 +246,7 @@ class TestDecomposePrompt:
 # ---------------------------------------------------------------------------
 
 from skills.core.brainstorm.brainstorm_runner import (
+    _ensure_label,
     _generate_tag,
     _parse_decomposition,
     _build_master_body,
@@ -565,7 +566,7 @@ class TestReplaceSubPlaceholders:
         with patch("skills.core.brainstorm.brainstorm_runner.issue_edit") as mock_edit:
             _replace_sub_placeholders(created, original, "/fake")
             # Only issue 42 had a placeholder that changed
-            mock_edit.assert_called_once_with("42", "Depends on #43.", cwd="/fake")
+            mock_edit.assert_called_once_with("42", "Depends on #43.", cwd="/fake", repo=None)
 
     def test_skips_edit_when_no_placeholders(self):
         created = [("10", "T", "u", 1)]
@@ -600,6 +601,34 @@ class TestReplaceSubPlaceholders:
             calls = {c.args[0]: c.args[1] for c in mock_edit.call_args_list}
             assert calls["42"] == "See #44"  # SUB-3 → #44
             assert calls["44"] == "See #42"  # SUB-1 → #42
+
+    def test_passes_repo_to_issue_edit(self):
+        """When repo is provided, it must be forwarded to issue_edit."""
+        created = [("42", "A", "u1", 1)]
+        original = [{"title": "A", "body": "See SUB-1"}]
+        with patch("skills.core.brainstorm.brainstorm_runner.issue_edit") as mock_edit:
+            _replace_sub_placeholders(
+                created, original, "/fake", repo="upstream/myapp",
+            )
+            mock_edit.assert_called_once_with(
+                "42", "See #42", cwd="/fake", repo="upstream/myapp",
+            )
+
+
+class TestEnsureLabel:
+    def test_passes_repo_flag_to_run_gh(self):
+        with patch("skills.core.brainstorm.brainstorm_runner.run_gh") as mock_gh:
+            _ensure_label("my-tag", "/fake", repo="upstream/app")
+            args = mock_gh.call_args
+            flat = list(args.args)
+            assert "--repo" in flat
+            assert flat[flat.index("--repo") + 1] == "upstream/app"
+
+    def test_omits_repo_flag_when_none(self):
+        with patch("skills.core.brainstorm.brainstorm_runner.run_gh") as mock_gh:
+            _ensure_label("my-tag", "/fake")
+            flat = list(mock_gh.call_args.args)
+            assert "--repo" not in flat
 
 
 class TestExtractMasterTitle:
