@@ -35,6 +35,7 @@ SAMPLE_PR = {
     "isDraft": False,
     "url": "https://github.com/owner/repo/pull/42",
     "createdAt": "2026-03-13T10:00:00Z",
+    "updatedAt": "2026-03-13T10:00:00Z",
     "reviewDecision": "APPROVED",
     "statusCheckRollup": [
         {"name": "ci", "state": "SUCCESS", "conclusion": "SUCCESS"},
@@ -106,8 +107,18 @@ class TestFetchAllPrs:
     @patch("app.pr_tracker.load_projects_config")
     def test_aggregates_projects(self, mock_config, mock_gh, mock_user):
         mock_config.return_value = SAMPLE_CONFIG
-        pr1 = {**SAMPLE_PR, "number": 1, "createdAt": "2026-03-13T10:00:00Z"}
-        pr2 = {**SAMPLE_PR, "number": 2, "createdAt": "2026-03-13T12:00:00Z"}
+        pr1 = {
+            **SAMPLE_PR,
+            "number": 1,
+            "createdAt": "2026-03-13T10:00:00Z",
+            "updatedAt": "2026-03-13T10:00:00Z",
+        }
+        pr2 = {
+            **SAMPLE_PR,
+            "number": 2,
+            "createdAt": "2026-03-13T09:00:00Z",
+            "updatedAt": "2026-03-13T12:00:00Z",
+        }
         mock_gh.side_effect = [json.dumps([pr1]), json.dumps([pr2])]
 
         result = pr_tracker.fetch_all_prs("/tmp/koan")
@@ -115,6 +126,40 @@ class TestFetchAllPrs:
         assert len(result["prs"]) == 2
         # Newest first
         assert result["prs"][0]["number"] == 2
+
+    @patch("app.pr_tracker.get_gh_username", return_value="koan-bot")
+    @patch("app.pr_tracker.run_gh")
+    @patch("app.pr_tracker.load_projects_config")
+    def test_sorts_by_updated_at_with_created_at_fallback(self, mock_config, mock_gh, mock_user):
+        mock_config.return_value = SAMPLE_CONFIG
+        # updatedAt should win over createdAt when sorting.
+        pr_old_created_new_updated = {
+            **SAMPLE_PR,
+            "number": 101,
+            "createdAt": "2026-03-10T08:00:00Z",
+            "updatedAt": "2026-03-15T08:00:00Z",
+        }
+        pr_new_created_old_updated = {
+            **SAMPLE_PR,
+            "number": 102,
+            "createdAt": "2026-03-14T09:00:00Z",
+            "updatedAt": "2026-03-14T09:00:00Z",
+        }
+        # Missing updatedAt falls back to createdAt.
+        pr_no_updated = {
+            **SAMPLE_PR,
+            "number": 103,
+            "createdAt": "2026-03-13T10:00:00Z",
+        }
+        pr_no_updated.pop("updatedAt", None)
+        mock_gh.side_effect = [
+            json.dumps([pr_old_created_new_updated, pr_no_updated]),
+            json.dumps([pr_new_created_old_updated]),
+        ]
+
+        result = pr_tracker.fetch_all_prs("/tmp/koan")
+        numbers = [pr["number"] for pr in result["prs"]]
+        assert numbers == [101, 102, 103]
 
     @patch("app.pr_tracker.load_projects_config", return_value=None)
     def test_no_config(self, mock_config):

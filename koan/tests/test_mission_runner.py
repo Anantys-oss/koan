@@ -3187,6 +3187,25 @@ class TestMissionRunnerFireAndForgetMetrics:
         assert kwargs["mission_type"] == "fix"
         assert kwargs["cache_read_input_tokens"] == 7
 
+    def test_record_cost_event_placeholder_for_skill_dispatch(self):
+        from app.mission_runner import _record_cost_event
+
+        with (
+            patch("app.token_parser.extract_tokens", return_value=None),
+            patch("app.cost_tracker.record_usage") as mock_record,
+        ):
+            _record_cost_event(
+                "/instance", "cp", "/tmp/out.json", "implement", "/review foo",
+                mission_type="review", allow_placeholder=True,
+            )
+
+        kwargs = mock_record.call_args.kwargs
+        assert kwargs["project"] == "cp"
+        assert kwargs["model"] == "unknown"
+        assert kwargs["input_tokens"] == 0
+        assert kwargs["output_tokens"] == 0
+        assert kwargs["mission_type"] == "review"
+
     def test_log_activity_usage_uses_preparsed_tokens(self):
         from app.mission_runner import _log_activity_usage
 

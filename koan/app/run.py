@@ -20,6 +20,7 @@ Features:
 """
 
 import os
+import json
 import signal
 import subprocess
 import sys
@@ -3078,11 +3079,6 @@ def _run_skill_mission(
     koan_pkg_dir = os.path.join(koan_root, "koan")
     pending_path = Path(instance) / "journal" / "pending.md"
 
-    # Explicitly set PYTHONPATH so the subprocess can always resolve
-    # app.* modules even if the working tree changes (e.g. skill does
-    # a git checkout on the koan repo itself).
-    skill_env = {**os.environ, "PYTHONPATH": koan_pkg_dir}
-
     # Record the koan repo's HEAD before execution.  Skills like
     # /rebase and /recreate do git checkouts on project_path which
     # may be the koan repo itself — if they crash without restoring
@@ -3105,6 +3101,16 @@ def _run_skill_mission(
     os.close(fd_out)
     fd_err, stderr_file = tempfile.mkstemp(prefix="koan-err-")
     os.close(fd_err)
+    fd_usage, stream_usage_file = tempfile.mkstemp(prefix="koan-stream-usage-")
+    os.close(fd_usage)
+    # Explicitly set PYTHONPATH so the subprocess can always resolve
+    # app.* modules even if the working tree changes (e.g. skill does
+    # a git checkout on the koan repo itself).
+    skill_env = {
+        **os.environ,
+        "PYTHONPATH": koan_pkg_dir,
+        "KOAN_STREAM_USAGE_FILE": stream_usage_file,
+    }
     stderr_fh = None
     try:
         stderr_fh = open(stderr_file, "w")
@@ -3176,6 +3182,19 @@ def _run_skill_mission(
             raise subprocess.TimeoutExpired(skill_cmd, skill_timeout)
         exit_code = proc.returncode
         skill_stdout = "\n".join(stdout_lines)
+        # Provider stream mode can persist token usage to a sidecar file.
+        # Append that JSON payload to stdout capture so token_parser can
+        # account for skill-dispatch sessions in run_post_mission.
+        with suppress_logged(log, "debug", "Skill stream usage read failed", OSError, json.JSONDecodeError):
+            raw_usage = Path(stream_usage_file).read_text().strip()
+            if raw_usage:
+                usage_payload = json.loads(raw_usage)
+                if isinstance(usage_payload, dict):
+                    usage_json = json.dumps(usage_payload, separators=(",", ":"))
+                    if skill_stdout:
+                        skill_stdout = f"{skill_stdout}\n{usage_json}"
+                    else:
+                        skill_stdout = usage_json
         # Read stderr from file after process exits.
         stderr_fh.close()
         stderr_fh = None
@@ -3283,7 +3302,7 @@ def _run_skill_mission(
     except Exception as e:
         log("error", f"Post-mission error: {e}")
     finally:
-        _cleanup_temp(stdout_file, stderr_file)
+        _cleanup_temp(stdout_file, stderr_file, stream_usage_file)
     duration = int(time.time()) - mission_start
     debug_log(f"[run] skill exec: done in {duration}s, exit_code={exit_code}")
     return skill_result

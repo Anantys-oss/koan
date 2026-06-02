@@ -544,6 +544,7 @@ def _record_cost_event(
     mission_title: str,
     mission_type: str = "",
     tokens: Optional[dict] = None,
+    allow_placeholder: bool = False,
 ) -> None:
     """Record structured usage event to JSONL cost tracker (fire-and-forget).
 
@@ -556,7 +557,18 @@ def _record_cost_event(
 
         tokens = _ensure_tokens(stdout_file, tokens)
         if tokens is None:
-            return
+            if not allow_placeholder:
+                return
+            # Keep daily/project activity visible even when token extraction
+            # is unavailable (common on skill-dispatch stream runs).
+            tokens = {
+                "model": "unknown",
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "cost_usd": 0.0,
+            }
 
         record_usage(
             instance_dir=Path(instance_dir),
@@ -1415,6 +1427,7 @@ def run_post_mission(
             instance_dir, project_name, stdout_file,
             autonomous_mode, mission_title, mission_type=_mission_type,
             tokens=_tokens,
+            allow_placeholder=is_skill_dispatch,
         )
 
         # 2. Compute duration (needed for quota early-return, reflection, and outcome tracking)
