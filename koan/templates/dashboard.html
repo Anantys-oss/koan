@@ -267,7 +267,7 @@
         const restartBtn = document.getElementById('ctrl-restart');
         const isStopped = data.state === 'stopped';
         const isPaused = data.state === 'paused';
-        if (pauseGroup) pauseGroup.style.display = (isPaused || isStopped) ? 'none' : '';
+        if (pauseGroup) pauseGroup.style.display = (isPaused || isStopped) ? 'none' : 'flex';
         if (resumeBtn) resumeBtn.style.display = isPaused ? '' : 'none';
         if (restartBtn) restartBtn.style.display = isStopped ? 'none' : '';
     }
