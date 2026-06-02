@@ -279,6 +279,7 @@ pre {
 /* Project cards (home) */
 .project-card { transition: border-color var(--dur-base), transform var(--dur-base); }
 .project-card:hover { border-color: var(--border-strong); transform: translateY(-2px); }
+.project-card.card-active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 
 /* Spinner / loading */
 .loading { opacity: 0.5; }
