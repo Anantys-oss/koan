@@ -131,6 +131,59 @@
         .pending-item .actions { opacity: 1; }
         .pending-item .drag-handle { display: none; }
     }
+    /* Done section */
+    .done-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        margin-bottom: 0.5rem;
+    }
+    .done-header h2 { margin: 0; }
+    .done-filter-bar {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-size: 0.8rem;
+    }
+    .done-filter-bar select {
+        max-width: 200px;
+        font-size: 0.8rem;
+        padding: 0.2rem 0.4rem;
+    }
+    .day-group-header {
+        font-size: 0.8rem;
+        font-weight: 600;
+        color: var(--text-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        padding: 0.6rem 0.75rem 0.3rem;
+        border-bottom: 1px solid var(--border);
+    }
+    .day-group-header:first-child { padding-top: 0.3rem; }
+    .done-item {
+        display: flex;
+        align-items: flex-start;
+        gap: 0.5rem;
+        padding: 0.4rem 0.75rem;
+        border-bottom: 1px solid var(--border);
+        font-family: var(--mono);
+        font-size: 0.82rem;
+        color: var(--text-muted);
+    }
+    .done-item:last-child { border-bottom: none; }
+    .done-item .done-text { flex: 1; line-height: 1.4; }
+    .done-item .done-time {
+        flex-shrink: 0;
+        font-size: 0.72rem;
+        color: var(--text-muted);
+        opacity: 0.7;
+        white-space: nowrap;
+        min-width: 5rem;
+        text-align: right;
+        padding-top: 0.1rem;
+    }
 </style>
 
 <div class="card">
@@ -195,24 +248,7 @@
 {% endif %}
 </div>
 
-<div id="done-section">
-{% if missions.done %}
-<h2>Done ({{ missions.done|length }})</h2>
-<div class="card">
-{% for m in missions.done[:20] %}
-    <div class="mission-item" style="color: var(--text-muted);">
-        {% if '❌' in m %}<span class="badge badge-red">failed</span> {% elif '✅' in m %}<span class="badge badge-green">done</span> {% endif %}
-        {% if not selected_project %}{{ m|project_badge|safe }}{% endif %}{{ m|strip_project_tag|linkify }}
-    </div>
-{% endfor %}
-{% if missions.done|length > 20 %}
-    <div class="mission-item" style="color: var(--text-muted); font-style: italic;">
-        ... and {{ missions.done|length - 20 }} more
-    </div>
-{% endif %}
-</div>
-{% endif %}
-</div>
+<div id="done-section"></div>
 
 <script>
 (function() {
@@ -526,6 +562,142 @@
         });
     }
 
+    // --- Done section rendering ---
+    const DONE_LIMIT = 50;
+    const TIMESTAMP_RE = /\s*[⏳▶️▶]\([^)]*\)/g;
+    const COMPLETION_RE = /\s*([✅❌])\s*\((\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})\)/;
+    let doneProjectFilter = '';
+
+    function parseDoneItem(raw) {
+        const compMatch = raw.match(COMPLETION_RE);
+        let status = 'done', completedAt = null;
+        if (compMatch) {
+            status = compMatch[1] === '❌' ? 'failed' : 'done';
+            completedAt = new Date(compMatch[2] + 'T' + compMatch[3]);
+        }
+        let cleaned = raw.replace(COMPLETION_RE, '').replace(TIMESTAMP_RE, '').replace(/\s*📬\s*/g, ' ').trim();
+        if (cleaned.startsWith('- ')) cleaned = cleaned.slice(2);
+        const tagMatch = cleaned.match(PROJECT_TAG_CAPTURE_RE);
+        const project = tagMatch ? tagMatch[1] : '';
+        const text = cleaned.replace(PROJECT_TAG_STRIP_RE, ' ').trim();
+        return { raw, status, completedAt, project, text };
+    }
+
+    function friendlyTime(date) {
+        if (!date) return '';
+        const now = new Date();
+        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const yesterday = new Date(today); yesterday.setDate(today.getDate() - 1);
+        const itemDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+        const hh = String(date.getHours()).padStart(2, '0');
+        const mm = String(date.getMinutes()).padStart(2, '0');
+        if (itemDay.getTime() === today.getTime()) return hh + ':' + mm;
+        if (itemDay.getTime() === yesterday.getTime()) return 'Yesterday ' + hh + ':' + mm;
+        const diffDays = Math.floor((today - itemDay) / 86400000);
+        if (diffDays < 7) {
+            return date.toLocaleDateString('en-US', {weekday: 'short'}) + ' ' + hh + ':' + mm;
+        }
+        return date.toLocaleDateString('en-US', {month: 'short', day: 'numeric'}) + ' ' + hh + ':' + mm;
+    }
+
+    function dayGroupLabel(date) {
+        if (!date) return 'Unknown';
+        const now = new Date();
+        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const yesterday = new Date(today); yesterday.setDate(today.getDate() - 1);
+        const itemDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+        if (itemDay.getTime() === today.getTime()) return 'Today';
+        if (itemDay.getTime() === yesterday.getTime()) return 'Yesterday';
+        const diffDays = Math.floor((today - itemDay) / 86400000);
+        if (diffDays < 7) {
+            return date.toLocaleDateString('en-US', {weekday: 'long', month: 'long', day: 'numeric'});
+        }
+        if (diffDays < 14) return 'Last week';
+        return date.toLocaleDateString('en-US', {month: 'long', day: 'numeric', year: 'numeric'});
+    }
+
+    function dayKey(date) {
+        if (!date) return 'unknown';
+        return date.getFullYear() + '-' + String(date.getMonth()+1).padStart(2,'0') + '-' + String(date.getDate()).padStart(2,'0');
+    }
+
+    function renderDone(rawItems) {
+        const section = document.getElementById('done-section');
+        if (!rawItems || !rawItems.length) {
+            section.innerHTML = '';
+            return;
+        }
+        let items = rawItems.map(parseDoneItem);
+        const allProjects = [...new Set(items.map(i => i.project).filter(Boolean))].sort();
+
+        if (doneProjectFilter) {
+            items = items.filter(i => i.project === doneProjectFilter);
+        }
+        const visible = items.slice(0, DONE_LIMIT);
+
+        // Group by day
+        const groups = [];
+        let currentKey = null;
+        visible.forEach(item => {
+            const dk = dayKey(item.completedAt);
+            if (dk !== currentKey) {
+                currentKey = dk;
+                groups.push({ label: dayGroupLabel(item.completedAt), items: [item] });
+            } else {
+                groups[groups.length - 1].items.push(item);
+            }
+        });
+
+        let html = '<div class="done-header"><h2>Done (' + rawItems.length + ')</h2>';
+        html += '<div class="done-filter-bar">';
+        if (allProjects.length > 1) {
+            html += '<select id="done-project-filter">';
+            html += '<option value="">All projects</option>';
+            allProjects.forEach(p => {
+                const sel = p === doneProjectFilter ? ' selected' : '';
+                html += '<option value="' + escapeHtml(p) + '"' + sel + '>' + escapeHtml(p) + '</option>';
+            });
+            html += '</select>';
+        }
+        html += '</div></div>';
+
+        html += '<div class="card">';
+        if (!visible.length) {
+            html += '<div class="empty-state" style="padding:1rem;">No completed missions for this project</div>';
+        }
+        groups.forEach(g => {
+            html += '<div class="day-group-header">' + escapeHtml(g.label) + '</div>';
+            g.items.forEach(item => {
+                const badgeCls = item.status === 'failed' ? 'badge-red' : 'badge-green';
+                const badgeLabel = item.status === 'failed' ? 'failed' : 'done';
+                const projBadge = item.project ? '<span class="badge badge-blue">' + escapeHtml(item.project) + '</span> ' : '';
+                html += '<div class="done-item">'
+                    + '<span class="badge ' + badgeCls + '">' + badgeLabel + '</span> '
+                    + '<span class="done-text">' + projBadge + linkifyText(item.text) + '</span>'
+                    + '<span class="done-time">' + friendlyTime(item.completedAt) + '</span>'
+                    + '</div>';
+            });
+        });
+        if (items.length > DONE_LIMIT) {
+            html += '<div class="done-item" style="font-style:italic; justify-content:center;">'
+                + '… and ' + (items.length - DONE_LIMIT) + ' more</div>';
+        }
+        html += '</div>';
+        section.innerHTML = html;
+
+        const filterEl = document.getElementById('done-project-filter');
+        if (filterEl) {
+            filterEl.addEventListener('change', function() {
+                doneProjectFilter = this.value;
+                renderDone(rawItems);
+            });
+        }
+    }
+
+    // Initial render from server data
+    let _lastDoneRaw = {{ missions.done|tojson }};
+    renderDone(_lastDoneRaw);
+
     // --- Auto-refresh (poll every 10s) ---
     let refreshTimer = null;
 
@@ -551,6 +723,11 @@
                 ipSection.innerHTML = html;
             } else {
                 ipSection.innerHTML = '';
+            }
+            // Update done section
+            if (data.done) {
+                _lastDoneRaw = data.done;
+                renderDone(_lastDoneRaw);
             }
         } catch (e) {
             // silently ignore refresh errors
