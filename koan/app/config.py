@@ -1490,6 +1490,20 @@ def is_strip_co_authored_by_enabled() -> bool:
     return bool(config.get("strip_co_authored_by", False))
 
 
+def get_worktree_isolation() -> bool:
+    """Check if worktree isolation is enabled for mission execution.
+
+    When enabled, each mission runs in an isolated git worktree instead
+    of the project's main working directory. This prevents dirty-state
+    conflicts from uncommitted changes, editor locks, or concurrent
+    processes.
+
+    Config key: worktree_isolation (default: false).
+    """
+    config = _load_config()
+    return bool(config.get("worktree_isolation", False))
+
+
 def get_skill_max_turns() -> int:
     """Get max turns for skill execution (fix, implement, incident).
 
