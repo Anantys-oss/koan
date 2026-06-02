@@ -1735,3 +1735,78 @@ class TestApiAgentSoul:
         app_client.put("/api/agent/soul", json={"content": new_text})
         resp = app_client.get("/api/agent/soul")
         assert resp.get_json()["content"] == new_text
+
+
+class TestConfigPage:
+    def test_config_page_renders(self, app_client):
+        resp = app_client.get("/config")
+        assert resp.status_code == 200
+        assert b"config.yaml" in resp.data
+        assert b"projects.yaml" in resp.data
+        assert b"Restart Service" in resp.data
+
+    def test_config_page_has_syntax_highlight_classes(self, app_client):
+        resp = app_client.get("/config")
+        assert b"hl-key" in resp.data
+        assert b"hl-comment" in resp.data
+
+    def test_put_config_valid_yaml(self, app_client, tmp_path):
+        config_path = tmp_path / "instance" / "config.yaml"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text("old: value\n")
+        resp = app_client.put(
+            "/api/config/config",
+            json={"content": "new_key: 42\nlist:\n  - item\n"},
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["ok"] is True
+        assert "new_key: 42" in config_path.read_text()
+
+    def test_put_config_invalid_yaml(self, app_client):
+        resp = app_client.put(
+            "/api/config/config",
+            json={"content": "bad: [unclosed\n"},
+        )
+        assert resp.status_code == 422
+        data = resp.get_json()
+        assert data["ok"] is False
+        assert "Invalid YAML" in data["error"]
+
+    def test_put_config_missing_content(self, app_client):
+        resp = app_client.put("/api/config/config", json={})
+        assert resp.status_code == 400
+        data = resp.get_json()
+        assert data["ok"] is False
+
+    def test_put_config_unknown_target(self, app_client):
+        resp = app_client.put(
+            "/api/config/unknown",
+            json={"content": "x: 1\n"},
+        )
+        assert resp.status_code == 404
+
+    def test_put_projects_valid(self, app_client, tmp_path):
+        projects_path = tmp_path / "projects.yaml"
+        projects_path.write_text("defaults:\n  path: /tmp\n")
+        resp = app_client.put(
+            "/api/config/projects",
+            json={"content": "defaults:\n  path: /new\n"},
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["ok"] is True
+        assert "/new" in projects_path.read_text()
+
+    def test_restart_endpoint(self, app_client):
+        with patch("app.restart_manager.request_restart") as mock_restart:
+            resp = app_client.post("/api/config/restart")
+        assert resp.status_code == 200
+        assert resp.get_json()["ok"] is True
+        mock_restart.assert_called_once()
+
+    def test_restart_endpoint_error(self, app_client):
+        with patch("app.restart_manager.request_restart", side_effect=OSError("fail")):
+            resp = app_client.post("/api/config/restart")
+        assert resp.status_code == 500
+        data = resp.get_json()
+        assert data["ok"] is False

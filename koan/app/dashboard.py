@@ -1637,6 +1637,63 @@ def api_agent_config():
 
 
 # ---------------------------------------------------------------------------
+# Config page routes
+# ---------------------------------------------------------------------------
+
+@app.route("/config")
+def config_page():
+    """Dedicated config editor page."""
+    return render_template("config.html")
+
+
+def _validate_yaml(text: str) -> str | None:
+    """Return None if valid YAML, error message otherwise."""
+    import yaml
+    try:
+        yaml.safe_load(text)
+        return None
+    except yaml.YAMLError as e:
+        return str(e)
+
+
+@app.route("/api/config/<target>", methods=["PUT"])
+def api_config_save(target: str):
+    """Validate and save config.yaml or projects.yaml."""
+    from app.utils import atomic_write
+
+    paths = {
+        "config": KOAN_ROOT / "instance" / "config.yaml",
+        "projects": KOAN_ROOT / "projects.yaml",
+    }
+    if target not in paths:
+        return jsonify({"ok": False, "error": f"Unknown config target: {target}"}), 404
+
+    data = request.get_json(silent=True) or {}
+    content = data.get("content")
+    if content is None:
+        return jsonify({"ok": False, "error": "Missing content"}), 400
+
+    error = _validate_yaml(content)
+    if error:
+        return jsonify({"ok": False, "error": f"Invalid YAML: {error}"}), 422
+
+    path = paths[target]
+    atomic_write(path, content)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/config/restart", methods=["POST"])
+def api_config_restart():
+    """Signal the agent loop to restart."""
+    from app.restart_manager import request_restart
+    try:
+        request_restart(str(KOAN_ROOT))
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
 # Automation rules routes
 # ---------------------------------------------------------------------------
 
