@@ -16,7 +16,6 @@ Usage:
 """
 
 import collections
-import logging
 import contextlib
 import json
 import logging
@@ -47,6 +46,7 @@ from app.signals import (
     PAUSE_FILE,
     PROJECT_FILE,
     QUOTA_RESET_FILE,
+    RESTART_FILE,
     STATUS_FILE,
     STOP_FILE,
 )
@@ -1288,6 +1288,46 @@ def api_attention_dismiss_all():
     project = data.get("project", "")
     count = dismiss_all(str(KOAN_ROOT), project_filter=project)
     return jsonify({"ok": True, "dismissed": count})
+
+
+@app.route("/api/agent/pause", methods=["POST"])
+def api_agent_pause():
+    """Pause the agent loop, optionally for a duration (e.g. '2h', '30m')."""
+    from app.pause_manager import create_pause, parse_duration
+
+    data = request.get_json(silent=True) or {}
+    duration_str = (data.get("duration") or "").strip()
+
+    timestamp = None
+    display = ""
+    if duration_str:
+        secs = parse_duration(duration_str)
+        if secs is None:
+            return jsonify({"ok": False, "error": "Invalid duration format. Use '2h', '30m', '1h30m'"}), 422
+        timestamp = int(time.time()) + secs
+        display = f"Dashboard pause ({duration_str})"
+
+    create_pause(str(KOAN_ROOT), "manual", timestamp=timestamp, display=display)
+    return jsonify({"ok": True, "status": "paused", "duration": duration_str or None})
+
+
+@app.route("/api/agent/resume", methods=["POST"])
+def api_agent_resume():
+    """Resume the agent loop."""
+    from app.pause_manager import remove_pause
+
+    remove_pause(str(KOAN_ROOT))
+    return jsonify({"ok": True, "status": "resumed"})
+
+
+@app.route("/api/agent/restart", methods=["POST"])
+def api_agent_restart():
+    """Signal the agent loop to restart."""
+    try:
+        (KOAN_ROOT / RESTART_FILE).touch()
+    except OSError as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+    return jsonify({"ok": True, "status": "restart_signaled"})
 
 
 @app.route("/prs")

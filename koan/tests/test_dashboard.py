@@ -1899,3 +1899,76 @@ class TestConfigPage:
         assert data["ok"] is False
         assert "internal detail" not in data["error"]
         assert "restart" in data["error"].lower()
+
+
+# ---------------------------------------------------------------------------
+# Agent control routes — pause / resume / restart
+# ---------------------------------------------------------------------------
+
+class TestAgentControls:
+    """Test /api/agent/pause, /api/agent/resume, /api/agent/restart."""
+
+    def test_pause_creates_file(self, app_client, tmp_path):
+        resp = app_client.post("/api/agent/pause", json={})
+        data = resp.get_json()
+        assert resp.status_code == 200
+        assert data["ok"] is True
+        assert data["status"] == "paused"
+        assert (tmp_path / ".koan-pause").exists()
+
+    def test_pause_with_duration(self, app_client, tmp_path):
+        fixed_time = 1700000000
+        with patch("app.dashboard.time.time", return_value=fixed_time):
+            resp = app_client.post("/api/agent/pause", json={"duration": "2h"})
+        data = resp.get_json()
+        assert resp.status_code == 200
+        assert data["ok"] is True
+        content = (tmp_path / ".koan-pause").read_text()
+        lines = content.splitlines()
+        assert lines[0] == "manual"
+        assert lines[1] == str(fixed_time + 7200)
+        assert lines[2] == "Dashboard pause (2h)"
+
+    def test_pause_invalid_duration(self, app_client, tmp_path):
+        resp = app_client.post("/api/agent/pause", json={"duration": "xyz"})
+        assert resp.status_code == 422
+        data = resp.get_json()
+        assert data["ok"] is False
+        assert "error" in data
+
+    def test_resume_removes_file(self, app_client, tmp_path):
+        (tmp_path / ".koan-pause").write_text("manual\n")
+        resp = app_client.post("/api/agent/resume")
+        data = resp.get_json()
+        assert resp.status_code == 200
+        assert data["ok"] is True
+        assert not (tmp_path / ".koan-pause").exists()
+
+    def test_resume_when_not_paused(self, app_client, tmp_path):
+        assert not (tmp_path / ".koan-pause").exists()
+        resp = app_client.post("/api/agent/resume")
+        assert resp.status_code == 200
+        assert resp.get_json()["ok"] is True
+
+    def test_restart_creates_signal(self, app_client, tmp_path):
+        resp = app_client.post("/api/agent/restart")
+        data = resp.get_json()
+        assert resp.status_code == 200
+        assert data["ok"] is True
+        assert (tmp_path / ".koan-restart").exists()
+
+    def test_pause_button_hidden_when_paused(self, app_client, tmp_path):
+        (tmp_path / ".koan-pause").write_text("manual\n")
+        with patch.object(dashboard, "KOAN_ROOT", tmp_path):
+            resp = app_client.get("/")
+        html = resp.data.decode()
+        assert 'id="ctrl-resume"' in html
+        assert 'id="ctrl-pause"' in html
+        assert 'ctrl-pause-group' in html
+
+    def test_resume_button_hidden_when_running(self, app_client, tmp_path):
+        assert not (tmp_path / ".koan-pause").exists()
+        resp = app_client.get("/")
+        html = resp.data.decode()
+        assert 'ctrl-resume' in html
+        assert 'display:none' in html

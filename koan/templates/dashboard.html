@@ -41,6 +41,15 @@
 </div>
 {% endif %}
 
+<div id="agent-controls" class="card" style="display:flex;align-items:center;gap:var(--space-3);flex-wrap:wrap;padding:var(--space-3) var(--space-4);">
+    <div id="ctrl-pause-group" style="display:flex;align-items:center;gap:var(--space-2);" {% if agent_state.state == 'paused' or agent_state.state == 'stopped' %}class="hidden"{% endif %}>
+        <button id="ctrl-pause" class="btn btn-sm btn-secondary" onclick="agentAction('pause')">Pause</button>
+        <input id="ctrl-pause-duration" type="text" placeholder="e.g. 2h" style="width:6rem;font-size:var(--fs-body-sm);padding:var(--space-1) var(--space-2);border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-secondary);color:var(--text-primary);">
+    </div>
+    <button id="ctrl-resume" class="btn btn-sm btn-secondary" onclick="agentAction('resume')" style="{% if agent_state.state != 'paused' %}display:none;{% endif %}">Resume</button>
+    <button id="ctrl-restart" class="btn btn-sm btn-secondary" onclick="agentAction('restart')" {% if agent_state.state == 'stopped' %}style="display:none;"{% endif %}>Restart</button>
+</div>
+
 <div id="state-detail" class="card state-detail" {% if agent_state.state == 'idle' %}style="display:none;"{% endif %}>
     <div class="state-detail-grid">
         <div id="detail-project" class="detail-item" {% if not agent_state.project %}style="display:none;"{% endif %}>
@@ -251,6 +260,16 @@
                 }
             }
         }
+
+        // Show/hide agent control buttons based on state
+        const pauseGroup = document.getElementById('ctrl-pause-group');
+        const resumeBtn = document.getElementById('ctrl-resume');
+        const restartBtn = document.getElementById('ctrl-restart');
+        const isStopped = data.state === 'stopped';
+        const isPaused = data.state === 'paused';
+        if (pauseGroup) pauseGroup.style.display = (isPaused || isStopped) ? 'none' : '';
+        if (resumeBtn) resumeBtn.style.display = isPaused ? '' : 'none';
+        if (restartBtn) restartBtn.style.display = isStopped ? 'none' : '';
     }
 
     function connectSSE() {
@@ -278,6 +297,37 @@
             })
             .catch(() => {});
     }, 10000);
+
+    function agentAction(action) {
+        if (action === 'restart') {
+            if (!confirm('Restart the agent loop?')) return;
+        }
+        const btn = document.getElementById('ctrl-' + action) ||
+                    document.getElementById('ctrl-' + action + '-group');
+        const pauseBtn = document.getElementById('ctrl-pause');
+        const activeBtn = action === 'pause' ? pauseBtn : btn;
+        if (activeBtn) activeBtn.disabled = true;
+
+        const body = {};
+        if (action === 'pause') {
+            const dur = (document.getElementById('ctrl-pause-duration') || {}).value || '';
+            if (dur) body.duration = dur;
+        }
+
+        fetch('/api/agent/' + action, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(body),
+        })
+            .then(r => r.json())
+            .then(data => {
+                if (!data.ok) {
+                    alert('Error: ' + (data.error || 'unknown'));
+                }
+            })
+            .catch(e => alert('Request failed: ' + e))
+            .finally(() => { if (activeBtn) activeBtn.disabled = false; });
+    }
 })();
 </script>
 
