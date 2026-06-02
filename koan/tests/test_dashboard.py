@@ -1665,3 +1665,36 @@ class TestApiHealth:
             resp = app_client.get("/api/health")
         data = resp.get_json()
         assert data["disk"]["status"] == "ok"
+
+
+class TestApiAgentSoul:
+    def test_get_soul(self, app_client, instance_dir):
+        resp = app_client.get("/api/agent/soul")
+        data = resp.get_json()
+        assert data["content"] == "You are Kōan."
+        assert "truncated" not in data
+
+    def test_get_soul_missing(self, app_client, instance_dir):
+        (instance_dir / "soul.md").unlink()
+        resp = app_client.get("/api/agent/soul")
+        data = resp.get_json()
+        assert data["content"] is None
+
+    def test_put_soul(self, app_client, instance_dir):
+        resp = app_client.put(
+            "/api/agent/soul",
+            json={"content": "New soul content."},
+        )
+        assert resp.get_json()["ok"] is True
+        assert (instance_dir / "soul.md").read_text() == "New soul content."
+
+    def test_put_soul_missing_content(self, app_client):
+        resp = app_client.put("/api/agent/soul", json={})
+        assert resp.status_code == 400
+        assert resp.get_json()["ok"] is False
+
+    def test_put_soul_roundtrip(self, app_client, instance_dir):
+        new_text = "# Updated Soul\n\nWith multiple lines."
+        app_client.put("/api/agent/soul", json={"content": new_text})
+        resp = app_client.get("/api/agent/soul")
+        assert resp.get_json()["content"] == new_text

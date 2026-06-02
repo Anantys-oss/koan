@@ -1491,10 +1491,27 @@ def agent_page():
 
 @app.route("/api/agent/soul")
 def api_agent_soul():
-    """Return soul.md content."""
+    """Return soul.md content (full, uncapped — editing needs the whole file)."""
     soul_path = INSTANCE_DIR / "soul.md"
-    data = _read_capped(soul_path)
-    return jsonify(data)
+    if not soul_path.exists():
+        return jsonify({"content": None, "path": "instance/soul.md"})
+    text = soul_path.read_text(errors="replace")
+    return jsonify({"content": text, "path": "instance/soul.md"})
+
+
+@app.route("/api/agent/soul", methods=["PUT"])
+def api_agent_soul_save():
+    """Save soul.md content atomically."""
+    from app.utils import atomic_write
+
+    data = request.get_json(silent=True) or {}
+    content = data.get("content")
+    if content is None:
+        return jsonify({"ok": False, "error": "Missing content"}), 400
+
+    soul_path = INSTANCE_DIR / "soul.md"
+    atomic_write(soul_path, content)
+    return jsonify({"ok": True})
 
 
 @app.route("/api/agent/memory")

@@ -2,15 +2,29 @@
 {% block title %}Kōan — Agent{% endblock %}
 {% block page_title %}Agent{% endblock %}
 {% block content %}
-<p style="color: var(--text-muted); margin-bottom: 1.5rem;">Read-only introspection of the agent's internal state.</p>
+<p style="color: var(--text-muted); margin-bottom: 1.5rem;">Introspection of the agent's internal state.</p>
 
 <!-- Soul -->
 <div class="card" id="section-soul">
-    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:0.75rem;">
-        <h2 style="margin:0;">Soul</h2>
-        <button class="btn-small" id="soul-reload">Reload</button>
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:0;">
+        <h2 style="margin:0; cursor:pointer;" id="soul-toggle">
+            <span id="soul-chevron" style="display:inline-block;transition:transform 0.2s;">▶</span> Soul
+        </h2>
+        <div style="display:flex; gap:0.5rem;" id="soul-actions">
+            <button class="btn-secondary" style="font-size:0.8rem;height:28px;padding:0 0.75rem;" id="soul-edit">Edit</button>
+            <button class="btn-secondary" style="font-size:0.8rem;height:28px;padding:0 0.75rem;" id="soul-reload">Reload</button>
+        </div>
     </div>
-    <div id="soul-content" style="color: var(--text-muted);">Loading…</div>
+    <div id="soul-body" style="display:none; margin-top:0.75rem;">
+        <div id="soul-content" style="color: var(--text-muted);">Loading…</div>
+        <div id="soul-editor" style="display:none;">
+            <textarea id="soul-textarea" style="width:100%;min-height:300px;font-family:var(--font-mono);font-size:0.82rem;resize:vertical;"></textarea>
+            <div style="display:flex;gap:0.5rem;margin-top:0.5rem;">
+                <button id="soul-save" style="font-size:0.8rem;height:28px;padding:0 0.75rem;">Save</button>
+                <button class="btn-secondary" id="soul-cancel" style="font-size:0.8rem;height:28px;padding:0 0.75rem;">Cancel</button>
+            </div>
+        </div>
+    </div>
 </div>
 
 <!-- Memory -->
@@ -45,6 +59,15 @@
     /* ------------------------------------------------------------------ */
     /* Soul                                                                  */
     /* ------------------------------------------------------------------ */
+    let _soulExpanded = false;
+    let _soulRaw = '';
+
+    function toggleSoul() {
+        _soulExpanded = !_soulExpanded;
+        document.getElementById('soul-body').style.display = _soulExpanded ? 'block' : 'none';
+        document.getElementById('soul-chevron').style.transform = _soulExpanded ? 'rotate(90deg)' : '';
+    }
+
     function loadSoul() {
         document.getElementById('soul-content').textContent = 'Loading…';
         fetch('/api/agent/soul')
@@ -55,15 +78,56 @@
                     el.innerHTML = '<span style="color:var(--text-muted)">No soul.md found. Copy from <code>instance.example/soul.md</code>.</span>';
                     return;
                 }
-                const warn = data.truncated
-                    ? `<div class="badge badge-orange" style="margin-bottom:0.5rem;">Showing first 10,000 of ${data.total_chars.toLocaleString()} characters</div>`
-                    : '';
-                el.innerHTML = warn + '<pre style="white-space:pre-wrap;margin:0;">' + escHtml(data.content) + '</pre>';
+                _soulRaw = data.content;
+                el.innerHTML = '<pre style="white-space:pre-wrap;margin:0;">' + escHtml(data.content) + '</pre>';
             })
             .catch(() => { document.getElementById('soul-content').textContent = 'Error loading soul.'; });
     }
 
+    function enterSoulEdit() {
+        document.getElementById('soul-textarea').value = _soulRaw;
+        document.getElementById('soul-content').style.display = 'none';
+        document.getElementById('soul-editor').style.display = 'block';
+        document.getElementById('soul-edit').style.display = 'none';
+        if (!_soulExpanded) toggleSoul();
+    }
+
+    function exitSoulEdit() {
+        document.getElementById('soul-editor').style.display = 'none';
+        document.getElementById('soul-content').style.display = 'block';
+        document.getElementById('soul-edit').style.display = '';
+    }
+
+    function saveSoul() {
+        const btn = document.getElementById('soul-save');
+        btn.disabled = true;
+        btn.textContent = 'Saving…';
+        const content = document.getElementById('soul-textarea').value;
+        fetch('/api/agent/soul', {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({content})
+        })
+            .then(r => r.json())
+            .then(data => {
+                if (data.ok) {
+                    _soulRaw = content;
+                    document.getElementById('soul-content').innerHTML =
+                        '<pre style="white-space:pre-wrap;margin:0;">' + escHtml(content) + '</pre>';
+                    exitSoulEdit();
+                } else {
+                    alert('Save failed: ' + (data.error || 'Unknown error'));
+                }
+            })
+            .catch(() => alert('Save failed — network error.'))
+            .finally(() => { btn.disabled = false; btn.textContent = 'Save'; });
+    }
+
+    document.getElementById('soul-toggle').addEventListener('click', toggleSoul);
     document.getElementById('soul-reload').addEventListener('click', loadSoul);
+    document.getElementById('soul-edit').addEventListener('click', enterSoulEdit);
+    document.getElementById('soul-cancel').addEventListener('click', exitSoulEdit);
+    document.getElementById('soul-save').addEventListener('click', saveSoul);
     loadSoul();
 
     /* ------------------------------------------------------------------ */
