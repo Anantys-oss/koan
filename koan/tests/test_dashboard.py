@@ -1104,6 +1104,26 @@ class TestProjectFiltering:
         assert dashboard.strip_project_tag_filter("- [project:koan] Fix bug") == "- Fix bug"
         assert dashboard.strip_project_tag_filter("- Fix bug") == "- Fix bug"
 
+    def test_linkify_filter_converts_urls(self):
+        result = dashboard.linkify_filter("Fix https://github.com/org/repo/pull/42 now")
+        assert 'href="https://github.com/org/repo/pull/42"' in result
+        assert 'target="_blank"' in result
+        assert 'rel="noopener noreferrer"' in result
+
+    def test_linkify_filter_no_url(self):
+        result = dashboard.linkify_filter("Fix the bug")
+        assert "<a " not in result
+        assert result == "Fix the bug"
+
+    def test_linkify_filter_escapes_html(self):
+        result = dashboard.linkify_filter("<script>alert(1)</script>")
+        assert "<script>" not in result
+        assert "&lt;script&gt;" in result
+
+    def test_linkify_filter_multiple_urls(self):
+        result = dashboard.linkify_filter("See https://jira.example.com/PROJ-123 and https://github.com/org/repo/issues/5")
+        assert result.count("<a ") == 2
+
 
 # ---------------------------------------------------------------------------
 # Mission queue API endpoints

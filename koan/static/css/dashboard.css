@@ -164,6 +164,12 @@ h2 { font-size: var(--fs-heading-sm); font-weight: var(--fw-semibold); color: va
 
 /* Missions */
 .mission-item { font-family: var(--font-mono); font-size: var(--fs-body-sm); color: var(--text-secondary); }
+.mission-item a, .in-progress-item a, .pending-item a, .done-item a {
+    color: var(--accent); text-decoration: underline; text-underline-offset: 2px;
+}
+.mission-item a:hover, .in-progress-item a:hover, .pending-item a:hover, .done-item a:hover {
+    color: var(--accent-hover, var(--accent)); opacity: 0.85;
+}
 
 /* Inputs / buttons — bridge bare elements & legacy .btn to DS look */
 input[type="text"], textarea, select {
