@@ -19,8 +19,11 @@ def _get_server_ip() -> str:
 def _needs_ollama() -> bool:
     """Return True if the configured provider requires ollama serve."""
     try:
-        from app.provider import get_provider_name
-        return get_provider_name() in ("local", "ollama")
+        from app.provider import get_provider_name, is_ollama_provider
+        name = get_provider_name()
+        if name == "ollama-launch":
+            return False
+        return is_ollama_provider(name)
     except Exception:
         return False
 

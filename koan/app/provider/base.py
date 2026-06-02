@@ -1,7 +1,7 @@
 """Base class and constants for CLI provider abstraction."""
 
 import shutil
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 
 # ---------------------------------------------------------------------------
@@ -37,6 +37,7 @@ class CLIProvider:
     """
 
     name: str = ""
+    uses_ollama: bool = False
 
     def binary(self) -> str:
         """Return the CLI binary name or path."""
@@ -256,6 +257,14 @@ class CLIProvider:
         cmd.extend(self.build_plugin_args(plugin_dirs))
         cmd.extend(self.build_effort_args(effort))
         return cmd
+
+    def get_env(self) -> Dict[str, str]:
+        """Return extra environment variables for subprocess invocation.
+
+        Override in subclasses that need to inject env vars (e.g.
+        OLLAMA_NO_CLOUD). Base returns empty dict.
+        """
+        return {}
 
     def check_quota_available(self, project_path: str, timeout: int = 15) -> Tuple[bool, str]:
         """Probe real API quota with a minimal CLI call.

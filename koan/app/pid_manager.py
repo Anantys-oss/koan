@@ -378,14 +378,19 @@ def start_ollama(koan_root: Path, verify_timeout: float = OLLAMA_VERIFY_TIMEOUT)
     # Write PID file — ollama serve is an external binary (no flock)
     acquire_pid(koan_root, "ollama", proc.pid)
 
-    # Wait briefly for ollama to start listening
+    # Wait for ollama to start listening on HTTP
     deadline = time.monotonic() + verify_timeout
     while time.monotonic() < deadline:
-        if _is_process_alive(proc.pid):
+        if not _is_process_alive(proc.pid):
+            release_pid(koan_root, "ollama")
+            return False, "ollama launched but exited immediately — check ollama logs"
+        if _ollama_http_ready():
             return True, f"ollama serve started (PID {proc.pid})"
         time.sleep(0.3)
 
-    # Clean up stale PID file — process is dead, don't leave phantom PIDs
+    # Process is alive but HTTP not ready yet — still report success
+    if _is_process_alive(proc.pid):
+        return True, f"ollama serve started (PID {proc.pid}), still warming up"
     release_pid(koan_root, "ollama")
     return False, "ollama launched but exited immediately — check ollama logs"
 
@@ -571,9 +576,24 @@ def _detect_provider(koan_root: Path) -> str:
         return "claude"
 
 
+def _ollama_http_ready() -> bool:
+    """Check if Ollama server is responding on HTTP."""
+    from app.ollama_client import is_server_running
+    return is_server_running(timeout=2)
+
+
 def _needs_ollama(provider: str) -> bool:
-    """Return True if the provider requires ollama serve."""
-    return provider in ("local", "ollama")
+    """Return True if the provider requires a manually started ollama serve.
+
+    ollama-launch manages its own server lifecycle, so it returns False.
+    """
+    if provider == "ollama-launch":
+        return False
+    try:
+        from app.provider import is_ollama_provider
+        return is_ollama_provider(provider)
+    except (ImportError, KeyError):
+        return provider in ("local", "ollama")
 
 
 def _show_startup_banner(koan_root: Path, provider: str) -> None:

@@ -134,6 +134,21 @@ def get_provider_by_name(name: str) -> CLIProvider:
     return _PROVIDERS[provider_name]()
 
 
+def is_ollama_provider(name: str = "") -> bool:
+    """Return True if the given (or configured) provider uses Ollama.
+
+    Checks the ``uses_ollama`` flag on the provider class, which is the
+    single source of truth for whether a provider requires Ollama.
+    For unregistered names (e.g. legacy "ollama"), falls back to
+    name-based detection.
+    """
+    if not name:
+        name = get_provider_name()
+    if name in _PROVIDERS:
+        return _PROVIDERS[name].uses_ollama
+    return "ollama" in name.lower()
+
+
 def get_cli_binary() -> str:
     """Get the CLI binary command for the configured provider.
 

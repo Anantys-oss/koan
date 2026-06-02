@@ -29,6 +29,7 @@ class LocalLLMProvider(CLIProvider):
     """
 
     name = "local"
+    uses_ollama = True
 
     def _get_config(self) -> dict:
         """Get local_llm config section from config.yaml."""

@@ -99,6 +99,27 @@ def _cleanup_prompt_file(path: Optional[str]) -> None:
             os.unlink(path)
 
 
+def _merge_provider_env(kwargs: dict) -> None:
+    """Merge provider-specific env vars into subprocess kwargs.
+
+    Providers declare extra env vars via ``get_env()`` (e.g.
+    ``OLLAMA_NO_CLOUD=1``). These are merged into the subprocess
+    environment so the protection actually applies at runtime.
+    Only merges when the caller hasn't already supplied an ``env``.
+    """
+    if "env" in kwargs:
+        return
+    try:
+        from app.provider import get_provider
+        extra = get_provider().get_env()
+        if extra:
+            env = os.environ.copy()
+            env.update(extra)
+            kwargs["env"] = env
+    except Exception:
+        pass
+
+
 def run_cli(cmd, **kwargs) -> subprocess.CompletedProcess:
     """Run a CLI command with the prompt passed via temp-file stdin.
 
@@ -107,6 +128,7 @@ def run_cli(cmd, **kwargs) -> subprocess.CompletedProcess:
     the caller does not provide one, preventing indefinite hangs.
     """
     kwargs.setdefault("timeout", DEFAULT_TIMEOUT)
+    _merge_provider_env(kwargs)
     cmd, prompt_path = prepare_prompt_file(cmd)
     if prompt_path:
         try:
@@ -129,6 +151,7 @@ def popen_cli(
     Returns ``(proc, cleanup)`` where *cleanup()* **must** be called after
     the process exits to close the file handle and delete the temp file.
     """
+    _merge_provider_env(kwargs)
     cmd, prompt_path = prepare_prompt_file(cmd)
     if prompt_path:
         stdin_file = open(prompt_path)  # noqa: SIM115
