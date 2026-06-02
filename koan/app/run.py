@@ -3443,8 +3443,8 @@ def _cleanup_worktree(worktree_info, project_path: str):
         try:
             from app.worktree_manager import remove_worktree
             remove_worktree(project_path, session_id=worktree_info.session_id, force=True)
-        except Exception:
-            pass
+        except Exception as e:
+            log("error", f"Worktree ref cleanup failed: {e}")
         return
 
     push_failed = False
