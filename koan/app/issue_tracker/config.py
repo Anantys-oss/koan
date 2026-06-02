@@ -58,11 +58,7 @@ def get_project_issue_tracker(
     if provider not in VALID_PROVIDERS:
         provider = "github"
 
-    github_repo = normalize_github_repo(
-        raw.get("repo")
-        or project_cfg.get("github_url", "")
-        or project_cfg.get("github_repo", "")
-    )
+    github_repo = normalize_github_repo(raw.get("repo", ""))
 
     return {
         "provider": provider,
@@ -184,10 +180,10 @@ def resolve_code_repository(project_name: str, project_path: str = "") -> str:
         tracker = get_project_issue_tracker(projects_cfg, project_name)
         if tracker.get("repo"):
             return normalize_github_repo(tracker["repo"])
-        project_cfg = get_project_config(projects_cfg, project_name)
-        if project_cfg.get("github_url"):
-            return normalize_github_repo(project_cfg["github_url"])
 
+    # Fork detection before github_url: upstream remote or GitHub API parent
+    # take precedence over the origin-derived github_url which points at the
+    # fork, not the canonical repo.
     if project_path:
         try:
             from app.github import origin_repo, resolve_target_repo
@@ -195,6 +191,18 @@ def resolve_code_repository(project_name: str, project_path: str = "") -> str:
             target = resolve_target_repo(project_path, project_name=project_name)
             if target:
                 return normalize_github_repo(target)
+        except (ImportError, OSError, RuntimeError):
+            pass
+
+    if projects_cfg:
+        project_cfg = get_project_config(projects_cfg, project_name)
+        if project_cfg.get("github_url"):
+            return normalize_github_repo(project_cfg["github_url"])
+
+    if project_path:
+        try:
+            from app.github import origin_repo
+
             origin = origin_repo(project_path)
             if origin:
                 return normalize_github_repo(origin)

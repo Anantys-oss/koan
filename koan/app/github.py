@@ -274,19 +274,22 @@ def list_open_audit_issues(
     )
 
 
-def issue_edit(number, body, cwd=None):
+def issue_edit(number, body, cwd=None, repo=None):
     """Update a GitHub issue body via ``gh issue edit``.
 
     Args:
         number: Issue number (string or int).
         body: New body text (markdown).
         cwd: Working directory (must be inside a git repo).
+        repo: Optional ``owner/repo`` to target (otherwise inferred from cwd).
     """
     from app.leak_detector import scan_and_redact
 
     body = scan_and_redact(body, context="Issue body")
-    return run_gh("issue", "edit", str(number), "--body", body,
-                  cwd=cwd, idempotent=False)
+    args = ["issue", "edit", str(number), "--body", body]
+    if repo:
+        args.extend(["--repo", repo])
+    return run_gh(*args, cwd=cwd, idempotent=False)
 
 
 def api(endpoint, method="GET", jq=None, input_data=None, cwd=None,
