@@ -131,6 +131,7 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
         "max_age_hours": "int",
         "check_interval_seconds": "int",
         "max_check_interval_seconds": "int",
+        "webhook": "dict",
     },
     "schedule": {
         "deep_hours": "str",
