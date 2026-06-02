@@ -261,16 +261,30 @@ def get_github_webhook_enabled(config: dict) -> bool:
 
 
 def get_github_webhook_port(config: dict) -> int:
-    """Port the webhook receiver binds to. Default: 8474."""
+    """Port the webhook receiver binds to. Default: 8474.
+
+    A configured value that is non-numeric or outside 1-65535 is rejected and
+    the default is used — with a logged warning so the operator can spot the
+    typo in startup logs rather than silently binding the wrong port.
+    """
     github = config.get("github") or {}
     webhook = github.get("webhook") or {}
+    # Distinguish "not configured" (use default silently) from "configured but
+    # invalid" (use default *and* warn).
+    if "port" not in webhook:
+        return DEFAULT_WEBHOOK_PORT
+    raw = webhook.get("port")
     try:
-        val = int(webhook.get("port", DEFAULT_WEBHOOK_PORT))
+        val = int(raw)
         if 1 <= val <= 65535:
             return val
-        return DEFAULT_WEBHOOK_PORT
     except (ValueError, TypeError):
-        return DEFAULT_WEBHOOK_PORT
+        pass
+    log.warning(
+        "Invalid github.webhook.port %r — must be an integer in 1-65535; "
+        "using default %d", raw, DEFAULT_WEBHOOK_PORT,
+    )
+    return DEFAULT_WEBHOOK_PORT
 
 
 def get_github_webhook_host(config: dict) -> str:
@@ -280,12 +294,22 @@ def get_github_webhook_host(config: dict) -> str:
     same host and forward to localhost — the receiver should not be directly
     internet-exposed. Set to "0.0.0.0" only for direct exposure behind your own
     TLS terminator.
+
+    A configured value that is not a non-empty string is rejected and the
+    default loopback host is used — with a logged warning, so an operator who
+    meant to bind 0.0.0.0 isn't silently left on loopback.
     """
     github = config.get("github") or {}
     webhook = github.get("webhook") or {}
-    host = webhook.get("host", DEFAULT_WEBHOOK_HOST)
+    if "host" not in webhook:
+        return DEFAULT_WEBHOOK_HOST
+    host = webhook.get("host")
     if isinstance(host, str) and host.strip():
         return host.strip()
+    log.warning(
+        "Invalid github.webhook.host %r — must be a non-empty string; "
+        "using default %s", host, DEFAULT_WEBHOOK_HOST,
+    )
     return DEFAULT_WEBHOOK_HOST
 
 

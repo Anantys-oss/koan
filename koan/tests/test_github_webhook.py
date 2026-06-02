@@ -293,6 +293,57 @@ class TestConfigHelpers:
         cfg = {"github": {"webhook": {"host": "0.0.0.0"}}}
         assert get_github_webhook_host(cfg) == "0.0.0.0"
 
+    def test_invalid_port_warns(self, caplog):
+        import logging
+
+        from app.github_webhook import DEFAULT_WEBHOOK_PORT
+        from app.github_config import get_github_webhook_port
+
+        cfg = {"github": {"webhook": {"port": 70000}}}
+        with caplog.at_level(logging.WARNING, logger="app.github_config"):
+            assert get_github_webhook_port(cfg) == DEFAULT_WEBHOOK_PORT
+        assert any("github.webhook.port" in r.message for r in caplog.records)
+
+    def test_valid_and_absent_port_do_not_warn(self, caplog):
+        import logging
+
+        from app.github_config import get_github_webhook_port
+
+        with caplog.at_level(logging.WARNING, logger="app.github_config"):
+            get_github_webhook_port({})  # absent → silent default
+            get_github_webhook_port({"github": {"webhook": {"port": 9999}}})  # valid
+        assert not [r for r in caplog.records if "github.webhook.port" in r.message]
+
+    def test_invalid_host_warns(self, caplog):
+        import logging
+
+        from app.github_config import get_github_webhook_host
+
+        cfg = {"github": {"webhook": {"host": 0}}}  # non-string
+        with caplog.at_level(logging.WARNING, logger="app.github_config"):
+            assert get_github_webhook_host(cfg) == "127.0.0.1"
+        assert any("github.webhook.host" in r.message for r in caplog.records)
+
+    def test_empty_host_warns(self, caplog):
+        import logging
+
+        from app.github_config import get_github_webhook_host
+
+        cfg = {"github": {"webhook": {"host": "   "}}}  # blank string
+        with caplog.at_level(logging.WARNING, logger="app.github_config"):
+            assert get_github_webhook_host(cfg) == "127.0.0.1"
+        assert any("github.webhook.host" in r.message for r in caplog.records)
+
+    def test_absent_host_does_not_warn(self, caplog):
+        import logging
+
+        from app.github_config import get_github_webhook_host
+
+        with caplog.at_level(logging.WARNING, logger="app.github_config"):
+            get_github_webhook_host({})
+            get_github_webhook_host({"github": {"webhook": {}}})
+        assert not [r for r in caplog.records if "github.webhook.host" in r.message]
+
 
 class TestCreateServerGuard:
     def test_refuses_without_secret(self, tmp_path):

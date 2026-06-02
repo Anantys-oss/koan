@@ -83,6 +83,10 @@ If `enabled` is true but `KOAN_GITHUB_WEBHOOK_SECRET` is unset, the receiver
 refuses to start (it never runs without signature verification) and logs a
 warning — polling continues unaffected.
 
+A `port` outside `1–65535` (or non-numeric) and a `host` that isn't a non-empty
+string are rejected with a logged warning and fall back to the defaults — check
+the startup logs if a configured value seems ignored.
+
 ### 3. Expose it with a tunnel
 
 Example with smee.io:
