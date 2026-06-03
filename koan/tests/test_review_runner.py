@@ -22,6 +22,7 @@ from app.review_runner import (
     _parse_review_json,
     _format_review_as_markdown,
     _extract_json_text,
+    _build_review_footer,
     _post_review_comment,
     _post_comment_replies,
     _fetch_pr_commit_shas,
@@ -747,6 +748,36 @@ class TestFormatReviewAsMarkdown:
 
 
 # ---------------------------------------------------------------------------
+# _build_review_footer
+# ---------------------------------------------------------------------------
+
+class TestBuildReviewFooter:
+    def test_no_provider_no_model(self):
+        result = _build_review_footer()
+        assert result == "_Automated review by [Kōan](https://koan.anantys.com)_"
+
+    def test_provider_only(self):
+        result = _build_review_footer(provider_name="claude")
+        assert "[Kōan](https://koan.anantys.com)" in result
+        assert "Claude" in result
+
+    def test_model_only(self):
+        result = _build_review_footer(model="claude-opus-4-6")
+        assert "model claude-opus-4-6" in result
+
+    def test_provider_and_model(self):
+        result = _build_review_footer(provider_name="claude", model="claude-sonnet-4-6")
+        assert "[Kōan](https://koan.anantys.com)" in result
+        assert "Claude" in result
+        assert "model claude-sonnet-4-6" in result
+        assert " · " in result
+
+    def test_provider_capitalized(self):
+        result = _build_review_footer(provider_name="copilot", model="gpt-4o")
+        assert "Copilot" in result
+
+
+# ---------------------------------------------------------------------------
 # _post_review_comment
 # ---------------------------------------------------------------------------
 
@@ -805,6 +836,18 @@ class TestPostReviewComment:
         call_args = mock_gh.call_args[0]
         body = [a for a in call_args if isinstance(a, str) and "Looks good" in a][0]
         assert "## Code Review" in body
+
+    @patch("app.review_runner.run_gh")
+    def test_footer_contains_provider_and_model(self, mock_gh):
+        """Footer includes provider name and model when provided."""
+        _post_review_comment(
+            "owner", "repo", "42", "LGTM",
+            provider_name="claude", model="claude-opus-4-6",
+        )
+        body = [a for a in mock_gh.call_args[0] if isinstance(a, str) and "LGTM" in a][0]
+        assert "[Kōan](https://koan.anantys.com)" in body
+        assert "Claude" in body
+        assert "model claude-opus-4-6" in body
 
 
 # ---------------------------------------------------------------------------
