@@ -2,7 +2,7 @@
 name: alias
 scope: core
 group: config
-emoji: "\U0001F517"
+emoji: 🔗
 description: Create short aliases for project names (e.g. /alias Template2 tt then /tt queues missions for Template2)
 version: 1.0.0
 audience: bridge

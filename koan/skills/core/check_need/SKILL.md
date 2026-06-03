@@ -2,7 +2,7 @@
 name: check_need
 scope: core
 group: code
-emoji: "\U0001F50E"
+emoji: 🔎
 description: "Check if a PR or issue is still needed given the current state of the repo"
 version: 1.0.0
 audience: hybrid

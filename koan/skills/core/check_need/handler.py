@@ -64,7 +64,7 @@ def handle(ctx) -> Optional[str]:
     missions_path = ctx.instance_dir / "missions.md"
     insert_pending_mission(missions_path, mission_entry)
 
-    return f"\U0001f50e Relevance check queued for {label}"
+    return f"🔎 Relevance check queued for {label}"
 
 
 def _resolve_project_name(repo, owner=None):

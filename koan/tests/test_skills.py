@@ -99,6 +99,19 @@ class TestParseYamlLite:
         result = _parse_yaml_lite("# comment\nname: test")
         assert result["name"] == "test"
 
+    def test_quoted_scalar_strips_quotes(self):
+        result = _parse_yaml_lite('emoji: "🔍"\nname: "my skill"')
+        assert result["emoji"] == "🔍"
+        assert result["name"] == "my skill"
+
+    def test_single_quoted_scalar(self):
+        result = _parse_yaml_lite("emoji: '🔎'")
+        assert result["emoji"] == "🔎"
+
+    def test_unquoted_emoji_unchanged(self):
+        result = _parse_yaml_lite("emoji: 🔎")
+        assert result["emoji"] == "🔎"
+
 
 # ---------------------------------------------------------------------------
 # _parse_bool_flag

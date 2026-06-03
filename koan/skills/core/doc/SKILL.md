@@ -2,7 +2,7 @@
 name: doc
 scope: core
 group: code
-emoji: "\U0001F4DA"
+emoji: 📚
 description: Extract and generate structured documentation from a project codebase
 version: 1.0.0
 audience: hybrid

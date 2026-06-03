@@ -2,7 +2,7 @@
 name: autoreview
 scope: core
 group: config
-emoji: "🔍"
+emoji: 🔍
 description: Toggle automatic review+rebase after PR creation per project
 version: 1.0.0
 audience: bridge
