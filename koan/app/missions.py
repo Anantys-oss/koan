@@ -176,6 +176,17 @@ def strip_timestamps(text: str) -> str:
     return text.rstrip()
 
 
+def strip_all_lifecycle_markers(text: str) -> str:
+    """Remove all lifecycle markers (⏳, ▶, ✅, ❌) from mission text."""
+    queued_pos = text.find(_QUEUED_MARKER)
+    if queued_pos > 0:
+        text = text[:queued_pos].rstrip()
+    text = _QUEUED_PATTERN.sub("", text)
+    text = _STARTED_PATTERN.sub("", text)
+    text = _COMPLETED_PATTERN.sub("", text)
+    return text.rstrip()
+
+
 def _normalize_now_flag(text: str) -> str:
     """Normalize Unicode dash variants of --now to ASCII --now.
 

@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from app.github_url_parser import ISSUE_URL_PATTERN, JIRA_ISSUE_URL_PATTERN, PR_URL_PATTERN
-from app.missions import extract_now_flag, strip_timestamps
+from app.missions import extract_now_flag, strip_all_lifecycle_markers
 from app.run_log import log_safe as _log_skill, suppress_logged
 from app.utils import PROJECT_TAG_PREFIX_RE, is_known_project, project_name_for_path
 
@@ -921,7 +921,7 @@ def _build_generic_runner_cmd(
     ]
 
     # Pass extra context via temp file to avoid shell escaping issues
-    cleaned_args = strip_timestamps(args).strip()
+    cleaned_args = strip_all_lifecycle_markers(args).strip()
     if cleaned_args:
         fd, path = tempfile.mkstemp(prefix="koan-ctx-", suffix=".txt")
         with open(fd, "w", encoding="utf-8") as f:
@@ -1166,10 +1166,9 @@ def dispatch_skill_mission(
         return None
 
     parsed_project, command, args = parse_skill_mission(mission_text)
-    # Strip lifecycle timestamps (⏳, ▶) and the 📬 GitHub origin marker
-    # that the mission system appends — they are metadata, not arguments
-    # for the skill runner.
-    args = strip_timestamps(args).replace("📬", "").strip()
+    # Strip all lifecycle markers (⏳, ▶, ❌, ✅) and the 📬 GitHub origin
+    # marker — they are metadata, not arguments for the skill runner.
+    args = strip_all_lifecycle_markers(args).replace("📬", "").strip()
     debug_log(
         f"[skill_dispatch] dispatch: parsed project='{parsed_project}' "
         f"command='{command}' args='{args[:80]}'"

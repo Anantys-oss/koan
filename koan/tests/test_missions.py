@@ -39,6 +39,7 @@ from app.missions import (
     stamp_queued,
     stamp_started,
     start_mission,
+    strip_all_lifecycle_markers,
     strip_timestamps,
     prune_completed_sections,
     prune_done_section,
@@ -2624,6 +2625,26 @@ class TestStripTimestamps:
 
     def test_no_timestamps(self):
         assert strip_timestamps("Fix the bug") == "Fix the bug"
+
+
+class TestStripAllLifecycleMarkers:
+    def test_strips_all_markers(self):
+        text = "/plan https://github.com/org/repo/issues/42 ⏳(2026-06-02T18:12) ❌ (2026-06-02 18:12)"
+        result = strip_all_lifecycle_markers(text)
+        assert result == "/plan https://github.com/org/repo/issues/42"
+
+    def test_strips_completed_marker(self):
+        text = "/audit ✅ (2026-06-02 18:12)"
+        result = strip_all_lifecycle_markers(text)
+        assert result == "/audit"
+
+    def test_preserves_content_before_queued(self):
+        text = "/plan Add dark mode 📬 ⏳(2026-06-02T18:12) ▶(2026-06-02T18:13)"
+        result = strip_all_lifecycle_markers(text)
+        assert result == "/plan Add dark mode 📬"
+
+    def test_no_markers(self):
+        assert strip_all_lifecycle_markers("Fix the bug") == "Fix the bug"
 
 
 # --- parse_ideas ---

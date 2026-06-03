@@ -1748,6 +1748,26 @@ class TestTimestampStripping:
         for arg in cmd:
             assert "📬" not in arg
 
+    def test_dispatch_strips_failed_marker(self):
+        """❌ completion markers should not leak into dispatched command args."""
+        cmd = dispatch_skill_mission(
+            "[project:koan] /plan Add dark mode ⏳(2026-06-02T18:12) ❌ (2026-06-02 18:12)",
+            "koan", "/tmp/project", "/tmp/koan", "/tmp/instance",
+        )
+        assert cmd is not None
+        for arg in cmd:
+            assert "❌" not in arg
+
+    def test_dispatch_strips_completed_marker(self):
+        """✅ completion markers should not leak into dispatched command args."""
+        cmd = dispatch_skill_mission(
+            "[project:koan] /audit ✅ (2026-06-02 18:12)",
+            "koan", "/tmp/project", "/tmp/koan", "/tmp/instance",
+        )
+        assert cmd is not None
+        for arg in cmd:
+            assert "✅" not in arg
+
     def test_dispatch_preserves_real_args(self):
         """Real arguments survive timestamp stripping."""
         cmd = dispatch_skill_mission(
