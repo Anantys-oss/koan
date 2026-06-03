@@ -1342,6 +1342,170 @@ def _decide_autonomous_action(
     return AutonomousDecision(action="autonomous", focus_remaining=None)
 
 
+def _sweep_decomposed_parents(instance_dir: Path) -> None:
+    """Complete parent missions whose sub-missions have all finished.
+
+    Scans missions.md for [decomposed:ID] parents still in Pending that have
+    no remaining [group:ID] sub-missions in Pending or In-Progress. Calls
+    complete_mission() on each ready parent and writes the result atomically.
+    """
+    missions_path = instance_dir / "missions.md"
+    if not missions_path.exists():
+        return
+    try:
+        from app.missions import (
+            check_all_subtasks_failed,
+            complete_mission,
+            extract_decomposed_tag,
+            fail_mission,
+            find_decomposed_parents_ready,
+        )
+        from app.utils import modify_missions_file
+
+        def _apply(content: str) -> str:
+            ready = find_decomposed_parents_ready(content)
+            for parent_text in ready:
+                # Strip leading "- " for complete_mission needle
+                needle = parent_text.strip()
+                if needle.startswith("- "):
+                    needle = needle[2:]
+                gid = extract_decomposed_tag(parent_text)
+                all_failed = (
+                    check_all_subtasks_failed(content, gid) if gid else False
+                )
+                try:
+                    if all_failed:
+                        content = fail_mission(content, needle)
+                        _log_iteration("koan",
+                            f"Group sweep: failed decomposed parent "
+                            f"(all sub-tasks failed) — {needle[:80]}")
+                    else:
+                        content = complete_mission(content, needle)
+                        _log_iteration("koan",
+                            f"Group sweep: completed decomposed parent — {needle[:80]}")
+                except Exception as exc:
+                    _log_iteration("error",
+                        f"Group sweep: failed to transition parent — {needle[:80]}: {exc}")
+            return content
+
+        modify_missions_file(missions_path, _apply)
+    except Exception as e:
+        _log_iteration("error", f"Group-completion sweep failed: {e}")
+
+
+def _maybe_decompose_mission(
+    mission_title: str,
+    project_name: str,
+    instance_dir: Path,
+    projects: List[Tuple[str, str]],
+) -> Optional[List[str]]:
+    """Decompose a mission if tagged [decompose] or auto-decompose is on.
+
+    Skips skill-command missions (starting with '/') and missions already
+    tagged [group:*] or [decomposed:*].
+
+    Returns the list of injected sub-task strings if decomposition occurred,
+    or None if the mission should run as-is.
+    """
+    # Skip skill commands
+    clean = mission_title.strip()
+    if clean.startswith("/"):
+        return None
+
+    # Skip sub-missions and already-decomposed parents
+    from app.missions import extract_group_tag, extract_decomposed_tag
+    if extract_group_tag(mission_title) or extract_decomposed_tag(mission_title):
+        return None
+
+    # Check config and tag
+    try:
+        from app.config import get_decompose_config
+        cfg = get_decompose_config()
+    except Exception as e:
+        _log_iteration("error", f"Decompose config load failed: {e}")
+        return None
+
+    has_tag = "[decompose]" in mission_title.lower()
+    if not cfg["enabled"] and not has_tag:
+        return None
+    if cfg["enabled"] and not cfg["auto"] and not has_tag:
+        return None
+
+    # Resolve project path for cwd
+    resolved = _resolve_project_path(project_name, projects)
+    project_path = resolved[1] if resolved else (projects[0][1] if projects else "")
+
+    # Call the decomposition classifier
+    try:
+        from app.decompose import DecomposeError, decompose_mission
+        subtasks = decompose_mission(mission_title, project_path)
+    except DecomposeError as e:
+        _log_iteration("warning", f"Decompose classifier failed: {e} — running mission as-is")
+        return None
+    except Exception as e:
+        _log_iteration("error", f"Decompose call failed: {e}")
+        return None
+
+    if not subtasks:
+        return None
+
+    # Generate a stable group ID from mission text + timestamp
+    import hashlib
+    import time as _time
+    raw = f"{mission_title}{_time.time()}"
+    group_id = hashlib.sha256(raw.encode()).hexdigest()[:8]
+
+    # Write sub-missions and mark parent
+    missions_path = instance_dir / "missions.md"
+    mutated = False
+    try:
+        from app.missions import inject_subtasks, mark_parent_decomposed
+        from app.utils import modify_missions_file
+
+        def _apply(content: str) -> str:
+            nonlocal mutated
+            updated = inject_subtasks(content, mission_title, subtasks, group_id)
+            updated = mark_parent_decomposed(updated, mission_title, group_id)
+            mutated = (updated != content)
+            return updated
+
+        modify_missions_file(missions_path, _apply)
+    except Exception as e:
+        _log_iteration("error", f"Decompose inject failed: {e}")
+        return None
+
+    if not mutated:
+        _log_iteration("warning",
+            "Decompose: inject/mark had no effect — running mission as-is")
+        return None
+
+    _log_iteration("koan",
+        f"Decomposed [{project_name}] mission into {len(subtasks)} sub-tasks "
+        f"(group={group_id}): {mission_title[:60]}")
+
+    # Journal the decomposition
+    try:
+        from datetime import date
+        from app.utils import atomic_write
+        journal_dir = instance_dir / "journal" / date.today().isoformat()
+        journal_dir.mkdir(parents=True, exist_ok=True)
+        journal_file = journal_dir / f"{project_name}.md"
+        entry_lines = [
+            f"\n## Decomposed mission (group:{group_id})",
+            f"**Mission**: {mission_title}",
+            "**Sub-tasks**:",
+        ]
+        for i, st in enumerate(subtasks, 1):
+            entry_lines.append(f"{i}. {st}")
+        entry = "\n".join(entry_lines) + "\n"
+        existing = journal_file.read_text() if journal_file.exists() else ""
+        atomic_write(journal_file, existing + entry)
+    except Exception as e:
+        _log_iteration("error", f"Decompose journal write failed: {e}")
+
+    return subtasks
+
+
 def plan_iteration(
     instance_dir: str,
     koan_root: str,
@@ -1483,6 +1647,10 @@ def plan_iteration(
         # Step 3c: Auto-dispatch CI fix missions for failing Koan PRs
         _dispatch_ci_fixes(instance, koan_root)
 
+    # Step 3d: Group-completion sweep — complete parent missions whose
+    # sub-missions have all left Pending and In-Progress.
+    _sweep_decomposed_parents(instance)
+
     # Step 4: Pick mission. Manual missions (queued in missions.md or via
     # notifications) are always eligible regardless of branch saturation —
     # max_pending_branches is a self-throttle for autonomous exploration,
@@ -1496,6 +1664,52 @@ def plan_iteration(
             f"Mission picked: [{mission_project}] {mission_title[:80]}")
     else:
         _log_iteration("koan", "No pending mission — entering autonomous mode")
+
+    # Step 4a: Decomposition gate — split complex missions into sub-tasks.
+    # Only applies to natural-language missions (not /command missions).
+    # Skips missions already tagged [group:*] or [decomposed:*].
+    if mission_project and mission_title:
+        # Guard: skip already-decomposed parents (waiting for sub-tasks)
+        from app.missions import extract_decomposed_tag
+        if extract_decomposed_tag(mission_title):
+            _log_iteration("koan",
+                f"Skipping decomposed parent (sub-tasks pending): "
+                f"{mission_title[:80]}")
+            return _make_result(
+                action="autonomous",
+                project_name=mission_project,
+                project_path="",
+                mission_title="",
+                autonomous_mode=autonomous_mode,
+                focus_area="Waiting for decomposed sub-tasks",
+                available_pct=available_pct,
+                decision_reason="Decomposed parent skipped — sub-tasks pending",
+                display_lines=display_lines,
+                recurring_injected=recurring_injected,
+                schedule_mode=schedule_state.mode if schedule_state else "normal",
+                tracker_error=tracker_error,
+            )
+
+        decomposed = _maybe_decompose_mission(
+            mission_title, mission_project, instance, projects,
+        )
+        if decomposed:
+            _log_iteration("koan",
+                f"Decomposed mission into {len(decomposed)} sub-tasks — skipping iteration")
+            return _make_result(
+                action="autonomous",
+                project_name=mission_project,
+                project_path="",
+                mission_title="",
+                autonomous_mode=autonomous_mode,
+                focus_area="Decomposing mission into sub-tasks",
+                available_pct=available_pct,
+                decision_reason="Mission decomposed into sub-tasks",
+                display_lines=display_lines,
+                recurring_injected=recurring_injected,
+                schedule_mode=schedule_state.mode if schedule_state else "normal",
+                tracker_error=tracker_error,
+            )
 
     # Step 4b: Passive mode gate — block all execution
     # Missions stay Pending, no autonomous work. Must check before start_mission().

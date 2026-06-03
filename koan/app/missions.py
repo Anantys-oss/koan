@@ -415,6 +415,11 @@ def extract_next_pending(content: str, project_name: str = "") -> str:
             i += 1
             continue
 
+        # Skip decomposed parents (waiting for sub-tasks to finish)
+        if _DECOMPOSED_TAG_RE.search(stripped):
+            i += 1
+            continue
+
         if project_name:
             # 1. Check inline tag first (takes priority)
             tag_match = PROJECT_TAG_RE.search(line)
@@ -2218,3 +2223,166 @@ def is_duplicate_mission(content: str, new_entry: str) -> bool:
             return True
 
     return False
+
+
+# Regex to detect decomposition-related tags
+_DECOMPOSED_TAG_RE = re.compile(r'\[decomposed:([^\]]+)\]', re.IGNORECASE)
+_GROUP_TAG_RE = re.compile(r'\[group:([^\]]+)\]', re.IGNORECASE)
+
+
+def extract_decomposed_tag(line: str) -> Optional[str]:
+    """Return the group ID from a [decomposed:ID] tag, or None."""
+    m = _DECOMPOSED_TAG_RE.search(line)
+    return m.group(1) if m else None
+
+
+def extract_group_tag(line: str) -> Optional[str]:
+    """Return the group ID from a [group:ID] tag, or None."""
+    m = _GROUP_TAG_RE.search(line)
+    return m.group(1) if m else None
+
+
+def inject_subtasks(
+    content: str,
+    parent_text: str,
+    subtasks: List[str],
+    group_id: str,
+) -> str:
+    """Insert sub-missions into Pending immediately after the parent mission.
+
+    Each sub-mission inherits the parent's [project:NAME] tag and is tagged
+    [group:GROUP_ID]. Sub-missions are stamped with a queued timestamp.
+
+    Returns updated content. Does nothing if the parent is not found in Pending.
+    """
+    needle = parent_text.strip()
+    # Extract project tag from parent to inherit it
+    project_tag = ""
+    project_match = PROJECT_TAG_RE.search(parent_text)
+    if project_match:
+        project_tag = f"[project:{project_match.group(1)}] "
+
+    lines = content.splitlines()
+    boundaries = find_section_boundaries(lines)
+    if "pending" not in boundaries:
+        return content
+
+    start, end = boundaries["pending"]
+
+    # Find the parent line within Pending
+    parent_line_idx = None
+    for i in range(start + 1, end):
+        if lines[i].strip().startswith("- ") and needle in lines[i]:
+            parent_line_idx = i
+            if not project_tag:
+                line_match = PROJECT_TAG_RE.search(lines[i])
+                if line_match:
+                    project_tag = f"[project:{line_match.group(1)}] "
+            break
+
+    if parent_line_idx is None:
+        return content
+
+    # Find the extent of the parent block (including continuation lines)
+    parent_end = _find_item_extent(lines, parent_line_idx, end)
+
+    # Build sub-mission entries (in reverse order for insert-after)
+    entries = []
+    for subtask in subtasks:
+        entry = f"- {project_tag}[group:{group_id}] {subtask}"
+        entry = stamp_queued(entry)
+        entries.append(entry)
+
+    # Insert all sub-missions after the parent block
+    insert_at = parent_end
+    for entry in reversed(entries):
+        lines.insert(insert_at, entry)
+
+    return normalize_content("\n".join(lines))
+
+
+def mark_parent_decomposed(
+    content: str,
+    parent_text: str,
+    group_id: str,
+) -> str:
+    """Rewrite the parent mission line to add [decomposed:GROUP_ID].
+
+    The tag is inserted before any timestamp markers so it's clearly visible.
+    Returns updated content. Does nothing if the parent is not found in Pending.
+    """
+    needle = parent_text.strip()
+    lines = content.splitlines()
+    boundaries = find_section_boundaries(lines)
+    if "pending" not in boundaries:
+        return content
+
+    start, end = boundaries["pending"]
+    tag = f"[decomposed:{group_id}]"
+
+    for i in range(start + 1, end):
+        raw = lines[i]
+        stripped = raw.strip()
+        if not stripped.startswith("- "):
+            continue
+        if needle not in raw:
+            continue
+        if _DECOMPOSED_TAG_RE.search(raw):
+            break  # Already tagged
+
+        base = raw.rstrip("\n").rstrip("\r")
+        # Insert tag before any timestamp marker
+        ts_match = re.search(r'\s*[⏳▶]\(', base)
+        if ts_match:
+            insert_pos = ts_match.start()
+            new_line = base[:insert_pos] + f" {tag}" + base[insert_pos:]
+        else:
+            new_line = f"{base} {tag}"
+        ending = raw[len(raw.rstrip("\r\n")):]
+        lines[i] = new_line + (ending or "\n")
+        break
+
+    return normalize_content("\n".join(lines))
+
+
+def find_decomposed_parents_ready(content: str) -> List[str]:
+    """Return parent mission texts that are ready to be completed.
+
+    A parent is ready when:
+    - It has a [decomposed:ID] tag and is still in Pending
+    - No sub-mission tagged [group:ID] appears in Pending or In Progress
+
+    Returns a list of raw mission line strings (as found in the Pending section).
+    """
+    sections = parse_sections(content)
+    pending = sections.get("pending", [])
+    in_progress = sections.get("in_progress", [])
+    active = pending + in_progress
+
+    # Collect group IDs that are still active
+    active_groups: set = set()
+    for item in active:
+        gid = extract_group_tag(item)
+        if gid:
+            active_groups.add(gid)
+
+    # Find decomposed parents in Pending that have no active sub-missions
+    ready = []
+    for item in pending:
+        gid = extract_decomposed_tag(item)
+        if gid and gid not in active_groups:
+            ready.append(item)
+
+    return ready
+
+
+def check_all_subtasks_failed(content: str, group_id: str) -> bool:
+    """Return True when every sub-task for *group_id* landed in Failed (none in Done)."""
+    sections = parse_sections(content)
+    done = sections.get("done", [])
+    failed = sections.get("failed", [])
+
+    has_done = any(extract_group_tag(item) == group_id for item in done)
+    has_failed = any(extract_group_tag(item) == group_id for item in failed)
+
+    return has_failed and not has_done
