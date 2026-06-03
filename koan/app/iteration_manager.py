@@ -186,10 +186,10 @@ def _get_usage_decision(usage_md: Path, count: int, projects_str: str):
 
 
 def _read_session_pct_and_reset(usage_state_path: Path):
-    """Return (session_pct, minutes_until_session_reset) or (None, None).
+    """Return (session_pct, minutes_until_session_reset, state) or (None, None, None).
 
-    Reads usage_state.json directly so the warning logic does not depend on
-    the freshness of usage.md.
+    Reads usage_state.json once and returns the parsed dict as the third element
+    so callers can reuse it without a second file read (prevents TOCTOU races).
     """
     try:
         import json
@@ -200,22 +200,22 @@ def _read_session_pct_and_reset(usage_state_path: Path):
         )
         from app.utils import load_config
     except (ImportError, OSError, ValueError):
-        return None, None
+        return None, None, None
 
     if not usage_state_path.exists():
-        return None, None
+        return None, None, None
 
     try:
         state = json.loads(usage_state_path.read_text())
     except (json.JSONDecodeError, OSError):
-        return None, None
+        return None, None, None
 
     try:
         session_limit, _ = _get_limits(load_config())
     except (OSError, ValueError, TypeError):
-        return None, None
+        return None, None, None
     if session_limit <= 0:
-        return None, None
+        return None, None, None
 
     tokens = state.get("session_tokens", 0) or 0
     session_pct = min(100.0, tokens / session_limit * 100.0)
@@ -223,11 +223,11 @@ def _read_session_pct_and_reset(usage_state_path: Path):
     try:
         session_start = datetime.fromisoformat(state["session_start"])
     except (KeyError, ValueError, TypeError):
-        return session_pct, None
+        return session_pct, None, state
 
     elapsed = (datetime.now() - session_start).total_seconds() / 60.0
     minutes_remaining = max(0.0, SESSION_DURATION_HOURS * 60.0 - elapsed)
-    return session_pct, minutes_remaining
+    return session_pct, minutes_remaining, state
 
 
 def _maybe_warn_burn_rate(instance_dir: Path, usage_state_path: Path) -> None:
@@ -249,7 +249,7 @@ def _maybe_warn_burn_rate(instance_dir: Path, usage_state_path: Path) -> None:
     except ImportError:
         return
 
-    session_pct, minutes_until_reset = _read_session_pct_and_reset(
+    session_pct, minutes_until_reset, usage_state = _read_session_pct_and_reset(
         usage_state_path
     )
     if session_pct is None or minutes_until_reset is None:
@@ -259,12 +259,11 @@ def _maybe_warn_burn_rate(instance_dir: Path, usage_state_path: Path) -> None:
     snapshot = BurnRateSnapshot(instance_dir)
 
     last_warned = snapshot.last_warned_at
-    if last_warned is not None:
+    if last_warned is not None and usage_state is not None:
         with suppress_logged(_log_iteration, "error", "Burn rate warning state parse failed",
                              json.JSONDecodeError, OSError, KeyError, ValueError, TypeError):
             from datetime import datetime, timezone
-            state = json.loads(usage_state_path.read_text())
-            session_start = datetime.fromisoformat(state["session_start"])
+            session_start = datetime.fromisoformat(usage_state["session_start"])
             if session_start.tzinfo is None:
                 session_start = session_start.replace(tzinfo=timezone.utc)
             if last_warned < session_start:

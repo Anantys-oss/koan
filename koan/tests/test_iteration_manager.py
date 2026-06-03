@@ -210,17 +210,19 @@ class TestReadSessionPctAndReset:
             patch("app.usage_estimator._get_limits", return_value=(1000, 10000)),
             patch("app.utils.load_config", return_value={}),
         ):
-            pct, minutes = _read_session_pct_and_reset(state)
+            pct, minutes, parsed_state = _read_session_pct_and_reset(state)
 
         assert pct == 25.0
         assert minutes is not None
         assert 0 < minutes <= 270
+        assert parsed_state is not None
+        assert "session_tokens" in parsed_state
 
-    def test_invalid_json_returns_none_tuple(self, tmp_path):
+    def test_invalid_json_returns_none_triple(self, tmp_path):
         state = tmp_path / "usage_state.json"
         state.write_text("not-json")
 
-        assert _read_session_pct_and_reset(state) == (None, None)
+        assert _read_session_pct_and_reset(state) == (None, None, None)
 
     def test_missing_session_start_returns_pct_without_reset(self, tmp_path):
         state = tmp_path / "usage_state.json"
@@ -230,9 +232,12 @@ class TestReadSessionPctAndReset:
             patch("app.usage_estimator._get_limits", return_value=(1000, 10000)),
             patch("app.utils.load_config", return_value={}),
         ):
-            assert _read_session_pct_and_reset(state) == (100.0, None)
+            pct, minutes, parsed_state = _read_session_pct_and_reset(state)
+            assert pct == 100.0
+            assert minutes is None
+            assert parsed_state == {"session_tokens": 1500}
 
-    def test_non_positive_session_limit_returns_none_tuple(self, tmp_path):
+    def test_non_positive_session_limit_returns_none_triple(self, tmp_path):
         state = tmp_path / "usage_state.json"
         state.write_text(json.dumps({"session_tokens": 100}))
 
@@ -240,7 +245,7 @@ class TestReadSessionPctAndReset:
             patch("app.usage_estimator._get_limits", return_value=(0, 10000)),
             patch("app.utils.load_config", return_value={}),
         ):
-            assert _read_session_pct_and_reset(state) == (None, None)
+            assert _read_session_pct_and_reset(state) == (None, None, None)
 
 
 # === Tests: _downgrade_if_unaffordable ===
@@ -3745,7 +3750,7 @@ class TestMaybeWarnBurnRate:
         outbox = inst / "outbox.md"
         assert not outbox.exists()
 
-    @patch("app.iteration_manager._read_session_pct_and_reset", return_value=(None, None))
+    @patch("app.iteration_manager._read_session_pct_and_reset", return_value=(None, None, None))
     def test_no_warning_when_session_pct_none(self, _mock, tmp_path):
         inst = tmp_path / "inst"
         inst.mkdir()
@@ -3757,7 +3762,7 @@ class TestMaybeWarnBurnRate:
     @patch("app.utils.append_to_outbox")
     @patch("app.burn_rate.mark_warned")
     @patch("app.burn_rate.BurnRateSnapshot")
-    @patch("app.iteration_manager._read_session_pct_and_reset", return_value=(60.0, 300.0))
+    @patch("app.iteration_manager._read_session_pct_and_reset", return_value=(60.0, 300.0, {}))
     def test_fires_warning_when_tte_below_threshold(self, _pct, mock_snap_cls,
                                                       mock_mark, mock_outbox,
                                                       tmp_path):
@@ -3777,7 +3782,7 @@ class TestMaybeWarnBurnRate:
 
     @patch("app.utils.append_to_outbox")
     @patch("app.burn_rate.BurnRateSnapshot")
-    @patch("app.iteration_manager._read_session_pct_and_reset", return_value=(60.0, 300.0))
+    @patch("app.iteration_manager._read_session_pct_and_reset", return_value=(60.0, 300.0, {}))
     def test_no_warning_when_tte_above_threshold(self, _pct, mock_snap_cls,
                                                    mock_outbox, tmp_path):
         mock_snap = MagicMock()
@@ -3791,7 +3796,7 @@ class TestMaybeWarnBurnRate:
 
     @patch("app.utils.append_to_outbox")
     @patch("app.burn_rate.BurnRateSnapshot")
-    @patch("app.iteration_manager._read_session_pct_and_reset", return_value=(60.0, 60.0))
+    @patch("app.iteration_manager._read_session_pct_and_reset", return_value=(60.0, 60.0, {}))
     def test_no_warning_when_reset_imminent(self, _pct, mock_snap_cls,
                                               mock_outbox, tmp_path):
         mock_snap = MagicMock()
@@ -3805,36 +3810,34 @@ class TestMaybeWarnBurnRate:
 
     @patch("app.utils.append_to_outbox")
     @patch("app.burn_rate.BurnRateSnapshot")
-    @patch("app.iteration_manager._read_session_pct_and_reset", return_value=(60.0, 300.0))
-    def test_no_duplicate_warning_when_already_warned(self, _pct, mock_snap_cls,
+    @patch("app.iteration_manager._read_session_pct_and_reset")
+    def test_no_duplicate_warning_when_already_warned(self, mock_pct, mock_snap_cls,
                                                         mock_outbox, tmp_path):
         from datetime import datetime, timezone, timedelta
         session_start = datetime.now(timezone.utc) - timedelta(minutes=30)
         warned_at = session_start + timedelta(minutes=10)
+        mock_pct.return_value = (60.0, 300.0, {"session_start": session_start.isoformat()})
         mock_snap = MagicMock()
         mock_snap.last_warned_at = warned_at
         mock_snap.time_to_exhaustion.return_value = 20.0
         mock_snap_cls.return_value = mock_snap
         inst = tmp_path / "inst"
         inst.mkdir()
-        usage = tmp_path / "usage.json"
-        usage.write_text(json.dumps({
-            "session_start": session_start.isoformat(),
-        }))
-        _maybe_warn_burn_rate(inst, usage)
+        _maybe_warn_burn_rate(inst, tmp_path / "usage.json")
         mock_outbox.assert_not_called()
 
     @patch("app.burn_rate.clear_warning")
     @patch("app.utils.append_to_outbox")
     @patch("app.burn_rate.mark_warned")
     @patch("app.burn_rate.BurnRateSnapshot")
-    @patch("app.iteration_manager._read_session_pct_and_reset", return_value=(60.0, 300.0))
-    def test_clears_stale_warning_from_previous_session(self, _pct, mock_snap_cls,
+    @patch("app.iteration_manager._read_session_pct_and_reset")
+    def test_clears_stale_warning_from_previous_session(self, mock_pct, mock_snap_cls,
                                                           mock_mark, mock_outbox,
                                                           mock_clear, tmp_path):
         from datetime import datetime, timezone, timedelta
         old_warn = datetime.now(timezone.utc) - timedelta(hours=5)
         new_session = datetime.now(timezone.utc) - timedelta(minutes=10)
+        mock_pct.return_value = (60.0, 300.0, {"session_start": new_session.isoformat()})
         mock_snap = MagicMock()
         mock_snap.last_warned_at = old_warn
         mock_snap.time_to_exhaustion.return_value = 15.0
@@ -3842,19 +3845,51 @@ class TestMaybeWarnBurnRate:
         mock_snap_cls.return_value = mock_snap
         inst = tmp_path / "inst"
         inst.mkdir()
-        usage = tmp_path / "usage.json"
-        usage.write_text(json.dumps({
-            "session_start": new_session.isoformat(),
-        }))
-        _maybe_warn_burn_rate(inst, usage)
+        _maybe_warn_burn_rate(inst, tmp_path / "usage.json")
         mock_clear.assert_called_once_with(inst)
         mock_outbox.assert_called_once()
         mock_mark.assert_called_once()
 
+    @patch("app.burn_rate.clear_warning")
+    @patch("app.utils.append_to_outbox")
+    @patch("app.burn_rate.mark_warned")
+    @patch("app.burn_rate.BurnRateSnapshot")
+    @patch("app.iteration_manager._read_session_pct_and_reset")
+    def test_uses_state_from_first_read_not_file(self, mock_pct, mock_snap_cls,
+                                                   mock_mark, mock_outbox,
+                                                   mock_clear, tmp_path):
+        """TOCTOU fix: session_start from _read_session_pct_and_reset state dict
+        must be used instead of re-reading the file. Write a stale session_start
+        to the file; the returned state carries a newer session_start that should
+        trigger the stale-warning clear.
+        """
+        from datetime import datetime, timezone, timedelta
+        old_warn = datetime.now(timezone.utc) - timedelta(hours=5)
+        new_session = datetime.now(timezone.utc) - timedelta(minutes=10)
+        # state dict (from first read) carries new_session — the stale warning should clear
+        mock_pct.return_value = (60.0, 300.0, {"session_start": new_session.isoformat()})
+        mock_snap = MagicMock()
+        mock_snap.last_warned_at = old_warn
+        mock_snap.time_to_exhaustion.return_value = 15.0
+        mock_snap.burn_rate_pct_per_minute.return_value = 0.8
+        mock_snap_cls.return_value = mock_snap
+        inst = tmp_path / "inst"
+        inst.mkdir()
+        # File carries an OLD session_start — if the code re-reads the file it
+        # would get the old start and fail to clear the stale warning.
+        usage = tmp_path / "usage.json"
+        old_session = datetime.now(timezone.utc) - timedelta(hours=6)
+        usage.write_text(json.dumps({"session_start": old_session.isoformat()}))
+        _maybe_warn_burn_rate(inst, usage)
+        # stale warning from old_warn (5h ago) should be cleared because state
+        # says session started 10 min ago (old_warn < new_session)
+        mock_clear.assert_called_once_with(inst)
+        mock_outbox.assert_called_once()
+
     @patch("app.utils.append_to_outbox", side_effect=OSError("write failed"))
     @patch("app.burn_rate.mark_warned")
     @patch("app.burn_rate.BurnRateSnapshot")
-    @patch("app.iteration_manager._read_session_pct_and_reset", return_value=(60.0, 300.0))
+    @patch("app.iteration_manager._read_session_pct_and_reset", return_value=(60.0, 300.0, {}))
     def test_outbox_write_failure_does_not_mark_warned(self, _pct, mock_snap_cls,
                                                          mock_mark, _outbox,
                                                          tmp_path):
