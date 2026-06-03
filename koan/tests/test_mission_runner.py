@@ -3,6 +3,8 @@
 import json
 import os
 import sys
+from contextlib import ExitStack
+from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 
@@ -2880,6 +2882,106 @@ class TestExtractCacheLine:
 
 class TestCostTrackingFailedFlag:
     """Test cost_tracking_failed flag in run_post_mission result."""
+
+    def test_codex_jsonl_updates_usage_state_and_cost_rows(self, tmp_path):
+        """Codex JSONL usage updates both budget state and usage JSONL rows."""
+        from app import cost_tracker
+        from app.mission_runner import run_post_mission
+
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        stdout_file = tmp_path / "codex.jsonl"
+        stderr_file = tmp_path / "codex.err"
+        stdout_file.write_text("\n".join([
+            json.dumps({"type": "thread.started"}),
+            json.dumps({
+                "type": "event_msg",
+                "payload": {
+                    "type": "token_count",
+                    "info": {
+                        "model": "gpt-5.4",
+                        "total_token_usage": {
+                            "input_tokens": 26549,
+                            "cached_input_tokens": 22272,
+                            "output_tokens": 1590,
+                            "reasoning_output_tokens": 1152,
+                            "total_tokens": 28139,
+                        },
+                    },
+                },
+            }),
+        ]))
+        stderr_file.write_text("")
+
+        patches = [
+            patch("app.usage_estimator.load_config", return_value={
+                "usage": {
+                    "session_token_limit": 500000,
+                    "weekly_token_limit": 5000000,
+                }
+            }),
+            patch("app.projects_config.load_projects_config", return_value={}),
+            patch("app.quota_handler.handle_quota_exhaustion", return_value=None),
+            patch("app.mission_runner.archive_pending", return_value=False),
+            patch("app.mission_runner.trigger_reflection", return_value=False),
+            patch("app.mission_runner._run_mission_verification", return_value=None),
+            patch("app.mission_runner._run_quality_pipeline", return_value={}),
+            patch("app.mission_runner._run_lint_gate", return_value=None),
+            patch("app.mission_runner.check_security_review", return_value=True),
+            patch("app.mission_runner.check_auto_merge", return_value=None),
+            patch("app.mission_runner._record_session_outcome"),
+            patch("app.mission_runner._record_skill_metric"),
+            patch("app.mission_runner._publish_jira_outcome", return_value={
+                "published": "false",
+                "reason": "test",
+            }),
+            patch("app.bandit.load_bandit_state", return_value={}),
+            patch("app.bandit.update_bandit"),
+            patch("app.bandit.save_bandit_state"),
+            patch("app.daily_snapshot.update_daily_snapshot"),
+            patch("app.mission_runner._check_pipeline_timeout_rate"),
+            patch("app.mission_runner._fire_post_mission_hook", return_value={}),
+            patch("app.mission_runner._write_pipeline_summary"),
+            patch("app.mission_runner._notify_pipeline_failures"),
+            patch("app.mission_runner._notify_mission_result"),
+        ]
+        with ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            result = run_post_mission(
+                instance_dir=str(instance_dir),
+                project_name="koan",
+                project_path=str(tmp_path),
+                run_num=1,
+                exit_code=0,
+                stdout_file=str(stdout_file),
+                stderr_file=str(stderr_file),
+                mission_title="test codex usage accounting",
+                autonomous_mode="implement",
+                provider_name="codex",
+            )
+
+        billable_input = 26549 - 22272
+        expected_total = billable_input + 1590
+        state = json.loads((instance_dir / "usage_state.json").read_text())
+        assert result["usage_updated"] is True
+        assert result["cost_tracking_failed"] is False
+        assert state["session_tokens"] == expected_total
+        assert state["weekly_tokens"] == expected_total
+        assert state["runs"] == 1
+
+        rows = cost_tracker._read_jsonl_for_date(
+            instance_dir / "usage",
+            date.today(),
+        )
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["project"] == "koan"
+        assert row["model"] == "gpt-5.4"
+        assert row["input_tokens"] == billable_input
+        assert row["output_tokens"] == 1590
+        assert row["cache_read_input_tokens"] == 22272
+        assert row["mode"] == "implement"
 
     @patch("app.mission_runner.commit_instance")
     @patch("app.mission_runner.check_auto_merge", return_value=None)
