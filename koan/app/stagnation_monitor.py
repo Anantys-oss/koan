@@ -55,6 +55,33 @@ _CLASSIFY_TAIL_LINES = 100        # lines to read for pattern classification
 _RETRY_TRACKER_FILENAME = ".stagnation-retries.json"
 
 
+def _read_tail(stdout_file: str, lines: int) -> Optional[bytes]:
+    """Read the last *lines* lines worth of bytes from *stdout_file*.
+
+    Uses a byte-aligned seek window of ``lines * 200`` bytes — a generous
+    upper bound for average log-line length. The seek may land mid-codepoint
+    inside a multi-byte UTF-8 sequence; callers either hash the raw bytes
+    (where this is fine for equality comparison) or decode with
+    ``errors='replace'`` (classification).
+
+    Returns ``None`` when the file is unreadable or smaller than
+    :data:`_DEFAULT_MIN_BYTES`, signalling "not enough output yet".
+    """
+    try:
+        size = os.path.getsize(stdout_file)
+    except OSError:
+        return None
+    if size < _DEFAULT_MIN_BYTES:
+        return None
+    try:
+        with open(stdout_file, "rb") as f:
+            window = min(size, lines * 200)
+            f.seek(size - window)
+            return f.read(window)
+    except OSError:
+        return None
+
+
 def _tail_hash(stdout_file: str, sample_lines: int) -> Optional[str]:
     """Compute a SHA-256 hash over the last *sample_lines* lines of the file.
 
@@ -69,29 +96,13 @@ def _tail_hash(stdout_file: str, sample_lines: int) -> Optional[str]:
     the same bytes, so identical inputs still hash identically), but the
     hash represents byte content, not logical text.
     """
-    try:
-        size = os.path.getsize(stdout_file)
-    except OSError:
+    raw = _read_tail(stdout_file, sample_lines)
+    if raw is None:
         return None
-    if size < _DEFAULT_MIN_BYTES:
-        return None
-
-    try:
-        with open(stdout_file, "rb") as f:
-            # Read from the end; sample_lines * 200 bytes is a generous
-            # upper bound (avg log line length) and keeps the hash cheap
-            # even for multi-megabyte stdout captures.
-            window = min(size, sample_lines * 200)
-            f.seek(size - window)
-            tail = f.read(window)
-    except OSError:
-        return None
-
-    lines = tail.splitlines()
-    if len(lines) > sample_lines:
-        lines = lines[-sample_lines:]
-    joined = b"\n".join(lines)
-    return hashlib.sha256(joined).hexdigest()
+    blines = raw.splitlines()
+    if len(blines) > sample_lines:
+        blines = blines[-sample_lines:]
+    return hashlib.sha256(b"\n".join(blines)).hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -119,37 +130,15 @@ _QUOTA_RE = re.compile(
 )
 
 
-def classify_stagnation(stdout_file: str, tail_lines: int = _CLASSIFY_TAIL_LINES) -> tuple:
-    """Classify the likely root cause of a stagnation event.
+def _classify_from_bytes(raw: bytes, tail_lines: int) -> tuple:
+    """Classify a stagnation pattern from pre-read stdout bytes.
 
-    Reads the last *tail_lines* lines of *stdout_file* and applies an ordered
-    pattern set.  Returns ``(pattern_type, excerpt)`` where *excerpt* is at
-    most 200 chars of representative text.
+    Extracted from :func:`classify_stagnation` so :meth:`StagnationMonitor._sample_once`
+    can share a single :func:`_read_tail` call between hash computation and pattern
+    classification — avoiding a second file read after stagnation is confirmed.
 
-    Pattern types (in match order):
-    - ``tool_loop``: same tool name appears in >= 5 of the sampled lines
-    - ``infinite_retry``: error keywords appear in >= 3 lines
-    - ``interactive_wait``: stdin prompt detected
-    - ``quota_mid_session``: quota / rate-limit markers in output
-    - ``silent``: file exists but has no content (or below threshold)
-    - ``unknown``: none of the above
+    Returns ``(pattern_type, excerpt)`` — same contract as :func:`classify_stagnation`.
     """
-    try:
-        size = os.path.getsize(stdout_file)
-    except OSError:
-        return ("silent", "")
-
-    if size < _DEFAULT_MIN_BYTES:
-        return ("silent", "")
-
-    try:
-        with open(stdout_file, "rb") as f:
-            window = min(size, tail_lines * 200)
-            f.seek(max(0, size - window))
-            raw = f.read(window)
-    except OSError:
-        return ("silent", "")
-
     text = raw.decode("utf-8", errors="replace")
     lines = text.splitlines()
     if len(lines) > tail_lines:
@@ -186,6 +175,27 @@ def classify_stagnation(stdout_file: str, tail_lines: int = _CLASSIFY_TAIL_LINES
             return ("quota_mid_session", line.strip()[:200])
 
     return ("unknown", _build_excerpt(lines, None))
+
+
+def classify_stagnation(stdout_file: str, tail_lines: int = _CLASSIFY_TAIL_LINES) -> tuple:
+    """Classify the likely root cause of a stagnation event.
+
+    Reads the last *tail_lines* lines of *stdout_file* and applies an ordered
+    pattern set.  Returns ``(pattern_type, excerpt)`` where *excerpt* is at
+    most 200 chars of representative text.
+
+    Pattern types (in match order):
+    - ``tool_loop``: same tool name appears in >= 5 of the sampled lines
+    - ``infinite_retry``: error keywords appear in >= 3 lines
+    - ``interactive_wait``: stdin prompt detected
+    - ``quota_mid_session``: quota / rate-limit markers in output
+    - ``silent``: file exists but has no content (or below threshold)
+    - ``unknown``: none of the above
+    """
+    raw = _read_tail(stdout_file, tail_lines)
+    if raw is None:
+        return ("silent", "")
+    return _classify_from_bytes(raw, tail_lines)
 
 
 def _build_excerpt(lines: list, keyword: Optional[str]) -> str:
@@ -282,7 +292,21 @@ class StagnationMonitor:
 
     def _sample_once(self) -> None:
         """Read one sample, update counters, fire callbacks if needed."""
-        current = _tail_hash(self._stdout_file, self._sample_lines)
+        # Read the larger classification window once — it subsumes the hash
+        # window.  On the abort path, the same buffer feeds both the hash
+        # comparison and the pattern classifier, avoiding a second file read
+        # while the subprocess is still writing.
+        classify_lines = max(self._sample_lines, _CLASSIFY_TAIL_LINES)
+        raw = _read_tail(self._stdout_file, classify_lines)
+
+        # Compute hash from the last sample_lines of the buffer.
+        current: Optional[str] = None
+        if raw is not None:
+            blines = raw.splitlines()
+            if len(blines) > self._sample_lines:
+                blines = blines[-self._sample_lines:]
+            current = hashlib.sha256(b"\n".join(blines)).hexdigest()
+
         if current is None:
             # Not enough output yet — reset to avoid counting empty samples.
             self._last_hash = None
@@ -312,11 +336,12 @@ class StagnationMonitor:
 
         if self._consecutive >= self._abort_after and not self.stagnated:
             self.stagnated = True
-            # Classify *before* aborting — the stdout file is still being
-            # written to by the subprocess, so we get the freshest snapshot.
+            # Classify from the same buffer used for hash detection — no
+            # second file read.  raw is guaranteed non-None here because
+            # current is non-None (early return above handles the None case).
             try:
-                self.pattern_type, self.pattern_excerpt = classify_stagnation(
-                    self._stdout_file,
+                self.pattern_type, self.pattern_excerpt = _classify_from_bytes(
+                    raw, _CLASSIFY_TAIL_LINES
                 )
             except Exception as e:
                 # Intentional stderr diagnostic — keeps the monitor
