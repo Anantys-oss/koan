@@ -4,6 +4,7 @@ Covers: base.py, claude.py, copilot.py, local.py, ollama_launch.py, __init__.py
 These modules had zero test coverage despite being used throughout the codebase.
 """
 
+import json
 import os
 import sys
 from unittest.mock import MagicMock, patch
@@ -58,6 +59,23 @@ class TestCLIProviderBase:
     def test_build_permission_args_default_empty(self):
         p = CLIProvider()
         assert p.build_permission_args(skip_permissions=True) == []
+
+    def test_stdin_prompt_passing_default_enabled(self):
+        p = CLIProvider()
+        assert p.supports_stdin_prompt_passing() is True
+
+    def test_default_rewrite_prompt_for_stdin(self):
+        p = CLIProvider()
+        rewritten, prompt = p.rewrite_prompt_for_stdin(
+            ["provider", "-p", "hello", "--model", "m"],
+            "@stdin",
+        )
+        assert rewritten == ["provider", "-p", "@stdin", "--model", "m"]
+        assert prompt == "hello"
+
+    def test_default_invocation_lock_empty(self):
+        p = CLIProvider()
+        assert p.invocation_lock_name() == ""
 
     def test_check_quota_default_always_available(self):
         p = CLIProvider()
@@ -303,6 +321,11 @@ class TestCopilotProvider:
     def test_prompt_args_standalone(self, mock_which):
         p = CopilotProvider()
         assert p.build_prompt_args("hello") == ["-p", "hello"]
+
+    @patch("shutil.which", side_effect=lambda x: "/usr/bin/copilot" if x == "copilot" else None)
+    def test_stdin_prompt_passing_disabled(self, mock_which):
+        p = CopilotProvider()
+        assert p.supports_stdin_prompt_passing() is False
 
     @patch("shutil.which", side_effect=lambda x: "/usr/bin/gh" if x == "gh" else None)
     def test_prompt_args_gh_mode(self, mock_which):
@@ -1528,6 +1551,26 @@ class TestFormatCliError:
         long_out = "y" * 500
         msg = _format_cli_error(1, long_out, "")
         assert f"stdout={'y' * 300}" in msg
+
+    def test_jsonl_error_preview_prefers_last_provider_error(self):
+        from app.provider import _format_cli_error
+        stdout = "\n".join([
+            json.dumps({"type": "thread.started"}),
+            json.dumps({
+                "type": "error",
+                "message": "Reconnecting... 2/5",
+            }),
+            json.dumps({
+                "type": "error",
+                "message": (
+                    'unexpected status 401 Unauthorized: {"detail":"Unauthorized"}'
+                ),
+            }),
+            json.dumps({"type": "turn.failed"}),
+        ])
+        msg = _format_cli_error(1, stdout, "")
+        assert "unexpected status 401 Unauthorized" in msg
+        assert "thread.started" not in msg
 
 
 # ---------------------------------------------------------------------------

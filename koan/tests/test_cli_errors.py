@@ -227,6 +227,60 @@ class TestClassifyCliError:
         result = classify_cli_error(1, stderr=stderr)
         assert result == ErrorCategory.AUTH
 
+    def test_codex_jsonl_unauthorized_is_auth(self):
+        stdout = "\n".join([
+            json.dumps({"type": "thread.started", "thread_id": "t1"}),
+            json.dumps({"type": "turn.started"}),
+            json.dumps({
+                "type": "error",
+                "message": (
+                    'unexpected status 401 Unauthorized: {"detail":"Unauthorized"}'
+                ),
+            }),
+            json.dumps({"type": "turn.failed"}),
+        ])
+        result = classify_cli_error(1, stdout=stdout, provider_name="codex")
+        assert result == ErrorCategory.AUTH
+
+    def test_codex_refresh_token_reuse_is_auth(self):
+        stderr = (
+            "Error: Your access token could not be refreshed because your "
+            "refresh token was already used. Please log out and sign in again."
+        )
+        result = classify_cli_error(1, stderr=stderr, provider_name="codex")
+        assert result == ErrorCategory.AUTH
+
+    # -- Provider auth detector resilience ---------------------------------------
+
+    def test_unknown_provider_name_does_not_raise(self):
+        """An unknown provider name must classify without crashing.
+
+        _detect_auth_for_provider resolves via get_provider_by_name, which
+        raises KeyError on unknown names; that must degrade to a normal
+        classification, not propagate.
+        """
+        result = classify_cli_error(
+            1, stderr="Error: something generic", provider_name="does-not-exist"
+        )
+        assert isinstance(result, ErrorCategory)
+        assert result != ErrorCategory.AUTH
+
+    def test_provider_auth_detector_exception_is_swallowed(self):
+        """A bug in a provider's detect_auth_failure must not crash the caller."""
+        from unittest.mock import patch
+
+        class _Boom:
+            def detect_auth_failure(self, **_kwargs):
+                raise RuntimeError("detector bug")
+
+        with patch("app.provider.get_provider_by_name", return_value=_Boom()):
+            result = classify_cli_error(
+                1, stderr="Error: generic failure", provider_name="codex"
+            )
+        # Detector blew up → no AUTH from it, and no exception propagated.
+        assert isinstance(result, ErrorCategory)
+        assert result != ErrorCategory.AUTH
+
     # -- False positive: loose quota patterns in stdout --------------------------
 
     def test_no_false_positive_rate_limit_in_stdout(self):

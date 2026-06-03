@@ -11,6 +11,9 @@ Providers are responsible for:
 - resolving the executable and authentication assumptions;
 - mapping Koan tool permissions to provider-specific flags;
 - building commands for print or streaming execution;
+- declaring how prompts can be moved from argv to stdin;
+- declaring whether invocations must be serialized to protect shared provider
+  state such as rotating auth tokens;
 - normalizing output handling enough for mission execution code;
 - exposing provider capabilities without leaking provider details into unrelated
   modules.

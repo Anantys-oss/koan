@@ -19,6 +19,7 @@ Features:
 - Colored log output with TTY detection
 """
 
+import contextlib
 import os
 import json
 import signal
@@ -2670,6 +2671,13 @@ def _classify_and_handle_cli_error(
 
         if cli_runtime_quota_signal(stdout_text):
             category = ErrorCategory.QUOTA
+    if category != ErrorCategory.AUTH and not trust_stdout:
+        if _cli_runtime_auth_signal(
+            stdout_text=stdout_text,
+            provider_name=provider_name,
+            exit_code=exit_code,
+        ):
+            category = ErrorCategory.AUTH
     if category == ErrorCategory.AUTH:
         _handle_auth_error(
             provider_label=provider_label,
@@ -2691,6 +2699,65 @@ def _classify_and_handle_cli_error(
         )
         return True
     return False
+
+
+def _cli_runtime_auth_signal(
+    *,
+    stdout_text: str,
+    provider_name: str,
+    exit_code: int,
+) -> bool:
+    """Detect provider auth failures from stdout-safe runtime lines.
+
+    Skill stdout is normally DATA, so broad stdout auth scans can false-positive
+    on quoted CI logs or source text. Codex, however, reports real stream auth
+    failures on stdout. Keep the trusted surface narrow: raw provider JSON
+    events, Koan's ``[cli]`` stream summaries, and CLI failure summaries.
+    """
+    if exit_code == 0 or not stdout_text or not provider_name:
+        return False
+
+    from app.provider.base import PROVIDER_ERROR_EVENT_TYPES
+
+    runtime_lines: list[str] = []
+    for line in stdout_text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("[cli]") or "CLI invocation failed:" in stripped:
+            runtime_lines.append(stripped)
+            continue
+        if not stripped.startswith("{"):
+            continue
+        with contextlib.suppress(json.JSONDecodeError):
+            event = json.loads(stripped)
+            if (
+                isinstance(event, dict)
+                and str(event.get("type") or "") in PROVIDER_ERROR_EVENT_TYPES
+            ):
+                runtime_lines.append(stripped)
+
+    if not runtime_lines:
+        return False
+
+    try:
+        from app.provider import get_provider_by_name
+
+        provider = get_provider_by_name(provider_name)
+        return provider.detect_auth_failure(
+            stdout_text="\n".join(runtime_lines),
+            stderr_text="",
+            exit_code=exit_code,
+        )
+    except KeyError as e:
+        print(f"[run] unknown provider {provider_name!r}: {e}", file=sys.stderr)
+        return False
+    except Exception as e:
+        print(
+            f"[run] runtime auth detector failed for {provider_name!r}: {e}",
+            file=sys.stderr,
+        )
+        return False
 
 
 def _probe_exit0_quota(

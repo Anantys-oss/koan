@@ -15,6 +15,10 @@ from app.cli_exec import (
     stream_with_timeout,
     _cleanup_prompt_file,
 )
+from app.provider.claude import ClaudeProvider
+from app.provider.codex import CodexProvider
+from app.provider.copilot import CopilotProvider
+from app.provider.local import LocalLLMProvider
 
 
 # ---------------------------------------------------------------------------
@@ -24,23 +28,23 @@ from app.cli_exec import (
 class TestUsesStdinPassing:
     """Tests for _uses_stdin_passing() provider detection."""
 
-    @patch("app.provider.get_provider_name", return_value="claude")
+    @patch("app.provider.get_provider", return_value=ClaudeProvider())
     def test_claude_provider_uses_stdin(self, _mock):
         assert _uses_stdin_passing() is True
 
-    @patch("app.provider.get_provider_name", return_value="copilot")
+    @patch("app.provider.get_provider", return_value=CopilotProvider())
     def test_copilot_provider_skips_stdin(self, _mock):
         assert _uses_stdin_passing() is False
 
-    @patch("app.provider.get_provider_name", return_value="local")
+    @patch("app.provider.get_provider", return_value=LocalLLMProvider())
     def test_local_provider_uses_stdin(self, _mock):
         assert _uses_stdin_passing() is True
 
-    @patch("app.provider.get_provider_name", side_effect=ImportError("no provider"))
+    @patch("app.provider.get_provider", side_effect=ImportError("no provider"))
     def test_import_error_defaults_to_true(self, _mock):
         assert _uses_stdin_passing() is True
 
-    @patch("app.provider.get_provider_name", side_effect=RuntimeError("broken"))
+    @patch("app.provider.get_provider", side_effect=RuntimeError("broken"))
     def test_runtime_error_defaults_to_true(self, _mock):
         assert _uses_stdin_passing() is True
 
@@ -125,7 +129,7 @@ class TestPreparePromptFile:
         finally:
             _cleanup_prompt_file(path)
 
-    @patch("app.provider.get_provider_name", return_value="copilot")
+    @patch("app.provider.get_provider", return_value=CopilotProvider())
     def test_copilot_provider_skips_stdin_passing(self, _mock):
         """Copilot provider should skip @stdin mechanism entirely."""
         cmd = ["copilot", "-p", "my prompt", "--allow-all-tools"]
@@ -133,7 +137,7 @@ class TestPreparePromptFile:
         assert new_cmd is cmd
         assert path is None
 
-    @patch("app.provider.get_provider_name", return_value="codex")
+    @patch("app.provider.get_provider", return_value=CodexProvider())
     def test_codex_exec_prompt_uses_stdin_dash(self, _mock):
         """Codex exec reads '-' from stdin, so the prompt stays out of argv."""
         cmd = ["codex", "exec", "--sandbox", "workspace-write", "my prompt"]
@@ -148,7 +152,7 @@ class TestPreparePromptFile:
         finally:
             _cleanup_prompt_file(path)
 
-    @patch("app.provider.get_provider_name", return_value="codex")
+    @patch("app.provider.get_provider", return_value=CodexProvider())
     def test_codex_large_prompt_removed_from_argv(self, _mock):
         """Regression for OSError: Argument list too long when using Codex."""
         prompt = "x" * 200_000
@@ -162,14 +166,14 @@ class TestPreparePromptFile:
         finally:
             _cleanup_prompt_file(path)
 
-    @patch("app.provider.get_provider_name", return_value="codex")
+    @patch("app.provider.get_provider", return_value=CodexProvider())
     def test_codex_existing_stdin_dash_returns_unchanged(self, _mock):
         cmd = ["codex", "exec", "--json", "-"]
         new_cmd, path = prepare_prompt_file(cmd)
         assert new_cmd is cmd
         assert path is None
 
-    @patch("app.provider.get_provider_name", return_value="codex")
+    @patch("app.provider.get_provider", return_value=CodexProvider())
     def test_codex_without_prompt_returns_unchanged(self, _mock):
         cmd = ["codex", "exec", "--json"]
         new_cmd, path = prepare_prompt_file(cmd)
@@ -259,7 +263,7 @@ class TestRunCli:
         call_args = mock_run.call_args
         assert call_args[1]["stdin"] != subprocess.DEVNULL
 
-    @patch("app.provider.get_provider_name", return_value="copilot")
+    @patch("app.provider.get_provider", return_value=CopilotProvider())
     @patch("app.cli_exec.subprocess.run")
     def test_copilot_keeps_prompt_in_args(self, mock_run, _mock_provider):
         """Copilot provider: prompt stays in -p, stdin is DEVNULL."""
@@ -294,6 +298,20 @@ class TestRunCli:
 
         call_args = mock_run.call_args
         assert call_args[1]["timeout"] == 42
+
+    @patch("app.provider.get_provider", return_value=CodexProvider())
+    @patch("fcntl.flock")
+    @patch("app.cli_exec.subprocess.run")
+    def test_codex_run_cli_uses_file_lock(self, mock_run, mock_flock, _mock_provider):
+        import fcntl
+
+        mock_run.return_value = subprocess.CompletedProcess([], 0, "ok", "")
+        cmd = ["codex", "exec", "prompt"]
+
+        run_cli(cmd, capture_output=True, text=True)
+
+        assert mock_flock.call_args_list[0][0][1] == fcntl.LOCK_EX
+        assert mock_flock.call_args_list[-1][0][1] == fcntl.LOCK_UN
 
 
 # ---------------------------------------------------------------------------
@@ -344,7 +362,7 @@ class TestPopenCli:
         assert hasattr(stdin_arg, "read")  # it's a file object
         cleanup()
 
-    @patch("app.provider.get_provider_name", return_value="copilot")
+    @patch("app.provider.get_provider", return_value=CopilotProvider())
     @patch("app.cli_exec.subprocess.Popen")
     def test_copilot_keeps_prompt_in_args(self, mock_popen, _mock_provider):
         """Copilot provider: popen keeps prompt in -p, stdin is DEVNULL."""
@@ -357,6 +375,73 @@ class TestPopenCli:
         assert actual_cmd == ["copilot", "-p", "my prompt"]
         assert mock_popen.call_args[1]["stdin"] == subprocess.DEVNULL
         cleanup()
+
+    @patch("app.provider.get_provider", return_value=CodexProvider())
+    @patch("fcntl.flock")
+    @patch("app.cli_exec.subprocess.Popen")
+    def test_codex_popen_lock_released_on_cleanup(
+        self, mock_popen, mock_flock, _mock_provider
+    ):
+        import fcntl
+
+        mock_popen.return_value = MagicMock()
+        cmd = ["codex", "exec", "prompt"]
+
+        _proc, cleanup = popen_cli(cmd)
+
+        assert mock_flock.call_args_list[0][0][1] == fcntl.LOCK_EX
+        cleanup()
+        assert mock_flock.call_args_list[-1][0][1] == fcntl.LOCK_UN
+
+    @patch("app.provider.get_provider", return_value=CodexProvider())
+    @patch("fcntl.flock")
+    def test_codex_popen_releases_lock_when_prompt_open_fails(
+        self, mock_flock, _mock_provider
+    ):
+        """If open(prompt_path) fails after the lock is taken, it must release."""
+        import fcntl
+
+        real_open = open
+
+        def fake_open(path, *args, **kwargs):
+            # Fail only on the temp prompt file; let the lock file open normally.
+            if str(path).endswith(".md"):
+                raise OSError("simulated prompt-file open failure")
+            return real_open(path, *args, **kwargs)
+
+        cmd = ["codex", "exec", "prompt"]
+        with patch("app.cli_exec.open", side_effect=fake_open):
+            with pytest.raises(OSError):
+                popen_cli(cmd)
+
+        assert mock_flock.call_args_list[0][0][1] == fcntl.LOCK_EX
+        assert mock_flock.call_args_list[-1][0][1] == fcntl.LOCK_UN
+
+
+class TestProviderInvocationLock:
+    """Degraded-state behaviour of _ProviderInvocationLock."""
+
+    def test_no_lock_name_is_noop(self):
+        from app.cli_exec import _ProviderInvocationLock
+
+        lock = _ProviderInvocationLock("")
+        with lock as entered:
+            assert entered is lock
+            assert lock.acquired is False
+        # release() on an unacquired lock must not raise.
+        lock.release()
+
+    @patch("fcntl.flock", side_effect=OSError("flock unsupported"))
+    def test_flock_failure_degrades_without_raising(self, _mock_flock):
+        from app.cli_exec import _ProviderInvocationLock
+
+        lock = _ProviderInvocationLock("codex-cli")
+        # Acquisition failure must degrade loudly, not raise.
+        with lock as entered:
+            assert entered is lock
+            assert lock.acquired is False
+        # Behaves as a no-op context; release stays safe.
+        lock.release()
 
 
 # ---------------------------------------------------------------------------

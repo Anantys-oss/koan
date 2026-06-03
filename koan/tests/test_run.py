@@ -5200,6 +5200,65 @@ class TestSkillDispatchAuthQuota(TestRunSkillMissionEnv):
         mock_finalize.assert_not_called()
         mock_pause.assert_called_once_with(koan_root, "auth")
 
+    def test_codex_unauthorized_requeues_and_pauses(self, tmp_path):
+        """Codex bare 401 stream failures should be auth, not normal failure."""
+        from app.run import _handle_skill_dispatch
+
+        koan_root = str(tmp_path)
+        instance = str(tmp_path / "instance")
+        (tmp_path / "instance").mkdir()
+        (tmp_path / "instance" / "journal").mkdir(parents=True)
+        (tmp_path / "koan").mkdir()
+
+        mock_proc = self._make_mock_popen(
+            returncode=1,
+            stdout_lines=["[cli] event: turn.failed\n"],
+            stderr_content=(
+                "[review_runner] Provider review failed: CLI invocation failed: "
+                'exit=1 | stdout=unexpected status 401 Unauthorized: '
+                '{"detail":"Unauthorized"}\n'
+            ),
+        )
+
+        with patch("app.run.subprocess.Popen", side_effect=mock_proc._side_effect), \
+             patch("app.run._get_koan_branch", return_value="main"), \
+             patch("app.run._restore_koan_branch"), \
+             patch("app.run._reset_terminal"), \
+             patch("app.run.protected_phase", return_value=MagicMock(
+                 __enter__=MagicMock(), __exit__=MagicMock(return_value=False)
+             )), \
+             patch("app.run._notify") as mock_notify, \
+             patch("app.run._notify_mission_end"), \
+             patch("app.run._finalize_mission") as mock_finalize, \
+             patch("app.run._requeue_mission_in_file") as mock_requeue, \
+             patch("app.run._commit_instance"), \
+             patch("app.run._sleep_between_runs"), \
+             patch("app.run.set_status"), \
+             patch("app.run.log"), \
+             patch("app.provider.get_provider_name", return_value="codex"), \
+             patch("app.skill_dispatch.dispatch_skill_mission",
+                   return_value=["python3", "-m", "app.review_runner"]), \
+             patch("app.mission_runner.run_post_mission"), \
+             patch("app.pause_manager.create_pause") as mock_pause:
+            handled, _ = _handle_skill_dispatch(
+                mission_title="/review https://github.com/example/repo/pull/1",
+                project_name="test",
+                project_path=str(tmp_path),
+                koan_root=koan_root,
+                instance=instance,
+                run_num=1,
+                max_runs=20,
+                autonomous_mode="implement",
+                interval=30,
+            )
+
+        assert handled is True
+        mock_requeue.assert_called_once()
+        mock_finalize.assert_not_called()
+        mock_pause.assert_called_once_with(koan_root, "auth")
+        notify_text = mock_notify.call_args_list[-1][0][1]
+        assert "logged out" in notify_text.lower()
+
     def test_post_mission_quota_requeues_and_pauses(self, tmp_path):
         """Quota detected in post-mission pipeline should requeue.
 
@@ -7154,3 +7213,77 @@ class TestClassifyTrustStdout:
             )
         assert handled is True
         quota.assert_called_once()
+
+    def test_codex_runtime_auth_stdout_still_honored(self):
+        from app import run
+
+        transcript = (
+            "[cli] event: thread.started\n"
+            '[cli] error: unexpected status 401 Unauthorized: {"detail":"Unauthorized"}\n'
+            "[cli] event: turn.failed\n"
+        )
+        common = {**self._COMMON, "provider_name": "codex", "provider_label": "Codex"}
+        with patch.object(run, "_handle_quota_error") as quota, \
+             patch.object(run, "_handle_auth_error") as auth:
+            handled = run._classify_and_handle_cli_error(
+                1, transcript, "", trust_stdout=False, **common
+            )
+        assert handled is True
+        auth.assert_called_once()
+        quota.assert_not_called()
+
+    def test_plain_skill_stdout_unauthorized_still_ignored(self):
+        from app import run
+
+        transcript = "Test fixture includes text: HTTP 401 Unauthorized\n"
+        common = {**self._COMMON, "provider_name": "codex", "provider_label": "Codex"}
+        with patch.object(run, "_handle_quota_error") as quota, \
+             patch.object(run, "_handle_auth_error") as auth:
+            handled = run._classify_and_handle_cli_error(
+                1, transcript, "", trust_stdout=False, **common
+            )
+        assert handled is False
+        auth.assert_not_called()
+        quota.assert_not_called()
+
+    def test_codex_runtime_auth_json_event_still_honored(self):
+        """Raw provider JSON error events on stdout must classify as auth.
+
+        Regression: the JSON-event branch of the runtime auth scan must run
+        without raising (previously crashed on a missing ``contextlib``).
+        """
+        from app import run
+
+        transcript = (
+            '{"type": "thread.started", "thread_id": "t1"}\n'
+            '{"type": "error", "message": "unexpected status 401 Unauthorized: '
+            '{\\"detail\\":\\"Unauthorized\\"}"}\n'
+            '{"type": "turn.failed"}\n'
+        )
+        common = {**self._COMMON, "provider_name": "codex", "provider_label": "Codex"}
+        with patch.object(run, "_handle_quota_error") as quota, \
+             patch.object(run, "_handle_auth_error") as auth:
+            handled = run._classify_and_handle_cli_error(
+                1, transcript, "", trust_stdout=False, **common
+            )
+        assert handled is True
+        auth.assert_called_once()
+        quota.assert_not_called()
+
+    def test_benign_json_event_quoting_unauthorized_ignored(self):
+        """A non-error JSON event that merely quotes '401' is not an auth failure."""
+        from app import run
+
+        transcript = (
+            '{"type": "item.completed", "message": "test output: HTTP 401 '
+            'Unauthorized appears in this CI log"}\n'
+        )
+        common = {**self._COMMON, "provider_name": "codex", "provider_label": "Codex"}
+        with patch.object(run, "_handle_quota_error") as quota, \
+             patch.object(run, "_handle_auth_error") as auth:
+            handled = run._classify_and_handle_cli_error(
+                1, transcript, "", trust_stdout=False, **common
+            )
+        assert handled is False
+        auth.assert_not_called()
+        quota.assert_not_called()

@@ -125,6 +125,33 @@ class TestCodexProvider:
             "/tmp/out.txt",
         ]
 
+    def test_add_last_message_file_args_before_prompt(self):
+        cmd = ["codex", "exec", "--json", "prompt"]
+        result = self.provider.add_last_message_file_args(cmd, "/tmp/out.txt")
+        assert result == [
+            "codex",
+            "exec",
+            "--json",
+            "--output-last-message",
+            "/tmp/out.txt",
+            "prompt",
+        ]
+
+    def test_rewrite_prompt_for_stdin_uses_dash(self):
+        cmd = ["codex", "exec", "--json", "prompt"]
+        rewritten, prompt = self.provider.rewrite_prompt_for_stdin(cmd, "@stdin")
+        assert rewritten == ["codex", "exec", "--json", "-"]
+        assert prompt == "prompt"
+
+    def test_rewrite_prompt_for_stdin_existing_dash_unchanged(self):
+        cmd = ["codex", "exec", "--json", "-"]
+        rewritten, prompt = self.provider.rewrite_prompt_for_stdin(cmd, "@stdin")
+        assert rewritten == cmd
+        assert prompt is None
+
+    def test_invocation_lock_name(self):
+        assert self.provider.invocation_lock_name() == "codex-cli"
+
     # -- Max turns (no-op) --
 
     def test_max_turns_args(self):
@@ -367,6 +394,36 @@ class TestCodexQuotaCheck:
         mock_run.side_effect = OSError("codex not found")
         available, detail = self.provider.check_quota_available("/tmp/project")
         assert available is True
+
+    @patch("subprocess.run")
+    def test_auth_failure_blocks_preflight(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=1,
+            stdout=json.dumps({
+                "type": "error",
+                "message": (
+                    'unexpected status 401 Unauthorized: {"detail":"Unauthorized"}'
+                ),
+            }),
+            stderr="",
+        )
+        available, detail = self.provider.check_quota_available("/tmp/project")
+        assert available is False
+        assert "401 Unauthorized" in detail
+
+    @patch("subprocess.run")
+    def test_refresh_token_reuse_blocks_preflight(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=1,
+            stdout="",
+            stderr=(
+                "Error: Your access token could not be refreshed because "
+                "your refresh token was already used."
+            ),
+        )
+        available, detail = self.provider.check_quota_available("/tmp/project")
+        assert available is False
+        assert "refresh token was already used" in detail
 
 
 # ---------------------------------------------------------------------------
