@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from app.claude_step import resolve_pr_location
-from app.config import is_review_compressor_enabled
+from app.config import get_review_reply_config, is_review_compressor_enabled
 from app.run_log import log
 from app.diff_compressor import compress_diff
 from app.github import run_gh, sanitize_github_comment, find_bot_comment
@@ -78,39 +78,101 @@ def _resolve_bot_username() -> str:
         return ""
 
 
+def _is_bot_user(item: dict, bot_username: str) -> bool:
+    """Return True if the comment author is a bot or the configured bot user."""
+    if item.get("user_type") == "Bot":
+        return True
+    if bot_username and item.get("user", "").lower() == bot_username.lower():
+        return True
+    return False
+
+
+def _filter_threads(
+    human_comments: List[dict],
+    all_comments: list,
+    bot_username: str,
+    max_thread_depth: int,
+) -> List[dict]:
+    """Remove comments where the bot already replied with no human follow-up,
+    or where the thread has reached max depth.
+
+    For inline review comments, threads are identified by ``in_reply_to_id``
+    (all replies point to the root comment). A comment is excluded when:
+
+    1. The bot is the last poster in the thread and no human posted after, OR
+    2. The total number of comments in the thread >= ``max_thread_depth``.
+    """
+    if not bot_username and max_thread_depth <= 0:
+        return human_comments
+
+    thread_members: dict = {}
+    for c in all_comments:
+        root_id = c.get("in_reply_to_id") or c["id"]
+        thread_members.setdefault(root_id, []).append(c)
+
+    excluded_threads: set = set()
+    for root_id, members in thread_members.items():
+        if max_thread_depth > 0 and len(members) >= max_thread_depth:
+            excluded_threads.add(root_id)
+            continue
+        if bot_username and members:
+            last = members[-1]
+            if last.get("user", "").lower() == bot_username.lower():
+                excluded_threads.add(root_id)
+
+    if not excluded_threads:
+        return human_comments
+
+    filtered = []
+    for c in human_comments:
+        root_id = c.get("in_reply_to_id") or c["id"]
+        if root_id not in excluded_threads:
+            filtered.append(c)
+    return filtered
+
+
 def _fetch_inline_review_comments(
     full_repo: str, pr_number: str, bot_username: str = "",
+    max_thread_depth: int = 0,
 ) -> List[dict]:
-    """Fetch inline review comments (code-level) for a PR."""
-    results: List[dict] = []
+    """Fetch inline review comments (code-level) for a PR.
+
+    When ``bot_username`` is set, threads where the bot was the last poster
+    (with no human follow-up) are excluded.  When ``max_thread_depth`` > 0,
+    threads with that many or more total comments are excluded entirely.
+    """
+    all_items: list = []
+    human_comments: List[dict] = []
     try:
         raw = run_gh(
             "api", f"repos/{full_repo}/pulls/{pr_number}/comments",
             "--paginate", "--jq",
-            r'.[] | {id: .id, user: .user.login, body: .body, path: .path, line: (.line // .original_line), user_type: .user.type}',
+            r'.[] | {id: .id, user: .user.login, body: .body, path: .path, line: (.line // .original_line), user_type: .user.type, in_reply_to_id: .in_reply_to_id}',
         )
         if raw.strip():
             for line in raw.strip().split("\n"):
                 try:
                     item = json.loads(line)
-                    if item.get("user_type") == "Bot":
+                    all_items.append(item)
+                    if _is_bot_user(item, bot_username):
                         continue
-                    # Skip bot's own comments to prevent self-reply loops
-                    if bot_username and item["user"].lower() == bot_username.lower():
-                        continue
-                    results.append({
+                    human_comments.append({
                         "id": item["id"],
                         "type": "review_comment",
                         "user": item["user"],
                         "body": item["body"],
                         "path": item.get("path", ""),
                         "line": item.get("line"),
+                        "in_reply_to_id": item.get("in_reply_to_id"),
                     })
                 except (json.JSONDecodeError, KeyError):
                     continue
     except RuntimeError:
         pass
-    return results
+
+    if bot_username or max_thread_depth > 0:
+        return _filter_threads(human_comments, all_items, bot_username, max_thread_depth)
+    return human_comments
 
 
 def _fetch_issue_comments(
@@ -128,10 +190,7 @@ def _fetch_issue_comments(
             for line in raw.strip().split("\n"):
                 try:
                     item = json.loads(line)
-                    if item.get("user_type") == "Bot":
-                        continue
-                    # Skip bot's own comments to prevent self-reply loops
-                    if bot_username and item["user"].lower() == bot_username.lower():
+                    if _is_bot_user(item, bot_username):
                         continue
                     results.append({
                         "id": item["id"],
@@ -154,8 +213,9 @@ def fetch_repliable_comments(
     """Fetch PR comments with their IDs for reply targeting.
 
     Returns a list of dicts with keys: id, type, user, body, path (for
-    inline comments only). Excludes bot comments and the PR author's own
-    inline comments to reduce noise.
+    inline comments only). Excludes bot comments, threads where the bot
+    was the last poster (self-reply guard), and threads that have reached
+    the configured ``max_thread_depth``.
 
     Args:
         owner: GitHub owner/org.
@@ -167,17 +227,25 @@ def fetch_repliable_comments(
         bot_username: If provided, comments from this user are excluded
             to prevent self-reply loops.
     """
+    reply_cfg = get_review_reply_config()
+    max_depth = reply_cfg["max_thread_depth"]
+
     full_repo = f"{owner}/{repo}"
     comments: List[dict] = []
 
     if parallel:
         with ThreadPoolExecutor(max_workers=2) as pool:
-            f_inline = pool.submit(_fetch_inline_review_comments, full_repo, pr_number, bot_username)
+            f_inline = pool.submit(
+                _fetch_inline_review_comments, full_repo, pr_number,
+                bot_username, max_depth,
+            )
             f_issue = pool.submit(_fetch_issue_comments, full_repo, pr_number, bot_username)
             comments.extend(f_inline.result())
             comments.extend(f_issue.result())
     else:
-        comments.extend(_fetch_inline_review_comments(full_repo, pr_number, bot_username))
+        comments.extend(
+            _fetch_inline_review_comments(full_repo, pr_number, bot_username, max_depth),
+        )
         comments.extend(_fetch_issue_comments(full_repo, pr_number, bot_username))
 
     return comments

@@ -2129,10 +2129,11 @@ class TestSkillDispatchPlanUrl:
 class TestFetchRepliableCommentsParallel:
     """Tests for the parallel=False / parallel=True modes of fetch_repliable_comments."""
 
+    @patch("app.review_runner.get_review_reply_config", return_value={"max_thread_depth": 5})
     @patch("app.review_runner._fetch_issue_comments")
     @patch("app.review_runner._fetch_inline_review_comments")
     def test_sequential_mode_calls_helpers_in_order(
-        self, mock_inline, mock_issue,
+        self, mock_inline, mock_issue, _cfg,
     ):
         """parallel=False calls the two fetch helpers sequentially."""
         mock_inline.return_value = [{"id": 1, "type": "review_comment"}]
@@ -2140,17 +2141,17 @@ class TestFetchRepliableCommentsParallel:
 
         comments = fetch_repliable_comments("owner", "repo", "42", parallel=False)
 
-        mock_inline.assert_called_once_with("owner/repo", "42", "")
+        mock_inline.assert_called_once_with("owner/repo", "42", "", 5)
         mock_issue.assert_called_once_with("owner/repo", "42", "")
         assert len(comments) == 2
-        # Inline results come first in sequential mode
         assert comments[0]["id"] == 1
         assert comments[1]["id"] == 2
 
+    @patch("app.review_runner.get_review_reply_config", return_value={"max_thread_depth": 5})
     @patch("app.review_runner._fetch_issue_comments")
     @patch("app.review_runner._fetch_inline_review_comments")
     def test_parallel_mode_collects_both_result_sets(
-        self, mock_inline, mock_issue,
+        self, mock_inline, mock_issue, _cfg,
     ):
         """parallel=True still collects results from both helpers."""
         mock_inline.return_value = [{"id": 10, "type": "review_comment"}]
@@ -2162,9 +2163,10 @@ class TestFetchRepliableCommentsParallel:
         ids = {c["id"] for c in comments}
         assert ids == {10, 20}
 
+    @patch("app.review_runner.get_review_reply_config", return_value={"max_thread_depth": 5})
     @patch("app.review_runner._fetch_issue_comments")
     @patch("app.review_runner._fetch_inline_review_comments")
-    def test_empty_results_from_both_helpers(self, mock_inline, mock_issue):
+    def test_empty_results_from_both_helpers(self, mock_inline, mock_issue, _cfg):
         """Returns empty list when both helpers return nothing."""
         mock_inline.return_value = []
         mock_issue.return_value = []
@@ -2222,17 +2224,239 @@ class TestSelfReplyPrevention:
         result = _fetch_inline_review_comments("owner/repo", "1", bot_username="")
         assert len(result) == 1
 
+    @patch("app.review_runner.get_review_reply_config", return_value={"max_thread_depth": 5})
     @patch("app.review_runner._fetch_issue_comments")
     @patch("app.review_runner._fetch_inline_review_comments")
-    def test_fetch_repliable_passes_bot_username(self, mock_inline, mock_issue):
-        """fetch_repliable_comments forwards bot_username to helpers."""
+    def test_fetch_repliable_passes_bot_username(self, mock_inline, mock_issue, _cfg):
+        """fetch_repliable_comments forwards bot_username and max_thread_depth."""
         mock_inline.return_value = []
         mock_issue.return_value = []
 
         fetch_repliable_comments("o", "r", "1", parallel=False, bot_username="mybot")
 
-        mock_inline.assert_called_once_with("o/r", "1", "mybot")
+        mock_inline.assert_called_once_with("o/r", "1", "mybot", 5)
         mock_issue.assert_called_once_with("o/r", "1", "mybot")
+
+
+# ---------------------------------------------------------------------------
+# Thread-aware self-reply guard: _is_bot_user, _filter_threads
+# ---------------------------------------------------------------------------
+
+class TestIsBotUser:
+    """Tests for _is_bot_user helper."""
+
+    def test_github_bot_type(self):
+        from app.review_runner import _is_bot_user
+        assert _is_bot_user({"user_type": "Bot", "user": "dependabot"}, "") is True
+
+    def test_configured_bot_username(self):
+        from app.review_runner import _is_bot_user
+        assert _is_bot_user({"user_type": "User", "user": "Koan-Bot"}, "koan-bot") is True
+
+    def test_human_user(self):
+        from app.review_runner import _is_bot_user
+        assert _is_bot_user({"user_type": "User", "user": "alice"}, "koan-bot") is False
+
+    def test_no_bot_username_configured(self):
+        from app.review_runner import _is_bot_user
+        assert _is_bot_user({"user_type": "User", "user": "koan-bot"}, "") is False
+
+
+class TestFilterThreads:
+    """Tests for _filter_threads — thread-aware self-reply prevention."""
+
+    def test_excludes_thread_where_bot_is_last_poster(self):
+        from app.review_runner import _filter_threads
+
+        human_comments = [
+            {"id": 1, "type": "review_comment", "user": "alice", "body": "fix this"},
+        ]
+        all_comments = [
+            {"id": 1, "user": "alice", "user_type": "User", "in_reply_to_id": None},
+            {"id": 2, "user": "koan-bot", "user_type": "User", "in_reply_to_id": 1},
+        ]
+        result = _filter_threads(human_comments, all_comments, "koan-bot", 0)
+        assert result == []
+
+    def test_keeps_thread_where_human_replied_after_bot(self):
+        from app.review_runner import _filter_threads
+
+        human_comments = [
+            {"id": 1, "type": "review_comment", "user": "alice", "body": "fix this"},
+            {"id": 3, "type": "review_comment", "user": "bob", "body": "agreed",
+             "in_reply_to_id": 1},
+        ]
+        all_comments = [
+            {"id": 1, "user": "alice", "user_type": "User", "in_reply_to_id": None},
+            {"id": 2, "user": "koan-bot", "user_type": "User", "in_reply_to_id": 1},
+            {"id": 3, "user": "bob", "user_type": "User", "in_reply_to_id": 1},
+        ]
+        result = _filter_threads(human_comments, all_comments, "koan-bot", 0)
+        assert len(result) == 2
+
+    def test_excludes_thread_at_max_depth(self):
+        from app.review_runner import _filter_threads
+
+        human_comments = [
+            {"id": 1, "type": "review_comment", "user": "alice", "body": "fix"},
+            {"id": 3, "type": "review_comment", "user": "alice", "body": "more",
+             "in_reply_to_id": 1},
+        ]
+        all_comments = [
+            {"id": 1, "user": "alice", "user_type": "User", "in_reply_to_id": None},
+            {"id": 2, "user": "koan-bot", "user_type": "User", "in_reply_to_id": 1},
+            {"id": 3, "user": "alice", "user_type": "User", "in_reply_to_id": 1},
+        ]
+        result = _filter_threads(human_comments, all_comments, "koan-bot", 3)
+        assert result == []
+
+    def test_keeps_thread_under_max_depth(self):
+        from app.review_runner import _filter_threads
+
+        human_comments = [
+            {"id": 1, "type": "review_comment", "user": "alice", "body": "fix"},
+        ]
+        all_comments = [
+            {"id": 1, "user": "alice", "user_type": "User", "in_reply_to_id": None},
+            {"id": 2, "user": "koan-bot", "user_type": "User", "in_reply_to_id": 1},
+        ]
+        # Thread has 2 comments, max is 5 → keep. But bot is last → exclude.
+        result = _filter_threads(human_comments, all_comments, "koan-bot", 5)
+        assert result == []
+
+        # Without bot_username check, thread is under max depth → keep
+        result = _filter_threads(human_comments, all_comments, "", 5)
+        assert len(result) == 1
+
+    def test_no_filtering_when_both_disabled(self):
+        from app.review_runner import _filter_threads
+
+        human_comments = [{"id": 1, "type": "review_comment", "user": "alice", "body": "x"}]
+        all_comments = [{"id": 1, "user": "alice", "user_type": "User", "in_reply_to_id": None}]
+        result = _filter_threads(human_comments, all_comments, "", 0)
+        assert len(result) == 1
+
+    def test_multiple_threads_filtered_independently(self):
+        from app.review_runner import _filter_threads
+
+        human_comments = [
+            {"id": 1, "type": "review_comment", "user": "alice", "body": "thread 1"},
+            {"id": 10, "type": "review_comment", "user": "bob", "body": "thread 2"},
+        ]
+        all_comments = [
+            {"id": 1, "user": "alice", "user_type": "User", "in_reply_to_id": None},
+            {"id": 2, "user": "koan-bot", "user_type": "User", "in_reply_to_id": 1},
+            {"id": 10, "user": "bob", "user_type": "User", "in_reply_to_id": None},
+        ]
+        # Thread 1: bot is last → excluded. Thread 2: only human → kept.
+        result = _filter_threads(human_comments, all_comments, "koan-bot", 0)
+        assert len(result) == 1
+        assert result[0]["id"] == 10
+
+    def test_reproduces_pr_1697_scenario(self):
+        """Reproduces the exact scenario from PR #1697 where bot replied 4x."""
+        from app.review_runner import _filter_threads
+
+        human_comments = [
+            {"id": 100, "type": "review_comment", "user": "teodesian",
+             "body": "Review commentary..."},
+        ]
+        all_comments = [
+            {"id": 100, "user": "teodesian", "user_type": "User", "in_reply_to_id": None},
+            {"id": 201, "user": "Koan-Bot", "user_type": "User", "in_reply_to_id": 100},
+            {"id": 202, "user": "Koan-Bot", "user_type": "User", "in_reply_to_id": 100},
+            {"id": 203, "user": "Koan-Bot", "user_type": "User", "in_reply_to_id": 100},
+            {"id": 204, "user": "Koan-Bot", "user_type": "User", "in_reply_to_id": 100},
+        ]
+        # Bot is last poster → excluded (even without max_depth)
+        result = _filter_threads(human_comments, all_comments, "koan-bot", 0)
+        assert result == []
+
+        # Also excluded by max_depth=5 (5 comments in thread)
+        result = _filter_threads(human_comments, all_comments, "", 5)
+        assert result == []
+
+    def test_github_bot_type_treated_as_bot(self):
+        """GitHub Bots (user_type=Bot) are treated same as configured bot."""
+        from app.review_runner import _filter_threads
+
+        human_comments = [
+            {"id": 1, "type": "review_comment", "user": "alice", "body": "x"},
+        ]
+        all_comments = [
+            {"id": 1, "user": "alice", "user_type": "User", "in_reply_to_id": None},
+            {"id": 2, "user": "copilot", "user_type": "Bot", "in_reply_to_id": 1},
+        ]
+        # copilot (Bot type) is last → not excluded (it's not our bot)
+        # We only exclude when OUR bot is last poster
+        result = _filter_threads(human_comments, all_comments, "koan-bot", 0)
+        assert len(result) == 1
+
+
+class TestFetchInlineWithThreadFilter:
+    """Integration tests for _fetch_inline_review_comments with thread filtering."""
+
+    @patch("app.review_runner.run_gh")
+    def test_bot_last_reply_excluded(self, mock_gh):
+        from app.review_runner import _fetch_inline_review_comments
+
+        mock_gh.return_value = "\n".join([
+            json.dumps({"id": 1, "user": "alice", "body": "fix this",
+                        "path": "a.py", "line": 10, "user_type": "User",
+                        "in_reply_to_id": None}),
+            json.dumps({"id": 2, "user": "koan-bot", "body": "done",
+                        "path": "a.py", "line": 10, "user_type": "User",
+                        "in_reply_to_id": 1}),
+        ])
+        result = _fetch_inline_review_comments(
+            "owner/repo", "1", bot_username="koan-bot", max_thread_depth=0,
+        )
+        assert result == []
+
+    @patch("app.review_runner.run_gh")
+    def test_max_depth_excludes_deep_thread(self, mock_gh):
+        from app.review_runner import _fetch_inline_review_comments
+
+        comments = [
+            {"id": 1, "user": "alice", "body": "q1", "path": "a.py",
+             "line": 1, "user_type": "User", "in_reply_to_id": None},
+        ]
+        for i in range(2, 7):
+            comments.append(
+                {"id": i, "user": "alice" if i % 2 == 0 else "koan-bot",
+                 "body": f"reply {i}", "path": "a.py", "line": 1,
+                 "user_type": "User", "in_reply_to_id": 1}
+            )
+        mock_gh.return_value = "\n".join(json.dumps(c) for c in comments)
+
+        result = _fetch_inline_review_comments(
+            "owner/repo", "1", bot_username="koan-bot", max_thread_depth=5,
+        )
+        assert result == []
+
+
+class TestReviewReplyConfig:
+    """Tests for get_review_reply_config in app.config."""
+
+    def test_defaults(self):
+        from app.config import get_review_reply_config
+        with patch("app.config._load_config", return_value={}):
+            cfg = get_review_reply_config()
+            assert cfg == {"max_thread_depth": 5}
+
+    def test_custom_value(self):
+        from app.config import get_review_reply_config
+        with patch("app.config._load_config",
+                   return_value={"review_reply": {"max_thread_depth": 10}}):
+            cfg = get_review_reply_config()
+            assert cfg == {"max_thread_depth": 10}
+
+    def test_invalid_value_falls_back_to_default(self):
+        from app.config import get_review_reply_config
+        with patch("app.config._load_config",
+                   return_value={"review_reply": {"max_thread_depth": "abc"}}):
+            cfg = get_review_reply_config()
+            assert cfg == {"max_thread_depth": 5}
 
 
 # ---------------------------------------------------------------------------

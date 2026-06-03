@@ -1293,6 +1293,29 @@ def get_review_concurrency_config() -> dict:
     }
 
 
+def get_review_reply_config() -> dict:
+    """Get review reply guard configuration from config.yaml.
+
+    Controls self-reply prevention and thread depth limits for PR review
+    comment replies.
+
+    Config key: review_reply
+      - max_thread_depth (int): Stop replying in a thread after this many
+            total comments (default: 5).
+
+    Returns:
+        Dict with keys:
+          - max_thread_depth (int): Maximum comments per thread.
+    """
+    config = _load_config()
+    review_cfg = config.get("review_reply", {})
+    if not isinstance(review_cfg, dict):
+        review_cfg = {}
+    return {
+        "max_thread_depth": _safe_int(review_cfg.get("max_thread_depth", 5), 5),
+    }
+
+
 def get_review_ignore_config() -> dict:
     """Get review ignore patterns from config.yaml.
 
