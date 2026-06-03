@@ -7,6 +7,7 @@ from app.github_skill_helpers import (
     format_success_message,
     queue_github_mission_once,
     resolve_project_for_repo,
+    resolve_project_via_pr,
 )
 
 
@@ -47,6 +48,8 @@ def handle(ctx):
         return f"\u274c {e}"
 
     project_path, project_name = resolve_project_for_repo(repo, owner=owner)
+    if not project_path:
+        project_path, project_name = resolve_project_via_pr(owner, repo, pr_number)
     if not project_path:
         return format_project_not_found_error(repo, owner=owner)
 
