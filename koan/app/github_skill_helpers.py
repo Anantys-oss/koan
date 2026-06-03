@@ -179,9 +179,9 @@ def resolve_project_via_pr(
         Tuple of (project_path, project_name) or (None, None)
     """
     import json
-    import sys
 
     from app.github import run_gh
+    from app.run_log import log_safe
 
     try:
         raw = run_gh(
@@ -190,32 +190,27 @@ def resolve_project_via_pr(
             "--json", "baseRepository,headRepository",
         )
         pr_info = json.loads(raw)
+
+        # Try the base repository first (the repo the PR targets — most likely
+        # to match a configured project when the URL is from a fork).
+        base_repo = pr_info.get("baseRepository") or {}
+        base_owner = (base_repo.get("owner") or {}).get("login")
+        base_name = base_repo.get("name")
+        if base_owner and base_name and (base_owner, base_name) != (owner, repo):
+            result = resolve_project_for_repo(base_name, owner=base_owner)
+            if result[0]:
+                return result
+
+        # Try the head repository (the fork that authored the PR).
+        head_repo = pr_info.get("headRepository") or {}
+        head_owner = (head_repo.get("owner") or {}).get("login")
+        head_name = head_repo.get("name")
+        if head_owner and head_name and (head_owner, head_name) != (owner, repo):
+            result = resolve_project_for_repo(head_name, owner=head_owner)
+            if result[0]:
+                return result
     except Exception as e:
-        print(
-            f"[github_skill_helpers] PR lookup for {owner}/{repo}#{number} "
-            f"failed: {e}",
-            file=sys.stderr,
-        )
-        return None, None
-
-    # Try the base repository first (the repo the PR targets — most likely
-    # to match a configured project when the URL is from a fork).
-    base_repo = pr_info.get("baseRepository") or {}
-    base_owner = (base_repo.get("owner") or {}).get("login")
-    base_name = base_repo.get("name")
-    if base_owner and base_name and (base_owner, base_name) != (owner, repo):
-        result = resolve_project_for_repo(base_name, owner=base_owner)
-        if result[0]:
-            return result
-
-    # Try the head repository (the fork that authored the PR).
-    head_repo = pr_info.get("headRepository") or {}
-    head_owner = (head_repo.get("owner") or {}).get("login")
-    head_name = head_repo.get("name")
-    if head_owner and head_name and (head_owner, head_name) != (owner, repo):
-        result = resolve_project_for_repo(head_name, owner=head_owner)
-        if result[0]:
-            return result
+        log_safe("github", f"PR lookup for {owner}/{repo}#{number} failed: {e}")
 
     return None, None
 
