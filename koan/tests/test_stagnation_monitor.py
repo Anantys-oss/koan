@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
+import app.stagnation_monitor as stagnation_monitor
 from app.stagnation_monitor import (
     StagnationMonitor,
     _mission_key,
@@ -754,7 +755,7 @@ class TestMonitorCapturesPattern:
 
 
 class TestClassifyExceptionInSampleOnce:
-    """When classify_stagnation raises during _sample_once, monitor still sets stagnated=True. Covers L320-325."""
+    """When classification raises during _sample_once, monitor still sets stagnated=True."""
 
     def test_classify_exception_sets_unknown(self, tmp_path):
         f = tmp_path / "stdout.log"
@@ -770,10 +771,10 @@ class TestClassifyExceptionInSampleOnce:
         monitor._sample_once()  # 1st duplicate (consecutive=1)
         assert not monitor.stagnated
 
-        # Patch classify_stagnation to raise on the abort path — this
+        # Patch _classify_from_bytes to raise on the abort path — this
         # 2nd duplicate is the one that crosses abort_after_cycles=2.
         with patch(
-            "app.stagnation_monitor.classify_stagnation",
+            "app.stagnation_monitor._classify_from_bytes",
             side_effect=RuntimeError("disk error"),
         ):
             monitor._sample_once()  # 2nd duplicate (consecutive=2) → abort path
@@ -781,6 +782,72 @@ class TestClassifyExceptionInSampleOnce:
         assert monitor.stagnated
         assert monitor.pattern_type == "unknown"
         assert monitor.pattern_excerpt == ""
+
+
+class TestSingleReadOnAbort:
+    """_sample_once() must read the stdout file only once, even when stagnation fires.
+
+    Before the fix, _tail_hash() and classify_stagnation() each open the file
+    independently — two reads of a potentially multi-megabyte file, seeing
+    slightly different snapshots because the subprocess keeps writing.
+
+    After the fix, a single _read_tail() call covers both the hash window and
+    the classification window.
+    """
+
+    def test_file_opened_once_on_abort_sample(self, tmp_path):
+        f = tmp_path / "stdout.log"
+        _make_stdout(f, 60)
+
+        monitor = StagnationMonitor(
+            stdout_file=str(f),
+            on_abort=lambda: None,
+            abort_after_cycles=2,
+        )
+        monitor._sample_once()  # baseline
+        monitor._sample_once()  # 1st duplicate
+
+        real_read_tail = stagnation_monitor._read_tail
+        call_count = []
+
+        def counting_read_tail(stdout_file, lines):
+            call_count.append(lines)
+            return real_read_tail(stdout_file, lines)
+
+        with patch("app.stagnation_monitor._read_tail", side_effect=counting_read_tail):
+            monitor._sample_once()  # 2nd duplicate → abort
+
+        assert monitor.stagnated
+        assert len(call_count) == 1, (
+            f"Expected 1 _read_tail call on abort sample, got {len(call_count)}"
+        )
+
+    def test_file_opened_once_on_non_abort_sample(self, tmp_path):
+        f = tmp_path / "stdout.log"
+        _make_stdout(f, 60)
+
+        monitor = StagnationMonitor(
+            stdout_file=str(f),
+            on_abort=lambda: None,
+            abort_after_cycles=3,
+        )
+
+        real_read_tail = stagnation_monitor._read_tail
+        call_count = []
+
+        def counting_read_tail(stdout_file, lines):
+            call_count.append(lines)
+            return real_read_tail(stdout_file, lines)
+
+        with patch("app.stagnation_monitor._read_tail", side_effect=counting_read_tail):
+            monitor._sample_once()  # baseline
+            monitor._sample_once()  # 1st duplicate (warn)
+            monitor._sample_once()  # 2nd duplicate (no abort yet)
+
+        assert not monitor.stagnated
+        assert len(call_count) == 3, (
+            f"Expected 1 _read_tail call per sample (3 samples), got {len(call_count)}"
+        )
 
 
 class TestMonitorLoopIntegration:
