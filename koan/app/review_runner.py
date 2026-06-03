@@ -1026,10 +1026,25 @@ def _format_review_as_markdown(review_data: dict, title: str = "", bot_username:
     return "\n".join(lines)
 
 
+def _build_review_footer(provider_name: str = "", model: str = "") -> str:
+    """Build the review footer with branding, provider, and model info."""
+    base = "_Automated review by [Kōan](https://koan.anantys.com)_"
+    parts = []
+    if provider_name:
+        parts.append(provider_name.capitalize())
+    if model:
+        parts.append(f"model {model}")
+    if parts:
+        return f"{base} _({' · '.join(parts)})_"
+    return base
+
+
 def _post_review_comment(
     owner: str, repo: str, pr_number: str, review_text: str,
     existing_comment: Optional[dict] = None,
     commit_shas: Optional[List[str]] = None,
+    provider_name: str = "",
+    model: str = "",
 ) -> Tuple[bool, str]:
     """Post (or update) the review as a comment on the PR.
 
@@ -1049,11 +1064,13 @@ def _post_review_comment(
     if len(review_text) > max_len:
         review_text = review_text[:max_len] + "\n\n_(Review truncated)_"
 
+    footer = _build_review_footer(provider_name, model)
+
     # If body already starts with a ## heading, don't add another
     if review_text.startswith("## "):
-        body = f"{SUMMARY_TAG}\n{review_text}\n\n---\n_Automated review by Kōan_"
+        body = f"{SUMMARY_TAG}\n{review_text}\n\n---\n{footer}"
     else:
-        body = f"{SUMMARY_TAG}\n## Code Review\n\n{review_text}\n\n---\n_Automated review by Kōan_"
+        body = f"{SUMMARY_TAG}\n## Code Review\n\n{review_text}\n\n---\n{footer}"
 
     # Embed commit SHAs when provided; otherwise preserve from existing
     # comment so a re-review doesn't clobber prior incremental state.
@@ -1440,6 +1457,16 @@ def run_review(
         triaged_files=_triaged_files,
     )
 
+    # Resolve provider/model for footer attribution
+    from app.config import get_model_config as _get_model_config
+    from app.provider import get_provider_name
+    _review_models = _get_model_config()
+    review_model = (
+        _review_models.get("review_mode")
+        or _review_models.get("mission", "")
+    )
+    review_provider_name = get_provider_name()
+
     # Step 3: Run provider review (read-only)
     notify_fn(f"Analyzing code changes on `{context['branch']}`...")
     raw_output, error = _run_claude_review(prompt, project_path)
@@ -1539,6 +1566,8 @@ def run_review(
     posted, post_error = _post_review_comment(
         owner, repo, pr_number, review_body, existing_comment,
         commit_shas=current_shas or None,
+        provider_name=review_provider_name,
+        model=review_model,
     )
 
     # Step 8: Close the PR if the review decided closure is warranted
