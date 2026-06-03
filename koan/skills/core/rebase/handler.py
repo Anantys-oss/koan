@@ -49,10 +49,6 @@ def handle(ctx):
 
     project_path, project_name = _gh_helpers.resolve_project_for_repo(repo, owner=owner)
     if not project_path:
-        project_path, project_name = _gh_helpers.resolve_project_via_pr(
-            owner, repo, pr_number,
-        )
-    if not project_path:
         return _gh_helpers.format_project_not_found_error(repo, owner=owner)
 
     try:
