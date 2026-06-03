@@ -7,10 +7,10 @@ with consistent error handling and validation.
 import re
 from typing import Optional, Tuple
 
-# GitHub URL patterns
-PR_URL_PATTERN = r'https?://github\.com/([^/]+)/([^/]+)/pull/(\d+)'
-ISSUE_URL_PATTERN = r'https?://github\.com/([^/]+)/([^/]+)/issues/(\d+)'
-PR_OR_ISSUE_PATTERN = r'https?://github\.com/([^/]+)/([^/]+)/(pull|issues)/(\d+)'
+# GitHub URL patterns — [^/]*github[^/]* matches both github.com and GHE hosts
+PR_URL_PATTERN = r'https?://[^/]*github[^/]*/([^/]+)/([^/]+)/pull/(\d+)'
+ISSUE_URL_PATTERN = r'https?://[^/]*github[^/]*/([^/]+)/([^/]+)/issues/(\d+)'
+PR_OR_ISSUE_PATTERN = r'https?://[^/]*github[^/]*/([^/]+)/([^/]+)/(pull|issues)/(\d+)'
 
 # Jira URL pattern: https://org.atlassian.net/browse/PROJ-123
 JIRA_ISSUE_URL_PATTERN = r'https?://[^/]+\.atlassian\.net/browse/([A-Z][A-Z0-9]+-\d+)'

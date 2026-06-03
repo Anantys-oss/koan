@@ -9,6 +9,7 @@ Provides:
 - get_project_models(config, name) -> dict: Get model overrides for a project
 - get_project_tools(config, name) -> dict: Get tool restrictions for a project
 - get_project_exploration(config, name) -> bool: Get exploration flag for a project
+- get_project_autoreview(config, name) -> bool: Get autoreview flag for a project
 - get_project_max_open_prs(config, name) -> int: Get max open PRs limit for a project
 - get_project_max_pending_branches(config, name) -> int: Get max pending branches limit
 - get_project_github_authorized_users(config, name) -> list: Get GitHub authorized users
@@ -99,6 +100,7 @@ _PROJECT_KEY_TYPES = {
     "stagnation": (dict, bool),
     "complexity_routing": (dict, bool),
     "exploration": (bool, str),
+    "autoreview": (bool, str),
     "focus": (bool, str),
     "max_open_prs": (int, str),
     "max_pending_branches": (int, str),
@@ -473,6 +475,24 @@ def get_project_exploration(config: dict, project_name: str) -> bool:
     """
     project_cfg = get_project_config(config, project_name)
     value = project_cfg.get("exploration", True)
+
+    # Handle string values like "false", "no", "0"
+    if isinstance(value, str):
+        return value.strip().lower() not in ("false", "no", "0", "")
+
+    return bool(value)
+
+
+def get_project_autoreview(config: dict, project_name: str) -> bool:
+    """Get autoreview flag for a project from projects.yaml.
+
+    When True, automatically queues /review then /rebase after any mission
+    that creates a PR (and was not auto-merged). Off by default.
+
+    Returns False by default (autoreview disabled).
+    """
+    project_cfg = get_project_config(config, project_name)
+    value = project_cfg.get("autoreview", False)
 
     # Handle string values like "false", "no", "0"
     if isinstance(value, str):

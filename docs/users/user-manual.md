@@ -935,6 +935,25 @@ When exploration is enabled, Kōan may autonomously explore a project's codebase
 - `/noexplore` — Disable exploration (focus on missions only)
 </details>
 
+### Autoreview Mode
+
+When autoreview is enabled for a project, Kōan automatically queues `/review <pr-url>` then `/rebase <pr-url>` after any successful mission that creates a PR (and was not auto-merged). This provides an extra quality gate without manual intervention. Off by default.
+
+**`/autoreview`** — Enable autoreview or show status.
+- **Usage:** `/autoreview [project|all|none]`
+- **Aliases:** `/auto_review`
+
+**`/noautoreview`** — Disable autoreview for a project.
+- **Usage:** `/noautoreview [project]`
+
+<details>
+<summary>Use cases</summary>
+
+- `/autoreview webapp` — Enable autoreview for webapp project
+- `/autoreview all` — Enable autoreview for all projects
+- `/noautoreview webapp` — Disable autoreview for webapp
+</details>
+
 ### Workflow Example: Feature from Idea to PR
 
 Here's a typical multi-step workflow combining several commands:
@@ -1892,6 +1911,8 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/done [project]` | `/merged` | I | List PRs merged in the last 24 hours |
 | `/explore [project]` | `/exploration` | I | Enable/show exploration mode |
 | `/noexplore [project]` | — | I | Disable exploration mode |
+| `/autoreview [project]` | `/auto_review` | I | Enable/show autoreview mode (auto-queue review+rebase after PR) |
+| `/noautoreview [project]` | — | I | Disable autoreview mode |
 | `/ai [project]` | `/ia` | P | Queue an AI exploration mission |
 | `/magic [project]` | — | P | Instant creative exploration |
 | `/sparring` | — | P | Strategic sparring session |

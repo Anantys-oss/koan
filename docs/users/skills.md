@@ -90,6 +90,7 @@ Skills marked **GitHub @mention** can be triggered by commenting `@koan-bot <com
 | `/focus <project>` | — | Lock the agent to one project (suppress exploration) |
 | `/unfocus` | — | Exit focus mode |
 | `/explore [project]` | `/exploration`, `/noexplore` | Toggle per-project exploration mode |
+| `/autoreview [project]` | `/auto_review`, `/noautoreview` | Toggle automatic review+rebase after PR creation per project |
 | `/language <lang>` | `/lng`, `/fr`, `/en` | Set reply language preference |
 | `/verbose` | — | Enable real-time progress updates |
 | `/silent` | — | Disable real-time progress updates |
