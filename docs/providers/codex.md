@@ -113,6 +113,16 @@ Koan tracks token usage from Codex JSON output when available. This internal
 estimate drives autonomous mode downgrades (`deep` -> `implement` -> `review`
 -> `wait`) but is separate from hard provider quota detection.
 
+Recognized Codex JSONL usage events are:
+
+- `turn.completed` events with a `usage` object.
+- `event_msg` rollout events where `payload.type` is `token_count` and
+  `payload.info.total_token_usage` contains the token counters.
+
+In both formats, Koan treats `cached_input_tokens` as cache-read tokens and
+subtracts them from counted input tokens before updating the internal budget.
+When multiple usage-bearing events are present, the latest snapshot wins.
+
 For Codex subscription accounts where you want to ignore internal estimates and
 only react to real provider quota/session-limit errors, set:
 
