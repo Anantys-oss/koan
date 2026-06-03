@@ -262,6 +262,13 @@ skill_timeout: 7200
 #   enabled: false                # Master switch (default: false)
 #   cooldown_minutes: 30          # Min minutes between checks per project (default: 30)
 
+# Review reply guard — prevents the bot from replying to itself in PR
+# comment threads and caps the total depth of any single thread.
+# When the bot is the last poster in a thread and no human followed up,
+# the thread is excluded from the repliable list on the next review run.
+# review_reply:
+#   max_thread_depth: 5           # Stop replying after this many comments in a thread (default: 5)
+
 # Contemplative mode trigger chance (0-100%)
 # When no mission is pending, this is the probability of running a reflective
 # session instead of autonomous work. Allows regular moments of introspection

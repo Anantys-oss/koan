@@ -661,6 +661,15 @@ review_dispatch:
   cooldown_minutes: 30     # Min minutes between checks per project (default: 30)
 ```
 
+To prevent the bot from replying to itself in review comment threads (and to cap thread depth), configure:
+
+```yaml
+review_reply:
+  max_thread_depth: 5      # Stop replying after this many comments per thread (default: 5)
+```
+
+When the bot is the last poster in a thread and no human has followed up, the thread is excluded from future replies. This prevents self-reply loops where repeated `/review` runs keep adding replies to the same comment.
+
 <details>
 <summary>Use cases</summary>
 
