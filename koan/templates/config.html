@@ -2,45 +2,55 @@
 {% block title_suffix %} — Config{% endblock %}
 {% block page_title %}Config{% endblock %}
 {% block content %}
-<p style="color: var(--text-muted); margin-bottom: 1.5rem;">View and edit instance configuration files.</p>
+<p style="color: var(--text-muted); margin-bottom: 1rem;">View and edit instance configuration files.</p>
 
-<!-- config.yaml -->
-<div class="card" id="section-config-yaml">
-    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:0.75rem; flex-wrap:wrap; gap:0.5rem;">
-        <h2 style="margin:0;">config.yaml</h2>
-        <div style="display:flex; gap:0.5rem; align-items:center;">
-            <span id="config-yaml-status" style="font-size:0.82rem;"></span>
-            <button class="btn-small" id="config-yaml-edit" title="Edit">Edit</button>
-            <button class="btn-small" id="config-yaml-save" style="display:none;">Save</button>
-            <button class="btn-small" id="config-yaml-cancel" style="display:none;">Cancel</button>
+<!-- Tab bar -->
+<div class="config-tabs" role="tablist">
+    <button class="config-tab active" role="tab" aria-selected="true" data-tab="config-yaml">config.yaml</button>
+    <button class="config-tab" role="tab" aria-selected="false" data-tab="projects-yaml">projects.yaml</button>
+</div>
+
+<!-- config.yaml panel -->
+<div class="config-panel active" id="panel-config-yaml" role="tabpanel">
+    <div class="card" id="section-config-yaml">
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:0.75rem; flex-wrap:wrap; gap:0.5rem;">
+            <h2 style="margin:0;">config.yaml</h2>
+            <div style="display:flex; gap:0.5rem; align-items:center;">
+                <span id="config-yaml-status" style="font-size:0.82rem;"></span>
+                <button class="btn-small" id="config-yaml-edit" title="Edit">Edit</button>
+                <button class="btn-small" id="config-yaml-save" style="display:none;">Save</button>
+                <button class="btn-small" id="config-yaml-cancel" style="display:none;">Cancel</button>
+            </div>
         </div>
-    </div>
-    <div id="config-yaml-view">
-        <pre id="config-yaml-pre" class="yaml-highlighted" style="white-space:pre-wrap;margin:0;font-size:0.82rem;tab-size:2;overflow-x:auto;"></pre>
-    </div>
-    <div id="config-yaml-editor" style="display:none;">
-        <textarea id="config-yaml-textarea" style="width:100%;min-height:400px;font-family:var(--font-mono,'Fira Code',monospace);font-size:0.82rem;background:var(--surface-2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:0.75rem;resize:vertical;tab-size:2;" spellcheck="false"></textarea>
-        <div id="config-yaml-error" style="display:none;color:var(--danger);font-size:0.82rem;margin-top:0.5rem;padding:0.5rem;background:var(--surface-2);border-radius:4px;font-family:var(--font-mono,'Fira Code',monospace);"></div>
+        <div id="config-yaml-view">
+            <pre id="config-yaml-pre" class="yaml-highlighted" style="white-space:pre-wrap;margin:0;font-size:0.82rem;tab-size:2;overflow-x:auto;"></pre>
+        </div>
+        <div id="config-yaml-editor" style="display:none;">
+            <textarea id="config-yaml-textarea" style="width:100%;min-height:400px;font-family:var(--font-mono,'Fira Code',monospace);font-size:0.82rem;background:var(--surface-2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:0.75rem;resize:vertical;tab-size:2;" spellcheck="false"></textarea>
+            <div id="config-yaml-error" style="display:none;color:var(--danger);font-size:0.82rem;margin-top:0.5rem;padding:0.5rem;background:var(--surface-2);border-radius:4px;font-family:var(--font-mono,'Fira Code',monospace);"></div>
+        </div>
     </div>
 </div>
 
-<!-- projects.yaml -->
-<div class="card" id="section-projects-yaml">
-    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:0.75rem; flex-wrap:wrap; gap:0.5rem;">
-        <h2 style="margin:0;">projects.yaml</h2>
-        <div style="display:flex; gap:0.5rem; align-items:center;">
-            <span id="projects-yaml-status" style="font-size:0.82rem;"></span>
-            <button class="btn-small" id="projects-yaml-edit" title="Edit">Edit</button>
-            <button class="btn-small" id="projects-yaml-save" style="display:none;">Save</button>
-            <button class="btn-small" id="projects-yaml-cancel" style="display:none;">Cancel</button>
+<!-- projects.yaml panel -->
+<div class="config-panel" id="panel-projects-yaml" role="tabpanel" style="display:none;">
+    <div class="card" id="section-projects-yaml">
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:0.75rem; flex-wrap:wrap; gap:0.5rem;">
+            <h2 style="margin:0;">projects.yaml</h2>
+            <div style="display:flex; gap:0.5rem; align-items:center;">
+                <span id="projects-yaml-status" style="font-size:0.82rem;"></span>
+                <button class="btn-small" id="projects-yaml-edit" title="Edit">Edit</button>
+                <button class="btn-small" id="projects-yaml-save" style="display:none;">Save</button>
+                <button class="btn-small" id="projects-yaml-cancel" style="display:none;">Cancel</button>
+            </div>
         </div>
-    </div>
-    <div id="projects-yaml-view">
-        <pre id="projects-yaml-pre" class="yaml-highlighted" style="white-space:pre-wrap;margin:0;font-size:0.82rem;tab-size:2;overflow-x:auto;"></pre>
-    </div>
-    <div id="projects-yaml-editor" style="display:none;">
-        <textarea id="projects-yaml-textarea" style="width:100%;min-height:300px;font-family:var(--font-mono,'Fira Code',monospace);font-size:0.82rem;background:var(--surface-2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:0.75rem;resize:vertical;tab-size:2;" spellcheck="false"></textarea>
-        <div id="projects-yaml-error" style="display:none;color:var(--danger);font-size:0.82rem;margin-top:0.5rem;padding:0.5rem;background:var(--surface-2);border-radius:4px;font-family:var(--font-mono,'Fira Code',monospace);"></div>
+        <div id="projects-yaml-view">
+            <pre id="projects-yaml-pre" class="yaml-highlighted" style="white-space:pre-wrap;margin:0;font-size:0.82rem;tab-size:2;overflow-x:auto;"></pre>
+        </div>
+        <div id="projects-yaml-editor" style="display:none;">
+            <textarea id="projects-yaml-textarea" style="width:100%;min-height:300px;font-family:var(--font-mono,'Fira Code',monospace);font-size:0.82rem;background:var(--surface-2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:0.75rem;resize:vertical;tab-size:2;" spellcheck="false"></textarea>
+            <div id="projects-yaml-error" style="display:none;color:var(--danger);font-size:0.82rem;margin-top:0.5rem;padding:0.5rem;background:var(--surface-2);border-radius:4px;font-family:var(--font-mono,'Fira Code',monospace);"></div>
+        </div>
     </div>
 </div>
 
@@ -62,6 +72,29 @@
 (function () {
     var _configRaw = null;
     var _projectsRaw = null;
+
+    /* ------------------------------------------------------------------ */
+    /* Tab switching                                                       */
+    /* ------------------------------------------------------------------ */
+    var tabs = document.querySelectorAll('.config-tab');
+    tabs.forEach(function (tab) {
+        tab.addEventListener('click', function () {
+            var target = this.getAttribute('data-tab');
+            tabs.forEach(function (t) {
+                t.classList.remove('active');
+                t.setAttribute('aria-selected', 'false');
+            });
+            this.classList.add('active');
+            this.setAttribute('aria-selected', 'true');
+            document.querySelectorAll('.config-panel').forEach(function (p) {
+                p.style.display = 'none';
+                p.classList.remove('active');
+            });
+            var panel = document.getElementById('panel-' + target);
+            panel.style.display = '';
+            panel.classList.add('active');
+        });
+    });
 
     /* ------------------------------------------------------------------ */
     /* YAML syntax highlighting (pure JS, no dependencies)                 */
@@ -224,7 +257,6 @@
                     saveBtn.disabled = false;
                     saveBtn.textContent = 'Save';
                     if (res.data.ok) {
-                        // Update raw cache and re-render highlighted view
                         if (apiField === 'config') { _configRaw = content; }
                         else { _projectsRaw = content; }
                         renderYaml(prefix, content, apiField + '.yaml');
@@ -249,7 +281,6 @@
                 });
         });
 
-        // Tab key inserts spaces in textarea
         textarea.addEventListener('keydown', function (e) {
             if (e.key === 'Tab') {
                 e.preventDefault();
@@ -268,7 +299,7 @@
     /* Restart button                                                      */
     /* ------------------------------------------------------------------ */
     document.getElementById('restart-btn').addEventListener('click', function () {
-        if (!confirm('Restart the Kōan agent service?')) return;
+        if (!confirm('Restart the Koan agent service?')) return;
         var btn = this;
         var statusEl = document.getElementById('restart-status');
         btn.disabled = true;
@@ -316,6 +347,36 @@
 </script>
 
 <style>
+    /* Tab bar */
+    .config-tabs {
+        display: flex;
+        gap: 0;
+        margin-bottom: 1rem;
+        border-bottom: 2px solid var(--border);
+    }
+    .config-tab {
+        background: none;
+        border: none;
+        padding: 0.6rem 1.25rem;
+        font-size: 0.9rem;
+        font-family: var(--font-mono, 'Fira Code', monospace);
+        font-weight: 500;
+        color: var(--text-muted);
+        cursor: pointer;
+        position: relative;
+        bottom: -2px;
+        border-bottom: 2px solid transparent;
+        transition: color 0.15s, border-color 0.15s;
+    }
+    .config-tab:hover {
+        color: var(--text);
+    }
+    .config-tab.active {
+        color: var(--brand);
+        border-bottom-color: var(--brand);
+    }
+
+    /* YAML highlighting */
     .yaml-highlighted { line-height: 1.5; }
     .hl-comment { color: var(--text-muted); font-style: italic; }
     .hl-key { color: #7eb6ff; font-weight: 500; }
