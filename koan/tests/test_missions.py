@@ -1676,6 +1676,51 @@ class TestRequeueMission:
         assert len(sections["failed"]) == 1
         assert len(sections["pending"]) == 1
 
+    def test_requeue_strips_queued_timestamp(self):
+        """Requeue must strip ⏳ marker so it doesn't leak as --context."""
+        content = (
+            "## Pending\n\n"
+            "## In Progress\n\n"
+            "- /plan https://github.com/org/repo/issues/42 ⏳(2026-06-02T18:12)"
+            " ▶(2026-06-02T18:13)\n"
+        )
+        result = requeue_mission(content, "/plan https://github.com/org/repo/issues/42")
+        sections = parse_sections(result)
+        assert len(sections["pending"]) == 1
+        assert "⏳" not in sections["pending"][0]
+        assert "▶" not in sections["pending"][0]
+        assert "/plan https://github.com/org/repo/issues/42" in sections["pending"][0]
+
+    def test_requeue_strips_all_lifecycle_after_queued(self):
+        """Everything after ⏳ is lifecycle metadata — strip it all on requeue."""
+        content = (
+            "## Pending\n\n"
+            "## Failed\n\n"
+            "- /plan https://github.com/org/repo/issues/42 📬"
+            " ⏳(2026-06-02T18:12) ❌ (2026-06-02 18:12)\n"
+        )
+        result = requeue_mission(content, "/plan https://github.com/org/repo/issues/42")
+        sections = parse_sections(result)
+        assert len(sections["pending"]) == 1
+        pending = sections["pending"][0]
+        assert "⏳" not in pending
+        assert "❌" not in pending
+        assert "📬" in pending
+        assert "/plan https://github.com/org/repo/issues/42" in pending
+
+    def test_requeue_strips_queued_only(self):
+        """Mission with only ⏳ (no ▶ or ❌) should still be cleaned."""
+        content = (
+            "## Pending\n\n"
+            "## In Progress\n\n"
+            "- Do something ⏳(2026-06-02T10:00)\n"
+        )
+        result = requeue_mission(content, "Do something")
+        sections = parse_sections(result)
+        assert len(sections["pending"]) == 1
+        assert "⏳" not in sections["pending"][0]
+        assert "Do something" in sections["pending"][0]
+
 
 # ---------------------------------------------------------------------------
 # parse_sections — failed section

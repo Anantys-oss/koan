@@ -1228,9 +1228,14 @@ def requeue_mission(content: str, mission_text: str) -> str:
     display = removed.strip()
     if display.startswith("- "):
         display = display[2:]
-    # Remove started timestamp (▶(2026-03-26T22:00))
+    # Truncate at ⏳ — everything from the queued marker onwards is lifecycle
+    # metadata (⏳, ▶, ❌, ✅) that must not survive requeueing.
+    queued_pos = display.find(_QUEUED_MARKER)
+    if queued_pos > 0:
+        display = display[:queued_pos].rstrip()
+    # Fallback: strip individual markers if ⏳ was absent
+    display = _QUEUED_PATTERN.sub("", display).strip()
     display = _STARTED_PATTERN.sub("", display).strip()
-    # Remove completed/failed marker (✅/❌(2026-04-13 14:47))
     display = _COMPLETED_PATTERN.sub("", display).strip()
 
     entry = f"- {display}"
