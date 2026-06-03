@@ -32,13 +32,14 @@ Usage::
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import re
 import sys
 import threading
 from pathlib import Path
 from typing import Callable, Optional
+
+from app.locked_file import locked_json_modify, locked_json_read
 
 
 # Default configuration — overridable via config.yaml stagnation: section.
@@ -354,30 +355,6 @@ def _mission_key(mission_title: str) -> str:
     return hashlib.sha256(mission_title.encode("utf-8", errors="replace")).hexdigest()
 
 
-def _load_retry_tracker(instance_dir: str) -> dict:
-    path = _retry_tracker_path(instance_dir)
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, dict):
-            return data
-    except (OSError, json.JSONDecodeError):
-        pass
-    return {}
-
-
-def _save_retry_tracker(instance_dir: str, data: dict) -> None:
-    path = _retry_tracker_path(instance_dir)
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        from app.utils import atomic_write_json
-        atomic_write_json(path, data)
-    except OSError as e:
-        # Stderr diagnostic — losing the counter just means an extra retry,
-        # not a correctness bug.
-        print(f"[stagnation_monitor] retry tracker save error: {e}", file=sys.stderr)
-
-
 def _extract_count(raw) -> int:
     """Extract retry count from a tracker entry (int or dict with 'count')."""
     if isinstance(raw, dict):
@@ -388,9 +365,16 @@ def _extract_count(raw) -> int:
         return 0
 
 
+def _validate_tracker(data) -> dict:
+    return data if isinstance(data, dict) else {}
+
+
 def get_retry_count(instance_dir: str, mission_title: str) -> int:
     """Return how many times *mission_title* has been stagnation-requeued."""
-    data = _load_retry_tracker(instance_dir)
+    path = _retry_tracker_path(instance_dir)
+    data = locked_json_read(path, default={})
+    if not isinstance(data, dict):
+        return 0
     return _extract_count(data.get(_mission_key(mission_title), 0))
 
 
@@ -399,8 +383,9 @@ def get_retry_info(instance_dir: str, mission_title: str) -> dict:
 
     Returns a dict with keys ``count``, ``pattern_type``, ``sample_lines``.
     """
-    data = _load_retry_tracker(instance_dir)
-    raw = data.get(_mission_key(mission_title), {})
+    path = _retry_tracker_path(instance_dir)
+    data = locked_json_read(path, default={})
+    raw = data.get(_mission_key(mission_title), {}) if isinstance(data, dict) else {}
     if isinstance(raw, int):
         return {"count": max(0, raw), "pattern_type": "", "sample_lines": ""}
     if isinstance(raw, dict):
@@ -425,23 +410,36 @@ def increment_retry_count(
 
     Returns the new count.
     """
-    data = _load_retry_tracker(instance_dir)
+    path = _retry_tracker_path(instance_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
     key = _mission_key(mission_title)
-    current = _extract_count(data.get(key, 0))
-    new_count = current + 1
-    data[key] = {
-        "count": new_count,
-        "pattern_type": pattern_type,
-        "sample_lines": pattern_excerpt[:500],
-    }
-    _save_retry_tracker(instance_dir, data)
-    return new_count
+
+    def _mutate(data: dict) -> int:
+        current = _extract_count(data.get(key, 0))
+        new_count = current + 1
+        data[key] = {
+            "count": new_count,
+            "pattern_type": pattern_type,
+            "sample_lines": pattern_excerpt[:500],
+        }
+        return new_count
+
+    try:
+        return locked_json_modify(path, _mutate, default_factory=dict, validator=_validate_tracker)
+    except OSError as e:
+        # Losing the counter means at most one extra retry — tolerable.
+        print(f"[stagnation_monitor] retry tracker save error: {e}", file=sys.stderr)
+        return 1
 
 
 def clear_retry_count(instance_dir: str, mission_title: str) -> None:
     """Drop the retry counter for *mission_title* (e.g. on completion)."""
-    data = _load_retry_tracker(instance_dir)
+    path = _retry_tracker_path(instance_dir)
+    if not path.exists():
+        return
     key = _mission_key(mission_title)
-    if key in data:
+
+    def _mutate(data: dict) -> None:
         data.pop(key, None)
-        _save_retry_tracker(instance_dir, data)
+
+    locked_json_modify(path, _mutate, default_factory=dict, validator=_validate_tracker)
