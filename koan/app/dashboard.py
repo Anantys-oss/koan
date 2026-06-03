@@ -99,6 +99,12 @@ app = Flask(
 )
 
 
+@app.context_processor
+def _inject_instance_nickname():
+    from app.config import get_dashboard_nickname
+    return {"instance_nickname": get_dashboard_nickname()}
+
+
 _URL_RE = re.compile(r'(https?://[^\s<>)\]]+)')
 _GITHUB_ISSUE_PR_RE = re.compile(
     r'^https?://(?:[^/]+\.)?github\.com/[^/]+/[^/]+/(?:issues|pull)/(\d+)(?:[?#].*)?$'
@@ -1851,6 +1857,41 @@ def api_config_restart():
     except Exception as e:
         print(f"[dashboard] restart signal failed: {e}", file=sys.stderr)
         return jsonify({"ok": False, "error": "Failed to send restart signal"}), 500
+
+
+@app.route("/api/nickname", methods=["GET"])
+def api_nickname_get():
+    """Return the current instance nickname."""
+    from app.config import get_dashboard_nickname
+    return jsonify({"nickname": get_dashboard_nickname()})
+
+
+@app.route("/api/nickname", methods=["PUT"])
+def api_nickname_set():
+    """Update the instance nickname in config.yaml."""
+    import yaml
+    from app.utils import atomic_write
+
+    data = request.get_json(silent=True)
+    if data is None:
+        return jsonify({"ok": False, "error": "Invalid JSON"}), 400
+
+    nickname = str(data.get("nickname", "")).strip()[:50]
+
+    config_path = INSTANCE_DIR / "config.yaml"
+    config = {}
+    if config_path.exists():
+        with open(config_path) as f:
+            config = yaml.safe_load(f) or {}
+
+    dashboard_cfg = config.get("dashboard")
+    if not isinstance(dashboard_cfg, dict):
+        dashboard_cfg = {}
+    dashboard_cfg["nickname"] = nickname
+    config["dashboard"] = dashboard_cfg
+
+    atomic_write(config_path, yaml.dump(config, default_flow_style=False, allow_unicode=True))
+    return jsonify({"ok": True, "nickname": nickname})
 
 
 # ---------------------------------------------------------------------------

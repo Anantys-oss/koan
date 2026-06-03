@@ -49,6 +49,36 @@
 }
 .sidebar-brand .logo:hover { text-decoration: none; }
 
+.instance-nickname {
+    font-size: var(--fs-sm);
+    color: var(--text-secondary);
+    margin-left: var(--space-2);
+    cursor: pointer;
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.instance-nickname:empty::after {
+    content: "+";
+    opacity: 0;
+    transition: opacity 0.15s;
+    font-size: var(--fs-xs);
+}
+.sidebar-brand:hover .instance-nickname:empty::after { opacity: 0.5; }
+.instance-nickname-input {
+    font-size: var(--fs-sm);
+    color: var(--text-primary);
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 1px 4px;
+    margin-left: var(--space-2);
+    max-width: 120px;
+    outline: none;
+    font-family: inherit;
+}
+
 .k-app__sidebar .k-nav { flex: 1; overflow-y: auto; padding: var(--space-3); }
 .k-nav__item i { width: 18px; height: 18px; flex-shrink: 0; }
 

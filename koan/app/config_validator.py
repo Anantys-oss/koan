@@ -171,6 +171,7 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
     "dashboard": {
         "enabled": "bool",
         "port": "int",
+        "nickname": "str",
     },
     "jira": {
         "enabled": "bool",

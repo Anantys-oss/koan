@@ -437,6 +437,15 @@ def get_dashboard_port() -> int:
     return 5001
 
 
+def get_dashboard_nickname() -> str:
+    """Return the configured dashboard instance nickname (default: empty)."""
+    config = _load_config()
+    dashboard_cfg = config.get("dashboard", {})
+    if isinstance(dashboard_cfg, dict):
+        return str(dashboard_cfg.get("nickname", "")).strip()
+    return ""
+
+
 def is_api_enabled() -> bool:
     """Check if REST API is enabled for managed startup.
 

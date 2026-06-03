@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{% block title %}Kōan{% endblock %}</title>
+    <title>Kōan{% if instance_nickname %} — {{ instance_nickname }}{% endif %}{% block title_suffix %}{% endblock %}</title>
     <!-- No-flash theme: stored choice, else OS preference, else dark. -->
     <script>
       (function () {
@@ -34,6 +34,7 @@
         <aside class="k-app__sidebar" id="sidebar">
             <div class="sidebar-brand">
                 <a href="/" class="logo">Kōan</a>
+                <span class="instance-nickname" id="instance-nickname" title="Click to edit instance nickname">{% if instance_nickname %}{{ instance_nickname }}{% endif %}</span>
             </div>
             <nav class="k-nav" id="main-nav">
                 <a href="/" class="k-nav__item {% if request.path == '/' %}active{% endif %}" id="nav-dashboard">
@@ -108,6 +109,53 @@
     <script src="{{ url_for('static', filename='js/lucide.min.js') }}"></script>
     <script src="{{ url_for('static', filename='js/koan.js') }}"></script>
     <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+    <script>
+    (function() {
+      function bindNickname(span) {
+        span.addEventListener('click', function(e) {
+          e.preventDefault();
+          var orig = span.textContent.trim();
+          var input = document.createElement('input');
+          input.type = 'text';
+          input.className = 'instance-nickname-input';
+          input.value = orig;
+          input.maxLength = 50;
+          input.placeholder = 'nickname';
+          span.replaceWith(input);
+          input.focus();
+          input.select();
+          var saved = false;
+          function save() {
+            if (saved) return;
+            saved = true;
+            var val = input.value.trim().substring(0, 50);
+            fetch('/api/nickname', {
+              method: 'PUT',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({nickname: val})
+            }).then(function(r) { return r.json(); }).then(function(d) {
+              var ns = document.createElement('span');
+              ns.className = 'instance-nickname';
+              ns.id = 'instance-nickname';
+              ns.title = 'Click to edit instance nickname';
+              ns.textContent = d.nickname || '';
+              input.replaceWith(ns);
+              bindNickname(ns);
+              var suffix = d.nickname ? ' — ' + d.nickname : '';
+              document.title = document.title.replace(/Kōan(?:\s*—\s*[^—]*)?/, 'Kōan' + suffix);
+            });
+          }
+          input.addEventListener('blur', save);
+          input.addEventListener('keydown', function(ev) {
+            if (ev.key === 'Enter') { ev.preventDefault(); input.blur(); }
+            if (ev.key === 'Escape') { ev.preventDefault(); input.value = orig; input.blur(); }
+          });
+        });
+      }
+      var el = document.getElementById('instance-nickname');
+      if (el) bindNickname(el);
+    })();
+    </script>
     {% block scripts %}{% endblock %}
 </body>
 </html>

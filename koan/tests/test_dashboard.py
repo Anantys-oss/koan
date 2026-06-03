@@ -1971,3 +1971,70 @@ class TestAgentControls:
         html = resp.data.decode()
         assert 'ctrl-resume' in html
         assert 'display:none' in html
+
+
+class TestNicknameApi:
+    def test_get_nickname_default_empty(self, app_client):
+        with patch("app.config._load_config", return_value={}):
+            resp = app_client.get("/api/nickname")
+        assert resp.status_code == 200
+        assert resp.get_json()["nickname"] == ""
+
+    def test_get_nickname_from_config(self, app_client):
+        with patch("app.config._load_config", return_value={"dashboard": {"nickname": "MyServer1"}}):
+            resp = app_client.get("/api/nickname")
+        assert resp.status_code == 200
+        assert resp.get_json()["nickname"] == "MyServer1"
+
+    def test_set_nickname(self, app_client, instance_dir):
+        import yaml
+        config_path = instance_dir / "config.yaml"
+        config_path.write_text("dashboard:\n  enabled: true\n")
+        with patch.object(dashboard, "INSTANCE_DIR", instance_dir):
+            resp = app_client.put("/api/nickname",
+                json={"nickname": "Prod-1"},
+                content_type="application/json")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["ok"] is True
+        assert data["nickname"] == "Prod-1"
+        saved = yaml.safe_load(config_path.read_text())
+        assert saved["dashboard"]["nickname"] == "Prod-1"
+
+    def test_set_nickname_truncates_at_50(self, app_client, instance_dir):
+        config_path = instance_dir / "config.yaml"
+        config_path.write_text("")
+        with patch.object(dashboard, "INSTANCE_DIR", instance_dir):
+            resp = app_client.put("/api/nickname",
+                json={"nickname": "x" * 100},
+                content_type="application/json")
+        assert resp.status_code == 200
+        assert len(resp.get_json()["nickname"]) == 50
+
+    def test_set_nickname_clear(self, app_client, instance_dir):
+        import yaml
+        config_path = instance_dir / "config.yaml"
+        config_path.write_text("dashboard:\n  nickname: OldName\n")
+        with patch.object(dashboard, "INSTANCE_DIR", instance_dir):
+            resp = app_client.put("/api/nickname",
+                json={"nickname": ""},
+                content_type="application/json")
+        assert resp.status_code == 200
+        assert resp.get_json()["nickname"] == ""
+        saved = yaml.safe_load(config_path.read_text())
+        assert saved["dashboard"]["nickname"] == ""
+
+    def test_set_nickname_invalid_json(self, app_client):
+        resp = app_client.put("/api/nickname", data="not json", content_type="text/plain")
+        assert resp.status_code == 400
+
+    def test_nickname_in_page_title(self, app_client):
+        with patch("app.config._load_config", return_value={"dashboard": {"nickname": "MyServer"}}):
+            resp = app_client.get("/")
+        assert b"MyServer" in resp.data
+
+    def test_nickname_in_sidebar(self, app_client):
+        with patch("app.config._load_config", return_value={"dashboard": {"nickname": "Lab42"}}):
+            resp = app_client.get("/")
+        assert b"Lab42" in resp.data
+        assert b"instance-nickname" in resp.data
