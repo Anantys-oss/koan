@@ -196,6 +196,11 @@ input[type="text"], textarea, select {
     border: 1px solid var(--border-strong); border-radius: var(--radius-md);
     font-family: var(--font-sans); font-size: var(--fs-body-md);
 }
+select {
+    -webkit-appearance: none; appearance: none; cursor: pointer;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%239a9ead' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right var(--space-3) center; padding-right: var(--space-8);
+}
 textarea { height: auto; min-height: 88px; padding: var(--space-3); resize: vertical; }
 input[type="text"]:focus, textarea:focus, select:focus {
     outline: none; border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-subtle);
