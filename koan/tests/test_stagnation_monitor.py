@@ -552,9 +552,7 @@ class TestRetryTracker:
     def test_save_handles_oserror(self, tmp_path):
         """OSError during save is logged to stderr, not raised."""
         d = str(tmp_path)
-        # atomic_write_json is imported locally inside _save_retry_tracker.
-        with patch("app.utils.atomic_write_json",
-                   side_effect=OSError("disk full")):
+        with patch("app.utils.atomic_write", side_effect=OSError("disk full")):
             # Should not raise — the OSError is caught and printed to stderr.
             increment_retry_count(d, "test mission")
 
@@ -876,3 +874,26 @@ class TestRetryTrackerWithPattern:
         info = get_retry_info(instance, "flaky")
         assert info["count"] == 2
         assert info["pattern_type"] == "infinite_retry"
+
+
+class TestRetryTrackerConcurrency:
+    """Concurrent increment_retry_count must not lose updates."""
+
+    def test_concurrent_increments_no_lost_updates(self, tmp_path):
+        """N threads incrementing the same mission must all be counted."""
+        import threading
+
+        n = 30
+        barrier = threading.Barrier(n)
+
+        def _inc():
+            barrier.wait()
+            increment_retry_count(str(tmp_path), "shared mission")
+
+        threads = [threading.Thread(target=_inc) for _ in range(n)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert get_retry_count(str(tmp_path), "shared mission") == n
