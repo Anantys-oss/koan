@@ -10,6 +10,7 @@ from app.projects_config import (
     get_projects_from_config,
     get_project_config,
     get_project_auto_merge,
+    get_project_autoreview,
     get_project_cli_provider,
     get_project_exploration,
     get_project_max_open_prs,
@@ -520,6 +521,68 @@ class TestGetProjectExploration:
             "projects": {"app": None},
         }
         assert get_project_exploration(config, "app") is True
+
+
+# ---------------------------------------------------------------------------
+# get_project_autoreview
+# ---------------------------------------------------------------------------
+
+
+class TestGetProjectAutoreview:
+    """Tests for get_project_autoreview() — per-project autoreview flag."""
+
+    def test_defaults_to_false_when_key_missing(self):
+        config = {"projects": {"app": {"path": "/app"}}}
+        assert get_project_autoreview(config, "app") is False
+
+    def test_explicit_false_returns_false(self):
+        config = {"projects": {"app": {"path": "/app", "autoreview": False}}}
+        assert get_project_autoreview(config, "app") is False
+
+    def test_explicit_true_returns_true(self):
+        config = {"projects": {"app": {"path": "/app", "autoreview": True}}}
+        assert get_project_autoreview(config, "app") is True
+
+    def test_defaults_section_override(self):
+        config = {
+            "defaults": {"autoreview": True},
+            "projects": {"app": {"path": "/app"}},
+        }
+        assert get_project_autoreview(config, "app") is True
+
+    def test_project_overrides_defaults(self):
+        config = {
+            "defaults": {"autoreview": True},
+            "projects": {"app": {"path": "/app", "autoreview": False}},
+        }
+        assert get_project_autoreview(config, "app") is False
+
+    def test_string_false_coerced(self):
+        config = {"projects": {"app": {"path": "/app", "autoreview": "false"}}}
+        assert get_project_autoreview(config, "app") is False
+
+    def test_string_no_coerced(self):
+        config = {"projects": {"app": {"path": "/app", "autoreview": "no"}}}
+        assert get_project_autoreview(config, "app") is False
+
+    def test_string_zero_coerced(self):
+        config = {"projects": {"app": {"path": "/app", "autoreview": "0"}}}
+        assert get_project_autoreview(config, "app") is False
+
+    def test_string_true_coerced(self):
+        config = {"projects": {"app": {"path": "/app", "autoreview": "true"}}}
+        assert get_project_autoreview(config, "app") is True
+
+    def test_unknown_project_returns_default_false(self):
+        config = {"projects": {"app": {"path": "/app"}}}
+        assert get_project_autoreview(config, "unknown") is False
+
+    def test_none_project_config_inherits_defaults(self):
+        config = {
+            "defaults": {"autoreview": True},
+            "projects": {"app": None},
+        }
+        assert get_project_autoreview(config, "app") is True
 
 
 # ---------------------------------------------------------------------------

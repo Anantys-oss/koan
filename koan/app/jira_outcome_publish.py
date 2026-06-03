@@ -12,7 +12,7 @@ from app.jira_notifications import jira_add_comment, jira_edit_comment, jira_lis
 from app.run_log import log_safe as _log_runner
 from app.tracker_comment_format import build_pr_comment_failure, build_pr_comment_success
 
-_PR_URL_RE = re.compile(r"https://github\.com/[^\s)]+/pull/\d+")
+_PR_URL_RE = re.compile(r"https?://[^/]*github[^\s)]+/pull/\d+")
 _MARKER_PREFIX = "<!-- koan-jira-outcome:"
 
 

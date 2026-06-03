@@ -25,8 +25,8 @@ project tags such as `[project:name]`.
 4. `mission_runner.py` resolves direct skill dispatch or provider execution.
 5. The mission is completed, failed, archived, retried, or requeued based on the
    result and configured guards.
-6. Post-mission reflection, journal writing, PR creation, security review, and
-   auto-merge checks run only when their conditions apply.
+6. Post-mission reflection, journal writing, PR creation, security review,
+   auto-merge checks, and autoreview queuing run only when their conditions apply.
 
 ## Direct Skill Missions
 

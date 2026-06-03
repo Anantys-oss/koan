@@ -497,9 +497,7 @@ def _record_skill_metric(
                 ci_status = "fail"
 
         # Extract PR URL from pending content (best-effort)
-        import re
-        pr_match = re.search(r'(https://github\.com/[^\s)]+/pull/\d+)', pending_content)
-        pr_url = pr_match.group(1) if pr_match else ""
+        pr_url = _extract_pr_url(pending_content)
 
         # Derive skill type from mission title
         skill_type = "fix" if "/fix " in mission_title.lower() else "implement"
@@ -1264,6 +1262,85 @@ def check_security_review(
         return True  # Don't block on failures
 
 
+_PR_URL_RE = re.compile(r'https?://[^/]*github[^\s)]+/pull/\d+')
+
+
+def _extract_pr_url(content: str) -> str:
+    """Extract first GitHub PR URL from text, or empty string."""
+    if not content:
+        return ""
+    match = _PR_URL_RE.search(content)
+    return match.group(0) if match else ""
+
+
+def _maybe_queue_autoreview(
+    instance_dir: str,
+    project_name: str,
+    mission_title: str,
+    pending_content: str,
+    projects_config: Optional[dict],
+    merge_result,
+    security_blocked: bool = False,
+) -> None:
+    """Queue /review then /rebase missions when autoreview is enabled for a project.
+
+    Skipped when:
+    - autoreview is disabled for the project
+    - the mission did not create a PR
+    - no PR URL can be extracted from pending_content
+    - the PR was auto-merged (merge_result is not None)
+    - the mission is itself a /review or /rebase (prevents infinite loops)
+    - security review blocked the PR
+    """
+    # Never trigger autoreview on review/rebase missions themselves
+    tokens = re.findall(r'/\w+', (mission_title or "").lower())
+    if any(t in ('/review', '/rebase', '/review_rebase') for t in tokens):
+        return
+
+    # Skip if auto-merged — PR is already done
+    if merge_result is not None:
+        return
+
+    # Skip if security review flagged the PR
+    if security_blocked:
+        _log_runner("info", f"Autoreview: skipped for {project_name} — blocked by security review")
+        return
+
+    # Check config
+    if not projects_config:
+        return
+    from app.projects_config import get_project_autoreview
+    if not get_project_autoreview(projects_config, project_name):
+        return
+
+    # Detect PR creation
+    from app.session_tracker import detect_pr_created
+    if not detect_pr_created(pending_content):
+        return
+
+    # Extract PR URL
+    pr_url = _extract_pr_url(pending_content)
+    if not pr_url:
+        _log_runner("warn", f"Autoreview: PR detected but no URL found in output for {project_name}")
+        return
+
+    # Queue review then rebase
+    from app.utils import insert_pending_mission
+    missions_path = Path(instance_dir) / "missions.md"
+    try:
+        project_tag = f"[project:{project_name}] " if project_name else ""
+        review_entry = f"- {project_tag}/review {pr_url}"
+        rebase_entry = f"- {project_tag}/rebase {pr_url}"
+        inserted_review = insert_pending_mission(missions_path, review_entry)
+        inserted_rebase = insert_pending_mission(missions_path, rebase_entry)
+        if inserted_review or inserted_rebase:
+            _log_runner("info", f"Autoreview: queued review+rebase for {pr_url} ({project_name})")
+        else:
+            _log_runner("info", f"Autoreview: review+rebase already pending for {pr_url}")
+    except (OSError, ValueError) as e:
+        _log_runner("error", f"Autoreview mission queuing failed: {e}")
+
+
 def run_post_mission(
     instance_dir: str,
     project_name: str,
@@ -1619,7 +1696,15 @@ def run_post_mission(
                 )
                 result["auto_merge_branch"] = merge_result
             else:
+                merge_result = None
                 tracker.record("auto_merge", "skipped", "blocked by security review")
+
+            # Autoreview: queue /review + /rebase when enabled and PR was created
+            _maybe_queue_autoreview(
+                instance_dir, project_name, mission_title,
+                pending_content, _projects_config, merge_result,
+                security_blocked=security_blocking,
+            )
         else:
             # Non-zero exit — skip success-only steps
             for step in ("verification", "quality_pipeline", "lint_gate", "reflection", "security_review", "auto_merge"):

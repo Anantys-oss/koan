@@ -3266,3 +3266,158 @@ class TestMissionRunnerLintBlocking:
             assert _is_lint_blocking(
                 "/instance", "koan", projects_config={"projects": {}},
             ) is False
+
+
+# ---------------------------------------------------------------------------
+# _maybe_queue_autoreview
+# ---------------------------------------------------------------------------
+
+
+class TestMaybeQueueAutoreview:
+    """Tests for _maybe_queue_autoreview — autoreview pipeline step."""
+
+    PR_URL = "https://github.com/owner/repo/pull/42"
+    PENDING_WITH_PR = f"Created PR: {PR_URL} — ready for review"
+
+    def _call(self, instance_dir, mission_title="", pending_content=None,
+              projects_config=None, merge_result=None, security_blocked=False):
+        from app.mission_runner import _maybe_queue_autoreview
+        _maybe_queue_autoreview(
+            str(instance_dir),
+            "myapp",
+            mission_title,
+            pending_content or self.PENDING_WITH_PR,
+            projects_config,
+            merge_result,
+            security_blocked=security_blocked,
+        )
+
+    @patch("app.utils.insert_pending_mission", return_value=True)
+    @patch("app.session_tracker.detect_pr_created", return_value=True)
+    @patch("app.projects_config.get_project_autoreview", return_value=True)
+    def test_queues_review_then_rebase_when_enabled(
+        self, mock_autoreview, mock_detect, mock_insert, tmp_path
+    ):
+        config = {"projects": {"myapp": {"path": str(tmp_path)}}}
+        (tmp_path / "missions.md").write_text("## Pending\n")
+        self._call(tmp_path, projects_config=config)
+        assert mock_insert.call_count == 2
+        calls = [str(c) for c in mock_insert.call_args_list]
+        assert any("/review" in c for c in calls)
+        assert any("/rebase" in c for c in calls)
+        # review must come before rebase
+        first_call_str = str(mock_insert.call_args_list[0])
+        assert "/review" in first_call_str
+
+    @patch("app.utils.insert_pending_mission", return_value=True)
+    @patch("app.session_tracker.detect_pr_created", return_value=True)
+    @patch("app.projects_config.get_project_autoreview", return_value=False)
+    def test_skips_when_disabled(
+        self, mock_autoreview, mock_detect, mock_insert, tmp_path
+    ):
+        config = {"projects": {"myapp": {"path": str(tmp_path)}}}
+        (tmp_path / "missions.md").write_text("## Pending\n")
+        self._call(tmp_path, projects_config=config)
+        mock_insert.assert_not_called()
+
+    @patch("app.utils.insert_pending_mission", return_value=True)
+    @patch("app.session_tracker.detect_pr_created", return_value=False)
+    @patch("app.projects_config.get_project_autoreview", return_value=True)
+    def test_skips_when_no_pr_created(
+        self, mock_autoreview, mock_detect, mock_insert, tmp_path
+    ):
+        config = {"projects": {"myapp": {"path": str(tmp_path)}}}
+        (tmp_path / "missions.md").write_text("## Pending\n")
+        self._call(tmp_path, projects_config=config)
+        mock_insert.assert_not_called()
+
+    @patch("app.utils.insert_pending_mission", return_value=True)
+    @patch("app.session_tracker.detect_pr_created", return_value=True)
+    @patch("app.projects_config.get_project_autoreview", return_value=True)
+    def test_skips_when_no_pr_url_extractable(
+        self, mock_autoreview, mock_detect, mock_insert, tmp_path
+    ):
+        config = {"projects": {"myapp": {"path": str(tmp_path)}}}
+        (tmp_path / "missions.md").write_text("## Pending\n")
+        self._call(tmp_path, pending_content="PR #42 was created (no URL)", projects_config=config)
+        mock_insert.assert_not_called()
+
+    @patch("app.utils.insert_pending_mission", return_value=True)
+    @patch("app.session_tracker.detect_pr_created", return_value=True)
+    @patch("app.projects_config.get_project_autoreview", return_value=True)
+    def test_skips_when_auto_merged(
+        self, mock_autoreview, mock_detect, mock_insert, tmp_path
+    ):
+        config = {"projects": {"myapp": {"path": str(tmp_path)}}}
+        (tmp_path / "missions.md").write_text("## Pending\n")
+        self._call(tmp_path, projects_config=config, merge_result="koan/fix-something")
+        mock_insert.assert_not_called()
+
+    @patch("app.utils.insert_pending_mission", return_value=False)
+    @patch("app.session_tracker.detect_pr_created", return_value=True)
+    @patch("app.projects_config.get_project_autoreview", return_value=True)
+    def test_skips_duplicate_review_already_pending(
+        self, mock_autoreview, mock_detect, mock_insert, tmp_path
+    ):
+        config = {"projects": {"myapp": {"path": str(tmp_path)}}}
+        (tmp_path / "missions.md").write_text(
+            f"## Pending\n- [project:myapp] /review {self.PR_URL}\n"
+        )
+        self._call(tmp_path, projects_config=config)
+        # insert_pending_mission returns False (dedup), no error raised
+        assert mock_insert.call_count == 2  # still called, but returns False (no-op)
+
+    @patch("app.utils.insert_pending_mission", return_value=True)
+    @patch("app.session_tracker.detect_pr_created", return_value=True)
+    @patch("app.projects_config.get_project_autoreview", return_value=True)
+    def test_skips_review_missions(
+        self, mock_autoreview, mock_detect, mock_insert, tmp_path
+    ):
+        config = {"projects": {"myapp": {"path": str(tmp_path)}}}
+        (tmp_path / "missions.md").write_text("## Pending\n")
+        # A /review mission itself should not trigger autoreview
+        self._call(tmp_path, mission_title=f"/review {self.PR_URL}", projects_config=config)
+        mock_insert.assert_not_called()
+
+    @patch("app.utils.insert_pending_mission", return_value=True)
+    @patch("app.session_tracker.detect_pr_created", return_value=True)
+    @patch("app.projects_config.get_project_autoreview", return_value=True)
+    def test_skips_rebase_missions(
+        self, mock_autoreview, mock_detect, mock_insert, tmp_path
+    ):
+        config = {"projects": {"myapp": {"path": str(tmp_path)}}}
+        (tmp_path / "missions.md").write_text("## Pending\n")
+        self._call(tmp_path, mission_title=f"/rebase {self.PR_URL}", projects_config=config)
+        mock_insert.assert_not_called()
+
+    @patch("app.utils.insert_pending_mission", return_value=True)
+    @patch("app.session_tracker.detect_pr_created", return_value=True)
+    @patch("app.projects_config.get_project_autoreview", return_value=True)
+    def test_skips_when_no_projects_config(
+        self, mock_autoreview, mock_detect, mock_insert, tmp_path
+    ):
+        (tmp_path / "missions.md").write_text("## Pending\n")
+        self._call(tmp_path, projects_config=None)
+        mock_insert.assert_not_called()
+
+    @patch("app.utils.insert_pending_mission", return_value=True)
+    @patch("app.session_tracker.detect_pr_created", return_value=True)
+    @patch("app.projects_config.get_project_autoreview", return_value=True)
+    def test_skips_when_security_blocked(
+        self, mock_autoreview, mock_detect, mock_insert, tmp_path
+    ):
+        config = {"projects": {"myapp": {"path": str(tmp_path)}}}
+        (tmp_path / "missions.md").write_text("## Pending\n")
+        self._call(tmp_path, projects_config=config, security_blocked=True)
+        mock_insert.assert_not_called()
+
+    @patch("app.utils.insert_pending_mission", return_value=True)
+    @patch("app.session_tracker.detect_pr_created", return_value=True)
+    @patch("app.projects_config.get_project_autoreview", return_value=True)
+    def test_skips_review_rebase_combo(
+        self, mock_autoreview, mock_detect, mock_insert, tmp_path
+    ):
+        config = {"projects": {"myapp": {"path": str(tmp_path)}}}
+        (tmp_path / "missions.md").write_text("## Pending\n")
+        self._call(tmp_path, mission_title=f"/review_rebase {self.PR_URL}", projects_config=config)
+        mock_insert.assert_not_called()
