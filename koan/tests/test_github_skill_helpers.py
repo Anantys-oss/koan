@@ -8,6 +8,7 @@ from app.github_skill_helpers import (
     extract_issue_tracker_url,
     extract_github_url,
     resolve_project_for_repo,
+    resolve_project_via_pr,
     queue_github_mission,
     format_project_not_found_error,
     format_success_message,
@@ -162,6 +163,92 @@ class TestResolveProjectForRepo:
     @patch("app.utils.resolve_project_path", return_value=None)
     def test_not_found(self, mock_path):
         path, name = resolve_project_for_repo("unknown")
+        assert path is None
+        assert name is None
+
+
+# ---------------------------------------------------------------------------
+# resolve_project_via_pr
+# ---------------------------------------------------------------------------
+
+class TestResolveProjectViaPr:
+    """Tests for resolve_project_via_pr() — PR-level project resolution."""
+
+    @patch("app.github.run_gh")
+    @patch("app.utils.resolve_project_path", return_value="/path/to/koan")
+    @patch("app.utils.project_name_for_path", return_value="koan")
+    def test_resolves_via_base_repo(self, mock_name, mock_path, mock_gh):
+        """PR at fork resolves via base repository (upstream)."""
+        import json
+        mock_gh.return_value = json.dumps({
+            "baseRepository": {
+                "name": "koan",
+                "owner": {"login": "Anantys-oss"},
+            },
+            "headRepository": {
+                "name": "koan",
+                "owner": {"login": "sukria"},
+            },
+        })
+        path, name = resolve_project_via_pr("sukria", "koan", "171")
+        assert path == "/path/to/koan"
+        assert name == "koan"
+        mock_path.assert_called_once_with("koan", owner="Anantys-oss")
+
+    @patch("app.github.run_gh")
+    @patch("app.utils.resolve_project_path")
+    @patch("app.utils.project_name_for_path", return_value="koan")
+    def test_falls_back_to_head_repo(self, mock_name, mock_path, mock_gh):
+        """When base repo doesn't match, tries head repository."""
+        import json
+        mock_gh.return_value = json.dumps({
+            "baseRepository": {
+                "name": "koan",
+                "owner": {"login": "sukria"},
+            },
+            "headRepository": {
+                "name": "koan",
+                "owner": {"login": "contributor"},
+            },
+        })
+        # base repo (sukria/koan) == original, skip; head repo matches
+        mock_path.side_effect = ["/path/to/koan"]
+        path, name = resolve_project_via_pr("sukria", "koan", "42")
+        assert path == "/path/to/koan"
+        mock_path.assert_called_once_with("koan", owner="contributor")
+
+    @patch("app.github.run_gh")
+    def test_gh_failure_returns_none(self, mock_gh):
+        """GitHub API failure returns (None, None) gracefully."""
+        mock_gh.side_effect = RuntimeError("gh failed")
+        path, name = resolve_project_via_pr("unknown", "repo", "1")
+        assert path is None
+        assert name is None
+
+    @patch("app.github.run_gh")
+    def test_same_owner_skipped(self, mock_gh):
+        """When base/head owner matches the URL owner, skip re-resolution."""
+        import json
+        mock_gh.return_value = json.dumps({
+            "baseRepository": {
+                "name": "koan",
+                "owner": {"login": "sukria"},
+            },
+            "headRepository": {
+                "name": "koan",
+                "owner": {"login": "sukria"},
+            },
+        })
+        path, name = resolve_project_via_pr("sukria", "koan", "5")
+        assert path is None
+        assert name is None
+
+    @patch("app.github.run_gh")
+    def test_empty_pr_info(self, mock_gh):
+        """Handles missing baseRepository/headRepository fields."""
+        import json
+        mock_gh.return_value = json.dumps({})
+        path, name = resolve_project_via_pr("owner", "repo", "1")
         assert path is None
         assert name is None
 

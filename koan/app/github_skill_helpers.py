@@ -159,6 +159,67 @@ def resolve_project_for_repo(repo: str, owner: Optional[str] = None) -> Tuple[Op
     return project_path, project_name
 
 
+def resolve_project_via_pr(
+    owner: str, repo: str, number: str,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Resolve project by querying a PR's base repository from GitHub.
+
+    When the URL owner doesn't match any configured project, queries
+    GitHub for the PR's base repository (the repo the PR targets) and
+    tries project resolution again.  Handles the common case where a PR
+    URL points to a contributor's fork but the local project is cloned
+    from the upstream org repo.
+
+    Args:
+        owner: GitHub owner from the PR URL
+        repo: Repository name from the PR URL
+        number: PR number as string
+
+    Returns:
+        Tuple of (project_path, project_name) or (None, None)
+    """
+    import json
+    import sys
+
+    from app.github import run_gh
+
+    try:
+        raw = run_gh(
+            "pr", "view", str(number),
+            "--repo", f"{owner}/{repo}",
+            "--json", "baseRepository,headRepository",
+        )
+        pr_info = json.loads(raw)
+    except Exception as e:
+        print(
+            f"[github_skill_helpers] PR lookup for {owner}/{repo}#{number} "
+            f"failed: {e}",
+            file=sys.stderr,
+        )
+        return None, None
+
+    # Try the base repository first (the repo the PR targets — most likely
+    # to match a configured project when the URL is from a fork).
+    base_repo = pr_info.get("baseRepository") or {}
+    base_owner = (base_repo.get("owner") or {}).get("login")
+    base_name = base_repo.get("name")
+    if base_owner and base_name and (base_owner, base_name) != (owner, repo):
+        result = resolve_project_for_repo(base_name, owner=base_owner)
+        if result[0]:
+            return result
+
+    # Try the head repository (the fork that authored the PR).
+    head_repo = pr_info.get("headRepository") or {}
+    head_owner = (head_repo.get("owner") or {}).get("login")
+    head_name = head_repo.get("name")
+    if head_owner and head_name and (head_owner, head_name) != (owner, repo):
+        result = resolve_project_for_repo(head_name, owner=head_owner)
+        if result[0]:
+            return result
+
+    return None, None
+
+
 def queue_github_mission(
     ctx, command: str, url: str, project_name: str,
     context: Optional[str] = None, *, urgent: bool = False,
@@ -367,8 +428,10 @@ def handle_github_skill(
         owner, repo, url_type_result, number = parsed
         type_label = "PR" if url_type_result == "pull" else "issue"
 
-    # Resolve project
+    # Resolve project — try standard resolution first, then PR-level fallback
     project_path, project_name = resolve_project_for_repo(repo, owner=owner)
+    if not project_path and type_label == "PR":
+        project_path, project_name = resolve_project_via_pr(owner, repo, number)
     if not project_path:
         return format_project_not_found_error(repo, owner=owner)
 
