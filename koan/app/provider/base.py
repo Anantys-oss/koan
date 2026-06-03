@@ -1,7 +1,7 @@
 """Base class and constants for CLI provider abstraction."""
 
 import shutil
-from typing import List, Optional, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 
 # ---------------------------------------------------------------------------
@@ -21,6 +21,16 @@ TOOL_NAME_MAP = {
     "Glob": "glob",
     "Grep": "grep",
     "Skill": "skill",
+}
+
+# JSONL ``type`` values that signal a provider-level error event in streamed
+# CLI output. Shared by error-preview extraction, runtime auth detection, and
+# the Codex provider so the recognized set stays in sync across modules.
+PROVIDER_ERROR_EVENT_TYPES = {
+    "error",
+    "turn.failed",
+    "response.failed",
+    "task.failed",
 }
 
 
@@ -57,6 +67,47 @@ class CLIProvider:
     def build_prompt_args(self, prompt: str) -> List[str]:
         """Build args for passing a prompt to the CLI."""
         raise NotImplementedError
+
+    def supports_stdin_prompt_passing(self) -> bool:
+        """Return True if Kōan may move the prompt from argv to stdin.
+
+        Providers that need stdin for their own tool calls should return False.
+        """
+        return True
+
+    def rewrite_prompt_for_stdin(
+        self,
+        cmd: Sequence[str],
+        stdin_marker: str,
+    ) -> Tuple[List[str], Optional[str]]:
+        """Rewrite *cmd* to read the prompt from stdin.
+
+        Returns ``(rewritten_cmd, prompt_text)``.  ``prompt_text`` is ``None``
+        when no rewrite is possible or needed.
+
+        The default supports Claude-style commands where ``-p`` is followed by
+        the prompt argument.
+        """
+        cmd_list = list(cmd)
+        try:
+            prompt_idx = cmd_list.index("-p") + 1
+        except ValueError:
+            return cmd_list, None
+        if prompt_idx >= len(cmd_list):
+            return cmd_list, None
+        prompt = cmd_list[prompt_idx]
+        if prompt == stdin_marker:
+            return cmd_list, None
+        rewritten = cmd_list.copy()
+        rewritten[prompt_idx] = stdin_marker
+        return rewritten, prompt
+
+    def invocation_lock_name(self) -> str:
+        """Return a process-wide lock name for serialized CLI invocations.
+
+        Empty string means invocations can run concurrently.
+        """
+        return ""
 
     def build_system_prompt_args(self, system_prompt: str) -> List[str]:
         """Build args for passing a system prompt to the CLI.
@@ -172,6 +223,13 @@ class CLIProvider:
         """Build args that ask the provider to write its final assistant text."""
         return []
 
+    def add_last_message_file_args(self, cmd: List[str], path: str) -> List[str]:
+        """Insert final-message-file args into an already-built command."""
+        args = self.build_last_message_file_args(path)
+        if not args:
+            return cmd
+        return [*cmd, *args]
+
     def build_thinking_args(
         self, enabled: bool = False, budget_tokens: int = 0,
     ) -> List[str]:
@@ -277,6 +335,20 @@ class CLIProvider:
         Providers own this because quota wording and output structure differ:
         Claude emits CLI/provider text, Codex emits JSONL events, Copilot emits
         GitHub-style 429 messages. The base provider has no quota concept.
+        """
+        return False
+
+    def detect_auth_failure(
+        self,
+        stdout_text: str = "",
+        stderr_text: str = "",
+        exit_code: int = 0,
+    ) -> bool:
+        """Return True when provider output is an auth/session failure.
+
+        Providers own this because auth wording and output structure differ.
+        Generic classifier code handles shared auth text; providers can add
+        structured or provider-specific cases without leaking patterns upward.
         """
         return False
 

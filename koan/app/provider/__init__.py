@@ -34,6 +34,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from app.provider.base import (  # noqa: F401
     CLIProvider,
     CLAUDE_TOOLS,
+    PROVIDER_ERROR_EVENT_TYPES,
     TOOL_NAME_MAP,
 )
 
@@ -43,6 +44,34 @@ from app.provider.codex import CodexProvider  # noqa: F401
 from app.provider.copilot import CopilotProvider  # noqa: F401
 from app.provider.local import LocalLLMProvider  # noqa: F401
 from app.provider.ollama_launch import OllamaLaunchProvider  # noqa: F401
+
+
+def _extract_provider_error_preview(stdout: str) -> str:
+    """Return the most useful direct provider error from JSONL stdout."""
+    previews: List[str] = []
+    for line in (stdout or "").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            event = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        etype = str(event.get("type") or "")
+        if etype not in PROVIDER_ERROR_EVENT_TYPES:
+            continue
+        message = event.get("message")
+        if isinstance(message, str) and message.strip():
+            previews.append(message.strip())
+            continue
+        error = event.get("error")
+        if isinstance(error, dict):
+            err_message = error.get("message")
+            if isinstance(err_message, str) and err_message.strip():
+                previews.append(err_message.strip())
+    return previews[-1] if previews else ""
 
 
 def _format_cli_error(returncode: int, stdout: str, stderr: str) -> str:
@@ -57,7 +86,8 @@ def _format_cli_error(returncode: int, stdout: str, stderr: str) -> str:
     if err:
         parts.append(f"stderr={err[:300]}")
     if out and not err:
-        parts.append(f"stdout={out[:300]}")
+        preview = _extract_provider_error_preview(out) or out
+        parts.append(f"stdout={preview[:300]}")
     return "CLI invocation failed: " + " | ".join(parts)
 
 
@@ -772,10 +802,7 @@ def run_command_streaming(
             suffix=".txt",
         )
         os.close(fd)
-        last_message_args = provider.build_last_message_file_args(last_message_path)
-        if last_message_args and cmd:
-            # Codex requires exec flags before the final prompt argument.
-            cmd = [*cmd[:-1], *last_message_args, cmd[-1]]
+        cmd = provider.add_last_message_file_args(cmd, last_message_path)
 
     print(f"[cli] Starting {provider.name or 'provider'} CLI session", flush=True)
 
@@ -790,6 +817,7 @@ def run_command_streaming(
     try:
         proc, cleanup = popen_cli(
             cmd,
+            provider=provider,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             encoding="utf-8",

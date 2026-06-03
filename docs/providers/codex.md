@@ -172,6 +172,24 @@ Install the CLI: `npm install -g @openai/codex`
 
 Re-authenticate: `codex login --device-auth`
 
+When debugging Kōan, test the same non-interactive path Kōan uses. A short
+plain command like `codex exec 'say hello'` can succeed while the daemon path
+fails during JSON streaming, stdin prompt passing, or final-message capture:
+
+```bash
+printf 'say hello' | codex exec --json --output-last-message /tmp/koan-codex-last-message --sandbox workspace-write -
+```
+
+If Kōan runs as a background service, also verify that the service user has the
+same `HOME`, `PATH`, `.codex/auth.json`, and `.env` values as your interactive
+shell. Restart Kōan after re-authenticating so the daemon uses the refreshed
+Codex auth state.
+
+Kōan serializes its own Codex CLI subprocesses to avoid concurrent token-refresh
+races between preflight probes, message formatting, and long-running review
+sessions. If Codex still reports `401 Unauthorized` or refresh-token reuse, Kōan
+will pause for auth and requeue the active mission instead of marking it failed.
+
 ### Rate limits
 
 Codex shares quota with your ChatGPT subscription. If you hit limits,

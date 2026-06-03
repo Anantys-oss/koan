@@ -65,6 +65,11 @@ class CopilotProvider(CLIProvider):
         prefix = ["copilot"] if self._is_gh_mode else []
         return prefix + ["-p", prompt]
 
+    def supports_stdin_prompt_passing(self) -> bool:
+        # Copilot consumes stdin for the prompt, which prevents its own tool
+        # calls from using stdin later in the session.
+        return False
+
     def build_tool_args(
         self,
         allowed_tools: Optional[List[str]] = None,
