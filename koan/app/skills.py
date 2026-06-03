@@ -190,6 +190,8 @@ def _parse_yaml_lite(text: str) -> Dict[str, Any]:
         if value.startswith("[") and value.endswith("]"):
             result[key] = _parse_inline_list(value)
         else:
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+                value = value[1:-1]
             result[key] = value
 
         i += 1

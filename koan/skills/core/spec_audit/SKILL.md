@@ -2,7 +2,7 @@
 name: spec_audit
 scope: core
 group: code
-emoji: "\U0001F4D0"
+emoji: 📐
 description: Audit docs/code alignment — find spec drift and queue fix missions
 version: 1.0.0
 audience: hybrid
