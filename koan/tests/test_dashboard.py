@@ -1811,6 +1811,14 @@ class TestConfigPage:
         assert b"projects.yaml" in resp.data
         assert b"Restart Service" in resp.data
 
+    def test_config_page_has_tab_navigation(self, app_client):
+        resp = app_client.get("/config")
+        assert b'class="config-tabs"' in resp.data
+        assert b'data-tab="config-yaml"' in resp.data
+        assert b'data-tab="projects-yaml"' in resp.data
+        assert b'id="panel-config-yaml"' in resp.data
+        assert b'id="panel-projects-yaml"' in resp.data
+
     def test_config_page_has_syntax_highlight_classes(self, app_client):
         resp = app_client.get("/config")
         assert b"hl-key" in resp.data
