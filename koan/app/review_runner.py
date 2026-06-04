@@ -1307,10 +1307,7 @@ def _collapse_old_review(
     comment_id = comment.get("id")
     if not comment_id:
         return
-    collapsed = (
-        f"{SUMMARY_TAG}\n"
-        "~~Previous review~~ — superseded by a newer review below.\n"
-    )
+    collapsed = "~~Previous review~~ — superseded by a newer review below.\n"
     try:
         run_gh(
             "api",

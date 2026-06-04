@@ -2961,11 +2961,11 @@ class TestReReviewFreshComment:
     @patch("app.review_runner.run_gh")
     @patch("app.review_runner._run_claude_review")
     @patch("app.review_runner.fetch_pr_context")
-    def test_same_shas_patches_existing_comment(
+    def test_same_shas_skips_review_entirely(
         self, mock_fetch, mock_claude, mock_gh, mock_repliable,
         mock_find_bot, _mock_shas, pr_context, review_skill_dir,
     ):
-        """Re-review of same commits (retry) PATCHes the existing comment."""
+        """Re-review of same commits (no new code) skips the review entirely."""
         from app.review_markers import SUMMARY_TAG, COMMIT_IDS_START, COMMIT_IDS_END
 
         mock_fetch.return_value = pr_context
