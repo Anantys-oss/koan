@@ -46,6 +46,7 @@ from app.config import (
     get_rebase_include_bot_feedback,
     get_rebase_ci_idle_timeout,
     get_rebase_ci_max_duration,
+    get_rebase_max_conflict_rounds,
     get_rebase_review_idle_timeout,
     get_rebase_review_max_duration,
     get_skill_max_turns,
@@ -751,7 +752,6 @@ def run_rebase(
     # ── Step 3: Rebase onto target branch ─────────────────────────────
     print(f"[rebase] Rebasing `{branch}` onto `{base}`", flush=True)
     notify_fn(f"Rebasing `{branch}` onto `{base}`...")
-    from app.config import get_rebase_max_conflict_rounds
     rebase_remote = _rebase_with_conflict_resolution(
         base, project_path, context, actions_log,
         notify_fn=notify_fn, skill_dir=skill_dir,
@@ -1126,7 +1126,7 @@ def _rebase_with_conflict_resolution(
     actions_log: List[str],
     notify_fn=None,
     skill_dir: Optional[Path] = None,
-    max_conflict_rounds: int = 5,
+    max_conflict_rounds: int = 10,
     preferred_remote: Optional[str] = None,
     head_remote: Optional[str] = None,
 ) -> Optional[str]:

@@ -160,6 +160,11 @@ skill_timeout: 7200
 # iteration is preserved.
 # rebase_include_bot_feedback: true
 
+# Maximum conflict resolution rounds during rebase.
+# Each conflicting commit consumes one round — multi-commit PRs with many
+# conflicts may need more than the default.  Set higher for large repos.
+# rebase_max_conflict_rounds: 10
+
 # Allow /rebase on PRs not created by this instance.
 # Default false keeps the branch-prefix ownership guard in Telegram /rebase.
 # Set true only when you intentionally want to rebase any writable PR.

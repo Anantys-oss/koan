@@ -767,19 +767,9 @@ def get_analysis_max_turns() -> int:
 
 
 def get_rebase_max_conflict_rounds() -> int:
-    """Get max conflict resolution rounds for rebase operations.
-
-    Each conflicting commit during a rebase requires one round.  Multi-commit
-    PRs with many conflicts can exceed the previous hardcoded limit of 5,
-    causing the rebase to fail silently.
-
-    Config key: rebase_max_conflict_rounds (default: 10).
-
-    Returns:
-        Maximum number of conflict resolution rounds.
-    """
+    """Get max conflict resolution rounds for rebase (default 10)."""
     config = _load_config()
-    return _safe_int(config.get("rebase_max_conflict_rounds", 10), 10)
+    return max(1, _safe_int(config.get("rebase_max_conflict_rounds", 10), 10))
 
 
 def get_post_mission_timeout() -> int:
