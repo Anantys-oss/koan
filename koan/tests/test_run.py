@@ -6220,6 +6220,47 @@ class TestIdleTimeoutAutoPause:
     @patch("app.run.acquire_pidfile")
     @patch("app.run.release_pidfile")
     @patch("app.run._run_iteration")
+    def test_idle_notification_not_repeated_after_counter_reset(
+        self, mock_iteration, mock_release, mock_acquire,
+        mock_startup, mock_subproc, koan_root,
+    ):
+        """Idle notification sent once, not repeated when counter resets."""
+        from app.run import main_loop
+
+        os.environ["KOAN_ROOT"] = str(koan_root)
+        os.environ["KOAN_PROJECTS"] = f"test:{koan_root}"
+        (koan_root / ".koan-project").write_text("test")
+
+        call_count = [0]
+
+        def iteration_side_effect(**kwargs):
+            call_count[0] += 1
+            # 60 idle iterations (2x MAX_CONSECUTIVE_IDLE) then stop
+            if call_count[0] <= 60:
+                return "idle"
+            (koan_root / ".koan-stop").touch()
+            (koan_root / ".koan-project").write_text("test")
+            return True
+
+        mock_iteration.side_effect = iteration_side_effect
+
+        with patch("app.run._notify") as mock_notify, \
+             patch("app.config.get_auto_pause", return_value=False):
+            main_loop()
+
+        idle_msgs = [
+            c for c in mock_notify.call_args_list
+            if "No work available" in str(c)
+        ]
+        assert len(idle_msgs) == 1, (
+            f"Expected exactly 1 idle notification, got {len(idle_msgs)}"
+        )
+
+    @patch("app.run.subprocess.run")
+    @patch("app.run.run_startup", return_value=(5, 60, "koan/"))
+    @patch("app.run.acquire_pidfile")
+    @patch("app.run.release_pidfile")
+    @patch("app.run._run_iteration")
     def test_non_idle_false_does_not_count(
         self, mock_iteration, mock_release, mock_acquire,
         mock_startup, mock_subproc, koan_root,
