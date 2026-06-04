@@ -1838,6 +1838,40 @@ class TestApplyReviewFeedback:
         assert meta["status"] == "feedback_quota"
         assert "quota" in actions[-1].lower()
 
+    @patch("app.rebase_pr._run_git")
+    @patch("app.rebase_pr.run_claude_step")
+    def test_step_exception_becomes_feedback_failed(self, mock_step, mock_git):
+        """A crash in the feedback step (e.g. a pre-commit hook rejecting the
+        edits) must not propagate — the git rebase already succeeded, so it is
+        converted to ``feedback_failed`` and the uncommitted edits are reset so
+        the clean rebase can still be pushed."""
+        from app.git_utils import GitCommandError
+
+        mock_step.side_effect = GitCommandError(
+            "git commit", 1, "husky pre-commit hook failed",
+        )
+        context = {
+            "title": "Fix", "body": "", "branch": "br", "base": "main",
+            "diff": "+code", "review_comments": "fix this",
+            "reviews": "", "issue_comments": "",
+        }
+        actions = []
+        meta = {}
+        # Must not raise.
+        summary = _apply_review_feedback(
+            context, "42", "/project", actions,
+            skill_dir=REBASE_SKILL_DIR,
+            result_meta=meta,
+        )
+        assert summary == ""
+        assert meta["status"] == "feedback_failed"
+        # The partial feedback edits are reset so the clean rebase survives.
+        reset_calls = [
+            c for c in mock_git.call_args_list
+            if c.args and c.args[0][:3] == ["git", "reset", "--hard"]
+        ]
+        assert reset_calls, "expected a git reset --hard to drop partial edits"
+
 
 # ---------------------------------------------------------------------------
 # run_rebase — Claude step integration
