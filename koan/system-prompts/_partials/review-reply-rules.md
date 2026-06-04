@@ -14,7 +14,10 @@ Do NOT reply when:
 - The comment is from the PR author to themselves
 - Replying would just repeat what your review already covers
 
-When you do reply, keep it concise and actionable — 2-4 sentences max.
+When you do reply, apply the following output style to your reply text:
+
+{@include caveman-mode}
+
 Reference specific code or lines when relevant.
 
 ### Closing the PR
