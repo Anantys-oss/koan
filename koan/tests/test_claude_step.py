@@ -16,12 +16,14 @@ from app.claude_step import (
     _rebase_onto_target,
     _run_git,
     commit_if_changes,
+    is_hook_rejection,
     resolve_pr_location,
     run_claude,
     run_claude_step,
     run_project_tests,
     strip_cli_noise,
 )
+from app.git_utils import GitCommandError
 
 
 # ---------- _run_git ----------
@@ -641,6 +643,50 @@ class TestCommitIfChanges:
         mock_git.side_effect = ["", RuntimeError("git failed: pre-commit rejected")]
         with pytest.raises(RuntimeError, match="pre-commit rejected"):
             commit_if_changes("/project", "test msg")
+
+    @patch("app.claude_step._precommit_hook_path", return_value="/project/.git/hooks/pre-commit")
+    @patch("app.claude_step._run_git")
+    @patch("app.cli_exec.subprocess.run")
+    def test_commit_respects_fast_hook_rejection(self, mock_run, mock_git, _hook):
+        """A fast hook rejection must re-raise — never silently --no-verify.
+
+        Distinct from a timeout (hook hung): here the hook ran, evaluated
+        quickly, and objected, so the commit must NOT be bypassed.
+        """
+        mock_run.return_value = MagicMock(stdout=" M file.py\n", returncode=0)
+        mock_git.side_effect = [
+            "",
+            GitCommandError("git commit", 1, "lint failed"),
+        ]
+        with pytest.raises(GitCommandError):
+            commit_if_changes("/project", "test msg")
+        # The --no-verify retry must NOT have been attempted.
+        for c in mock_git.call_args_list:
+            assert "--no-verify" not in c.args[0]
+
+
+class TestIsHookRejection:
+    """Tests for is_hook_rejection failure-mode classification."""
+
+    @patch("app.claude_step._precommit_hook_path", return_value="/repo/.git/hooks/pre-commit")
+    def test_fast_nonzero_with_hook_present_is_rejection(self, _hook):
+        exc = GitCommandError("git commit", 1, "eslint found errors")
+        assert is_hook_rejection(exc, "/repo") is True
+
+    @patch("app.claude_step._precommit_hook_path", return_value="/repo/.git/hooks/pre-commit")
+    def test_exit_128_is_git_fatal_not_hook(self, _hook):
+        exc = GitCommandError("git commit", 128, "fatal: bad object")
+        assert is_hook_rejection(exc, "/repo") is False
+
+    @patch("app.claude_step._precommit_hook_path", return_value="/repo/.git/hooks/pre-commit")
+    def test_nothing_to_commit_is_not_hook(self, _hook):
+        exc = GitCommandError("git commit", 1, "nothing to commit, working tree clean")
+        assert is_hook_rejection(exc, "/repo") is False
+
+    @patch("app.claude_step._precommit_hook_path", return_value=None)
+    def test_no_hook_present_is_not_rejection(self, _hook):
+        exc = GitCommandError("git commit", 1, "some error")
+        assert is_hook_rejection(exc, "/repo") is False
 
     @patch("app.claude_step._run_git")
     @patch("app.cli_exec.subprocess.run")

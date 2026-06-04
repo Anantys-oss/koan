@@ -8,6 +8,7 @@ pipeline modules.
 
 import json
 import logging
+import os
 import re
 import shlex
 import subprocess
@@ -19,10 +20,12 @@ from typing import Callable, List, Optional, Tuple
 from app.cli_exec import popen_cli, stream_with_timeout
 from app.cli_provider import build_full_command, run_command
 from app.config import get_model_config
+from app.git_utils import GitCommandError
 from app.git_utils import get_current_branch as _git_utils_get_current_branch
 from app.git_utils import ordered_remotes, run_git_strict
 from app.github import pr_create, run_gh, sanitize_github_comment
 from app.prompts import load_prompt_or_skill
+from app.run_log import log_safe
 
 
 class StepResult:
@@ -366,15 +369,59 @@ def run_claude(
     }
 
 
+def _precommit_hook_path(repo_path: str) -> Optional[Path]:
+    """Return the path to an executable pre-commit hook, or ``None``.
+
+    Checks the standard git hook location plus Husky (the common JS toolchain
+    layout). Only files that exist and are executable count.
+    """
+    candidates = [
+        Path(repo_path) / ".git" / "hooks" / "pre-commit",
+        Path(repo_path) / ".husky" / "pre-commit",
+    ]
+    for path in candidates:
+        try:
+            if path.is_file() and os.access(path, os.X_OK):
+                return path
+        except OSError:
+            continue
+    return None
+
+
+def is_hook_rejection(exc: GitCommandError, repo_path: str) -> bool:
+    """Heuristically decide whether *exc* came from a pre-commit hook objecting.
+
+    git reserves exit code 128 for its *own* fatal errors (bad ref, lock
+    contention, etc.); a hook rejection propagates the hook's own exit code
+    (typically 1/2). git's "nothing to commit" is the one common exit-1
+    false-positive, so it is filtered out. Finally, an executable pre-commit
+    hook must actually be present. Together these separate "the hook ran and
+    said no" from "git itself failed".
+    """
+    if exc.returncode == 128:
+        return False
+    if "nothing to commit" in (exc.stderr or ""):
+        return False
+    return _precommit_hook_path(repo_path) is not None
+
+
 def _commit_with_hook_fallback(commit_args: list, cwd: str, run_git=None) -> None:
     """Commit, attempting target-repo pre-commit hooks first.
 
     Project pre-commit hooks (lint/format/test) can exceed the git timeout on
     first run — a cold env install (nvm/node) easily outlasts the default. A
     blanket ``--no-verify`` would never let hooks run; an unguarded hooked
-    commit crashes the whole pipeline on timeout. So try the hooked commit with
-    a generous 180s budget, and only on *timeout* retry with ``--no-verify``.
-    CI remains the real gate. Non-timeout failures propagate unchanged.
+    commit crashes the whole pipeline on timeout.
+
+    The two failure modes are distinct and handled differently:
+
+    * **Timeout** (``subprocess.TimeoutExpired``) — the hook *hung* (e.g. a
+      watch-mode test runner, or a cold env install). Retry with ``--no-verify``
+      so the pipeline makes progress; CI remains the real gate.
+    * **Fast non-zero exit** (:class:`GitCommandError`) — when this is a hook
+      *rejection* (see :func:`is_hook_rejection`), the hook evaluated quickly and
+      objected. Surface its output and re-raise — do *not* bypass it. Genuine
+      git errors (exit 128, etc.) also re-raise unchanged.
 
     ``run_git`` defaults to :func:`_run_git`; callers may pass their own
     module-level reference so patches in tests resolve correctly.
@@ -382,10 +429,25 @@ def _commit_with_hook_fallback(commit_args: list, cwd: str, run_git=None) -> Non
     runner = run_git or _run_git
     try:
         runner(["git", "commit", *commit_args], cwd=cwd, timeout=180)
-    except (subprocess.TimeoutExpired, RuntimeError) as exc:
-        if "timed out" not in str(exc).lower():
-            raise
+    except subprocess.TimeoutExpired:
+        # Hook hung past the budget — bypass it so the pipeline can proceed.
         runner(["git", "commit", "--no-verify", *commit_args], cwd=cwd)
+    except GitCommandError as exc:
+        if is_hook_rejection(exc, cwd):
+            # Hook ran, evaluated quickly, and objected — respect it.
+            log_safe(
+                "git",
+                f"pre-commit hook rejected the commit (exit {exc.returncode}): "
+                f"{(exc.stderr or '').strip()[:200]}",
+            )
+        raise
+    except RuntimeError as exc:
+        # A non-GitCommandError runner (e.g. a test double) that reports a
+        # timeout in its message still means the hook hung — bypass it.
+        if "timed out" in str(exc).lower():
+            runner(["git", "commit", "--no-verify", *commit_args], cwd=cwd)
+            return
+        raise
 
 
 def commit_if_changes(project_path: str, message: str) -> bool:

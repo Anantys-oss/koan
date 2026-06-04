@@ -13,6 +13,24 @@ import subprocess
 from typing import Dict, List, Optional, Tuple
 
 
+class GitCommandError(RuntimeError):
+    """Raised by :func:`run_git_strict` when git exits non-zero.
+
+    Subclasses ``RuntimeError`` so existing ``except RuntimeError`` callers keep
+    working, while carrying the exit code and captured output. This lets callers
+    distinguish failure modes — notably a pre-commit *hook rejection* (git exits
+    with the hook's own code, typically 1/2) from a git plumbing error (git
+    reserves exit code 128 for its own fatal errors).
+    """
+
+    def __init__(self, cmd: str, returncode: int, stderr: str, stdout: str = ""):
+        super().__init__(f"git failed: {cmd} — {stderr[:200]}")
+        self.cmd = cmd
+        self.returncode = returncode
+        self.stderr = stderr
+        self.stdout = stdout
+
+
 def run_git(
     *args: str,
     cwd: str = None,
@@ -78,7 +96,9 @@ def run_git_strict(
     )
     if result.returncode != 0:
         cmd_str = " ".join(["git"] + list(args))
-        raise RuntimeError(f"git failed: {cmd_str} — {result.stderr[:200]}")
+        raise GitCommandError(
+            cmd_str, result.returncode, result.stderr, result.stdout,
+        )
     return result.stdout.strip()
 
 
