@@ -3,7 +3,7 @@
 import os
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, call
 
 import pytest
 
@@ -12,6 +12,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from skills.core.explain.explain_runner import (
     _build_explain_prompt,
+    _is_transient_error,
+    _run_claude_explain_with_retry,
+    _EXPLAIN_TAG,
     main,
     run_explain,
 )
@@ -86,13 +89,91 @@ class TestBuildExplainPrompt:
         assert "Project Learnings" in prompt
 
 
+class TestIsTransientError:
+    """Test transient error detection."""
+
+    def test_rate_limit(self):
+        assert _is_transient_error("CLI invocation failed: exit=1 | stderr=rate_limit_exceeded")
+
+    def test_timeout(self):
+        assert _is_transient_error("CLI invocation timed out after 600s")
+
+    def test_connection_error(self):
+        assert _is_transient_error("Connection refused ECONNRESET")
+
+    def test_server_error_503(self):
+        assert _is_transient_error("exit=1 | stderr=503 Service Unavailable")
+
+    def test_overloaded(self):
+        assert _is_transient_error("API is overloaded")
+
+    def test_non_transient(self):
+        assert not _is_transient_error("invalid model name")
+
+    def test_non_transient_syntax(self):
+        assert not _is_transient_error("exit=1 | stderr=SyntaxError in prompt")
+
+    def test_empty_error(self):
+        assert not _is_transient_error("")
+
+
+class TestRetryLogic:
+    """Test retry-with-backoff for Claude CLI failures."""
+
+    @patch("skills.core.explain.explain_runner.time.sleep")
+    @patch("skills.core.explain.explain_runner._run_claude_explain")
+    def test_retry_on_transient_error(self, mock_claude, mock_sleep):
+        mock_claude.side_effect = [
+            ("", "rate limit exceeded"),
+            ("Explanation text", ""),
+        ]
+
+        output, error = _run_claude_explain_with_retry("prompt", "/path")
+
+        assert output == "Explanation text"
+        assert error == ""
+        assert mock_claude.call_count == 2
+        mock_sleep.assert_called_once()
+
+    @patch("skills.core.explain.explain_runner.time.sleep")
+    @patch("skills.core.explain.explain_runner._run_claude_explain")
+    def test_no_retry_on_non_transient(self, mock_claude, mock_sleep):
+        mock_claude.return_value = ("", "invalid model name foo")
+
+        output, error = _run_claude_explain_with_retry("prompt", "/path")
+
+        assert error == "invalid model name foo"
+        assert mock_claude.call_count == 1
+        mock_sleep.assert_not_called()
+
+    @patch("skills.core.explain.explain_runner.time.sleep")
+    @patch("skills.core.explain.explain_runner._run_claude_explain")
+    def test_retry_exhausted(self, mock_claude, mock_sleep):
+        mock_claude.return_value = ("", "timeout after 600s")
+
+        output, error = _run_claude_explain_with_retry("prompt", "/path")
+
+        assert "timeout" in error
+        assert mock_claude.call_count == 2
+
+    @patch("skills.core.explain.explain_runner._run_claude_explain")
+    def test_success_no_retry(self, mock_claude):
+        mock_claude.return_value = ("Explanation", "")
+
+        output, error = _run_claude_explain_with_retry("prompt", "/path")
+
+        assert output == "Explanation"
+        assert mock_claude.call_count == 1
+
+
 class TestRunExplain:
     """Test the main run_explain orchestration."""
 
+    @patch("skills.core.explain.explain_runner._post_explanation_comment")
     @patch("app.rebase_pr.fetch_pr_context")
     @patch("app.claude_step.resolve_pr_location")
     @patch("skills.core.explain.explain_runner._run_claude_explain")
-    def test_success(self, mock_claude, mock_resolve, mock_fetch):
+    def test_success(self, mock_claude, mock_resolve, mock_fetch, mock_post):
         mock_resolve.return_value = ("owner", "repo")
         mock_fetch.return_value = {
             "title": "Fix bug",
@@ -106,6 +187,7 @@ class TestRunExplain:
             "issue_comments": "",
         }
         mock_claude.return_value = ("Great explanation of the fix.", "")
+        mock_post.return_value = (True, "")
 
         notify = MagicMock()
         success, summary = run_explain(
@@ -118,6 +200,31 @@ class TestRunExplain:
         assert "Great explanation" in summary
         assert "#42" in summary
         notify.assert_called_once()
+        mock_post.assert_called_once_with("owner", "repo", "42", "Great explanation of the fix.")
+
+    @patch("skills.core.explain.explain_runner._post_explanation_comment")
+    @patch("app.rebase_pr.fetch_pr_context")
+    @patch("app.claude_step.resolve_pr_location")
+    @patch("skills.core.explain.explain_runner._run_claude_explain")
+    def test_success_comment_post_failure(self, mock_claude, mock_resolve, mock_fetch, mock_post):
+        """Explanation succeeds even when PR comment posting fails."""
+        mock_resolve.return_value = ("owner", "repo")
+        mock_fetch.return_value = {
+            "title": "Fix", "author": "a", "branch": "b", "base": "main",
+            "body": "", "diff": "+change",
+            "review_comments": "", "reviews": "", "issue_comments": "",
+        }
+        mock_claude.return_value = ("Explanation text", "")
+        mock_post.return_value = (False, "403 Forbidden")
+
+        success, summary = run_explain(
+            "owner", "repo", "42", "/path",
+            notify_fn=MagicMock(),
+            skill_dir=SKILL_DIR,
+        )
+
+        assert success is True
+        assert "comment post failed" in summary
 
     @patch("app.rebase_pr.fetch_pr_context")
     @patch("app.claude_step.resolve_pr_location")
@@ -155,10 +262,12 @@ class TestRunExplain:
         assert success is False
         assert "not found" in summary.lower()
 
+    @patch("skills.core.explain.explain_runner.time.sleep")
     @patch("app.rebase_pr.fetch_pr_context")
     @patch("app.claude_step.resolve_pr_location")
     @patch("skills.core.explain.explain_runner._run_claude_explain")
-    def test_claude_error(self, mock_claude, mock_resolve, mock_fetch):
+    def test_claude_error_with_retry(self, mock_claude, mock_resolve, mock_fetch, mock_sleep):
+        """Non-transient errors fail without retry."""
         mock_resolve.return_value = ("owner", "repo")
         mock_fetch.return_value = {
             "title": "Fix",
@@ -171,7 +280,7 @@ class TestRunExplain:
             "reviews": "",
             "issue_comments": "",
         }
-        mock_claude.return_value = ("", "rate limited")
+        mock_claude.return_value = ("", "invalid model")
 
         success, summary = run_explain(
             "owner", "repo", "42", "/path",
@@ -181,6 +290,82 @@ class TestRunExplain:
 
         assert success is False
         assert "failed" in summary.lower()
+        assert mock_claude.call_count == 1
+        mock_sleep.assert_not_called()
+
+    @patch("skills.core.explain.explain_runner._post_explanation_comment")
+    @patch("skills.core.explain.explain_runner.time.sleep")
+    @patch("app.rebase_pr.fetch_pr_context")
+    @patch("app.claude_step.resolve_pr_location")
+    @patch("skills.core.explain.explain_runner._run_claude_explain")
+    def test_transient_error_retries_then_succeeds(
+        self, mock_claude, mock_resolve, mock_fetch, mock_sleep, mock_post,
+    ):
+        mock_resolve.return_value = ("owner", "repo")
+        mock_fetch.return_value = {
+            "title": "Fix", "author": "a", "branch": "b", "base": "main",
+            "body": "", "diff": "+change",
+            "review_comments": "", "reviews": "", "issue_comments": "",
+        }
+        mock_claude.side_effect = [
+            ("", "rate limit exceeded"),
+            ("Explanation after retry", ""),
+        ]
+        mock_post.return_value = (True, "")
+
+        success, summary = run_explain(
+            "owner", "repo", "42", "/path",
+            notify_fn=MagicMock(),
+            skill_dir=SKILL_DIR,
+        )
+
+        assert success is True
+        assert "Explanation after retry" in summary
+        assert mock_claude.call_count == 2
+        mock_sleep.assert_called_once()
+
+
+class TestPostExplanationComment:
+    """Test PR comment posting."""
+
+    @patch("app.github.run_gh")
+    @patch("app.github.find_bot_comment")
+    def test_posts_new_comment(self, mock_find, mock_gh):
+        from skills.core.explain.explain_runner import _post_explanation_comment
+
+        mock_find.return_value = None
+
+        ok, err = _post_explanation_comment("owner", "repo", "42", "Explanation text")
+
+        assert ok is True
+        mock_gh.assert_called_once()
+        body_arg = str(mock_gh.call_args)
+        assert _EXPLAIN_TAG in body_arg
+
+    @patch("app.github.run_gh")
+    @patch("app.github.find_bot_comment")
+    def test_updates_existing_comment(self, mock_find, mock_gh):
+        from skills.core.explain.explain_runner import _post_explanation_comment
+
+        mock_find.return_value = {"id": 123, "body": "old", "user": "bot"}
+
+        ok, err = _post_explanation_comment("owner", "repo", "42", "Updated explanation")
+
+        assert ok is True
+        assert "PATCH" in str(mock_gh.call_args)
+
+    @patch("app.github.run_gh")
+    @patch("app.github.find_bot_comment")
+    def test_post_failure_returns_error(self, mock_find, mock_gh):
+        from skills.core.explain.explain_runner import _post_explanation_comment
+
+        mock_find.return_value = None
+        mock_gh.side_effect = RuntimeError("403 Forbidden")
+
+        ok, err = _post_explanation_comment("owner", "repo", "42", "text")
+
+        assert ok is False
+        assert "403" in err
 
 
 class TestMain:
@@ -215,15 +400,17 @@ class TestMain:
 class TestErrorHandling:
     """Test error handling for edge cases that caused silent failures."""
 
+    @patch("skills.core.explain.explain_runner._post_explanation_comment")
     @patch("app.rebase_pr.fetch_pr_context")
     @patch("app.claude_step.resolve_pr_location")
-    def test_notify_failure_does_not_crash(self, mock_resolve, mock_fetch):
+    def test_notify_failure_does_not_crash(self, mock_resolve, mock_fetch, mock_post):
         mock_resolve.return_value = ("owner", "repo")
         mock_fetch.return_value = {
             "title": "Fix", "author": "a", "branch": "b", "base": "main",
             "body": "", "diff": "+change",
             "review_comments": "", "reviews": "", "issue_comments": "",
         }
+        mock_post.return_value = (True, "")
         notify = MagicMock(side_effect=ConnectionError("telegram down"))
 
         with patch("skills.core.explain.explain_runner._run_claude_explain") as mock_claude:

@@ -2,7 +2,7 @@
 
 Fetches PR metadata and diff, builds a pedagogical explanation prompt,
 and invokes Claude CLI to produce a plain-language walkthrough of the
-changes.
+changes.  Posts the explanation as a PR comment for the requester.
 
 Usage:
     python3 -m skills.core.explain.explain_runner <pr-url> --project-path /path
@@ -11,11 +11,29 @@ Usage:
 import contextlib
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Optional, Tuple
 
 from app.prompts import load_prompt_or_skill
 from app.run_log import log_safe as log
+
+_EXPLAIN_TAG = "<!-- koan:explain -->"
+
+_TRANSIENT_PATTERNS = (
+    "rate_limit", "rate limit", "overloaded", "503", "429",
+    "timeout", "timed out", "connection", "econnreset", "etimedout",
+    "internal server error", "500", "502", "504",
+)
+
+_MAX_RETRIES = 1
+_RETRY_DELAY = 10
+
+
+def _is_transient_error(error: str) -> bool:
+    """Check if error suggests a transient failure worth retrying."""
+    lower = error.lower()
+    return any(p in lower for p in _TRANSIENT_PATTERNS)
 
 
 def _build_explain_prompt(
@@ -97,6 +115,69 @@ def _run_claude_explain(
         return "", error
 
 
+def _run_claude_explain_with_retry(
+    prompt: str,
+    project_path: str,
+    timeout: int = 600,
+    model: Optional[str] = None,
+) -> Tuple[str, str]:
+    """Run Claude explain with retry on transient failures.
+
+    Retries up to _MAX_RETRIES times when the error looks transient
+    (rate limits, timeouts, connection issues).
+    """
+    output, error = _run_claude_explain(prompt, project_path, timeout, model)
+    if not error:
+        return output, ""
+
+    for attempt in range(_MAX_RETRIES):
+        if not _is_transient_error(error):
+            log("explain", f"Non-transient error, not retrying: {error[:200]}")
+            break
+        log("explain", f"Transient error, retrying ({attempt + 1}/{_MAX_RETRIES}): {error[:100]}")
+        time.sleep(_RETRY_DELAY)
+        output, error = _run_claude_explain(prompt, project_path, timeout, model)
+        if not error:
+            return output, ""
+
+    return output, error
+
+
+def _post_explanation_comment(
+    owner: str,
+    repo: str,
+    pr_number: str,
+    explanation: str,
+) -> Tuple[bool, str]:
+    """Post explanation as a PR comment.  Returns (success, error)."""
+    from app.github import run_gh, find_bot_comment, sanitize_github_comment
+
+    full_repo = f"{owner}/{repo}"
+    clean_text = sanitize_github_comment(explanation) or ""
+    body = f"{_EXPLAIN_TAG}\n## PR Explanation\n\n{clean_text}"
+
+    existing = find_bot_comment(owner, repo, int(pr_number), _EXPLAIN_TAG)
+    if existing:
+        comment_id = existing["id"]
+        try:
+            run_gh(
+                "api", f"repos/{full_repo}/issues/comments/{comment_id}",
+                "--method", "PATCH", "--field", f"body={body}",
+            )
+            return True, ""
+        except RuntimeError as e:
+            log("explain", f"PATCH failed ({e}), posting new comment")
+
+    try:
+        run_gh(
+            "pr", "comment", pr_number, "--repo", full_repo,
+            "--body", body,
+        )
+        return True, ""
+    except RuntimeError as e:
+        return False, str(e)
+
+
 def run_explain(
     owner: str,
     repo: str,
@@ -146,15 +227,22 @@ def run_explain(
     except Exception as e:
         return False, f"Failed to build explanation prompt: {e}"
 
-    output, error = _run_claude_explain(prompt, project_path)
+    output, error = _run_claude_explain_with_retry(prompt, project_path)
     if error:
         return False, f"Explanation failed: {error}"
     if not output.strip():
         return False, "Claude returned empty output for explanation."
 
+    posted, post_error = _post_explanation_comment(
+        owner, repo, pr_number, output,
+    )
+    if not posted:
+        log("explain", f"Comment post failed: {post_error}")
+
+    post_status = "" if posted else " (comment post failed)"
     summary = (
         f"Explained PR #{pr_number} ({full_repo}): "
-        f"{context.get('title', '')}\n\n{output}"
+        f"{context.get('title', '')}{post_status}\n\n{output}"
     )
     return True, summary
 
