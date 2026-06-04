@@ -2324,6 +2324,78 @@ class TestIsBotUser:
         assert _is_bot_user({"user_type": "User", "user": "koan-bot"}, "") is False
 
 
+class TestExcludeRepliedIssueComments:
+    """Tests for _exclude_replied_issue_comments — flat issue comment dedup."""
+
+    def test_excludes_comment_already_replied_to(self):
+        from app.review_runner import _exclude_replied_issue_comments
+        human = [
+            {"id": 1, "user": "alice", "body": "Looks good overall"},
+            {"id": 2, "user": "bob", "body": "Why this approach?"},
+        ]
+        bot = [
+            {"body": "> @alice: Looks good overall\n\nThanks!"},
+        ]
+        result = _exclude_replied_issue_comments(human, bot)
+        assert len(result) == 1
+        assert result[0]["id"] == 2
+
+    def test_keeps_unreplied_comments(self):
+        from app.review_runner import _exclude_replied_issue_comments
+        human = [
+            {"id": 1, "user": "alice", "body": "New question"},
+        ]
+        bot = [
+            {"body": "> @bob: Something else\n\nReply"},
+        ]
+        result = _exclude_replied_issue_comments(human, bot)
+        assert len(result) == 1
+
+    def test_handles_truncated_quotes(self):
+        from app.review_runner import _exclude_replied_issue_comments
+        long_body = "A" * 200
+        human = [{"id": 1, "user": "alice", "body": long_body}]
+        bot = [{"body": f"> @alice: {long_body[:100]}...\n\nReply"}]
+        result = _exclude_replied_issue_comments(human, bot)
+        assert len(result) == 0
+
+    def test_no_bot_replies_returns_all(self):
+        from app.review_runner import _exclude_replied_issue_comments
+        human = [{"id": 1, "user": "alice", "body": "Question"}]
+        result = _exclude_replied_issue_comments(human, [])
+        assert len(result) == 1
+
+    def test_summary_comments_not_matched(self):
+        """Bot summary comments (<!-- koan-summary -->) don't match as replies."""
+        from app.review_runner import _exclude_replied_issue_comments
+        human = [{"id": 1, "user": "alice", "body": "Good work"}]
+        bot = [{"body": "<!-- koan-summary -->\n## PR Review\n\nLooks fine."}]
+        result = _exclude_replied_issue_comments(human, bot)
+        assert len(result) == 1
+
+    def test_case_insensitive_user_match(self):
+        from app.review_runner import _exclude_replied_issue_comments
+        human = [{"id": 1, "user": "Alice", "body": "Question here"}]
+        bot = [{"body": "> @alice: Question here\n\nAnswer"}]
+        result = _exclude_replied_issue_comments(human, bot)
+        assert len(result) == 0
+
+    @patch("app.review_runner.run_gh")
+    def test_fetch_issue_comments_excludes_replied(self, mock_gh):
+        """_fetch_issue_comments uses _exclude_replied_issue_comments."""
+        from app.review_runner import _fetch_issue_comments
+
+        mock_gh.return_value = "\n".join([
+            json.dumps({"id": 10, "user": "alice", "body": "Nice work", "user_type": "User"}),
+            json.dumps({"id": 11, "user": "koan-bot", "body": "> @alice: Nice work\n\nThanks!", "user_type": "User"}),
+            json.dumps({"id": 12, "user": "bob", "body": "New question", "user_type": "User"}),
+        ])
+
+        result = _fetch_issue_comments("owner/repo", "1", bot_username="koan-bot")
+        assert len(result) == 1
+        assert result[0]["user"] == "bob"
+
+
 class TestFilterThreads:
     """Tests for _filter_threads — thread-aware self-reply prevention."""
 

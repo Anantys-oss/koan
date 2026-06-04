@@ -1079,22 +1079,23 @@ def _try_assignment_notification(
         log.error("GitHub assign: KOAN_ROOT not set")
         return False
 
-    from app.missions import list_pending
+    from app.missions import list_pending, parse_sections
     from app.utils import insert_pending_mission
 
     missions_path = Path(koan_root) / "instance" / "missions.md"
 
-    # Deduplicate: skip if a mission for the same URL is already pending.
-    # This prevents duplicate missions when both an assignment notification
-    # and an @mention comment arrive for the same PR/issue.
+    # Deduplicate: skip if a mission for the same URL is already pending
+    # or in progress.  The in-progress check prevents re-queuing while a
+    # review is still running (e.g., a rebase pushes new commits mid-review).
     try:
         content = missions_path.read_text() if missions_path.exists() else ""
-        pending = list_pending(content)
+        sections = parse_sections(content)
+        active = list_pending(content) + sections.get("in_progress", [])
         url_lower = web_url.lower()
-        for line in pending:
+        for line in active:
             if url_lower in line.lower():
                 log.debug(
-                    "GitHub assign: mission for %s already pending, skipping",
+                    "GitHub assign: mission for %s already active, skipping",
                     web_url,
                 )
                 mark_notification_read(notif_id)

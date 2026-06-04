@@ -42,6 +42,7 @@ from app.review_markers import (
 from app.review_schema import validate_review
 
 _ISSUE_URL_RE = re.compile(ISSUE_URL_PATTERN)
+_QUOTE_RE = re.compile(r'^>\s*@(\S+):\s*(.+)')
 
 
 def load_project_learnings(project_name: Optional[str]) -> str:
@@ -131,6 +132,47 @@ def _filter_threads(
     return filtered
 
 
+def _exclude_replied_issue_comments(
+    human_comments: List[dict],
+    bot_comments: list,
+) -> List[dict]:
+    """Exclude issue comments the bot already replied to.
+
+    Issue comments are flat (no ``in_reply_to_id``), so ``_filter_threads``
+    cannot detect self-replies.  Bot replies to issue comments use the
+    format ``> @user: first_line...``.  Match that quote pattern against
+    human comments to detect prior replies.
+    """
+    replied_prefixes: list = []
+    for bc in bot_comments:
+        body = bc.get("body", "")
+        first_line = body.split("\n")[0]
+        m = _QUOTE_RE.match(first_line)
+        if not m:
+            continue
+        user = m.group(1).lower()
+        text = m.group(2).strip()
+        if text.endswith("..."):
+            text = text[:-3].rstrip()
+        if text:
+            replied_prefixes.append((user, text.lower()))
+
+    if not replied_prefixes:
+        return human_comments
+
+    filtered = []
+    for hc in human_comments:
+        user = hc.get("user", "").lower()
+        first_line = hc.get("body", "").split("\n")[0].strip().lower()
+        already_replied = any(
+            user == ru and first_line.startswith(rp)
+            for ru, rp in replied_prefixes
+        )
+        if not already_replied:
+            filtered.append(hc)
+    return filtered
+
+
 def _fetch_inline_review_comments(
     full_repo: str, pr_number: str, bot_username: str = "",
     max_thread_depth: int = 0,
@@ -178,8 +220,14 @@ def _fetch_inline_review_comments(
 def _fetch_issue_comments(
     full_repo: str, pr_number: str, bot_username: str = "",
 ) -> List[dict]:
-    """Fetch issue-level comments (conversation thread) for a PR."""
-    results: List[dict] = []
+    """Fetch issue-level comments (conversation thread) for a PR.
+
+    Collects bot comments separately and uses them to detect prior replies.
+    Human comments that the bot already replied to (matching quote pattern)
+    are excluded from the returned list.
+    """
+    human: List[dict] = []
+    bot_replies: list = []
     try:
         raw = run_gh(
             "api", f"repos/{full_repo}/issues/{pr_number}/comments",
@@ -191,8 +239,9 @@ def _fetch_issue_comments(
                 try:
                     item = json.loads(line)
                     if _is_bot_user(item, bot_username):
+                        bot_replies.append(item)
                         continue
-                    results.append({
+                    human.append({
                         "id": item["id"],
                         "type": "issue_comment",
                         "user": item["user"],
@@ -202,7 +251,10 @@ def _fetch_issue_comments(
                     continue
     except RuntimeError:
         pass
-    return results
+
+    if bot_replies and human:
+        return _exclude_replied_issue_comments(human, bot_replies)
+    return human
 
 
 def fetch_repliable_comments(

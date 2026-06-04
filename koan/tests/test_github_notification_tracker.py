@@ -7,11 +7,14 @@ import pytest
 
 from app.github_notification_tracker import (
     _MAX_ENTRIES,
+    _REVIEW_COOLDOWN_SECONDS,
     _TTL_SECONDS,
     _threads_path,
     _tracker_path,
     is_comment_tracked,
+    is_review_on_cooldown,
     is_thread_tracked,
+    set_review_cooldown,
     track_comment,
     track_thread,
 )
@@ -141,3 +144,35 @@ class TestThreadTracker:
         track_thread(instance_dir, "thread-Y")
         assert not is_comment_tracked(instance_dir, "thread-Y")
         assert not is_thread_tracked(instance_dir, "comment-X")
+
+
+# ---------------------------------------------------------------------------
+# Review cooldown (prevents re-review after bot's own rebase)
+# ---------------------------------------------------------------------------
+
+
+class TestReviewCooldown:
+    def test_not_on_cooldown_initially(self, instance_dir):
+        assert not is_review_on_cooldown(instance_dir, "owner", "repo", "42")
+
+    def test_on_cooldown_after_set(self, instance_dir):
+        set_review_cooldown(instance_dir, "owner", "repo", "42")
+        assert is_review_on_cooldown(instance_dir, "owner", "repo", "42")
+
+    def test_different_pr_not_on_cooldown(self, instance_dir):
+        set_review_cooldown(instance_dir, "owner", "repo", "42")
+        assert not is_review_on_cooldown(instance_dir, "owner", "repo", "99")
+
+    def test_cooldown_expires(self, instance_dir):
+        """Cooldown expires after the configured window."""
+        key = "review_cd:owner/repo#42"
+        expired_ts = time.time() - _REVIEW_COOLDOWN_SECONDS - 1
+        _threads_path(instance_dir).write_text(json.dumps({key: expired_ts}))
+        assert not is_review_on_cooldown(instance_dir, "owner", "repo", "42")
+
+    def test_cooldown_active_within_window(self, instance_dir):
+        """Cooldown active within the configured window."""
+        key = "review_cd:owner/repo#42"
+        recent_ts = time.time() - 60  # 1 min ago
+        _threads_path(instance_dir).write_text(json.dumps({key: recent_ts}))
+        assert is_review_on_cooldown(instance_dir, "owner", "repo", "42")

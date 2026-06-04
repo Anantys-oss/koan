@@ -139,3 +139,41 @@ def track_thread(instance_dir: str, thread_key: str) -> None:
         locked_json_modify(_threads_path(instance_dir), _update)
     except OSError:
         pass  # Best-effort — don't break notification processing
+
+
+# ---------------------------------------------------------------------------
+# Review cooldown — prevents re-review after bot's own rebase
+# ---------------------------------------------------------------------------
+
+_REVIEW_COOLDOWN_SECONDS = 30 * 60  # 30 minutes
+
+
+def is_review_on_cooldown(instance_dir: str, owner: str, repo: str, pr_number: str) -> bool:
+    """Check if a review for this PR was recently queued.
+
+    Returns True if a review was queued within the cooldown window.
+    Prevents the review_requested → review → rebase → new SHA → re-review
+    feedback loop.
+    """
+    key = f"review_cd:{owner}/{repo}#{pr_number}"
+    data = _load_threads(instance_dir)
+    ts = data.get(key)
+    if ts is None:
+        return False
+    return time.time() - ts < _REVIEW_COOLDOWN_SECONDS
+
+
+def set_review_cooldown(instance_dir: str, owner: str, repo: str, pr_number: str) -> None:
+    """Record that a review was just queued for this PR."""
+    key = f"review_cd:{owner}/{repo}#{pr_number}"
+    try:
+        from app.locked_file import locked_json_modify
+
+        def _update(data):
+            _prune_expired(data)
+            data[key] = time.time()
+            _cap_entries(data)
+
+        locked_json_modify(_threads_path(instance_dir), _update)
+    except OSError:
+        pass
