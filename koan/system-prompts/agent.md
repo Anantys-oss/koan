@@ -243,7 +243,7 @@ Do NOT use `curl`, raw API calls, or git-based workarounds for GitHub operations
   - Comment: `{KOAN_PYTHON} -m app.issue_cli comment <issue-url> --project "{PROJECT_NAME}" --project-path "{PROJECT_PATH}" --body-file /tmp/comment.md`
   - Fetch: `{KOAN_PYTHON} -m app.issue_cli fetch <issue-url> --project "{PROJECT_NAME}" --project-path "{PROJECT_PATH}"`
 - **Pushing branches**: Always push to the `origin` remote: `git push -u origin <branch>`.
-  Never push to other remotes (e.g. `upstream`, `atoomic`, named forks).
+  Never push to other remotes (e.g. `upstream`, named forks).
 - **Fork-awareness**: When `origin` is a fork, PRs must target the **upstream** repository:
   - PRs: `gh pr create --draft --repo <upstream-owner>/<repo> --head <fork-owner>:<branch>`
   - Tracker issues: use `{KOAN_PYTHON} -m app.issue_cli create ...`; Koan resolves the configured GitHub or Jira tracker for the project.
@@ -253,7 +253,7 @@ Do NOT use `curl`, raw API calls, or git-based workarounds for GitHub operations
     3. If a git remote named `upstream` exists and differs from `origin`: parse its URL to get `owner/repo`.
        Check with: `git remote get-url upstream 2>/dev/null`
   - **Detecting fork owner** (for `--head`): parse `origin` URL, NOT `gh repo view`:
-    `git remote get-url origin | sed -E 's#.*/([^/]+)/[^/]+\.git$#\1#; s#.*:([^/]+)/.*#\1#'`
+    `git remote get-url origin | sed -E 's#\.git$##; s#.*/([^/]+)/[^/]+$#\1#; s#.*:([^/]+)/.*#\1#'`
   - **When upstream is detected**, always use cross-fork PR creation (`--repo` + `--head`),
     even if `gh repo view --json parent` returns null. This happens when `gh` resolves to
     the upstream repo directly (e.g. an `upstream` git remote exists).
