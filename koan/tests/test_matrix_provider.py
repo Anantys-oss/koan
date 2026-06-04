@@ -142,10 +142,11 @@ class TestSendMessage:
             assert mock_put.call_count == 0
 
     @patch("app.messaging.matrix.requests.put")
-    def test_txn_id_stable_across_resends(self, mock_put, provider):
-        """Resending identical content reuses the same transaction id so the
-        homeserver dedupes it. Prevents duplicate messages when a delivered-but-
-        slow send is misreported as failed and the outbox requeues + resends."""
+    def test_txn_id_differs_across_separate_sends(self, mock_put, provider):
+        """Two separate send_message calls with identical content must get
+        different txn_ids — the per-session counter ensures intentional
+        duplicate messages (e.g. repeated 'OK' acks) are not silently dropped
+        by the homeserver's idempotency dedup."""
         mock_put.return_value = MagicMock(status_code=200)
 
         provider.send_message("same body")
@@ -155,7 +156,21 @@ class TestSendMessage:
         provider.send_message("same body")
         second_txn = mock_put.call_args[0][0].rsplit("/", 1)[-1]
 
-        assert first_txn == second_txn
+        assert first_txn != second_txn
+
+    @patch("app.messaging.matrix.requests.put")
+    def test_txn_id_stable_within_retry_attempts(self, mock_put, provider):
+        """Retries inside one _send_chunk call must reuse the same txn_id so the
+        homeserver treats them as idempotent (no duplicate event on retry)."""
+        # First call fails (5xx), second succeeds.
+        mock_put.side_effect = [
+            MagicMock(status_code=500, text="server error"),
+            MagicMock(status_code=200),
+        ]
+        provider._send_chunk("retry me", chunk_index=0)
+        txns = [c[0][0].rsplit("/", 1)[-1] for c in mock_put.call_args_list]
+        assert len(txns) == 2
+        assert txns[0] == txns[1]
 
     @patch("app.messaging.matrix.requests.put")
     def test_txn_id_differs_for_different_content(self, mock_put, provider):

@@ -793,6 +793,14 @@ def main():
     log("init", f"Polling every {POLL_INTERVAL}s (chat mode: fast reply)")
     offset = None
     first_poll = True
+    # Compute once: channel_id and CHAT_ID are fixed at startup.
+    # Filter out None/falsy values before stringifying so a misconfigured
+    # provider returning None doesn't produce the literal string "None" in
+    # the set and silently drop every incoming message.
+    # Match against either: (a) the active provider's channel id (covers
+    # slack/matrix where CHAT_ID is unset), or (b) CHAT_ID (telegram-only,
+    # kept for backward compat with existing tests that patch it directly).
+    valid_chat_ids = {str(v) for v in (channel_id, CHAT_ID) if v}
 
     try:
         while True:
@@ -828,13 +836,6 @@ def main():
                 msg = update.get("message", {})
                 text = msg.get("text", "")
                 chat_id = str(msg.get("chat", {}).get("id", ""))
-                # Match against either: (a) the active provider's channel
-                # id (resolved at startup — covers slack/matrix where
-                # CHAT_ID is unset), or (b) CHAT_ID (telegram-only, kept
-                # for backward compat with existing tests that patch it
-                # directly).  For telegram in production the two are the
-                # same value.
-                #
                 # message_id / mention-stripping MUST be derived inside this
                 # block, not a separate `chat_id == CHAT_ID` guard: for matrix
                 # (and any provider where CHAT_ID is unset) chat_id matches
@@ -842,11 +843,9 @@ def main():
                 # message_id unbound and set_reply_context() below raises
                 # UnboundLocalError — crashing the bridge on every message.
                 #
-                # Empty strings are stripped from the match set and an empty
-                # chat_id is rejected: with CHAT_ID="" (normal for matrix/slack)
-                # a malformed update missing chat.id would otherwise satisfy
-                # `"" in (channel_id, "")` and slip past the channel filter.
-                valid_chat_ids = {str(channel_id), str(CHAT_ID)} - {""}
+                # An empty chat_id is rejected: with CHAT_ID="" (normal for
+                # matrix/slack) a malformed update missing chat.id would
+                # otherwise slip past the channel filter.
                 if text and chat_id and chat_id in valid_chat_ids:
                     message_id = msg.get("message_id", 0)
                     text = _strip_bot_mention_from_text(text, msg)

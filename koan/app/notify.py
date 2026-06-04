@@ -361,16 +361,19 @@ def send_telegram(text: str,
 
     # Debug: log each outgoing message with its call-site so we can trace
     # where bursts originate (awake.log will show these lines).
-    import traceback as _tb
-    _preview = text[:80].replace("\n", " ")
-    if len(text) > 80:
-        _preview += "…"
-    _caller = ""
-    for frame in reversed(_tb.extract_stack()[:-1]):
-        if not frame.filename.endswith("notify.py"):
-            _caller = f"{frame.filename.rsplit('/', 1)[-1]}:{frame.lineno}"
-            break
-    print(f"[notify] send_telegram from {_caller}: {_preview!r}", file=sys.stderr)
+    try:
+        import traceback as _tb
+        _preview = text[:80].replace("\n", " ")
+        if len(text) > 80:
+            _preview += "…"
+        _caller = ""
+        for frame in reversed(_tb.extract_stack()[:-1]):
+            if not frame.filename.endswith("notify.py"):
+                _caller = f"{frame.filename.rsplit('/', 1)[-1]}:{frame.lineno}"
+                break
+        print(f"[notify] send_telegram from {_caller}: {_preview!r}", file=sys.stderr)
+    except Exception:
+        pass
 
     try:
         from app.messaging import get_messaging_provider

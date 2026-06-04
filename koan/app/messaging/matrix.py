@@ -60,6 +60,7 @@ class MatrixProvider(MessagingProvider):
         self._sync_token: Optional[str] = None
         self._sync_initialized: bool = False
         self._update_counter = itertools.count(1)
+        self._send_counter = itertools.count(0)
         self._send_lock = threading.Lock()
 
     # -- MessagingProvider interface ------------------------------------------
@@ -271,8 +272,9 @@ class MatrixProvider(MessagingProvider):
         """
         from app.retry import retry_with_backoff
 
+        send_seq = next(self._send_counter)
         txn_id = hashlib.sha256(
-            f"{self._room_id}\x00{chunk_index}\x00{text}".encode("utf-8")
+            f"{self._room_id}\x00{send_seq}\x00{chunk_index}\x00{text}".encode("utf-8")
         ).hexdigest()
         url = (
             f"{self._homeserver}/_matrix/client/v3/rooms/"
