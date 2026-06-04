@@ -22,6 +22,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from app.claude_step import _commit_with_hook_fallback
 from app.git_sync import run_git
 from app.git_utils import run_git_strict
 from app.prompts import load_skill_prompt
@@ -126,8 +127,12 @@ def _commit_and_push(project_path: str, branch_name: str, message: str) -> bool:
     if not _has_changes(project_path):
         return False
     run_git_strict("add", "CLAUDE.md", cwd=project_path)
-    # --no-verify: skip target-repo pre-commit hooks that can hang/timeout.
-    run_git_strict("commit", "--no-verify", "-m", message, cwd=project_path)
+
+    def _runner(cmd, cwd=None, timeout=60):
+        # Adapt _run_git convention (cmd list) to run_git_strict (*args).
+        return run_git_strict(*cmd[1:], cwd=cwd, timeout=timeout)
+
+    _commit_with_hook_fallback(["-m", message], project_path, _runner)
     run_git_strict("push", "-u", "origin", branch_name, cwd=project_path)
     return True
 

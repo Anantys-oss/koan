@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from app.claude_step import (
+    _commit_with_hook_fallback,
     _fetch_branch,
     _get_current_branch,
     _run_git,
@@ -79,9 +80,7 @@ def _squash_commits(
     ).strip()
 
     _run_git(["git", "reset", "--soft", merge_base], cwd=project_path)
-    # --no-verify: skip target-repo pre-commit hooks (lint/format/test) that can
-    # exceed the git timeout and crash the automation. CI is the real gate.
-    _run_git(["git", "commit", "--no-verify", "-m", message], cwd=project_path)
+    _commit_with_hook_fallback(["-m", message], project_path, _run_git)
     return True
 
 

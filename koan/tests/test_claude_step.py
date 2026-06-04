@@ -607,9 +607,40 @@ class TestCommitIfChanges:
         assert result is True
         assert mock_git.call_count == 2
         mock_git.assert_any_call(["git", "add", "-A"], cwd="/project")
+        # Happy path commits WITH hooks (no --no-verify) under a generous timeout;
+        # --no-verify is only the timeout fallback.
+        mock_git.assert_any_call(
+            ["git", "commit", "-m", "test msg"], cwd="/project", timeout=180
+        )
+
+    @patch("app.claude_step._run_git")
+    @patch("app.cli_exec.subprocess.run")
+    def test_commit_falls_back_to_no_verify_on_timeout(self, mock_run, mock_git):
+        """A hook timeout must retry with --no-verify, not crash the pipeline."""
+        mock_run.return_value = MagicMock(stdout=" M file.py\n", returncode=0)
+        # add succeeds, hooked commit times out, --no-verify commit succeeds.
+        mock_git.side_effect = [
+            "",
+            subprocess.TimeoutExpired(cmd="git commit", timeout=180),
+            "",
+        ]
+        result = commit_if_changes("/project", "test msg")
+        assert result is True
+        mock_git.assert_any_call(
+            ["git", "commit", "-m", "test msg"], cwd="/project", timeout=180
+        )
         mock_git.assert_any_call(
             ["git", "commit", "--no-verify", "-m", "test msg"], cwd="/project"
         )
+
+    @patch("app.claude_step._run_git")
+    @patch("app.cli_exec.subprocess.run")
+    def test_commit_propagates_non_timeout_failure(self, mock_run, mock_git):
+        """Non-timeout commit failures must propagate, not silently --no-verify."""
+        mock_run.return_value = MagicMock(stdout=" M file.py\n", returncode=0)
+        mock_git.side_effect = ["", RuntimeError("git failed: pre-commit rejected")]
+        with pytest.raises(RuntimeError, match="pre-commit rejected"):
+            commit_if_changes("/project", "test msg")
 
     @patch("app.claude_step._run_git")
     @patch("app.cli_exec.subprocess.run")

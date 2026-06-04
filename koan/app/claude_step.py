@@ -366,6 +366,28 @@ def run_claude(
     }
 
 
+def _commit_with_hook_fallback(commit_args: list, cwd: str, run_git=None) -> None:
+    """Commit, attempting target-repo pre-commit hooks first.
+
+    Project pre-commit hooks (lint/format/test) can exceed the git timeout on
+    first run — a cold env install (nvm/node) easily outlasts the default. A
+    blanket ``--no-verify`` would never let hooks run; an unguarded hooked
+    commit crashes the whole pipeline on timeout. So try the hooked commit with
+    a generous 180s budget, and only on *timeout* retry with ``--no-verify``.
+    CI remains the real gate. Non-timeout failures propagate unchanged.
+
+    ``run_git`` defaults to :func:`_run_git`; callers may pass their own
+    module-level reference so patches in tests resolve correctly.
+    """
+    runner = run_git or _run_git
+    try:
+        runner(["git", "commit", *commit_args], cwd=cwd, timeout=180)
+    except (subprocess.TimeoutExpired, RuntimeError) as exc:
+        if "timed out" not in str(exc).lower():
+            raise
+        runner(["git", "commit", "--no-verify", *commit_args], cwd=cwd)
+
+
 def commit_if_changes(project_path: str, message: str) -> bool:
     """Stage all changes and commit if there are any.
 
@@ -380,9 +402,7 @@ def commit_if_changes(project_path: str, message: str) -> bool:
         return False
 
     _run_git(["git", "add", "-A"], cwd=project_path)
-    # --no-verify: skip target-repo pre-commit hooks (lint/format/test) that can
-    # exceed the git timeout and crash the automation. CI is the real gate.
-    _run_git(["git", "commit", "--no-verify", "-m", message], cwd=project_path)
+    _commit_with_hook_fallback(["-m", message], project_path, _run_git)
     return True
 
 
