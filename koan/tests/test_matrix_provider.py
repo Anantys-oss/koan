@@ -141,6 +141,45 @@ class TestSendMessage:
             assert provider.send_message("") is True
             assert mock_put.call_count == 0
 
+    @patch("app.messaging.matrix.requests.put")
+    def test_txn_id_stable_across_resends(self, mock_put, provider):
+        """Resending identical content reuses the same transaction id so the
+        homeserver dedupes it. Prevents duplicate messages when a delivered-but-
+        slow send is misreported as failed and the outbox requeues + resends."""
+        mock_put.return_value = MagicMock(status_code=200)
+
+        provider.send_message("same body")
+        first_txn = mock_put.call_args[0][0].rsplit("/", 1)[-1]
+
+        mock_put.reset_mock()
+        provider.send_message("same body")
+        second_txn = mock_put.call_args[0][0].rsplit("/", 1)[-1]
+
+        assert first_txn == second_txn
+
+    @patch("app.messaging.matrix.requests.put")
+    def test_txn_id_differs_for_different_content(self, mock_put, provider):
+        """Different bodies must get different transaction ids (no false dedup)."""
+        mock_put.return_value = MagicMock(status_code=200)
+
+        provider.send_message("body A")
+        txn_a = mock_put.call_args[0][0].rsplit("/", 1)[-1]
+
+        mock_put.reset_mock()
+        provider.send_message("body B")
+        txn_b = mock_put.call_args[0][0].rsplit("/", 1)[-1]
+
+        assert txn_a != txn_b
+
+    @patch("app.messaging.matrix.requests.put")
+    def test_chunks_get_distinct_txn_ids(self, mock_put, provider):
+        """Chunks of one message must not collide on txn id (would drop a chunk)."""
+        mock_put.return_value = MagicMock(status_code=200)
+        provider.send_message("x" * 8500)  # 3 chunks
+        txns = [c[0][0].rsplit("/", 1)[-1] for c in mock_put.call_args_list]
+        assert len(txns) == 3
+        assert len(set(txns)) == 3
+
 
 # ---------------------------------------------------------------------------
 # poll_updates / sync

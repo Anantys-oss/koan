@@ -199,7 +199,15 @@ class OutboxManager:
             log("outbox", f"Outbox flushed: {preview}")
             staging.unlink(missing_ok=True)
         else:
-            log("error", "Outbox send failed — re-queuing for retry")
+            preview = formatted[:150].replace("\n", " ")
+            if len(formatted) > 150:
+                preview += "..."
+            # Visible by design: a requeue means this exact content will be sent
+            # again next cycle. If you see the same preview here repeatedly, the
+            # provider is reporting failure on a send that may have actually
+            # delivered (e.g. a slow homeserver timing out) — that is the
+            # duplicate-message signature.
+            log("error", f"Outbox send failed — re-queuing for retry: {preview}")
             self.requeue(content)
             staging.unlink(missing_ok=True)
 
