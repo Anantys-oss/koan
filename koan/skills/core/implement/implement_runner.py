@@ -226,9 +226,10 @@ def run_implement(
             )
 
     # Post-implementation: submit draft PR (only for GitHub issues with repo info)
-    _progress("Implementation complete, submitting draft PR...")
+    _progress("Implementation complete")
     pr_url = None
     if owner and repo:
+        _progress("Submitting draft PR...")
         try:
             pr_url = _submit_implement_pr(
                 project_path=project_path,
