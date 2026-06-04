@@ -141,8 +141,8 @@ COMMENT_REPLY_SCHEMA = {
         "reply": {
             "type": "string",
             "description": (
-                "The reply text. Be complete and detailed — explain the why "
-                "and how, not just the what. Keep the tone constructive."
+                "The reply text. Use Caveman style: short direct sentences, "
+                "no filler words, 2-4 sentences max. Constructive tone."
             ),
         },
     },
