@@ -373,7 +373,7 @@ class TestCoreSkillsShipDefaults:
     """Core skills ship with the expected caveman flag for opt-in semantics."""
 
     @pytest.mark.parametrize("skill_name", [
-        "plan", "deepplan", "review", "security_audit", "audit",
+        "plan", "deepplan", "security_audit", "audit",
         "brainstorm", "sparring", "incident", "claudemd", "chat",
     ])
     def test_context_rich_skills_ship_caveman_false(self, skill_name):
@@ -392,6 +392,7 @@ class TestCoreSkillsShipDefaults:
 
     @pytest.mark.parametrize("skill_name", [
         "rebase", "recreate", "squash", "fix", "ci_check", "check", "implement",
+        "review",
     ])
     def test_terse_skills_ship_caveman_true(self, skill_name):
         """Terse-output skills opt in with ``caveman: true``."""
