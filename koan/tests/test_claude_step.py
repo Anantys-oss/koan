@@ -1366,8 +1366,8 @@ class TestPushWithPrFallback:
             "url": "https://github.com/sukria/koan/pull/99",
         }
 
-    @patch("app.claude_step._run_git")
-    def test_force_push_success_rebase(self, mock_git, context):
+    @patch("app.claude_step._force_push")
+    def test_force_push_success_rebase(self, mock_push, context):
         from app.claude_step import _push_with_pr_fallback
         result = _push_with_pr_fallback(
             "koan/fix", "main", "sukria/koan", "99",
@@ -1376,9 +1376,10 @@ class TestPushWithPrFallback:
         assert result["success"] is True
         assert any("Force-pushed" in a for a in result["actions"])
         assert "recreated" not in result["actions"][0]
+        mock_push.assert_called_once_with("origin", "koan/fix", "/project")
 
-    @patch("app.claude_step._run_git")
-    def test_force_push_success_recreate(self, mock_git, context):
+    @patch("app.claude_step._force_push")
+    def test_force_push_success_recreate(self, mock_push, context):
         from app.claude_step import _push_with_pr_fallback
         result = _push_with_pr_fallback(
             "koan/fix", "main", "sukria/koan", "99",
@@ -1387,8 +1388,8 @@ class TestPushWithPrFallback:
         assert result["success"] is True
         assert "recreated from scratch" in result["actions"][0]
 
-    @patch("app.claude_step._run_git", side_effect=RuntimeError("network timeout"))
-    def test_non_permission_error_fails(self, mock_git, context):
+    @patch("app.claude_step._force_push", side_effect=RuntimeError("network timeout"))
+    def test_non_permission_error_fails(self, mock_push, context):
         from app.claude_step import _push_with_pr_fallback
         result = _push_with_pr_fallback(
             "koan/fix", "main", "sukria/koan", "99",
@@ -1399,15 +1400,9 @@ class TestPushWithPrFallback:
 
     def test_permission_error_creates_fallback_pr(self, context):
         from app.claude_step import _push_with_pr_fallback
-        call_count = [0]
 
-        def mock_git(cmd, **kwargs):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                raise RuntimeError("permission denied")
-            return ""
-
-        with patch("app.claude_step._run_git", side_effect=mock_git), \
+        with patch("app.claude_step._force_push", side_effect=RuntimeError("permission denied")), \
+             patch("app.claude_step._run_git", return_value=""), \
              patch("app.claude_step.pr_create", return_value="https://github.com/sukria/koan/pull/200\n"), \
              patch("app.claude_step.run_gh"), \
              patch("app.utils.get_branch_prefix", return_value="koan/"):
@@ -1422,18 +1417,15 @@ class TestPushWithPrFallback:
 
     def test_recreate_fallback_uses_recreate_prefix(self, context):
         from app.claude_step import _push_with_pr_fallback
-        call_count = [0]
         branches_created = []
 
         def mock_git(cmd, **kwargs):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                raise RuntimeError("permission denied")
             if "checkout" in cmd and "-b" in cmd:
                 branches_created.append(cmd[cmd.index("-b") + 1])
             return ""
 
-        with patch("app.claude_step._run_git", side_effect=mock_git), \
+        with patch("app.claude_step._force_push", side_effect=RuntimeError("permission denied")), \
+             patch("app.claude_step._run_git", side_effect=mock_git), \
              patch("app.claude_step.pr_create", return_value="https://github.com/sukria/koan/pull/201\n"), \
              patch("app.claude_step.run_gh"), \
              patch("app.utils.get_branch_prefix", return_value="koan/"):
@@ -1446,15 +1438,9 @@ class TestPushWithPrFallback:
 
     def test_crosslink_failure_is_nonfatal(self, context):
         from app.claude_step import _push_with_pr_fallback
-        call_count = [0]
 
-        def mock_git(cmd, **kwargs):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                raise RuntimeError("permission denied")
-            return ""
-
-        with patch("app.claude_step._run_git", side_effect=mock_git), \
+        with patch("app.claude_step._force_push", side_effect=RuntimeError("permission denied")), \
+             patch("app.claude_step._run_git", return_value=""), \
              patch("app.claude_step.pr_create", return_value="https://github.com/sukria/koan/pull/202\n"), \
              patch("app.claude_step.run_gh", side_effect=RuntimeError("API error")), \
              patch("app.utils.get_branch_prefix", return_value="koan/"):

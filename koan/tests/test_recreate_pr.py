@@ -215,28 +215,21 @@ class TestBuildRecreateComment:
 
 class TestPushRecreated:
     def test_force_push_succeeds(self, pr_context):
-        with patch("app.claude_step._run_git") as mock_git:
+        with patch("app.claude_step._force_push") as mock_push:
             result = _push_recreated(
                 "koan/feat", "main", "sukria/koan", "71",
                 pr_context, "/project",
             )
             assert result["success"] is True
             assert any("Force-pushed" in a for a in result["actions"])
-            mock_git.assert_called_once_with(
-                ["git", "push", "origin", "koan/feat", "--force-with-lease"],
-                cwd="/project",
-            )
+            mock_push.assert_called_once_with("origin", "koan/feat", "/project")
 
     def test_permission_denied_creates_new_pr(self, pr_context):
-        with patch("app.claude_step._run_git") as mock_git, \
+        with patch("app.claude_step._force_push", side_effect=RuntimeError("permission denied")), \
+             patch("app.claude_step._run_git", return_value=""), \
              patch("app.claude_step.pr_create", return_value="https://github.com/sukria/koan/pull/120"), \
              patch("app.claude_step.run_gh"), \
              patch("app.utils.get_branch_prefix", return_value="koan/"):
-            mock_git.side_effect = [
-                RuntimeError("permission denied"),  # force-push fails
-                None,  # checkout -b
-                None,  # push -u
-            ]
             result = _push_recreated(
                 "koan/feat", "main", "sukria/koan", "71",
                 pr_context, "/project",
@@ -246,8 +239,7 @@ class TestPushRecreated:
             assert any("draft PR" in a for a in result["actions"])
 
     def test_non_permission_error_fails(self, pr_context):
-        with patch("app.claude_step._run_git") as mock_git:
-            mock_git.side_effect = RuntimeError("network error")
+        with patch("app.claude_step._force_push", side_effect=RuntimeError("network error")):
             result = _push_recreated(
                 "koan/feat", "main", "sukria/koan", "71",
                 pr_context, "/project",

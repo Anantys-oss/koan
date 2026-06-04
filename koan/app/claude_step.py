@@ -1413,10 +1413,7 @@ def _push_with_pr_fallback(
 
     # Option 1: Try force-pushing to the existing branch
     try:
-        _run_git(
-            ["git", "push", "origin", branch, "--force-with-lease"],
-            cwd=project_path,
-        )
+        _force_push("origin", branch, project_path)
         actions.append(cfg["force_label"].format(branch=branch))
         return {"success": True, "actions": actions, "error": ""}
     except Exception as push_error:

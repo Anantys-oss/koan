@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Optional, Tuple, List
 
 from app.claude_step import (
+    _force_push,
     _run_git,
     _rebase_onto_target,
     run_claude_step as _run_claude_step,
@@ -326,10 +327,7 @@ def run_pr_review(
     # ── Step 7: Force-push ────────────────────────────────────────────
     notify_fn(f"Pushing `{branch}`...")
     try:
-        _run_git(
-            ["git", "push", "origin", branch, "--force-with-lease"],
-            cwd=project_path,
-        )
+        _force_push("origin", branch, project_path)
         actions_log.append(f"Force-pushed `{branch}`")
     except Exception as e:
         return False, f"Push failed: {e}\n\nActions completed before failure:\n" + "\n".join(
