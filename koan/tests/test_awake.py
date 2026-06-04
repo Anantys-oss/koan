@@ -1402,13 +1402,15 @@ class TestGetUpdates:
 class TestCheckConfig:
     def test_exits_without_token(self, monkeypatch, tmp_path):
         monkeypatch.setenv("KOAN_TELEGRAM_TOKEN", "")
-        with patch("app.awake.BOT_TOKEN", ""), \
+        with patch("app.messaging.resolve_provider_name", return_value="telegram"), \
+             patch("app.awake.BOT_TOKEN", ""), \
              patch("app.awake.CHAT_ID", "123"), \
              pytest.raises(SystemExit):
             check_config()
 
     def test_exits_without_chat_id(self, monkeypatch, tmp_path):
-        with patch("app.awake.BOT_TOKEN", "token"), \
+        with patch("app.messaging.resolve_provider_name", return_value="telegram"), \
+             patch("app.awake.BOT_TOKEN", "token"), \
              patch("app.awake.CHAT_ID", ""), \
              pytest.raises(SystemExit):
             check_config()
