@@ -5,6 +5,7 @@ Two JSON files in instance/:
 - ``.hint-history.json`` — records when each skill was last hinted (7-day filtering)
 """
 
+import contextlib
 import fcntl
 import json
 import sys
@@ -32,10 +33,8 @@ def _load_json(path: Path) -> dict:
         return data if isinstance(data, dict) else {}
     except json.JSONDecodeError as e:
         print(f"[skill_usage] Failed to load {path.name}: {e}", file=sys.stderr)
-        try:
+        with contextlib.suppress(OSError):
             path.rename(path.with_suffix(path.suffix + ".bak"))
-        except OSError:
-            pass
         return {}
     except OSError as e:
         print(f"[skill_usage] Failed to load {path.name}: {e}", file=sys.stderr)
