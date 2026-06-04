@@ -18,12 +18,12 @@ Environment variables (override config.yaml when set):
     KOAN_MATRIX_ROOM_ID      — Room to operate in (e.g. !abc123:matrix.org)
 """
 
+import hashlib
 import itertools
 import os
 import sys
 import threading
 import time
-import uuid
 from typing import List, Optional
 from urllib.parse import quote
 
@@ -36,6 +36,10 @@ from app.messaging import register_provider
 MAX_MESSAGE_SIZE = DEFAULT_MAX_MESSAGE_SIZE
 SYNC_TIMEOUT_MS = 30000  # 30s long-poll
 SYNC_HTTP_TIMEOUT = 35   # leave 5s buffer over SYNC_TIMEOUT_MS
+# Slow homeservers can take well over 10s to ack a send even when the message
+# is actually delivered. A too-short timeout makes a delivered send look failed,
+# which triggers an outbox requeue + resend → duplicate messages in the room.
+SEND_HTTP_TIMEOUT = 30
 
 
 @register_provider("matrix")
@@ -132,9 +136,9 @@ class MatrixProvider(MessagingProvider):
             return True
 
         ok = True
-        for chunk in self.chunk_message(text, max_size=MAX_MESSAGE_SIZE):
+        for idx, chunk in enumerate(self.chunk_message(text, max_size=MAX_MESSAGE_SIZE)):
             with self._send_lock:
-                if not self._send_chunk(chunk):
+                if not self._send_chunk(chunk, idx):
                     ok = False
         return ok
 
@@ -246,11 +250,25 @@ class MatrixProvider(MessagingProvider):
             )
         return updates
 
-    def _send_chunk(self, text: str) -> bool:
-        """PUT a single m.room.message to the homeserver."""
+    def _send_chunk(self, text: str, chunk_index: int = 0) -> bool:
+        """PUT a single m.room.message to the homeserver.
+
+        The transaction ID is derived deterministically from the room, the
+        chunk position and the chunk body — not a random uuid. Matrix treats a
+        repeated transaction ID as idempotent (same id → same event, never a
+        second message), so both the internal retry loop *and* an outbox-level
+        requeue+resend of the same content collapse to one event server-side.
+
+        This is the fix for duplicate messages spamming the room: a slow
+        homeserver would make a delivered send time out and look failed, the
+        outbox would requeue and resend, and the old random uuid produced a
+        brand-new event every time. A content-derived id dedupes those.
+        """
         from app.retry import retry_with_backoff
 
-        txn_id = uuid.uuid4().hex
+        txn_id = hashlib.sha256(
+            f"{self._room_id}\x00{chunk_index}\x00{text}".encode("utf-8")
+        ).hexdigest()
         url = (
             f"{self._homeserver}/_matrix/client/v3/rooms/"
             f"{quote(self._room_id, safe='')}/send/m.room.message/{txn_id}"
@@ -259,7 +277,7 @@ class MatrixProvider(MessagingProvider):
         headers = {"Authorization": f"Bearer {self._access_token}"}
 
         def _do_put():
-            resp = requests.put(url, json=payload, headers=headers, timeout=10)
+            resp = requests.put(url, json=payload, headers=headers, timeout=SEND_HTTP_TIMEOUT)
             if resp.status_code >= 400:
                 # 4xx is not retryable; raise ValueError to short-circuit.
                 if 400 <= resp.status_code < 500:
