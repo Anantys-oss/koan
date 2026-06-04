@@ -7,6 +7,9 @@ from app.review_markers import (
     COMMIT_IDS_START,
     COMMIT_IDS_END,
     extract_between_markers,
+    extract_commit_shas,
+    build_hidden_commit_block,
+    replace_commit_block,
     remove_section,
     wrap_section,
     replace_section,
@@ -141,3 +144,81 @@ class TestReplaceSection:
         body = f"{COMMIT_IDS_START}old{COMMIT_IDS_END}"
         result = replace_section(body, COMMIT_IDS_START, COMMIT_IDS_END, "")
         assert result == f"{COMMIT_IDS_START}{COMMIT_IDS_END}"
+
+
+# ---------------------------------------------------------------------------
+# Hidden commit block (single HTML comment format)
+# ---------------------------------------------------------------------------
+
+class TestBuildHiddenCommitBlock:
+    def test_single_sha(self):
+        result = build_hidden_commit_block(["abc123"])
+        assert result == "<!-- koan-commits\nabc123\n-->"
+
+    def test_multiple_shas(self):
+        result = build_hidden_commit_block(["abc123", "def456"])
+        assert result == "<!-- koan-commits\nabc123\ndef456\n-->"
+
+    def test_fully_hidden_no_visible_text(self):
+        """Entire block is a single HTML comment — nothing renders visibly."""
+        result = build_hidden_commit_block(["abc123"])
+        assert result.startswith("<!--")
+        assert result.endswith("-->")
+
+
+class TestExtractCommitShas:
+    def test_extracts_from_new_format(self):
+        body = "review text\n<!-- koan-commits\nabc123\ndef456\n-->"
+        assert extract_commit_shas(body) == ["abc123", "def456"]
+
+    def test_extracts_from_legacy_format(self):
+        body = f"review text\n{COMMIT_IDS_START}abc123\ndef456{COMMIT_IDS_END}"
+        assert extract_commit_shas(body) == ["abc123", "def456"]
+
+    def test_prefers_new_format_over_legacy(self):
+        body = (
+            f"{COMMIT_IDS_START}old1\nold2{COMMIT_IDS_END}"
+            "\n<!-- koan-commits\nnew1\nnew2\n-->"
+        )
+        assert extract_commit_shas(body) == ["new1", "new2"]
+
+    def test_returns_empty_list_when_no_block(self):
+        assert extract_commit_shas("plain review text") == []
+
+    def test_strips_whitespace_from_shas(self):
+        body = "<!-- koan-commits\n  abc123  \n  def456  \n-->"
+        assert extract_commit_shas(body) == ["abc123", "def456"]
+
+    def test_skips_blank_lines(self):
+        body = "<!-- koan-commits\nabc123\n\ndef456\n-->"
+        assert extract_commit_shas(body) == ["abc123", "def456"]
+
+
+class TestReplaceCommitBlock:
+    def test_appends_when_no_block_exists(self):
+        body = "review text"
+        result = replace_commit_block(body, ["abc123"])
+        assert "abc123" in result
+        assert "<!-- koan-commits" in result
+        assert result.startswith("review text")
+
+    def test_replaces_legacy_block(self):
+        body = f"review\n{COMMIT_IDS_START}old{COMMIT_IDS_END}\nfooter"
+        result = replace_commit_block(body, ["new1"])
+        assert COMMIT_IDS_START not in result
+        assert "old" not in result
+        assert "new1" in result
+        assert "footer" in result
+
+    def test_replaces_new_format_block(self):
+        body = "review\n<!-- koan-commits\nold\n-->\nfooter"
+        result = replace_commit_block(body, ["new1"])
+        assert "old" not in result
+        assert "new1" in result
+        assert "footer" in result
+
+    def test_roundtrip(self):
+        shas = ["abc123", "def456", "ghi789"]
+        block = build_hidden_commit_block(shas)
+        extracted = extract_commit_shas(block)
+        assert extracted == shas

@@ -11,7 +11,8 @@ GitHub's 65536-char comment limit constrains total comment size; keep
 marker strings short.  No ``--`` inside comment bodies (invalid HTML).
 """
 
-from typing import Optional
+import re
+from typing import List, Optional
 
 
 # ---------------------------------------------------------------------------
@@ -127,3 +128,56 @@ def replace_section(body: str, start: str, end: str, new_content: str) -> str:
         # Malformed (start present, end absent) — append block, leave orphan
         return body + new_block
     return body[:start_idx] + new_block + body[end_idx + len(end):]
+
+
+# ---------------------------------------------------------------------------
+# Hidden commit block (single HTML comment — fully invisible on GitHub)
+# ---------------------------------------------------------------------------
+
+_HIDDEN_COMMITS_TAG = "koan-commits"
+_HIDDEN_COMMITS_RE = re.compile(
+    r"<!-- " + _HIDDEN_COMMITS_TAG + r"\n(.*?)\n-->",
+    re.DOTALL,
+)
+
+
+def build_hidden_commit_block(shas: List[str]) -> str:
+    """Build a single HTML comment containing all commit SHAs.
+
+    Unlike the legacy two-marker format (where SHAs between separate
+    ``<!-- start -->`` and ``<!-- end -->`` comments render visibly),
+    this embeds everything inside one comment — fully hidden on GitHub.
+    """
+    return f"<!-- {_HIDDEN_COMMITS_TAG}\n" + "\n".join(shas) + "\n-->"
+
+
+def extract_commit_shas(body: str) -> List[str]:
+    """Extract reviewed commit SHAs from a comment body.
+
+    Tries the new single-comment format first, then falls back to the
+    legacy two-marker format for backward compatibility with older reviews.
+    """
+    m = _HIDDEN_COMMITS_RE.search(body)
+    if m:
+        return [s.strip() for s in m.group(1).splitlines() if s.strip()]
+
+    raw = extract_between_markers(body, COMMIT_IDS_START, COMMIT_IDS_END)
+    if raw:
+        return [s.strip() for s in raw.splitlines() if s.strip()]
+
+    return []
+
+
+def replace_commit_block(body: str, shas: List[str]) -> str:
+    """Replace or append the hidden commit block in ``body``.
+
+    Removes any legacy two-marker block first, then upserts the new
+    single-comment format.
+    """
+    body = remove_section(body, COMMIT_IDS_START, COMMIT_IDS_END)
+
+    m = _HIDDEN_COMMITS_RE.search(body)
+    new_block = build_hidden_commit_block(shas)
+    if m:
+        return body[:m.start()] + new_block + body[m.end():]
+    return body + "\n" + new_block

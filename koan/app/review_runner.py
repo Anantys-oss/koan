@@ -37,6 +37,8 @@ from app.review_markers import (
     COMMIT_IDS_START,
     COMMIT_IDS_END,
     extract_between_markers,
+    extract_commit_shas,
+    replace_commit_block,
     replace_section,
 )
 from app.review_schema import validate_review
@@ -1203,14 +1205,19 @@ def _format_review_as_markdown(review_data: dict, title: str = "", bot_username:
     return "\n".join(lines)
 
 
-def _build_review_footer(provider_name: str = "", model: str = "") -> str:
-    """Build the review footer with branding, provider, and model info."""
+def _build_review_footer(
+    provider_name: str = "", model: str = "", head_sha: str = "",
+) -> str:
+    """Build the review footer with branding, provider, model, and HEAD SHA."""
     from app.pr_footer import build_koan_footer
-    return build_koan_footer(
+    footer = build_koan_footer(
         action="Automated review by",
         provider_name=provider_name,
         model=model,
     )
+    if head_sha:
+        footer += f" `HEAD={head_sha[:7]}`"
+    return footer
 
 
 def _post_review_comment(
@@ -1238,7 +1245,8 @@ def _post_review_comment(
     if len(review_text) > max_len:
         review_text = review_text[:max_len] + "\n\n_(Review truncated)_"
 
-    footer = _build_review_footer(provider_name, model)
+    head_sha = commit_shas[-1] if commit_shas else ""
+    footer = _build_review_footer(provider_name, model, head_sha=head_sha)
 
     # If body already starts with a ## heading, don't add another
     if review_text.startswith("## "):
@@ -1246,19 +1254,13 @@ def _post_review_comment(
     else:
         body = f"{SUMMARY_TAG}\n## Code Review\n\n{review_text}\n\n---\n{footer}"
 
-    # Embed commit SHAs when provided; otherwise preserve from existing
-    # comment so a re-review doesn't clobber prior incremental state.
+    # Embed commit SHAs in a single hidden HTML comment (fully invisible).
     if commit_shas:
-        body = replace_section(
-            body, COMMIT_IDS_START, COMMIT_IDS_END, "\n".join(commit_shas),
-        )
+        body = replace_commit_block(body, commit_shas)
     elif existing_comment:
-        existing_body = existing_comment.get("body", "")
-        commits_block = extract_between_markers(
-            existing_body, COMMIT_IDS_START, COMMIT_IDS_END,
-        )
-        if commits_block is not None:
-            body = replace_section(body, COMMIT_IDS_START, COMMIT_IDS_END, commits_block)
+        prior = extract_commit_shas(existing_comment.get("body", ""))
+        if prior:
+            body = replace_commit_block(body, prior)
 
     sanitized = sanitize_github_comment(body)
     if existing_comment:
@@ -1606,13 +1608,7 @@ def run_review(
     # Step 1e: Extract previously reviewed SHAs from existing comment (Phase 5)
     prior_shas: List[str] = []
     if existing_comment:
-        raw_prior = extract_between_markers(
-            existing_comment.get("body", ""),
-            COMMIT_IDS_START,
-            COMMIT_IDS_END,
-        )
-        if raw_prior:
-            prior_shas = [s.strip() for s in raw_prior.splitlines() if s.strip()]
+        prior_shas = extract_commit_shas(existing_comment.get("body", ""))
 
     # If all current commits were already reviewed, skip
     if current_shas and prior_shas and set(current_shas) == set(prior_shas):
