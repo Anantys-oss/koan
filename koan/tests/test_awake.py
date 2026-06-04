@@ -1428,6 +1428,30 @@ class TestCheckConfig:
              patch("app.awake.INSTANCE_DIR", inst):
             check_config()  # Should not raise
 
+    def test_does_not_exit_for_non_telegram_without_telegram_creds(self, tmp_path):
+        """Non-telegram providers (matrix/slack) leave BOT_TOKEN/CHAT_ID unset.
+        check_config() must not sys.exit on them — the credential check is
+        deferred to each provider's own configure()."""
+        inst = tmp_path / "instance"
+        inst.mkdir()
+        with patch("app.messaging.resolve_provider_name", return_value="matrix"), \
+             patch("app.awake.BOT_TOKEN", ""), \
+             patch("app.awake.CHAT_ID", ""), \
+             patch("app.awake.INSTANCE_DIR", inst):
+            check_config()  # Should not raise
+
+    def test_still_exits_for_telegram_without_creds(self, tmp_path):
+        """The telegram credential gate still fires when the provider is
+        telegram and creds are missing."""
+        inst = tmp_path / "instance"
+        inst.mkdir()
+        with patch("app.messaging.resolve_provider_name", return_value="telegram"), \
+             patch("app.awake.BOT_TOKEN", ""), \
+             patch("app.awake.CHAT_ID", ""), \
+             patch("app.awake.INSTANCE_DIR", inst), \
+             pytest.raises(SystemExit):
+            check_config()
+
 
 # ---------------------------------------------------------------------------
 # main() loop
@@ -1539,6 +1563,129 @@ class TestMainLoop:
         from app.awake import main
         mock_updates.return_value = [
             {"update_id": 100, "message": {"chat": {"id": int(self.TEST_CHAT_ID)}}}  # no text
+        ]
+        with pytest.raises(StopIteration):
+            main()
+        mock_handle.assert_not_called()
+
+    # -- Non-Telegram provider regressions (matrix/slack/discord) ------------
+    #
+    # These providers leave CHAT_ID unset and match on the resolved
+    # channel_id (e.g. a matrix room id). The main loop must not assume the
+    # Telegram update shape, or it crash-loops the bridge on every message.
+
+    MATRIX_ROOM_ID = "!VakERumPJhkcdQphyO:example.org"
+
+    def _matrix_provider_mock(self):
+        """A messaging provider whose channel_id is a matrix room id."""
+        provider = MagicMock()
+        provider.get_provider_name.return_value = "matrix"
+        provider.get_channel_id.return_value = self.MATRIX_ROOM_ID
+        return provider
+
+    @patch("app.awake._check_group_chat_mode")
+    @patch("app.messaging.get_messaging_provider")
+    @patch("app.awake.write_heartbeat")
+    @patch("app.awake._flush_outbox_async")
+    @patch("app.awake.handle_message")
+    @patch("app.awake.get_updates")
+    @patch("app.awake.check_config")
+    @patch("app.awake.CHAT_ID", "")  # matrix leaves CHAT_ID unset
+    @patch("app.awake.time.sleep", side_effect=StopIteration)
+    def test_main_matrix_message_binds_message_id(
+        self, mock_sleep, mock_config, mock_updates, mock_handle, mock_flush,
+        mock_heartbeat, mock_provider, mock_group_check,
+    ):
+        """A matrix message (chat_id matches channel_id but not CHAT_ID) must
+        dispatch without raising UnboundLocalError on message_id. The buggy
+        version bound message_id only inside a `chat_id == CHAT_ID` guard,
+        crashing the bridge on every matrix message → restart → crash-loop."""
+        from app.awake import main
+        mock_provider.return_value = self._matrix_provider_mock()
+        mock_updates.return_value = [
+            {"update_id": 1, "message": {
+                "message_id": "$evt", "text": "/resume",
+                "chat": {"id": self.MATRIX_ROOM_ID}}}
+        ]
+        # Must reach sleep() (StopIteration), not raise UnboundLocalError.
+        with pytest.raises(StopIteration):
+            main()
+        mock_handle.assert_called_once_with("/resume")
+
+    @patch("app.awake._check_group_chat_mode")
+    @patch("app.messaging.get_messaging_provider")
+    @patch("app.awake.write_heartbeat")
+    @patch("app.awake._flush_outbox_async")
+    @patch("app.awake.handle_message")
+    @patch("app.awake.get_updates")
+    @patch("app.awake.check_config")
+    @patch("app.awake.CHAT_ID", "")
+    @patch("app.awake.time.sleep", side_effect=StopIteration)
+    def test_main_update_without_update_id_does_not_crash(
+        self, mock_sleep, mock_config, mock_updates, mock_handle, mock_flush,
+        mock_heartbeat, mock_provider, mock_group_check,
+    ):
+        """An update lacking update_id must not crash the loop. A KeyError here
+        would take down main(), the supervisor would restart the bridge, the
+        same poison message would be re-delivered, and we'd crash-loop forever."""
+        from app.awake import main
+        mock_provider.return_value = self._matrix_provider_mock()
+        mock_updates.return_value = [
+            {"message": {"message_id": "$evt", "text": "hi from matrix",
+                         "chat": {"id": self.MATRIX_ROOM_ID}}}
+        ]
+        with pytest.raises(StopIteration):
+            main()
+        mock_handle.assert_called_once_with("hi from matrix")
+        mock_flush.assert_called_once()
+        mock_heartbeat.assert_called()
+
+    @patch("app.awake._check_group_chat_mode")
+    @patch("app.messaging.get_messaging_provider")
+    @patch("app.awake.write_heartbeat")
+    @patch("app.awake._flush_outbox_async")
+    @patch("app.awake.handle_message")
+    @patch("app.awake.get_updates")
+    @patch("app.awake.check_config")
+    @patch("app.awake.CHAT_ID", "")
+    @patch("app.awake.time.sleep", side_effect=StopIteration)
+    def test_main_drops_message_from_other_channel(
+        self, mock_sleep, mock_config, mock_updates, mock_handle, mock_flush,
+        mock_heartbeat, mock_provider, mock_group_check,
+    ):
+        """A message whose chat.id matches neither channel_id nor CHAT_ID is
+        dropped (not dispatched)."""
+        from app.awake import main
+        mock_provider.return_value = self._matrix_provider_mock()
+        mock_updates.return_value = [
+            {"update_id": 1, "message": {
+                "message_id": "$evt", "text": "intruder",
+                "chat": {"id": "!someOtherRoom:example.org"}}}
+        ]
+        with pytest.raises(StopIteration):
+            main()
+        mock_handle.assert_not_called()
+
+    @patch("app.awake._check_group_chat_mode")
+    @patch("app.messaging.get_messaging_provider")
+    @patch("app.awake.write_heartbeat")
+    @patch("app.awake._flush_outbox_async")
+    @patch("app.awake.handle_message")
+    @patch("app.awake.get_updates")
+    @patch("app.awake.check_config")
+    @patch("app.awake.CHAT_ID", "")
+    @patch("app.awake.time.sleep", side_effect=StopIteration)
+    def test_main_drops_malformed_update_missing_chat_id(
+        self, mock_sleep, mock_config, mock_updates, mock_handle, mock_flush,
+        mock_heartbeat, mock_provider, mock_group_check,
+    ):
+        """With CHAT_ID="" (normal for matrix/slack), a malformed update with no
+        chat.id (chat_id == "") must NOT pass the channel filter. Guards against
+        the empty-string match `"" in (channel_id, "")` slipping through."""
+        from app.awake import main
+        mock_provider.return_value = self._matrix_provider_mock()
+        mock_updates.return_value = [
+            {"update_id": 1, "message": {"message_id": "$evt", "text": "no chat id"}}
         ]
         with pytest.raises(StopIteration):
             main()

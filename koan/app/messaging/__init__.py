@@ -116,7 +116,7 @@ def get_messaging_provider(provider_name_override: Optional[str] = None) -> Mess
         if _instance is not None and provider_name_override is None:
             return _instance
 
-        name = provider_name_override or _resolve_provider_name()
+        name = provider_name_override or resolve_provider_name()
         instance = _create_provider(name)
 
         if provider_name_override is None:
@@ -132,7 +132,7 @@ def reset_provider():
         _instance = None
 
 
-def _resolve_provider_name() -> str:
+def resolve_provider_name() -> str:
     """Resolve provider name from env var or config."""
     name = os.environ.get("KOAN_MESSAGING_PROVIDER", "")
     if name:
@@ -177,6 +177,12 @@ def _ensure_providers_loaded():
         _modules_loaded = True
 
 
+# Backward-compatible private alias. ``resolve_provider_name`` is the public
+# API (used by awake.py); the underscore-prefixed name is retained so existing
+# callers/tests that imported it keep working.
+_resolve_provider_name = resolve_provider_name
+
+
 __all__ = [
     "DEFAULT_MAX_MESSAGE_SIZE",
     "MessagingProvider",
@@ -186,4 +192,5 @@ __all__ = [
     "get_messaging_provider",
     "register_provider",
     "reset_provider",
+    "resolve_provider_name",
 ]

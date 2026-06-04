@@ -83,7 +83,12 @@ def _get_last_message_id() -> int:
 
 
 def check_config():
-    if not BOT_TOKEN or not CHAT_ID:
+    # BOT_TOKEN / CHAT_ID are Telegram-specific.  Slack and Matrix users
+    # don't set them — defer the actual credential check to each
+    # provider's own ``configure()`` (called from get_messaging_provider
+    # below) so non-telegram providers don't get sys.exit(1)'d here.
+    from app.messaging import resolve_provider_name
+    if resolve_provider_name() == "telegram" and (not BOT_TOKEN or not CHAT_ID):
         log("error", "Set KOAN_TELEGRAM_TOKEN and KOAN_TELEGRAM_CHAT_ID env vars.")
         sys.exit(1)
     if not INSTANCE_DIR.exists():
@@ -727,7 +732,8 @@ def main():
 
     setup_github_auth()
 
-    provider_name = "telegram"  # about to become dynamic with provider abstraction
+    from app.messaging import resolve_provider_name
+    provider_name = resolve_provider_name()
     print_bridge_banner(f"messaging bridge — {provider_name.lower()}")
 
     # Record startup time — used to ignore stale signal files in the
@@ -743,8 +749,10 @@ def main():
     heartbeat_file = KOAN_ROOT / HEARTBEAT_FILE
     heartbeat_file.unlink(missing_ok=True)
     write_heartbeat(str(KOAN_ROOT))
-    log("init", f"Token: ...{BOT_TOKEN[-8:]}")
-    log("init", f"Chat ID: {CHAT_ID}")
+    if BOT_TOKEN:
+        log("init", f"Token: ...{BOT_TOKEN[-8:]}")
+    if CHAT_ID:
+        log("init", f"Chat ID: {CHAT_ID}")
     log("init", f"Soul: {len(SOUL)} chars loaded")
     log("init", f"Summary: {len(SUMMARY)} chars loaded")
     registry = _get_registry()
@@ -798,7 +806,16 @@ def main():
                 continue
 
             for update in updates:
-                offset = update["update_id"] + 1
+                # Telegram uses update_id for offset-based pagination.
+                # Other providers (matrix, slack, discord) manage their own
+                # cursor internally and may hand us updates that don't carry
+                # this key. Never let a missing/malformed update_id crash the
+                # bridge: a single non-conforming update would otherwise take
+                # down main(), the supervisor would restart us, the same
+                # poison message would be re-delivered, and we'd crash-loop
+                # forever (see logs/awake.log KeyError: 'update_id').
+                if "update_id" in update:
+                    offset = update["update_id"] + 1
 
                 # Handle reaction updates
                 if "message_reaction" in update:
@@ -811,7 +828,26 @@ def main():
                 msg = update.get("message", {})
                 text = msg.get("text", "")
                 chat_id = str(msg.get("chat", {}).get("id", ""))
-                if chat_id == CHAT_ID and text:
+                # Match against either: (a) the active provider's channel
+                # id (resolved at startup — covers slack/matrix where
+                # CHAT_ID is unset), or (b) CHAT_ID (telegram-only, kept
+                # for backward compat with existing tests that patch it
+                # directly).  For telegram in production the two are the
+                # same value.
+                #
+                # message_id / mention-stripping MUST be derived inside this
+                # block, not a separate `chat_id == CHAT_ID` guard: for matrix
+                # (and any provider where CHAT_ID is unset) chat_id matches
+                # channel_id but never CHAT_ID, so a CHAT_ID-only guard leaves
+                # message_id unbound and set_reply_context() below raises
+                # UnboundLocalError — crashing the bridge on every message.
+                #
+                # Empty strings are stripped from the match set and an empty
+                # chat_id is rejected: with CHAT_ID="" (normal for matrix/slack)
+                # a malformed update missing chat.id would otherwise satisfy
+                # `"" in (channel_id, "")` and slip past the channel filter.
+                valid_chat_ids = {str(channel_id), str(CHAT_ID)} - {""}
+                if text and chat_id and chat_id in valid_chat_ids:
                     message_id = msg.get("message_id", 0)
                     text = _strip_bot_mention_from_text(text, msg)
                     log("chat", f"Received: {text[:60]}")

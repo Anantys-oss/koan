@@ -210,16 +210,38 @@ class MatrixProvider(MessagingProvider):
             if not body:
                 continue
 
+            # awake.py's main loop expects Telegram-Bot-API-shaped dicts
+            # (update["update_id"], update["message"]["chat"]["id"], …).
+            # Mint that wrapper here so the polling loop doesn't care which
+            # provider it's draining.
+            ts = event.get("origin_server_ts", "")
+            update_id = next(self._update_counter)
+            raw = {
+                "update_id": update_id,
+                "message": {
+                    "message_id": event.get("event_id", ""),
+                    "text": body,
+                    "date": ts,
+                    "chat": {"id": self._room_id, "type": "supergroup"},
+                    "from": {"id": sender, "username": sender},
+                },
+                "_matrix": {
+                    "sender": sender,
+                    "event_id": event.get("event_id", ""),
+                    "room_id": self._room_id,
+                    "origin_server_ts": ts,
+                },
+            }
             updates.append(
                 Update(
-                    update_id=next(self._update_counter),
+                    update_id=update_id,
                     message=Message(
                         text=body,
                         role="user",
-                        timestamp=str(event.get("origin_server_ts", "")),
-                        raw_data=event,
+                        timestamp=str(ts),
+                        raw_data=raw,
                     ),
-                    raw_data=event,
+                    raw_data=raw,
                 )
             )
         return updates
