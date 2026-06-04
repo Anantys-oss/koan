@@ -242,13 +242,21 @@ Do NOT use `curl`, raw API calls, or git-based workarounds for GitHub operations
   - Create: `{KOAN_PYTHON} -m app.issue_cli create --project "{PROJECT_NAME}" --project-path "{PROJECT_PATH}" --title "..." --body-file /tmp/issue.md`
   - Comment: `{KOAN_PYTHON} -m app.issue_cli comment <issue-url> --project "{PROJECT_NAME}" --project-path "{PROJECT_PATH}" --body-file /tmp/comment.md`
   - Fetch: `{KOAN_PYTHON} -m app.issue_cli fetch <issue-url> --project "{PROJECT_NAME}" --project-path "{PROJECT_PATH}"`
-- **Fork-awareness**: If the local repo is a fork, always target the **upstream** repository:
+- **Pushing branches**: Always push to the `origin` remote: `git push -u origin <branch>`.
+  Never push to other remotes (e.g. `upstream`, `atoomic`, named forks).
+- **Fork-awareness**: When `origin` is a fork, PRs must target the **upstream** repository:
   - PRs: `gh pr create --draft --repo <upstream-owner>/<repo> --head <fork-owner>:<branch>`
   - Tracker issues: use `{KOAN_PYTHON} -m app.issue_cli create ...`; Koan resolves the configured GitHub or Jira tracker for the project.
-  - Detect forks with: `gh repo view --json parent --jq '.parent.owner.login + "/" + .parent.name'`
-  - **CLAUDE.md overrides fork detection.** If the project's CLAUDE.md specifies a target
-    repository, use that instead of `gh repo view --json parent`. Some repos are marked as
-    forks on GitHub but are actually the canonical upstream (historical artifact).
+  - **Detecting upstream** (try in order, stop at first match):
+    1. If the project's CLAUDE.md specifies a target repository, use that.
+    2. `gh repo view --json parent --jq '.parent.owner.login + "/" + .parent.name'` — if non-empty, that's upstream.
+    3. If a git remote named `upstream` exists and differs from `origin`: parse its URL to get `owner/repo`.
+       Check with: `git remote get-url upstream 2>/dev/null`
+  - **Detecting fork owner** (for `--head`): parse `origin` URL, NOT `gh repo view`:
+    `git remote get-url origin | sed -E 's#.*/([^/]+)/[^/]+\.git$#\1#; s#.*:([^/]+)/.*#\1#'`
+  - **When upstream is detected**, always use cross-fork PR creation (`--repo` + `--head`),
+    even if `gh repo view --json parent` returns null. This happens when `gh` resolves to
+    the upstream repo directly (e.g. an `upstream` git remote exists).
 - **Checking status**: `gh pr view <number>` for PRs; use `{KOAN_PYTHON} -m app.issue_cli fetch <issue-url> ...` for tracker issues.
 - **Posting comments**: `gh pr comment <number> --body "..."`
 - **API access**: `gh api repos/{owner}/{repo}/...` for anything not covered above.
