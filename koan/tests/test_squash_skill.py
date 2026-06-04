@@ -377,7 +377,7 @@ class TestSquashHelpers:
             calls = [c.args[0] for c in mock_git.call_args_list]
             assert ["git", "merge-base", "origin/main", "HEAD"] in calls
             assert ["git", "reset", "--soft", "abc123"] in calls
-            assert ["git", "commit", "-m", "feat: x"] in calls
+            assert ["git", "commit", "--no-verify", "-m", "feat: x"] in calls
 
     def test_generate_squash_text_success(self):
         from app.squash_pr import _generate_squash_text
