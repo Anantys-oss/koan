@@ -223,8 +223,11 @@ def _get_command_usage(skill: Skill, command_name: str) -> str:
 
 def _dispatch_skill(skill: Skill, command_name: str, command_args: str):
     """Dispatch a skill execution — handles worker threads and standard calls."""
-    from app.skill_usage import record_usage
-    record_usage(str(INSTANCE_DIR), command_name)
+    try:
+        from app.skill_usage import record_usage
+        record_usage(str(INSTANCE_DIR), command_name)
+    except Exception:
+        pass
 
     # cli_skill + audience:agent → queue as mission for the runner, don't execute inline
     if skill.cli_skill and skill.audience == "agent":

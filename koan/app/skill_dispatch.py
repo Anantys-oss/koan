@@ -1205,8 +1205,11 @@ def dispatch_skill_mission(
     )
     if result:
         debug_log(f"[skill_dispatch] dispatch: built command: {' '.join(result[:5])}")
-        from app.skill_usage import record_usage
-        record_usage(instance_dir, command)
+        try:
+            from app.skill_usage import record_usage
+            record_usage(instance_dir, command)
+        except Exception:
+            pass
     else:
         debug_log("[skill_dispatch] dispatch: build_skill_command returned None")
     return result

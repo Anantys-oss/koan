@@ -30,12 +30,20 @@ def _load_json(path: Path) -> dict:
             data = json.load(f)
             fcntl.flock(f, fcntl.LOCK_UN)
         return data if isinstance(data, dict) else {}
-    except (json.JSONDecodeError, OSError) as e:
+    except json.JSONDecodeError as e:
+        print(f"[skill_usage] Failed to load {path.name}: {e}", file=sys.stderr)
+        try:
+            path.rename(path.with_suffix(path.suffix + ".bak"))
+        except OSError:
+            pass
+        return {}
+    except OSError as e:
         print(f"[skill_usage] Failed to load {path.name}: {e}", file=sys.stderr)
         return {}
 
 
 def _save_json(path: Path, data: dict) -> None:
+    """Best-effort persist — analytics data loss is acceptable, blocking callers is not."""
     try:
         atomic_write(path, json.dumps(data, indent=2, sort_keys=True) + "\n")
     except OSError as e:
