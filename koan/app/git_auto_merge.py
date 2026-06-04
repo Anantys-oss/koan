@@ -152,8 +152,7 @@ class GitAutoMerger:
                 return False, f"Merge conflict during squash: {stderr}"
 
             commit_msg = build_merge_commit_message(branch, strategy, subjects)
-            # --no-verify: skip target-repo pre-commit hooks that can hang/timeout.
-            exit_code, _, stderr = run_git(self.project_path, "commit", "--no-verify", "-m", commit_msg, env=author_env)
+            exit_code, _, stderr = run_git(self.project_path, "commit", "-m", commit_msg, env=author_env)
             if exit_code != 0:
                 run_git(self.project_path, "reset", "--hard")
                 return False, f"Failed to commit squash: {stderr}"
@@ -174,8 +173,7 @@ class GitAutoMerger:
 
         else:
             commit_msg = build_merge_commit_message(branch, "merge", subjects)
-            # --no-verify: skip target-repo pre-commit hooks that can hang/timeout.
-            exit_code, _, stderr = run_git(self.project_path, "merge", "--no-verify", "--no-ff", branch, "-m", commit_msg, env=author_env)
+            exit_code, _, stderr = run_git(self.project_path, "merge", "--no-ff", branch, "-m", commit_msg, env=author_env)
             if exit_code != 0:
                 run_git(self.project_path, "merge", "--abort")
                 return False, f"Merge conflict: {stderr}"
