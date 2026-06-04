@@ -1,7 +1,9 @@
 """Tests for the feature tip system (app.feature_tips)."""
 
+import json
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional
 from unittest.mock import patch
@@ -9,11 +11,11 @@ from unittest.mock import patch
 import pytest
 
 from app.feature_tips import (
+    _KEY_DEV_SKILLS,
+    _TIP_INTERVAL,
     _format_tip,
     _get_eligible_skills,
-    _load_seen,
-    _save_seen,
-    _TIP_INTERVAL,
+    _score_skill,
     mark_active,
     maybe_send_feature_tip,
     pick_tip,
@@ -51,26 +53,6 @@ class FakeRegistry:
 
     def list_all(self):
         return self._skills
-
-
-# --- _load_seen / _save_seen ---
-
-def test_load_seen_missing_file(tmp_path):
-    assert _load_seen(tmp_path / "nope.txt") == set()
-
-
-def test_load_seen_empty_file(tmp_path):
-    p = tmp_path / "seen.txt"
-    p.write_text("")
-    assert _load_seen(p) == set()
-
-
-def test_load_save_roundtrip(tmp_path):
-    p = tmp_path / "seen.txt"
-    original = {"status", "plan", "refactor"}
-    _save_seen(p, original)
-    loaded = _load_seen(p)
-    assert loaded == original
 
 
 # --- _get_eligible_skills ---
@@ -121,9 +103,32 @@ def test_format_tip_with_usage():
     assert "Example:" in msg
 
 
+# --- _score_skill ---
+
+class TestScoreSkill:
+    def test_recently_hinted_excluded(self):
+        assert _score_skill("status", set(), {"status"}) == -1
+
+    def test_unused_key_skill_highest(self):
+        score = _score_skill("fix", set(), set())
+        assert score == 15  # 10 (unused) + 5 (key dev unused)
+
+    def test_unused_regular_skill(self):
+        score = _score_skill("status", set(), set())
+        assert score == 10  # 10 (unused) + 0 (not key dev)
+
+    def test_used_key_skill(self):
+        score = _score_skill("fix", {"fix"}, set())
+        assert score == 2  # 0 (used) + 2 (key dev used)
+
+    def test_used_regular_skill(self):
+        score = _score_skill("status", {"status"}, set())
+        assert score == 0
+
+
 # --- pick_tip ---
 
-def test_pick_tip_marks_seen(tmp_path):
+def test_pick_tip_records_hint(tmp_path):
     skills = [_make_skill("status"), _make_skill("plan")]
     registry = FakeRegistry(skills)
 
@@ -131,25 +136,58 @@ def test_pick_tip_marks_seen(tmp_path):
         tip = pick_tip(str(tmp_path))
 
     assert tip is not None
-    seen = _load_seen(tmp_path / "seen_tips.txt")
-    assert len(seen) == 1
+    from app.skill_usage import get_recently_hinted
+    hinted = get_recently_hinted(str(tmp_path))
+    assert len(hinted) == 1
 
 
-def test_pick_tip_cycles_when_all_seen(tmp_path):
-    skills = [_make_skill("status")]
+def test_pick_tip_prefers_unused_key_skills(tmp_path):
+    skills = [_make_skill("status"), _make_skill("fix")]
     registry = FakeRegistry(skills)
-
-    # Pre-populate seen with all skills
-    _save_seen(tmp_path / "seen_tips.txt", {"status"})
 
     with patch("app.skills.build_registry", return_value=registry):
         tip = pick_tip(str(tmp_path))
 
-    assert tip is not None
+    assert "/fix" in tip
+
+
+def test_pick_tip_skips_recently_hinted(tmp_path):
+    from app.skill_usage import record_hint_shown
+    record_hint_shown(str(tmp_path), "status")
+
+    skills = [_make_skill("status"), _make_skill("plan")]
+    registry = FakeRegistry(skills)
+
+    with patch("app.skills.build_registry", return_value=registry):
+        tip = pick_tip(str(tmp_path))
+
+    assert "/plan" in tip
+
+
+def test_pick_tip_skips_used_prefers_unused(tmp_path):
+    from app.skill_usage import record_usage
+    record_usage(str(tmp_path), "plan")
+
+    skills = [_make_skill("status"), _make_skill("plan")]
+    registry = FakeRegistry(skills)
+
+    with patch("app.skills.build_registry", return_value=registry):
+        tip = pick_tip(str(tmp_path))
+
     assert "/status" in tip
-    # Seen file should now have just "status" again (reset + re-add)
-    seen = _load_seen(tmp_path / "seen_tips.txt")
-    assert seen == {"status"}
+
+
+def test_pick_tip_returns_none_all_hinted(tmp_path):
+    from app.skill_usage import record_hint_shown
+    record_hint_shown(str(tmp_path), "status")
+
+    skills = [_make_skill("status")]
+    registry = FakeRegistry(skills)
+
+    with patch("app.skills.build_registry", return_value=registry):
+        tip = pick_tip(str(tmp_path))
+
+    assert tip is None
 
 
 def test_pick_tip_no_skills(tmp_path):
@@ -158,18 +196,19 @@ def test_pick_tip_no_skills(tmp_path):
         assert pick_tip(str(tmp_path)) is None
 
 
-def test_pick_tip_avoids_already_seen(tmp_path):
-    skills = [_make_skill("status"), _make_skill("plan")]
+def test_pick_tip_all_same_score_picks_randomly(tmp_path):
+    skills = [_make_skill("a"), _make_skill("b"), _make_skill("c")]
     registry = FakeRegistry(skills)
 
-    _save_seen(tmp_path / "seen_tips.txt", {"status"})
-
-    with patch("app.skills.build_registry", return_value=registry):
-        tip = pick_tip(str(tmp_path))
-
-    assert "/plan" in tip
-    seen = _load_seen(tmp_path / "seen_tips.txt")
-    assert seen == {"status", "plan"}
+    seen = set()
+    for _ in range(50):
+        with patch("app.skills.build_registry", return_value=registry):
+            tip = pick_tip(str(tmp_path))
+        if tip:
+            for s in ["a", "b", "c"]:
+                if f"/{s}" in tip:
+                    seen.add(s)
+    assert len(seen) >= 2
 
 
 # --- maybe_send_feature_tip ---
@@ -181,11 +220,11 @@ def test_maybe_send_throttled(tmp_path):
 
     with patch("app.skills.build_registry", return_value=registry), \
          patch("app.utils.append_to_outbox") as mock_outbox:
-        # First call should send
         assert maybe_send_feature_tip(str(tmp_path)) is True
         assert mock_outbox.call_count == 1
 
-        # Second call should be throttled
+        # Second call throttled (hint was just shown, so even without
+        # time throttle it would return None — but time throttle catches first)
         assert maybe_send_feature_tip(str(tmp_path)) is False
         assert mock_outbox.call_count == 1
 
@@ -200,7 +239,6 @@ def test_maybe_send_after_interval(tmp_path):
     with patch("app.skills.build_registry", return_value=registry), \
          patch("app.utils.append_to_outbox") as mock_outbox, \
          patch("app.feature_tips.time") as mock_time:
-        # Simulate time progression
         mock_time.monotonic.side_effect = [0.0, 0.0 + _TIP_INTERVAL + 1]
         assert maybe_send_feature_tip(str(tmp_path)) is True
         # Productive work resets the idle guard
@@ -245,3 +283,10 @@ def test_mark_active_resets_idle_guard(tmp_path):
         assert mock_outbox.call_count == 2
 
     reset_tip_throttle()
+
+
+# --- Key dev skills set ---
+
+def test_key_dev_skills_contains_expected():
+    for skill in ["fix", "plan", "review", "implement", "rebase", "squash"]:
+        assert skill in _KEY_DEV_SKILLS
