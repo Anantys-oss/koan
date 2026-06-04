@@ -1295,6 +1295,37 @@ def _post_review_comment(
         return False, str(e)
 
 
+def _collapse_old_review(
+    owner: str, repo: str, comment: dict,
+) -> None:
+    """Replace an old review comment body with a short pointer to the new one.
+
+    Called before posting a fresh review on re-review so the PR timeline
+    stays tidy. Failures are logged but never block the new review from
+    being posted.
+    """
+    comment_id = comment.get("id")
+    if not comment_id:
+        return
+    collapsed = (
+        f"{SUMMARY_TAG}\n"
+        "~~Previous review~~ — superseded by a newer review below.\n"
+    )
+    try:
+        run_gh(
+            "api",
+            f"repos/{owner}/{repo}/issues/comments/{comment_id}",
+            "-X", "PATCH",
+            "-f", f"body={collapsed}",
+        )
+    except Exception as e:
+        print(
+            f"[review_runner] failed to collapse old review comment "
+            f"{comment_id}: {e}",
+            file=sys.stderr,
+        )
+
+
 def _post_comment_replies(
     owner: str,
     repo: str,
@@ -1731,9 +1762,18 @@ def run_review(
 
     # Step 7: Post (or update) review comment (Phase 3 — idempotent upsert)
     # Commit SHAs are embedded in the body upfront to avoid extra API calls.
+    #
+    # Re-review with new commits: post a FRESH comment instead of PATCHing.
+    # GitHub does not send notifications for edited comments, so an in-place
+    # update is invisible to the reviewer — they never see the updated review.
+    post_target = existing_comment
+    if existing_comment and prior_shas and current_shas and set(current_shas) != set(prior_shas):
+        _collapse_old_review(owner, repo, existing_comment)
+        post_target = None
+
     notify_fn(f"Posting review on PR #{pr_number}...")
     posted, post_error = _post_review_comment(
-        owner, repo, pr_number, review_body, existing_comment,
+        owner, repo, pr_number, review_body, post_target,
         commit_shas=current_shas or None,
         provider_name=review_provider_name,
         model=review_model,

@@ -13,6 +13,7 @@ from app.review_runner import (
     fetch_repliable_comments,
     load_project_learnings,
     run_review,
+    _collapse_old_review,
     _detect_plan_url,
     _fetch_plan_body,
     _truncate_plan,
@@ -2901,6 +2902,115 @@ class TestIncrementalReview:
             if len(c[0]) > 1 and "PATCH" in c[0]
         ]
         assert len(patch_calls) == 0
+
+
+# ---------------------------------------------------------------------------
+# Re-review: fresh comment on new commits
+# ---------------------------------------------------------------------------
+
+
+class TestReReviewFreshComment:
+    """When new commits land after a prior review, post a fresh comment
+    instead of PATCHing the old one (GitHub doesn't notify on edits)."""
+
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=["abc", "def", "ghi"])
+    @patch("app.review_runner.find_bot_comment")
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_re_review_posts_new_comment_not_patch(
+        self, mock_fetch, mock_claude, mock_gh, mock_repliable,
+        mock_find_bot, _mock_shas, pr_context, review_skill_dir,
+    ):
+        """Re-review with new commits posts a fresh comment (not PATCH)."""
+        from app.review_markers import SUMMARY_TAG, COMMIT_IDS_START, COMMIT_IDS_END
+
+        mock_fetch.return_value = pr_context
+        # Prior review had 2 SHAs; current has 3 → new commits
+        sha_block = f"{COMMIT_IDS_START}\nabc\ndef\n{COMMIT_IDS_END}"
+        prior_comment = {"id": 99, "body": f"{SUMMARY_TAG}\n{sha_block}", "user": "koan-bot"}
+        mock_find_bot.return_value = prior_comment
+        mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
+
+        success, summary, _ = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(),
+            skill_dir=review_skill_dir,
+        )
+
+        assert success is True
+        # Should have a "pr comment" call (POST), not a PATCH-only flow
+        post_calls = [
+            c for c in mock_gh.call_args_list
+            if len(c[0]) >= 2 and c[0][0] == "pr" and c[0][1] == "comment"
+        ]
+        assert len(post_calls) >= 1, "Expected a fresh 'pr comment' call for re-review"
+
+        # The old comment should be collapsed via a PATCH call
+        collapse_calls = [
+            c for c in mock_gh.call_args_list
+            if any("PATCH" in str(a) for a in c[0])
+            and any("99" in str(a) for a in c[0])
+        ]
+        assert len(collapse_calls) >= 1, "Expected old comment to be collapsed via PATCH"
+
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=["abc", "def"])
+    @patch("app.review_runner.find_bot_comment")
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_same_shas_patches_existing_comment(
+        self, mock_fetch, mock_claude, mock_gh, mock_repliable,
+        mock_find_bot, _mock_shas, pr_context, review_skill_dir,
+    ):
+        """Re-review of same commits (retry) PATCHes the existing comment."""
+        from app.review_markers import SUMMARY_TAG, COMMIT_IDS_START, COMMIT_IDS_END
+
+        mock_fetch.return_value = pr_context
+        # Prior and current SHAs are identical — should SKIP entirely
+        sha_block = f"{COMMIT_IDS_START}\nabc\ndef\n{COMMIT_IDS_END}"
+        prior_comment = {"id": 99, "body": f"{SUMMARY_TAG}\n{sha_block}", "user": "koan-bot"}
+        mock_find_bot.return_value = prior_comment
+
+        success, summary, _ = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(),
+            skill_dir=review_skill_dir,
+        )
+
+        assert success is True
+        assert "no new commits" in summary.lower()
+        mock_claude.assert_not_called()
+
+
+class TestCollapseOldReview:
+    """Tests for _collapse_old_review helper."""
+
+    @patch("app.review_runner.run_gh")
+    def test_collapses_comment(self, mock_gh):
+        """Patches the old comment body to a superseded notice."""
+        comment = {"id": 42, "body": "## Full Review\n\nLots of findings..."}
+        _collapse_old_review("owner", "repo", comment)
+
+        mock_gh.assert_called_once()
+        args = mock_gh.call_args[0]
+        assert "PATCH" in args
+        assert "42" in str(args)
+
+    @patch("app.review_runner.run_gh")
+    def test_collapse_failure_does_not_raise(self, mock_gh):
+        """Collapse failure is logged but doesn't block the new review."""
+        mock_gh.side_effect = RuntimeError("API error")
+        comment = {"id": 42, "body": "## Review"}
+        _collapse_old_review("owner", "repo", comment)
+
+    @patch("app.review_runner.run_gh")
+    def test_collapse_skips_missing_id(self, mock_gh):
+        """No API call when comment has no id."""
+        _collapse_old_review("owner", "repo", {})
+        mock_gh.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
