@@ -911,6 +911,33 @@ class TestPostReviewComment:
         assert "Claude" in body
         assert "model claude-opus-4-6" in body
 
+    @patch("app.review_runner.run_gh")
+    def test_footer_shows_head_sha(self, mock_gh):
+        """Footer displays HEAD=<sha> when commit_shas provided."""
+        _post_review_comment(
+            "owner", "repo", "42", "LGTM",
+            commit_shas=["abc123full", "def456full"],
+        )
+        body = [a for a in mock_gh.call_args[0] if isinstance(a, str) and "LGTM" in a][0]
+        assert "`HEAD=def456f`" in body
+
+    @patch("app.review_runner.run_gh")
+    def test_footer_no_head_sha_without_commits(self, mock_gh):
+        """Footer omits HEAD= when no commit_shas provided."""
+        _post_review_comment("owner", "repo", "42", "LGTM")
+        body = [a for a in mock_gh.call_args[0] if isinstance(a, str) and "LGTM" in a][0]
+        assert "HEAD=" not in body
+
+    @patch("app.review_runner.run_gh")
+    def test_commits_hidden_in_single_html_comment(self, mock_gh):
+        """Commit SHAs are stored in a single HTML comment (invisible on GitHub)."""
+        _post_review_comment(
+            "owner", "repo", "42", "LGTM",
+            commit_shas=["abc123", "def456"],
+        )
+        body = [a for a in mock_gh.call_args[0] if isinstance(a, str) and "LGTM" in a][0]
+        assert "<!-- koan-commits\nabc123\ndef456\n-->" in body
+
 
 # ---------------------------------------------------------------------------
 # run_review (integration, mocked externals)
@@ -2700,7 +2727,18 @@ class TestPostReviewCommentIdempotent:
         _post_review_comment("owner", "repo", "42", "New review text", existing)
         body_arg = [a for a in mock_gh.call_args[0] if isinstance(a, str) and "New review" in a][0]
         assert "abc123" in body_arg
-        assert COMMIT_IDS_START in body_arg
+        assert "<!-- koan-commits" in body_arg
+
+    @patch("app.review_runner.run_gh")
+    def test_preserves_commit_ids_from_new_single_comment_format(self, mock_gh):
+        """New single-comment commit block is carried forward."""
+        from app.review_markers import SUMMARY_TAG, build_hidden_commit_block
+        sha_block = build_hidden_commit_block(["abc123", "def456"])
+        existing = {"id": 99, "body": f"{SUMMARY_TAG}\nold review\n{sha_block}", "user": "koan-bot"}
+        _post_review_comment("owner", "repo", "42", "New review text", existing)
+        body_arg = [a for a in mock_gh.call_args[0] if isinstance(a, str) and "New review" in a][0]
+        assert "abc123" in body_arg
+        assert "def456" in body_arg
 
     @patch("app.review_runner.run_gh")
     def test_patch_403_falls_back_to_new_comment(self, mock_gh):
@@ -2837,8 +2875,6 @@ class TestIncrementalReview:
         mock_find_bot, _mock_shas, pr_context, review_skill_dir,
     ):
         """Commit SHAs are embedded in the initial comment body (no extra PATCH)."""
-        from app.review_markers import COMMIT_IDS_START, COMMIT_IDS_END
-
         mock_fetch.return_value = pr_context
         mock_find_bot.return_value = None  # No prior comment
         mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
@@ -2850,18 +2886,16 @@ class TestIncrementalReview:
         )
 
         assert success is True
-        # SHAs are now embedded in the initial post — find the body arg
-        # from the `pr comment` call (new comment creation).
         comment_calls = [
             c for c in mock_gh.call_args_list
             if "comment" in c[0]
         ]
         assert len(comment_calls) >= 1
         body_arg = " ".join(str(a) for a in comment_calls[0][0])
-        assert COMMIT_IDS_START in body_arg
+        assert "<!-- koan-commits" in body_arg
         assert "abc" in body_arg
         assert "def" in body_arg
-        # No separate PATCH call should exist for SHA embedding
+        assert "HEAD=def" in body_arg
         patch_calls = [
             c for c in mock_gh.call_args_list
             if len(c[0]) > 1 and "PATCH" in c[0]
