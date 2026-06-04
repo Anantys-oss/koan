@@ -8,6 +8,7 @@ Usage:
     python3 -m skills.core.explain.explain_runner <pr-url> --project-path /path
 """
 
+import subprocess
 import sys
 from pathlib import Path
 from typing import Optional, Tuple
@@ -34,16 +35,24 @@ def _build_explain_prompt(
         )))
         project_memory = build_memory_block_for_skill(project_path, task_text)
 
+    from app.prompt_guard import fence_external_data
+
     kwargs = dict(
-        TITLE=context["title"],
+        TITLE=fence_external_data(context["title"], "PR title"),
         AUTHOR=context["author"],
         BRANCH=context["branch"],
         BASE=context["base"],
-        BODY=context["body"],
-        DIFF=context["diff"],
-        REVIEW_COMMENTS=context.get("review_comments", ""),
-        REVIEWS=context.get("reviews", ""),
-        ISSUE_COMMENTS=context.get("issue_comments", ""),
+        BODY=fence_external_data(context.get("body", ""), "PR body"),
+        DIFF=fence_external_data(context.get("diff", ""), "PR diff", scan=False),
+        REVIEW_COMMENTS=fence_external_data(
+            context.get("review_comments", ""), "review comments"
+        ),
+        REVIEWS=fence_external_data(
+            context.get("reviews", ""), "reviews"
+        ),
+        ISSUE_COMMENTS=fence_external_data(
+            context.get("issue_comments", ""), "issue comments"
+        ),
         PROJECT_MEMORY=project_memory,
     )
 
@@ -65,25 +74,25 @@ def _run_claude_explain(
 
     if model is None:
         models = get_model_config()
-        model = models.get("review_mode") or models.get("mission", "")
+        model = models.get("review_mode") or models.get("mission") or None
+
+    cmd_kwargs = dict(
+        prompt=prompt,
+        project_path=project_path,
+        allowed_tools=["Read", "Glob", "Grep"],
+        model_key="mission",
+        max_turns=get_skill_max_turns(),
+        timeout=timeout,
+    )
+    if model:
+        cmd_kwargs["model"] = model
 
     try:
-        output = run_command_streaming(
-            prompt=prompt,
-            project_path=project_path,
-            allowed_tools=["Read", "Glob", "Grep"],
-            model_key="mission",
-            model=model,
-            max_turns=get_skill_max_turns(),
-            timeout=timeout,
-        )
+        output = run_command_streaming(**cmd_kwargs)
         return output, ""
     except RuntimeError as e:
         error = str(e) or "unknown error"
-        print(
-            f"[explain_runner] Claude explain failed: {error}",
-            file=sys.stderr,
-        )
+        log("explain", f"Claude explain failed: {error}")
         return "", error
 
 
@@ -117,7 +126,7 @@ def run_explain(
 
     try:
         context = fetch_pr_context(owner, repo, pr_number, project_path)
-    except Exception as e:
+    except (RuntimeError, OSError, subprocess.CalledProcessError) as e:
         return False, f"Failed to fetch PR context: {e}"
 
     diff = context.get("diff", "")
