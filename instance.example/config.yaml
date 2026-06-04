@@ -187,6 +187,15 @@ skill_timeout: 7200
 # Default: 75.
 # analysis_max_turns: 75
 
+# Contemplative max turns — maximum turns for reflective sessions
+# Controls how many turns Claude CLI is allowed during contemplative
+# reflection. The contemplative prompt reads several memory files
+# (soul.md, summary.md, personality-evolution.md, learnings.md) and
+# writes output — requiring at least 6-7 tool calls. Too few turns
+# causes sessions to hit the limit before producing any output.
+# Default: 15.
+# contemplative_max_turns: 15
+
 # Reasoning effort level — controls Claude's --effort flag per autonomous mode.
 # Higher effort = deeper reasoning but more tokens. Accepts per-mode overrides
 # or a single value for all modes. Valid levels: low, medium, high, max.
