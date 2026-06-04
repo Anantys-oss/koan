@@ -10,7 +10,7 @@
 - **checklist**: Review checklist results. Empty array `[]` for trivial changes. Each item has `passed` (bool) and `finding_ref` (cross-reference like `"critical #1"`, or empty string `""` if passed).
 
 All fields in `file_comments` and `review_summary` are required. Use empty strings `""`, empty arrays `[]`, or `false` as sentinel values — never omit a field.
-- **comment_replies**: Optional. Array of replies to user comments. Omit or use `[]` if no replies are warranted. Each item needs `comment_id` (integer, from the repliable comments list) and `reply` (string, Caveman style — short direct sentences, no filler, 2-4 sentences max).
+- **comment_replies**: Optional. Array of replies to user comments. Omit or use `[]` if no replies are warranted. Each item needs `comment_id` (integer, from the repliable comments list) and `reply` (string, concise and actionable, 2-4 sentences max).
 - **close_pr**: Optional. Object signalling whether to close the PR after the review is posted. `close` (bool) defaults to `false`. `reason` (string) is a short closure rationale, empty when `close=false`. Omit the field entirely if not closing — only include it when `close=true`.
 
 IMPORTANT: Output ONLY the JSON object. No markdown formatting, no explanatory text, no code fences around the JSON.
