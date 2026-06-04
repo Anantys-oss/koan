@@ -254,7 +254,16 @@ class OutboxManager:
         """
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
-                return  # Previous flush still running — skip this cycle
+                # If the outbox file has content and we're skipping, log it so
+                # the user can see messages accumulating (burst root cause).
+                if self._outbox_file.exists():
+                    try:
+                        size = self._outbox_file.stat().st_size
+                        if size > 0:
+                            log("outbox", f"flush_async skipped (thread busy) — {size} bytes waiting in outbox")
+                    except OSError:
+                        pass
+                return
             self._thread = threading.Thread(target=self._flush_safe, daemon=True)
             self._thread.start()
 

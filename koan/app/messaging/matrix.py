@@ -135,6 +135,11 @@ class MatrixProvider(MessagingProvider):
         if not text:
             return True
 
+        preview = text[:80].replace("\n", " ")
+        if len(text) > 80:
+            preview += "…"
+        print(f"[matrix] send_message: {len(text)} chars — {preview!r}", file=sys.stderr)
+
         ok = True
         for idx, chunk in enumerate(self.chunk_message(text, max_size=MAX_MESSAGE_SIZE)):
             with self._send_lock:
@@ -276,7 +281,26 @@ class MatrixProvider(MessagingProvider):
         payload = {"msgtype": "m.text", "body": text}
         headers = {"Authorization": f"Bearer {self._access_token}"}
 
+        # Log the txn_id so we can spot duplicate sends in awake.log.
+        # Same txn_id on two lines = idempotent retry (safe).
+        # Different txn_id, same content = old-code requeue bug (would be duplicate).
+        preview = text[:60].replace("\n", " ")
+        print(
+            f"[matrix] PUT chunk[{chunk_index}] txn={txn_id[:12]}… "
+            f"len={len(text)} {preview!r}",
+            file=sys.stderr,
+        )
+
+        attempt_count = 0
+
         def _do_put():
+            nonlocal attempt_count
+            attempt_count += 1
+            if attempt_count > 1:
+                print(
+                    f"[matrix] retry #{attempt_count} chunk[{chunk_index}] txn={txn_id[:12]}…",
+                    file=sys.stderr,
+                )
             resp = requests.put(url, json=payload, headers=headers, timeout=SEND_HTTP_TIMEOUT)
             if resp.status_code >= 400:
                 # 4xx is not retryable; raise ValueError to short-circuit.
@@ -290,6 +314,11 @@ class MatrixProvider(MessagingProvider):
                 raise requests.RequestException(
                     f"matrix HTTP {resp.status_code}: {resp.text[:200]}"
                 )
+            print(
+                f"[matrix] PUT ok chunk[{chunk_index}] txn={txn_id[:12]}… "
+                f"status={resp.status_code}",
+                file=sys.stderr,
+            )
             return True
 
         try:
