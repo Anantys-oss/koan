@@ -143,7 +143,7 @@ def _exclude_replied_issue_comments(
     format ``> @user: first_line...``.  Match that quote pattern against
     human comments to detect prior replies.
     """
-    replied_prefixes: list = []
+    replied_quotes: list = []
     for bc in bot_comments:
         body = bc.get("body", "")
         first_line = body.split("\n")[0]
@@ -152,12 +152,13 @@ def _exclude_replied_issue_comments(
             continue
         user = m.group(1).lower()
         text = m.group(2).strip()
-        if text.endswith("..."):
+        truncated = text.endswith("...")
+        if truncated:
             text = text[:-3].rstrip()
         if text:
-            replied_prefixes.append((user, text.lower()))
+            replied_quotes.append((user, text.lower(), truncated))
 
-    if not replied_prefixes:
+    if not replied_quotes:
         return human_comments
 
     filtered = []
@@ -165,8 +166,11 @@ def _exclude_replied_issue_comments(
         user = hc.get("user", "").lower()
         first_line = hc.get("body", "").split("\n")[0].strip().lower()
         already_replied = any(
-            user == ru and first_line.startswith(rp)
-            for ru, rp in replied_prefixes
+            user == ru and (
+                first_line[:len(rp)] == rp if was_truncated
+                else first_line == rp
+            )
+            for ru, rp, was_truncated in replied_quotes
         )
         if not already_replied:
             filtered.append(hc)

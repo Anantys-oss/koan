@@ -2359,6 +2359,18 @@ class TestExcludeRepliedIssueComments:
         result = _exclude_replied_issue_comments(human, bot)
         assert len(result) == 0
 
+    def test_exact_match_no_false_positive_on_prefix(self):
+        """Non-truncated quotes require exact first-line match, not prefix."""
+        from app.review_runner import _exclude_replied_issue_comments
+        human = [
+            {"id": 1, "user": "alice", "body": "Some text is wrong"},
+            {"id": 2, "user": "alice", "body": "Some text is fine"},
+        ]
+        bot = [{"body": "> @alice: Some text is fine\n\nAgreed"}]
+        result = _exclude_replied_issue_comments(human, bot)
+        assert len(result) == 1
+        assert result[0]["id"] == 1
+
     def test_no_bot_replies_returns_all(self):
         from app.review_runner import _exclude_replied_issue_comments
         human = [{"id": 1, "user": "alice", "body": "Question"}]

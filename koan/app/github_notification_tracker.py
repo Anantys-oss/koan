@@ -15,8 +15,11 @@ Both survive process restarts and use the same TTL/cap/locking pattern.
 """
 
 import json
+import logging
 import time
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 
 _TRACKER_FILE = ".koan-github-processed.json"
@@ -164,7 +167,11 @@ def is_review_on_cooldown(instance_dir: str, owner: str, repo: str, pr_number: s
 
 
 def set_review_cooldown(instance_dir: str, owner: str, repo: str, pr_number: str) -> None:
-    """Record that a review was just queued for this PR."""
+    """Record that a review was just queued for this PR.
+
+    # TODO: wire into github_command_handler or loop_manager alongside
+    # the self-reply detection for belt-and-suspenders re-review prevention.
+    """
     key = f"review_cd:{owner}/{repo}#{pr_number}"
     try:
         from app.locked_file import locked_json_modify
@@ -176,4 +183,4 @@ def set_review_cooldown(instance_dir: str, owner: str, repo: str, pr_number: str
 
         locked_json_modify(_threads_path(instance_dir), _update)
     except OSError:
-        pass
+        log.warning("Failed to set review cooldown for %s/%s#%s", owner, repo, pr_number)
