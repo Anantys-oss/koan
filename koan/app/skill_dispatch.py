@@ -1208,8 +1208,8 @@ def dispatch_skill_mission(
         try:
             from app.skill_usage import record_usage
             record_usage(instance_dir, command)
-        except Exception:
-            pass
+        except Exception as e:
+            debug_log(f"[skill_dispatch] record_usage error: {e}")
     else:
         debug_log("[skill_dispatch] dispatch: build_skill_command returned None")
     return result
