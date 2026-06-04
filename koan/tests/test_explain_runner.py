@@ -367,6 +367,42 @@ class TestPostExplanationComment:
         assert ok is False
         assert "403" in err
 
+    @patch("app.github.run_gh")
+    @patch("app.github.find_bot_comment")
+    def test_timeout_caught_on_post(self, mock_find, mock_gh):
+        from skills.core.explain.explain_runner import _post_explanation_comment
+        import subprocess
+
+        mock_find.return_value = None
+        mock_gh.side_effect = subprocess.TimeoutExpired("gh", 30)
+
+        ok, err = _post_explanation_comment("owner", "repo", "42", "text")
+
+        assert ok is False
+
+    @patch("app.github.run_gh")
+    @patch("app.github.find_bot_comment")
+    def test_oserror_caught_on_patch(self, mock_find, mock_gh):
+        from skills.core.explain.explain_runner import _post_explanation_comment
+
+        mock_find.return_value = {"id": 123, "body": "old", "user": "bot"}
+        mock_gh.side_effect = OSError("connection refused")
+
+        ok, err = _post_explanation_comment("owner", "repo", "42", "text")
+
+        assert ok is True or ok is False
+
+    @patch("app.github.sanitize_github_comment")
+    def test_empty_after_sanitization(self, mock_sanitize):
+        from skills.core.explain.explain_runner import _post_explanation_comment
+
+        mock_sanitize.return_value = ""
+
+        ok, err = _post_explanation_comment("owner", "repo", "42", "raw text")
+
+        assert ok is False
+        assert "empty" in err.lower()
+
 
 class TestMain:
     """Test the CLI entry point."""

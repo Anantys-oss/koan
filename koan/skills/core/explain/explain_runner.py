@@ -154,6 +154,8 @@ def _post_explanation_comment(
 
     full_repo = f"{owner}/{repo}"
     clean_text = sanitize_github_comment(explanation) or ""
+    if not clean_text.strip():
+        return False, "Explanation empty after sanitization"
     body = f"{_EXPLAIN_TAG}\n## PR Explanation\n\n{clean_text}"
 
     existing = find_bot_comment(owner, repo, int(pr_number), _EXPLAIN_TAG)
@@ -165,7 +167,7 @@ def _post_explanation_comment(
                 "--method", "PATCH", "--field", f"body={body}",
             )
             return True, ""
-        except RuntimeError as e:
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
             log("explain", f"PATCH failed ({e}), posting new comment")
 
     try:
@@ -174,7 +176,7 @@ def _post_explanation_comment(
             "--body", body,
         )
         return True, ""
-    except RuntimeError as e:
+    except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
         return False, str(e)
 
 
@@ -233,9 +235,12 @@ def run_explain(
     if not output.strip():
         return False, "Claude returned empty output for explanation."
 
-    posted, post_error = _post_explanation_comment(
-        owner, repo, pr_number, output,
-    )
+    try:
+        posted, post_error = _post_explanation_comment(
+            owner, repo, pr_number, output,
+        )
+    except Exception as e:
+        posted, post_error = False, str(e)
     if not posted:
         log("explain", f"Comment post failed: {post_error}")
 
