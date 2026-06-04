@@ -608,6 +608,68 @@ class TestParseReviewJson:
         assert '"file_comments"' not in md
         assert "```json" not in md
 
+    def test_pr1178_terse_lgtm_without_checklist_survives(self):
+        """Regression for esphome/device-builder#1178.
+
+        The model produced a complete, useful LGTM review but omitted
+        ``review_summary.checklist`` (allowed to be empty for trivial PRs).
+        Strict validation previously discarded the whole review and posted
+        the "could not be formatted" placeholder. The terse review must now
+        parse, with the checklist backfilled to an empty list.
+        """
+        raw = json.dumps({
+            "file_comments": [],
+            "review_summary": {
+                "lgtm": True,
+                "summary": "Clean, behavioral no-op refactor.",
+            },
+        })
+        result = _parse_review_json(raw)
+        assert result is not None
+        assert result["review_summary"]["lgtm"] is True
+        assert result["review_summary"]["checklist"] == []
+
+    def test_file_comment_without_code_snippet_survives(self):
+        """A finding that omits the optional code_snippet must not sink the
+        whole review — the sentinel empty string is backfilled."""
+        raw = json.dumps({
+            "file_comments": [{
+                "file": "script/sync_boards.py",
+                "line_start": 392, "line_end": 392,
+                "severity": "suggestion",
+                "title": "Consider a comment", "comment": "Explain the cast.",
+            }],
+            "review_summary": {"lgtm": True, "summary": "Minor nit.", "checklist": []},
+        })
+        result = _parse_review_json(raw)
+        assert result is not None
+        assert result["file_comments"][0]["code_snippet"] == ""
+
+    def test_lgtm_derived_from_severities_when_omitted(self):
+        """When the model omits lgtm, it is derived: blocking iff any
+        critical/warning finding is present."""
+        blocking = json.dumps({
+            "file_comments": [{
+                "file": "a.py", "line_start": 1, "line_end": 1,
+                "severity": "critical", "title": "t", "comment": "c",
+                "code_snippet": "",
+            }],
+            "review_summary": {"summary": "Has a blocker.", "checklist": []},
+        })
+        result = _parse_review_json(blocking)
+        assert result is not None
+        assert result["review_summary"]["lgtm"] is False
+
+    def test_missing_summary_still_rejected(self):
+        """Normalization must NOT fabricate semantically meaningful fields:
+        a review with no summary is genuinely incomplete and stays rejected."""
+        raw = json.dumps({
+            "file_comments": [],
+            "review_summary": {"lgtm": True},
+        })
+        result = _parse_review_json(raw)
+        assert result is None
+
 
 # ---------------------------------------------------------------------------
 # _format_review_as_markdown

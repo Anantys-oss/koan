@@ -859,6 +859,59 @@ def _extract_json_text(text: str) -> Optional[str]:
     return best
 
 
+def _normalize_review_data(data: object) -> object:
+    """Backfill sentinel-defaultable fields the model commonly omits.
+
+    The review schema declares every field required with an explicit sentinel
+    value (empty array / empty string / False) rather than marking any field
+    optional. But the model often produces a semantically complete, terse
+    review that simply omits a field whose sentinel is unambiguous — most
+    commonly ``review_summary.checklist`` (for trivial PRs) and a
+    ``file_comments[].code_snippet``. Hard-rejecting the whole review for one
+    such omission discards a useful review and posts the "could not be
+    formatted" placeholder instead (observed on esphome/device-builder#1178).
+
+    This fills in those sentinel defaults in place so a terse review survives
+    validation. It deliberately does NOT fabricate semantically meaningful
+    fields (``summary``, ``comment``, ``title``, ``severity``, line numbers,
+    checklist ``item``/``passed``) — if those are missing the review is
+    genuinely incomplete and should still fail validation.
+    """
+    if not isinstance(data, dict):
+        return data
+
+    # Top-level sentinel: an absent file_comments array means "no inline
+    # findings", which is a valid (LGTM) review.
+    if "file_comments" not in data:
+        data["file_comments"] = []
+
+    fc = data.get("file_comments")
+    if isinstance(fc, list):
+        for item in fc:
+            if isinstance(item, dict) and "code_snippet" not in item:
+                item["code_snippet"] = ""
+
+    rs = data.get("review_summary")
+    if isinstance(rs, dict):
+        # checklist is explicitly allowed to be empty for trivial PRs.
+        if "checklist" not in rs:
+            rs["checklist"] = []
+        checklist = rs.get("checklist")
+        if isinstance(checklist, list):
+            for entry in checklist:
+                if isinstance(entry, dict) and "finding_ref" not in entry:
+                    entry["finding_ref"] = ""
+        # lgtm is derivable from finding severities when omitted: blocking iff
+        # any critical/warning finding is present.
+        if "lgtm" not in rs and isinstance(fc, list):
+            rs["lgtm"] = not any(
+                isinstance(c, dict) and c.get("severity") in ("critical", "warning")
+                for c in fc
+            )
+
+    return data
+
+
 def _parse_review_json(raw_output: str) -> Optional[dict]:
     """Attempt to parse and validate JSON review output.
 
@@ -874,6 +927,8 @@ def _parse_review_json(raw_output: str) -> Optional[dict]:
         data = json.loads(json_text)
     except (json.JSONDecodeError, ValueError):
         return None
+
+    data = _normalize_review_data(data)
 
     is_valid, errors = validate_review(data)
     if not is_valid:
