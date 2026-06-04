@@ -1803,21 +1803,50 @@ def _apply_review_feedback(
         min_severity=min_severity,
     )
 
-    step = _run_claude_step_with_heartbeat(
-        phase_label="Applying review feedback",
-        heartbeat_seconds=_REBASE_FEEDBACK_HEARTBEAT_SECONDS,
-        prompt=prompt,
-        project_path=project_path,
-        commit_msg=f"rebase: apply review feedback on #{pr_number}",
-        success_label="Applied review feedback",
-        failure_label="Review feedback step failed",
-        actions_log=actions_log,
-        max_turns=get_skill_max_turns(),
-        timeout=get_skill_timeout(),
-        idle_timeout=get_rebase_review_idle_timeout(),
-        max_duration=get_rebase_review_max_duration(),
-        use_convention_subject=bool(commit_conventions),
-    )
+    try:
+        step = _run_claude_step_with_heartbeat(
+            phase_label="Applying review feedback",
+            heartbeat_seconds=_REBASE_FEEDBACK_HEARTBEAT_SECONDS,
+            prompt=prompt,
+            project_path=project_path,
+            commit_msg=f"rebase: apply review feedback on #{pr_number}",
+            success_label="Applied review feedback",
+            failure_label="Review feedback step failed",
+            actions_log=actions_log,
+            max_turns=get_skill_max_turns(),
+            timeout=get_skill_timeout(),
+            idle_timeout=get_rebase_review_idle_timeout(),
+            max_duration=get_rebase_review_max_duration(),
+            use_convention_subject=bool(commit_conventions),
+        )
+    except Exception as exc:
+        # The git rebase already succeeded by this point. A crash while
+        # *applying* review feedback — most commonly a target-repo pre-commit
+        # hook rejecting the feedback edits (`GitCommandError`), but any
+        # exception qualifies — must not discard that successful rebase. Drop
+        # any partially-staged feedback edits so the clean rebase is what gets
+        # pushed, then signal ``feedback_failed`` so run_rebase pushes the
+        # rebase as-is and flags that feedback was not applied. CI remains the
+        # real gate; the human can re-run /rebase to retry the feedback.
+        try:
+            _run_git(
+                ["git", "reset", "--hard", "HEAD"],
+                cwd=project_path, timeout=30,
+            )
+        except Exception as reset_exc:
+            print(
+                "[rebase_pr] feedback-crash reset failed: "
+                f"{reset_exc}",
+                file=sys.stderr,
+            )
+        error_text = f"{type(exc).__name__}: {exc}"[:200]
+        actions_log.append(
+            "Review feedback step crashed; continuing with rebase-only push"
+        )
+        if result_meta is not None:
+            result_meta["status"] = "feedback_failed"
+            result_meta["error"] = error_text
+        return ""
 
     if not step.committed:
         status = "no_changes"
