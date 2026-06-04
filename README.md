@@ -21,9 +21,9 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python 3.10+" />
+  <img src="https://img.shields.io/badge/python-3.11+-blue.svg" alt="Python 3.11+" />
   <img src="https://img.shields.io/badge/tests-9000+-green.svg" alt="Tests" />
-  <img src="https://img.shields.io/badge/skills-44-blueviolet.svg" alt="Skills" />
+  <img src="https://img.shields.io/badge/skills-80+-blueviolet.svg" alt="Skills" />
   <img src="https://img.shields.io/badge/license-GPL--3.0-blue.svg" alt="License" />
 </p>
 

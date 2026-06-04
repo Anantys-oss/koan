@@ -17,6 +17,7 @@ Complete reference for all Koan slash commands. Use these via Telegram, Slack, o
 | `/list` | `/queue`, `/ls` | List pending and in-progress missions |
 | `/priority <n> <pos>` | — | Reorder a pending mission in the queue |
 | `/cancel <n or keyword>` | `/remove`, `/clear` | Cancel a pending mission |
+| `/abort` | — | Abort the current in-progress mission |
 | `/idea <text>` | `/ideas`, `/buffer` | Add to the ideas backlog (promote to mission later) |
 
 ## Recurring Missions
@@ -34,34 +35,57 @@ Complete reference for all Koan slash commands. Use these via Telegram, Slack, o
 | Command | Aliases | Description | GitHub @mention |
 |---------|---------|-------------|:-:|
 | `/plan <desc>` | — | Deep-think an idea, create a tracker issue with structured plan | — |
+| `/deepplan <desc>` | `/deeplan` | Spec-first design: explore approaches, post spec, queue /plan | — |
 | `/implement <issue>` | `/impl` | Queue implementation for a GitHub or Jira issue; never bails — resolves ambiguity with simplest viable solution, retries once before surfacing a problem | Yes |
 | `/fix <issue>` | — | Understand → plan → test → implement → submit PR | Yes |
 | `/review <PR>` | `/rv` | Review a pull request | Yes |
 | `/explain <PR>` | `/xp` | Explain a PR's changes in plain language with examples and alternative approaches | Yes |
 | `/rebase <PR>` | `/rb` | Rebase a PR onto its base branch | Yes |
-| `/planimplement <issue>` | `/planimp`, `/planimpl`, `/planit`, `/plandoit` | Plan then implement an issue (combo: /plan → /implement) | Yes |
+| `/squash <PR>` | `/sq` | Squash all PR commits into one clean commit | Yes |
 | `/recreate <PR>` | `/rc` | Re-implement a PR from scratch on a fresh branch | Yes |
 | `/refactor <desc>` | `/rf` | Targeted refactoring mission | Yes |
-| `/check <project>` | `/inspect` | Run project health checks (rebase, review, plan) | — |
+| `/check <url>` | `/inspect` | Run project health checks on a PR or issue (rebase, review, plan) | — |
+| `/check_need <url>` | `/need`, `/needs` | Analyze if a PR or issue is still needed vs. current main | — |
+| `/ci_check <PR>` | — | Check and fix CI failures on a PR | — |
 | `/pr <PR>` | — | Review and update a GitHub pull request | — |
 | `/claudemd [project]` | `/claude`, `/claude.md` | Refresh or create a project's CLAUDE.md | — |
 | `/doc <project> [cats]` | `/docs` | Extract structured documentation to docs/ | Yes |
+| `/profile <project>` | `/perf`, `/benchmark` | Performance profiling mission | Yes |
 
-For URL-based `/plan`, `/implement`, and `/fix`, append `branch:<name>` to
+For URL-based `/plan`, `/deepplan`, `/implement`, and `/fix`, append `branch:<name>` to
 override the base branch for that mission.
 
 Skills marked **GitHub @mention** can be triggered by commenting `@koan-bot <command>` on a PR or issue. See [GitHub commands](../messaging/github-commands.md).
 
+## PR Management
+
+| Command | Aliases | Description | GitHub @mention |
+|---------|---------|-------------|:-:|
+| `/ask <comment-url>` | — | Ask a question about a PR/issue — posts AI reply to GitHub | Yes |
+| `/reviewrebase <PR>` | `/rr` | Review then rebase a PR (combo: /review → /rebase) | Yes |
+| `/planimplement <issue>` | `/planimp`, `/planimpl`, `/planit`, `/plandoit` | Plan then implement an issue (combo: /plan → /implement) | Yes |
+| `/branches [project]` | `/br`, `/prs` | List koan branches + open PRs with merge order | — |
+| `/done [project]` | `/merged` | List PRs merged in the last 24 hours | — |
+| `/diagnose [project]` | `/dx` | Find the last failed mission and queue a fix attempt | — |
+| `/gh_request <url> <text>` | — | Route a natural-language GitHub request to the right skill | Yes |
+
 ## Exploration & Analysis
 
-| Command | Aliases | Description |
-|---------|---------|-------------|
-| `/ai <topic>` | `/ia` | Queue an AI exploration mission (deep, with codebase access) |
-| `/magic <topic>` | — | Instant creative exploration (quick, no mission queue) |
-| `/sparring` | — | Strategic challenge session — thinking, not code |
-| `/gha_audit [project]` | `/gha` | Scan GitHub Actions workflows for security vulnerabilities |
-| `/changelog [project]` | `/changes` | Generate changelog from recent commits and journal entries |
-| `/stats` | — | Show session outcome statistics per project |
+| Command | Aliases | Description | GitHub @mention |
+|---------|---------|-------------|:-:|
+| `/brainstorm <topic>` | — | Decompose topic into linked sub-issues + master tracking issue | Yes |
+| `/ai <topic>` | `/ia` | Queue an AI exploration mission (deep, with codebase access) | — |
+| `/magic <topic>` | — | Instant creative exploration (quick, no mission queue) | — |
+| `/sparring` | — | Strategic challenge session — thinking, not code | — |
+| `/audit <project>` | — | Audit project, create tracker issues for each finding (top 5) | Yes |
+| `/security_audit <project>` | `/security`, `/secu` | Security audit, find critical vulnerabilities (top 5) | Yes |
+| `/private_security_audit <project>` | `/private_security`, `/psecu` | Security audit, findings to journal only (no GitHub) | — |
+| `/tech_debt [project]` | `/td`, `/debt` | Scan for duplicated code, complex functions, testing gaps | — |
+| `/dead_code [project]` | `/dc` | Scan for unused imports, functions, classes, dead branches | — |
+| `/spec_audit [project]` | `/sa`, `/drift` | Audit docs/code alignment, queue fix missions | — |
+| `/gha_audit [project]` | `/gha` | Scan GitHub Actions workflows for security vulnerabilities | — |
+| `/changelog [project]` | `/changes` | Generate changelog from recent commits and journal entries | — |
+| `/stats [project]` | — | Show session outcome statistics per project | — |
 
 ## Communication & Reflection
 
@@ -76,10 +100,21 @@ Skills marked **GitHub @mention** can be triggered by commenting `@koan-bot <com
 
 | Command | Aliases | Description |
 |---------|---------|-------------|
-| `/status` | `/st`, `/ping`, `/usage`, `/metrics` | Show agent status, missions, and loop health |
+| `/status` | `/st` | Show agent state, missions, and loop health |
+| `/ping` | — | Check if the agent loop is alive |
 | `/live` | `/progress` | Show live progress from the current run |
-| `/quota` | `/q` | Check LLM quota (live, no cache) |
-| `/doctor` | `/diag` | Diagnostic self-checks; `--fix` auto-repairs, `--full` adds connectivity |
+| `/logs [run\|awake\|all]` | — | Show last 20 lines from logs (default: run) |
+| `/quota [N]` | `/q` | Check LLM quota (live), or override remaining % |
+| `/usage` | — | Detailed quota and progress |
+| `/metrics` | — | Mission success rates and reliability stats |
+| `/doctor` | — | Diagnostic self-checks; `--fix` auto-repairs, `--full` adds connectivity |
+| `/models` | `/model` | Show resolved model config for the active CLI provider |
+| `/config_check` | `/cfgcheck`, `/configcheck` | Detect drift between instance/config.yaml and the template |
+| `/check_notifications` | `/read` | Force immediate GitHub + Jira notification check |
+| `/inbox` | — | Force GitHub notification check + show queued mail count |
+| `/rescan` | `/rescan_heads` | Re-check all projects for remote HEAD branch changes |
+| `/verbose` | — | Enable real-time progress updates |
+| `/silent` | — | Disable real-time progress updates |
 
 ## Configuration
 
@@ -87,23 +122,43 @@ Skills marked **GitHub @mention** can be triggered by commenting `@koan-bot <com
 |---------|---------|-------------|
 | `/projects` | `/proj` | List configured projects |
 | `/tracker` | — | Show or set per-project issue tracker routing |
-| `/add_project <url>` | — | Clone a GitHub repo and add it to the workspace |
-| `/focus <project>` | — | Lock the agent to one project (suppress exploration) |
+| `/alias <proj> <short>` | — | Create project shortcut (e.g. `/alias Template2 tt`) |
+| `/unalias <short>` | — | Remove a project alias |
+| `/focus [duration]` | — | Lock the agent to one project (suppress exploration) |
 | `/unfocus` | — | Exit focus mode |
+| `/passive [duration]` | — | Enter read-only passive mode |
+| `/active` | — | Exit passive mode, resume execution |
 | `/explore [project]` | `/exploration`, `/noexplore` | Toggle per-project exploration mode |
 | `/autoreview [project]` | `/auto_review`, `/noautoreview` | Toggle automatic review+rebase after PR creation per project |
 | `/language <lang>` | `/lng`, `/fr`, `/en` | Set reply language preference |
-| `/verbose` | — | Enable real-time progress updates |
-| `/silent` | — | Disable real-time progress updates |
-| `/config_check` | `/cfgcheck`, `/configcheck` | Detect drift between instance/config.yaml and the template |
 
 ## System
 
 | Command | Aliases | Description |
 |---------|---------|-------------|
+| `/pause` | `/sleep` | Pause mission processing |
+| `/resume` | `/work`, `/awake`, `/run`, `/start` | Resume mission processing |
 | `/shutdown` | — | Shutdown both agent loop and messaging bridge |
-| `/update` | `/upgrade`, `/restart` | Update Koan to latest upstream and restart |
-| `/start` | — | Start the agent loop |
+| `/update` | `/upgrade` | Finish current mission, pull updates, and restart |
+| `/restart` | — | Restart processes (no code pull) |
+| `/snapshot` | — | Export memory state to a portable file |
+
+## Project Management
+
+| Command | Aliases | Description |
+|---------|---------|-------------|
+| `/add_project <url>` | — | Clone a GitHub repo and add it to the workspace |
+| `/delete_project <name>` | `/delete`, `/del` | Remove a project from workspace |
+| `/rename <old> <new>` | `/rename_project` | Rename a project everywhere (config, memory, journals) |
+
+## Power Tools
+
+| Command | Aliases | Description |
+|---------|---------|-------------|
+| `/incident <error>` | — | Triage a production error from a stack trace or log snippet |
+| `/scaffold_skill <scope> <name> <desc>` | `/scaffold`, `/new_skill` | Generate SKILL.md + handler.py for a new custom skill |
+| `/rtk [setup\|uninstall\|gain\|on\|off]` | — | Manage optional rtk integration for compressed tool output |
+| `/ideas` | — | List all ideas in the backlog |
 
 ---
 

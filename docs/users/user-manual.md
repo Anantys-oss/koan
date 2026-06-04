@@ -1969,4 +1969,4 @@ Skills marked with GitHub @mention support: `/audit`, `/doc`, `/security_audit`,
 
 ---
 
-*This manual covers all 45 core skills. For the full command reference with tabular format, see [docs/users/skills.md](skills.md). For skill authoring, see [koan/skills/README.md](../../koan/skills/README.md).*
+*For the full command reference with tabular format, see [docs/users/skills.md](skills.md). For skill authoring, see [koan/skills/README.md](../../koan/skills/README.md).*

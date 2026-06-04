@@ -112,6 +112,6 @@ All third-party assets are **vendored** so the local-only dashboard works fully 
 
 ## Related
 
-- Design system: `docs/design-system/` (and its `docs/developer-handoff.md`)
+- Design system: vendored in `koan/static/css/koan.css` and `koan/static/js/koan.js` (see the Design system section above)
 - Shared state files: see `docs/architecture/`
 - REST API: [`docs/operations/rest-api.md`](rest-api.md) — programmatic HTTP control layer
