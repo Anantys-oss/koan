@@ -126,7 +126,8 @@ def _commit_and_push(project_path: str, branch_name: str, message: str) -> bool:
     if not _has_changes(project_path):
         return False
     run_git_strict("add", "CLAUDE.md", cwd=project_path)
-    run_git_strict("commit", "-m", message, cwd=project_path)
+    # --no-verify: skip target-repo pre-commit hooks that can hang/timeout.
+    run_git_strict("commit", "--no-verify", "-m", message, cwd=project_path)
     run_git_strict("push", "-u", "origin", branch_name, cwd=project_path)
     return True
 

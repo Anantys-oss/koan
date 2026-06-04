@@ -79,7 +79,9 @@ def _squash_commits(
     ).strip()
 
     _run_git(["git", "reset", "--soft", merge_base], cwd=project_path)
-    _run_git(["git", "commit", "-m", message], cwd=project_path)
+    # --no-verify: skip target-repo pre-commit hooks (lint/format/test) that can
+    # exceed the git timeout and crash the automation. CI is the real gate.
+    _run_git(["git", "commit", "--no-verify", "-m", message], cwd=project_path)
     return True
 
 

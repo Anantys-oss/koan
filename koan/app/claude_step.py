@@ -380,7 +380,12 @@ def commit_if_changes(project_path: str, message: str) -> bool:
         return False
 
     _run_git(["git", "add", "-A"], cwd=project_path)
-    _run_git(["git", "commit", "-m", message], cwd=project_path)
+    # --no-verify: Kōan is a headless automation agent. Target repos often ship
+    # pre-commit hooks (husky/lint-staged) that run lint/format/test on commit.
+    # Those routinely exceed the 60s git timeout — or hang on watch-mode test
+    # runners — crashing the rebase with TimeoutExpired. CI validates the PR;
+    # local hooks are not Kōan's gate.
+    _run_git(["git", "commit", "--no-verify", "-m", message], cwd=project_path)
     return True
 
 

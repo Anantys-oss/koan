@@ -608,8 +608,21 @@ class TestCommitIfChanges:
         assert mock_git.call_count == 2
         mock_git.assert_any_call(["git", "add", "-A"], cwd="/project")
         mock_git.assert_any_call(
-            ["git", "commit", "-m", "test msg"], cwd="/project"
+            ["git", "commit", "--no-verify", "-m", "test msg"], cwd="/project"
         )
+
+    @patch("app.claude_step._run_git")
+    @patch("app.cli_exec.subprocess.run")
+    def test_commit_skips_target_repo_hooks(self, mock_run, mock_git):
+        """Agent commits must use --no-verify so target-repo pre-commit hooks
+        (husky lint/format/test) can't hang past the git timeout and crash the
+        rebase. Regression for device-builder-frontend PR 609."""
+        mock_run.return_value = MagicMock(stdout=" M file.py\n", returncode=0)
+        commit_if_changes("/project", "msg")
+        commit_call = next(
+            c for c in mock_git.call_args_list if "commit" in c.args[0]
+        )
+        assert "--no-verify" in commit_call.args[0]
 
     @patch("app.claude_step._run_git")
     @patch("app.cli_exec.subprocess.run")
