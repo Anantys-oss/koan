@@ -663,16 +663,25 @@ def _commit_instance(instance: str, message: str = ""):
 # Update handler (graceful update + restart)
 # ---------------------------------------------------------------------------
 
-def _handle_update(koan_root: str, instance: str, count: int):
+def _handle_update(koan_root: str, instance: str, count: int) -> bool:
     """Handle /update: pull upstream updates, then trigger restart.
 
     Called after the current mission completes. Pulls the latest code
     and requests a restart. If the pull fails, notifies and still restarts
     (the user explicitly asked for an update).
+
+    Returns True if the update was performed (caller should restart),
+    False if the update was refused due to safety checks.
     """
-    from app.update_manager import pull_upstream
+    from app.update_manager import check_update_safety, pull_upstream
     from app.restart_manager import request_restart
     from app.pause_manager import remove_pause
+
+    safety_msg = check_update_safety(Path(koan_root))
+    if safety_msg:
+        log("koan", "Update refused: diverged from upstream")
+        _notify(instance, safety_msg)
+        return False
 
     result = pull_upstream(Path(koan_root))
     if not result.success:
@@ -687,6 +696,7 @@ def _handle_update(koan_root: str, instance: str, count: int):
 
     remove_pause(koan_root)
     request_restart(koan_root)
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -854,8 +864,8 @@ def main_loop():
             if cycle_file.exists():
                 log("koan", "Update requested. Updating and restarting...")
                 cycle_file.unlink(missing_ok=True)
-                _handle_update(koan_root, instance, count)
-                sys.exit(RESTART_EXIT_CODE)
+                if _handle_update(koan_root, instance, count):
+                    sys.exit(RESTART_EXIT_CODE)
 
             # --- Shutdown check (stops both agent loop and bridge) ---
             if is_shutdown_requested(koan_root, start_time):

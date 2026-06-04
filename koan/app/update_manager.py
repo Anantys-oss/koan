@@ -111,6 +111,45 @@ def _count_commits_between(koan_root: Path, old_sha: str, new_sha: str) -> int:
     return 0
 
 
+def check_update_safety(koan_root: Path) -> Optional[str]:
+    """Pre-flight check: refuse update if instance diverged from upstream.
+
+    Returns None if safe to update, or a human-readable message explaining
+    why the update was refused.
+    """
+    branch = _get_current_branch(koan_root)
+    if branch is not None and branch != "main":
+        return (
+            f"⚠️ Update refused — you are on branch `{branch}`, not `main`.\n"
+            "Switch back to `main` before updating."
+        )
+
+    remote = find_upstream_remote(koan_root)
+    if remote is None:
+        return None
+
+    _run_git(["fetch", remote, "--quiet"], koan_root)
+
+    result = _run_git(
+        ["rev-list", "--oneline", f"{remote}/main..HEAD"],
+        koan_root,
+    )
+    if result.returncode != 0:
+        return None
+
+    extra_commits = result.stdout.strip()
+    if not extra_commits:
+        return None
+
+    count = len(extra_commits.splitlines())
+    return (
+        f"⚠️ Update refused — local `main` is {count} commit(s) ahead "
+        f"of `{remote}/main`.\n"
+        f"```\n{extra_commits}\n```\n"
+        "Push or reset these commits before updating."
+    )
+
+
 def pull_upstream(koan_root: Path, timeout: int = 120) -> UpdateResult:
     """Pull the latest code from upstream/main.
 
