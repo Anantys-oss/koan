@@ -114,7 +114,10 @@ def shutdown():
 @require_token
 def update():
     try:
-        from app.update_manager import pull_upstream
+        from app.update_manager import check_update_safety, pull_upstream
+        safety_msg = check_update_safety(_koan_root())
+        if safety_msg:
+            return jsonify({"error": {"code": "update_refused", "message": safety_msg}}), 409
         result = pull_upstream(_koan_root())
         # Signal restart after update
         from app.signals import RESTART_FILE

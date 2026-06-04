@@ -9,6 +9,7 @@ import pytest
 from app.update_manager import (
     UpdateResult,
     pull_upstream,
+    check_update_safety,
     _run_git,
     _get_current_branch,
     _get_short_sha,
@@ -379,3 +380,62 @@ class TestPullUpstream:
 
         result = pull_upstream(Path("/repo"), timeout=30)
         assert result.success is False
+
+
+class TestCheckUpdateSafety:
+    """Tests for check_update_safety() pre-flight guard."""
+
+    @patch("app.update_manager._run_git")
+    def test_safe_on_main_no_divergence(self, mock_run):
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="main\n"),          # _get_current_branch
+            MagicMock(returncode=0, stdout="upstream\n"),       # find_upstream_remote
+            MagicMock(returncode=0, stdout=""),                  # fetch --quiet
+            MagicMock(returncode=0, stdout=""),                  # rev-list (no extra commits)
+        ]
+        assert check_update_safety(Path("/repo")) is None
+
+    @patch("app.update_manager._run_git")
+    def test_refused_on_non_main_branch(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="koan/feature\n")
+        msg = check_update_safety(Path("/repo"))
+        assert msg is not None
+        assert "koan/feature" in msg
+        assert "not `main`" in msg
+
+    @patch("app.update_manager._run_git")
+    def test_refused_when_ahead_of_upstream(self, mock_run):
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="main\n"),          # _get_current_branch
+            MagicMock(returncode=0, stdout="upstream\n"),       # find_upstream_remote
+            MagicMock(returncode=0, stdout=""),                  # fetch --quiet
+            MagicMock(returncode=0, stdout="abc1234 local fix\ndef5678 another tweak\n"),
+        ]
+        msg = check_update_safety(Path("/repo"))
+        assert msg is not None
+        assert "2 commit(s) ahead" in msg
+        assert "abc1234 local fix" in msg
+        assert "def5678 another tweak" in msg
+
+    @patch("app.update_manager._run_git")
+    def test_safe_when_no_remote(self, mock_run):
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="main\n"),          # _get_current_branch
+            MagicMock(returncode=1, stdout=""),                  # find_upstream_remote fails
+        ]
+        assert check_update_safety(Path("/repo")) is None
+
+    @patch("app.update_manager._run_git")
+    def test_safe_when_rev_list_fails(self, mock_run):
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="main\n"),
+            MagicMock(returncode=0, stdout="upstream\n"),
+            MagicMock(returncode=0, stdout=""),                  # fetch
+            MagicMock(returncode=1, stdout=""),                  # rev-list fails
+        ]
+        assert check_update_safety(Path("/repo")) is None
+
+    @patch("app.update_manager._run_git")
+    def test_safe_when_branch_detection_fails(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=1, stdout="")
+        assert check_update_safety(Path("/repo")) is None
