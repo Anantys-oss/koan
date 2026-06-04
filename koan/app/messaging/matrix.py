@@ -61,6 +61,7 @@ class MatrixProvider(MessagingProvider):
         self._sync_initialized: bool = False
         self._update_counter = itertools.count(1)
         self._send_lock = threading.Lock()
+        self._send_counter: int = 0
 
     # -- MessagingProvider interface ------------------------------------------
 
@@ -136,9 +137,11 @@ class MatrixProvider(MessagingProvider):
             return True
 
         ok = True
+        self._send_counter += 1
+        send_id = self._send_counter
         for idx, chunk in enumerate(self.chunk_message(text, max_size=MAX_MESSAGE_SIZE)):
             with self._send_lock:
-                if not self._send_chunk(chunk, idx):
+                if not self._send_chunk(chunk, idx, send_id):
                     ok = False
         return ok
 
@@ -250,24 +253,20 @@ class MatrixProvider(MessagingProvider):
             )
         return updates
 
-    def _send_chunk(self, text: str, chunk_index: int = 0) -> bool:
+    def _send_chunk(self, text: str, chunk_index: int = 0, send_id: int = 0) -> bool:
         """PUT a single m.room.message to the homeserver.
 
-        The transaction ID is derived deterministically from the room, the
-        chunk position and the chunk body — not a random uuid. Matrix treats a
-        repeated transaction ID as idempotent (same id → same event, never a
-        second message), so both the internal retry loop *and* an outbox-level
-        requeue+resend of the same content collapse to one event server-side.
-
-        This is the fix for duplicate messages spamming the room: a slow
-        homeserver would make a delivered send time out and look failed, the
-        outbox would requeue and resend, and the old random uuid produced a
-        brand-new event every time. A content-derived id dedupes those.
+        The transaction ID is derived from the room, the per-send counter
+        (incremented once per send_message call), and the chunk index. Matrix
+        treats a repeated transaction ID as idempotent, so retries within a
+        single _do_put retry loop collapse to one event. The per-send counter
+        ensures that two intentionally distinct sends of identical text each
+        produce a separate Matrix event — no silent data loss.
         """
         from app.retry import retry_with_backoff
 
         txn_id = hashlib.sha256(
-            f"{self._room_id}\x00{chunk_index}\x00{text}".encode("utf-8")
+            f"{self._room_id}\x00{send_id}\x00{chunk_index}\x00{text}".encode("utf-8")
         ).hexdigest()
         url = (
             f"{self._homeserver}/_matrix/client/v3/rooms/"

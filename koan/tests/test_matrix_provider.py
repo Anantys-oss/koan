@@ -142,20 +142,17 @@ class TestSendMessage:
             assert mock_put.call_count == 0
 
     @patch("app.messaging.matrix.requests.put")
-    def test_txn_id_stable_across_resends(self, mock_put, provider):
-        """Resending identical content reuses the same transaction id so the
-        homeserver dedupes it. Prevents duplicate messages when a delivered-but-
-        slow send is misreported as failed and the outbox requeues + resends."""
+    def test_intentional_repeat_sends_both(self, mock_put, provider):
+        """Two intentional sends of identical text must produce two distinct events.
+
+        The per-send counter in the txn_id hash ensures the second send is not
+        silently dropped by Matrix's idempotency dedup."""
         mock_put.return_value = MagicMock(status_code=200)
 
         provider.send_message("same body")
-        first_txn = mock_put.call_args[0][0].rsplit("/", 1)[-1]
-
-        mock_put.reset_mock()
         provider.send_message("same body")
-        second_txn = mock_put.call_args[0][0].rsplit("/", 1)[-1]
-
-        assert first_txn == second_txn
+        txns = [c[0][0].rsplit("/", 1)[-1] for c in mock_put.call_args_list]
+        assert txns[0] != txns[1]
 
     @patch("app.messaging.matrix.requests.put")
     def test_txn_id_differs_for_different_content(self, mock_put, provider):
