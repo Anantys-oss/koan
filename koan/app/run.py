@@ -811,6 +811,7 @@ def main_loop():
     consecutive_errors = 0
     consecutive_idle = 0
     consecutive_nonproductive = 0
+    idle_notified = False
     MAX_CONSECUTIVE_IDLE = 30  # ~30 min at 60s interval → auto-pause
     # Throttle kicks in only after several back-to-back non-productive
     # iterations so that one-off dedup skips / transient errors don't eat
@@ -878,6 +879,9 @@ def main_loop():
                     consecutive_errors = 0
                     consecutive_idle = 0
                     consecutive_nonproductive = 0
+                    idle_notified = False
+                    from app.feature_tips import mark_active
+                    mark_active()
                     global _startup_notified
                     _startup_notified = False
                 continue
@@ -898,10 +902,14 @@ def main_loop():
                     count += 1
                     consecutive_idle = 0
                     consecutive_nonproductive = 0
+                    idle_notified = False
+                    from app.feature_tips import mark_active
+                    mark_active()
                 elif productive == "idle":
                     consecutive_idle += 1
                     consecutive_nonproductive = 0
-                    if consecutive_idle == 1:
+                    if not idle_notified:
+                        idle_notified = True
                         try:
                             from app.schedule_manager import is_scheduled_active
                             schedule_active = is_scheduled_active()

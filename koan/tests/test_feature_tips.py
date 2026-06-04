@@ -14,6 +14,7 @@ from app.feature_tips import (
     _load_seen,
     _save_seen,
     _TIP_INTERVAL,
+    mark_active,
     maybe_send_feature_tip,
     pick_tip,
     reset_tip_throttle,
@@ -202,6 +203,44 @@ def test_maybe_send_after_interval(tmp_path):
         # Simulate time progression
         mock_time.monotonic.side_effect = [0.0, 0.0 + _TIP_INTERVAL + 1]
         assert maybe_send_feature_tip(str(tmp_path)) is True
+        # Productive work resets the idle guard
+        mark_active()
+        assert maybe_send_feature_tip(str(tmp_path)) is True
+        assert mock_outbox.call_count == 2
+
+    reset_tip_throttle()
+
+
+def test_idle_tip_guard_blocks_second_tip(tmp_path):
+    """Only one tip per idle period — second call blocked even after interval."""
+    reset_tip_throttle()
+    skills = [_make_skill("status"), _make_skill("plan")]
+    registry = FakeRegistry(skills)
+
+    with patch("app.skills.build_registry", return_value=registry), \
+         patch("app.utils.append_to_outbox") as mock_outbox, \
+         patch("app.feature_tips.time") as mock_time:
+        mock_time.monotonic.side_effect = [0.0, 0.0 + _TIP_INTERVAL + 1]
+        assert maybe_send_feature_tip(str(tmp_path)) is True
+        # Without mark_active(), second tip is blocked
+        assert maybe_send_feature_tip(str(tmp_path)) is False
+        assert mock_outbox.call_count == 1
+
+    reset_tip_throttle()
+
+
+def test_mark_active_resets_idle_guard(tmp_path):
+    """mark_active() allows a new tip in the next idle period."""
+    reset_tip_throttle()
+    skills = [_make_skill("status"), _make_skill("plan")]
+    registry = FakeRegistry(skills)
+
+    with patch("app.skills.build_registry", return_value=registry), \
+         patch("app.utils.append_to_outbox") as mock_outbox, \
+         patch("app.feature_tips.time") as mock_time:
+        mock_time.monotonic.side_effect = [0.0, 0.0 + _TIP_INTERVAL + 1]
+        assert maybe_send_feature_tip(str(tmp_path)) is True
+        mark_active()
         assert maybe_send_feature_tip(str(tmp_path)) is True
         assert mock_outbox.call_count == 2
 
