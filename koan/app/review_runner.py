@@ -19,6 +19,7 @@ CLI:
 import json
 import re
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -1207,9 +1208,10 @@ def _format_review_as_markdown(review_data: dict, title: str = "", bot_username:
 
 def _build_review_footer(
     provider_name: str = "", model: str = "", head_sha: str = "",
+    duration_seconds: float = 0,
 ) -> str:
-    """Build the review footer with branding, provider, model, and HEAD SHA."""
-    from app.pr_footer import build_koan_footer
+    """Build the review footer with branding, provider, model, HEAD SHA, and duration."""
+    from app.pr_footer import build_koan_footer, format_duration
     footer = build_koan_footer(
         action="Automated review by",
         provider_name=provider_name,
@@ -1217,6 +1219,8 @@ def _build_review_footer(
     )
     if head_sha:
         footer += f" `HEAD={head_sha[:7]}`"
+    if duration_seconds > 0:
+        footer += f" `{format_duration(duration_seconds)}`"
     return footer
 
 
@@ -1226,6 +1230,7 @@ def _post_review_comment(
     commit_shas: Optional[List[str]] = None,
     provider_name: str = "",
     model: str = "",
+    duration_seconds: float = 0,
 ) -> Tuple[bool, str]:
     """Post (or update) the review as a comment on the PR.
 
@@ -1246,7 +1251,10 @@ def _post_review_comment(
         review_text = review_text[:max_len] + "\n\n_(Review truncated)_"
 
     head_sha = commit_shas[-1] if commit_shas else ""
-    footer = _build_review_footer(provider_name, model, head_sha=head_sha)
+    footer = _build_review_footer(
+        provider_name, model, head_sha=head_sha,
+        duration_seconds=duration_seconds,
+    )
 
     # If body already starts with a ## heading, don't add another
     if review_text.startswith("## "):
@@ -1646,6 +1654,9 @@ def run_review(
             None,
         )
 
+    # Track review wall-clock time for footer attribution
+    _review_start = time.monotonic()
+
     # Step 2: Build review prompt
     prompt = build_review_prompt(
         context, skill_dir=skill_dir, architecture=architecture,
@@ -1769,11 +1780,13 @@ def run_review(
         post_target = None
 
     notify_fn(f"Posting review on PR #{pr_number}...")
+    _review_duration = time.monotonic() - _review_start
     posted, post_error = _post_review_comment(
         owner, repo, pr_number, review_body, post_target,
         commit_shas=current_shas or None,
         provider_name=review_provider_name,
         model=review_model,
+        duration_seconds=_review_duration,
     )
 
     # Step 8: Close the PR if the review decided closure is warranted

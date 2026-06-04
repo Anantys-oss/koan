@@ -839,6 +839,19 @@ class TestBuildReviewFooter:
         result = _build_review_footer(provider_name="copilot", model="gpt-4o")
         assert "Copilot" in result
 
+    def test_duration_appended(self):
+        result = _build_review_footer(
+            provider_name="claude", model="opus-4-6",
+            head_sha="abc1234567", duration_seconds=334,
+        )
+        assert "`HEAD=abc1234`" in result
+        assert "`5 min 34s`" in result
+
+    def test_zero_duration_omitted(self):
+        result = _build_review_footer(duration_seconds=0)
+        assert "min" not in result
+        assert "0s" not in result
+
 
 # ---------------------------------------------------------------------------
 # _post_review_comment

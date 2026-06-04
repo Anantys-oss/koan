@@ -8,7 +8,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 os.environ.setdefault("KOAN_ROOT", "/tmp/test-koan")
 
-from app.pr_footer import build_koan_footer, strip_legacy_footers, KOAN_URL
+from app.pr_footer import build_koan_footer, format_duration, strip_legacy_footers, KOAN_URL
 
 
 class TestBuildKoanFooter:
@@ -51,6 +51,32 @@ class TestBuildKoanFooter:
             " _(Claude · model opus-4-6)_"
         )
         assert result == expected
+
+
+class TestFormatDuration:
+    def test_seconds_only(self):
+        assert format_duration(45) == "45s"
+
+    def test_zero(self):
+        assert format_duration(0) == "0s"
+
+    def test_exact_minute(self):
+        assert format_duration(60) == "1 min"
+
+    def test_minutes_and_seconds(self):
+        assert format_duration(334) == "5 min 34s"
+
+    def test_many_minutes(self):
+        assert format_duration(725) == "12 min 5s"
+
+    def test_exact_hour(self):
+        assert format_duration(3600) == "1 h"
+
+    def test_hour_and_minutes(self):
+        assert format_duration(4320) == "1 h 12 min"
+
+    def test_float_input(self):
+        assert format_duration(65.7) == "1 min 5s"
 
 
 class TestStripLegacyFooters:
