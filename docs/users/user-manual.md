@@ -514,6 +514,21 @@ Use this before `/plan` when the idea is architecturally complex, when you want 
 - `/review https://github.com/org/repo/pull/55 --architecture --errors` — Both passes
 </details>
 
+**`/explain`** — Explain a PR's intent and changes in plain, simple language.
+
+- **Usage:** `/explain <github-pr-url>`
+- **Aliases:** `/xp`
+- **GitHub @mention:** `@koan-bot /explain` on a PR
+
+Produces a pedagogical walkthrough of the PR: what problem it solves (with examples), how the fix works step-by-step, the data flow after the change, and whether a simpler approach could have worked.
+
+<details>
+<summary>Use cases</summary>
+
+- `/explain https://github.com/org/repo/pull/55` — Get a plain-language explanation
+- `/xp https://github.com/org/repo/pull/55` — Same thing, shorter
+</details>
+
 **`/refactor`** — Queue a targeted refactoring mission.
 
 - **Usage:** `/refactor <github-url-or-path>`
@@ -1886,6 +1901,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/implement <issue>` | `/impl` | I | Implement a GitHub or Jira issue |
 | `/fix <issue>` | — | I | Full bug-fix pipeline (understand → plan → test → fix → PR) |
 | `/review <PR> [--architecture] [--errors]` | `/rv` | I | Review a pull request |
+| `/explain <PR>` | `/xp` | I | Explain a PR in plain language with examples |
 | `/refactor <desc>` | `/rf` | I | Targeted refactoring mission |
 | `/ask <comment-url>` | — | I | Ask a question about a PR/issue — posts AI reply to GitHub |
 | `/rebase <PR>` | `/rb` | I | Rebase a PR onto its base branch |

@@ -82,6 +82,7 @@ _CANONICAL_RUNNERS = {
     "doc": "skills.core.doc.doc_runner",
     "check_need": "skills.core.check_need.check_need_runner",
     "spec_audit": "skills.core.spec_audit.spec_audit_runner",
+    "explain": "skills.core.explain.explain_runner",
 }
 
 # Alias -> canonical command name. Declared once, expanded into
@@ -101,6 +102,7 @@ _COMMAND_ALIASES = {
     "needs": "check_need",
     "sa": "spec_audit",
     "drift": "spec_audit",
+    "xp": "explain",
 }
 
 # Full mapping including aliases — used for runner module lookup.
@@ -395,6 +397,7 @@ def build_skill_command(
         "spec_audit": lambda: _build_project_info_cmd(
             base_cmd, project_name, project_path, instance_dir,
         ),
+        "explain": lambda: _build_explain_cmd(base_cmd, args, project_path, project_name),
     }
     def _audit_builder():
         return _build_audit_cmd(
@@ -651,6 +654,19 @@ def _build_rebase_cmd(
         if canonical:
             cmd.extend(["--min-severity", canonical])
 
+    return cmd
+
+
+def _build_explain_cmd(
+    base_cmd: List[str], args: str, project_path: str, project_name: str = "",
+) -> Optional[List[str]]:
+    """Build explain_runner command."""
+    url_match = _PR_URL_RE.search(args)
+    if not url_match:
+        return None
+    cmd = base_cmd + [url_match.group(0), "--project-path", project_path]
+    if project_name:
+        cmd.extend(["--project-name", project_name])
     return cmd
 
 
@@ -971,7 +987,7 @@ def validate_skill_args(command: str, args: str) -> Optional[str]:
     canonical = _resolve_canonical(command)
 
     # Validation rules use canonical names — aliases inherit automatically.
-    if canonical in ("rebase", "recreate", "review", "squash", "ci_check"):
+    if canonical in ("rebase", "recreate", "review", "squash", "ci_check", "explain"):
         if not _PR_URL_RE.search(args):
             return (
                 f"/{command} requires a PR URL "
