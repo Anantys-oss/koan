@@ -1416,8 +1416,9 @@ class MemoryManager:
                     try:
                         sec_stats = self.compact_security_learnings(name, compact_learnings_lines)
                         if not sec_stats.get("skipped"):
+                            method = " (fallback)" if sec_stats.get("fallback") else ""
                             stats[f"security_compacted_{name}"] = (
-                                f"{sec_stats['original_lines']}->{sec_stats['compacted_lines']}"
+                                f"{sec_stats['original_lines']}->{sec_stats['compacted_lines']}{method}"
                             )
                     except Exception as e:
                         print(
