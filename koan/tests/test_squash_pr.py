@@ -130,7 +130,9 @@ class TestSquashCommits:
         calls = mock_run.call_args_list
         assert calls[0][0][0] == ["git", "merge-base", "origin/main", "HEAD"]
         assert calls[1][0][0] == ["git", "reset", "--soft", "abc123"]
-        assert calls[2][0][0] == ["git", "commit", "-m", "squash msg"]
+        # --no-verify: agent commits must skip target-repo pre-commit hooks
+        # (lint/format/test) that can hang past the git timeout and crash squash.
+        assert calls[2][0][0] == ["git", "commit", "--no-verify", "-m", "squash msg"]
 
     @patch("app.squash_pr._run_git")
     def test_propagates_error(self, mock_run):
