@@ -8,6 +8,7 @@ Usage:
     python3 -m skills.core.explain.explain_runner <pr-url> --project-path /path
 """
 
+import contextlib
 import subprocess
 import sys
 from pathlib import Path
@@ -90,7 +91,7 @@ def _run_claude_explain(
     try:
         output = run_command_streaming(**cmd_kwargs)
         return output, ""
-    except RuntimeError as e:
+    except (RuntimeError, OSError, subprocess.SubprocessError) as e:
         error = str(e) or "unknown error"
         log("explain", f"Claude explain failed: {error}")
         return "", error
@@ -122,7 +123,8 @@ def run_explain(
         return False, str(e)
 
     full_repo = f"{owner}/{repo}"
-    notify_fn(f"Explaining PR #{pr_number} ({full_repo})...")
+    with contextlib.suppress(Exception):
+        notify_fn(f"Explaining PR #{pr_number} ({full_repo})...")
 
     try:
         context = fetch_pr_context(owner, repo, pr_number, project_path)
@@ -135,11 +137,14 @@ def run_explain(
 
     log("explain", f"PR #{pr_number}: {context.get('title', '?')}")
 
-    prompt = _build_explain_prompt(
-        context,
-        skill_dir=skill_dir,
-        project_path=project_path,
-    )
+    try:
+        prompt = _build_explain_prompt(
+            context,
+            skill_dir=skill_dir,
+            project_path=project_path,
+        )
+    except Exception as e:
+        return False, f"Failed to build explanation prompt: {e}"
 
     output, error = _run_claude_explain(prompt, project_path)
     if error:
@@ -182,11 +187,15 @@ def main(argv=None):
 
     skill_dir = Path(__file__).resolve().parent
 
-    success, summary = run_explain(
-        owner, repo, pr_number, cli_args.project_path,
-        skill_dir=skill_dir,
-        project_name=cli_args.project_name,
-    )
+    try:
+        success, summary = run_explain(
+            owner, repo, pr_number, cli_args.project_path,
+            skill_dir=skill_dir,
+            project_name=cli_args.project_name,
+        )
+    except Exception as e:
+        print(f"Explanation failed: {e}")
+        return 1
     print(summary)
     return 0 if success else 1
 

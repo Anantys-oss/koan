@@ -212,6 +212,87 @@ class TestMain:
         assert exit_code == 1
 
 
+class TestErrorHandling:
+    """Test error handling for edge cases that caused silent failures."""
+
+    @patch("app.rebase_pr.fetch_pr_context")
+    @patch("app.claude_step.resolve_pr_location")
+    def test_notify_failure_does_not_crash(self, mock_resolve, mock_fetch):
+        mock_resolve.return_value = ("owner", "repo")
+        mock_fetch.return_value = {
+            "title": "Fix", "author": "a", "branch": "b", "base": "main",
+            "body": "", "diff": "+change",
+            "review_comments": "", "reviews": "", "issue_comments": "",
+        }
+        notify = MagicMock(side_effect=ConnectionError("telegram down"))
+
+        with patch("skills.core.explain.explain_runner._run_claude_explain") as mock_claude:
+            mock_claude.return_value = ("Explanation", "")
+            success, summary = run_explain(
+                "owner", "repo", "42", "/path",
+                notify_fn=notify,
+                skill_dir=SKILL_DIR,
+            )
+
+        assert success is True
+        assert "Explanation" in summary
+
+    @patch("app.rebase_pr.fetch_pr_context")
+    @patch("app.claude_step.resolve_pr_location")
+    def test_prompt_build_failure_returns_error(self, mock_resolve, mock_fetch):
+        mock_resolve.return_value = ("owner", "repo")
+        mock_fetch.return_value = {
+            "title": "Fix", "author": "a", "branch": "b", "base": "main",
+            "body": "", "diff": "+change",
+            "review_comments": "", "reviews": "", "issue_comments": "",
+        }
+
+        with patch(
+            "skills.core.explain.explain_runner._build_explain_prompt",
+            side_effect=KeyError("missing_key"),
+        ):
+            success, summary = run_explain(
+                "owner", "repo", "42", "/path",
+                notify_fn=MagicMock(),
+                skill_dir=SKILL_DIR,
+            )
+
+        assert success is False
+        assert "prompt" in summary.lower()
+
+    @patch("skills.core.explain.explain_runner.run_explain")
+    def test_main_catches_unhandled_exception(self, mock_run):
+        mock_run.side_effect = TypeError("unexpected error")
+
+        exit_code = main([
+            "https://github.com/owner/repo/pull/42",
+            "--project-path", "/path",
+        ])
+
+        assert exit_code == 1
+
+    @patch("app.rebase_pr.fetch_pr_context")
+    @patch("app.claude_step.resolve_pr_location")
+    @patch("skills.core.explain.explain_runner._run_claude_explain")
+    def test_oserror_in_claude_cli_returns_error(self, mock_claude, mock_resolve, mock_fetch):
+        mock_resolve.return_value = ("owner", "repo")
+        mock_fetch.return_value = {
+            "title": "Fix", "author": "a", "branch": "b", "base": "main",
+            "body": "", "diff": "+change",
+            "review_comments": "", "reviews": "", "issue_comments": "",
+        }
+        mock_claude.return_value = ("", "file not found")
+
+        success, summary = run_explain(
+            "owner", "repo", "42", "/path",
+            notify_fn=MagicMock(),
+            skill_dir=SKILL_DIR,
+        )
+
+        assert success is False
+        assert "failed" in summary.lower()
+
+
 class TestSkillDispatchIntegration:
     """Test that /explain is properly wired in skill_dispatch."""
 
