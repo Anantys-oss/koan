@@ -137,7 +137,7 @@ Your ENTIRE response must be a single valid JSON object (no markdown, no code fe
   "comment_replies": [
     {
       "comment_id": 12345,
-      "reply": "Missing null guard in `parse()`. Add early return for nil input."
+      "reply": "Detailed reply explaining why and how."
     }
   ]
 }
