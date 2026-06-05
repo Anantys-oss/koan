@@ -795,7 +795,12 @@ loadAll();
                     }
                 }
             })
-            .catch(() => {});
+            .catch(() => {
+                const el = document.getElementById('forecast-badge-text');
+                if (el) el.textContent = 'Unavailable';
+                const r = document.getElementById('forecast-badge-rate');
+                if (r) r.textContent = '';
+            });
     }
 
     updateForecast();

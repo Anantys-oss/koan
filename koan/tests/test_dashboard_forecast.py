@@ -1,10 +1,27 @@
 """Tests for dashboard forecast endpoint and _build_forecast helper."""
 
 import json
+import shutil
+from pathlib import Path
+
 import pytest
 from unittest.mock import patch, MagicMock
 
 from app import dashboard
+
+
+def _make_test_instance(tmp_path):
+    inst = tmp_path / "instance"
+    inst.mkdir()
+    (inst / "memory").mkdir()
+    (inst / "journal").mkdir()
+    (inst / "missions.md").write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n\n")
+
+    tpl_src = Path(__file__).parent.parent / "templates"
+    tpl_dest = tmp_path / "koan" / "templates"
+    shutil.copytree(tpl_src, tpl_dest)
+
+    return inst
 
 
 class TestBuildForecast:
@@ -126,24 +143,8 @@ class TestBuildForecast:
 class TestApiForecastEndpoint:
     """Test /api/forecast HTTP endpoint."""
 
-    def _make_client(self, tmp_path):
-        from pathlib import Path
-        import shutil
-
-        inst = tmp_path / "instance"
-        inst.mkdir()
-        (inst / "memory").mkdir()
-        (inst / "journal").mkdir()
-        (inst / "missions.md").write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n\n")
-
-        tpl_src = Path(__file__).parent.parent / "templates"
-        tpl_dest = tmp_path / "koan" / "templates"
-        shutil.copytree(tpl_src, tpl_dest)
-
-        return inst
-
     def test_endpoint_returns_200(self, tmp_path):
-        inst = self._make_client(tmp_path)
+        inst = _make_test_instance(tmp_path)
         with patch.object(dashboard, "KOAN_ROOT", tmp_path), \
              patch.object(dashboard, "INSTANCE_DIR", inst), \
              patch("app.dashboard._build_forecast", return_value={
@@ -162,7 +163,7 @@ class TestApiForecastEndpoint:
         assert "samples_count" in data
 
     def test_endpoint_warming_up_on_fresh_instance(self, tmp_path):
-        inst = self._make_client(tmp_path)
+        inst = _make_test_instance(tmp_path)
         with patch.object(dashboard, "KOAN_ROOT", tmp_path), \
              patch.object(dashboard, "INSTANCE_DIR", inst):
             resp = dashboard.app.test_client().get("/api/forecast")
@@ -174,7 +175,7 @@ class TestApiForecastEndpoint:
         assert data["time_to_exhaustion_minutes"] is None
 
     def test_endpoint_returns_all_expected_keys(self, tmp_path):
-        inst = self._make_client(tmp_path)
+        inst = _make_test_instance(tmp_path)
         expected_keys = {
             "status", "burn_rate_pct_per_minute", "time_to_exhaustion_minutes",
             "session_pct", "autonomous_mode", "samples_count",
@@ -187,7 +188,7 @@ class TestApiForecastEndpoint:
         assert expected_keys.issubset(data.keys())
 
     def test_endpoint_paused_when_pause_file_exists(self, tmp_path):
-        inst = self._make_client(tmp_path)
+        inst = _make_test_instance(tmp_path)
         (tmp_path / ".koan-pause").write_text("manual\n")
         with patch.object(dashboard, "KOAN_ROOT", tmp_path), \
              patch.object(dashboard, "INSTANCE_DIR", inst):
@@ -200,24 +201,8 @@ class TestApiForecastEndpoint:
 class TestSSEStreamForecast:
     """Test that the SSE stream includes forecast data."""
 
-    def _make_client(self, tmp_path):
-        from pathlib import Path
-        import shutil
-
-        inst = tmp_path / "instance"
-        inst.mkdir()
-        (inst / "memory").mkdir()
-        (inst / "journal").mkdir()
-        (inst / "missions.md").write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n\n")
-
-        tpl_src = Path(__file__).parent.parent / "templates"
-        tpl_dest = tmp_path / "koan" / "templates"
-        shutil.copytree(tpl_src, tpl_dest)
-
-        return inst
-
     def test_sse_includes_forecast_key(self, tmp_path):
-        inst = self._make_client(tmp_path)
+        inst = _make_test_instance(tmp_path)
         with patch.object(dashboard, "KOAN_ROOT", tmp_path), \
              patch.object(dashboard, "INSTANCE_DIR", inst), \
              patch.object(dashboard, "MISSIONS_FILE", inst / "missions.md"), \
@@ -246,7 +231,7 @@ class TestSSEStreamForecast:
         assert payload["forecast"]["status"] == "warming_up"
 
     def test_sse_forecast_updates_on_burn_rate_mtime_change(self, tmp_path):
-        inst = self._make_client(tmp_path)
+        inst = _make_test_instance(tmp_path)
         burn_rate_file = inst / ".burn-rate.json"
         burn_rate_file.write_text("{}")
 
