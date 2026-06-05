@@ -755,3 +755,47 @@ class TestSummarizeWeekMonth:
         month = summarize_month(instance_dir)
         assert "plan" in week["by_type"]
         assert "plan" in month["by_type"]
+
+
+# ---------------------------------------------------------------------------
+# Tests: duration_seconds and provider fields in record_usage
+# ---------------------------------------------------------------------------
+
+class TestRecordUsageDurationProvider:
+    def test_duration_seconds_written_when_nonzero(self, instance_dir):
+        """duration_seconds appears in JSONL when non-zero."""
+        record_usage(
+            instance_dir, "koan", "sonnet", 1000, 500,
+            duration_seconds=300,
+        )
+        today = date.today().isoformat()
+        line = (instance_dir / "usage" / f"{today}.jsonl").read_text().strip()
+        entry = json.loads(line)
+        assert entry["duration_seconds"] == 300
+
+    def test_duration_seconds_omitted_when_zero(self, instance_dir):
+        """duration_seconds absent from JSONL when zero (backwards compat)."""
+        record_usage(instance_dir, "koan", "sonnet", 1000, 500)
+        today = date.today().isoformat()
+        line = (instance_dir / "usage" / f"{today}.jsonl").read_text().strip()
+        entry = json.loads(line)
+        assert "duration_seconds" not in entry
+
+    def test_provider_written_when_nonempty(self, instance_dir):
+        """provider field appears in JSONL when non-empty string passed."""
+        record_usage(
+            instance_dir, "koan", "sonnet", 1000, 500,
+            provider="claude",
+        )
+        today = date.today().isoformat()
+        line = (instance_dir / "usage" / f"{today}.jsonl").read_text().strip()
+        entry = json.loads(line)
+        assert entry["provider"] == "claude"
+
+    def test_provider_omitted_when_empty(self, instance_dir):
+        """provider absent from JSONL when empty or not passed."""
+        record_usage(instance_dir, "koan", "sonnet", 1000, 500)
+        today = date.today().isoformat()
+        line = (instance_dir / "usage" / f"{today}.jsonl").read_text().strip()
+        entry = json.loads(line)
+        assert "provider" not in entry
