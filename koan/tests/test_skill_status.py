@@ -184,15 +184,17 @@ class TestHandleStatus:
         ctx = _make_ctx(koan_root, instance_dir)
         with patch("skills.core.status.handler._needs_ollama", return_value=False):
             result = _handle_status(ctx)
-        assert "Kōan Status" in result
-        assert "🟢 Mode: Active" in result
+        assert "◉ Kōan Status" in result
+        assert "🟢 Active" in result
+        assert result.startswith("```\n")
+        assert result.endswith("\n```")
 
     def test_paused_status(self, koan_root, instance_dir):
         (koan_root / ".koan-pause").touch()
         ctx = _make_ctx(koan_root, instance_dir)
         with patch("skills.core.status.handler._needs_ollama", return_value=False):
             result = _handle_status(ctx)
-        assert "⏸️ Mode: Paused" in result
+        assert "⏸️ Paused" in result
         assert "/resume" in result
 
     def test_paused_quota_reason(self, koan_root, instance_dir):
@@ -214,7 +216,7 @@ class TestHandleStatus:
         ctx = _make_ctx(koan_root, instance_dir)
         with patch("skills.core.status.handler._needs_ollama", return_value=False):
             result = _handle_status(ctx)
-        assert "⛔ Mode: Stopping" in result
+        assert "⛔ Stopping" in result
 
     def test_shows_loop_status(self, koan_root, instance_dir):
         (koan_root / ".koan-status").write_text("Run 3/50 — executing mission on koan")

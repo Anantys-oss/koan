@@ -39,7 +39,7 @@ class TestStatusDispatch:
         from skills.core.status.handler import handle
         ctx = _make_ctx("status", instance, tmp_path)
         result = handle(ctx)
-        assert "Kōan Status" in result
+        assert "◉ Kōan Status" in result
 
     def test_dispatch_to_ping(self, tmp_path):
         instance = tmp_path / "instance"
@@ -75,6 +75,8 @@ class TestHandleStatus:
         result = _handle_status(ctx)
         assert "Active" in result
         assert "Paused" not in result
+        assert result.startswith("```\n")
+        assert result.endswith("\n```")
 
     def test_paused_mode_generic(self, tmp_path):
         """Pause file without reason = generic pause."""
@@ -217,6 +219,7 @@ class TestHandleStatus:
         from skills.core.status.handler import _handle_status
         ctx = _make_ctx("status", instance, tmp_path)
         result = _handle_status(ctx)
+        assert "◎ Missions" in result
         assert "Pending: 2" in result
         assert "In progress: 1" in result
         # Project tags should be stripped from display
@@ -230,7 +233,7 @@ class TestHandleStatus:
         from skills.core.status.handler import _handle_status
         ctx = _make_ctx("status", instance, tmp_path)
         result = _handle_status(ctx)
-        assert "Kōan Status" in result
+        assert "◉ Kōan Status" in result
 
     def test_empty_missions(self, tmp_path):
         """missions.md with only Done items shows no pending/in-progress."""
@@ -433,6 +436,7 @@ class TestGetServerIp:
         with patch("skills.core.status.handler._get_server_ip", return_value="192.168.1.42"):
             result = _handle_status(ctx)
         assert "🌐 IP: 192.168.1.42" in result
+        assert "│" in result
 
     def test_ip_hidden_when_unknown(self, tmp_path):
         """When IP can't be determined, no IP line shown."""
@@ -1035,7 +1039,7 @@ class TestGetVersion:
         ctx = _make_ctx("status", instance, tmp_path)
         with patch("skills.core.status.handler._get_version", return_value="v0.73"):
             result = _handle_status(ctx)
-        assert "Kōan Status (v0.73)" in result
+        assert "◉ Kōan Status (v0.73)" in result
 
     def test_no_version_no_parens(self, tmp_path):
         """Empty version = no parentheses in header."""
@@ -1045,4 +1049,4 @@ class TestGetVersion:
         ctx = _make_ctx("status", instance, tmp_path)
         with patch("skills.core.status.handler._get_version", return_value=""):
             result = _handle_status(ctx)
-        assert result.startswith("Kōan Status\n") or result == "Kōan Status"
+        assert "◉ Kōan Status\n" in result
