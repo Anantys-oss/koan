@@ -81,6 +81,11 @@
         <div class="stat-label">Est. Cache Savings</div>
         <div class="stat-value" id="cache-savings">-</div>
     </div>
+    <div class="card" id="forecast-badge-card">
+        <div class="stat-label">Quota Forecast</div>
+        <div class="stat-value" id="forecast-badge-text" style="font-size:var(--fs-body-md);">-</div>
+        <div id="forecast-badge-rate" style="font-size:var(--fs-caption);color:var(--text-muted);margin-top:0.2rem;"></div>
+    </div>
 </div>
 
 <h2>Token Spend</h2>
@@ -756,5 +761,45 @@ if (params.get('granularity')) {
 loadProjects();
 initTypeSortHandlers();
 loadAll();
+
+// Quota forecast badge
+(function() {
+    function formatForecastMins(mins) {
+        if (mins < 60) return Math.round(mins) + 'm';
+        if (mins < 1440) {
+            const h = Math.floor(mins / 60), m = Math.round(mins % 60);
+            return m > 0 ? h + 'h ' + m + 'm' : h + 'h';
+        }
+        const d = Math.floor(mins / 1440), h = Math.round((mins % 1440) / 60);
+        return h > 0 ? d + 'd ' + h + 'h' : d + 'd';
+    }
+
+    function updateForecast() {
+        fetch('/api/forecast')
+            .then(r => r.json())
+            .then(fc => {
+                const textEl = document.getElementById('forecast-badge-text');
+                const rateEl = document.getElementById('forecast-badge-rate');
+                if (!textEl) return;
+                if (fc.status === 'paused') {
+                    textEl.textContent = 'Paused';
+                    if (rateEl) rateEl.textContent = '';
+                } else if (fc.status === 'warming_up' || fc.time_to_exhaustion_minutes === null) {
+                    textEl.textContent = 'Warming up...';
+                    if (rateEl) rateEl.textContent = '';
+                } else {
+                    const modeLabel = fc.autonomous_mode || 'base';
+                    textEl.textContent = modeLabel + ' ≈ ' + formatForecastMins(fc.time_to_exhaustion_minutes) + ' remaining';
+                    if (rateEl && fc.burn_rate_pct_per_minute !== null) {
+                        rateEl.textContent = fc.burn_rate_pct_per_minute.toFixed(3) + '%/min · ' + Math.round(fc.session_pct) + '% used';
+                    }
+                }
+            })
+            .catch(() => {});
+    }
+
+    updateForecast();
+    setInterval(updateForecast, 30000);
+})();
 </script>
 {% endblock %}

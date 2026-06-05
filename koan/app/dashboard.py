@@ -348,6 +348,84 @@ def get_agent_state() -> dict:
     }
 
 
+def _build_forecast() -> dict:
+    """Assemble burn-rate and session-usage data into a forecast dict.
+
+    Returns a dict with keys: burn_rate_pct_per_minute, time_to_exhaustion_minutes,
+    session_pct, autonomous_mode, samples_count, status.
+    Status is one of 'normal', 'warming_up', 'paused'.
+    """
+    try:
+        from app.burn_rate import BurnRateSnapshot, MIN_SAMPLES_FOR_ESTIMATE
+        from app.iteration_manager import _read_session_pct_and_reset
+    except ImportError:
+        return {
+            "burn_rate_pct_per_minute": None,
+            "time_to_exhaustion_minutes": None,
+            "session_pct": None,
+            "autonomous_mode": None,
+            "samples_count": 0,
+            "status": "warming_up",
+        }
+
+    signals = get_signal_status()
+    if signals.get("paused") or signals.get("quota_paused"):
+        return {
+            "burn_rate_pct_per_minute": None,
+            "time_to_exhaustion_minutes": None,
+            "session_pct": None,
+            "autonomous_mode": None,
+            "samples_count": 0,
+            "status": "paused",
+        }
+
+    snapshot = BurnRateSnapshot(INSTANCE_DIR)
+    samples_count = len(snapshot.samples)
+    rate = snapshot.burn_rate_pct_per_minute()
+
+    if samples_count < MIN_SAMPLES_FOR_ESTIMATE or rate is None:
+        return {
+            "burn_rate_pct_per_minute": None,
+            "time_to_exhaustion_minutes": None,
+            "session_pct": None,
+            "autonomous_mode": None,
+            "samples_count": samples_count,
+            "status": "warming_up",
+        }
+
+    usage_state_path = INSTANCE_DIR / "usage_state.json"
+    session_pct, _, _ = _read_session_pct_and_reset(usage_state_path)
+    if session_pct is None:
+        return {
+            "burn_rate_pct_per_minute": rate,
+            "time_to_exhaustion_minutes": None,
+            "session_pct": None,
+            "autonomous_mode": None,
+            "samples_count": samples_count,
+            "status": "warming_up",
+        }
+
+    agent_state = get_agent_state()
+    autonomous_mode = agent_state.get("autonomous_mode") or None
+    mode_key = autonomous_mode.lower() if autonomous_mode else None
+    tte = snapshot.time_to_exhaustion(session_pct, mode=mode_key)
+
+    return {
+        "burn_rate_pct_per_minute": rate,
+        "time_to_exhaustion_minutes": tte,
+        "session_pct": session_pct,
+        "autonomous_mode": autonomous_mode,
+        "samples_count": samples_count,
+        "status": "normal",
+    }
+
+
+@app.route("/api/forecast")
+def api_forecast():
+    """Return burn-rate and quota forecast as JSON."""
+    return jsonify(_build_forecast())
+
+
 def parse_missions() -> dict:
     """Parse missions.md into structured sections."""
     from app.missions import parse_sections
@@ -801,6 +879,11 @@ def api_state_stream():
         # Mutable containers for mtime-based mission count caching
         missions_mtime = [0.0]
         missions_counts = [{"pending": 0, "in_progress": 0, "done": 0}]
+        # Mutable container for mtime-based forecast caching
+        burn_rate_mtime = [0.0]
+        forecast_cache = [{"status": "warming_up", "burn_rate_pct_per_minute": None,
+                           "time_to_exhaustion_minutes": None, "session_pct": None,
+                           "autonomous_mode": None, "samples_count": 0}]
 
         while True:
             try:
@@ -829,6 +912,16 @@ def api_state_stream():
                 except OSError:
                     pass
                 state["missions"] = missions_counts[0]
+                # Add forecast (uses mtime check on .burn-rate.json to avoid re-reading)
+                try:
+                    burn_rate_file = INSTANCE_DIR / ".burn-rate.json"
+                    br_mtime = burn_rate_file.stat().st_mtime if burn_rate_file.exists() else 0.0
+                    if br_mtime != burn_rate_mtime[0]:
+                        burn_rate_mtime[0] = br_mtime
+                        forecast_cache[0] = _build_forecast()
+                except OSError:
+                    pass
+                state["forecast"] = forecast_cache[0]
                 state_json = json.dumps(state, sort_keys=True)
                 if state_json != last_json:
                     last_json = state_json

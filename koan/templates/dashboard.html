@@ -78,6 +78,12 @@
     </div>
 </div>
 
+<div id="forecast-card" class="card" style="display:none;padding:var(--space-3) var(--space-4);font-size:var(--fs-body-sm);">
+    <span style="color:var(--text-muted);margin-right:var(--space-2);">Quota Forecast</span>
+    <span id="forecast-text" style="font-weight:var(--fw-semibold);">Warming up...</span>
+    <span id="forecast-rate" style="color:var(--text-muted);margin-left:var(--space-3);"></span>
+</div>
+
 <div id="provider-card" class="card" style="display:none;">
     <h2 style="margin-top:0;">Provider &amp; Models</h2>
     <div style="display:flex;gap:var(--space-6);flex-wrap:wrap;font-size:var(--fs-body-sm);align-items:flex-start;">
@@ -257,6 +263,43 @@
                 const el = document.getElementById(id);
                 if (el && data.missions[key] !== undefined) {
                     el.textContent = data.missions[key];
+                }
+            }
+        }
+
+        // Update forecast row
+        if (data.forecast) {
+            const fc = data.forecast;
+            const fcCard = document.getElementById('forecast-card');
+            const fcText = document.getElementById('forecast-text');
+            const fcRate = document.getElementById('forecast-rate');
+            if (fcCard && fcText) {
+                fcCard.style.display = '';
+                if (fc.status === 'paused') {
+                    fcText.textContent = 'Paused';
+                    if (fcRate) fcRate.textContent = '';
+                } else if (fc.status === 'warming_up' || fc.time_to_exhaustion_minutes === null) {
+                    fcText.textContent = 'Warming up...';
+                    if (fcRate) fcRate.textContent = '';
+                } else {
+                    const mins = fc.time_to_exhaustion_minutes;
+                    let timeStr;
+                    if (mins < 60) {
+                        timeStr = Math.round(mins) + 'm';
+                    } else if (mins < 1440) {
+                        const h = Math.floor(mins / 60);
+                        const m = Math.round(mins % 60);
+                        timeStr = m > 0 ? h + 'h ' + m + 'm' : h + 'h';
+                    } else {
+                        const d = Math.floor(mins / 1440);
+                        const h = Math.round((mins % 1440) / 60);
+                        timeStr = h > 0 ? d + 'd ' + h + 'h' : d + 'd';
+                    }
+                    const modeLabel = fc.autonomous_mode || 'base';
+                    fcText.textContent = modeLabel + ' ≈ ' + timeStr + ' remaining';
+                    if (fcRate && fc.burn_rate_pct_per_minute !== null) {
+                        fcRate.textContent = '(' + fc.burn_rate_pct_per_minute.toFixed(3) + '%/min)';
+                    }
                 }
             }
         }
