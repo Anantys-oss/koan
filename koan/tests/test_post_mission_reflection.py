@@ -21,6 +21,14 @@ from app.post_mission_reflection import (
 
 # --- Fixtures ---
 
+@pytest.fixture(autouse=True)
+def _reset_resume_counter():
+    import app.post_mission_reflection as mod
+    mod._RESUME_FAIL_COUNT = 0
+    yield
+    mod._RESUME_FAIL_COUNT = 0
+
+
 @pytest.fixture
 def instance_dir(tmp_path):
     """Create a minimal instance directory for testing."""
@@ -398,6 +406,29 @@ class TestSessionResume:
         result = run_reflection(instance_dir, "Audit mission")
         assert result == ""
         assert mock_build.call_count == 1
+
+    @patch("app.config.is_session_resume_enabled", return_value=True)
+    @patch("app.claude_step.run_claude")
+    @patch("app.cli_provider.build_full_command", return_value=["claude", "-p", "test"])
+    def test_resume_skipped_after_threshold_failures(self, mock_build, mock_run_claude, _mock_cfg, instance_dir):
+        """After 3 consecutive resume failures, resume is not attempted."""
+        import app.post_mission_reflection as mod
+        mod._RESUME_FAIL_COUNT = 3
+        mock_run_claude.return_value = {"success": True, "output": "OK", "error": ""}
+        run_reflection(instance_dir, "Audit mission", session_id="abc-123")
+        assert mock_build.call_count == 1
+        assert mock_build.call_args[1]["resume_session_id"] == ""
+
+    @patch("app.config.is_session_resume_enabled", return_value=True)
+    @patch("app.claude_step.run_claude")
+    @patch("app.cli_provider.build_full_command", return_value=["claude", "-p", "test"])
+    def test_counter_resets_on_successful_resume(self, mock_build, mock_run_claude, _mock_cfg, instance_dir):
+        """Counter resets to 0 when resume succeeds."""
+        import app.post_mission_reflection as mod
+        mod._RESUME_FAIL_COUNT = 2
+        mock_run_claude.return_value = {"success": True, "output": "OK", "error": ""}
+        run_reflection(instance_dir, "Audit mission", session_id="abc-123")
+        assert mod._RESUME_FAIL_COUNT == 0
 
 
 # --- TestReadJournalFile ---
