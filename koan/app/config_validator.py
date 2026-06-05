@@ -47,6 +47,7 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "rebase_ci_max_duration": "int",
     "rebase_include_bot_feedback": "bool",
     "allow_rebase_foreign_prs": "bool",
+    "worktree_isolation": "bool",
     "post_mission_timeout": "int",
     "contemplative_chance": "int",
     "ci_fix_max_attempts": "int",

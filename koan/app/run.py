@@ -2118,6 +2118,7 @@ def _run_iteration(
     provider_label = "Provider"
     plugin_dir = None  # generated plugin dir for Skill tool (cleaned up in finally)
     cmd_cleanup_paths: List[str] = []  # temp files created by build_mission_command
+    worktree_info = None  # worktree isolation state (cleaned up in finally)
     try:
         provider_name, provider_label = _provider_identity()
         # Build CLI command (provider-agnostic with per-project overrides)
@@ -2174,18 +2175,39 @@ def _run_iteration(
             tier=mission_tier,
         )
 
+        # --- Worktree isolation ---
+        # When enabled, create an isolated worktree so the mission runs
+        # in a clean directory instead of the (possibly dirty) project root.
+        execution_cwd = project_path
+        try:
+            from app.config import get_worktree_isolation
+            if get_worktree_isolation():
+                from app.worktree_manager import create_worktree, inject_worktree_claude_md, setup_shared_deps
+                log("worktree", f"Creating isolated worktree for {project_name}...")
+                worktree_info = create_worktree(project_path)
+                execution_cwd = worktree_info.path
+                inject_worktree_claude_md(execution_cwd, mission_title or "autonomous session")
+                # Symlink heavy dependency dirs to avoid re-install
+                _wt_shared = [".venv", "node_modules", "vendor", ".tox"]
+                setup_shared_deps(execution_cwd, project_path, _wt_shared)
+                log("worktree", f"Worktree ready: {execution_cwd} (branch: {worktree_info.branch})")
+        except Exception as e:
+            log("error", f"Worktree creation failed, falling back to project dir: {e}")
+            worktree_info = None
+            execution_cwd = project_path
+
         cmd_display = [c[:100] + '...' if len(c) > 100 else c for c in cmd[:6]]
-        _debug_log(f"[run] cli: cmd={' '.join(cmd_display)}... cwd={project_path}")
+        _debug_log(f"[run] cli: cmd={' '.join(cmd_display)}... cwd={execution_cwd}")
 
         # Capture git HEAD before execution for retry safety check
-        pre_head = _get_git_head(project_path)
+        pre_head = _get_git_head(execution_cwd)
 
         # Snapshot core files before execution for integrity check
         from app.core_files import snapshot_core_files, check_core_files, log_integrity_warnings
         core_snapshot = snapshot_core_files(koan_root, project_path)
 
         claude_exit = run_claude_task(
-            cmd, stdout_file, stderr_file, cwd=project_path,
+            cmd, stdout_file, stderr_file, cwd=execution_cwd,
             instance_dir=instance, project_name=project_name, run_num=run_num,
         )
         _debug_log(f"[run] cli: exit_code={claude_exit}")
@@ -2399,6 +2421,12 @@ def _run_iteration(
                 cleanup_plugin_dir(plugin_dir)
             except Exception as e:
                 print(f"[run] plugin cleanup error: {e}", file=sys.stderr)
+        # Worktree cleanup: push any branches, then remove the worktree
+        if worktree_info:
+            try:
+                _cleanup_worktree(worktree_info, project_path)
+            except Exception as e:
+                log("error", f"Worktree cleanup error: {e}")
 
     # Report result — always notify on completion (success or failure)
     if claude_exit == 0:
@@ -3400,6 +3428,90 @@ def _cleanup_temp(*files):
     for f in files:
         with suppress_logged(log, "debug", f"Temp file cleanup failed ({f})", OSError):
             Path(f).unlink(missing_ok=True)
+
+
+def _cleanup_worktree(worktree_info, project_path: str):
+    """Push branches from worktree and remove it.
+
+    After a mission runs in an isolated worktree, any new branches
+    need to be pushed to the remote before the worktree is destroyed.
+    """
+    wt_path = worktree_info.path
+
+    # If worktree directory is already gone, just clean up git refs
+    if not Path(wt_path).is_dir():
+        try:
+            from app.worktree_manager import remove_worktree
+            remove_worktree(project_path, session_id=worktree_info.session_id, force=True)
+        except Exception as e:
+            log("error", f"Worktree ref cleanup failed: {e}")
+        return
+
+    push_failed = False
+
+    # Push any branches the agent created in the worktree
+    try:
+        current_branch = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=wt_path,
+            capture_output=True, text=True, timeout=5,
+        ).stdout.strip()
+
+        # Check if worktree HEAD moved from its initial commit
+        has_commits = False
+        if worktree_info.commit:
+            try:
+                head = subprocess.run(
+                    ["git", "rev-parse", "HEAD"],
+                    cwd=wt_path,
+                    capture_output=True, text=True, timeout=5,
+                )
+                has_commits = head.returncode == 0 and head.stdout.strip() != worktree_info.commit
+            except (subprocess.SubprocessError, ValueError):
+                has_commits = True
+        else:
+            try:
+                ahead = subprocess.run(
+                    ["git", "rev-list", "--count", "@{u}..HEAD"],
+                    cwd=wt_path,
+                    capture_output=True, text=True, timeout=5,
+                )
+                if ahead.returncode != 0:
+                    has_commits = True
+                else:
+                    has_commits = int(ahead.stdout.strip() or "0") > 0
+            except (subprocess.SubprocessError, ValueError):
+                has_commits = True
+
+        if has_commits and current_branch and current_branch != "HEAD":
+            log("worktree", f"Pushing branch {current_branch} from worktree...")
+            push_result = subprocess.run(
+                ["git", "push", "-u", "origin", current_branch],
+                cwd=wt_path,
+                capture_output=True, text=True, timeout=60,
+            )
+            if push_result.returncode != 0:
+                log("error", f"Worktree push failed: {push_result.stderr.strip()}")
+                push_failed = True
+    except (subprocess.SubprocessError, OSError) as e:
+        log("error", f"Worktree branch push error: {e}")
+        push_failed = True
+
+    # Remove the worktree — but preserve it if push failed to avoid data loss
+    if push_failed:
+        log("error", f"Worktree preserved at {wt_path} — push failed, manual intervention needed")
+        return
+
+    try:
+        from app.worktree_manager import remove_worktree
+        remove_worktree(
+            project_path,
+            session_id=worktree_info.session_id,
+            force=True,
+        )
+        log("worktree", f"Worktree cleaned up: {wt_path}")
+    except Exception as e:
+        log("error", f"Worktree removal failed: {e}")
 
 
 # ---------------------------------------------------------------------------
