@@ -126,6 +126,35 @@
     </div>
 </div>
 
+<h2>Top Missions</h2>
+<div class="card">
+    <details id="top-missions-details">
+        <summary style="cursor:pointer;user-select:none;padding:0.25rem 0;color:var(--text-muted);font-size:0.9rem;">
+            Top missions by token spend (click to load)
+        </summary>
+        <div id="top-missions-content" style="margin-top:0.75rem;overflow-x:auto;">
+            <div class="empty-state" id="missions-loading" style="display:none;">Loading...</div>
+            <div class="empty-state" id="missions-empty" style="display:none;">No mission data for this period.</div>
+            <table id="top-missions-table" style="display:none;width:100%;border-collapse:collapse;font-family:var(--mono);font-size:0.82rem;">
+                <thead id="top-missions-thead">
+                    <tr style="color:var(--text-muted);text-align:left;">
+                        <th class="sortable-header" data-mcol="date" style="padding:0.5rem 0.3rem 0.5rem 0;">Date <span class="sort-indicator">&#8597;</span></th>
+                        <th class="sortable-header" data-mcol="project" style="padding:0.5rem 0.3rem;">Project <span class="sort-indicator">&#8597;</span></th>
+                        <th class="sortable-header" data-mcol="type" style="padding:0.5rem 0.3rem;">Type <span class="sort-indicator">&#8597;</span></th>
+                        <th class="sortable-header" data-mcol="mode" style="padding:0.5rem 0.3rem;">Mode <span class="sort-indicator">&#8597;</span></th>
+                        <th style="padding:0.5rem 0.3rem;">Mission</th>
+                        <th class="sortable-header" data-mcol="input" style="padding:0.5rem 0.3rem;text-align:right;">Input <span class="sort-indicator">&#8597;</span></th>
+                        <th class="sortable-header" data-mcol="output" style="padding:0.5rem 0.3rem;text-align:right;">Output <span class="sort-indicator">&#8597;</span></th>
+                        <th class="sortable-header" data-mcol="cache" style="padding:0.5rem 0.3rem;text-align:right;">Cache Hit <span class="sort-indicator">&#8597;</span></th>
+                        <th class="sortable-header" data-mcol="cost" style="padding:0.5rem 0.3rem;text-align:right;">Cost <span class="sort-indicator">&#8597;</span></th>
+                    </tr>
+                </thead>
+                <tbody id="top-missions-tbody"></tbody>
+            </table>
+        </div>
+    </details>
+</div>
+
 <h2>Mission Outcomes</h2>
 <div class="card" style="display:flex;align-items:center;gap:2rem;flex-wrap:wrap;">
     <div class="chart-container" style="width:200px;height:200px;flex-shrink:0;">
@@ -586,6 +615,10 @@ function resortTypeTable() {
 }
 
 function loadAll() {
+    _lastMissionParams = null;
+    if (_missionsOpen) {
+        loadTopMissions(true);
+    }
     const days = document.getElementById('range-select').value;
     const granularity = document.getElementById('granularity-select').value;
     const projParam = currentProject ? '&project=' + encodeURIComponent(currentProject) : '';
@@ -624,6 +657,7 @@ function loadAll() {
                 savingsCard.style.display = 'none';
             }
 
+            window._lastHasPricing = !!data.has_pricing;
             renderDailyChart(data.series || [], data.has_pricing, data.granularity || 'day');
             renderStackedChart(data.series || [], data.granularity || 'day');
             renderTypeChart(data.by_type || {}, data.has_pricing);
@@ -753,8 +787,178 @@ if (params.get('granularity')) {
     }
 }
 
+let missionSortCol = 'total';
+let missionSortAsc = false;
+let _missionsOpen = false;
+let _lastMissionParams = null;
+
+function fmtDate(iso) {
+    if (!iso) return '';
+    return iso.slice(5, 16).replace('T', ' ');
+}
+
+function fmtCostDetail(v, hasPricing) {
+    if (!hasPricing) return '-';
+    if (v === null || v === undefined) return '-';
+    if (v === 0) return '$0.0000';
+    return '$' + v.toFixed(4);
+}
+
+function renderTopMissionsTable(missions, hasPricing) {
+    const table = document.getElementById('top-missions-table');
+    const emptyEl = document.getElementById('missions-empty');
+    const tbody = document.getElementById('top-missions-tbody');
+
+    tbody.innerHTML = '';
+
+    if (!missions || missions.length === 0) {
+        table.style.display = 'none';
+        emptyEl.style.display = '';
+        return;
+    }
+
+    table.style.display = '';
+    emptyEl.style.display = 'none';
+
+    for (const m of missions) {
+        const tr = document.createElement('tr');
+        tr.style.borderTop = '1px solid var(--border)';
+        tr.dataset.date = m.ts || '';
+        tr.dataset.project = m.project || '';
+        tr.dataset.type = m.mission_type || '';
+        tr.dataset.mode = m.mode || '';
+        tr.dataset.input = m.input_tokens || 0;
+        tr.dataset.output = m.output_tokens || 0;
+        tr.dataset.cache = m.cache_read_input_tokens || 0;
+        tr.dataset.cost = m.cost_usd || 0;
+        tr.dataset.total = m.total_tokens || 0;
+
+        const dateCell = document.createElement('td');
+        dateCell.style.cssText = 'padding:0.35rem 0.3rem 0.35rem 0;white-space:nowrap;';
+        dateCell.textContent = fmtDate(m.ts);
+        tr.appendChild(dateCell);
+
+        const projCell = document.createElement('td');
+        projCell.style.cssText = 'padding:0.35rem 0.3rem;';
+        projCell.textContent = m.project || '';
+        tr.appendChild(projCell);
+
+        const typeCell = document.createElement('td');
+        typeCell.style.cssText = 'padding:0.35rem 0.3rem;';
+        typeCell.textContent = m.mission_type || '';
+        tr.appendChild(typeCell);
+
+        const modeCell = document.createElement('td');
+        modeCell.style.cssText = 'padding:0.35rem 0.3rem;';
+        modeCell.textContent = m.mode || '';
+        tr.appendChild(modeCell);
+
+        const missionCell = document.createElement('td');
+        missionCell.style.cssText = 'padding:0.35rem 0.3rem;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+        missionCell.title = m.mission || '';
+        missionCell.textContent = m.mission || '';
+        tr.appendChild(missionCell);
+
+        const inputCell = document.createElement('td');
+        inputCell.style.cssText = 'padding:0.35rem 0.3rem;text-align:right;';
+        inputCell.textContent = fmtTokens(m.input_tokens || 0);
+        tr.appendChild(inputCell);
+
+        const outputCell = document.createElement('td');
+        outputCell.style.cssText = 'padding:0.35rem 0.3rem;text-align:right;';
+        outputCell.textContent = fmtTokens(m.output_tokens || 0);
+        tr.appendChild(outputCell);
+
+        const cacheCell = document.createElement('td');
+        cacheCell.style.cssText = 'padding:0.35rem 0.3rem;text-align:right;';
+        cacheCell.textContent = fmtTokens(m.cache_read_input_tokens || 0);
+        tr.appendChild(cacheCell);
+
+        const costCell = document.createElement('td');
+        costCell.style.cssText = 'padding:0.35rem 0.3rem;text-align:right;';
+        costCell.textContent = fmtCostDetail(m.cost_usd, hasPricing);
+        tr.appendChild(costCell);
+
+        tbody.appendChild(tr);
+    }
+}
+
+function resortMissionsTable() {
+    const tbody = document.getElementById('top-missions-tbody');
+    const rows = Array.from(tbody.querySelectorAll('tr'));
+    rows.sort((a, b) => {
+        if (missionSortCol === 'date') {
+            const va = a.dataset.date || '';
+            const vb = b.dataset.date || '';
+            return missionSortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
+        }
+        if (missionSortCol === 'project' || missionSortCol === 'type' || missionSortCol === 'mode') {
+            const va = a.dataset[missionSortCol] || '';
+            const vb = b.dataset[missionSortCol] || '';
+            return missionSortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
+        }
+        const va = parseFloat(a.dataset[missionSortCol]) || 0;
+        const vb = parseFloat(b.dataset[missionSortCol]) || 0;
+        return missionSortAsc ? va - vb : vb - va;
+    });
+    rows.forEach(r => tbody.appendChild(r));
+}
+
+function initMissionSortHandlers() {
+    document.querySelectorAll('#top-missions-thead .sortable-header').forEach(th => {
+        th.addEventListener('click', () => {
+            const col = th.dataset.mcol;
+            if (!col) return;
+            if (missionSortCol === col) {
+                missionSortAsc = !missionSortAsc;
+            } else {
+                missionSortCol = col;
+                missionSortAsc = ['date', 'project', 'type', 'mode'].includes(col);
+            }
+            resortMissionsTable();
+        });
+    });
+}
+
+function loadTopMissions(forceReload) {
+    const days = document.getElementById('range-select').value;
+    const projParam = currentProject ? '&project=' + encodeURIComponent(currentProject) : '';
+    const offsetParam = windowOffset > 0 ? '&offset=' + windowOffset : '';
+    const paramKey = days + projParam + offsetParam;
+
+    if (!forceReload && _lastMissionParams === paramKey) return;
+    _lastMissionParams = paramKey;
+
+    const loadingEl = document.getElementById('missions-loading');
+    const emptyEl = document.getElementById('missions-empty');
+    const table = document.getElementById('top-missions-table');
+    loadingEl.style.display = '';
+    emptyEl.style.display = 'none';
+    table.style.display = 'none';
+
+    fetch('/api/usage/missions?days=' + days + projParam + offsetParam)
+        .then(r => r.json())
+        .then(data => {
+            loadingEl.style.display = 'none';
+            const hasPricing = window._lastHasPricing !== undefined ? window._lastHasPricing : false;
+            renderTopMissionsTable(data.missions || [], hasPricing);
+        })
+        .catch(() => {
+            loadingEl.style.display = 'none';
+            emptyEl.style.display = '';
+        });
+}
+
+document.getElementById('top-missions-details').addEventListener('toggle', function() {
+    _missionsOpen = this.open;
+    if (this.open) {
+        loadTopMissions(false);
+    }
+});
+
 loadProjects();
 initTypeSortHandlers();
+initMissionSortHandlers();
 loadAll();
 </script>
 {% endblock %}

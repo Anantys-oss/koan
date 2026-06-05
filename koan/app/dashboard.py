@@ -1065,6 +1065,46 @@ def api_usage():
     return jsonify(response_data)
 
 
+@app.route("/api/usage/missions")
+def api_usage_missions():
+    """Per-mission cost drill-down, sorted by total tokens descending."""
+    from app.cost_tracker import top_missions
+    import calendar as _calendar
+
+    days = request.args.get("days", "7", type=str)
+    selected_project = request.args.get("project", "")
+    offset_raw = request.args.get("offset", "0", type=str)
+    limit_raw = request.args.get("limit", "100", type=str)
+
+    try:
+        days = max(1, min(int(days), 90))
+    except (ValueError, TypeError):
+        days = 7
+
+    try:
+        offset = max(0, int(offset_raw))
+    except (ValueError, TypeError):
+        offset = 0
+
+    try:
+        limit = max(1, min(int(limit_raw), 200))
+    except (ValueError, TypeError):
+        limit = 100
+
+    today = date.today()
+    end = today - timedelta(days=offset * days)
+    start = end - timedelta(days=days - 1)
+
+    missions = top_missions(
+        INSTANCE_DIR,
+        start,
+        end,
+        project=selected_project or None,
+        limit=limit,
+    )
+    return jsonify({"missions": missions, "start": start.isoformat(), "end": end.isoformat()})
+
+
 @app.route("/api/metrics")
 def api_metrics():
     """JSON mission metrics for the specified time range."""

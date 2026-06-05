@@ -21,6 +21,7 @@ from app.cost_tracker import (
     get_pricing_config,
     format_cache_summary,
     format_mission_cache_line,
+    top_missions,
     _read_jsonl_for_date,
     _read_jsonl_range,
     _aggregate,
@@ -757,10 +758,6 @@ class TestSummarizeWeekMonth:
         assert "plan" in month["by_type"]
 
 
-# ---------------------------------------------------------------------------
-# Tests: duration_seconds and provider fields in record_usage
-# ---------------------------------------------------------------------------
-
 class TestRecordUsageDurationProvider:
     def test_duration_seconds_written_when_nonzero(self, instance_dir):
         """duration_seconds appears in JSONL when non-zero."""
@@ -799,3 +796,141 @@ class TestRecordUsageDurationProvider:
         line = (instance_dir / "usage" / f"{today}.jsonl").read_text().strip()
         entry = json.loads(line)
         assert "provider" not in entry
+
+
+class TestTopMissions:
+    def _write_entries(self, usage_dir, entries, d=None):
+        if d is None:
+            d = date.today()
+        path = usage_dir / f"{d.isoformat()}.jsonl"
+        lines = [json.dumps(e) for e in entries]
+        path.write_text("\n".join(lines) + "\n")
+
+    def test_top_missions_returns_sorted_by_total(self, instance_dir, usage_dir):
+        today = date.today()
+        self._write_entries(usage_dir, [
+            {"ts": "2026-01-01T10:00:00", "project": "koan", "model": "sonnet",
+             "input_tokens": 100, "output_tokens": 50, "mode": "implement",
+             "mission": "small", "mission_type": "implement"},
+            {"ts": "2026-01-01T11:00:00", "project": "koan", "model": "sonnet",
+             "input_tokens": 5000, "output_tokens": 2000, "mode": "deep",
+             "mission": "large", "mission_type": "implement"},
+            {"ts": "2026-01-01T12:00:00", "project": "koan", "model": "sonnet",
+             "input_tokens": 1000, "output_tokens": 500, "mode": "review",
+             "mission": "medium", "mission_type": "review"},
+        ], today)
+        result = top_missions(instance_dir, today, today)
+        assert result[0]["mission"] == "large"
+        assert result[1]["mission"] == "medium"
+        assert result[2]["mission"] == "small"
+
+    def test_top_missions_project_filter(self, instance_dir, usage_dir):
+        today = date.today()
+        self._write_entries(usage_dir, [
+            {"ts": "2026-01-01T10:00:00", "project": "koan", "model": "sonnet",
+             "input_tokens": 1000, "output_tokens": 500, "mode": "implement",
+             "mission": "koan mission", "mission_type": "implement"},
+            {"ts": "2026-01-01T11:00:00", "project": "other", "model": "sonnet",
+             "input_tokens": 2000, "output_tokens": 1000, "mode": "implement",
+             "mission": "other mission", "mission_type": "implement"},
+        ], today)
+        result = top_missions(instance_dir, today, today, project="koan")
+        assert len(result) == 1
+        assert result[0]["project"] == "koan"
+
+    def test_top_missions_limit(self, instance_dir, usage_dir):
+        today = date.today()
+        self._write_entries(usage_dir, [
+            {"ts": f"2026-01-01T{i:02d}:00:00", "project": "koan", "model": "sonnet",
+             "input_tokens": (i + 1) * 100, "output_tokens": 50, "mode": "implement",
+             "mission": f"mission {i}", "mission_type": "implement"}
+            for i in range(5)
+        ], today)
+        result = top_missions(instance_dir, today, today, limit=2)
+        assert len(result) == 2
+
+    def test_top_missions_truncates_mission_text(self, instance_dir, usage_dir):
+        today = date.today()
+        long_text = "x" * 200
+        self._write_entries(usage_dir, [
+            {"ts": "2026-01-01T10:00:00", "project": "koan", "model": "sonnet",
+             "input_tokens": 100, "output_tokens": 50, "mode": "implement",
+             "mission": long_text, "mission_type": "implement"},
+        ], today)
+        result = top_missions(instance_dir, today, today)
+        assert len(result) == 1
+        assert result[0]["mission"].endswith("...")
+        assert len(result[0]["mission"]) == 123  # 120 + len("...")
+
+    def test_top_missions_empty_range(self, instance_dir, usage_dir):
+        future = date.today() + timedelta(days=365)
+        result = top_missions(instance_dir, future, future)
+        assert result == []
+
+    def test_top_missions_missing_cost_usd_fallback(self, instance_dir, usage_dir):
+        today = date.today()
+        self._write_entries(usage_dir, [
+            {"ts": "2026-01-01T10:00:00", "project": "koan",
+             "model": "claude-sonnet-4-20250514",
+             "input_tokens": 1000, "output_tokens": 500, "mode": "implement",
+             "mission": "no cost field", "mission_type": "implement"},
+        ], today)
+        pricing = {"sonnet": {"input": 3.0, "output": 15.0}}
+        from unittest.mock import patch
+        with patch("app.cost_tracker.get_pricing_config", return_value=pricing):
+            result = top_missions(instance_dir, today, today)
+        assert len(result) == 1
+        assert result[0]["cost_usd"] > 0
+
+    def test_top_missions_missing_mission_type_reclassified(self, instance_dir, usage_dir):
+        today = date.today()
+        self._write_entries(usage_dir, [
+            {"ts": "2026-01-01T10:00:00", "project": "koan", "model": "sonnet",
+             "input_tokens": 100, "output_tokens": 50, "mode": "implement",
+             "mission": "/review fix something"},
+        ], today)
+        result = top_missions(instance_dir, today, today)
+        assert len(result) == 1
+        assert result[0]["mission_type"] != ""
+
+    def test_top_missions_newlines_replaced_in_mission(self, instance_dir, usage_dir):
+        today = date.today()
+        self._write_entries(usage_dir, [
+            {"ts": "2026-01-01T10:00:00", "project": "koan", "model": "sonnet",
+             "input_tokens": 100, "output_tokens": 50, "mode": "implement",
+             "mission": "line1\nline2\nline3", "mission_type": "implement"},
+        ], today)
+        result = top_missions(instance_dir, today, today)
+        assert "\n" not in result[0]["mission"]
+
+    def test_top_missions_zero_tokens_included(self, instance_dir, usage_dir):
+        today = date.today()
+        self._write_entries(usage_dir, [
+            {"ts": "2026-01-01T10:00:00", "project": "koan", "model": "sonnet",
+             "input_tokens": 0, "output_tokens": 0, "mode": "implement",
+             "mission": "zero", "mission_type": "implement"},
+            {"ts": "2026-01-01T11:00:00", "project": "koan", "model": "sonnet",
+             "input_tokens": 100, "output_tokens": 50, "mode": "implement",
+             "mission": "nonzero", "mission_type": "implement"},
+        ], today)
+        result = top_missions(instance_dir, today, today)
+        assert len(result) == 2
+        assert result[-1]["mission"] == "zero"
+
+    def test_top_missions_cost_zero_not_fallback(self, instance_dir, usage_dir):
+        today = date.today()
+        self._write_entries(usage_dir, [
+            {"ts": "2026-01-01T10:00:00", "project": "koan", "model": "sonnet",
+             "input_tokens": 100, "output_tokens": 50, "mode": "implement",
+             "mission": "cached", "mission_type": "implement", "cost_usd": 0.0},
+        ], today)
+        from unittest.mock import patch
+        call_count = []
+        def tracking_estimate_cost(tokens, pricing):
+            call_count.append(1)
+            return 0.005
+        with patch("app.cost_tracker.get_pricing_config", return_value={"sonnet": {"input": 3.0, "output": 15.0}}):
+            with patch("app.cost_tracker.estimate_cost", side_effect=tracking_estimate_cost):
+                result = top_missions(instance_dir, today, today)
+        assert result[0]["cost_usd"] == 0.0
+        assert len(call_count) == 0

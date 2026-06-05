@@ -424,6 +424,87 @@ def estimate_cost(tokens: dict, pricing: Optional[dict] = None) -> Optional[floa
     return inp_cost + out_cost
 
 
+def top_missions(
+    instance_dir: Path,
+    start: date,
+    end: date,
+    project: Optional[str] = None,
+    limit: int = 100,
+) -> list:
+    """Return top missions sorted by total tokens descending.
+
+    Args:
+        instance_dir: Path to instance directory.
+        start: Start date (inclusive).
+        end: End date (inclusive).
+        project: Optional project name filter.
+        limit: Maximum number of entries to return (1-200).
+
+    Returns:
+        List of dicts: ts, project, model, mode, mission_type, mission,
+        input_tokens, output_tokens, cache_read_input_tokens, cost_usd,
+        total_tokens. Mission text truncated to 120 chars.
+    """
+    usage_dir = Path(instance_dir) / "usage"
+    pricing = get_pricing_config()
+    entries = _read_jsonl_range(usage_dir, start, end)
+
+    if project:
+        entries = [e for e in entries if e.get("project") == project]
+
+    _classify = None
+    result = []
+    for entry in entries:
+        inp = entry.get("input_tokens", 0)
+        out = entry.get("output_tokens", 0)
+        cache_read = entry.get("cache_read_input_tokens", 0)
+
+        cost = entry.get("cost_usd")
+        if cost is None:
+            if pricing:
+                est = estimate_cost(
+                    {
+                        "model": entry.get("model", "unknown"),
+                        "input_tokens": inp,
+                        "output_tokens": out,
+                    },
+                    pricing,
+                )
+                cost = est if est is not None else 0.0
+            else:
+                cost = 0.0
+
+        mission_type = entry.get("mission_type", "")
+        if not mission_type:
+            if _classify is None:
+                from app.session_tracker import classify_mission_type
+                _classify = classify_mission_type
+            mission_type = _classify(entry.get("mission", ""))
+
+        raw_mission = entry.get("mission", "")
+        mission_text = raw_mission.replace("\n", " ").replace("\r", " ")
+        if len(mission_text) > 120:
+            mission_text = mission_text[:120] + "..."
+
+        result.append({
+            "ts": entry.get("ts", ""),
+            "project": entry.get("project", "_global"),
+            "model": entry.get("model", "unknown"),
+            "mode": entry.get("mode", ""),
+            "mission_type": mission_type,
+            "mission": mission_text,
+            "input_tokens": inp,
+            "output_tokens": out,
+            "cache_read_input_tokens": cache_read,
+            "cost_usd": cost,
+            "total_tokens": inp + out,
+        })
+
+    result.sort(key=lambda x: x["total_tokens"], reverse=True)
+    limit = max(1, min(limit, 200))
+    return result[:limit]
+
+
 def daily_series(
     instance_dir: Path,
     start: date,
