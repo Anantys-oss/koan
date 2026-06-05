@@ -118,6 +118,15 @@ class TestParseProjectLenient:
         assert project is None
         assert text == "review the project: notes today"
 
+    def test_mid_sentence_valid_token_is_not_a_tag(self):
+        # A valid-looking "project:<name>" token mid-sentence (no space after
+        # the colon) must NOT be treated as a tag — only the trailing-$ anchor
+        # prevents this false positive.
+        from app.utils import parse_project_lenient
+        project, text = parse_project_lenient("fix the project:widgets dependency issue")
+        assert project is None
+        assert text == "fix the project:widgets dependency issue"
+
     def test_no_project_at_all(self):
         from app.utils import parse_project_lenient
         project, text = parse_project_lenient("just a plain mission")
