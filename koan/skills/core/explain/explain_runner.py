@@ -150,7 +150,7 @@ def _post_explanation_comment(
     clean_text = sanitize_github_comment(explanation) or ""
     if not clean_text.strip():
         return False, "Explanation empty after sanitization"
-    body = f"{_EXPLAIN_TAG}\n## PR Explanation\n\n{clean_text}"
+    body = f"{_EXPLAIN_TAG}\n## 💡 PR Explanation\n\n{clean_text}"
 
     existing = find_bot_comment(owner, repo, int(pr_number), _EXPLAIN_TAG)
     if existing:
