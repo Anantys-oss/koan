@@ -86,6 +86,52 @@ class TestParseProject:
         assert text == "Fix bug"
 
 
+class TestParseProjectLenient:
+    def test_bracketed_tag_still_works(self):
+        from app.utils import parse_project_lenient
+        project, text = parse_project_lenient("[project:koan] Fix bug")
+        assert project == "koan"
+        assert text == "Fix bug"
+
+    def test_trailing_inline_hint(self):
+        from app.utils import parse_project_lenient
+        project, text = parse_project_lenient("run the nightly audit project:webapp")
+        assert project == "webapp"
+        assert text == "run the nightly audit"
+
+    def test_trailing_inline_hint_with_hyphen(self):
+        from app.utils import parse_project_lenient
+        project, text = parse_project_lenient("sync the schema project:webapp-mobile")
+        assert project == "webapp-mobile"
+        assert text == "sync the schema"
+
+    def test_trailing_inline_hint_trailing_whitespace(self):
+        from app.utils import parse_project_lenient
+        project, text = parse_project_lenient("do the thing project:webapp   ")
+        assert project == "webapp"
+        assert text == "do the thing"
+
+    def test_mid_sentence_project_word_is_not_a_tag(self):
+        # "project:" not at the end of the line must NOT be treated as a tag.
+        from app.utils import parse_project_lenient
+        project, text = parse_project_lenient("review the project: notes today")
+        assert project is None
+        assert text == "review the project: notes today"
+
+    def test_no_project_at_all(self):
+        from app.utils import parse_project_lenient
+        project, text = parse_project_lenient("just a plain mission")
+        assert project is None
+        assert text == "just a plain mission"
+
+    def test_bracketed_takes_precedence_over_trailing(self):
+        from app.utils import parse_project_lenient
+        project, text = parse_project_lenient("[project:koan] do X project:webapp")
+        assert project == "koan"
+        # only the bracketed tag is stripped; trailing text is left intact
+        assert text == "do X project:webapp"
+
+
 class TestDetectProjectFromText:
     def test_detects_first_word_as_project(self):
         from app.utils import detect_project_from_text

@@ -73,6 +73,40 @@ class TestAddCommands:
         data = json.loads(recurring_path.read_text())
         assert data[0]["project"] == "koan"
 
+    def test_add_with_trailing_inline_project(self, tmp_path):
+        # Forgetting the brackets (/daily ... project:yarn) must still capture
+        # the project instead of silently storing null. Regression for the
+        # recurring.json "project not parsed" report.
+        mod = _load_handler()
+        ctx = _ctx(tmp_path, "daily", "run the nightly audit project:webapp")
+        result = mod.handle(ctx)
+        assert "project:webapp" in result
+
+        recurring_path = tmp_path / "instance" / "recurring.json"
+        data = json.loads(recurring_path.read_text())
+        assert data[0]["project"] == "webapp"
+        # the inline hint is stripped from the stored text
+        assert data[0]["text"] == "run the nightly audit"
+
+    def test_add_with_trailing_inline_project_and_time(self, tmp_path):
+        mod = _load_handler()
+        ctx = _ctx(tmp_path, "daily", "03:00 sync the API schema project:webapp-mobile")
+        mod.handle(ctx)
+        recurring_path = tmp_path / "instance" / "recurring.json"
+        data = json.loads(recurring_path.read_text())
+        assert data[0]["project"] == "webapp-mobile"
+        assert data[0]["at"] == "03:00"
+        assert data[0]["text"] == "sync the API schema"
+
+    def test_every_with_trailing_inline_project(self, tmp_path):
+        mod = _load_handler()
+        ctx = _ctx(tmp_path, "every", "2h check design issues project:nocrm")
+        mod.handle(ctx)
+        recurring_path = tmp_path / "instance" / "recurring.json"
+        data = json.loads(recurring_path.read_text())
+        assert data[0]["project"] == "nocrm"
+        assert data[0]["text"] == "check design issues"
+
     def test_add_with_at_time(self, tmp_path):
         mod = _load_handler()
         ctx = _ctx(tmp_path, "daily", "20:00 nightly audit [project:koan]")

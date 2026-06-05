@@ -44,10 +44,12 @@ def _handle_add(ctx, frequency):
             f"Ex: /{frequency} 20:00 run nightly audit [project:myapp]"
         )
 
-    from app.utils import parse_project
+    from app.utils import parse_project_lenient
     from app.recurring import add_recurring, parse_at_time
 
-    project, text = parse_project(body)
+    # Lenient parse: accept both [project:name] and a trailing project:name
+    # hint so forgetting the brackets doesn't silently drop the project.
+    project, text = parse_project_lenient(body)
 
     try:
         at_time, text = parse_at_time(text)
@@ -91,7 +93,7 @@ def _handle_every(ctx):
 
     interval_str, rest = parts[0], parts[1]
 
-    from app.utils import parse_project
+    from app.utils import parse_project_lenient
     from app.recurring import parse_interval, format_interval, add_recurring_interval
 
     try:
@@ -99,7 +101,7 @@ def _handle_every(ctx):
     except ValueError as e:
         return str(e)
 
-    project, text = parse_project(rest)
+    project, text = parse_project_lenient(rest)
     if not text.strip():
         return "Missing mission description after interval."
 
