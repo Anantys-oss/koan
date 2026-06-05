@@ -1517,7 +1517,8 @@ def _is_review_requested(owner: str, repo: str, pr_number: str, bot_username: st
         )
         reviewers = [r.strip().lower() for r in raw.strip().splitlines() if r.strip()]
         return bot_username.lower() in reviewers
-    except RuntimeError:
+    except RuntimeError as e:
+        log("review", f"Failed to check requested reviewers on PR #{pr_number}: {e}")
         return False
 
 
@@ -1554,11 +1555,7 @@ def _submit_review_verdict(
         log("review", f"Submitted {event} verdict on PR #{pr_number}")
         return True
     except RuntimeError as e:
-        print(
-            f"[review_runner] failed to submit {event} verdict on "
-            f"PR #{pr_number}: {e}",
-            file=sys.stderr,
-        )
+        log("review", f"Failed to submit {event} verdict on PR #{pr_number}: {e}")
         return False
 
 
@@ -1872,6 +1869,7 @@ def run_review(
     # comment was posted successfully.  The commit_id anchors the
     # verdict to the reviewed code state.
     verdict_submitted = False
+    review_summary = {}
     if posted and isinstance(review_data, dict):
         review_summary = review_data.get("review_summary") or {}
         lgtm = review_summary.get("lgtm")
