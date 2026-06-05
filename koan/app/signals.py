@@ -21,6 +21,7 @@ ABORT_FILE = ".koan-abort"
 PAUSE_FILE = ".koan-pause"
 SKIP_START_PAUSE_FILE = ".koan-skip-start-pause"
 QUOTA_RESET_FILE = ".koan-quota-reset"
+RESET_COUNTER_FILE = ".koan-reset-counter"
 
 # -- Status / heartbeat -------------------------------------------------------
 

@@ -1570,6 +1570,15 @@ Use `/models` to inspect the resolved values for the active provider at any time
 - `/upgrade` — Same as `/update`
 </details>
 
+**`/reset`** — Reset the run counter to 0 without restarting. If Kōan is paused because it reached `max_runs`, `/reset` also resumes execution.
+
+<details>
+<summary>Use cases</summary>
+
+- `/reset` — Reset counter mid-session when you want more runs
+- `/reset` — Resume from a max_runs pause without losing current state
+</details>
+
 **`/restart`** — Restart both agent and bridge processes without pulling new code.
 
 <details>
@@ -1963,6 +1972,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/resume` | `/work`, `/awake`, `/run`, `/start` | P | Resume mission processing |
 | `/shutdown` | — | P | Shutdown all processes |
 | `/update` | `/upgrade` | P | Finish mission, update, restart |
+| `/reset` | — | P | Reset run counter to 0 |
 | `/restart` | — | P | Restart processes (no code pull) |
 | `/snapshot` | — | P | Export memory state |
 | `/add_project <url>` | `/add_project` | P | Add a project from GitHub |

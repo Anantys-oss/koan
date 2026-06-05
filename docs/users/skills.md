@@ -141,6 +141,7 @@ Skills marked **GitHub @mention** can be triggered by commenting `@koan-bot <com
 | `/resume` | `/work`, `/awake`, `/run`, `/start` | Resume mission processing |
 | `/shutdown` | — | Shutdown both agent loop and messaging bridge |
 | `/update` | `/upgrade` | Finish current mission, pull updates, and restart |
+| `/reset` | — | Reset run counter to 0 (resumes if paused by max_runs) |
 | `/restart` | — | Restart processes (no code pull) |
 | `/snapshot` | — | Export memory state to a portable file |
 

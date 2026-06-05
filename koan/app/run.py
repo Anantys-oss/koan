@@ -56,6 +56,7 @@ from app.signals import (
     CYCLE_FILE,
     PAUSE_FILE,
     PROJECT_FILE,
+    RESET_COUNTER_FILE,
     RESTART_FILE,
     SHUTDOWN_FILE,
     ABORT_FILE,
@@ -802,6 +803,7 @@ def main_loop():
     Path(koan_root, SHUTDOWN_FILE).unlink(missing_ok=True)
     Path(koan_root, CYCLE_FILE).unlink(missing_ok=True)
     Path(koan_root, ABORT_FILE).unlink(missing_ok=True)
+    Path(koan_root, RESET_COUNTER_FILE).unlink(missing_ok=True)
     clear_restart(koan_root, target="run")
 
     # Install SIGINT handler
@@ -897,6 +899,19 @@ def main_loop():
                     global _startup_notified
                     _startup_notified = False
                 continue
+
+            # --- Reset counter check ---
+            reset_file = Path(koan_root, RESET_COUNTER_FILE)
+            if reset_file.exists():
+                reset_file.unlink(missing_ok=True)
+                old_count = count
+                count = 0
+                consecutive_errors = 0
+                consecutive_idle = 0
+                consecutive_nonproductive = 0
+                idle_notified = False
+                log("koan", f"Run counter reset (was {old_count}/{max_runs}, now 0/{max_runs}).")
+                _notify(instance, f"🔄 Run counter reset: {old_count} → 0 (max {max_runs}).")
 
             # --- Iteration body (exception-protected) ---
             try:
