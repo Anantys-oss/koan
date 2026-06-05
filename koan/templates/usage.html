@@ -131,6 +131,33 @@
     </div>
 </div>
 
+<h2>Spend by Autonomous Mode</h2>
+<div class="card" style="display:flex;align-items:flex-start;gap:2rem;flex-wrap:wrap;">
+    <div style="flex:0 0 220px;">
+        <div class="chart-container" style="width:220px;height:220px;">
+            <canvas id="mode-chart"></canvas>
+        </div>
+        <div class="empty-state" id="mode-empty" style="display:none;">No mode data.</div>
+    </div>
+    <div style="flex:1;min-width:320px;overflow-x:auto;">
+        <table id="by-mode-table" style="width:100%;border-collapse:collapse;font-family:var(--mono);font-size:0.85rem;">
+            <thead id="by-mode-thead">
+                <tr style="color:var(--text-muted);text-align:left;">
+                    <th class="sortable-header" data-col="mode" style="padding:0.5rem 0;">Mode <span class="sort-indicator">&#8597;</span></th>
+                    <th class="sortable-header" data-col="runs" style="padding:0.5rem 0;text-align:right;">Runs <span class="sort-indicator">&#8597;</span></th>
+                    <th class="sortable-header" data-col="input" style="padding:0.5rem 0;text-align:right;">Input <span class="sort-indicator">&#8597;</span></th>
+                    <th class="sortable-header" data-col="output" style="padding:0.5rem 0;text-align:right;">Output <span class="sort-indicator">&#8597;</span></th>
+                    <th class="sortable-header" data-col="total" style="padding:0.5rem 0;text-align:right;">Total <span class="sort-indicator">&#8597;</span></th>
+                    <th class="sortable-header" data-col="cost" style="padding:0.5rem 0;text-align:right;">Cost <span class="sort-indicator">&#8597;</span></th>
+                    <th style="padding:0.5rem 0;text-align:right;min-width:120px;">Share</th>
+                </tr>
+            </thead>
+            <tbody id="by-mode-tbody"></tbody>
+        </table>
+        <div class="empty-state" id="mode-table-empty" style="display:none;">No mode data available.</div>
+    </div>
+</div>
+
 <h2>Top Missions</h2>
 <div class="card">
     <details id="top-missions-details">
@@ -209,6 +236,7 @@ let dailyChart = null;
 let stackedChart = null;
 let outcomeChart = null;
 let typeChart = null;
+let modeChart = null;
 let currentProject = '';
 let windowOffset = 0;
 
@@ -245,6 +273,22 @@ function typeColor(name) {
     TYPE_COLORS[name] = PROJECT_COLORS[_fallbackColorIdx % PROJECT_COLORS.length];
     _fallbackColorIdx++;
     return TYPE_COLORS[name];
+}
+const MODE_COLORS = {
+    review:    'rgba(88,166,255,0.8)',
+    implement: 'rgba(63,185,80,0.8)',
+    deep:      'rgba(188,140,255,0.8)',
+    unknown:   'rgba(80,80,80,0.5)',
+};
+let _modeFallbackIdx = 0;
+function modeColor(name) {
+    if (MODE_COLORS[name]) return MODE_COLORS[name];
+    MODE_COLORS[name] = PROJECT_COLORS[_modeFallbackIdx % PROJECT_COLORS.length];
+    _modeFallbackIdx++;
+    return MODE_COLORS[name];
+}
+function modeLabel(name) {
+    return name === 'unknown' ? 'Unknown (non-autonomous)' : capitalize(name);
 }
 
 const _projectColorMap = {};
@@ -645,6 +689,119 @@ function resortTypeTable() {
     rows.forEach(r => tbody.appendChild(r));
 }
 
+function renderModeChart(byMode, hasPricing) {
+    const canvas = document.getElementById('mode-chart');
+    const emptyEl = document.getElementById('mode-empty');
+    const tableEmptyEl = document.getElementById('mode-table-empty');
+    const tbody = document.getElementById('by-mode-tbody');
+
+    if (!byMode || Object.keys(byMode).length === 0) {
+        canvas.style.display = 'none';
+        emptyEl.style.display = '';
+        tbody.innerHTML = '';
+        tableEmptyEl.style.display = '';
+        if (modeChart) { modeChart.destroy(); modeChart = null; }
+        return;
+    }
+    canvas.style.display = '';
+    emptyEl.style.display = 'none';
+    tableEmptyEl.style.display = 'none';
+
+    const entries = Object.entries(byMode)
+        .sort((a, b) => (b[1].input_tokens + b[1].output_tokens) - (a[1].input_tokens + a[1].output_tokens));
+    const labels = entries.map(([k]) => modeLabel(k));
+    const values = entries.map(([, v]) => v.input_tokens + v.output_tokens);
+    const colors = entries.map(([k]) => modeColor(k));
+    const grandTotal = values.reduce((s, v) => s + v, 0);
+
+    if (modeChart) modeChart.destroy();
+    modeChart = new Chart(canvas, {
+        type: 'doughnut',
+        data: {labels, datasets: [{data: values, backgroundColor: colors, borderWidth: 0}]},
+        options: {
+            responsive: true,
+            maintainAspectRatio: true,
+            plugins: {
+                legend: {display: false},
+                tooltip: {
+                    callbacks: {
+                        label: function(ctx) {
+                            const v = ctx.raw;
+                            const pct = grandTotal > 0 ? ((v / grandTotal) * 100).toFixed(1) : '0';
+                            return ctx.label + ': ' + fmtTokens(v) + ' (' + pct + '%)';
+                        }
+                    }
+                }
+            },
+            cutout: '55%',
+        },
+    });
+
+    tbody.innerHTML = '';
+    for (const [modeName, modeData] of entries) {
+        const total = modeData.input_tokens + modeData.output_tokens;
+        const pct = grandTotal > 0 ? ((total / grandTotal) * 100) : 0;
+        const costCell = hasPricing ? fmtCost(modeData.total_cost_usd || 0) : '-';
+        const color = modeColor(modeName);
+        tbody.innerHTML += '<tr style="border-top:1px solid var(--border);" data-mode="' + modeName + '"' +
+            ' data-runs="' + modeData.count + '"' +
+            ' data-input="' + modeData.input_tokens + '"' +
+            ' data-output="' + modeData.output_tokens + '"' +
+            ' data-total="' + total + '"' +
+            ' data-cost="' + (modeData.total_cost_usd || 0) + '">' +
+            '<td style="padding:0.4rem 0;">' +
+                '<span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:' + color + ';margin-right:0.5rem;vertical-align:middle;"></span>' +
+                modeLabel(modeName) +
+            '</td>' +
+            '<td style="padding:0.4rem 0;text-align:right;">' + modeData.count + '</td>' +
+            '<td style="padding:0.4rem 0;text-align:right;">' + fmtTokens(modeData.input_tokens) + '</td>' +
+            '<td style="padding:0.4rem 0;text-align:right;">' + fmtTokens(modeData.output_tokens) + '</td>' +
+            '<td style="padding:0.4rem 0;text-align:right;">' + fmtTokens(total) + '</td>' +
+            '<td style="padding:0.4rem 0;text-align:right;">' + costCell + '</td>' +
+            '<td style="padding:0.4rem 0;">' +
+                '<div class="type-bar-container">' +
+                    '<div class="type-bar-track"><div class="type-bar-fill" style="width:' + pct.toFixed(1) + '%;background:' + color + ';"></div></div>' +
+                    '<span class="type-pct">' + pct.toFixed(1) + '%</span>' +
+                '</div>' +
+            '</td>' +
+            '</tr>';
+    }
+}
+
+let modeSortCol = 'total';
+let modeSortAsc = false;
+
+function initModeSortHandlers() {
+    document.querySelectorAll('#by-mode-thead .sortable-header').forEach(th => {
+        th.addEventListener('click', () => {
+            const col = th.dataset.col;
+            if (modeSortCol === col) {
+                modeSortAsc = !modeSortAsc;
+            } else {
+                modeSortCol = col;
+                modeSortAsc = col === 'mode';
+            }
+            resortModeTable();
+        });
+    });
+}
+
+function resortModeTable() {
+    const tbody = document.getElementById('by-mode-tbody');
+    const rows = Array.from(tbody.querySelectorAll('tr'));
+    rows.sort((a, b) => {
+        if (modeSortCol === 'mode') {
+            const va = a.dataset.mode || '';
+            const vb = b.dataset.mode || '';
+            return modeSortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
+        }
+        const va = parseFloat(a.dataset[modeSortCol]) || 0;
+        const vb = parseFloat(b.dataset[modeSortCol]) || 0;
+        return modeSortAsc ? va - vb : vb - va;
+    });
+    rows.forEach(r => tbody.appendChild(r));
+}
+
 function loadAll() {
     _lastMissionParams = null;
     const days = document.getElementById('range-select').value;
@@ -692,6 +849,7 @@ function loadAll() {
             renderDailyChart(data.series || [], data.has_pricing, data.granularity || 'day');
             renderStackedChart(data.series || [], data.granularity || 'day');
             renderTypeChart(data.by_type || {}, data.has_pricing);
+            renderModeChart(data.by_mode || {}, data.has_pricing);
 
             if (data.start && data.end) {
                 labelEl.textContent = data.start + ' — ' + data.end;
@@ -995,6 +1153,7 @@ document.getElementById('top-missions-details').addEventListener('toggle', funct
 
 loadProjects();
 initTypeSortHandlers();
+initModeSortHandlers();
 initMissionSortHandlers();
 loadAll();
 

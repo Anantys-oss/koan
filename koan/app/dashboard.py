@@ -1175,9 +1175,13 @@ def api_usage():
     if selected_project:
         proj_and_type = summary.get("by_project_and_type", {})
         response_data["by_type"] = proj_and_type.get(selected_project, {})
+        proj_and_mode = summary.get("by_project_and_mode", {})
+        response_data["by_mode"] = proj_and_mode.get(selected_project, {})
     else:
         response_data["by_type"] = summary.get("by_type", {})
+        response_data["by_mode"] = summary.get("by_mode", {})
     response_data["by_project_and_type"] = summary.get("by_project_and_type", {})
+    response_data["by_project_and_mode"] = summary.get("by_project_and_mode", {})
 
     return jsonify(response_data)
 

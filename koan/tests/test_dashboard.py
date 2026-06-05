@@ -211,6 +211,8 @@ class TestUsageApi:
                     "count": 3,
                 }
             },
+            "by_mode": {},
+            "by_project_and_mode": {},
         }
         fake_daily = [{
             "date": "2026-03-21",
@@ -249,6 +251,8 @@ class TestUsageApi:
             "count": 0,
             "by_project": {},
             "by_model": {},
+            "by_mode": {},
+            "by_project_and_mode": {},
         }
         with patch("app.cost_tracker.summarize_range", return_value=fake_summary), \
              patch("app.cost_tracker.get_pricing_config", return_value=None), \
@@ -275,6 +279,8 @@ class TestUsageApi:
                 "review": {"input_tokens": 200, "output_tokens": 50, "total_cost_usd": 0.005, "count": 1},
             },
             "by_project_and_type": {},
+            "by_mode": {},
+            "by_project_and_mode": {},
         }
         with patch("app.cost_tracker.summarize_range", return_value=fake_summary), \
              patch("app.cost_tracker.get_pricing_config", return_value=None), \
@@ -297,6 +303,7 @@ class TestUsageApi:
             "by_project": {}, "by_model": {},
             "by_type": {"implement": {"count": 1}},
             "by_project_and_type": {},
+            "by_mode": {}, "by_project_and_mode": {},
         }
         with patch("app.cost_tracker.summarize_range", return_value=fake_summary), \
              patch("app.cost_tracker.get_pricing_config", return_value=None), \
@@ -307,6 +314,33 @@ class TestUsageApi:
         data = resp.get_json()
         assert "by_type" in data
         assert data["by_type"]["implement"]["count"] == 1
+
+    def test_api_usage_includes_by_mode(self, app_client):
+        fake_summary = {
+            "total_input": 500, "total_output": 200,
+            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+            "cache_hit_rate": 0.0, "count": 3,
+            "by_project": {}, "by_model": {},
+            "by_type": {}, "by_project_and_type": {},
+            "by_mode": {
+                "implement": {"input_tokens": 300, "output_tokens": 150, "total_cost_usd": 0.01, "count": 1},
+                "deep": {"input_tokens": 200, "output_tokens": 50, "total_cost_usd": 0.005, "count": 1},
+                "unknown": {"input_tokens": 0, "output_tokens": 0, "total_cost_usd": 0.0, "count": 1},
+            },
+            "by_project_and_mode": {},
+        }
+        with patch("app.cost_tracker.summarize_range", return_value=fake_summary), \
+             patch("app.cost_tracker.get_pricing_config", return_value=None), \
+             patch("app.cost_tracker.estimate_cache_savings", return_value=None), \
+             patch("app.cost_tracker.daily_series", return_value=[]):
+            resp = app_client.get("/api/usage?days=7")
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "by_mode" in data
+        assert "implement" in data["by_mode"]
+        assert "deep" in data["by_mode"]
+        assert data["by_mode"]["implement"]["count"] == 1
 
     def test_api_usage_granularity_week_buckets_series(self, app_client):
         fake_daily = [
@@ -325,6 +359,7 @@ class TestUsageApi:
             "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
             "cache_hit_rate": 0.0, "count": 4,
             "by_project": {}, "by_model": {},
+            "by_mode": {}, "by_project_and_mode": {},
         }
         with patch("app.cost_tracker.summarize_range", return_value=fake_summary), \
              patch("app.cost_tracker.get_pricing_config", return_value=None), \
@@ -356,6 +391,7 @@ class TestUsageApi:
             "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
             "cache_hit_rate": 0.0, "count": 3,
             "by_project": {}, "by_model": {},
+            "by_mode": {}, "by_project_and_mode": {},
         }
         with patch("app.cost_tracker.summarize_range", return_value=fake_summary), \
              patch("app.cost_tracker.get_pricing_config", return_value=None), \
@@ -387,6 +423,7 @@ class TestUsageApi:
             "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
             "cache_hit_rate": 0.0, "count": 2,
             "by_project": {}, "by_model": {},
+            "by_mode": {}, "by_project_and_mode": {},
         }
         with patch("app.cost_tracker.summarize_range", return_value=fake_summary), \
              patch("app.cost_tracker.get_pricing_config", return_value=None), \
@@ -410,6 +447,7 @@ class TestUsageApi:
             "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
             "cache_hit_rate": 0.0, "count": 1,
             "by_project": {}, "by_model": {},
+            "by_mode": {}, "by_project_and_mode": {},
         }
         with patch("app.cost_tracker.summarize_range", return_value=fake_summary), \
              patch("app.cost_tracker.get_pricing_config", return_value=None), \
@@ -427,6 +465,7 @@ class TestUsageApi:
             "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
             "cache_hit_rate": 0.0, "count": 0,
             "by_project": {}, "by_model": {},
+            "by_mode": {}, "by_project_and_mode": {},
         }
         with patch("app.cost_tracker.summarize_range", return_value=fake_summary) as mock_sr, \
              patch("app.cost_tracker.get_pricing_config", return_value=None), \

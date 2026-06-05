@@ -209,6 +209,32 @@ def summarize_by_project_and_type(instance_dir: Path, days: int = 7) -> dict:
     return summary["by_project_and_type"]
 
 
+def summarize_by_mode(instance_dir: Path, days: int = 7) -> dict:
+    """Get per-autonomous-mode token breakdown for the last N days.
+
+    Returns:
+        Dict mapping mode name to {input_tokens, output_tokens, total_cost_usd, count}.
+        Entries without a mode field or with an empty mode are grouped under "unknown".
+    """
+    end = date.today()
+    start = end - timedelta(days=days - 1)
+    summary = summarize_range(instance_dir, start, end)
+    return summary["by_mode"]
+
+
+def summarize_by_project_and_mode(instance_dir: Path, days: int = 7) -> dict:
+    """Get nested project → autonomous-mode token breakdown for the last N days.
+
+    Returns:
+        Dict mapping project name to {mode: {input_tokens, output_tokens,
+        total_cost_usd, count}}.
+    """
+    end = date.today()
+    start = end - timedelta(days=days - 1)
+    summary = summarize_range(instance_dir, start, end)
+    return summary["by_project_and_mode"]
+
+
 def summarize_week(instance_dir: Path) -> dict:
     """Summarize usage for the last 7 days."""
     end = date.today()
@@ -231,7 +257,8 @@ def _aggregate(entries: list) -> dict:
         cache_creation_input_tokens, cache_read_input_tokens,
         cache_hit_rate, total_cost_usd,
         by_project (dict), by_model (dict), by_type (dict),
-        by_project_and_type (dict).
+        by_project_and_type (dict), by_mode (dict),
+        by_project_and_mode (dict).
     """
     result = {
         "total_input": 0,
@@ -244,6 +271,8 @@ def _aggregate(entries: list) -> dict:
         "by_model": {},
         "by_type": {},
         "by_project_and_type": {},
+        "by_mode": {},
+        "by_project_and_mode": {},
     }
 
     _classify = None
@@ -331,6 +360,35 @@ def _aggregate(entries: list) -> dict:
         result["by_project_and_type"][project][mission_type]["output_tokens"] += out
         result["by_project_and_type"][project][mission_type]["total_cost_usd"] += cost
         result["by_project_and_type"][project][mission_type]["count"] += 1
+
+        # By autonomous mode — empty string and missing key both map to "unknown"
+        mode = entry.get("mode") or "unknown"
+        if mode not in result["by_mode"]:
+            result["by_mode"][mode] = {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_cost_usd": 0.0,
+                "count": 0,
+            }
+        result["by_mode"][mode]["input_tokens"] += inp
+        result["by_mode"][mode]["output_tokens"] += out
+        result["by_mode"][mode]["total_cost_usd"] += cost
+        result["by_mode"][mode]["count"] += 1
+
+        # By project and mode (nested)
+        if project not in result["by_project_and_mode"]:
+            result["by_project_and_mode"][project] = {}
+        if mode not in result["by_project_and_mode"][project]:
+            result["by_project_and_mode"][project][mode] = {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_cost_usd": 0.0,
+                "count": 0,
+            }
+        result["by_project_and_mode"][project][mode]["input_tokens"] += inp
+        result["by_project_and_mode"][project][mode]["output_tokens"] += out
+        result["by_project_and_mode"][project][mode]["total_cost_usd"] += cost
+        result["by_project_and_mode"][project][mode]["count"] += 1
 
     # Compute cache hit rate using centralized formula
     from app.token_parser import compute_cache_hit_rate

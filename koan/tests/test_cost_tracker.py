@@ -13,6 +13,8 @@ from app.cost_tracker import (
     summarize_by_model,
     summarize_by_type,
     summarize_by_project_and_type,
+    summarize_by_mode,
+    summarize_by_project_and_mode,
     summarize_week,
     summarize_month,
     estimate_cost,
@@ -911,6 +913,100 @@ class TestSummarizeWeekMonth:
         month = summarize_month(instance_dir)
         assert "plan" in week["by_type"]
         assert "plan" in month["by_type"]
+
+
+class TestByMode:
+    """Tests for autonomous-mode aggregation in _aggregate."""
+
+    def test_aggregate_by_mode(self, sample_entries):
+        result = _aggregate(sample_entries)
+        assert "by_mode" in result
+        assert "implement" in result["by_mode"]
+        assert "deep" in result["by_mode"]
+        assert "review" in result["by_mode"]
+        assert result["by_mode"]["implement"]["count"] == 1
+        assert result["by_mode"]["implement"]["input_tokens"] == 1000
+        assert result["by_mode"]["implement"]["output_tokens"] == 500
+        assert result["by_mode"]["deep"]["count"] == 1
+        assert result["by_mode"]["review"]["count"] == 1
+
+    def test_empty_mode_bucketed_as_unknown(self):
+        entries = [
+            {"input_tokens": 100, "output_tokens": 50, "project": "p", "model": "m",
+             "mode": ""},
+        ]
+        result = _aggregate(entries)
+        assert "unknown" in result["by_mode"]
+        assert result["by_mode"]["unknown"]["count"] == 1
+
+    def test_missing_mode_bucketed_as_unknown(self):
+        entries = [
+            {"input_tokens": 100, "output_tokens": 50, "project": "p", "model": "m"},
+        ]
+        result = _aggregate(entries)
+        assert "unknown" in result["by_mode"]
+        assert result["by_mode"]["unknown"]["count"] == 1
+
+    def test_empty_entries_has_by_mode(self):
+        result = _aggregate([])
+        assert result["by_mode"] == {}
+        assert result["by_project_and_mode"] == {}
+
+    def test_cost_aggregated_by_mode(self):
+        entries = [
+            {"input_tokens": 100, "output_tokens": 50, "project": "p", "model": "m",
+             "mode": "implement", "cost_usd": 0.5},
+            {"input_tokens": 200, "output_tokens": 100, "project": "p", "model": "m",
+             "mode": "implement", "cost_usd": 1.0},
+        ]
+        result = _aggregate(entries)
+        assert result["by_mode"]["implement"]["total_cost_usd"] == pytest.approx(1.5)
+
+    def test_by_project_and_mode(self, sample_entries):
+        result = _aggregate(sample_entries)
+        assert "by_project_and_mode" in result
+        assert "koan" in result["by_project_and_mode"]
+        assert "other" in result["by_project_and_mode"]
+        assert result["by_project_and_mode"]["koan"]["implement"]["count"] == 1
+        assert result["by_project_and_mode"]["koan"]["deep"]["count"] == 1
+        assert result["by_project_and_mode"]["other"]["review"]["count"] == 1
+
+    def test_summarize_by_mode(self, instance_dir, usage_dir):
+        today = date.today()
+        entries = [
+            {"input_tokens": 100, "output_tokens": 50, "project": "p", "model": "m",
+             "mode": "implement", "ts": today.isoformat()},
+            {"input_tokens": 200, "output_tokens": 100, "project": "p", "model": "m",
+             "mode": "deep", "ts": today.isoformat()},
+            {"input_tokens": 50, "output_tokens": 25, "project": "p", "model": "m",
+             "ts": today.isoformat()},
+        ]
+        jsonl_path = usage_dir / f"{today.isoformat()}.jsonl"
+        jsonl_path.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
+
+        result = summarize_by_mode(instance_dir, days=1)
+        assert result["implement"]["count"] == 1
+        assert result["deep"]["count"] == 1
+        assert result["unknown"]["count"] == 1
+
+    def test_summarize_by_mode_empty(self, instance_dir):
+        result = summarize_by_mode(instance_dir, days=1)
+        assert result == {}
+
+    def test_summarize_by_project_and_mode(self, instance_dir, usage_dir):
+        today = date.today()
+        entries = [
+            {"input_tokens": 100, "output_tokens": 50, "project": "koan", "model": "m",
+             "mode": "implement", "ts": today.isoformat()},
+            {"input_tokens": 200, "output_tokens": 100, "project": "other", "model": "m",
+             "mode": "review", "ts": today.isoformat()},
+        ]
+        jsonl_path = usage_dir / f"{today.isoformat()}.jsonl"
+        jsonl_path.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
+
+        result = summarize_by_project_and_mode(instance_dir, days=1)
+        assert result["koan"]["implement"]["count"] == 1
+        assert result["other"]["review"]["count"] == 1
 
 
 class TestRecordUsageDurationProvider:
