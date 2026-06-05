@@ -1,7 +1,7 @@
 """Koan /deep skill -- queue a deep exploration mission."""
 
 import random
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from app.project_explorer import get_projects
 
@@ -43,7 +43,7 @@ def handle(ctx):
 
 def _resolve_project(
     projects: List[Tuple[str, str]], target: str
-) -> Tuple[str, str]:
+) -> Tuple[Optional[str], Optional[str]]:
     """Resolve a project by name or pick random."""
     if not target:
         return random.choice(projects)

@@ -36,20 +36,21 @@ def _build_project_context(
     project_structure = gather_project_structure(project_path)
     missions_context = get_missions_context(Path(instance_dir))
 
+    from app.skill_memory import build_memory_block_for_skill
+    from app.ai_runner import _build_project_health_block
+
     project_memory = ""
     try:
-        from app.skill_memory import build_memory_block_for_skill
         project_memory = build_memory_block_for_skill(
             project_path, f"Deep exploration of {project_name}",
         )
-    except Exception as e:
+    except (OSError, ValueError, RuntimeError) as e:
         print(f"[deep_runner] memory injection failed: {e}", file=sys.stderr)
 
     project_health = ""
     try:
-        from app.ai_runner import _build_project_health_block
         project_health = _build_project_health_block(instance_dir, project_name)
-    except Exception as e:
+    except (OSError, ValueError, RuntimeError) as e:
         print(f"[deep_runner] health block failed: {e}", file=sys.stderr)
 
     return {
@@ -247,10 +248,11 @@ def run_deep_exploration(
         skill_dir=skill_dir,
     )
 
+    import subprocess
     try:
         raw_output = _run_claude_deep(prompt, project_path)
-    except (RuntimeError, OSError, Exception) as e:
-        return False, f"Deep exploration failed: {str(e)[:300]}"
+    except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
+        return False, f"Deep exploration failed: {e}"
 
     if not raw_output:
         return False, f"Deep exploration produced no output for {project_name}."
@@ -307,13 +309,17 @@ def main(argv=None):
 
     skill_dir = Path(__file__).resolve().parent
 
-    success, summary = run_deep_exploration(
-        project_path=cli_args.project_path,
-        project_name=cli_args.project_name,
-        instance_dir=cli_args.instance_dir,
-        skill_dir=skill_dir,
-        focus_context=cli_args.focus_context,
-    )
+    try:
+        success, summary = run_deep_exploration(
+            project_path=cli_args.project_path,
+            project_name=cli_args.project_name,
+            instance_dir=cli_args.instance_dir,
+            skill_dir=skill_dir,
+            focus_context=cli_args.focus_context,
+        )
+    except Exception as e:
+        print(f"Deep exploration failed: {e}")
+        return 1
     print(summary)
     return 0 if success else 1
 
