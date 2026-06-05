@@ -1499,6 +1499,68 @@ def _fetch_pr_commit_shas(owner: str, repo: str, pr_number: str) -> List[str]:
         return []
 
 
+def _is_review_requested(owner: str, repo: str, pr_number: str, bot_username: str) -> bool:
+    """Check if the bot has a pending review request on this PR.
+
+    When a user clicks "Refresh" on the Reviewers panel, GitHub re-adds
+    the bot to the requested_reviewers list.  Detecting this lets us
+    bypass the incremental-review SHA check and honour the explicit
+    re-request.
+    """
+    if not bot_username:
+        return False
+    try:
+        raw = run_gh(
+            "api",
+            f"repos/{owner}/{repo}/pulls/{pr_number}/requested_reviewers",
+            "--jq", "[.users[].login, .teams[].slug] | .[]",
+        )
+        reviewers = [r.strip().lower() for r in raw.strip().splitlines() if r.strip()]
+        return bot_username.lower() in reviewers
+    except RuntimeError:
+        return False
+
+
+def _submit_review_verdict(
+    owner: str, repo: str, pr_number: str,
+    approve: bool, head_sha: str,
+    body: str = "",
+) -> bool:
+    """Submit a formal PR review verdict (APPROVE or REQUEST_CHANGES).
+
+    Uses the GitHub Pull Request Reviews API so the bot's decision
+    is reflected in the Reviewers panel (green check / red X).
+
+    The ``commit_id`` field anchors the review to a specific commit so
+    GitHub knows what code state was reviewed.
+
+    Returns True on success, False on error (non-fatal — the comment
+    review was already posted).
+    """
+    event = "APPROVE" if approve else "REQUEST_CHANGES"
+    review_body = body or (
+        "No blocking issues found." if approve
+        else "Blocking issues found — see the review comment above."
+    )
+    try:
+        run_gh(
+            "api",
+            f"repos/{owner}/{repo}/pulls/{pr_number}/reviews",
+            "-X", "POST",
+            "-f", f"event={event}",
+            "-f", f"body={review_body}",
+            "-f", f"commit_id={head_sha}",
+        )
+        log("review", f"Submitted {event} verdict on PR #{pr_number}")
+        return True
+    except RuntimeError as e:
+        print(
+            f"[review_runner] failed to submit {event} verdict on "
+            f"PR #{pr_number}: {e}",
+            file=sys.stderr,
+        )
+        return False
+
 
 def run_review(
     owner: str,
@@ -1646,8 +1708,22 @@ def run_review(
     if existing_comment:
         prior_shas = extract_commit_shas(existing_comment.get("body", ""))
 
-    # If all current commits were already reviewed, skip
-    if current_shas and prior_shas and set(current_shas) == set(prior_shas):
+    # Step 1f: Check if the bot has a pending review request (re-request
+    # via the "Refresh" button on GitHub's Reviewers panel).  When a
+    # re-request is detected, bypass the incremental SHA check so the
+    # user's explicit action is honoured even without new commits.
+    review_was_requested = _is_review_requested(
+        owner, repo, pr_number, bot_username,
+    )
+
+    # If all current commits were already reviewed AND this is not an
+    # explicit re-request, skip.
+    if (
+        current_shas
+        and prior_shas
+        and set(current_shas) == set(prior_shas)
+        and not review_was_requested
+    ):
         return (
             True,
             f"PR #{pr_number} has no new commits since last review — skipping.",
@@ -1775,7 +1851,8 @@ def run_review(
     # GitHub does not send notifications for edited comments, so an in-place
     # update is invisible to the reviewer — they never see the updated review.
     post_target = existing_comment
-    if existing_comment and prior_shas and current_shas and set(current_shas) != set(prior_shas):
+    new_commits = prior_shas and current_shas and set(current_shas) != set(prior_shas)
+    if existing_comment and (new_commits or review_was_requested):
         _collapse_old_review(owner, repo, existing_comment)
         post_target = None
 
@@ -1788,6 +1865,22 @@ def run_review(
         model=review_model,
         duration_seconds=_review_duration,
     )
+
+    # Step 7b: Submit formal review verdict (APPROVE / REQUEST_CHANGES)
+    # so the bot's decision shows in GitHub's Reviewers panel.  Only
+    # submitted when we have structured data (lgtm field) and the
+    # comment was posted successfully.  The commit_id anchors the
+    # verdict to the reviewed code state.
+    verdict_submitted = False
+    if posted and isinstance(review_data, dict):
+        review_summary = review_data.get("review_summary") or {}
+        lgtm = review_summary.get("lgtm")
+        if isinstance(lgtm, bool) and current_shas:
+            verdict_submitted = _submit_review_verdict(
+                owner, repo, pr_number,
+                approve=lgtm,
+                head_sha=current_shas[-1],
+            )
 
     # Step 8: Close the PR if the review decided closure is warranted
     closed = False
@@ -1809,6 +1902,9 @@ def run_review(
 
     if posted:
         summary = f"Review posted on PR #{pr_number} ({full_repo})."
+        if verdict_submitted:
+            verdict_label = "APPROVE" if review_summary.get("lgtm") else "REQUEST_CHANGES"
+            summary += f" Verdict: {verdict_label}."
         if run_error_hunter:
             summary += " Silent-failure-hunter pass included."
         if reply_count:

@@ -4177,3 +4177,320 @@ class TestFormatErrorHunterFindings:
         result = _format_error_hunter_findings(findings)
         assert "<details>" in result
         assert "bare except" in result
+
+
+# ---------------------------------------------------------------------------
+# Review verdict submission (APPROVE / REQUEST_CHANGES)
+# ---------------------------------------------------------------------------
+
+
+class TestIsReviewRequested:
+    """_is_review_requested checks GitHub's requested_reviewers endpoint."""
+
+    @patch("app.review_runner.run_gh")
+    def test_returns_true_when_bot_in_requested_reviewers(self, mock_gh):
+        from app.review_runner import _is_review_requested
+        mock_gh.return_value = "koan-bot\nsome-team\n"
+        assert _is_review_requested("owner", "repo", "42", "koan-bot") is True
+
+    @patch("app.review_runner.run_gh")
+    def test_returns_false_when_bot_not_in_list(self, mock_gh):
+        from app.review_runner import _is_review_requested
+        mock_gh.return_value = "other-user\n"
+        assert _is_review_requested("owner", "repo", "42", "koan-bot") is False
+
+    @patch("app.review_runner.run_gh")
+    def test_returns_false_on_empty_response(self, mock_gh):
+        from app.review_runner import _is_review_requested
+        mock_gh.return_value = ""
+        assert _is_review_requested("owner", "repo", "42", "koan-bot") is False
+
+    def test_returns_false_when_bot_username_empty(self):
+        from app.review_runner import _is_review_requested
+        assert _is_review_requested("owner", "repo", "42", "") is False
+
+    @patch("app.review_runner.run_gh", side_effect=RuntimeError("API error"))
+    def test_returns_false_on_api_error(self, _mock_gh):
+        from app.review_runner import _is_review_requested
+        assert _is_review_requested("owner", "repo", "42", "koan-bot") is False
+
+    @patch("app.review_runner.run_gh")
+    def test_case_insensitive_match(self, mock_gh):
+        from app.review_runner import _is_review_requested
+        mock_gh.return_value = "Koan-Bot\n"
+        assert _is_review_requested("owner", "repo", "42", "koan-bot") is True
+
+    @patch("app.review_runner.run_gh")
+    def test_calls_correct_api_endpoint(self, mock_gh):
+        from app.review_runner import _is_review_requested
+        mock_gh.return_value = ""
+        _is_review_requested("acme", "widget", "7", "mybot")
+        mock_gh.assert_called_once()
+        args = mock_gh.call_args[0]
+        assert args[0] == "api"
+        assert "acme/widget/pulls/7/requested_reviewers" in args[1]
+
+
+class TestSubmitReviewVerdict:
+    """_submit_review_verdict posts APPROVE or REQUEST_CHANGES via GitHub API."""
+
+    @patch("app.review_runner.run_gh")
+    def test_submits_approve(self, mock_gh):
+        from app.review_runner import _submit_review_verdict
+        result = _submit_review_verdict("owner", "repo", "42", approve=True, head_sha="abc123")
+        assert result is True
+        args = mock_gh.call_args[0]
+        assert "repos/owner/repo/pulls/42/reviews" in args[1]
+        kw_args = {args[i]: args[i + 1] for i in range(2, len(args) - 1, 2) if args[i] == "-f"}
+        flat_args = " ".join(args)
+        assert "event=APPROVE" in flat_args
+        assert "commit_id=abc123" in flat_args
+
+    @patch("app.review_runner.run_gh")
+    def test_submits_request_changes(self, mock_gh):
+        from app.review_runner import _submit_review_verdict
+        result = _submit_review_verdict("owner", "repo", "42", approve=False, head_sha="def456")
+        assert result is True
+        flat_args = " ".join(mock_gh.call_args[0])
+        assert "event=REQUEST_CHANGES" in flat_args
+
+    @patch("app.review_runner.run_gh", side_effect=RuntimeError("forbidden"))
+    def test_returns_false_on_error(self, _mock_gh):
+        from app.review_runner import _submit_review_verdict
+        result = _submit_review_verdict("owner", "repo", "42", approve=True, head_sha="abc")
+        assert result is False
+
+    @patch("app.review_runner.run_gh")
+    def test_custom_body(self, mock_gh):
+        from app.review_runner import _submit_review_verdict
+        _submit_review_verdict(
+            "owner", "repo", "42",
+            approve=True, head_sha="abc",
+            body="Ship it!",
+        )
+        flat_args = " ".join(mock_gh.call_args[0])
+        assert "body=Ship it!" in flat_args
+
+    @patch("app.review_runner.run_gh")
+    def test_default_approve_body(self, mock_gh):
+        from app.review_runner import _submit_review_verdict
+        _submit_review_verdict("owner", "repo", "42", approve=True, head_sha="abc")
+        flat_args = " ".join(mock_gh.call_args[0])
+        assert "No blocking issues found" in flat_args
+
+    @patch("app.review_runner.run_gh")
+    def test_default_request_changes_body(self, mock_gh):
+        from app.review_runner import _submit_review_verdict
+        _submit_review_verdict("owner", "repo", "42", approve=False, head_sha="abc")
+        flat_args = " ".join(mock_gh.call_args[0])
+        assert "Blocking issues found" in flat_args
+
+
+class TestReviewVerdictInRunReview:
+    """Integration: run_review submits verdict after posting comment."""
+
+    @patch("app.review_runner._is_review_requested", return_value=False)
+    @patch("app.review_runner._submit_review_verdict", return_value=True)
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=["abc"])
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_lgtm_submits_approve(
+        self, mock_fetch, mock_claude, mock_gh, _repliable,
+        _shas, mock_verdict, _mock_req, pr_context, review_skill_dir,
+    ):
+        mock_fetch.return_value = pr_context
+        mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
+
+        success, summary, _ = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(), skill_dir=review_skill_dir,
+        )
+        assert success is True
+        assert "APPROVE" in summary
+        mock_verdict.assert_called_once_with(
+            "owner", "repo", "42", approve=True, head_sha="abc",
+        )
+
+    @patch("app.review_runner._is_review_requested", return_value=False)
+    @patch("app.review_runner._submit_review_verdict", return_value=True)
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=["abc"])
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_findings_submit_request_changes(
+        self, mock_fetch, mock_claude, mock_gh, _repliable,
+        _shas, mock_verdict, _mock_req, pr_context, review_skill_dir,
+    ):
+        mock_fetch.return_value = pr_context
+        mock_claude.return_value = (json.dumps(VALID_REVIEW_JSON), "")
+
+        success, summary, _ = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(), skill_dir=review_skill_dir,
+        )
+        assert success is True
+        assert "REQUEST_CHANGES" in summary
+        mock_verdict.assert_called_once_with(
+            "owner", "repo", "42", approve=False, head_sha="abc",
+        )
+
+    @patch("app.review_runner._is_review_requested", return_value=False)
+    @patch("app.review_runner._submit_review_verdict")
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_no_verdict_when_no_commit_shas(
+        self, mock_fetch, mock_claude, mock_gh, _repliable,
+        _shas, mock_verdict, _mock_req, pr_context, review_skill_dir,
+    ):
+        """Verdict requires commit SHAs to anchor the review."""
+        mock_fetch.return_value = pr_context
+        mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
+
+        run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(), skill_dir=review_skill_dir,
+        )
+        mock_verdict.assert_not_called()
+
+    @patch("app.review_runner._is_review_requested", return_value=False)
+    @patch("app.review_runner._submit_review_verdict")
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=["abc"])
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_no_verdict_when_json_parse_failed(
+        self, mock_fetch, mock_claude, mock_gh, _repliable,
+        _shas, mock_verdict, _mock_req, pr_context, review_skill_dir,
+    ):
+        """When JSON parsing fails, no verdict submitted (can't determine lgtm)."""
+        mock_fetch.return_value = pr_context
+        mock_claude.return_value = (
+            "## PR Review\n\nLooks good.\n\n---\n\n### Summary\nMerge-ready.",
+            "",
+        )
+
+        run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(), skill_dir=review_skill_dir,
+        )
+        mock_verdict.assert_not_called()
+
+
+class TestReRequestBypassesIncrementalSkip:
+    """When the bot has a pending review request (re-request via Refresh),
+    the incremental SHA check is bypassed so a fresh review runs."""
+
+    @patch("app.review_runner._is_review_requested", return_value=True)
+    @patch("app.review_runner._submit_review_verdict", return_value=True)
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=["abc", "def"])
+    @patch("app.review_runner.find_bot_comment")
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_re_request_reviews_same_commits(
+        self, mock_fetch, mock_claude, mock_gh, _repliable,
+        mock_find_bot, _shas, mock_verdict, _mock_req,
+        pr_context, review_skill_dir,
+    ):
+        """Re-request (bot in requested_reviewers) reviews even with same SHAs."""
+        from app.review_markers import SUMMARY_TAG, COMMIT_IDS_START, COMMIT_IDS_END
+
+        mock_fetch.return_value = pr_context
+        sha_block = f"{COMMIT_IDS_START}\nabc\ndef\n{COMMIT_IDS_END}"
+        prior_comment = {
+            "id": 99,
+            "body": f"{SUMMARY_TAG}\n## Review\n\n{sha_block}",
+            "user": "koan-bot",
+        }
+        mock_find_bot.return_value = prior_comment
+        mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
+
+        success, summary, _ = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(), skill_dir=review_skill_dir,
+        )
+
+        assert success is True
+        assert "no new commits" not in summary.lower()
+        mock_claude.assert_called_once()
+        mock_verdict.assert_called_once()
+
+    @patch("app.review_runner._is_review_requested", return_value=True)
+    @patch("app.review_runner._submit_review_verdict", return_value=True)
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=["abc", "def"])
+    @patch("app.review_runner.find_bot_comment")
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_re_request_collapses_old_review(
+        self, mock_fetch, mock_claude, mock_gh, _repliable,
+        mock_find_bot, _shas, _verdict, _mock_req,
+        pr_context, review_skill_dir,
+    ):
+        """Re-request collapses prior review and posts fresh comment."""
+        from app.review_markers import SUMMARY_TAG, COMMIT_IDS_START, COMMIT_IDS_END
+
+        mock_fetch.return_value = pr_context
+        sha_block = f"{COMMIT_IDS_START}\nabc\ndef\n{COMMIT_IDS_END}"
+        prior_comment = {
+            "id": 99,
+            "body": f"{SUMMARY_TAG}\n## Review\n\n{sha_block}",
+            "user": "koan-bot",
+        }
+        mock_find_bot.return_value = prior_comment
+        mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
+
+        run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(), skill_dir=review_skill_dir,
+        )
+
+        # Old comment should be collapsed via PATCH
+        collapse_calls = [
+            c for c in mock_gh.call_args_list
+            if any("PATCH" in str(a) for a in c[0])
+            and any("99" in str(a) for a in c[0])
+        ]
+        assert len(collapse_calls) >= 1
+
+    @patch("app.review_runner._is_review_requested", return_value=False)
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=["abc", "def"])
+    @patch("app.review_runner.find_bot_comment")
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_no_re_request_still_skips_same_commits(
+        self, mock_fetch, mock_claude, _mock_gh, _repliable,
+        mock_find_bot, _shas, _mock_req,
+        pr_context, review_skill_dir,
+    ):
+        """Without re-request, same SHAs still skip (existing behavior preserved)."""
+        from app.review_markers import SUMMARY_TAG, COMMIT_IDS_START, COMMIT_IDS_END
+
+        mock_fetch.return_value = pr_context
+        sha_block = f"{COMMIT_IDS_START}\nabc\ndef\n{COMMIT_IDS_END}"
+        prior_comment = {
+            "id": 99,
+            "body": f"{SUMMARY_TAG}\n## Review\n\n{sha_block}",
+            "user": "koan-bot",
+        }
+        mock_find_bot.return_value = prior_comment
+
+        success, summary, _ = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(), skill_dir=review_skill_dir,
+        )
+
+        assert success is True
+        assert "no new commits" in summary.lower()
+        mock_claude.assert_not_called()
