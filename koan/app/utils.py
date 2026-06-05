@@ -52,6 +52,10 @@ PROJECT_TAG_FULL_RE = re.compile(rf'\s*\[(?:project|projet):([{PROJECT_NAME_CHAR
 PROJECT_SUBHEADER_RE = re.compile(rf'###\s+projec?t\s*:\s*([{PROJECT_NAME_CHARS}]+)', re.IGNORECASE)
 # Natural-text hint form: "(projet: name)" / "projet:name" (no brackets)
 PROJECT_HINT_RE = re.compile(rf'\(?\s*projec?t\s*:\s*([{PROJECT_NAME_CHARS}]+)\s*\)?', re.IGNORECASE)
+# Unbracketed *trailing* hint: "... project:name" at the very end of the text.
+# Anchored to end (and requires leading whitespace) so a "project:" mid-sentence
+# is never misread as a tag — used as a lenient fallback for command input.
+PROJECT_TRAILING_HINT_RE = re.compile(rf'\s+projec?t:([{PROJECT_NAME_CHARS}]+)\s*$', re.IGNORECASE)
 
 _MISSIONS_DEFAULT = "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n"
 _MISSIONS_LOCK = threading.Lock()
@@ -161,6 +165,31 @@ def parse_project(text: str) -> Tuple[Optional[str], str]:
     if match:
         project = match.group(1)
         cleaned = PROJECT_TAG_STRIP_RE.sub('', text).strip()
+        return project, cleaned
+    return None, text
+
+
+def parse_project_lenient(text: str) -> Tuple[Optional[str], str]:
+    """Extract a project, accepting both bracketed and trailing-inline forms.
+
+    Tries the canonical ``[project:name]`` tag first (via :func:`parse_project`);
+    if absent, falls back to an unbracketed **trailing** ``project:name`` hint
+    (e.g. ``run the audit project:yarn``). The fallback is anchored to the end
+    of the string, so a ``project:`` appearing mid-sentence is never mistaken
+    for a tag.
+
+    Returns ``(project_name, cleaned_text)`` with the tag/hint removed, or
+    ``(None, text)`` when neither form is present. Use this for human command
+    input (e.g. ``/daily``) where forgetting the brackets should not silently
+    drop the project.
+    """
+    project, cleaned = parse_project(text)
+    if project is not None:
+        return project, cleaned
+    match = PROJECT_TRAILING_HINT_RE.search(text)
+    if match:
+        project = match.group(1)
+        cleaned = PROJECT_TRAILING_HINT_RE.sub('', text).strip()
         return project, cleaned
     return None, text
 

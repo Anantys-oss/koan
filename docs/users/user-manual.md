@@ -813,6 +813,8 @@ Kōan supports recurring missions that automatically re-queue at set intervals.
 **`/weekly`** — Schedule a mission to run every week.
 - **Usage:** `/weekly <text> [project:<name>]`
 
+> **Targeting a project:** the bracketed `[project:<name>]` form is recommended, but a trailing `project:<name>` (no brackets, at the end of the text) is also accepted — e.g. `/daily run the API audit project:webapp`. The same applies to `/every`.
+
 **`/recurring`** — List all active recurring missions.
 
 **`/cancel_recurring`** — Cancel a recurring mission.
