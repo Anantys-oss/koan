@@ -89,13 +89,19 @@ def check_for_updates(koan_root: str) -> Optional[int]:
         log("update", "No upstream remote found, skipping update check")
         return None
 
-    # Fetch upstream (lightweight, refs only — skip --tags to avoid clobber failures)
-    result = _run_git(["fetch", remote, "--quiet"], koan_path)
+    # Fetch upstream with tags; fall back without --tags on clobber failures
+    result = _run_git(["fetch", remote, "--tags", "--quiet"], koan_path)
     if result.returncode != 0:
-        stderr = result.stderr.strip()
-        if "Warning:" not in stderr:
-            log("update", f"Fetch failed: {stderr}")
-        return None
+        result = _run_git(["fetch", remote, "--quiet"], koan_path)
+        if result.returncode != 0:
+            stderr_lines = [
+                l
+                for l in result.stderr.strip().splitlines()
+                if not l.lstrip().startswith("Warning:")
+            ]
+            if stderr_lines:
+                log("update", f"Fetch failed: {chr(10).join(stderr_lines)}")
+            return None
 
     # Compare local main vs remote main
     result = _run_git(
