@@ -112,6 +112,7 @@ class TestResetInMainLoop:
         from app.signals import RESET_COUNTER_FILE
 
         koan_root = tmp_path
+        (koan_root / "instance").mkdir()
         os.environ["KOAN_ROOT"] = str(koan_root)
         os.environ["KOAN_PROJECTS"] = f"test:{koan_root}"
         (koan_root / ".koan-project").write_text("test")
