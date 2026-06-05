@@ -897,11 +897,35 @@ def _bucket_by_week(series: list) -> list:
         if "by_project" in entry and "by_project" in b:
             for proj, pdata in entry["by_project"].items():
                 if proj not in b["by_project"]:
-                    b["by_project"][proj] = {"total_input": 0, "total_output": 0, "count": 0}
+                    b["by_project"][proj] = {
+                        "total_input": 0,
+                        "total_output": 0,
+                        "cache_creation_input_tokens": 0,
+                        "cache_read_input_tokens": 0,
+                        "count": 0,
+                    }
                 bp = b["by_project"][proj]
                 bp["total_input"] += pdata.get("total_input", 0)
                 bp["total_output"] += pdata.get("total_output", 0)
+                bp["cache_creation_input_tokens"] += pdata.get("cache_creation_input_tokens", 0)
+                bp["cache_read_input_tokens"] += pdata.get("cache_read_input_tokens", 0)
                 bp["count"] += pdata.get("count", 0)
+
+    from app.token_parser import compute_cache_hit_rate
+
+    for b in buckets.values():
+        b["cache_hit_rate"] = compute_cache_hit_rate(
+            b["total_input"],
+            b["cache_read_input_tokens"],
+            b["cache_creation_input_tokens"],
+        )
+        if "by_project" in b:
+            for bp in b["by_project"].values():
+                bp["cache_hit_rate"] = compute_cache_hit_rate(
+                    bp["total_input"],
+                    bp["cache_read_input_tokens"],
+                    bp["cache_creation_input_tokens"],
+                )
     return [buckets[k] for k in sorted(buckets.keys())]
 
 
@@ -937,11 +961,35 @@ def _bucket_by_month(series: list) -> list:
         if "by_project" in entry and "by_project" in b:
             for proj, pdata in entry["by_project"].items():
                 if proj not in b["by_project"]:
-                    b["by_project"][proj] = {"total_input": 0, "total_output": 0, "count": 0}
+                    b["by_project"][proj] = {
+                        "total_input": 0,
+                        "total_output": 0,
+                        "cache_creation_input_tokens": 0,
+                        "cache_read_input_tokens": 0,
+                        "count": 0,
+                    }
                 bp = b["by_project"][proj]
                 bp["total_input"] += pdata.get("total_input", 0)
                 bp["total_output"] += pdata.get("total_output", 0)
+                bp["cache_creation_input_tokens"] += pdata.get("cache_creation_input_tokens", 0)
+                bp["cache_read_input_tokens"] += pdata.get("cache_read_input_tokens", 0)
                 bp["count"] += pdata.get("count", 0)
+
+    from app.token_parser import compute_cache_hit_rate
+
+    for b in buckets.values():
+        b["cache_hit_rate"] = compute_cache_hit_rate(
+            b["total_input"],
+            b["cache_read_input_tokens"],
+            b["cache_creation_input_tokens"],
+        )
+        if "by_project" in b:
+            for bp in b["by_project"].values():
+                bp["cache_hit_rate"] = compute_cache_hit_rate(
+                    bp["total_input"],
+                    bp["cache_read_input_tokens"],
+                    bp["cache_creation_input_tokens"],
+                )
     return [buckets[k] for k in sorted(buckets.keys())]
 
 

@@ -145,6 +145,7 @@
                 <th style="padding:0.5rem 0;text-align:right;">Output</th>
                 <th style="padding:0.5rem 0;text-align:right;">Total</th>
                 <th style="padding:0.5rem 0;text-align:right;">Runs</th>
+                <th style="padding:0.5rem 0;text-align:right;">Cache Hit %</th>
                 <th style="padding:0.5rem 0;text-align:right;">Success</th>
                 <th style="padding:0.5rem 0;text-align:right;">Trend</th>
             </tr>
@@ -346,6 +347,22 @@ function renderDailyChart(series, hasPricing, granularity) {
         });
     }
 
+    const hasCacheData = series.some(d => (d.cache_hit_rate || 0) > 0);
+    if (hasCacheData) {
+        datasets.push({
+            label: 'Cache Hit %',
+            data: series.map(d => parseFloat(((d.cache_hit_rate || 0) * 100).toFixed(1))),
+            type: 'line',
+            borderColor: 'rgba(163,113,247,0.9)',
+            backgroundColor: 'transparent',
+            borderDash: [5, 3],
+            yAxisID: 'cacheRate',
+            pointRadius: 2,
+            tension: 0.3,
+        });
+    }
+
+    const hasCost = hasPricing && series.some(d => d.cost !== null);
     if (dailyChart) dailyChart.destroy();
     dailyChart = new Chart(canvas, {
         type: 'bar',
@@ -361,10 +378,19 @@ function renderDailyChart(series, hasPricing, granularity) {
                     ticks: {color: '#8b949e', callback: v => fmtTokens(v)},
                     grid: {color: 'rgba(48,54,61,0.5)'},
                 },
-                ...(hasPricing && series.some(d => d.cost !== null) ? {
+                ...(hasCost ? {
                     cost: {
                         position: 'right',
                         ticks: {color: '#d29922', callback: v => '$' + v.toFixed(2)},
+                        grid: {drawOnChartArea: false},
+                    }
+                } : {}),
+                ...(hasCacheData ? {
+                    cacheRate: {
+                        position: 'right',
+                        min: 0,
+                        max: 100,
+                        ticks: {color: 'rgba(163,113,247,0.9)', callback: v => v.toFixed(0) + '%'},
                         grid: {drawOnChartArea: false},
                     }
                 } : {}),
@@ -638,10 +664,13 @@ function loadAll() {
             const projects = Object.entries(data.by_project)
                 .sort((a, b) => (b[1].input_tokens + b[1].output_tokens) - (a[1].input_tokens + a[1].output_tokens));
             if (projects.length === 0) {
-                pTbody.innerHTML = '<tr><td colspan="7" style="color:var(--text-muted);padding:0.5rem 0;">No data</td></tr>';
+                pTbody.innerHTML = '<tr><td colspan="8" style="color:var(--text-muted);padding:0.5rem 0;">No data</td></tr>';
             }
             for (const [name, p] of projects) {
                 const total = p.input_tokens + p.output_tokens;
+                const cacheHitPct = p.cache_hit_rate !== undefined
+                    ? (p.cache_hit_rate * 100).toFixed(0) + '%'
+                    : '0%';
                 const successCell = p.success_rate !== undefined
                     ? (p.success_rate * 100).toFixed(0) + '%'
                     : '-';
@@ -652,6 +681,7 @@ function loadAll() {
                     '<td style="padding:0.5rem 0;text-align:right;">' + fmtTokens(p.output_tokens) + '</td>' +
                     '<td style="padding:0.5rem 0;text-align:right;">' + fmtTokens(total) + '</td>' +
                     '<td style="padding:0.5rem 0;text-align:right;">' + p.count + '</td>' +
+                    '<td style="padding:0.5rem 0;text-align:right;">' + cacheHitPct + '</td>' +
                     '<td style="padding:0.5rem 0;text-align:right;">' + successCell + '</td>' +
                     '<td style="padding:0.5rem 0;text-align:right;">' + trendCell + '</td>' +
                     '</tr>';
@@ -695,9 +725,9 @@ function loadAll() {
                     const pm = metrics.by_project[proj];
                     if (!pm) return;
                     const cells = row.querySelectorAll('td');
-                    if (cells.length >= 7) {
-                        cells[5].textContent = (pm.success_rate * 100).toFixed(0) + '%';
-                        cells[6].innerHTML = trendBadge(pm.trend);
+                    if (cells.length >= 8) {
+                        cells[6].textContent = (pm.success_rate * 100).toFixed(0) + '%';
+                        cells[7].innerHTML = trendBadge(pm.trend);
                     }
                 });
             }
