@@ -15,25 +15,19 @@ import time
 from pathlib import Path
 from typing import Optional, Tuple
 
+from app.cli_errors import ErrorCategory, classify_cli_error
 from app.prompts import load_prompt_or_skill
 from app.run_log import log_safe as log
 
 _EXPLAIN_TAG = "<!-- koan:explain -->"
 
-_TRANSIENT_PATTERNS = (
-    "rate_limit", "rate limit", "overloaded", "503", "429",
-    "timeout", "timed out", "connection", "econnreset", "etimedout",
-    "internal server error", "500", "502", "504",
-)
-
-_MAX_RETRIES = 1
+_MAX_RETRIES = 2
 _RETRY_DELAY = 10
 
 
 def _is_transient_error(error: str) -> bool:
     """Check if error suggests a transient failure worth retrying."""
-    lower = error.lower()
-    return any(p in lower for p in _TRANSIENT_PATTERNS)
+    return classify_cli_error(1, stderr=error) == ErrorCategory.RETRYABLE
 
 
 def _build_explain_prompt(

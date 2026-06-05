@@ -92,8 +92,8 @@ class TestBuildExplainPrompt:
 class TestIsTransientError:
     """Test transient error detection."""
 
-    def test_rate_limit(self):
-        assert _is_transient_error("CLI invocation failed: exit=1 | stderr=rate_limit_exceeded")
+    def test_bad_gateway(self):
+        assert _is_transient_error("502 Bad Gateway")
 
     def test_timeout(self):
         assert _is_transient_error("CLI invocation timed out after 600s")
@@ -104,8 +104,8 @@ class TestIsTransientError:
     def test_server_error_503(self):
         assert _is_transient_error("exit=1 | stderr=503 Service Unavailable")
 
-    def test_overloaded(self):
-        assert _is_transient_error("API is overloaded")
+    def test_service_unavailable(self):
+        assert _is_transient_error("service unavailable")
 
     def test_non_transient(self):
         assert not _is_transient_error("invalid model name")
@@ -124,7 +124,7 @@ class TestRetryLogic:
     @patch("skills.core.explain.explain_runner._run_claude_explain")
     def test_retry_on_transient_error(self, mock_claude, mock_sleep):
         mock_claude.side_effect = [
-            ("", "rate limit exceeded"),
+            ("", "connection reset by peer"),
             ("Explanation text", ""),
         ]
 
@@ -154,7 +154,7 @@ class TestRetryLogic:
         output, error = _run_claude_explain_with_retry("prompt", "/path")
 
         assert "timeout" in error
-        assert mock_claude.call_count == 2
+        assert mock_claude.call_count == 3
 
     @patch("skills.core.explain.explain_runner._run_claude_explain")
     def test_success_no_retry(self, mock_claude):
@@ -308,7 +308,7 @@ class TestRunExplain:
             "review_comments": "", "reviews": "", "issue_comments": "",
         }
         mock_claude.side_effect = [
-            ("", "rate limit exceeded"),
+            ("", "connection reset by peer"),
             ("Explanation after retry", ""),
         ]
         mock_post.return_value = (True, "")
