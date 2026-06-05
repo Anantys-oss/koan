@@ -20,6 +20,9 @@ from app.prompts import get_prompt_path
 from app.utils import atomic_write
 
 
+_RESUME_FAIL_COUNT = 0
+_RESUME_FAIL_THRESHOLD = 3
+
 # Keywords indicating significant missions
 SIGNIFICANT_KEYWORDS = [
     "audit",
@@ -213,8 +216,10 @@ def run_reflection(
         from app.claude_step import run_claude, strip_cli_noise
         from app.cli_provider import build_full_command
 
+        global _RESUME_FAIL_COUNT
+
         resume_id = ""
-        if session_id:
+        if session_id and _RESUME_FAIL_COUNT < _RESUME_FAIL_THRESHOLD:
             try:
                 from app.config import is_session_resume_enabled
                 if is_session_resume_enabled():
@@ -229,6 +234,8 @@ def run_reflection(
         result = run_claude(cmd, cwd=str(koan_root), timeout=60)
 
         if result["success"]:
+            if resume_id:
+                _RESUME_FAIL_COUNT = 0
             output = strip_cli_noise(result["output"])
             if output in ["—", "-", ""]:
                 return ""
@@ -236,10 +243,18 @@ def run_reflection(
 
         # Resume failed — retry without resume
         if resume_id:
-            print(
-                "[post_mission_reflection] Resume failed, retrying fresh",
-                file=sys.stderr,
-            )
+            _RESUME_FAIL_COUNT += 1
+            if _RESUME_FAIL_COUNT >= _RESUME_FAIL_THRESHOLD:
+                print(
+                    f"[post_mission_reflection] Resume failed {_RESUME_FAIL_COUNT}x consecutively, "
+                    f"disabling for rest of session",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    "[post_mission_reflection] Resume failed, retrying fresh",
+                    file=sys.stderr,
+                )
             cmd = build_full_command(prompt=prompt, max_turns=1)
             result = run_claude(cmd, cwd=str(koan_root), timeout=60)
             if result["success"]:
