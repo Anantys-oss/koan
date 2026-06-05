@@ -9,7 +9,7 @@ audience: bridge
 commands:
   - name: alias
     description: Create or list project aliases
-    usage: "/alias <project> <shortcut> — create alias. /alias — list all aliases."
+    usage: "/alias <project> <shortcut> — create alias. /alias --rm <shortcut> — remove alias. /alias — list all aliases."
     aliases: []
   - name: unalias
     description: Remove a project alias

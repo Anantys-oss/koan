@@ -40,6 +40,13 @@ def _handle_alias(ctx):
         return _list_aliases(ctx)
 
     parts = args.split()
+
+    if parts[0] == "--rm":
+        if len(parts) < 2:
+            return "Usage: /alias --rm <shortcut>"
+        ctx.args = parts[1]
+        return _handle_unalias(ctx)
+
     if len(parts) < 2:
         return "Usage: /alias <project> <shortcut>\nExample: /alias Template2 tt"
     if len(parts) > 2:
@@ -88,5 +95,5 @@ def _list_aliases(ctx):
     lines = ["Project aliases:"]
     for shortcut, project in sorted(aliases.items()):
         lines.append(f"  /{shortcut} → {project}")
-    lines.append("\nRemove with: /unalias <shortcut>")
+    lines.append("\nRemove with: /alias --rm <shortcut>")
     return "\n".join(lines)

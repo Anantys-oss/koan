@@ -183,6 +183,44 @@ class TestAliasHandler:
         result = handle(ctx)
         assert "Usage" in result
 
+    def test_alias_rm_removes_alias(self, ctx):
+        aliases_path = ctx.instance_dir / ".project-aliases.json"
+        aliases_path.write_text(json.dumps({"tt": "Template2"}))
+
+        from skills.core.alias.handler import handle
+        ctx.command_name = "alias"
+        ctx.args = "--rm tt"
+        result = handle(ctx)
+        assert "removed" in result
+        assert "tt" in result
+
+        aliases = json.loads(aliases_path.read_text())
+        assert "tt" not in aliases
+
+    def test_alias_rm_nonexistent(self, ctx):
+        from skills.core.alias.handler import handle
+        ctx.command_name = "alias"
+        ctx.args = "--rm nope"
+        result = handle(ctx)
+        assert "No alias" in result
+
+    def test_alias_rm_no_shortcut(self, ctx):
+        from skills.core.alias.handler import handle
+        ctx.command_name = "alias"
+        ctx.args = "--rm"
+        result = handle(ctx)
+        assert "Usage" in result
+
+    def test_list_aliases_shows_rm_hint(self, ctx):
+        aliases_path = ctx.instance_dir / ".project-aliases.json"
+        aliases_path.write_text(json.dumps({"tt": "Template2"}))
+
+        from skills.core.alias.handler import handle
+        ctx.command_name = "alias"
+        ctx.args = ""
+        result = handle(ctx)
+        assert "--rm" in result
+
 
 # ---------------------------------------------------------------------------
 # Dispatch integration tests
