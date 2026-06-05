@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Optional
 
 from app.git_utils import run_git as _run_git_core
+from app.run_log import log
 
 
 class _GitResult:
@@ -128,7 +129,9 @@ def check_update_safety(koan_root: Path) -> Optional[str]:
     if remote is None:
         return None
 
-    _run_git(["fetch", remote, "--quiet"], koan_root)
+    fetch_result = _run_git(["fetch", remote, "--quiet"], koan_root)
+    if fetch_result.returncode != 0:
+        log("update", f"Safety check: fetch {remote} failed, using cached refs")
 
     result = _run_git(
         ["rev-list", "--oneline", f"{remote}/main..HEAD"],

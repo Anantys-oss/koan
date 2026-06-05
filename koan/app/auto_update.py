@@ -202,7 +202,7 @@ def perform_auto_update(koan_root: str, instance: str) -> bool:
     from app.update_manager import check_update_safety
     safety_msg = check_update_safety(Path(koan_root))
     if safety_msg:
-        log("update", "Auto-update skipped: instance diverged from upstream")
+        log("update", f"Auto-update skipped: {safety_msg}")
         return False
 
     # Check for new release tag before pulling (notify is tag-based)
