@@ -541,8 +541,8 @@ def top_missions(
 
         raw_mission = entry.get("mission", "")
         mission_text = raw_mission.replace("\n", " ").replace("\r", " ")
-        if len(mission_text) > 120:
-            mission_text = mission_text[:120] + "..."
+        if len(mission_text) > 300:
+            mission_text = mission_text[:300] + "..."
 
         result.append({
             "ts": entry.get("ts", ""),
