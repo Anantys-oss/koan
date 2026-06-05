@@ -27,6 +27,14 @@ Run `/doctor` first — it catches many common problems and can auto-repair with
 
 The internal usage estimate can drift from reality. Use `/quota <N>` to override (e.g., `/quota 50` tells the agent it has 50% remaining). This clears any quota-related pause.
 
+**Repeated false pauses right after `/resume` (especially fixed in a newer version):** if the agent keeps pausing for "quota" on every resume even though quota is fine — and a `git log` shows a relevant fix already landed — the running daemon may be executing **stale code from before the fix**. The run loop is long-lived; `/update` re-execs the interpreter to load new code (see [auto-update](auto-update.md)), but a daemon started on a much older version (or one whose update didn't complete) can keep running the old modules in memory. Do a full restart so a fresh process loads the current code:
+
+```bash
+make stop && make start          # run as the account that owns the daemon
+```
+
+If `make stop` reports processes "stopped" but `pgrep -fl app/run.py` still shows a `run.py` (and `cat instance/.koan-run.pid` is missing), you have an **orphaned daemon** that escaped PID tracking — likely owned by a different user (e.g. a dedicated bot account). Kill it from that account (`kill -9 <pid>`) before `make start`.
+
 ### Agent loop process not running
 
 1. Check `make status` to see which processes are alive.

@@ -6,7 +6,6 @@ lifecycle notifications.
 
 Usage:
     python -m app.run              # Normal start
-    python -m app.run --restart    # Re-exec after restart signal (exit 42)
 
 Features:
 - Double-tap CTRL-C protection across ALL phases (missions, rituals,
@@ -14,7 +13,10 @@ Features:
   activity name; second press within 10s aborts.
 - Automatic exception recovery with backoff (survives crashes)
 - protected_phase() context manager for easy phase protection
-- Restart wrapper (exit code 42 → re-exec)
+- Restart wrapper: a restart signal (exit code 42) triggers os.execv so
+  the interpreter reloads updated code from disk — without this, /update
+  and auto-update would pull new code yet keep running the old modules
+  already imported into this long-lived process.
 - Process group isolation for Claude subprocess (SIGINT ignored)
 - Colored log output with TTY detection
 """
@@ -3412,11 +3414,32 @@ def main():
             break
         except SystemExit as e:
             if e.code == RESTART_EXIT_CODE:
-                # Restart signal
+                # Restart signal — re-exec the interpreter so updated code on
+                # disk is actually loaded. A plain in-process `continue` re-runs
+                # the loop with the STALE modules already imported into this
+                # long-lived process, so `/update` and auto-update would pull
+                # new code to disk yet keep executing the old code in memory
+                # until a full manual restart. main_loop()'s finally has already
+                # released the pidfile by the time we get here, so the re-exec'd
+                # image re-acquires it cleanly; cwd, env and the stdout/stderr
+                # log fds are preserved across execv.
                 crash_count = 0
-                print("[koan] Restarting run loop...")
-                time.sleep(1)
-                continue
+                print("[koan] Restarting (re-exec to load updated code)...")
+                _reset_terminal()
+                sys.stdout.flush()
+                sys.stderr.flush()
+                try:
+                    os.execv(sys.executable, [sys.executable, *sys.argv])
+                except OSError as exc:
+                    # Re-exec failed — fall back to an in-process restart so the
+                    # daemon stays alive (it just won't pick up updated code).
+                    print(
+                        f"[koan] Re-exec failed ({exc}); restarting in-process "
+                        "without reloading code.",
+                        file=sys.stderr,
+                    )
+                    time.sleep(1)
+                    continue
             raise
         except Exception:
             crash_count += 1

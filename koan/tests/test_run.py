@@ -1448,8 +1448,32 @@ class TestMain:
         mock_loop.assert_called_once()
 
     @patch("app.run.main_loop")
+    def test_restart_on_42_reexecs(self, mock_loop):
+        # A restart signal (exit 42) must re-exec the interpreter so updated
+        # code on disk is loaded — NOT loop in-process with stale modules.
+        from app.run import main
+        from app.restart_manager import RESTART_EXIT_CODE
+
+        class _StopExec(BaseException):
+            """Sentinel: real os.execv never returns; stand in for it here."""
+
+        mock_loop.side_effect = SystemExit(RESTART_EXIT_CODE)
+        with patch("app.run.os.execv", side_effect=_StopExec) as mock_execv:
+            with pytest.raises(_StopExec):
+                main()
+        mock_execv.assert_called_once()
+        path, argv = mock_execv.call_args[0]
+        assert path == sys.executable
+        assert argv == [sys.executable, *sys.argv]
+        # main_loop runs once; the re-exec replaces the process instead of
+        # re-entering the loop in the same interpreter.
+        assert mock_loop.call_count == 1
+
+    @patch("app.run.main_loop")
     @patch("app.run.time.sleep")
-    def test_restart_on_42(self, mock_sleep, mock_loop):
+    def test_restart_reexec_failure_falls_back_in_process(self, mock_sleep, mock_loop):
+        # If os.execv fails, the daemon must stay alive via an in-process
+        # restart rather than dying (it just won't pick up updated code).
         from app.run import main
         from app.restart_manager import RESTART_EXIT_CODE
         call_count = [0]
@@ -1459,7 +1483,8 @@ class TestMain:
                 raise SystemExit(RESTART_EXIT_CODE)
             # Second call: normal exit
         mock_loop.side_effect = side_effect
-        main()
+        with patch("app.run.os.execv", side_effect=OSError("boom")):
+            main()
         assert call_count[0] == 2
         mock_sleep.assert_called_once_with(1)
 
@@ -2699,21 +2724,27 @@ class TestMainCrashRecovery:
 
     @patch("app.run.main_loop")
     @patch("app.run.time.sleep")
-    def test_crash_count_resets_on_restart(self, mock_sleep, mock_loop):
-        """SystemExit(RESTART_EXIT_CODE) resets the crash counter."""
+    def test_restart_signal_is_not_a_crash(self, mock_sleep, mock_loop):
+        """A restart signal re-execs (fresh process) and is never a crash.
+
+        The crash counter reset is now implicit: os.execv replaces the whole
+        interpreter, so the new process starts with crash_count=0. The restart
+        must NOT go through the crash-recovery/backoff path.
+        """
         from app.run import main
         from app.restart_manager import RESTART_EXIT_CODE
 
-        call_count = [0]
-        def side_effect():
-            call_count[0] += 1
-            if call_count[0] == 1:
-                raise SystemExit(RESTART_EXIT_CODE)  # restart signal
-            # Second call: normal exit
+        class _StopExec(BaseException):
+            """Sentinel: real os.execv never returns; stand in for it here."""
 
-        mock_loop.side_effect = side_effect
-        main()
-        assert call_count[0] == 2
+        mock_loop.side_effect = SystemExit(RESTART_EXIT_CODE)
+        with patch("app.run.os.execv", side_effect=_StopExec) as mock_execv:
+            with pytest.raises(_StopExec):
+                main()
+        mock_execv.assert_called_once()
+        # Restart is not a crash: no backoff sleep, main_loop not retried.
+        mock_sleep.assert_not_called()
+        assert mock_loop.call_count == 1
 
     @patch("app.run.main_loop")
     @patch("app.run.time.sleep")

@@ -42,7 +42,7 @@ auto_update:
    - Pulls from upstream into local `main`
    - Signals a restart via the restart manager
    - Sends a success notification with a summary of changes
-5. The run loop wrapper detects the restart signal and relaunches Kōan with the updated code
+5. The run loop wrapper detects the restart signal and **re-execs the interpreter** (`os.execv`) so the freshly pulled code is actually loaded. This matters: the run loop is a long-lived process, so a plain in-process restart would keep executing the modules imported at startup — `git pull` would update files on disk while the daemon ran the old code in memory until a full manual restart.
 
 ## Safety
 
