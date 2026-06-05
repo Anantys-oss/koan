@@ -1159,6 +1159,7 @@ rebase_ci_idle_timeout: 1800       # /rebase CI-fix phase: kill on inactivity
 rebase_ci_max_duration: 7200       # /rebase CI-fix phase: absolute cap
 rebase_include_bot_feedback: true  # Include bot-authored PR comments in feedback analysis (set false to filter them out)
 allow_rebase_foreign_prs: false    # Telegram /rebase can target non-instance PRs
+strip_co_authored_by: false        # Strip Co-Authored-By trailers from generated commits (set true to enable)
 skill_max_turns: 200          # Max agentic turns for heavy skills
 
 # Stagnation detection — kill Claude sessions stuck in a loop early

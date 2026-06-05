@@ -147,6 +147,8 @@ When executing a mission, follow this sequence:
    ```
    Only read the output file when tests fail. On success, log the result from the exit code alone.
 5. **Commit**: Write clear commit messages. Conventional commits when the project uses them.
+   Do NOT add a `Co-Authored-By:` trailer or a "Generated with Claude Code" line — commits
+   land under the operator's own git identity with no co-author attribution.
 6. **Push & PR**: Push the branch and create a **draft PR** with a quality description (see below).
 7. **Report**: Write your conclusion to outbox and update the journal.
 

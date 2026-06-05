@@ -19,7 +19,7 @@ from typing import Callable, List, Optional, Tuple
 
 from app.cli_exec import popen_cli, stream_with_timeout
 from app.cli_provider import build_full_command, run_command
-from app.config import get_model_config
+from app.config import get_model_config, is_strip_co_authored_by_enabled
 from app.git_utils import GitCommandError
 from app.git_utils import get_current_branch as _git_utils_get_current_branch
 from app.git_utils import ordered_remotes, run_git_strict
@@ -405,6 +405,49 @@ def is_hook_rejection(exc: GitCommandError, repo_path: str) -> bool:
     return _precommit_hook_path(repo_path) is not None
 
 
+# Matches a Co-Authored-By trailer line or the "Generated with Claude Code"
+# promo line that Claude Code appends to commit messages by default. Anchored
+# to line starts (MULTILINE) so it only strips whole trailer lines.
+_CO_AUTHOR_LINE = re.compile(
+    r"^[ \t]*Co-Authored-By:.*$"
+    r"|^[ \t]*🤖[ \t]*Generated with .*Claude Code.*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def strip_co_authored_by(message: str) -> str:
+    """Remove Co-Authored-By / "Generated with Claude Code" trailers.
+
+    Kōan commits land under the operator's own git identity; the agent must
+    not attribute a co-author. Claude Code appends these trailers by default,
+    so this guard scrubs them from any commit message before it reaches git.
+    Collapses the blank lines left behind so the message ends cleanly.
+    """
+    if not message:
+        return message
+    cleaned = _CO_AUTHOR_LINE.sub("", message)
+    # Collapse 3+ consecutive newlines (left by removed lines) down to two,
+    # then trim trailing whitespace/newlines.
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.rstrip()
+
+
+def _sanitize_commit_args(commit_args: list) -> list:
+    """Return a copy of *commit_args* with any ``-m``/``--message`` value
+    scrubbed of Co-Authored-By trailers. Handles the two-arg forms
+    (``-m <value>``, ``--message <value>``) and the combined
+    ``--message=<value>`` form. Other args pass through untouched."""
+    if not is_strip_co_authored_by_enabled():
+        return list(commit_args)
+    sanitized = list(commit_args)
+    for i in range(len(sanitized)):
+        if sanitized[i] in ("-m", "--message") and i + 1 < len(sanitized):
+            sanitized[i + 1] = strip_co_authored_by(sanitized[i + 1])
+        elif sanitized[i].startswith("--message="):
+            sanitized[i] = "--message=" + strip_co_authored_by(sanitized[i][len("--message="):])
+    return sanitized
+
+
 def _commit_with_hook_fallback(commit_args: list, cwd: str, run_git=None) -> None:
     """Commit, attempting target-repo pre-commit hooks first.
 
@@ -427,6 +470,7 @@ def _commit_with_hook_fallback(commit_args: list, cwd: str, run_git=None) -> Non
     module-level reference so patches in tests resolve correctly.
     """
     runner = run_git or _run_git
+    commit_args = _sanitize_commit_args(commit_args)
     try:
         runner(["git", "commit", *commit_args], cwd=cwd, timeout=180)
     except subprocess.TimeoutExpired:

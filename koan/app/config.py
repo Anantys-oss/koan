@@ -734,6 +734,20 @@ def is_rebase_foreign_prs_allowed() -> bool:
     return bool(config.get("allow_rebase_foreign_prs", False))
 
 
+def is_strip_co_authored_by_enabled() -> bool:
+    """Whether to strip Co-Authored-By / "Generated with Claude Code" trailers
+    from generated commit messages.
+
+    Off by default — commits keep whatever trailers the CLI appends. Operators
+    who want Kōan commits to land under their own git identity with no co-author
+    attribution can opt in via config.
+
+    Config key: strip_co_authored_by (default: False).
+    """
+    config = _load_config()
+    return bool(config.get("strip_co_authored_by", False))
+
+
 def get_skill_max_turns() -> int:
     """Get max turns for skill execution (fix, implement, incident).
 

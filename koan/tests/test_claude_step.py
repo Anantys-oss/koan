@@ -22,6 +22,7 @@ from app.claude_step import (
     run_claude_step,
     run_project_tests,
     strip_cli_noise,
+    strip_co_authored_by,
 )
 from app.git_utils import GitCommandError
 
@@ -585,6 +586,75 @@ class TestRunClaude:
 
 
 # ---------- commit_if_changes ----------
+
+
+class TestStripCoAuthoredBy:
+    """Tests for the Co-Authored-By trailer guard."""
+
+    def test_strips_co_authored_by_line(self):
+        msg = (
+            "fix: resolve bug\n\n"
+            "Body text.\n\n"
+            "Co-Authored-By: Claude <noreply@anthropic.com>"
+        )
+        result = strip_co_authored_by(msg)
+        assert "Co-Authored-By" not in result
+        assert result == "fix: resolve bug\n\nBody text."
+
+    def test_strips_generated_with_claude_code_line(self):
+        msg = (
+            "feat: add thing\n\n"
+            "🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\n"
+            "Co-Authored-By: Claude <noreply@anthropic.com>"
+        )
+        result = strip_co_authored_by(msg)
+        assert "Generated with" not in result
+        assert "Co-Authored-By" not in result
+        assert result == "feat: add thing"
+
+    def test_case_insensitive(self):
+        msg = "subject\n\nco-authored-by: Someone <x@y.z>"
+        assert "co-authored-by" not in strip_co_authored_by(msg).lower()
+
+    def test_preserves_clean_message(self):
+        msg = "fix: clean commit\n\nNo trailers here."
+        assert strip_co_authored_by(msg) == msg
+
+    def test_empty_message_unchanged(self):
+        assert strip_co_authored_by("") == ""
+
+    def test_does_not_strip_mid_line_mention(self):
+        # The phrase only appears inside prose, not as a trailer line.
+        msg = "docs: explain the Co-Authored-By guard we added"
+        assert strip_co_authored_by(msg) == msg
+
+
+class TestCommitStripsTrailer:
+    """commit_if_changes must scrub trailers before reaching git."""
+
+    @patch("app.claude_step.is_strip_co_authored_by_enabled", return_value=True)
+    @patch("app.claude_step._run_git")
+    @patch("app.cli_exec.subprocess.run")
+    def test_commit_message_has_no_co_author(self, mock_run, mock_git, _enabled):
+        mock_run.return_value = MagicMock(stdout=" M file.py\n", returncode=0)
+        msg = "fix: thing\n\nCo-Authored-By: Claude <noreply@anthropic.com>"
+        result = commit_if_changes("/project", msg)
+        assert result is True
+        mock_git.assert_any_call(
+            ["git", "commit", "-m", "fix: thing"], cwd="/project", timeout=180
+        )
+
+    @patch("app.claude_step.is_strip_co_authored_by_enabled", return_value=False)
+    @patch("app.claude_step._run_git")
+    @patch("app.cli_exec.subprocess.run")
+    def test_opt_out_keeps_trailer(self, mock_run, mock_git, _disabled):
+        mock_run.return_value = MagicMock(stdout=" M file.py\n", returncode=0)
+        msg = "fix: thing\n\nCo-Authored-By: Claude <noreply@anthropic.com>"
+        result = commit_if_changes("/project", msg)
+        assert result is True
+        mock_git.assert_any_call(
+            ["git", "commit", "-m", msg], cwd="/project", timeout=180
+        )
 
 
 class TestCommitIfChanges:
