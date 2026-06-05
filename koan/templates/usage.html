@@ -616,9 +616,6 @@ function resortTypeTable() {
 
 function loadAll() {
     _lastMissionParams = null;
-    if (_missionsOpen) {
-        loadTopMissions(true);
-    }
     const days = document.getElementById('range-select').value;
     const granularity = document.getElementById('granularity-select').value;
     const projParam = currentProject ? '&project=' + encodeURIComponent(currentProject) : '';
@@ -658,6 +655,9 @@ function loadAll() {
             }
 
             window._lastHasPricing = !!data.has_pricing;
+            if (_missionsOpen) {
+                loadTopMissions(true);
+            }
             renderDailyChart(data.series || [], data.has_pricing, data.granularity || 'day');
             renderStackedChart(data.series || [], data.granularity || 'day');
             renderTypeChart(data.by_type || {}, data.has_pricing);
@@ -813,6 +813,7 @@ function renderTopMissionsTable(missions, hasPricing) {
 
     if (!missions || missions.length === 0) {
         table.style.display = 'none';
+        emptyEl.textContent = 'No mission data for this period.';
         emptyEl.style.display = '';
         return;
     }
@@ -945,6 +946,7 @@ function loadTopMissions(forceReload) {
         })
         .catch(() => {
             loadingEl.style.display = 'none';
+            emptyEl.textContent = 'Failed to load missions.';
             emptyEl.style.display = '';
         });
 }
