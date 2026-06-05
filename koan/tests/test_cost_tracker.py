@@ -570,6 +570,161 @@ class TestDailySeriesCacheFields:
         assert day["cache_read_input_tokens"] == 3000
         assert day["cache_creation_input_tokens"] == 1000
 
+    def test_by_project_includes_cache_fields(self, instance_dir):
+        record_usage(
+            instance_dir, "proj-a", "sonnet",
+            1000, 500,
+            cache_read_input_tokens=2000,
+            cache_creation_input_tokens=500,
+        )
+        from app.cost_tracker import daily_series
+        series = daily_series(instance_dir, date.today(), date.today(), include_by_project=True)
+        assert len(series) == 1
+        bp = series[0]["by_project"]["proj-a"]
+        assert bp["cache_read_input_tokens"] == 2000
+        assert bp["cache_creation_input_tokens"] == 500
+        # cache_hit_rate = 2000 / (1000 + 2000 + 500) = 2000/3500
+        assert abs(bp["cache_hit_rate"] - 2000 / 3500) < 1e-9
+
+    def test_by_project_zero_cache_returns_zero_not_nan(self, instance_dir):
+        record_usage(instance_dir, "proj-b", "sonnet", 1000, 500)
+        from app.cost_tracker import daily_series
+        series = daily_series(instance_dir, date.today(), date.today(), include_by_project=True)
+        assert len(series) == 1
+        bp = series[0]["by_project"]["proj-b"]
+        assert bp["cache_hit_rate"] == 0.0
+        assert bp["cache_read_input_tokens"] == 0
+        assert bp["cache_creation_input_tokens"] == 0
+
+    def test_zero_cache_day_hit_rate_is_zero(self, instance_dir):
+        record_usage(instance_dir, "proj-c", "sonnet", 500, 200)
+        from app.cost_tracker import daily_series
+        series = daily_series(instance_dir, date.today(), date.today())
+        assert len(series) == 1
+        assert series[0]["cache_hit_rate"] == 0.0
+
+
+class TestBucketCacheFields:
+    """Tests for cache hit rate recomputation in weekly/monthly bucket functions."""
+
+    def test_bucket_by_week_recomputes_cache_hit_rate(self):
+        from app.dashboard import _bucket_by_week
+        from datetime import date
+
+        monday = date(2026, 6, 1)  # A Monday
+        tuesday = date(2026, 6, 2)
+        series = [
+            {
+                "date": monday.isoformat(),
+                "total_input": 1000,
+                "total_output": 200,
+                "cache_creation_input_tokens": 500,
+                "cache_read_input_tokens": 1000,
+                "cache_hit_rate": 1000 / 2500,
+                "count": 1,
+                "cost": None,
+            },
+            {
+                "date": tuesday.isoformat(),
+                "total_input": 2000,
+                "total_output": 400,
+                "cache_creation_input_tokens": 200,
+                "cache_read_input_tokens": 800,
+                "cache_hit_rate": 800 / 3000,
+                "count": 2,
+                "cost": None,
+            },
+        ]
+        buckets = _bucket_by_week(series)
+        assert len(buckets) == 1
+        b = buckets[0]
+        # Summed: input=3000, cache_read=1800, cache_create=700 => rate = 1800/(3000+1800+700)
+        expected = 1800 / (3000 + 1800 + 700)
+        assert abs(b["cache_hit_rate"] - expected) < 1e-9
+
+    def test_bucket_by_week_by_project_cache_fields(self):
+        from app.dashboard import _bucket_by_week
+
+        monday = date(2026, 6, 1)
+        tuesday = date(2026, 6, 2)
+        series = [
+            {
+                "date": monday.isoformat(),
+                "total_input": 1000, "total_output": 200,
+                "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+                "cache_hit_rate": 0.0, "count": 1, "cost": None,
+                "by_project": {
+                    "alpha": {
+                        "total_input": 1000, "total_output": 200,
+                        "cache_creation_input_tokens": 300, "cache_read_input_tokens": 600,
+                        "cache_hit_rate": 600 / 1900, "count": 1,
+                    }
+                },
+            },
+            {
+                "date": tuesday.isoformat(),
+                "total_input": 500, "total_output": 100,
+                "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+                "cache_hit_rate": 0.0, "count": 1, "cost": None,
+                "by_project": {
+                    "alpha": {
+                        "total_input": 500, "total_output": 100,
+                        "cache_creation_input_tokens": 100, "cache_read_input_tokens": 200,
+                        "cache_hit_rate": 200 / 800, "count": 1,
+                    }
+                },
+            },
+        ]
+        buckets = _bucket_by_week(series)
+        assert len(buckets) == 1
+        bp = buckets[0]["by_project"]["alpha"]
+        assert bp["cache_read_input_tokens"] == 800
+        assert bp["cache_creation_input_tokens"] == 400
+        # rate = 800 / (1500 + 800 + 400)
+        expected = 800 / (1500 + 800 + 400)
+        assert abs(bp["cache_hit_rate"] - expected) < 1e-9
+
+    def test_bucket_by_month_recomputes_cache_hit_rate(self):
+        from app.dashboard import _bucket_by_month
+
+        d1 = date(2026, 5, 1)
+        d2 = date(2026, 5, 15)
+        series = [
+            {
+                "date": d1.isoformat(),
+                "total_input": 1000, "total_output": 200,
+                "cache_creation_input_tokens": 400, "cache_read_input_tokens": 1600,
+                "cache_hit_rate": 1600 / 3000, "count": 1, "cost": None,
+            },
+            {
+                "date": d2.isoformat(),
+                "total_input": 500, "total_output": 100,
+                "cache_creation_input_tokens": 100, "cache_read_input_tokens": 400,
+                "cache_hit_rate": 400 / 1000, "count": 1, "cost": None,
+            },
+        ]
+        buckets = _bucket_by_month(series)
+        assert len(buckets) == 1
+        b = buckets[0]
+        # Summed: input=1500, cache_read=2000, cache_create=500 => rate=2000/4000
+        expected = 2000 / (1500 + 2000 + 500)
+        assert abs(b["cache_hit_rate"] - expected) < 1e-9
+
+    def test_bucket_zero_cache_returns_zero_hit_rate(self):
+        from app.dashboard import _bucket_by_week
+
+        series = [
+            {
+                "date": date(2026, 6, 1).isoformat(),
+                "total_input": 1000, "total_output": 200,
+                "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+                "cache_hit_rate": 0.0, "count": 1, "cost": None,
+            },
+        ]
+        buckets = _bucket_by_week(series)
+        assert len(buckets) == 1
+        assert buckets[0]["cache_hit_rate"] == 0.0
+
 
 class TestAggregateByType:
     """Tests for mission_type aggregation in _aggregate."""

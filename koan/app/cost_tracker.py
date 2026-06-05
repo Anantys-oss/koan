@@ -563,10 +563,19 @@ def daily_series(
             "cost": cost,
         }
         if include_by_project:
+            from app.token_parser import compute_cache_hit_rate
+
             entry["by_project"] = {
                 proj: {
                     "total_input": pdata["input_tokens"],
                     "total_output": pdata["output_tokens"],
+                    "cache_creation_input_tokens": pdata["cache_creation_input_tokens"],
+                    "cache_read_input_tokens": pdata["cache_read_input_tokens"],
+                    "cache_hit_rate": compute_cache_hit_rate(
+                        pdata["input_tokens"],
+                        pdata["cache_read_input_tokens"],
+                        pdata["cache_creation_input_tokens"],
+                    ),
                     "count": pdata["count"],
                 }
                 for proj, pdata in day_summary["by_project"].items()
