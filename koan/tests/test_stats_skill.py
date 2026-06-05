@@ -592,49 +592,70 @@ class TestTimeBreakdowns:
 class TestFlagParsing:
     def test_no_flags_defaults_to_week(self):
         from skills.core.stats.handler import _parse_args
-        days, project = _parse_args("")
+        days, project, show_perf = _parse_args("")
         assert days == 7
         assert project == ""
+        assert show_perf is False
 
     def test_week_flag(self):
         from skills.core.stats.handler import _parse_args
-        days, project = _parse_args("--week")
+        days, project, show_perf = _parse_args("--week")
         assert days == 7
         assert project == ""
+        assert show_perf is False
 
     def test_month_flag(self):
         from skills.core.stats.handler import _parse_args
-        days, project = _parse_args("--month")
+        days, project, show_perf = _parse_args("--month")
         assert days == 30
         assert project == ""
 
     def test_week_then_month_last_wins(self):
         from skills.core.stats.handler import _parse_args
-        days, project = _parse_args("--week --month")
+        days, project, show_perf = _parse_args("--week --month")
         assert days == 30
 
     def test_month_then_week_last_wins(self):
         from skills.core.stats.handler import _parse_args
-        days, project = _parse_args("--month --week")
+        days, project, show_perf = _parse_args("--month --week")
         assert days == 7
 
     def test_week_with_project(self):
         from skills.core.stats.handler import _parse_args
-        days, project = _parse_args("--week koan")
+        days, project, show_perf = _parse_args("--week koan")
         assert days == 7
         assert project == "koan"
 
     def test_month_with_project(self):
         from skills.core.stats.handler import _parse_args
-        days, project = _parse_args("--month koan")
+        days, project, show_perf = _parse_args("--month koan")
         assert days == 30
         assert project == "koan"
 
     def test_project_only(self):
         from skills.core.stats.handler import _parse_args
-        days, project = _parse_args("koan")
+        days, project, show_perf = _parse_args("koan")
         assert days == 7
         assert project == "koan"
+
+    def test_perf_flag(self):
+        from skills.core.stats.handler import _parse_args
+        days, project, show_perf = _parse_args("--perf")
+        assert show_perf is True
+        assert project == ""
+        assert days == 7
+
+    def test_perf_with_project(self):
+        from skills.core.stats.handler import _parse_args
+        days, project, show_perf = _parse_args("koan --perf")
+        assert show_perf is True
+        assert project == "koan"
+
+    def test_perf_with_month(self):
+        from skills.core.stats.handler import _parse_args
+        days, project, show_perf = _parse_args("--month --perf")
+        assert show_perf is True
+        assert days == 30
 
 
 # ---------------------------------------------------------------------------
@@ -708,6 +729,160 @@ class TestTokenOverview:
             result = h.handle(ctx)
 
         assert "cost($)" not in result
+
+
+# ---------------------------------------------------------------------------
+# Tests: Performance breakdown (--perf flag)
+# ---------------------------------------------------------------------------
+
+def _make_outcome_with_perf(project="koan", outcome="productive",
+                             duration=10, hours_ago=0,
+                             provider="claude", model="claude-opus-4-20250514"):
+    """Build a session outcome entry with provider/model fields."""
+    ts = datetime.now() - timedelta(hours=hours_ago)
+    entry = {
+        "timestamp": ts.isoformat(timespec="seconds"),
+        "project": project,
+        "mode": "implement",
+        "duration_minutes": duration,
+        "outcome": outcome,
+        "summary": "branch pushed",
+    }
+    if provider:
+        entry["provider"] = provider
+    if model:
+        entry["model"] = model
+    return entry
+
+
+class TestPerfBreakdown:
+    def test_perf_no_data(self, tmp_path):
+        """Empty outcomes file returns no-data message."""
+        ctx = _make_ctx(tmp_path, args="--perf")
+        _write_outcomes(ctx.instance_dir, [])
+        from skills.core.stats import handler as h
+        result = h.handle(ctx)
+        assert "No session data" in result
+
+    def test_perf_shows_by_provider(self, tmp_path):
+        ctx = _make_ctx(tmp_path, args="--perf")
+        outcomes = [
+            _make_outcome_with_perf(provider="claude", duration=10, hours_ago=1),
+            _make_outcome_with_perf(provider="claude", duration=20, hours_ago=2),
+            _make_outcome_with_perf(provider="copilot", duration=30, hours_ago=3),
+        ]
+        _write_outcomes(ctx.instance_dir, outcomes)
+        from skills.core.stats import handler as h
+        result = h.handle(ctx)
+        assert "By provider:" in result
+        assert "claude" in result
+        assert "copilot" in result
+        assert "avg" in result
+
+    def test_perf_shows_by_model(self, tmp_path):
+        ctx = _make_ctx(tmp_path, args="--perf")
+        outcomes = [
+            _make_outcome_with_perf(model="claude-opus-4-20250514", duration=12, hours_ago=1),
+            _make_outcome_with_perf(model="claude-sonnet-4-20250514", duration=8, hours_ago=2),
+        ]
+        _write_outcomes(ctx.instance_dir, outcomes)
+        from skills.core.stats import handler as h
+        result = h.handle(ctx)
+        assert "By model:" in result
+        # model names are normalized (date suffix stripped)
+        assert "claude-opus-4" in result
+        assert "claude-sonnet-4" in result
+
+    def test_perf_unknown_provider_grouped(self, tmp_path):
+        """Outcomes without provider field grouped as 'unknown'."""
+        ctx = _make_ctx(tmp_path, args="--perf")
+        outcomes = [
+            _make_outcome(project="koan", duration=10, hours_ago=1),  # no provider field
+        ]
+        _write_outcomes(ctx.instance_dir, outcomes)
+        from skills.core.stats import handler as h
+        result = h.handle(ctx)
+        assert "By provider:" in result
+        assert "unknown" in result
+
+    def test_perf_project_filter(self, tmp_path):
+        """--perf scopes to project when name provided."""
+        ctx = _make_ctx(tmp_path, args="other-proj --perf")
+        outcomes = [
+            _make_outcome_with_perf(project="koan", duration=10, hours_ago=1),
+            _make_outcome_with_perf(project="other-proj", duration=30, hours_ago=2),
+        ]
+        _write_outcomes(ctx.instance_dir, outcomes)
+        from skills.core.stats import handler as h
+        result = h.handle(ctx)
+        assert "other-proj" in result
+
+    def test_perf_no_data_for_project(self, tmp_path):
+        ctx = _make_ctx(tmp_path, args="unknown-proj --perf")
+        outcomes = [
+            _make_outcome_with_perf(project="koan", duration=10, hours_ago=1),
+        ]
+        _write_outcomes(ctx.instance_dir, outcomes)
+        from skills.core.stats import handler as h
+        result = h.handle(ctx)
+        assert "No session data" in result
+
+    def test_perf_trend_shown_when_prior_data_exists(self, tmp_path):
+        ctx = _make_ctx(tmp_path, args="--perf")
+        # Current window (last 7d): 3 days ago
+        # Prior window (7-14d ago): 10 days ago
+        outcomes = [
+            _make_outcome_with_perf(duration=10, hours_ago=72),   # current window
+            _make_outcome_with_perf(duration=20, hours_ago=240),  # prior window
+        ]
+        _write_outcomes(ctx.instance_dir, outcomes)
+        from skills.core.stats import handler as h
+        result = h.handle(ctx)
+        assert "Trend" in result
+
+    def test_perf_no_trend_when_no_prior_data(self, tmp_path):
+        ctx = _make_ctx(tmp_path, args="--perf")
+        outcomes = [
+            _make_outcome_with_perf(duration=10, hours_ago=1),
+        ]
+        _write_outcomes(ctx.instance_dir, outcomes)
+        from skills.core.stats import handler as h
+        result = h.handle(ctx)
+        assert "Trend" not in result
+
+    def test_perf_zero_duration_excluded_from_avg(self, tmp_path):
+        """Zero-duration sessions are excluded from average calculation."""
+        from skills.core.stats.handler import _perf_stats
+        outcomes = [
+            _make_outcome_with_perf(duration=0, hours_ago=1),   # killed early
+            _make_outcome_with_perf(duration=20, hours_ago=2),
+        ]
+        count, avg, median, _, _ = _perf_stats(outcomes)
+        assert count == 2
+        assert avg == 20  # only the 20-min session counted
+
+    def test_normalize_model_name(self):
+        from skills.core.stats.handler import _normalize_model_name
+        assert _normalize_model_name("claude-opus-4-20250514") == "claude-opus-4"
+        assert _normalize_model_name("claude-sonnet-4-6-20250514") == "claude-sonnet-4-6"
+        assert _normalize_model_name("unknown") == "unknown"
+        assert _normalize_model_name("gpt-4o") == "gpt-4o"  # no date suffix
+
+    def test_compute_trend_returns_none_on_no_prior(self):
+        from skills.core.stats.handler import _compute_trend
+        current = [{"duration_minutes": 10}]
+        assert _compute_trend(current, []) is None
+
+    def test_compute_trend_computes_delta(self):
+        from skills.core.stats.handler import _compute_trend
+        current = [{"duration_minutes": 10}, {"duration_minutes": 10}]
+        prior = [{"duration_minutes": 20}, {"duration_minutes": 20}]
+        result = _compute_trend(current, prior)
+        assert result is not None
+        cur_avg, prev_avg, delta_pct = result
+        assert cur_avg == 10
+        assert prev_avg == 20
+        assert delta_pct == -50.0  # 50% faster
 
     def test_cost_column_present_with_cost_data(self, tmp_path):
         ctx = _make_ctx(tmp_path)

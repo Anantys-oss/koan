@@ -1174,3 +1174,54 @@ class TestAdaptContemplativeChance:
     def test_no_outcomes_file(self, tracker_env):
         """Missing outcomes file → return base chance."""
         assert adapt_contemplative_chance(10, tracker_env, "proj") == 10
+
+
+# ---------------------------------------------------------------------------
+# Tests: provider/model fields in record_outcome
+# ---------------------------------------------------------------------------
+
+class TestRecordOutcomeProviderModel:
+    def _write(self, path, data):
+        path.write_text(json.dumps(data))
+
+    def test_provider_and_model_written_when_provided(self, tracker_env, monkeypatch):
+        """provider and model appear in entry when non-empty."""
+        monkeypatch.setattr("app.utils.atomic_write", _mock_atomic_write)
+
+        entry = record_outcome(
+            tracker_env, "koan", "implement", 10,
+            "branch pushed",
+            provider="claude",
+            model="claude-opus-4-20250514",
+        )
+        assert entry["provider"] == "claude"
+        assert entry["model"] == "claude-opus-4-20250514"
+
+        outcomes_path = Path(tracker_env) / "session_outcomes.json"
+        data = json.loads(outcomes_path.read_text())
+        assert data[-1]["provider"] == "claude"
+        assert data[-1]["model"] == "claude-opus-4-20250514"
+
+    def test_provider_and_model_omitted_when_empty(self, tracker_env, monkeypatch):
+        """provider and model absent from entry when empty strings passed."""
+        monkeypatch.setattr("app.utils.atomic_write", _mock_atomic_write)
+
+        entry = record_outcome(
+            tracker_env, "koan", "implement", 10,
+            "branch pushed",
+            provider="",
+            model="",
+        )
+        assert "provider" not in entry
+        assert "model" not in entry
+
+    def test_provider_and_model_omitted_by_default(self, tracker_env, monkeypatch):
+        """Old callers that don't pass provider/model get compact entries."""
+        monkeypatch.setattr("app.utils.atomic_write", _mock_atomic_write)
+
+        entry = record_outcome(
+            tracker_env, "koan", "implement", 10,
+            "branch pushed",
+        )
+        assert "provider" not in entry
+        assert "model" not in entry

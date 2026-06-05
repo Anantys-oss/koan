@@ -1251,6 +1251,8 @@ class TestRecordSessionOutcome:
             mission_title="",
             mission_type=None,
             pipeline_timed_out=False,
+            provider="",
+            model="",
         )
 
     @patch("app.session_tracker.record_outcome")

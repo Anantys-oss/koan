@@ -39,6 +39,8 @@ def record_usage(
     cache_read_input_tokens: int = 0,
     cost_usd: float = 0.0,
     mission_type: str = "",
+    duration_seconds: int = 0,
+    provider: str = "",
 ) -> bool:
     """Append a usage event to today's JSONL file.
 
@@ -56,6 +58,10 @@ def record_usage(
         mission_type: Granular mission category (e.g. "rebase", "implement").
             Omitted from records when empty; absent records should be treated
             as "unknown" by downstream readers.
+        duration_seconds: Total mission duration in seconds. Informational —
+            authoritative duration aggregation comes from session_outcomes.json.
+            Omitted from records when zero.
+        provider: CLI provider name (e.g. "claude", "copilot"). Omitted when empty.
 
     Returns:
         True if the record was written successfully.
@@ -85,6 +91,10 @@ def record_usage(
         entry["cache_read_input_tokens"] = cache_read_input_tokens
     if cost_usd:
         entry["cost_usd"] = round(cost_usd, 6)
+    if duration_seconds:
+        entry["duration_seconds"] = duration_seconds
+    if provider:
+        entry["provider"] = provider
 
     line = json.dumps(entry, separators=(",", ":")) + "\n"
 

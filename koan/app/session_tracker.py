@@ -270,6 +270,8 @@ def record_outcome(
     mission_title: str = "",
     mission_type: Optional[str] = None,
     pipeline_timed_out: bool = False,
+    provider: str = "",
+    model: str = "",
 ) -> dict:
     """Record a session outcome to session_outcomes.json.
 
@@ -283,6 +285,10 @@ def record_outcome(
         mission_type: Explicit mission type override (e.g. "contemplative").
             When provided, bypasses classify_mission_type().
         pipeline_timed_out: Whether POST_MISSION_TIMEOUT fired during this session.
+        provider: CLI provider name (e.g. "claude", "copilot"). Omitted from
+            entry when empty to keep old entries compact.
+        model: Model identifier (e.g. "claude-opus-4-20250514"). Omitted from
+            entry when empty.
 
     Returns:
         The recorded outcome dict.
@@ -302,6 +308,10 @@ def record_outcome(
         "has_branch": _detect_branch_pushed(journal_content),
         "pipeline_timed_out": pipeline_timed_out,
     }
+    if provider:
+        entry["provider"] = provider
+    if model:
+        entry["model"] = model
 
     outcomes_path = Path(instance_dir) / "session_outcomes.json"
 

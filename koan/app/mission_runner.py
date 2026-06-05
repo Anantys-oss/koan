@@ -425,6 +425,8 @@ def _record_session_outcome(
     mission_title: str = "",
     mission_type: Optional[str] = None,
     pipeline_timed_out: bool = False,
+    provider: str = "",
+    model: str = "",
 ) -> None:
     """Record session outcome for staleness tracking (fire-and-forget).
 
@@ -432,6 +434,8 @@ def _record_session_outcome(
         mission_type: Explicit mission type override (e.g. "contemplative").
             When provided, bypasses classify_mission_type().
         pipeline_timed_out: Whether POST_MISSION_TIMEOUT fired during this session.
+        provider: CLI provider name (e.g. "claude", "copilot").
+        model: Model identifier extracted from token output.
     """
     try:
         from app.session_tracker import record_outcome
@@ -444,6 +448,8 @@ def _record_session_outcome(
             mission_title=mission_title,
             mission_type=mission_type,
             pipeline_timed_out=pipeline_timed_out,
+            provider=provider,
+            model=model,
         )
     except Exception as e:
         _log_runner("error", f"Session outcome recording failed: {e}")
@@ -543,12 +549,16 @@ def _record_cost_event(
     mission_type: str = "",
     tokens: Optional[dict] = None,
     allow_placeholder: bool = False,
+    duration_seconds: int = 0,
+    provider: str = "",
 ) -> None:
     """Record structured usage event to JSONL cost tracker (fire-and-forget).
 
     Args:
         tokens: Pre-extracted token details (from extract_tokens_detailed).
             When provided, skips redundant file read + JSON parse.
+        duration_seconds: Total mission wall-clock duration. Informational only.
+        provider: CLI provider name (e.g. "claude", "copilot").
     """
     try:
         from app.cost_tracker import record_usage
@@ -580,6 +590,8 @@ def _record_cost_event(
             cache_read_input_tokens=tokens.get("cache_read_input_tokens", 0),
             cost_usd=tokens.get("cost_usd", 0.0),
             mission_type=mission_type,
+            duration_seconds=duration_seconds,
+            provider=provider,
         )
     except Exception as e:
         _log_runner("error", f"Cost tracking failed: {e}")
@@ -1501,6 +1513,14 @@ def run_post_mission(
         result["usage_updated"] = update_usage(stdout_file, usage_state, usage_md)
         tracker.record("usage_update", "success" if result["usage_updated"] else "fail")
 
+        # 2. Compute duration (needed for cost tracking, quota, reflection, and outcome)
+        if start_time > 0:
+            duration_seconds = int(datetime.now().timestamp()) - start_time
+            duration_minutes = duration_seconds // 60
+        else:
+            duration_seconds = 0
+            duration_minutes = 0
+
         # 1b. Record structured usage to JSONL cost tracker
         from app.session_tracker import classify_mission_type as _classify_type
         _mission_type = _classify_type(mission_title)
@@ -1509,15 +1529,9 @@ def run_post_mission(
             autonomous_mode, mission_title, mission_type=_mission_type,
             tokens=_tokens,
             allow_placeholder=is_skill_dispatch,
+            duration_seconds=duration_seconds,
+            provider=provider_name,
         )
-
-        # 2. Compute duration (needed for quota early-return, reflection, and outcome tracking)
-        if start_time > 0:
-            duration_seconds = int(datetime.now().timestamp()) - start_time
-            duration_minutes = duration_seconds // 60
-        else:
-            duration_seconds = 0
-            duration_minutes = 0
 
         # 2b. Log activity usage to logs/usage.log (human-readable, rotated)
         _log_activity_usage(
@@ -1579,6 +1593,8 @@ def run_post_mission(
                     instance_dir, project_name, autonomous_mode,
                     duration_minutes, pending_content,
                     mission_title=mission_title,
+                    provider=provider_name,
+                    model=_tokens.get("model", "") if _tokens else "",
                 )
                 # Fire post_mission hooks before early return so hooks see quota events
                 _fire_post_mission_hook(
@@ -1723,6 +1739,8 @@ def run_post_mission(
             duration_minutes, pending_content,
             mission_title=mission_title,
             pipeline_timed_out=_pipeline_timed_out,
+            provider=provider_name,
+            model=_tokens.get("model", "") if _tokens else "",
         )
         tracker.record("session_outcome", "success")
 

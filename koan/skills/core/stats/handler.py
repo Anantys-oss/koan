@@ -12,12 +12,16 @@ def handle(ctx):
     instance_dir = ctx.instance_dir
     raw_args = ctx.args.strip() if ctx.args else ""
 
-    # Phase 1: parse --week / --month flags (last flag wins, default 7 days)
-    days, project_filter = _parse_args(raw_args)
+    # Parse flags including --perf
+    days, project_filter, show_perf = _parse_args(raw_args)
 
-    # Phase 4: filter outcomes to the requested window
     all_outcomes = _load_outcomes(instance_dir / "session_outcomes.json")
     outcomes = _filter_by_days(all_outcomes, days)
+
+    if show_perf:
+        if not all_outcomes:
+            return "No session data yet. Stats will appear after the first completed run."
+        return _format_perf_breakdown(all_outcomes, days, project_filter or None)
 
     if not outcomes:
         return "No session data yet. Stats will appear after the first completed run."
@@ -38,11 +42,12 @@ def handle(ctx):
 
 
 def _parse_args(raw: str):
-    """Parse flag/project args. Returns (days, project_name).
+    """Parse flag/project args. Returns (days, project_name, show_perf).
 
     Last --week/--month flag wins; remaining token is the project name.
     """
     days = 7
+    show_perf = False
     tokens = raw.split()
     remaining = []
     for token in tokens:
@@ -50,10 +55,12 @@ def _parse_args(raw: str):
             days = 7
         elif token == "--month":
             days = 30
+        elif token == "--perf":
+            show_perf = True
         else:
             remaining.append(token)
     project = " ".join(remaining).strip()
-    return days, project
+    return days, project, show_perf
 
 
 def _filter_by_days(outcomes: list, days: int) -> list:
@@ -570,3 +577,156 @@ def _get_range_summary(instance_dir: Path, days: int) -> Optional[dict]:
         return cost_tracker.summarize_range(instance_dir, start, end)
     except (ImportError, Exception):
         return None
+
+
+# ---------------------------------------------------------------------------
+# Performance breakdown (--perf flag)
+# ---------------------------------------------------------------------------
+
+def _normalize_model_name(raw: str) -> str:
+    """Strip date suffixes from model IDs for readable display.
+
+    "claude-opus-4-20250514" → "claude-opus-4"
+    "claude-sonnet-4-6-20250514" → "claude-sonnet-4-6"
+    Leaves non-standard strings unchanged.
+    """
+    import re
+    return re.sub(r"-\d{8}$", "", raw)
+
+
+def _perf_stats(outcomes: list):
+    """Compute count, avg, median, min, max duration_minutes from outcomes.
+
+    Zero-duration entries are excluded from averages (sessions killed early).
+    Returns (count, avg, median, min_dur, max_dur) — avg/median/min/max are
+    None when no positive-duration entries exist.
+    """
+    durations = [
+        o.get("duration_minutes", 0)
+        for o in outcomes
+        if o.get("duration_minutes", 0) > 0
+    ]
+    count = len(outcomes)
+    if not durations:
+        return count, None, None, None, None
+    durations.sort()
+    avg = sum(durations) / len(durations)
+    mid = len(durations) // 2
+    if len(durations) % 2 == 0:
+        median = (durations[mid - 1] + durations[mid]) / 2
+    else:
+        median = durations[mid]
+    return count, avg, median, durations[0], durations[-1]
+
+
+def _format_perf_row(label: str, count: int, avg, median) -> str:
+    """Format a single perf table row (Telegram monospace-friendly)."""
+    if avg is None:
+        return f"  {label:<18} {count:>4} sessions | no duration data"
+    return (
+        f"  {label:<18} {count:>4} sessions"
+        f" | avg {avg:.0f} min | med {median:.0f} min"
+    )
+
+
+def _format_perf_breakdown(
+    all_outcomes: list,
+    days: int,
+    project_filter: Optional[str] = None,
+) -> str:
+    """Format provider/model performance breakdown for --perf flag.
+
+    Args:
+        all_outcomes: All outcomes loaded from session_outcomes.json.
+        days: Window in days (7 or 30).
+        project_filter: Optional project name to scope output to.
+
+    Returns:
+        Telegram-friendly monospace-formatted string.
+    """
+    now = datetime.now()
+    cutoff = now - timedelta(days=days)
+    prior_cutoff = cutoff - timedelta(days=days)
+
+    def _in_window(o, start, end):
+        ts_str = o.get("timestamp", "")
+        try:
+            ts = datetime.fromisoformat(ts_str)
+        except (ValueError, TypeError):
+            return False
+        return start <= ts < end
+
+    current = [o for o in all_outcomes if _in_window(o, cutoff, now)]
+    prior = [o for o in all_outcomes if _in_window(o, prior_cutoff, cutoff)]
+
+    if project_filter:
+        pf_lower = project_filter.lower()
+        current = [o for o in current if o.get("project", "").lower() == pf_lower]
+        prior = [o for o in prior if o.get("project", "").lower() == pf_lower]
+
+    if not current:
+        scope = f" for '{project_filter}'" if project_filter else ""
+        window_label = "30d" if days == 30 else "7d"
+        return f"No session data{scope} in the last {window_label}."
+
+    window_label = "30d" if days == 30 else "7d"
+    scope_label = f" — {project_filter}" if project_filter else ""
+    lines = [f"Performance ({window_label}){scope_label}"]
+
+    # --- By provider ---
+    by_provider = {}
+    for o in current:
+        p = o.get("provider", "") or "unknown"
+        by_provider.setdefault(p, []).append(o)
+
+    lines.append("\nBy provider:")
+    for prov in sorted(by_provider, key=lambda k: (k == "unknown", k)):
+        count, avg, median, _, _ = _perf_stats(by_provider[prov])
+        lines.append(_format_perf_row(prov, count, avg, median))
+
+    # --- By model ---
+    by_model = {}
+    for o in current:
+        raw_model = o.get("model", "") or "unknown"
+        display = _normalize_model_name(raw_model) if raw_model != "unknown" else "unknown"
+        by_model.setdefault(display, []).append(o)
+
+    lines.append("\nBy model:")
+    for model in sorted(by_model, key=lambda k: (k == "unknown", k)):
+        count, avg, median, _, _ = _perf_stats(by_model[model])
+        lines.append(_format_perf_row(model, count, avg, median))
+
+    # --- Trend vs prior window ---
+    trend = _compute_trend(current, prior)
+    if trend is not None:
+        cur_avg, prev_avg, delta_pct = trend
+        direction = "↓" if delta_pct < 0 else "↑"
+        lines.append(
+            f"\nTrend (vs prior {window_label}):"
+            f"\n  avg duration: {prev_avg:.0f} min → {cur_avg:.0f} min"
+            f" ({direction}{abs(delta_pct):.0f}%)"
+        )
+
+    return "\n".join(lines)
+
+
+def _compute_trend(current: list, prior: list):
+    """Compute average duration trend between two windows.
+
+    Returns (cur_avg, prev_avg, delta_pct) or None when insufficient data.
+    delta_pct is negative when duration decreased (faster).
+    """
+    cur_durations = [
+        o.get("duration_minutes", 0) for o in current if o.get("duration_minutes", 0) > 0
+    ]
+    prev_durations = [
+        o.get("duration_minutes", 0) for o in prior if o.get("duration_minutes", 0) > 0
+    ]
+    if not cur_durations or not prev_durations:
+        return None
+    cur_avg = sum(cur_durations) / len(cur_durations)
+    prev_avg = sum(prev_durations) / len(prev_durations)
+    if prev_avg == 0:
+        return None
+    delta_pct = (cur_avg - prev_avg) / prev_avg * 100
+    return cur_avg, prev_avg, delta_pct
