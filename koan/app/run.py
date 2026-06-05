@@ -910,6 +910,9 @@ def main_loop():
                 consecutive_idle = 0
                 consecutive_nonproductive = 0
                 idle_notified = False
+                from app.feature_tips import mark_active
+                mark_active()
+                _startup_notified = False
                 log("koan", f"Run counter reset (was {old_count}/{max_runs}, now 0/{max_runs}).")
                 _notify(instance, f"🔄 Run counter reset: {old_count} → 0 (max {max_runs}).")
 

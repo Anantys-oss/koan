@@ -100,10 +100,32 @@ class TestResetSkillRegistry:
 class TestResetInMainLoop:
     """Test the reset counter signal is consumed in the main loop."""
 
-    def test_signal_file_cleared_on_startup(self, tmp_path, monkeypatch):
+    @patch("app.run.subprocess.run")
+    @patch("app.run.run_startup", return_value=(5, 10, "koan/"))
+    @patch("app.run.acquire_pidfile")
+    @patch("app.run.release_pidfile")
+    def test_signal_file_cleared_on_startup(self, mock_release, mock_acquire, mock_startup, mock_subproc, tmp_path, monkeypatch):
         """Stale reset signal from previous session is cleared at startup."""
+        import os
+
+        from app.run import main_loop
         from app.signals import RESET_COUNTER_FILE
 
-        reset_file = tmp_path / RESET_COUNTER_FILE
+        koan_root = tmp_path
+        os.environ["KOAN_ROOT"] = str(koan_root)
+        os.environ["KOAN_PROJECTS"] = f"test:{koan_root}"
+        (koan_root / ".koan-project").write_text("test")
+
+        reset_file = koan_root / RESET_COUNTER_FILE
         reset_file.touch()
-        assert reset_file.exists()
+
+        def startup_then_stop(*args, **kwargs):
+            (koan_root / ".koan-stop").touch()
+            return (5, 10, "koan/")
+
+        mock_startup.side_effect = startup_then_stop
+
+        with patch("app.run._notify"):
+            main_loop()
+
+        assert not reset_file.exists()
