@@ -99,6 +99,16 @@ app = Flask(
 )
 
 
+@app.url_defaults
+def _static_cache_buster(endpoint, values):
+    if endpoint == "static":
+        filename = values.get("filename")
+        if filename and not filename.endswith("/"):
+            file_path = Path(app.static_folder) / filename
+            with contextlib.suppress(OSError):
+                values["v"] = int(file_path.stat().st_mtime)
+
+
 @app.context_processor
 def _inject_instance_nickname():
     from app.config import get_dashboard_nickname

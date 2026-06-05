@@ -77,6 +77,20 @@ class TestParsingMissions:
             assert result == {"pending": [], "in_progress": [], "done": []}
 
 
+class TestStaticCacheBusting:
+    def test_static_urls_include_version_param(self, app_client):
+        resp = app_client.get("/")
+        html = resp.data.decode()
+        assert "css/koan.css?v=" in html
+        assert "js/koan.js?v=" in html
+        assert "js/dashboard.js?v=" in html
+
+    def test_favicon_directory_url_has_no_version(self, app_client):
+        resp = app_client.get("/")
+        html = resp.data.decode()
+        assert 'data-base="/static/favicon/"' in html
+
+
 class TestRoutes:
     def test_index(self, app_client):
         resp = app_client.get("/")
