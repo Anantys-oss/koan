@@ -3376,6 +3376,38 @@ class TestMissionRunnerLintBlocking:
 
 
 # ---------------------------------------------------------------------------
+# _read_full_stdout_text
+# ---------------------------------------------------------------------------
+
+
+class TestReadFullStdoutText:
+    """Tests for _read_full_stdout_text — uncapped stdout reader for autoreview."""
+
+    def test_reads_and_parses_json_stdout(self, tmp_path):
+        from app.mission_runner import _read_full_stdout_text
+        stdout_file = tmp_path / "stdout.txt"
+        stdout_file.write_text(
+            '{"type":"result","result":"Created PR: https://github.com/o/r/pull/1"}'
+        )
+        result = _read_full_stdout_text(str(stdout_file))
+        assert "https://github.com/o/r/pull/1" in result
+
+    def test_returns_empty_for_missing_file(self):
+        from app.mission_runner import _read_full_stdout_text
+        assert _read_full_stdout_text("/nonexistent/file.txt") == ""
+
+    def test_returns_empty_for_empty_file(self, tmp_path):
+        from app.mission_runner import _read_full_stdout_text
+        stdout_file = tmp_path / "stdout.txt"
+        stdout_file.write_text("")
+        assert _read_full_stdout_text(str(stdout_file)) == ""
+
+    def test_returns_empty_for_empty_string_arg(self):
+        from app.mission_runner import _read_full_stdout_text
+        assert _read_full_stdout_text("") == ""
+
+
+# ---------------------------------------------------------------------------
 # _maybe_queue_autoreview
 # ---------------------------------------------------------------------------
 
@@ -3387,7 +3419,8 @@ class TestMaybeQueueAutoreview:
     PENDING_WITH_PR = f"Created PR: {PR_URL} — ready for review"
 
     def _call(self, instance_dir, mission_title="", pending_content=None,
-              projects_config=None, merge_result=None, security_blocked=False):
+              projects_config=None, merge_result=None, security_blocked=False,
+              stdout_file=""):
         from app.mission_runner import _maybe_queue_autoreview
         _maybe_queue_autoreview(
             str(instance_dir),
@@ -3397,6 +3430,7 @@ class TestMaybeQueueAutoreview:
             projects_config,
             merge_result,
             security_blocked=security_blocked,
+            stdout_file=stdout_file,
         )
 
     @patch("app.utils.insert_pending_mission", return_value=True)
@@ -3528,3 +3562,50 @@ class TestMaybeQueueAutoreview:
         (tmp_path / "missions.md").write_text("## Pending\n")
         self._call(tmp_path, mission_title=f"/review_rebase {self.PR_URL}", projects_config=config)
         mock_insert.assert_not_called()
+
+    @patch("app.utils.insert_pending_mission", return_value=True)
+    @patch("app.projects_config.get_project_autoreview", return_value=True)
+    def test_falls_back_to_stdout_when_pending_empty(
+        self, mock_autoreview, mock_insert, tmp_path
+    ):
+        """When pending_content has no PR signal, fall back to full stdout."""
+        config = {"projects": {"myapp": {"path": str(tmp_path)}}}
+        (tmp_path / "missions.md").write_text("## Pending\n")
+        # Write stdout file with PR URL buried in JSON-like content
+        stdout_file = tmp_path / "stdout.txt"
+        stdout_file.write_text(
+            f'{{"type":"result","result":"PR created: {self.PR_URL}"}}'
+        )
+        self._call(
+            tmp_path,
+            pending_content="no pr info here",
+            projects_config=config,
+            stdout_file=str(stdout_file),
+        )
+        assert mock_insert.call_count == 2
+        calls = [str(c) for c in mock_insert.call_args_list]
+        assert any("/review" in c for c in calls)
+        assert any("/rebase" in c for c in calls)
+
+    @patch("app.utils.insert_pending_mission", return_value=True)
+    @patch("app.projects_config.get_project_autoreview", return_value=True)
+    def test_prefers_pending_content_over_stdout(
+        self, mock_autoreview, mock_insert, tmp_path
+    ):
+        """pending_content PR URL takes precedence over stdout."""
+        config = {"projects": {"myapp": {"path": str(tmp_path)}}}
+        (tmp_path / "missions.md").write_text("## Pending\n")
+        stdout_file = tmp_path / "stdout.txt"
+        stdout_file.write_text(
+            '{"type":"result","result":"PR created: https://github.com/owner/repo/pull/99"}'
+        )
+        self._call(
+            tmp_path,
+            pending_content=self.PENDING_WITH_PR,
+            projects_config=config,
+            stdout_file=str(stdout_file),
+        )
+        assert mock_insert.call_count == 2
+        # Should use PR URL from pending_content (#42), not stdout (#99)
+        first_call = str(mock_insert.call_args_list[0])
+        assert "/pull/42" in first_call

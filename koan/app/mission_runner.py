@@ -1273,6 +1273,24 @@ def _extract_pr_url(content: str) -> str:
     return match.group(0) if match else ""
 
 
+def _read_full_stdout_text(stdout_file: str) -> str:
+    """Read and parse the full Claude stdout for PR detection.
+
+    Unlike _read_stdout_summary (capped at 2000 chars), this reads the full
+    output so PR URLs aren't lost to truncation.
+    """
+    try:
+        stdout_path = Path(stdout_file)
+        if not stdout_path.exists():
+            return ""
+        raw = stdout_path.read_text(errors="replace")
+        if not raw.strip():
+            return ""
+        return parse_claude_output(raw) or ""
+    except (OSError, FileNotFoundError):
+        return ""
+
+
 def _maybe_queue_autoreview(
     instance_dir: str,
     project_name: str,
@@ -1281,13 +1299,14 @@ def _maybe_queue_autoreview(
     projects_config: Optional[dict],
     merge_result,
     security_blocked: bool = False,
+    stdout_file: str = "",
 ) -> None:
     """Queue /review then /rebase missions when autoreview is enabled for a project.
 
     Skipped when:
     - autoreview is disabled for the project
     - the mission did not create a PR
-    - no PR URL can be extracted from pending_content
+    - no PR URL can be extracted from pending_content or stdout
     - the PR was auto-merged (merge_result is not None)
     - the mission is itself a /review or /rebase (prevents infinite loops)
     - security review blocked the PR
@@ -1313,13 +1332,17 @@ def _maybe_queue_autoreview(
     if not get_project_autoreview(projects_config, project_name):
         return
 
-    # Detect PR creation
+    # Detect PR creation — check pending_content first, then full stdout.
+    # The agent often deletes pending.md before exiting, so pending_content
+    # falls back to _read_stdout_summary() capped at 2000 chars — PR URLs
+    # are frequently beyond that limit.
     from app.session_tracker import detect_pr_created
-    if not detect_pr_created(pending_content):
+    full_stdout = _read_full_stdout_text(stdout_file) if stdout_file else ""
+    if not detect_pr_created(pending_content) and not detect_pr_created(full_stdout):
         return
 
-    # Extract PR URL
-    pr_url = _extract_pr_url(pending_content)
+    # Extract PR URL — try pending_content first, fall back to full stdout
+    pr_url = _extract_pr_url(pending_content) or _extract_pr_url(full_stdout)
     if not pr_url:
         _log_runner("warn", f"Autoreview: PR detected but no URL found in output for {project_name}")
         return
@@ -1708,6 +1731,7 @@ def run_post_mission(
                 instance_dir, project_name, mission_title,
                 pending_content, _projects_config, merge_result,
                 security_blocked=security_blocking,
+                stdout_file=stdout_file,
             )
         else:
             # Non-zero exit — skip success-only steps
