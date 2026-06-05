@@ -67,8 +67,8 @@ class TestShowStatus:
         ctx = _make_ctx("explore", tmp_path)
         result = handle(ctx)
 
-        assert "✅ koan: ON" in result
-        assert "❌ backend: OFF" in result
+        assert "🟢 koan: ON" in result
+        assert "⭕️ backend: OFF" in result
 
     def test_show_status_inherits_defaults(self, tmp_path):
         from skills.core.explore.handler import handle
@@ -83,8 +83,8 @@ class TestShowStatus:
         ctx = _make_ctx("explore", tmp_path)
         result = handle(ctx)
 
-        assert "❌ koan: OFF" in result
-        assert "✅ backend: ON" in result
+        assert "⭕️ koan: OFF" in result
+        assert "🟢 backend: ON" in result
 
     def test_show_status_default_is_true(self, tmp_path):
         from skills.core.explore.handler import handle
@@ -97,7 +97,7 @@ class TestShowStatus:
         ctx = _make_ctx("explore", tmp_path)
         result = handle(ctx)
 
-        assert "✅ myproject: ON" in result
+        assert "🟢 myproject: ON" in result
 
     def test_noexplore_no_args_shows_status(self, tmp_path):
         from skills.core.explore.handler import handle

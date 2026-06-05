@@ -78,7 +78,7 @@ def _show_status(config, koan_root):
     lines = ["🔭 Exploration status:"]
     for name in sorted(all_names, key=str.lower):
         enabled = _get_exploration_status(config, name)
-        icon = "✅" if enabled else "❌"
+        icon = "🟢" if enabled else "⭕️"
         state = "ON" if enabled else "OFF"
         suffix = " (workspace)" if name not in yaml_only_names else ""
         lines.append(f"  {icon} {name}: {state}{suffix}")
