@@ -107,7 +107,7 @@ def _handle_display(ctx):
 
     parts = []
 
-    # --- Section 1: Koan's internal token tracking (live from state, not cache) ---
+    # --- Section 1: Koan's internal token tracking ---
     state = _load_usage_state(instance_dir / "usage_state.json")
     config = _load_config()
     session_limit, weekly_limit = _get_limits(config)
@@ -117,22 +117,26 @@ def _handle_display(ctx):
         parts.append(_format_koan_usage(state, session_limit, weekly_limit,
                                         instance_dir=instance_dir))
     else:
-        parts.append("No internal usage data yet (first run?).")
+        parts.append("No usage data yet (first run?).")
 
-    # --- Section 2: Claude CLI stats (live from stats-cache.json) ---
-    cli_stats = _load_cli_stats()
-    if cli_stats:
-        parts.append(_format_cli_stats(cli_stats))
-
-    # --- Section 2b: Per-project/model breakdown (last 7 days) ---
+    # --- Section 2: Per-project/model breakdown (last 7 days) ---
     cost_section = _format_cost_breakdown(instance_dir)
     if cost_section:
         parts.append(cost_section)
 
-    # --- Section 3: Agent state ---
+    # --- Section 3: Claude CLI stats ---
+    cli_stats = _load_cli_stats()
+    if cli_stats:
+        parts.append(_format_cli_stats(cli_stats))
+
+    # --- Section 4: Agent state ---
     parts.append(_format_agent_state(koan_root))
 
-    return "\n\n".join(parts)
+    # --- Footer ---
+    parts.append("⚠ Estimates — /quota N to correct")
+
+    body = "\n\n".join(parts)
+    return f"```\n{body}\n```"
 
 
 def _load_usage_state(state_path):
@@ -201,11 +205,11 @@ def _format_tokens(n):
 
 
 def _progress_bar(pct, width=10):
-    """Build a small text progress bar."""
+    """Build a small unicode progress bar."""
     filled = round(pct / 100 * width)
     filled = min(filled, width)
     empty = width - filled
-    return "[" + "=" * filled + "." * empty + "]"
+    return "●" * filled + "○" * empty
 
 
 def _time_remaining(start_iso, duration_hours):
@@ -242,10 +246,10 @@ def _format_koan_usage(state, session_limit, weekly_limit, instance_dir=None):
         days_to_monday = 7
 
     lines = [
-        "Session quota (token estimate)",
-        f"  {_progress_bar(session_pct)} ~{session_pct}%",
+        f"◉ Session ({SESSION_DURATION_HOURS}h window)",
+        f"  {_progress_bar(session_pct)}  {session_pct}%",
         f"  {_format_tokens(session_tokens)} / {_format_tokens(session_limit)} tokens",
-        f"  Resets in {session_reset} | {runs} run(s) this session",
+        f"  ⏱ {session_reset} │ {runs} runs",
     ]
 
     burn_lines = _format_burn_rate(instance_dir, session_pct)
@@ -254,23 +258,17 @@ def _format_koan_usage(state, session_limit, weekly_limit, instance_dir=None):
 
     lines.extend([
         "",
-        "Weekly quota (token estimate)",
-        f"  {_progress_bar(weekly_pct)} ~{weekly_pct}%",
+        "◉ Weekly",
+        f"  {_progress_bar(weekly_pct)}  {weekly_pct}%",
         f"  {_format_tokens(weekly_tokens)} / {_format_tokens(weekly_limit)} tokens",
-        f"  Resets in {days_to_monday}d",
-        "",
-        "⚠️ These are estimates based on token counting.",
-        "Real API quota may differ — use /quota <N> to correct.",
+        f"  ⏱ {days_to_monday}d",
     ])
 
     return "\n".join(lines)
 
 
 def _format_burn_rate(instance_dir, session_pct):
-    """Build the burn-rate summary lines for /quota output.
-
-    Returns an empty list when there is not enough history to estimate.
-    """
+    """Build the burn-rate summary line for /quota output."""
     if instance_dir is None:
         return []
 
@@ -289,8 +287,7 @@ def _format_burn_rate(instance_dir, session_pct):
     tte = time_to_exhaustion(instance_dir, session_pct)
     tte_str = "—" if tte is None else _format_minutes(tte)
     return [
-        f"  Burn rate: ~{rate * 60:.1f}%/h ({rate:.2f}%/min)",
-        f"  Est. time to exhaustion: {tte_str}",
+        f"  ↗ ~{rate * 60:.1f}%/h ({rate:.2f}%/min) │ {tte_str} left",
     ]
 
 
@@ -318,33 +315,29 @@ def _format_cost_breakdown(instance_dir):
     if not by_project and not by_model:
         return None
 
-    lines = ["Usage (7 days)"]
+    lines = ["◎ Usage (7d)"]
 
     if by_project:
-        # Top 3 projects by total tokens
         sorted_projects = sorted(
             by_project.items(),
             key=lambda x: x[1]["input_tokens"] + x[1]["output_tokens"],
             reverse=True,
         )[:3]
-        lines.append("  By project:")
         for name, data in sorted_projects:
             total = data["input_tokens"] + data["output_tokens"]
-            lines.append(f"    {name}: {_format_tokens(total)} ({data['count']} runs)")
+            lines.append(f"  {name}: {_format_tokens(total)} ({data['count']} runs)")
 
     if by_model:
-        # Top 2 models by total tokens
         sorted_models = sorted(
             by_model.items(),
             key=lambda x: x[1]["input_tokens"] + x[1]["output_tokens"],
             reverse=True,
         )[:2]
-        lines.append("  By model:")
         for name, data in sorted_models:
             short = _short_model_name(name)
             inp = data["input_tokens"]
             out = data["output_tokens"]
-            lines.append(f"    {short}: {_format_tokens(inp)} in / {_format_tokens(out)} out")
+            lines.append(f"  {short}: {_format_tokens(inp)} in │ {_format_tokens(out)} out")
 
     # Cache performance (today)
     today_summary = summarize_day(instance_dir)
@@ -354,14 +347,11 @@ def _format_cost_breakdown(instance_dir):
     total_cost = today_summary.get("total_cost_usd", 0.0)
 
     if cache_read or cache_create:
-        lines.append("  Cache (today):")
-        lines.append(f"    Hit rate: {cache_hit_rate:.0%}")
-        lines.append(
-            f"    Read: {_format_tokens(cache_read)} | "
-            f"Created: {_format_tokens(cache_create)}"
-        )
+        lines.append(f"  cache: {cache_hit_rate:.0%} hit │ "
+                     f"{_format_tokens(cache_read)} read │ "
+                     f"{_format_tokens(cache_create)} new")
     if total_cost > 0:
-        lines.append(f"  Cost (today): ${total_cost:.2f}")
+        lines.append(f"  cost today: ${total_cost:.2f}")
 
     return "\n".join(lines)
 
@@ -378,7 +368,7 @@ def _load_cli_stats():
 
 def _format_cli_stats(stats):
     """Format Claude CLI global statistics."""
-    lines = ["Claude CLI stats"]
+    lines = ["◎ CLI stats"]
 
     # Today's activity
     today = datetime.now().strftime("%Y-%m-%d")
@@ -389,7 +379,7 @@ def _format_cli_stats(stats):
         msgs = today_entry.get("messageCount", 0)
         sessions = today_entry.get("sessionCount", 0)
         tools = today_entry.get("toolCallCount", 0)
-        lines.append(f"  Today: {msgs:,} msgs | {sessions} sessions | {tools:,} tool calls")
+        lines.append(f"  today: {msgs:,} msgs │ {sessions} sessions │ {tools:,} calls")
 
     # Model token breakdown for today
     daily_tokens = stats.get("dailyModelTokens", [])
@@ -398,15 +388,14 @@ def _format_cli_stats(stats):
     if today_tokens:
         by_model = today_tokens.get("tokensByModel", {})
         if by_model:
-            lines.append("  Today by model:")
+            model_parts = []
             for model, tokens in sorted(by_model.items()):
-                short_name = _short_model_name(model)
-                lines.append(f"    {short_name}: {_format_tokens(tokens)}")
+                model_parts.append(f"{_short_model_name(model)} {_format_tokens(tokens)}")
+            lines.append(f"  today: {' │ '.join(model_parts)}")
 
     # Total model usage (cumulative)
     model_usage = stats.get("modelUsage", {})
     if model_usage:
-        lines.append("  Cumulative:")
         for model, usage in sorted(model_usage.items()):
             short_name = _short_model_name(model)
             inp = usage.get("inputTokens", 0)
@@ -414,7 +403,7 @@ def _format_cli_stats(stats):
             cache_read = usage.get("cacheReadInputTokens", 0)
             total = inp + out
             lines.append(
-                f"    {short_name}: {_format_tokens(total)} "
+                f"  {short_name}: {_format_tokens(total)} "
                 f"(+{_format_tokens(cache_read)} cache)"
             )
 
@@ -422,7 +411,7 @@ def _format_cli_stats(stats):
     total_sessions = stats.get("totalSessions", 0)
     total_messages = stats.get("totalMessages", 0)
     if total_sessions:
-        lines.append(f"  All time: {total_sessions:,} sessions | {total_messages:,} messages")
+        lines.append(f"  all time: {total_sessions:,} sessions │ {total_messages:,} msgs")
 
     return "\n".join(lines)
 
@@ -440,30 +429,30 @@ def _short_model_name(model_id):
 
 def _format_agent_state(koan_root):
     """Format current agent state."""
-    lines = ["Agent"]
-
     pause_file = koan_root / ".koan-pause"
     stop_file = koan_root / ".koan-stop"
 
     if stop_file.exists():
-        lines.append("  State: stopping")
+        state_str = "stopping"
     elif pause_file.exists():
         from app.pause_manager import get_pause_state
         state = get_pause_state(str(koan_root))
         reason = state.reason if state else ""
         if reason == "quota":
-            lines.append("  State: paused (quota exhausted)")
+            state_str = "paused (quota exhausted)"
         elif reason == "max_runs":
-            lines.append("  State: paused (max runs)")
+            state_str = "paused (max runs)"
         else:
-            lines.append("  State: paused")
+            state_str = "paused"
     else:
-        lines.append("  State: running")
+        state_str = "running"
+
+    lines = [f"○ Agent: {state_str}"]
 
     status_file = koan_root / ".koan-status"
     if status_file.exists():
         loop_status = status_file.read_text().strip()
         if loop_status:
-            lines.append(f"  Loop: {loop_status}")
+            lines.append(f"  {loop_status}")
 
     return "\n".join(lines)

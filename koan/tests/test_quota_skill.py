@@ -106,7 +106,7 @@ class TestQuotaHandler:
 
         ctx = _make_ctx(tmp_path)
         result = handle(ctx)
-        assert "first run" in result.lower() or "no internal" in result.lower()
+        assert "first run" in result.lower() or "no usage" in result.lower()
         assert "Agent" in result
 
     @patch("skills.core.quota.handler.STATS_CACHE_PATH", Path("/nonexistent"))
@@ -118,8 +118,8 @@ class TestQuotaHandler:
         ctx = _make_ctx(tmp_path)
         _write_usage_state(ctx.instance_dir)
         result = handle(ctx)
-        assert "Session quota" in result
-        assert "Weekly quota" in result
+        assert "◉ Session" in result
+        assert "◉ Weekly" in result
         assert "%" in result
 
     @patch("skills.core.quota.handler._load_config", return_value={})
@@ -136,8 +136,8 @@ class TestQuotaHandler:
         with patch("skills.core.quota.handler.STATS_CACHE_PATH", stats_path):
             result = handle(ctx)
 
-        assert "Claude CLI stats" in result
-        assert "Today:" in result
+        assert "◎ CLI stats" in result
+        assert "today" in result
         assert "Opus" in result
 
     @patch("skills.core.quota.handler.STATS_CACHE_PATH", Path("/nonexistent"))
@@ -175,6 +175,29 @@ class TestQuotaHandler:
         (tmp_path / ".koan-status").write_text("sleeping (next run in 3m)")
         result = handle(ctx)
         assert "sleeping" in result
+
+    @patch("skills.core.quota.handler.STATS_CACHE_PATH", Path("/nonexistent"))
+    @patch("skills.core.quota.handler._load_config", return_value={})
+    def test_output_wrapped_in_code_block(self, mock_config, tmp_path):
+        """Full output wrapped in markdown code block for Telegram rendering."""
+        from skills.core.quota.handler import handle
+
+        ctx = _make_ctx(tmp_path)
+        _write_usage_state(ctx.instance_dir)
+        result = handle(ctx)
+        assert result.startswith("```\n")
+        assert result.endswith("\n```")
+
+    @patch("skills.core.quota.handler.STATS_CACHE_PATH", Path("/nonexistent"))
+    @patch("skills.core.quota.handler._load_config", return_value={})
+    def test_footer_present(self, mock_config, tmp_path):
+        """Footer with correction hint is present."""
+        from skills.core.quota.handler import handle
+
+        ctx = _make_ctx(tmp_path)
+        _write_usage_state(ctx.instance_dir)
+        result = handle(ctx)
+        assert "/quota N" in result
 
 
 # ---------------------------------------------------------------------------
@@ -218,31 +241,31 @@ class TestFormatTokens:
 # ---------------------------------------------------------------------------
 
 class TestProgressBar:
-    """Test text progress bar rendering."""
+    """Test unicode progress bar rendering."""
 
     def test_zero_percent(self):
         from skills.core.quota.handler import _progress_bar
-        assert _progress_bar(0) == "[..........]"
+        assert _progress_bar(0) == "○○○○○○○○○○"
 
     def test_hundred_percent(self):
         from skills.core.quota.handler import _progress_bar
-        assert _progress_bar(100) == "[==========]"
+        assert _progress_bar(100) == "●●●●●●●●●●"
 
     def test_fifty_percent(self):
         from skills.core.quota.handler import _progress_bar
         bar = _progress_bar(50)
-        assert bar.count("=") == 5
-        assert bar.count(".") == 5
+        assert bar.count("●") == 5
+        assert bar.count("○") == 5
 
     def test_over_hundred_clamped(self):
         from skills.core.quota.handler import _progress_bar
-        assert _progress_bar(150) == "[==========]"
+        assert _progress_bar(150) == "●●●●●●●●●●"
 
     def test_custom_width(self):
         from skills.core.quota.handler import _progress_bar
         bar = _progress_bar(50, width=20)
-        assert bar.count("=") == 10
-        assert bar.count(".") == 10
+        assert bar.count("●") == 10
+        assert bar.count("○") == 10
 
 
 # ---------------------------------------------------------------------------
@@ -380,9 +403,9 @@ class TestFormatKoanUsage:
             "runs": 5,
         }
         result = _format_koan_usage(state, 500_000, 5_000_000)
-        assert "[" in result and "]" in result
+        assert "●" in result and "○" in result
         assert "50%" in result
-        assert "5 run(s)" in result
+        assert "5 runs" in result
 
     def test_zero_usage(self):
         from skills.core.quota.handler import _format_koan_usage
@@ -394,7 +417,7 @@ class TestFormatKoanUsage:
         }
         result = _format_koan_usage(state, 500_000, 5_000_000)
         assert "0%" in result
-        assert "0 run(s)" in result
+        assert "0 runs" in result
 
     def test_max_usage_capped_at_100(self):
         from skills.core.quota.handler import _format_koan_usage
@@ -406,6 +429,18 @@ class TestFormatKoanUsage:
         }
         result = _format_koan_usage(state, 500_000, 5_000_000)
         assert "100%" in result
+
+    def test_section_headers(self):
+        from skills.core.quota.handler import _format_koan_usage
+        state = {
+            "session_tokens": 100_000,
+            "weekly_tokens": 500_000,
+            "session_start": datetime.now().isoformat(),
+            "runs": 3,
+        }
+        result = _format_koan_usage(state, 500_000, 5_000_000)
+        assert "◉ Session" in result
+        assert "◉ Weekly" in result
 
 
 # ---------------------------------------------------------------------------
@@ -451,7 +486,7 @@ class TestFormatCliStats:
             "totalMessages": 0,
         }
         result = _format_cli_stats(stats)
-        assert "Claude CLI stats" in result
+        assert "◎ CLI stats" in result
 
     def test_no_today_data(self):
         """Stats exist but nothing for today."""
@@ -466,8 +501,10 @@ class TestFormatCliStats:
             "totalMessages": 400,
         }
         result = _format_cli_stats(stats)
-        assert "Claude CLI stats" in result
-        assert "Today:" not in result
+        assert "◎ CLI stats" in result
+        # "today:" should not appear when there's no today data
+        lines = result.split("\n")
+        assert not any("today:" in line for line in lines[1:])  # skip header
 
 
 # ---------------------------------------------------------------------------
@@ -511,6 +548,11 @@ class TestFormatAgentState:
         (tmp_path / ".koan-status").write_text("executing mission: fix auth")
         result = _format_agent_state(tmp_path)
         assert "executing mission" in result
+
+    def test_uses_circle_marker(self, tmp_path):
+        from skills.core.quota.handler import _format_agent_state
+        result = _format_agent_state(tmp_path)
+        assert result.startswith("○ Agent:")
 
 
 # ---------------------------------------------------------------------------
@@ -596,7 +638,7 @@ class TestQuotaEdgeCases:
         ctx = _make_ctx(tmp_path)
         (ctx.instance_dir / "usage_state.json").write_text("{invalid json")
         result = handle(ctx)
-        assert "first run" in result.lower() or "no internal" in result.lower()
+        assert "first run" in result.lower() or "no usage" in result.lower()
 
     def test_corrupt_cli_stats(self, tmp_path):
         """Corrupt stats-cache.json doesn't crash."""
@@ -611,7 +653,7 @@ class TestQuotaEdgeCases:
              patch("skills.core.quota.handler._load_config", return_value={}):
             result = handle(ctx)
         # Should still return usage data, just skip CLI stats
-        assert "Session quota" in result
+        assert "◉ Session" in result
 
     @patch("skills.core.quota.handler.STATS_CACHE_PATH", Path("/nonexistent"))
     @patch("skills.core.quota.handler._load_config", return_value={
@@ -654,8 +696,7 @@ class TestFormatCostBreakdown:
 
         result = _format_cost_breakdown(instance_dir)
         assert result is not None
-        assert "Usage (7 days)" in result
-        assert "By project:" in result
+        assert "◎ Usage (7d)" in result
         assert "koan" in result
         assert "other" in result
 
@@ -669,7 +710,6 @@ class TestFormatCostBreakdown:
         record_usage(instance_dir, "p", "claude-opus-4-20250514", 20000, 8000)
 
         result = _format_cost_breakdown(instance_dir)
-        assert "By model:" in result
         assert "Opus" in result
         assert "Sonnet" in result
 
@@ -728,8 +768,8 @@ class TestFormatCostBreakdown:
         with patch("skills.core.quota.handler.STATS_CACHE_PATH", Path("/nonexistent")), \
              patch("skills.core.quota.handler._load_config", return_value={}):
             result = handle(ctx)
-        assert "Session quota" in result
-        assert "Usage (7 days)" in result
+        assert "◉ Session" in result
+        assert "◎ Usage (7d)" in result
         assert "koan" in result
 
 
@@ -855,5 +895,5 @@ class TestQuotaOverride:
         with patch("skills.core.quota.handler.STATS_CACHE_PATH", Path("/nonexistent")), \
              patch("skills.core.quota.handler._load_config", return_value={}):
             result = handle(ctx)
-        assert "Session quota" in result
+        assert "◉ Session" in result
         assert "Agent" in result
