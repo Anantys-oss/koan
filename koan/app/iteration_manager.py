@@ -43,6 +43,10 @@ from app.run_log import log_safe, suppress_logged
 # Set to True when running as CLI subprocess (stdout carries JSON).
 _cli_mode = False
 
+# Track projects already reported as branch-saturated this session (log once, not every iteration)
+_branch_saturated_logged: set = set()
+_no_github_url_logged: set = set()
+
 
 def _log_iteration(category: str, message: str):
     """Log iteration events, routing to stderr in CLI subprocess mode."""
@@ -1096,8 +1100,10 @@ def _filter_exploration_projects(
                 urls_to_check.add(url)
 
         if not urls_to_check:
-            _log_iteration("debug",
-                f"Project '{name}' has max_open_prs={limit} but no github_url — skipping PR check")
+            if name not in _no_github_url_logged:
+                _log_iteration("debug",
+                    f"Project '{name}' has max_open_prs={limit} but no github_url — skipping PR check")
+                _no_github_url_logged.add(name)
             filtered.append((name, path))
             continue
 
@@ -1174,9 +1180,11 @@ def _filter_exploration_projects(
             continue
 
         if count >= branch_limit:
-            _log_iteration("koan",
-                f"Project '{name}' branch-saturated ({count}/{branch_limit}) "
-                f"— excluding from exploration")
+            if name not in _branch_saturated_logged:
+                _log_iteration("koan",
+                    f"Project '{name}' branch-saturated ({count}/{branch_limit}) "
+                    f"— excluding from exploration")
+                _branch_saturated_logged.add(name)
             branch_saturated.append(name)
         else:
             final_filtered.append((name, path))
