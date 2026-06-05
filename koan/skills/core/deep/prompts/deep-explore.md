@@ -34,23 +34,231 @@ Start by building a mental model of the project:
 - Look at test coverage — what's tested, what's not
 - Check for CLAUDE.md, README, or other project docs
 
-### Phase 2: Analyze
+## Phase 2: Analyze
 
-With understanding in hand, look for:
-- **Bugs**: Real bugs, not style nitpicks. Race conditions, off-by-one errors, unchecked
-  error paths, data loss risks, silent failures
-- **Architecture issues**: Misplaced responsibilities, circular dependencies, abstractions
-  that leak, modules doing too many things
-- **Missing tests**: Critical paths with no test coverage, edge cases untested
-- **Security concerns**: Input validation gaps, injection risks, improper auth checks
-- **Performance**: O(n²) where O(n) exists, unnecessary I/O, missing caching
-- **Reliability**: Error handling that swallows exceptions, retry logic without backoff,
-  resource leaks (file handles, connections)
+With understanding in hand, run a focused deep analysis pass.
 
-### Phase 3: Propose
+You may work alone, but if the tooling/runtime supports sub-agents, you should start **up to 5 parallel sub-agents** to broaden the search.
 
-Generate **5-10 concrete, actionable missions** ranked by impact. Each must be specific
-enough that another agent can implement it without re-reading the entire codebase.
+The orchestrator must assign each sub-agent **one distinct focus area** selected from the list below. If there are more focus areas than available sub-agents, choose the most relevant areas based on project shape, recent activity, risk profile, and current state. If no clear priority exists, assign areas randomly.
+
+The orchestrator remains responsible for the final judgment. Sub-agents gather evidence; the orchestrator validates, reconciles, deduplicates, and prioritizes findings.
+
+### Focus Areas
+
+#### 1. Bugs and Correctness
+- Real bugs, not style nitpicks.
+- Race conditions.
+- Data corruption risks.
+- Off-by-one errors.
+- Broken edge cases.
+- Silent failures.
+- Incorrect assumptions.
+- State consistency issues.
+- User-visible defects.
+
+#### 2. Architecture and Maintainability
+- Misplaced responsibilities.
+- Circular dependencies.
+- Leaky abstractions.
+- Excessive coupling.
+- Duplicate business logic.
+- Modules doing too many things.
+- Designs slowing future delivery.
+
+Do not recommend large rewrites unless there is clear evidence the current architecture is blocking progress.
+
+#### 3. Testing and SDLC Confidence
+- Missing test coverage on critical paths.
+- Missing regression tests.
+- Untested edge cases.
+- Fragile mocks.
+- Flaky tests.
+- Gaps between CI validation and production behavior.
+
+Favor tests that would catch real failures.
+
+#### 4. Security and Trust Boundaries
+- Input validation issues.
+- Injection risks.
+- Improper authorization.
+- Secret exposure.
+- Unsafe defaults.
+- Insecure file or network operations.
+- Boundary violations involving untrusted input.
+
+Security findings must be backed by concrete evidence.
+
+#### 5. Performance and Scalability
+- Inefficient algorithms.
+- Repeated I/O.
+- Missing caching.
+- Expensive queries.
+- Excessive serialization.
+- Unnecessary network calls.
+- Blocking operations in critical paths.
+
+Distinguish theoretical concerns from realistic bottlenecks.
+
+#### 6. Reliability and Operations
+- Swallowed exceptions.
+- Missing timeouts.
+- Retries without backoff.
+- Resource leaks.
+- Weak observability.
+- Poor logging.
+- Recovery path weaknesses.
+- Startup/shutdown fragility.
+
+Focus on production impact.
+
+#### 7. Product Impact and Bold Opportunities
+- User experience improvements.
+- Onboarding improvements.
+- Automation opportunities.
+- Operational cost reductions.
+- Support burden reductions.
+- Adoption improvements.
+- Missing capabilities with high leverage.
+
+Do not be afraid to identify bold opportunities when supported by evidence.
+
+### Sub-Agent Requirements
+
+Each sub-agent must:
+
+- Inspect actual code.
+- Read files, not only names.
+- Reference concrete evidence.
+- Include file paths and line numbers.
+- Report confidence level.
+- Report implementation complexity.
+- Report risks and unknowns.
+
+Prefer a few strong findings over many speculative ones.
+
+If no worthwhile finding exists, explicitly state that.
+
+---
+
+## Phase 2.5: Reconcile Findings
+
+Before generating missions, the orchestrator must perform a reconciliation pass.
+
+### Objectives
+
+- Merge overlapping findings.
+- Eliminate duplicates.
+- Resolve contradictions.
+- Validate high-impact findings through direct code inspection.
+- Identify root causes behind multiple symptoms.
+- Convert observations into implementable opportunities.
+
+### Validation Rules
+
+Re-read the underlying code before accepting any major finding.
+
+For each accepted finding record:
+
+- Root cause
+- Evidence
+- Impact
+- Confidence
+- Implementation effort
+
+Reject findings that are:
+
+- Style-only
+- Speculative
+- Unsupported by code evidence
+- Already covered by a higher-level finding
+
+### Ranking Criteria
+
+Rank findings by:
+
+1. User impact
+2. Production risk
+3. Security impact
+4. Data integrity risk
+5. Reliability impact
+6. Engineering velocity impact
+7. Confidence level
+
+The output of this phase should be a reconciled set of distinct opportunities rather than a collection of observations.
+
+---
+
+## Phase 3: Propose
+
+Generate **5-10 concrete, actionable missions** ranked by impact.
+
+Every mission must originate from a validated finding produced during Phase 2.5.
+
+### Mission Selection Strategy
+
+Do not optimize for the number of missions.
+
+Optimize for total project impact.
+
+The first mission should represent the single highest-value improvement discovered during the entire analysis.
+
+When selecting missions, prioritize:
+
+1. Critical production risks
+2. Security vulnerabilities
+3. Data integrity risks
+4. Reliability and operational risks
+5. User-facing product improvements
+6. Performance bottlenecks
+7. Developer productivity improvements
+8. Architecture improvements
+9. Test coverage improvements
+10. Cleanup and maintenance work
+
+A mission with significantly higher impact should always outrank multiple lower-value missions.
+
+Prefer:
+
+- One mission preventing production outages over five cleanup tasks.
+- One mission improving a critical user workflow over several code-quality improvements.
+- One mission eliminating a major source of support burden over multiple refactors.
+
+Do not attempt to balance categories.
+
+The final mission list may contain multiple missions from the same category if they represent the highest-value opportunities.
+
+### Mission Uniqueness Rules
+
+Missions must be UNIQUE.
+
+- Never generate multiple missions for the same root cause.
+- Merge overlapping findings.
+- Prefer root-cause fixes over symptom fixes.
+- Remove duplicate implementation work.
+- Ensure each mission addresses a distinct problem or opportunity.
+
+### Final Prioritization Check
+
+Before emitting missions, ask:
+
+"If I could only implement ONE mission from this entire report, which would I choose?"
+
+That mission must appear first.
+
+Then repeat the exercise for the remaining findings until all missions are ordered.
+
+Assume engineering resources are limited.
+
+If only the first 1–3 missions were implemented, they should still deliver substantial value to the project.
+
+The resulting mission list should resemble an executive investment portfolio:
+
+- High conviction
+- High impact
+- Minimal overlap
+- Clear implementation scope
+- Maximum return per engineering hour
 
 Rules:
 - **Read before suggesting.** Every finding must reference actual code you read, with
