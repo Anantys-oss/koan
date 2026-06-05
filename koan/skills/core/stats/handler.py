@@ -1,6 +1,7 @@
 """Kōan stats skill — session outcome statistics per project."""
 
 import json
+import re
 from collections import Counter
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -16,12 +17,13 @@ def handle(ctx):
     days, project_filter, show_perf = _parse_args(raw_args)
 
     all_outcomes = _load_outcomes(instance_dir / "session_outcomes.json")
-    outcomes = _filter_by_days(all_outcomes, days)
 
     if show_perf:
         if not all_outcomes:
             return "No session data yet. Stats will appear after the first completed run."
         return _format_perf_breakdown(all_outcomes, days, project_filter or None)
+
+    outcomes = _filter_by_days(all_outcomes, days)
 
     if not outcomes:
         return "No session data yet. Stats will appear after the first completed run."
@@ -590,7 +592,6 @@ def _normalize_model_name(raw: str) -> str:
     "claude-sonnet-4-6-20250514" → "claude-sonnet-4-6"
     Leaves non-standard strings unchanged.
     """
-    import re
     return re.sub(r"-\d{8}$", "", raw)
 
 

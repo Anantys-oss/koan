@@ -1513,7 +1513,7 @@ def run_post_mission(
         result["usage_updated"] = update_usage(stdout_file, usage_state, usage_md)
         tracker.record("usage_update", "success" if result["usage_updated"] else "fail")
 
-        # 2. Compute duration (needed for cost tracking, quota, reflection, and outcome)
+        # 1b. Compute duration (needed for cost tracking, quota, reflection, and outcome)
         if start_time > 0:
             duration_seconds = int(datetime.now().timestamp()) - start_time
             duration_minutes = duration_seconds // 60
@@ -1521,7 +1521,7 @@ def run_post_mission(
             duration_seconds = 0
             duration_minutes = 0
 
-        # 1b. Record structured usage to JSONL cost tracker
+        # 1c. Record structured usage to JSONL cost tracker
         from app.session_tracker import classify_mission_type as _classify_type
         _mission_type = _classify_type(mission_title)
         _record_cost_event(
@@ -1533,7 +1533,7 @@ def run_post_mission(
             provider=provider_name,
         )
 
-        # 2b. Log activity usage to logs/usage.log (human-readable, rotated)
+        # 2. Log activity usage to logs/usage.log (human-readable, rotated)
         _log_activity_usage(
             instance_dir, project_name, stdout_file,
             autonomous_mode, mission_title, duration_seconds,
