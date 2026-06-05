@@ -470,9 +470,9 @@ def top_missions(
                     },
                     pricing,
                 )
-                cost = est if est is not None else 0.0
+                cost = est
             else:
-                cost = 0.0
+                cost = None
 
         mission_type = entry.get("mission_type", "")
         if not mission_type:

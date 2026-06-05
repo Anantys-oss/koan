@@ -1069,7 +1069,6 @@ def api_usage():
 def api_usage_missions():
     """Per-mission cost drill-down, sorted by total tokens descending."""
     from app.cost_tracker import top_missions
-    import calendar as _calendar
 
     days = request.args.get("days", "7", type=str)
     selected_project = request.args.get("project", "")
