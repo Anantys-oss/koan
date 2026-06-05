@@ -83,6 +83,7 @@ _CANONICAL_RUNNERS = {
     "check_need": "skills.core.check_need.check_need_runner",
     "spec_audit": "skills.core.spec_audit.spec_audit_runner",
     "explain": "skills.core.explain.explain_runner",
+    "deep": "skills.core.deep.deep_runner",
 }
 
 # Alias -> canonical command name. Declared once, expanded into
@@ -397,6 +398,7 @@ def build_skill_command(
         "spec_audit": lambda: _build_project_info_cmd(
             base_cmd, project_name, project_path, instance_dir,
         ),
+        "deep": lambda: _build_ai_cmd(base_cmd, args, project_name, project_path, instance_dir),
         "explain": lambda: _build_explain_cmd(base_cmd, args, project_path, project_name),
     }
     def _audit_builder():

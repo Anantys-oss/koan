@@ -75,6 +75,7 @@ Skills marked **GitHub @mention** can be triggered by commenting `@koan-bot <com
 |---------|---------|-------------|:-:|
 | `/brainstorm <topic>` | — | Decompose topic into linked sub-issues + master tracking issue | Yes |
 | `/ai <topic>` | `/ia` | Queue an AI exploration mission (deep, with codebase access) | — |
+| `/deep [project] [focus]` | — | Thorough autonomous exploration with full tool access | — |
 | `/magic <topic>` | — | Instant creative exploration (quick, no mission queue) | — |
 | `/sparring` | — | Strategic challenge session — thinking, not code | — |
 | `/audit <project>` | — | Audit project, create tracker issues for each finding (top 5) | Yes |

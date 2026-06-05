@@ -1076,6 +1076,18 @@ git worktree prune   # Remove stale references
 - `/ai` — Explore the default/focused project
 </details>
 
+**`/deep`** — Launch a thorough autonomous exploration session. Full tool access (Read, Grep, Bash), higher turn limits, and structured mission output. Goes deeper than `/ai` — traces execution paths, checks test coverage, finds real bugs.
+
+- **Usage:** `/deep [project] [focus context]`
+
+<details>
+<summary>Use cases</summary>
+
+- `/deep koan` — Thorough exploration of the koan project
+- `/deep koan error handling` — Focused deep dive on error handling patterns
+- `/deep` — Deep explore a random project
+</details>
+
 **`/magic`** — Instant creative exploration. Quick single-turn analysis without queuing a mission.
 
 - **Usage:** `/magic [project]`
@@ -1941,6 +1953,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/autoreview [project]` | `/auto_review` | I | Enable/show autoreview mode (auto-queue review+rebase after PR) |
 | `/noautoreview [project]` | — | I | Disable autoreview mode |
 | `/ai [project]` | `/ia` | P | Queue an AI exploration mission |
+| `/deep [project]` | — | P | Thorough autonomous deep exploration |
 | `/magic [project]` | — | P | Instant creative exploration |
 | `/sparring` | — | P | Strategic sparring session |
 | `/language <lang>` | `/lng` | P | Set reply language |
