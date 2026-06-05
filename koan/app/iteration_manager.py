@@ -43,9 +43,10 @@ from app.run_log import log_safe, suppress_logged
 # Set to True when running as CLI subprocess (stdout carries JSON).
 _cli_mode = False
 
-# Track projects already reported as branch-saturated this session (log once, not every iteration)
+# Track projects already reported this session (log once, not every iteration)
 _branch_saturated_logged: set = set()
 _no_github_url_logged: set = set()
+_pr_limited_logged: set = set()
 
 
 def _log_iteration(category: str, message: str):
@@ -1140,10 +1141,13 @@ def _filter_exploration_projects(
                 continue
 
             if total_open >= limit:
-                _log_iteration("koan",
-                    f"Project '{name}' at PR limit ({total_open}/{limit}) — excluding from exploration")
+                if name not in _pr_limited_logged:
+                    _log_iteration("koan",
+                        f"Project '{name}' at PR limit ({total_open}/{limit}) — excluding from exploration")
+                    _pr_limited_logged.add(name)
                 pr_limited.append(name)
             else:
+                _pr_limited_logged.discard(name)
                 filtered.append((name, path))
 
     # Gate 3: max_pending_branches limit
@@ -1187,6 +1191,7 @@ def _filter_exploration_projects(
                 _branch_saturated_logged.add(name)
             branch_saturated.append(name)
         else:
+            _branch_saturated_logged.discard(name)
             final_filtered.append((name, path))
 
     return FilterResult(projects=final_filtered, pr_limited=pr_limited,
