@@ -938,6 +938,8 @@ class TestByMode:
         result = _aggregate(entries)
         assert "unknown" in result["by_mode"]
         assert result["by_mode"]["unknown"]["count"] == 1
+        assert result["by_mode"]["unknown"]["input_tokens"] == 100
+        assert result["by_mode"]["unknown"]["output_tokens"] == 50
 
     def test_missing_mode_bucketed_as_unknown(self):
         entries = [
@@ -946,6 +948,8 @@ class TestByMode:
         result = _aggregate(entries)
         assert "unknown" in result["by_mode"]
         assert result["by_mode"]["unknown"]["count"] == 1
+        assert result["by_mode"]["unknown"]["input_tokens"] == 100
+        assert result["by_mode"]["unknown"]["output_tokens"] == 50
 
     def test_empty_entries_has_by_mode(self):
         result = _aggregate([])
