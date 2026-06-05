@@ -1106,7 +1106,7 @@ class TestTopMissions:
 
     def test_top_missions_truncates_mission_text(self, instance_dir, usage_dir):
         today = date.today()
-        long_text = "x" * 200
+        long_text = "x" * 400
         self._write_entries(usage_dir, [
             {"ts": "2026-01-01T10:00:00", "project": "koan", "model": "sonnet",
              "input_tokens": 100, "output_tokens": 50, "mode": "implement",
@@ -1115,7 +1115,7 @@ class TestTopMissions:
         result = top_missions(instance_dir, today, today)
         assert len(result) == 1
         assert result[0]["mission"].endswith("...")
-        assert len(result[0]["mission"]) == 123  # 120 + len("...")
+        assert len(result[0]["mission"]) == 303  # 300 + len("...")
 
     def test_top_missions_empty_range(self, instance_dir, usage_dir):
         future = date.today() + timedelta(days=365)

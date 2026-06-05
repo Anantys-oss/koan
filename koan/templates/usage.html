@@ -39,6 +39,69 @@
 .type-bar-track { flex: 1; height: 6px; background: var(--surface-3); border-radius: 3px; overflow: hidden; }
 .type-bar-fill { height: 100%; border-radius: 3px; transition: width 0.3s; }
 .type-pct { font-size: 0.75rem; color: var(--text-muted); min-width: 3rem; text-align: right; }
+
+/* ── Mission table badge colors (dark-first) ── */
+.k-badge--cat-iris    { background: rgba(91,91,214,.15); color: #9b9ef0; border-color: transparent; }
+.k-badge--cat-cyan    { background: rgba(20,184,196,.12); color: #14b8c4; border-color: transparent; }
+.k-badge--cat-emerald { background: rgba(43,217,142,.12); color: #2bd98e; border-color: transparent; }
+.k-badge--cat-amber   { background: rgba(245,166,35,.12); color: #f5a623; border-color: transparent; }
+.k-badge--cat-rose    { background: rgba(242,85,90,.12); color: #ff7a82; border-color: transparent; }
+.k-badge--cat-violet  { background: rgba(168,85,247,.12); color: #a855f7; border-color: transparent; }
+.k-badge--cat-blue    { background: rgba(77,163,255,.12); color: #4da3ff; border-color: transparent; }
+.k-badge--cat-pink    { background: rgba(236,72,153,.12); color: #ec4899; border-color: transparent; }
+[data-theme="light"] .k-badge--cat-iris    { background: #ebebff; color: #5b5bd6; }
+[data-theme="light"] .k-badge--cat-cyan    { background: #e0f9fa; color: #0e8c96; }
+[data-theme="light"] .k-badge--cat-emerald { background: #ddfaed; color: #1a9e60; }
+[data-theme="light"] .k-badge--cat-amber   { background: #fff4e0; color: #b07219; }
+[data-theme="light"] .k-badge--cat-rose    { background: #fde8e9; color: #c1373b; }
+[data-theme="light"] .k-badge--cat-violet  { background: #f5e8ff; color: #8b3dd1; }
+[data-theme="light"] .k-badge--cat-blue    { background: #e3f0ff; color: #2a7ed3; }
+[data-theme="light"] .k-badge--cat-pink    { background: #fde9f5; color: #c42d82; }
+.k-badge--project { background: transparent; border: 1px solid var(--border); color: var(--text-secondary); font-family: var(--font-mono); }
+
+/* ── Mission popover ── */
+.mission-popover {
+    position: fixed;
+    max-width: 520px;
+    max-height: 320px;
+    overflow-y: auto;
+    z-index: 300;
+    opacity: 0;
+    transform: translateY(-4px);
+    transition: opacity 150ms ease, transform 150ms ease;
+    pointer-events: none;
+    font-family: var(--font-sans);
+    font-size: var(--fs-body-sm);
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.mission-popover.is-visible { opacity: 1; transform: translateY(0); pointer-events: auto; }
+.mission-popover .pop-cmd { font-weight: 600; color: var(--brand); }
+.mission-popover .pop-tag { display: inline; padding: 1px 5px; border-radius: 3px; background: var(--surface-3); font-size: 0.8em; }
+.mission-popover .pop-url { color: var(--sky-400); text-decoration: underline; }
+
+/* ── Table date styling ── */
+.table-date { font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* ── Inline table filter ── */
+.table-filter-select {
+    padding: 0.2rem 0.3rem;
+    background: var(--surface-1);
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    font-size: var(--fs-caption);
+    font-family: var(--font-mono);
+    max-width: 100%;
+    cursor: pointer;
+}
+.table-filter-select:focus { border-color: var(--brand); outline: none; }
+
+/* ── Mission cell truncated ── */
+.mission-cell { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: default; }
+.mission-cell a { color: var(--sky-400); text-decoration: underline; text-underline-offset: 2px; }
+.mission-cell a:hover { color: var(--text-primary); }
 </style>
 
 <div class="filter-bar">
@@ -113,20 +176,22 @@
         <div class="empty-state" id="type-empty" style="display:none;">No type data.</div>
     </div>
     <div style="flex:1;min-width:320px;overflow-x:auto;">
-        <table id="by-type-table" style="width:100%;border-collapse:collapse;font-family:var(--mono);font-size:0.85rem;">
-            <thead id="by-type-thead">
-                <tr style="color:var(--text-muted);text-align:left;">
-                    <th class="sortable-header" data-col="type" style="padding:0.5rem 0;">Type <span class="sort-indicator">&#8597;</span></th>
-                    <th class="sortable-header" data-col="runs" style="padding:0.5rem 0;text-align:right;">Runs <span class="sort-indicator">&#8597;</span></th>
-                    <th class="sortable-header" data-col="input" style="padding:0.5rem 0;text-align:right;">Input <span class="sort-indicator">&#8597;</span></th>
-                    <th class="sortable-header" data-col="output" style="padding:0.5rem 0;text-align:right;">Output <span class="sort-indicator">&#8597;</span></th>
-                    <th class="sortable-header" data-col="total" style="padding:0.5rem 0;text-align:right;">Total <span class="sort-indicator">&#8597;</span></th>
-                    <th class="sortable-header" data-col="cost" style="padding:0.5rem 0;text-align:right;">Cost <span class="sort-indicator">&#8597;</span></th>
-                    <th style="padding:0.5rem 0;text-align:right;min-width:120px;">Share</th>
-                </tr>
-            </thead>
-            <tbody id="by-type-tbody"></tbody>
-        </table>
+        <div class="k-table-wrap">
+            <table class="k-table" id="by-type-table">
+                <thead id="by-type-thead">
+                    <tr>
+                        <th class="sortable-header" data-col="type">Type <span class="sort-indicator">&#8597;</span></th>
+                        <th class="sortable-header" data-col="runs" style="text-align:right;">Runs <span class="sort-indicator">&#8597;</span></th>
+                        <th class="sortable-header" data-col="input" style="text-align:right;">Input <span class="sort-indicator">&#8597;</span></th>
+                        <th class="sortable-header" data-col="output" style="text-align:right;">Output <span class="sort-indicator">&#8597;</span></th>
+                        <th class="sortable-header" data-col="total" style="text-align:right;">Total <span class="sort-indicator">&#8597;</span></th>
+                        <th class="sortable-header" data-col="cost" style="text-align:right;">Cost <span class="sort-indicator">&#8597;</span></th>
+                        <th style="text-align:right;min-width:120px;">Share</th>
+                    </tr>
+                </thead>
+                <tbody id="by-type-tbody"></tbody>
+            </table>
+        </div>
         <div class="empty-state" id="type-table-empty" style="display:none;">No type data available.</div>
     </div>
 </div>
@@ -140,52 +205,53 @@
         <div class="empty-state" id="mode-empty" style="display:none;">No mode data.</div>
     </div>
     <div style="flex:1;min-width:320px;overflow-x:auto;">
-        <table id="by-mode-table" style="width:100%;border-collapse:collapse;font-family:var(--mono);font-size:0.85rem;">
-            <thead id="by-mode-thead">
-                <tr style="color:var(--text-muted);text-align:left;">
-                    <th class="sortable-header" data-col="mode" style="padding:0.5rem 0;">Mode <span class="sort-indicator">&#8597;</span></th>
-                    <th class="sortable-header" data-col="runs" style="padding:0.5rem 0;text-align:right;">Runs <span class="sort-indicator">&#8597;</span></th>
-                    <th class="sortable-header" data-col="input" style="padding:0.5rem 0;text-align:right;">Input <span class="sort-indicator">&#8597;</span></th>
-                    <th class="sortable-header" data-col="output" style="padding:0.5rem 0;text-align:right;">Output <span class="sort-indicator">&#8597;</span></th>
-                    <th class="sortable-header" data-col="total" style="padding:0.5rem 0;text-align:right;">Total <span class="sort-indicator">&#8597;</span></th>
-                    <th class="sortable-header" data-col="cost" style="padding:0.5rem 0;text-align:right;">Cost <span class="sort-indicator">&#8597;</span></th>
-                    <th style="padding:0.5rem 0;text-align:right;min-width:120px;">Share</th>
-                </tr>
-            </thead>
-            <tbody id="by-mode-tbody"></tbody>
-        </table>
+        <div class="k-table-wrap">
+            <table class="k-table" id="by-mode-table">
+                <thead id="by-mode-thead">
+                    <tr>
+                        <th class="sortable-header" data-col="mode">Mode <span class="sort-indicator">&#8597;</span></th>
+                        <th class="sortable-header" data-col="runs" style="text-align:right;">Runs <span class="sort-indicator">&#8597;</span></th>
+                        <th class="sortable-header" data-col="input" style="text-align:right;">Input <span class="sort-indicator">&#8597;</span></th>
+                        <th class="sortable-header" data-col="output" style="text-align:right;">Output <span class="sort-indicator">&#8597;</span></th>
+                        <th class="sortable-header" data-col="total" style="text-align:right;">Total <span class="sort-indicator">&#8597;</span></th>
+                        <th class="sortable-header" data-col="cost" style="text-align:right;">Cost <span class="sort-indicator">&#8597;</span></th>
+                        <th style="text-align:right;min-width:120px;">Share</th>
+                    </tr>
+                </thead>
+                <tbody id="by-mode-tbody"></tbody>
+            </table>
+        </div>
         <div class="empty-state" id="mode-table-empty" style="display:none;">No mode data available.</div>
     </div>
 </div>
 
 <h2>Top Missions</h2>
-<div class="card">
-    <details id="top-missions-details">
-        <summary style="cursor:pointer;user-select:none;padding:0.25rem 0;color:var(--text-muted);font-size:0.9rem;">
-            Top missions by token spend (click to load)
-        </summary>
-        <div id="top-missions-content" style="margin-top:0.75rem;overflow-x:auto;">
-            <div class="empty-state" id="missions-loading" style="display:none;">Loading...</div>
-            <div class="empty-state" id="missions-empty" style="display:none;">No mission data for this period.</div>
-            <table id="top-missions-table" style="display:none;width:100%;border-collapse:collapse;font-family:var(--mono);font-size:0.82rem;">
+<div class="card" id="top-missions-card">
+    <div id="top-missions-content" style="overflow-x:auto;">
+        <div class="empty-state" id="missions-loading">Loading...</div>
+        <div class="empty-state" id="missions-empty" style="display:none;">No mission data for this period.</div>
+        <div class="k-table-wrap" id="top-missions-wrap" style="display:none;">
+            <table class="k-table" id="top-missions-table">
                 <thead id="top-missions-thead">
-                    <tr style="color:var(--text-muted);text-align:left;">
-                        <th class="sortable-header" data-mcol="date" style="padding:0.5rem 0.3rem 0.5rem 0;">Date <span class="sort-indicator">&#8597;</span></th>
-                        <th class="sortable-header" data-mcol="project" style="padding:0.5rem 0.3rem;">Project <span class="sort-indicator">&#8597;</span></th>
-                        <th class="sortable-header" data-mcol="type" style="padding:0.5rem 0.3rem;">Type <span class="sort-indicator">&#8597;</span></th>
-                        <th class="sortable-header" data-mcol="mode" style="padding:0.5rem 0.3rem;">Mode <span class="sort-indicator">&#8597;</span></th>
-                        <th style="padding:0.5rem 0.3rem;">Mission</th>
-                        <th class="sortable-header" data-mcol="input" style="padding:0.5rem 0.3rem;text-align:right;">Input <span class="sort-indicator">&#8597;</span></th>
-                        <th class="sortable-header" data-mcol="output" style="padding:0.5rem 0.3rem;text-align:right;">Output <span class="sort-indicator">&#8597;</span></th>
-                        <th class="sortable-header" data-mcol="cache" style="padding:0.5rem 0.3rem;text-align:right;">Cache Hit <span class="sort-indicator">&#8597;</span></th>
-                        <th class="sortable-header" data-mcol="cost" style="padding:0.5rem 0.3rem;text-align:right;">Cost <span class="sort-indicator">&#8597;</span></th>
+                    <tr>
+                        <th class="sortable-header" data-mcol="date">Date <span class="sort-indicator">&#8597;</span></th>
+                        <th data-mcol="project"><select class="table-filter-select" id="missions-project-filter" aria-label="Filter by project"><option value="">Project</option></select></th>
+                        <th class="sortable-header" data-mcol="type">Type <span class="sort-indicator">&#8597;</span></th>
+                        <th data-mcol="mode"><select class="table-filter-select" id="missions-mode-filter" aria-label="Filter by mode"><option value="">Mode</option></select></th>
+                        <th class="sortable-header" data-mcol="model">Model <span class="sort-indicator">&#8597;</span></th>
+                        <th>Mission</th>
+                        <th class="sortable-header" data-mcol="input" style="text-align:right;">Input <span class="sort-indicator">&#8597;</span></th>
+                        <th class="sortable-header" data-mcol="output" style="text-align:right;">Output <span class="sort-indicator">&#8597;</span></th>
+                        <th class="sortable-header" data-mcol="cache" style="text-align:right;">Cache <span class="sort-indicator">&#8597;</span></th>
+                        <th class="sortable-header" data-mcol="cost" style="text-align:right;">Cost <span class="sort-indicator">&#8597;</span></th>
                     </tr>
                 </thead>
                 <tbody id="top-missions-tbody"></tbody>
             </table>
         </div>
-    </details>
+    </div>
 </div>
+<div class="k-popover mission-popover" id="mission-popover" role="tooltip"></div>
 
 <h2>Mission Outcomes</h2>
 <div class="card" style="display:flex;align-items:center;gap:2rem;flex-wrap:wrap;">
@@ -198,37 +264,41 @@
 
 <h2>By Project</h2>
 <div class="card" id="by-project-card">
-    <table id="by-project" style="width:100%;border-collapse:collapse;font-family:var(--mono);font-size:0.85rem;">
-        <thead>
-            <tr style="color:var(--text-muted);text-align:left;">
-                <th style="padding:0.5rem 0;">Project</th>
-                <th style="padding:0.5rem 0;text-align:right;">Input</th>
-                <th style="padding:0.5rem 0;text-align:right;">Output</th>
-                <th style="padding:0.5rem 0;text-align:right;">Total</th>
-                <th style="padding:0.5rem 0;text-align:right;">Runs</th>
-                <th style="padding:0.5rem 0;text-align:right;">Cache Hit %</th>
-                <th style="padding:0.5rem 0;text-align:right;">Success</th>
-                <th style="padding:0.5rem 0;text-align:right;">Trend</th>
-            </tr>
-        </thead>
-        <tbody></tbody>
-    </table>
+    <div class="k-table-wrap">
+        <table class="k-table" id="by-project">
+            <thead>
+                <tr>
+                    <th>Project</th>
+                    <th style="text-align:right;">Input</th>
+                    <th style="text-align:right;">Output</th>
+                    <th style="text-align:right;">Total</th>
+                    <th style="text-align:right;">Runs</th>
+                    <th style="text-align:right;">Cache Hit %</th>
+                    <th style="text-align:right;">Success</th>
+                    <th style="text-align:right;">Trend</th>
+                </tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+    </div>
 </div>
 
 <h2>By Model</h2>
 <div class="card" id="by-model-card">
-    <table id="by-model" style="width:100%;border-collapse:collapse;font-family:var(--mono);font-size:0.85rem;">
-        <thead>
-            <tr style="color:var(--text-muted);text-align:left;">
-                <th style="padding:0.5rem 0;">Model</th>
-                <th style="padding:0.5rem 0;text-align:right;">Input</th>
-                <th style="padding:0.5rem 0;text-align:right;">Output</th>
-                <th style="padding:0.5rem 0;text-align:right;">Total</th>
-                <th style="padding:0.5rem 0;text-align:right;">Runs</th>
-            </tr>
-        </thead>
-        <tbody></tbody>
-    </table>
+    <div class="k-table-wrap">
+        <table class="k-table" id="by-model">
+            <thead>
+                <tr>
+                    <th>Model</th>
+                    <th style="text-align:right;">Input</th>
+                    <th style="text-align:right;">Output</th>
+                    <th style="text-align:right;">Total</th>
+                    <th style="text-align:right;">Runs</th>
+                </tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+    </div>
 </div>
 
 <script>
@@ -843,9 +913,7 @@ function loadAll() {
             }
 
             window._lastHasPricing = !!data.has_pricing;
-            if (_missionsOpen) {
-                loadTopMissions(true);
-            }
+            loadTopMissions(true);
             renderDailyChart(data.series || [], data.has_pricing, data.granularity || 'day');
             renderStackedChart(data.series || [], data.granularity || 'day');
             renderTypeChart(data.by_type || {}, data.has_pricing);
@@ -982,99 +1050,206 @@ if (params.get('granularity')) {
 
 let missionSortCol = 'total';
 let missionSortAsc = false;
-let _missionsOpen = false;
 let _lastMissionParams = null;
+let _allMissions = [];
+let _missionFilterProject = '';
+let _missionFilterMode = '';
+
+const DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
 function fmtDate(iso) {
     if (!iso) return '';
-    return iso.slice(5, 16).replace('T', ' ');
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return iso.slice(5, 16).replace('T', ' ');
+    const day = DAYS[d.getDay()];
+    const mon = MONTHS[d.getMonth()];
+    const date = d.getDate();
+    const h = d.getHours();
+    const m = String(d.getMinutes()).padStart(2, '0');
+    return day + ' ' + mon + ' ' + date + ' ' + h + ':' + m;
 }
 
 function fmtCostDetail(v, hasPricing) {
     if (!hasPricing) return '-';
     if (v === null || v === undefined) return '-';
-    if (v === 0) return '$0.0000';
-    return '$' + v.toFixed(4);
+    if (v === 0) return '$0.00';
+    if (v < 0.01) return '<$0.01';
+    return '$' + v.toFixed(2);
+}
+
+function shortModelName(id) {
+    if (!id) return '';
+    return id.replace(/^claude-/, '').replace(/-(\d+)-(\d+).*$/, '-$1.$2').replace(/-(\d+)$/, '-$1');
+}
+
+const TYPE_BADGE_COLORS = {
+    implement: 'cat-blue', fix: 'cat-rose', refactor: 'cat-cyan', dead_code: 'cat-iris',
+    review: 'cat-emerald', check: 'cat-emerald', ci_check: 'cat-amber',
+    security_audit: 'danger', spec_audit: 'cat-violet', private_security_audit: 'danger',
+    plan: 'cat-violet', deep: 'cat-iris', deepplan: 'cat-iris', brainstorm: 'cat-pink',
+    rebase: 'cat-cyan', recreate: 'cat-blue', squash: 'cat-cyan', pr: 'brand',
+    ai: 'cat-pink', ask: 'cat-violet', explain: 'cat-violet', doc: 'cat-blue',
+    claudemd: 'cat-amber', tech_debt: 'cat-amber',
+};
+const MODE_BADGE_COLORS = {
+    implement: 'cat-blue', deep: 'cat-iris', review: 'cat-emerald', wait: 'warning',
+};
+
+function typeBadge(type) {
+    if (!type) return '';
+    const cls = TYPE_BADGE_COLORS[type] || 'info';
+    return '<span class="k-badge k-badge--' + cls + '" aria-label="Type: ' + type + '">' + type + '</span>';
+}
+function modeBadge(mode) {
+    if (!mode) return '';
+    const cls = MODE_BADGE_COLORS[mode] || 'info';
+    return '<span class="k-badge k-badge--' + cls + '" aria-label="Mode: ' + mode + '">' + mode + '</span>';
+}
+function projectBadge(proj) {
+    if (!proj) return '';
+    return '<span class="k-badge k-badge--project" aria-label="Project: ' + proj + '">' + proj + '</span>';
+}
+
+function escapeHtml(t) {
+    const d = document.createElement('div');
+    d.textContent = t;
+    return d.innerHTML;
+}
+function shortenUrl(url) {
+    var m = url.match(/^https?:\/\/(?:[^/]+\.)?github\.com\/[^/]+\/[^/]+\/(?:issues|pull)\/(\d+)(?:[?#].*)?$/);
+    if (m) return '#' + m[1];
+    m = url.match(/^https?:\/\/[^/]+\/browse\/([A-Z][A-Z0-9_]+-\d+)(?:[?#].*)?$/);
+    if (m) return m[1];
+    return url.length > 50 ? url.slice(0, 47) + '...' : url;
+}
+function linkifyMission(t) {
+    return escapeHtml(t).replace(/(https?:\/\/[^\s<>)\]]+)/g, function(_, url) {
+        return '<a class="pop-url" href="' + url + '" target="_blank" rel="noopener noreferrer">' + shortenUrl(url) + '</a>';
+    });
+}
+function highlightMission(t) {
+    return escapeHtml(t)
+        .replace(/(\/[\w_]+)/g, '<span class="pop-cmd">$1</span>')
+        .replace(/\[([\w:._-]+)\]/g, '<span class="pop-tag">[$1]</span>')
+        .replace(/(https?:\/\/[^\s<>)\]]+)/g, '<a class="pop-url" href="$1" target="_blank" rel="noopener noreferrer">$1</a>');
 }
 
 function renderTopMissionsTable(missions, hasPricing) {
-    const table = document.getElementById('top-missions-table');
+    const wrap = document.getElementById('top-missions-wrap');
     const emptyEl = document.getElementById('missions-empty');
     const tbody = document.getElementById('top-missions-tbody');
 
+    _allMissions = missions.slice(0, 100);
+    _populateMissionFilters(_allMissions);
+
     tbody.innerHTML = '';
 
-    if (!missions || missions.length === 0) {
-        table.style.display = 'none';
+    if (!_allMissions || _allMissions.length === 0) {
+        wrap.style.display = 'none';
         emptyEl.textContent = 'No mission data for this period.';
         emptyEl.style.display = '';
         return;
     }
 
-    table.style.display = '';
+    wrap.style.display = '';
     emptyEl.style.display = 'none';
 
-    for (const m of missions) {
+    _renderFilteredMissions(hasPricing);
+}
+
+function _renderFilteredMissions(hasPricing) {
+    const tbody = document.getElementById('top-missions-tbody');
+    const frag = document.createDocumentFragment();
+    const filteredMissions = _allMissions.filter(m => {
+        if (_missionFilterProject && m.project !== _missionFilterProject) return false;
+        if (_missionFilterMode && m.mode !== _missionFilterMode) return false;
+        return true;
+    });
+
+    tbody.innerHTML = '';
+
+    for (const m of filteredMissions) {
         const tr = document.createElement('tr');
-        tr.style.borderTop = '1px solid var(--border)';
         tr.dataset.date = m.ts || '';
         tr.dataset.project = m.project || '';
         tr.dataset.type = m.mission_type || '';
         tr.dataset.mode = m.mode || '';
+        tr.dataset.model = m.model || '';
         tr.dataset.input = m.input_tokens || 0;
         tr.dataset.output = m.output_tokens || 0;
         tr.dataset.cache = m.cache_read_input_tokens || 0;
         tr.dataset.cost = m.cost_usd || 0;
         tr.dataset.total = m.total_tokens || 0;
+        tr.dataset.fullMission = m.mission || '';
 
         const dateCell = document.createElement('td');
-        dateCell.style.cssText = 'padding:0.35rem 0.3rem 0.35rem 0;white-space:nowrap;';
+        dateCell.className = 'table-date';
         dateCell.textContent = fmtDate(m.ts);
         tr.appendChild(dateCell);
 
         const projCell = document.createElement('td');
-        projCell.style.cssText = 'padding:0.35rem 0.3rem;';
-        projCell.textContent = m.project || '';
+        projCell.innerHTML = projectBadge(m.project);
         tr.appendChild(projCell);
 
         const typeCell = document.createElement('td');
-        typeCell.style.cssText = 'padding:0.35rem 0.3rem;';
-        typeCell.textContent = m.mission_type || '';
+        typeCell.innerHTML = typeBadge(m.mission_type);
         tr.appendChild(typeCell);
 
         const modeCell = document.createElement('td');
-        modeCell.style.cssText = 'padding:0.35rem 0.3rem;';
-        modeCell.textContent = m.mode || '';
+        modeCell.innerHTML = modeBadge(m.mode);
         tr.appendChild(modeCell);
 
+        const modelCell = document.createElement('td');
+        modelCell.style.cssText = 'white-space:nowrap;font-family:var(--font-mono);font-size:var(--fs-caption);color:var(--text-muted);';
+        modelCell.textContent = shortModelName(m.model);
+        tr.appendChild(modelCell);
+
         const missionCell = document.createElement('td');
-        missionCell.style.cssText = 'padding:0.35rem 0.3rem;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
-        missionCell.title = m.mission || '';
-        missionCell.textContent = m.mission || '';
+        missionCell.className = 'mission-cell';
+        missionCell.innerHTML = linkifyMission(m.mission || '');
         tr.appendChild(missionCell);
 
         const inputCell = document.createElement('td');
-        inputCell.style.cssText = 'padding:0.35rem 0.3rem;text-align:right;';
+        inputCell.style.textAlign = 'right';
         inputCell.textContent = fmtTokens(m.input_tokens || 0);
         tr.appendChild(inputCell);
 
         const outputCell = document.createElement('td');
-        outputCell.style.cssText = 'padding:0.35rem 0.3rem;text-align:right;';
+        outputCell.style.textAlign = 'right';
         outputCell.textContent = fmtTokens(m.output_tokens || 0);
         tr.appendChild(outputCell);
 
         const cacheCell = document.createElement('td');
-        cacheCell.style.cssText = 'padding:0.35rem 0.3rem;text-align:right;';
+        cacheCell.style.textAlign = 'right';
         cacheCell.textContent = fmtTokens(m.cache_read_input_tokens || 0);
         tr.appendChild(cacheCell);
 
         const costCell = document.createElement('td');
-        costCell.style.cssText = 'padding:0.35rem 0.3rem;text-align:right;';
-        costCell.textContent = fmtCostDetail(m.cost_usd, hasPricing);
+        costCell.style.textAlign = 'right';
+        costCell.innerHTML = '<strong>' + fmtCostDetail(m.cost_usd, hasPricing) + '</strong>';
         tr.appendChild(costCell);
 
-        tbody.appendChild(tr);
+        frag.appendChild(tr);
     }
+    tbody.appendChild(frag);
+}
+
+function _populateMissionFilters(missions) {
+    const projects = [...new Set(missions.map(m => m.project).filter(Boolean))].sort();
+    const modes = [...new Set(missions.map(m => m.mode).filter(Boolean))].sort();
+
+    const projSelect = document.getElementById('missions-project-filter');
+    const modeSelect = document.getElementById('missions-mode-filter');
+
+    const curProj = projSelect.value;
+    const curMode = modeSelect.value;
+
+    projSelect.innerHTML = '<option value="">Project</option>' + projects.map(p => '<option value="' + p + '">' + p + '</option>').join('');
+    modeSelect.innerHTML = '<option value="">Mode</option>' + modes.map(m => '<option value="' + m + '">' + m + '</option>').join('');
+
+    projSelect.value = curProj;
+    modeSelect.value = curMode;
 }
 
 function resortMissionsTable() {
@@ -1086,7 +1261,7 @@ function resortMissionsTable() {
             const vb = b.dataset.date || '';
             return missionSortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
         }
-        if (missionSortCol === 'project' || missionSortCol === 'type' || missionSortCol === 'mode') {
+        if (['project', 'type', 'mode', 'model'].includes(missionSortCol)) {
             const va = a.dataset[missionSortCol] || '';
             const vb = b.dataset[missionSortCol] || '';
             return missionSortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
@@ -1107,12 +1282,58 @@ function initMissionSortHandlers() {
                 missionSortAsc = !missionSortAsc;
             } else {
                 missionSortCol = col;
-                missionSortAsc = ['date', 'project', 'type', 'mode'].includes(col);
+                missionSortAsc = ['date', 'project', 'type', 'mode', 'model'].includes(col);
             }
             resortMissionsTable();
         });
     });
+
+    document.getElementById('missions-project-filter').addEventListener('change', function() {
+        _missionFilterProject = this.value;
+        const hasPricing = window._lastHasPricing !== undefined ? window._lastHasPricing : false;
+        _renderFilteredMissions(hasPricing);
+    });
+    document.getElementById('missions-mode-filter').addEventListener('change', function() {
+        _missionFilterMode = this.value;
+        const hasPricing = window._lastHasPricing !== undefined ? window._lastHasPricing : false;
+        _renderFilteredMissions(hasPricing);
+    });
 }
+
+// ── Mission popover logic ──
+let _popShowTimer = null;
+let _popHideTimer = null;
+const _popover = document.getElementById('mission-popover');
+
+function _showPopover(cell) {
+    const fullText = cell.closest('tr').dataset.fullMission;
+    if (!fullText) return;
+    _popover.innerHTML = highlightMission(fullText);
+    const rect = cell.getBoundingClientRect();
+    _popover.style.left = Math.min(rect.left, window.innerWidth - 540) + 'px';
+    _popover.style.top = (rect.bottom + 8) + 'px';
+    _popover.classList.add('is-visible');
+}
+function _hidePopover() { _popover.classList.remove('is-visible'); }
+
+document.getElementById('top-missions-tbody').addEventListener('mouseenter', function(e) {
+    const cell = e.target.closest('.mission-cell');
+    if (!cell) return;
+    clearTimeout(_popHideTimer);
+    _popShowTimer = setTimeout(() => _showPopover(cell), 300);
+}, true);
+document.getElementById('top-missions-tbody').addEventListener('mouseleave', function(e) {
+    const cell = e.target.closest('.mission-cell');
+    if (!cell) return;
+    clearTimeout(_popShowTimer);
+    _popHideTimer = setTimeout(_hidePopover, 200);
+}, true);
+_popover.addEventListener('mouseenter', () => clearTimeout(_popHideTimer));
+_popover.addEventListener('mouseleave', () => { _popHideTimer = setTimeout(_hidePopover, 200); });
+document.getElementById('top-missions-content').addEventListener('scroll', () => {
+    clearTimeout(_popShowTimer);
+    _hidePopover();
+}, { passive: true });
 
 function loadTopMissions(forceReload) {
     const days = document.getElementById('range-select').value;
@@ -1125,12 +1346,12 @@ function loadTopMissions(forceReload) {
 
     const loadingEl = document.getElementById('missions-loading');
     const emptyEl = document.getElementById('missions-empty');
-    const table = document.getElementById('top-missions-table');
+    const wrap = document.getElementById('top-missions-wrap');
     loadingEl.style.display = '';
     emptyEl.style.display = 'none';
-    table.style.display = 'none';
+    wrap.style.display = 'none';
 
-    fetch('/api/usage/missions?days=' + days + projParam + offsetParam)
+    fetch('/api/usage/missions?days=' + days + '&limit=100' + projParam + offsetParam)
         .then(r => r.json())
         .then(data => {
             loadingEl.style.display = 'none';
@@ -1143,13 +1364,6 @@ function loadTopMissions(forceReload) {
             emptyEl.style.display = '';
         });
 }
-
-document.getElementById('top-missions-details').addEventListener('toggle', function() {
-    _missionsOpen = this.open;
-    if (this.open) {
-        loadTopMissions(false);
-    }
-});
 
 loadProjects();
 initTypeSortHandlers();
