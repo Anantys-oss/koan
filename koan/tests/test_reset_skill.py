@@ -104,7 +104,7 @@ class TestResetInMainLoop:
     @patch("app.run.run_startup", return_value=(5, 10, "koan/"))
     @patch("app.run.acquire_pidfile")
     @patch("app.run.release_pidfile")
-    def test_signal_file_cleared_on_startup(self, mock_release, mock_acquire, mock_startup, mock_subproc, tmp_path, monkeypatch):
+    def test_signal_file_cleared_on_startup(self, mock_release, mock_acquire, mock_startup, mock_subproc, tmp_path):
         """Stale reset signal from previous session is cleared at startup."""
         import os
 
@@ -112,7 +112,11 @@ class TestResetInMainLoop:
         from app.signals import RESET_COUNTER_FILE
 
         koan_root = tmp_path
-        (koan_root / "instance").mkdir()
+        instance = koan_root / "instance"
+        instance.mkdir()
+        (instance / "missions.md").write_text("# Missions\n\n## En attente\n\n## En cours\n\n## Terminées\n")
+        (instance / "config.yaml").write_text("startup_delay: 0\n")
+        (koan_root / "koan" / "app").mkdir(parents=True)
         os.environ["KOAN_ROOT"] = str(koan_root)
         os.environ["KOAN_PROJECTS"] = f"test:{koan_root}"
         (koan_root / ".koan-project").write_text("test")
