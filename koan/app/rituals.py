@@ -82,6 +82,8 @@ def run_ritual(ritual_type: str, instance_dir: Path) -> bool:
             return True
         else:
             stderr = strip_cli_noise(result.stderr[:200])
+            if not stderr:
+                stderr = strip_cli_noise(result.stdout[-200:]) or f"exit code {result.returncode}"
             print(f"[rituals] {ritual_type} ritual failed: {stderr}", file=sys.stderr)
             return False
     except subprocess.TimeoutExpired:
