@@ -1,4 +1,4 @@
-"""Tests for mission retry logic in app.run — _maybe_retry_mission and _get_git_head."""
+"""Tests for mission retry logic — _maybe_retry_mission and _get_git_head."""
 
 import contextlib
 import os

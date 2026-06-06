@@ -3,9 +3,9 @@
 import os
 import shutil
 import tempfile
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -130,3 +130,62 @@ def instance_dir(tmp_path):
         "## Done\n\n"
     )
     return inst
+
+
+def make_iteration_plan(**overrides):
+    """Build a minimal plan dict for _run_iteration tests."""
+    plan = {
+        "action": "mission",
+        "project_name": "testproj",
+        "project_path": "/tmp/testproj",
+        "autonomous_mode": "implement",
+        "available_pct": 50,
+        "display_lines": [],
+        "mission_title": "test mission",
+        "focus_area": "",
+        "decision_reason": "",
+        "recurring_injected": [],
+    }
+    plan.update(overrides)
+    return plan
+
+
+@contextmanager
+def patched_run_iteration(prep_result, extra_patches=None):
+    """Patch all _run_iteration dependencies, yield mock for prepare_project_branch.
+
+    Use extra_patches dict to override or add specific mocks (e.g. fire_hook).
+    """
+    mock_prep = MagicMock(return_value=prep_result)
+    patches = {
+        "app.run.plan_iteration": MagicMock(return_value=make_iteration_plan()),
+        "app.run.run_claude_task": MagicMock(return_value=0),
+        "app.run._run_preflight_check": MagicMock(return_value=False),
+        "app.run._handle_skill_dispatch": MagicMock(return_value=(False, "test mission")),
+        "app.run._start_mission_in_file": MagicMock(),
+        "app.run._finalize_mission": MagicMock(),
+        "app.run._notify": MagicMock(),
+        "app.run._notify_mission_end": MagicMock(),
+        "app.run._commit_instance": MagicMock(),
+        "app.run._sleep_between_runs": MagicMock(),
+        "app.run._cleanup_temp": MagicMock(),
+        "app.run_log._reset_terminal": MagicMock(),
+        "app.git_prep.prepare_project_branch": mock_prep,
+        "app.prompt_builder.build_agent_prompt": MagicMock(return_value="prompt"),
+        "app.loop_manager.create_pending_file": MagicMock(),
+        "app.mission_runner.build_mission_command": MagicMock(return_value=(["echo"], [])),
+        "app.mission_runner.run_post_mission": MagicMock(return_value={}),
+        "app.mission_runner.parse_claude_output": MagicMock(return_value="ok"),
+    }
+    if extra_patches:
+        patches.update(extra_patches)
+    started = []
+    try:
+        for target, mock_obj in patches.items():
+            p = patch(target, mock_obj)
+            started.append(p)
+            p.start()
+        yield mock_prep
+    finally:
+        for p in started:
+            p.stop()
