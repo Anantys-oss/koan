@@ -253,6 +253,61 @@ class TestHandleStatus:
         assert "Pending" not in result
         assert "In progress" not in result
 
+    def test_active_shows_queue_count(self, tmp_path):
+        """Active status shows pending mission count."""
+        instance = tmp_path / "instance"
+        instance.mkdir()
+        missions = instance / "missions.md"
+        missions.write_text(
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- task one\n"
+            "- task two\n"
+            "- task three\n\n"
+            "## In Progress\n\n"
+            "## Done\n"
+        )
+        from skills.core.status.handler import _handle_status
+        ctx = _make_ctx("status", instance, tmp_path)
+        result = _handle_status(ctx)
+        assert "Active — 3 in queue" in result
+
+    def test_active_no_queue_count_when_empty(self, tmp_path):
+        """Active status omits queue count when no pending missions."""
+        instance = tmp_path / "instance"
+        instance.mkdir()
+        missions = instance / "missions.md"
+        missions.write_text(
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "## In Progress\n\n"
+            "## Done\n"
+        )
+        from skills.core.status.handler import _handle_status
+        ctx = _make_ctx("status", instance, tmp_path)
+        result = _handle_status(ctx)
+        assert "🟢 Active" in result
+        assert "in queue" not in result
+
+    def test_paused_shows_queue_count(self, tmp_path):
+        """Paused status shows pending mission count."""
+        instance = tmp_path / "instance"
+        instance.mkdir()
+        (tmp_path / ".koan-pause").touch()
+        missions = instance / "missions.md"
+        missions.write_text(
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- task one\n"
+            "- task two\n\n"
+            "## In Progress\n\n"
+            "## Done\n"
+        )
+        from skills.core.status.handler import _handle_status
+        ctx = _make_ctx("status", instance, tmp_path)
+        result = _handle_status(ctx)
+        assert "Paused — 2 in queue" in result
+
     def test_multi_project_missions(self, tmp_path):
         """Missions from different projects are grouped separately."""
         instance = tmp_path / "instance"
@@ -316,6 +371,29 @@ class TestHandleStatus:
 # ---------------------------------------------------------------------------
 # _truncate()
 # ---------------------------------------------------------------------------
+
+class TestCountPendingMissions:
+    """Test the _count_pending_missions() helper."""
+
+    def test_no_file(self, tmp_path):
+        from skills.core.status.handler import _count_pending_missions
+        assert _count_pending_missions(tmp_path / "missing.md") == 0
+
+    def test_no_pending(self, tmp_path):
+        f = tmp_path / "missions.md"
+        f.write_text("## Pending\n\n## In Progress\n\n- task\n\n## Done\n")
+        from skills.core.status.handler import _count_pending_missions
+        assert _count_pending_missions(f) == 0
+
+    def test_counts_pending(self, tmp_path):
+        f = tmp_path / "missions.md"
+        f.write_text(
+            "## Pending\n\n- task one\n- task two\n- task three\n\n"
+            "## In Progress\n\n- current\n\n## Done\n"
+        )
+        from skills.core.status.handler import _count_pending_missions
+        assert _count_pending_missions(f) == 3
+
 
 class TestGetInProgressMissions:
     """Test the _get_in_progress_missions() helper."""

@@ -38,6 +38,21 @@ def _truncate(text: str, max_len: int = 60) -> str:
     return text[:max_len - 1].rstrip() + "…"
 
 
+def _count_pending_missions(missions_file) -> int:
+    """Return the total number of pending missions across all projects."""
+    from pathlib import Path
+    from app.missions import parse_sections
+
+    path = Path(missions_file)
+    if not path.exists():
+        return 0
+    try:
+        sections = parse_sections(path.read_text())
+        return len(sections.get("pending", []))
+    except Exception:
+        return 0
+
+
 def _get_in_progress_missions(missions_file) -> str:
     """Return a short display of in-progress missions, or empty string."""
     from pathlib import Path
@@ -122,6 +137,9 @@ def _handle_status(ctx) -> str:
     pause_file = koan_root / ".koan-pause"
     stop_file = koan_root / ".koan-stop"
 
+    pending_count = _count_pending_missions(missions_file)
+    queue_suffix = f" — {pending_count} in queue" if pending_count else ""
+
     if stop_file.exists():
         parts.append("  ⛔ Stopping")
         in_flight = _get_in_progress_missions(missions_file)
@@ -132,7 +150,7 @@ def _handle_status(ctx) -> str:
         state = get_pause_state(str(koan_root))
         reason = state.reason if state else ""
         if reason == "quota":
-            parts.append("  ⏸️ Paused (quota exhausted)")
+            parts.append(f"  ⏸️ Paused (quota exhausted){queue_suffix}")
             if state and state.timestamp > 0:
                 try:
                     from app.reset_parser import time_until_reset
@@ -145,15 +163,15 @@ def _handle_status(ctx) -> str:
                 try:
                     from app.reset_parser import time_until_reset
                     remaining = time_until_reset(state.timestamp)
-                    parts.append(f"  ⏸️ Paused (~{remaining} remaining)")
+                    parts.append(f"  ⏸️ Paused (~{remaining} remaining){queue_suffix}")
                 except Exception:
-                    parts.append("  ⏸️ Paused (timed)")
+                    parts.append(f"  ⏸️ Paused (timed){queue_suffix}")
             else:
-                parts.append("  ⏸️ Paused (timed)")
+                parts.append(f"  ⏸️ Paused (timed){queue_suffix}")
         elif reason == "max_runs":
-            parts.append("  ⏸️ Paused (max runs reached)")
+            parts.append(f"  ⏸️ Paused (max runs reached){queue_suffix}")
         else:
-            parts.append("  ⏸️ Paused")
+            parts.append(f"  ⏸️ Paused{queue_suffix}")
         in_flight = _get_in_progress_missions(missions_file)
         if in_flight:
             parts.append(f"  ⏳ Finishing: {in_flight}")
@@ -165,13 +183,13 @@ def _handle_status(ctx) -> str:
             if passive_state:
                 remaining = passive_state.remaining_display()
                 if passive_state.duration == 0:
-                    parts.append("  👁️ Passive (read-only)")
+                    parts.append(f"  👁️ Passive (read-only){queue_suffix}")
                 else:
-                    parts.append(f"  👁️ Passive (read-only, {remaining} remaining)")
+                    parts.append(f"  👁️ Passive (read-only, {remaining} remaining){queue_suffix}")
             else:
-                parts.append("  🟢 Active")
+                parts.append(f"  🟢 Active{queue_suffix}")
         except Exception:
-            parts.append("  🟢 Active")
+            parts.append(f"  🟢 Active{queue_suffix}")
 
     # System info: IP │ Provider on one compact line
     info_items = []
