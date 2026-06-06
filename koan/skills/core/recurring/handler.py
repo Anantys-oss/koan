@@ -9,9 +9,10 @@ def handle(ctx):
     /weekly <text>             — add a weekly recurring mission
     /every <interval> <text>   — add a custom-interval recurring mission
     /recurring                 — list all recurring missions
+    /recurring resume <X>      — re-enable a disabled recurring mission
+    /recurring run [X]         — force an immediate run of a recurring mission (or all due if omitted)
     /cancel_recurring [n]      — cancel a recurring mission by number or keyword
     /pause_recurring [n]       — disable a recurring mission
-    /resume_recurring [n]      — re-enable a recurring mission
     /days_recurring <n> <days> — set day-of-week filter (weekdays/weekends/mon,wed,fri)
     """
     command = ctx.command_name
@@ -21,13 +22,11 @@ def handle(ctx):
     elif command == "every":
         return _handle_every(ctx)
     elif command == "recurring":
-        return _handle_list(ctx)
+        return _handle_recurring(ctx)
     elif command == "cancel_recurring":
         return _handle_cancel(ctx)
     elif command == "pause_recurring":
         return _handle_toggle(ctx, enabled=False)
-    elif command == "resume_recurring":
-        return _handle_toggle(ctx, enabled=True)
     elif command == "days_recurring":
         return _handle_days(ctx)
 
@@ -116,6 +115,41 @@ def _handle_every(ctx):
     return ack
 
 
+def _handle_recurring(ctx):
+    """Route /recurring sub-commands: list, resume <X>, run [X]."""
+    args = ctx.args.strip()
+
+    if not args:
+        # No args — list all missions
+        return _handle_list(ctx)
+
+    # Parse first token for sub-command
+    parts = args.split(None, 1)
+    sub_command = parts[0].lower()
+    remaining_args = parts[1].strip() if len(parts) > 1 else ""
+
+    if sub_command == "resume":
+        if not remaining_args:
+            from app.recurring import list_recurring, format_recurring_list
+            recurring_path = ctx.instance_dir / "recurring.json"
+            missions = list_recurring(recurring_path)
+            if missions:
+                msg = format_recurring_list(missions)
+                msg += "\n\nUsage: /recurring resume <number or keyword>"
+                return msg
+            return "No recurring missions configured."
+        # Create a temporary context with the remaining args for _handle_toggle
+        ctx_copy = ctx
+        ctx_copy.args = remaining_args
+        return _handle_toggle(ctx_copy, enabled=True)
+    elif sub_command == "run":
+        # Force run with optional identifier
+        return _handle_run(ctx, identifier=remaining_args if remaining_args else None)
+    else:
+        # Treat as list (or could be a legacy sub-command)
+        return _handle_list(ctx)
+
+
 def _handle_list(ctx):
     """List all recurring missions."""
     from app.recurring import list_recurring, format_recurring_list
@@ -167,6 +201,32 @@ def _handle_toggle(ctx, enabled):
         toggled = toggle_recurring(recurring_path, identifier, enabled)
         status = "enabled ✅" if enabled else "disabled ⏸️"
         return f"Recurring mission {status}: {toggled}"
+    except ValueError as e:
+        return str(e)
+
+
+def _handle_run(ctx, identifier=None):
+    """Force an immediate run of recurring mission(s)."""
+    from app.recurring import list_recurring, format_recurring_list, force_run
+
+    recurring_path = ctx.instance_dir / "recurring.json"
+    missions_path = ctx.instance_dir / "missions.md"
+
+    if not identifier:
+        # No identifier — show list and ask for confirmation
+        missions = list_recurring(recurring_path)
+        if missions:
+            msg = format_recurring_list(missions)
+            msg += "\n\nUsage: /recurring run <number or keyword>\nOmit number to run all enabled due missions."
+            return msg
+        return "No recurring missions configured."
+
+    # Attempt to force run
+    try:
+        injected = force_run(recurring_path, missions_path, identifier=identifier)
+        if injected:
+            return f"Forced run of {len(injected)} mission(s):\n" + "\n".join(f"  • {text}" for text in injected)
+        return "No missions matched the identifier."
     except ValueError as e:
         return str(e)
 

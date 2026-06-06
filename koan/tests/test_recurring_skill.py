@@ -294,6 +294,157 @@ class TestCancelRecurringCommand:
 
 
 # ---------------------------------------------------------------------------
+# /pause_recurring — disable a recurring mission
+# ---------------------------------------------------------------------------
+
+
+class TestPauseRecurringCommand:
+    def _setup_recurring(self, tmp_path):
+        """Add a sample recurring mission."""
+        mod = _load_handler()
+        ctx = _ctx(tmp_path, "daily", "check emails")
+        mod.handle(ctx)
+
+    def test_pause_by_number(self, tmp_path):
+        mod = _load_handler()
+        self._setup_recurring(tmp_path)
+        ctx = _ctx(tmp_path, "pause_recurring", "1")
+        result = mod.handle(ctx)
+        assert "disabled ⏸️" in result
+        assert "check emails" in result
+
+    def test_pause_by_keyword(self, tmp_path):
+        mod = _load_handler()
+        self._setup_recurring(tmp_path)
+        ctx = _ctx(tmp_path, "pause_recurring", "check")
+        result = mod.handle(ctx)
+        assert "disabled ⏸️" in result
+
+    def test_pause_invalid_number(self, tmp_path):
+        mod = _load_handler()
+        self._setup_recurring(tmp_path)
+        ctx = _ctx(tmp_path, "pause_recurring", "99")
+        result = mod.handle(ctx)
+        assert "Invalid number" in result or "No recurring mission" in result
+
+
+# ---------------------------------------------------------------------------
+# /recurring resume — re-enable a disabled recurring mission
+# ---------------------------------------------------------------------------
+
+
+class TestRecurringResumeCommand:
+    def _setup_recurring(self, tmp_path):
+        """Add and disable a sample recurring mission."""
+        mod = _load_handler()
+        ctx = _ctx(tmp_path, "daily", "check emails")
+        mod.handle(ctx)
+        ctx = _ctx(tmp_path, "pause_recurring", "1")
+        mod.handle(ctx)
+
+    def test_resume_by_number(self, tmp_path):
+        mod = _load_handler()
+        self._setup_recurring(tmp_path)
+        ctx = _ctx(tmp_path, "recurring", "resume 1")
+        result = mod.handle(ctx)
+        assert "enabled ✅" in result
+        assert "check emails" in result
+
+    def test_resume_by_keyword(self, tmp_path):
+        mod = _load_handler()
+        self._setup_recurring(tmp_path)
+        ctx = _ctx(tmp_path, "recurring", "resume check")
+        result = mod.handle(ctx)
+        assert "enabled ✅" in result
+
+    def test_resume_invalid_number(self, tmp_path):
+        mod = _load_handler()
+        self._setup_recurring(tmp_path)
+        ctx = _ctx(tmp_path, "recurring", "resume 99")
+        result = mod.handle(ctx)
+        assert "Invalid number" in result or "No recurring mission" in result
+
+
+# ---------------------------------------------------------------------------
+# /recurring run — force immediate run of a recurring mission
+# ---------------------------------------------------------------------------
+
+
+class TestRecurringRunCommand:
+    def _setup_missions(self, tmp_path):
+        """Set up missions.md."""
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir(exist_ok=True)
+        missions_path = instance_dir / "missions.md"
+        missions_path.write_text(
+            "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n\n"
+        )
+
+    def _setup_recurring(self, tmp_path):
+        """Add a sample recurring mission."""
+        self._setup_missions(tmp_path)
+        mod = _load_handler()
+        ctx = _ctx(tmp_path, "daily", "check emails")
+        mod.handle(ctx)
+
+    def test_run_by_number(self, tmp_path):
+        mod = _load_handler()
+        self._setup_recurring(tmp_path)
+        ctx = _ctx(tmp_path, "recurring", "run 1")
+        result = mod.handle(ctx)
+        assert "Forced run of" in result or "mission" in result.lower()
+
+    def test_run_by_keyword(self, tmp_path):
+        mod = _load_handler()
+        self._setup_recurring(tmp_path)
+        ctx = _ctx(tmp_path, "recurring", "run check")
+        result = mod.handle(ctx)
+        assert "Forced run of" in result or "mission" in result.lower()
+
+    def test_run_no_identifier_shows_list(self, tmp_path):
+        mod = _load_handler()
+        self._setup_recurring(tmp_path)
+        ctx = _ctx(tmp_path, "recurring", "run")
+        result = mod.handle(ctx)
+        # Should show the list when no identifier provided
+        assert "check emails" in result or "Usage" in result
+
+    def test_run_invalid_identifier(self, tmp_path):
+        mod = _load_handler()
+        self._setup_recurring(tmp_path)
+        ctx = _ctx(tmp_path, "recurring", "run nonexistent")
+        result = mod.handle(ctx)
+        assert "No recurring mission" in result or "Invalid" in result
+
+
+# ---------------------------------------------------------------------------
+# /recurring — main command with sub-commands
+# ---------------------------------------------------------------------------
+
+
+class TestRecurringMainCommand:
+    def _setup_recurring(self, tmp_path):
+        """Add a sample recurring mission."""
+        mod = _load_handler()
+        ctx = _ctx(tmp_path, "daily", "check emails")
+        mod.handle(ctx)
+
+    def test_recurring_list_empty(self, tmp_path):
+        mod = _load_handler()
+        ctx = _ctx(tmp_path, "recurring", "")
+        result = mod.handle(ctx)
+        assert "No recurring missions" in result
+
+    def test_recurring_list_with_missions(self, tmp_path):
+        mod = _load_handler()
+        self._setup_recurring(tmp_path)
+        ctx = _ctx(tmp_path, "recurring", "")
+        result = mod.handle(ctx)
+        assert "check emails" in result
+        assert "Recurring missions:" in result
+
+
+# ---------------------------------------------------------------------------
 # Skill registration (SKILL.md)
 # ---------------------------------------------------------------------------
 

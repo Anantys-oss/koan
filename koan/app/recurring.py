@@ -539,6 +539,34 @@ def is_due(mission: Dict, now: Optional[datetime] = None) -> bool:
     return False
 
 
+def _inject_one(mission: Dict, missions_path: Path, now: datetime) -> str:
+    """Inject a single mission into missions.md and update its last_run.
+
+    Returns the mission's description for logging.
+    """
+    text = mission["text"]
+    project = mission.get("project")
+    freq = mission["frequency"]
+
+    # Build mission entry for missions.md
+    if freq == "every":
+        interval_display = mission.get("interval_display") or format_interval(mission.get("interval_seconds", 0))
+        tag = f"[every {interval_display}] "
+    else:
+        tag = f"[{freq}] "
+    if project:
+        entry = f"- [project:{project}] {tag}{text}"
+    else:
+        entry = f"- {tag}{text}"
+
+    # Insert into pending section
+    insert_pending_mission(missions_path, entry)
+
+    # Update last_run
+    mission["last_run"] = now.isoformat(timespec="seconds")
+    return f"[{freq}] {text}"
+
+
 def check_and_inject(
     recurring_path: Path,
     missions_path: Path,
@@ -567,29 +595,55 @@ def check_and_inject(
         for mission in missions:
             if not is_due(mission, now):
                 continue
-
-            text = mission["text"]
-            project = mission.get("project")
-            freq = mission["frequency"]
-
-            # Build mission entry for missions.md
-            if freq == "every":
-                interval_display = mission.get("interval_display") or format_interval(mission.get("interval_seconds", 0))
-                tag = f"[every {interval_display}] "
-            else:
-                tag = f"[{freq}] "
-            if project:
-                entry = f"- [project:{project}] {tag}{text}"
-            else:
-                entry = f"- {tag}{text}"
-
-            # Insert into pending section
-            insert_pending_mission(missions_path, entry)
-
-            # Update last_run
-            mission["last_run"] = now.isoformat(timespec="seconds")
-            injected.append(f"[{freq}] {text}")
+            injected.append(_inject_one(mission, missions_path, now))
 
         return injected
 
     return _locked_modify(recurring_path, _check)
+
+
+def force_run(
+    recurring_path: Path,
+    missions_path: Path,
+    identifier: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> List[str]:
+    """Force an immediate run of one or more recurring missions.
+
+    Injects mission(s) into missions.md regardless of enabled/last_run/cadence.
+    Updates last_run to prevent duplicate runs.
+
+    Args:
+        recurring_path: Path to recurring.json
+        missions_path: Path to missions.md
+        identifier: Optional number (1-indexed, display order) or keyword substring.
+                   If omitted, injects all enabled missions.
+        now: Optional datetime for testing
+
+    Returns:
+        List of mission descriptions that were injected
+
+    Raises:
+        ValueError: If identifier doesn't match any mission
+    """
+    now = now or datetime.now()
+
+    def _force(missions: List[Dict]) -> List[str]:
+        if not missions:
+            raise ValueError("No recurring missions configured.")
+
+        injected = []
+
+        if identifier is None:
+            # Inject all enabled missions (ignore disabled, bypass cadence)
+            for mission in missions:
+                if mission.get("enabled", True):
+                    injected.append(_inject_one(mission, missions_path, now))
+        else:
+            # Inject the single matching mission (ignore enabled, bypass cadence)
+            target = _resolve_target(missions, identifier)
+            injected.append(_inject_one(target, missions_path, now))
+
+        return injected
+
+    return _locked_modify(recurring_path, _force)

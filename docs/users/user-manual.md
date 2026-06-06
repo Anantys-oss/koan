@@ -815,10 +815,16 @@ Kōan supports recurring missions that automatically re-queue at set intervals.
 
 > **Targeting a project:** the bracketed `[project:<name>]` form is recommended, but a trailing `project:<name>` (no brackets, at the end of the text) is also accepted — e.g. `/daily run the API audit project:webapp`. The same applies to `/every`.
 
-**`/recurring`** — List all active recurring missions.
+**`/recurring`** — List, manage, or force-run recurring missions.
+- **Usage:** `/recurring` (list), `/recurring resume <n>` (re-enable), `/recurring run [n]` (force immediate run)
+- **Aliases:** —
 
 **`/cancel_recurring`** — Cancel a recurring mission.
 - **Usage:** `/cancel_recurring <n>` or `/cancel_recurring <keyword>`
+- **Aliases:** —
+
+**`/pause_recurring`** — Disable a recurring mission without deleting it.
+- **Usage:** `/pause_recurring <n>` or `/pause_recurring <keyword>`
 - **Aliases:** —
 
 <details>
@@ -828,6 +834,9 @@ Kōan supports recurring missions that automatically re-queue at set intervals.
 - `/weekly Run the full test suite and report flaky tests` — Weekly health check
 - `/hourly Check CI status [project:api]` — Frequent monitoring
 - `/recurring` — See what's scheduled
+- `/recurring resume 1` — Re-enable a paused mission
+- `/recurring run 2` — Force an immediate run of mission #2
+- `/pause_recurring 1` — Temporarily disable mission #1
 - `/cancel_recurring 2` — Stop a recurring mission
 </details>
 
@@ -1953,7 +1962,10 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/hourly <text>` | — | I | Schedule an hourly recurring mission |
 | `/weekly <text>` | — | I | Schedule a weekly recurring mission |
 | `/recurring` | — | I | List all recurring missions |
-| `/cancel_recurring <n>` | `/cancel_recurring` | I | Cancel a recurring mission |
+| `/recurring resume <n>` | — | I | Re-enable a disabled recurring mission |
+| `/recurring run [n]` | — | I | Force an immediate run of a recurring mission |
+| `/pause_recurring <n>` | — | I | Disable a recurring mission without deleting |
+| `/cancel_recurring <n>` | — | I | Cancel a recurring mission |
 | `/idea <text>` | `/buffer` | I | Add to the ideas backlog |
 | `/ideas` | — | I | List all ideas |
 | `/reflect <msg>` | `/think` | I | Write a reflection to the shared journal |
