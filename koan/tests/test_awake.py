@@ -3566,6 +3566,43 @@ class TestConfirmationDetection:
         assert _is_rejection("help") is False
 
 
+class TestCommandPreFilter:
+    """Test the cheap keyword pre-filter that gates the classifier call."""
+
+    def test_mentions_known_command_matches_command_word(self):
+        from app.awake import _mentions_known_command
+        assert _mentions_known_command("show recurring tasks") is True
+        assert _mentions_known_command("what is the status?") is True
+
+    def test_mentions_known_command_matches_underscore_part(self):
+        """A multi-word command (resume_recurring) matches its word parts."""
+        from app.awake import _mentions_known_command
+        assert _mentions_known_command("relance les recurring tasks") is True
+        assert _mentions_known_command("tu peux faire resume recurring ?") is True
+
+    def test_plain_chat_does_not_match(self):
+        from app.awake import _mentions_known_command
+        assert _mentions_known_command("tell me a joke") is False
+        assert _mentions_known_command("how are you today?") is False
+        assert _mentions_known_command("merci beaucoup") is False
+
+    def test_classifier_skipped_when_no_command_keyword(self, tmp_path):
+        """handle_chat must not call _classify_intent for plain chatter."""
+        from app.awake import handle_chat
+        with patch("app.awake._mentions_known_command", return_value=False), \
+             patch("app.awake._classify_intent") as mock_classify, \
+             patch("app.awake.save_conversation_message"), \
+             patch("app.cli_exec.run_cli") as mock_run, \
+             patch("app.awake.get_chat_tools", return_value="Read"), \
+             patch("app.awake.INSTANCE_DIR", tmp_path), \
+             patch("app.awake.KOAN_ROOT", tmp_path), \
+             patch("app.awake.CONVERSATION_HISTORY_FILE", tmp_path / "h.jsonl"), \
+             patch("app.awake.send_telegram", return_value=True):
+            mock_run.return_value = MagicMock(stdout="hi there", returncode=0)
+            handle_chat("how are you?")
+        mock_classify.assert_not_called()
+
+
 class TestIntentClassification:
     """Test intent classification helper functions."""
 

@@ -395,7 +395,9 @@ def handle_chat(text: str, chat_id: Optional[str] = None):
                 return
 
     # --- Intent classification: check if this looks like an actionable request ---
-    intent = _classify_intent(text)
+    # Cheap pre-filter first: only pay the ~5-10s classifier cold-start when the
+    # message actually mentions a known command keyword. Plain chat skips it.
+    intent = _classify_intent(text) if _mentions_known_command(text) else None
     if intent and intent.get("actionable") and intent.get("command"):
         confidence = intent.get("confidence", 0)
         # High-confidence, low-risk commands: execute without confirmation
@@ -536,6 +538,53 @@ def handle_chat(text: str, chat_id: Optional[str] = None):
 # ---------------------------------------------------------------------------
 # Intent classification and confirmation
 # ---------------------------------------------------------------------------
+
+# Common short tokens produced by splitting command names on "_" that would
+# over-match plain chat (e.g. "ai", "pr"). Kept out of the trigger vocabulary.
+_VOCAB_STOPWORDS = frozenset({"ai", "pr", "rtk", "gh"})
+
+# Cached trigger vocabulary — command names/aliases (and their underscore
+# parts) that gate the classifier. Computed once per process; the registry is
+# static after startup.
+_COMMAND_VOCAB: Optional[frozenset] = None
+
+_WORD_RE = re.compile(r"[a-z0-9]+")
+
+
+def _command_vocabulary() -> frozenset:
+    """Build (and cache) the set of tokens that should trigger classification.
+
+    Includes every command name and alias, plus the individual words of
+    multi-word names (``resume_recurring`` → ``resume``, ``recurring``), so a
+    natural phrasing like "relance les recurring tasks" still matches even
+    though the user never types the underscore form. Short/ambiguous tokens
+    are filtered out to avoid running the classifier on ordinary chatter.
+    """
+    global _COMMAND_VOCAB
+    if _COMMAND_VOCAB is not None:
+        return _COMMAND_VOCAB
+
+    vocab: set = set()
+    for skill in _get_registry().list_all():
+        for cmd in getattr(skill, "commands", []):
+            names = [cmd.name, *getattr(cmd, "aliases", [])]
+            for name in names:
+                for part in str(name).lower().split("_"):
+                    if len(part) >= 3 and part not in _VOCAB_STOPWORDS:
+                        vocab.add(part)
+    _COMMAND_VOCAB = frozenset(vocab)
+    return _COMMAND_VOCAB
+
+
+def _mentions_known_command(text: str) -> bool:
+    """Cheap pre-filter: does the message mention a known command keyword?
+
+    Used to gate the (~5-10s) classifier call so plain conversational
+    messages skip it entirely and reply instantly.
+    """
+    words = set(_WORD_RE.findall(text.lower()))
+    return bool(words & _command_vocabulary())
+
 
 def _classify_intent(text: str) -> Optional[dict]:
     """Classify user message intent and propose a matching slash command.
