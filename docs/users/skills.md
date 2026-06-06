@@ -114,6 +114,7 @@ Skills marked **GitHub @mention** can be triggered by commenting `@koan-bot <com
 | `/check_notifications` | `/read` | Force immediate GitHub + Jira notification check |
 | `/inbox` | — | Force GitHub notification check + show queued mail count |
 | `/rescan` | `/rescan_heads` | Re-check all projects for remote HEAD branch changes |
+| `/version` | `/ver` | Show Kōan version (tag, commit, commits ahead) |
 | `/verbose` | — | Enable real-time progress updates |
 | `/silent` | — | Disable real-time progress updates |
 

@@ -26,32 +26,9 @@ def _needs_ollama() -> bool:
 
 
 def _get_version() -> str:
-    """Return Kōan version from git tags.
-
-    Format: 'v0.73' (exact tag) or 'v0.73@deadbeef +17' (ahead of tag).
-    """
-    import subprocess
-    from pathlib import Path
-    # koan source root: handler.py is at koan/skills/core/status/handler.py
-    koan_src = Path(__file__).resolve().parents[3]
-    try:
-        result = subprocess.run(
-            ["git", "describe", "--tags"],
-            capture_output=True, text=True, timeout=5,
-            cwd=koan_src,
-        )
-        if result.returncode != 0:
-            return ""
-        desc = result.stdout.strip()
-        # Exact tag: just "v0.73"
-        # Ahead of tag: "v0.73-17-gabcdef12"
-        parts = desc.rsplit("-", 2)
-        if len(parts) == 3 and parts[2].startswith("g"):
-            tag, commits_ahead, sha = parts[0], parts[1], parts[2][1:]
-            return f"{tag}@{sha[:8]} +{commits_ahead}"
-        return desc
-    except Exception:
-        return ""
+    """Return Kōan version from git tags."""
+    from app.version import get_version
+    return get_version()
 
 
 def _truncate(text: str, max_len: int = 60) -> str:

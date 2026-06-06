@@ -162,7 +162,7 @@ If Kōan misclassifies your message, use `/chat` to force chat mode:
 **`/status`** — Get a quick overview of Kōan's state: what's running, what's queued, loop health.
 
 - **Aliases:** `/st`
-- **Related:** `/ping` (is the loop alive?), `/usage` (detailed quota), `/metrics` (success rates)
+- **Related:** `/ping` (is the loop alive?), `/usage` (detailed quota), `/metrics` (success rates), `/version` (version only)
 
 <details>
 <summary>Use cases</summary>
@@ -1909,6 +1909,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/inbox` | — | B | Force GitHub notification check + show queued mail count |
 | `/quota [N]` | `/q` | B | Check LLM quota (live), or override remaining % |
 | `/chat <msg>` | — | B | Force chat mode (bypass mission detection) |
+| `/version` | `/ver` | B | Show Kōan version |
 | `/verbose` | — | B | Enable real-time progress updates |
 | `/silent` | — | B | Disable real-time progress updates |
 | `/projects` | `/proj` | B | List configured projects |
