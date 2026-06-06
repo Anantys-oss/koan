@@ -703,7 +703,12 @@ def _ensure_runner_alive() -> None:
         log("error", f"Failed to start runner: {msg}")
 
 
-def main():
+MAX_BRIDGE_CRASHES = 5
+BRIDGE_BACKOFF_MULTIPLIER = 10
+MAX_BRIDGE_BACKOFF = 60
+
+
+def _bridge_loop():
     from app.banners import print_bridge_banner
     from app.github_auth import setup_github_auth
     from app.pid_manager import acquire_pidfile, release_pidfile
@@ -912,6 +917,46 @@ def main():
         release_pidfile(pidfile_lock, KOAN_ROOT, "awake")
         log("init", "Shutting down.")
         sys.exit(0)
+
+
+def main():
+    """Entry point with crash recovery wrapper.
+
+    Handles: normal exit, CTRL-C, and unexpected crashes with backoff.
+    Mirrors the pattern in run.py to keep the bridge alive through transient
+    failures (network blips, provider errors, file I/O hiccups).
+    """
+    import traceback
+
+    crash_count = 0
+    while True:
+        try:
+            _bridge_loop()
+            break
+        except KeyboardInterrupt:
+            break
+        except SystemExit:
+            raise
+        except Exception:
+            crash_count += 1
+            tb = traceback.format_exc()
+            print(
+                f"[bridge] Unexpected crash ({crash_count}/{MAX_BRIDGE_CRASHES}): {tb}",
+                file=sys.stderr,
+            )
+
+            if crash_count >= MAX_BRIDGE_CRASHES:
+                print(
+                    f"[bridge] Too many crashes ({MAX_BRIDGE_CRASHES}). Giving up.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
+            backoff = min(
+                BRIDGE_BACKOFF_MULTIPLIER * crash_count, MAX_BRIDGE_BACKOFF
+            )
+            print(f"[bridge] Restarting in {backoff}s...", file=sys.stderr)
+            time.sleep(backoff)
 
 
 if __name__ == "__main__":

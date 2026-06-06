@@ -152,7 +152,7 @@ class TestAwakeMainLoopShutdownCheck:
         # by reading the source and verifying the call pattern.
         import inspect
         from app import awake
-        source = inspect.getsource(awake.main)
+        source = inspect.getsource(awake._bridge_loop)
 
         # The shutdown check must use startup_time (not 0 or time.time())
         assert "is_shutdown_requested(str(KOAN_ROOT), startup_time)" in source
@@ -161,7 +161,7 @@ class TestAwakeMainLoopShutdownCheck:
         """Verify that first_poll block clears shutdown file."""
         import inspect
         from app import awake
-        source = inspect.getsource(awake.main)
+        source = inspect.getsource(awake._bridge_loop)
 
         # The first_poll block must clear both restart and shutdown
         assert "clear_shutdown" in source

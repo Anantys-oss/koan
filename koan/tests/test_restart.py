@@ -219,8 +219,8 @@ class TestMainLoopRestartDetection:
     def test_main_imports_restart_functions(self):
         """Verify main() has the restart check/reexec/clear imports."""
         import inspect
-        from app.awake import main
-        source = inspect.getsource(main)
+        from app.awake import _bridge_loop
+        source = inspect.getsource(_bridge_loop)
         assert "check_restart" in source
         assert "clear_restart" in source
         assert "reexec_bridge" in source
@@ -228,8 +228,8 @@ class TestMainLoopRestartDetection:
     def test_main_records_startup_time(self):
         """Verify main() records startup_time before the main loop."""
         import inspect
-        from app.awake import main
-        source = inspect.getsource(main)
+        from app.awake import _bridge_loop
+        source = inspect.getsource(_bridge_loop)
         startup_idx = source.index("startup_time")
         while_idx = source.index("while True:")
         assert startup_idx < while_idx, "startup_time should be set before main loop"
@@ -237,15 +237,15 @@ class TestMainLoopRestartDetection:
     def test_main_uses_since_in_check(self):
         """Verify main() passes since=startup_time to check_restart."""
         import inspect
-        from app.awake import main
-        source = inspect.getsource(main)
+        from app.awake import _bridge_loop
+        source = inspect.getsource(_bridge_loop)
         assert "since=startup_time" in source
 
     def test_main_checks_restart_in_loop(self):
         """Verify main() checks for restart signal inside the poll loop."""
         import inspect
-        from app.awake import main
-        source = inspect.getsource(main)
+        from app.awake import _bridge_loop
+        source = inspect.getsource(_bridge_loop)
         while_idx = source.index("while True:")
         # check_restart should appear after the while loop starts
         check_idx = source.index("check_restart(str(KOAN_ROOT)", while_idx)
@@ -254,8 +254,8 @@ class TestMainLoopRestartDetection:
     def test_main_clears_stale_file_after_first_poll(self):
         """Verify main() clears restart file after the first poll cycle."""
         import inspect
-        from app.awake import main
-        source = inspect.getsource(main)
+        from app.awake import _bridge_loop
+        source = inspect.getsource(_bridge_loop)
         while_idx = source.index("while True:")
         # clear_restart should appear inside the loop (after first poll)
         clear_idx = source.index("clear_restart(str(KOAN_ROOT)", while_idx)

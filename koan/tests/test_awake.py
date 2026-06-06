@@ -28,6 +28,7 @@ from app.awake import (
     _strip_bot_mention_from_text,
     get_updates,
     check_config,
+    _bridge_loop,
 )
 from app.outbox_manager import OutboxManager
 from app.bridge_state import (
@@ -1482,12 +1483,12 @@ class TestMainLoop:
     def test_main_processes_updates(self, mock_sleep, mock_config, mock_updates,
                                     mock_handle, mock_flush, mock_heartbeat):
         """main() fetches updates, dispatches messages, flushes outbox, writes heartbeat."""
-        from app.awake import main
+        from app.awake import _bridge_loop
         mock_updates.return_value = [
             {"update_id": 100, "message": {"text": "hello", "chat": {"id": int(self.TEST_CHAT_ID)}}}
         ]
         with pytest.raises(StopIteration):
-            main()
+            _bridge_loop()
         mock_config.assert_called_once()
         mock_updates.assert_called_once_with(None)
         mock_handle.assert_called_once_with("hello")
@@ -1503,12 +1504,12 @@ class TestMainLoop:
     def test_main_ignores_wrong_chat_id(self, mock_sleep, mock_config, mock_updates,
                                          mock_handle, mock_flush, mock_heartbeat):
         """Messages from other chat IDs are ignored."""
-        from app.awake import main
+        from app.awake import _bridge_loop
         mock_updates.return_value = [
             {"update_id": 100, "message": {"text": "hello", "chat": {"id": 999999}}}
         ]
         with pytest.raises(StopIteration):
-            main()
+            _bridge_loop()
         mock_handle.assert_not_called()
 
     @patch("app.awake.write_heartbeat")
@@ -1521,7 +1522,7 @@ class TestMainLoop:
     def test_main_updates_offset(self, mock_sleep, mock_config, mock_updates,
                                   mock_handle, mock_flush, mock_heartbeat):
         """Offset advances to update_id + 1 after processing."""
-        from app.awake import main
+        from app.awake import _bridge_loop
         test_chat_id = self.TEST_CHAT_ID
         call_count = [0]
         def side_effect(offset=None):
@@ -1532,7 +1533,7 @@ class TestMainLoop:
         mock_updates.side_effect = side_effect
 
         with pytest.raises(StopIteration):
-            main()
+            _bridge_loop()
         assert mock_updates.call_count == 2
         mock_updates.assert_called_with(43)
 
@@ -1545,9 +1546,9 @@ class TestMainLoop:
     def test_main_empty_updates_still_flushes(self, mock_sleep, mock_config, mock_updates,
                                                mock_handle, mock_flush, mock_heartbeat):
         """Even with no updates, outbox is flushed and heartbeat written."""
-        from app.awake import main
+        from app.awake import _bridge_loop
         with pytest.raises(StopIteration):
-            main()
+            _bridge_loop()
         mock_handle.assert_not_called()
         mock_flush.assert_called_once()
         mock_heartbeat.assert_called()
@@ -1562,12 +1563,12 @@ class TestMainLoop:
     def test_main_skips_updates_without_text(self, mock_sleep, mock_config, mock_updates,
                                               mock_handle, mock_flush, mock_heartbeat):
         """Updates without text field (e.g., photo, sticker) are ignored."""
-        from app.awake import main
+        from app.awake import _bridge_loop
         mock_updates.return_value = [
             {"update_id": 100, "message": {"chat": {"id": int(self.TEST_CHAT_ID)}}}  # no text
         ]
         with pytest.raises(StopIteration):
-            main()
+            _bridge_loop()
         mock_handle.assert_not_called()
 
     # -- Non-Telegram provider regressions (matrix/slack/discord) ------------
@@ -1602,7 +1603,7 @@ class TestMainLoop:
         dispatch without raising UnboundLocalError on message_id. The buggy
         version bound message_id only inside a `chat_id == CHAT_ID` guard,
         crashing the bridge on every matrix message → restart → crash-loop."""
-        from app.awake import main
+        from app.awake import _bridge_loop
         mock_provider.return_value = self._matrix_provider_mock()
         mock_updates.return_value = [
             {"update_id": 1, "message": {
@@ -1611,7 +1612,7 @@ class TestMainLoop:
         ]
         # Must reach sleep() (StopIteration), not raise UnboundLocalError.
         with pytest.raises(StopIteration):
-            main()
+            _bridge_loop()
         mock_handle.assert_called_once_with("/resume")
 
     @patch("app.awake._check_group_chat_mode")
@@ -1630,14 +1631,14 @@ class TestMainLoop:
         """An update lacking update_id must not crash the loop. A KeyError here
         would take down main(), the supervisor would restart the bridge, the
         same poison message would be re-delivered, and we'd crash-loop forever."""
-        from app.awake import main
+        from app.awake import _bridge_loop
         mock_provider.return_value = self._matrix_provider_mock()
         mock_updates.return_value = [
             {"message": {"message_id": "$evt", "text": "hi from matrix",
                          "chat": {"id": self.MATRIX_ROOM_ID}}}
         ]
         with pytest.raises(StopIteration):
-            main()
+            _bridge_loop()
         mock_handle.assert_called_once_with("hi from matrix")
         mock_flush.assert_called_once()
         mock_heartbeat.assert_called()
@@ -1657,7 +1658,7 @@ class TestMainLoop:
     ):
         """A message whose chat.id matches neither channel_id nor CHAT_ID is
         dropped (not dispatched)."""
-        from app.awake import main
+        from app.awake import _bridge_loop
         mock_provider.return_value = self._matrix_provider_mock()
         mock_updates.return_value = [
             {"update_id": 1, "message": {
@@ -1665,7 +1666,7 @@ class TestMainLoop:
                 "chat": {"id": "!someOtherRoom:example.org"}}}
         ]
         with pytest.raises(StopIteration):
-            main()
+            _bridge_loop()
         mock_handle.assert_not_called()
 
     @patch("app.awake._check_group_chat_mode")
@@ -1684,13 +1685,13 @@ class TestMainLoop:
         """With CHAT_ID="" (normal for matrix/slack), a malformed update with no
         chat.id (chat_id == "") must NOT pass the channel filter. Guards against
         the empty-string match `"" in (channel_id, "")` slipping through."""
-        from app.awake import main
+        from app.awake import _bridge_loop
         mock_provider.return_value = self._matrix_provider_mock()
         mock_updates.return_value = [
             {"update_id": 1, "message": {"message_id": "$evt", "text": "no chat id"}}
         ]
         with pytest.raises(StopIteration):
-            main()
+            _bridge_loop()
         mock_handle.assert_not_called()
 
     @patch("app.awake.write_heartbeat")
@@ -1702,9 +1703,9 @@ class TestMainLoop:
                                            mock_handle, mock_flush, mock_heartbeat,
                                            capsys):
         """CTRL-C (KeyboardInterrupt) exits cleanly without traceback."""
-        from app.awake import main
+        from app.awake import _bridge_loop
         with pytest.raises(SystemExit) as exc_info:
-            main()
+            _bridge_loop()
         assert exc_info.value.code == 0
         captured = capsys.readouterr()
         assert "Shutting down" in captured.err
@@ -1721,9 +1722,9 @@ class TestMainLoop:
                                                         mock_flush, mock_heartbeat,
                                                         capsys):
         """CTRL-C during sleep between polls also exits cleanly."""
-        from app.awake import main
+        from app.awake import _bridge_loop
         with pytest.raises(SystemExit) as exc_info:
-            main()
+            _bridge_loop()
         assert exc_info.value.code == 0
         captured = capsys.readouterr()
         assert "Shutting down" in captured.err
@@ -1741,9 +1742,9 @@ class TestMainLoop:
                                             mock_heartbeat, mock_shutdown,
                                             mock_clear, capsys):
         """Bridge exits cleanly when /shutdown signal is detected."""
-        from app.awake import main
+        from app.awake import _bridge_loop
         with pytest.raises(SystemExit) as exc_info:
-            main()
+            _bridge_loop()
         assert exc_info.value.code == 0
         mock_shutdown.assert_called()
         mock_clear.assert_called()
@@ -1759,12 +1760,12 @@ class TestMainLoop:
                                   mock_handle, mock_flush, mock_heartbeat,
                                   tmp_path, monkeypatch):
         """main() sets PYTHONPATH to include koan/ package directory."""
-        from app.awake import main
+        from app.awake import _bridge_loop
         monkeypatch.setattr("app.awake.KOAN_ROOT", tmp_path)
         monkeypatch.delenv("PYTHONPATH", raising=False)
 
         with pytest.raises(SystemExit):
-            main()
+            _bridge_loop()
 
         pythonpath = os.environ.get("PYTHONPATH", "")
         koan_dir = str(tmp_path / "koan")
@@ -1780,12 +1781,12 @@ class TestMainLoop:
                                                  mock_heartbeat,
                                                  tmp_path, monkeypatch):
         """main() prepends koan/ to PYTHONPATH without losing existing entries."""
-        from app.awake import main
+        from app.awake import _bridge_loop
         monkeypatch.setattr("app.awake.KOAN_ROOT", tmp_path)
         monkeypatch.setenv("PYTHONPATH", "/existing/path")
 
         with pytest.raises(SystemExit):
-            main()
+            _bridge_loop()
 
         pythonpath = os.environ.get("PYTHONPATH", "")
         parts = pythonpath.split(os.pathsep)
@@ -1803,13 +1804,13 @@ class TestMainLoop:
                                                  mock_heartbeat,
                                                  tmp_path, monkeypatch):
         """main() does not add koan/ to PYTHONPATH if already present."""
-        from app.awake import main
+        from app.awake import _bridge_loop
         koan_dir = str(tmp_path / "koan")
         monkeypatch.setattr("app.awake.KOAN_ROOT", tmp_path)
         monkeypatch.setenv("PYTHONPATH", koan_dir)
 
         with pytest.raises(SystemExit):
-            main()
+            _bridge_loop()
 
         pythonpath = os.environ.get("PYTHONPATH", "")
         # Should not be duplicated
@@ -3137,13 +3138,13 @@ class TestBridgeExceptionResilience:
         mock_send, mock_flush, mock_heartbeat
     ):
         """If handle_message raises, the bridge logs and continues."""
-        from app.awake import main
+        from app.awake import _bridge_loop
         mock_updates.return_value = [
             {"update_id": 100, "message": {"text": "/bad", "chat": {"id": int(self.TEST_CHAT_ID)}}}
         ]
         # Should stop at StopIteration (time.sleep), NOT at RuntimeError
         with pytest.raises(StopIteration):
-            main()
+            _bridge_loop()
         mock_handle.assert_called_once_with("/bad")
         # Error notification sent to user
         mock_send.assert_called_once()
@@ -3162,12 +3163,12 @@ class TestBridgeExceptionResilience:
         mock_send, mock_flush, mock_heartbeat
     ):
         """If both handle_message AND the error notification fail, bridge still survives."""
-        from app.awake import main
+        from app.awake import _bridge_loop
         mock_updates.return_value = [
             {"update_id": 100, "message": {"text": "/bad", "chat": {"id": int(self.TEST_CHAT_ID)}}}
         ]
         with pytest.raises(StopIteration):
-            main()
+            _bridge_loop()
         # Bridge survived both exceptions
 
 
@@ -3195,9 +3196,9 @@ class TestBridgeInfrastructureResilience:
         mock_flush, mock_heartbeat, capsys
     ):
         """If get_updates raises, bridge logs error and retries next iteration."""
-        from app.awake import main
+        from app.awake import _bridge_loop
         with pytest.raises(StopIteration):
-            main()
+            _bridge_loop()
         # handle_message never called (no updates received)
         mock_handle.assert_not_called()
         # flush_outbox and heartbeat NOT called when get_updates fails
@@ -3217,10 +3218,10 @@ class TestBridgeInfrastructureResilience:
         mock_flush, mock_heartbeat, capsys
     ):
         """If flush_outbox raises, bridge logs error and continues."""
-        from app.awake import main
+        from app.awake import _bridge_loop
         mock_updates.return_value = []
         with pytest.raises(StopIteration):
-            main()
+            _bridge_loop()
         mock_flush.assert_called_once()
         # Heartbeat still called despite flush failure
         mock_heartbeat.assert_called()
@@ -3239,12 +3240,12 @@ class TestBridgeInfrastructureResilience:
         mock_flush, mock_heartbeat, capsys
     ):
         """If write_heartbeat raises in the loop, bridge logs error and continues."""
-        from app.awake import main
+        from app.awake import _bridge_loop
         mock_updates.return_value = []
         # First call succeeds (startup), second call (loop) fails
         mock_heartbeat.side_effect = [None, PermissionError("read-only fs")]
         with pytest.raises(StopIteration):
-            main()
+            _bridge_loop()
         mock_flush.assert_called_once()
         assert mock_heartbeat.call_count == 2
         captured = capsys.readouterr()
@@ -3262,12 +3263,12 @@ class TestBridgeInfrastructureResilience:
         mock_flush, mock_heartbeat, capsys
     ):
         """Both flush_outbox and write_heartbeat can fail without crashing."""
-        from app.awake import main
+        from app.awake import _bridge_loop
         mock_updates.return_value = []
         # First call succeeds (startup), second call (loop) fails
         mock_heartbeat.side_effect = [None, RuntimeError("heartbeat boom")]
         with pytest.raises(StopIteration):
-            main()
+            _bridge_loop()
         captured = capsys.readouterr()
         assert "flush_outbox failed" in captured.err
         assert "write_heartbeat failed" in captured.err
