@@ -4,12 +4,13 @@ import re
 from datetime import date, timedelta
 from pathlib import Path
 
+from app.utils import PROJECT_TAG_RE
+
 
 _FAILED_TS_RE = re.compile(
     r"❌\s*\((\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})\)"
 )
 _CAUSE_TAG_RE = re.compile(r"\[([a-z_:]+)\]\s*$")
-_PROJECT_TAG_RE = re.compile(r"\[project:([^\]]+)\]", re.IGNORECASE)
 _MAX_JOURNAL_CHARS = 3000
 
 
@@ -65,7 +66,7 @@ def _find_last_failure(missions_path, project_filter=None):
         fail_date = ts_match.group(1)
         fail_time = ts_match.group(2)
 
-        proj_match = _PROJECT_TAG_RE.search(first_line)
+        proj_match = PROJECT_TAG_RE.search(first_line)
         project = proj_match.group(1) if proj_match else None
 
         if project_filter and project and project.lower() != project_filter.lower():
@@ -75,7 +76,7 @@ def _find_last_failure(missions_path, project_filter=None):
         cause_tag = cause_match.group(1) if cause_match else None
 
         clean_text = strip_timestamps(first_line)
-        clean_text = _PROJECT_TAG_RE.sub("", clean_text).strip()
+        clean_text = PROJECT_TAG_RE.sub("", clean_text).strip()
         clean_text = _CAUSE_TAG_RE.sub("", clean_text).strip()
         clean_text = _FAILED_TS_RE.sub("", clean_text).strip()
 

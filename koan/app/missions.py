@@ -2086,7 +2086,7 @@ def _parse_ci_line(line: str) -> Optional[dict]:
     """Parse a single CI entry line. Returns dict or None if unparseable."""
     # Extract project tag
     project = ""
-    tag_match = re.search(r"\[project:([^\]]+)\]", line, re.IGNORECASE)
+    tag_match = PROJECT_TAG_RE.search(line)
     if tag_match:
         project = tag_match.group(1)
 

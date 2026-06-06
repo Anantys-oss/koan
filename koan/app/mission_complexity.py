@@ -8,7 +8,7 @@ post_mission_reflection.is_significant_mission).
 Simple missions ("fix typo", "/plan something") skip spec generation.
 """
 
-import re
+from app.utils import PROJECT_TAG_PREFIX_RE
 
 # Keywords indicating complex missions that benefit from a spec
 COMPLEXITY_KEYWORDS = [
@@ -28,8 +28,6 @@ COMPLEXITY_KEYWORDS = [
 # Default minimum description length (after stripping project prefix)
 DEFAULT_COMPLEXITY_THRESHOLD = 80
 
-# Pattern to strip [project:name] tags
-_PROJECT_TAG_RE = re.compile(r"^\[project:\w+\]\s*", re.IGNORECASE)
 
 
 def _get_complexity_threshold() -> int:
@@ -47,7 +45,7 @@ def _get_complexity_threshold() -> int:
 
 def _strip_project_tag(title: str) -> str:
     """Strip [project:name] tag prefix from a mission title."""
-    return _PROJECT_TAG_RE.sub("", title).strip()
+    return PROJECT_TAG_PREFIX_RE.sub("", title).strip()
 
 
 def is_complex_mission(title: str) -> bool:

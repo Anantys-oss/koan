@@ -11,6 +11,8 @@ These functions ensure consistent text processing across all message paths:
 
 import re
 
+from app.utils import PROJECT_TAG_RE
+
 # Markdown symbols to strip (order matters: longer patterns first)
 _MARKDOWN_SYMBOLS = ("```", "**", "__", "~~")
 
@@ -84,7 +86,7 @@ def extract_project_from_message(text: str) -> str:
         The project name, or empty string if none found.
     """
     # Match [project:name] first (more specific)
-    m = re.search(r'\[project:(\w[\w.-]*)\]', text, re.IGNORECASE)
+    m = PROJECT_TAG_RE.search(text)
     if m:
         return m.group(1)
     # Match emoji-prefixed [name] pattern (e.g. "🏁 [koan]")
