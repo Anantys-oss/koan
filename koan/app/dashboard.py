@@ -40,16 +40,7 @@ from app.conversation_history import (
     load_recent_history,
     format_conversation_history,
 )
-from app.signals import (
-    DAILY_REPORT_FILE,
-    FOCUS_FILE,
-    PAUSE_FILE,
-    PROJECT_FILE,
-    QUOTA_RESET_FILE,
-    RESTART_FILE,
-    STATUS_FILE,
-    STOP_FILE,
-)
+from app.signals import RESTART_FILE
 from app.missions import (
     cancel_pending_mission,
     edit_pending_mission,
@@ -177,185 +168,20 @@ def read_file(path: Path) -> str:
 
 
 def get_signal_status() -> dict:
-    """Read .koan-* signal files."""
-    status = {
-        "stop_requested": (KOAN_ROOT / STOP_FILE).exists(),
-        "quota_paused": (KOAN_ROOT / QUOTA_RESET_FILE).exists(),
-        "paused": (KOAN_ROOT / PAUSE_FILE).exists(),
-        "loop_status": "",
-        "pause_reason": "",
-        "reset_time": "",
-    }
+    """Read .koan-* signal files. Delegates to ``agent_state`` module."""
+    from app.agent_state import get_signal_status as _get_signal_status
 
-    # Read pause reason from .koan-pause content
-    if status["paused"]:
-        from app.pause_manager import get_pause_state
-        state = get_pause_state(str(KOAN_ROOT))
-        if state:
-            status["pause_reason"] = state.reason
-            if state.display:
-                status["reset_time"] = state.display
-            elif state.timestamp:
-                try:
-                    from app.reset_parser import time_until_reset
-                    status["reset_time"] = f"in ~{time_until_reset(state.timestamp)}"
-                except (ValueError, ImportError):
-                    pass
-
-    status_file = KOAN_ROOT / STATUS_FILE
-    if status_file.exists():
-        status["loop_status"] = status_file.read_text().strip()
-    report_file = KOAN_ROOT / DAILY_REPORT_FILE
-    if report_file.exists():
-        status["last_report"] = report_file.read_text().strip()
-    return status
-
-
-# Staleness threshold — if .koan-status mtime is older than this, treat as idle
-_STALE_THRESHOLD_SECONDS = 300  # 5 minutes
-
-# Patterns to classify .koan-status text into agent states.
-# Order matters: first match wins.
-_STATUS_PATTERNS = [
-    # Error recovery
-    (re.compile(r"Error recovery"), "error_recovery"),
-    # Paused (written by run.py when quota-paused)
-    (re.compile(r"Paused"), "paused"),
-    # Contemplative (must be before Idle — text starts with "Idle —")
-    (re.compile(r"post-contemplation"), "contemplating"),
-    # Idle / sleeping
-    (re.compile(r"Idle"), "sleeping"),
-    # Executing / working states
-    (re.compile(r"Run \d+/\d+ — executing"), "working"),
-    (re.compile(r"Run \d+/\d+ — skill dispatch"), "working"),
-    (re.compile(r"Run \d+/\d+ — (REVIEW|IMPLEMENT|DEEP)"), "working"),
-    (re.compile(r"Run \d+/\d+ — preparing"), "working"),
-    (re.compile(r"Run \d+/\d+ — finalizing"), "working"),
-    (re.compile(r"Run \d+/\d+ — done"), "working"),
-]
-
-# Badge color per state
-_BADGE_COLORS = {
-    "working": "green",
-    "sleeping": "blue",
-    "contemplating": "blue",
-    "paused": "orange",
-    "stopped": "red",
-    "error_recovery": "red",
-    "idle": "muted",
-}
-
-# Extract "Run X/Y" from status text
-_RUN_INFO_RE = re.compile(r"Run (\d+/\d+)")
-
-# Extract autonomous mode from status text (e.g. "REVIEW on koan")
-_MODE_RE = re.compile(r"— (REVIEW|IMPLEMENT|DEEP)\b")
-
-# Extract project name from "on <project>" in status text
-_STATUS_PROJECT_RE = re.compile(r"on (\S+)\s*$")
+    return _get_signal_status(KOAN_ROOT)
 
 
 def get_agent_state() -> dict:
     """Derive a structured agent state from signal files.
 
-    Returns a dict with keys: state, label, project, run_info, pause_reason,
-    reset_time, focus, elapsed, badge_color.
+    Delegates to ``agent_state`` module.
     """
-    signals = get_signal_status()
-    status_text = signals.get("loop_status", "")
+    from app.agent_state import get_agent_state as _get_agent_state
 
-    # Read project from .koan-project
-    project_file = KOAN_ROOT / PROJECT_FILE
-    project = ""
-    if project_file.exists():
-        with contextlib.suppress(OSError):
-            project = project_file.read_text().strip()
-
-    # Read focus state
-    focus = None
-    focus_file = KOAN_ROOT / FOCUS_FILE
-    if focus_file.exists():
-        try:
-            from app.focus_manager import get_focus_state
-            fs = get_focus_state(str(KOAN_ROOT))
-            if fs and not fs.is_expired():
-                focus = {
-                    "remaining": fs.remaining_display(),
-                    "reason": fs.reason,
-                }
-        except (OSError, ImportError):
-            pass
-
-    # Calculate elapsed time since status file was last written
-    elapsed = 0
-    status_file = KOAN_ROOT / STATUS_FILE
-    is_stale = False
-    if status_file.exists():
-        try:
-            elapsed = int(time.time() - status_file.stat().st_mtime)
-            is_stale = elapsed > _STALE_THRESHOLD_SECONDS
-        except OSError:
-            pass
-
-    # Determine state with priority: stopped > paused > status text > idle
-    if signals["stop_requested"]:
-        state = "stopped"
-        label = "Stopped"
-    elif signals["paused"] or signals["quota_paused"]:
-        state = "paused"
-        reason = signals.get("pause_reason", "")
-        reset = signals.get("reset_time", "")
-        # quota_paused flag (.koan-quota-reset) may exist without .koan-pause
-        if signals["quota_paused"] and not reason:
-            reason = "quota"
-        if reason == "quota":
-            label = f"Paused — quota{f' ({reset})' if reset else ''}"
-        elif reason:
-            label = f"Paused — {reason}"
-        else:
-            label = "Paused"
-    elif status_text and not is_stale:
-        # Classify from status text patterns
-        state = "idle"
-        for pattern, matched_state in _STATUS_PATTERNS:
-            if pattern.search(status_text):
-                state = matched_state
-                break
-        label = status_text
-    else:
-        state = "idle"
-        label = "Idle" if not is_stale else "Idle (stale)"
-
-    # Extract run_info from status text
-    run_info = ""
-    m = _RUN_INFO_RE.search(status_text)
-    if m:
-        run_info = m.group(1)
-
-    # Extract autonomous mode
-    autonomous_mode = ""
-    m = _MODE_RE.search(status_text)
-    if m:
-        autonomous_mode = m.group(1)
-
-    # Extract project from status text if not set from .koan-project
-    if not project:
-        m = _STATUS_PROJECT_RE.search(status_text)
-        if m:
-            project = m.group(1)
-
-    return {
-        "state": state,
-        "label": label,
-        "project": project,
-        "run_info": run_info,
-        "autonomous_mode": autonomous_mode,
-        "pause_reason": signals.get("pause_reason", ""),
-        "reset_time": signals.get("reset_time", ""),
-        "focus": focus,
-        "elapsed": elapsed,
-        "badge_color": _BADGE_COLORS.get(state, "muted"),
-    }
+    return _get_agent_state(KOAN_ROOT)
 
 
 _EMPTY_FORECAST = {

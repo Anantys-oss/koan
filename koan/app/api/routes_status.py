@@ -1,10 +1,6 @@
 """REST API status routes."""
 
-import contextlib
 import logging
-import os
-import re
-import time
 from pathlib import Path
 
 from flask import Blueprint, current_app, jsonify
@@ -14,19 +10,6 @@ from app.api.auth import require_token
 log = logging.getLogger("koan.api")
 
 bp = Blueprint("status", __name__)
-
-_STALE_THRESHOLD = 300  # 5 minutes
-
-_STATUS_PATTERNS = [
-    (re.compile(r"Error recovery"), "error_recovery"),
-    (re.compile(r"Paused"), "paused"),
-    (re.compile(r"post-contemplation"), "contemplating"),
-    (re.compile(r"Idle"), "sleeping"),
-    (re.compile(r"Run \d+/\d+"), "working"),
-]
-
-_MODE_RE = re.compile(r"— (REVIEW|IMPLEMENT|DEEP)\b")
-_RUN_INFO_RE = re.compile(r"Run (\d+/\d+)")
 
 
 def _instance_dir() -> Path:
@@ -38,59 +21,20 @@ def _koan_root() -> Path:
 
 
 def _get_agent_state() -> dict:
-    """Derive structured agent state from signal files."""
-    from app.signals import (
-        PAUSE_FILE,
-        PROJECT_FILE,
-        STOP_FILE,
-        STATUS_FILE,
-        FOCUS_FILE,
-    )
-    root = _koan_root()
+    """Derive structured agent state from signal files.
 
-    paused = (root / PAUSE_FILE).exists()
-    stopped = (root / STOP_FILE).exists()
-    status_text = ""
-    status_file = root / STATUS_FILE
-    if status_file.exists():
-        with contextlib.suppress(OSError):
-            status_text = status_file.read_text().strip()
-        try:
-            mtime = status_file.stat().st_mtime
-            if time.time() - mtime > _STALE_THRESHOLD:
-                status_text = ""
-        except OSError:
-            pass
+    Delegates to ``agent_state`` module and reshapes the result into the
+    REST API's response contract.
+    """
+    from app.agent_state import get_agent_state
 
-    project = ""
-    project_file = root / PROJECT_FILE
-    if project_file.exists():
-        with contextlib.suppress(OSError):
-            project = project_file.read_text().strip()
-
-    focus = (root / FOCUS_FILE).exists()
-
-    state = "idle"
-    if stopped:
-        state = "stopped"
-    elif paused:
-        state = "paused"
-    else:
-        for pattern, s in _STATUS_PATTERNS:
-            if pattern.search(status_text):
-                state = s
-                break
-
-    mode_match = _MODE_RE.search(status_text)
-    mode = mode_match.group(1) if mode_match else None
-
-    run_info_match = _RUN_INFO_RE.search(status_text)
-    run_info = run_info_match.group(1) if run_info_match else None
+    full = get_agent_state(_koan_root())
 
     pause_info: dict = {}
-    if paused:
+    if full["state"] == "paused":
         from app.pause_manager import get_pause_state
-        ps = get_pause_state(str(root))
+
+        ps = get_pause_state(str(_koan_root()))
         if ps:
             pause_info = {
                 "reason": ps.reason,
@@ -99,12 +43,12 @@ def _get_agent_state() -> dict:
             }
 
     return {
-        "state": state,
-        "mode": mode,
-        "run_info": run_info,
-        "project": project,
-        "focus": focus,
-        "status_text": status_text,
+        "state": full["state"],
+        "mode": full["autonomous_mode"] or None,
+        "run_info": full["run_info"] or None,
+        "project": full["project"],
+        "focus": full["focus"] is not None,
+        "status_text": full["label"],
         "pause": pause_info,
     }
 
