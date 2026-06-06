@@ -176,7 +176,7 @@ class TestGetMaxParallelSessions:
     @patch("app.utils.load_config")
     def test_default(self, mock_config):
         mock_config.return_value = {}
-        assert get_max_parallel_sessions() == 2
+        assert get_max_parallel_sessions() == 1
 
     @patch("app.utils.load_config")
     def test_configured(self, mock_config):
@@ -195,7 +195,7 @@ class TestGetMaxParallelSessions:
 
     @patch("app.utils.load_config", side_effect=ValueError("bad config"))
     def test_config_error_returns_default(self, mock_config, capsys):
-        assert get_max_parallel_sessions() == 2
+        assert get_max_parallel_sessions() == 1
         assert "config read error" in capsys.readouterr().err
 
 

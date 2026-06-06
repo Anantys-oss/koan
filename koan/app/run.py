@@ -1053,6 +1053,22 @@ def main_loop():
             fire_hook("session_end", instance_dir=instance, total_runs=count)
         except Exception as e:
             print(f"[hooks] session_end hook error: {e}", file=sys.stderr)
+        # Kill any active parallel sessions before exiting
+        if _live_sessions:
+            log("koan", f"Killing {len(_live_sessions)} active parallel session(s) on shutdown")
+            try:
+                from app.session_manager import kill_session
+                for _s in list(_live_sessions.values()):
+                    try:
+                        registry = _get_session_registry(instance)
+                        kill_session(_s, registry)
+                    except Exception as _ke:
+                        log("error", f"kill_session error: {_ke}")
+                _live_sessions.clear()
+            except Exception as e:
+                log("error", f"parallel session cleanup error: {e}")
+        global _session_registry
+        _session_registry = None
         # Cleanup
         Path(koan_root, STATUS_FILE).unlink(missing_ok=True)
         release_pidfile(pidfile_lock, Path(koan_root), "run")
@@ -1351,6 +1367,246 @@ def _mark_startup_resume() -> None:
 
 
 _warned_missing_projects: set = set()
+
+# ---------------------------------------------------------------------------
+# Parallel session state (populated/consumed by _parallel_reap_sessions
+# and _parallel_dispatch_session; only used when max_parallel_sessions > 1)
+# ---------------------------------------------------------------------------
+# session_id -> Session object (with _proc attached — NOT persisted to JSON)
+_live_sessions: dict = {}
+# Lazy SessionRegistry singleton — initialised on first parallel-mode access
+_session_registry = None
+
+
+def _get_session_registry(instance: str):
+    """Return the lazy-initialised SessionRegistry singleton."""
+    global _session_registry
+    if _session_registry is None:
+        from app.session_manager import SessionRegistry
+        _session_registry = SessionRegistry(instance)
+    return _session_registry
+
+
+def _parallel_reap_sessions(
+    instance: str,
+    koan_root: str,
+    run_num: int,
+    max_runs: int,
+) -> bool:
+    """Poll active parallel sessions; process any that have completed.
+
+    Returns True if at least one session was reaped.
+    """
+    if not _live_sessions:
+        return False
+
+    from app.session_manager import poll_sessions
+    from app.missions import complete_mission_by_session, fail_mission_by_session
+    from app.mission_runner import run_post_mission
+
+    registry = _get_session_registry(instance)
+    active = list(_live_sessions.values())
+    completed = poll_sessions(active, registry)
+    if not completed:
+        return False
+
+    quota_hit = False
+    for result in completed:
+        session = result.session
+        _live_sessions.pop(session.id, None)
+
+        log("koan", f"[parallel] Session {session.id} done (exit={result.exit_code}, "
+            f"project={session.project_name})")
+
+        # Post-mission pipeline
+        try:
+            post = run_post_mission(
+                instance_dir=instance,
+                project_name=session.project_name,
+                project_path=session.worktree_path,
+                run_num=run_num,
+                exit_code=result.exit_code,
+                stdout_file=session.stdout_file,
+                stderr_file=session.stderr_file,
+                mission_title=session.mission_text,
+                autonomous_mode=getattr(session, "autonomous_mode", "implement"),
+                start_time=int(session.started_at),
+                status_callback=lambda step: set_status(koan_root, f"[parallel] {step}"),
+            )
+        except Exception as e:
+            log("error", f"[parallel] post-mission failed for {session.id}: {e}")
+            post = {"success": False, "quota_exhausted": False}
+
+        # Persist missions.md state transition via locked read-modify-write
+        try:
+            from app.utils import modify_missions_file
+            missions_path = Path(instance) / "missions.md"
+            if result.exit_code == 0:
+                modify_missions_file(missions_path, lambda c: complete_mission_by_session(c, session.id))
+            else:
+                modify_missions_file(missions_path, lambda c: fail_mission_by_session(c, session.id))
+        except Exception as e:
+            log("error", f"[parallel] missions.md update failed for {session.id}: {e}")
+            try:
+                dead_letter = Path(instance) / ".failed-transitions.json"
+                import json
+                entries = []
+                if dead_letter.exists():
+                    entries = json.loads(dead_letter.read_text())
+                entries.append({
+                    "session_id": session.id,
+                    "mission_text": session.mission_text,
+                    "exit_code": result.exit_code,
+                    "project": session.project_name,
+                })
+                atomic_write(dead_letter, json.dumps(entries, indent=2))
+            except Exception as dle:
+                log("error", f"[parallel] dead-letter write also failed: {dle}")
+
+        # End-of-mission notification
+        _notify_mission_end(
+            instance, session.project_name, run_num, max_runs,
+            result.exit_code, session.mission_text,
+        )
+
+        if post.get("quota_exhausted"):
+            quota_hit = True
+
+    registry.clear_completed()
+    _commit_instance(instance)
+
+    if quota_hit:
+        log("quota", "[parallel] Quota exhausted — no new sessions will be dispatched")
+        _notify(instance, "⚠️ API quota exhausted in a parallel session. "
+                "Existing sessions will finish; no new sessions until quota resets.")
+
+    return True
+
+
+def _parallel_dispatch_sessions(
+    primary_mission: str,
+    primary_project: str,
+    primary_project_path: str,
+    instance: str,
+    koan_root: str,
+    run_num: int,
+    max_runs: int,
+    autonomous_mode: str,
+    projects: list,
+    last_project: str,
+) -> bool:
+    """Spawn the primary session and fill remaining free slots.
+
+    Returns True if at least one session was dispatched.
+    """
+    from app.session_manager import spawn_session, get_max_parallel_sessions
+    from app.missions import start_mission_parallel, pick_missions, extract_project_tag
+    from app.git_sync import run_git
+
+    registry = _get_session_registry(instance)
+    max_slots = get_max_parallel_sessions()
+    active_count = len(registry.get_active())
+
+    if active_count >= max_slots:
+        log("koan", f"[parallel] All {max_slots} slots occupied — waiting for completions")
+        return False
+
+    missions_to_dispatch = [(primary_mission, primary_project, primary_project_path)]
+
+    # Fill remaining slots using pick_missions() which reads all N at once,
+    # avoiding the duplicate-pick bug from calling _pick_mission() in a loop
+    # (it's read-only and returns the same first pending each time).
+    extra = max_slots - active_count - 1
+    if extra > 0:
+        # Exclude projects with active sessions + the primary project
+        active_projects = {s.project_name.lower() for s in registry.get_active()}
+        active_projects.add(primary_project.lower())
+        try:
+            missions_path = Path(instance) / "missions.md"
+            content = missions_path.read_text()
+            extras = pick_missions(content, n=extra, exclude_projects=list(active_projects))
+        except Exception as e:
+            log("error", f"[parallel] pick_missions failed: {e}")
+            extras = []
+
+        # Build project path lookup
+        path_by_name = {name.lower(): path for name, path in (projects or [])}
+
+        for mission_text in extras:
+            proj_name = extract_project_tag(mission_text)
+            if not proj_name:
+                log("warn", f"[parallel] Skipping mission without project tag: {mission_text[:60]}")
+                continue
+            proj_path = path_by_name.get(proj_name.lower(), "")
+            if not proj_path:
+                log("warn", f"[parallel] Skipping mission — no path for project '{proj_name}': {mission_text[:60]}")
+                continue
+            if registry.get_by_project(proj_name):
+                continue
+            missions_to_dispatch.append((mission_text, proj_name, proj_path))
+
+    dispatched = 0
+    for mission_text, project_name, project_path in missions_to_dispatch:
+        if registry.get_by_project(project_name):
+            log("koan", f"[parallel] {project_name} already has an active session — skipping")
+            continue
+
+        # Determine base branch — skip dispatch if detection fails entirely
+        base_branch = None
+        try:
+            branch = run_git(project_path, "rev-parse", "--abbrev-ref", "HEAD")
+            if branch:
+                base_branch = branch.strip()
+        except Exception as e:
+            log("warn", f"[parallel] rev-parse HEAD failed for {project_name}: {e}")
+        if not base_branch:
+            try:
+                ref = run_git(project_path, "symbolic-ref", "refs/remotes/origin/HEAD")
+                if ref:
+                    base_branch = ref.strip().removeprefix("refs/remotes/origin/")
+            except Exception as e:
+                log("warn", f"[parallel] symbolic-ref failed for {project_name}: {e}")
+        if not base_branch:
+            log("warn", f"[parallel] Could not detect base branch for {project_name} — skipping")
+            continue
+
+        try:
+            session = spawn_session(
+                mission_text=mission_text,
+                project_name=project_name,
+                project_path=project_path,
+                instance_dir=instance,
+                registry=registry,
+                autonomous_mode=autonomous_mode,
+                base_branch=base_branch,
+            )
+        except Exception as e:
+            log("error", f"[parallel] spawn failed for [{project_name}]: {e}")
+            continue
+
+        # Keep in-memory reference (preserves _proc for poll_sessions)
+        _live_sessions[session.id] = session
+
+        # Transition mission Pending → In Progress in missions.md
+        try:
+            from app.utils import modify_missions_file
+            missions_path = Path(instance) / "missions.md"
+            modify_missions_file(missions_path, lambda c: start_mission_parallel(c, mission_text, session.id))
+        except Exception as e:
+            log("error", f"[parallel] missions.md start failed for {session.id} — killing session: {e}")
+            try:
+                from app.session_manager import kill_session
+                kill_session(session, registry)
+            except Exception as ke:
+                log("error", f"[parallel] kill_session cleanup failed: {ke}")
+            _live_sessions.pop(session.id, None)
+            continue
+
+        log("koan", f"[parallel] Spawned {session.id} [{project_name}]: {mission_text[:60]}")
+        _notify(instance, f"🚀 [{project_name}] Parallel session started: {mission_text[:60]}")
+        dispatched += 1
+
+    return dispatched > 0
 
 
 # ---------------------------------------------------------------------------

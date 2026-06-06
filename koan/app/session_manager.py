@@ -36,7 +36,7 @@ from app.worktree_manager import (
 
 
 # Default configuration
-DEFAULT_MAX_PARALLEL = 2
+DEFAULT_MAX_PARALLEL = 1
 MAX_PARALLEL_CAP = 5
 SESSIONS_FILE = "sessions.json"
 
@@ -57,6 +57,7 @@ class Session:
     exit_code: int = -1
     stdout_file: str = ""
     stderr_file: str = ""
+    autonomous_mode: str = "implement"
 
 
 @dataclass
@@ -187,7 +188,7 @@ def _dict_to_session(d: dict) -> Session:
 
 
 def get_max_parallel_sessions() -> int:
-    """Read max_parallel_sessions from config.yaml (default: 2, max: 5)."""
+    """Read max_parallel_sessions from config.yaml (default: 1, max: 5)."""
     try:
         from app.utils import load_config
         config = load_config()
@@ -262,6 +263,7 @@ def spawn_session(
         started_at=time.time(),
         stdout_file=stdout_file,
         stderr_file=stderr_file,
+        autonomous_mode=autonomous_mode,
     )
 
     # Start subprocess — file handles must outlive the process
