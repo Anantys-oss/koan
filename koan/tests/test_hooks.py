@@ -1,12 +1,14 @@
 """Tests for hooks.py — hook registry and discovery."""
 
+import os
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from app.hooks import HookRegistry, fire_hook, init_hooks, reset_registry
+from tests.conftest import patched_run_iteration
 
 
 @pytest.fixture(autouse=True)
@@ -519,14 +521,30 @@ class TestSessionHookWiring:
 class TestPreMissionHookWiring:
     """Verify pre_mission hook fires before Claude execution in _run_iteration."""
 
-    def test_fire_hook_called_with_pre_mission(self):
-        """Verify the pre_mission fire_hook call exists in run.py source."""
-        # Static verification: ensure fire_hook("pre_mission", ...) is in the source
-        import inspect
-        from app import run
-        source = inspect.getsource(run)
-        assert 'fire_hook(\n            "pre_mission"' in source or \
-               'fire_hook("pre_mission"' in source
+    def test_fire_hook_called_with_pre_mission(self, tmp_path):
+        """fire_hook('pre_mission', ...) is called during _run_iteration."""
+        from app.git_prep import PrepResult
+        from app.run import _run_iteration
+
+        mock_fire = MagicMock()
+        instance = str(tmp_path / "instance")
+        os.makedirs(instance, exist_ok=True)
+
+        with patched_run_iteration(
+            PrepResult(success=True),
+            extra_patches={"app.hooks.fire_hook": mock_fire},
+        ):
+            _run_iteration(
+                koan_root=str(tmp_path), instance=instance,
+                projects=[("testproj", str(tmp_path))],
+                count=0, max_runs=10, interval=30, git_sync_interval=5,
+            )
+
+        pre_mission_calls = [
+            c for c in mock_fire.call_args_list if c.args[0] == "pre_mission"
+        ]
+        assert len(pre_mission_calls) == 1
+        assert pre_mission_calls[0].kwargs["project_name"] == "testproj"
 
 
 class TestSessionEndHookWiring:

@@ -1,5 +1,7 @@
 """Tests for git_prep.py — pre-mission git preparation."""
 
+import os
+
 import pytest
 from unittest.mock import patch, call
 
@@ -11,6 +13,7 @@ from app.git_prep import (
     PrepResult,
     detect_remote_default_branch,
 )
+from tests.conftest import patched_run_iteration
 
 
 # --- get_upstream_remote ---
@@ -987,28 +990,36 @@ class TestPrepareProjectBranchSecondarySync:
 
 
 class TestRunIterationIntegration:
-    """Verify git prep is called from run.py's _run_iteration."""
+    """Verify git prep is called from _run_iteration (behavioral)."""
 
-    def test_git_prep_called_in_run_iteration(self):
-        """prepare_project_branch is imported and called in _run_iteration."""
-        # Verify the import exists in run.py by checking the source
-        import inspect
-        from app import run
+    def test_git_prep_called_in_run_iteration(self, tmp_path):
+        """prepare_project_branch is called with project args during iteration."""
+        from app.run import _run_iteration
 
-        source = inspect.getsource(run)
-        assert "from app.git_prep import prepare_project_branch" in source
-        assert "prepare_project_branch(project_path, project_name, koan_root)" in source
+        instance = str(tmp_path / "instance")
+        os.makedirs(instance, exist_ok=True)
 
-    def test_git_prep_failure_aborts_iteration(self):
+        with patched_run_iteration(PrepResult(success=True)) as mock_prep:
+            _run_iteration(
+                koan_root=str(tmp_path), instance=instance,
+                projects=[("testproj", str(tmp_path))],
+                count=0, max_runs=10, interval=30, git_sync_interval=5,
+            )
+
+        mock_prep.assert_called_once_with("/tmp/testproj", "testproj", str(tmp_path))
+
+    def test_git_prep_failure_aborts_iteration(self, tmp_path):
         """Git prep failure aborts the iteration — returns False."""
-        import inspect
-        from app import run
+        from app.run import _run_iteration
 
-        source = inspect.getsource(run)
-        # Find the git prep block — it should abort on failure
-        idx = source.find("prepare_project_branch(project_path")
-        assert idx > 0
-        # After the call, there should be a return False on failure
-        following = source[idx:idx + 600]
-        assert "return False" in following
-        assert "abort" in following.lower()
+        instance = str(tmp_path / "instance")
+        os.makedirs(instance, exist_ok=True)
+
+        with patched_run_iteration(PrepResult(success=False, error="branch conflict")):
+            result = _run_iteration(
+                koan_root=str(tmp_path), instance=instance,
+                projects=[("testproj", str(tmp_path))],
+                count=0, max_runs=10, interval=30, git_sync_interval=5,
+            )
+
+        assert result is False
