@@ -31,10 +31,16 @@ You are an intent classifier. Given a user message and a list of available slash
 **Output:** `{"actionable": false, "command": null, "confidence": 0.1, "rationale": "General question unrelated to Kōan actions"}`
 
 **Input:** "restart my recurring tasks"  
-**Output:** `{"actionable": true, "command": "/recurring", "confidence": 0.9, "rationale": "Clear request to re-enable recurring missions"}`
+**Output:** `{"actionable": true, "command": "/resume_recurring", "confidence": 0.9, "rationale": "Clear request to re-enable all recurring missions"}`
+
+**Input:** "enable recurring tasks again"  
+**Output:** `{"actionable": true, "command": "/resume_recurring", "confidence": 0.9, "rationale": "Synonym for restarting/resuming disabled recurring missions"}`
+
+**Input:** "show recurring tasks"  
+**Output:** `{"actionable": true, "command": "/recurring", "confidence": 0.85, "rationale": "Requesting to see the list of recurring missions"}`
 
 **Input:** "create a mission: implement new feature X"  
-**Output:** `{"actionable": true, "command": "/mission project:Foo implement new feature X", "confidence": 0.6, "rationale": "Imperative request to queue a mission; project unclear but command structure is sound"}`
+**Output:** `{"actionable": true, "command": "/mission implement new feature X", "confidence": 0.8, "rationale": "Imperative request to queue a mission via /mission command"}`
 
 **Input:** "how do I use Kōan?"  
 **Output:** `{"actionable": false, "command": null, "confidence": 0.2, "rationale": "Meta-question about Kōan, use /help instead"}`
