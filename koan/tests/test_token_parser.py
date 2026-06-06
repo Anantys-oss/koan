@@ -216,6 +216,61 @@ class TestExtractTokens:
         assert extract_tokens(f) is None
 
 
+    def test_model_from_model_usage_single(self, tmp_path):
+        """Model extracted from modelUsage when no top-level model field."""
+        f = tmp_path / "no_model.json"
+        f.write_text(json.dumps({
+            "usage": {"input_tokens": 100, "output_tokens": 50},
+            "modelUsage": {
+                "claude-sonnet-4-20250514": {
+                    "inputTokens": 100,
+                    "outputTokens": 50,
+                    "costUSD": 0.01,
+                },
+            },
+        }))
+        result = extract_tokens(f)
+        assert result is not None
+        assert result.model == "claude-sonnet-4-20250514"
+
+    def test_model_from_model_usage_picks_highest_cost(self, tmp_path):
+        """When multiple models in modelUsage, pick highest cost."""
+        f = tmp_path / "multi_model.json"
+        f.write_text(json.dumps({
+            "usage": {"input_tokens": 2827, "output_tokens": 491},
+            "modelUsage": {
+                "claude-haiku-4-5-20251001": {
+                    "inputTokens": 444,
+                    "outputTokens": 13,
+                    "costUSD": 0.000509,
+                },
+                "claude-opus-4-8[1m]": {
+                    "inputTokens": 2827,
+                    "outputTokens": 491,
+                    "costUSD": 0.20780325,
+                },
+            },
+        }))
+        result = extract_tokens(f)
+        assert result is not None
+        assert result.model == "claude-opus-4-8[1m]"
+
+    def test_model_toplevel_takes_precedence(self, tmp_path):
+        """Explicit top-level model field wins over modelUsage."""
+        f = tmp_path / "both.json"
+        f.write_text(json.dumps({
+            "model": "claude-sonnet-4-20250514",
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "modelUsage": {
+                "claude-opus-4-8": {"costUSD": 1.0},
+            },
+        }))
+        result = extract_tokens(f)
+        assert result is not None
+        assert result.model == "claude-sonnet-4-20250514"
+
+
 class TestCacheHitRate:
     def test_basic_hit_rate(self):
         assert compute_cache_hit_rate(100, 800, 100) == 0.8

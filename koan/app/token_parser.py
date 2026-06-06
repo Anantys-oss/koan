@@ -108,13 +108,38 @@ def _extract_tokens_from_jsonl(raw: str) -> Optional[TokenResult]:
     return last_result
 
 
+def _primary_model_from_usage(data: dict) -> str:
+    """Extract primary model name from modelUsage keys.
+
+    Claude CLI ``--output-format json`` omits a top-level ``model`` field but
+    includes a ``modelUsage`` dict keyed by model identifier.  When multiple
+    models appear (e.g. Haiku for summarisation + Opus for the task), pick the
+    one with the highest reported cost.
+    """
+    model_usage = data.get("modelUsage")
+    if not isinstance(model_usage, dict) or not model_usage:
+        return ""
+    if len(model_usage) == 1:
+        return next(iter(model_usage))
+    best = ""
+    best_cost = -1.0
+    for name, stats in model_usage.items():
+        if not isinstance(stats, dict):
+            continue
+        cost = stats.get("costUSD", 0) or 0
+        if cost > best_cost:
+            best_cost = cost
+            best = name
+    return best
+
+
 def _extract_tokens_from_dict(data: dict) -> Optional[TokenResult]:
     """Extract token info from one JSON object/event."""
     codex_result = _extract_codex_token_count(data)
     if codex_result is not None:
         return codex_result
 
-    model = data.get("model", "unknown")
+    model = data.get("model") or _primary_model_from_usage(data) or "unknown"
 
     # Try top-level fields
     inp = data.get("input_tokens", 0)
