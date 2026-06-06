@@ -122,13 +122,14 @@ def delete_mission(mission_id: str):
 
     # Remove from missions.md
     stored_text = rec.get("text", "")
-    needle = stored_text.lstrip("- ").strip()
+    from app.api.mission_index import _normalize_for_match
+    needle = _normalize_for_match(stored_text)
 
     def _remove(content: str) -> str:
         lines = content.splitlines(keepends=True)
         result = []
         for line in lines:
-            if needle in line:
+            if _normalize_for_match(line) == needle:
                 continue
             result.append(line)
         return "".join(result)

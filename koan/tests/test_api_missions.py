@@ -189,6 +189,22 @@ class TestDeleteMission:
         resp = api_client.delete("/v1/missions/no-such-id", headers=_AUTH)
         assert resp.status_code == 404
 
+    def test_cancel_does_not_remove_substring_match(self, api_client, instance_dir):
+        """DELETE must use exact matching — not substring. Deleting 'Fix bug'
+        must not remove 'Fix bug in auth module'."""
+        resp_short = api_client.post(
+            "/v1/missions", json={"text": "Fix bug"}, headers=_AUTH
+        )
+        resp_long = api_client.post(
+            "/v1/missions", json={"text": "Fix bug in auth module"}, headers=_AUTH
+        )
+        short_id = resp_short.get_json()["id"]
+
+        api_client.delete(f"/v1/missions/{short_id}", headers=_AUTH)
+
+        content = (instance_dir / "missions.md").read_text()
+        assert "Fix bug in auth module" in content
+
 
 class TestListMissions:
     def test_list_empty(self, api_client):
@@ -261,6 +277,27 @@ class TestCancelByText:
         record_mission(instance_dir, "- [project:koan] Fix something", "koan")
         result = cancel_by_text(instance_dir, "Fix")
         assert result is False
+
+
+class TestReconcileSubstringMatch:
+    """Reconcile must not confuse missions that share a common prefix."""
+
+    def test_reconcile_rejects_substring_match(self, api_client, instance_dir):
+        """A mission 'Fix bug' reconciled against missions.md containing only
+        'Fix bug in auth module' must NOT report as present."""
+        from app.api.mission_index import record_mission, reconcile
+
+        mid = record_mission(instance_dir, "- Fix bug", None)
+
+        missions_file = instance_dir / "missions.md"
+        missions_file.write_text(
+            "# Missions\n\n## Pending\n\n"
+            "- Fix bug in auth module\n\n"
+            "## In Progress\n\n## Done\n"
+        )
+
+        rec = reconcile(instance_dir, missions_file, mid)
+        assert rec["status"] == "removed"
 
 
 class TestRecordMissionDedup:

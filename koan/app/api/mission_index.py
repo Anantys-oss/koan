@@ -143,12 +143,11 @@ def reconcile(instance_dir: Path, missions_file: Path, mission_id: str) -> dict:
         return target
 
     stored_text = target.get("text", "")
-    # Strip the "- " prefix for matching
-    needle = stored_text.lstrip("- ").strip()
+    needle = _normalize_for_match(stored_text)
 
     def _in_section(section_items: List[str]) -> bool:
         for item in section_items:
-            if needle in item:
+            if _normalize_for_match(item) == needle:
                 return True
         return False
 
@@ -160,15 +159,14 @@ def reconcile(instance_dir: Path, missions_file: Path, mission_id: str) -> dict:
         new_status = "in_progress"
     elif _in_section(sections.get("done", [])):
         new_status = "done"
-        # Extract result_line from the done entry
         for item in sections.get("done", []):
-            if needle in item:
+            if _normalize_for_match(item) == needle:
                 target["result_line"] = item.split("\n")[0][:200]
                 break
     elif _in_section(sections.get("failed", [])):
         new_status = "failed"
         for item in sections.get("failed", []):
-            if needle in item:
+            if _normalize_for_match(item) == needle:
                 target["result_line"] = item.split("\n")[0][:200]
                 break
     else:
