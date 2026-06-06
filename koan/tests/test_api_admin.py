@@ -82,6 +82,33 @@ class TestConfig:
         assert data["config"]["telegram"]["bot_token"] == "***"
         assert data["config"]["telegram"]["chat_id"] == "123"
 
+    @pytest.mark.parametrize("key", [
+        "api_key", "private_key", "access_key", "signing_key", "encryption_key",
+        "credential", "credentials", "service_credential",
+        "passphrase", "ssh_passphrase",
+        "password", "db_password",
+        "secret", "webhook_secret",
+        "token", "access_token", "refresh_token",
+    ])
+    def test_config_masks_secret_patterns(self, api_client, key):
+        cfg = {"section": {key: "should-be-masked", "enabled": True}}
+        with patch("app.utils.load_config", return_value=cfg):
+            resp = api_client.get("/v1/config", headers=_AUTH)
+        data = resp.get_json()
+        assert data["config"]["section"][key] == "***"
+        assert data["config"]["section"]["enabled"] is True
+
+    @pytest.mark.parametrize("key", [
+        "enabled", "host", "port", "chat_id", "name", "description",
+        "check_interval", "cooldown_minutes",
+    ])
+    def test_config_does_not_mask_non_secrets(self, api_client, key):
+        cfg = {"section": {key: "visible-value"}}
+        with patch("app.utils.load_config", return_value=cfg):
+            resp = api_client.get("/v1/config", headers=_AUTH)
+        data = resp.get_json()
+        assert data["config"]["section"][key] == "visible-value"
+
 
 class TestRestart:
     def test_restart_creates_signal_file(self, api_client, tmp_path):

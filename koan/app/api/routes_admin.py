@@ -10,8 +10,19 @@ from app.api.auth import require_token
 bp = Blueprint("admin", __name__)
 
 # Substrings that, when found in a config key name, indicate the value is secret.
-# Check as suffixes/substrings to catch bot_token, api_token, access_token, etc.
-_SECRET_SUBSTRINGS = ("token", "api_key", "password", "secret", "api_token")
+# Matched via `s in key.lower()` — order doesn't matter.
+_SECRET_SUBSTRINGS = (
+    "token",
+    "password",
+    "secret",
+    "api_key",
+    "private_key",
+    "access_key",
+    "credential",
+    "passphrase",
+    "signing_key",
+    "encryption_key",
+)
 
 
 def _koan_root() -> Path:
