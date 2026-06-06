@@ -179,13 +179,7 @@ def patched_run_iteration(prep_result, extra_patches=None):
     }
     if extra_patches:
         patches.update(extra_patches)
-    started = []
-    try:
+    with ExitStack() as stack:
         for target, mock_obj in patches.items():
-            p = patch(target, mock_obj)
-            started.append(p)
-            p.start()
+            stack.enter_context(patch(target, mock_obj))
         yield mock_prep
-    finally:
-        for p in started:
-            p.stop()
