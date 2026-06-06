@@ -5,9 +5,14 @@
 <p class="k-body-sm k-text-muted k-mb-4">View and edit instance configuration files.</p>
 
 <!-- Tab bar -->
-<div class="k-tabs" role="tablist">
-    <button class="k-tab" role="tab" aria-selected="true" data-tab="config-yaml">config.yaml</button>
-    <button class="k-tab" role="tab" aria-selected="false" data-tab="projects-yaml">projects.yaml</button>
+<div style="display:flex; align-items:flex-end; justify-content:space-between; margin-bottom:1rem;">
+    <div class="k-tabs" role="tablist" style="margin-bottom:0;">
+        <button class="k-tab" role="tab" aria-selected="true" data-tab="config-yaml">config.yaml</button>
+        <button class="k-tab" role="tab" aria-selected="false" data-tab="projects-yaml">projects.yaml</button>
+    </div>
+    <label style="display:flex; align-items:center; gap:0.4rem; font-size:0.82rem; color:var(--text-muted); cursor:pointer; padding-bottom:0.6rem; white-space:nowrap; user-select:none;">
+        <input type="checkbox" id="hide-comments-cb" style="cursor:pointer;"> Hide comments
+    </label>
 </div>
 
 <!-- config.yaml panel -->
@@ -78,6 +83,7 @@
 (function () {
     var _configRaw = null;
     var _projectsRaw = null;
+    var _hideComments = false;
 
     /* ------------------------------------------------------------------ */
     /* Tab switching                                                       */
@@ -103,11 +109,33 @@
     });
 
     /* ------------------------------------------------------------------ */
+    /* Hide-comments toggle                                                */
+    /* ------------------------------------------------------------------ */
+    document.getElementById('hide-comments-cb').addEventListener('change', function () {
+        _hideComments = this.checked;
+        renderYaml('config-yaml', _configRaw, 'config.yaml');
+        renderYaml('projects-yaml', _projectsRaw, 'projects.yaml');
+    });
+
+    /* ------------------------------------------------------------------ */
     /* YAML syntax highlighting (pure JS, no dependencies)                 */
     /* ------------------------------------------------------------------ */
     function highlightYaml(text) {
         if (!text) return '';
-        return text.split('\n').map(function (line) {
+        var lines = text.split('\n');
+        if (_hideComments) {
+            lines = lines.filter(function (line) { return !/^\s*#/.test(line); });
+            var collapsed = [];
+            var lastBlank = false;
+            lines.forEach(function (line) {
+                var isBlank = !line.trim();
+                if (isBlank && lastBlank) return;
+                collapsed.push(line);
+                lastBlank = isBlank;
+            });
+            lines = collapsed;
+        }
+        return lines.map(function (line) {
             if (/^\s*#/.test(line)) {
                 return '<span class="hl-comment">' + escHtml(line) + '</span>';
             }
@@ -157,6 +185,9 @@
         }
         var commentIdx = val.indexOf(' #');
         if (commentIdx > 0) {
+            if (_hideComments) {
+                return '<span class="hl-value">' + escHtml(val.substring(0, commentIdx)) + '</span>';
+            }
             return '<span class="hl-value">' + escHtml(val.substring(0, commentIdx)) + '</span><span class="hl-comment">' + escHtml(val.substring(commentIdx)) + '</span>';
         }
         return '<span class="hl-value">' + escHtml(val) + '</span>';
