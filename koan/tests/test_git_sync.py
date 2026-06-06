@@ -1,13 +1,18 @@
 """Tests for git_sync.py — git awareness module."""
 
+import json
 import subprocess
+import time
 from datetime import date, datetime
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
 
-from app.git_sync import run_git, GitSync, RECENT_BRANCH_DAYS
+from app.git_sync import (
+    run_git, GitSync, RECENT_BRANCH_DAYS,
+    CLEANUP_TRACKER_FILE, _load_cleanup_tracker, _save_cleanup_tracker,
+)
 
 # Patch path for the lazy import of run_gh inside get_github_merged_branches.
 _RUN_GH_PATH = "app.github.run_gh"
@@ -605,7 +610,10 @@ class TestBuildSyncReport:
                 return ""
 
             mock_git.side_effect = side_effect
-            with patch.object(GitSync, "get_github_merged_branches", return_value=[]):
+            with patch.object(GitSync, "get_github_merged_branches", return_value=[]), \
+                 patch.object(GitSync, "_should_run_cleanup", return_value=True), \
+                 patch.object(GitSync, "_record_cleanup"), \
+                 patch.object(GitSync, "get_orphan_branches", return_value=[]):
                 report = _sync().build_sync_report()
 
         assert "cleaned up" in report.lower()
@@ -874,9 +882,13 @@ class TestBranchCleanupConfig:
              patch.object(GitSync, "get_unmerged_branches", return_value=[]), \
              patch.object(GitSync, "get_recent_main_commits", return_value=[]), \
              patch.object(GitSync, "cleanup_merged_branches", return_value=[]) as mock_cleanup, \
+             patch.object(GitSync, "_should_run_cleanup", return_value=True), \
+             patch.object(GitSync, "_record_cleanup"), \
+             patch.object(GitSync, "get_orphan_branches", return_value=[]), \
              patch("app.git_sync.run_git", return_value=""), \
              patch("app.git_sync.get_branch_cleanup_config",
-                   return_value={"enabled": True, "delete_remote_branches": False}):
+                   return_value={"enabled": True, "delete_remote_branches": False,
+                                 "notify_orphans": True}):
             sync.build_sync_report()
 
         mock_cleanup.assert_called_once()
@@ -891,9 +903,13 @@ class TestBranchCleanupConfig:
              patch.object(GitSync, "get_unmerged_branches", return_value=[]), \
              patch.object(GitSync, "get_recent_main_commits", return_value=[]), \
              patch.object(GitSync, "cleanup_merged_branches", return_value=[]) as mock_cleanup, \
+             patch.object(GitSync, "_should_run_cleanup", return_value=True), \
+             patch.object(GitSync, "_record_cleanup"), \
+             patch.object(GitSync, "get_orphan_branches", return_value=[]), \
              patch("app.git_sync.run_git", return_value=""), \
              patch("app.git_sync.get_branch_cleanup_config",
-                   return_value={"enabled": True, "delete_remote_branches": True}):
+                   return_value={"enabled": True, "delete_remote_branches": True,
+                                 "notify_orphans": True}):
             sync.build_sync_report()
 
         mock_cleanup.assert_called_once()
@@ -997,3 +1013,254 @@ class TestGitSyncCLI:
                     run_module("app.git_sync", run_name="__main__")
                     output = mock_print.call_args[0][0]
                     assert "koan/done" in output
+
+
+class TestCleanupTracker:
+    """Tests for .branch-cleanup-tracker.json persistence."""
+
+    def test_load_returns_empty_when_missing(self, tmp_path):
+        assert _load_cleanup_tracker(str(tmp_path)) == {}
+
+    def test_load_returns_empty_on_corrupt_json(self, tmp_path):
+        (tmp_path / CLEANUP_TRACKER_FILE).write_text("{bad json")
+        assert _load_cleanup_tracker(str(tmp_path)) == {}
+
+    def test_save_and_load_roundtrip(self, tmp_path):
+        data = {"koan": {"last_cleanup_ts": 1717600000.0}}
+        _save_cleanup_tracker(str(tmp_path), data)
+        loaded = _load_cleanup_tracker(str(tmp_path))
+        assert loaded == data
+
+    def test_should_run_cleanup_first_time(self, tmp_path):
+        """First run (no tracker file) should always trigger cleanup."""
+        sync = GitSync(str(tmp_path), "myproject", "/fake")
+        with patch("app.git_sync.get_branch_cleanup_config",
+                   return_value={"cleanup_interval_hours": 24}):
+            assert sync._should_run_cleanup() is True
+
+    def test_should_run_cleanup_after_interval(self, tmp_path):
+        """Cleanup should run when enough time has passed."""
+        tracker = {"myproject": {"last_cleanup_ts": time.time() - 25 * 3600}}
+        _save_cleanup_tracker(str(tmp_path), tracker)
+        sync = GitSync(str(tmp_path), "myproject", "/fake")
+        with patch("app.git_sync.get_branch_cleanup_config",
+                   return_value={"cleanup_interval_hours": 24}):
+            assert sync._should_run_cleanup() is True
+
+    def test_should_not_run_cleanup_before_interval(self, tmp_path):
+        """Cleanup should NOT run when interval hasn't elapsed."""
+        tracker = {"myproject": {"last_cleanup_ts": time.time() - 1 * 3600}}
+        _save_cleanup_tracker(str(tmp_path), tracker)
+        sync = GitSync(str(tmp_path), "myproject", "/fake")
+        with patch("app.git_sync.get_branch_cleanup_config",
+                   return_value={"cleanup_interval_hours": 24}):
+            assert sync._should_run_cleanup() is False
+
+    def test_record_cleanup_writes_timestamp(self, tmp_path):
+        """_record_cleanup persists the current time for the project."""
+        sync = GitSync(str(tmp_path), "myproject", "/fake")
+        before = time.time()
+        sync._record_cleanup()
+        after = time.time()
+        tracker = _load_cleanup_tracker(str(tmp_path))
+        ts = tracker["myproject"]["last_cleanup_ts"]
+        assert before <= ts <= after
+
+    def test_record_cleanup_preserves_other_projects(self, tmp_path):
+        """Recording for one project doesn't clobber another."""
+        _save_cleanup_tracker(str(tmp_path), {
+            "other": {"last_cleanup_ts": 1000.0},
+        })
+        sync = GitSync(str(tmp_path), "myproject", "/fake")
+        sync._record_cleanup()
+        tracker = _load_cleanup_tracker(str(tmp_path))
+        assert tracker["other"]["last_cleanup_ts"] == 1000.0
+        assert "myproject" in tracker
+
+
+class TestGetOrphanBranches:
+    """Tests for orphan branch detection (unmerged + no open PR)."""
+
+    def test_returns_branches_without_prs(self):
+        sync = _sync()
+        with patch.object(sync, "get_unmerged_branches",
+                          return_value=["koan/has-pr", "koan/no-pr", "koan/also-no-pr"]), \
+             patch("app.github.run_gh",
+                   return_value=json.dumps([{"headRefName": "koan/has-pr"}])):
+            orphans = sync.get_orphan_branches()
+        assert orphans == ["koan/also-no-pr", "koan/no-pr"]
+
+    def test_returns_empty_when_all_have_prs(self):
+        sync = _sync()
+        with patch.object(sync, "get_unmerged_branches",
+                          return_value=["koan/a", "koan/b"]), \
+             patch("app.github.run_gh",
+                   return_value=json.dumps([
+                       {"headRefName": "koan/a"},
+                       {"headRefName": "koan/b"},
+                   ])):
+            orphans = sync.get_orphan_branches()
+        assert orphans == []
+
+    def test_returns_empty_on_no_unmerged(self):
+        sync = _sync()
+        with patch.object(sync, "get_unmerged_branches", return_value=[]):
+            orphans = sync.get_orphan_branches()
+        assert orphans == []
+
+    def test_returns_empty_on_github_error(self):
+        """Fail-safe: GitHub API errors produce empty list, not false positives."""
+        sync = _sync()
+        with patch.object(sync, "get_unmerged_branches",
+                          return_value=["koan/something"]), \
+             patch("app.github.run_gh", side_effect=RuntimeError("API error")):
+            orphans = sync.get_orphan_branches()
+        assert orphans == []
+
+    def test_ignores_non_prefix_pr_branches(self):
+        """PRs from other branch prefixes don't affect orphan detection."""
+        sync = _sync()
+        with patch.object(sync, "get_unmerged_branches",
+                          return_value=["koan/orphan"]), \
+             patch("app.github.run_gh",
+                   return_value=json.dumps([{"headRefName": "feature/unrelated"}])):
+            orphans = sync.get_orphan_branches()
+        assert orphans == ["koan/orphan"]
+
+
+class TestBuildSyncReportThrottle:
+    """Tests for 24h-throttled cleanup in build_sync_report."""
+
+    def _default_patches(self, sync, merged=None, github_merged=None,
+                         unmerged=None, recent=None, cleanup_enabled=True,
+                         cleanup_due=True, notify_orphans=True, orphans=None):
+        """Stack of patches for build_sync_report tests."""
+        from contextlib import ExitStack
+        stack = ExitStack()
+        stack.enter_context(patch("app.git_sync.run_git", return_value=""))
+        stack.enter_context(patch.object(
+            sync, "get_merged_branches", return_value=merged or []))
+        stack.enter_context(patch.object(
+            sync, "get_github_merged_branches", return_value=github_merged or []))
+        stack.enter_context(patch.object(
+            sync, "get_unmerged_branches", return_value=unmerged or []))
+        stack.enter_context(patch.object(
+            sync, "get_recent_main_commits", return_value=recent or []))
+        stack.enter_context(patch.object(
+            sync, "cleanup_merged_branches", return_value=[]))
+        stack.enter_context(patch.object(
+            sync, "_should_run_cleanup", return_value=cleanup_due))
+        stack.enter_context(patch.object(
+            sync, "_record_cleanup"))
+        stack.enter_context(patch.object(
+            sync, "get_orphan_branches", return_value=orphans or []))
+        stack.enter_context(patch("app.git_sync.get_branch_cleanup_config",
+                                  return_value={
+                                      "enabled": cleanup_enabled,
+                                      "delete_remote_branches": True,
+                                      "cleanup_interval_hours": 24,
+                                      "notify_orphans": notify_orphans,
+                                  }))
+        return stack
+
+    def test_cleanup_skipped_when_not_due(self):
+        """When 24h hasn't elapsed, cleanup_merged_branches is not called."""
+        sync = _sync()
+        with self._default_patches(sync, merged=["koan/old"],
+                                   cleanup_due=False) as stack:
+            mock_cleanup = stack.enter_context(patch.object(
+                sync, "cleanup_merged_branches", return_value=[]))
+            sync.build_sync_report()
+        mock_cleanup.assert_not_called()
+
+    def test_cleanup_runs_when_due(self):
+        """When 24h has elapsed, cleanup_merged_branches is called."""
+        sync = _sync()
+        with self._default_patches(sync, merged=["koan/old"],
+                                   cleanup_due=True) as stack:
+            mock_cleanup = stack.enter_context(patch.object(
+                sync, "cleanup_merged_branches", return_value=["koan/old"]))
+            sync.build_sync_report()
+        mock_cleanup.assert_called_once()
+
+    def test_record_cleanup_called_after_cleanup(self):
+        """Cleanup records its timestamp after running."""
+        sync = _sync()
+        with self._default_patches(sync, cleanup_due=True) as stack:
+            mock_record = stack.enter_context(patch.object(
+                sync, "_record_cleanup"))
+            sync.build_sync_report()
+        mock_record.assert_called_once()
+
+    def test_record_cleanup_not_called_when_skipped(self):
+        """No timestamp recorded when cleanup is skipped."""
+        sync = _sync()
+        with self._default_patches(sync, cleanup_due=False) as stack:
+            mock_record = stack.enter_context(patch.object(
+                sync, "_record_cleanup"))
+            sync.build_sync_report()
+        mock_record.assert_not_called()
+
+    def test_orphans_included_in_report(self):
+        """Orphan branches appear in the sync report."""
+        sync = _sync()
+        with self._default_patches(sync, cleanup_due=True,
+                                   orphans=["koan/leftover"]):
+            report = sync.build_sync_report()
+        assert "Orphan" in report
+        assert "koan/leftover" in report
+
+    def test_orphans_not_checked_when_disabled(self):
+        """When notify_orphans=False, orphan detection is skipped."""
+        sync = _sync()
+        with self._default_patches(sync, cleanup_due=True,
+                                   notify_orphans=False) as stack:
+            mock_orphans = stack.enter_context(patch.object(
+                sync, "get_orphan_branches", return_value=["koan/x"]))
+            sync.build_sync_report()
+        mock_orphans.assert_not_called()
+
+
+class TestNotifyCleanupResults:
+    """Tests for outbox notification on cleanup/orphan events."""
+
+    def test_notifies_on_cleaned_branches(self, tmp_path):
+        sync = GitSync(str(tmp_path), "myproject", "/fake")
+        sync._last_cleaned = ["koan/old-branch"]
+        sync._last_orphans = []
+        outbox = tmp_path / "outbox.md"
+        outbox.write_text("")
+        with patch("app.git_sync.Path") as mock_path_cls:
+            mock_path_cls.return_value = outbox
+            with patch("app.utils.append_to_outbox") as mock_append:
+                sync._notify_cleanup_results()
+        mock_append.assert_called_once()
+        msg = mock_append.call_args[0][1]
+        assert "Cleaned 1 merged branch" in msg
+        assert "koan/old-branch" in msg
+
+    def test_notifies_on_orphan_branches(self, tmp_path):
+        sync = GitSync(str(tmp_path), "myproject", "/fake")
+        sync._last_cleaned = []
+        sync._last_orphans = ["koan/forgotten"]
+        with patch("app.utils.append_to_outbox") as mock_append:
+            sync._notify_cleanup_results()
+        mock_append.assert_called_once()
+        msg = mock_append.call_args[0][1]
+        assert "orphan" in msg
+        assert "koan/forgotten" in msg
+
+    def test_no_notification_when_nothing_happened(self, tmp_path):
+        sync = GitSync(str(tmp_path), "myproject", "/fake")
+        sync._last_cleaned = []
+        sync._last_orphans = []
+        with patch("app.utils.append_to_outbox") as mock_append:
+            sync._notify_cleanup_results()
+        mock_append.assert_not_called()
+
+    def test_no_notification_without_attributes(self, tmp_path):
+        """No crash if build_sync_report wasn't called first."""
+        sync = GitSync(str(tmp_path), "myproject", "/fake")
+        with patch("app.utils.append_to_outbox") as mock_append:
+            sync._notify_cleanup_results()
+        mock_append.assert_not_called()

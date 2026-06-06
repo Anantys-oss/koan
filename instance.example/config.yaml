@@ -439,6 +439,9 @@ models:
 #   enabled: true                  # Master switch (default: true)
 #   delete_remote_branches: true   # Also delete remote refs (default: true)
 #                                  # Set false to only clean up local branches
+#   cleanup_interval_hours: 24     # Hours between cleanup runs per project (default: 24)
+#                                  # Persisted in .branch-cleanup-tracker.json — survives restarts
+#   notify_orphans: true           # Notify about unmerged branches with no open PR (default: true)
 
 # Git auto-merge configuration
 # Automatically merges koan/* branches based on rules

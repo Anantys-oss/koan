@@ -17,6 +17,7 @@ Usage:
 import json
 import logging
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -28,6 +29,24 @@ log = logging.getLogger(__name__)
 # Branches updated within this many days are shown in detail;
 # older branches are collapsed into a summary line.
 RECENT_BRANCH_DAYS = 7
+
+CLEANUP_TRACKER_FILE = ".branch-cleanup-tracker.json"
+
+
+def _load_cleanup_tracker(instance_dir: str) -> dict:
+    path = Path(instance_dir) / CLEANUP_TRACKER_FILE
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _save_cleanup_tracker(instance_dir: str, data: dict) -> None:
+    from app.utils import atomic_write_json
+    path = Path(instance_dir) / CLEANUP_TRACKER_FILE
+    atomic_write_json(path, data, indent=2)
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +158,67 @@ class GitSync:
         all_koan = set(self.get_koan_branches())
         merged = set(self.get_merged_branches())
         return sorted(all_koan - merged)
+
+    def _should_run_cleanup(self) -> bool:
+        """Check if enough time has passed since last cleanup for this project."""
+        cleanup_cfg = get_branch_cleanup_config()
+        interval_hours = cleanup_cfg.get("cleanup_interval_hours", 24)
+        tracker = _load_cleanup_tracker(self.instance_dir)
+        project_data = tracker.get(self.project_name, {})
+        last_ts = project_data.get("last_cleanup_ts", 0)
+        elapsed_hours = (time.time() - last_ts) / 3600
+        return elapsed_hours >= interval_hours
+
+    def _record_cleanup(self) -> None:
+        """Record that cleanup ran for this project."""
+        tracker = _load_cleanup_tracker(self.instance_dir)
+        if self.project_name not in tracker:
+            tracker[self.project_name] = {}
+        tracker[self.project_name]["last_cleanup_ts"] = time.time()
+        _save_cleanup_tracker(self.instance_dir, tracker)
+
+    def get_orphan_branches(self) -> List[str]:
+        """Find unmerged agent branches that have no open PR.
+
+        "Orphans" are branches with the agent prefix that are neither merged
+        nor backing an open pull request — likely leftovers from aborted or
+        forgotten work.
+
+        Returns empty list on GitHub API errors (fail-safe: never false-positive).
+        """
+        unmerged = self.get_unmerged_branches()
+        if not unmerged:
+            return []
+
+        prefix = _get_prefix()
+        try:
+            from app.github import run_gh
+            raw = run_gh(
+                "pr", "list",
+                "--state", "open",
+                "--limit", "200",
+                "--json", "headRefName",
+                cwd=self.project_path,
+                timeout=30,
+            )
+        except (RuntimeError, OSError):
+            return []
+
+        try:
+            prs = json.loads(raw) if raw else []
+        except json.JSONDecodeError:
+            return []
+
+        if not isinstance(prs, list):
+            return []
+
+        pr_branches = {
+            pr["headRefName"]
+            for pr in prs
+            if isinstance(pr, dict) and pr.get("headRefName", "").startswith(prefix)
+        }
+
+        return sorted(b for b in unmerged if b not in pr_branches)
 
     def _get_current_branch(self) -> str:
         """Return the current branch name, or empty string on failure."""
@@ -351,7 +431,13 @@ class GitSync:
         return deleted
 
     def build_sync_report(self) -> str:
-        """Build a human-readable git sync report."""
+        """Build a human-readable git sync report.
+
+        Branch cleanup (deletion of merged branches + orphan detection) is
+        time-throttled: it only runs once per ``cleanup_interval_hours``
+        (default 24h) per project, with timestamps persisted in
+        ``.branch-cleanup-tracker.json`` so restarts don't re-trigger it.
+        """
         run_git(self.project_path, "fetch", "--prune")
 
         merged = self.get_merged_branches()
@@ -359,19 +445,24 @@ class GitSync:
         unmerged = self.get_unmerged_branches()
         recent = self.get_recent_main_commits(since_hours=12)
 
-        # Auto-cleanup merged branches (config-controlled)
         cleanup_cfg = get_branch_cleanup_config()
-        if cleanup_cfg["enabled"]:
+        cleanup_due = cleanup_cfg["enabled"] and self._should_run_cleanup()
+
+        if cleanup_due:
             cleaned = self.cleanup_merged_branches(
                 merged,
                 github_merged,
                 delete_remote=cleanup_cfg["delete_remote_branches"],
             )
+            orphans = (
+                self.get_orphan_branches()
+                if cleanup_cfg.get("notify_orphans", True) else []
+            )
+            self._record_cleanup()
         else:
             cleaned = []
+            orphans = []
 
-        # Branches cleaned via GitHub detection should be removed from
-        # the unmerged list (they were unmerged per git but merged per GitHub)
         if cleaned:
             cleaned_set = set(cleaned)
             unmerged = [b for b in unmerged if b not in cleaned_set]
@@ -383,7 +474,6 @@ class GitSync:
         prefix = _get_prefix()
         label = f"{prefix}*"
 
-        # Combine all confirmed-merged branches for the report
         git_merged_set = set(merged)
         github_only = [b for b in (github_merged or []) if b not in git_merged_set]
         all_merged = merged + github_only
@@ -396,6 +486,10 @@ class GitSync:
 
         if cleaned:
             parts.append(f"\nCleaned up {len(cleaned)} merged local branch(es).")
+
+        if orphans:
+            parts.append(f"\nOrphan {label} branches ({len(orphans)}) — unmerged, no open PR:")
+            parts.extend(f"  ⚠ {b}" for b in orphans)
 
         if unmerged:
             recent_branches, stale_branches = self._split_branches_by_recency(unmerged)
@@ -414,6 +508,9 @@ class GitSync:
         if not all_merged and not unmerged and not recent:
             parts.append("\nNo notable changes since last sync.")
 
+        self._last_cleaned = cleaned
+        self._last_orphans = orphans
+
         return "\n".join(parts)
 
     def write_sync_to_journal(self, report: str):
@@ -422,10 +519,30 @@ class GitSync:
         entry = f"\n## Git Sync — {datetime.now().strftime('%H:%M')}\n\n{report}\n"
         append_to_journal(Path(self.instance_dir), self.project_name, entry)
 
+    def _notify_cleanup_results(self) -> None:
+        """Send outbox notification when branches were cleaned or orphans found."""
+        cleaned = getattr(self, "_last_cleaned", [])
+        orphans = getattr(self, "_last_orphans", [])
+        if not cleaned and not orphans:
+            return
+
+        from app.utils import append_to_outbox
+        parts = [f"🧹 [{self.project_name}]"]
+        if cleaned:
+            parts.append(f"Cleaned {len(cleaned)} merged branch(es): {', '.join(cleaned)}")
+        if orphans:
+            parts.append(
+                f"⚠️ {len(orphans)} orphan branch(es) (no PR): {', '.join(orphans)}"
+            )
+        msg = " ".join(parts) + "\n"
+        outbox_path = Path(self.instance_dir) / "outbox.md"
+        append_to_outbox(outbox_path, msg)
+
     def sync_and_report(self) -> str:
-        """Full sync: build report and write to journal. Returns the report."""
+        """Full sync: build report, write to journal, notify if needed."""
         report = self.build_sync_report()
         self.write_sync_to_journal(report)
+        self._notify_cleanup_results()
         return report
 
 

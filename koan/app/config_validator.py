@@ -216,6 +216,8 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
     "branch_cleanup": {
         "enabled": "bool",
         "delete_remote_branches": "bool",
+        "cleanup_interval_hours": "int",
+        "notify_orphans": "bool",
     },
     "review_concurrency": {
         "enabled": "bool",

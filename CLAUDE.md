@@ -105,7 +105,7 @@ Communication between processes happens through shared files in `instance/` with
 - **`cli_provider.py`** — Re-export facade (legacy); prefer importing from `provider` directly
 
 **Git & GitHub:**
-- **`git_sync.py`** / **`git_auto_merge.py`** — Branch tracking, sync awareness, configurable auto-merge
+- **`git_sync.py`** / **`git_auto_merge.py`** — Branch tracking, sync awareness, configurable auto-merge. Branch cleanup is time-throttled (default 24h per project, persisted in `.branch-cleanup-tracker.json`). Orphan branch detection (unmerged, no open PR) notifies via outbox.
 - **`github.py`** — Centralized `gh` CLI wrapper (`run_gh()`, `pr_create()`, `issue_create()`)
 - **`github_url_parser.py`** — Centralized GitHub URL parsing for PRs and issues
 - **`github_skill_helpers.py`** — Shared helpers for GitHub-related skills (URL extraction, project resolution, mission queuing)

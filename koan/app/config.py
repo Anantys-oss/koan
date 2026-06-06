@@ -1286,6 +1286,8 @@ def get_branch_cleanup_config() -> dict:
     return {
         "enabled": bool(cleanup_cfg.get("enabled", True)),
         "delete_remote_branches": bool(cleanup_cfg.get("delete_remote_branches", True)),
+        "cleanup_interval_hours": int(cleanup_cfg.get("cleanup_interval_hours", 24)),
+        "notify_orphans": bool(cleanup_cfg.get("notify_orphans", True)),
     }
 
 
