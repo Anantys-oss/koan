@@ -30,8 +30,9 @@ Complete reference for all Koan slash commands. Use these via Telegram, Slack, o
 | `/recurring` | — | List all recurring missions |
 | `/recurring resume <n>` | — | Re-enable a disabled recurring mission |
 | `/recurring run [n]` | — | Force an immediate run of a recurring mission |
-| `/pause_recurring <n>` | — | Disable a recurring mission without deleting |
-| `/cancel_recurring <n>` | — | Remove a recurring mission |
+| `/recurring pause <n>` | — | Disable a recurring mission without deleting |
+| `/recurring cancel <n>` | — | Remove a recurring mission |
+| `/recurring days <n> <days>` | — | Set a day-of-week filter on a recurring mission |
 
 ## Code & Project Operations
 

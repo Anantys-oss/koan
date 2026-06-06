@@ -251,7 +251,7 @@ class TestCancelRecurringCommand:
     def test_cancel_by_number(self, tmp_path):
         mod = _load_handler()
         self._setup_recurring(tmp_path)
-        ctx = _ctx(tmp_path, "cancel_recurring", "1")
+        ctx = _ctx(tmp_path, "recurring", "cancel 1")
         result = mod.handle(ctx)
         assert "Recurring mission removed" in result
         assert "check emails" in result
@@ -259,7 +259,7 @@ class TestCancelRecurringCommand:
     def test_cancel_by_keyword(self, tmp_path):
         mod = _load_handler()
         self._setup_recurring(tmp_path)
-        ctx = _ctx(tmp_path, "cancel_recurring", "security")
+        ctx = _ctx(tmp_path, "recurring", "cancel security")
         result = mod.handle(ctx)
         assert "Recurring mission removed" in result
         assert "security audit" in result
@@ -267,34 +267,34 @@ class TestCancelRecurringCommand:
     def test_cancel_invalid_number(self, tmp_path):
         mod = _load_handler()
         self._setup_recurring(tmp_path)
-        ctx = _ctx(tmp_path, "cancel_recurring", "99")
+        ctx = _ctx(tmp_path, "recurring", "cancel 99")
         result = mod.handle(ctx)
         assert "Invalid number" in result
 
     def test_cancel_no_match(self, tmp_path):
         mod = _load_handler()
         self._setup_recurring(tmp_path)
-        ctx = _ctx(tmp_path, "cancel_recurring", "nonexistent")
+        ctx = _ctx(tmp_path, "recurring", "cancel nonexistent")
         result = mod.handle(ctx)
         assert "No recurring mission matching" in result
 
     def test_cancel_empty_shows_list(self, tmp_path):
         mod = _load_handler()
         self._setup_recurring(tmp_path)
-        ctx = _ctx(tmp_path, "cancel_recurring", "")
+        ctx = _ctx(tmp_path, "recurring", "cancel")
         result = mod.handle(ctx)
         assert "check emails" in result
-        assert "/cancel_recurring" in result
+        assert "/recurring cancel" in result
 
     def test_cancel_empty_no_missions(self, tmp_path):
         mod = _load_handler()
-        ctx = _ctx(tmp_path, "cancel_recurring", "")
+        ctx = _ctx(tmp_path, "recurring", "cancel")
         result = mod.handle(ctx)
         assert "No recurring missions to cancel" in result
 
 
 # ---------------------------------------------------------------------------
-# /pause_recurring — disable a recurring mission
+# /recurring pause — disable a recurring mission
 # ---------------------------------------------------------------------------
 
 
@@ -308,7 +308,7 @@ class TestPauseRecurringCommand:
     def test_pause_by_number(self, tmp_path):
         mod = _load_handler()
         self._setup_recurring(tmp_path)
-        ctx = _ctx(tmp_path, "pause_recurring", "1")
+        ctx = _ctx(tmp_path, "recurring", "pause 1")
         result = mod.handle(ctx)
         assert "disabled ⏸️" in result
         assert "check emails" in result
@@ -316,14 +316,14 @@ class TestPauseRecurringCommand:
     def test_pause_by_keyword(self, tmp_path):
         mod = _load_handler()
         self._setup_recurring(tmp_path)
-        ctx = _ctx(tmp_path, "pause_recurring", "check")
+        ctx = _ctx(tmp_path, "recurring", "pause check")
         result = mod.handle(ctx)
         assert "disabled ⏸️" in result
 
     def test_pause_invalid_number(self, tmp_path):
         mod = _load_handler()
         self._setup_recurring(tmp_path)
-        ctx = _ctx(tmp_path, "pause_recurring", "99")
+        ctx = _ctx(tmp_path, "recurring", "pause 99")
         result = mod.handle(ctx)
         assert "Invalid number" in result or "No recurring mission" in result
 
@@ -339,7 +339,7 @@ class TestRecurringResumeCommand:
         mod = _load_handler()
         ctx = _ctx(tmp_path, "daily", "check emails")
         mod.handle(ctx)
-        ctx = _ctx(tmp_path, "pause_recurring", "1")
+        ctx = _ctx(tmp_path, "recurring", "pause 1")
         mod.handle(ctx)
 
     def test_resume_by_number(self, tmp_path):
@@ -457,7 +457,7 @@ class TestSkillRegistration:
     def test_skill_md_has_required_commands(self):
         skill_md = Path(__file__).parent.parent / "skills" / "core" / "recurring" / "SKILL.md"
         content = skill_md.read_text()
-        for cmd in ["daily", "hourly", "weekly", "every", "recurring", "cancel_recurring"]:
+        for cmd in ["daily", "hourly", "weekly", "every", "recurring"]:
             assert cmd in content, f"Missing command '{cmd}' in SKILL.md"
 
     def test_handler_exists(self):
@@ -467,15 +467,15 @@ class TestSkillRegistration:
     def test_registry_discovers_recurring(self):
         from app.skills import build_registry
         registry = build_registry()
-        for cmd in ["daily", "hourly", "weekly", "every", "recurring", "cancel_recurring"]:
+        for cmd in ["daily", "hourly", "weekly", "every", "recurring"]:
             skill = registry.find_by_command(cmd)
             assert skill is not None, f"Command '/{cmd}' not found in registry"
             assert skill.name == "recurring"
 
     def test_underscore_alias(self):
-        """The underscore alias resolves correctly."""
+        """The underscore command resolves correctly."""
         from app.skills import build_registry
         registry = build_registry()
-        skill = registry.find_by_command("cancel_recurring")
-        assert skill is not None, "Alias 'cancel_recurring' not found"
+        skill = registry.find_by_command("recurring")
+        assert skill is not None, "Command 'recurring' not found"
         assert skill.name == "recurring"
