@@ -16,7 +16,8 @@ _ORIGIN_MARKERS = (_GITHUB_ORIGIN_MARKER, _JIRA_ORIGIN_MARKER)
 # Project character class is sourced from utils.PROJECT_NAME_CHARS so it stays
 # in sync with the precompiled tag regexes there.
 _COMMAND_RE = re.compile(
-    rf"^(?:-\s*)?(?:\[projec?t:[{PROJECT_NAME_CHARS}]+\]\s*)?/([a-zA-Z0-9_.]+)"
+    rf"^(?:-\s*)?(?:\[projec?t:[{PROJECT_NAME_CHARS}]+\]\s*)?/([a-zA-Z0-9_.]+)",
+    re.IGNORECASE,
 )
 
 

@@ -82,14 +82,19 @@ def handle(ctx):
         changes = replace_in_file(path, old_name, new_name)
         if changes:
             text = path.read_text(encoding="utf-8")
-            text = text.replace(f"[project:{old_name}]", f"[project:{new_name}]")
-            text = text.replace(f"[projet:{old_name}]", f"[projet:{new_name}]")
+            text = re.sub(
+                rf'\[projec?t:{re.escape(old_name)}\]',
+                f'[project:{new_name}]',
+                text,
+                flags=re.IGNORECASE,
+            )
             text = text.replace(f'"project": "{old_name}"', f'"project": "{new_name}"')
             text = text.replace(f'"project":"{old_name}"', f'"project":"{new_name}"')
             text = re.sub(
                 rf'\bproject:\s*{re.escape(old_name)}\b',
                 f'project: {new_name}',
                 text,
+                flags=re.IGNORECASE,
             )
             path.write_text(text, encoding="utf-8")
             total_changes += len(changes)

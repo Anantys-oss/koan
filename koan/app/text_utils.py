@@ -84,7 +84,7 @@ def extract_project_from_message(text: str) -> str:
         The project name, or empty string if none found.
     """
     # Match [project:name] first (more specific)
-    m = re.search(r'\[project:(\w[\w.-]*)\]', text)
+    m = re.search(r'\[project:(\w[\w.-]*)\]', text, re.IGNORECASE)
     if m:
         return m.group(1)
     # Match emoji-prefixed [name] pattern (e.g. "🏁 [koan]")

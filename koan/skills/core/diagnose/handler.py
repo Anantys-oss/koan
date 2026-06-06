@@ -9,7 +9,7 @@ _FAILED_TS_RE = re.compile(
     r"❌\s*\((\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})\)"
 )
 _CAUSE_TAG_RE = re.compile(r"\[([a-z_:]+)\]\s*$")
-_PROJECT_TAG_RE = re.compile(r"\[project:([^\]]+)\]")
+_PROJECT_TAG_RE = re.compile(r"\[project:([^\]]+)\]", re.IGNORECASE)
 _MAX_JOURNAL_CHARS = 3000
 
 

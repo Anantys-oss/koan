@@ -29,7 +29,7 @@ COMPLEXITY_KEYWORDS = [
 DEFAULT_COMPLEXITY_THRESHOLD = 80
 
 # Pattern to strip [project:name] tags
-_PROJECT_TAG_RE = re.compile(r"^\[project:\w+\]\s*")
+_PROJECT_TAG_RE = re.compile(r"^\[project:\w+\]\s*", re.IGNORECASE)
 
 
 def _get_complexity_threshold() -> int:

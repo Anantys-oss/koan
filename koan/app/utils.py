@@ -41,13 +41,13 @@ KOAN_ROOT = Path(os.environ["KOAN_ROOT"])
 PROJECT_NAME_CHARS = r"a-zA-Z0-9_.-"
 
 # Bracketed inline tag, capturing form: [project:X] / [projet:X]
-PROJECT_TAG_RE = re.compile(rf'\[projec?t:([{PROJECT_NAME_CHARS}]+)\]')
+PROJECT_TAG_RE = re.compile(rf'\[projec?t:([{PROJECT_NAME_CHARS}]+)\]', re.IGNORECASE)
 # Bracketed inline tag, strip form (with trailing whitespace consumed).
-PROJECT_TAG_STRIP_RE = re.compile(rf'\[projec?t:[{PROJECT_NAME_CHARS}]+\]\s*')
+PROJECT_TAG_STRIP_RE = re.compile(rf'\[projec?t:[{PROJECT_NAME_CHARS}]+\]\s*', re.IGNORECASE)
 # Anchored prefix form (used to peel a leading tag off a mission line).
-PROJECT_TAG_PREFIX_RE = re.compile(rf'^\[projec?t:([{PROJECT_NAME_CHARS}]+)\]\s*')
+PROJECT_TAG_PREFIX_RE = re.compile(rf'^\[projec?t:([{PROJECT_NAME_CHARS}]+)\]\s*', re.IGNORECASE)
 # Full alternation form with surrounding whitespace (dashboard / template-side parity).
-PROJECT_TAG_FULL_RE = re.compile(rf'\s*\[(?:project|projet):([{PROJECT_NAME_CHARS}]+)\]\s*')
+PROJECT_TAG_FULL_RE = re.compile(rf'\s*\[(?:project|projet):([{PROJECT_NAME_CHARS}]+)\]\s*', re.IGNORECASE)
 # Markdown sub-header form: "### project:name" / "### projet:name"
 PROJECT_SUBHEADER_RE = re.compile(rf'###\s+projec?t\s*:\s*([{PROJECT_NAME_CHARS}]+)', re.IGNORECASE)
 # Natural-text hint form: "(projet: name)" / "projet:name" (no brackets)

@@ -195,6 +195,14 @@ class TestExtractNextPending:
         content = "## Pending\n\n- English task\n\n## In Progress\n"
         assert extract_next_pending(content) == "- English task"
 
+    def test_case_insensitive_project_tag(self):
+        content = "## Pending\n\n- [Project:koan] Fix memory\n"
+        assert extract_next_pending(content, "koan") == "- [Project:koan] Fix memory"
+
+    def test_case_insensitive_uppercase_tag(self):
+        content = "## Pending\n\n- [PROJECT:myapp] deploy\n"
+        assert extract_next_pending(content, "myapp") == "- [PROJECT:myapp] deploy"
+
 
 # --- extract_next_pending: multi-line missions ---
 
@@ -402,6 +410,12 @@ class TestExtractProjectTag:
 
     def test_no_tag(self):
         assert extract_project_tag("- Plain task") == "default"
+
+    def test_case_insensitive_project(self):
+        assert extract_project_tag("- [Project:koan] Fix bug") == "koan"
+
+    def test_case_insensitive_uppercase(self):
+        assert extract_project_tag("- [PROJECT:myapp] deploy") == "myapp"
 
 
 # --- group_by_project ---

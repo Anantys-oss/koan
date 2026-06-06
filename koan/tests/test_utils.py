@@ -85,6 +85,24 @@ class TestParseProject:
         assert project == "koan"
         assert text == "Fix bug"
 
+    def test_case_insensitive_project_tag(self):
+        from app.utils import parse_project
+        project, text = parse_project("[Project:koan] Fix bug")
+        assert project == "koan"
+        assert text == "Fix bug"
+
+    def test_case_insensitive_uppercase(self):
+        from app.utils import parse_project
+        project, text = parse_project("[PROJECT:myapp] deploy")
+        assert project == "myapp"
+        assert text == "deploy"
+
+    def test_case_insensitive_projet(self):
+        from app.utils import parse_project
+        project, text = parse_project("[Projet:koan] audit")
+        assert project == "koan"
+        assert text == "audit"
+
 
 class TestParseProjectLenient:
     def test_bracketed_tag_still_works(self):
