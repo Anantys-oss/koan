@@ -170,6 +170,52 @@ def _strip_bot_mention_from_text(text: str, msg: dict) -> str:
 # Chat
 # ---------------------------------------------------------------------------
 
+def _build_command_catalog() -> str:
+    """Build a compact catalog of high-value slash commands for chat suggestions.
+
+    Filters skills to human-triggerable ones (bridge/command/hybrid, excluding
+    agent-only), selects the top ~20 by group, and formats as plain-text list:
+
+        /command — Short description (one line)
+
+    Returns empty string if chat suggestion is disabled in config.
+    """
+    from app.config import get_chat_suggest_commands_enabled
+
+    if not get_chat_suggest_commands_enabled():
+        return ""
+
+    try:
+        registry = _get_registry()
+        # Get human-triggerable skills (bridge, command, hybrid — not agent-only)
+        skills = registry.list_by_audience("bridge", "command", "hybrid")
+
+        # Build catalog grouped by help group
+        groups_dict = {}
+        for skill in skills:
+            if not skill.group:
+                continue
+            if skill.group not in groups_dict:
+                groups_dict[skill.group] = []
+            # Pick the first command (primary command)
+            if skill.commands:
+                cmd = skill.commands[0]
+                # Keep descriptions compact (~70 chars max)
+                desc = cmd.description[:70] if cmd.description else skill.description[:70]
+                groups_dict[skill.group].append(f"/{cmd.name} — {desc}")
+
+        # Build final catalog text
+        lines = [
+            line
+            for group in sorted(groups_dict.keys())
+            for line in sorted(groups_dict[group])[:5]
+        ]
+        return "\n".join(lines) if lines else ""
+    except Exception as e:
+        log("warn", f"[chat] catalog builder failed: {e}")
+        return ""
+
+
 def _build_chat_prompt(text: str, *, lite: bool = False) -> str:
     """Build the prompt for a chat response.
 
@@ -285,6 +331,9 @@ def _build_chat_prompt(text: str, *, lite: bool = False) -> str:
             else:
                 emotional_context = content
 
+    # Build command catalog (empty in lite mode to save tokens)
+    skills_catalog = "" if lite else _build_command_catalog()
+
     prompt = load_prompt(
         "chat",
         SOUL=SOUL,
@@ -296,6 +345,7 @@ def _build_chat_prompt(text: str, *, lite: bool = False) -> str:
         HISTORY=history_context or "",
         TIME_HINT=time_hint,
         TEXT=text,
+        SKILLS_CATALOG=skills_catalog,
     )
 
     # Inject language preference override

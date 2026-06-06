@@ -3511,3 +3511,116 @@ class TestReplyContext:
             send_telegram("test")
         mock_provider.send_message.assert_called_once_with("test", reply_to_message_id=456)
         clear_reply_context()
+
+
+# ---------------------------------------------------------------------------
+# Chat command suggestions
+# ---------------------------------------------------------------------------
+
+class TestBuildCommandCatalog:
+    """Tests for _build_command_catalog — command suggestion feature."""
+
+    def test_catalog_includes_known_commands(self):
+        """Catalog should include high-value commands from the registry."""
+        from app.awake import _build_command_catalog
+
+        with patch("app.config.get_chat_suggest_commands_enabled", return_value=True):
+            catalog = _build_command_catalog()
+
+        # Catalog should not be empty (we have core skills)
+        assert catalog, "Catalog should not be empty with enabled suggestions"
+        # At least one command should be present (we'll check for a known core command format)
+        assert "/" in catalog, "Catalog should contain slash commands"
+        assert "—" in catalog or "-" in catalog, "Catalog should have descriptions"
+
+    def test_catalog_empty_when_disabled(self):
+        """When suggest_commands is disabled, catalog should be empty."""
+        from app.awake import _build_command_catalog
+
+        with patch("app.config.get_chat_suggest_commands_enabled", return_value=False):
+            catalog = _build_command_catalog()
+
+        assert catalog == "", "Catalog should be empty when disabled in config"
+
+    def test_catalog_excludes_agent_only_skills(self):
+        """Catalog should exclude skills with audience='agent' only."""
+        from app.awake import _build_command_catalog
+        from app.skills import Skill, SkillCommand
+
+        # Create a mock registry with a known agent-only skill
+        mock_skill = Skill(
+            name="test_agent_skill",
+            scope="core",
+            audience="agent",  # Agent-only
+            commands=[SkillCommand(name="test_agent", description="Agent only command")],
+        )
+        mock_registry = MagicMock()
+        mock_registry.list_by_audience.return_value = []
+
+        with patch("app.awake._get_registry", return_value=mock_registry), \
+             patch("app.config.get_chat_suggest_commands_enabled", return_value=True):
+            catalog = _build_command_catalog()
+
+        # Verify list_by_audience was called with human-facing audiences
+        mock_registry.list_by_audience.assert_called_once_with("bridge", "command", "hybrid")
+
+    def test_catalog_graceful_failure(self):
+        """Catalog builder should return empty string on exception."""
+        from app.awake import _build_command_catalog
+
+        with patch("app.awake._get_registry", side_effect=Exception("Registry failed")):
+            catalog = _build_command_catalog()
+
+        assert catalog == "", "Should return empty string on error"
+
+
+class TestChatPromptSkillsCatalogPlaceholder:
+    """Tests that chat.md prompt includes and injects SKILLS_CATALOG placeholder."""
+
+    @patch("app.awake.save_conversation_message")
+    @patch("app.awake.load_recent_history", return_value=[])
+    @patch("app.awake.format_conversation_history", return_value="")
+    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.awake.get_language_instruction", return_value="")
+    def test_catalog_injected_in_non_lite_mode(
+        self, mock_lang, mock_tools_desc, mock_fmt, mock_hist, mock_save, tmp_path
+    ):
+        """Non-lite chat prompt should include SKILLS_CATALOG injection."""
+        from app.awake import _build_chat_prompt
+
+        with patch("app.awake.INSTANCE_DIR", tmp_path), \
+             patch("app.awake.KOAN_ROOT", tmp_path), \
+             patch("app.awake.MISSIONS_FILE", tmp_path / "missions.md"), \
+             patch("app.awake.SOUL", "test soul"), \
+             patch("app.awake.SUMMARY", ""), \
+             patch("app.awake._build_command_catalog", return_value="/status — Show status\n/resume — Resume missions"), \
+             patch("app.config.get_chat_suggest_commands_enabled", return_value=True):
+            prompt = _build_chat_prompt("hello")
+
+        # The prompt should contain injected catalog content
+        assert "/status" in prompt or "Available slash commands" in prompt, \
+            "Non-lite prompt should have catalog"
+        # Ensure no literal placeholder remains
+        assert "{SKILLS_CATALOG}" not in prompt, "Placeholder should be substituted"
+
+    @patch("app.awake.save_conversation_message")
+    @patch("app.awake.load_recent_history", return_value=[])
+    @patch("app.awake.format_conversation_history", return_value="")
+    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.awake.get_language_instruction", return_value="")
+    def test_catalog_empty_in_lite_mode(
+        self, mock_lang, mock_tools_desc, mock_fmt, mock_hist, mock_save, tmp_path
+    ):
+        """Lite retry mode should omit catalog to save tokens."""
+        from app.awake import _build_chat_prompt
+
+        with patch("app.awake.INSTANCE_DIR", tmp_path), \
+             patch("app.awake.KOAN_ROOT", tmp_path), \
+             patch("app.awake.MISSIONS_FILE", tmp_path / "missions.md"), \
+             patch("app.awake.SOUL", "test soul"), \
+             patch("app.awake.SUMMARY", ""):
+            prompt = _build_chat_prompt("hello", lite=True)
+
+        # In lite mode, catalog builder is never called (empty string is passed)
+        # So the prompt should have the placeholder area empty or minimal
+        assert "{SKILLS_CATALOG}" not in prompt, "Placeholder should be substituted (empty in lite)"

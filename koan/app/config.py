@@ -141,6 +141,30 @@ def get_tools_description() -> str:
     return config.get("tools", {}).get("description", "")
 
 
+def get_chat_suggest_commands_enabled() -> bool:
+    """Check if chat should suggest matching slash commands from natural language.
+
+    When enabled, the chat prompt includes a compact catalog of high-value
+    slash commands with an instruction to suggest the matching command when
+    the human's message maps to one of them.
+
+    Config key: chat.suggest_commands (default: true)
+
+    Returns:
+        True if suggestions are enabled, False otherwise.
+    """
+    config = _load_config()
+    chat_config = config.get("chat", {})
+    if isinstance(chat_config, dict):
+        # Explicitly check for false (allow true, unset, and other truthy values)
+        suggest = chat_config.get("suggest_commands", True)
+        if isinstance(suggest, bool):
+            return suggest
+        # Handle string representations
+        return str(suggest).lower() not in ("false", "no", "0", "off")
+    return True
+
+
 def get_model_config(project_name: str = "") -> dict:
     """Get model configuration from config.yaml with per-project overrides.
 

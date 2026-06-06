@@ -95,6 +95,13 @@ interval_seconds: 300
 # Faster response, lower cost, but simpler answers
 fast_reply: false
 
+# Chat settings
+# chat:
+#   # Suggest matching slash commands from natural language (default: true)
+#   # When a user's conversational message maps to a slash command, the chat will
+#   # suggest it (e.g. "That sounds like /resume_recurring — want me to queue it?")
+#   suggest_commands: true
+
 # Debug mode — write detailed mission execution logs to .koan-debug.log
 # Use `tail -f .koan-debug.log` to watch dispatch decisions, commands, and errors
 # debug: false

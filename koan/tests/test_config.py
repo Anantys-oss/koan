@@ -1182,3 +1182,59 @@ class TestThinkingConfig:
         from app.config import should_enable_thinking
         with _mock_config({"thinking": {"enabled": True, "min_mode": "deep"}}):
             assert should_enable_thinking("unknown", tier="critical") is False
+
+
+# --- get_chat_suggest_commands_enabled ---
+
+
+class TestGetChatSuggestCommandsEnabled:
+    def test_default_enabled(self):
+        """By default, chat command suggestions are enabled."""
+        from app.config import get_chat_suggest_commands_enabled
+
+        with _mock_config({}):
+            assert get_chat_suggest_commands_enabled() is True
+
+    def test_explicitly_enabled(self):
+        """When chat.suggest_commands is true, suggestions are enabled."""
+        from app.config import get_chat_suggest_commands_enabled
+
+        with _mock_config({"chat": {"suggest_commands": True}}):
+            assert get_chat_suggest_commands_enabled() is True
+
+    def test_explicitly_disabled(self):
+        """When chat.suggest_commands is false, suggestions are disabled."""
+        from app.config import get_chat_suggest_commands_enabled
+
+        with _mock_config({"chat": {"suggest_commands": False}}):
+            assert get_chat_suggest_commands_enabled() is False
+
+    def test_string_values_disabled(self):
+        """String representations of false disable suggestions."""
+        from app.config import get_chat_suggest_commands_enabled
+
+        for value in ["false", "False", "FALSE", "no", "No", "0", "off"]:
+            with _mock_config({"chat": {"suggest_commands": value}}):
+                assert get_chat_suggest_commands_enabled() is False, f"Failed for value: {value}"
+
+    def test_string_values_enabled(self):
+        """String representations of true enable suggestions."""
+        from app.config import get_chat_suggest_commands_enabled
+
+        for value in ["true", "True", "yes", "1", "on"]:
+            with _mock_config({"chat": {"suggest_commands": value}}):
+                assert get_chat_suggest_commands_enabled() is True, f"Failed for value: {value}"
+
+    def test_no_chat_section(self):
+        """When chat section doesn't exist, defaults to True."""
+        from app.config import get_chat_suggest_commands_enabled
+
+        with _mock_config({}):
+            assert get_chat_suggest_commands_enabled() is True
+
+    def test_non_dict_chat_config(self):
+        """When chat is not a dict, defaults to True."""
+        from app.config import get_chat_suggest_commands_enabled
+
+        with _mock_config({"chat": "invalid"}):
+            assert get_chat_suggest_commands_enabled() is True
