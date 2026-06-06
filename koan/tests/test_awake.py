@@ -796,7 +796,8 @@ class TestHandleChat:
              patch("app.awake.PROJECT_PATH", ""), \
              patch("app.awake.CONVERSATION_HISTORY_FILE", tmp_path / "history.jsonl"), \
              patch("app.awake.SOUL", ""), \
-             patch("app.awake.SUMMARY", ""):
+             patch("app.awake.SUMMARY", ""), \
+             patch("app.awake._classify_intent", return_value=None):
             handle_chat("hi")
         mock_run.assert_called_once()
 
@@ -1311,7 +1312,7 @@ class TestHandleMessage:
     @patch("app.awake._run_in_worker")
     def test_dispatches_chat(self, mock_worker):
         handle_message("how are you?")
-        mock_worker.assert_called_once_with(handle_chat, "how are you?")
+        mock_worker.assert_called_once_with(handle_chat, "how are you?", None)
 
     @patch("app.awake.handle_command")
     @patch("app.awake.handle_mission")
@@ -1491,7 +1492,7 @@ class TestMainLoop:
             _bridge_loop()
         mock_config.assert_called_once()
         mock_updates.assert_called_once_with(None)
-        mock_handle.assert_called_once_with("hello")
+        mock_handle.assert_called_once_with("hello", self.TEST_CHAT_ID)
         mock_flush.assert_called_once()
         mock_heartbeat.assert_called()
 
@@ -1613,7 +1614,7 @@ class TestMainLoop:
         # Must reach sleep() (StopIteration), not raise UnboundLocalError.
         with pytest.raises(StopIteration):
             _bridge_loop()
-        mock_handle.assert_called_once_with("/resume")
+        mock_handle.assert_called_once_with("/resume", self.MATRIX_ROOM_ID)
 
     @patch("app.awake._check_group_chat_mode")
     @patch("app.messaging.get_messaging_provider")
@@ -1639,7 +1640,7 @@ class TestMainLoop:
         ]
         with pytest.raises(StopIteration):
             _bridge_loop()
-        mock_handle.assert_called_once_with("hi from matrix")
+        mock_handle.assert_called_once_with("hi from matrix", self.MATRIX_ROOM_ID)
         mock_flush.assert_called_once()
         mock_heartbeat.assert_called()
 
@@ -2063,6 +2064,7 @@ class TestChatLiteRetryErrors:
              patch("app.awake.SOUL", ""), \
              patch("app.awake.SUMMARY", ""), \
              patch("app.awake.CHAT_TIMEOUT", 180), \
+             patch("app.awake._classify_intent", return_value=None), \
              patch("app.awake.time.sleep"):
             handle_chat("complex question")
         assert "timeout" in mock_send.call_args[0][0].lower()
@@ -2088,6 +2090,7 @@ class TestChatLiteRetryErrors:
              patch("app.awake.SOUL", ""), \
              patch("app.awake.SUMMARY", ""), \
              patch("app.awake.CHAT_TIMEOUT", 180), \
+             patch("app.awake._classify_intent", return_value=None), \
              patch("app.awake.time.sleep") as mock_sleep:
             handle_chat("complex question")
         mock_sleep.assert_called_once_with(4)
@@ -2113,6 +2116,7 @@ class TestChatLiteRetryErrors:
              patch("app.awake.SOUL", ""), \
              patch("app.awake.SUMMARY", ""), \
              patch("app.awake.CHAT_TIMEOUT", 180), \
+             patch("app.awake._classify_intent", return_value=None), \
              patch("app.awake.time.sleep"):
             handle_chat("complex question")
         # Second call (lite retry) should use timeout=90 (180//2)
@@ -3145,7 +3149,7 @@ class TestBridgeExceptionResilience:
         # Should stop at StopIteration (time.sleep), NOT at RuntimeError
         with pytest.raises(StopIteration):
             _bridge_loop()
-        mock_handle.assert_called_once_with("/bad")
+        mock_handle.assert_called_once_with("/bad", self.TEST_CHAT_ID)
         # Error notification sent to user
         mock_send.assert_called_once()
         assert "RuntimeError" in mock_send.call_args[0][0]

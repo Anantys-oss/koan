@@ -49,6 +49,10 @@ You are an intent classifier. Given a user message and a list of available slash
 
 {COMMANDS_LIST}
 
+## User message to classify
+
+{USER_MESSAGE}
+
 ---
 
 **Remember:** Only return valid JSON. Never wrap in markdown code blocks. Return ONLY the JSON object, nothing else.

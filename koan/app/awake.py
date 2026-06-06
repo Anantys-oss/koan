@@ -569,13 +569,16 @@ def _classify_intent(text: str) -> Optional[dict]:
         chat_skill_dir,
         "intent_route",
         COMMANDS_LIST=commands_list,
+        USER_MESSAGE=text,
     )
 
     cmd = build_full_command(
         prompt=prompt,
         allowed_tools=[],  # No tools for intent classification
         model=models["lightweight"],
-        fallback=models["fallback"],
+        # No fallback: classification is a trivial task that haiku handles
+        # well, and any failure degrades gracefully to normal chat (None).
+        # A sonnet fallback would only add latency and risk the timeout.
         max_turns=1,
     )
 
@@ -584,7 +587,7 @@ def _classify_intent(text: str) -> Optional[dict]:
             cmd,
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=30,
             cwd=str(KOAN_ROOT),
         )
         if result.returncode != 0:
