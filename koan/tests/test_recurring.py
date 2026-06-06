@@ -15,6 +15,7 @@ from app.recurring import (
     format_recurring_list,
     is_due,
     check_and_inject,
+    force_run,
     parse_at_time,
     parse_interval,
     format_interval,
@@ -887,3 +888,108 @@ class TestIsDueWithDays:
         assert is_due(mission, saturday_later) is False
         monday = datetime(2026, 4, 13, 10, 0)  # Monday
         assert is_due(mission, monday) is True
+
+
+# --- force_run ---
+
+
+class TestForceRun:
+    def _setup_missions(self, tmp_path):
+        missions_path = tmp_path / "missions.md"
+        missions_path.write_text(
+            "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n\n"
+        )
+        return missions_path
+
+    def test_force_run_single_by_number(self, tmp_path):
+        missions_path = self._setup_missions(tmp_path)
+        recurring_path = tmp_path / "recurring.json"
+        add_recurring(recurring_path, "daily", "task 1")
+        add_recurring(recurring_path, "daily", "task 2")
+
+        now = datetime(2026, 2, 3, 10, 0)
+        result = force_run(recurring_path, missions_path, identifier="1", now=now)
+
+        assert len(result) == 1
+        assert "task 1" in result[0]
+        missions_content = missions_path.read_text()
+        assert "task 1" in missions_content
+        assert "task 2" not in missions_content
+
+    def test_force_run_single_by_keyword(self, tmp_path):
+        missions_path = self._setup_missions(tmp_path)
+        recurring_path = tmp_path / "recurring.json"
+        add_recurring(recurring_path, "daily", "check emails")
+
+        now = datetime(2026, 2, 3, 10, 0)
+        result = force_run(recurring_path, missions_path, identifier="check", now=now)
+
+        assert len(result) == 1
+        assert "check emails" in result[0]
+
+    def test_force_run_all_enabled(self, tmp_path):
+        missions_path = self._setup_missions(tmp_path)
+        recurring_path = tmp_path / "recurring.json"
+        add_recurring(recurring_path, "daily", "task 1")
+        add_recurring(recurring_path, "daily", "task 2")
+
+        now = datetime(2026, 2, 3, 10, 0)
+        result = force_run(recurring_path, missions_path, identifier=None, now=now)
+
+        assert len(result) == 2
+        missions_content = missions_path.read_text()
+        assert "task 1" in missions_content
+        assert "task 2" in missions_content
+
+    def test_force_run_skips_disabled(self, tmp_path):
+        missions_path = self._setup_missions(tmp_path)
+        recurring_path = tmp_path / "recurring.json"
+        add_recurring(recurring_path, "daily", "task 1")
+        add_recurring(recurring_path, "daily", "task 2")
+        toggle_recurring(recurring_path, "1", enabled=False)
+
+        now = datetime(2026, 2, 3, 10, 0)
+        result = force_run(recurring_path, missions_path, identifier=None, now=now)
+
+        # Only task 2 should be injected (task 1 is disabled)
+        assert len(result) == 1
+        assert "task 2" in result[0]
+
+    def test_force_run_ignores_disabled_when_specific(self, tmp_path):
+        missions_path = self._setup_missions(tmp_path)
+        recurring_path = tmp_path / "recurring.json"
+        add_recurring(recurring_path, "daily", "task 1")
+        toggle_recurring(recurring_path, "1", enabled=False)
+
+        now = datetime(2026, 2, 3, 10, 0)
+        result = force_run(recurring_path, missions_path, identifier="1", now=now)
+
+        # Task 1 should be injected even though it's disabled
+        assert len(result) == 1
+        assert "task 1" in result[0]
+
+    def test_force_run_updates_last_run(self, tmp_path):
+        missions_path = self._setup_missions(tmp_path)
+        recurring_path = tmp_path / "recurring.json"
+        add_recurring(recurring_path, "daily", "task 1")
+
+        now = datetime(2026, 2, 3, 10, 0)
+        force_run(recurring_path, missions_path, identifier="1", now=now)
+
+        missions = load_recurring(recurring_path)
+        assert missions[0]["last_run"] == "2026-02-03T10:00:00"
+
+    def test_force_run_empty_list(self, tmp_path):
+        missions_path = self._setup_missions(tmp_path)
+        recurring_path = tmp_path / "recurring.json"
+
+        with pytest.raises(ValueError, match="No recurring missions"):
+            force_run(recurring_path, missions_path, identifier="1")
+
+    def test_force_run_invalid_identifier(self, tmp_path):
+        missions_path = self._setup_missions(tmp_path)
+        recurring_path = tmp_path / "recurring.json"
+        add_recurring(recurring_path, "daily", "task 1")
+
+        with pytest.raises(ValueError):
+            force_run(recurring_path, missions_path, identifier="nonexistent")
