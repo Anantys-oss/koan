@@ -1015,12 +1015,13 @@ def main_loop():
             log("koan", f"Killing {len(_live_sessions)} active parallel session(s) on shutdown")
             try:
                 from app.session_manager import kill_session
+                registry = _get_session_registry(instance)
                 for _s in list(_live_sessions.values()):
                     try:
-                        registry = _get_session_registry(instance)
                         kill_session(_s, registry)
                     except Exception as _ke:
                         log("error", f"kill_session error: {_ke}")
+                    registry.remove(_s.id)
                 _live_sessions.clear()
             except Exception as e:
                 log("error", f"parallel session cleanup error: {e}")
@@ -1369,7 +1370,7 @@ def _parallel_reap_sessions(
             )
         except Exception as e:
             log("error", f"[parallel] post-mission failed for {session.id}: {e}")
-            post = {"success": False, "quota_exhausted": False}
+            post = {"success": False, "quota_exhausted": True}
 
         # Persist missions.md state transition via locked read-modify-write
         try:
@@ -1398,10 +1399,13 @@ def _parallel_reap_sessions(
                 log("error", f"[parallel] dead-letter write also failed: {dle}")
 
         # End-of-mission notification
-        _notify_mission_end(
-            instance, session.project_name, run_num, max_runs,
-            result.exit_code, session.mission_text,
-        )
+        try:
+            _notify_mission_end(
+                instance, session.project_name, run_num, max_runs,
+                result.exit_code, session.mission_text,
+            )
+        except Exception as e:
+            log("error", f"[parallel] notification failed for {session.id}: {e}")
 
         if post.get("quota_exhausted"):
             quota_hit = True

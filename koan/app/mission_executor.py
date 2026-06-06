@@ -432,7 +432,45 @@ def _run_iteration(
     atomic_write = _run.atomic_write
 
     run_num = count + 1
-    _run.set_status(koan_root, f"Run {run_num}/{max_runs} — preparing")
+
+    # --- Parallel session reap (Phase 1) ---
+    # Poll any active parallel sessions and process completions before planning
+    # the next iteration.  Skipped when max_parallel_sessions == 1 (default) so
+    # there is zero overhead on single-slot installations.
+    _reap_failed = False
+    try:
+        from app.session_manager import get_max_parallel_sessions
+        _max_par = get_max_parallel_sessions()
+    except Exception as e:
+        _run.log("error", f"[parallel] Could not read max_parallel_sessions: {e}")
+        _max_par = 1
+
+    if _max_par > 1:
+        try:
+            _run._parallel_reap_sessions(instance, koan_root, run_num, max_runs)
+        except Exception as e:
+            _reap_failed = True
+            log("error", f"[parallel] Reap phase failed — killing sessions as circuit breaker: {e}")
+            for _cb_session in list(_run._live_sessions.values()):
+                try:
+                    from app.session_manager import kill_session as _kill
+                    registry = _run._get_session_registry(instance)
+                    _kill(_cb_session, registry)
+                except Exception as _ke:
+                    log("error", f"[parallel] circuit-breaker kill failed for {_cb_session.id}: {_ke}")
+                import contextlib
+                with contextlib.suppress(Exception):
+                    _run._get_session_registry(instance).remove(_cb_session.id)
+            _run._live_sessions.clear()
+
+    # Build status prefix that includes slot utilisation when parallel is active
+    if _max_par > 1:
+        _active_count = len(_run._live_sessions)
+        _status_prefix = f"[{_active_count}/{_max_par} slots] Run {run_num}/{max_runs}"
+    else:
+        _status_prefix = f"Run {run_num}/{max_runs}"
+
+    _run.set_status(koan_root, f"{_status_prefix} — preparing")
 
     # Write run-loop heartbeat so external monitors can detect a hung agent
     from app.health_check import write_run_heartbeat
@@ -713,6 +751,38 @@ def _run_iteration(
             log("warning", f"Dedup guard error (proceeding anyway): {e}")
             # Don't skip — running a mission once extra is cheaper than
             # silently dropping it every iteration.
+
+    # --- Parallel dispatch (Phase 2) ---
+    # When max_parallel_sessions > 1 and the planned action is a regular
+    # mission (not a skill command), spawn a parallel session instead of
+    # running sequentially.  Skill-dispatched missions ("/rebase", "/plan",
+    # etc.) continue through the existing sequential path because they rely
+    # on git prep and specialised post-mission handling in _handle_skill_dispatch.
+    if (
+        action == "mission"
+        and mission_title
+        and _max_par > 1
+        and not _reap_failed
+    ):
+        from app.skill_dispatch import is_skill_mission
+        if not is_skill_mission(mission_title):
+            dispatched = _run._parallel_dispatch_sessions(
+                primary_mission=mission_title,
+                primary_project=project_name,
+                primary_project_path=project_path,
+                instance=instance,
+                koan_root=koan_root,
+                run_num=run_num,
+                max_runs=max_runs,
+                autonomous_mode=autonomous_mode,
+                projects=projects,
+                last_project=last_project,
+            )
+            if dispatched:
+                _run._commit_instance(instance)
+                return True  # parallel session(s) spawned — productive iteration
+            # Fall through to sequential path if dispatch produced nothing
+            # (e.g., all slots occupied by same-project guard)
 
     # Set project state
     from app.signals import PROJECT_FILE
