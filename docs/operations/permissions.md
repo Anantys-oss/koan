@@ -24,17 +24,17 @@ If a mission targets a workspace project other than Kōan, or if it reads Kōan 
 
 If you want to author missions that improve Kōan's own code (fixing bugs in the bridge, adding skills, etc.), you have two options:
 
-#### Option 1: Skip permissions (simple, per-mission)
+#### Option 1: Skip permissions globally (simple)
 
-In your mission text, add the `[skip_permissions]` tag:
+Set `skip_permissions: true` in `instance/config.yaml`:
 
+```yaml
+skip_permissions: true
 ```
-mission: [skip_permissions] add a new core skill for X
-```
 
-This tells the agent loop to run Claude without the permission dialog. Useful for one-off tasks where you trust the content.
+This adds `--dangerously-skip-permissions` to the Claude CLI invocation (see `get_skip_permissions()` in `config.py`), so the agent loop runs Claude without the permission dialog. Useful when you trust all mission content.
 
-**Default:** `skip_permissions: false` (enabled by default is not recommended for security).
+**Default:** `skip_permissions: false` (disabling permissions is not recommended for security; prefer the allowlist in Option 2).
 
 #### Option 2: Allowlist `instance/` files (recommended, permanent)
 

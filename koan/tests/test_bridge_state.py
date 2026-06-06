@@ -242,6 +242,16 @@ class TestModuleLevelConstants:
 class TestPendingActionState:
     """Tests for pending action confirmation state."""
 
+    @pytest.fixture(autouse=True)
+    def _clear_pending(self):
+        """Reset module-level pending-action store between tests."""
+        import app.bridge_state as bs
+        with bs._pending_actions_lock:
+            bs._pending_actions.clear()
+        yield
+        with bs._pending_actions_lock:
+            bs._pending_actions.clear()
+
     def test_set_and_get_pending_action(self):
         """Can store and retrieve a pending action."""
         import app.bridge_state as bs

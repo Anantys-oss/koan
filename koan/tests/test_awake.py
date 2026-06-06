@@ -3688,6 +3688,16 @@ class TestIntentClassification:
 class TestHandleChatIntentRouting:
     """Test intent routing and confirmation flow in handle_chat."""
 
+    @pytest.fixture(autouse=True)
+    def _clear_pending(self):
+        """Reset module-level pending-action store between tests."""
+        import app.bridge_state as bs
+        with bs._pending_actions_lock:
+            bs._pending_actions.clear()
+        yield
+        with bs._pending_actions_lock:
+            bs._pending_actions.clear()
+
     def test_confirmation_with_pending_action(self, tmp_path, monkeypatch):
         """When user confirms, pending action is dispatched via handle_command."""
         from app.awake import handle_chat
@@ -3733,24 +3743,17 @@ class TestHandleChatIntentRouting:
                     mock_handle_cmd.assert_not_called()
                     assert get_pending_action(chat_id) is None
 
-    def test_no_pending_action_confirmation_ignored(self):
-        """Confirmation without pending action is treated as normal chat."""
+    def test_no_pending_action_confirmation_gives_feedback(self):
+        """Confirmation without pending action sends feedback, not normal chat."""
         from app.awake import handle_chat
-        import json
-
-        # Mock intent classification to return None (will fall through to normal chat)
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = json.dumps({
-            "actionable": False,
-            "command": None,
-            "confidence": 0.0,
-            "rationale": "Not an actionable intent",
-        })
 
         with patch("app.awake.save_conversation_message"):
-            with patch("app.awake.send_telegram"):
-                with patch("app.awake._classify_intent", return_value=None):
-                    with patch("app.cli_exec.run_cli", return_value=mock_result):
-                        # Should fall through to normal chat path
+            with patch("app.awake.send_telegram") as mock_send:
+                with patch("app.awake._classify_intent") as mock_classify:
+                    with patch("app.cli_exec.run_cli") as mock_run:
                         handle_chat("yes", "test_chat")
+                        # Feedback sent, no classifier/chat CLI invocation
+                        mock_send.assert_called_once()
+                        assert "pending" in mock_send.call_args[0][0].lower()
+                        mock_classify.assert_not_called()
+                        mock_run.assert_not_called()

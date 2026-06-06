@@ -375,17 +375,39 @@ def handle_chat(text: str, chat_id: Optional[str] = None):
     # Save user message to history
     save_conversation_message(CONVERSATION_HISTORY_FILE, "user", text)
 
+    # Scan for prompt injection — warn-only (never block chat; tools are read-only).
+    # Runs BEFORE the confirmation/intent shortcuts so an injected "yes" or a
+    # crafted actionable phrase cannot skip the guard entirely (review warning #6).
+    from app.prompt_guard import scan_mission_text
+    from app.config import get_prompt_guard_config
+    from app.command_handlers import quarantine_mission
+
+    guard_config = get_prompt_guard_config()
+    if guard_config["enabled"]:
+        guard_result = scan_mission_text(text)
+        if guard_result.blocked:
+            log("guard", f"WARNING chat: {guard_result.reason} | {text[:100]}")
+            quarantine_mission(text, guard_result.reason, source="telegram-chat")
+
     # --- Confirmation flow: check if user is confirming or rejecting a pending action ---
     if _is_confirmation(text) or _is_rejection(text):
         pending = get_pending_action(chat_id)
         if pending:
             if _is_confirmation(text):
-                # User confirmed — dispatch the command
-                clear_pending_action(chat_id)
-                log("intent", f"Confirmed: {pending['command']}")
-                # Dispatch via command_handlers (the safe path that validates everything)
+                # User confirmed — dispatch the command. Keep the pending action
+                # until dispatch succeeds so a failure can be retried (warning #5).
+                command = pending["command"]
+                log("intent", f"Confirmed: {command}")
                 from app.command_handlers import handle_command
-                handle_command(pending["command"])
+                try:
+                    handle_command(command)
+                except Exception as e:
+                    log("error", f"Confirmed command failed: {command} | {e}")
+                    err = f"⚠️ Couldn't run `{command}`: {e}"
+                    send_telegram(err)
+                    save_conversation_message(CONVERSATION_HISTORY_FILE, "assistant", err)
+                    return
+                clear_pending_action(chat_id)
                 return
             else:  # Rejection
                 # User rejected — clear and acknowledge
@@ -393,27 +415,47 @@ def handle_chat(text: str, chat_id: Optional[str] = None):
                 send_telegram("❌ Cancelled.")
                 save_conversation_message(CONVERSATION_HISTORY_FILE, "assistant", "❌ Cancelled.")
                 return
+        elif _is_confirmation(text):
+            # Confirmation word with nothing pending (e.g. expired) — give feedback
+            # instead of silently routing "yes" through normal chat (Phase 1).
+            msg = "Nothing pending to confirm."
+            send_telegram(msg)
+            save_conversation_message(CONVERSATION_HISTORY_FILE, "assistant", msg)
+            return
 
     # --- Intent classification: check if this looks like an actionable request ---
     # Cheap pre-filter first: only pay the ~5-10s classifier cold-start when the
     # message actually mentions a known command keyword. Plain chat skips it.
     intent = _classify_intent(text) if _mentions_known_command(text) else None
     if intent and intent.get("actionable") and intent.get("command"):
-        confidence = intent.get("confidence", 0)
-        # High-confidence, low-risk commands: execute without confirmation
-        # Risk assessment: /status, /list, /show are safe; anything else needs confirmation
-        safe_commands = {"/status", "/list", "/show", "/help", "/projects"}
-        command_name = intent["command"].split()[0]  # Extract /command part
-        is_high_confidence = confidence >= 0.7
-        is_safe = any(intent["command"].startswith(sc) for sc in safe_commands)
+        # Absent confidence is treated as non-actionable rather than silently
+        # defaulting to 0 (which would fail every threshold check) (Phase 4).
+        if "confidence" not in intent:
+            log("intent", f"Classifier output missing 'confidence'; ignoring: {intent.get('command')}")
+            intent = None
+        else:
+            confidence = intent["confidence"]
+            # High-confidence, low-risk commands: execute without confirmation.
+            # Risk assessment: /status, /list, /show are safe; else needs confirmation.
+            safe_commands = {"/status", "/list", "/show", "/help", "/projects"}
+            command_name = intent["command"].split()[0]  # Extract /command part
+            is_high_confidence = confidence >= 0.7
+            is_safe = command_name in safe_commands
 
-        if is_high_confidence and is_safe:
-            # Auto-execute safe, high-confidence commands
-            log("intent", f"Auto-executing (high-confidence safe): {intent['command']}")
-            from app.command_handlers import handle_command
-            handle_command(intent["command"])
-            return
+            if is_high_confidence and is_safe:
+                # Auto-execute safe, high-confidence commands
+                log("intent", f"Auto-executing (high-confidence safe): {intent['command']}")
+                from app.command_handlers import handle_command
+                try:
+                    handle_command(intent["command"])
+                except Exception as e:
+                    log("error", f"Auto-execute failed: {intent['command']} | {e}")
+                    err = f"⚠️ Couldn't run `{intent['command']}`: {e}"
+                    send_telegram(err)
+                    save_conversation_message(CONVERSATION_HISTORY_FILE, "assistant", err)
+                return
 
+    if intent and intent.get("actionable") and intent.get("command") and "confidence" in intent:
         # All other actionable commands: propose with confirmation
         store_action = {
             "command": intent["command"],
@@ -425,18 +467,6 @@ def handle_chat(text: str, chat_id: Optional[str] = None):
         save_conversation_message(CONVERSATION_HISTORY_FILE, "assistant", proposal)
         log("intent", f"Proposed: {intent['command']}")
         return
-
-    # Scan for prompt injection — warn-only (never block chat; tools are read-only)
-    from app.prompt_guard import scan_mission_text
-    from app.config import get_prompt_guard_config
-    from app.command_handlers import quarantine_mission
-
-    guard_config = get_prompt_guard_config()
-    if guard_config["enabled"]:
-        guard_result = scan_mission_text(text)
-        if guard_result.blocked:
-            log("guard", f"WARNING chat: {guard_result.reason} | {text[:100]}")
-            quarantine_mission(text, guard_result.reason, source="telegram-chat")
 
     prompt = _build_chat_prompt(text)
     chat_tools_list = get_chat_tools().split(",")
@@ -654,9 +684,13 @@ def _classify_intent(text: str) -> Optional[dict]:
             json_str = text_output[json_start:json_end]
             intent = json_lib.loads(json_str)
             # Validate structure
-            if isinstance(intent, dict) and "actionable" in intent and "confidence" in intent:
+            if isinstance(intent, dict):
+                missing = [k for k in ("actionable", "confidence") if k not in intent]
+                if missing:
+                    log("intent", f"Classifier output missing required fields {missing}; dropping")
+                    return None
                 return intent
-    except (json_lib.JSONDecodeError, subprocess.TimeoutExpired, Exception) as e:
+    except (json_lib.JSONDecodeError, subprocess.TimeoutExpired, OSError) as e:
         log("intent", f"Intent classification error: {e}")
 
     return None
