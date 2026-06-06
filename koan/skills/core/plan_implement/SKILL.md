@@ -13,6 +13,6 @@ commands:
   - name: planimplement
     description: "Queue /plan then /implement for an issue — plan insights feed the implementation"
     usage: "/planimplement <issue-url>"
-    aliases: [planimp, planimpl, planit, plandoit]
+    aliases: [planimp, planimpl, planit, plandoit, doit]
 handler: handler.py
 ---
