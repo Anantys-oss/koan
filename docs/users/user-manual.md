@@ -105,6 +105,16 @@ Just send a regular message — Kōan classifies it automatically. Short convers
 
 **Bare skill shortcut:** if the first word of a plain message is the name (or alias) of a core skill, Kōan treats the whole message as that slash command — `time` runs `/time`, `review <url>` runs `/review <url>`. Only core skills trigger this; custom/instance skills do not. If a common word collides with a skill name and you meant to chat, prefix with `/chat`.
 
+#### Chat Command Suggestions
+
+When you write a message that maps to an existing slash command, Kōan will suggest it:
+
+> "That sounds like a job for `/resume_recurring` — want me to queue it?"
+
+Suggestions are advisory — you always stay in control. If you like the suggestion, send the command; otherwise, Kōan continues the conversation. Suggestions are opt-in and can be disabled via the `chat.suggest_commands: false` config flag.
+
+#### Forcing Chat Mode
+
 If Kōan misclassifies your message, use `/chat` to force chat mode:
 
 **`/chat`** — Force a message to be treated as chat, not a mission.
