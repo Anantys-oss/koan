@@ -103,6 +103,16 @@ By default, Kōan processes one mission at a time. When idle, it picks the next 
 
 Just send a regular message — Kōan classifies it automatically. Short conversational messages get instant replies (chat mode). Task-like messages get queued as missions.
 
+#### Chat Command Suggestions
+
+When you write a message that maps to an existing slash command, Kōan will suggest it:
+
+> "That sounds like a job for `/resume_recurring` — want me to queue it?"
+
+Suggestions are advisory — you always stay in control. If you like the suggestion, send the command; otherwise, Kōan continues the conversation. Suggestions are opt-in and can be disabled via the `chat.suggest_commands: false` config flag.
+
+#### Forcing Chat Mode
+
 If Kōan misclassifies your message, use `/chat` to force chat mode:
 
 **`/chat`** — Force a message to be treated as chat, not a mission.
