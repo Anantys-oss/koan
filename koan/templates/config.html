@@ -2,68 +2,74 @@
 {% block title_suffix %} — Config{% endblock %}
 {% block page_title %}Config{% endblock %}
 {% block content %}
-<p style="color: var(--text-muted); margin-bottom: 1rem;">View and edit instance configuration files.</p>
+<p class="k-body-sm k-text-muted k-mb-4">View and edit instance configuration files.</p>
 
 <!-- Tab bar -->
-<div class="config-tabs" role="tablist">
-    <button class="config-tab active" role="tab" aria-selected="true" data-tab="config-yaml">config.yaml</button>
-    <button class="config-tab" role="tab" aria-selected="false" data-tab="projects-yaml">projects.yaml</button>
+<div class="k-tabs" role="tablist">
+    <button class="k-tab" role="tab" aria-selected="true" data-tab="config-yaml">config.yaml</button>
+    <button class="k-tab" role="tab" aria-selected="false" data-tab="projects-yaml">projects.yaml</button>
 </div>
 
 <!-- config.yaml panel -->
-<div class="config-panel active" id="panel-config-yaml" role="tabpanel">
-    <div class="card" id="section-config-yaml">
-        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:0.75rem; flex-wrap:wrap; gap:0.5rem;">
-            <h2 style="margin:0;">config.yaml</h2>
-            <div style="display:flex; gap:0.5rem; align-items:center;">
-                <span id="config-yaml-status" style="font-size:0.82rem;"></span>
-                <button class="btn-small" id="config-yaml-edit" title="Edit">Edit</button>
-                <button class="btn-small" id="config-yaml-save" style="display:none;">Save</button>
-                <button class="btn-small" id="config-yaml-cancel" style="display:none;">Cancel</button>
+<div class="config-panel active k-mt-4" id="panel-config-yaml" role="tabpanel">
+    <div class="k-card" id="section-config-yaml">
+        <div class="k-card__header">
+            <h2 class="k-card__title">config.yaml</h2>
+            <div class="k-row k-gap-2">
+                <span id="config-yaml-status" class="k-body-sm"></span>
+                <button class="k-btn k-btn--secondary k-btn--sm" id="config-yaml-edit">Edit</button>
+                <button class="k-btn k-btn--primary k-btn--sm" id="config-yaml-save" style="display:none;">Save</button>
+                <button class="k-btn k-btn--ghost k-btn--sm" id="config-yaml-cancel" style="display:none;">Cancel</button>
             </div>
         </div>
         <div id="config-yaml-view">
-            <pre id="config-yaml-pre" class="yaml-highlighted" style="white-space:pre-wrap;margin:0;font-size:0.82rem;tab-size:2;overflow-x:auto;"></pre>
+            <pre id="config-yaml-pre" class="yaml-highlighted"></pre>
         </div>
         <div id="config-yaml-editor" style="display:none;">
-            <textarea id="config-yaml-textarea" style="width:100%;min-height:400px;font-family:var(--font-mono,'Fira Code',monospace);font-size:0.82rem;background:var(--surface-2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:0.75rem;resize:vertical;tab-size:2;" spellcheck="false"></textarea>
-            <div id="config-yaml-error" style="display:none;color:var(--danger);font-size:0.82rem;margin-top:0.5rem;padding:0.5rem;background:var(--surface-2);border-radius:4px;font-family:var(--font-mono,'Fira Code',monospace);"></div>
+            <textarea id="config-yaml-textarea" class="k-textarea k-code" spellcheck="false" style="min-height:400px;tab-size:2;"></textarea>
+            <div id="config-yaml-error" class="k-alert k-alert--danger k-mt-2" style="display:none;">
+                <div class="k-alert__body k-code" id="config-yaml-error-text"></div>
+            </div>
         </div>
     </div>
 </div>
 
 <!-- projects.yaml panel -->
-<div class="config-panel" id="panel-projects-yaml" role="tabpanel" style="display:none;">
-    <div class="card" id="section-projects-yaml">
-        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:0.75rem; flex-wrap:wrap; gap:0.5rem;">
-            <h2 style="margin:0;">projects.yaml</h2>
-            <div style="display:flex; gap:0.5rem; align-items:center;">
-                <span id="projects-yaml-status" style="font-size:0.82rem;"></span>
-                <button class="btn-small" id="projects-yaml-edit" title="Edit">Edit</button>
-                <button class="btn-small" id="projects-yaml-save" style="display:none;">Save</button>
-                <button class="btn-small" id="projects-yaml-cancel" style="display:none;">Cancel</button>
+<div class="config-panel k-mt-4" id="panel-projects-yaml" role="tabpanel" style="display:none;">
+    <div class="k-card" id="section-projects-yaml">
+        <div class="k-card__header">
+            <h2 class="k-card__title">projects.yaml</h2>
+            <div class="k-row k-gap-2">
+                <span id="projects-yaml-status" class="k-body-sm"></span>
+                <button class="k-btn k-btn--secondary k-btn--sm" id="projects-yaml-edit">Edit</button>
+                <button class="k-btn k-btn--primary k-btn--sm" id="projects-yaml-save" style="display:none;">Save</button>
+                <button class="k-btn k-btn--ghost k-btn--sm" id="projects-yaml-cancel" style="display:none;">Cancel</button>
             </div>
         </div>
         <div id="projects-yaml-view">
-            <pre id="projects-yaml-pre" class="yaml-highlighted" style="white-space:pre-wrap;margin:0;font-size:0.82rem;tab-size:2;overflow-x:auto;"></pre>
+            <pre id="projects-yaml-pre" class="yaml-highlighted"></pre>
         </div>
         <div id="projects-yaml-editor" style="display:none;">
-            <textarea id="projects-yaml-textarea" style="width:100%;min-height:300px;font-family:var(--font-mono,'Fira Code',monospace);font-size:0.82rem;background:var(--surface-2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:0.75rem;resize:vertical;tab-size:2;" spellcheck="false"></textarea>
-            <div id="projects-yaml-error" style="display:none;color:var(--danger);font-size:0.82rem;margin-top:0.5rem;padding:0.5rem;background:var(--surface-2);border-radius:4px;font-family:var(--font-mono,'Fira Code',monospace);"></div>
+            <textarea id="projects-yaml-textarea" class="k-textarea k-code" spellcheck="false" style="min-height:300px;tab-size:2;"></textarea>
+            <div id="projects-yaml-error" class="k-alert k-alert--danger k-mt-2" style="display:none;">
+                <div class="k-alert__body k-code" id="projects-yaml-error-text"></div>
+            </div>
         </div>
     </div>
 </div>
 
 <!-- Restart -->
-<div class="card" id="section-restart">
-    <div style="display:flex; align-items:center; justify-content:space-between;">
+<div class="k-card k-mt-4" id="section-restart">
+    <div class="k-row-between">
         <div>
-            <h2 style="margin:0 0 0.25rem 0;">Service Control</h2>
-            <p style="color:var(--text-muted);margin:0;font-size:0.85rem;">Restart the main agent service to apply configuration changes.</p>
+            <h2 class="k-card__title">Service Control</h2>
+            <p class="k-body-sm k-text-muted k-mt-2">Restart the main agent service to apply configuration changes.</p>
         </div>
-        <button class="btn-small" id="restart-btn" style="background:var(--warning);color:#000;font-weight:600;">Restart Service</button>
+        <button class="k-btn k-btn--sm" id="restart-btn" style="background:var(--warning);color:var(--text-inverse);font-weight:var(--fw-semibold);">Restart Service</button>
     </div>
-    <div id="restart-status" style="display:none;margin-top:0.75rem;font-size:0.85rem;padding:0.5rem;border-radius:4px;"></div>
+    <div id="restart-status" class="k-alert k-mt-3" style="display:none;">
+        <div class="k-alert__body" id="restart-status-text"></div>
+    </div>
 </div>
 {% endblock %}
 
@@ -76,7 +82,7 @@
     /* ------------------------------------------------------------------ */
     /* Tab switching                                                       */
     /* ------------------------------------------------------------------ */
-    var tabs = document.querySelectorAll('.config-tab');
+    var tabs = document.querySelectorAll('.k-tab');
     tabs.forEach(function (tab) {
         tab.addEventListener('click', function () {
             var target = this.getAttribute('data-tab');
@@ -102,11 +108,9 @@
     function highlightYaml(text) {
         if (!text) return '';
         return text.split('\n').map(function (line) {
-            // Comment lines
             if (/^\s*#/.test(line)) {
                 return '<span class="hl-comment">' + escHtml(line) + '</span>';
             }
-            // Key: value lines
             var m = line.match(/^(\s*)([\w][\w.\-]*)\s*(:)(.*)/);
             if (m) {
                 var indent = escHtml(m[1]);
@@ -115,12 +119,10 @@
                 var val = highlightValue(m[4]);
                 return indent + key + colon + val;
             }
-            // List items
             var listMatch = line.match(/^(\s*)(- )(.*)/);
             if (listMatch) {
                 var li = escHtml(listMatch[1]) + '<span class="hl-list">- </span>';
                 var rest = listMatch[3];
-                // list item with key:value
                 var kvMatch = rest.match(/^([\w][\w.\-]*)\s*(:)(.*)/);
                 if (kvMatch) {
                     li += '<span class="hl-key">' + escHtml(kvMatch[1]) + '</span>';
@@ -138,27 +140,21 @@
     function highlightValue(val) {
         if (!val || !val.trim()) return escHtml(val);
         var trimmed = val.trim();
-        // <redacted>
         if (trimmed === '<redacted>') {
             return escHtml(val.substring(0, val.indexOf(trimmed))) + '<span class="hl-redacted">' + escHtml(trimmed) + '</span>';
         }
-        // Booleans
         if (/^(true|false|yes|no|on|off)$/i.test(trimmed)) {
             return escHtml(val.substring(0, val.indexOf(trimmed))) + '<span class="hl-bool">' + escHtml(trimmed) + '</span>';
         }
-        // Numbers
         if (/^-?\d+(\.\d+)?$/.test(trimmed)) {
             return escHtml(val.substring(0, val.indexOf(trimmed))) + '<span class="hl-num">' + escHtml(trimmed) + '</span>';
         }
-        // Null
         if (/^(null|~)$/i.test(trimmed)) {
             return escHtml(val.substring(0, val.indexOf(trimmed))) + '<span class="hl-null">' + escHtml(trimmed) + '</span>';
         }
-        // Quoted strings
         if (/^["'].*["']$/.test(trimmed)) {
             return escHtml(val.substring(0, val.indexOf(trimmed))) + '<span class="hl-string">' + escHtml(trimmed) + '</span>';
         }
-        // Inline comment
         var commentIdx = val.indexOf(' #');
         if (commentIdx > 0) {
             return '<span class="hl-value">' + escHtml(val.substring(0, commentIdx)) + '</span><span class="hl-comment">' + escHtml(val.substring(commentIdx)) + '</span>';
@@ -190,7 +186,7 @@
     function renderYaml(prefix, content, label) {
         var pre = document.getElementById(prefix + '-pre');
         if (content === null) {
-            pre.innerHTML = '<span style="color:var(--text-muted)">' + escHtml(label) + ' not found.</span>';
+            pre.innerHTML = '<span class="k-text-muted">' + escHtml(label) + ' not found.</span>';
         } else {
             pre.innerHTML = highlightYaml(content);
         }
@@ -207,15 +203,12 @@
         var editorEl = document.getElementById(prefix + '-editor');
         var textarea = document.getElementById(prefix + '-textarea');
         var errorEl = document.getElementById(prefix + '-error');
+        var errorText = document.getElementById(prefix + '-error-text');
         var statusEl = document.getElementById(prefix + '-status');
 
         editBtn.addEventListener('click', function () {
             var raw = getContent();
-            if (raw === null) {
-                textarea.value = '';
-            } else {
-                textarea.value = raw;
-            }
+            textarea.value = raw === null ? '' : raw;
             viewEl.style.display = 'none';
             editorEl.style.display = 'block';
             editBtn.style.display = 'none';
@@ -265,19 +258,19 @@
                         editBtn.style.display = '';
                         saveBtn.style.display = 'none';
                         cancelBtn.style.display = 'none';
-                        statusEl.innerHTML = '<span style="color:var(--success);">✓ Saved</span>';
+                        statusEl.innerHTML = '<span class="k-text-success">✓ Saved</span>';
                         setTimeout(function () { statusEl.textContent = ''; }, 3000);
                     } else {
-                        errorEl.textContent = res.data.error || 'Validation failed.';
-                        errorEl.style.display = 'block';
+                        errorText.textContent = res.data.error || 'Validation failed.';
+                        errorEl.style.display = '';
                     }
                 })
                 .catch(function (err) {
                     console.error('Config save failed:', err);
                     saveBtn.disabled = false;
                     saveBtn.textContent = 'Save';
-                    errorEl.textContent = err.message || 'Network error — could not save.';
-                    errorEl.style.display = 'block';
+                    errorText.textContent = err.message || 'Network error — could not save.';
+                    errorEl.style.display = '';
                 });
         });
 
@@ -302,6 +295,7 @@
         if (!confirm('Restart the Kōan agent service?')) return;
         var btn = this;
         var statusEl = document.getElementById('restart-status');
+        var statusText = document.getElementById('restart-status-text');
         btn.disabled = true;
         btn.textContent = 'Restarting…';
         statusEl.style.display = 'none';
@@ -311,23 +305,22 @@
             .then(function (data) {
                 btn.disabled = false;
                 btn.textContent = 'Restart Service';
-                statusEl.style.display = 'block';
+                statusEl.style.display = '';
                 if (data.ok) {
-                    statusEl.style.background = 'var(--surface-2)';
-                    statusEl.style.color = 'var(--success)';
-                    statusEl.textContent = '✓ Restart signal sent. The agent will restart shortly.';
+                    statusEl.className = 'k-alert k-alert--success k-mt-3';
+                    statusText.textContent = '✓ Restart signal sent. The agent will restart shortly.';
                 } else {
-                    statusEl.style.color = 'var(--danger)';
-                    statusEl.textContent = data.error || 'Failed to send restart signal.';
+                    statusEl.className = 'k-alert k-alert--danger k-mt-3';
+                    statusText.textContent = data.error || 'Failed to send restart signal.';
                 }
                 setTimeout(function () { statusEl.style.display = 'none'; }, 8000);
             })
             .catch(function () {
                 btn.disabled = false;
                 btn.textContent = 'Restart Service';
-                statusEl.style.display = 'block';
-                statusEl.style.color = 'var(--danger)';
-                statusEl.textContent = 'Network error — could not restart.';
+                statusEl.style.display = '';
+                statusEl.className = 'k-alert k-alert--danger k-mt-3';
+                statusText.textContent = 'Network error — could not restart.';
             });
     });
 
@@ -347,44 +340,23 @@
 </script>
 
 <style>
-    /* Tab bar */
-    .config-tabs {
-        display: flex;
-        gap: 0;
-        margin-bottom: 1rem;
-        border-bottom: 2px solid var(--border);
-    }
-    .config-tab {
-        background: none;
-        border: none;
-        padding: 0.6rem 1.25rem;
-        font-size: 0.9rem;
-        font-family: var(--font-mono, 'Fira Code', monospace);
-        font-weight: 500;
-        color: var(--text-muted);
-        cursor: pointer;
-        position: relative;
-        bottom: -2px;
-        border-bottom: 2px solid transparent;
-        transition: color 0.15s, border-color 0.15s;
-    }
-    .config-tab:hover {
-        color: var(--text);
-    }
-    .config-tab.active {
-        color: var(--brand);
-        border-bottom-color: var(--brand);
-    }
-
     /* YAML highlighting */
-    .yaml-highlighted { line-height: 1.5; }
+    .yaml-highlighted {
+        white-space: pre-wrap;
+        margin: 0;
+        font-family: var(--font-mono);
+        font-size: var(--fs-code);
+        line-height: var(--lh-relaxed);
+        tab-size: 2;
+        overflow-x: auto;
+    }
     .hl-comment { color: var(--text-muted); font-style: italic; }
-    .hl-key { color: #7eb6ff; font-weight: 500; }
+    .hl-key { color: var(--iris-300); font-weight: var(--fw-medium); }
     .hl-colon { color: var(--text-muted); }
-    .hl-value { color: var(--text); }
-    .hl-string { color: #a8d8a8; }
+    .hl-value { color: var(--text-primary); }
+    .hl-string { color: var(--emerald-400); }
     .hl-bool { color: #d8a8e8; }
-    .hl-num { color: #e8c87e; }
+    .hl-num { color: var(--amber-400); }
     .hl-null { color: #d8a8e8; font-style: italic; }
     .hl-list { color: var(--text-muted); }
     .hl-redacted { color: var(--warning); font-style: italic; }
@@ -395,5 +367,8 @@
     [data-theme="light"] .hl-num { color: #953800; }
     [data-theme="light"] .hl-null { color: #8250df; }
     [data-theme="light"] .hl-redacted { color: #b35900; }
+
+    .config-panel { display: none; }
+    .config-panel.active { display: block; }
 </style>
 {% endblock %}
