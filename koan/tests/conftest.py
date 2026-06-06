@@ -137,7 +137,6 @@ def make_iteration_plan(**overrides):
     plan = {
         "action": "mission",
         "project_name": "testproj",
-        "project_path": "/tmp/testproj",
         "autonomous_mode": "implement",
         "available_pct": 50,
         "display_lines": [],
@@ -147,6 +146,7 @@ def make_iteration_plan(**overrides):
         "recurring_injected": [],
     }
     plan.update(overrides)
+    plan.setdefault("project_path", f"/tmp/{plan['project_name']}")
     return plan
 
 
