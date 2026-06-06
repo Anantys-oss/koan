@@ -138,7 +138,7 @@ def _handle_status(ctx) -> str:
     stop_file = koan_root / ".koan-stop"
 
     pending_count = _count_pending_missions(missions_file)
-    queue_suffix = f" — {pending_count} in queue" if pending_count else ""
+    queue_suffix = f" — {pending_count} in queue" if pending_count else " — queue empty"
 
     if stop_file.exists():
         parts.append("  ⛔ Stopping")

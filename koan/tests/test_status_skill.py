@@ -272,8 +272,8 @@ class TestHandleStatus:
         result = _handle_status(ctx)
         assert "Active — 3 in queue" in result
 
-    def test_active_no_queue_count_when_empty(self, tmp_path):
-        """Active status omits queue count when no pending missions."""
+    def test_active_shows_queue_empty_when_no_pending(self, tmp_path):
+        """Active status shows 'queue empty' when no pending missions."""
         instance = tmp_path / "instance"
         instance.mkdir()
         missions = instance / "missions.md"
@@ -286,8 +286,7 @@ class TestHandleStatus:
         from skills.core.status.handler import _handle_status
         ctx = _make_ctx("status", instance, tmp_path)
         result = _handle_status(ctx)
-        assert "🟢 Active" in result
-        assert "in queue" not in result
+        assert "Active — queue empty" in result
 
     def test_paused_shows_queue_count(self, tmp_path):
         """Paused status shows pending mission count."""
