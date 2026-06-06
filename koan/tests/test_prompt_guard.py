@@ -330,7 +330,7 @@ class TestConfigIntegration:
         with patch("app.config._load_config", return_value={}):
             config = get_prompt_guard_config()
             assert config["enabled"] is True
-            assert config["block_mode"] is False
+            assert config["block_mode"] is True
 
     def test_custom_config(self):
         from app.config import get_prompt_guard_config

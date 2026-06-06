@@ -1294,13 +1294,13 @@ def get_prompt_guard_config() -> dict:
 
     Returns:
         Dict with keys: enabled (bool), block_mode (bool).
-        Defaults: enabled=True, block_mode=False (warn only).
+        Defaults: enabled=True, block_mode=True (reject).
     """
     config = _load_config()
     guard_cfg = config.get("prompt_guard", {})
     return {
         "enabled": guard_cfg.get("enabled", True),
-        "block_mode": guard_cfg.get("block_mode", False),
+        "block_mode": guard_cfg.get("block_mode", True),
     }
 
 

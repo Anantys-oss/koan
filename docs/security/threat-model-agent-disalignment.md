@@ -21,7 +21,10 @@ or adversarial input.
 | **Supply chain** | Low | MCP server or tool returns adversarial content that influences agent actions |
 
 The most realistic threat is **prompt injection** — a crafted mission or Telegram message
-that causes the agent to leak data or execute unintended actions.
+that causes the agent to leak data or execute unintended actions. The `prompt_guard`
+module mitigates this on the input side: it scans incoming missions for suspicious
+patterns and, in block mode (the default), rejects them outright. See
+[prompt-guard.md](prompt-guard.md) for details.
 
 ---
 

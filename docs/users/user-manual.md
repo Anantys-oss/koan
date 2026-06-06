@@ -1187,7 +1187,9 @@ stagnation:
   max_retry_on_stagnation: 3  # Stagnation requeues before marking Failed (0 disables retry)
 
 # Prompt guard (content safety)
-prompt_guard: true            # Enable prompt injection detection
+prompt_guard:
+  enabled: true               # Enable prompt injection detection (default: true)
+  block_mode: true            # true = reject mission (default), false = warn + quarantine
 
 # Output optimizations — caveman directive ("no filler, 3–6 word sentences,
 # direct answers"). ``enabled`` controls the agent loop (default true);

@@ -533,7 +533,7 @@ usage:
 # Complements outbox_scanner (output defense) with input-side defense.
 # prompt_guard:
 #   enabled: true          # Master switch (default: true)
-#   block_mode: false      # false = warn + quarantine, true = reject mission entirely
+#   block_mode: true       # true = reject mission entirely (default), false = warn + quarantine
 
 # Dashboard — web UI for monitoring and interacting with Kōan
 # When enabled, `make start` / `make stop` / `make restart` also manage
