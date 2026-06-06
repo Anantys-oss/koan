@@ -113,6 +113,8 @@ class TestCheckForUpdates:
         def mock_git(args, cwd):
             if args[0] == "fetch":
                 return MagicMock(returncode=0)
+            if args[0] == "rev-parse":  # ref-existence probes resolve
+                return MagicMock(returncode=0)
             if args[0] == "rev-list":
                 return MagicMock(returncode=0, stdout="3\n")
             return MagicMock(returncode=1, stderr="")
@@ -126,6 +128,8 @@ class TestCheckForUpdates:
         def mock_git(args, cwd):
             if args[0] == "fetch":
                 return MagicMock(returncode=0)
+            if args[0] == "rev-parse":
+                return MagicMock(returncode=0)
             if args[0] == "rev-list":
                 return MagicMock(returncode=0, stdout="0\n")
             return MagicMock(returncode=1, stderr="")
@@ -135,6 +139,20 @@ class TestCheckForUpdates:
             result = check_for_updates("/fake/root")
         assert result == 0
 
+    def test_no_remote_default_ref_returns_none(self):
+        """When neither <remote>/main nor <remote>/master exists, skip the
+        check gracefully instead of running an ambiguous rev-list."""
+        def mock_git(args, cwd):
+            if args[0] == "fetch":
+                return MagicMock(returncode=0)
+            # All ref-existence probes fail (no local/remote default branch).
+            return MagicMock(returncode=1, stderr="")
+
+        with patch("app.auto_update.find_upstream_remote", return_value="upstream"), \
+             patch("app.auto_update._run_git", side_effect=mock_git):
+            result = check_for_updates("/fake/root")
+        assert result is None
+
     def test_cache_prevents_rapid_checks(self):
         """Second call within cache window returns 0 without git ops."""
         call_count = 0
@@ -143,6 +161,8 @@ class TestCheckForUpdates:
             nonlocal call_count
             call_count += 1
             if args[0] == "fetch":
+                return MagicMock(returncode=0)
+            if args[0] == "rev-parse":
                 return MagicMock(returncode=0)
             if args[0] == "rev-list":
                 return MagicMock(returncode=0, stdout="5\n")
@@ -155,11 +175,15 @@ class TestCheckForUpdates:
 
         assert first == 5
         assert second == 0  # cached, no git call
-        assert call_count == 2  # only fetch + rev-list from first call
+        # First call: fetch + rev-parse(local main) + rev-parse(remote main)
+        # + rev-list = 4 git ops. Second call is fully cached.
+        assert call_count == 4
 
     def test_rev_list_failure_returns_none(self):
         def mock_git(args, cwd):
             if args[0] == "fetch":
+                return MagicMock(returncode=0)
+            if args[0] == "rev-parse":  # refs resolve; the rev-list itself fails
                 return MagicMock(returncode=0)
             return MagicMock(returncode=1, stderr="bad ref")
 

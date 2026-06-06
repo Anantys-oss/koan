@@ -103,9 +103,21 @@ def check_for_updates(koan_root: str) -> Optional[int]:
                 log("update", f"Fetch failed: {chr(10).join(stderr_lines)}")
             return None
 
-    # Compare local main vs remote main
+    # Compare what we have against the remote's default branch.
+    #
+    # The base ref must actually exist locally: this checkout may be on a
+    # development branch with no local `main`, in
+    # which case `main..<remote>/main` raises "ambiguous argument" and used
+    # to spam the log every cycle. Prefer a local default branch when present,
+    # otherwise fall back to HEAD so the comparison always resolves.
+    base_ref = _resolve_base_ref(koan_path)
+    remote_ref = _resolve_remote_default_ref(koan_path, remote)
+    if remote_ref is None:
+        log("update", f"No {remote}/main or {remote}/master ref — skipping update check")
+        return None
+
     result = _run_git(
-        ["rev-list", "--count", f"main..{remote}/main"],
+        ["rev-list", "--count", f"{base_ref}..{remote_ref}"],
         koan_path,
     )
     if result.returncode != 0:
@@ -116,6 +128,34 @@ def check_for_updates(koan_root: str) -> Optional[int]:
         return int(result.stdout.strip())
     except ValueError:
         return None
+
+
+def _ref_exists(koan_path: Path, ref: str) -> bool:
+    """Return True if the given git ref resolves in the repo."""
+    result = _run_git(["rev-parse", "--verify", "--quiet", ref], koan_path)
+    return result.returncode == 0
+
+
+def _resolve_base_ref(koan_path: Path) -> str:
+    """Return a local ref to compare against the remote default branch.
+
+    Prefers a local ``main`` / ``master`` branch when one exists, otherwise
+    falls back to ``HEAD`` so the comparison resolves even on a checkout
+    (e.g. a development branch) that has no local default branch.
+    """
+    for ref in ("refs/heads/main", "refs/heads/master"):
+        if _ref_exists(koan_path, ref):
+            return ref
+    return "HEAD"
+
+
+def _resolve_remote_default_ref(koan_path: Path, remote: str) -> Optional[str]:
+    """Return the remote's default-branch tracking ref, or None if absent."""
+    for branch in ("main", "master"):
+        ref = f"{remote}/{branch}"
+        if _ref_exists(koan_path, ref):
+            return ref
+    return None
 
 
 def _get_latest_tag(koan_path: Path) -> Optional[str]:

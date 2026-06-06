@@ -210,6 +210,51 @@ class TestListMergedPrs:
         assert forge.list_merged_prs(repo="owner/repo") == []
 
 
+class TestListOpenPrBranches:
+    @patch("app.github.list_open_pr_branches", return_value=["koan/a", "koan/b"])
+    def test_delegates_to_github_helper(self, mock_helper):
+        forge = _make_forge()
+        result = forge.list_open_pr_branches("owner/repo", "bot", cwd="/p")
+        assert result == ["koan/a", "koan/b"]
+        mock_helper.assert_called_once_with("owner/repo", "bot", cwd="/p")
+
+
+class TestFindPrForBranch:
+    @patch("app.github.run_gh")
+    def test_returns_pr_dict(self, mock_run_gh):
+        mock_run_gh.return_value = json.dumps({
+            "number": 7, "state": "OPEN", "isDraft": True,
+            "url": "https://github.com/owner/repo/pull/7",
+            "headRefName": "koan/feat",
+        })
+        forge = _make_forge()
+        pr = forge.find_pr_for_branch("owner/repo", "koan/feat", cwd="/p")
+        assert pr["number"] == 7
+        assert pr["state"] == "OPEN"
+
+    @patch("app.github.run_gh", side_effect=RuntimeError("no PR found"))
+    def test_returns_none_on_error(self, _mock_run_gh):
+        forge = _make_forge()
+        assert forge.find_pr_for_branch("owner/repo", "koan/feat") is None
+
+    @patch("app.github.run_gh", return_value="not-json")
+    def test_returns_none_on_bad_json(self, _mock_run_gh):
+        forge = _make_forge()
+        assert forge.find_pr_for_branch("owner/repo", "koan/feat") is None
+
+
+class TestRepoSlug:
+    @patch("app.github.origin_repo", return_value="owner/repo")
+    def test_delegates_to_origin_repo(self, _mock_origin):
+        forge = _make_forge()
+        assert forge.repo_slug("/p") == "owner/repo"
+
+    @patch("app.github.origin_repo", return_value=None)
+    def test_returns_none_when_unparseable(self, _mock_origin):
+        forge = _make_forge()
+        assert forge.repo_slug("/p") is None
+
+
 # ---------------------------------------------------------------------------
 # Issue operations
 # ---------------------------------------------------------------------------

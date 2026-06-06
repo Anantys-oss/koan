@@ -422,6 +422,27 @@ class TestGetGithubMergedBranches:
         with patch(_RUN_GH_PATH, side_effect=OSError("not found")):
             assert _sync().get_github_merged_branches() == []
 
+    def test_non_github_forge_uses_forge_list_merged(self):
+        """On a non-GitHub forge, merged detection routes through the forge's
+        list_merged_prs (slug resolved from the checkout), still filtered by
+        the agent prefix — never touching the GitHub `gh` path."""
+        forge = MagicMock()
+        forge.name = "gogs"
+        forge.repo_slug.return_value = "alice/repo"
+        forge.list_merged_prs.return_value = ["koan/done", "feature/other"]
+        with patch("app.forge.get_forge", return_value=forge), \
+             patch(_RUN_GH_PATH, side_effect=AssertionError("gh must not be called")):
+            branches = _sync().get_github_merged_branches()
+        assert branches == ["koan/done"]
+        forge.list_merged_prs.assert_called_once_with("alice/repo", cwd="/fake")
+
+    def test_non_github_forge_empty_when_no_slug(self):
+        forge = MagicMock()
+        forge.name = "gogs"
+        forge.repo_slug.return_value = None
+        with patch("app.forge.get_forge", return_value=forge):
+            assert _sync().get_github_merged_branches() == []
+
 
 class TestCleanupWithGithubMerged:
     """Tests for cleanup_merged_branches with github_merged parameter."""

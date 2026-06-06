@@ -1,22 +1,25 @@
 """Forge provider registry — maps type strings to ForgeProvider classes.
 
 Phase 1: GitHub only.
-Phase 2a: GitLabForge will be added here.
-Phase 2b: GiteaForge will be added here.
+Phase 2:  Gogs (self-hosted) added.
+Phase 3a: GitLabForge will be added here.
+Phase 3b: GiteaForge will be added here.
 """
 
 from typing import Type
 
 from app.forge.base import ForgeProvider
 from app.forge.github import GitHubForge
+from app.forge.gogs import GogsForge
 
 
 # Map forge type strings to provider classes.
 # Keys are the values accepted in projects.yaml under `forge:`.
 FORGE_TYPES: dict = {
     "github": GitHubForge,
-    # "gitlab": GitLabForge,   # Phase 2a
-    # "gitea": GiteaForge,     # Phase 2b
+    "gogs": GogsForge,
+    # "gitlab": GitLabForge,   # Phase 3a
+    # "gitea": GiteaForge,     # Phase 3b
 }
 
 DEFAULT_FORGE = "github"

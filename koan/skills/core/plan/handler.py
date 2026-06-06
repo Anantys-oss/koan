@@ -10,10 +10,11 @@ def handle(ctx):
         /plan                              -- usage help
         /plan <idea>                       -- plan for default project
         /plan <project> <idea>             -- plan for a specific project
-        /plan <github-issue-url>           -- iterate on existing issue
+        /plan <github-issue-url>           -- iterate on existing GitHub issue
+        /plan <gogs-issue-url>             -- iterate on existing Gogs issue
 
     Queues a mission that invokes Claude to deep-think the idea,
-    explore the codebase, and post a structured plan as a GitHub issue.
+    explore the codebase, and post a structured plan as a tracker issue.
     """
     args = ctx.args.strip()
 
@@ -22,13 +23,25 @@ def handle(ctx):
             "Usage:\n"
             "  /plan <idea> -- plan for default project\n"
             "  /plan <project> <idea> -- plan for a specific project\n"
-            "  /plan <github-issue-url> -- iterate on an existing issue\n\n"
+            "  /plan <issue-url> -- iterate on an existing issue\n\n"
             "Queues a mission that generates a structured plan with "
             "implementation steps, corner cases, and open questions. "
-            "Posts to GitHub as an issue."
+            "Posts to the tracker as an issue."
         )
 
-    # Mode 1: existing GitHub or Jira issue URL
+    # Mode 1a: Gogs issue URL
+    try:
+        from app.gogs_url_parser import search_issue_url as gogs_search_issue
+        from app.gogs_url_parser import build_issue_url
+        from app.gogs_auth import get_gogs_host
+        owner, repo, issue_number = gogs_search_issue(args)
+        host = get_gogs_host()
+        issue_url = build_issue_url(host, owner, repo, int(issue_number))
+        return _queue_gogs_issue_plan(ctx, owner, repo, issue_number, issue_url)
+    except (ValueError, ImportError):
+        pass
+
+    # Mode 1b: existing GitHub or Jira issue URL
     try:
         owner, repo, issue_number = search_issue_url(args)
         return _queue_issue_plan(ctx, owner, repo, issue_number)
@@ -125,6 +138,20 @@ def _queue_new_plan(ctx, project_name, idea):
     insert_pending_mission(missions_path, mission_entry)
 
     return f"\U0001f9e0 Plan queued: {idea[:100]}{'...' if len(idea) > 100 else ''} (project: {project_label})"
+
+
+def _queue_gogs_issue_plan(ctx, owner, repo, issue_number, issue_url):
+    """Queue a mission to iterate on an existing Gogs issue."""
+    from app.utils import insert_pending_mission
+
+    project_path = _resolve_project_path(repo, fallback=True, owner=owner)
+    project_label = _project_name_for_path(project_path) if project_path else repo
+
+    mission_entry = f"- [project:{project_label}] /plan {issue_url}"
+    missions_path = ctx.instance_dir / "missions.md"
+    insert_pending_mission(missions_path, mission_entry)
+
+    return f"\U0001f4d6 Plan queued for Gogs issue #{issue_number} ({owner}/{repo})"
 
 
 def _queue_issue_plan(ctx, owner, repo, issue_number):

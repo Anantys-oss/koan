@@ -67,6 +67,31 @@ class TestGetForge:
         assert isinstance(forge, GitHubForge)
 
 
+class TestGetForgeForPath:
+    """Tests for the get_forge_for_path() convenience wrapper."""
+
+    def test_derives_project_name_from_basename(self):
+        from app.forge import get_forge_for_path
+        import app.forge as forge_pkg
+        from unittest.mock import patch
+        with patch.object(forge_pkg, "get_forge") as mock_get_forge:
+            get_forge_for_path("/home/koan/workspace/my-toolkit")
+            mock_get_forge.assert_called_once_with("my-toolkit")
+
+    def test_strips_trailing_slash(self):
+        from app.forge import get_forge_for_path
+        import app.forge as forge_pkg
+        from unittest.mock import patch
+        with patch.object(forge_pkg, "get_forge") as mock_get_forge:
+            get_forge_for_path("/home/koan/workspace/proj/")
+            mock_get_forge.assert_called_once_with("proj")
+
+    def test_unconfigured_project_returns_github(self):
+        from app.forge import get_forge_for_path
+        forge = get_forge_for_path("/tmp/project-that-does-not-exist")
+        assert isinstance(forge, GitHubForge)
+
+
 class TestDetectForgeFromUrl:
     def test_github_url_returns_github_forge(self):
         from app.forge import detect_forge_from_url

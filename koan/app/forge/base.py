@@ -167,6 +167,50 @@ class ForgeProvider(ABC):
         """
         raise NotImplementedError
 
+    def list_open_pr_branches(
+        self,
+        repo: str,
+        author: str = "",
+        cwd: Optional[str] = None,
+    ) -> List[str]:
+        """Return branch names (head refs) of open PRs in ``repo``.
+
+        Args:
+            repo: Repository in owner/repo format.
+            author: Optional author login to filter by.  When empty, open
+                PRs from all authors are returned.
+            cwd: Optional working directory for CLI-backed forges.
+
+        Returns:
+            Sorted list of head-ref branch names.  Returns an empty list on
+            error rather than raising, so callers can treat it as best-effort.
+
+        Raises:
+            NotImplementedError: If the forge does not support PR listing.
+        """
+        raise NotImplementedError
+
+    def find_pr_for_branch(
+        self,
+        repo: str,
+        branch: str,
+        cwd: Optional[str] = None,
+    ) -> Optional[Dict]:
+        """Return details for the PR whose head is ``branch``, or None.
+
+        The returned dict (when a PR is found) carries GitHub-style keys:
+        ``number``, ``state`` (e.g. "OPEN"/"open"), ``isDraft`` (bool),
+        ``url`` and ``headRefName``.
+
+        Returns None when no PR exists for the branch.  Implementations
+        should swallow lookup errors and return None so callers don't have
+        to special-case "no PR yet".
+
+        Raises:
+            NotImplementedError: If the forge does not support PR lookup.
+        """
+        raise NotImplementedError
+
     # ------------------------------------------------------------------
     # Issue operations
     # ------------------------------------------------------------------
@@ -258,6 +302,17 @@ class ForgeProvider(ABC):
 
         Raises:
             NotImplementedError: If the forge does not support fork detection.
+        """
+        raise NotImplementedError
+
+    def repo_slug(self, project_path: str) -> Optional[str]:
+        """Return the ``owner/repo`` slug for the repo checked out at path.
+
+        Derived from the ``origin`` git remote.  Returns None when there's
+        no origin remote or its URL can't be parsed for this forge.
+
+        Raises:
+            NotImplementedError: If the forge does not support slug parsing.
         """
         raise NotImplementedError
 

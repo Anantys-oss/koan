@@ -9,10 +9,13 @@ Supports GitHub Enterprise via the base_url parameter.
 """
 
 import json
+import logging
 import subprocess
 from typing import Dict, List, Optional, Tuple
 
 from app.forge.base import ForgeProvider
+
+log = logging.getLogger(__name__)
 
 
 class GitHubForge(ForgeProvider):
@@ -131,6 +134,43 @@ class GitHubForge(ForgeProvider):
         )
         return [line for line in output.splitlines() if line.strip()]
 
+    def list_open_pr_branches(
+        self,
+        repo: str,
+        author: str = "",
+        cwd: Optional[str] = None,
+    ) -> List[str]:
+        from app.github import list_open_pr_branches
+        return list_open_pr_branches(repo, author, cwd=cwd)
+
+    def find_pr_for_branch(
+        self,
+        repo: str,
+        branch: str,
+        cwd: Optional[str] = None,
+    ) -> Optional[Dict]:
+        # Mirror the historical `gh pr view` behaviour: with a cwd on the
+        # feature branch, gh infers the PR for the current branch. We pass
+        # the branch explicitly so the lookup also works without a checkout.
+        from app.github import run_gh
+        try:
+            output = run_gh(
+                "pr", "view", branch,
+                "--json", "number,state,isDraft,url,headRefName",
+                cwd=cwd, timeout=15,
+            )
+        except (RuntimeError, subprocess.SubprocessError, OSError) as e:
+            log.debug("find_pr_for_branch: gh pr view failed for branch %r: %s", branch, e)
+            return None
+        try:
+            data = json.loads(output)
+        except (json.JSONDecodeError, TypeError) as e:
+            log.debug("find_pr_for_branch: failed to parse gh output for branch %r: %s", branch, e)
+            return None
+        if not data or data.get("number") is None:
+            return None
+        return data
+
     # ------------------------------------------------------------------
     # Issue operations
     # ------------------------------------------------------------------
@@ -209,6 +249,10 @@ class GitHubForge(ForgeProvider):
     def detect_fork(self, project_path: str) -> Optional[str]:
         from app.github import detect_parent_repo
         return detect_parent_repo(project_path)
+
+    def repo_slug(self, project_path: str) -> Optional[str]:
+        from app.github import origin_repo
+        return origin_repo(project_path)
 
     # ------------------------------------------------------------------
     # Feature matrix

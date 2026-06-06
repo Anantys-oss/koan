@@ -1,7 +1,7 @@
-"""Shared helpers for GitHub-related skills.
+"""Shared helpers for GitHub and Gogs skills.
 
-Common utilities for skills that interact with GitHub PRs and issues:
-- URL extraction and validation
+Common utilities for skills that interact with forge PRs and issues:
+- URL extraction and validation (GitHub, Gogs, Jira)
 - Project resolution
 - Mission queuing
 - Response formatting
@@ -344,6 +344,57 @@ def format_success_message(url_type: str, number: str, owner: str, repo: str, co
     return msg
 
 
+def try_extract_gogs_pr(args: str) -> Optional[Tuple[str, str, str, str]]:
+    """Try to extract a Gogs PR URL from args.
+
+    Returns (owner, repo, pr_number, pr_url) or None if no Gogs PR URL
+    found or KOAN_GOGS_HOST is not configured.
+    """
+    try:
+        from app.gogs_url_parser import search_pr_url, build_pr_url
+        from app.gogs_auth import get_gogs_host
+        owner, repo, number = search_pr_url(args)
+        host = get_gogs_host()
+        pr_url = build_pr_url(host, owner, repo, int(number))
+        return owner, repo, number, pr_url
+    except (ValueError, ImportError):
+        return None
+
+
+def try_extract_gogs_issue(args: str) -> Optional[Tuple[str, str, str, str]]:
+    """Try to extract a Gogs issue URL from args.
+
+    Returns (owner, repo, issue_number, issue_url) or None if no Gogs issue URL
+    found or KOAN_GOGS_HOST is not configured.
+    """
+    try:
+        from app.gogs_url_parser import search_issue_url, build_issue_url
+        from app.gogs_auth import get_gogs_host
+        owner, repo, number = search_issue_url(args)
+        host = get_gogs_host()
+        issue_url = build_issue_url(host, owner, repo, int(number))
+        return owner, repo, number, issue_url
+    except (ValueError, ImportError):
+        return None
+
+
+def try_extract_gogs_pr_or_issue(args: str) -> Optional[Tuple[str, str, str, str, str]]:
+    """Try to extract a Gogs PR or issue URL from args.
+
+    Returns (owner, repo, number, url, type_label) where type_label is "PR" or "issue",
+    or None if no Gogs URL found or KOAN_GOGS_HOST is not configured.
+    """
+    result = try_extract_gogs_pr(args)
+    if result:
+        owner, repo, number, url = result
+        return owner, repo, number, url, "PR"
+    result = try_extract_gogs_issue(args)
+    if result:
+        owner, repo, number, url = result
+        return owner, repo, number, url, "issue"
+    return None
+
+
 def handle_github_skill(
     ctx,
     command: str,
@@ -353,20 +404,23 @@ def handle_github_skill(
     *,
     urgent: bool = False,
 ) -> str:
-    """Unified handler for GitHub-based skills (review, implement, refactor).
+    """Unified handler for forge-based skills (review, implement, refactor).
+
+    Handles GitHub PRs/issues, Jira issues, and Gogs PRs/issues.
 
     This consolidates the common pattern used by review, implement, and refactor skills:
-    1. Extract and validate GitHub URL
-    2. Parse URL to get owner/repo/number
-    3. Resolve to local project
-    4. Queue mission
-    5. Return success message
+    1. Try Gogs URL first
+    2. Extract and validate GitHub/Jira URL
+    3. Parse URL to get owner/repo/number
+    4. Resolve to local project
+    5. Queue mission
+    6. Return success message
 
     Args:
         ctx: Skill context
         command: Command name (e.g., "review", "implement", "refactor")
         url_type: URL type filter ("pr", "issue", or "pr-or-issue")
-        parse_func: Function to parse the URL, returns (owner, repo, number) or (owner, repo, type, number)
+        parse_func: Function to parse the GitHub URL, returns (owner, repo, number) or (owner, repo, type, number)
         success_prefix: Prefix for success message (e.g., "Review queued")
         urgent: If True, insert at the top of the queue (--now flag)
 
@@ -377,6 +431,39 @@ def handle_github_skill(
 
     if not args:
         return _format_usage_message(command, url_type)
+
+    # ── Try Gogs first ──────────────────────────────────────────────────
+    if url_type in ("pr", "pr-or-issue"):
+        gogs = try_extract_gogs_pr(args)
+        if gogs:
+            owner, repo, number, url = gogs
+            project_path, project_name = resolve_project_for_repo(repo, owner=owner)
+            if not project_path:
+                return format_project_not_found_error(repo, owner=owner)
+            priority = " (priority)" if urgent else ""
+            duplicate = queue_github_mission_once(
+                ctx, command, url, project_name, None, urgent=urgent,
+                type_label="PR", number=number, owner=owner, repo=repo,
+            )
+            if duplicate:
+                return duplicate
+            return f"{success_prefix}{priority} for Gogs PR #{number} ({owner}/{repo})"
+
+    if url_type in ("issue", "pr-or-issue"):
+        gogs = try_extract_gogs_issue(args)
+        if gogs:
+            owner, repo, number, url = gogs
+            project_path, project_name = resolve_project_for_repo(repo, owner=owner)
+            if not project_path:
+                return format_project_not_found_error(repo, owner=owner)
+            priority = " (priority)" if urgent else ""
+            duplicate = queue_github_mission_once(
+                ctx, command, url, project_name, None, urgent=urgent,
+                type_label="issue", number=number, owner=owner, repo=repo,
+            )
+            if duplicate:
+                return duplicate
+            return f"{success_prefix}{priority} for Gogs issue #{number} ({owner}/{repo})"
 
     # Extract URL from arguments
     result = extract_issue_tracker_url(args, url_type=url_type)

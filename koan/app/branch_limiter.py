@@ -31,14 +31,44 @@ def _get_local_unmerged_branches(instance_dir: str, project_name: str,
         return set()
 
 
-def _get_open_pr_branches(github_urls: List[str], author: str) -> Set[str]:
-    """Return set of branch names from open PRs across all GitHub URLs."""
-    if not author or not github_urls:
+def _get_open_pr_branches(
+    project_name: str,
+    project_path: str,
+    github_urls: List[str],
+    author: str,
+) -> Set[str]:
+    """Return set of branch names from open PRs for the project.
+
+    Routes through the project's forge. The GitHub path is unchanged (iterate
+    the configured repo URLs via ``gh``). Non-GitHub forges (Gogs, etc.)
+    resolve the repo slug from the checkout and query the forge API — without
+    this, open PRs on a self-hosted forge are never counted, so merged work is
+    invisible to the saturation accounting.
+    """
+    if not author:
         return set()
 
-    from app.github import list_open_pr_branches
+    from app.forge import get_forge
+    forge = get_forge(project_name)
 
     pr_branches: Set[str] = set()
+
+    if forge.name != "github":
+        try:
+            repo = forge.repo_slug(project_path) or ""
+            if repo:
+                pr_branches.update(
+                    forge.list_open_pr_branches(repo, author, cwd=project_path)
+                )
+        except Exception as e:
+            log.debug("Failed to list open PR branches (forge=%s) for %s: %s",
+                      forge.name, project_name, e)
+        return pr_branches
+
+    if not github_urls:
+        return pr_branches
+
+    from app.github import list_open_pr_branches
     for url in github_urls:
         try:
             branches = list_open_pr_branches(url, author)
@@ -65,7 +95,9 @@ def count_pending_branches(
     local_branches = _get_local_unmerged_branches(
         instance_dir, project_name, project_path,
     )
-    pr_branches = _get_open_pr_branches(github_urls, author)
+    pr_branches = _get_open_pr_branches(
+        project_name, project_path, github_urls, author,
+    )
 
     # Union: a branch with both a local copy and an open PR counts once
     return len(local_branches | pr_branches)

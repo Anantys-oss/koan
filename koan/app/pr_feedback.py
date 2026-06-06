@@ -49,6 +49,22 @@ FAST_MERGE_HOURS = 48
 SLOW_MERGE_HOURS = 168  # 7 days
 
 
+def _is_github_forge(project_path: str) -> bool:
+    """Return True if the project at ``project_path`` is on a GitHub forge.
+
+    Used to gate GitHub-only PR analytics so they degrade quietly (rather
+    than erroring) on self-hosted forges like Gogs. Returns True on any
+    resolution error so GitHub behaviour is never accidentally suppressed.
+    """
+    try:
+        from app.forge import get_forge_for_path
+        return get_forge_for_path(project_path).name == "github"
+    except Exception as e:
+        print(f"[pr_feedback] forge resolution failed, assuming GitHub: {e}",
+              file=sys.stderr)
+        return True
+
+
 def categorize_pr(title: str) -> str:
     """Categorize a PR by work type from its title.
 
@@ -121,6 +137,13 @@ def fetch_merged_prs(
         List of PR dicts with keys: number, title, createdAt, mergedAt,
         headRefName, category, hours_to_merge.
     """
+    # Merge-velocity analytics rely on GitHub-specific PR metadata
+    # (createdAt/mergedAt). On non-GitHub forges, skip quietly rather than
+    # firing `gh` at a repo it can't resolve — which used to log an error
+    # every iteration. The feature simply doesn't apply to those projects.
+    if not _is_github_forge(project_path):
+        return []
+
     try:
         from app.github import run_gh
     except ImportError:
@@ -199,6 +222,9 @@ def fetch_open_prs(project_path: str) -> List[dict]:
         List of PR dicts with: number, title, createdAt, headRefName,
         category, hours_open.
     """
+    if not _is_github_forge(project_path):
+        return []
+
     try:
         from app.github import run_gh
     except ImportError:
