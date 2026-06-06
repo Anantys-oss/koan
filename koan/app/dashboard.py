@@ -1145,6 +1145,7 @@ def api_usage():
             c = estimate_cost(model_tokens, pricing)
             if c is not None:
                 total_cost += c
+                model_data["cost_usd"] = c
         estimated_cost = total_cost
 
     # Per-day time series, optionally with per-project breakdown
