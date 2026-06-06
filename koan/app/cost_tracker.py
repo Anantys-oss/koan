@@ -41,6 +41,7 @@ def record_usage(
     mission_type: str = "",
     duration_seconds: int = 0,
     provider: str = "",
+    last_action: str = "",
 ) -> bool:
     """Append a usage event to today's JSONL file.
 
@@ -62,6 +63,8 @@ def record_usage(
             authoritative duration aggregation comes from session_outcomes.json.
             Omitted from records when zero.
         provider: CLI provider name (e.g. "claude", "copilot"). Omitted when empty.
+        last_action: Last tool action from JSONL session data (e.g. "Edit").
+            Omitted when empty.
 
     Returns:
         True if the record was written successfully.
@@ -95,6 +98,8 @@ def record_usage(
         entry["duration_seconds"] = duration_seconds
     if provider:
         entry["provider"] = provider
+    if last_action:
+        entry["last_action"] = last_action
 
     line = json.dumps(entry, separators=(",", ":")) + "\n"
 
@@ -544,7 +549,7 @@ def top_missions(
         if len(mission_text) > 300:
             mission_text = mission_text[:300] + "..."
 
-        result.append({
+        item = {
             "ts": entry.get("ts", ""),
             "project": entry.get("project", "_global"),
             "model": entry.get("model", "unknown"),
@@ -556,7 +561,14 @@ def top_missions(
             "cache_read_input_tokens": cache_read,
             "cost_usd": cost,
             "total_tokens": inp + out,
-        })
+        }
+        dur = entry.get("duration_seconds", 0)
+        if dur:
+            item["duration_seconds"] = dur
+        la = entry.get("last_action", "")
+        if la:
+            item["last_action"] = la
+        result.append(item)
 
     result.sort(key=lambda x: x["total_tokens"], reverse=True)
     limit = max(1, min(limit, 200))

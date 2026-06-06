@@ -218,6 +218,8 @@
                         <th class="sortable-header text-right" data-mcol="output">Output <span class="sort-indicator">&#8597;</span></th>
                         <th class="sortable-header text-right" data-mcol="cache">Cache <span class="sort-indicator">&#8597;</span></th>
                         <th class="sortable-header text-right" data-mcol="cost">Cost <span class="sort-indicator">&#8597;</span></th>
+                        <th class="sortable-header text-right" data-mcol="duration">Duration <span class="sort-indicator">&#8597;</span></th>
+                        <th class="sortable-header" data-mcol="lastaction">Last Action <span class="sort-indicator">&#8597;</span></th>
                     </tr>
                 </thead>
                 <tbody id="top-missions-tbody"></tbody>
@@ -228,6 +230,7 @@
                         <td class="text-right" id="missions-total-output"></td>
                         <td class="text-right" id="missions-total-cache"></td>
                         <td class="text-right" id="missions-total-cost" style="font-weight:var(--fw-medium);"></td>
+                        <td colspan="2"></td>
                     </tr>
                 </tfoot>
             </table>
@@ -242,6 +245,15 @@
     </div>
     <div id="outcome-legend" style="font-size:0.85rem;"></div>
     <div class="empty-state" id="outcome-empty" style="display:none;width:100%;">No mission data available.</div>
+</div>
+
+<h2>Last Action</h2>
+<div class="card" style="display:flex;align-items:center;gap:2rem;flex-wrap:wrap;">
+    <div class="chart-container" style="width:200px;height:200px;flex-shrink:0;">
+        <canvas id="last-action-chart"></canvas>
+    </div>
+    <div id="last-action-legend" style="font-size:0.85rem;"></div>
+    <div class="empty-state" id="last-action-empty" style="display:none;width:100%;">No last-action data available.</div>
 </div>
 
 <h2>By Project</h2>
@@ -293,6 +305,7 @@ let stackedChart = null;
 let outcomeChart = null;
 let typeChart = null;
 let modeChart = null;
+let lastActionChart = null;
 let currentProject = '';
 let windowOffset = 0;
 
@@ -707,6 +720,55 @@ function renderOutcomeChart(metrics) {
     });
 }
 
+const ACTION_COLORS = {
+    'Edit': '#3fb950', 'Write': '#58a6ff', 'Read': '#8b949e',
+    'Bash': '#d29922', 'Grep': '#bc8cff', 'Glob': '#f0883e',
+    'Agent': '#f85149', 'WebSearch': '#39d353', 'WebFetch': '#1f6feb',
+};
+function actionColor(name) {
+    return ACTION_COLORS[name] || PROJECT_COLORS[(Object.keys(ACTION_COLORS).length + name.charCodeAt(0)) % PROJECT_COLORS.length];
+}
+
+function renderLastActionChart(byLastAction) {
+    const canvas = document.getElementById('last-action-chart');
+    const legendEl = document.getElementById('last-action-legend');
+    const emptyEl = document.getElementById('last-action-empty');
+
+    if (!byLastAction || Object.keys(byLastAction).length === 0) {
+        canvas.style.display = 'none';
+        legendEl.innerHTML = '';
+        emptyEl.style.display = '';
+        if (lastActionChart) { lastActionChart.destroy(); lastActionChart = null; }
+        return;
+    }
+    canvas.style.display = '';
+    emptyEl.style.display = 'none';
+
+    const entries = Object.entries(byLastAction).sort((a, b) => b[1] - a[1]);
+    const labels = entries.map(([k]) => k);
+    const data = entries.map(([, v]) => v);
+    const colors = labels.map(l => actionColor(l));
+    const total = data.reduce((s, v) => s + v, 0);
+
+    legendEl.innerHTML = entries.map(([k, v], i) =>
+        '<div style="margin-bottom:0.25rem;">' +
+        '<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:' + colors[i] + ';margin-right:0.5rem;"></span>' +
+        k + ': <strong>' + v + '</strong> <span style="color:var(--text-muted);">(' + (v / total * 100).toFixed(0) + '%)</span></div>'
+    ).join('');
+
+    if (lastActionChart) lastActionChart.destroy();
+    lastActionChart = new Chart(canvas, {
+        type: 'doughnut',
+        data: {labels, datasets: [{data, backgroundColor: colors, borderWidth: 0}]},
+        options: {
+            responsive: true,
+            maintainAspectRatio: true,
+            plugins: {legend: {display: false}},
+            cutout: '55%',
+        },
+    });
+}
+
 function renderTypeChart(byType, hasPricing) {
     const canvas = document.getElementById('type-chart');
     const emptyEl = document.getElementById('type-empty');
@@ -1048,6 +1110,7 @@ function loadAll() {
         .then(r => r.json())
         .then(metrics => {
             renderOutcomeChart(metrics);
+            renderLastActionChart(metrics.by_last_action);
 
             if (metrics.by_project) {
                 document.querySelectorAll('#by-project tbody tr').forEach(row => {
@@ -1257,6 +1320,10 @@ function renderTopMissionsTable(missions, hasPricing) {
         var missionText = m.mission || '';
         var preview = missionText.length > 80 ? missionText.slice(0, 80) + '…' : missionText;
 
+        var dur = m.duration_seconds || 0;
+        var durText = dur ? (dur >= 60 ? Math.round(dur / 60) + 'm' : dur + 's') : '';
+        var lastAct = m.last_action || '';
+
         html += '<tr data-date="' + (m.ts || '') + '"' +
             ' data-project="' + escapeHtml(m.project || '') + '"' +
             ' data-type="' + escapeHtml(m.mission_type || '') + '"' +
@@ -1266,7 +1333,9 @@ function renderTopMissionsTable(missions, hasPricing) {
             ' data-output="' + out + '"' +
             ' data-cache="' + cache + '"' +
             ' data-cost="' + cost + '"' +
-            ' data-total="' + (m.total_tokens || 0) + '">' +
+            ' data-total="' + (m.total_tokens || 0) + '"' +
+            ' data-duration="' + dur + '"' +
+            ' data-lastaction="' + escapeHtml(lastAct) + '">' +
             '<td class="text-nowrap">' + fmtDate(m.ts) + '</td>' +
             '<td>' + projectBadgeHtml(m.project) + '</td>' +
             '<td>' + typeBadgeHtml(m.mission_type) + '</td>' +
@@ -1277,6 +1346,8 @@ function renderTopMissionsTable(missions, hasPricing) {
             '<td class="text-right">' + fmtTokens(out) + '</td>' +
             '<td class="text-right">' + fmtTokens(cache) + '</td>' +
             '<td class="text-right">' + fmtCostDetail(cost, hasPricing) + '</td>' +
+            '<td class="text-right text-nowrap">' + escapeHtml(durText) + '</td>' +
+            '<td class="text-nowrap">' + escapeHtml(lastAct) + '</td>' +
             '</tr>';
     }
 
@@ -1302,7 +1373,7 @@ function resortMissionsTable() {
             const vb = b.dataset.date || '';
             return missionSortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
         }
-        if (['project', 'type', 'mode', 'model'].indexOf(missionSortCol) >= 0) {
+        if (['project', 'type', 'mode', 'model', 'lastaction'].indexOf(missionSortCol) >= 0) {
             const va = a.dataset[missionSortCol] || '';
             const vb = b.dataset[missionSortCol] || '';
             return missionSortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
@@ -1323,7 +1394,7 @@ function initMissionSortHandlers() {
                 missionSortAsc = !missionSortAsc;
             } else {
                 missionSortCol = col;
-                missionSortAsc = ['date', 'project', 'type', 'mode', 'model'].includes(col);
+                missionSortAsc = ['date', 'project', 'type', 'mode', 'model', 'lastaction'].includes(col);
             }
             resortMissionsTable();
         });

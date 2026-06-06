@@ -602,6 +602,7 @@ def _record_cost_event(
             mission_type=mission_type,
             duration_seconds=duration_seconds,
             provider=provider,
+            last_action=jsonl_data.get("last_action", "") if jsonl_data else "",
         )
     except Exception as e:
         _log_runner("error", f"Cost tracking failed: {e}")

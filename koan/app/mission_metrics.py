@@ -91,6 +91,13 @@ def compute_project_metrics(
             "success_rate": counts["productive"] / counts["total"] if counts["total"] else 0.0,
         }
 
+    # Last-action distribution (what tool was the agent using at session end)
+    by_last_action = defaultdict(int)
+    for o in filtered:
+        action = o.get("last_action", "")
+        if action:
+            by_last_action[action] += 1
+
     return {
         "total_sessions": total,
         "productive": productive,
@@ -101,6 +108,7 @@ def compute_project_metrics(
         "branch_rate": branch_count / total,
         "avg_duration_minutes": round(avg_duration, 1),
         "by_mission_type": by_type_out,
+        "by_last_action": dict(by_last_action),
     }
 
 
@@ -155,6 +163,13 @@ def compute_global_metrics(
 
     trend = _compute_trend(filtered)
 
+    # Last-action distribution
+    by_last_action = defaultdict(int)
+    for o in filtered:
+        action = o.get("last_action", "")
+        if action:
+            by_last_action[action] += 1
+
     return {
         "total_sessions": total,
         "productive": productive,
@@ -163,6 +178,7 @@ def compute_global_metrics(
         "success_rate": productive / total,
         "by_project": by_project_out,
         "trend": trend,
+        "by_last_action": dict(by_last_action),
     }
 
 
@@ -358,4 +374,5 @@ def _empty_metrics() -> dict:
         "branch_rate": 0.0,
         "avg_duration_minutes": 0.0,
         "by_mission_type": {},
+        "by_last_action": {},
     }
