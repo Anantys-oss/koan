@@ -39,7 +39,8 @@ def _load_cleanup_tracker(instance_dir: str) -> dict:
         return {}
     try:
         return json.loads(path.read_text())
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError) as exc:
+        logging.warning("corrupt cleanup tracker %s: %s", path, exc)
         return {}
 
 
@@ -184,7 +185,9 @@ class GitSync:
         nor backing an open pull request — likely leftovers from aborted or
         forgotten work.
 
-        Returns empty list on GitHub API errors (fail-safe: never false-positive).
+        Fail-safe: returns ``[]`` on GitHub API errors to avoid false positives.
+        Caveat: ``gh pr list --limit`` caps results — repos with more open PRs
+        than the limit may produce false orphans (notified but not deleted).
         """
         unmerged = self.get_unmerged_branches()
         if not unmerged:
@@ -196,17 +199,20 @@ class GitSync:
             raw = run_gh(
                 "pr", "list",
                 "--state", "open",
-                "--limit", "200",
+                "--limit", "1000",
                 "--json", "headRefName",
                 cwd=self.project_path,
                 timeout=30,
             )
-        except (RuntimeError, OSError):
+        except (RuntimeError, OSError) as exc:
+            logging.warning("orphan branch check failed for %s: %s",
+                            self.project_name, exc)
             return []
 
         try:
             prs = json.loads(raw) if raw else []
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as exc:
+            logging.warning("malformed PR list JSON for %s: %s", self.project_name, exc)
             return []
 
         if not isinstance(prs, list):
@@ -334,7 +340,7 @@ class GitSync:
             raw = run_gh(
                 "pr", "list",
                 "--state", "merged",
-                "--limit", "200",
+                "--limit", "1000",
                 "--json", "headRefName",
                 cwd=self.project_path,
                 timeout=30,
@@ -345,7 +351,9 @@ class GitSync:
 
         try:
             prs = json.loads(raw) if raw else []
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as exc:
+            logging.warning("malformed merged PR JSON for %s: %s",
+                            self.project_name, exc)
             return []
 
         if not isinstance(prs, list):
