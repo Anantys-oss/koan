@@ -41,6 +41,9 @@ from app.bridge_state import (
     CONVERSATION_HISTORY_FILE,
     TOPICS_FILE,
     _get_registry,
+    get_pending_action,
+    set_pending_action,
+    clear_pending_action,
 )
 from app.cli_provider import build_full_command
 from app.command_handlers import (
@@ -354,16 +357,72 @@ def _clean_chat_response(text: str, user_message: str = "") -> str:
     return expand_github_refs_auto(cleaned, user_message)
 
 
-def handle_chat(text: str):
+def handle_chat(text: str, chat_id: Optional[str] = None):
     """Lightweight Claude call for conversational messages — fast response.
 
     Uses restricted tools (Read/Glob/Grep by default) to prevent prompt
     injection attacks via Telegram messages. No Bash, Edit, or Write access.
+
+    Also implements intent routing: detects actionable requests and proposes
+    slash commands with confirmation before execution.
     """
     from app.cli_exec import run_cli
 
+    # Default to CHAT_ID if not provided (for backward compat with tests)
+    if chat_id is None:
+        chat_id = CHAT_ID
+
     # Save user message to history
     save_conversation_message(CONVERSATION_HISTORY_FILE, "user", text)
+
+    # --- Confirmation flow: check if user is confirming or rejecting a pending action ---
+    if _is_confirmation(text) or _is_rejection(text):
+        pending = get_pending_action(chat_id)
+        if pending:
+            if _is_confirmation(text):
+                # User confirmed — dispatch the command
+                clear_pending_action(chat_id)
+                log("intent", f"Confirmed: {pending['command']}")
+                # Dispatch via command_handlers (the safe path that validates everything)
+                from app.command_handlers import handle_command
+                handle_command(pending["command"])
+                return
+            else:  # Rejection
+                # User rejected — clear and acknowledge
+                clear_pending_action(chat_id)
+                send_telegram("❌ Cancelled.")
+                save_conversation_message(CONVERSATION_HISTORY_FILE, "assistant", "❌ Cancelled.")
+                return
+
+    # --- Intent classification: check if this looks like an actionable request ---
+    intent = _classify_intent(text)
+    if intent and intent.get("actionable") and intent.get("command"):
+        confidence = intent.get("confidence", 0)
+        # High-confidence, low-risk commands: execute without confirmation
+        # Risk assessment: /status, /list, /show are safe; anything else needs confirmation
+        safe_commands = {"/status", "/list", "/show", "/help", "/projects"}
+        command_name = intent["command"].split()[0]  # Extract /command part
+        is_high_confidence = confidence >= 0.7
+        is_safe = any(intent["command"].startswith(sc) for sc in safe_commands)
+
+        if is_high_confidence and is_safe:
+            # Auto-execute safe, high-confidence commands
+            log("intent", f"Auto-executing (high-confidence safe): {intent['command']}")
+            from app.command_handlers import handle_command
+            handle_command(intent["command"])
+            return
+
+        # All other actionable commands: propose with confirmation
+        store_action = {
+            "command": intent["command"],
+            "expires_at": time.time() + 120,  # 120s expiry
+        }
+        set_pending_action(chat_id, store_action)
+        proposal = f"I can run this for you:\n\n`{intent['command']}`\n\nRespond with **yes** or **no**."
+        send_telegram(proposal)
+        save_conversation_message(CONVERSATION_HISTORY_FILE, "assistant", proposal)
+        log("intent", f"Proposed: {intent['command']}")
+        return
 
     # Scan for prompt injection — warn-only (never block chat; tools are read-only)
     from app.prompt_guard import scan_mission_text
@@ -472,6 +531,102 @@ def handle_chat(text: str):
             error_msg = "⚠️ Something went wrong — try again?"
             send_telegram(error_msg)
             save_conversation_message(CONVERSATION_HISTORY_FILE, "assistant", error_msg)
+
+
+# ---------------------------------------------------------------------------
+# Intent classification and confirmation
+# ---------------------------------------------------------------------------
+
+def _classify_intent(text: str) -> Optional[dict]:
+    """Classify user message intent and propose a matching slash command.
+
+    Uses a lightweight Claude call to analyze the message against available
+    commands. Returns None on low confidence or parse failure.
+
+    Returns:
+        Dict with keys: actionable (bool), command (str or None),
+        confidence (0-1), rationale (str). Or None on error.
+    """
+    import json as json_lib
+    from app.cli_exec import run_cli
+    from app.prompts import load_skill_prompt
+    from pathlib import Path
+
+    # Build list of available commands from registry
+    registry = _get_registry()
+    all_skills = registry.list_all()
+    command_lines = []
+    for skill in all_skills:
+        for cmd in getattr(skill, "commands", []):
+            aliases_str = f" (aliases: {', '.join(cmd.aliases)})" if cmd.aliases else ""
+            command_lines.append(f"- /{cmd.name}{aliases_str}: {cmd.description}")
+    commands_list = "\n".join(command_lines) if command_lines else "(no commands available)"
+
+    models = get_model_config()
+    # Load intent_route prompt from chat skill
+    chat_skill_dir = Path(__file__).resolve().parent.parent / "skills" / "core" / "chat"
+    prompt = load_skill_prompt(
+        chat_skill_dir,
+        "intent_route",
+        COMMANDS_LIST=commands_list,
+    )
+
+    cmd = build_full_command(
+        prompt=prompt,
+        allowed_tools=[],  # No tools for intent classification
+        model=models["lightweight"],
+        fallback=models["fallback"],
+        max_turns=1,
+    )
+
+    try:
+        result = run_cli(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=str(KOAN_ROOT),
+        )
+        if result.returncode != 0:
+            log("intent", f"Classification failed: {result.stderr[:200]}")
+            return None
+
+        text_output = result.stdout.strip()
+        # Try to extract JSON from the output (in case there's surrounding text)
+        if "{" not in text_output:
+            return None
+
+        json_start = text_output.find("{")
+        json_end = text_output.rfind("}") + 1
+        if json_start >= 0 and json_end > json_start:
+            json_str = text_output[json_start:json_end]
+            intent = json_lib.loads(json_str)
+            # Validate structure
+            if isinstance(intent, dict) and "actionable" in intent and "confidence" in intent:
+                return intent
+    except (json_lib.JSONDecodeError, subprocess.TimeoutExpired, Exception) as e:
+        log("intent", f"Intent classification error: {e}")
+
+    return None
+
+
+def _is_confirmation(text: str) -> bool:
+    """Check if message is a confirmation word (yes, ok, go, etc.)."""
+    text_lower = text.strip().lower()
+    affirmatives = {
+        "yes", "yep", "yeah", "y", "ok", "okay", "go", "do it", "sure",
+        "oui", "ok", "go"  # French variations
+    }
+    return text_lower in affirmatives
+
+
+def _is_rejection(text: str) -> bool:
+    """Check if message is a rejection word (no, nope, cancel, etc.)."""
+    text_lower = text.strip().lower()
+    rejections = {
+        "no", "nope", "n", "cancel", "nevermind", "non", "annuler"  # French variations
+    }
+    return text_lower in rejections
 
 
 # ---------------------------------------------------------------------------
@@ -641,7 +796,7 @@ def _handle_reaction_update(update: dict):
         log("reaction", f"Reaction {emoji} removed from message {message_id}")
 
 
-def handle_message(text: str):
+def handle_message(text: str, chat_id: Optional[str] = None):
     text = text.strip()
     if not text:
         return
@@ -655,7 +810,7 @@ def handle_message(text: str):
     elif is_mission(text):
         handle_mission(text)
     else:
-        _run_in_worker(handle_chat, text)
+        _run_in_worker(handle_chat, text, chat_id)
 
 
 def _check_group_chat_mode(provider) -> None:
@@ -858,7 +1013,7 @@ def _bridge_loop():
                     log("chat", f"Received: {text[:60]}")
                     set_reply_context(message_id)
                     try:
-                        handle_message(text)
+                        handle_message(text, chat_id)
                     except Exception as e:
                         log("error", f"Message handling failed: {e}")
                         try:

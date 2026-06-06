@@ -136,3 +136,53 @@ def _reset_registry():
     global _skill_registry, _skill_registry_mtime
     _skill_registry = None
     _skill_registry_mtime = 0.0
+
+
+# Pending action confirmation state — ephemeral (no disk persistence needed)
+# Maps chat_id → {"command": "/mission ...", "expires_at": <timestamp>}
+# Guarded by a lock since awake.py runs chat in worker threads.
+
+import threading as _threading
+_pending_actions_lock = _threading.Lock()
+_pending_actions: dict = {}
+
+
+def set_pending_action(chat_id: str, action: dict) -> None:
+    """Store a pending action (proposed command) awaiting confirmation.
+
+    Args:
+        chat_id: Telegram chat ID (string).
+        action: Dict with "command" (string) and "expires_at" (float timestamp).
+    """
+    with _pending_actions_lock:
+        _pending_actions[chat_id] = action
+
+
+def get_pending_action(chat_id: str) -> Optional[dict]:
+    """Retrieve a pending action if it exists and hasn't expired.
+
+    Args:
+        chat_id: Telegram chat ID (string).
+
+    Returns:
+        Action dict, or None if not found or expired.
+    """
+    import time as _time
+    with _pending_actions_lock:
+        action = _pending_actions.get(chat_id)
+        if action is None:
+            return None
+        if _time.time() >= action.get("expires_at", 0):
+            del _pending_actions[chat_id]
+            return None
+        return action
+
+
+def clear_pending_action(chat_id: str) -> None:
+    """Remove a pending action if it exists.
+
+    Args:
+        chat_id: Telegram chat ID (string).
+    """
+    with _pending_actions_lock:
+        _pending_actions.pop(chat_id, None)

@@ -237,3 +237,107 @@ class TestModuleLevelConstants:
         """TOPICS_FILE should be a known filename."""
         from app.bridge_state import INSTANCE_DIR, TOPICS_FILE
         assert TOPICS_FILE == INSTANCE_DIR / "previous-discussions-topics.json"
+
+
+class TestPendingActionState:
+    """Tests for pending action confirmation state."""
+
+    def test_set_and_get_pending_action(self):
+        """Can store and retrieve a pending action."""
+        import app.bridge_state as bs
+        import time
+
+        chat_id = "123456"
+        action = {
+            "command": "/recurring",
+            "expires_at": time.time() + 100,
+        }
+
+        bs.set_pending_action(chat_id, action)
+        result = bs.get_pending_action(chat_id)
+
+        assert result is not None
+        assert result["command"] == "/recurring"
+
+    def test_get_nonexistent_action(self):
+        """Getting nonexistent action returns None."""
+        import app.bridge_state as bs
+
+        result = bs.get_pending_action("nonexistent_chat")
+        assert result is None
+
+    def test_expired_action_returns_none(self):
+        """Expired actions are returned as None and cleaned up."""
+        import app.bridge_state as bs
+        import time
+
+        chat_id = "expired_chat"
+        action = {
+            "command": "/mission test",
+            "expires_at": time.time() - 1,  # Already expired
+        }
+
+        bs.set_pending_action(chat_id, action)
+        result = bs.get_pending_action(chat_id)
+
+        assert result is None
+        # Verify it was cleaned up
+        assert bs.get_pending_action(chat_id) is None
+
+    def test_clear_pending_action(self):
+        """Clear removes a pending action."""
+        import app.bridge_state as bs
+        import time
+
+        chat_id = "clear_test"
+        action = {
+            "command": "/status",
+            "expires_at": time.time() + 100,
+        }
+
+        bs.set_pending_action(chat_id, action)
+        assert bs.get_pending_action(chat_id) is not None
+
+        bs.clear_pending_action(chat_id)
+        assert bs.get_pending_action(chat_id) is None
+
+    def test_clear_nonexistent_action(self):
+        """Clearing nonexistent action is a no-op (doesn't raise)."""
+        import app.bridge_state as bs
+
+        # Should not raise
+        bs.clear_pending_action("nonexistent")
+
+    def test_replace_pending_action(self):
+        """Setting a new action for a chat replaces the old one."""
+        import app.bridge_state as bs
+        import time
+
+        chat_id = "replace_test"
+        action1 = {"command": "/status", "expires_at": time.time() + 100}
+        action2 = {"command": "/mission new", "expires_at": time.time() + 100}
+
+        bs.set_pending_action(chat_id, action1)
+        result1 = bs.get_pending_action(chat_id)
+        assert result1["command"] == "/status"
+
+        bs.set_pending_action(chat_id, action2)
+        result2 = bs.get_pending_action(chat_id)
+        assert result2["command"] == "/mission new"
+
+    def test_multiple_chats_isolated(self):
+        """Pending actions for different chats are isolated."""
+        import app.bridge_state as bs
+        import time
+
+        chat_1 = "chat_1"
+        chat_2 = "chat_2"
+
+        action1 = {"command": "/recurring", "expires_at": time.time() + 100}
+        action2 = {"command": "/mission test", "expires_at": time.time() + 100}
+
+        bs.set_pending_action(chat_1, action1)
+        bs.set_pending_action(chat_2, action2)
+
+        assert bs.get_pending_action(chat_1)["command"] == "/recurring"
+        assert bs.get_pending_action(chat_2)["command"] == "/mission test"

@@ -3511,3 +3511,205 @@ class TestReplyContext:
             send_telegram("test")
         mock_provider.send_message.assert_called_once_with("test", reply_to_message_id=456)
         clear_reply_context()
+
+
+# ---------------------------------------------------------------------------
+# Confirmation flow tests
+# ---------------------------------------------------------------------------
+
+class TestConfirmationDetection:
+    """Test confirmation and rejection word detection."""
+
+    def test_is_confirmation_yes(self):
+        from app.awake import _is_confirmation
+        assert _is_confirmation("yes") is True
+        assert _is_confirmation("YES") is True
+        assert _is_confirmation("  yes  ") is True
+
+    def test_is_confirmation_variations(self):
+        from app.awake import _is_confirmation
+        assert _is_confirmation("yep") is True
+        assert _is_confirmation("okay") is True
+        assert _is_confirmation("ok") is True
+        assert _is_confirmation("go") is True
+        assert _is_confirmation("sure") is True
+
+    def test_is_confirmation_french(self):
+        from app.awake import _is_confirmation
+        assert _is_confirmation("oui") is True
+
+    def test_is_rejection_no(self):
+        from app.awake import _is_rejection
+        assert _is_rejection("no") is True
+        assert _is_rejection("NO") is True
+        assert _is_rejection("  no  ") is True
+
+    def test_is_rejection_variations(self):
+        from app.awake import _is_rejection
+        assert _is_rejection("nope") is True
+        assert _is_rejection("cancel") is True
+        assert _is_rejection("nevermind") is True
+
+    def test_is_rejection_french(self):
+        from app.awake import _is_rejection
+        assert _is_rejection("non") is True
+
+    def test_not_confirmation(self):
+        from app.awake import _is_confirmation, _is_rejection
+        assert _is_confirmation("maybe") is False
+        assert _is_confirmation("help") is False
+        assert _is_rejection("maybe") is False
+        assert _is_rejection("help") is False
+
+
+class TestIntentClassification:
+    """Test intent classification helper functions."""
+
+    def test_classify_intent_returns_dict_on_success(self, tmp_path, monkeypatch):
+        """_classify_intent returns a dict with expected keys on success."""
+        from app.awake import _classify_intent
+        import json
+
+        # Mock run_cli to return a valid JSON response
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = json.dumps({
+            "actionable": True,
+            "command": "/status",
+            "confidence": 0.9,
+            "rationale": "Request to check status",
+        })
+
+        with patch("app.cli_exec.run_cli", return_value=mock_result):
+            result = _classify_intent("what is the status?")
+
+        assert result is not None
+        assert result["actionable"] is True
+        assert result["command"] == "/status"
+
+    def test_classify_intent_low_confidence_returns_false(self, tmp_path, monkeypatch):
+        """_classify_intent returns actionable=false for low-confidence matches."""
+        from app.awake import _classify_intent
+        import json
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = json.dumps({
+            "actionable": False,
+            "command": None,
+            "confidence": 0.3,
+            "rationale": "Uncertain match",
+        })
+
+        with patch("app.cli_exec.run_cli", return_value=mock_result):
+            result = _classify_intent("tell me a joke")
+
+        assert result is not None
+        assert result["actionable"] is False
+        assert result["command"] is None
+
+    def test_classify_intent_parse_error_returns_none(self):
+        """_classify_intent returns None on JSON parse error."""
+        from app.awake import _classify_intent
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "this is not json"
+
+        with patch("app.cli_exec.run_cli", return_value=mock_result):
+            result = _classify_intent("something")
+
+        assert result is None
+
+    def test_classify_intent_timeout_returns_none(self):
+        """_classify_intent returns None on subprocess timeout."""
+        from app.awake import _classify_intent
+
+        with patch("app.cli_exec.run_cli", side_effect=subprocess.TimeoutExpired("cmd", 10)):
+            result = _classify_intent("something")
+
+        assert result is None
+
+    def test_classify_intent_cli_error_returns_none(self):
+        """_classify_intent returns None when Claude returns non-zero exit."""
+        from app.awake import _classify_intent
+
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        mock_result.stderr = "error message"
+
+        with patch("app.cli_exec.run_cli", return_value=mock_result):
+            result = _classify_intent("something")
+
+        assert result is None
+
+
+class TestHandleChatIntentRouting:
+    """Test intent routing and confirmation flow in handle_chat."""
+
+    def test_confirmation_with_pending_action(self, tmp_path, monkeypatch):
+        """When user confirms, pending action is dispatched via handle_command."""
+        from app.awake import handle_chat
+        from app.bridge_state import (
+            set_pending_action,
+            get_pending_action,
+            CHAT_ID,
+        )
+        import time
+
+        # Set up pending action
+        chat_id = "test_chat"
+        action = {
+            "command": "/recurring",
+            "expires_at": time.time() + 100,
+        }
+        set_pending_action(chat_id, action)
+
+        # Mock dependencies
+        with patch("app.awake.save_conversation_message"):
+            with patch("app.awake.send_telegram"):
+                with patch("app.command_handlers.handle_command") as mock_handle_cmd:
+                    handle_chat("yes", chat_id)
+                    mock_handle_cmd.assert_called_once_with("/recurring")
+
+    def test_rejection_with_pending_action(self, tmp_path, monkeypatch):
+        """When user rejects, pending action is cleared without dispatch."""
+        from app.awake import handle_chat
+        from app.bridge_state import set_pending_action, get_pending_action
+        import time
+
+        chat_id = "test_chat"
+        action = {
+            "command": "/recurring",
+            "expires_at": time.time() + 100,
+        }
+        set_pending_action(chat_id, action)
+
+        with patch("app.awake.save_conversation_message"):
+            with patch("app.awake.send_telegram") as mock_send:
+                with patch("app.command_handlers.handle_command") as mock_handle_cmd:
+                    handle_chat("no", chat_id)
+                    mock_handle_cmd.assert_not_called()
+                    assert get_pending_action(chat_id) is None
+
+    def test_no_pending_action_confirmation_ignored(self):
+        """Confirmation without pending action is treated as normal chat."""
+        from app.awake import handle_chat
+        import json
+
+        # Mock intent classification to return None (will fall through to normal chat)
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = json.dumps({
+            "actionable": False,
+            "command": None,
+            "confidence": 0.0,
+            "rationale": "Not an actionable intent",
+        })
+
+        with patch("app.awake.save_conversation_message"):
+            with patch("app.awake.send_telegram"):
+                with patch("app.awake._classify_intent", return_value=None):
+                    with patch("app.cli_exec.run_cli", return_value=mock_result):
+                        # Should fall through to normal chat path
+                        handle_chat("yes", "test_chat")
