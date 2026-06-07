@@ -292,53 +292,71 @@ def _build_command_catalog() -> str:
         skills = registry.list_by_audience("bridge", "command", "hybrid")
         confirm_enabled = get_chat_confirm_commands_enabled()
 
-        # Build catalog grouped by help group. Commands whose skill opted into
-        # ``chat_confirmable`` are marked with ⚡ — those are the only ones the
-        # bridge will arm for one-word ("yes") confirmation. The bridge revalidates
-        # eligibility, so a marker for any other command is silently ignored.
+        def _representative(skill):
+            """Pick the command that best names the skill (name == skill.name),
+            else the first command. For multi-form skills like ``recurring`` this
+            surfaces ``/recurring …`` (with its run/resume subforms) instead of
+            an unrelated first command like ``/daily``."""
+            for c in skill.commands:
+                if c.name == skill.name:
+                    return c
+            return skill.commands[0] if skill.commands else None
+
+        # --- ⚡ Runnable section: confirmable commands WITH their usage forms ---
+        # These are the only commands the bridge will arm for one-word ("yes")
+        # confirmation. Showing the real usage (e.g. "/recurring run <n>") is what
+        # lets the model build the precise subcommand the human asked for.
+        runnable_lines = []
+        if confirm_enabled:
+            for skill in sorted(skills, key=lambda s: s.name):
+                if not skill.chat_confirmable:
+                    continue
+                cmd = _representative(skill)
+                if not cmd:
+                    continue
+                form = (cmd.usage or f"/{cmd.name}").strip()
+                desc = (cmd.description or skill.description or "")[:70]
+                runnable_lines.append(f"{form} — {desc}")
+
+        # --- Prose-only section: other human commands, grouped, capped ---
         groups_dict = {}
         for skill in skills:
-            if not skill.group:
+            if not skill.group or (confirm_enabled and skill.chat_confirmable):
                 continue
-            if skill.group not in groups_dict:
-                groups_dict[skill.group] = []
-            # Pick the first command (primary command)
-            if skill.commands:
-                cmd = skill.commands[0]
-                # Keep descriptions compact (~70 chars max); tolerate None
-                raw_desc = cmd.description or skill.description or ""
-                desc = raw_desc[:70]
-                flag = " ⚡" if (confirm_enabled and skill.chat_confirmable) else ""
-                groups_dict[skill.group].append(f"/{cmd.name}{flag} — {desc}")
-
-        # Build final catalog text
-        lines = [
+            cmd = skill.commands[0] if skill.commands else None
+            if not cmd:
+                continue
+            desc = (cmd.description or skill.description or "")[:70]
+            groups_dict.setdefault(skill.group, []).append(f"/{cmd.name} — {desc}")
+        prose_lines = [
             line
             for group in sorted(groups_dict.keys())
             for line in sorted(groups_dict[group])[:5]
         ]
-        if not lines:
+
+        if not runnable_lines and not prose_lines:
             return ""
-        catalog_body = "\n".join(lines)
-        confirm_protocol = (
-            "\n\nIf the human's message maps to a ⚡ command, you MAY offer to run it: write a short "
-            "natural confirmation question, then on the FINAL line append exactly:\n"
-            "  SUGGEST_COMMAND: /command [args]\n"
-            "Use the precise command and any subcommand/args (e.g. `SUGGEST_COMMAND: /recurring run 3`). "
-            "The system shows the human the literal command and runs it only if they reply \"yes\" — "
-            "you never run it yourself. Offer at most one command per message, only when the mapping is "
-            "clear. For non-⚡ commands, suggest them in prose only (no marker)."
-            if confirm_enabled else ""
-        )
-        return (
-            f"Available slash commands (suggest when the human's message maps to one):\n"
-            f"{catalog_body}\n\n"
-            f"When the human's message clearly maps to a slash command from the list above, "
-            f"suggest it in your reply — e.g. \"That sounds like a job for `/status` — want me to queue it?\" "
-            f"at most one suggestion per message, only when the mapping is clear. "
-            f"Never claim you executed it — the human always runs commands."
-            f"{confirm_protocol}"
-        )
+
+        sections = []
+        if runnable_lines:
+            sections.append(
+                "Commands you can OFFER TO RUN (the human confirms with \"yes\"):\n"
+                + "\n".join(runnable_lines)
+                + "\n\nTo offer one of these, write a short natural confirmation question, then put "
+                "the command on the FINAL line as EXACTLY:\n"
+                "  SUGGEST_COMMAND: /command [args]\n"
+                "Use the precise form, including any subcommand/args the human implied "
+                "(e.g. \"relance la 3\" → `SUGGEST_COMMAND: /recurring run 3`). The system shows the "
+                "human the literal command and runs it ONLY after they reply \"yes\" — you never run it. "
+                "Offer at most one per message, only when the mapping is clear."
+            )
+        if prose_lines:
+            sections.append(
+                "Other commands (mention in prose only — you cannot run these, do NOT add a marker):\n"
+                + "\n".join(prose_lines)
+            )
+
+        return "\n\n".join(sections)
     except Exception:
         # Log full traceback at error level so persistent registry bugs surface
         # in normal monitoring instead of silently degrading to 'disabled'.
