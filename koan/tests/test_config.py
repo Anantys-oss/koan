@@ -223,6 +223,279 @@ class TestGetModelConfigProviderSection:
         assert result["mission"] == "claude-sonnet"
 
 
+class TestGetModelConfigNestedStructure:
+    """Tests for new nested models.default / models.{provider} structure."""
+
+    def test_nested_default_section(self):
+        """New nested models.default section works correctly."""
+        from app.config import get_model_config
+
+        config = {
+            "models": {
+                "default": {
+                    "mission": "opus",
+                    "chat": "haiku",
+                    "lightweight": "haiku",
+                    "fallback": "sonnet",
+                    "review_mode": "",
+                    "reflect": "",
+                }
+            }
+        }
+        with _mock_config(config):
+            result = get_model_config()
+        assert result["mission"] == "opus"
+        assert result["chat"] == "haiku"
+        assert result["lightweight"] == "haiku"
+
+    def test_nested_provider_section(self):
+        """New nested models.{provider} section overrides models.default."""
+        from unittest.mock import patch
+
+        from app.config import get_model_config
+
+        config = {
+            "models": {
+                "default": {"mission": "opus", "chat": "haiku"},
+                "codex": {"mission": "gpt-5.5"},
+            }
+        }
+        with _mock_config(config), patch("app.provider.get_provider_name", return_value="codex"):
+            result = get_model_config()
+        assert result["mission"] == "gpt-5.5"
+        assert result["chat"] == "haiku"  # falls back to default
+
+    def test_nested_per_key_fallback(self):
+        """Key missing from provider section falls back to default."""
+        from unittest.mock import patch
+
+        from app.config import get_model_config
+
+        config = {
+            "models": {
+                "default": {"mission": "opus", "chat": "sonnet", "lightweight": "haiku"},
+                "claude": {"mission": "opus-turbo"},
+            }
+        }
+        with _mock_config(config), patch("app.provider.get_provider_name", return_value="claude"):
+            result = get_model_config()
+        assert result["mission"] == "opus-turbo"
+        assert result["chat"] == "sonnet"
+        assert result["lightweight"] == "haiku"
+
+    def test_nested_provider_with_hyphens_in_name(self):
+        """Nested provider names can use hyphens as literal keys."""
+        from unittest.mock import patch
+
+        from app.config import get_model_config
+
+        config = {
+            "models": {
+                "default": {"mission": "default"},
+                "ollama-launch": {"mission": "llama3"},
+            }
+        }
+        with _mock_config(config), patch("app.provider.get_provider_name", return_value="ollama-launch"):
+            result = get_model_config()
+        assert result["mission"] == "llama3"
+
+
+class TestBackwardCompatNormalization:
+    """Tests for legacy structure detection and normalization."""
+
+    def test_legacy_flat_models_normalized_to_default(self):
+        """Legacy flat models.{role} is normalized to models.default."""
+        from unittest.mock import patch
+        from io import StringIO
+
+        from app.config import get_model_config
+
+        config = {
+            "models": {
+                "mission": "opus",
+                "chat": "haiku",
+                "lightweight": "haiku",
+                "fallback": "sonnet",
+            }
+        }
+        stderr = StringIO()
+        with _mock_config(config), patch("sys.stderr", stderr):
+            # Reset the module-level guard to trigger deprecation warning
+            import app.config
+
+            app.config._MODEL_CONFIG_NORMALIZED = False
+            result = get_model_config()
+
+        assert result["mission"] == "opus"
+        assert result["chat"] == "haiku"
+        assert "DEPRECATED" in stderr.getvalue()
+
+    def test_legacy_models_for_provider_normalized(self):
+        """Legacy top-level models_for_* keys are folded into models.{provider}."""
+        from unittest.mock import patch
+
+        from app.config import get_model_config
+
+        config = {
+            "models": {"mission": "default-mission"},
+            "models_for_codex": {"mission": "gpt-5.5", "chat": "gpt-4"},
+        }
+        with _mock_config(config), patch("app.provider.get_provider_name", return_value="codex"):
+            result = get_model_config()
+        assert result["mission"] == "gpt-5.5"
+        assert result["chat"] == "gpt-4"
+
+    def test_legacy_flat_plus_models_for_provider(self):
+        """Both legacy flat models and models_for_* are normalized together."""
+        from unittest.mock import patch
+
+        from app.config import get_model_config
+
+        config = {
+            "models": {"mission": "default-opus", "chat": "default-haiku"},
+            "models_for_claude": {"mission": "claude-opus"},
+        }
+        with _mock_config(config), patch("app.provider.get_provider_name", return_value="claude"):
+            result = get_model_config()
+        assert result["mission"] == "claude-opus"
+        assert result["chat"] == "default-haiku"
+
+    def test_new_structure_beats_legacy_on_collision(self):
+        """When both legacy and new forms exist, new form (models.provider) wins."""
+        from unittest.mock import patch
+
+        from app.config import get_model_config
+
+        config = {
+            "models": {
+                "mission": "legacy-flat",
+                "default": {"mission": "new-default"},
+                "codex": {"mission": "new-provider"},
+            },
+            "models_for_codex": {"mission": "legacy-provider"},
+        }
+        with _mock_config(config), patch("app.provider.get_provider_name", return_value="codex"):
+            result = get_model_config()
+        # New provider form should win over legacy
+        assert result["mission"] == "new-provider"
+
+    def test_legacy_underscore_normalization_in_top_level_keys(self):
+        """Legacy models_for_ollama_launch key (with underscores) is handled correctly."""
+        from unittest.mock import patch
+
+        from app.config import get_model_config
+
+        config = {
+            "models": {"mission": "default"},
+            "models_for_ollama_launch": {"mission": "llama3"},
+        }
+        with _mock_config(config), patch("app.provider.get_provider_name", return_value="ollama-launch"):
+            result = get_model_config()
+        assert result["mission"] == "llama3"
+
+
+class TestModelConfigScenarios:
+    """End-to-end scenarios requested in review: no models / flat / models_for_* / new nested."""
+
+    def _reset_guard(self):
+        import app.config
+
+        app.config._MODEL_CONFIG_NORMALIZED = False
+
+    def test_scenario_no_models_entry_falls_back_to_defaults(self):
+        """1) No 'models' entry → sane built-in defaults, no warning."""
+        from io import StringIO
+        from unittest.mock import patch
+
+        from app.config import get_model_config
+
+        self._reset_guard()
+        stderr = StringIO()
+        with _mock_config({}), patch("sys.stderr", stderr):
+            result = get_model_config()
+        assert result["mission"] == ""
+        assert result["lightweight"] == "haiku"
+        assert result["fallback"] == "sonnet"
+        assert "DEPRECATED" not in stderr.getvalue()
+
+    def test_scenario_flat_models_only_emits_deprecated(self):
+        """2) Flat models entry only → works and emits DEPRECATED."""
+        from io import StringIO
+        from unittest.mock import patch
+
+        from app.config import get_model_config
+
+        self._reset_guard()
+        stderr = StringIO()
+        config = {"models": {"mission": "opus", "chat": "haiku"}}
+        with _mock_config(config), patch("sys.stderr", stderr):
+            result = get_model_config()
+        assert result["mission"] == "opus"
+        assert result["chat"] == "haiku"
+        assert "DEPRECATED" in stderr.getvalue()
+
+    def test_scenario_models_for_provider_emits_deprecated(self):
+        """3) models_for_FOO entry → works and emits DEPRECATED."""
+        from io import StringIO
+        from unittest.mock import patch
+
+        from app.config import get_model_config
+
+        self._reset_guard()
+        stderr = StringIO()
+        config = {"models_for_claude": {"mission": "opus"}}
+        with (
+            _mock_config(config),
+            patch("sys.stderr", stderr),
+            patch("app.provider.get_provider_name", return_value="claude"),
+        ):
+            result = get_model_config()
+        assert result["mission"] == "opus"
+        assert "DEPRECATED" in stderr.getvalue()
+
+    def test_scenario_new_nested_structure_no_warning(self):
+        """4) Final valid structure models.{harness}.{role} → works, no warning."""
+        from io import StringIO
+        from unittest.mock import patch
+
+        from app.config import get_model_config
+
+        self._reset_guard()
+        stderr = StringIO()
+        config = {
+            "models": {
+                "default": {"mission": "sonnet"},
+                "claude": {"mission": "opus", "chat": "haiku"},
+            }
+        }
+        with (
+            _mock_config(config),
+            patch("sys.stderr", stderr),
+            patch("app.provider.get_provider_name", return_value="claude"),
+        ):
+            result = get_model_config()
+        assert result["mission"] == "opus"
+        assert result["chat"] == "haiku"
+        assert "DEPRECATED" not in stderr.getvalue()
+
+    def test_legacy_flat_does_not_clobber_new_default_on_collision(self):
+        """Legacy flat keys must NOT overwrite an explicit models.default (new wins)."""
+        from unittest.mock import patch
+
+        from app.config import get_model_config
+
+        self._reset_guard()
+        config = {
+            "models": {
+                "mission": "legacy-flat",
+                "default": {"mission": "new-default"},
+            }
+        }
+        with _mock_config(config), patch("app.provider.get_provider_name", return_value="claude"):
+            result = get_model_config()
+        assert result["mission"] == "new-default"
+
+
 # --- get_start_on_pause ---
 
 

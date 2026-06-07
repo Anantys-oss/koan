@@ -165,17 +165,104 @@ def get_chat_suggest_commands_enabled() -> bool:
     return True
 
 
+_MODEL_CONFIG_NORMALIZED = False  # Module-level guard to emit deprecation warnings once per process
+
+
+def _normalize_model_config(config: dict) -> dict:
+    """Normalize legacy flat/models_for_* structure to nested models.default/models.{provider}.
+
+    Returns normalized config dict with models section structure:
+    {
+        "models": {
+            "default": {...},
+            "claude": {...},
+            "codex": {...},
+            ...
+        },
+        ...other config keys...
+    }
+
+    Detects and folds:
+    - Legacy flat models.{role} keys into models.default
+    - Legacy models_for_{provider} top-level keys into models.{provider}
+
+    New structure takes precedence over legacy when both exist (collision handling).
+    """
+    global _MODEL_CONFIG_NORMALIZED
+    normalized = config.copy()
+
+    # Known role keys for legacy flat detection
+    _KNOWN_ROLES = {"mission", "chat", "lightweight", "fallback", "review_mode", "reflect"}
+
+    # Get the current models section
+    models_section = normalized.get("models") or {}
+    if not isinstance(models_section, dict):
+        models_section = {}
+
+    # Detect legacy flat layout: if models section contains role keys, it's flat
+    has_legacy_flat = bool(_KNOWN_ROLES & set(models_section.keys()))
+
+    # Detect legacy provider sections: top-level models_for_* keys
+    legacy_provider_keys = [k for k in normalized.keys() if k.startswith("models_for_")]
+    has_legacy_for = bool(legacy_provider_keys)
+
+    if has_legacy_flat or has_legacy_for:
+        if not _MODEL_CONFIG_NORMALIZED:
+            _MODEL_CONFIG_NORMALIZED = True
+            deprecation_msg = (
+                "[DEPRECATED] Flat 'models:' keys and 'models_for_*' top-level keys detected.\n"
+                "  New structure: nest under 'models.default:' and 'models.{provider}:'.\n"
+                "  See docs/users/model-configuration.md for migration guide."
+            )
+            print(deprecation_msg, file=sys.stderr)
+
+    # Start building normalized nested structure
+    normalized_models = {}
+
+    # Step 1: Resolve the default section. An explicit models.default always wins;
+    # legacy flat roles only seed default when no explicit default exists.
+    if "default" in models_section and isinstance(models_section["default"], dict):
+        normalized_models["default"] = models_section["default"]
+    elif has_legacy_flat:
+        normalized_models["default"] = {k: v for k, v in models_section.items() if k in _KNOWN_ROLES}
+
+    # Step 2: Fold any existing provider sections from the flat models dict
+    for provider_name in models_section.keys():
+        if provider_name not in _KNOWN_ROLES and provider_name != "default":
+            # A provider key (like "claude", "codex") already nested under models
+            if isinstance(models_section[provider_name], dict):
+                normalized_models[provider_name] = models_section[provider_name]
+
+    # Step 3: Fold legacy models_for_* top-level keys
+    for key in legacy_provider_keys:
+        provider_value = normalized.pop(key)
+        if isinstance(provider_value, dict):
+            # Extract provider name from "models_for_<name>" and normalize (underscores only)
+            provider_name = key[len("models_for_") :]  # Already underscores from top-level key
+            # If this provider already exists in normalized_models, new form wins
+            if provider_name not in normalized_models:
+                normalized_models[provider_name] = provider_value
+
+    # Update the models section with normalized structure. Preserve any already-nested
+    # structure and overlay the resolved default/provider sections on top.
+    normalized["models"] = {**models_section, **normalized_models}
+
+    return normalized
+
+
 def get_model_config(project_name: str = "") -> dict:
     """Get model configuration from config.yaml with per-project overrides.
 
     Resolution order for each key:
     1. projects.yaml models.{key} for the project (if set) — highest priority
-    2. config.yaml models_for_{provider}.{key} (provider-specific section)
-    3. config.yaml models.{key} (global fallback)
+    2. config.yaml models.{provider}.{key} (provider-specific nested section)
+    3. config.yaml models.default.{key} (global fallback)
     4. Built-in default
 
-    Provider name is resolved internally via get_provider_name(); hyphens are
-    normalised to underscores (e.g. ``ollama-launch`` → ``models_for_ollama_launch``).
+    Supports both legacy and new config structures:
+    - Legacy flat models.{role} → normalized to models.default.{role}
+    - Legacy models_for_{provider} → normalized to models.{provider}
+    - New nested models.default, models.{provider}
 
     Args:
         project_name: Optional project name for per-project overrides.
@@ -185,6 +272,8 @@ def get_model_config(project_name: str = "") -> dict:
         Empty strings mean "use default model".
     """
     config = _load_config()
+    config = _normalize_model_config(config)
+
     defaults = {
         "mission": "",
         "chat": "",
@@ -193,15 +282,33 @@ def get_model_config(project_name: str = "") -> dict:
         "review_mode": "",
         "reflect": "",  # Model for second-pass reflection; defaults to lightweight when unset
     }
-    # Start with global config
-    global_models = config.get("models", {}) or {}
-    result = {k: global_models.get(k, v) for k, v in defaults.items()}
 
-    # Apply provider-specific section per key (models_for_{provider})
+    # Get normalized models section
+    models_section = config.get("models", {}) or {}
+    if not isinstance(models_section, dict):
+        models_section = {}
+
+    # Get default (fallback) models
+    default_models = models_section.get("default", {}) or {}
+    if not isinstance(default_models, dict):
+        default_models = {}
+
+    # Start with defaults, then apply default models
+    result = {k: default_models.get(k, v) for k, v in defaults.items()}
+
+    # Apply provider-specific section per key
     try:
         from app.provider import get_provider_name
-        provider_key = "models_for_" + get_provider_name().replace("-", "_")
-        provider_models = config.get(provider_key, {}) or {}
+
+        provider_name = get_provider_name()
+        # Try both hyphenated and underscored versions of the provider name
+        # Users can write nested keys as either "ollama-launch" or "ollama_launch"
+        provider_models = models_section.get(provider_name, {}) or {}
+        if not provider_models or not isinstance(provider_models, dict):
+            # Try underscore version if hyphenated didn't work
+            provider_key = provider_name.replace("-", "_")
+            provider_models = models_section.get(provider_key, {}) or {}
+
         if isinstance(provider_models, dict):
             for key in defaults:
                 if key in provider_models:
