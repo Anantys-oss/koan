@@ -223,10 +223,13 @@ def _launch_web(koan_root: Path) -> int:
 
 
 def _launch_terminal(koan_root: Path) -> int:
-    _start_stack(koan_root)
+    results = _start_stack(koan_root)
+    failed = [name for name, (ok, _) in results.items() if not ok]
+    if failed:
+        print(f"  {amber('some components did not start:')} {text(', '.join(failed))}")
     try:
         from app.tui_dashboard import run as run_tui
-    except Exception:
+    except (ImportError, ModuleNotFoundError):
         print(f"  {amber('terminal dashboard unavailable')} "
               f"{muted('(install textual: pip install textual) — falling back to logs')}")
         print(f"  {muted('run')} {text('make logs')} {muted('to follow output')}")
