@@ -99,7 +99,7 @@ fast_reply: false
 # chat:
 #   # Suggest matching slash commands from natural language (default: true)
 #   # When a user's conversational message maps to a slash command, the chat will
-#   # suggest it (e.g. "That sounds like /resume_recurring — want me to queue it?")
+#   # suggest it (e.g. "That sounds like /recurring resume — want me to queue it?")
 #   suggest_commands: true
 
 # Debug mode — write detailed mission execution logs to .koan-debug.log

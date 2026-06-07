@@ -22,6 +22,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from datetime import date, datetime
 from pathlib import Path
 from typing import Dict, Optional, Tuple
@@ -300,8 +301,9 @@ def _build_command_catalog() -> str:
             # Pick the first command (primary command)
             if skill.commands:
                 cmd = skill.commands[0]
-                # Keep descriptions compact (~70 chars max)
-                desc = cmd.description[:70] if cmd.description else skill.description[:70]
+                # Keep descriptions compact (~70 chars max); tolerate None
+                raw_desc = cmd.description or skill.description or ""
+                desc = raw_desc[:70]
                 groups_dict[skill.group].append(f"/{cmd.name} — {desc}")
 
         # Build final catalog text
@@ -321,8 +323,10 @@ def _build_command_catalog() -> str:
             f"at most one suggestion per message, only when the mapping is clear. "
             f"Never claim you executed it — the human always runs commands."
         )
-    except Exception as e:
-        log("warn", f"[chat] catalog builder failed: {e}")
+    except Exception:
+        # Log full traceback at error level so persistent registry bugs surface
+        # in normal monitoring instead of silently degrading to 'disabled'.
+        log("error", f"[chat] catalog builder failed:\n{traceback.format_exc()}")
         return ""
 
 
