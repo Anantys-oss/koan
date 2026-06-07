@@ -368,7 +368,12 @@ class KoanDashboard(App):
             tagged = _tail(logs_dir / name, _LOG_TAIL_LINES // 2)
             lines.extend(f"[{name[:-4]}] {ln.rstrip()}" for ln in tagged)
         body = "\n".join(lines[-_LOG_TAIL_LINES:]) or "no logs yet — is Kōan running?"
-        self.query_one("#logs-body", Static).update(body)
+        # Logs carry raw ANSI and brackets ("[run]", "=== Run ===") that would
+        # be mis-parsed as rich markup. Render via Text.from_ansi: it treats the
+        # content as literal text and converts ANSI escapes into real styling.
+        from rich.text import Text
+
+        self.query_one("#logs-body", Static).update(Text.from_ansi(body))
 
     # --- config tree --------------------------------------------------------
 

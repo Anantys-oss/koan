@@ -166,3 +166,26 @@ def test_pilot_bool_toggles_with_space_and_enter(tmp_path):
             assert yaml.safe_load(cfg.read_text())["auto_update"]["enabled"] is False
 
     asyncio.run(scenario())
+
+
+def test_pilot_logs_with_ansi_and_brackets_do_not_crash(tmp_path):
+    _write_config(tmp_path, "x: 1\n")
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    # Real-world log line: ANSI codes + bracket tokens that look like markup.
+    (logs / "run.log").write_text(
+        "\x1b[36m=== Run 1/10 — 2026-06-07 19:13:45 ===\x1b[0m\n"
+        "[run] picking mission [project:my-app]\n"
+    )
+    (logs / "awake.log").write_text("\x1b[34m[init]\x1b[0m Token: abc\n")
+
+    async def scenario():
+        app = tui.KoanDashboard(tmp_path)
+        async with app.run_test() as pilot:
+            # Before the fix this raised MarkupError; reaching the assert means
+            # the ANSI/bracket content rendered as literal text.
+            app.refresh_dynamic()
+            await pilot.pause()
+            app._render_logs()  # second pass also clean
+
+    asyncio.run(scenario())
