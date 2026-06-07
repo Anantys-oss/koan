@@ -36,6 +36,7 @@ from typing import Optional, Set
 
 from app.github_config import DEFAULT_WEBHOOK_HOST, DEFAULT_WEBHOOK_PORT
 from app.signals import CHECK_NOTIFICATIONS_FILE
+from app.utils import atomic_write
 
 log = logging.getLogger(__name__)
 
@@ -151,8 +152,8 @@ def write_check_signal(koan_root: str) -> bool:
     """
     signal_path = os.path.join(str(koan_root), CHECK_NOTIFICATIONS_FILE)
     try:
-        with open(signal_path, "w") as f:
-            f.write(f"github webhook at {time.strftime('%H:%M:%S')}\n")
+        from pathlib import Path
+        atomic_write(Path(signal_path), f"github webhook at {time.strftime('%H:%M:%S')}\n")
         return True
     except OSError as e:
         log.warning("Webhook: failed to write check-notifications signal: %s", e)

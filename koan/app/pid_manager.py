@@ -163,6 +163,9 @@ def acquire_pidfile(koan_root: Path, process_name: str) -> IO:
         msg += ". Aborting."
         print(msg, file=sys.stderr)
         sys.exit(1)
+    except BaseException:
+        fh.close()
+        raise
 
     # Lock acquired — write our PID
     fh.seek(0)

@@ -685,7 +685,9 @@ def _persist_and_cache_remotes(
             print(f"[utils] Failed to cache github_url for {name}: {e}", file=sys.stderr)
 
 
-def _resolve_via_fork_parent(target: str, projects: list) -> Optional[str]:
+def _resolve_via_fork_parent(
+    target: str, projects: list, config: Optional[dict] = None
+) -> Optional[str]:
     """Resolve a GitHub repo via its fork parent.
 
     When ``target`` (owner/repo) isn't found in any local remote, ask GitHub
@@ -708,11 +710,12 @@ def _resolve_via_fork_parent(target: str, projects: list) -> Optional[str]:
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return None
 
-    from app.projects_config import load_projects_config
-    try:
-        config = load_projects_config(str(KOAN_ROOT))
-    except (OSError, ValueError):
-        return None
+    if config is None:
+        from app.projects_config import load_projects_config
+        try:
+            config = load_projects_config(str(KOAN_ROOT))
+        except (OSError, ValueError):
+            return None
     if not config:
         return None
 
@@ -771,13 +774,17 @@ def resolve_project_path(repo_name: str, owner: Optional[str] = None) -> Optiona
     projects = get_known_projects()
     target = f"{owner}/{repo_name}".lower() if owner else None
 
+    # Config loaded once at step 1 and reused at steps 6 and 7 to avoid
+    # triple-parsing projects.yaml on the same call.
+    _projects_config: Optional[dict] = None
+
     # 1. GitHub URL match via projects.yaml and in-memory cache
     if target:
         try:
             from app.projects_config import load_projects_config
-            config = load_projects_config(str(KOAN_ROOT))
-            if config:
-                for project in config.get("projects", {}).values():
+            _projects_config = load_projects_config(str(KOAN_ROOT))
+            if _projects_config:
+                for project in _projects_config.get("projects", {}).values():
                     if isinstance(project, dict):
                         # Check primary github_url
                         gh_url = project.get("github_url", "")
@@ -860,8 +867,7 @@ def resolve_project_path(repo_name: str, owner: Optional[str] = None) -> Optiona
     if target:
         repo_lower = repo_name.lower()
         try:
-            from app.projects_config import load_projects_config
-            config = load_projects_config(str(KOAN_ROOT))
+            config = _projects_config
             if config:
                 candidates = []
                 for project in config.get("projects", {}).values():
@@ -886,7 +892,7 @@ def resolve_project_path(repo_name: str, owner: Optional[str] = None) -> Optiona
     # 7. Fork resolution via GitHub API: when the URL points to a fork not
     #    in any local remote, ask GitHub for the parent repo and try matching.
     if target:
-        resolved = _resolve_via_fork_parent(target, projects)
+        resolved = _resolve_via_fork_parent(target, projects, config=_projects_config)
         if resolved:
             return resolved
 
