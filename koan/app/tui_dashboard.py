@@ -35,6 +35,7 @@ from textual.widgets import (
     Static,
     TabbedContent,
     TabPane,
+    Tabs,
     Tree,
 )
 
@@ -205,6 +206,9 @@ class KoanDashboard(App):
 
     BINDINGS = [
         ("q", "quit", "Quit"),
+        ("1", "show('logs')", "Logs"),
+        ("2", "show('config')", "Config"),
+        ("3", "show('usage')", "Usage"),
         ("p", "pause", "Pause Kōan"),
         ("r", "refresh", "Refresh"),
     ]
@@ -251,6 +255,22 @@ class KoanDashboard(App):
     def action_refresh(self) -> None:
         self._build_config_tree()
         self.refresh_dynamic()
+
+    def action_show(self, pane: str) -> None:
+        """Switch tabs via 1/2/3 — works even while the config tree has focus."""
+        try:
+            self.query_one(TabbedContent).active = pane
+        except Exception as exc:
+            self.log(f"tab switch failed: {exc}")
+            return
+        if pane == "config":
+            self._focus_config_tree()
+        else:
+            # Move focus off the (now hidden) tree so it stops eating keys.
+            try:
+                self.query_one(Tabs).focus()
+            except Exception as exc:
+                self.log(f"tab focus failed: {exc}")
 
     def action_pause(self) -> None:
         try:
@@ -312,7 +332,7 @@ class KoanDashboard(App):
         from app.pause_manager import is_paused
 
         state = "paused" if is_paused(str(self.koan_root)) else "live"
-        self.sub_title = f"{state} · run + awake · enter edits config · p pauses"
+        self.sub_title = f"{state} · 1/2/3 tabs · enter edits config · p pauses · q quits"
 
     def _render_logs(self) -> None:
         logs_dir = self.koan_root / "logs"

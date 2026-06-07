@@ -110,3 +110,21 @@ def test_pilot_config_tab_focuses_tree_and_arrows_move(tmp_path):
             assert tree.cursor_line != start  # arrows browse the tree
 
     asyncio.run(scenario())
+
+
+def test_pilot_can_leave_config_tab_via_number_keys(tmp_path):
+    _write_config(tmp_path, "a:\n  one: 1\n  two: 2\n")
+
+    async def scenario():
+        app = tui.KoanDashboard(tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.press("2")  # to config — tree takes focus
+            await pilot.pause()
+            tree = app.query_one("#config-tree", tui.Tree)
+            assert app.focused is tree
+            await pilot.press("1")  # back to logs even though tree had focus
+            await pilot.pause()
+            assert app.query_one(tui.TabbedContent).active == "logs"
+            assert app.focused is not tree  # tree no longer traps keys
+
+    asyncio.run(scenario())

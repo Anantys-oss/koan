@@ -36,6 +36,11 @@ action is `p` (pause), which writes `.koan-pause` through the same helper the
 bridge uses. `textual` is installed by `make setup`; if absent, the launcher
 falls back to `make logs`.
 
+Keys: `1`/`2`/`3` switch to Logs/Config/Usage (these work even while the
+config tree holds keyboard focus), arrow keys browse the focused config tree,
+Enter (or click) edits the selected scalar, `p` pauses, `r` reloads, `q` quits.
+The Config tab edits `instance/config.yaml` in place, preserving comments.
+
 ## Theme
 
 The Anantys palette and helpers live in `koan/app/banners/theme.py` (truecolor
