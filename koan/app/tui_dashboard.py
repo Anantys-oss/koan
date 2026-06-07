@@ -32,6 +32,7 @@ from textual.widgets import (
     Header,
     Input,
     Label,
+    RichLog,
     Static,
     TabbedContent,
     TabPane,
@@ -224,7 +225,7 @@ class KoanDashboard(App):
         yield Header(show_clock=True)
         with TabbedContent(initial="logs"):
             with TabPane("Logs", id="logs"):
-                yield Container(Static(id="logs-body", classes="pane"))
+                yield RichLog(id="logs-body", classes="pane", markup=False, auto_scroll=True)
             with TabPane("Config", id="config"):
                 yield Tree("config.yaml", id="config-tree")
                 yield Static(id="config-status", classes="pane")
@@ -373,7 +374,9 @@ class KoanDashboard(App):
         # content as literal text and converts ANSI escapes into real styling.
         from rich.text import Text
 
-        self.query_one("#logs-body", Static).update(Text.from_ansi(body))
+        log_widget = self.query_one("#logs-body", RichLog)
+        log_widget.clear()
+        log_widget.write(Text.from_ansi(body))
 
     # --- config tree --------------------------------------------------------
 
