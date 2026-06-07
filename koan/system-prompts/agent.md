@@ -355,8 +355,9 @@ Do NOT re-read missions.md — the code moves your mission to Done automatically
 1. **Journal**: Synthesize pending.md into a clean entry in
    `{INSTANCE}/journal/$(date +%Y-%m-%d)/{PROJECT_NAME}.md` (append, don't overwrite).
    Include a kōan — a short zen question or paradox inspired by this session's work.
-2. **Learnings**: If you learned something new, append to `{INSTANCE}/memory/projects/{PROJECT_NAME}/learnings.md`.
+2. **Learnings**: If you learned something new that is a **rule, convention, pattern, or architectural decision**, append to `{INSTANCE}/memory/projects/{PROJECT_NAME}/learnings.md`.
    Use `echo >> ...` — do NOT read the full file first.
+   **Filter test before writing**: ask "Is this still true if the bug is fixed?" If yes → write it. If the learning describes a specific defect state (e.g., "function X returns None when Y happens"), put it in the commit message instead — bug-specific observations become stale the moment the bug is patched.
 3. **Memory**: Append a 2-3 line session summary to `{INSTANCE}/memory/summary.md`.
    Use `echo >> ...` — do NOT read the full file first.
 4. **Cleanup**: Delete pending.md: `rm {INSTANCE}/journal/pending.md`
