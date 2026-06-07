@@ -24,6 +24,7 @@ from app.cost_tracker import (
     format_cache_summary,
     format_mission_cache_line,
     top_missions,
+    compute_efficiency,
     _read_jsonl_for_date,
     _read_jsonl_range,
     _aggregate,
@@ -1189,3 +1190,107 @@ class TestTopMissions:
                 result = top_missions(instance_dir, today, today)
         assert result[0]["cost_usd"] == 0.0
         assert len(call_count) == 0
+
+
+class TestComputeEfficiency:
+    def _write_outcomes(self, instance_dir, outcomes):
+        (instance_dir / "session_outcomes.json").write_text(json.dumps(outcomes))
+
+    def _write_usage(self, instance_dir, entries):
+        today = date.today()
+        usage_dir = instance_dir / "usage"
+        usage_dir.mkdir(parents=True, exist_ok=True)
+        jsonl_path = usage_dir / f"{today.isoformat()}.jsonl"
+        with open(jsonl_path, "a") as f:
+            for entry in entries:
+                f.write(json.dumps(entry) + "\n")
+
+    def _make_outcome(self, project, outcome):
+        return {
+            "timestamp": datetime.now().isoformat(),
+            "project": project,
+            "mode": "implement",
+            "outcome": outcome,
+            "mission_type": "implement",
+            "has_pr": False,
+            "has_branch": False,
+            "duration_minutes": 10,
+            "pipeline_timed_out": False,
+            "summary": "",
+        }
+
+    def test_basic_join(self, instance_dir):
+        self._write_usage(instance_dir, [
+            {"ts": datetime.now().isoformat(), "project": "alpha", "model": "sonnet",
+             "input_tokens": 9000, "output_tokens": 1000, "mode": "implement", "mission": "x"},
+        ])
+        self._write_outcomes(instance_dir, [
+            self._make_outcome("alpha", "productive"),
+            self._make_outcome("alpha", "empty"),
+        ])
+        result = compute_efficiency(instance_dir, days=7)
+        assert "alpha" in result["by_project"]
+        p = result["by_project"]["alpha"]
+        assert p["total_tokens"] == 10000
+        assert p["productive_count"] == 1
+        assert p["empty_count"] == 1
+        assert p["total_sessions"] == 2
+        assert p["tokens_per_productive_outcome"] == 10000.0
+        assert p["waste_pct"] == 50.0
+
+    def test_zero_productive_sessions(self, instance_dir):
+        self._write_usage(instance_dir, [
+            {"ts": datetime.now().isoformat(), "project": "beta", "model": "sonnet",
+             "input_tokens": 5000, "output_tokens": 1000, "mode": "review", "mission": "y"},
+        ])
+        self._write_outcomes(instance_dir, [
+            self._make_outcome("beta", "empty"),
+            self._make_outcome("beta", "blocked"),
+        ])
+        result = compute_efficiency(instance_dir, days=7)
+        p = result["by_project"]["beta"]
+        assert p["tokens_per_productive_outcome"] is None
+        assert p["waste_pct"] == 100.0
+
+    def test_project_only_in_cost_data(self, instance_dir):
+        self._write_usage(instance_dir, [
+            {"ts": datetime.now().isoformat(), "project": "gamma", "model": "sonnet",
+             "input_tokens": 1000, "output_tokens": 500, "mode": "implement", "mission": "z"},
+        ])
+        self._write_outcomes(instance_dir, [])
+        result = compute_efficiency(instance_dir, days=7)
+        assert "gamma" in result["by_project"]
+        p = result["by_project"]["gamma"]
+        assert p["total_tokens"] == 1500
+        assert p["tokens_per_productive_outcome"] is None
+        assert p["waste_pct"] == 0.0
+
+    def test_project_only_in_outcome_data(self, instance_dir):
+        self._write_outcomes(instance_dir, [
+            self._make_outcome("delta", "productive"),
+        ])
+        result = compute_efficiency(instance_dir, days=7)
+        assert "delta" in result["by_project"]
+        p = result["by_project"]["delta"]
+        assert p["total_tokens"] == 0
+        assert p["tokens_per_productive_outcome"] is None
+
+    def test_project_filter(self, instance_dir):
+        self._write_usage(instance_dir, [
+            {"ts": datetime.now().isoformat(), "project": "alpha", "model": "sonnet",
+             "input_tokens": 1000, "output_tokens": 500, "mode": "implement", "mission": "x"},
+            {"ts": datetime.now().isoformat(), "project": "beta", "model": "sonnet",
+             "input_tokens": 2000, "output_tokens": 1000, "mode": "deep", "mission": "y"},
+        ])
+        self._write_outcomes(instance_dir, [
+            self._make_outcome("alpha", "productive"),
+            self._make_outcome("beta", "productive"),
+        ])
+        result = compute_efficiency(instance_dir, days=7, project="alpha")
+        assert "alpha" in result["by_project"]
+        assert "beta" not in result["by_project"]
+
+    def test_no_data_returns_empty(self, instance_dir):
+        result = compute_efficiency(instance_dir, days=7)
+        assert result["by_project"] == {}
+        assert result["days"] == 7

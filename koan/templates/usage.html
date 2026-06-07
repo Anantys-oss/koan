@@ -256,6 +256,18 @@
     <div class="empty-state" id="last-action-empty" style="display:none;width:100%;">No last-action data available.</div>
 </div>
 
+<h2>Token Efficiency <span style="font-size:var(--fs-caption);color:var(--text-muted);font-weight:normal;">tokens per productive outcome — lower is better</span></h2>
+<div class="card">
+    <div class="chart-container" style="height:240px;">
+        <canvas id="efficiency-chart"></canvas>
+    </div>
+    <div class="empty-state" id="efficiency-empty" style="display:none;">No efficiency data available for this period.</div>
+    <p style="font-size:var(--fs-caption);color:var(--text-muted);margin-top:0.75rem;margin-bottom:0;">
+        Approximation: token spend is distributed evenly across sessions for each project.
+        Projects with fewer than 3 productive sessions are shown but should be interpreted with caution.
+    </p>
+</div>
+
 <h2>By Project</h2>
 <div class="card" id="by-project-card">
     <div class="k-table-wrap">
@@ -270,6 +282,7 @@
                 <th class="text-right">Runs</th>
                 <th class="text-right">Cache Hit %</th>
                 <th class="text-right">Success</th>
+                <th class="text-right">Waste %</th>
                 <th class="text-right">Trend</th>
             </tr>
         </thead>
@@ -306,6 +319,7 @@ let outcomeChart = null;
 let typeChart = null;
 let modeChart = null;
 let lastActionChart = null;
+let efficiencyChart = null;
 let currentProject = '';
 let windowOffset = 0;
 
@@ -995,6 +1009,83 @@ function resortModeTable() {
     rows.forEach(r => tbody.appendChild(r));
 }
 
+function renderEfficiencyChart(byProject) {
+    const canvas = document.getElementById('efficiency-chart');
+    const emptyEl = document.getElementById('efficiency-empty');
+
+    // Filter to projects with token data, sort ascending (lower = better)
+    const entries = Object.entries(byProject)
+        .filter(([, p]) => p.total_tokens > 0 && p.tokens_per_productive_outcome !== null)
+        .sort((a, b) => a[1].tokens_per_productive_outcome - b[1].tokens_per_productive_outcome)
+        .slice(0, 15);
+
+    if (entries.length === 0) {
+        canvas.style.display = 'none';
+        emptyEl.style.display = '';
+        if (efficiencyChart) { efficiencyChart.destroy(); efficiencyChart = null; }
+        return;
+    }
+    canvas.style.display = '';
+    emptyEl.style.display = 'none';
+
+    const labels = entries.map(([name]) => name);
+    const values = entries.map(([, p]) => p.tokens_per_productive_outcome);
+    const productive = entries.map(([, p]) => p.productive_count);
+
+    // Color bars by productive count: green if >= 5, yellow if 2-4, orange if < 2
+    const colors = entries.map(([, p]) =>
+        p.productive_count >= 5 ? 'rgba(63,185,80,0.75)' :
+        p.productive_count >= 2 ? 'rgba(210,153,34,0.75)' :
+        'rgba(255,168,87,0.75)'
+    );
+
+    const ctx = canvas.getContext('2d');
+    if (efficiencyChart) efficiencyChart.destroy();
+    efficiencyChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels,
+            datasets: [{
+                label: 'Tokens / productive outcome',
+                data: values,
+                backgroundColor: colors,
+                borderWidth: 0,
+            }]
+        },
+        options: {
+            indexAxis: 'y',
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    callbacks: {
+                        label(ctx) {
+                            const idx = ctx.dataIndex;
+                            const v = ctx.parsed.x;
+                            const prod = productive[idx];
+                            return [
+                                fmtTokens(Math.round(v)) + ' tokens / productive outcome',
+                                prod + ' productive session' + (prod === 1 ? '' : 's'),
+                            ];
+                        }
+                    }
+                }
+            },
+            scales: {
+                x: {
+                    ticks: { color: 'var(--text-muted)', callback: v => fmtTokens(v) },
+                    grid: { color: 'rgba(255,255,255,0.04)' },
+                },
+                y: {
+                    ticks: { color: 'var(--text-muted)', font: { size: 12 } },
+                    grid: { display: false },
+                }
+            }
+        }
+    });
+}
+
 function loadAll() {
     _lastMissionParams = null;
     const days = document.getElementById('range-select').value;
@@ -1051,7 +1142,7 @@ function loadAll() {
             const projects = Object.entries(data.by_project)
                 .sort((a, b) => (b[1].input_tokens + b[1].output_tokens) - (a[1].input_tokens + a[1].output_tokens));
             if (projects.length === 0) {
-                pTbody.innerHTML = '<tr><td colspan="9" class="empty-state">No data</td></tr>';
+                pTbody.innerHTML = '<tr><td colspan="10" class="empty-state">No data</td></tr>';
             }
             const hasPricing = data.has_pricing;
             for (const [name, p] of projects) {
@@ -1073,6 +1164,7 @@ function loadAll() {
                     '<td class="text-right">' + p.count + '</td>' +
                     '<td class="text-right">' + cacheHitPct + '</td>' +
                     '<td class="text-right">' + successCell + '</td>' +
+                    '<td class="text-right" data-waste>-</td>' +
                     '<td class="text-right">' + trendCell + '</td>' +
                     '</tr>';
             }
@@ -1120,12 +1212,35 @@ function loadAll() {
                     const pm = metrics.by_project[proj];
                     if (!pm) return;
                     const cells = row.querySelectorAll('td');
-                    if (cells.length >= 9) {
+                    if (cells.length >= 10) {
                         cells[7].textContent = (pm.success_rate * 100).toFixed(0) + '%';
-                        cells[8].innerHTML = trendBadge(pm.trend);
+                        cells[9].innerHTML = trendBadge(pm.trend);
                     }
                 });
             }
+        })
+        .catch(() => {});
+
+    fetch('/api/efficiency?days=' + days + projParam)
+        .then(r => r.json())
+        .then(eff => {
+            renderEfficiencyChart(eff.by_project || {});
+            // Populate Waste % cells in by-project table
+            document.querySelectorAll('#by-project tbody tr').forEach(row => {
+                const linkEl = row.querySelector('.project-link');
+                if (!linkEl) return;
+                const proj = linkEl.dataset.project;
+                const ep = (eff.by_project || {})[proj];
+                if (!ep) return;
+                const wasteCell = row.querySelector('[data-waste]');
+                if (wasteCell) {
+                    wasteCell.textContent = ep.waste_pct.toFixed(0) + '%';
+                    const color = ep.waste_pct >= 50
+                        ? 'var(--warning)' : ep.waste_pct >= 25
+                        ? 'var(--text-muted)' : 'var(--success)';
+                    wasteCell.style.color = color;
+                }
+            });
         })
         .catch(() => {});
 }

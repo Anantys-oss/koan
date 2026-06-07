@@ -707,6 +707,137 @@ def _format_tokens(n: int) -> str:
     return str(n)
 
 
+def compute_efficiency(
+    instance_dir: Path,
+    days: int = 30,
+    project: Optional[str] = None,
+) -> dict:
+    """Join cost data and session outcomes to compute per-project token efficiency.
+
+    Efficiency = tokens spent per productive outcome. Lower is better.
+    Waste % = fraction of sessions (by count) that were empty or blocked,
+    used as a proxy for wasted token spend (exact per-session attribution
+    is unavailable without a shared session_id across both stores).
+
+    Args:
+        instance_dir: Path to instance directory.
+        days: Number of days to look back (max 90).
+        project: Optional project name to filter to a single project.
+
+    Returns:
+        Dict with keys:
+            "days": days requested,
+            "by_project": {
+                project_name: {
+                    "total_tokens": int,
+                    "total_cost_usd": float,
+                    "productive_count": int,
+                    "empty_count": int,
+                    "blocked_count": int,
+                    "total_sessions": int,
+                    "tokens_per_productive_outcome": float | None,
+                    "waste_pct": float,  # 0-100
+                }
+            }
+    """
+    from app.session_tracker import load_outcomes
+
+    days = max(1, min(days, 90))
+    end = date.today()
+    start = end - timedelta(days=days - 1)
+
+    # --- Cost data: total tokens + cost per project ---
+    usage_dir = Path(instance_dir) / "usage"
+    entries = _read_jsonl_range(usage_dir, start, end)
+    if project:
+        entries = [e for e in entries if e.get("project") == project]
+
+    cost_by_project: dict = {}
+    for e in entries:
+        proj = e.get("project", "_global")
+        if proj not in cost_by_project:
+            cost_by_project[proj] = {"total_tokens": 0, "total_cost_usd": 0.0}
+        cost_by_project[proj]["total_tokens"] += (
+            e.get("input_tokens", 0) + e.get("output_tokens", 0)
+        )
+        cost_by_project[proj]["total_cost_usd"] += e.get("cost_usd", 0.0)
+
+    # --- Outcome data: productive/empty/blocked counts per project ---
+    outcomes_path = Path(instance_dir) / "session_outcomes.json"
+    all_outcomes = load_outcomes(outcomes_path)
+
+    # Filter by date window
+    cutoff = datetime.combine(start, datetime.min.time())
+    windowed = [
+        o for o in all_outcomes
+        if _parse_outcome_ts(o.get("timestamp", "")) >= cutoff
+    ]
+    if project:
+        windowed = [o for o in windowed if o.get("project") == project]
+
+    outcome_by_project: dict = {}
+    for o in windowed:
+        proj = o.get("project", "_global")
+        if proj not in outcome_by_project:
+            outcome_by_project[proj] = {
+                "productive_count": 0, "empty_count": 0, "blocked_count": 0,
+            }
+        outcome = o.get("outcome", "")
+        if outcome == "productive":
+            outcome_by_project[proj]["productive_count"] += 1
+        elif outcome == "empty":
+            outcome_by_project[proj]["empty_count"] += 1
+        elif outcome == "blocked":
+            outcome_by_project[proj]["blocked_count"] += 1
+
+    # --- Join on project key ---
+    all_projects = set(cost_by_project) | set(outcome_by_project)
+    by_project = {}
+    for proj in sorted(all_projects):
+        cost_data = cost_by_project.get(proj, {"total_tokens": 0, "total_cost_usd": 0.0})
+        outcome_data = outcome_by_project.get(proj, {
+            "productive_count": 0, "empty_count": 0, "blocked_count": 0,
+        })
+
+        has_cost_data = proj in cost_by_project
+        total_tokens = cost_data["total_tokens"]
+        productive = outcome_data["productive_count"]
+        empty = outcome_data["empty_count"]
+        blocked = outcome_data["blocked_count"]
+        total_sessions = productive + empty + blocked
+
+        tokens_per_productive = (
+            total_tokens / productive
+            if productive > 0 and has_cost_data
+            else None
+        )
+        waste_pct = (
+            round((empty + blocked) / total_sessions * 100, 1)
+            if total_sessions > 0 else 0.0
+        )
+
+        by_project[proj] = {
+            "total_tokens": total_tokens,
+            "total_cost_usd": round(cost_data["total_cost_usd"], 6),
+            "productive_count": productive,
+            "empty_count": empty,
+            "blocked_count": blocked,
+            "total_sessions": total_sessions,
+            "tokens_per_productive_outcome": tokens_per_productive,
+            "waste_pct": waste_pct,
+        }
+
+    return {"days": days, "by_project": by_project}
+
+
+def _parse_outcome_ts(ts_str: str) -> datetime:
+    """Parse an ISO timestamp string from session_outcomes.json, returning epoch on error."""
+    try:
+        return datetime.fromisoformat(ts_str)
+    except (ValueError, TypeError):
+        return datetime.min
+
+
 def get_pricing_config(config: Optional[dict] = None) -> Optional[dict]:
     """Get pricing table from config.yaml → usage.pricing.
 
