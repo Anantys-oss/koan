@@ -84,6 +84,7 @@ _CANONICAL_RUNNERS = {
     "spec_audit": "skills.core.spec_audit.spec_audit_runner",
     "explain": "skills.core.explain.explain_runner",
     "deep": "skills.core.deep.deep_runner",
+    "sdlc_phase": "skills.core.sdlc.sdlc_phase_runner",
 }
 
 # Alias -> canonical command name. Declared once, expanded into
@@ -400,6 +401,9 @@ def build_skill_command(
         ),
         "deep": lambda: _build_ai_cmd(base_cmd, args, project_name, project_path, instance_dir),
         "explain": lambda: _build_explain_cmd(base_cmd, args, project_path, project_name),
+        "sdlc_phase": lambda: _build_sdlc_phase_cmd(
+            base_cmd, args, project_name, project_path, instance_dir,
+        ),
     }
     def _audit_builder():
         return _build_audit_cmd(
@@ -949,6 +953,30 @@ def _build_generic_runner_cmd(
     return cmd
 
 
+def _build_sdlc_phase_cmd(
+    base_cmd: List[str],
+    args: str,
+    project_name: str,
+    project_path: str,
+    instance_dir: str,
+) -> Optional[List[str]]:
+    """Build sdlc_phase_runner command.
+
+    The issue_name is the first token in *args*.  The runner reads STATE.json
+    to determine the current phase and executes the appropriate prompt.
+    """
+    cleaned = strip_all_lifecycle_markers(args).strip()
+    issue_name = cleaned.split()[0] if cleaned.split() else ""
+    if not issue_name:
+        return None
+    return base_cmd + [
+        "--issue-name", issue_name,
+        "--project-path", project_path,
+        "--project-name", project_name,
+        "--instance-dir", instance_dir,
+    ]
+
+
 def cleanup_skill_temp_files(skill_cmd: List[str]) -> None:
     """Remove temp files created by skill command builders.
 
@@ -1012,6 +1040,10 @@ def validate_skill_args(command: str, args: str) -> Optional[str]:
                 f"/{command} requires a GitHub PR or issue URL "
                 f"(e.g. https://github.com/owner/repo/pull/42)"
             )
+    elif canonical == "sdlc_phase":
+        cleaned = strip_all_lifecycle_markers(args).strip()
+        if not cleaned.split():
+            return "/sdlc_phase requires an issue name (e.g. /sdlc_phase my-feature)"
 
     return None
 

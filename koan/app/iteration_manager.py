@@ -1445,6 +1445,29 @@ def plan_iteration(
     else:
         _log_iteration("koan", "No pending mission — entering autonomous mode")
 
+    # Step 4b-sdlc: SDLC approval gate — sentinel missions must never execute.
+    # The human must send /approve <issue-name> to advance.
+    if mission_project and mission_title and "[sdlc:awaiting-approval:" in mission_title:
+        _log_iteration(
+            "koan",
+            f"SDLC awaiting approval for '{mission_title}' — skipping execution",
+        )
+        return _make_result(
+            action="sdlc_wait",
+            project_name=mission_project,
+            project_path="",
+            mission_title=mission_title,
+            autonomous_mode=autonomous_mode,
+            focus_area="Waiting for SDLC approval — reply /approve <issue-name>",
+            available_pct=available_pct,
+            decision_reason="SDLC approval sentinel — waiting for /approve",
+            display_lines=display_lines,
+            recurring_injected=recurring_injected,
+            focus_remaining=None,
+            schedule_mode=schedule_state.mode if schedule_state else "normal",
+            tracker_error=tracker_error,
+        )
+
     # Step 4b: Passive mode gate — block all execution
     # Missions stay Pending, no autonomous work. Must check before start_mission().
     passive_state = _check_passive(koan_root)

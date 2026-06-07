@@ -1860,6 +1860,23 @@ projects:
 - `/psecu webapp focus on token handling limit=3` — Focused review, kept off GitHub
 </details>
 
+### SDLC Orchestrator
+
+**`/sdlc`** — Run a full software development lifecycle for a GitHub issue. Kōan works through phases sequentially (Research → Architecture → Planning → [human approval] → Implementation → Review → Documentation → Production Ready), pausing for your sign-off before writing any code.
+
+- **Usage:** `/sdlc <issue-name> ["description"]`
+- **Flags:** `--resume` (re-queue current phase), `--plan` (jump to planning), `--implement` (jump to implementation), `--review` (jump to review), `--approve` (approve plan and start implementation)
+- **Approval flow:** When planning completes, Kōan posts the plan and waits. Reply `/approve <issue-name>` to proceed or `/reject <issue-name>` to abandon.
+
+<details>
+<summary>Use cases</summary>
+
+- `/sdlc add-oauth2 "Add OAuth2 login support"` — Start a full SDLC workflow for a new feature
+- `/sdlc add-oauth2 --resume` — Re-queue the current phase if it was skipped
+- `/approve add-oauth2` — Approve the plan and start implementation
+- `/reject add-oauth2` — Abandon the workflow
+</details>
+
 ### Incident Triage
 
 **`/incident`** — Triage a production error from a stack trace or log snippet. Kōan will parse the error, identify the root cause, propose a fix with tests, and submit a draft PR.
@@ -1997,6 +2014,9 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/tech_debt [project]` | `/td`, `/debt` | P | Scan project for tech debt |
 | `/dead_code [project]` | `/dc` | P | Scan for unused code |
 | `/spec_audit [project]` | `/sa`, `/drift` | P | Audit docs/code alignment, queue fix missions |
+| `/sdlc <issue-name> [description]` | — | P | Run full SDLC workflow (Research→Architecture→Planning→[approval]→Implementation→Review→Docs) |
+| `/approve <issue-name>` | — | P | Approve SDLC plan and start implementation |
+| `/reject <issue-name>` | — | P | Reject SDLC plan and abandon workflow |
 | `/incident <error>` | — | P | Triage a production error |
 | `/scaffold_skill <scope> <name> <desc>` | `/scaffold`, `/new_skill` | P | Generate SKILL.md + handler.py for a new custom skill |
 | `/rtk [setup\|uninstall\|gain\|on\|off]` | — | P | Manage optional [rtk](https://github.com/rtk-ai/rtk) integration for compressed tool output (60-90 % token savings on Bash commands). See [docs/operations/rtk.md](../operations/rtk.md). |

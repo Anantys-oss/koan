@@ -166,6 +166,9 @@ Skills marked **GitHub @mention** can be triggered by commenting `@koan-bot <com
 | `/scaffold_skill <scope> <name> <desc>` | `/scaffold`, `/new_skill` | Generate SKILL.md + handler.py for a new custom skill |
 | `/rtk [setup\|uninstall\|gain\|on\|off]` | — | Manage optional rtk integration for compressed tool output |
 | `/ideas` | — | List all ideas in the backlog |
+| `/sdlc <issue-name> [description]` | — | Start or resume a multi-phase SDLC workflow (Research → Architecture → Planning → [approval] → Implementation → Review → Documentation → Production Ready) |
+| `/approve <issue-name>` | — | Approve an SDLC plan and start implementation |
+| `/reject <issue-name>` | — | Reject an SDLC plan and abandon the workflow |
 
 ---
 

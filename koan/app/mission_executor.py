@@ -638,6 +638,10 @@ def _run_iteration(
             p.get("decision_reason") or "Project branch-saturated — waiting for reviews/merges",
             f"Branch-saturated — waiting ({time.strftime('%H:%M')})",
         ),
+        "sdlc_wait": lambda p: (
+            p.get("decision_reason") or "SDLC awaiting human approval",
+            f"SDLC approval pending — /approve <issue-name> to proceed ({time.strftime('%H:%M')})",
+        ),
     }
     if action in _IDLE_WAIT_CONFIG:
         log_msg, status_msg = _IDLE_WAIT_CONFIG[action](plan)
