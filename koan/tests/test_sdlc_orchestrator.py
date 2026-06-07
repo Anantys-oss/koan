@@ -439,6 +439,36 @@ class TestSdlcPhaseRunnerHelpers:
         result = _build_context(ws, SdlcPhase.ARCHITECTURE)
         assert len(result) <= _CONTEXT_BUDGET + 200  # some header overhead
 
+    def test_build_context_fix_loop_only_failing_experts(self, tmp_path):
+        from skills.core.sdlc.sdlc_phase_runner import _build_context
+
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        (ws / "PLAN.md").write_text("plan content", encoding="utf-8")
+        (ws / "SECURITY.md").write_text("VERDICT: NEEDS_FIX\nsecurity issue", encoding="utf-8")
+        (ws / "QA.md").write_text("VERDICT: APPROVED\nall good", encoding="utf-8")
+        (ws / "SRE.md").write_text("VERDICT: APPROVED\nfine", encoding="utf-8")
+
+        result = _build_context(ws, SdlcPhase.FIX_LOOP, failing_experts=["security"])
+
+        assert "plan content" in result
+        assert "security issue" in result
+        # Passing reviews must NOT be injected
+        assert "all good" not in result
+        assert "fine" not in result
+
+    def test_build_context_fix_loop_no_experts_gives_plan_only(self, tmp_path):
+        from skills.core.sdlc.sdlc_phase_runner import _build_context
+
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        (ws / "PLAN.md").write_text("plan content", encoding="utf-8")
+        (ws / "SECURITY.md").write_text("VERDICT: NEEDS_FIX", encoding="utf-8")
+
+        result = _build_context(ws, SdlcPhase.FIX_LOOP, failing_experts=[])
+        assert "plan content" in result
+        assert "NEEDS_FIX" not in result
+
     def test_parse_failing_experts_empty_when_approved(self, tmp_path):
         from skills.core.sdlc.sdlc_phase_runner import _parse_failing_experts
 

@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import re
 import sys
-import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -24,7 +23,6 @@ from app.sdlc_state import (
     MAX_FIX_ITERATIONS,
     SdlcPhase,
     archive_sdlc_workspace,
-    get_artifact_path,
     get_sdlc_workspace,
     load_sdlc_state,
     save_sdlc_state,
@@ -59,14 +57,21 @@ _PHASE_ARTIFACTS: Dict[SdlcPhase, str] = {
     SdlcPhase.DOCUMENTATION: "DOCS.md",
 }
 
-# Prior artifacts to inject as context per phase
+# Prior artifacts to inject as context per phase.
+# FIX_LOOP is handled dynamically based on failing_experts — not listed here.
 _PHASE_CONTEXT: Dict[SdlcPhase, List[str]] = {
     SdlcPhase.ARCHITECTURE: ["RESEARCH.md"],
     SdlcPhase.PLANNING: ["RESEARCH.md", "ADR.md"],
     SdlcPhase.IMPLEMENTATION: ["PLAN.md", "RESEARCH.md"],
     SdlcPhase.REVIEW: ["IMPLEMENTATION.md"],
-    SdlcPhase.FIX_LOOP: ["PLAN.md", "IMPLEMENTATION.md", "SECURITY.md", "QA.md", "SRE.md"],
     SdlcPhase.DOCUMENTATION: ["IMPLEMENTATION.md", "PLAN.md"],
+}
+
+# Mapping from failing_experts entry → review artifact filename
+_EXPERT_ARTIFACTS: Dict[str, str] = {
+    "security": "SECURITY.md",
+    "qa": "QA.md",
+    "sre": "SRE.md",
 }
 
 # Linear phase progression for non-branching phases
@@ -130,7 +135,8 @@ def run_sdlc_phase(
 
     skill_dir = Path(__file__).resolve().parent
     ws = get_sdlc_workspace(instance_dir, issue_name)
-    context = _build_context(ws, phase)
+    failing = state.failing_experts if phase == SdlcPhase.FIX_LOOP else []
+    context = _build_context(ws, phase, failing_experts=failing)
 
     if phase == SdlcPhase.REVIEW:
         exit_code = _run_review_phase(
@@ -186,19 +192,6 @@ def _run_single_phase(
     phase_timeout = get_mission_timeout() if phase == SdlcPhase.IMPLEMENTATION else 1200
     max_turns = get_skill_max_turns() if phase == SdlcPhase.IMPLEMENTATION else 100
 
-    context_file: Optional[str] = None
-    cmd_extra: List[str] = []
-    if context:
-        fd, context_file = tempfile.mkstemp(prefix="koan-sdlc-", suffix=".txt")
-        try:
-            import os
-            with open(fd, "w", encoding="utf-8") as f:
-                f.write(context)
-        except OSError:
-            os.close(fd)
-
-        cmd_extra = ["--context-file", context_file]
-
     try:
         output = run_command_streaming(
             prompt=prompt,
@@ -212,11 +205,6 @@ def _run_single_phase(
         print(f"[sdlc] Phase failed: {exc}", file=sys.stderr)
         _notify(instance_dir, f"❌ [{issue_name}] {phase.value} phase failed.")
         return 1
-    finally:
-        if context_file:
-            import contextlib
-            with contextlib.suppress(OSError):
-                Path(context_file).unlink(missing_ok=True)
 
     artifact_name = _PHASE_ARTIFACTS.get(phase)
     if artifact_name:
@@ -252,9 +240,6 @@ def _run_review_phase(
         artifact_path = ws / artifact_name
         print(f"[sdlc] Running {prompt_name}...", flush=True)
 
-        reviewer_context = context
-        reviewer_context_file: Optional[str] = None
-
         prompt = load_skill_prompt(
             skill_dir,
             prompt_name,
@@ -264,8 +249,8 @@ def _run_review_phase(
             INSTANCE_DIR=instance_dir,
             PROJECT_NAME=project_name,
         )
-        if reviewer_context:
-            prompt = f"{prompt}\n\n---\n## Implementation Summary\n\n{reviewer_context}"
+        if context:
+            prompt = f"{prompt}\n\n---\n## Implementation Summary\n\n{context}"
 
         try:
             run_command_streaming(
@@ -403,9 +388,22 @@ def _queue_next_phase(
     atomic_write(missions_path, updated)
 
 
-def _build_context(ws: Path, phase: SdlcPhase) -> str:
-    """Build a context string from prior phase artifacts for injection."""
-    artifact_names = _PHASE_CONTEXT.get(phase, [])
+def _build_context(
+    ws: Path, phase: SdlcPhase, *, failing_experts: Optional[List[str]] = None
+) -> str:
+    """Build a context string from prior phase artifacts for injection.
+
+    For FIX_LOOP, only injects the failing experts' review artifacts plus PLAN.md
+    — avoids overwhelming the fix agent with reviews it doesn't need to address.
+    """
+    if phase == SdlcPhase.FIX_LOOP:
+        failing = failing_experts or []
+        artifact_names = ["PLAN.md"] + [
+            _EXPERT_ARTIFACTS[e] for e in failing if e in _EXPERT_ARTIFACTS
+        ]
+    else:
+        artifact_names = _PHASE_CONTEXT.get(phase, [])
+
     if not artifact_names:
         return ""
 

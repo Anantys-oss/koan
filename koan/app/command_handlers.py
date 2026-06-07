@@ -960,8 +960,9 @@ def _extract_project_from_sentinel(issue_name: str) -> str:
         projects = get_known_projects(str(KOAN_ROOT))
         if projects:
             return projects[0]
-    except Exception:
-        pass
+    except Exception as e:
+        import sys
+        print(f"[command_handlers] _resolve_approval_project: {e}", file=sys.stderr)
     return ""
 
 
