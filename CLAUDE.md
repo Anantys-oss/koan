@@ -17,13 +17,12 @@ Kōan is an autonomous background agent that uses idle Claude API quota to work 
 
 ```bash
 make setup          # Create venv, install dependencies
-make start          # Start full stack (auto-detects provider: awake+run or ollama+awake+run)
-make stop           # Stop all running processes (run + awake + ollama)
+make start          # Start full stack (auto-detects provider: awake+run)
+make stop           # Stop all running processes (run + awake)
 make status         # Show running process status
 make logs           # Watch live output from all processes + agent progress
 make run            # Start main agent loop (foreground)
 make awake          # Start Telegram bridge (foreground)
-make ollama         # Start full Ollama stack (ollama serve + awake + run)
 make dashboard      # Start Flask web dashboard (port 5001)
 make lint           # Run ruff linter (must pass before committing)
 make test           # Run full test suite (pytest + coverage summary)

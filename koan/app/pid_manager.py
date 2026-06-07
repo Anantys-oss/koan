@@ -1,17 +1,15 @@
 """Exclusive PID file management for Kōan processes.
 
-Ensures only one instance of each process type (run, awake, ollama) can run
+Ensures only one instance of each process type (run, awake) can run
 at a time. Uses fcntl.flock() — OS releases lock on crash.
 
 PID files live in $KOAN_ROOT:
   .koan-pid-run    — agent loop (run.py)
   .koan-pid-awake  — Telegram bridge (awake.py)
-  .koan-pid-ollama — ollama serve (external binary)
 
 Log files live in $KOAN_ROOT/logs/:
   run.log          — agent loop output
   awake.log        — Telegram bridge output
-  ollama.log       — ollama serve output
 
 Usage from Python:
     lock = acquire_pidfile(koan_root, "awake")
@@ -22,7 +20,6 @@ Usage from Python:
 import contextlib
 import fcntl
 import os
-import shutil
 import signal
 import subprocess
 import sys
@@ -255,11 +252,10 @@ def check_pidfile(koan_root: Path, process_name: str) -> Optional[int]:
     return None
 
 
-PROCESS_NAMES = ("run", "awake", "ollama", "dashboard", "api")
+PROCESS_NAMES = ("run", "awake", "dashboard", "api")
 
-# Process startup verification timeouts
+# Process startup verification timeout
 DEFAULT_VERIFY_TIMEOUT = 3.0
-OLLAMA_VERIFY_TIMEOUT = 5.0
 
 
 def _launch_python_process(
@@ -345,50 +341,6 @@ def start_runner(
     )
 
 
-def start_ollama(koan_root: Path, verify_timeout: float = OLLAMA_VERIFY_TIMEOUT) -> tuple:
-    """Start ollama serve as a detached subprocess.
-
-    Checks that ollama binary is available, not already running,
-    then launches it in the background with a tracked PID file.
-
-    Returns (success: bool, message: str).
-    """
-    pid = check_pidfile(koan_root, "ollama")
-    if pid:
-        return False, f"ollama already running (PID {pid})"
-
-    ollama_bin = shutil.which("ollama")
-    if not ollama_bin:
-        return False, "ollama not found in PATH — install with: brew install ollama"
-
-    log_fh = _open_log_file(koan_root, "ollama")
-    try:
-        proc = subprocess.Popen(
-            [ollama_bin, "serve"],
-            stdin=subprocess.DEVNULL,
-            stdout=log_fh,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
-    except Exception as e:
-        return False, f"Failed to launch ollama: {e}"
-    finally:
-        log_fh.close()
-
-    # Write PID file — ollama serve is an external binary (no flock)
-    acquire_pid(koan_root, "ollama", proc.pid)
-
-    # Wait briefly for ollama to start listening
-    deadline = time.monotonic() + verify_timeout
-    while time.monotonic() < deadline:
-        if _is_process_alive(proc.pid):
-            return True, f"ollama serve started (PID {proc.pid})"
-        time.sleep(0.3)
-
-    # Clean up stale PID file — process is dead, don't leave phantom PIDs
-    release_pid(koan_root, "ollama")
-    return False, "ollama launched but exited immediately — check ollama logs"
-
 
 def start_awake(koan_root: Path, verify_timeout: float = DEFAULT_VERIFY_TIMEOUT) -> tuple:
     """Start the Telegram bridge (awake.py) as a detached subprocess.
@@ -437,15 +389,12 @@ def _is_dashboard_enabled() -> bool:
 def get_status_processes(koan_root: Path) -> tuple:
     """Return the process names to display in status output.
 
-    Only includes ollama when the CLI provider is local/ollama.
     Only includes dashboard when dashboard.enabled is true in config.
+    Only includes api when api.enabled is true in config.
     """
-    provider = _detect_provider(koan_root)
     dashboard = _is_dashboard_enabled()
     api = _is_api_enabled()
     names = list(PROCESS_NAMES)
-    if not _needs_ollama(provider):
-        names.remove("ollama")
     if not dashboard:
         names.remove("dashboard")
     if not api:
@@ -537,14 +486,6 @@ def format_status_all(koan_root: Path) -> list:
     else:
         lines.append("  awake: not running")
 
-    # --- Ollama (conditional) ---
-    if "ollama" in process_names:
-        ollama_pid = check_pidfile(koan_root, "ollama")
-        if ollama_pid:
-            lines.append(f"  ollama: running (PID {ollama_pid})")
-        else:
-            lines.append("  ollama: not running")
-
     # --- Dashboard (conditional) ---
     if "dashboard" in process_names:
         dash_pid = check_pidfile(koan_root, "dashboard")
@@ -560,8 +501,7 @@ def _detect_provider(koan_root: Path) -> str:
     """Detect the configured CLI provider.
 
     Uses the provider package resolution (env var > config.yaml > default).
-    Returns provider name: "claude", "copilot", "local", "ollama",
-    or "ollama-launch".
+    Returns provider name: "claude", "codex", "copilot", or "ollama-launch".
     """
     try:
         # Lazy import to avoid circular deps and keep pid_manager lightweight
@@ -569,11 +509,6 @@ def _detect_provider(koan_root: Path) -> str:
         return get_provider_name()
     except (ImportError, OSError, ValueError):
         return "claude"
-
-
-def _needs_ollama(provider: str) -> bool:
-    """Return True if the provider requires ollama serve."""
-    return provider in ("local", "ollama")
 
 
 def _show_startup_banner(koan_root: Path, provider: str) -> None:
@@ -596,12 +531,8 @@ def _show_startup_banner(koan_root: Path, provider: str) -> None:
 def start_all(koan_root: Path, provider: str = None) -> dict:
     """Start the full Kōan stack for the configured provider.
 
-    Auto-detects the provider if not specified.
-    - claude/copilot/ollama-launch: starts awake + run (2 processes)
-    - local/ollama: starts ollama + awake + run (3 processes)
-
-    Note: ollama-launch does not need a separate ollama serve process
-    because ``ollama launch claude`` handles server lifecycle internally.
+    Auto-detects the provider if not specified. Starts awake + run,
+    plus dashboard and API if enabled in config.
 
     Returns dict mapping component name to (success, message).
     """
@@ -613,41 +544,25 @@ def start_all(koan_root: Path, provider: str = None) -> dict:
 
     results = {}
 
-    # 1. Start ollama serve if needed
-    if _needs_ollama(provider):
-        ok, msg = start_ollama(koan_root)
-        results["ollama"] = (ok, msg)
-        if ok:
-            time.sleep(1)
-
-    # 2. Start awake (Telegram bridge)
+    # 1. Start awake (Telegram bridge)
     ok, msg = start_awake(koan_root)
     results["awake"] = (ok, msg)
 
-    # 3. Start agent loop (run.py)
+    # 2. Start agent loop (run.py)
     ok, msg = start_runner(koan_root)
     results["run"] = (ok, msg)
 
-    # 4. Start dashboard if enabled
+    # 3. Start dashboard if enabled
     if _is_dashboard_enabled():
         ok, msg = start_dashboard(koan_root)
         results["dashboard"] = (ok, msg)
 
-    # 5. Start REST API if enabled
+    # 4. Start REST API if enabled
     if _is_api_enabled():
         ok, msg = start_api(koan_root)
         results["api"] = (ok, msg)
 
     return results
-
-
-def start_stack(koan_root: Path) -> dict:
-    """Start the full ollama stack: ollama serve + awake + run.
-
-    Kept for backward compatibility with `make ollama`.
-    Delegates to start_all() with provider="local".
-    """
-    return start_all(koan_root, provider="local")
 
 
 def _wait_for_exit(pid: int, timeout: float) -> bool:
@@ -695,7 +610,7 @@ def _bootout_launchd_service(name: str) -> bool:
 
 
 def stop_processes(koan_root: Path, timeout: float = 5.0) -> dict:
-    """Stop all running Kōan processes (run + awake + ollama).
+    """Stop all running Kōan processes (run + awake + dashboard + api).
 
     Detects and boots out launchd services first (prevents respawn),
     then sends SIGTERM to each running process, waits up to timeout
@@ -759,7 +674,7 @@ def stop_processes(koan_root: Path, timeout: float = 5.0) -> dict:
 def _print_stack_results(results: dict) -> int:
     """Print stack start results and return exit code (0=ok, 1=failure)."""
     any_failed = False
-    for name in ("ollama", "awake", "run", "dashboard"):
+    for name in ("awake", "run", "dashboard", "api"):
         if name not in results:
             continue
         ok, msg = results[name]
@@ -811,21 +726,10 @@ if __name__ == "__main__":
         print(f"  {msg}")
         sys.exit(0 if ok else 1)
 
-    if action == "start-ollama":
-        root = Path(sys.argv[2])
-        ok, msg = start_ollama(root)
-        print(f"  {msg}")
-        sys.exit(0 if ok else 1)
-
     if action == "start-all":
         root = Path(sys.argv[2])
         provider = sys.argv[3] if len(sys.argv) > 3 else None
         results = start_all(root, provider=provider)
-        sys.exit(_print_stack_results(results))
-
-    if action == "start-stack":
-        root = Path(sys.argv[2])
-        results = start_stack(root)
         sys.exit(_print_stack_results(results))
 
     if action == "status-all":

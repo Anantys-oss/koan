@@ -1346,7 +1346,7 @@ projects:
 ```
 
 Key per-project settings:
-- **`cli_provider`** — `claude`, `codex`, `copilot`, `local`, or `ollama-launch`
+- **`cli_provider`** — `claude`, `codex`, `copilot`, or `ollama-launch`
 - **`models`** — Override model selection per role
 - **`tools`** — Restrict available tools
 - **`git_auto_merge`** — Auto-merge completed PRs (strategy: squash/merge/rebase)

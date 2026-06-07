@@ -4,7 +4,7 @@ export
 .PHONY: install onboard setup start stop status restart
 .PHONY: clean say migrate test test-skills test-strict coverage lint sync-instance rename-project release
 .PHONY: awake run errand-run errand-awake dashboard api api-token webhook
-.PHONY: ollama logs ssh-forward
+.PHONY: logs ssh-forward
 .PHONY: install-systemctl-service uninstall-systemctl-service
 .PHONY: install-launchd-service uninstall-launchd-service
 .PHONY: docker-setup docker-up docker-down docker-logs docker-test docker-auth docker-gh-auth
@@ -224,18 +224,14 @@ errand-run: setup
 errand-awake: setup
 	caffeinate -i sh -c '$(KOAN_RUN) app/awake.py'
 
-ollama: setup
-	@echo "→ Starting Kōan with Ollama stack..."
-	@$(KOAN_RUN) -m app.pid_manager start-stack $(PWD)
-
 logs:
 	@mkdir -p logs
-	@if [ ! -f logs/run.log ] && [ ! -f logs/awake.log ] && [ ! -f logs/ollama.log ]; then \
+	@if [ ! -f logs/run.log ] && [ ! -f logs/awake.log ]; then \
 		echo "No log files found. Start Kōan first with 'make start'."; \
 		exit 1; \
 	fi
 	@echo "→ Watching Kōan logs + live progress (Ctrl-C to stop watching — Kōan keeps running)"
-	@tail -F logs/run.log logs/awake.log logs/ollama.log instance/journal/pending.md 2>/dev/null
+	@tail -F logs/run.log logs/awake.log instance/journal/pending.md 2>/dev/null
 
 install:
 	@echo "→ Starting Kōan Setup Wizard..."

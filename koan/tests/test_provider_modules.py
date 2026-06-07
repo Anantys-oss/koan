@@ -1,12 +1,10 @@
 """Tests for the CLI provider abstraction layer.
 
-Covers: base.py, claude.py, copilot.py, local.py, ollama_launch.py, __init__.py
-These modules had zero test coverage despite being used throughout the codebase.
+Covers: base.py, claude.py, copilot.py, ollama_launch.py, __init__.py
 """
 
 import json
 import os
-import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -14,7 +12,6 @@ import pytest
 from app.provider.base import CLIProvider, CLAUDE_TOOLS, TOOL_NAME_MAP
 from app.provider.claude import ClaudeProvider
 from app.provider.copilot import CopilotProvider
-from app.provider.local import LocalLLMProvider
 from app.provider.ollama_launch import OllamaLaunchProvider
 
 
@@ -158,18 +155,13 @@ class TestBuildCommand:
         assert "10" in cmd
 
     def test_system_prompt_fallback_prepend(self):
-        """When provider doesn't support system prompt, it's prepended to user prompt."""
-        p = LocalLLMProvider()
-        # LocalLLMProvider doesn't override build_system_prompt_args,
-        # so it returns [] → base class signals no native support.
-        with patch.object(p, "_get_base_url", return_value="http://localhost:11434/v1"):
-            with patch.object(p, "_get_api_key", return_value=""):
-                with patch.object(p, "_get_default_model", return_value="test-model"):
-                    cmd = p.build_command(
-                        prompt="do X",
-                        system_prompt="Be concise.",
-                    )
-        # System prompt should be prepended to user prompt
+        """When provider doesn't support system prompt natively, it's prepended to user prompt."""
+        p = OllamaLaunchProvider()
+        cmd = p.build_command(
+            prompt="do X",
+            system_prompt="Be concise.",
+        )
+        # OllamaLaunchProvider prepends system prompt to user prompt
         prompt_idx = cmd.index("-p") + 1
         assert cmd[prompt_idx].startswith("Be concise.")
         assert "do X" in cmd[prompt_idx]
@@ -408,121 +400,6 @@ class TestCopilotProvider:
 
 
 # ---------------------------------------------------------------------------
-# LocalLLMProvider
-# ---------------------------------------------------------------------------
-
-
-class TestLocalLLMProvider:
-
-    def test_name(self):
-        assert LocalLLMProvider.name == "local"
-
-    def test_binary_is_python(self):
-        p = LocalLLMProvider()
-        assert p.binary() == sys.executable
-
-    def test_shell_command(self):
-        p = LocalLLMProvider()
-        assert "app.local_llm_runner" in p.shell_command()
-
-    def test_prompt_args(self):
-        p = LocalLLMProvider()
-        args = p.build_prompt_args("hello")
-        assert args == ["-m", "app.local_llm_runner", "-p", "hello"]
-
-    def test_tool_args(self):
-        p = LocalLLMProvider()
-        args = p.build_tool_args(allowed_tools=["Bash"], disallowed_tools=["Write"])
-        assert "--allowed-tools" in args
-        assert "Bash" in args[args.index("--allowed-tools") + 1]
-        assert "--disallowed-tools" in args
-
-    def test_model_args_explicit(self):
-        p = LocalLLMProvider()
-        assert p.build_model_args("glm4") == ["--model", "glm4"]
-
-    @patch.dict(os.environ, {"KOAN_LOCAL_LLM_MODEL": "default-model"}, clear=False)
-    def test_model_args_default_from_env(self):
-        p = LocalLLMProvider()
-        args = p.build_model_args()  # No explicit model
-        assert args == ["--model", "default-model"]
-
-    def test_model_args_empty_no_config(self):
-        """No model configured → empty args."""
-        p = LocalLLMProvider()
-        with patch.object(p, "_get_config", return_value={}):
-            with patch.dict(os.environ, {}, clear=True):
-                args = p.build_model_args()
-        assert args == []
-
-    def test_output_args(self):
-        p = LocalLLMProvider()
-        assert p.build_output_args("json") == ["--output-format", "json"]
-
-    def test_max_turns_args(self):
-        p = LocalLLMProvider()
-        assert p.build_max_turns_args(5) == ["--max-turns", "5"]
-
-    def test_mcp_not_supported(self):
-        p = LocalLLMProvider()
-        assert p.build_mcp_args(["config.json"]) == []
-
-    @patch.dict(os.environ, {"KOAN_LOCAL_LLM_MODEL": "test-model"}, clear=False)
-    def test_is_available_with_model(self):
-        p = LocalLLMProvider()
-        assert p.is_available() is True
-
-    def test_is_available_without_model(self):
-        p = LocalLLMProvider()
-        with patch.object(p, "_get_config", return_value={}):
-            with patch.dict(os.environ, {}, clear=True):
-                assert p.is_available() is False
-
-    def test_build_command_includes_base_url(self):
-        p = LocalLLMProvider()
-        with patch.object(p, "_get_base_url", return_value="http://localhost:1234/v1"):
-            with patch.object(p, "_get_api_key", return_value=""):
-                with patch.object(p, "_get_default_model", return_value="my-model"):
-                    cmd = p.build_command(prompt="hello")
-        assert "--base-url" in cmd
-        assert "http://localhost:1234/v1" in cmd
-
-    def test_build_command_includes_api_key(self):
-        p = LocalLLMProvider()
-        with patch.object(p, "_get_base_url", return_value="http://localhost:1234/v1"):
-            with patch.object(p, "_get_api_key", return_value="sk-test"):
-                with patch.object(p, "_get_default_model", return_value="my-model"):
-                    cmd = p.build_command(prompt="hello")
-        assert "--api-key" in cmd
-        assert "sk-test" in cmd
-
-    def test_build_command_no_api_key(self):
-        p = LocalLLMProvider()
-        with patch.object(p, "_get_base_url", return_value="http://localhost:1234/v1"):
-            with patch.object(p, "_get_api_key", return_value=""):
-                with patch.object(p, "_get_default_model", return_value="my-model"):
-                    cmd = p.build_command(prompt="hello")
-        assert "--api-key" not in cmd
-
-    @patch.dict(os.environ, {
-        "KOAN_LOCAL_LLM_BASE_URL": "http://env-url:5000/v1",
-        "KOAN_LOCAL_LLM_MODEL": "env-model",
-        "KOAN_LOCAL_LLM_API_KEY": "env-key",
-    }, clear=False)
-    def test_env_overrides_config(self):
-        """Env vars take priority over config.yaml."""
-        p = LocalLLMProvider()
-        with patch.object(p, "_get_config", return_value={
-            "base_url": "http://config-url/v1",
-            "model": "config-model",
-            "api_key": "config-key",
-        }):
-            assert p._get_base_url() == "http://env-url:5000/v1"
-            assert p._get_default_model() == "env-model"
-            assert p._get_api_key() == "env-key"
-
-
-# ---------------------------------------------------------------------------
 # OllamaLaunchProvider
 # ---------------------------------------------------------------------------
 
@@ -659,8 +536,8 @@ class TestProviderRegistry:
         from app.provider import _PROVIDERS
         assert "claude" in _PROVIDERS
         assert "copilot" in _PROVIDERS
-        assert "local" in _PROVIDERS
         assert "ollama-launch" in _PROVIDERS
+        assert "local" not in _PROVIDERS
 
     @patch("app.provider.get_provider_name", return_value="claude")
     def test_get_provider_claude(self, mock_name):
@@ -701,9 +578,9 @@ class TestProviderRegistry:
     def test_get_provider_name_from_config(self):
         from app.provider import get_provider_name
         with patch("app.utils.get_cli_provider_env", return_value=""):
-            with patch("app.utils.load_config", return_value={"cli_provider": "local"}):
+            with patch("app.utils.load_config", return_value={"cli_provider": "ollama-launch"}):
                 name = get_provider_name()
-        assert name == "local"
+        assert name == "ollama-launch"
 
     def test_get_provider_name_invalid_env_falls_through(self):
         from app.provider import get_provider_name

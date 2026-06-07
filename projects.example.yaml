@@ -47,7 +47,7 @@ defaults:
   #   blocking: false
   #   severity_threshold: high
 
-  # CLI provider — which AI CLI to use ("claude", "codex", "copilot", "local")
+  # CLI provider — which AI CLI to use ("claude", "codex", "copilot", "ollama-launch")
   # Per-project overrides allow different providers for different repos.
   # Can also be set globally in config.yaml or via KOAN_CLI_PROVIDER env var.
   # cli_provider: "claude"

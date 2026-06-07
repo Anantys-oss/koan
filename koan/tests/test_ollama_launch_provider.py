@@ -326,23 +326,6 @@ class TestOllamaLaunchRegistry:
 class TestOllamaLaunchPidManager:
     """Verify pid_manager treats ollama-launch correctly."""
 
-    def test_needs_ollama_false_for_ollama_launch(self):
-        """ollama-launch manages its own server — no separate ollama serve."""
-        from app.pid_manager import _needs_ollama
-        assert _needs_ollama("ollama-launch") is False
-
-    def test_needs_ollama_true_for_local(self):
-        from app.pid_manager import _needs_ollama
-        assert _needs_ollama("local") is True
-
-    def test_needs_ollama_true_for_ollama(self):
-        from app.pid_manager import _needs_ollama
-        assert _needs_ollama("ollama") is True
-
-    def test_needs_ollama_false_for_claude(self):
-        from app.pid_manager import _needs_ollama
-        assert _needs_ollama("claude") is False
-
     def test_status_processes_exclude_ollama(self):
         """ollama-launch should not show ollama in status processes."""
         from app.pid_manager import get_status_processes
