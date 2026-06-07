@@ -210,6 +210,68 @@ class TestHandleChatCommand:
 
 
 # ---------------------------------------------------------------------------
+# Chat command confirmation flow (handle_message interception)
+# ---------------------------------------------------------------------------
+
+class TestChatCommandConfirmation:
+    """A 'yes' to an armed chat suggestion replays the literal command through
+    the existing handle_command path — no new trigger code path."""
+
+    @pytest.fixture(autouse=True)
+    def _clean(self):
+        from app import command_confirm
+        command_confirm.clear_pending()
+        yield
+        command_confirm.clear_pending()
+
+    @patch("app.awake.handle_command")
+    def test_affirmative_runs_pending_literal_command(self, mock_handle_command):
+        from app import command_confirm
+        command_confirm.register_pending("/recurring run 3", "chat-1")
+
+        handle_message("yes", chat_id="chat-1")
+
+        # Executed via the SAME command path, with the exact stored literal string
+        mock_handle_command.assert_called_once_with("/recurring run 3")
+        # single-use: pending consumed
+        assert command_confirm.peek_pending("chat-1") is None
+
+    @patch("app.awake._run_in_worker")
+    @patch("app.awake.handle_command")
+    def test_non_affirmative_clears_pending_and_falls_through_to_chat(
+        self, mock_handle_command, mock_worker
+    ):
+        from app import command_confirm
+        command_confirm.register_pending("/recurring run 3", "chat-1")
+
+        handle_message("actually tell me about the logs instead", chat_id="chat-1")
+
+        # Did NOT run the command; treated as normal chat
+        mock_handle_command.assert_not_called()
+        mock_worker.assert_called_once()
+        # pending cleared — a later stray 'yes' won't fire the stale command
+        assert command_confirm.peek_pending("chat-1") is None
+
+    @patch("app.awake.handle_command")
+    def test_affirmative_with_no_pending_is_normal_chat(self, mock_handle_command):
+        with patch("app.awake._run_in_worker") as mock_worker:
+            handle_message("yes", chat_id="chat-1")
+        mock_handle_command.assert_not_called()
+        mock_worker.assert_called_once()
+
+    @patch("app.awake.handle_command")
+    def test_disabled_config_ignores_pending(self, mock_handle_command):
+        from app import command_confirm
+        command_confirm.register_pending("/recurring run 3", "chat-1")
+        with patch("app.config.get_chat_confirm_commands_enabled", return_value=False), \
+             patch("app.awake._run_in_worker") as mock_worker:
+            handle_message("yes", chat_id="chat-1")
+        # No replay; "yes" handled as normal chat
+        mock_handle_command.assert_not_called()
+        mock_worker.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
 # is_command
 # ---------------------------------------------------------------------------
 
@@ -1311,7 +1373,7 @@ class TestHandleMessage:
     @patch("app.awake._run_in_worker")
     def test_dispatches_chat(self, mock_worker):
         handle_message("how are you?")
-        mock_worker.assert_called_once_with(handle_chat, "how are you?")
+        mock_worker.assert_called_once_with(handle_chat, "how are you?", "")
 
     @patch("app.awake.handle_command")
     @patch("app.awake.handle_mission")
@@ -1491,7 +1553,7 @@ class TestMainLoop:
             _bridge_loop()
         mock_config.assert_called_once()
         mock_updates.assert_called_once_with(None)
-        mock_handle.assert_called_once_with("hello")
+        mock_handle.assert_called_once_with("hello", chat_id=self.TEST_CHAT_ID)
         mock_flush.assert_called_once()
         mock_heartbeat.assert_called()
 
@@ -1613,7 +1675,7 @@ class TestMainLoop:
         # Must reach sleep() (StopIteration), not raise UnboundLocalError.
         with pytest.raises(StopIteration):
             _bridge_loop()
-        mock_handle.assert_called_once_with("/resume")
+        mock_handle.assert_called_once_with("/resume", chat_id=self.MATRIX_ROOM_ID)
 
     @patch("app.awake._check_group_chat_mode")
     @patch("app.messaging.get_messaging_provider")
@@ -1639,7 +1701,7 @@ class TestMainLoop:
         ]
         with pytest.raises(StopIteration):
             _bridge_loop()
-        mock_handle.assert_called_once_with("hi from matrix")
+        mock_handle.assert_called_once_with("hi from matrix", chat_id=self.MATRIX_ROOM_ID)
         mock_flush.assert_called_once()
         mock_heartbeat.assert_called()
 
@@ -3145,7 +3207,7 @@ class TestBridgeExceptionResilience:
         # Should stop at StopIteration (time.sleep), NOT at RuntimeError
         with pytest.raises(StopIteration):
             _bridge_loop()
-        mock_handle.assert_called_once_with("/bad")
+        mock_handle.assert_called_once_with("/bad", chat_id=self.TEST_CHAT_ID)
         # Error notification sent to user
         mock_send.assert_called_once()
         assert "RuntimeError" in mock_send.call_args[0][0]
@@ -3511,3 +3573,141 @@ class TestReplyContext:
             send_telegram("test")
         mock_provider.send_message.assert_called_once_with("test", reply_to_message_id=456)
         clear_reply_context()
+
+
+# ---------------------------------------------------------------------------
+# Chat command suggestions
+# ---------------------------------------------------------------------------
+
+class TestBuildCommandCatalog:
+    """Tests for _build_command_catalog — command suggestion feature."""
+
+    def test_catalog_includes_known_commands(self):
+        """Catalog should include high-value commands from the registry."""
+        from app.awake import _build_command_catalog
+
+        with patch("app.config.get_chat_suggest_commands_enabled", return_value=True):
+            catalog = _build_command_catalog()
+
+        # Catalog should not be empty (we have core skills)
+        assert catalog, "Catalog should not be empty with enabled suggestions"
+        # At least one command should be present (we'll check for a known core command format)
+        assert "/" in catalog, "Catalog should contain slash commands"
+        assert "—" in catalog or "-" in catalog, "Catalog should have descriptions"
+
+    def test_catalog_surfaces_confirmable_usage_and_protocol(self):
+        """Regression: confirmable commands must appear with their usage forms
+        (e.g. '/recurring run') so the model can build subcommands, and the
+        SUGGEST_COMMAND marker protocol must be present."""
+        from app.awake import _build_command_catalog
+
+        with patch("app.config.get_chat_suggest_commands_enabled", return_value=True), \
+             patch("app.config.get_chat_confirm_commands_enabled", return_value=True):
+            catalog = _build_command_catalog()
+
+        # The force-run subcommand form must be visible (was hidden behind /daily)
+        assert "/recurring run" in catalog
+        # The marker protocol must be present
+        assert "SUGGEST_COMMAND:" in catalog
+        assert "Commands you can OFFER TO RUN" in catalog
+
+    def test_catalog_marks_no_protocol_when_confirm_disabled(self):
+        """With confirm disabled, no marker protocol is emitted (prose only)."""
+        from app.awake import _build_command_catalog
+
+        with patch("app.config.get_chat_suggest_commands_enabled", return_value=True), \
+             patch("app.config.get_chat_confirm_commands_enabled", return_value=False):
+            catalog = _build_command_catalog()
+
+        assert "SUGGEST_COMMAND:" not in catalog
+
+    def test_catalog_empty_when_disabled(self):
+        """When suggest_commands is disabled, catalog should be empty."""
+        from app.awake import _build_command_catalog
+
+        with patch("app.config.get_chat_suggest_commands_enabled", return_value=False):
+            catalog = _build_command_catalog()
+
+        assert catalog == "", "Catalog should be empty when disabled in config"
+
+    def test_catalog_excludes_agent_only_skills(self):
+        """Catalog should exclude skills with audience='agent' only."""
+        from app.awake import _build_command_catalog
+        from app.skills import Skill, SkillCommand
+
+        # Create a mock registry with a known agent-only skill
+        mock_skill = Skill(
+            name="test_agent_skill",
+            scope="core",
+            audience="agent",  # Agent-only
+            commands=[SkillCommand(name="test_agent", description="Agent only command")],
+        )
+        mock_registry = MagicMock()
+        mock_registry.list_by_audience.return_value = []
+
+        with patch("app.awake._get_registry", return_value=mock_registry), \
+             patch("app.config.get_chat_suggest_commands_enabled", return_value=True):
+            catalog = _build_command_catalog()
+
+        # Verify list_by_audience was called with human-facing audiences
+        mock_registry.list_by_audience.assert_called_once_with("bridge", "command", "hybrid")
+
+    def test_catalog_graceful_failure(self):
+        """Catalog builder should return empty string on exception."""
+        from app.awake import _build_command_catalog
+
+        with patch("app.awake._get_registry", side_effect=Exception("Registry failed")):
+            catalog = _build_command_catalog()
+
+        assert catalog == "", "Should return empty string on error"
+
+
+class TestChatPromptSkillsCatalogPlaceholder:
+    """Tests that chat.md prompt includes and injects SKILLS_CATALOG placeholder."""
+
+    @patch("app.awake.save_conversation_message")
+    @patch("app.awake.load_recent_history", return_value=[])
+    @patch("app.awake.format_conversation_history", return_value="")
+    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.awake.get_language_instruction", return_value="")
+    def test_catalog_injected_in_non_lite_mode(
+        self, mock_lang, mock_tools_desc, mock_fmt, mock_hist, mock_save, tmp_path
+    ):
+        """Non-lite chat prompt should include SKILLS_CATALOG injection."""
+        from app.awake import _build_chat_prompt
+
+        with patch("app.awake.INSTANCE_DIR", tmp_path), \
+             patch("app.awake.KOAN_ROOT", tmp_path), \
+             patch("app.awake.MISSIONS_FILE", tmp_path / "missions.md"), \
+             patch("app.awake.SOUL", "test soul"), \
+             patch("app.awake.SUMMARY", ""), \
+             patch("app.awake._build_command_catalog", return_value="/status — Show status\n/resume — Resume missions"), \
+             patch("app.config.get_chat_suggest_commands_enabled", return_value=True):
+            prompt = _build_chat_prompt("hello")
+
+        # The prompt should contain injected catalog content (not just template text)
+        assert "/status" in prompt, "Catalog content should appear in prompt"
+        # Ensure no literal placeholder remains
+        assert "{SKILLS_CATALOG}" not in prompt, "Placeholder should be substituted"
+
+    @patch("app.awake.save_conversation_message")
+    @patch("app.awake.load_recent_history", return_value=[])
+    @patch("app.awake.format_conversation_history", return_value="")
+    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.awake.get_language_instruction", return_value="")
+    def test_catalog_empty_in_lite_mode(
+        self, mock_lang, mock_tools_desc, mock_fmt, mock_hist, mock_save, tmp_path
+    ):
+        """Lite retry mode should omit catalog to save tokens."""
+        from app.awake import _build_chat_prompt
+
+        with patch("app.awake.INSTANCE_DIR", tmp_path), \
+             patch("app.awake.KOAN_ROOT", tmp_path), \
+             patch("app.awake.MISSIONS_FILE", tmp_path / "missions.md"), \
+             patch("app.awake.SOUL", "test soul"), \
+             patch("app.awake.SUMMARY", ""):
+            prompt = _build_chat_prompt("hello", lite=True)
+
+        # In lite mode, catalog builder is never called (empty string is passed)
+        # So the prompt should have the placeholder area empty or minimal
+        assert "{SKILLS_CATALOG}" not in prompt, "Placeholder should be substituted (empty in lite)"

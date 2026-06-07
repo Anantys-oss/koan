@@ -6,6 +6,7 @@ emoji: 📰
 description: Generate a changelog from conventional commits and journal entries
 version: 1.0.0
 audience: bridge
+chat_confirmable: true
 worker: true
 commands:
   - name: changelog

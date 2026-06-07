@@ -6,6 +6,7 @@ emoji: 🌿
 description: List koan branches and open PRs with recommended merge order and stats
 version: 1.0.0
 audience: bridge
+chat_confirmable: true
 commands:
   - name: branches
     description: Show koan branches + PRs with merge order recommendation

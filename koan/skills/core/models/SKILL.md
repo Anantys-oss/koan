@@ -7,6 +7,7 @@ commands:
     description: Show resolved model config
     aliases: [model]
 audience: bridge
+chat_confirmable: true
 worker: false
 handler: handler.py
 ---
