@@ -107,7 +107,7 @@ Just send a regular message — Kōan classifies it automatically. Short convers
 
 When you write a message that maps to an existing slash command, Kōan will suggest it:
 
-> "That sounds like a job for `/resume_recurring` — want me to queue it?"
+> "That sounds like a job for `/recurring resume` — want me to queue it?"
 
 Suggestions are advisory — you always stay in control. If you like the suggestion, send the command; otherwise, Kōan continues the conversation. Suggestions are opt-in and can be disabled via the `chat.suggest_commands: false` config flag.
 
