@@ -87,6 +87,48 @@ def test_launch_terminal_stops_after_session(tmp_path, monkeypatch):
     assert stopped["called"] is True  # quitting the dashboard tears down
 
 
+def test_launch_web_checks_start_all_results(tmp_path, monkeypatch, capsys):
+    # Simulate stack start failure (run component down)
+    failed_results = {"run": (False, "failed"), "awake": (True, "ok")}
+    monkeypatch.setattr("app.pid_manager.start_all", lambda root, **kw: failed_results)
+    monkeypatch.setattr("app.pid_manager.start_dashboard", lambda root: (True, "ok"))
+    monkeypatch.setattr("app.koan_cli._wait_until_interrupt", lambda root: None)
+    monkeypatch.setattr("app.koan_cli._stop_stack", lambda root: None)
+
+    koan_cli._launch_web(tmp_path)
+    captured = capsys.readouterr()
+    # Should report the failure before proceeding
+    assert "run" in captured.out or "failed" in captured.out
+
+
+def test_launch_terminal_warns_on_failed_stack(tmp_path, monkeypatch, capsys):
+    # Simulate stack start failure
+    failed_results = {"run": (False, "failed"), "awake": (True, "ok")}
+    monkeypatch.setattr("app.pid_manager.start_all", lambda root, **kw: failed_results)
+    monkeypatch.setattr("app.tui_dashboard.run", lambda root: 0)
+    monkeypatch.setattr("app.koan_cli._wait_until_interrupt", lambda root: None)
+    monkeypatch.setattr("app.koan_cli._stop_stack", lambda root: None)
+
+    koan_cli._launch_terminal(tmp_path)
+    captured = capsys.readouterr()
+    # Should warn about failed component before launching TUI
+    assert "run" in captured.out or "failed" in captured.out
+
+
+def test_launch_terminal_narrows_import_error(tmp_path, monkeypatch, capsys):
+    # Test that non-import errors are not silently swallowed
+    monkeypatch.setattr("app.pid_manager.start_all", lambda root, **kw: {})
+
+    def bad_import(root):
+        # Simulate a real bug in tui_dashboard, not missing textual
+        raise AttributeError("some real bug in tui_dashboard")
+
+    monkeypatch.setattr("app.tui_dashboard.run", bad_import)
+
+    with pytest.raises(AttributeError):
+        koan_cli._launch_terminal(tmp_path)
+
+
 # --- theme ------------------------------------------------------------------
 
 def test_pixel_gradient_line_count():
