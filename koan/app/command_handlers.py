@@ -51,6 +51,7 @@ CORE_COMMANDS = frozenset({
     "help", "stop", "update", "upgrade", "sleep", "resume", "skill",
     "pause", "work", "awake", "start", "run",  # aliases for sleep/resume
     "at",  # one-shot scheduled mission trigger
+    "approve", "reject",  # SDLC workflow approval gate
 })
 
 
@@ -143,6 +144,16 @@ def handle_command(text: str):
 
     if cmd == "/start":
         _handle_start()
+        return
+
+    if cmd == "/approve" or cmd.startswith("/approve "):
+        issue = text.strip().split(None, 1)[1].strip() if " " in text.strip() else ""
+        _handle_sdlc_approve(issue)
+        return
+
+    if cmd == "/reject" or cmd.startswith("/reject "):
+        issue = text.strip().split(None, 1)[1].strip() if " " in text.strip() else ""
+        _handle_sdlc_reject(issue)
         return
 
     if cmd == "/help" or cmd.startswith("/help "):
@@ -581,12 +592,14 @@ _GROUP_META = {
 # Core commands that are hardcoded (not skill-based) but should appear in /help.
 # Each entry: (command_name, description, aliases, group)
 _CORE_COMMAND_HELP = [
-    ("help",   "Show help overview or details",   ["h"],                    "system"),
-    ("stop",   "Stop the run loop",               [],                      "system"),
-    ("update", "Finish current mission, update, restart", ["upgrade"],     "system"),
-    ("pause",  "Pause mission processing (optional: /pause 2h)",  ["sleep"],  "system"),
-    ("resume", "Resume mission processing",        ["work", "awake", "run", "start"], "system"),
-    ("skill",  "Manage skill packages",            [],                     "system"),
+    ("help",    "Show help overview or details",   ["h"],                    "system"),
+    ("stop",    "Stop the run loop",               [],                      "system"),
+    ("update",  "Finish current mission, update, restart", ["upgrade"],     "system"),
+    ("pause",   "Pause mission processing (optional: /pause 2h)",  ["sleep"],  "system"),
+    ("resume",  "Resume mission processing",        ["work", "awake", "run", "start"], "system"),
+    ("skill",   "Manage skill packages",            [],                     "system"),
+    ("approve", "Approve an SDLC plan and start implementation (e.g. /approve my-feature)", [],   "missions"),
+    ("reject",  "Abandon an SDLC workflow awaiting approval (e.g. /reject my-feature)", [],       "missions"),
 ]
 
 # Ordered group list (controls display order in /help)
@@ -870,6 +883,110 @@ def handle_resume():
     except (OSError, ValueError) as e:
         log("error", f"Error checking quota reset: {e}")
         send_telegram("⚠️ Error checking quota. /status or check manually.")
+
+
+def _handle_sdlc_approve(issue_name: str) -> None:
+    """Handle /approve <issue-name> — approve an SDLC plan and start implementation."""
+    if not issue_name:
+        send_telegram("Usage: /approve <issue-name>")
+        return
+
+    from app.sdlc_state import SdlcPhase, load_sdlc_state, save_sdlc_state
+
+    state = load_sdlc_state(str(INSTANCE_DIR), issue_name)
+    if state is None:
+        send_telegram(f"⚠️ No SDLC workflow found for `{issue_name}`.")
+        return
+    if state.current_phase != SdlcPhase.AWAITING_APPROVAL:
+        send_telegram(
+            f"⚠️ `{issue_name}` is not awaiting approval "
+            f"(current phase: {state.current_phase.value})."
+        )
+        return
+
+    state.approved = True
+    state.current_phase = SdlcPhase.IMPLEMENTATION
+    save_sdlc_state(str(INSTANCE_DIR), state)
+
+    project_name = _extract_project_from_sentinel(issue_name)
+    _remove_sdlc_sentinel(issue_name)
+    _queue_sdlc_phase(issue_name, project_name)
+
+    send_telegram(f"✅ `{issue_name}` approved — implementation queued.")
+
+
+def _handle_sdlc_reject(issue_name: str) -> None:
+    """Handle /reject <issue-name> — abandon an SDLC workflow awaiting approval."""
+    if not issue_name:
+        send_telegram("Usage: /reject <issue-name>")
+        return
+
+    from app.sdlc_state import SdlcPhase, load_sdlc_state, save_sdlc_state
+    from app.sdlc_state import archive_sdlc_workspace
+
+    state = load_sdlc_state(str(INSTANCE_DIR), issue_name)
+    if state is None:
+        send_telegram(f"⚠️ No SDLC workflow found for `{issue_name}`.")
+        return
+    if state.current_phase != SdlcPhase.AWAITING_APPROVAL:
+        send_telegram(
+            f"⚠️ `{issue_name}` is not awaiting approval "
+            f"(current phase: {state.current_phase.value})."
+        )
+        return
+
+    state.current_phase = SdlcPhase.ABANDONED
+    save_sdlc_state(str(INSTANCE_DIR), state)
+    _remove_sdlc_sentinel(issue_name)
+    archive_sdlc_workspace(str(INSTANCE_DIR), issue_name)
+    send_telegram(f"🗑️ `{issue_name}` rejected and archived.")
+
+
+def _extract_project_from_sentinel(issue_name: str) -> str:
+    """Extract the project name from an existing sdlc:awaiting-approval sentinel."""
+    from app.utils import PROJECT_TAG_RE
+
+    tag = f"[sdlc:awaiting-approval:{issue_name}]"
+    try:
+        content = MISSIONS_FILE.read_text(encoding="utf-8")
+        for line in content.splitlines():
+            if tag in line:
+                m = PROJECT_TAG_RE.search(line)
+                if m:
+                    return m.group(1)
+    except OSError:
+        pass
+    try:
+        projects = get_known_projects(str(KOAN_ROOT))
+        if projects:
+            return projects[0]
+    except Exception as e:
+        import sys
+        print(f"[command_handlers] _resolve_approval_project: {e}", file=sys.stderr)
+    return ""
+
+
+def _remove_sdlc_sentinel(issue_name: str) -> None:
+    """Remove [sdlc:awaiting-approval:{issue_name}] sentinel from missions.md."""
+    tag = f"[sdlc:awaiting-approval:{issue_name}]"
+    try:
+        content = MISSIONS_FILE.read_text(encoding="utf-8")
+        filtered = "\n".join(ln for ln in content.splitlines() if tag not in ln)
+        if filtered.rstrip("\n") != content.rstrip("\n"):
+            atomic_write(MISSIONS_FILE, filtered + "\n")
+    except (OSError, FileNotFoundError):
+        pass
+
+
+def _queue_sdlc_phase(issue_name: str, project_name: str) -> None:
+    """Queue /sdlc_phase <issue_name> into missions.md."""
+    from app.missions import insert_mission
+
+    missions_content = MISSIONS_FILE.read_text(encoding="utf-8") if MISSIONS_FILE.exists() else ""
+    project_tag = f"[project:{project_name}] " if project_name else ""
+    entry = f"{project_tag}/sdlc_phase {issue_name}"
+    updated = insert_mission(missions_content, entry, urgent=False)
+    atomic_write(MISSIONS_FILE, updated)
 
 
 def _handle_start():

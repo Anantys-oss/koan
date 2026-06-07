@@ -2170,6 +2170,7 @@ _GITHUB_ACTION_RE = re.compile(
     r"|deeplan|deepplan|doc|docs|doit|explain|fix|gh_request"
     r"|impl|implement|inspect|need|needs|perf|plan|plandoit|planimp|planimplement|planimpl|planit|profile"
     r"|rb|rc|rebase|recreate|refactor|review|reviewrebase|rf|rr|rv|xp"
+    r"|sdlc|sdlc_run"
     r"|secu|security|security_audit|sq|squash)\s+"
     r"(https://github\.com/[^\s]+)"
 )
