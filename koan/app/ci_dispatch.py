@@ -210,9 +210,10 @@ def compute_ci_fingerprint(
     pr_number: int,
     head_sha: str,
     job_name: str,
+    run_id: str = "",
 ) -> str:
     """Deterministic dedup key for a CI failure."""
-    key = f"{pr_number}:{head_sha}:{job_name}"
+    key = f"{pr_number}:{head_sha}:{job_name}:{run_id}"
     return hashlib.sha256(key.encode()).hexdigest()[:16]
 
 
@@ -278,7 +279,8 @@ def check_and_dispatch_ci_fixes(
 
             for fail in failures:
                 job_name = fail.get("name", "unknown")
-                fingerprint = compute_ci_fingerprint(pr_number, head_sha, job_name)
+                run_id = str(fail.get("id", ""))
+                fingerprint = compute_ci_fingerprint(pr_number, head_sha, job_name, run_id)
                 fp_key = f"{full_repo}#{fingerprint}"
 
                 if fp_key in tracker:

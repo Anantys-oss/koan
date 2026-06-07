@@ -52,6 +52,16 @@ class TestComputeCiFingerprint:
         fp = compute_ci_fingerprint(1, "sha", "job")
         assert len(fp) == 16
 
+    def test_unnamed_jobs_differ_by_run_id(self):
+        fp1 = compute_ci_fingerprint(42, "abc123", "unknown", "111")
+        fp2 = compute_ci_fingerprint(42, "abc123", "unknown", "222")
+        assert fp1 != fp2
+
+    def test_run_id_defaults_to_empty(self):
+        fp1 = compute_ci_fingerprint(42, "abc123", "job")
+        fp2 = compute_ci_fingerprint(42, "abc123", "job", "")
+        assert fp1 == fp2
+
 
 class TestFetchKoanOpenPrs:
     @patch("app.ci_dispatch.run_gh")
@@ -217,7 +227,7 @@ class TestCheckAndDispatchCiFixes:
             {"id": 1, "name": "test-suite", "conclusion": "failure", "html_url": "u"},
         ]
 
-        fingerprint = compute_ci_fingerprint(42, "sha123", "test-suite")
+        fingerprint = compute_ci_fingerprint(42, "sha123", "test-suite", "1")
         mock_load.return_value = {f"owner/repo#{fingerprint}": fingerprint}
 
         with patch("app.projects_config.load_projects_config") as mock_pc, \
