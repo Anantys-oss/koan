@@ -111,6 +111,32 @@ When you write a message that maps to an existing slash command, Kōan will sugg
 
 Suggestions are advisory — you always stay in control. If you like the suggestion, send the command; otherwise, Kōan continues the conversation. Suggestions are opt-in and can be disabled via the `chat.suggest_commands: false` config flag.
 
+#### Confirm-to-Run ("yes")
+
+For a curated set of safe commands, Kōan can go one step further: it offers to run the command, and a one-word **"yes"** runs it for you — including subcommands and arguments derived from the conversation:
+
+```
+you>   what are our recurring tasks?
+Kōan>  Want me to list them?
+       → Reply "yes" to run  /recurring
+you>   yes
+       …(runs /recurring, lists tasks)…
+you>   force-run number 3
+Kōan>  Force-run recurring task #3?
+       → Reply "yes" to run  /recurring run 3
+you>   yes
+       …(runs /recurring run 3)…
+```
+
+How it stays safe:
+
+- **No new trigger path.** A confirmed "yes" replays the *exact* command Kōan showed you, through the normal command pipeline — every existing gate (channel filter, permission checks, pause/passive state) still applies. Kōan never runs anything on its own; your "yes" is the trigger.
+- **Opt-in per command.** Only skills that declare `chat_confirmable: true` in their `SKILL.md` are eligible (e.g. `/recurring`, `/status`, `/list`). Destructive commands (`/stop`, `/shutdown`, `/delete_project`, `/reset`, …) are never eligible.
+- **What you see is what runs.** The literal command is shown before you confirm; there is no model in the loop at confirmation time.
+- **Single-use & short-lived.** The pending offer is bound to your channel, expires after 5 minutes, and is cleared the moment you reply with anything other than a tight "yes".
+
+Disable the whole behaviour with `chat.confirm_commands: false` (prose suggestions stay on). To make one of your own custom skills eligible, add `chat_confirmable: true` to its `SKILL.md` frontmatter.
+
 #### Forcing Chat Mode
 
 If Kōan misclassifies your message, use `/chat` to force chat mode:

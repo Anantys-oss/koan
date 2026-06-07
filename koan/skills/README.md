@@ -65,6 +65,7 @@ handler: handler.py
 | `title_markers` | no | Optional list of additional mission-title substrings to match against this skill (case-insensitive). Used when a handler emits a plain-text mission title without the slash command. Defaults to `[]`. |
 | `requirements` | no | Python packages to auto-install before first execution (e.g. `[requests, boto3]`) |
 | `sub_commands` | no | List of skill commands to expand into when triggered. Defines a combo skill — see [Combo skills](#combo-skills). Defaults to `[]`. |
+| `chat_confirmable` | no | Set to `true` to let chat offer one-word ("yes") confirmation that runs this skill's command from natural language. The confirmed "yes" replays the exact command through the normal command path (all gates apply); only opt in safe, non-destructive commands. Defaults to `false`. |
 
 ### Audience
 

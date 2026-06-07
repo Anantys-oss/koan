@@ -636,9 +636,11 @@ def force_run(
 
         if identifier is None:
             # Inject all enabled missions (ignore disabled, bypass cadence)
-            for mission in missions:
-                if mission.get("enabled", True):
-                    injected.append(_inject_one(mission, missions_path, now))
+            injected.extend(
+                _inject_one(mission, missions_path, now)
+                for mission in missions
+                if mission.get("enabled", True)
+            )
         else:
             # Inject the single matching mission (ignore enabled, bypass cadence)
             target = _resolve_target(missions, identifier)

@@ -6,6 +6,7 @@ emoji: 📊
 description: Show Kōan status, missions, and run loop health
 version: 1.0.0
 audience: bridge
+chat_confirmable: true
 commands:
   - name: status
     description: Quick status overview

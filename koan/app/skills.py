@@ -107,6 +107,13 @@ class Skill:
     # their expansion in SKILL.md frontmatter rather than in a hardcoded dict.
     sub_commands: List[str] = field(default_factory=list)
     requirements: List[str] = field(default_factory=list)
+    # ``chat_confirmable`` follows the SKILL.md frontmatter ``chat_confirmable:``
+    # flag. Default ``False`` (opt-in): a skill must declare
+    # ``chat_confirmable: true`` for the chat bridge to offer one-word ("yes")
+    # confirmation that runs its slash command. Execution still flows through
+    # the normal ``handle_command`` path with every existing gate — this flag
+    # only authorizes the *offer*. Destructive commands must stay opt-out.
+    chat_confirmable: bool = False
 
     @property
     def qualified_name(self) -> str:
@@ -268,6 +275,7 @@ def parse_skill_md(path: Path) -> Optional[Skill]:
     github_context_aware = _parse_bool_flag(meta, "github_context_aware")
     caveman_enabled = _parse_bool_flag(meta, "caveman")
     forward_result_enabled = _parse_bool_flag(meta, "forward_result")
+    chat_confirmable = _parse_bool_flag(meta, "chat_confirmable")
 
     # Parse title_markers (optional inline list or comma-separated scalar).
     title_markers_raw = meta.get("title_markers", [])
@@ -325,6 +333,7 @@ def parse_skill_md(path: Path) -> Optional[Skill]:
         title_markers=title_markers,
         sub_commands=sub_commands,
         requirements=requirements,
+        chat_confirmable=chat_confirmable,
     )
 
 

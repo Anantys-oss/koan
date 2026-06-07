@@ -165,6 +165,31 @@ def get_chat_suggest_commands_enabled() -> bool:
     return True
 
 
+def get_chat_confirm_commands_enabled() -> bool:
+    """Check if chat may arm one-word ("yes") confirmation to run a command.
+
+    When enabled, a chat reply carrying a validated ``SUGGEST_COMMAND:`` marker
+    (resolves in the registry + skill opted into ``chat_confirmable``) arms a
+    channel-bound, single-use, TTL'd pending suggestion. A subsequent tight
+    affirmative replays the literal command through the normal command path.
+    Independent of ``chat.suggest_commands`` (prose suggestions) so an operator
+    can keep suggestions on while disabling auto-run.
+
+    Config key: chat.confirm_commands (default: true)
+
+    Returns:
+        True if confirmation-to-run is enabled, False otherwise.
+    """
+    config = _load_config()
+    chat_config = config.get("chat", {})
+    if isinstance(chat_config, dict):
+        confirm = chat_config.get("confirm_commands", True)
+        if isinstance(confirm, bool):
+            return confirm
+        return str(confirm).lower() not in ("false", "no", "0", "off")
+    return True
+
+
 _MODEL_CONFIG_NORMALIZED = False  # Module-level guard to emit deprecation warnings once per process
 
 

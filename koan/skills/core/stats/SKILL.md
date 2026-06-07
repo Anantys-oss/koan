@@ -6,6 +6,7 @@ emoji: 📊
 description: Show session outcome statistics per project
 version: 1.0.0
 audience: bridge
+chat_confirmable: true
 commands:
   - name: stats
     description: Session productivity stats by project
