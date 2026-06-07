@@ -6,6 +6,7 @@ emoji: 🎯
 description: Focus mode — suppress reflection and free exploration, process missions only
 version: 1.0.0
 audience: bridge
+chat_confirmable: true
 commands:
   - name: focus
     description: Activate focus mode (missions only, no reflection/exploration)

@@ -113,6 +113,13 @@ class Skill:
     # skill subprocess via ``KOAN_MISSION_MODEL_KEY``.
     model_key: str = ""
     iterative: bool = False
+    # ``chat_confirmable`` follows the SKILL.md frontmatter ``chat_confirmable:``
+    # flag. Default ``False`` (opt-in): a skill must declare
+    # ``chat_confirmable: true`` for the chat bridge to offer one-word ("yes")
+    # confirmation that runs its slash command. Execution still flows through
+    # the normal ``handle_command`` path with every existing gate — this flag
+    # only authorizes the *offer*. Destructive commands must stay opt-out.
+    chat_confirmable: bool = False
 
     @property
     def qualified_name(self) -> str:
@@ -338,6 +345,7 @@ def parse_skill_md(path: Path) -> Optional[Skill]:
     caveman_enabled = _parse_bool_flag(meta, "caveman")
     forward_result_enabled = _parse_bool_flag(meta, "forward_result")
     iterative = _parse_bool_flag(meta, "iterative")
+    chat_confirmable = _parse_bool_flag(meta, "chat_confirmable")
 
     # Parse title_markers (optional inline list or comma-separated scalar).
     title_markers_raw = meta.get("title_markers", [])
@@ -404,6 +412,7 @@ def parse_skill_md(path: Path) -> Optional[Skill]:
         requirements=requirements,
         model_key=model_key,
         iterative=iterative,
+        chat_confirmable=chat_confirmable,
     )
 
 

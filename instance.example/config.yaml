@@ -101,6 +101,13 @@ fast_reply: false
 #   # When a user's conversational message maps to a slash command, the chat will
 #   # suggest it (e.g. "That sounds like /recurring resume — want me to queue it?")
 #   suggest_commands: true
+#   # Let chat arm one-word ("yes") confirmation to run a command (default: true)
+#   # When you ask in plain language, chat may offer to run an eligible command;
+#   # replying "yes" runs the *exact* command it showed — through the normal
+#   # command path with every existing gate. Only skills that opt in via
+#   # `chat_confirmable: true` in their SKILL.md are eligible. Set false to keep
+#   # prose suggestions but require you to type the command yourself.
+#   confirm_commands: true
 
 # Debug mode — write detailed mission execution logs to .koan-debug.log
 # Use `tail -f .koan-debug.log` to watch dispatch decisions, commands, and errors

@@ -213,6 +213,68 @@ class TestHandleChatCommand:
 
 
 # ---------------------------------------------------------------------------
+# Chat command confirmation flow (handle_message interception)
+# ---------------------------------------------------------------------------
+
+class TestChatCommandConfirmation:
+    """A 'yes' to an armed chat suggestion replays the literal command through
+    the existing handle_command path — no new trigger code path."""
+
+    @pytest.fixture(autouse=True)
+    def _clean(self):
+        from app import command_confirm
+        command_confirm.clear_pending()
+        yield
+        command_confirm.clear_pending()
+
+    @patch("app.awake.handle_command")
+    def test_affirmative_runs_pending_literal_command(self, mock_handle_command):
+        from app import command_confirm
+        command_confirm.register_pending("/recurring run 3", "chat-1")
+
+        handle_message("yes", chat_id="chat-1")
+
+        # Executed via the SAME command path, with the exact stored literal string
+        mock_handle_command.assert_called_once_with("/recurring run 3")
+        # single-use: pending consumed
+        assert command_confirm.peek_pending("chat-1") is None
+
+    @patch("app.awake._run_in_worker")
+    @patch("app.awake.handle_command")
+    def test_non_affirmative_clears_pending_and_falls_through_to_chat(
+        self, mock_handle_command, mock_worker
+    ):
+        from app import command_confirm
+        command_confirm.register_pending("/recurring run 3", "chat-1")
+
+        handle_message("actually tell me about the logs instead", chat_id="chat-1")
+
+        # Did NOT run the command; treated as normal chat
+        mock_handle_command.assert_not_called()
+        mock_worker.assert_called_once()
+        # pending cleared — a later stray 'yes' won't fire the stale command
+        assert command_confirm.peek_pending("chat-1") is None
+
+    @patch("app.awake.handle_command")
+    def test_affirmative_with_no_pending_is_normal_chat(self, mock_handle_command):
+        with patch("app.awake._run_in_worker") as mock_worker:
+            handle_message("yes", chat_id="chat-1")
+        mock_handle_command.assert_not_called()
+        mock_worker.assert_called_once()
+
+    @patch("app.awake.handle_command")
+    def test_disabled_config_ignores_pending(self, mock_handle_command):
+        from app import command_confirm
+        command_confirm.register_pending("/recurring run 3", "chat-1")
+        with patch("app.config.get_chat_confirm_commands_enabled", return_value=False), \
+             patch("app.awake._run_in_worker") as mock_worker:
+            handle_message("yes", chat_id="chat-1")
+        # No replay; "yes" handled as normal chat
+        mock_handle_command.assert_not_called()
+        mock_worker.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
 # is_command
 # ---------------------------------------------------------------------------
 
@@ -1352,7 +1414,7 @@ class TestHandleMessage:
     @patch("app.awake._run_in_worker")
     def test_dispatches_chat(self, mock_worker):
         handle_message("how are you?")
-        mock_worker.assert_called_once_with(handle_chat, "how are you?", lane="chat")
+        mock_worker.assert_called_once_with(handle_chat, "how are you?", "", lane="chat")
 
     @patch("app.awake.handle_command")
     @patch("app.awake.handle_mission")
@@ -1533,7 +1595,7 @@ class TestMainLoop:
             _bridge_loop()
         mock_config.assert_called_once()
         mock_updates.assert_called_once_with(None)
-        mock_handle.assert_called_once_with("hello")
+        mock_handle.assert_called_once_with("hello", chat_id=self.TEST_CHAT_ID)
         mock_flush.assert_called_once()
         mock_heartbeat.assert_called()
 
@@ -1655,7 +1717,7 @@ class TestMainLoop:
         # Must reach sleep() (StopIteration), not raise UnboundLocalError.
         with pytest.raises(StopIteration):
             _bridge_loop()
-        mock_handle.assert_called_once_with("/resume")
+        mock_handle.assert_called_once_with("/resume", chat_id=self.MATRIX_ROOM_ID)
 
     @patch("app.awake._check_group_chat_mode")
     @patch("app.messaging.get_messaging_provider")
@@ -1681,7 +1743,7 @@ class TestMainLoop:
         ]
         with pytest.raises(StopIteration):
             _bridge_loop()
-        mock_handle.assert_called_once_with("hi from matrix")
+        mock_handle.assert_called_once_with("hi from matrix", chat_id=self.MATRIX_ROOM_ID)
         mock_flush.assert_called_once()
         mock_heartbeat.assert_called()
 
@@ -3187,7 +3249,7 @@ class TestBridgeExceptionResilience:
         # Should stop at StopIteration (time.sleep), NOT at RuntimeError
         with pytest.raises(StopIteration):
             _bridge_loop()
-        mock_handle.assert_called_once_with("/bad")
+        mock_handle.assert_called_once_with("/bad", chat_id=self.TEST_CHAT_ID)
         # Error notification sent to user
         mock_send.assert_called_once()
         assert "RuntimeError" in mock_send.call_args[0][0]

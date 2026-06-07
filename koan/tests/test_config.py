@@ -1924,3 +1924,50 @@ class TestGetChatSuggestCommandsEnabled:
 
         with _mock_config({"chat": "invalid"}):
             assert get_chat_suggest_commands_enabled() is True
+
+
+# --- get_chat_confirm_commands_enabled ---
+
+
+class TestGetChatConfirmCommandsEnabled:
+    def test_default_true_when_unset(self):
+        from app.config import get_chat_confirm_commands_enabled
+
+        with _mock_config({}):
+            assert get_chat_confirm_commands_enabled() is True
+
+    def test_explicit_false(self):
+        from app.config import get_chat_confirm_commands_enabled
+
+        with _mock_config({"chat": {"confirm_commands": False}}):
+            assert get_chat_confirm_commands_enabled() is False
+
+    def test_explicit_true(self):
+        from app.config import get_chat_confirm_commands_enabled
+
+        with _mock_config({"chat": {"confirm_commands": True}}):
+            assert get_chat_confirm_commands_enabled() is True
+
+    @pytest.mark.parametrize("value", ["false", "no", "0", "off"])
+    def test_string_falsey(self, value):
+        from app.config import get_chat_confirm_commands_enabled
+
+        with _mock_config({"chat": {"confirm_commands": value}}):
+            assert get_chat_confirm_commands_enabled() is False, f"Failed for value: {value}"
+
+    def test_independent_of_suggest_commands(self):
+        """Confirm can be disabled while suggestions stay on."""
+        from app.config import (
+            get_chat_confirm_commands_enabled,
+            get_chat_suggest_commands_enabled,
+        )
+
+        with _mock_config({"chat": {"suggest_commands": True, "confirm_commands": False}}):
+            assert get_chat_suggest_commands_enabled() is True
+            assert get_chat_confirm_commands_enabled() is False
+
+    def test_non_dict_chat_config(self):
+        from app.config import get_chat_confirm_commands_enabled
+
+        with _mock_config({"chat": "invalid"}):
+            assert get_chat_confirm_commands_enabled() is True

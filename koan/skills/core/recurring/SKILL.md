@@ -6,6 +6,7 @@ emoji: 🔁
 description: Manage recurring missions (hourly, daily, weekly, custom interval)
 version: 1.5.0
 audience: bridge
+chat_confirmable: true
 commands:
   - name: daily
     description: Add a daily recurring mission
