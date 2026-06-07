@@ -49,3 +49,4 @@ docker-compose.override.yml
 .env.docker
 claude-auth/
 workspace
+.spec/
