@@ -3597,9 +3597,8 @@ class TestChatPromptSkillsCatalogPlaceholder:
              patch("app.config.get_chat_suggest_commands_enabled", return_value=True):
             prompt = _build_chat_prompt("hello")
 
-        # The prompt should contain injected catalog content
-        assert "/status" in prompt or "Available slash commands" in prompt, \
-            "Non-lite prompt should have catalog"
+        # The prompt should contain injected catalog content (not just template text)
+        assert "/status" in prompt, "Catalog content should appear in prompt"
         # Ensure no literal placeholder remains
         assert "{SKILLS_CATALOG}" not in prompt, "Placeholder should be substituted"
 

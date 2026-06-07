@@ -210,7 +210,17 @@ def _build_command_catalog() -> str:
             for group in sorted(groups_dict.keys())
             for line in sorted(groups_dict[group])[:5]
         ]
-        return "\n".join(lines) if lines else ""
+        if not lines:
+            return ""
+        catalog_body = "\n".join(lines)
+        return (
+            f"Available slash commands (suggest when the human's message maps to one):\n"
+            f"{catalog_body}\n\n"
+            f"When the human's message clearly maps to a slash command from the list above, "
+            f"suggest it in your reply — e.g. \"That sounds like a job for `/status` — want me to queue it?\" "
+            f"at most one suggestion per message, only when the mapping is clear. "
+            f"Never claim you executed it — the human always runs commands."
+        )
     except Exception as e:
         log("warn", f"[chat] catalog builder failed: {e}")
         return ""
