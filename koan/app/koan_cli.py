@@ -13,9 +13,6 @@ config), then lets the human choose how to supervise the agent:
 (services, CI, scripts). When stdin is not a TTY this launcher delegates to
 the existing headless ``start_all`` path with no prompt, so it is safe to
 call from non-interactive contexts too.
-
-The chosen mode is remembered in ``instance/.koan.prefs`` and reused on the
-next run unless ``--menu`` is passed.
 """
 
 import argparse
