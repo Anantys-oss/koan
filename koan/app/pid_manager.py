@@ -593,7 +593,7 @@ def _show_startup_banner(koan_root: Path, provider: str) -> None:
         print(f"Warning: Failed to display startup banner: {e}", file=sys.stderr)
 
 
-def start_all(koan_root: Path, provider: str = None) -> dict:
+def start_all(koan_root: Path, provider: str = None, show_banner: bool = True) -> dict:
     """Start the full Kōan stack for the configured provider.
 
     Auto-detects the provider if not specified.
@@ -603,13 +603,17 @@ def start_all(koan_root: Path, provider: str = None) -> dict:
     Note: ollama-launch does not need a separate ollama serve process
     because ``ollama launch claude`` handles server lifecycle internally.
 
+    ``show_banner`` lets the interactive launcher (``make koan``) suppress the
+    startup banner it has already rendered itself, avoiding a double banner.
+
     Returns dict mapping component name to (success, message).
     """
     if provider is None:
         provider = _detect_provider(koan_root)
 
     # Display startup banner before launching processes
-    _show_startup_banner(koan_root, provider)
+    if show_banner:
+        _show_startup_banner(koan_root, provider)
 
     results = {}
 

@@ -108,12 +108,14 @@ def _visible_len(s: str) -> int:
 
 
 def colorize_startup(art: str) -> str:
-    """Apply ANSI colors to the unified startup banner."""
+    """Apply ANSI colors to the unified startup banner (Anantys mint theme)."""
+    from app.banners.theme import MINT, MINT_DIM, _seq
+
     return _colorize_art(art, {
-        "K Ō A N": f"{BOLD}{CYAN}",
+        "K Ō A N": _seq(MINT, bold=True),
         "cognitive sparring partner": f"{DIM}{WHITE}",
-        "─────────────────────": f"{DIM}{CYAN}",
-        "◉": CYAN,
+        "─────────────────────": _seq(MINT_DIM),
+        "◉": _seq(MINT),
         "☢": YELLOW,
     }, f"{DIM}{BLUE}")
 
@@ -134,14 +136,17 @@ def _format_info_lines(system_info: dict) -> list:
         ("soul", "Soul"),
         ("messaging", "Messaging"),
     ]
+    from app.banners.theme import MINT, _seq
+
     max_value_len = 50
+    mint = _seq(MINT)
     lines = []
     for key, label in label_map:
         if key in system_info:
             value = system_info[key]
             if len(value) > max_value_len:
                 value = value[:max_value_len - 1] + "…"
-            lines.append(f"{DIM}{WHITE}{label}: {RESET}{CYAN}{value}{RESET}")
+            lines.append(f"{DIM}{WHITE}{label}: {RESET}{mint}{value}{RESET}")
     return lines
 
 

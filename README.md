@@ -56,9 +56,14 @@ git clone https://github.com/Anantys-oss/koan.git
 cd koan
 make setup
 make install    # Interactive web wizard — sets up everything
-make start      # Launches the full stack
+make koan       # Interactive launcher — pick web / terminal / headless
 make logs       # Watch it work
 ```
+
+`make koan` is the interactive front door: it shows the banner, surfaces any
+config drift, and lets you choose how to supervise the agent (web dashboard,
+terminal dashboard, or headless). `make start` remains the non-interactive
+launcher used by services and scripts.
 
 On macOS, keep your machine awake while Koan runs:
 
@@ -381,7 +386,8 @@ instance/                 # Your private data (gitignored)
 | Target | Description |
 |--------|-------------|
 | `make install` | Interactive web-based setup wizard |
-| `make start` | Start full stack (agent + bridge) |
+| `make koan` | Interactive launcher (web / terminal / headless) |
+| `make start` | Start full stack (agent + bridge), non-interactive |
 | `make logs` | Tail live output from all processes |
 | `make stop` | Stop all processes |
 | `make status` | Show running process status |

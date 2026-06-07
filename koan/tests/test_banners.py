@@ -133,17 +133,20 @@ class TestStartupArt:
 
 class TestColorizeStartup:
     def test_colors_eyes(self):
+        # Anantys mint theme: eyes use the mint accent, not cyan.
+        from app.banners.theme import MINT, _seq
         result = colorize_startup("│ ◉  ◉ │")
-        assert CYAN in result
+        assert _seq(MINT) in result
 
     def test_colors_radioactive(self):
         result = colorize_startup("├──☢───┤")
         assert YELLOW in result
 
     def test_colors_title(self):
+        from app.banners.theme import MINT, _seq
         result = colorize_startup("K Ō A N")
         assert BOLD in result
-        assert CYAN in result
+        assert _seq(MINT, bold=True) in result
 
     def test_colors_tagline(self):
         result = colorize_startup("cognitive sparring partner")

@@ -1872,6 +1872,27 @@ projects:
 - `/incident TypeError: Cannot read property 'id' of undefined at UserService.getUser (user.js:42)` — Paste a stack trace and get a fix
 </details>
 
+### Interactive launcher (`make koan`)
+
+`make koan` is the interactive way to start Kōan. In a terminal it renders the
+Anantys banner, surfaces any config drift (read-only — it never edits your
+`config.yaml`), then asks how you want to supervise the agent:
+
+- **Web dashboard** — starts the stack and the web UI, opens your browser, and
+  stays in the foreground. Ctrl-C ends the session and stops Kōan.
+- **Terminal view** — starts the stack and opens the terminal dashboard with
+  Logs / Config / Usage tabs. Pressing `q` ends the session and stops Kōan.
+- **Headless** — starts the stack and hands control back (identical to
+  `make start`); Kōan keeps running in the background.
+
+Use the arrow keys to move, Enter to confirm, `q` to quit. When stdin is not a
+TTY (services, CI, pipes) `make koan` falls back to the headless path with no
+prompt. `make start` is unchanged and remains the launcher used by services
+and scripts.
+
+The terminal dashboard requires `textual` (installed by `make setup`); if it is
+missing, Kōan falls back to `make logs`.
+
 ### Web Dashboard
 
 Run `make dashboard` to start a local web UI on port 5001. The dashboard provides:
