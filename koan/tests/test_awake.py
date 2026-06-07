@@ -3595,6 +3595,32 @@ class TestBuildCommandCatalog:
         assert "/" in catalog, "Catalog should contain slash commands"
         assert "—" in catalog or "-" in catalog, "Catalog should have descriptions"
 
+    def test_catalog_surfaces_confirmable_usage_and_protocol(self):
+        """Regression: confirmable commands must appear with their usage forms
+        (e.g. '/recurring run') so the model can build subcommands, and the
+        SUGGEST_COMMAND marker protocol must be present."""
+        from app.awake import _build_command_catalog
+
+        with patch("app.config.get_chat_suggest_commands_enabled", return_value=True), \
+             patch("app.config.get_chat_confirm_commands_enabled", return_value=True):
+            catalog = _build_command_catalog()
+
+        # The force-run subcommand form must be visible (was hidden behind /daily)
+        assert "/recurring run" in catalog
+        # The marker protocol must be present
+        assert "SUGGEST_COMMAND:" in catalog
+        assert "Commands you can OFFER TO RUN" in catalog
+
+    def test_catalog_marks_no_protocol_when_confirm_disabled(self):
+        """With confirm disabled, no marker protocol is emitted (prose only)."""
+        from app.awake import _build_command_catalog
+
+        with patch("app.config.get_chat_suggest_commands_enabled", return_value=True), \
+             patch("app.config.get_chat_confirm_commands_enabled", return_value=False):
+            catalog = _build_command_catalog()
+
+        assert "SUGGEST_COMMAND:" not in catalog
+
     def test_catalog_empty_when_disabled(self):
         """When suggest_commands is disabled, catalog should be empty."""
         from app.awake import _build_command_catalog
