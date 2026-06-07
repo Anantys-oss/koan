@@ -1,7 +1,11 @@
 # Kōan instance data (private to each user)
 instance
 .koan*
+
+# Claude Code local directory — track settings.json (permission allowlist) but
+# ignore session data, credentials, and machine-specific overrides.
 .claude
+!.claude/settings.json
 
 # Python
 __pycache__/

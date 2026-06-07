@@ -1,7 +1,7 @@
 -include .env
 export
 
-.PHONY: install onboard setup start stop status restart
+.PHONY: install onboard setup permissions start stop status restart
 .PHONY: clean say migrate test test-skills test-strict coverage lint sync-instance rename-project release
 .PHONY: awake run errand-run errand-awake dashboard api api-token webhook
 .PHONY: ollama logs ssh-forward
@@ -62,12 +62,22 @@ endif
 SERVICE_INSTALLED = $(shell [ -f /etc/systemd/system/koan.service ] && echo 1)
 LAUNCHD_INSTALLED = $(shell [ -f ~/Library/LaunchAgents/com.koan.run.plist ] && echo 1)
 
-setup: $(VENV)/.installed
+setup: $(VENV)/.installed .claude/settings.json
 
 $(VENV)/.installed: koan/requirements.txt
 	$(PYTHON_BIN) -m venv $(VENV)
 	$(VENV)/bin/pip install -r koan/requirements.txt
 	@touch $@
+
+# Create .claude/settings.json with the instance/** permission allowlist so
+# autonomous agents can write to runtime state files without approval prompts.
+# Safe to re-run — idempotent.
+.claude/settings.json: koan/app/setup_claude_settings.py
+	$(KOAN_RUN) -m app.setup_claude_settings
+
+permissions:
+	$(KOAN_RUN) -m app.setup_claude_settings
+	@echo "→ Re-run 'make permissions' any time to refresh the allowlist."
 
 awake: setup
 	$(KOAN_RUN) app/awake.py

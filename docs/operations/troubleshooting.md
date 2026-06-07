@@ -126,6 +126,30 @@ Messages queue in `instance/outbox.md`. The bridge flushes this to Telegram on e
 
 ## CLI Provider Issues
 
+### Agent blocked by permission prompts on instance/ files
+
+Kōan writes to `instance/` files (mission queue, outbox, journals, memory) during
+every session. If Claude Code prompts for approval on these writes, autonomous
+operation stalls.
+
+**Fix**: Run `make permissions` (or `make setup`) to create `.claude/settings.json`
+with the permission allowlist for `instance/**`:
+
+```bash
+make permissions
+```
+
+This creates `.claude/settings.json` in the project root with pre-approved rules
+for `Write(instance/**)`, `Edit(instance/**)`, git, and gh operations. The file
+persists across runs — you only need to run this once, or after a fresh clone.
+
+To verify: `/doctor` will show a `Permissions` section — `✅ .claude/settings.json present`
+or `⚠️ missing` with an auto-fix available via `/doctor --fix`.
+
+**Why not use `skip_permissions: true`?** `skip_permissions: true` passes
+`--dangerously-skip-permissions` to Claude CLI, which is rejected when Kōan runs
+as root and is broader than needed. The per-file allowlist is more surgical.
+
 ### Claude Code not found or not working
 
 1. Verify the CLI is installed: `which claude` or `claude --version`.

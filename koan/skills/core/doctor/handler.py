@@ -12,6 +12,7 @@ _MODULE_NAMES = {
     "config_check": "Configuration",
     "environment_check": "Environment",
     "instance_check": "Instance",
+    "permissions_check": "Permissions",
     "process_check": "Processes",
     "project_check": "Projects",
     "connectivity_check": "Connectivity",

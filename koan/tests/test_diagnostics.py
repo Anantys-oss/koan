@@ -35,6 +35,7 @@ class TestDiscoverChecks:
         assert "config_check" in modules
         assert "environment_check" in modules
         assert "instance_check" in modules
+        assert "permissions_check" in modules
         assert "process_check" in modules
         assert "project_check" in modules
         assert "connectivity_check" in modules
