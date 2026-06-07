@@ -1062,6 +1062,26 @@ def api_usage_missions():
     return jsonify({"missions": missions, "start": start.isoformat(), "end": end.isoformat()})
 
 
+@app.route("/api/efficiency")
+def api_efficiency():
+    """Token efficiency: cost-per-productive-outcome joined across cost + outcome stores."""
+    from app.cost_tracker import compute_efficiency
+
+    days = request.args.get("days", "30", type=str)
+    selected_project = request.args.get("project", "")
+    try:
+        days = max(1, min(int(days), 90))
+    except (ValueError, TypeError):
+        days = 30
+
+    result = compute_efficiency(
+        INSTANCE_DIR,
+        days=days,
+        project=selected_project or None,
+    )
+    return jsonify(result)
+
+
 @app.route("/api/metrics")
 def api_metrics():
     """JSON mission metrics for the specified time range."""
