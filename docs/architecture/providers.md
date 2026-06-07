@@ -33,6 +33,6 @@ prefer importing from `koan.app.provider`.
 - Claude provider: Claude Code CLI integration.
 - Codex provider: OpenAI Codex CLI integration.
 - Copilot provider: GitHub Copilot CLI integration with tool-name mapping.
-- Local provider: local model server integration.
+- Ollama-launch provider: Ollama + Claude Code CLI integration via `ollama launch claude`.
 
 Setup details live in [Provider Setup](../providers/).

@@ -8,7 +8,7 @@ import pytest
 from app.provider.base import CLIProvider
 from app.provider.claude import ClaudeProvider
 from app.provider.copilot import CopilotProvider
-from app.provider.local import LocalLLMProvider
+from app.provider.ollama_launch import OllamaLaunchProvider
 
 
 class TestBaseProviderQuota:
@@ -105,11 +105,11 @@ class TestClaudeProviderQuota:
 
 
 class TestLocalProviderQuota:
-    """Local/Ollama providers have no quota concept."""
+    """Ollama-launch provider has no quota concept."""
 
-    def test_local_always_available(self):
-        """LocalLLMProvider inherits base (True, '')."""
-        provider = LocalLLMProvider()
+    def test_ollama_launch_always_available(self):
+        """OllamaLaunchProvider inherits base (True, '')."""
+        provider = OllamaLaunchProvider()
         ok, detail = provider.check_quota_available("/tmp")
         assert ok is True
         assert detail == ""

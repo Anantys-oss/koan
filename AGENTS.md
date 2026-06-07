@@ -47,7 +47,6 @@ make status         # Show running process status
 make logs           # Watch live output
 make run            # Start main agent loop
 make awake          # Start Telegram bridge
-make ollama         # Start full Ollama stack
 make dashboard      # Start Flask web dashboard on port 5001
 make lint           # Run ruff linter
 make test           # Run full test suite

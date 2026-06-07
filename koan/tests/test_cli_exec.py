@@ -18,7 +18,6 @@ from app.cli_exec import (
 from app.provider.claude import ClaudeProvider
 from app.provider.codex import CodexProvider
 from app.provider.copilot import CopilotProvider
-from app.provider.local import LocalLLMProvider
 
 
 # ---------------------------------------------------------------------------
@@ -35,10 +34,6 @@ class TestUsesStdinPassing:
     @patch("app.provider.get_provider", return_value=CopilotProvider())
     def test_copilot_provider_skips_stdin(self, _mock):
         assert _uses_stdin_passing() is False
-
-    @patch("app.provider.get_provider", return_value=LocalLLMProvider())
-    def test_local_provider_uses_stdin(self, _mock):
-        assert _uses_stdin_passing() is True
 
     @patch("app.provider.get_provider", side_effect=ImportError("no provider"))
     def test_import_error_defaults_to_true(self, _mock):

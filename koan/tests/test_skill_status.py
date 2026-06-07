@@ -12,7 +12,6 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from skills.core.status.handler import (
-    _needs_ollama,
     _truncate,
     _format_mission_display,
     handle,
@@ -50,37 +49,6 @@ def _make_ctx(koan_root, instance_dir, command_name="status", args=""):
         send_message=None,
         handle_chat=None,
     )
-
-
-# ---------------------------------------------------------------------------
-# _needs_ollama
-# ---------------------------------------------------------------------------
-
-class TestNeedsOllama:
-    def test_returns_true_for_local(self):
-        with patch("skills.core.status.handler._needs_ollama") as mock:
-            mock.return_value = True
-            assert mock() is True
-
-    @patch("app.provider.get_provider_name", return_value="claude")
-    def test_returns_false_for_claude(self, _mock):
-        assert _needs_ollama() is False
-
-    @patch("app.provider.get_provider_name", return_value="copilot")
-    def test_returns_false_for_copilot(self, _mock):
-        assert _needs_ollama() is False
-
-    @patch("app.provider.get_provider_name", return_value="local")
-    def test_returns_true_for_local_provider(self, _mock):
-        assert _needs_ollama() is True
-
-    @patch("app.provider.get_provider_name", return_value="ollama")
-    def test_returns_true_for_ollama_provider(self, _mock):
-        assert _needs_ollama() is True
-
-    @patch("app.provider.get_provider_name", side_effect=ImportError)
-    def test_returns_false_on_import_error(self, _mock):
-        assert _needs_ollama() is False
 
 
 # ---------------------------------------------------------------------------
@@ -182,8 +150,7 @@ class TestHandleDispatch:
 class TestHandleStatus:
     def test_basic_working_status(self, koan_root, instance_dir):
         ctx = _make_ctx(koan_root, instance_dir)
-        with patch("skills.core.status.handler._needs_ollama", return_value=False):
-            result = _handle_status(ctx)
+        result = _handle_status(ctx)
         assert "◉ Kōan Status" in result
         assert "🟢 Active" in result
         assert result.startswith("```\n")
@@ -192,37 +159,32 @@ class TestHandleStatus:
     def test_paused_status(self, koan_root, instance_dir):
         (koan_root / ".koan-pause").touch()
         ctx = _make_ctx(koan_root, instance_dir)
-        with patch("skills.core.status.handler._needs_ollama", return_value=False):
-            result = _handle_status(ctx)
+        result = _handle_status(ctx)
         assert "⏸️ Paused" in result
         assert "/resume" in result
 
     def test_paused_quota_reason(self, koan_root, instance_dir):
         (koan_root / ".koan-pause").write_text("quota\n1234567890\n")
         ctx = _make_ctx(koan_root, instance_dir)
-        with patch("skills.core.status.handler._needs_ollama", return_value=False):
-            result = _handle_status(ctx)
+        result = _handle_status(ctx)
         assert "quota exhausted" in result
 
     def test_paused_max_runs_reason(self, koan_root, instance_dir):
         (koan_root / ".koan-pause").write_text("max_runs\n1234567890\n")
         ctx = _make_ctx(koan_root, instance_dir)
-        with patch("skills.core.status.handler._needs_ollama", return_value=False):
-            result = _handle_status(ctx)
+        result = _handle_status(ctx)
         assert "max runs reached" in result
 
     def test_stopping_status(self, koan_root, instance_dir):
         (koan_root / ".koan-stop").touch()
         ctx = _make_ctx(koan_root, instance_dir)
-        with patch("skills.core.status.handler._needs_ollama", return_value=False):
-            result = _handle_status(ctx)
+        result = _handle_status(ctx)
         assert "⛔ Stopping" in result
 
     def test_shows_loop_status(self, koan_root, instance_dir):
         (koan_root / ".koan-status").write_text("Run 3/50 — executing mission on koan")
         ctx = _make_ctx(koan_root, instance_dir)
-        with patch("skills.core.status.handler._needs_ollama", return_value=False):
-            result = _handle_status(ctx)
+        result = _handle_status(ctx)
         assert "Run 3/50" in result
 
     def test_shows_pending_missions(self, koan_root, instance_dir):
@@ -236,8 +198,7 @@ class TestHandleStatus:
         )
         (instance_dir / "missions.md").write_text(missions)
         ctx = _make_ctx(koan_root, instance_dir)
-        with patch("skills.core.status.handler._needs_ollama", return_value=False):
-            result = _handle_status(ctx)
+        result = _handle_status(ctx)
         assert "Pending: 2" in result
 
     def test_shows_in_progress_missions(self, koan_root, instance_dir):
@@ -250,54 +211,34 @@ class TestHandleStatus:
         )
         (instance_dir / "missions.md").write_text(missions)
         ctx = _make_ctx(koan_root, instance_dir)
-        with patch("skills.core.status.handler._needs_ollama", return_value=False):
-            result = _handle_status(ctx)
+        result = _handle_status(ctx)
         assert "In progress: 1" in result
 
     def test_no_missions_file(self, koan_root, instance_dir):
         ctx = _make_ctx(koan_root, instance_dir)
-        with patch("skills.core.status.handler._needs_ollama", return_value=False):
-            result = _handle_status(ctx)
+        result = _handle_status(ctx)
         # Should not crash, just show status header
         assert "Kōan Status" in result
 
     def test_empty_missions_file(self, koan_root, instance_dir):
         (instance_dir / "missions.md").write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
         ctx = _make_ctx(koan_root, instance_dir)
-        with patch("skills.core.status.handler._needs_ollama", return_value=False):
-            result = _handle_status(ctx)
+        result = _handle_status(ctx)
         assert "Kōan Status" in result
 
     @patch("app.focus_manager.check_focus")
     def test_shows_focus_mode(self, mock_focus, koan_root, instance_dir):
         mock_focus.return_value = SimpleNamespace(remaining_display=lambda: "2h30m")
         ctx = _make_ctx(koan_root, instance_dir)
-        with patch("skills.core.status.handler._needs_ollama", return_value=False):
-            result = _handle_status(ctx)
+        result = _handle_status(ctx)
         assert "🎯 Focus" in result
         assert "2h30m" in result
 
     @patch("app.focus_manager.check_focus", return_value=None)
     def test_no_focus_mode(self, mock_focus, koan_root, instance_dir):
         ctx = _make_ctx(koan_root, instance_dir)
-        with patch("skills.core.status.handler._needs_ollama", return_value=False):
-            result = _handle_status(ctx)
+        result = _handle_status(ctx)
         assert "Focus" not in result
-
-    @patch("app.pid_manager.check_pidfile", return_value=12345)
-    def test_shows_ollama_running(self, mock_pid, koan_root, instance_dir):
-        ctx = _make_ctx(koan_root, instance_dir)
-        with patch("skills.core.status.handler._needs_ollama", return_value=True):
-            result = _handle_status(ctx)
-        assert "🦙 Ollama: running" in result
-        assert "12345" in result
-
-    @patch("app.pid_manager.check_pidfile", return_value=None)
-    def test_shows_ollama_not_running(self, mock_pid, koan_root, instance_dir):
-        ctx = _make_ctx(koan_root, instance_dir)
-        with patch("skills.core.status.handler._needs_ollama", return_value=True):
-            result = _handle_status(ctx)
-        assert "🦙 Ollama: not running" in result
 
     def test_multi_project_missions(self, koan_root, instance_dir):
         missions = (
@@ -311,8 +252,7 @@ class TestHandleStatus:
         )
         (instance_dir / "missions.md").write_text(missions)
         ctx = _make_ctx(koan_root, instance_dir)
-        with patch("skills.core.status.handler._needs_ollama", return_value=False):
-            result = _handle_status(ctx)
+        result = _handle_status(ctx)
         assert "alpha" in result
         assert "beta" in result
 
@@ -326,8 +266,7 @@ class TestHandlePing:
     def test_all_processes_running(self, mock_pid, koan_root, instance_dir):
         mock_pid.side_effect = lambda root, name: {"run": 100, "awake": 200}.get(name)
         ctx = _make_ctx(koan_root, instance_dir, "ping")
-        with patch("skills.core.status.handler._needs_ollama", return_value=False):
-            result = _handle_ping(ctx)
+        result = _handle_ping(ctx)
         assert "✅ Runner" in result
         assert "✅ Bridge" in result
 
@@ -335,8 +274,7 @@ class TestHandlePing:
     def test_runner_not_running(self, mock_pid, koan_root, instance_dir):
         mock_pid.side_effect = lambda root, name: {"run": None, "awake": 200}.get(name)
         ctx = _make_ctx(koan_root, instance_dir, "ping")
-        with patch("skills.core.status.handler._needs_ollama", return_value=False):
-            result = _handle_ping(ctx)
+        result = _handle_ping(ctx)
         assert "❌ Runner: not running" in result
         assert "make run" in result
 
@@ -344,8 +282,7 @@ class TestHandlePing:
     def test_bridge_not_running(self, mock_pid, koan_root, instance_dir):
         mock_pid.side_effect = lambda root, name: {"run": 100, "awake": None}.get(name)
         ctx = _make_ctx(koan_root, instance_dir, "ping")
-        with patch("skills.core.status.handler._needs_ollama", return_value=False):
-            result = _handle_ping(ctx)
+        result = _handle_ping(ctx)
         assert "✅ Runner" in result
         assert "❌ Bridge: not running" in result
         assert "make awake" in result
@@ -355,8 +292,7 @@ class TestHandlePing:
         mock_pid.side_effect = lambda root, name: {"run": 100, "awake": 200}.get(name)
         (koan_root / ".koan-pause").touch()
         ctx = _make_ctx(koan_root, instance_dir, "ping")
-        with patch("skills.core.status.handler._needs_ollama", return_value=False):
-            result = _handle_ping(ctx)
+        result = _handle_ping(ctx)
         assert "⏸️ Runner: paused" in result
         assert "/resume" in result
 
@@ -365,8 +301,7 @@ class TestHandlePing:
         mock_pid.side_effect = lambda root, name: {"run": 100, "awake": 200}.get(name)
         (koan_root / ".koan-stop").touch()
         ctx = _make_ctx(koan_root, instance_dir, "ping")
-        with patch("skills.core.status.handler._needs_ollama", return_value=False):
-            result = _handle_ping(ctx)
+        result = _handle_ping(ctx)
         assert "⏹️ Runner: stopping" in result
 
     @patch("app.pid_manager.check_pidfile")
@@ -374,35 +309,16 @@ class TestHandlePing:
         mock_pid.side_effect = lambda root, name: {"run": 100, "awake": 200}.get(name)
         (koan_root / ".koan-status").write_text("Run 5/50 — idle")
         ctx = _make_ctx(koan_root, instance_dir, "ping")
-        with patch("skills.core.status.handler._needs_ollama", return_value=False):
-            result = _handle_ping(ctx)
+        result = _handle_ping(ctx)
         assert "Run 5/50" in result
         assert "PID 100" in result
-
-    @patch("app.pid_manager.check_pidfile")
-    def test_ollama_shown_when_needed(self, mock_pid, koan_root, instance_dir):
-        mock_pid.side_effect = lambda root, name: {"run": 100, "awake": 200, "ollama": 300}.get(name)
-        ctx = _make_ctx(koan_root, instance_dir, "ping")
-        with patch("skills.core.status.handler._needs_ollama", return_value=True):
-            result = _handle_ping(ctx)
-        assert "✅ Ollama" in result
-        assert "300" in result
 
     @patch("app.pid_manager.check_pidfile")
     def test_ollama_hidden_when_not_needed(self, mock_pid, koan_root, instance_dir):
         mock_pid.side_effect = lambda root, name: {"run": 100, "awake": 200}.get(name)
         ctx = _make_ctx(koan_root, instance_dir, "ping")
-        with patch("skills.core.status.handler._needs_ollama", return_value=False):
-            result = _handle_ping(ctx)
+        result = _handle_ping(ctx)
         assert "Ollama" not in result
-
-    @patch("app.pid_manager.check_pidfile")
-    def test_ollama_not_running(self, mock_pid, koan_root, instance_dir):
-        mock_pid.side_effect = lambda root, name: {"run": 100, "awake": 200, "ollama": None}.get(name)
-        ctx = _make_ctx(koan_root, instance_dir, "ping")
-        with patch("skills.core.status.handler._needs_ollama", return_value=True):
-            result = _handle_ping(ctx)
-        assert "❌ Ollama: not running" in result
 
 
 # ---------------------------------------------------------------------------

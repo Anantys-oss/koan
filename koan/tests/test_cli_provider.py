@@ -8,7 +8,6 @@ import pytest
 from app.cli_provider import (
     ClaudeProvider,
     CopilotProvider,
-    LocalLLMProvider,
     get_provider,
     get_provider_name,
     get_cli_binary,
@@ -49,15 +48,6 @@ class TestPackageStructure:
     def test_import_from_copilot_module(self):
         from app.provider.copilot import CopilotProvider
         assert CopilotProvider.name == "copilot"
-
-    def test_import_from_local_module(self):
-        from app.provider.local import LocalLLMProvider
-        assert LocalLLMProvider.name == "local"
-
-    def test_facade_reexports_local(self):
-        from app.cli_provider import LocalLLMProvider as Facade
-        from app.provider import LocalLLMProvider as Package
-        assert Facade is Package
 
     def test_facade_reexports_same_objects(self):
         """cli_provider.py re-exports are identical to provider package objects."""
@@ -209,11 +199,6 @@ class TestSystemPromptSupport:
         """CopilotProvider returns empty (no native support)."""
         with patch("shutil.which", return_value="/usr/bin/gh"):
             p = CopilotProvider()
-        assert p.build_system_prompt_args("content") == []
-
-    def test_local_build_system_prompt_args_empty(self):
-        """LocalLLMProvider returns empty (no native support)."""
-        p = LocalLLMProvider()
         assert p.build_system_prompt_args("content") == []
 
     def test_claude_build_command_with_system_prompt(self):
@@ -656,225 +641,6 @@ class TestConvenienceFunctions:
 
 
 # ---------------------------------------------------------------------------
-# LocalLLMProvider
-# ---------------------------------------------------------------------------
-
-class TestLocalLLMProvider:
-    """Tests for LocalLLMProvider flag generation."""
-
-    def setup_method(self):
-        self.provider = LocalLLMProvider()
-
-    def test_name(self):
-        assert self.provider.name == "local"
-
-    def test_binary_is_python(self):
-        import sys
-        assert self.provider.binary() == sys.executable
-
-    def test_prompt_args(self):
-        result = self.provider.build_prompt_args("do the thing")
-        assert "-m" in result
-        assert "app.local_llm_runner" in result
-        assert "-p" in result
-        assert "do the thing" in result
-
-    def test_tool_args_allowed(self):
-        result = self.provider.build_tool_args(allowed_tools=["Bash", "Read"])
-        assert result == ["--allowed-tools", "Bash,Read"]
-
-    def test_tool_args_disallowed(self):
-        result = self.provider.build_tool_args(disallowed_tools=["Bash", "Edit"])
-        assert result == ["--disallowed-tools", "Bash,Edit"]
-
-    def test_tool_args_empty(self):
-        assert self.provider.build_tool_args() == []
-
-    @patch("app.utils.load_config", return_value={"local_llm": {"model": "glm4"}})
-    def test_model_args_from_config(self, mock_config):
-        """Uses model from config when no explicit model given."""
-        result = self.provider.build_model_args()
-        assert result == ["--model", "glm4"]
-
-    def test_model_args_explicit(self):
-        result = self.provider.build_model_args(model="nemotron-nano")
-        assert result == ["--model", "nemotron-nano"]
-
-    def test_model_args_fallback_ignored(self):
-        result = self.provider.build_model_args(model="glm4", fallback="sonnet")
-        assert result == ["--model", "glm4"]
-        assert "--fallback" not in " ".join(result)
-
-    def test_output_args_json(self):
-        assert self.provider.build_output_args("json") == ["--output-format", "json"]
-
-    def test_output_args_empty(self):
-        assert self.provider.build_output_args() == []
-
-    def test_max_turns_args(self):
-        assert self.provider.build_max_turns_args(5) == ["--max-turns", "5"]
-
-    def test_max_turns_args_zero(self):
-        assert self.provider.build_max_turns_args(0) == []
-
-    def test_mcp_args_ignored(self):
-        """MCP not supported — always returns empty."""
-        assert self.provider.build_mcp_args(["config.json"]) == []
-        assert self.provider.build_mcp_args() == []
-
-    @patch.dict("os.environ", {
-        "KOAN_LOCAL_LLM_BASE_URL": "http://myserver:8080/v1",
-        "KOAN_LOCAL_LLM_MODEL": "test-model",
-    })
-    def test_build_command_full(self):
-        import sys
-        cmd = self.provider.build_command(
-            prompt="analyze code",
-            allowed_tools=["Read", "Grep"],
-            model="glm4",
-            output_format="json",
-            max_turns=3,
-        )
-        assert cmd[0] == sys.executable
-        assert "-m" in cmd
-        assert "app.local_llm_runner" in cmd
-        assert "-p" in cmd
-        assert "analyze code" in cmd
-        assert "--allowed-tools" in cmd
-        assert "Read,Grep" in cmd
-        assert "--model" in cmd
-        assert "glm4" in cmd
-        assert "--output-format" in cmd
-        assert "json" in cmd
-        assert "--max-turns" in cmd
-        assert "3" in cmd
-        assert "--base-url" in cmd
-        assert "http://myserver:8080/v1" in cmd
-
-    @patch("app.utils.load_config", return_value={"local_llm": {"model": "test"}})
-    def test_build_command_minimal(self, mock_config):
-        import sys
-        cmd = self.provider.build_command(prompt="hello")
-        assert cmd[0] == sys.executable
-        assert "-p" in cmd
-        assert "hello" in cmd
-        assert "--base-url" in cmd
-
-    @patch.dict("os.environ", {"KOAN_LOCAL_LLM_BASE_URL": "http://custom:1234/v1"})
-    def test_base_url_from_env(self):
-        assert self.provider._get_base_url() == "http://custom:1234/v1"
-
-    @patch.dict("os.environ", {}, clear=False)
-    @patch("app.utils.load_config", return_value={"local_llm": {"base_url": "http://cfg:5555/v1"}})
-    def test_base_url_from_config(self, mock_config):
-        os.environ.pop("KOAN_LOCAL_LLM_BASE_URL", None)
-        assert self.provider._get_base_url() == "http://cfg:5555/v1"
-
-    @patch.dict("os.environ", {}, clear=False)
-    @patch("app.utils.load_config", return_value={})
-    def test_base_url_default(self, mock_config):
-        os.environ.pop("KOAN_LOCAL_LLM_BASE_URL", None)
-        assert self.provider._get_base_url() == "http://localhost:11434/v1"
-
-    @patch.dict("os.environ", {"KOAN_LOCAL_LLM_MODEL": "env-model"})
-    def test_model_from_env(self):
-        assert self.provider._get_default_model() == "env-model"
-
-    @patch.dict("os.environ", {}, clear=False)
-    @patch("app.utils.load_config", return_value={"local_llm": {"model": "cfg-model"}})
-    def test_model_from_config(self, mock_config):
-        os.environ.pop("KOAN_LOCAL_LLM_MODEL", None)
-        assert self.provider._get_default_model() == "cfg-model"
-
-    @patch.dict("os.environ", {"KOAN_LOCAL_LLM_MODEL": "some-model"})
-    def test_is_available_with_model(self):
-        assert self.provider.is_available()
-
-    @patch.dict("os.environ", {}, clear=False)
-    @patch("app.utils.load_config", return_value={})
-    def test_not_available_without_model(self, mock_config):
-        os.environ.pop("KOAN_LOCAL_LLM_MODEL", None)
-        assert not self.provider.is_available()
-
-    @patch.dict("os.environ", {"KOAN_LOCAL_LLM_API_KEY": "sk-test"})
-    def test_api_key_from_env(self):
-        assert self.provider._get_api_key() == "sk-test"
-
-    @patch.dict("os.environ", {
-        "KOAN_LOCAL_LLM_API_KEY": "sk-test",
-        "KOAN_LOCAL_LLM_BASE_URL": "http://localhost:11434/v1",
-        "KOAN_LOCAL_LLM_MODEL": "test",
-    })
-    def test_build_command_with_api_key(self):
-        cmd = self.provider.build_command(prompt="test", model="test")
-        assert "--api-key" in cmd
-        assert "sk-test" in cmd
-
-    def test_extra_flags(self):
-        result = self.provider.build_extra_flags(
-            model="glm4", disallowed_tools=["Bash"]
-        )
-        assert "--model" in result
-        assert "glm4" in result
-        assert "--disallowed-tools" in result
-
-
-# ---------------------------------------------------------------------------
-# Provider resolution with local provider
-# ---------------------------------------------------------------------------
-
-class TestLocalProviderResolution:
-    """Tests for provider resolution with local LLM provider."""
-
-    def setup_method(self):
-        reset_provider()
-
-    def teardown_method(self):
-        reset_provider()
-
-    @patch.dict("os.environ", {"KOAN_CLI_PROVIDER": "local"})
-    def test_env_var_local(self):
-        assert get_provider_name() == "local"
-
-    @patch.dict("os.environ", {"KOAN_CLI_PROVIDER": "local"})
-    def test_get_provider_returns_local(self):
-        provider = get_provider()
-        assert isinstance(provider, LocalLLMProvider)
-
-    @patch.dict("os.environ", {"KOAN_CLI_PROVIDER": "local"})
-    def test_get_cli_binary_local(self):
-        import sys
-        binary = get_cli_binary()
-        assert sys.executable in binary
-
-    @patch.dict("os.environ", {}, clear=False)
-    @patch("app.utils.load_config", return_value={"cli_provider": "local"})
-    def test_config_yaml_local(self, mock_config):
-        os.environ.pop("KOAN_CLI_PROVIDER", None)
-        assert get_provider_name() == "local"
-
-    @patch.dict("os.environ", {
-        "KOAN_CLI_PROVIDER": "local",
-        "KOAN_LOCAL_LLM_BASE_URL": "http://localhost:11434/v1",
-        "KOAN_LOCAL_LLM_MODEL": "glm4",
-    })
-    def test_build_full_command_local(self):
-        import sys
-        cmd = build_full_command(
-            prompt="hello",
-            allowed_tools=["Read", "Grep"],
-            model="glm4",
-            max_turns=3,
-            output_format="json",
-        )
-        assert cmd[0] == sys.executable
-        assert "-m" in cmd
-        assert "app.local_llm_runner" in cmd
-        assert "--allowed-tools" in cmd
-        assert "--output-format" in cmd
-
-
-# ---------------------------------------------------------------------------
 # ClaudeProvider.check_quota_available
 # ---------------------------------------------------------------------------
 
@@ -1120,11 +886,6 @@ class TestPluginDirSupport:
         provider = CopilotProvider()
         assert provider.build_plugin_args(["/tmp/plugins"]) == []
 
-    def test_local_build_plugin_args_returns_empty(self):
-        """Local LLM doesn't support --plugin-dir."""
-        provider = LocalLLMProvider()
-        assert provider.build_plugin_args(["/tmp/plugins"]) == []
-
     def test_claude_build_command_includes_plugin_dir(self):
         provider = ClaudeProvider()
         cmd = provider.build_command(
@@ -1202,10 +963,6 @@ class TestEffortSupport:
         p = CopilotProvider()
         assert p.build_effort_args("high") == []
 
-    def test_local_provider_returns_empty(self):
-        p = LocalLLMProvider()
-        assert p.build_effort_args("high") == []
-
     def test_build_full_command_includes_effort(self):
         with patch("app.provider.get_provider", return_value=ClaudeProvider()), \
              patch("app.config.get_skip_permissions", return_value=True):
@@ -1244,10 +1001,6 @@ class TestThinkingSupport:
         p = CopilotProvider()
         assert p.build_thinking_args(enabled=True) == []
 
-    def test_local_provider_returns_empty(self):
-        p = LocalLLMProvider()
-        assert p.build_thinking_args(enabled=True) == []
-
     def test_build_full_command_no_thinking_param(self):
         """build_full_command no longer accepts thinking params — thinking
         is appended by mission_runner after command construction."""
@@ -1280,10 +1033,6 @@ class TestSessionResume:
 
     def test_copilot_does_not_support_resume(self):
         p = CopilotProvider()
-        assert p.supports_session_resume() is False
-
-    def test_local_does_not_support_resume(self):
-        p = LocalLLMProvider()
         assert p.supports_session_resume() is False
 
     def test_build_full_command_with_resume(self):
