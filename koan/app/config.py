@@ -195,8 +195,9 @@ def _normalize_model_config(config: dict) -> dict:
     # Start building normalized nested structure
     normalized_models = {}
 
-    # Step 1: If legacy flat detected, move roles into default
-    if has_legacy_flat:
+    # Step 1: If legacy flat detected, move roles into default — but only when no
+    # explicit models.default already exists. New structure wins on collision.
+    if has_legacy_flat and "default" not in models_section:
         normalized_models["default"] = {k: v for k, v in models_section.items() if k in _KNOWN_ROLES}
 
     # Step 2: Fold any existing provider sections from the flat models dict

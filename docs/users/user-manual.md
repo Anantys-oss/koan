@@ -1117,12 +1117,13 @@ All behavioral config lives in `instance/config.yaml`. Key settings:
 max_runs_per_day: 10          # Max missions per day
 interval_seconds: 60          # Seconds between mission checks
 
-# Model selection
+# Model selection (see docs/users/model-configuration.md)
 models:
-  mission: null               # Default (sonnet) for mission work
-  chat: null                  # Default for chat replies
-  lightweight: haiku          # Quick tasks (formatting, picking)
-  review_mode: null           # Override autonomous review mode and /review
+  default:
+    mission: null             # Default (sonnet) for mission work
+    chat: null                # Default for chat replies
+    lightweight: haiku        # Quick tasks (formatting, picking)
+    review_mode: null         # Override autonomous review mode and /review
 
 # Budget thresholds
 budget:
@@ -1216,13 +1217,13 @@ See `instance.example/config.yaml` for all available options.
 Hard provider quota/session-limit errors are still detected from CLI output and
 will still pause and requeue missions.
 
-**`/models`** (alias `/model`) — Show the resolved model configuration for the active CLI provider. Useful when debugging model-routing issues — displays which model wins for each of the 6 slots (`mission`, `chat`, `lightweight`, `fallback`, `review_mode`, `reflect`) after applying the full resolution chain: per-project `models:` → `models_for_{provider}:` → global `models:` → built-in defaults.
+**`/models`** (alias `/model`) — Show the resolved model configuration for the active CLI provider. Useful when debugging model-routing issues — displays which model wins for each of the 6 slots (`mission`, `chat`, `lightweight`, `fallback`, `review_mode`, `reflect`) after applying the full resolution chain: per-project `models:` → `models.{provider}:` → `models.default:` → built-in defaults.
 
 ```
 /models
 ```
 
-The active provider is also shown in `/status` output. See [Provider-specific model config](#provider-specific-model-config) below for how to configure `models_for_claude:` / `models_for_codex:` sections.
+The active provider is also shown in `/status` output. See [Provider-specific model config](#provider-specific-model-config) below for how to configure `models.claude:` / `models.codex:` sections.
 
 **`/config_check`** — Detect drift between your `instance/config.yaml` and the template at `instance.example/config.yaml`. Reports two things:
 
@@ -1483,30 +1484,31 @@ Kōan supports multiple CLI backends. Configure globally via `KOAN_CLI_PROVIDER`
 
 #### Provider-specific model config
 
-When switching between providers, model names are not interchangeable. Use `models_for_claude:` / `models_for_codex:` sections in `instance/config.yaml` to configure provider-specific defaults without touching the global `models:` fallback:
+When switching between providers, model names are not interchangeable. Use `models.claude:` / `models.codex:` sections in `instance/config.yaml` to configure provider-specific defaults without touching the global `models.default:` fallback:
 
 ```yaml
 cli_provider: "codex"
 
-# Provider-specific overrides (resolved before global models:)
-models_for_codex:
-  mission: "gpt-5.5"
-  chat: "gpt-5.5"
-  lightweight: "gpt-5.4-mini"
-  fallback: ""              # empty = use provider default
-  review_mode: "gpt-5.3-codex"
-  reflect: "gpt-5.5"
-
-models_for_claude:
-  review_mode: "haiku"      # use haiku for cheaper REVIEW mode audits
-
-# Global fallback for providers without a specific section
 models:
-  lightweight: "haiku"
-  fallback: "sonnet"
+  # Provider-specific overrides (resolved before models.default)
+  codex:
+    mission: "gpt-5.5"
+    chat: "gpt-5.5"
+    lightweight: "gpt-5.4-mini"
+    fallback: ""              # empty = use provider default
+    review_mode: "gpt-5.3-codex"
+    reflect: "gpt-5.5"
+
+  claude:
+    review_mode: "haiku"      # use haiku for cheaper REVIEW mode audits
+
+  # Global fallback for providers without a specific section
+  default:
+    lightweight: "haiku"
+    fallback: "sonnet"
 ```
 
-Resolution order per key: per-project `models:` → `models_for_{provider}:` → global `models:` → built-in default.
+Resolution order per key: per-project `models:` → `models.{provider}:` → `models.default:` → built-in default. Provider names may use hyphens or underscores. The legacy flat `models:` / `models_for_{provider}:` layout still works but emits a one-time `DEPRECATED` warning at startup. See [Model Configuration](model-configuration.md) for the full migration guide.
 
 Use `/models` to inspect the resolved values for the active provider at any time.
 

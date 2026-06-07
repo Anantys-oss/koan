@@ -394,6 +394,108 @@ class TestBackwardCompatNormalization:
         assert result["mission"] == "llama3"
 
 
+class TestModelConfigScenarios:
+    """End-to-end scenarios requested in review: no models / flat / models_for_* / new nested."""
+
+    def _reset_guard(self):
+        import app.config
+
+        app.config._MODEL_CONFIG_NORMALIZED = False
+
+    def test_scenario_no_models_entry_falls_back_to_defaults(self):
+        """1) No 'models' entry → sane built-in defaults, no warning."""
+        from io import StringIO
+        from unittest.mock import patch
+
+        from app.config import get_model_config
+
+        self._reset_guard()
+        stderr = StringIO()
+        with _mock_config({}), patch("sys.stderr", stderr):
+            result = get_model_config()
+        assert result["mission"] == ""
+        assert result["lightweight"] == "haiku"
+        assert result["fallback"] == "sonnet"
+        assert "DEPRECATED" not in stderr.getvalue()
+
+    def test_scenario_flat_models_only_emits_deprecated(self):
+        """2) Flat models entry only → works and emits DEPRECATED."""
+        from io import StringIO
+        from unittest.mock import patch
+
+        from app.config import get_model_config
+
+        self._reset_guard()
+        stderr = StringIO()
+        config = {"models": {"mission": "opus", "chat": "haiku"}}
+        with _mock_config(config), patch("sys.stderr", stderr):
+            result = get_model_config()
+        assert result["mission"] == "opus"
+        assert result["chat"] == "haiku"
+        assert "DEPRECATED" in stderr.getvalue()
+
+    def test_scenario_models_for_provider_emits_deprecated(self):
+        """3) models_for_FOO entry → works and emits DEPRECATED."""
+        from io import StringIO
+        from unittest.mock import patch
+
+        from app.config import get_model_config
+
+        self._reset_guard()
+        stderr = StringIO()
+        config = {"models_for_claude": {"mission": "opus"}}
+        with (
+            _mock_config(config),
+            patch("sys.stderr", stderr),
+            patch("app.provider.get_provider_name", return_value="claude"),
+        ):
+            result = get_model_config()
+        assert result["mission"] == "opus"
+        assert "DEPRECATED" in stderr.getvalue()
+
+    def test_scenario_new_nested_structure_no_warning(self):
+        """4) Final valid structure models.{harness}.{role} → works, no warning."""
+        from io import StringIO
+        from unittest.mock import patch
+
+        from app.config import get_model_config
+
+        self._reset_guard()
+        stderr = StringIO()
+        config = {
+            "models": {
+                "default": {"mission": "sonnet"},
+                "claude": {"mission": "opus", "chat": "haiku"},
+            }
+        }
+        with (
+            _mock_config(config),
+            patch("sys.stderr", stderr),
+            patch("app.provider.get_provider_name", return_value="claude"),
+        ):
+            result = get_model_config()
+        assert result["mission"] == "opus"
+        assert result["chat"] == "haiku"
+        assert "DEPRECATED" not in stderr.getvalue()
+
+    def test_legacy_flat_does_not_clobber_new_default_on_collision(self):
+        """Legacy flat keys must NOT overwrite an explicit models.default (new wins)."""
+        from unittest.mock import patch
+
+        from app.config import get_model_config
+
+        self._reset_guard()
+        config = {
+            "models": {
+                "mission": "legacy-flat",
+                "default": {"mission": "new-default"},
+            }
+        }
+        with _mock_config(config), patch("app.provider.get_provider_name", return_value="claude"):
+            result = get_model_config()
+        assert result["mission"] == "new-default"
+
+
 # --- get_start_on_pause ---
 
 
