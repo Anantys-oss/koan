@@ -38,7 +38,8 @@ falls back to `make logs`.
 
 Keys: `1`/`2`/`3` switch to Logs/Config/Usage (these work even while the
 config tree holds keyboard focus), arrow keys browse the focused config tree,
-Enter (or click) edits the selected scalar, `p` pauses, `r` reloads, `q` quits.
+Enter (or click) edits the selected scalar, `t` toggles a boolean in place
+(Enter also flips booleans, no typing), `p` pauses, `r` reloads, `q` quits.
 The Config tab edits `instance/config.yaml` in place, preserving comments.
 
 ## Theme

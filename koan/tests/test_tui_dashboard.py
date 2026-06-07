@@ -128,3 +128,41 @@ def test_pilot_can_leave_config_tab_via_number_keys(tmp_path):
             assert app.focused is not tree  # tree no longer traps keys
 
     asyncio.run(scenario())
+
+
+def test_pilot_bool_toggles_with_space_and_enter(tmp_path):
+    _write_config(tmp_path, "auto_update:\n  enabled: false\n")
+
+    async def scenario():
+        app = tui.KoanDashboard(tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.press("2")  # config tab, tree focused
+            await pilot.pause()
+            tree = app.query_one("#config-tree", tui.Tree)
+            branch = tree.root.children[0]
+            branch.expand()
+            await pilot.pause()
+            tree.move_cursor(branch.children[0])
+            await pilot.pause()
+            assert tree.cursor_node.data["path"] == "auto_update.enabled"
+            import yaml
+            cfg = tmp_path / "instance" / "config.yaml"
+
+            async def _focus_leaf():
+                # The tree is rebuilt (collapsed) after each toggle.
+                b = tree.root.children[0]
+                b.expand()
+                await pilot.pause()
+                tree.move_cursor(b.children[0])
+                await pilot.pause()
+
+            await pilot.press("t")  # toggle false -> true, no modal
+            await pilot.pause()
+            assert yaml.safe_load(cfg.read_text())["auto_update"]["enabled"] is True
+
+            await _focus_leaf()
+            await pilot.press("enter")  # enter also flips a bool, no modal
+            await pilot.pause()
+            assert yaml.safe_load(cfg.read_text())["auto_update"]["enabled"] is False
+
+    asyncio.run(scenario())

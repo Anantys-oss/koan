@@ -209,6 +209,7 @@ class KoanDashboard(App):
         ("1", "show('logs')", "Logs"),
         ("2", "show('config')", "Config"),
         ("3", "show('usage')", "Usage"),
+        ("t", "toggle", "Toggle bool"),
         ("p", "pause", "Pause Kōan"),
         ("r", "refresh", "Refresh"),
     ]
@@ -286,27 +287,52 @@ class KoanDashboard(App):
             self.notify(f"pause failed: {exc}", severity="error")
         self.refresh_dynamic()
 
-    def action_edit(self) -> None:
+    def _selected_leaf(self):
+        """Return (path, value) for the focused editable leaf, or None."""
         if self.active_pane_id() != "config":
-            return
-        tree = self.query_one("#config-tree", Tree)
-        node = tree.cursor_node
+            return None
+        try:
+            node = self.query_one("#config-tree", Tree).cursor_node
+        except Exception as exc:
+            self.log(f"tree lookup failed: {exc}")
+            return None
         if not node or not isinstance(node.data, dict) or "path" not in node.data:
+            return None
+        return node.data["path"], node.data["value"]
+
+    def _persist(self, path: str, value) -> None:
+        try:
+            set_config_value(self.koan_root, path, value)
+            self.notify(f"set {path} = {self._format_scalar(value)}")
+        except Exception as exc:
+            self.notify(f"save failed: {exc}", severity="error")
+        self._build_config_tree()
+
+    def action_edit(self) -> None:
+        leaf = self._selected_leaf()
+        if leaf is None:
             return
-        path = node.data["path"]
-        current = node.data["value"]
+        path, current = leaf
+        # Booleans flip in place — no need to type true/false.
+        if isinstance(current, bool):
+            self._persist(path, not current)
+            return
 
         def _apply(new_value) -> None:
             if new_value is None:
                 return
-            try:
-                set_config_value(self.koan_root, path, new_value)
-                self.notify(f"set {path}")
-            except Exception as exc:
-                self.notify(f"save failed: {exc}", severity="error")
-            self._build_config_tree()
+            self._persist(path, new_value)
 
         self.push_screen(EditValueScreen(path, current), _apply)
+
+    def action_toggle(self) -> None:
+        """Flip the selected boolean leaf (space). No-op on non-booleans."""
+        leaf = self._selected_leaf()
+        if leaf is None:
+            return
+        path, current = leaf
+        if isinstance(current, bool):
+            self._persist(path, not current)
 
     def active_pane_id(self) -> str:
         try:
@@ -332,7 +358,8 @@ class KoanDashboard(App):
         from app.pause_manager import is_paused
 
         state = "paused" if is_paused(str(self.koan_root)) else "live"
-        self.sub_title = f"{state} · 1/2/3 tabs · enter edits config · p pauses · q quits"
+        self.sub_title = (f"{state} · 1/2/3 tabs · enter edits · t toggles bool"
+                          f" · p pauses · q quits")
 
     def _render_logs(self) -> None:
         logs_dir = self.koan_root / "logs"
@@ -367,6 +394,12 @@ class KoanDashboard(App):
                                     expand=False)
                 for i, item in enumerate(value):
                     branch.add_leaf(f"[dim]- {item}[/dim]")
+            elif isinstance(value, bool):
+                # Show the current state only; enter/t flips it in place.
+                shown = "on" if value else "off"
+                color = _MINT if value else _MINT_DIM
+                leaf = parent.add_leaf(f"{key}: [{color}][b]{shown}[/b][/]")
+                leaf.data = {"path": path, "value": value}
             else:
                 shown = self._format_scalar(value)
                 leaf = parent.add_leaf(f"{key}: [{_MINT}]{shown}[/]")
