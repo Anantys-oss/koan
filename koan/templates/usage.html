@@ -68,6 +68,72 @@
 /* Right-aligned numeric cells in k-table */
 .k-table .text-right { text-align: right; }
 .k-table .text-nowrap { white-space: nowrap; }
+
+/* Efficiency heatmap */
+.heatmap-wrap { overflow-x: auto; }
+.heatmap-grid {
+    display: grid;
+    gap: 3px;
+    min-width: fit-content;
+}
+.heatmap-corner { /* empty top-left */ }
+.heatmap-col-label {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    text-align: center;
+    padding: 0 2px 4px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 48px;
+}
+.heatmap-row-label {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding: 0 6px 0 0;
+    display: flex;
+    align-items: center;
+    cursor: pointer;
+}
+.heatmap-row-label:hover { color: var(--text); }
+.heatmap-cell {
+    min-width: 48px;
+    height: 36px;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.65rem;
+    font-weight: 600;
+    color: rgba(255,255,255,0.9);
+    cursor: default;
+    transition: filter 0.1s;
+}
+.heatmap-cell:hover { filter: brightness(1.2); }
+.heatmap-cell.empty-cell {
+    background: var(--surface-3) !important;
+    opacity: 0.25;
+    color: transparent;
+}
+/* Custom tooltip for heatmap */
+#heatmap-tooltip {
+    position: fixed; z-index: 600;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.8rem;
+    line-height: 1.6;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.1s;
+    white-space: pre-line;
+    max-width: 200px;
+}
+#heatmap-tooltip.visible { opacity: 1; }
 </style>
 
 <div class="filter-bar">
@@ -190,6 +256,15 @@
         <div class="empty-state" id="mode-table-empty" style="display:none;">No mode data available.</div>
     </div>
 </div>
+
+<h2>Efficiency Heatmap <span style="font-size:var(--fs-caption);color:var(--text-muted);font-weight:normal;">token density by project × skill type</span></h2>
+<div class="card">
+    <div class="heatmap-wrap">
+        <div id="heatmap-container"></div>
+    </div>
+    <div class="empty-state" id="heatmap-empty" style="display:none;">Need at least 2 projects and 2 skill types to render heatmap.</div>
+</div>
+<div id="heatmap-tooltip"></div>
 
 <h2>Top Missions <span style="font-size:var(--fs-caption);color:var(--text-muted);font-weight:normal;">max 100</span></h2>
 <div class="card">
@@ -995,6 +1070,129 @@ function resortModeTable() {
     rows.forEach(r => tbody.appendChild(r));
 }
 
+/* ── Efficiency Heatmap ── */
+const _heatTip = document.getElementById('heatmap-tooltip');
+let _heatTipVisible = false;
+
+function _showHeatTip(e, html) {
+    _heatTip.innerHTML = html;
+    _heatTip.classList.add('visible');
+    _heatTipVisible = true;
+    _positionHeatTip(e);
+}
+function _hideHeatTip() {
+    _heatTip.classList.remove('visible');
+    _heatTipVisible = false;
+}
+function _positionHeatTip(e) {
+    const x = e.clientX + 14;
+    const y = e.clientY - 10;
+    const w = _heatTip.offsetWidth || 180;
+    const h = _heatTip.offsetHeight || 80;
+    _heatTip.style.left = Math.min(x, window.innerWidth - w - 12) + 'px';
+    _heatTip.style.top = Math.min(y, window.innerHeight - h - 12) + 'px';
+}
+document.addEventListener('mousemove', function(e) {
+    if (_heatTipVisible) _positionHeatTip(e);
+});
+
+function renderHeatmap(byProjectAndType, hasPricing) {
+    const container = document.getElementById('heatmap-container');
+    const emptyEl = document.getElementById('heatmap-empty');
+    container.innerHTML = '';
+
+    // Accumulate totals per project and per type
+    const projectTotals = {};
+    const typeTotals = {};
+    for (const [proj, types] of Object.entries(byProjectAndType)) {
+        for (const [type, d] of Object.entries(types)) {
+            const tok = d.input_tokens + d.output_tokens;
+            projectTotals[proj] = (projectTotals[proj] || 0) + tok;
+            typeTotals[type] = (typeTotals[type] || 0) + tok;
+        }
+    }
+
+    const projects = Object.keys(projectTotals).sort((a, b) => projectTotals[b] - projectTotals[a]);
+    const types = Object.keys(typeTotals).sort((a, b) => typeTotals[b] - typeTotals[a]);
+
+    if (projects.length < 2 || types.length < 2) {
+        emptyEl.style.display = '';
+        return;
+    }
+    emptyEl.style.display = 'none';
+
+    // Find max for log scale
+    let maxTok = 1;
+    for (const proj of projects) {
+        for (const type of types) {
+            const d = (byProjectAndType[proj] || {})[type];
+            if (d) maxTok = Math.max(maxTok, d.input_tokens + d.output_tokens);
+        }
+    }
+    const logMax = Math.log(maxTok + 1);
+
+    // Build CSS grid: first column = row labels (fixed width), rest = type columns
+    const colDef = '90px ' + types.map(() => 'minmax(44px,1fr)').join(' ');
+    const grid = document.createElement('div');
+    grid.className = 'heatmap-grid';
+    grid.style.gridTemplateColumns = colDef;
+
+    // Header row: empty corner + type labels
+    const corner = document.createElement('div');
+    corner.className = 'heatmap-corner';
+    grid.appendChild(corner);
+    for (const type of types) {
+        const th = document.createElement('div');
+        th.className = 'heatmap-col-label';
+        th.textContent = capitalize(type);
+        th.title = capitalize(type);
+        grid.appendChild(th);
+    }
+
+    // Data rows
+    for (const proj of projects) {
+        const rowLabel = document.createElement('div');
+        rowLabel.className = 'heatmap-row-label';
+        rowLabel.textContent = proj;
+        rowLabel.title = proj;
+        rowLabel.addEventListener('click', function() { setProjectFilter(proj); });
+        grid.appendChild(rowLabel);
+
+        for (const type of types) {
+            const d = (byProjectAndType[proj] || {})[type];
+            const cell = document.createElement('div');
+            cell.className = 'heatmap-cell';
+
+            if (d) {
+                const tok = d.input_tokens + d.output_tokens;
+                const intensity = logMax > 0 ? Math.log(tok + 1) / logMax : 0;
+                // Blue accent, opacity 0.12 (near-zero) → 0.85 (max)
+                const alpha = (0.12 + intensity * 0.73).toFixed(2);
+                cell.style.background = 'rgba(88,166,255,' + alpha + ')';
+                cell.textContent = fmtTokens(tok);
+
+                const tipLines = [
+                    '<strong>' + escapeHtml(proj) + ' × ' + capitalize(type) + '</strong>',
+                    fmtTokens(tok) + ' tokens',
+                    d.count + ' run' + (d.count !== 1 ? 's' : ''),
+                ];
+                if (hasPricing && d.total_cost_usd) {
+                    tipLines.push(fmtCost(d.total_cost_usd) + ' cost');
+                }
+                const tipHtml = tipLines.join('<br>');
+
+                cell.addEventListener('mouseenter', function(e) { _showHeatTip(e, tipHtml); });
+                cell.addEventListener('mouseleave', function() { _hideHeatTip(); });
+            } else {
+                cell.classList.add('empty-cell');
+            }
+            grid.appendChild(cell);
+        }
+    }
+
+    container.appendChild(grid);
+}
+
 function loadAll() {
     _lastMissionParams = null;
     const days = document.getElementById('range-select').value;
@@ -1040,6 +1238,7 @@ function loadAll() {
             renderStackedChart(data.series || [], data.granularity || 'day');
             renderTypeChart(data.by_type || {}, data.has_pricing);
             renderModeChart(data.by_mode || {}, data.has_pricing);
+            renderHeatmap(data.by_project_and_type || {}, data.has_pricing);
 
             if (data.start && data.end) {
                 labelEl.textContent = data.start + ' — ' + data.end;
