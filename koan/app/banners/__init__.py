@@ -120,6 +120,40 @@ def colorize_startup(art: str) -> str:
     }, f"{DIM}{BLUE}")
 
 
+def colorize_hero(art: str) -> str:
+    """Colorize the KŌAN hero banner (Anantys mint theme).
+
+    The block-glyph wordmark and the katana blade glow mint, the guards (◈)
+    are amber, and the tagline is dim white.
+    """
+    from app.banners.theme import MINT, _seq
+
+    return _colorize_art(art, {
+        "the agent proposes, the human decides": f"{DIM}{WHITE}",
+        "◈": YELLOW,
+    }, _seq(MINT, bold=True))
+
+
+def print_hero_banner(system_info: dict = None) -> None:
+    """Print the KŌAN hero banner with system info listed beneath it.
+
+    Falls back to the compact two-column banner if the hero art is missing.
+    """
+    art = _read_art("koan_hero.txt")
+    if not art:
+        print_startup_banner(system_info)
+        return
+
+    print()
+    print(colorize_hero(art.rstrip("\n")))
+    print()
+    for line in _format_info_lines(system_info) if system_info else []:
+        # _format_info_lines already colors the value; just indent.
+        print(f"   {line}")
+    if system_info:
+        print()
+
+
 def _format_info_lines(system_info: dict) -> list:
     """Format system_info dict into display lines with labels.
     
