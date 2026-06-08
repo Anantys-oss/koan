@@ -7,6 +7,12 @@ import pytest
 from app import tui_dashboard as tui
 
 
+@pytest.fixture(autouse=True)
+def _no_caffeinate(monkeypatch):
+    # Never spawn the real `caffeinate` keep-awake process during tests.
+    monkeypatch.setattr(tui.KoanDashboard, "_start_caffeinate", lambda self: None)
+
+
 def _write_config(tmp_path, text):
     inst = tmp_path / "instance"
     inst.mkdir(exist_ok=True)
@@ -118,11 +124,11 @@ def test_pilot_can_leave_config_tab_via_number_keys(tmp_path):
     async def scenario():
         app = tui.KoanDashboard(tmp_path)
         async with app.run_test() as pilot:
-            await pilot.press("2")  # to config — tree takes focus
+            await pilot.press("c")  # to config — tree takes focus
             await pilot.pause()
             tree = app.query_one("#config-tree", tui.Tree)
             assert app.focused is tree
-            await pilot.press("1")  # back to logs even though tree had focus
+            await pilot.press("2")  # back to logs even though tree had focus
             await pilot.pause()
             assert app.query_one(tui.TabbedContent).active == "logs"
             assert app.focused is not tree  # tree no longer traps keys
@@ -136,7 +142,7 @@ def test_pilot_bool_toggles_with_space_and_enter(tmp_path):
     async def scenario():
         app = tui.KoanDashboard(tmp_path)
         async with app.run_test() as pilot:
-            await pilot.press("2")  # config tab, tree focused
+            await pilot.press("c")  # config tab, tree focused
             await pilot.pause()
             tree = app.query_one("#config-tree", tui.Tree)
             branch = tree.root.children[0]
@@ -189,3 +195,115 @@ def test_pilot_logs_with_ansi_and_brackets_do_not_crash(tmp_path):
             app._render_logs()  # second pass also clean
 
     asyncio.run(scenario())
+
+
+def test_pilot_letter_aliases_switch_tabs(tmp_path):
+    _write_config(tmp_path, "x: 1\n")
+
+    async def scenario():
+        app = tui.KoanDashboard(tmp_path)
+        async with app.run_test() as pilot:
+            tabs = app.query_one(tui.TabbedContent)
+            await pilot.press("c")  # config
+            await pilot.pause()
+            assert tabs.active == "config"
+            await pilot.press("u")  # usage
+            await pilot.pause()
+            assert tabs.active == "usage"
+            await pilot.press("l")  # logs
+            await pilot.pause()
+            assert tabs.active == "logs"
+
+    asyncio.run(scenario())
+
+
+# --- status tab + toggles ---------------------------------------------------
+
+def test_dot_on_off():
+    app = tui.KoanDashboard("/tmp/x")
+    assert "◉" in app._dot(True)
+    assert "○" in app._dot(False)
+
+
+def test_pilot_status_is_initial_tab_with_flags(tmp_path):
+    _write_config(tmp_path, "x: 1\n")
+
+    async def scenario():
+        app = tui.KoanDashboard(tmp_path)
+        async with app.run_test() as pilot:
+            assert app.query_one(tui.TabbedContent).active == "status"
+            await pilot.pause()
+            body = app.query_one("#status-body", tui.Static)
+            rendered = body.render()
+            text = getattr(rendered, "plain", str(rendered))
+            assert "web board" in text
+            assert "keep awake" in text
+            assert "missions" in text
+
+    asyncio.run(scenario())
+
+
+def test_pilot_web_toggle_starts_then_stops(tmp_path, monkeypatch):
+    _write_config(tmp_path, "x: 1\n")
+    state = {"running": False, "started": 0, "stopped": 0}
+    monkeypatch.setattr("app.pid_manager.check_pidfile",
+                        lambda root, name: 123 if state["running"] else None)
+
+    def fake_start(root):
+        state["running"] = True
+        state["started"] += 1
+        return (True, "ok")
+
+    def fake_stop(root, name, **k):
+        state["running"] = False
+        state["stopped"] += 1
+        return "stopped"
+
+    monkeypatch.setattr("app.pid_manager.start_dashboard", fake_start)
+    monkeypatch.setattr("app.pid_manager.stop_process", fake_stop)
+    monkeypatch.setattr("webbrowser.open", lambda url: None)
+
+    async def scenario():
+        app = tui.KoanDashboard(tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.press("w")  # start
+            await pilot.pause()
+            await pilot.press("w")  # stop
+            await pilot.pause()
+
+    asyncio.run(scenario())
+    assert state["started"] == 1
+    assert state["stopped"] == 1
+
+
+def test_caffeinate_toggle_lifecycle(tmp_path, monkeypatch):
+    # Replace the real spawn with a fake handle so no process is created.
+    class FakeProc:
+        def __init__(self):
+            self._alive = True
+
+        def poll(self):
+            return None if self._alive else 0
+
+        def terminate(self):
+            self._alive = False
+
+        def wait(self, timeout=None):
+            return 0
+
+    def fake_start(self):
+        self._caffeinate = FakeProc()
+
+    monkeypatch.setattr(tui.KoanDashboard, "_start_caffeinate", fake_start)
+    app = tui.KoanDashboard(tmp_path)
+    # Exercise the helpers directly (actions need a mounted app for notify).
+    assert app._caffeinate_on() is False
+    app._start_caffeinate()
+    assert app._caffeinate_on() is True
+    app._stop_caffeinate()
+    assert app._caffeinate_on() is False
+
+
+def test_stop_process_not_running(tmp_path):
+    from app import pid_manager
+    assert pid_manager.stop_process(tmp_path, "dashboard") == "not_running"

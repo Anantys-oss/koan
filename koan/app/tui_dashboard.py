@@ -17,6 +17,7 @@ missing, and the launcher falls back to ``make logs``.
 Anantys mint theme, no emojis.
 """
 
+import contextlib
 import logging
 from collections import deque
 from pathlib import Path
@@ -24,6 +25,7 @@ from pathlib import Path
 _log = logging.getLogger(__name__)
 
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.containers import Container, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import (
@@ -207,9 +209,17 @@ class KoanDashboard(App):
 
     BINDINGS = [
         ("q", "quit", "Quit"),
-        ("1", "show('logs')", "Logs"),
-        ("2", "show('config')", "Config"),
+        ("1", "show('status')", "Status"),
+        ("2", "show('logs')", "Logs"),
         ("3", "show('usage')", "Usage"),
+        ("4", "show('config')", "Config"),
+        # Letter aliases for the tabs (hidden from the footer to keep it tidy).
+        Binding("s", "show('status')", "Status", show=False),
+        Binding("l", "show('logs')", "Logs", show=False),
+        Binding("u", "show('usage')", "Usage", show=False),
+        Binding("c", "show('config')", "Config", show=False),
+        ("w", "toggle_web", "Web dashboard"),
+        ("k", "toggle_caffeinate", "Keep awake"),
         ("t", "toggle", "Toggle bool"),
         ("p", "pause", "Pause Kōan"),
         ("r", "refresh", "Refresh"),
@@ -220,23 +230,31 @@ class KoanDashboard(App):
     def __init__(self, koan_root: Path):
         super().__init__()
         self.koan_root = Path(koan_root)
+        # Caffeinate (macOS keep-awake) subprocess handle; on by default.
+        self._caffeinate = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        with TabbedContent(initial="logs"):
+        with TabbedContent(initial="status"):
+            with TabPane("Status", id="status"):
+                yield Container(Static(id="status-body", classes="pane"))
             with TabPane("Logs", id="logs"):
                 yield RichLog(id="logs-body", classes="pane", markup=False, auto_scroll=True)
+            with TabPane("Usage", id="usage"):
+                yield Container(Static(id="usage-body", classes="pane"))
             with TabPane("Config", id="config"):
                 yield Tree("config.yaml", id="config-tree")
                 yield Static(id="config-status", classes="pane")
-            with TabPane("Usage", id="usage"):
-                yield Container(Static(id="usage-body", classes="pane"))
         yield Footer()
 
     def on_mount(self) -> None:
         self._build_config_tree()
+        self._start_caffeinate()  # keep the machine awake by default
         self.refresh_dynamic()
         self.set_interval(2.0, self.refresh_dynamic)
+
+    def on_unmount(self) -> None:
+        self._stop_caffeinate()
 
     def on_tabbed_content_tab_activated(
         self, event: "TabbedContent.TabActivated"
@@ -286,6 +304,79 @@ class KoanDashboard(App):
                 self.notify("Kōan paused")
         except Exception as exc:  # pragma: no cover - defensive
             self.notify(f"pause failed: {exc}", severity="error")
+        self.refresh_dynamic()
+
+    # --- toggles (web dashboard, caffeinate) --------------------------------
+
+    def _web_running(self) -> bool:
+        try:
+            from app.pid_manager import check_pidfile
+
+            return check_pidfile(self.koan_root, "dashboard") is not None
+        except Exception as exc:
+            self.log(f"dashboard status check failed: {exc}")
+            return False
+
+    def action_toggle_web(self) -> None:
+        """Start/stop the web dashboard with a single tap; open browser on start."""
+        try:
+            from app.pid_manager import start_dashboard, stop_process
+
+            if self._web_running():
+                stop_process(self.koan_root, "dashboard")
+                self.notify("web dashboard stopped")
+            else:
+                ok, msg = start_dashboard(self.koan_root)
+                if ok:
+                    import webbrowser
+
+                    with contextlib.suppress(Exception):
+                        webbrowser.open("http://localhost:5001")
+                    self.notify("web dashboard started — localhost:5001")
+                else:
+                    self.notify(f"dashboard: {msg}", severity="warning")
+        except Exception as exc:
+            self.notify(f"web toggle failed: {exc}", severity="error")
+        self.refresh_dynamic()
+
+    def _start_caffeinate(self) -> None:
+        """Keep the machine awake via `caffeinate -s` (macOS only)."""
+        import shutil
+        import subprocess
+
+        if self._caffeinate is not None:
+            return
+        exe = shutil.which("caffeinate")
+        if not exe:  # non-macOS or unavailable — quietly skip
+            return
+        try:
+            self._caffeinate = subprocess.Popen(
+                [exe, "-s"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as exc:
+            self.log(f"caffeinate start failed: {exc}")
+            self._caffeinate = None
+
+    def _stop_caffeinate(self) -> None:
+        if self._caffeinate is None:
+            return
+        with contextlib.suppress(Exception):
+            self._caffeinate.terminate()
+            self._caffeinate.wait(timeout=2)  # reap so it does not linger
+        self._caffeinate = None
+
+    def _caffeinate_on(self) -> bool:
+        return self._caffeinate is not None and self._caffeinate.poll() is None
+
+    def action_toggle_caffeinate(self) -> None:
+        if self._caffeinate_on():
+            self._stop_caffeinate()
+            self.notify("caffeinate off — machine may sleep")
+        else:
+            self._start_caffeinate()
+            if self._caffeinate_on():
+                self.notify("caffeinate on — staying awake")
+            else:
+                self.notify("caffeinate unavailable on this platform", severity="warning")
         self.refresh_dynamic()
 
     def _selected_leaf(self):
@@ -350,6 +441,7 @@ class KoanDashboard(App):
     # --- rendering ----------------------------------------------------------
 
     def refresh_dynamic(self) -> None:
+        self._render_status()
         self._render_logs()
         self._render_usage()
         self._render_config_status()
@@ -359,8 +451,73 @@ class KoanDashboard(App):
         from app.pause_manager import is_paused
 
         state = "paused" if is_paused(str(self.koan_root)) else "live"
-        self.sub_title = (f"{state} · 1/2/3 tabs · enter edits · t toggles bool"
+        self.sub_title = (f"{state} · 1-4 tabs · w web · k awake"
                           f" · p pauses · q quits")
+
+    # --- status (home) ------------------------------------------------------
+
+    def _dot(self, on: bool) -> str:
+        """Anantys accent dot: filled mint when ON, empty muted when OFF."""
+        return f"[{_MINT}]◉[/]" if on else "[dim]○[/]"
+
+    def _running_missions(self) -> int:
+        try:
+            from app.missions import parse_sections
+
+            md = self.koan_root / "instance" / "missions.md"
+            if not md.exists():
+                return 0
+            return len(parse_sections(md.read_text()).get("in_progress", []))
+        except Exception as exc:
+            self.log(f"mission count failed: {exc}")
+            return 0
+
+    def _render_status(self) -> None:
+        try:
+            body = self.query_one("#status-body", Static)
+        except Exception as exc:
+            self.log(f"status widget missing: {exc}")
+            return
+
+        from rich.text import Text
+
+        from app.banners import _read_art, colorize_hero
+        from app.banners.theme import RESET
+        from app.pause_manager import is_paused
+
+        hero_art = ""
+        try:
+            hero_art = colorize_hero(_read_art("koan_hero.txt").rstrip("\n"))
+        except Exception as exc:
+            self.log(f"hero render failed: {exc}")
+
+        out = Text.from_ansi(hero_art + RESET) if hero_art else Text("Kōan")
+        out.append("\n\n")
+
+        # Live status flags + single-tap toggles, rendered as markup.
+        paused = is_paused(str(self.koan_root))
+        missions = self._running_missions()
+        lines = [
+            f"  state        {'[yellow]paused[/]' if paused else f'[{_MINT}]running[/]'}",
+            f"  missions     [{_MINT}]{missions}[/] in progress",
+            f"  web board    {self._dot(self._web_running())}  "
+            f"[dim](w to toggle · localhost:5001)[/]",
+            f"  keep awake   {self._dot(self._caffeinate_on())}  "
+            f"[dim](k to toggle · caffeinate -s)[/]",
+        ]
+        # Usage bars reuse the same renderer as the Usage tab.
+        try:
+            from app.usage_tracker import UsageTracker
+
+            t = UsageTracker(self.koan_root / "instance" / "usage.md")
+            lines.append("")
+            lines.append("  " + self._bar("session", t.session_pct, t.session_reset))
+            lines.append("  " + self._bar("weekly", t.weekly_pct, t.weekly_reset))
+        except Exception as exc:
+            self.log(f"status usage failed: {exc}")
+
+        out.append_text(Text.from_markup("\n".join(lines)))
+        body.update(out)
 
     def _render_logs(self) -> None:
         logs_dir = self.koan_root / "logs"

@@ -760,6 +760,31 @@ def stop_processes(koan_root: Path, timeout: float = 5.0) -> dict:
     return results
 
 
+def stop_process(koan_root: Path, name: str, timeout: float = 5.0) -> str:
+    """Stop a single named Kōan process (SIGTERM, then SIGKILL on timeout).
+
+    Returns "stopped", "not_running", or "force_killed". Used by the terminal
+    dashboard's web-dashboard toggle to bring just that process down.
+    """
+    _bootout_launchd_service(name)
+    pid = check_pidfile(koan_root, name)
+    if not pid:
+        return "not_running"
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except (OSError, ProcessLookupError):
+        return "not_running"
+    if _wait_for_exit(pid, timeout):
+        result = "stopped"
+    else:
+        with contextlib.suppress(OSError, ProcessLookupError):
+            os.kill(pid, signal.SIGKILL)
+        _wait_for_exit(pid, 1.0)
+        result = "force_killed"
+    _pidfile_path(koan_root, name).unlink(missing_ok=True)
+    return result
+
+
 def _print_stack_results(results: dict) -> int:
     """Print stack start results and return exit code (0=ok, 1=failure)."""
     any_failed = False
