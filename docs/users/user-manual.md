@@ -1874,24 +1874,26 @@ projects:
 
 ### Interactive launcher (`make koan`)
 
-`make koan` is the interactive way to start Kōan. In a terminal it renders the
-Anantys banner, surfaces any config drift (read-only — it never edits your
-`config.yaml`), then asks how you want to supervise the agent:
+`make koan` is the interactive way to start Kōan. In a terminal it starts the
+stack and drops you straight into the terminal dashboard — no prompts. The home
+screen is the **Status** tab (KŌAN hero + live flags), alongside **Logs**,
+**Config**, and **Usage** tabs.
 
-- **Web dashboard** — starts the stack and the web UI, opens your browser, and
-  stays in the foreground. Ctrl-C ends the session and stops Kōan.
-- **Terminal view** — starts the stack and opens the terminal dashboard with
-  Logs / Config / Usage tabs. Pressing `q` ends the session and stops Kōan.
-- **Headless** — starts the stack and hands control back (identical to
-  `make start`); Kōan keeps running in the background.
+Single-tap toggles (accent dot `◉` on / `○` off):
 
-Use the arrow keys to move, Enter to confirm, `q` to quit. When stdin is not a
-TTY (services, CI, pipes) `make koan` falls back to the headless path with no
-prompt. `make start` is unchanged and remains the launcher used by services
-and scripts.
+- **`w` — web dashboard**: start/stop the web UI and open your browser at
+  `localhost:5001`.
+- **`k` — keep awake**: runs `caffeinate -s` so your Mac doesn't sleep while
+  Kōan works. On by default; tap `k` to turn it off.
+
+Keys: `1`–`4` (or `s`/`l`/`c`/`u`) switch tabs; in Config, arrows browse the
+tree, Enter edits a value, `t` toggles a boolean; `p` pauses, `r` reloads, `q`
+quits (which stops Kōan). When stdin is not a TTY (services, CI, pipes)
+`make koan` falls back to the headless path with no prompt. `make start` is
+unchanged and remains the launcher used by services and scripts.
 
 The terminal dashboard requires `textual` (installed by `make setup`); if it is
-missing, Kōan falls back to `make logs`.
+missing, Kōan stays running and you can follow it with `make logs`.
 
 ### Web Dashboard
 
