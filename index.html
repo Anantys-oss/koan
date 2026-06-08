@@ -299,7 +299,15 @@
       font-size: 0.77rem; font-weight: 600;
       display: flex; align-items: center; gap: 0.4rem; z-index: 3;
       box-shadow: 0 4px 20px rgba(0,0,0,0.4); white-space: nowrap;
+      color: var(--text); text-decoration: none;
       animation: float-b 4s ease-in-out infinite alternate;
+    }
+    .avatar-badge:hover {
+      color: var(--text); border-color: rgba(0,229,195,0.45);
+      background: rgba(16,26,22,0.96);
+    }
+    .avatar-badge:focus-visible {
+      outline: 2px solid var(--accent); outline-offset: 4px;
     }
     .avatar-badge:nth-child(5){top:14%;left:-7%;animation-delay:0s;}
     .avatar-badge:nth-child(6){top:22%;right:-10%;animation-delay:1.3s;}
@@ -537,10 +545,10 @@
             <a class="hero-avatar-link" href="https://github.com/Anantys-oss/koan" aria-label="Open Kōan on GitHub">
               <img src="avatar.png?cb=20260607" alt="Kōan" class="hero-avatar-img" onerror="this.src='https://api.dicebear.com/7.x/bottts/svg?seed=koan&backgroundColor=0c1210'" />
             </a>
-            <div class="avatar-badge"><i class="fas fa-brain" style="color:var(--accent)"></i> Claude Max</div>
-            <div class="avatar-badge"><i class="fas fa-code-branch" style="color:var(--accent3)"></i> Auto Rebase</div>
-            <div class="avatar-badge"><i class="fas fa-shield-halved" style="color:var(--accent2)"></i> Security Scan</div>
-            <div class="avatar-badge"><i class="fab fa-docker" style="color:#2496ED"></i> Docker Ready</div>
+            <a class="avatar-badge" href="https://github.com/Anantys-oss/koan"><i class="fas fa-brain" style="color:var(--accent)"></i> Claude Max</a>
+            <a class="avatar-badge" href="https://github.com/Anantys-oss/koan"><i class="fas fa-code-branch" style="color:var(--accent3)"></i> Auto Rebase</a>
+            <a class="avatar-badge" href="https://github.com/Anantys-oss/koan"><i class="fas fa-shield-halved" style="color:var(--accent2)"></i> Security Scan</a>
+            <a class="avatar-badge" href="https://github.com/Anantys-oss/koan"><i class="fab fa-docker" style="color:#2496ED"></i> Docker Ready</a>
           </div>
         </div>
       </div>
