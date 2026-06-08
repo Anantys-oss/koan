@@ -13,9 +13,6 @@ config), then lets the human choose how to supervise the agent:
 (services, CI, scripts). When stdin is not a TTY this launcher delegates to
 the existing headless ``start_all`` path with no prompt, so it is safe to
 call from non-interactive contexts too.
-
-The chosen mode is remembered in ``instance/.koan.prefs`` and reused on the
-next run unless ``--menu`` is passed.
 """
 
 import argparse
@@ -208,7 +205,10 @@ def _wait_until_interrupt(koan_root: Path) -> None:
 def _launch_web(koan_root: Path) -> int:
     from app.pid_manager import start_dashboard
 
-    _start_stack(koan_root)
+    results = _start_stack(koan_root)
+    failed = [name for name, (ok, _) in results.items() if not ok]
+    if failed:
+        print(f"  {amber('some components did not start:')} {text(', '.join(failed))}")
     ok, msg = start_dashboard(koan_root)
     print(f"  {mint('dashboard') if ok else amber('dashboard')} {muted(msg)}")
     try:
@@ -223,10 +223,13 @@ def _launch_web(koan_root: Path) -> int:
 
 
 def _launch_terminal(koan_root: Path) -> int:
-    _start_stack(koan_root)
+    results = _start_stack(koan_root)
+    failed = [name for name, (ok, _) in results.items() if not ok]
+    if failed:
+        print(f"  {amber('some components did not start:')} {text(', '.join(failed))}")
     try:
         from app.tui_dashboard import run as run_tui
-    except Exception:
+    except (ImportError, ModuleNotFoundError):
         print(f"  {amber('terminal dashboard unavailable')} "
               f"{muted('(install textual: pip install textual) — falling back to logs')}")
         print(f"  {muted('run')} {text('make logs')} {muted('to follow output')}")
