@@ -347,8 +347,10 @@ def test_new_mission_queues_to_missions_md(tmp_path):
 def test_pilot_status_shows_mission_titles_and_telegram(tmp_path, monkeypatch):
     _write_config(tmp_path, "x: 1\n")
     inst = tmp_path / "instance"
+    # Title carries a [project:koan] tag — must be escaped, not parsed as markup.
     (inst / "missions.md").write_text(
-        "# Missions\n\n## Pending\n\n## In Progress\n\n- ship the feature\n\n## Done\n")
+        "# Missions\n\n## Pending\n\n## In Progress\n\n"
+        "- /review https://x [project:koan]\n\n## Done\n")
     monkeypatch.setenv("KOAN_TELEGRAM_TOKEN", "t")
     monkeypatch.setenv("KOAN_TELEGRAM_CHAT_ID", "c")
 
@@ -356,10 +358,12 @@ def test_pilot_status_shows_mission_titles_and_telegram(tmp_path, monkeypatch):
         app = tui.KoanDashboard(tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
+            app.refresh_dynamic()  # would raise MarkupError on the tag before the fix
+            await pilot.pause()
             body = app.query_one("#status-body", tui.Static)
             rendered = body.render()
             text = getattr(rendered, "plain", str(rendered))
-            assert "ship the feature" in text
+            assert "project:koan" in text  # tag rendered literally, not parsed
             assert "telegram" in text
 
     asyncio.run(scenario())

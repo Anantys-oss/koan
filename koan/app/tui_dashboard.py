@@ -626,6 +626,7 @@ class KoanDashboard(App):
             self.log(f"status widget missing: {exc}")
             return
 
+        from rich.markup import escape
         from rich.text import Text
 
         from app.banners import _read_art, colorize_hero
@@ -661,7 +662,9 @@ class KoanDashboard(App):
             f"  state        {'[yellow]paused[/]' if paused else f'[{_MINT}]running[/]'}",
             f"  missions     [{_MINT}]{len(titles)}[/] in progress",
         ]
-        lines.extend(f"                 [dim]·[/] {t}" for t in titles[:3])
+        # Escape titles — mission text like "[project:koan]" would otherwise
+        # be parsed as rich markup tags and crash the renderer.
+        lines.extend(f"                 [dim]·[/] {escape(t)}" for t in titles[:3])
         if len(titles) > 3:
             lines.append(f"                 [dim]… +{len(titles) - 3} more[/]")
         lines += [
