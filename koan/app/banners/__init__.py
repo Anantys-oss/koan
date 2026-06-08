@@ -108,14 +108,50 @@ def _visible_len(s: str) -> int:
 
 
 def colorize_startup(art: str) -> str:
-    """Apply ANSI colors to the unified startup banner."""
+    """Apply ANSI colors to the unified startup banner (Anantys mint theme)."""
+    from app.banners.theme import MINT, MINT_DIM, _seq
+
     return _colorize_art(art, {
-        "K Ō A N": f"{BOLD}{CYAN}",
+        "K Ō A N": _seq(MINT, bold=True),
         "cognitive sparring partner": f"{DIM}{WHITE}",
-        "─────────────────────": f"{DIM}{CYAN}",
-        "◉": CYAN,
+        "─────────────────────": _seq(MINT_DIM),
+        "◉": _seq(MINT),
         "☢": YELLOW,
     }, f"{DIM}{BLUE}")
+
+
+def colorize_hero(art: str) -> str:
+    """Colorize the KŌAN hero banner (Anantys mint theme).
+
+    The block-glyph wordmark and the katana blade glow mint, the guards (◈)
+    are amber, and the tagline is dim white.
+    """
+    from app.banners.theme import MINT, _seq
+
+    return _colorize_art(art, {
+        "the agent proposes, the human decides": f"{DIM}{WHITE}",
+        "◈": YELLOW,
+    }, _seq(MINT, bold=True))
+
+
+def print_hero_banner(system_info: dict = None) -> None:
+    """Print the KŌAN hero banner with system info listed beneath it.
+
+    Falls back to the compact two-column banner if the hero art is missing.
+    """
+    art = _read_art("koan_hero.txt")
+    if not art:
+        print_startup_banner(system_info)
+        return
+
+    print()
+    print(colorize_hero(art.rstrip("\n")))
+    print()
+    for line in _format_info_lines(system_info) if system_info else []:
+        # _format_info_lines already colors the value; just indent.
+        print(f"   {line}")
+    if system_info:
+        print()
 
 
 def _format_info_lines(system_info: dict) -> list:
@@ -134,14 +170,17 @@ def _format_info_lines(system_info: dict) -> list:
         ("soul", "Soul"),
         ("messaging", "Messaging"),
     ]
+    from app.banners.theme import MINT, _seq
+
     max_value_len = 50
+    mint = _seq(MINT)
     lines = []
     for key, label in label_map:
         if key in system_info:
             value = system_info[key]
             if len(value) > max_value_len:
                 value = value[:max_value_len - 1] + "…"
-            lines.append(f"{DIM}{WHITE}{label}: {RESET}{CYAN}{value}{RESET}")
+            lines.append(f"{DIM}{WHITE}{label}: {RESET}{mint}{value}{RESET}")
     return lines
 
 

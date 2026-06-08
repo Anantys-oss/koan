@@ -133,17 +133,20 @@ class TestStartupArt:
 
 class TestColorizeStartup:
     def test_colors_eyes(self):
+        # Anantys mint theme: eyes use the mint accent, not cyan.
+        from app.banners.theme import MINT, _seq
         result = colorize_startup("│ ◉  ◉ │")
-        assert CYAN in result
+        assert _seq(MINT) in result
 
     def test_colors_radioactive(self):
         result = colorize_startup("├──☢───┤")
         assert YELLOW in result
 
     def test_colors_title(self):
+        from app.banners.theme import MINT, _seq
         result = colorize_startup("K Ō A N")
         assert BOLD in result
-        assert CYAN in result
+        assert _seq(MINT, bold=True) in result
 
     def test_colors_tagline(self):
         result = colorize_startup("cognitive sparring partner")
@@ -231,3 +234,29 @@ class TestPrintStartupBanner:
         visible = _ANSI_RE.sub("", lines[0])
         assert "…" in visible
         assert len(visible.split(": ", 1)[1]) <= 50
+
+
+class TestHeroBanner:
+    def test_hero_art_present(self):
+        art = _read_art("koan_hero.txt")
+        assert art
+        # Block-glyph wordmark + katana guards + kōan label present.
+        assert "█" in art
+        assert "◈" in art
+        assert "kōan" in art
+
+    def test_colorize_hero_mint_and_reset(self):
+        from app.banners.theme import MINT, _seq
+        from app.banners import colorize_hero
+        result = colorize_hero(_read_art("koan_hero.txt"))
+        assert _seq(MINT, bold=True) in result
+        assert RESET in result
+
+    def test_print_hero_falls_back_without_art(self, monkeypatch):
+        import app.banners as b
+        monkeypatch.setattr(b, "_read_art", lambda name: "")
+        called = {}
+        monkeypatch.setattr(b, "print_startup_banner",
+                            lambda info=None: called.setdefault("fallback", True))
+        b.print_hero_banner({"provider": "claude"})
+        assert called.get("fallback") is True

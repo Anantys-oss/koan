@@ -593,7 +593,7 @@ def _show_startup_banner(koan_root: Path, provider: str) -> None:
         print(f"Warning: Failed to display startup banner: {e}", file=sys.stderr)
 
 
-def start_all(koan_root: Path, provider: str = None) -> dict:
+def start_all(koan_root: Path, provider: str = None, show_banner: bool = True) -> dict:
     """Start the full Kōan stack for the configured provider.
 
     Auto-detects the provider if not specified.
@@ -603,13 +603,17 @@ def start_all(koan_root: Path, provider: str = None) -> dict:
     Note: ollama-launch does not need a separate ollama serve process
     because ``ollama launch claude`` handles server lifecycle internally.
 
+    ``show_banner`` lets the interactive launcher (``make koan``) suppress the
+    startup banner it has already rendered itself, avoiding a double banner.
+
     Returns dict mapping component name to (success, message).
     """
     if provider is None:
         provider = _detect_provider(koan_root)
 
     # Display startup banner before launching processes
-    _show_startup_banner(koan_root, provider)
+    if show_banner:
+        _show_startup_banner(koan_root, provider)
 
     results = {}
 
@@ -754,6 +758,31 @@ def stop_processes(koan_root: Path, timeout: float = 5.0) -> dict:
         pidfile.unlink(missing_ok=True)
 
     return results
+
+
+def stop_process(koan_root: Path, name: str, timeout: float = 5.0) -> str:
+    """Stop a single named Kōan process (SIGTERM, then SIGKILL on timeout).
+
+    Returns "stopped", "not_running", or "force_killed". Used by the terminal
+    dashboard's web-dashboard toggle to bring just that process down.
+    """
+    _bootout_launchd_service(name)
+    pid = check_pidfile(koan_root, name)
+    if not pid:
+        return "not_running"
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except (OSError, ProcessLookupError):
+        return "not_running"
+    if _wait_for_exit(pid, timeout):
+        result = "stopped"
+    else:
+        with contextlib.suppress(OSError, ProcessLookupError):
+            os.kill(pid, signal.SIGKILL)
+        _wait_for_exit(pid, 1.0)
+        result = "force_killed"
+    _pidfile_path(koan_root, name).unlink(missing_ok=True)
+    return result
 
 
 def _print_stack_results(results: dict) -> int:

@@ -56,9 +56,17 @@ git clone https://github.com/Anantys-oss/koan.git
 cd koan
 make setup
 make install    # Interactive web wizard — sets up everything
-make start      # Launches the full stack
+make koan       # Start Kōan + open the terminal dashboard (recommended)
+make start      # Or launch the full stack non-interactively
 make logs       # Watch it work
 ```
+
+`make koan` is the interactive front door: it starts the stack and drops you
+straight into the terminal dashboard — a Status home screen (hero + live
+flags) plus Logs / Config / Usage tabs, with single-tap toggles for the web
+dashboard (`w`) and keep-awake/caffeinate (`k`, on by default). Quitting with
+`q` stops Kōan. `make start` remains the non-interactive launcher used by
+services and scripts.
 
 On macOS, keep your machine awake while Koan runs:
 
@@ -381,7 +389,8 @@ instance/                 # Your private data (gitignored)
 | Target | Description |
 |--------|-------------|
 | `make install` | Interactive web-based setup wizard |
-| `make start` | Start full stack (agent + bridge) |
+| `make koan` | Start Kōan + terminal dashboard (Status/Logs/Config/Usage) |
+| `make start` | Start full stack (agent + bridge), non-interactive |
 | `make logs` | Tail live output from all processes |
 | `make stop` | Stop all processes |
 | `make status` | Show running process status |
