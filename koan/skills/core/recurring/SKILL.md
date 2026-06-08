@@ -24,3 +24,8 @@ commands:
     usage: /recurring, /recurring resume <n>, /recurring run [n], /recurring pause <n>, /recurring cancel <n>, /recurring days <n> <days>
 handler: handler.py
 ---
+
+Use `project:all` to make a recurring mission **org-wide**: it runs once at the
+workspace root and its instructions iterate over every repo in the workspace
+(see `docs/architecture/mission-lifecycle.md`). Without a `project:` tag, a
+mission defaults to the first configured project.

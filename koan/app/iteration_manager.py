@@ -34,6 +34,8 @@ from app.constants import (
     BURN_RATE_DOWNGRADE_THRESHOLD_MIN,
     BURN_RATE_WARNING_MIN_RESET_GAP_MIN,
     BURN_RATE_WARNING_THRESHOLD_MIN,
+    ORG_WIDE_PROJECT,
+    WORKSPACE_DIRNAME,
     MAX_SELECTION_AUDIT_ENTRIES as _MAX_SELECTION_AUDIT_ENTRIES,
 )
 from app.loop_manager import resolve_focus_area
@@ -523,10 +525,35 @@ def _projects_to_str(projects: List[Tuple[str, str]]) -> str:
     return ";".join(f"{name}:{path}" for name, path in projects)
 
 
+def _org_wide_workspace_root(koan_root: Optional[str]) -> Optional[str]:
+    """Resolve the workspace root directory used for org-wide missions.
+
+    Returns the absolute path to ``<KOAN_ROOT>/workspace`` if it exists as a
+    directory, otherwise ``None`` (org-wide missions require the workspace
+    layout that holds all repos). ``koan_root`` falls back to the
+    ``KOAN_ROOT`` environment variable when not provided.
+    """
+    root = koan_root
+    if not root:
+        import os
+        root = os.environ.get("KOAN_ROOT", "")
+    if not root:
+        return None
+    workspace = Path(root) / WORKSPACE_DIRNAME
+    return str(workspace) if workspace.is_dir() else None
+
+
 def _resolve_project_path(
-    project_name: str, projects: List[Tuple[str, str]],
+    project_name: str,
+    projects: List[Tuple[str, str]],
+    koan_root: Optional[str] = None,
 ) -> Optional[Tuple[str, str]]:
     """Find the canonical name and path for a project name (case-insensitive).
+
+    Recognises the org-wide sentinel ``ORG_WIDE_PROJECT`` ("all"): when no
+    real project matches that name, it resolves to the workspace root so the
+    mission is launched once with every repo visible underneath. A real
+    project literally named "all" still takes precedence.
 
     Returns:
         (canonical_name, path) tuple or None if not found
@@ -546,6 +573,13 @@ def _resolve_project_path(
         for name, path in projects:
             if name.lower() == canonical_lower:
                 return (name, path)
+
+    # Org-wide sentinel: no real project matched, so "all" means "run once at
+    # the workspace root and let the mission iterate over every repo itself".
+    if lower == ORG_WIDE_PROJECT:
+        workspace_root = _org_wide_workspace_root(koan_root)
+        if workspace_root:
+            return (ORG_WIDE_PROJECT, workspace_root)
     return None
 
 
@@ -1470,7 +1504,7 @@ def plan_iteration(
 
     # Step 5: Resolve project for the picked mission.
     if mission_project and mission_title:
-        resolved = _resolve_project_path(mission_project, projects)
+        resolved = _resolve_project_path(mission_project, projects, koan_root)
 
         if resolved is None:
             project_name = mission_project

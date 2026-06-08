@@ -15,6 +15,26 @@ Missions are stored in Markdown sections. The canonical lifecycle is:
 French section names are also accepted for compatibility. Missions can include
 project tags such as `[project:name]`.
 
+### Org-wide missions (`[project:all]`)
+
+A mission tagged `[project:all]` (or a recurring entry with `"project": "all"`)
+is an **org-wide** mission: it targets every repository in the workspace
+instead of a single project. The engine resolves it to the workspace root
+(`<KOAN_ROOT>/workspace`) as its working directory and launches it **once** —
+the mission's own instructions are responsible for iterating over each repo
+(e.g. enumerating `workspace/*/` and operating on each, optionally via
+sub-agents). Engine-level git branch preparation and auto-merge are skipped for
+org-wide missions, because there is no single repo to branch; each repo's git
+work (branches, PRs) is handled inside the mission.
+
+`all` is a reserved sentinel resolved in
+`iteration_manager._resolve_project_path`. A real project literally named `all`
+still takes precedence over the sentinel. Missions with **no** project tag keep
+their previous behaviour (they default to the first configured project), so
+single-project setups are unaffected. To scope which repos an org-wide mission
+touches, exclude repos at the workspace-sync layer (they simply never get cloned
+into `workspace/`).
+
 ## Normal Execution
 
 1. The bridge, a command handler, a scheduler, or a GitHub/Jira notification

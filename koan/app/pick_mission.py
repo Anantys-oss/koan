@@ -27,13 +27,17 @@ def fallback_extract(content: str, projects_str: str) -> tuple[str | None, str |
     if not line:
         return (None, None)
 
-    # Try to extract project from inline tag
+    # Try to extract project from inline tag.
+    # The sentinel tag [project:all] passes through verbatim here; it is
+    # resolved to the workspace root downstream (iteration_manager
+    # ._resolve_project_path) so the org-wide mission runs once over all repos.
     tag = PROJECT_TAG_RE.search(line)
     if tag:
         project = tag.group(1)
         title = PROJECT_TAG_STRIP_RE.sub("", line).removeprefix("- ").strip()
     else:
-        # Default to first project
+        # No tag: default to the first project (intentional for single-project
+        # setups). Org-wide missions must carry an explicit [project:all] tag.
         parts = [p for p in projects_str.split(";") if p]
         project = parts[0].split(":")[0] if parts else "default"
         title = line.removeprefix("- ").strip()

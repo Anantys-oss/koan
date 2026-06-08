@@ -723,25 +723,35 @@ def _run_iteration(
     log("project", bold_green(f">>> Current project: {project_name}") + f" ({project_path})")
 
     # --- Prepare project git state ---
-    from app.git_prep import prepare_project_branch
-    try:
-        prep = prepare_project_branch(project_path, project_name, koan_root)
-        if prep.stashed:
-            log("git", f"Stashed uncommitted changes in {project_name}")
-        if not prep.success:
-            log("error", f"Git prep failed for {project_name}: {prep.error}")
+    # Org-wide missions run at the workspace root (which is not itself a git
+    # repo) and iterate over every repo themselves, handling each repo's git
+    # branch/PR work inside the mission. Engine-level branch preparation would
+    # fail there, so skip it for the org-wide sentinel.
+    from app.constants import ORG_WIDE_PROJECT
+    is_org_wide = project_name == ORG_WIDE_PROJECT
+    if is_org_wide:
+        log("git", f"Org-wide mission — running at workspace root ({project_path}); "
+                    "skipping branch prep (mission manages git per repo)")
+    else:
+        from app.git_prep import prepare_project_branch
+        try:
+            prep = prepare_project_branch(project_path, project_name, koan_root)
+            if prep.stashed:
+                log("git", f"Stashed uncommitted changes in {project_name}")
+            if not prep.success:
+                log("error", f"Git prep failed for {project_name}: {prep.error}")
+                if mission_title:
+                    _run._update_mission_in_file(instance, mission_title, failed=True)
+                    _run._notify(instance, f"❌ [{project_name}] Git prep failed, aborting mission: {mission_title[:60]}")
+                return False  # abort — branch state is unreliable
+            else:
+                log("git", f"Ready on {prep.base_branch} from {prep.remote_used}")
+        except Exception as e:
+            log("error", f"Git prep error for {project_name}: {e}\n{traceback.format_exc()}")
             if mission_title:
                 _run._update_mission_in_file(instance, mission_title, failed=True)
-                _run._notify(instance, f"❌ [{project_name}] Git prep failed, aborting mission: {mission_title[:60]}")
+                _run._notify(instance, f"❌ [{project_name}] Git prep error, aborting mission: {mission_title[:60]}")
             return False  # abort — branch state is unreliable
-        else:
-            log("git", f"Ready on {prep.base_branch} from {prep.remote_used}")
-    except Exception as e:
-        log("error", f"Git prep error for {project_name}: {e}\n{traceback.format_exc()}")
-        if mission_title:
-            _run._update_mission_in_file(instance, mission_title, failed=True)
-            _run._notify(instance, f"❌ [{project_name}] Git prep error, aborting mission: {mission_title[:60]}")
-        return False  # abort — branch state is unreliable
 
     # --- Mark mission as In Progress ---
     # Save the original title before skill dispatch may translate it.

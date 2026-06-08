@@ -120,6 +120,59 @@ class TestResolveProjectPath:
         assert _resolve_project_path("ghost", PROJECTS_LIST) is None
 
 
+class TestResolveProjectPathOrgWide:
+    """The org-wide sentinel ([project:all]) resolves to the workspace root."""
+
+    def test_all_resolves_to_workspace_root(self, tmp_path, monkeypatch):
+        """`all` with no matching project resolves to <KOAN_ROOT>/workspace."""
+        import app.utils as utils
+        monkeypatch.setattr(utils, "resolve_project_alias", lambda n: None)
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        result = _resolve_project_path("all", PROJECTS_LIST, str(tmp_path))
+        assert result == ("all", str(workspace))
+
+    def test_all_case_insensitive(self, tmp_path, monkeypatch):
+        """The sentinel is matched case-insensitively."""
+        import app.utils as utils
+        monkeypatch.setattr(utils, "resolve_project_alias", lambda n: None)
+        (tmp_path / "workspace").mkdir()
+        result = _resolve_project_path("ALL", PROJECTS_LIST, str(tmp_path))
+        assert result == ("all", str(tmp_path / "workspace"))
+
+    def test_all_falls_back_to_env_koan_root(self, tmp_path, monkeypatch):
+        """When koan_root is omitted, KOAN_ROOT env is used."""
+        import app.utils as utils
+        monkeypatch.setattr(utils, "resolve_project_alias", lambda n: None)
+        (tmp_path / "workspace").mkdir()
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        result = _resolve_project_path("all", PROJECTS_LIST)
+        assert result == ("all", str(tmp_path / "workspace"))
+
+    def test_all_none_when_no_workspace_dir(self, tmp_path, monkeypatch):
+        """No workspace/ directory means the sentinel cannot resolve."""
+        import app.utils as utils
+        monkeypatch.setattr(utils, "resolve_project_alias", lambda n: None)
+        # tmp_path has no "workspace" subdirectory
+        assert _resolve_project_path("all", PROJECTS_LIST, str(tmp_path)) is None
+
+    def test_real_project_named_all_takes_precedence(self, tmp_path, monkeypatch):
+        """A real project literally named 'all' wins over the sentinel."""
+        import app.utils as utils
+        monkeypatch.setattr(utils, "resolve_project_alias", lambda n: None)
+        (tmp_path / "workspace").mkdir()
+        projects = [("all", "/path/to/real-all"), ("backend", "/path/to/backend")]
+        result = _resolve_project_path("all", projects, str(tmp_path))
+        assert result == ("all", "/path/to/real-all")
+
+    def test_named_project_unaffected_by_workspace(self, tmp_path, monkeypatch):
+        """A named project still resolves to its own path, not the workspace."""
+        import app.utils as utils
+        monkeypatch.setattr(utils, "resolve_project_alias", lambda n: None)
+        (tmp_path / "workspace").mkdir()
+        result = _resolve_project_path("backend", PROJECTS_LIST, str(tmp_path))
+        assert result == ("backend", "/path/to/backend")
+
 
 class TestGetKnownProjectNames:
 

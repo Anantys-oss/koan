@@ -83,3 +83,21 @@ BURN_RATE_WARNING_MIN_RESET_GAP_MIN = 120.0
 
 # Ring-buffer cap for the selection audit log.
 MAX_SELECTION_AUDIT_ENTRIES = 200
+
+# ---------------------------------------------------------------------------
+# Org-wide missions  (iteration_manager.py, mission_executor.py)
+# ---------------------------------------------------------------------------
+
+# Sentinel project name marking an "org-wide" mission, i.e. one meant to
+# cover every repository in the workspace rather than a single project.
+# A mission tagged ``[project:all]`` (or a recurring entry with
+# ``"project": "all"``) resolves to the workspace root as its working
+# directory and is launched ONCE; the mission's own instructions iterate
+# over every repo under the workspace. The engine skips per-project git
+# branch preparation for it — each repo's git work is handled inside the
+# mission itself. A real project literally named "all" still takes
+# precedence over this sentinel.
+ORG_WIDE_PROJECT = "all"
+
+# Name of the workspace directory under KOAN_ROOT that holds all repos.
+WORKSPACE_DIRNAME = "workspace"
