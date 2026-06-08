@@ -53,29 +53,33 @@ def run(koan_root: Path) -> int:
     _clear_screen()
     from app.pid_manager import start_all
 
-    results = start_all(koan_root, show_banner=False)
-    failed = [name for name, (ok, msg) in results.items()
-              if not ok and "already running" not in msg.lower()]
-    if failed:
-        print(f"  {amber('some components did not start:')} {text(', '.join(failed))}")
-
     try:
         from app.tui_dashboard import run as run_tui
     except ImportError:
-        # textual not installed — show the hero, keep Kōan running, point at logs.
+        # textual not installed — start synchronously, show the hero, point at logs.
         from app.banners import print_hero_banner
 
+        start_all(koan_root, show_banner=False)
         print_hero_banner()
         print(f"  {amber('terminal dashboard unavailable')} "
               f"{muted('(install textual: pip install textual)')}")
         print(f"  {mint('Kōan is running.')} {muted('make logs / make stop')}")
         return 0
 
+    # Start the stack in the background so the dashboard appears instantly
+    # instead of blocking ~3s on process-start verification. The Status tab
+    # reflects each component as it comes up.
     import contextlib
+    import threading
+
+    starter = threading.Thread(
+        target=lambda: start_all(koan_root, show_banner=False), daemon=True)
+    starter.start()
 
     detached = False
     with contextlib.suppress(KeyboardInterrupt):
         detached = run_tui(koan_root)
+    starter.join(timeout=10)
     if detached:
         # User pressed `d`: keep Kōan running in the background.
         print(f"  {mint('Kōan still running.')} {muted('make logs / make stop')}")

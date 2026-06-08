@@ -35,7 +35,10 @@ def test_run_tty_starts_stack_runs_tui_then_stops(monkeypatch):
     monkeypatch.setattr("app.pid_manager.stop_processes",
                         lambda *a, **k: calls.append("stop"))
     assert koan_cli.run(Path("/tmp/x")) == 0
-    assert calls == ["start", "tui", "stop"]  # start → supervise → tear down
+    # Stack starts in a background thread, so start/tui order is unspecified;
+    # what matters is both ran and the stack was torn down last.
+    assert "start" in calls and "tui" in calls
+    assert calls[-1] == "stop"
 
 
 def test_run_tty_detach_keeps_running(monkeypatch):
@@ -49,7 +52,8 @@ def test_run_tty_detach_keeps_running(monkeypatch):
     monkeypatch.setattr("app.pid_manager.stop_processes",
                         lambda *a, **k: calls.append("stop"))
     assert koan_cli.run(Path("/tmp/x")) == 0
-    assert calls == ["start", "tui"]  # detach → no stop
+    assert "tui" in calls
+    assert "stop" not in calls  # detach → no tear-down
 
 
 def test_run_tty_without_textual_keeps_running(monkeypatch):

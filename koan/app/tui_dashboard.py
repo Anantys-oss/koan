@@ -276,25 +276,29 @@ class KoanDashboard(App):
     Tree > .tree--cursor {{ background: {_MINT_DIM}; color: {_MIDNIGHT}; }}
     """
 
+    # Tabs are switched by their underlined first letter (BIOS-style) or 1-4;
+    # those bindings are hidden from the footer to keep it focused on actions.
     BINDINGS = [
         ("q", "request_quit", "Quit (stop)"),
         ("d", "detach", "Detach (keep running)"),
-        ("1", "show('status')", "Status"),
-        ("2", "show('logs')", "Logs"),
-        ("3", "show('usage')", "Usage"),
-        ("4", "show('config')", "Config"),
-        # Letter aliases for the tabs (hidden from the footer to keep it tidy).
+        ("m", "new_mission", "New mission"),
+        ("w", "toggle_web", "Web dashboard"),
+        ("k", "toggle_keepawake", "Keep awake"),
+        ("p", "pause", "Pause"),
+        Binding("1", "show('status')", "Status", show=False),
+        Binding("2", "show('logs')", "Logs", show=False),
+        Binding("3", "show('usage')", "Usage", show=False),
+        Binding("4", "show('config')", "Config", show=False),
         Binding("s", "show('status')", "Status", show=False),
         Binding("l", "show('logs')", "Logs", show=False),
         Binding("u", "show('usage')", "Usage", show=False),
         Binding("c", "show('config')", "Config", show=False),
-        ("m", "new_mission", "New mission"),
-        ("w", "toggle_web", "Web dashboard"),
-        ("k", "toggle_keepawake", "Keep awake"),
-        ("t", "toggle", "Toggle bool"),
-        ("p", "pause", "Pause Kōan"),
-        ("r", "refresh", "Refresh"),
+        Binding("t", "toggle", "Toggle bool", show=False),
+        Binding("r", "refresh", "Refresh", show=False),
     ]
+
+    # Disable the built-in command palette (^p) — wasted real estate here.
+    ENABLE_COMMAND_PALETTE = False
 
     TITLE = "Kōan"
 
@@ -310,13 +314,13 @@ class KoanDashboard(App):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with TabbedContent(initial="status"):
-            with TabPane("Status", id="status"):
+            with TabPane("[u]S[/]tatus", id="status"):
                 yield Container(Static(id="status-body", classes="pane"))
-            with TabPane("Logs", id="logs"):
+            with TabPane("[u]L[/]ogs", id="logs"):
                 yield RichLog(id="logs-body", classes="pane", markup=False, auto_scroll=True)
-            with TabPane("Usage", id="usage"):
+            with TabPane("[u]U[/]sage", id="usage"):
                 yield Container(Static(id="usage-body", classes="pane"))
-            with TabPane("Config", id="config"):
+            with TabPane("[u]C[/]onfig", id="config"):
                 yield Tree("config.yaml", id="config-tree")
                 yield Static(id="config-status", classes="pane")
         yield Footer()
@@ -571,9 +575,8 @@ class KoanDashboard(App):
     def _update_subtitle(self) -> None:
         from app.pause_manager import is_paused
 
-        state = "paused" if is_paused(str(self.koan_root)) else "live"
-        self.sub_title = (f"{state} · 1-4 tabs · m mission · w web · k awake"
-                          f" · p pause · d detach · q stop")
+        # Keep the subtitle minimal — the footer already lists the shortcuts.
+        self.sub_title = "paused" if is_paused(str(self.koan_root)) else "live"
 
     # --- status (home) ------------------------------------------------------
 
@@ -676,10 +679,6 @@ class KoanDashboard(App):
             lines.append("  " + self._bar("weekly", t.weekly_pct, t.weekly_reset))
         except Exception as exc:
             self.log(f"status usage failed: {exc}")
-
-        lines.append("")
-        lines.append("  [dim]m new mission · w web · k awake · p pause · "
-                     "d detach · q stop[/]")
 
         out.append_text(Text.from_markup("\n".join(lines)))
         body.update(out)
