@@ -54,7 +54,8 @@ def run(koan_root: Path) -> int:
     from app.pid_manager import start_all
 
     results = start_all(koan_root, show_banner=False)
-    failed = [name for name, (ok, _) in results.items() if not ok]
+    failed = [name for name, (ok, msg) in results.items()
+              if not ok and "already running" not in msg.lower()]
     if failed:
         print(f"  {amber('some components did not start:')} {text(', '.join(failed))}")
 
