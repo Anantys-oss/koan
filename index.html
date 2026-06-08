@@ -279,11 +279,19 @@
     }
     .avatar-ring:nth-child(2)::after{background:var(--accent2);box-shadow:0 0 12px var(--accent2);}
     .avatar-ring:nth-child(3)::after{background:var(--accent3);box-shadow:0 0 12px var(--accent3);}
+    .hero-avatar-link {
+      position: relative; z-index: 2; display: block; border-radius: 50%;
+      transition: transform 0.2s ease, filter 0.2s ease;
+    }
+    .hero-avatar-link:hover { transform: translateY(-3px) scale(1.02); filter: brightness(1.08); }
+    .hero-avatar-link:focus-visible {
+      outline: 3px solid var(--accent); outline-offset: 8px;
+    }
     .hero-avatar-img {
       width: 205px; height: 205px; border-radius: 50%; object-fit: cover;
       border: 3px solid rgba(0,229,195,0.28);
       box-shadow: 0 0 0 10px rgba(0,229,195,0.05), 0 0 65px rgba(0,184,148,0.38), 0 22px 60px rgba(0,0,0,0.55);
-      position: relative; z-index: 2;
+      display: block;
     }
     .avatar-badge {
       position: absolute; background: var(--card); border: 1px solid var(--border);
@@ -526,7 +534,9 @@
             <div class="avatar-ring"></div>
             <div class="avatar-ring"></div>
             <div class="avatar-ring"></div>
-            <img src="avatar.png?cb=20260607" alt="Kōan" class="hero-avatar-img" onerror="this.src='https://api.dicebear.com/7.x/bottts/svg?seed=koan&backgroundColor=0c1210'" />
+            <a class="hero-avatar-link" href="https://github.com/Anantys-oss/koan" aria-label="Open Kōan on GitHub">
+              <img src="avatar.png?cb=20260607" alt="Kōan" class="hero-avatar-img" onerror="this.src='https://api.dicebear.com/7.x/bottts/svg?seed=koan&backgroundColor=0c1210'" />
+            </a>
             <div class="avatar-badge"><i class="fas fa-brain" style="color:var(--accent)"></i> Claude Max</div>
             <div class="avatar-badge"><i class="fas fa-code-branch" style="color:var(--accent3)"></i> Auto Rebase</div>
             <div class="avatar-badge"><i class="fas fa-shield-halved" style="color:var(--accent2)"></i> Security Scan</div>
