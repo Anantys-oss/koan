@@ -26,7 +26,7 @@ signal files). Four tabs:
 
 | Tab | Contents |
 |-----|----------|
-| **Status** (home) | Hero banner + live flags: run state, missions in progress, usage bars, and single-tap toggles for the web dashboard and keep-awake |
+| **Status** (home) | Hero banner + live flags: run state, in-progress mission titles, Telegram/bridge status, usage bars, and single-tap toggles for the web dashboard and keep-awake |
 | **Logs** | Live tail of `run.log` + `awake.log` (ANSI preserved, auto-scrolling) |
 | **Config** | Collapsible tree of `config.yaml` with inline editing (comment-preserving); booleans toggle in place |
 | **Usage** | Session/weekly progress bars, autonomous mode, burn rate |
@@ -36,21 +36,27 @@ signal files). Four tabs:
 - **`w` — web dashboard**: start/stop the Flask web UI process and open the
   browser at `localhost:5001` on start. Backed by `start_dashboard` /
   `stop_process`.
-- **`k` — keep awake**: runs `caffeinate -s` (macOS) so the machine doesn't
-  sleep while Kōan works. **On by default**; tap `k` to turn it off. The
-  process is reaped on exit. No-op on non-macOS platforms.
+- **`k` — keep awake**: runs `caffeinate -s` (macOS) or `systemd-inhibit`
+  (Linux) so the machine doesn't sleep while Kōan works. **On by default**;
+  tap `k` to turn it off. The process is reaped on exit. No-op where neither
+  tool exists.
 
 ### Keys
 
-- `1`/`2`/`3`/`4` (or aliases `s`/`l`/`c`/`u`) — switch to
-  Status/Logs/Config/Usage. These work even while the config tree holds focus.
+- `1`/`2`/`3`/`4` (or aliases `s`/`l`/`u`/`c`) — switch to
+  Status/Logs/Usage/Config. These work even while the config tree holds focus.
+- `m` — queue a new mission into `missions.md` (modal input; supports
+  `[project:name]` tags).
 - Arrow keys browse the focused config tree; Enter (or click) edits the
   selected scalar; `t` toggles a boolean in place (Enter also flips booleans).
-- `w` web dashboard, `k` keep-awake, `p` pause, `r` reload, `q` quit.
+- `w` web dashboard, `k` keep-awake, `p` pause, `r` reload.
+- `d` — **detach**: close the dashboard but leave Kōan running.
+- `q` — **quit**: stop Kōan (with a confirmation prompt).
 
 State-mutating actions are limited to: pause (`.koan-pause`, same signal the
-bridge uses), config edits (`instance/config.yaml`, comments preserved), and
-the two toggles.
+bridge uses), config edits (`instance/config.yaml`, comments preserved),
+queueing a mission (`missions.md`, via the locked `insert_pending_mission`),
+and the two toggles.
 
 ## Theme
 

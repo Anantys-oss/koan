@@ -38,6 +38,20 @@ def test_run_tty_starts_stack_runs_tui_then_stops(monkeypatch):
     assert calls == ["start", "tui", "stop"]  # start → supervise → tear down
 
 
+def test_run_tty_detach_keeps_running(monkeypatch):
+    _tty(monkeypatch, True)
+    calls = []
+    monkeypatch.setattr("app.koan_cli._clear_screen", lambda: None)
+    monkeypatch.setattr("app.pid_manager.start_all",
+                        lambda root, **kw: calls.append("start") or {})
+    monkeypatch.setattr("app.tui_dashboard.run",
+                        lambda root: calls.append("tui") or True)  # detached
+    monkeypatch.setattr("app.pid_manager.stop_processes",
+                        lambda *a, **k: calls.append("stop"))
+    assert koan_cli.run(Path("/tmp/x")) == 0
+    assert calls == ["start", "tui"]  # detach → no stop
+
+
 def test_run_tty_without_textual_keeps_running(monkeypatch):
     _tty(monkeypatch, True)
     monkeypatch.setattr("app.koan_cli._clear_screen", lambda: None)

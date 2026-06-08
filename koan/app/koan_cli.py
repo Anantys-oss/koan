@@ -73,10 +73,15 @@ def run(koan_root: Path) -> int:
 
     import contextlib
 
+    detached = False
     with contextlib.suppress(KeyboardInterrupt):
-        run_tui(koan_root)
-    # Quitting the dashboard ends the session and stops Kōan.
-    _stop_stack(koan_root)
+        detached = run_tui(koan_root)
+    if detached:
+        # User pressed `d`: keep Kōan running in the background.
+        print(f"  {mint('Kōan still running.')} {muted('make logs / make stop')}")
+    else:
+        # Quitting (q) ends the session and stops Kōan.
+        _stop_stack(koan_root)
     return 0
 
 

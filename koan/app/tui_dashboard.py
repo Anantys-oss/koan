@@ -191,6 +191,75 @@ class EditValueScreen(ModalScreen):
         self.dismiss(_coerce(raw))
 
 
+class ConfirmScreen(ModalScreen):
+    """Yes/No confirmation modal. Dismisses with True (yes) or False."""
+
+    CSS = f"""
+    ConfirmScreen {{ align: center middle; }}
+    #box {{ width: 64; height: auto; padding: 1 2;
+            background: {_MIDNIGHT}; border: round {_AMBER}; }}
+    #title {{ color: {_AMBER}; text-style: bold; }}
+    #msg {{ color: $text; }}
+    #buttons {{ height: auto; padding-top: 1; }}
+    Button {{ margin-right: 2; }}
+    """
+
+    BINDINGS = [("escape", "no", "Cancel"), ("y", "yes", "Yes"), ("n", "no", "No")]
+
+    def __init__(self, title: str, message: str):
+        super().__init__()
+        self._title = title
+        self._message = message
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="box"):
+            yield Label(self._title, id="title")
+            yield Label(self._message, id="msg")
+            with Container(id="buttons"):
+                yield Button("Yes (stop)", variant="error", id="yes")
+                yield Button("Cancel", id="no")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id == "yes")
+
+    def action_yes(self) -> None:
+        self.dismiss(True)
+
+    def action_no(self) -> None:
+        self.dismiss(False)
+
+
+class NewMissionScreen(ModalScreen):
+    """Prompt for a new mission line; dismisses with the text or None."""
+
+    CSS = f"""
+    NewMissionScreen {{ align: center middle; }}
+    #box {{ width: 84; height: auto; padding: 1 2;
+            background: {_MIDNIGHT}; border: round {_MINT}; }}
+    #title {{ color: {_MINT}; text-style: bold; }}
+    #hint {{ color: $text-muted; }}
+    """
+
+    BINDINGS = [("escape", "cancel", "Cancel")]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="box"):
+            yield Label("New mission", id="title")
+            yield Label("enter to queue · esc to cancel · tag with [project:name]",
+                        id="hint")
+            yield Input(placeholder="e.g. fix the flaky login test [project:my-app]",
+                        id="mission")
+
+    def on_mount(self) -> None:
+        self.query_one("#mission", Input).focus()
+
+    def on_input_submitted(self, _event: Input.Submitted) -> None:
+        self.dismiss(self.query_one("#mission", Input).value.strip())
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class KoanDashboard(App):
     """Terminal dashboard for a running Kōan instance."""
 
@@ -208,7 +277,8 @@ class KoanDashboard(App):
     """
 
     BINDINGS = [
-        ("q", "quit", "Quit"),
+        ("q", "request_quit", "Quit (stop)"),
+        ("d", "detach", "Detach (keep running)"),
         ("1", "show('status')", "Status"),
         ("2", "show('logs')", "Logs"),
         ("3", "show('usage')", "Usage"),
@@ -218,8 +288,9 @@ class KoanDashboard(App):
         Binding("l", "show('logs')", "Logs", show=False),
         Binding("u", "show('usage')", "Usage", show=False),
         Binding("c", "show('config')", "Config", show=False),
+        ("m", "new_mission", "New mission"),
         ("w", "toggle_web", "Web dashboard"),
-        ("k", "toggle_caffeinate", "Keep awake"),
+        ("k", "toggle_keepawake", "Keep awake"),
         ("t", "toggle", "Toggle bool"),
         ("p", "pause", "Pause Kōan"),
         ("r", "refresh", "Refresh"),
@@ -230,8 +301,11 @@ class KoanDashboard(App):
     def __init__(self, koan_root: Path):
         super().__init__()
         self.koan_root = Path(koan_root)
-        # Caffeinate (macOS keep-awake) subprocess handle; on by default.
-        self._caffeinate = None
+        # Keep-awake subprocess handle (caffeinate / systemd-inhibit); on by default.
+        self._keepawake = None
+        self._keepawake_label = ""
+        # Detach flag: True when the user closed the dashboard but left Kōan up.
+        self._detached = False
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -249,12 +323,12 @@ class KoanDashboard(App):
 
     def on_mount(self) -> None:
         self._build_config_tree()
-        self._start_caffeinate()  # keep the machine awake by default
+        self._start_keepawake()  # keep the machine awake by default
         self.refresh_dynamic()
         self.set_interval(2.0, self.refresh_dynamic)
 
     def on_unmount(self) -> None:
-        self._stop_caffeinate()
+        self._stop_keepawake()
 
     def on_tabbed_content_tab_activated(
         self, event: "TabbedContent.TabActivated"
@@ -339,45 +413,92 @@ class KoanDashboard(App):
             self.notify(f"web toggle failed: {exc}", severity="error")
         self.refresh_dynamic()
 
-    def _start_caffeinate(self) -> None:
-        """Keep the machine awake via `caffeinate -s` (macOS only)."""
+    def _keepawake_command(self):
+        """Return (argv, label) for a keep-awake command, or (None, "") if none."""
         import shutil
+
+        if shutil.which("caffeinate"):  # macOS
+            return ["caffeinate", "-s"], "caffeinate -s"
+        if shutil.which("systemd-inhibit"):  # Linux
+            return (["systemd-inhibit", "--what=sleep", "--why=Kōan",
+                     "--mode=block", "sleep", "infinity"], "systemd-inhibit")
+        return None, ""
+
+    def _start_keepawake(self) -> None:
+        """Keep the machine awake (caffeinate on macOS, systemd-inhibit on Linux)."""
         import subprocess
 
-        if self._caffeinate is not None:
+        if self._keepawake is not None:
             return
-        exe = shutil.which("caffeinate")
-        if not exe:  # non-macOS or unavailable — quietly skip
+        argv, label = self._keepawake_command()
+        if not argv:  # unsupported platform — quietly skip
             return
         try:
-            self._caffeinate = subprocess.Popen(
-                [exe, "-s"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self._keepawake = subprocess.Popen(
+                argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self._keepawake_label = label
         except Exception as exc:
-            self.log(f"caffeinate start failed: {exc}")
-            self._caffeinate = None
+            self.log(f"keep-awake start failed: {exc}")
+            self._keepawake = None
 
-    def _stop_caffeinate(self) -> None:
-        if self._caffeinate is None:
+    def _stop_keepawake(self) -> None:
+        if self._keepawake is None:
             return
         with contextlib.suppress(Exception):
-            self._caffeinate.terminate()
-            self._caffeinate.wait(timeout=2)  # reap so it does not linger
-        self._caffeinate = None
+            self._keepawake.terminate()
+            self._keepawake.wait(timeout=2)  # reap so it does not linger
+        self._keepawake = None
 
-    def _caffeinate_on(self) -> bool:
-        return self._caffeinate is not None and self._caffeinate.poll() is None
+    def _keepawake_on(self) -> bool:
+        return self._keepawake is not None and self._keepawake.poll() is None
 
-    def action_toggle_caffeinate(self) -> None:
-        if self._caffeinate_on():
-            self._stop_caffeinate()
-            self.notify("caffeinate off — machine may sleep")
+    def action_toggle_keepawake(self) -> None:
+        if self._keepawake_on():
+            self._stop_keepawake()
+            self.notify("keep-awake off — machine may sleep")
         else:
-            self._start_caffeinate()
-            if self._caffeinate_on():
-                self.notify("caffeinate on — staying awake")
+            self._start_keepawake()
+            if self._keepawake_on():
+                self.notify(f"keep-awake on — {self._keepawake_label}")
             else:
-                self.notify("caffeinate unavailable on this platform", severity="warning")
+                self.notify("keep-awake unavailable on this platform", severity="warning")
         self.refresh_dynamic()
+
+    # --- detach / quit / new mission ---------------------------------------
+
+    def action_detach(self) -> None:
+        """Close the dashboard but leave Kōan running."""
+        self._detached = True
+        self.exit()
+
+    def action_request_quit(self) -> None:
+        """Confirm before stopping Kōan (q tears the stack down)."""
+        def _confirmed(yes) -> None:
+            if yes:
+                self._detached = False
+                self.exit()
+
+        self.push_screen(ConfirmScreen(
+            "Stop Kōan?",
+            "This stops the agent + bridge. Use d to detach and keep it running."),
+            _confirmed)
+
+    def action_new_mission(self) -> None:
+        """Queue a new mission into missions.md from a modal input."""
+        def _submit(text_value) -> None:
+            if not text_value:
+                return
+            try:
+                from app.utils import insert_pending_mission
+
+                md = self.koan_root / "instance" / "missions.md"
+                ok = insert_pending_mission(md, text_value)
+                self.notify("mission queued" if ok else "duplicate — already queued")
+            except Exception as exc:
+                self.notify(f"queue failed: {exc}", severity="error")
+            self.refresh_dynamic()
+
+        self.push_screen(NewMissionScreen(), _submit)
 
     def _selected_leaf(self):
         """Return (path, value) for the focused editable leaf, or None."""
@@ -451,8 +572,8 @@ class KoanDashboard(App):
         from app.pause_manager import is_paused
 
         state = "paused" if is_paused(str(self.koan_root)) else "live"
-        self.sub_title = (f"{state} · 1-4 tabs · w web · k awake"
-                          f" · p pauses · q quits")
+        self.sub_title = (f"{state} · 1-4 tabs · m mission · w web · k awake"
+                          f" · p pause · d detach · q stop")
 
     # --- status (home) ------------------------------------------------------
 
@@ -460,17 +581,40 @@ class KoanDashboard(App):
         """Anantys accent dot: filled mint when ON, empty muted when OFF."""
         return f"[{_MINT}]◉[/]" if on else "[dim]○[/]"
 
-    def _running_missions(self) -> int:
+    def _in_progress_missions(self) -> list:
+        """Return short titles of in-progress missions (best effort)."""
         try:
-            from app.missions import parse_sections
+            from app.missions import parse_sections, strip_all_lifecycle_markers
 
             md = self.koan_root / "instance" / "missions.md"
             if not md.exists():
-                return 0
-            return len(parse_sections(md.read_text()).get("in_progress", []))
+                return []
+            items = parse_sections(md.read_text()).get("in_progress", [])
+            titles = []
+            for raw in items:
+                line = strip_all_lifecycle_markers(raw).strip().lstrip("-").strip()
+                line = line.splitlines()[0] if line else ""
+                if line:
+                    titles.append(line[:60] + ("…" if len(line) > 60 else ""))
+            return titles
         except Exception as exc:
-            self.log(f"mission count failed: {exc}")
-            return 0
+            self.log(f"mission list failed: {exc}")
+            return []
+
+    def _telegram_status(self):
+        """Return (bridge_alive, configured) for the Telegram indicator."""
+        import os
+
+        configured = bool(os.environ.get("KOAN_TELEGRAM_TOKEN")
+                          and os.environ.get("KOAN_TELEGRAM_CHAT_ID"))
+        bridge = False
+        try:
+            from app.pid_manager import check_pidfile
+
+            bridge = check_pidfile(self.koan_root, "awake") is not None
+        except Exception as exc:
+            self.log(f"bridge status failed: {exc}")
+        return bridge, configured
 
     def _render_status(self) -> None:
         try:
@@ -496,14 +640,31 @@ class KoanDashboard(App):
 
         # Live status flags + single-tap toggles, rendered as markup.
         paused = is_paused(str(self.koan_root))
-        missions = self._running_missions()
+        titles = self._in_progress_missions()
+        web_on = self._web_running()
+        bridge, tg_configured = self._telegram_status()
+
+        web_hint = "localhost:5001" if web_on else "start + open browser"
+        awake_on = self._keepawake_on()
+        awake_hint = self._keepawake_label if awake_on else "off"
+        if bridge and tg_configured:
+            tg = f"{self._dot(True)}  [dim]bridge live[/]"
+        elif tg_configured:
+            tg = f"{self._dot(False)}  [dim]configured · bridge down[/]"
+        else:
+            tg = f"{self._dot(False)}  [dim]not configured[/]"
+
         lines = [
             f"  state        {'[yellow]paused[/]' if paused else f'[{_MINT}]running[/]'}",
-            f"  missions     [{_MINT}]{missions}[/] in progress",
-            f"  web board    {self._dot(self._web_running())}  "
-            f"[dim](w to toggle · localhost:5001)[/]",
-            f"  keep awake   {self._dot(self._caffeinate_on())}  "
-            f"[dim](k to toggle · caffeinate -s)[/]",
+            f"  missions     [{_MINT}]{len(titles)}[/] in progress",
+        ]
+        lines.extend(f"                 [dim]·[/] {t}" for t in titles[:3])
+        if len(titles) > 3:
+            lines.append(f"                 [dim]… +{len(titles) - 3} more[/]")
+        lines += [
+            f"  telegram     {tg}",
+            f"  web board    {self._dot(web_on)}  [dim](w · {web_hint})[/]",
+            f"  keep awake   {self._dot(awake_on)}  [dim](k · {awake_hint})[/]",
         ]
         # Usage bars reuse the same renderer as the Usage tab.
         try:
@@ -515,6 +676,10 @@ class KoanDashboard(App):
             lines.append("  " + self._bar("weekly", t.weekly_pct, t.weekly_reset))
         except Exception as exc:
             self.log(f"status usage failed: {exc}")
+
+        lines.append("")
+        lines.append("  [dim]m new mission · w web · k awake · p pause · "
+                     "d detach · q stop[/]")
 
         out.append_text(Text.from_markup("\n".join(lines)))
         body.update(out)
@@ -643,7 +808,12 @@ class KoanDashboard(App):
         self.query_one("#usage-body", Static).update("\n".join(lines))
 
 
-def run(koan_root: Path) -> int:
-    """Launch the dashboard. Returns a process exit code."""
-    KoanDashboard(Path(koan_root)).run()
-    return 0
+def run(koan_root: Path) -> bool:
+    """Launch the dashboard.
+
+    Returns True if the user *detached* (closed the dashboard but left Kōan
+    running), False if they quit and Kōan should be stopped.
+    """
+    app = KoanDashboard(Path(koan_root))
+    app.run()
+    return app._detached

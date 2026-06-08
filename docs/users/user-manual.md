@@ -1883,12 +1883,15 @@ Single-tap toggles (accent dot `◉` on / `○` off):
 
 - **`w` — web dashboard**: start/stop the web UI and open your browser at
   `localhost:5001`.
-- **`k` — keep awake**: runs `caffeinate -s` so your Mac doesn't sleep while
-  Kōan works. On by default; tap `k` to turn it off.
+- **`k` — keep awake**: runs `caffeinate -s` (macOS) or `systemd-inhibit`
+  (Linux) so your machine doesn't sleep while Kōan works. On by default; tap
+  `k` to turn it off.
 
-Keys: `1`–`4` (or `s`/`l`/`c`/`u`) switch tabs; in Config, arrows browse the
-tree, Enter edits a value, `t` toggles a boolean; `p` pauses, `r` reloads, `q`
-quits (which stops Kōan). When stdin is not a TTY (services, CI, pipes)
+Keys: `1`–`4` (or `s`/`l`/`u`/`c`) switch tabs; `m` queues a new mission; in
+Config, arrows browse the tree, Enter edits a value, `t` toggles a boolean;
+`p` pauses, `r` reloads. `d` **detaches** (closes the dashboard, leaves Kōan
+running); `q` **quits** and stops Kōan (with a confirmation). When stdin is not
+a TTY (services, CI, pipes)
 `make koan` falls back to the headless path with no prompt. `make start` is
 unchanged and remains the launcher used by services and scripts.
 

@@ -8,9 +8,9 @@ from app import tui_dashboard as tui
 
 
 @pytest.fixture(autouse=True)
-def _no_caffeinate(monkeypatch):
-    # Never spawn the real `caffeinate` keep-awake process during tests.
-    monkeypatch.setattr(tui.KoanDashboard, "_start_caffeinate", lambda self: None)
+def _no_keepawake(monkeypatch):
+    # Never spawn the real keep-awake (caffeinate / systemd-inhibit) in tests.
+    monkeypatch.setattr(tui.KoanDashboard, "_start_keepawake", lambda self: None)
 
 
 def _write_config(tmp_path, text):
@@ -276,7 +276,7 @@ def test_pilot_web_toggle_starts_then_stops(tmp_path, monkeypatch):
     assert state["stopped"] == 1
 
 
-def test_caffeinate_toggle_lifecycle(tmp_path, monkeypatch):
+def test_keepawake_toggle_lifecycle(tmp_path, monkeypatch):
     # Replace the real spawn with a fake handle so no process is created.
     class FakeProc:
         def __init__(self):
@@ -292,18 +292,74 @@ def test_caffeinate_toggle_lifecycle(tmp_path, monkeypatch):
             return 0
 
     def fake_start(self):
-        self._caffeinate = FakeProc()
+        self._keepawake = FakeProc()
 
-    monkeypatch.setattr(tui.KoanDashboard, "_start_caffeinate", fake_start)
+    monkeypatch.setattr(tui.KoanDashboard, "_start_keepawake", fake_start)
     app = tui.KoanDashboard(tmp_path)
     # Exercise the helpers directly (actions need a mounted app for notify).
-    assert app._caffeinate_on() is False
-    app._start_caffeinate()
-    assert app._caffeinate_on() is True
-    app._stop_caffeinate()
-    assert app._caffeinate_on() is False
+    assert app._keepawake_on() is False
+    app._start_keepawake()
+    assert app._keepawake_on() is True
+    app._stop_keepawake()
+    assert app._keepawake_on() is False
+
+
+def test_keepawake_command_prefers_caffeinate(monkeypatch):
+    app = tui.KoanDashboard("/tmp/x")
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/caffeinate" if name == "caffeinate" else None)
+    argv, label = app._keepawake_command()
+    assert argv[0] == "caffeinate"
+    # Linux fallback when caffeinate is absent.
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-inhibit" if name == "systemd-inhibit" else None)
+    argv, label = app._keepawake_command()
+    assert argv[0] == "systemd-inhibit"
 
 
 def test_stop_process_not_running(tmp_path):
     from app import pid_manager
     assert pid_manager.stop_process(tmp_path, "dashboard") == "not_running"
+
+
+def test_detach_returns_true(tmp_path):
+    app = tui.KoanDashboard(tmp_path)
+    assert app._detached is False
+    app.action_detach()  # sets the flag and asks the app to exit
+    assert app._detached is True
+
+
+def test_new_mission_queues_to_missions_md(tmp_path):
+    _write_config(tmp_path, "x: 1\n")
+
+    async def scenario():
+        app = tui.KoanDashboard(tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.press("m")  # open the new-mission modal
+            await pilot.pause()
+            app.screen.query_one("#mission", tui.Input).value = "do the thing"
+            await pilot.press("enter")
+            await pilot.pause()
+
+    asyncio.run(scenario())
+    md = (tmp_path / "instance" / "missions.md").read_text()
+    assert "do the thing" in md
+
+
+def test_pilot_status_shows_mission_titles_and_telegram(tmp_path, monkeypatch):
+    _write_config(tmp_path, "x: 1\n")
+    inst = tmp_path / "instance"
+    (inst / "missions.md").write_text(
+        "# Missions\n\n## Pending\n\n## In Progress\n\n- ship the feature\n\n## Done\n")
+    monkeypatch.setenv("KOAN_TELEGRAM_TOKEN", "t")
+    monkeypatch.setenv("KOAN_TELEGRAM_CHAT_ID", "c")
+
+    async def scenario():
+        app = tui.KoanDashboard(tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            body = app.query_one("#status-body", tui.Static)
+            rendered = body.render()
+            text = getattr(rendered, "plain", str(rendered))
+            assert "ship the feature" in text
+            assert "telegram" in text
+
+    asyncio.run(scenario())
