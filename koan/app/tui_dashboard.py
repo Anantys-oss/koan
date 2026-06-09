@@ -655,10 +655,18 @@ class KoanDashboard(App):
                 self._detached = False
                 self.exit()
 
-        self.push_screen(ConfirmScreen(
-            "Stop Kōan?",
-            "This stops the agent + bridge. Use d to detach and keep it running."),
-            _confirmed)
+        parts = ["This stops the agent + bridge. Use d to detach and keep it running."]
+        active = self._active_processes()
+        if active:
+            parts.append(f"\nActive processes: {', '.join(active)}")
+        titles = self._in_progress_missions()
+        if titles:
+            parts.append(f"\nIn progress ({len(titles)}):")
+            parts.extend(f"  · {t}" for t in titles[:5])
+            if len(titles) > 5:
+                parts.append(f"  … +{len(titles) - 5} more")
+
+        self.push_screen(ConfirmScreen("Stop Kōan?", "\n".join(parts)), _confirmed)
 
     def action_new_mission(self) -> None:
         """Queue a new mission into missions.md from a modal input."""
@@ -811,6 +819,20 @@ class KoanDashboard(App):
         except Exception as exc:
             self.log(f"api status failed: {exc}")
             return False
+
+    def _active_processes(self) -> list:
+        """Return names of active Kōan processes (excluding the dashboard itself)."""
+        try:
+            from app.pid_manager import PROCESS_NAMES, check_pidfile
+
+            return [
+                name
+                for name in PROCESS_NAMES
+                if name != "dashboard" and check_pidfile(self.koan_root, name) is not None
+            ]
+        except Exception as exc:
+            self.log(f"process list failed: {exc}")
+            return []
 
     def _render_status(self) -> None:
         try:

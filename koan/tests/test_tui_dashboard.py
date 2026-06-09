@@ -733,3 +733,115 @@ def test_pilot_usage_hides_duration_when_none(tmp_path, monkeypatch):
             assert "Duration" not in text
 
     asyncio.run(scenario())
+
+
+# --- quit confirmation --------------------------------------------------------
+
+def test_active_processes_excludes_dashboard(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "app.pid_manager.check_pidfile",
+        lambda root, name: 123 if name in ("run", "awake", "api") else None,
+    )
+    app = tui.KoanDashboard(tmp_path)
+    assert app._active_processes() == ["run", "awake", "api"]
+
+
+def test_quit_confirmation_default_when_nothing_active(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.pid_manager.check_pidfile", lambda root, name: None)
+    app = tui.KoanDashboard(tmp_path)
+    captured = {}
+
+    def _capture(screen, callback=None):
+        captured["screen"] = screen
+
+    app.push_screen = _capture
+    app.action_request_quit()
+    assert "agent + bridge" in captured["screen"]._message
+    assert "Active processes" not in captured["screen"]._message
+    assert "In progress" not in captured["screen"]._message
+
+
+def test_quit_confirmation_shows_active_processes(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "app.pid_manager.check_pidfile",
+        lambda root, name: 123 if name == "run" else None,
+    )
+    app = tui.KoanDashboard(tmp_path)
+    captured = {}
+
+    def _capture(screen, callback=None):
+        captured["screen"] = screen
+
+    app.push_screen = _capture
+    app.action_request_quit()
+    assert "Active processes: run" in captured["screen"]._message
+
+
+def test_quit_confirmation_shows_in_progress_missions(tmp_path, monkeypatch):
+    _write_config(tmp_path, "x: 1\n")
+    inst = tmp_path / "instance"
+    (inst / "missions.md").write_text(
+        "# Missions\n\n## Pending\n\n## In Progress\n\n"
+        "- mission alpha\n- mission beta\n\n## Done\n"
+    )
+    monkeypatch.setattr("app.pid_manager.check_pidfile", lambda root, name: None)
+    app = tui.KoanDashboard(tmp_path)
+    captured = {}
+
+    def _capture(screen, callback=None):
+        captured["screen"] = screen
+
+    app.push_screen = _capture
+    app.action_request_quit()
+    msg = captured["screen"]._message
+    assert "In progress (2):" in msg
+    assert "mission alpha" in msg
+    assert "mission beta" in msg
+
+
+def test_quit_confirmation_caps_missions_at_five(tmp_path, monkeypatch):
+    _write_config(tmp_path, "x: 1\n")
+    inst = tmp_path / "instance"
+    missions = "\n".join(f"- mission {i}" for i in range(7))
+    (inst / "missions.md").write_text(
+        f"# Missions\n\n## Pending\n\n## In Progress\n\n{missions}\n\n## Done\n"
+    )
+    monkeypatch.setattr("app.pid_manager.check_pidfile", lambda root, name: None)
+    app = tui.KoanDashboard(tmp_path)
+    captured = {}
+
+    def _capture(screen, callback=None):
+        captured["screen"] = screen
+
+    app.push_screen = _capture
+    app.action_request_quit()
+    msg = captured["screen"]._message
+    assert "In progress (7):" in msg
+    assert "… +2 more" in msg
+    # Only first 5 listed explicitly.
+    assert msg.count("mission ") == 5
+
+
+def test_quit_confirmation_shows_both_processes_and_missions(tmp_path, monkeypatch):
+    _write_config(tmp_path, "x: 1\n")
+    inst = tmp_path / "instance"
+    (inst / "missions.md").write_text(
+        "# Missions\n\n## Pending\n\n## In Progress\n\n"
+        "- mission one\n\n## Done\n"
+    )
+    monkeypatch.setattr(
+        "app.pid_manager.check_pidfile",
+        lambda root, name: 123 if name in ("run", "awake") else None,
+    )
+    app = tui.KoanDashboard(tmp_path)
+    captured = {}
+
+    def _capture(screen, callback=None):
+        captured["screen"] = screen
+
+    app.push_screen = _capture
+    app.action_request_quit()
+    msg = captured["screen"]._message
+    assert "Active processes: run, awake" in msg
+    assert "In progress (1):" in msg
+    assert "mission one" in msg
