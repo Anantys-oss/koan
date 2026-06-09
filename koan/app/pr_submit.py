@@ -119,6 +119,9 @@ def submit_draft_pr(
     base_branch: Optional[str] = None,
     notify_fn: Optional[Callable[[str], None]] = None,
     skill_name: str = "",
+    footer_enabled: bool = True,
+    footer_model_key: str = "",
+    footer_started_at: Optional[float] = None,
 ) -> Optional[str]:
     """Push branch and create a draft PR.
 
@@ -150,6 +153,12 @@ def submit_draft_pr(
             to Telegram instead of leaving it in logs only.
         skill_name: Optional origin skill (e.g. ``"fix"``, ``"implement"``)
             included in Jira status comments.
+        footer_enabled: Whether to normalize and append the Kōan attribution
+            footer to the PR body.
+        footer_model_key: Model slot to report in the footer. When omitted,
+            falls back to ``KOAN_MISSION_MODEL_KEY`` then ``mission``.
+        footer_started_at: Unix timestamp for elapsed-runtime reporting. When
+            omitted, falls back to ``KOAN_MISSION_STARTED_AT`` if set.
 
     Returns:
         PR URL on success, or None on failure.
@@ -281,6 +290,33 @@ def submit_draft_pr(
 
     # Resolve where to submit
     target = resolve_submit_target(project_path, project_name, owner, repo)
+
+    if footer_enabled:
+        from app.pr_footer import append_koan_footer, build_pr_footer
+
+        started_at = footer_started_at
+        if started_at is None:
+            started_at_raw = os.environ.get("KOAN_MISSION_STARTED_AT", "")
+            try:
+                started_at = float(started_at_raw) if started_at_raw else None
+            except ValueError:
+                started_at = None
+
+        effective_model_key = (
+            footer_model_key
+            or os.environ.get("KOAN_MISSION_MODEL_KEY", "")
+            or "mission"
+        )
+
+        pr_body = append_koan_footer(
+            pr_body,
+            build_pr_footer(
+                project_name=project_name,
+                model_key=effective_model_key,
+                project_path=project_path,
+                started_at=started_at,
+            ),
+        )
 
     pr_kwargs = {
         "title": pr_title,

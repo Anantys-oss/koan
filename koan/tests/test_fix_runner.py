@@ -6,6 +6,7 @@ from unittest.mock import patch, MagicMock
 from skills.core.fix.fix_runner import (
     run_fix,
     _build_issue_body,
+    _execute_fix,
     _build_prompt,
     _submit_fix_pr,
     main,
@@ -143,6 +144,23 @@ class TestBuildPrompt:
         assert "Closes https://github.com/o/r/issues/42" in prompt
         assert "{KOAN_PYTHON}" not in prompt
         assert " -m app.issue_cli" in prompt
+
+
+class TestExecuteFix:
+    def test_uses_mission_model_key(self):
+        with patch(f"{_FIX_MODULE}._build_prompt", return_value="prompt"), \
+             patch("app.skill_memory.build_memory_block_for_skill", return_value=""), \
+             patch("app.cli_provider.run_command_streaming",
+                   return_value="ok") as mock_run:
+            result = _execute_fix(
+                project_path="/project",
+                issue_url="https://github.com/o/r/issues/42",
+                issue_title="Bug",
+                issue_body="Body",
+                context="Fix it",
+            )
+        assert result == "ok"
+        assert mock_run.call_args.kwargs["model_key"] == "mission"
 
 
 # ---------------------------------------------------------------------------

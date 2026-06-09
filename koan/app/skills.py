@@ -107,6 +107,10 @@ class Skill:
     # their expansion in SKILL.md frontmatter rather than in a hardcoded dict.
     sub_commands: List[str] = field(default_factory=list)
     requirements: List[str] = field(default_factory=list)
+    # ``model_key`` — optional key used to resolve the model name shown in PR
+    # footers (e.g. "mission"). When set, the agent loop forwards it to the
+    # skill subprocess via ``KOAN_MISSION_MODEL_KEY``.
+    model_key: str = ""
 
     @property
     def qualified_name(self) -> str:
@@ -304,6 +308,9 @@ def parse_skill_md(path: Path) -> Optional[Skill]:
         sub_commands_raw = [sub_commands_raw] if sub_commands_raw else []
     sub_commands = [s for s in sub_commands_raw if s]
 
+    # Parse model_key (for PR footer model resolution)
+    model_key = str(meta.get("model_key", "") or "").strip()
+
     return Skill(
         name=meta["name"],
         scope=meta.get("scope", skill_dir.parent.name),
@@ -325,6 +332,7 @@ def parse_skill_md(path: Path) -> Optional[Skill]:
         title_markers=title_markers,
         sub_commands=sub_commands,
         requirements=requirements,
+        model_key=model_key,
     )
 
 

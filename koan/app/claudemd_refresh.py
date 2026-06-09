@@ -144,30 +144,45 @@ def _create_pr(
     base_branch: str,
 ) -> str:
     """Create a draft PR for the CLAUDE.md update. Returns the PR URL."""
+    import os
+
     from app.github import pr_create, resolve_target_repo
+    from app.pr_footer import append_koan_footer, build_pr_footer
 
-    from app.pr_footer import build_koan_footer
+    started_at_raw = os.environ.get("KOAN_MISSION_STARTED_AT", "")
+    try:
+        started_at = float(started_at_raw) if started_at_raw else None
+    except ValueError:
+        started_at = None
 
-    footer = build_koan_footer()
+    footer = build_pr_footer(
+        project_name=project_name,
+        project_path=project_path,
+        started_at=started_at,
+    )
     if mode == "INIT":
         title = f"docs: create CLAUDE.md for {project_name}"
-        body = (
-            "## What\n"
-            f"Create initial CLAUDE.md for **{project_name}**.\n\n"
-            "## Why\n"
-            "No CLAUDE.md existed — this bootstraps the reference document "
-            "for AI coding assistants working on this project.\n\n"
-            f"---\n{footer}"
+        body = append_koan_footer(
+            (
+                "## What\n"
+                f"Create initial CLAUDE.md for **{project_name}**.\n\n"
+                "## Why\n"
+                "No CLAUDE.md existed — this bootstraps the reference document "
+                "for AI coding assistants working on this project."
+            ),
+            footer,
         )
     else:
         title = f"docs: update CLAUDE.md for {project_name}"
-        body = (
-            "## What\n"
-            f"Update CLAUDE.md for **{project_name}** to reflect recent changes.\n\n"
-            "## Why\n"
-            "Architecturally significant changes landed since the last update. "
-            "This keeps the AI reference document in sync with the codebase.\n\n"
-            f"---\n{footer}"
+        body = append_koan_footer(
+            (
+                "## What\n"
+                f"Update CLAUDE.md for **{project_name}** to reflect recent changes.\n\n"
+                "## Why\n"
+                "Architecturally significant changes landed since the last update. "
+                "This keeps the AI reference document in sync with the codebase."
+            ),
+            footer,
         )
 
     pr_kwargs = {

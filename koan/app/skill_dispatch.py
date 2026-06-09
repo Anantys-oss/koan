@@ -311,6 +311,37 @@ def mission_command_name(mission_text: str) -> str:
     return canonical
 
 
+def mission_model_key(command: str, instance_dir: str) -> str:
+    """Resolve a skill command's ``model_key`` for PR footer attribution.
+
+    Looks up the skill in the registry (core + instance skills) and returns
+    its declared ``model_key`` (e.g. ``"mission"``).  Returns ``""`` when
+    the command is unknown or the skill has no model_key.
+
+    This replaces the former hardcoded set in ``run.py`` so that new skills
+    can opt-in to footer model attribution via SKILL.md frontmatter without
+    touching agent-loop code.
+    """
+    if not command:
+        return ""
+    canonical = _resolve_canonical(command)
+    try:
+        from pathlib import Path
+        from app.skills import build_registry
+        instance_skills = Path(instance_dir) / "skills"
+        extra = [instance_skills] if instance_skills.is_dir() else []
+        registry = build_registry(extra)
+        skill = registry.find_by_command(canonical)
+        if skill:
+            return skill.model_key
+    except Exception as exc:
+        from app.debug import debug_log
+        debug_log(
+            f"[skill_dispatch] mission_model_key lookup failed for '{command}': {exc}"
+        )
+    return ""
+
+
 def build_skill_command(
     command: str,
     args: str,

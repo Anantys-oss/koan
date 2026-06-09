@@ -1482,6 +1482,12 @@ def _push_with_pr_fallback(
             pr_number=pr_number, branch=branch, base=base,
             url=context.get("url", f"#{pr_number}"),
         )
+        from app.pr_footer import append_koan_footer, build_pr_footer
+
+        boilerplate = append_koan_footer(
+            boilerplate,
+            build_pr_footer(project_path=project_path),
+        )
         pr_body = boilerplate
         try:
             from app.describe_pr import describe_pr, format_description
@@ -1505,14 +1511,18 @@ def _push_with_pr_fallback(
         new_pr_ref = new_pr_match.group(0) if new_pr_match else new_pr_url.strip()
 
         try:
+            crosslink = append_koan_footer(
+                cfg["crosslink"].format(ref=new_pr_ref, base=base),
+                build_pr_footer(action="Automated by", project_path=project_path),
+            )
             run_gh(
                 "pr", "comment", pr_number,
                 "--repo", full_repo,
-                "--body", sanitize_github_comment(cfg["crosslink"].format(ref=new_pr_ref, base=base)),
+                "--body", sanitize_github_comment(crosslink),
             )
             actions.append("Cross-linked original PR")
         except Exception as e:
-            print(f"[{pr_type}_pr] Cross-link comment failed: {e}", file=sys.stderr)
+            log_safe("warning", f"[{pr_type}_pr] Cross-link comment failed: {e}")
 
         return {
             "success": True,

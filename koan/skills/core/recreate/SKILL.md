@@ -7,6 +7,7 @@ description: "Recreate a diverged PR from scratch (ex: /recreate https://github.
 version: 1.0.0
 audience: hybrid
 caveman: true
+model_key: mission
 github_enabled: true
 github_context_aware: true
 commands:

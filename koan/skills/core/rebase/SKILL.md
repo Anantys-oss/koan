@@ -7,6 +7,7 @@ description: "Queue a PR rebase mission (ex: /rebase https://github.com/owner/re
 version: 2.0.0
 audience: hybrid
 caveman: true
+model_key: mission
 github_enabled: true
 github_context_aware: true
 commands:
