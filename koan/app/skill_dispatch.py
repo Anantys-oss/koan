@@ -66,6 +66,7 @@ _CANONICAL_RUNNERS = {
     "recreate": "app.recreate_pr",
     "squash": "app.squash_pr",
     "review": "app.review_runner",
+    "ultrareview": "app.review_runner",
     "ai": "app.ai_runner",
     "check": "app.check_runner",
     "tech_debt": "skills.core.tech_debt.tech_debt_runner",
@@ -104,6 +105,8 @@ _COMMAND_ALIASES = {
     "sa": "spec_audit",
     "drift": "spec_audit",
     "xp": "explain",
+    "urv": "ultrareview",
+    "ultra_review": "ultrareview",
 }
 
 # Full mapping including aliases — used for runner module lookup.
@@ -380,6 +383,9 @@ def build_skill_command(
         "recreate": lambda: _build_pr_url_cmd(base_cmd, args, project_path),
         "squash": lambda: _build_pr_url_cmd(base_cmd, args, project_path),
         "review": lambda: _build_review_cmd(base_cmd, args, project_path, project_name),
+        "ultrareview": lambda: _build_review_cmd(
+            base_cmd, args, project_path, project_name, ultra=True,
+        ),
         "ai": lambda: _build_ai_cmd(base_cmd, args, project_name, project_path, instance_dir),
         "check": lambda: _build_check_cmd(base_cmd, args, instance_dir, koan_root),
         "tech_debt": lambda: _build_project_info_cmd(
@@ -674,12 +680,15 @@ def _build_explain_cmd(
 
 def _build_review_cmd(
     base_cmd: List[str], args: str, project_path: str, project_name: str = "",
+    ultra: bool = False,
 ) -> Optional[List[str]]:
-    """Build review_runner command, passing --architecture, --errors, --comments, --plan-url, and --project-name if present."""
+    """Build review_runner command, passing --architecture, --errors, --comments, --ultra, --plan-url, and --project-name if present."""
     url_match = _PR_URL_RE.search(args)
     if not url_match:
         return None
     cmd = base_cmd + [url_match.group(0), "--project-path", project_path]
+    if ultra or "--ultra" in args:
+        cmd.append("--ultra")
     if "--architecture" in args:
         cmd.append("--architecture")
     if "--errors" in args:
@@ -989,7 +998,7 @@ def validate_skill_args(command: str, args: str) -> Optional[str]:
     canonical = _resolve_canonical(command)
 
     # Validation rules use canonical names — aliases inherit automatically.
-    if canonical in ("rebase", "recreate", "review", "squash", "ci_check", "explain"):
+    if canonical in ("rebase", "recreate", "review", "ultrareview", "squash", "ci_check", "explain"):
         if not _PR_URL_RE.search(args):
             return (
                 f"/{command} requires a PR URL "
