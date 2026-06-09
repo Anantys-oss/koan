@@ -1028,6 +1028,21 @@ class KoanDashboard(App):
                         lines.append(f"Burn      [{_MINT}]{burn:.2f}%/min[/]")
                 except Exception as exc:
                     self.log(f"burn rate unavailable: {exc}")
+                try:
+                    from app.session_tracker import load_outcomes
+
+                    outcomes_path = self.koan_root / "instance" / "session_outcomes.json"
+                    outcomes = load_outcomes(outcomes_path)
+                    if outcomes:
+                        last = outcomes[-1]
+                        la = last.get("last_action", "")
+                        dur = last.get("duration_minutes")
+                        if la:
+                            lines.append(f"Last      [{_MINT}]{la}[/]")
+                        if dur is not None:
+                            lines.append(f"Duration  [{_MINT}]{dur} min[/]")
+                except Exception as exc:
+                    self.log(f"last session info unavailable: {exc}")
             else:
                 lines.append("[dim]Session    no API quota[/]")
                 lines.append("[dim]Weekly     no API quota[/]")

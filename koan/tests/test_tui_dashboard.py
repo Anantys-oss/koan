@@ -375,7 +375,6 @@ def test_pilot_status_shows_mission_titles_and_telegram(tmp_path, monkeypatch):
 
     asyncio.run(scenario())
 
-
 def test_run_status_reads_pidfile(tmp_path, monkeypatch):
     app = tui.KoanDashboard(tmp_path)
     monkeypatch.setattr(
@@ -654,3 +653,83 @@ def test_refresh_on_usage_tab_triggers_reset_modal(tmp_path, monkeypatch):
 
     asyncio.run(scenario())
     assert modal_shown == [True]
+
+
+# --- usage tab: last_action + duration parity -----------------------------
+
+def test_pilot_usage_shows_last_action_and_duration(tmp_path, monkeypatch):
+    _write_config(tmp_path, "x: 1\n")
+    inst = tmp_path / "instance"
+    (inst / "usage.md").write_text(
+        "Session (5hr) : 25% (reset in 3h)\n"
+        "Weekly (7 day) : 60% (resets in 3d)\n"
+    )
+    (inst / "session_outcomes.json").write_text(
+        '[{"timestamp": "2026-06-08T12:00:00", "project": "koan", "mode": "implement",'
+        ' "duration_minutes": 42, "outcome": "productive", "last_action": "Edit"}]'
+    )
+
+    async def scenario():
+        app = tui.KoanDashboard(tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.press("u")
+            await pilot.pause()
+            body = app.query_one("#usage-body", tui.Static)
+            rendered = body.render()
+            text = getattr(rendered, "plain", str(rendered))
+            assert "Last      Edit" in text
+            assert "Duration  42 min" in text
+
+    asyncio.run(scenario())
+
+
+def test_pilot_usage_hides_last_action_when_empty(tmp_path, monkeypatch):
+    _write_config(tmp_path, "x: 1\n")
+    inst = tmp_path / "instance"
+    (inst / "usage.md").write_text(
+        "Session (5hr) : 25% (reset in 3h)\n"
+        "Weekly (7 day) : 60% (resets in 3d)\n"
+    )
+    (inst / "session_outcomes.json").write_text(
+        '[{"timestamp": "2026-06-08T12:00:00", "project": "koan", "mode": "implement",'
+        ' "duration_minutes": 7, "outcome": "productive", "last_action": ""}]'
+    )
+
+    async def scenario():
+        app = tui.KoanDashboard(tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.press("u")
+            await pilot.pause()
+            body = app.query_one("#usage-body", tui.Static)
+            rendered = body.render()
+            text = getattr(rendered, "plain", str(rendered))
+            assert "Duration  7 min" in text
+            assert "Last" not in text
+
+    asyncio.run(scenario())
+
+
+def test_pilot_usage_hides_duration_when_none(tmp_path, monkeypatch):
+    _write_config(tmp_path, "x: 1\n")
+    inst = tmp_path / "instance"
+    (inst / "usage.md").write_text(
+        "Session (5hr) : 25% (reset in 3h)\n"
+        "Weekly (7 day) : 60% (resets in 3d)\n"
+    )
+    (inst / "session_outcomes.json").write_text(
+        '[{"timestamp": "2026-06-08T12:00:00", "project": "koan", "mode": "implement",'
+        ' "outcome": "productive", "last_action": "Read"}]'
+    )
+
+    async def scenario():
+        app = tui.KoanDashboard(tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.press("u")
+            await pilot.pause()
+            body = app.query_one("#usage-body", tui.Static)
+            rendered = body.render()
+            text = getattr(rendered, "plain", str(rendered))
+            assert "Last      Read" in text
+            assert "Duration" not in text
+
+    asyncio.run(scenario())
