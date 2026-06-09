@@ -1041,7 +1041,10 @@ class KoanDashboard(App):
                             lines.append(f"Last      [{_MINT}]{la}[/]")
                         if dur is not None:
                             lines.append(f"Duration  [{_MINT}]{dur} min[/]")
+                except ImportError as exc:
+                    self.log(f"session_tracker unavailable: {exc}")
                 except Exception as exc:
+                    logging.exception("last session info failed")
                     self.log(f"last session info unavailable: {exc}")
             else:
                 lines.append("[dim]Session    no API quota[/]")
@@ -1054,6 +1057,7 @@ class KoanDashboard(App):
                     self.log(f"mode decision unavailable: {exc}")
                     lines.append(f"Mode      [{_MINT}]deep[/]  [dim](budget disabled for {_provider_name()})[/]")
         except Exception as exc:
+            logging.exception("usage rendering failed")
             lines.append(f"[dim](usage unavailable: {exc})[/dim]")
         if not (usage_md.exists()):
             lines.append("[dim]no usage.md yet — Kōan writes it after the first run[/dim]")
