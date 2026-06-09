@@ -37,7 +37,10 @@ make setup
 make install
 ```
 
-This launches a web-based wizard that guides you through Telegram setup, project configuration, and validation. If you prefer manual setup, continue below.
+This launches the terminal onboarding wizard. It creates your private
+`instance/`, configures a CLI provider and messaging, clones Kōan into
+`workspace/koan`, and validates the setup. If you prefer manual setup,
+continue below.
 
 ## Docker
 

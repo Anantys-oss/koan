@@ -134,13 +134,13 @@ class TestInputHelpers:
         ):
             pause()  # Should not raise
 
-    def test_pause_handles_keyboard_interrupt(self):
+    def test_pause_raises_keyboard_interrupt(self):
         from app.onboarding import pause
 
         with patch("app.onboarding._is_interactive", True), patch(
             "builtins.input", side_effect=KeyboardInterrupt
-        ):
-            pause()  # Should not raise
+        ), pytest.raises(KeyboardInterrupt):
+            pause()
 
     def test_pause_custom_message(self):
         from app.onboarding import pause
@@ -152,6 +152,41 @@ class TestInputHelpers:
             # Verify the custom message appears in the prompt
             call_arg = mock_input.call_args[0][0]
             assert "Press Enter to begin" in call_arg
+
+    def test_pause_textual_none_fallback_to_input(self):
+        """When Textual pause exits without a result, fall back to plain input()."""
+        from app.onboarding import pause
+
+        with (
+            patch("app.onboarding._is_interactive", True),
+            patch("app.onboarding._use_textual_prompts", return_value=True),
+            patch("app.onboarding._textual_pause", return_value=False) as mock_textual,
+            patch("builtins.input", return_value="") as mock_input,
+        ):
+            pause("test message")
+            mock_textual.assert_called_once_with("test message")
+            mock_input.assert_called_once()
+
+    def test_textual_pause_returns_false_when_app_run_returns_none(self):
+        """_textual_pause must return False when Textual exits unexpectedly."""
+        from app.onboarding import _textual_pause
+
+        # Simulate Textual installed but App.run() returns None (immediate exit)
+        mock_app_instance = MagicMock()
+        mock_app_instance.run.return_value = None
+        mock_app_class = MagicMock(return_value=mock_app_instance)
+
+        textual_modules = {
+            "textual.app": MagicMock(App=mock_app_class, ComposeResult=MagicMock()),
+            "textual.binding": MagicMock(Binding=MagicMock()),
+            "textual.containers": MagicMock(Vertical=MagicMock()),
+            "textual.widgets": MagicMock(
+                Button=MagicMock(), Footer=MagicMock(), Header=MagicMock(), Label=MagicMock()
+            ),
+        }
+        with patch.dict("sys.modules", textual_modules):
+            result = _textual_pause("test message")
+            assert result is False
 
     def test_ask_interactive_returns_typed_value(self):
         from app.onboarding import ask
@@ -171,7 +206,7 @@ class TestInputHelpers:
         ):
             assert ask("prompt", default="fallback") == "fallback"
 
-    def test_ask_handles_eof_and_keyboard_interrupt(self):
+    def test_ask_handles_eof(self):
         from app.onboarding import ask
 
         with (
@@ -179,11 +214,14 @@ class TestInputHelpers:
             patch("builtins.input", side_effect=EOFError),
         ):
             assert ask("prompt", default="fallback") == "fallback"
-        with (
-            patch("app.onboarding._is_interactive", True),
-            patch("builtins.input", side_effect=KeyboardInterrupt),
-        ):
-            assert ask("prompt") == ""
+
+    def test_ask_raises_keyboard_interrupt(self):
+        from app.onboarding import ask
+
+        with patch("app.onboarding._is_interactive", True), patch(
+            "builtins.input", side_effect=KeyboardInterrupt
+        ), pytest.raises(KeyboardInterrupt):
+            ask("prompt")
 
     def test_ask_yes_no_interactive_variants(self):
         from app.onboarding import ask_yes_no
@@ -204,8 +242,38 @@ class TestInputHelpers:
                 assert ask_choice("pick", ["a", "b"], default=0) == 1
             with patch("builtins.input", return_value="bad"):
                 assert ask_choice("pick", ["a", "b"], default=1) == 1
-            with patch("builtins.input", side_effect=KeyboardInterrupt):
-                assert ask_choice("pick", ["a", "b"], default=1) == 1
+            with patch("builtins.input", side_effect=KeyboardInterrupt), pytest.raises(
+                KeyboardInterrupt
+            ):
+                ask_choice("pick", ["a", "b"], default=1)
+
+    def test_textual_choice_selects_with_helper(self):
+        import app.onboarding as onb
+
+        with patch("app.onboarding._is_interactive", True), patch(
+            "app.onboarding._use_textual_prompts", return_value=True
+        ), patch("app.onboarding._textual_choice", return_value=1):
+            assert onb.ask_choice("pick", ["a", "b"], default=0) == 1
+
+    def test_textual_choice_abort_raises_keyboard_interrupt(self):
+        import app.onboarding as onb
+
+        with patch("app.onboarding._is_interactive", True), patch(
+            "app.onboarding._use_textual_prompts", return_value=True
+        ), patch("app.onboarding._textual_choice", return_value=onb._ABORT), pytest.raises(
+            KeyboardInterrupt
+        ):
+            onb.ask_choice("pick", ["a", "b"], default=0)
+
+    def test_textual_choice_reset_raises_onboarding_reset(self):
+        import app.onboarding as onb
+
+        with patch("app.onboarding._is_interactive", True), patch(
+            "app.onboarding._use_textual_prompts", return_value=True
+        ), patch("app.onboarding._textual_choice", return_value=onb._RESET), pytest.raises(
+            onb.OnboardingReset
+        ):
+            onb.ask_choice("pick", ["a", "b"], default=0)
 
     def test_ask_path_expands_and_validates(self, tmp_path):
         from app.onboarding import ask_path
@@ -315,13 +383,13 @@ class TestStepInstanceInit:
         root = Path(onboarding_root)
 
         with patch.object(onb, "KOAN_ROOT", root), patch(
-            "app.setup_wizard.KOAN_ROOT", root
-        ), patch("app.setup_wizard.INSTANCE_DIR", root / "instance"), patch(
-            "app.setup_wizard.INSTANCE_EXAMPLE", root / "instance.example"
+            "app.onboarding_helpers.KOAN_ROOT", root
+        ), patch("app.onboarding_helpers.INSTANCE_DIR", root / "instance"), patch(
+            "app.onboarding_helpers.INSTANCE_EXAMPLE", root / "instance.example"
         ), patch(
-            "app.setup_wizard.ENV_FILE", root / ".env"
+            "app.onboarding_helpers.ENV_FILE", root / ".env"
         ), patch(
-            "app.setup_wizard.ENV_EXAMPLE", root / "env.example"
+            "app.onboarding_helpers.ENV_EXAMPLE", root / "env.example"
         ):
             state = onb.OnboardingState()
             result = onb.step_instance_init(state)
@@ -341,6 +409,35 @@ class TestStepInstanceInit:
             # Should succeed without errors
 
 
+class TestStepProvider:
+    def test_existing_provider_skips(self, onboarding_root):
+        import app.onboarding as onb
+
+        root = Path(onboarding_root)
+        (root / ".env").write_text("KOAN_CLI_PROVIDER=codex\n")
+
+        with patch.object(onb, "KOAN_ROOT", root):
+            state = onb.OnboardingState()
+            result = onb.step_provider(state)
+
+        assert result.data["cli_provider"] == "codex"
+
+    def test_noninteractive_selects_available_default(self, onboarding_root):
+        import app.onboarding as onb
+
+        root = Path(onboarding_root)
+        (root / ".env").write_text("# empty\n")
+
+        with patch.object(onb, "KOAN_ROOT", root), patch(
+            "app.onboarding._is_interactive", False
+        ):
+            state = onb.OnboardingState(data={"installed_providers": ["local"]})
+            result = onb.step_provider(state)
+
+        assert result.data["cli_provider"] == "local"
+        assert "KOAN_CLI_PROVIDER=local" in (root / ".env").read_text()
+
+
 class TestStepVenv:
     def test_skips_when_marker_exists(self, onboarding_root):
         import app.onboarding as onb
@@ -350,11 +447,10 @@ class TestStepVenv:
         marker.parent.mkdir()
         marker.write_text("")
 
-        with patch.object(onb, "KOAN_ROOT", root), patch("app.onboarding.pause") as mock_pause:
+        with patch.object(onb, "KOAN_ROOT", root):
             result = onb.step_venv(onb.OnboardingState())
 
         assert isinstance(result, onb.OnboardingState)
-        mock_pause.assert_called_once()
 
     def test_make_setup_success(self, onboarding_root):
         import app.onboarding as onb
@@ -404,7 +500,7 @@ class TestStepMessaging:
         )
 
         with patch.object(onb, "KOAN_ROOT", root), patch(
-            "app.setup_wizard.ENV_FILE", root / ".env"
+            "app.onboarding_helpers.ENV_FILE", root / ".env"
         ):
             state = onb.OnboardingState()
             result = onb.step_messaging(state)
@@ -417,7 +513,7 @@ class TestStepMessaging:
         (root / ".env").write_text("# empty\n")
 
         with patch.object(onb, "KOAN_ROOT", root), patch(
-            "app.setup_wizard.ENV_FILE", root / ".env"
+            "app.onboarding_helpers.ENV_FILE", root / ".env"
         ), patch("app.onboarding._is_interactive", False):
             state = onb.OnboardingState()
             # Non-interactive uses default (Telegram idx 0), empty token -> skips
@@ -502,6 +598,33 @@ class TestStepProjects:
             # Non-interactive returns empty path, skips
 
 
+class TestStepWorkspaceKoan:
+    def test_workspace_koan_success(self, onboarding_root):
+        import app.onboarding as onb
+
+        root = Path(onboarding_root)
+
+        with patch.object(onb, "KOAN_ROOT", root), patch(
+            "app.onboarding_helpers.setup_workspace_koan",
+            return_value=(True, "workspace ready"),
+        ):
+            state = onb.OnboardingState()
+            result = onb.step_workspace_koan(state)
+
+        assert result.data["workspace_koan"] is True
+
+    def test_workspace_koan_failure_blocks(self, onboarding_root):
+        import app.onboarding as onb
+
+        root = Path(onboarding_root)
+
+        with patch.object(onb, "KOAN_ROOT", root), patch(
+            "app.onboarding_helpers.setup_workspace_koan",
+            return_value=(False, "conflict"),
+        ), pytest.raises(RuntimeError):
+            onb.step_workspace_koan(onb.OnboardingState())
+
+
 class TestStepGitHub:
     """Tests for the GitHub identity step."""
 
@@ -525,12 +648,93 @@ class TestStepGitHub:
         with patch.object(onb, "KOAN_ROOT", root), patch(
             "app.onboarding._is_interactive", False
         ), patch("app.onboarding._run_cmd") as mock_cmd, patch(
-            "app.setup_wizard.ENV_FILE", root / ".env"
+            "app.onboarding_helpers.ENV_FILE", root / ".env"
         ):
             mock_cmd.return_value = MagicMock(returncode=0, stdout="testuser\n")
             state = onb.OnboardingState()
             state.data["has_gh"] = True
             result = onb.step_github(state)
+
+
+class TestStepModels:
+    """Tests for the model configuration step."""
+
+    def test_skips_when_already_configured(self, onboarding_root):
+        import app.onboarding as onb
+
+        root = Path(onboarding_root)
+        (root / "instance").mkdir(exist_ok=True)
+        (root / "instance" / "config.yaml").write_text(
+            "models:\n  claude:\n    mission: opus\n"
+        )
+
+        with patch.object(onb, "KOAN_ROOT", root):
+            state = onb.OnboardingState(data={"cli_provider": "claude"})
+            result = onb.step_models(state)
+
+        assert result.data.get("models") is None
+
+    def test_noninteractive_accepts_defaults(self, onboarding_root):
+        import yaml
+
+        import app.onboarding as onb
+
+        root = Path(onboarding_root)
+        (root / "instance").mkdir(exist_ok=True)
+        (root / "instance" / "config.yaml").write_text("max_runs_per_day: 20\n")
+
+        with patch.object(onb, "KOAN_ROOT", root), patch(
+            "app.onboarding._is_interactive", False
+        ):
+            state = onb.OnboardingState(data={"cli_provider": "claude"})
+            result = onb.step_models(state)
+
+        assert result.data["models"]["lightweight"] == "haiku"
+        config = yaml.safe_load((root / "instance" / "config.yaml").read_text())
+        assert config["models"]["claude"]["lightweight"] == "haiku"
+
+    def test_customize_models_writes_to_config(self, onboarding_root):
+        import yaml
+
+        import app.onboarding as onb
+
+        root = Path(onboarding_root)
+        (root / "instance").mkdir(exist_ok=True)
+        (root / "instance" / "config.yaml").write_text("max_runs_per_day: 20\n")
+
+        with patch.object(onb, "KOAN_ROOT", root), patch(
+            "app.onboarding.ask_yes_no", return_value=False
+        ), patch("app.onboarding.ask", side_effect=["", "gpt-5.5", "", "", "", ""]):
+            state = onb.OnboardingState(data={"cli_provider": "codex"})
+            result = onb.step_models(state)
+
+        assert result.data["models"]["chat"] == "gpt-5.5"
+        config = yaml.safe_load((root / "instance" / "config.yaml").read_text())
+        assert config["models"]["codex"]["chat"] == "gpt-5.5"
+
+    def test_check_models_true_when_configured(self, onboarding_root):
+        import app.onboarding as onb
+
+        root = Path(onboarding_root)
+        (root / "instance").mkdir(exist_ok=True)
+        (root / "instance" / "config.yaml").write_text(
+            "models:\n  claude:\n    lightweight: haiku\n"
+        )
+
+        with patch.object(onb, "KOAN_ROOT", root):
+            state = onb.OnboardingState(data={"cli_provider": "claude"})
+            assert onb.check_models(state) is True
+
+    def test_check_models_false_when_missing(self, onboarding_root):
+        import app.onboarding as onb
+
+        root = Path(onboarding_root)
+        (root / "instance").mkdir(exist_ok=True)
+        (root / "instance" / "config.yaml").write_text("max_runs_per_day: 20\n")
+
+        with patch.object(onb, "KOAN_ROOT", root):
+            state = onb.OnboardingState(data={"cli_provider": "claude"})
+            assert onb.check_models(state) is False
 
 
 class TestStepDeployment:
@@ -545,6 +749,16 @@ class TestStepDeployment:
             state = onb.OnboardingState()
             result = onb.step_deployment(state)
             assert result.data["deployment_method"] == "terminal"
+
+    def test_no_docker_option(self, onboarding_root):
+        import app.onboarding as onb
+
+        with patch.object(onb, "KOAN_ROOT", Path(onboarding_root)), patch(
+            "app.onboarding._is_interactive", False
+        ):
+            state = onb.OnboardingState()
+            result = onb.step_deployment(state)
+            assert result.data["deployment_method"] != "docker"
 
 
 class TestWelcomePage:
@@ -569,12 +783,15 @@ class TestWelcomePage:
         with patch.object(onb, "KOAN_ROOT", root), patch.object(
             onb, "CHECKPOINT_FILE", checkpoint
         ), patch("app.onboarding._is_interactive", False), patch(
-            "app.setup_wizard.ENV_FILE", root / ".env"
-        ), patch("app.setup_wizard.KOAN_ROOT", root), patch(
-            "app.setup_wizard.INSTANCE_DIR", root / "instance"
-        ), patch("app.setup_wizard.INSTANCE_EXAMPLE", root / "instance.example"), patch(
-            "app.setup_wizard.ENV_EXAMPLE", root / "env.example"
-        ), patch("app.onboarding._run_cmd") as mock_cmd:
+            "app.onboarding_helpers.ENV_FILE", root / ".env"
+        ), patch("app.onboarding_helpers.KOAN_ROOT", root), patch(
+            "app.onboarding_helpers.INSTANCE_DIR", root / "instance"
+        ), patch("app.onboarding_helpers.INSTANCE_EXAMPLE", root / "instance.example"), patch(
+            "app.onboarding_helpers.ENV_EXAMPLE", root / "env.example"
+        ), patch("app.onboarding._run_cmd") as mock_cmd, patch(
+            "app.onboarding_helpers.setup_workspace_koan",
+            return_value=(True, "workspace ready"),
+        ):
             mock_cmd.return_value = MagicMock(returncode=0, stdout="user\n")
             onb.run_onboarding(force=True)
 
@@ -606,12 +823,15 @@ class TestWelcomePage:
         with patch.object(onb, "KOAN_ROOT", root), patch.object(
             onb, "CHECKPOINT_FILE", checkpoint
         ), patch("app.onboarding._is_interactive", False), patch(
-            "app.setup_wizard.ENV_FILE", root / ".env"
-        ), patch("app.setup_wizard.KOAN_ROOT", root), patch(
-            "app.setup_wizard.INSTANCE_DIR", root / "instance"
-        ), patch("app.setup_wizard.INSTANCE_EXAMPLE", root / "instance.example"), patch(
-            "app.setup_wizard.ENV_EXAMPLE", root / "env.example"
-        ), patch("app.onboarding._run_cmd") as mock_cmd:
+            "app.onboarding_helpers.ENV_FILE", root / ".env"
+        ), patch("app.onboarding_helpers.KOAN_ROOT", root), patch(
+            "app.onboarding_helpers.INSTANCE_DIR", root / "instance"
+        ), patch("app.onboarding_helpers.INSTANCE_EXAMPLE", root / "instance.example"), patch(
+            "app.onboarding_helpers.ENV_EXAMPLE", root / "env.example"
+        ), patch("app.onboarding._run_cmd") as mock_cmd, patch(
+            "app.onboarding_helpers.setup_workspace_koan",
+            return_value=(True, "workspace ready"),
+        ):
             mock_cmd.return_value = MagicMock(returncode=0, stdout="user\n")
             onb.run_onboarding()
 
@@ -622,6 +842,11 @@ class TestWelcomePage:
 
 class TestRunOnboarding:
     """Tests for the main run_onboarding flow."""
+
+    def test_projects_step_not_in_onboarding_flow(self):
+        import app.onboarding as onb
+
+        assert "projects" not in [step.name for step in onb.STEPS]
 
     def test_force_clears_checkpoint(self, onboarding_root):
         import app.onboarding as onb
@@ -679,24 +904,170 @@ class TestRunOnboarding:
         with patch.object(onb, "KOAN_ROOT", root), patch.object(
             onb, "CHECKPOINT_FILE", checkpoint
         ), patch("app.onboarding._is_interactive", False), patch(
-            "app.setup_wizard.ENV_FILE", root / ".env"
+            "app.onboarding_helpers.ENV_FILE", root / ".env"
         ), patch(
-            "app.setup_wizard.KOAN_ROOT", root
+            "app.onboarding_helpers.KOAN_ROOT", root
         ), patch(
-            "app.setup_wizard.INSTANCE_DIR", root / "instance"
+            "app.onboarding_helpers.INSTANCE_DIR", root / "instance"
         ), patch(
-            "app.setup_wizard.INSTANCE_EXAMPLE", root / "instance.example"
+            "app.onboarding_helpers.INSTANCE_EXAMPLE", root / "instance.example"
         ), patch(
-            "app.setup_wizard.ENV_EXAMPLE", root / "env.example"
+            "app.onboarding_helpers.ENV_EXAMPLE", root / "env.example"
         ), patch(
             "app.onboarding._run_cmd"
-        ) as mock_cmd:
+        ) as mock_cmd, patch(
+            "app.onboarding_helpers.setup_workspace_koan",
+            return_value=(True, "workspace ready"),
+        ):
             mock_cmd.return_value = MagicMock(returncode=0, stdout="user\n")
 
             onb.run_onboarding(force=True)
 
             # Checkpoint should be cleaned up on success
             assert not checkpoint.exists()
+
+    def test_final_shows_next_steps_without_start_prompt(self, onboarding_root, capsys):
+        import app.onboarding as onb
+
+        root = Path(onboarding_root)
+        (root / "instance").mkdir(exist_ok=True)
+        (root / "instance" / "config.yaml").write_text("max_runs_per_day: 20\n")
+        (root / ".env").write_text(
+            "KOAN_CLI_PROVIDER=local\nKOAN_TELEGRAM_TOKEN=123:ABC\nKOAN_TELEGRAM_CHAT_ID=456\n"
+        )
+        (root / "workspace" / "koan").mkdir(parents=True)
+
+        with patch.object(onb, "KOAN_ROOT", root), patch(
+            "app.onboarding.ask_yes_no"
+        ) as ask_yes_no:
+            result = onb.step_final(onb.OnboardingState(data={"cli_provider": "local"}))
+
+        out = capsys.readouterr().out
+        assert result is not None
+        assert "make koan" in out
+        assert "/help" in out
+        assert "/add_project <github-url>" in out
+        ask_yes_no.assert_not_called()
+
+    def test_reset_clears_checkpoint_and_restarts(self, onboarding_root, capsys):
+        import app.onboarding as onb
+
+        root = Path(onboarding_root)
+        checkpoint = root / ".koan-onboarding.json"
+        checkpoint.write_text('{"completed_steps": [], "data": {"draft": true}}')
+
+        # Seed a provider choice in .env — must be wiped on reset
+        (root / ".env").write_text("KOAN_CLI_PROVIDER=codex\n")
+
+        calls = {"count": 0}
+
+        def maybe_reset(state):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise onb.OnboardingReset
+            return state
+
+        reset_step = onb.Step("reset_probe", "Reset probe", maybe_reset)
+
+        with patch.object(onb, "KOAN_ROOT", root), patch.object(
+            onb, "CHECKPOINT_FILE", checkpoint
+        ), patch.object(onb, "STEPS", [reset_step]), patch(
+            "app.onboarding._is_interactive", False
+        ):
+            onb.run_onboarding()
+
+        captured = capsys.readouterr()
+        assert "Install reset" in captured.out
+        assert not checkpoint.exists()
+        assert calls["count"] == 2
+        assert "KOAN_CLI_PROVIDER" not in (root / ".env").read_text()
+
+
+class TestIntroScreen:
+    """Tests for the onboarding intro screen."""
+
+    def test_shows_on_fresh_start(self, onboarding_root, capsys):
+        import app.onboarding as onb
+
+        root = Path(onboarding_root)
+        (root / "instance").mkdir(exist_ok=True)
+        (root / "instance" / "config.yaml").write_text("max_runs_per_day: 20\n")
+        (root / "instance" / "soul.md").write_text("# Soul\n")
+        (root / ".env").write_text(
+            "KOAN_TELEGRAM_TOKEN=123:ABC\nKOAN_TELEGRAM_CHAT_ID=456\n"
+        )
+        (root / ".venv").mkdir(exist_ok=True)
+        (root / "projects.yaml").write_text("projects:\n  test:\n    path: /tmp\n")
+        checkpoint = root / ".koan-onboarding.json"
+
+        with patch.object(onb, "KOAN_ROOT", root), patch.object(
+            onb, "CHECKPOINT_FILE", checkpoint
+        ), patch("app.onboarding._is_interactive", False), patch(
+            "app.onboarding_helpers.ENV_FILE", root / ".env"
+        ), patch(
+            "app.onboarding_helpers.KOAN_ROOT", root
+        ), patch(
+            "app.onboarding_helpers.INSTANCE_DIR", root / "instance"
+        ), patch(
+            "app.onboarding_helpers.INSTANCE_EXAMPLE", root / "instance.example"
+        ), patch(
+            "app.onboarding_helpers.ENV_EXAMPLE", root / "env.example"
+        ), patch(
+            "app.onboarding._run_cmd"
+        ) as mock_cmd, patch(
+            "app.onboarding_helpers.setup_workspace_koan",
+            return_value=(True, "workspace ready"),
+        ):
+            mock_cmd.return_value = MagicMock(returncode=0, stdout="user\n")
+            onb.run_onboarding(force=True)
+
+        captured = capsys.readouterr()
+        assert "Welcome to Kōan" in captured.out
+        assert "koan.anantys.com" in captured.out
+        assert "steps" in captured.out
+
+    def test_hidden_on_resume(self, onboarding_root, capsys):
+        import app.onboarding as onb
+
+        root = Path(onboarding_root)
+        (root / "instance").mkdir(exist_ok=True)
+        (root / "instance" / "config.yaml").write_text("max_runs_per_day: 20\n")
+        (root / "instance" / "soul.md").write_text("# Soul\n")
+        (root / ".env").write_text(
+            "KOAN_TELEGRAM_TOKEN=123:ABC\nKOAN_TELEGRAM_CHAT_ID=456\n"
+        )
+        (root / ".venv").mkdir(exist_ok=True)
+        (root / "projects.yaml").write_text("projects:\n  test:\n    path: /tmp\n")
+        checkpoint = root / ".koan-onboarding.json"
+
+        state = onb.OnboardingState()
+        state.mark_complete("prerequisites")
+        state.save(checkpoint)
+
+        with patch.object(onb, "KOAN_ROOT", root), patch.object(
+            onb, "CHECKPOINT_FILE", checkpoint
+        ), patch("app.onboarding._is_interactive", False), patch(
+            "app.onboarding_helpers.ENV_FILE", root / ".env"
+        ), patch(
+            "app.onboarding_helpers.KOAN_ROOT", root
+        ), patch(
+            "app.onboarding_helpers.INSTANCE_DIR", root / "instance"
+        ), patch(
+            "app.onboarding_helpers.INSTANCE_EXAMPLE", root / "instance.example"
+        ), patch(
+            "app.onboarding_helpers.ENV_EXAMPLE", root / "env.example"
+        ), patch(
+            "app.onboarding._run_cmd"
+        ) as mock_cmd, patch(
+            "app.onboarding_helpers.setup_workspace_koan",
+            return_value=(True, "workspace ready"),
+        ):
+            mock_cmd.return_value = MagicMock(returncode=0, stdout="user\n")
+            onb.run_onboarding()
+
+        captured = capsys.readouterr()
+        assert "Resuming" in captured.out
+        assert "Welcome to Kōan" not in captured.out
 
 
 class TestCheckFunctions:
@@ -738,7 +1109,7 @@ class TestCheckFunctions:
             "KOAN_TELEGRAM_TOKEN=123:ABC\nKOAN_TELEGRAM_CHAT_ID=456\n"
         )
         with patch.object(onb, "KOAN_ROOT", root), patch(
-            "app.setup_wizard.ENV_FILE", root / ".env"
+            "app.onboarding_helpers.ENV_FILE", root / ".env"
         ):
             assert onb.check_messaging(onb.OnboardingState())
 
@@ -748,7 +1119,7 @@ class TestCheckFunctions:
         root = Path(onboarding_root)
         (root / ".env").write_text("# empty\n")
         with patch.object(onb, "KOAN_ROOT", root), patch(
-            "app.setup_wizard.ENV_FILE", root / ".env"
+            "app.onboarding_helpers.ENV_FILE", root / ".env"
         ):
             assert not onb.check_messaging(onb.OnboardingState())
 

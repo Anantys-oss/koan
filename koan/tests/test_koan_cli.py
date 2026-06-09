@@ -28,6 +28,7 @@ def test_run_tty_starts_stack_runs_tui_then_stops(monkeypatch):
     _tty(monkeypatch, True)
     calls = []
     monkeypatch.setattr("app.koan_cli._clear_screen", lambda: None)
+    monkeypatch.setattr("app.onboarding_helpers.onboarding_needed", lambda root: False)
     monkeypatch.setattr("app.pid_manager.start_all",
                         lambda root, **kw: calls.append("start") or {})
     monkeypatch.setattr("app.tui_dashboard.run",
@@ -45,6 +46,7 @@ def test_run_tty_detach_keeps_running(monkeypatch):
     _tty(monkeypatch, True)
     calls = []
     monkeypatch.setattr("app.koan_cli._clear_screen", lambda: None)
+    monkeypatch.setattr("app.onboarding_helpers.onboarding_needed", lambda root: False)
     monkeypatch.setattr("app.pid_manager.start_all",
                         lambda root, **kw: calls.append("start") or {})
     monkeypatch.setattr("app.tui_dashboard.run",
@@ -59,6 +61,7 @@ def test_run_tty_detach_keeps_running(monkeypatch):
 def test_run_tty_without_textual_keeps_running(monkeypatch):
     _tty(monkeypatch, True)
     monkeypatch.setattr("app.koan_cli._clear_screen", lambda: None)
+    monkeypatch.setattr("app.onboarding_helpers.onboarding_needed", lambda root: False)
     monkeypatch.setattr("app.pid_manager.start_all", lambda root, **kw: {})
     stopped = {"called": False}
     monkeypatch.setattr("app.pid_manager.stop_processes",
@@ -76,6 +79,23 @@ def test_run_tty_without_textual_keeps_running(monkeypatch):
     assert koan_cli.run(Path("/tmp/x")) == 0
     # textual missing → Kōan stays up, stack not torn down.
     assert stopped["called"] is False
+
+
+def test_run_tty_first_run_onboards_before_stack(monkeypatch):
+    _tty(monkeypatch, True)
+    calls = []
+    monkeypatch.setattr("app.koan_cli._clear_screen", lambda: None)
+    monkeypatch.setattr("app.onboarding_helpers.onboarding_needed", lambda root: True)
+    monkeypatch.setattr("app.onboarding.run_onboarding",
+                        lambda: calls.append("onboard"))
+    monkeypatch.setattr("app.pid_manager.start_all",
+                        lambda root, **kw: calls.append("start") or {})
+    monkeypatch.setattr("app.tui_dashboard.run",
+                        lambda root: calls.append("tui") or True)
+
+    assert koan_cli.run(Path("/tmp/x")) == 0
+    assert calls[0] == "onboard"
+    assert "start" in calls
 
 
 def test_clear_screen_emits_escape(monkeypatch, capsys):

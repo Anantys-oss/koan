@@ -1880,8 +1880,10 @@ projects:
 
 ### Interactive launcher (`make koan`)
 
-`make koan` is the interactive way to start Kōan. In a terminal it starts the
-stack and drops you straight into the terminal dashboard — no prompts. The home
+`make koan` is the interactive way to start Kōan. On first launch, if no
+`instance/` exists or onboarding progress is waiting in `.koan-onboarding.json`,
+it runs the CLI onboarding wizard before starting anything. After setup, it
+starts the stack and drops you straight into the terminal dashboard. The home
 screen is the **Status** tab (KŌAN hero + live flags), alongside **Logs**,
 **Config**, and **Usage** tabs.
 

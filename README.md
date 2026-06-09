@@ -55,7 +55,7 @@ This isn't a chatbot wrapper. It's a collaborator with memory, personality, and 
 git clone https://github.com/Anantys-oss/koan.git
 cd koan
 make setup
-make install    # Interactive web wizard — sets up everything
+make install    # Interactive CLI onboarding wizard — sets up everything
 make koan       # Start Kōan + open the terminal dashboard (recommended)
 make start      # Or launch the full stack non-interactively
 make logs       # Watch it work
@@ -105,7 +105,7 @@ But Koan takes a different path entirely.
 | **Philosophy** | General-purpose personal assistant — can do anything on your behalf | Generic, secure, vendor-agnostic infrastructure | Purpose-built GitHub collaborator — the agent proposes, the human decides |
 | **GitHub integration** | Generic (shell/browser tools) | Generic (tool-based) | Native and deep — draft PRs, issue triage, @mention triggers, rebase, code review, branch isolation |
 | **Multi-project** | Single workspace with multi-agent routing | Single workspace | Up to 50 projects with per-project memory, config, and smart rotation |
-| **Getting started** | `npm install -g openclaw` + onboarding wizard | TOML config, pairing codes, allowlists | `make install` — interactive web wizard, ready in minutes |
+| **Getting started** | `npm install -g openclaw` + onboarding wizard | TOML config, pairing codes, allowlists | `make install` — interactive CLI wizard, ready in minutes |
 | **Safety model** | Pairing codes, sandbox optional — but has shell access, browser control, and can send emails autonomously | Mandatory sandboxing, command allowlists, encrypted keys | Branch isolation, draft PRs only, never touches `main`, human review required |
 | **Memory** | Local Markdown files, session persistence | Hybrid BM25/vector search, multiple backends | Markdown-based — per-project learnings, session journals, personality evolution. No database needed |
 | **Communication** | 21+ channels (WhatsApp, Telegram, Slack, Discord, iMessage, Signal…) | 15+ channels (Telegram, Discord, Slack, iMessage…) | Telegram, Slack, or Matrix with personality-aware formatting, spontaneous messages, and verbose mode |
@@ -192,7 +192,7 @@ For implementation details, see the [architecture reference](docs/architecture/o
 
 - **44 slash commands** — From `/plan` to `/review` to `/sparring` — see [Skills](#skills)
 - **Web dashboard** — Local Flask UI for status, missions, chat, and journal browsing
-- **Setup wizard** — Web-based guided setup (`make install`)
+- **Setup wizard** — Terminal guided setup (`make install`)
 - **4500+ tests** — Comprehensive test suite with `make test`
 
 ## Skills
@@ -388,7 +388,7 @@ instance/                 # Your private data (gitignored)
 
 | Target | Description |
 |--------|-------------|
-| `make install` | Interactive web-based setup wizard |
+| `make install` | Interactive CLI onboarding wizard |
 | `make koan` | Start Kōan + terminal dashboard (Status/Logs/Config/Usage) |
 | `make start` | Start full stack (agent + bridge), non-interactive |
 | `make logs` | Tail live output from all processes |

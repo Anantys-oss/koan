@@ -51,6 +51,16 @@ def run(koan_root: Path) -> int:
         return 0
 
     _clear_screen()
+    from app.onboarding_helpers import onboarding_needed
+
+    if onboarding_needed(koan_root):
+        from app.onboarding import run_onboarding
+
+        print(f"  {mint('First-run setup')}")
+        print(f"  {muted('No completed Kōan instance was detected. Starting onboarding.')}")
+        run_onboarding()
+        _clear_screen()
+
     from app.pid_manager import start_all
 
     try:

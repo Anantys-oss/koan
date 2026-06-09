@@ -9,8 +9,10 @@ used by launchd/systemd services, CI, and scripts.
 In a terminal, `make koan`:
 
 1. Clears the screen for a clean slate.
-2. Starts the stack (agent + bridge) via `start_all(show_banner=False)`.
-3. Opens the terminal dashboard directly — **no mode prompt**.
+2. Runs/resumes the CLI onboarding wizard first if no `instance/` exists or
+   `.koan-onboarding.json` is present.
+3. Starts the stack (agent + bridge) via `start_all(show_banner=False)`.
+4. Opens the terminal dashboard directly — **no mode prompt after setup**.
 
 Quitting the dashboard with `q` tears the stack down cleanly
 (`stop_processes`). When stdin is not a TTY (services, CI, pipes) `make koan`

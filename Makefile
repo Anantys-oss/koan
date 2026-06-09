@@ -23,6 +23,9 @@ PYTHON_ABS := $(abspath $(PYTHON))
 # absolute path. Used by every target that drives the agent or a CLI tool.
 KOAN_RUN      := cd koan && KOAN_ROOT=$(PWD) PYTHONPATH=. $(PYTHON_ABS)
 KOAN_TEST_RUN := cd koan && KOAN_ROOT=/tmp/test-koan PYTHONPATH=. $(PYTHON_ABS)
+# Onboarding runs with TTY forced so the intro screen pauses correctly even when
+# invoked through make (which can make stdin.isatty() return False).
+KOAN_ONBOARD  := cd koan && KOAN_ROOT=$(PWD) PYTHONPATH=. KOAN_ONBOARDING_FORCE_TTY=1 $(PYTHON_ABS)
 
 # --- pytest-xdist worker count ---
 # Auto-pick the worker count for `make test` based on the environment:
@@ -243,13 +246,11 @@ logs:
 	@tail -F logs/run.log logs/awake.log logs/ollama.log instance/journal/pending.md 2>/dev/null
 
 install:
-	@echo "→ Starting Kōan Setup Wizard..."
-	@$(PYTHON) -m venv $(VENV) 2>/dev/null || true
-	@$(VENV)/bin/pip install -q flask 2>/dev/null || pip3 install -q flask 2>/dev/null
-	@$(KOAN_RUN) app/setup_wizard.py
+	@$(MAKE) --no-print-directory setup
+	@$(KOAN_ONBOARD) -m app.onboarding
 
 onboard: setup
-	@$(KOAN_RUN) -m app.onboarding $(ARGS)
+	@$(KOAN_ONBOARD) -m app.onboarding $(ARGS)
 
 rename-project: setup
 	@test -n "$(old)" || (echo "Usage: make rename-project old=foo new=bar [apply=1]" && exit 1)

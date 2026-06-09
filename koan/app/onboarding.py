@@ -39,7 +39,9 @@ _use_color = (
     and sys.stdout.isatty()
 )
 
-_is_interactive = hasattr(sys.stdin, "isatty") and sys.stdin.isatty()
+_is_interactive = (
+    hasattr(sys.stdin, "isatty") and sys.stdin.isatty()
+) or os.environ.get("KOAN_ONBOARDING_FORCE_TTY") == "1"
 
 
 def _col(code: str, text: str) -> str:
@@ -76,15 +78,264 @@ def cyan(text: str) -> str:
 # Input helpers
 # ---------------------------------------------------------------------------
 
+_ABORT = object()
+_RESET = object()
+
+
+class OnboardingReset(Exception):
+    """Signal that onboarding progress should be cleared and restarted."""
+
+
+def _use_textual_prompts() -> bool:
+    """Return True when onboarding prompts should use Textual screens."""
+    if os.environ.get("KOAN_ONBOARDING_TEXTUAL") == "0":
+        return False
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return False
+    return (
+        _is_interactive
+        and getattr(sys.stdin, "isatty", lambda: False)()
+        and getattr(sys.stdout, "isatty", lambda: False)()
+    )
+
+
+def _read_line(prompt: str) -> str:
+    """Read a line of input, falling back to /dev/tty when stdin is not a TTY.
+
+    When the onboarding script is invoked through ``make`` or another wrapper,
+    ``sys.stdin`` may be a pipe rather than the real terminal.  In that case
+    ``input()`` returns EOF immediately and the user never gets to interact.
+    Reading from ``/dev/tty`` bypasses the pipe and talks directly to the
+    controlling terminal.
+    """
+    if hasattr(sys.stdin, "isatty") and sys.stdin.isatty():
+        return input(prompt)
+    try:
+        with open("/dev/tty", "r") as tty_in, open("/dev/tty", "w") as tty_out:
+            tty_out.write(prompt)
+            tty_out.flush()
+            return tty_in.readline().rstrip("\n")
+    except (OSError, ValueError):
+        # No controlling terminal available — fall back to regular input()
+        return input(prompt)
+
+
+def _textual_text(prompt: str, default: Optional[str] = None) -> Optional[str]:
+    try:
+        from textual.app import App, ComposeResult
+        from textual.binding import Binding
+        from textual.containers import Container, Vertical
+        from textual.widgets import Button, Footer, Header, Input, Label
+    except ImportError:
+        return None
+
+    class TextPrompt(App):
+        CSS = """
+        App { background: #0D1117; color: #DCE2E6; }
+        #box {
+            width: 80; height: auto; margin: 2 4; padding: 1 2;
+            border: round #3ECF8E; background: #0D1117;
+        }
+        #title { color: #3ECF8E; text-style: bold; }
+        #hint { color: #808C94; }
+        Button { margin-right: 2; }
+        """
+        BINDINGS = [
+            Binding("escape", "cancel", "Cancel"),
+            Binding("ctrl+r", "reset", "Reset install", priority=True),
+            Binding("ctrl+c", "abort", "Abort", priority=True),
+            Binding("ctrl+q", "abort", "Abort", priority=True),
+        ]
+
+        def compose(self) -> ComposeResult:
+            yield Header(show_clock=False)
+            with Vertical(id="box"):
+                yield Label(prompt, id="title")
+                yield Label("Enter to save · Esc to cancel", id="hint")
+                yield Input(value=default or "", id="answer")
+                with Container():
+                    yield Button("Save", variant="success", id="save")
+                    yield Button("Cancel", id="cancel")
+            yield Footer()
+
+        def on_mount(self) -> None:
+            self.query_one("#answer", Input).focus()
+
+        def on_input_submitted(self, _event: Input.Submitted) -> None:
+            self.exit(self.query_one("#answer", Input).value.strip())
+
+        def on_button_pressed(self, event: Button.Pressed) -> None:
+            if event.button.id == "save":
+                self.exit(self.query_one("#answer", Input).value.strip())
+            else:
+                self.exit(None)
+
+        def action_cancel(self) -> None:
+            self.exit(None)
+
+        def action_abort(self) -> None:
+            self.exit(_ABORT)
+
+        def action_reset(self) -> None:
+            self.exit(_RESET)
+
+    return TextPrompt().run()
+
+
+def _textual_choice(prompt: str, options: list[str], default: int = 0) -> Optional[int]:
+    try:
+        from textual.app import App, ComposeResult
+        from textual.binding import Binding
+        from textual.containers import Vertical
+        from textual.widgets import Footer, Header, Label
+    except ImportError:
+        return None
+
+    class ChoicePrompt(App):
+        CSS = """
+        App { background: #0D1117; color: #DCE2E6; }
+        #box {
+            width: 88; height: auto; margin: 2 4; padding: 1 2;
+            border: round #3ECF8E; background: #0D1117;
+        }
+        #title { color: #3ECF8E; text-style: bold; }
+        #hint { color: #808C94; }
+        .option { color: #DCE2E6; padding: 0 1; }
+        .selected { color: #3ECF8E; text-style: bold; background: #111820; }
+        """
+        BINDINGS = [
+            Binding("up", "cursor_up", "Up"),
+            Binding("down", "cursor_down", "Down"),
+            Binding("enter", "submit", "Select"),
+            Binding("escape", "cancel", "Default"),
+            Binding("ctrl+r", "reset", "Reset install", priority=True),
+            Binding("ctrl+c", "abort", "Abort", priority=True),
+            Binding("ctrl+q", "abort", "Abort", priority=True),
+        ]
+
+        def __init__(self):
+            super().__init__()
+            self.selected = min(max(default, 0), len(options) - 1)
+
+        def compose(self) -> ComposeResult:
+            yield Header(show_clock=False)
+            with Vertical(id="box"):
+                yield Label(prompt, id="title")
+                yield Label(
+                    "Use arrows to choose · Enter to continue · Ctrl-R to reset install",
+                    id="hint",
+                )
+                for i, option in enumerate(options):
+                    yield Label("", id=f"choice-{i}", classes="option")
+            yield Footer()
+
+        def on_mount(self) -> None:
+            self._refresh_options()
+
+        def action_cursor_up(self) -> None:
+            self.selected = (self.selected - 1) % len(options)
+            self._refresh_options()
+
+        def action_cursor_down(self) -> None:
+            self.selected = (self.selected + 1) % len(options)
+            self._refresh_options()
+
+        def action_submit(self) -> None:
+            self.exit(self.selected)
+
+        def action_cancel(self) -> None:
+            self.exit(None)
+
+        def action_abort(self) -> None:
+            self.exit(_ABORT)
+
+        def action_reset(self) -> None:
+            self.exit(_RESET)
+
+        def _refresh_options(self) -> None:
+            for i, option in enumerate(options):
+                label = self.query_one(f"#choice-{i}", Label)
+                prefix = ">" if i == self.selected else " "
+                suffix = "  [default]" if i == default else ""
+                label.update(f"{prefix} {i + 1}. {option}{suffix}")
+                label.set_class(i == self.selected, "selected")
+
+    return ChoicePrompt().run()
+
+
+def _textual_pause(message: str) -> bool:
+    try:
+        from textual.app import App, ComposeResult
+        from textual.binding import Binding
+        from textual.containers import Vertical
+        from textual.widgets import Button, Footer, Header, Label
+    except ImportError:
+        return False
+
+    class PausePrompt(App):
+        CSS = """
+        App { background: #0D1117; color: #DCE2E6; }
+        #box {
+            width: 72; height: auto; margin: 2 4; padding: 1 2;
+            border: round #3ECF8E; background: #0D1117;
+        }
+        #title { color: #3ECF8E; text-style: bold; }
+        Button { margin-top: 1; }
+        """
+        BINDINGS = [
+            Binding("enter", "continue", "Continue"),
+            Binding("escape", "continue", "Continue"),
+            Binding("ctrl+r", "reset", "Reset install", priority=True),
+            Binding("ctrl+c", "abort", "Abort", priority=True),
+            Binding("ctrl+q", "abort", "Abort", priority=True),
+        ]
+
+        def compose(self) -> ComposeResult:
+            yield Header(show_clock=False)
+            with Vertical(id="box"):
+                yield Label(message, id="title")
+                yield Button("Continue", variant="success", id="continue")
+            yield Footer()
+
+        def on_button_pressed(self, _event: Button.Pressed) -> None:
+            self.exit(True)
+
+        def action_continue(self) -> None:
+            self.exit(True)
+
+        def action_abort(self) -> None:
+            self.exit(_ABORT)
+
+        def action_reset(self) -> None:
+            self.exit(_RESET)
+
+    result = PausePrompt().run()
+    if result is _ABORT:
+        raise KeyboardInterrupt
+    if result is _RESET:
+        raise OnboardingReset
+    return result is True
+
 
 def ask(prompt: str, default: Optional[str] = None) -> str:
     """Prompt user for text input with optional default."""
     if not _is_interactive:
         return default or ""
+    if _use_textual_prompts():
+        value = _textual_text(prompt, default)
+        if value is _ABORT:
+            raise KeyboardInterrupt
+        if value is _RESET:
+            raise OnboardingReset
+        if value is not None:
+            return value if value else (default or "")
     suffix = f" [{default}]" if default else ""
     try:
-        value = input(f"  {prompt}{suffix}: ").strip()
-    except (EOFError, KeyboardInterrupt):
+        value = _read_line(f"  {prompt}{suffix}: ").strip()
+    except KeyboardInterrupt:
+        print()
+        raise
+    except (EOFError, OSError):
         print()
         return default or ""
     return value if value else (default or "")
@@ -94,10 +345,21 @@ def ask_yes_no(prompt: str, default: bool = True) -> bool:
     """Prompt user for yes/no answer."""
     if not _is_interactive:
         return default
+    if _use_textual_prompts():
+        idx = _textual_choice(prompt, ["Yes", "No"], default=0 if default else 1)
+        if idx is _ABORT:
+            raise KeyboardInterrupt
+        if idx is _RESET:
+            raise OnboardingReset
+        if idx is not None:
+            return idx == 0
     hint = "Y/n" if default else "y/N"
     try:
-        value = input(f"  {prompt} [{hint}]: ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
+        value = _read_line(f"  {prompt} [{hint}]: ").strip().lower()
+    except KeyboardInterrupt:
+        print()
+        raise
+    except (EOFError, OSError):
         print()
         return default
     if not value:
@@ -109,14 +371,25 @@ def ask_choice(prompt: str, options: list[str], default: int = 0) -> int:
     """Present numbered choices. Returns index of selected option."""
     if not _is_interactive:
         return default
+    if _use_textual_prompts():
+        idx = _textual_choice(prompt, options, default=default)
+        if idx is _ABORT:
+            raise KeyboardInterrupt
+        if idx is _RESET:
+            raise OnboardingReset
+        if idx is not None:
+            return idx
     print()
     for i, opt in enumerate(options):
         marker = bold("→") if i == default else " "
         print(f"  {marker} {i + 1}. {opt}")
     print()
     try:
-        value = input(f"  {prompt} [1-{len(options)}, default {default + 1}]: ").strip()
-    except (EOFError, KeyboardInterrupt):
+        value = _read_line(f"  {prompt} [1-{len(options)}, default {default + 1}]: ").strip()
+    except KeyboardInterrupt:
+        print()
+        raise
+    except (EOFError, OSError):
         print()
         return default
     if not value:
@@ -142,13 +415,25 @@ def ask_path(prompt: str, must_exist: bool = True) -> str:
     return expanded
 
 
-def pause(message: str = "Press Enter to continue →") -> None:
-    """Wait for the user to press Enter before proceeding."""
+def pause(message: str = "Press Enter to continue →", *, plain: bool = False) -> None:
+    """Wait for the user to press Enter before proceeding.
+
+    Args:
+        message: Prompt text to display.
+        plain: When True, skip the Textual TUI and use a simple input() prompt.
+               Use this when the terminal already contains content that must stay
+               visible (e.g. the onboarding intro screen with the hero banner).
+    """
     if not _is_interactive:
         return
+    if not plain and _use_textual_prompts() and _textual_pause(message):
+        return
     try:
-        input(f"\n  {dim(message)} ")
-    except (EOFError, KeyboardInterrupt):
+        _read_line(f"\n  {dim(message)} ")
+    except KeyboardInterrupt:
+        print()
+        raise
+    except (EOFError, OSError):
         print()
 
 
@@ -229,19 +514,28 @@ def step_prerequisites(state: OnboardingState) -> OnboardingState:
 
     # Python version
     py_ver = platform.python_version()
-    py_ok = sys.version_info >= (3, 10)
+    py_ok = sys.version_info >= (3, 11)
     status = green("✓") if py_ok else red("✗")
-    print(f"  {status} Python {py_ver}" + ("" if py_ok else f" {red('(3.10+ required)')}"))
+    print(f"  {status} Python {py_ver}" + ("" if py_ok else f" {red('(3.11+ required)')}"))
 
     # Git
     git = _check_tool("git")
     print(f"  {green('✓') if git else red('✗')} git" + (f" ({git})" if git else " (required — install git)"))
 
-    # Claude CLI
-    claude = _check_tool("claude")
-    print(f"  {green('✓') if claude else red('✗')} claude CLI" + (
-        f" ({claude})" if claude else f" {red('(required — https://docs.anthropic.com/en/docs/claude-code)')}"
-    ))
+    # Supported CLI providers
+    installed_providers = _detect_installed_providers()
+    provider_tools = {
+        "claude": "claude",
+        "codex": "codex",
+        "copilot": "gh",
+        "local": None,
+    }
+    for provider, tool in provider_tools.items():
+        if tool is not None:
+            found = _check_tool(tool)
+            print(f"  {green('✓') if found else yellow('○')} {provider} provider" + (
+                f" ({found})" if found else f" {dim(f'({tool} not found)')}"
+            ))
 
     # gh CLI (optional)
     gh = _check_tool("gh")
@@ -258,23 +552,231 @@ def step_prerequisites(state: OnboardingState) -> OnboardingState:
     print()
 
     if not py_ok:
-        print(f"  {red('Python 3.10 or later is required. Please upgrade.')}")
+        print(f"  {red('Python 3.11 or later is required. Please upgrade.')}")
         sys.exit(1)
 
     if not git:
         print(f"  {red('git is required. Please install it.')}")
         sys.exit(1)
 
-    if not claude:
-        print(f"  {yellow('Claude CLI is required for the agent to work.')}")
-        print(f"  {dim('You can continue setup and install it later.')}")
-        print()
-
-    state.data["has_claude"] = bool(claude)
+    state.data["installed_providers"] = installed_providers
+    state.data["has_claude"] = "claude" in installed_providers
     state.data["has_gh"] = bool(gh)
 
-    pause()
     return state
+
+
+# ---------------------------------------------------------------------------
+# Step 2: Provider selection
+# ---------------------------------------------------------------------------
+
+PROVIDERS = [
+    ("claude", "Claude Code CLI"),
+    ("codex", "OpenAI Codex CLI"),
+    ("copilot", "GitHub Copilot CLI"),
+    ("local", "Local provider"),
+]
+
+
+def _provider_ready(provider: str) -> tuple[bool, str]:
+    tool_by_provider = {
+        "claude": "claude",
+        "codex": "codex",
+        "copilot": "gh",
+        "local": None,
+    }
+    tool = tool_by_provider.get(provider)
+    if provider == "local":
+        return True, "local provider selected"
+    if not tool:
+        return False, f"Unknown CLI provider: {provider}"
+    if not _check_tool(tool):
+        return False, f"{provider} provider selected but `{tool}` is not installed"
+    return True, f"{provider} provider ready"
+
+
+def _detect_installed_providers() -> list[str]:
+    """Return the list of CLI providers whose binaries are on PATH."""
+    provider_tools = {
+        "claude": "claude",
+        "codex": "codex",
+        "copilot": "gh",
+        "local": None,
+    }
+    return [p for p, t in provider_tools.items() if t is None or _check_tool(t)]
+
+
+def step_provider(state: OnboardingState) -> OnboardingState:
+    from app.onboarding_helpers import update_env_var
+
+    existing = _get_env_for_root("KOAN_CLI_PROVIDER") or _get_env_for_root("CLI_PROVIDER")
+    if existing:
+        state.data["cli_provider"] = existing
+        print(f"  {green('✓')} CLI provider already configured: {existing}")
+        return state
+
+    labels = [label for _key, label in PROVIDERS]
+    installed = state.data.get("installed_providers")
+    if installed is None:
+        installed = _detect_installed_providers()
+    default = 0
+    for i, (key, _label) in enumerate(PROVIDERS):
+        if key in installed:
+            default = i
+            break
+
+    idx = ask_choice("Which CLI provider should Kōan use?", labels, default=default)
+    provider = PROVIDERS[idx][0]
+    state.data["cli_provider"] = provider
+    update_env_var("KOAN_CLI_PROVIDER", provider, KOAN_ROOT / ".env")
+    print(f"  {green('✓')} CLI provider: {provider}")
+    return state
+
+
+def check_provider(state: OnboardingState) -> bool:
+    return bool(_get_env_for_root("KOAN_CLI_PROVIDER") or _get_env_for_root("CLI_PROVIDER"))
+
+
+# ---------------------------------------------------------------------------
+# Step 3: Model configuration
+# ---------------------------------------------------------------------------
+
+MODEL_FIELDS = [
+    ("mission", "Main mission execution"),
+    ("chat", "Telegram / dashboard chat responses"),
+    ("lightweight", "Low-cost calls (pick_mission, contemplative, format_outbox)"),
+    ("fallback", "Fallback when primary model is overloaded"),
+    ("review_mode", "Override model for REVIEW mode (cheaper audits)"),
+    ("reflect", "Model for review reflection pass"),
+]
+
+_PROVIDER_MODEL_DEFAULTS: dict[str, dict[str, str]] = {
+    "claude": {
+        "mission": "",
+        "chat": "",
+        "lightweight": "haiku",
+        "fallback": "sonnet",
+        "review_mode": "",
+        "reflect": "",
+    },
+    "codex": {
+        "mission": "gpt-5.3-codex",
+        "chat": "gpt-5.5",
+        "lightweight": "gpt-5.5",
+        "fallback": "",
+        "review_mode": "gpt-5.3-codex",
+        "reflect": "gpt-5.5",
+    },
+    "copilot": {
+        "mission": "",
+        "chat": "",
+        "lightweight": "haiku",
+        "fallback": "sonnet",
+        "review_mode": "",
+        "reflect": "",
+    },
+    "local": {
+        "mission": "",
+        "chat": "",
+        "lightweight": "",
+        "fallback": "",
+        "review_mode": "",
+        "reflect": "",
+    },
+    "ollama-launch": {
+        "mission": "qwen2.5-coder:14b",
+        "chat": "qwen2.5-coder:14b",
+        "lightweight": "qwen2.5-coder:7b",
+        "fallback": "",
+        "review_mode": "qwen2.5-coder:14b",
+        "reflect": "qwen2.5-coder:7b",
+    },
+}
+
+
+def _update_config_yaml_models(provider: str, models: dict[str, str]) -> None:
+    """Update the models.{provider} section in config.yaml."""
+    import yaml
+
+    config_file = _instance_dir() / "config.yaml"
+    if not config_file.exists():
+        return
+
+    try:
+        config = yaml.safe_load(config_file.read_text()) or {}
+    except yaml.YAMLError:
+        return
+
+    if "models" not in config or not isinstance(config["models"], dict):
+        config["models"] = {}
+
+    config["models"][provider] = models
+
+    config_file.write_text(yaml.dump(config, default_flow_style=False, sort_keys=False))
+
+
+def step_models(state: OnboardingState) -> OnboardingState:
+    import yaml
+
+    provider = state.data.get("cli_provider") or _get_env_for_root("KOAN_CLI_PROVIDER") or "claude"
+    config_file = _instance_dir() / "config.yaml"
+
+    # Skip if provider-specific models already configured in config.yaml
+    if config_file.exists():
+        try:
+            config = yaml.safe_load(config_file.read_text()) or {}
+            existing = config.get("models", {}).get(provider)
+            if isinstance(existing, dict) and existing:
+                print(f"  {green('✓')} Model configuration for {provider} already set.")
+                return state
+        except yaml.YAMLError:
+            pass
+
+    defaults = _PROVIDER_MODEL_DEFAULTS.get(provider, _PROVIDER_MODEL_DEFAULTS["claude"]).copy()
+
+    print(f"\n  {bold('Recommended models for')} {bold(provider)}:")
+    print()
+    for key, desc in MODEL_FIELDS:
+        val = defaults[key]
+        display = f'"{val}"' if val else "(provider default)"
+        print(f"    {key:<14} {display:<22}  {dim(desc)}")
+    print()
+
+    if ask_yes_no(f"Accept recommended models for {provider}?", default=True):
+        _update_config_yaml_models(provider, defaults)
+        print(f"  {green('✓')} Saved recommended models for {provider}.")
+        state.data["models"] = defaults
+        return state
+
+    # User wants to customize — walk through each field
+    print(f"\n  {bold('Customize models')} — press Enter to keep the default, or type a new value.")
+    print()
+    customized: dict[str, str] = {}
+    for key, desc in MODEL_FIELDS:
+        default_val = defaults[key]
+        hint = f' [{default_val}]' if default_val else " [provider default]"
+        val = ask(f"  {key}{hint}")
+        customized[key] = val if val else default_val
+
+    _update_config_yaml_models(provider, customized)
+    print(f"\n  {green('✓')} Saved custom models for {provider}.")
+    state.data["models"] = customized
+    return state
+
+
+def check_models(state: OnboardingState) -> bool:
+    import yaml
+
+    provider = state.data.get("cli_provider") or _get_env_for_root("KOAN_CLI_PROVIDER") or "claude"
+    config_file = _instance_dir() / "config.yaml"
+    if not config_file.exists():
+        return False
+    try:
+        config = yaml.safe_load(config_file.read_text()) or {}
+        existing = config.get("models", {}).get(provider)
+        return isinstance(existing, dict) and bool(existing)
+    except yaml.YAMLError:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -290,21 +792,26 @@ def _env_file() -> Path:
     return KOAN_ROOT / ".env"
 
 
+def _get_env_for_root(key: str) -> Optional[str]:
+    from app.onboarding_helpers import get_env_var
+
+    return get_env_var(key, KOAN_ROOT / ".env")
+
+
 def step_instance_init(state: OnboardingState) -> OnboardingState:
-    from app.setup_wizard import create_env_file, create_instance_dir, update_env_var
+    from app.onboarding_helpers import create_env_file, create_instance_dir, update_env_var
 
     instance_dir = _instance_dir()
     env_file = _env_file()
 
     if instance_dir.exists() and env_file.exists():
         print(f"  {green('✓')} Instance directory and .env already exist.")
-        pause()
         return state
 
     print("  Creating instance directory and .env file...")
 
     if not instance_dir.exists():
-        ok = create_instance_dir()
+        ok = create_instance_dir(KOAN_ROOT)
         if ok:
             print(f"  {green('✓')} Created instance/")
         else:
@@ -312,17 +819,16 @@ def step_instance_init(state: OnboardingState) -> OnboardingState:
             sys.exit(1)
 
     if not env_file.exists():
-        ok = create_env_file()
+        ok = create_env_file(KOAN_ROOT)
         if ok:
             print(f"  {green('✓')} Created .env")
         else:
             print(f"  {red('✗')} Failed to create .env — is env.example present?")
             sys.exit(1)
 
-    update_env_var("KOAN_ROOT", str(KOAN_ROOT))
+    update_env_var("KOAN_ROOT", str(KOAN_ROOT), env_file)
     print(f"  {green('✓')} Set KOAN_ROOT={KOAN_ROOT}")
 
-    pause()
     return state
 
 
@@ -339,7 +845,6 @@ def step_venv(state: OnboardingState) -> OnboardingState:
     venv_marker = KOAN_ROOT / ".venv" / ".installed"
     if venv_marker.exists():
         print(f"  {green('✓')} Virtual environment already set up.")
-        pause()
         return state
 
     print(f"  Running {bold('make setup')} to create virtual environment...")
@@ -362,7 +867,6 @@ def step_venv(state: OnboardingState) -> OnboardingState:
     except FileNotFoundError:
         print(f"\n  {red('✗')} make not found. Run: pip install -r koan/requirements.txt")
 
-    pause()
     return state
 
 
@@ -376,7 +880,7 @@ def check_venv(state: OnboardingState) -> bool:
 
 
 def step_messaging(state: OnboardingState) -> OnboardingState:
-    from app.setup_wizard import (
+    from app.onboarding_helpers import (
         get_chat_id_from_updates,
         get_env_var,
         update_env_var,
@@ -384,15 +888,16 @@ def step_messaging(state: OnboardingState) -> OnboardingState:
     )
 
     # Check if already configured (any supported provider)
-    token = get_env_var("KOAN_TELEGRAM_TOKEN")
-    chat_id = get_env_var("KOAN_TELEGRAM_CHAT_ID")
+    env_file = KOAN_ROOT / ".env"
+    token = get_env_var("KOAN_TELEGRAM_TOKEN", env_file)
+    chat_id = get_env_var("KOAN_TELEGRAM_CHAT_ID", env_file)
     if token and "your-bot-token" not in token and chat_id and "your-chat-id" not in chat_id:
         print(f"  {green('✓')} Messaging already configured.")
         return state
-    if get_env_var("KOAN_SLACK_BOT_TOKEN") and get_env_var("KOAN_SLACK_CHANNEL_ID"):
+    if get_env_var("KOAN_SLACK_BOT_TOKEN", env_file) and get_env_var("KOAN_SLACK_CHANNEL_ID", env_file):
         print(f"  {green('✓')} Messaging already configured.")
         return state
-    if get_env_var("KOAN_MATRIX_ACCESS_TOKEN") and get_env_var("KOAN_MATRIX_ROOM_ID"):
+    if get_env_var("KOAN_MATRIX_ACCESS_TOKEN", env_file) and get_env_var("KOAN_MATRIX_ROOM_ID", env_file):
         print(f"  {green('✓')} Messaging already configured.")
         return state
 
@@ -413,10 +918,10 @@ def step_messaging(state: OnboardingState) -> OnboardingState:
         channel_id = ask("Slack Channel ID (C01234ABCD)")
 
         if bot_token and app_token and channel_id:
-            update_env_var("KOAN_SLACK_BOT_TOKEN", bot_token)
-            update_env_var("KOAN_SLACK_APP_TOKEN", app_token)
-            update_env_var("KOAN_SLACK_CHANNEL_ID", channel_id)
-            update_env_var("KOAN_MESSAGING_PROVIDER", "slack")
+            update_env_var("KOAN_SLACK_BOT_TOKEN", bot_token, env_file)
+            update_env_var("KOAN_SLACK_APP_TOKEN", app_token, env_file)
+            update_env_var("KOAN_SLACK_CHANNEL_ID", channel_id, env_file)
+            update_env_var("KOAN_MESSAGING_PROVIDER", "slack", env_file)
             state.data["messaging_provider"] = "slack"
             print(f"\n  {green('✓')} Slack configuration saved.")
         else:
@@ -433,11 +938,11 @@ def step_messaging(state: OnboardingState) -> OnboardingState:
         room_id = ask("Room ID (!abcdef:matrix.org)")
 
         if homeserver and access_token and user_id and room_id:
-            update_env_var("KOAN_MATRIX_HOMESERVER", homeserver)
-            update_env_var("KOAN_MATRIX_ACCESS_TOKEN", access_token)
-            update_env_var("KOAN_MATRIX_USER_ID", user_id)
-            update_env_var("KOAN_MATRIX_ROOM_ID", room_id)
-            update_env_var("KOAN_MESSAGING_PROVIDER", "matrix")
+            update_env_var("KOAN_MATRIX_HOMESERVER", homeserver, env_file)
+            update_env_var("KOAN_MATRIX_ACCESS_TOKEN", access_token, env_file)
+            update_env_var("KOAN_MATRIX_USER_ID", user_id, env_file)
+            update_env_var("KOAN_MATRIX_ROOM_ID", room_id, env_file)
+            update_env_var("KOAN_MESSAGING_PROVIDER", "matrix", env_file)
             state.data["messaging_provider"] = "matrix"
             print(f"\n  {green('✓')} Matrix configuration saved.")
         else:
@@ -464,7 +969,7 @@ def step_messaging(state: OnboardingState) -> OnboardingState:
             print(f" {red('✗')} Invalid token: {result.get('error', 'unknown error')}")
             return state
 
-        update_env_var("KOAN_TELEGRAM_TOKEN", bot_token)
+        update_env_var("KOAN_TELEGRAM_TOKEN", bot_token, env_file)
 
         # Try to auto-detect chat ID
         print(f"\n  {dim('Send any message to your bot on Telegram, then press Enter.')}")
@@ -475,12 +980,12 @@ def step_messaging(state: OnboardingState) -> OnboardingState:
         chat_id_detected = get_chat_id_from_updates(bot_token)
         if chat_id_detected:
             print(f"  {green('✓')} Detected chat ID: {chat_id_detected}")
-            update_env_var("KOAN_TELEGRAM_CHAT_ID", chat_id_detected)
+            update_env_var("KOAN_TELEGRAM_CHAT_ID", chat_id_detected, env_file)
         else:
             print(f"  {yellow('○')} Could not auto-detect chat ID.")
             manual_id = ask("Enter chat ID manually")
             if manual_id:
-                update_env_var("KOAN_TELEGRAM_CHAT_ID", manual_id)
+                update_env_var("KOAN_TELEGRAM_CHAT_ID", manual_id, env_file)
             else:
                 print(f"  {yellow('○')} No chat ID — you can set it later in .env")
                 return state
@@ -492,15 +997,16 @@ def step_messaging(state: OnboardingState) -> OnboardingState:
 
 
 def check_messaging(state: OnboardingState) -> bool:
-    from app.setup_wizard import get_env_var
+    from app.onboarding_helpers import get_env_var
 
     # Telegram check
-    token = get_env_var("KOAN_TELEGRAM_TOKEN")
-    chat_id = get_env_var("KOAN_TELEGRAM_CHAT_ID")
+    env_file = KOAN_ROOT / ".env"
+    token = get_env_var("KOAN_TELEGRAM_TOKEN", env_file)
+    chat_id = get_env_var("KOAN_TELEGRAM_CHAT_ID", env_file)
     if token and "your-bot-token" not in token and chat_id and "your-chat-id" not in chat_id:
         return True
     # Slack check
-    slack_token = get_env_var("KOAN_SLACK_BOT_TOKEN")
+    slack_token = get_env_var("KOAN_SLACK_BOT_TOKEN", env_file)
     if slack_token:
         return True
     return False
@@ -642,7 +1148,32 @@ def step_personality(state: OnboardingState) -> OnboardingState:
 
 
 # ---------------------------------------------------------------------------
-# Step 7: Project registration
+# Step 7: Kōan workspace project
+# ---------------------------------------------------------------------------
+
+
+def step_workspace_koan(state: OnboardingState) -> OnboardingState:
+    from app.onboarding_helpers import setup_workspace_koan
+
+    print(f"  Ensuring Kōan is available as {bold('workspace/koan')}...")
+    ok, message = setup_workspace_koan(KOAN_ROOT)
+    if not ok:
+        print(f"  {red('✗')} {message}")
+        raise RuntimeError(message)
+    print(f"  {green('✓')} {message}")
+    state.data["workspace_koan"] = True
+    return state
+
+
+def check_workspace_koan(state: OnboardingState) -> bool:
+    from app.onboarding_helpers import _has_koan_remote
+
+    path = KOAN_ROOT / "workspace" / "koan"
+    return path.is_dir() and _has_koan_remote(path)
+
+
+# ---------------------------------------------------------------------------
+# Step 8: Project registration
 # ---------------------------------------------------------------------------
 
 
@@ -736,11 +1267,11 @@ def step_projects(state: OnboardingState) -> OnboardingState:
 
 
 def check_projects(state: OnboardingState) -> bool:
-    return (KOAN_ROOT / "projects.yaml").exists()
+    return (KOAN_ROOT / "projects.yaml").exists() or (KOAN_ROOT / "workspace" / "koan").is_dir()
 
 
 # ---------------------------------------------------------------------------
-# Step 8: GitHub identity
+# Step 9: GitHub identity
 # ---------------------------------------------------------------------------
 
 
@@ -811,9 +1342,9 @@ def step_github(state: OnboardingState) -> OnboardingState:
 
     email = ask("Git email for Kōan's commits", default=git_email)
     if email:
-        from app.setup_wizard import update_env_var
+        from app.onboarding_helpers import update_env_var
 
-        update_env_var("KOAN_EMAIL", email)
+        update_env_var("KOAN_EMAIL", email, KOAN_ROOT / ".env")
         print(f"  {green('✓')} Git email: {email}")
 
     return state
@@ -849,11 +1380,8 @@ def _update_config_yaml_github(nickname: str, auth_users: list[str]) -> None:
 def step_deployment(state: OnboardingState) -> OnboardingState:
     is_linux = platform.system() == "Linux"
 
-    options = ["Terminal — make start / make stop (default)"]
+    options = ["Terminal dashboard — make koan (default)"]
     option_keys = ["terminal"]
-
-    options.append("Docker — docker compose up")
-    option_keys.append("docker")
 
     if is_linux:
         options.append("Systemd — automatic service management")
@@ -862,24 +1390,13 @@ def step_deployment(state: OnboardingState) -> OnboardingState:
     idx = ask_choice("How do you want to run Kōan?", options, default=0)
     method = option_keys[idx]
 
-    if method == "docker":
-        docker_script = KOAN_ROOT / "setup-docker.sh"
-        if docker_script.exists():
-            print("\n  Running Docker setup...")
-            subprocess.run(["bash", str(docker_script)], cwd=str(KOAN_ROOT))
-        else:
-            print(f"  {yellow('○')} setup-docker.sh not found.")
-
-        print(f"\n  {dim('Start with: make docker-up')}")
-        print(f"  {dim('If using Claude CLI: run make docker-auth first')}")
-
-    elif method == "systemd":
+    if method == "systemd":
         print(f"\n  {dim('Systemd service will be installed on first `make start`.')}")
         print(f"  {dim('Or run: make install-systemctl-service')}")
 
     else:
-        print(f"\n  {dim('Start with: make start')}")
-        print(f"  {dim('Stop with:  make stop')}")
+        print(f"\n  {dim('Start with: make koan')}")
+        print(f"  {dim('Detach or quit from the terminal dashboard')}")
 
     state.data["deployment_method"] = method
     print(f"\n  {green('✓')} Deployment method: {method}")
@@ -892,7 +1409,7 @@ def step_deployment(state: OnboardingState) -> OnboardingState:
 
 
 def step_final(state: OnboardingState) -> OnboardingState:
-    from app.setup_wizard import get_env_var
+    from app.onboarding_helpers import get_env_var
 
     print(f"\n  {bold('Configuration Summary')}")
     print(f"  {'─' * 40}")
@@ -921,8 +1438,8 @@ def step_final(state: OnboardingState) -> OnboardingState:
 
     # Projects
     proj_ok = check_projects(state)
-    proj_count = state.data.get("project_count", "?")
-    print(f"  Projects:            {green('✓') if proj_ok else yellow('○')} ({proj_count} configured)")
+    project_hint = "workspace/koan" if (KOAN_ROOT / "workspace" / "koan").is_dir() else "not configured"
+    print(f"  Default project:     {green('✓') if proj_ok else yellow('○')} {project_hint}")
 
     # GitHub
     gh_enabled = state.data.get("github_commands_enabled", False)
@@ -936,21 +1453,29 @@ def step_final(state: OnboardingState) -> OnboardingState:
     has_claude = state.data.get("has_claude", bool(_check_tool("claude")))
     print(f"  Claude CLI:          {green('✓') if has_claude else yellow('○ not found')}")
 
+    provider = state.data.get("cli_provider") or _get_env_for_root("KOAN_CLI_PROVIDER") or "claude"
+    provider_ok, provider_msg = _provider_ready(provider)
+    print(f"  CLI provider:        {green('✓') if provider_ok else red('✗')} {provider}")
+
     print(f"  {'─' * 40}")
     print()
 
     # Validation
     issues = []
+    blocking_issues = []
     if not inst_ok:
         issues.append("Instance directory missing")
+        blocking_issues.append("Instance directory missing")
     if not env_ok:
         issues.append(".env file missing")
+        blocking_issues.append(".env file missing")
     if not msg_ok:
         issues.append("Messaging not configured")
     if not proj_ok:
-        issues.append("No projects configured")
-    if not has_claude:
-        issues.append("Claude CLI not installed")
+        issues.append("Default workspace project not configured")
+    if not provider_ok:
+        issues.append(provider_msg)
+        blocking_issues.append(provider_msg)
 
     if issues:
         print(f"  {yellow('Warnings:')}")
@@ -958,16 +1483,14 @@ def step_final(state: OnboardingState) -> OnboardingState:
             print(f"    {yellow('○')} {issue}")
         print()
 
-    # Offer to start
-    if ask_yes_no("Start Kōan now?", default=False):
-        print("\n  Starting Kōan...")
-        subprocess.run(["make", "start"], cwd=str(KOAN_ROOT))
-    else:
-        print(f"\n  {bold('Next steps:')}")
-        print(f"  {dim('1. Start Kōan:        make start')}")
-        print(f"  {dim('2. Watch logs:         make logs')}")
-        print(f"  {dim('3. Send a message to your bot on Telegram')}")
-        print(f"  {dim('4. Try /help to see available commands')}")
+    if blocking_issues:
+        raise RuntimeError("Setup incomplete: " + "; ".join(blocking_issues))
+
+    print(f"\n  {bold('Next steps:')}")
+    print(f"  {dim('1. Start Kōan:           make koan')}")
+    print(f"  {dim('2. See commands:         /help')}")
+    print(f"  {dim('3. Add your first repo:  /add_project <github-url>')}")
+    print(f"  {dim('4. Watch logs:           make logs')}")
 
     return state
 
@@ -980,11 +1503,13 @@ def step_final(state: OnboardingState) -> OnboardingState:
 STEPS = [
     Step("prerequisites", "Check prerequisites", step_prerequisites),
     Step("instance_init", "Initialize instance", step_instance_init, check_instance_init),
+    Step("provider", "Choose CLI provider", step_provider, check_provider),
+    Step("models", "Configure models", step_models, check_models),
     Step("venv", "Set up virtual environment", step_venv, check_venv),
     Step("messaging", "Configure messaging", step_messaging, check_messaging),
     Step("language", "Set language preference", step_language),
     Step("personality", "Choose agent personality", step_personality),
-    Step("projects", "Register projects", step_projects, check_projects),
+    Step("workspace_koan", "Set up Kōan workspace project", step_workspace_koan, check_workspace_koan),
     Step("github", "Configure GitHub", step_github),
     Step("deployment", "Choose deployment method", step_deployment),
     Step("final", "Verify and launch", step_final),
@@ -995,75 +1520,158 @@ STEPS = [
 # Main entry point
 # ---------------------------------------------------------------------------
 
-BANNER = """\
+def _osc8_link(url: str, text: str) -> str:
+    """Return an OSC 8 hyperlink when color is enabled, otherwise plain text."""
+    if not _use_color:
+        return f"{text}  {dim(f'({url})')}"
+    return f"\033]8;;{url}\033\\{text}\033]8;;\033\\"
 
-  ██╗  ██╗ ██████╗  █████╗ ███╗   ██╗
-  ██║ ██╔╝██╔═══██╗██╔══██╗████╗  ██║
-  █████╔╝ ██║   ██║███████║██╔██╗ ██║
-  ██╔═██╗ ██║   ██║██╔══██║██║╚██╗██║
-  ██║  ██╗╚██████╔╝██║  ██║██║ ╚████║
-  ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═══╝
 
-  Onboarding Wizard
-"""
+def _get_version_info() -> tuple[Optional[str], Optional[str]]:
+    """Read version from pyproject.toml and git HEAD."""
+    version: Optional[str] = None
+    pyproject = KOAN_ROOT / "pyproject.toml"
+    if pyproject.exists():
+        try:
+            for line in pyproject.read_text().splitlines():
+                if line.startswith("version"):
+                    version = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    break
+        except Exception as e:
+            print(f"[onboarding] warning reading version: {e}", file=sys.stderr)
+
+    commit: Optional[str] = None
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(KOAN_ROOT), "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            commit = result.stdout.strip()
+    except Exception as e:
+        print(f"[onboarding] warning reading commit: {e}", file=sys.stderr)
+
+    return version, commit
+
+
+def _print_intro_screen() -> None:
+    """Print the onboarding intro screen with hero banner and welcome info."""
+    from app.banners import print_hero_banner
+
+    # Clear screen for a clean slate (home first, then clear display + scrollback)
+    sys.stdout.write("\033[H\033[2J\033[3J")
+    sys.stdout.flush()
+
+    print_hero_banner()
+
+    print(f"  {bold('Welcome to Kōan')} — your autonomous coding companion")
+    print()
+
+    version, commit = _get_version_info()
+    info_parts: list[str] = []
+    if version:
+        info_parts.append(f"version {version}")
+    if commit:
+        info_parts.append(f"commit {commit}")
+    if info_parts:
+        print(f"  {dim(' · '.join(info_parts))}")
+        print()
+
+    website_url = "https://koan.anantys.com"
+    print(f"  {dim('Website:')}  {_osc8_link(website_url, 'koan.anantys.com')}")
+    print()
+
+    docs_url = "https://koan.anantys.com/docs"
+    print(f"  {dim('Docs:')}     {_osc8_link(docs_url, 'koan.anantys.com/docs')}")
+    print()
+
+    total = len(STEPS)
+    print(
+        f"  {dim(f'{total} steps')}  {dim('·')}  "
+        f"{dim('~5 minutes')}  {dim('·')}  "
+        f"{dim('progress saved automatically')}"
+    )
+    print()
+
+    pause("Press Enter to start setup  ·  Ctrl-C to abort", plain=True)
 
 
 def run_onboarding(force: bool = False) -> None:
     """Run the interactive onboarding wizard."""
-    print(bold(BANNER))
+    while True:
+        if force and CHECKPOINT_FILE.exists():
+            CHECKPOINT_FILE.unlink()
+            print(f"  {dim('Cleared previous progress (--force)')}")
+            print()
+        force = False
 
-    if force and CHECKPOINT_FILE.exists():
-        CHECKPOINT_FILE.unlink()
-        print(f"  {dim('Cleared previous progress (--force)')}")
-        print()
-
-    state = OnboardingState.load(CHECKPOINT_FILE)
-
-    # Welcome page — explain what's about to happen
-    if not state.completed_steps:
-        print(f"  {bold('Welcome!')} This wizard will walk you through setting up Kōan.")
-        print("  It takes about 5 minutes. Progress is saved after each step.")
-        print()
-        print(f"  {dim('Navigation: follow the prompts at each step.')}")
-        print(f"  {dim('You can press Ctrl-C at any time to save and quit.')}")
-        pause("Press Enter to begin →")
-    else:
-        completed = len(state.completed_steps)
-        print(f"  {dim(f'Resuming from step {completed + 1} (progress loaded)')}")
-        print()
-
-    total = len(STEPS)
-    for i, step in enumerate(STEPS, 1):
-        # Skip if already completed (and file-based check passes too)
-        already_done = state.is_complete(step.name)
-        if already_done and step.check and step.check(state):
-            continue
-        if already_done and not step.check:
-            continue
-
-        print(f"\n{'─' * 50}")
-        print(f"  {bold(f'Step {i}/{total}')} — {step.description}")
-        print(f"{'─' * 50}")
+        state = OnboardingState.load(CHECKPOINT_FILE)
 
         try:
-            state = step.run(state)
-            state.mark_complete(step.name)
-            state.save(CHECKPOINT_FILE)
+            # Intro screen on first run (and after reset)
+            if not state.completed_steps:
+                _print_intro_screen()
+                print(f"  {bold('Welcome!')} This wizard will walk you through setting up Kōan.")
+                print("  It takes about 5 minutes. Progress is saved after each step.")
+                print()
+                print(f"  {dim('Navigation: follow the prompts at each step.')}")
+                print(f"  {dim('Ctrl-C aborts. Ctrl-R resets onboarding progress.')}")
+            else:
+                completed = len(state.completed_steps)
+                print(f"  {dim(f'Resuming from step {completed + 1} (progress loaded)')}")
+                print()
+
+            total = len(STEPS)
+            for i, step in enumerate(STEPS, 1):
+                # Skip if already completed (and file-based check passes too)
+                already_done = state.is_complete(step.name)
+                if already_done and step.check and step.check(state):
+                    continue
+                if already_done and not step.check:
+                    continue
+
+                print(f"\n{'─' * 50}")
+                print(f"  {bold(f'Step {i}/{total}')} — {step.description}")
+                print(f"{'─' * 50}")
+
+                try:
+                    state = step.run(state)
+                    state.mark_complete(step.name)
+                    state.save(CHECKPOINT_FILE)
+                except OnboardingReset:
+                    raise
+                except KeyboardInterrupt:
+                    print(f"\n\n  {yellow('Interrupted.')} Progress saved — run again to resume.")
+                    state.save(CHECKPOINT_FILE)
+                    sys.exit(130)
+                except Exception as e:
+                    print(f"\n  {red(f'Error in step {step.name}:')} {e}")
+                    print(f"  {dim('Progress saved — run again to resume from this step.')}")
+                    state.save(CHECKPOINT_FILE)
+                    sys.exit(1)
+
+        except OnboardingReset:
+            if CHECKPOINT_FILE.exists():
+                CHECKPOINT_FILE.unlink()
+            # Wipe provider choice from .env so the wizard re-prompts on restart
+            from app.onboarding_helpers import remove_env_var
+
+            remove_env_var("KOAN_CLI_PROVIDER", KOAN_ROOT / ".env")
+            remove_env_var("CLI_PROVIDER", KOAN_ROOT / ".env")
+            print(f"\n  {yellow('Install reset.')} {dim('Onboarding progress cleared; restarting.')}")
+            print()
+            continue
         except KeyboardInterrupt:
             print(f"\n\n  {yellow('Interrupted.')} Progress saved — run again to resume.")
             state.save(CHECKPOINT_FILE)
             sys.exit(130)
-        except Exception as e:
-            print(f"\n  {red(f'Error in step {step.name}:')} {e}")
-            print(f"  {dim('Progress saved — run again to resume from this step.')}")
-            state.save(CHECKPOINT_FILE)
-            sys.exit(1)
 
-    # Cleanup checkpoint on success
-    if CHECKPOINT_FILE.exists():
-        CHECKPOINT_FILE.unlink()
+        # Cleanup checkpoint on success
+        if CHECKPOINT_FILE.exists():
+            CHECKPOINT_FILE.unlink()
 
-    print(f"\n  {green(bold('Setup complete!'))}\n")
+        print(f"\n  {green(bold('Setup complete!'))}\n")
+        return
 
 
 def main():
