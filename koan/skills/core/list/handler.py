@@ -191,20 +191,22 @@ def handle(ctx):
     now = datetime.now()
 
     if in_progress:
-        parts.append("IN PROGRESS")
-        for i, m in enumerate(in_progress, 1):
+        parts.append("🔄 In Progress")
+        parts.append("```")
+        for m in in_progress:
             prefix = mission_prefix(m)
             display = _humanize_timestamps(clean_mission_display(m), now)
             origin = _detect_origin_marker(m)
             display = _strip_origin_markers(display)
             if prefix:
-                parts.append(f"  {i}. {origin}{prefix} {display}")
+                parts.append(f"{origin}{prefix} {display}")
             else:
-                parts.append(f"  {i}. {origin}{display}")
+                parts.append(f"{origin}{display}")
+        parts.append("```")
         parts.append("")
 
     if pending:
-        parts.append("PENDING")
+        parts.append("⏳ Pending")
         for i, m in enumerate(pending, 1):
             prefix = mission_prefix(m)
             display = _humanize_timestamps(clean_mission_display(m), now)

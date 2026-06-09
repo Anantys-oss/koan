@@ -186,11 +186,11 @@ class TestListHandler:
         """)
         ctx = self._make_ctx(tmp_path, missions)
         result = handle(ctx)
-        assert "PENDING" in result
+        assert "⏳ Pending" in result
         assert "\U0001f4cb fix the login bug" in result
         assert "\U0001f4cb add dark mode" in result
         assert "\U0001f4cb refactor auth module" in result
-        assert "IN PROGRESS" not in result
+        assert "🔄 In Progress" not in result
 
     def test_in_progress_missions(self, tmp_path):
         from skills.core.list.handler import handle
@@ -208,9 +208,9 @@ class TestListHandler:
         """)
         ctx = self._make_ctx(tmp_path, missions)
         result = handle(ctx)
-        assert "IN PROGRESS" in result
+        assert "🔄 In Progress" in result
         assert "\U0001f4cb implement new feature" in result
-        assert "PENDING" not in result
+        assert "⏳ Pending" not in result
 
     def test_both_sections(self, tmp_path):
         from skills.core.list.handler import handle
@@ -233,13 +233,13 @@ class TestListHandler:
         """)
         ctx = self._make_ctx(tmp_path, missions)
         result = handle(ctx)
-        assert "IN PROGRESS" in result
+        assert "🔄 In Progress" in result
         assert "\U0001f4cb working on feature X" in result
-        assert "PENDING" in result
+        assert "⏳ Pending" in result
         assert "\U0001f4cb fix bug A" in result
         assert "\U0001f4cb fix bug B" in result
-        # IN PROGRESS should appear before PENDING
-        assert result.index("IN PROGRESS") < result.index("PENDING")
+        # In Progress should appear before Pending
+        assert result.index("🔄 In Progress") < result.index("⏳ Pending")
 
     def test_project_tags_displayed(self, tmp_path):
         from skills.core.list.handler import handle
@@ -292,8 +292,8 @@ class TestListHandler:
         """)
         ctx = self._make_ctx(tmp_path, missions)
         result = handle(ctx)
-        assert "IN PROGRESS" in result
-        assert "PENDING" in result
+        assert "🔄 In Progress" in result
+        assert "⏳ Pending" in result
 
     def test_plan_mission_gets_brain_prefix(self, tmp_path):
         from skills.core.list.handler import handle
@@ -604,7 +604,7 @@ class TestListCommandRouting:
             handle_command("/list")
         mock_send.assert_called_once()
         output = mock_send.call_args[0][0]
-        assert "PENDING" in output
+        assert "⏳ Pending" in output
         assert "test mission" in output
 
     @patch("app.command_handlers.send_telegram")
