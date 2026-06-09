@@ -99,7 +99,7 @@ def _provider_has_api_quota() -> bool:
         from app.cli_provider import get_provider
         return get_provider().has_api_quota()
     except Exception as exc:
-        _log.debug("provider_has_api_quota failed: %s", exc)
+        _log.warning("provider_has_api_quota failed: %s", exc)
         return True
 
 
@@ -1032,7 +1032,11 @@ class KoanDashboard(App):
                 lines.append("[dim]Session    no API quota[/]")
                 lines.append("[dim]Weekly     no API quota[/]")
                 lines.append("")
-                lines.append(f"Mode      [{_MINT}]deep[/]  [dim](budget disabled for {_provider_name()})[/]")
+                try:
+                    mode = t.decide_mode()
+                    lines.append(f"Mode      [{_MINT}]{mode}[/]  [dim](budget disabled for {_provider_name()})[/]")
+                except Exception as exc:
+                    lines.append(f"Mode      [{_MINT}]deep[/]  [dim](budget disabled for {_provider_name()})[/]")
         except Exception as exc:
             lines.append(f"[dim](usage unavailable: {exc})[/dim]")
         if not (usage_md.exists()):

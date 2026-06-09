@@ -288,7 +288,7 @@ def _get_budget_mode() -> str:
                     if not get_provider().has_api_quota():
                         return "disabled"
                 except Exception as exc:
-                    logger.debug("Provider quota check failed: %s", exc)
+                    logger.warning("Provider quota check failed: %s", exc)
             return mode
     except (ImportError, OSError, ValueError):
         pass
