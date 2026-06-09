@@ -26,9 +26,29 @@ def handle(ctx):
     if not args:
         return (
             "Usage: /planit <issue-url>\n"
-            "Ex: /planit https://github.com/sukria/koan/issues/42\n\n"
+            "Ex: /planit https://github.com/sukria/koan/issues/42\n"
+            "Ex: /planit https://git.example.com/owner/repo/issues/42\n\n"
             "Queues /plan then /implement — plan insights feed the implementation."
         )
+
+    # ── Gogs issue ────────────────────────────────────────────────────
+    from app.github_skill_helpers import try_extract_gogs_issue
+    gogs = try_extract_gogs_issue(args)
+    if gogs:
+        owner, repo, number, issue_url = gogs
+        project_path, project_name = resolve_project_for_repo(repo, owner=owner)
+        if not project_path:
+            return format_project_not_found_error(repo, owner=owner)
+        plan_ok = queue_github_mission(ctx, "plan", issue_url, project_name)
+        impl_ok = queue_github_mission(ctx, "implement", issue_url, project_name)
+        label = f"Gogs issue #{number} ({owner}/{repo})"
+        if plan_ok is False and impl_ok is False:
+            return f"⚠️ Both /plan and /implement already queued or running for {label}."
+        if plan_ok is False:
+            return f"Implement queued for {label} (plan already queued/running)."
+        if impl_ok is False:
+            return f"Plan queued for {label} (implement already queued/running)."
+        return f"\U0001f9e0\U0001f528 Plan + implement combo queued for {label}"
 
     result = extract_issue_tracker_url(args, url_type="pr-or-issue")
     if not result:

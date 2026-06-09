@@ -231,6 +231,25 @@ class TestCheckPrCreated:
         assert result.status == CheckStatus.WARN
         assert "CLOSED" in result.message
 
+    @patch("app.mission_verifier.run_git")
+    def test_pass_via_non_github_forge(self, mock_git):
+        """The PR lookup routes through the project's forge — a Gogs project
+        resolves its PR via the forge API, never `gh`."""
+        from unittest.mock import MagicMock
+        mock_git.return_value = (0, "koan/my-branch", "")
+        forge = MagicMock()
+        forge.repo_slug.return_value = "alice/repo"
+        forge.find_pr_for_branch.return_value = {
+            "number": 7, "state": "OPEN", "isDraft": False,
+        }
+        with patch("app.forge.get_forge_for_path", return_value=forge):
+            result = check_pr_created("/project", "implement login")
+        assert result.status == CheckStatus.PASS
+        assert "#7" in result.message
+        forge.find_pr_for_branch.assert_called_once_with(
+            "alice/repo", "koan/my-branch", cwd="/project",
+        )
+
 
 # ---------------------------------------------------------------------------
 # check_commit_quality

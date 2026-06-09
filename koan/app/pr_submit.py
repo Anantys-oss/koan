@@ -49,7 +49,7 @@ def get_commit_subjects(project_path: str, base_branch: str = "main") -> List[st
 
 
 def get_fork_owner(project_path: str) -> str:
-    """Return the GitHub owner login of the PR head (the push target).
+    """Return the forge owner login of the PR head (the push target).
 
     Derived from the ``origin`` git remote — the branch is pushed there, so
     the cross-fork ``--head <owner>:<branch>`` must name the same owner.
@@ -57,7 +57,17 @@ def get_fork_owner(project_path: str) -> str:
     remote exists it resolves to the upstream/base repo and reports the
     *upstream* owner, which would point ``--head`` at a branch that doesn't
     exist on upstream and silently land the PR on the fork instead.
+
+    On non-GitHub forges the owner is derived from the forge's repo slug
+    (host-agnostic git-remote parse); the GitHub path is unchanged.
     """
+    from app.forge import get_forge_for_path
+    forge = get_forge_for_path(project_path)
+
+    if forge.name != "github":
+        slug = forge.repo_slug(project_path)
+        return slug.split("/", 1)[0] if slug else ""
+
     slug = origin_repo(project_path)
     if slug:
         return slug.split("/", 1)[0]
@@ -97,10 +107,22 @@ def resolve_submit_target(
             if submit_cfg.get("repo"):
                 return {"repo": submit_cfg["repo"], "is_fork": True}
 
+    # Detect a fork via the project's forge. On GitHub this is unchanged:
     # resolve_target_repo falls back to the `upstream` git remote when the
-    # GitHub fork-parent lookup comes back empty (e.g. gh resolved the local
-    # repo to the upstream itself, which reports no parent).
-    upstream = resolve_target_repo(project_path)
+    # fork-parent lookup comes back empty (e.g. gh resolved the local repo to
+    # the upstream itself, which reports no parent). Non-GitHub forges use the
+    # forge's own fork detection.
+    from app.forge import get_forge
+    forge = get_forge(project_name)
+
+    if forge.name != "github":
+        try:
+            upstream = forge.detect_fork(project_path)
+        except (NotImplementedError, RuntimeError, OSError):
+            upstream = None
+    else:
+        upstream = resolve_target_repo(project_path)
+
     if upstream:
         return {"repo": upstream, "is_fork": True}
 
@@ -223,12 +245,28 @@ def submit_draft_pr(
             )
         return None
 
+    # Resolve the project's forge once — used for the existing-PR check here
+    # and for PR creation below. The GitHub path is unchanged; non-GitHub
+    # forges (Gogs, etc.) go through the forge API so they can actually
+    # detect and create PRs instead of failing on `gh`.
+    from app.forge import get_forge
+    forge = get_forge(project_name)
+
     # Check for existing PR on this branch
     try:
-        existing = run_gh(
-            "pr", "list", "--head", branch, "--json", "url", "--jq", ".[0].url",
-            cwd=project_path, timeout=15,
-        ).strip()
+        if forge.name == "github":
+            existing = run_gh(
+                "pr", "list", "--head", branch, "--json", "url", "--jq", ".[0].url",
+                cwd=project_path, timeout=15,
+            ).strip()
+        else:
+            repo_slug = forge.repo_slug(project_path) or ""
+            pr = forge.find_pr_for_branch(repo_slug, branch, cwd=project_path)
+            existing = (
+                pr.get("url", "")
+                if pr and (pr.get("state") or "").upper() == "OPEN"
+                else ""
+            )
         if existing:
             logger.info("PR already exists: %s", existing)
             return existing
@@ -298,8 +336,19 @@ def submit_draft_pr(
         if fork_owner:
             pr_kwargs["head"] = f"{fork_owner}:{branch}"
 
+    # `gh pr create` infers repo/head/base from the local checkout, but the
+    # forge REST APIs (e.g. Gogs) cannot — they need them stated explicitly.
+    # Fill in any that weren't already set so same-repo PRs work too.
+    if forge.name != "github":
+        pr_kwargs.setdefault("repo", forge.repo_slug(project_path) or target["repo"])
+        pr_kwargs.setdefault("head", branch)
+        pr_kwargs.setdefault("base", effective_base)
+
     try:
-        pr_url = pr_create(**pr_kwargs)
+        if forge.name == "github":
+            pr_url = pr_create(**pr_kwargs)
+        else:
+            pr_url = forge.pr_create(**pr_kwargs)
     except (RuntimeError, OSError, subprocess.SubprocessError) as e:
         reason = f"gh pr create failed: {str(e)[:300]}"
         logger.warning(reason)

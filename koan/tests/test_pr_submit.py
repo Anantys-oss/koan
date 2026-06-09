@@ -249,6 +249,40 @@ class TestSubmitDraftPr:
             assert kw["body"] == "## Summary\nFixed."
             assert kw["draft"] is True
 
+    def test_non_github_forge_creates_pr_via_forge(self):
+        """On a non-GitHub forge the existing-PR check and PR creation go
+        through the forge API (not `gh`), so Gogs projects can actually open
+        PRs instead of stalling at 'open via web UI'."""
+        forge = MagicMock()
+        forge.name = "gogs"
+        forge.repo_slug.return_value = "alice/repo"
+        forge.find_pr_for_branch.return_value = None  # no existing PR
+        forge.pr_create.return_value = "https://git.example.com/alice/repo/pulls/3"
+        with patch(f"{_M}.get_current_branch", return_value="koan/feat"), \
+             patch(f"{_M}.resolve_base_branch", return_value="main"), \
+             patch(f"{_M}.get_commit_subjects", return_value=["c1"]), \
+             patch(f"{_M}.run_git_strict"), \
+             patch(f"{_M}.resolve_submit_target",
+                    return_value={"repo": "alice/repo", "is_fork": False}), \
+             patch("app.forge.get_forge", return_value=forge):
+            result = submit_draft_pr("/p", "proj", "alice", "repo", "1", "T", "B")
+        assert result == "https://git.example.com/alice/repo/pulls/3"
+        forge.pr_create.assert_called_once()
+
+    def test_non_github_forge_returns_existing_open_pr(self):
+        forge = MagicMock()
+        forge.name = "gogs"
+        forge.repo_slug.return_value = "alice/repo"
+        forge.find_pr_for_branch.return_value = {
+            "state": "OPEN", "url": "https://git.example.com/alice/repo/pulls/9",
+        }
+        with patch(f"{_M}.get_current_branch", return_value="koan/feat"), \
+             patch(f"{_M}.resolve_base_branch", return_value="main"), \
+             patch("app.forge.get_forge", return_value=forge):
+            result = submit_draft_pr("/p", "proj", "alice", "repo", "1", "T", "B")
+        assert result == "https://git.example.com/alice/repo/pulls/9"
+        forge.pr_create.assert_not_called()
+
     def test_fork_workflow_sets_repo_and_head(self):
         with patch(f"{_M}.get_current_branch", return_value="koan/feat"), \
              patch(f"{_M}.resolve_base_branch", return_value="main"), \

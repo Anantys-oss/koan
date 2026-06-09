@@ -104,6 +104,13 @@ Communication between processes happens through shared files in `instance/` with
 - **`provider/__init__.py`** — Provider registry, resolution (env → config → default), cached singleton, and convenience functions (`run_command()`, `run_command_streaming()`, `build_full_command()`). Main entry point for the provider package.
 - **`cli_provider.py`** — Re-export facade (legacy); prefer importing from `provider` directly
 
+**Forge abstraction** (`koan/app/forge/`):
+- **`forge/base.py`** — `ForgeProvider` ABC + `FEATURE_*` flags. Unsupported operations raise `NotImplementedError`; callers check `supports()` or branch on `forge.name`.
+- **`forge/github.py`** — `GitHubForge`, thin delegation wrapper over `app.github` (canonical `gh` implementation; zero behavior change).
+- **`forge/gogs.py`** — `GogsForge` for self-hosted Gogs via REST API v1 (`urllib`); host/token from `KOAN_GOGS_HOST`/`KOAN_GOGS_TOKEN`. Supports PR + issue ops (no drafts/CI/reactions).
+- **`forge/registry.py`** — maps `forge:` type string → provider class (`DEFAULT_FORGE = "github"`).
+- **`forge/__init__.py`** — `get_forge(project_name)` resolves from `projects.yaml` `forge:`/`forge_url`/`github_url` (default GitHub); `get_forge_for_path(project_path)` resolves by directory basename. Loop-critical PR paths (`pr_submit`, `git_sync` merged detection, `branch_limiter` open-PR detection, `mission_verifier.check_pr_created`) route through the forge so non-GitHub projects function end-to-end; GitHub-only enrichments (`pr_feedback`, `deep_research`, `pr_quality`) degrade quietly on other forges. See `docs/architecture/github-and-trackers.md`.
+
 **Git & GitHub:**
 - **`git_sync.py`** / **`git_auto_merge.py`** — Branch tracking, sync awareness, configurable auto-merge. Branch cleanup is time-throttled (default 24h per project, persisted in `.branch-cleanup-tracker.json`). Orphan branch detection (unmerged, no open PR) notifies via outbox.
 - **`github.py`** — Centralized `gh` CLI wrapper (`run_gh()`, `pr_create()`, `issue_create()`)

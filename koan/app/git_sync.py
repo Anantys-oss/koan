@@ -324,17 +324,47 @@ class GitSync:
         return recent, stale
 
     def get_github_merged_branches(self) -> List[str]:
-        """Find agent branches whose GitHub PRs have been merged.
+        """Find agent branches whose PRs have been merged on the forge.
 
-        Uses ``gh pr list --state merged`` to batch-detect branches that
-        were squash-merged or rebase-merged — invisible to
-        ``git branch --merged`` since commit SHAs change.
+        Batch-detects branches that were squash-merged or rebase-merged —
+        invisible to ``git branch --merged`` since commit SHAs change. Routes
+        through the project's forge so this works on GitHub *and* self-hosted
+        forges (Gogs, etc.); the GitHub path is unchanged. Without this, a
+        non-GitHub project's branches are never recognised as merged, so the
+        project stays permanently branch-saturated.
 
         Returns:
-            Sorted list of branch names whose PRs are merged on GitHub.
-            Returns empty list on error (no gh CLI, not a GitHub repo, etc.).
+            Sorted list of branch names whose PRs are merged on the forge.
+            Returns empty list on error (no CLI, unknown repo, etc.).
         """
         prefix = _get_prefix()
+
+        from app.forge import get_forge
+        forge = get_forge(self.project_name)
+
+        if forge.name != "github":
+            # Non-GitHub forge: resolve the repo slug and ask the forge for
+            # merged PR branches. list_merged_prs is best-effort and swallows
+            # its own errors, so we only guard slug resolution here.
+            try:
+                repo = forge.repo_slug(self.project_path) or ""
+                if not repo:
+                    log.warning(
+                        "Forge %s: could not determine repo slug for %s — "
+                        "merged-branch detection skipped; if branches are not "
+                        "being cleaned up, check the origin remote URL",
+                        forge.name, self.project_path,
+                    )
+                    return []
+                merged = forge.list_merged_prs(repo, cwd=self.project_path)
+            except (RuntimeError, OSError, ValueError, NotImplementedError) as e:
+                log.warning("Forge %s: failed to list merged PRs: %s", forge.name, e)
+                return []
+            return sorted({
+                ref for ref in merged
+                if isinstance(ref, str) and ref.startswith(prefix)
+            })
+
         try:
             from app.github import run_gh
             raw = run_gh(

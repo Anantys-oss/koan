@@ -202,7 +202,10 @@ def check_test_coverage(project_path: str, mission_title: str) -> Check:
 def check_pr_created(project_path: str, mission_title: str) -> Check:
     """Verify that a draft PR was created for code-changing missions.
 
-    Uses `gh pr view` to check for an existing PR on the current branch.
+    Routes the PR lookup through the project's forge so the check works on
+    GitHub *and* self-hosted forges (Gogs, etc.) — previously it called
+    ``gh`` unconditionally, which failed for every non-GitHub project and
+    spammed the log with "known GitHub host" errors each iteration.
     """
     if _is_analysis_mission(mission_title):
         return Check(
@@ -215,36 +218,40 @@ def check_pr_created(project_path: str, mission_title: str) -> Check:
     if rc != 0 or branch in ("main", "master", ""):
         return Check("pr_created", CheckStatus.SKIP, "Not on feature branch")
 
-    # Check for PR via gh CLI
+    # Look up the PR via the forge abstraction.
     try:
-        from app.github import run_gh
-        pr_json = run_gh(
-            "pr", "view", "--json", "number,state,isDraft",
-            cwd=project_path, timeout=10,
-        )
-        import json
-        pr_data = json.loads(pr_json)
-        pr_num = pr_data.get("number")
-        is_draft = pr_data.get("isDraft", False)
-        state = pr_data.get("state", "")
-
-        if state == "OPEN":
-            draft_info = " (draft)" if is_draft else ""
-            return Check(
-                "pr_created", CheckStatus.PASS,
-                f"PR #{pr_num}{draft_info} exists"
-            )
-        return Check(
-            "pr_created", CheckStatus.WARN,
-            f"PR #{pr_num} exists but state is {state}"
-        )
+        from app.forge import get_forge_for_path
+        forge = get_forge_for_path(project_path)
+        repo = forge.repo_slug(project_path) or ""
+        pr_data = forge.find_pr_for_branch(repo, branch, cwd=project_path)
     except Exception as e:
-        # No PR or gh not available
+        # Forge not available / lookup error — don't fail the mission over it.
         print(f"[verifier] PR check failed: {e}", file=sys.stderr)
         return Check(
             "pr_created", CheckStatus.WARN,
             "No PR found for current branch"
         )
+
+    if not pr_data:
+        return Check(
+            "pr_created", CheckStatus.WARN,
+            "No PR found for current branch"
+        )
+
+    pr_num = pr_data.get("number")
+    is_draft = pr_data.get("isDraft", False)
+    state = (pr_data.get("state") or "").upper()
+
+    if state == "OPEN":
+        draft_info = " (draft)" if is_draft else ""
+        return Check(
+            "pr_created", CheckStatus.PASS,
+            f"PR #{pr_num}{draft_info} exists"
+        )
+    return Check(
+        "pr_created", CheckStatus.WARN,
+        f"PR #{pr_num} exists but state is {state}"
+    )
 
 
 def check_commit_quality(project_path: str) -> Check:

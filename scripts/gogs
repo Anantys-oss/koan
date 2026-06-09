@@ -1,0 +1,575 @@
+#!/usr/bin/env python3
+"""gh-compatible CLI wrapper for self-hosted Gogs instances.
+
+Reads KOAN_GOGS_HOST and KOAN_GOGS_TOKEN from the environment.  Provides
+a subset of the ``gh`` command interface so that tooling written for GitHub
+can work with Gogs by swapping the binary name.
+
+Supported commands:
+    gogs pr create  --title TITLE --body BODY [--draft] [--base BASE]
+                    [--repo OWNER/REPO] [--head HEAD]
+    gogs pr view    NUMBER --repo OWNER/REPO [--json FIELDS]
+    gogs pr diff    NUMBER --repo OWNER/REPO
+    gogs pr list    --repo OWNER/REPO --state STATE
+                    [--json FIELDS] [--jq FILTER] [--author AUTHOR]
+                    [--limit N]
+    gogs issue create --title TITLE --body BODY [--repo OWNER/REPO]
+    gogs issue list   --state STATE [--repo OWNER/REPO]
+                      [--json FIELDS] [--limit N]
+    gogs issue edit   NUMBER --body BODY [--repo OWNER/REPO]
+    gogs repo view        [--json FIELDS] [--jq FILTER]
+    gogs repo permissions [--repo OWNER/REPO] [--json FIELDS] [--jq FILTER]
+    gogs repo fork        [--repo OWNER/REPO] [--org ORGANIZATION]
+    gogs api         ENDPOINT [-X METHOD] [--jq FILTER]
+                     [--input -] [-F body=@-] [--paginate]
+
+Environment:
+    KOAN_GOGS_HOST   — Gogs base URL, e.g. https://git.example.com
+    KOAN_GOGS_TOKEN  — Personal access token
+"""
+
+import json
+import os
+import re
+import subprocess
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from typing import Any, Dict, List, Optional, Tuple
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+
+GOGS_HOST = os.environ.get("KOAN_GOGS_HOST", "").rstrip("/")
+GOGS_TOKEN = os.environ.get("KOAN_GOGS_TOKEN", "")
+
+
+def _require_host() -> None:
+    if not GOGS_HOST:
+        _die("KOAN_GOGS_HOST is not set. Point it at your Gogs instance URL.")
+
+
+# ---------------------------------------------------------------------------
+# HTTP helpers
+# ---------------------------------------------------------------------------
+
+def _headers() -> Dict[str, str]:
+    h = {"Content-Type": "application/json"}
+    if GOGS_TOKEN:
+        h["Authorization"] = f"token {GOGS_TOKEN}"
+    return h
+
+
+def _request(
+    method: str,
+    path: str,
+    data: Optional[Dict] = None,
+    params: Optional[Dict] = None,
+    timeout: int = 30,
+    full_url: str = "",
+) -> Any:
+    """Make an authenticated Gogs API v1 request, return parsed JSON."""
+    _require_host()
+    if full_url:
+        url = full_url
+    else:
+        url = f"{GOGS_HOST}/api/v1/{path.lstrip('/')}"
+    if params:
+        url = url + "?" + urllib.parse.urlencode(params)
+    body = json.dumps(data).encode() if data is not None else None
+    req = urllib.request.Request(url, data=body, headers=_headers(), method=method.upper())
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            return json.loads(raw) if raw.strip() else {}
+    except urllib.error.HTTPError as exc:
+        _die(f"Gogs API {method} {path}: HTTP {exc.code}: {exc.read().decode('utf-8', errors='replace')[:300]}")
+    except Exception as exc:
+        _die(f"Gogs API {method} {path}: {exc}")
+
+
+def _raw_get(url: str, timeout: int = 30) -> str:
+    """Fetch a raw (non-JSON) URL with token auth."""
+    _require_host()
+    req = urllib.request.Request(url, headers=_headers())
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        _die(f"Gogs fetch {url}: HTTP {exc.code}")
+    except Exception as exc:
+        _die(f"Gogs fetch {url}: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# Minimal jq-like filter
+# ---------------------------------------------------------------------------
+
+def _apply_jq(data: Any, filter_str: str) -> str:
+    """Apply a minimal subset of jq filter expressions to data.
+
+    Supported patterns:
+        .[].FIELD          → newline-separated field values from array
+        .FIELD.SUBFIELD    → nested field access
+        length             → array/object length
+        .A.B + "/" + .C.D  → string concatenation (any number of segments)
+    """
+    f = filter_str.strip()
+
+    # length
+    if f in ("length", ".length"):
+        if isinstance(data, (list, dict)):
+            return str(len(data))
+        return "0"
+
+    # .[].FIELD  or  .[].FIELD.SUBFIELD
+    array_field = re.match(r"^\.\[\]\.([\w.]+)$", f)
+    if array_field:
+        field_path = array_field.group(1).split(".")
+        results = []
+        if isinstance(data, list):
+            for item in data:
+                val = _get_path(item, field_path)
+                if val is not None:
+                    results.append(str(val))
+        return "\n".join(results)
+
+    # String concatenation:  .A + "/" + .B  etc.
+    if "+" in f:
+        segments = [s.strip() for s in f.split("+")]
+        parts = []
+        for seg in segments:
+            if seg.startswith("."):
+                field_path = seg[1:].split(".")
+                val = _get_path(data, field_path) or ""
+                parts.append(str(val))
+            else:
+                # Literal string (possibly quoted)
+                parts.append(seg.strip("\"'"))
+        result = "".join(parts)
+        return result
+
+    # Simple field path: .FIELD  or  .FIELD.SUBFIELD
+    if f.startswith("."):
+        field_path = f[1:].split(".")
+        val = _get_path(data, field_path)
+        if val is None:
+            return ""
+        if isinstance(val, (dict, list)):
+            return json.dumps(val)
+        return str(val)
+
+    # Object construction: {"key": .field}  — too complex, return raw JSON
+    return json.dumps(data)
+
+
+def _get_path(obj: Any, keys: List[str]) -> Any:
+    """Traverse a nested dict/list by dotted key path."""
+    for key in keys:
+        if not key:
+            continue
+        if isinstance(obj, dict):
+            obj = obj.get(key)
+        else:
+            return None
+    return obj
+
+
+# ---------------------------------------------------------------------------
+# Field normalisation (Gogs → gh compatible)
+# ---------------------------------------------------------------------------
+
+_PR_FIELD_MAP = {
+    "number": lambda pr: pr.get("number"),
+    "title": lambda pr: pr.get("title", ""),
+    "body": lambda pr: pr.get("body", ""),
+    "state": lambda pr: pr.get("state", ""),
+    "headRefName": lambda pr: (pr.get("head") or {}).get("ref", ""),
+    "baseRefName": lambda pr: (pr.get("base") or {}).get("ref", ""),
+    "url": lambda pr: pr.get("html_url", ""),
+    "merged": lambda pr: pr.get("merged", False),
+}
+
+_ISSUE_FIELD_MAP = {
+    "number": lambda i: i.get("number"),
+    "title": lambda i: i.get("title", ""),
+    "body": lambda i: i.get("body", ""),
+    "url": lambda i: i.get("html_url", ""),
+    "state": lambda i: i.get("state", ""),
+}
+
+
+def _pick_fields(obj: Dict, field_map: Dict, fields: List[str]) -> Dict:
+    """Build a dict with only the requested fields, normalised via field_map."""
+    result = {}
+    for field in fields:
+        if field in field_map:
+            result[field] = field_map[field](obj)
+        elif field in obj:
+            result[field] = obj[field]
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Output helpers
+# ---------------------------------------------------------------------------
+
+def _out(text: str) -> None:
+    print(text, flush=True)
+
+
+def _die(msg: str) -> None:
+    print(f"gogs: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def _output_json_or_jq(data: Any, json_fields: str, jq_filter: str) -> None:
+    """Output data, applying field selection and/or jq filter."""
+    if json_fields and isinstance(data, list):
+        fields = [f.strip() for f in json_fields.split(",")]
+        # Detect which field map to use based on keys present
+        if data:
+            sample = data[0] if isinstance(data[0], dict) else {}
+            if "head" in sample or "headRefName" in sample:
+                field_map = _PR_FIELD_MAP
+            else:
+                field_map = _ISSUE_FIELD_MAP
+            data = [_pick_fields(item, field_map, fields) for item in data]
+    elif json_fields and isinstance(data, dict):
+        fields = [f.strip() for f in json_fields.split(",")]
+        if "head" in data or "headRefName" in data:
+            field_map = _PR_FIELD_MAP
+        else:
+            field_map = _ISSUE_FIELD_MAP
+        data = _pick_fields(data, field_map, fields)
+
+    if jq_filter:
+        _out(_apply_jq(data, jq_filter))
+    else:
+        _out(json.dumps(data, ensure_ascii=False))
+
+
+# ---------------------------------------------------------------------------
+# Argument parser (manual, no argparse dependency to keep script portable)
+# ---------------------------------------------------------------------------
+
+def _pop(args: List[str], flag: str) -> Optional[str]:
+    """Pop a --flag VALUE pair from args list, return VALUE or None."""
+    try:
+        idx = args.index(flag)
+        val = args[idx + 1]
+        args.pop(idx)
+        args.pop(idx)
+        return val
+    except (ValueError, IndexError):
+        return None
+
+
+def _has(args: List[str], flag: str) -> bool:
+    """Return True and remove flag if present."""
+    if flag in args:
+        args.remove(flag)
+        return True
+    return False
+
+
+def _positional(args: List[str]) -> str:
+    """Return the first non-flag positional argument."""
+    for i, a in enumerate(args):
+        if not a.startswith("-"):
+            return args.pop(i)
+    return ""
+
+
+# ---------------------------------------------------------------------------
+# Command implementations
+# ---------------------------------------------------------------------------
+
+def cmd_pr_create(args: List[str]) -> None:
+    title = _pop(args, "--title") or _die("--title required")
+    body = _pop(args, "--body") or ""
+    base = _pop(args, "--base")
+    repo = _pop(args, "--repo")
+    head = _pop(args, "--head")
+    _has(args, "--draft")  # Accepted but ignored — Gogs has no draft PRs
+
+    if not repo:
+        repo = _repo_from_git_remote()
+    owner, repo_name = _split_repo(repo)
+
+    payload = {"title": title, "body": body}
+    if base:
+        payload["base"] = base
+    if head:
+        payload["head"] = head
+
+    data = _request("POST", f"{owner}/{repo_name}/pulls", payload)
+    html_url = data.get("html_url") or f"{GOGS_HOST}/{owner}/{repo_name}/pulls/{data.get('number')}"
+    _out(html_url)
+
+
+def cmd_pr_view(args: List[str]) -> None:
+    number = _positional(args) or _die("pr view requires a PR number")
+    repo = _pop(args, "--repo") or _die("--repo required")
+    json_fields = _pop(args, "--json") or ""
+    jq_filter = _pop(args, "--jq") or ""
+
+    owner, repo_name = _split_repo(repo)
+    data = _request("GET", f"{owner}/{repo_name}/pulls/{number}")
+    _output_json_or_jq(data, json_fields, jq_filter)
+
+
+def cmd_pr_diff(args: List[str]) -> None:
+    number = _positional(args) or _die("pr diff requires a PR number")
+    repo = _pop(args, "--repo") or _die("--repo required")
+    owner, repo_name = _split_repo(repo)
+    diff = _raw_get(f"{GOGS_HOST}/{owner}/{repo_name}/pulls/{number}.diff")
+    _out(diff)
+
+
+def cmd_pr_list(args: List[str]) -> None:
+    repo = _pop(args, "--repo") or _repo_from_git_remote()
+    state = _pop(args, "--state") or "open"
+    json_fields = _pop(args, "--json") or ""
+    jq_filter = _pop(args, "--jq") or ""
+    author = _pop(args, "--author") or ""
+    limit = int(_pop(args, "--limit") or "50")
+
+    owner, repo_name = _split_repo(repo)
+
+    params: Dict = {"limit": str(limit)}
+    # Gogs uses state=open/closed for PR listing
+    if state in ("merged", "closed"):
+        params["state"] = "closed"
+    else:
+        params["state"] = state
+
+    items = _request("GET", f"{owner}/{repo_name}/pulls", params=params)
+    if not isinstance(items, list):
+        items = []
+
+    if author:
+        items = [
+            pr for pr in items
+            if isinstance(pr, dict)
+            and (pr.get("user") or {}).get("login", "").lower() == author.lower()
+        ]
+
+    if state == "merged":
+        items = [pr for pr in items if isinstance(pr, dict) and pr.get("merged")]
+
+    _output_json_or_jq(items, json_fields, jq_filter)
+
+
+def cmd_issue_create(args: List[str]) -> None:
+    title = _pop(args, "--title") or _die("--title required")
+    body = _pop(args, "--body") or ""
+    repo = _pop(args, "--repo") or _repo_from_git_remote()
+
+    owner, repo_name = _split_repo(repo)
+    data = _request("POST", f"{owner}/{repo_name}/issues", {"title": title, "body": body})
+    html_url = data.get("html_url") or f"{GOGS_HOST}/{owner}/{repo_name}/issues/{data.get('number')}"
+    _out(html_url)
+
+
+def cmd_issue_list(args: List[str]) -> None:
+    repo = _pop(args, "--repo") or _repo_from_git_remote()
+    state = _pop(args, "--state") or "open"
+    json_fields = _pop(args, "--json") or ""
+    jq_filter = _pop(args, "--jq") or ""
+    limit = int(_pop(args, "--limit") or "50")
+
+    owner, repo_name = _split_repo(repo)
+    params = {"state": state, "type": "issues", "limit": str(limit)}
+    items = _request("GET", f"{owner}/{repo_name}/issues", params=params)
+    if not isinstance(items, list):
+        items = []
+
+    _output_json_or_jq(items, json_fields, jq_filter)
+
+
+def cmd_issue_edit(args: List[str]) -> None:
+    number = _positional(args) or _die("issue edit requires an issue number")
+    body = _pop(args, "--body") or _die("--body required")
+    repo = _pop(args, "--repo") or _repo_from_git_remote()
+
+    owner, repo_name = _split_repo(repo)
+    _request("PATCH", f"{owner}/{repo_name}/issues/{number}", {"body": body})
+
+
+def cmd_repo_view(args: List[str]) -> None:
+    json_fields = _pop(args, "--json") or ""
+    jq_filter = _pop(args, "--jq") or ""
+
+    # Infer repo from git remote
+    repo = _repo_from_git_remote()
+    owner, repo_name = _split_repo(repo)
+    data = _request("GET", f"{owner}/{repo_name}")
+
+    # Normalise parent field to match gh's output shape
+    parent = data.get("parent")
+    if parent and isinstance(parent, dict):
+        normalised = {
+            "parent": {
+                "owner": {"login": (parent.get("owner") or {}).get("login", "")},
+                "name": parent.get("name", ""),
+            }
+        }
+    else:
+        normalised = {"parent": None}
+
+    _output_json_or_jq(normalised, json_fields, jq_filter)
+
+
+def cmd_repo_permissions(args: List[str]) -> None:
+    repo = _pop(args, "--repo")
+    json_fields = _pop(args, "--json") or ""
+    jq_filter = _pop(args, "--jq") or ""
+
+    if not repo:
+        repo = _repo_from_git_remote()
+    owner, repo_name = _split_repo(repo)
+    data = _request("GET", f"{owner}/{repo_name}")
+
+    perms = data.get("permissions") or {}
+    # Normalise to a consistent shape regardless of Gogs version
+    normalised = {
+        "admin": bool(perms.get("admin", False)),
+        "push":  bool(perms.get("push", False)),
+        "pull":  bool(perms.get("pull", False)),
+    }
+
+    if jq_filter:
+        _out(_apply_jq(normalised, jq_filter))
+    elif json_fields:
+        fields = [f.strip() for f in json_fields.split(",")]
+        _out(json.dumps({k: v for k, v in normalised.items() if k in fields}, ensure_ascii=False))
+    else:
+        _out(json.dumps(normalised, ensure_ascii=False))
+
+
+def cmd_repo_fork(args: List[str]) -> None:
+    repo = _pop(args, "--repo")
+    org = _pop(args, "--org") or ""
+
+    if not repo:
+        repo = _repo_from_git_remote()
+    owner, repo_name = _split_repo(repo)
+
+    payload: Dict = {}
+    if org:
+        payload["organization"] = org
+
+    data = _request("POST", f"{owner}/{repo_name}/forks", payload or None)
+    html_url = data.get("html_url") or f"{GOGS_HOST}/{data.get('full_name', '')}"
+    _out(html_url)
+
+
+def cmd_api(args: List[str]) -> None:
+    endpoint = _positional(args) or _die("api requires an endpoint")
+    method = _pop(args, "-X") or "GET"
+    jq_filter = _pop(args, "--jq") or ""
+    _has(args, "--paginate")  # Pagination not implemented; accepted silently
+
+    # Body via stdin: --input - or -F body=@-
+    body_data = None
+    if _has(args, "--input"):
+        # Next arg is '-' (stdin)
+        _positional(args)  # discard the '-'
+        body_data = sys.stdin.read()
+    elif "-F" in args:
+        _pop(args, "-F")  # consume -F body=@-
+        body_data = sys.stdin.read()
+
+    _require_host()
+    url = f"{GOGS_HOST}/api/v1/{endpoint.lstrip('/')}"
+    headers = _headers()
+
+    body = body_data.encode() if body_data else None
+    req = urllib.request.Request(url, data=body, headers=headers, method=method.upper())
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            data = json.loads(raw) if raw.strip() else {}
+    except urllib.error.HTTPError as exc:
+        _die(f"API {method} {endpoint}: HTTP {exc.code}: {exc.read().decode('utf-8', errors='replace')[:300]}")
+    except Exception as exc:
+        _die(f"API {method} {endpoint}: {exc}")
+
+    if jq_filter:
+        _out(_apply_jq(data, jq_filter))
+    else:
+        _out(json.dumps(data, ensure_ascii=False))
+
+
+# ---------------------------------------------------------------------------
+# Git remote helper
+# ---------------------------------------------------------------------------
+
+def _repo_from_git_remote() -> str:
+    """Infer owner/repo from the current directory's git remote."""
+    try:
+        result = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            capture_output=True, text=True, timeout=5, stdin=subprocess.DEVNULL,
+        )
+        if result.returncode == 0:
+            url = result.stdout.strip()
+            match = re.search(r"[:/]([^/:]+)/([^/]+?)(?:\.git)?$", url)
+            if match:
+                return f"{match.group(1)}/{match.group(2)}"
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+    _die("Could not infer repo from git remote. Pass --repo OWNER/REPO explicitly.")
+
+
+def _split_repo(repo: Optional[str]) -> Tuple[str, str]:
+    if not repo:
+        _die("--repo OWNER/REPO is required")
+    parts = str(repo).split("/", 1)
+    if len(parts) != 2 or not all(parts):
+        _die(f"Invalid --repo format: {repo!r} (expected OWNER/REPO)")
+    return parts[0], parts[1]
+
+
+# ---------------------------------------------------------------------------
+# Main dispatch
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    args = sys.argv[1:]
+    if not args:
+        print(__doc__, file=sys.stderr)
+        sys.exit(1)
+
+    cmd = args.pop(0)
+    sub = args.pop(0) if args and not args[0].startswith("-") else ""
+
+    dispatch = {
+        ("pr", "create"): cmd_pr_create,
+        ("pr", "view"): cmd_pr_view,
+        ("pr", "diff"): cmd_pr_diff,
+        ("pr", "list"): cmd_pr_list,
+        ("issue", "create"): cmd_issue_create,
+        ("issue", "list"): cmd_issue_list,
+        ("issue", "edit"): cmd_issue_edit,
+        ("repo", "view"): cmd_repo_view,
+        ("repo", "permissions"): cmd_repo_permissions,
+        ("repo", "fork"): cmd_repo_fork,
+        ("api", ""): cmd_api,
+    }
+
+    handler = dispatch.get((cmd, sub))
+    if handler is None:
+        _die(f"Unsupported command: {cmd} {sub}".strip())
+
+    # For 'api' the endpoint is the remaining first positional arg
+    if cmd == "api":
+        args.insert(0, sub)  # sub was the endpoint, put it back
+    handler(args)
+
+
+if __name__ == "__main__":
+    main()

@@ -2550,7 +2550,7 @@ class TestHandlePr:
         from app.skills import SkillContext
         ctx = SkillContext(koan_root=tmp_path, instance_dir=tmp_path, args="not a url")
         result = mod.handle(ctx)
-        assert "No valid GitHub PR URL" in result
+        assert "No valid PR URL" in result
 
     @patch("app.utils.get_known_projects", return_value=[])
     def test_no_matching_project(self, mock_projects, tmp_path):

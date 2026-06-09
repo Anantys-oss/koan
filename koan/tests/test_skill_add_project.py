@@ -238,7 +238,7 @@ class TestHandleSuccessWithPush:
         self, mock_refresh, mock_push, mock_clone,
         koan_root, instance_dir, workspace_dir
     ):
-        def fake_clone(url, target):
+        def fake_clone(host, url, target):
             Path(target).mkdir(parents=True)
 
         mock_clone.side_effect = fake_clone
@@ -256,7 +256,7 @@ class TestHandleSuccessWithPush:
         self, mock_refresh, mock_push, mock_clone,
         koan_root, instance_dir, workspace_dir
     ):
-        def fake_clone(url, target):
+        def fake_clone(host, url, target):
             Path(target).mkdir(parents=True)
 
         mock_clone.side_effect = fake_clone
@@ -274,7 +274,7 @@ class TestHandleSuccessWithPush:
         koan_root, instance_dir
     ):
         """workspace/ is created automatically if it doesn't exist."""
-        def fake_clone(url, target):
+        def fake_clone(host, url, target):
             Path(target).mkdir(parents=True)
 
         mock_clone.side_effect = fake_clone
@@ -298,7 +298,7 @@ class TestHandleFork:
         self, mock_refresh, mock_fork, mock_push, mock_clone,
         koan_root, instance_dir, workspace_dir
     ):
-        def fake_clone(url, target):
+        def fake_clone(host, url, target):
             Path(target).mkdir(parents=True)
 
         mock_clone.side_effect = fake_clone
@@ -319,7 +319,7 @@ class TestHandleFork:
         koan_root, instance_dir, workspace_dir
     ):
         """If fork creation fails, the project is still registered."""
-        def fake_clone(url, target):
+        def fake_clone(host, url, target):
             Path(target).mkdir(parents=True)
 
         mock_clone.side_effect = fake_clone
@@ -338,7 +338,7 @@ class TestHandleFork:
         koan_root, instance_dir, workspace_dir
     ):
         """If push check raises, treat as no access."""
-        def fake_clone(url, target):
+        def fake_clone(host, url, target):
             Path(target).mkdir(parents=True)
 
         mock_clone.side_effect = fake_clone
@@ -360,7 +360,7 @@ class TestHandleCacheRefresh:
         self, mock_refresh, mock_push, mock_clone,
         koan_root, instance_dir, workspace_dir
     ):
-        def fake_clone(url, target):
+        def fake_clone(host, url, target):
             Path(target).mkdir(parents=True)
 
         mock_clone.side_effect = fake_clone
@@ -376,7 +376,7 @@ class TestHandleCacheRefresh:
         self, mock_refresh, mock_push, mock_clone,
         koan_root, instance_dir, workspace_dir
     ):
-        def fake_clone(url, target):
+        def fake_clone(host, url, target):
             Path(target).mkdir(parents=True)
 
         mock_clone.side_effect = fake_clone
@@ -398,7 +398,7 @@ class TestHandleNotifications:
         self, mock_refresh, mock_push, mock_clone,
         koan_root, instance_dir, workspace_dir
     ):
-        def fake_clone(url, target):
+        def fake_clone(host, url, target):
             Path(target).mkdir(parents=True)
 
         mock_clone.side_effect = fake_clone
@@ -415,7 +415,7 @@ class TestHandleNotifications:
         self, mock_refresh, mock_fork, mock_push, mock_clone,
         koan_root, instance_dir, workspace_dir
     ):
-        def fake_clone(url, target):
+        def fake_clone(host, url, target):
             Path(target).mkdir(parents=True)
 
         mock_clone.side_effect = fake_clone
@@ -432,23 +432,23 @@ class TestHandleNotifications:
 class TestCheckPushAccess:
     @patch("app.github.run_gh", return_value="ADMIN")
     def test_admin_returns_true(self, _):
-        assert _mod._check_push_access("owner", "repo") is True
+        assert _mod._check_push_access("github.com", "owner", "repo") is True
 
     @patch("app.github.run_gh", return_value="WRITE")
     def test_write_returns_true(self, _):
-        assert _mod._check_push_access("owner", "repo") is True
+        assert _mod._check_push_access("github.com", "owner", "repo") is True
 
     @patch("app.github.run_gh", return_value="MAINTAIN")
     def test_maintain_returns_true(self, _):
-        assert _mod._check_push_access("owner", "repo") is True
+        assert _mod._check_push_access("github.com", "owner", "repo") is True
 
     @patch("app.github.run_gh", return_value="READ")
     def test_read_returns_false(self, _):
-        assert _mod._check_push_access("owner", "repo") is False
+        assert _mod._check_push_access("github.com", "owner", "repo") is False
 
     @patch("app.github.run_gh", return_value="")
     def test_none_returns_false(self, _):
-        assert _mod._check_push_access("owner", "repo") is False
+        assert _mod._check_push_access("github.com", "owner", "repo") is False
 
 
 # ---------------------------------------------------------------------------
@@ -461,7 +461,7 @@ class TestCreateForkAndConfigure:
     @patch(f"{P}.run_git_strict")
     def test_creates_fork_and_reconfigures(self, mock_git, mock_gh, mock_user):
         result = _mod._create_fork_and_configure(
-            "upstream-owner", "repo", "/tmp/project"
+            "github.com", "upstream-owner", "repo", "/tmp/project"
         )
 
         assert result == "myuser/repo"
@@ -479,7 +479,7 @@ class TestCreateForkAndConfigure:
     @patch(f"{P}.run_git_strict")
     def test_fork_already_exists_is_ok(self, mock_git, mock_gh, mock_user):
         result = _mod._create_fork_and_configure(
-            "upstream-owner", "repo", "/tmp/project"
+            "github.com", "upstream-owner", "repo", "/tmp/project"
         )
         assert result == "myuser/repo"
 
@@ -488,7 +488,7 @@ class TestCreateForkAndConfigure:
     def test_no_username_raises(self, mock_gh, mock_user):
         with pytest.raises(RuntimeError, match="Cannot determine"):
             _mod._create_fork_and_configure(
-                "upstream-owner", "repo", "/tmp/project"
+                "github.com", "upstream-owner", "repo", "/tmp/project"
             )
 
     @patch(f"{P}._get_gh_username", return_value="myuser")
@@ -496,7 +496,7 @@ class TestCreateForkAndConfigure:
     def test_fork_api_error_raises(self, mock_gh, mock_user):
         with pytest.raises(RuntimeError, match="forbidden"):
             _mod._create_fork_and_configure(
-                "upstream-owner", "repo", "/tmp/project"
+                "github.com", "upstream-owner", "repo", "/tmp/project"
             )
 
 
@@ -512,7 +512,7 @@ class TestHandleNameDerivation:
         self, mock_refresh, mock_push, mock_clone,
         koan_root, instance_dir, workspace_dir
     ):
-        def fake_clone(url, target):
+        def fake_clone(host, url, target):
             Path(target).mkdir(parents=True)
 
         mock_clone.side_effect = fake_clone
@@ -529,7 +529,7 @@ class TestHandleNameDerivation:
         self, mock_refresh, mock_push, mock_clone,
         koan_root, instance_dir, workspace_dir
     ):
-        def fake_clone(url, target):
+        def fake_clone(host, url, target):
             Path(target).mkdir(parents=True)
 
         mock_clone.side_effect = fake_clone
@@ -555,7 +555,7 @@ class TestHandleCloneUrl:
     ):
         clone_urls = []
 
-        def capture_clone(url, target):
+        def capture_clone(host, url, target):
             clone_urls.append(url)
             Path(target).mkdir(parents=True)
 
@@ -573,7 +573,7 @@ class TestHandleCloneUrl:
     ):
         clone_urls = []
 
-        def capture_clone(url, target):
+        def capture_clone(host, url, target):
             clone_urls.append(url)
             Path(target).mkdir(parents=True)
 

@@ -47,6 +47,22 @@ SECRETS_PATTERNS = [
 ]
 
 
+def _is_github_forge(project_path: str) -> bool:
+    """Return True if the project at ``project_path`` is on a GitHub forge.
+
+    Gates GitHub-only PR mutation (``gh pr edit`` / ``gh pr comment``), which
+    has no Gogs equivalent, so it degrades quietly on self-hosted forges.
+    Returns True on resolution error to preserve GitHub behaviour by default.
+    """
+    try:
+        from app.forge import get_forge_for_path
+        return get_forge_for_path(project_path).name == "github"
+    except Exception as e:
+        print(f"[pr_quality] forge resolution failed, assuming GitHub: {e}",
+              file=sys.stderr)
+        return True
+
+
 def _get_base_ref(project_path: str) -> Optional[str]:
     """Determine the base ref for diffing (upstream/main or origin/main)."""
     for ref in ("upstream/main", "origin/main", "upstream/master", "origin/master"):
@@ -369,6 +385,12 @@ def enrich_pr_description(project_path: str, quality_report: dict) -> Optional[s
     Returns:
         PR URL if enriched, None if no PR found or enrichment skipped.
     """
+    # PR-body enrichment uses `gh pr edit`, which has no Gogs equivalent in
+    # the forge interface. Skip quietly on non-GitHub forges instead of
+    # erroring on every mission's post-run pipeline.
+    if not _is_github_forge(project_path):
+        return None
+
     from app.github import run_gh
 
     # Check if a PR exists for the current branch
@@ -527,6 +549,11 @@ def post_quality_comment(project_path: str, quality_report: dict) -> bool:
 
     Returns True if comment was posted.
     """
+    # Commenting uses `gh pr comment`, which has no Gogs equivalent in the
+    # forge interface. Skip quietly on non-GitHub forges.
+    if not _is_github_forge(project_path):
+        return False
+
     from app.github import run_gh, sanitize_github_comment
 
     # Only comment if there are actual issues

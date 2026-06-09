@@ -8,6 +8,7 @@ from app.github_skill_helpers import (
     queue_github_mission_once,
     resolve_project_for_repo,
     resolve_project_via_pr,
+    try_extract_gogs_pr,
 )
 
 
@@ -16,6 +17,7 @@ def handle(ctx):
 
     Usage:
         /recreate https://github.com/owner/repo/pull/123
+        /recreate https://git.example.com/owner/repo/pulls/42
 
     Unlike /rebase which preserves the branch history, /recreate reads the
     original PR to understand its intent, then reimplements the feature
@@ -26,17 +28,34 @@ def handle(ctx):
 
     if not args:
         return (
-            "Usage: /recreate <github-pr-url>\n"
-            "Ex: /recreate https://github.com/sukria/koan/pull/42\n\n"
+            "Usage: /recreate <pr-url>\n"
+            "Ex: /recreate https://github.com/sukria/koan/pull/42\n"
+            "Ex: /recreate https://git.example.com/owner/repo/pulls/42\n\n"
             "Reads the original PR to understand intent, then reimplements "
             "the feature from scratch on current upstream. Use when a branch "
             "has diverged too far for a clean rebase."
         )
 
+    # ── Gogs PR ───────────────────────────────────────────────────────
+    gogs = try_extract_gogs_pr(args)
+    if gogs:
+        owner, repo, pr_number, pr_url = gogs
+        project_path, project_name = resolve_project_for_repo(repo, owner=owner)
+        if not project_path:
+            return format_project_not_found_error(repo, owner=owner)
+        duplicate = queue_github_mission_once(
+            ctx, "recreate", pr_url, project_name,
+            type_label="PR", number=pr_number, owner=owner, repo=repo,
+        )
+        if duplicate:
+            return duplicate
+        return f"Recreate queued for Gogs PR #{pr_number} ({owner}/{repo})"
+
+    # ── GitHub PR ─────────────────────────────────────────────────────
     result = extract_github_url(args, url_type="pr")
     if not result:
         return (
-            "\u274c No valid GitHub PR URL found.\n"
+            "❌ No valid PR URL found.\n"
             "Ex: /recreate https://github.com/owner/repo/pull/123"
         )
 
@@ -45,7 +64,7 @@ def handle(ctx):
     try:
         owner, repo, pr_number = parse_pr_url(pr_url)
     except ValueError as e:
-        return f"\u274c {e}"
+        return f"❌ {e}"
 
     project_path, project_name = resolve_project_for_repo(repo, owner=owner)
     if not project_path:

@@ -169,27 +169,27 @@ class TestParseArgs:
 class TestCheckPushAccess:
     @patch("app.github.run_gh", return_value="ADMIN")
     def test_admin_has_push(self, mock_gh, handler):
-        assert handler._check_push_access("owner", "repo") is True
+        assert handler._check_push_access("github.com", "owner", "repo") is True
 
     @patch("app.github.run_gh", return_value="WRITE")
     def test_write_has_push(self, mock_gh, handler):
-        assert handler._check_push_access("owner", "repo") is True
+        assert handler._check_push_access("github.com", "owner", "repo") is True
 
     @patch("app.github.run_gh", return_value="MAINTAIN")
     def test_maintain_has_push(self, mock_gh, handler):
-        assert handler._check_push_access("owner", "repo") is True
+        assert handler._check_push_access("github.com", "owner", "repo") is True
 
     @patch("app.github.run_gh", return_value="READ")
     def test_read_no_push(self, mock_gh, handler):
-        assert handler._check_push_access("owner", "repo") is False
+        assert handler._check_push_access("github.com", "owner", "repo") is False
 
     @patch("app.github.run_gh", return_value="")
     def test_empty_no_push(self, mock_gh, handler):
-        assert handler._check_push_access("owner", "repo") is False
+        assert handler._check_push_access("github.com", "owner", "repo") is False
 
     @patch("app.github.run_gh", return_value="  write  \n")
     def test_whitespace_stripped(self, mock_gh, handler):
-        assert handler._check_push_access("owner", "repo") is True
+        assert handler._check_push_access("github.com", "owner", "repo") is True
 
 
 # ===========================================================================
@@ -224,7 +224,7 @@ class TestCreateForkAndConfigure:
         ]
 
         with patch.object(handler, "run_git_strict") as mock_git:
-            result = handler._create_fork_and_configure("owner", "repo", str(project_dir))
+            result = handler._create_fork_and_configure("github.com", "owner", "repo", str(project_dir))
 
         assert result == "koan-bot/repo"
         assert mock_git.call_count == 2  # rename + add
@@ -240,7 +240,7 @@ class TestCreateForkAndConfigure:
         ]
 
         with patch.object(handler, "run_git_strict"):
-            result = handler._create_fork_and_configure("owner", "repo", str(project_dir))
+            result = handler._create_fork_and_configure("github.com", "owner", "repo", str(project_dir))
 
         assert result == "koan-bot/repo"
 
@@ -253,7 +253,7 @@ class TestCreateForkAndConfigure:
 
         with patch.object(handler, "run_git_strict"):
             with pytest.raises(RuntimeError, match="permission denied"):
-                handler._create_fork_and_configure("owner", "repo", str(project_dir))
+                handler._create_fork_and_configure("github.com", "owner", "repo", str(project_dir))
 
     @patch("app.github.run_gh")
     def test_no_username_raises(self, mock_gh, handler, tmp_path):
@@ -268,7 +268,7 @@ class TestCreateForkAndConfigure:
         with patch.object(handler, "_get_gh_username", return_value=None):
             with patch.object(handler, "run_git_strict"):
                 with pytest.raises(RuntimeError, match="Cannot determine"):
-                    handler._create_fork_and_configure("owner", "repo", str(project_dir))
+                    handler._create_fork_and_configure("github.com", "owner", "repo", str(project_dir))
 
 
 # ===========================================================================
@@ -474,15 +474,15 @@ class TestHandle:
 class TestCheckPushAccessSafe:
     @patch("app.github.run_gh", return_value="WRITE")
     def test_success(self, mock_gh, handler):
-        assert handler._check_push_access_safe("owner", "repo") is True
+        assert handler._check_push_access_safe("github.com", "owner", "repo") is True
 
     @patch("app.github.run_gh", return_value="READ")
     def test_no_access(self, mock_gh, handler):
-        assert handler._check_push_access_safe("owner", "repo") is False
+        assert handler._check_push_access_safe("github.com", "owner", "repo") is False
 
     @patch("app.github.run_gh", side_effect=RuntimeError("network"))
     def test_retries_on_failure(self, mock_gh, handler):
-        result = handler._check_push_access_safe("owner", "repo")
+        result = handler._check_push_access_safe("github.com", "owner", "repo")
         assert result is False
         # Called twice (initial + retry)
         assert mock_gh.call_count == 2
@@ -493,7 +493,7 @@ class TestCheckPushAccessSafe:
             RuntimeError("timeout"),  # first attempt fails
             "ADMIN",                  # retry succeeds
         ]
-        assert handler._check_push_access_safe("owner", "repo") is True
+        assert handler._check_push_access_safe("github.com", "owner", "repo") is True
 
 
 # ===========================================================================
@@ -504,7 +504,7 @@ class TestCheckPushAccessSafe:
 class TestGitClone:
     def test_clones_via_gh(self, handler):
         with patch("app.github.run_gh") as mock_gh:
-            handler._git_clone("https://github.com/owner/repo.git", "/tmp/target")
+            handler._git_clone("github.com", "https://github.com/owner/repo.git", "/tmp/target")
 
         mock_gh.assert_called_once_with(
             "repo", "clone", "https://github.com/owner/repo.git", "/tmp/target",
@@ -514,4 +514,144 @@ class TestGitClone:
     def test_propagates_error(self, handler):
         with patch("app.github.run_gh", side_effect=RuntimeError("boom")):
             with pytest.raises(RuntimeError, match="boom"):
-                handler._git_clone("url", "/tmp/t")
+                handler._git_clone("github.com", "url", "/tmp/t")
+
+
+# ===========================================================================
+# _is_gogs_host
+# ===========================================================================
+
+
+class TestIsGogsHost:
+    def test_matching_host(self, handler):
+        with patch("app.gogs_auth.get_gogs_host", return_value="https://git.example.com"):
+            assert handler._is_gogs_host("git.example.com") is True
+
+    def test_non_matching_host(self, handler):
+        with patch("app.gogs_auth.get_gogs_host", return_value="https://git.example.com"):
+            assert handler._is_gogs_host("other.example.com") is False
+
+    def test_gogs_not_configured(self, handler):
+        with patch("app.gogs_auth.get_gogs_host", return_value=""):
+            assert handler._is_gogs_host("git.example.com") is False
+
+    def test_matching_host_with_scheme_from_get_gogs_host(self, handler):
+        # get_gogs_host() now always returns a URL with scheme (normalised in gogs_auth.py),
+        # but _is_gogs_host should still resolve correctly in all cases.
+        with patch("app.gogs_auth.get_gogs_host", return_value="https://git.example.com"):
+            assert handler._is_gogs_host("git.example.com") is True
+
+
+# ===========================================================================
+# _check_push_access — Gogs paths
+# ===========================================================================
+
+
+class TestCheckPushAccessGogs:
+    GOGS_HOST = "git.example.com"
+
+    def _patch_gogs_host(self):
+        return patch("app.gogs_auth.get_gogs_host", return_value=f"https://{self.GOGS_HOST}")
+
+    def test_admin_permission_returns_true(self, handler):
+        with self._patch_gogs_host():
+            with patch("app.gogs.api", return_value={"permissions": {"admin": True, "push": False, "pull": True}}):
+                assert handler._check_push_access(self.GOGS_HOST, "owner", "repo") is True
+
+    def test_push_permission_returns_true(self, handler):
+        with self._patch_gogs_host():
+            with patch("app.gogs.api", return_value={"permissions": {"admin": False, "push": True, "pull": True}}):
+                assert handler._check_push_access(self.GOGS_HOST, "owner", "repo") is True
+
+    def test_pull_only_returns_false(self, handler):
+        with self._patch_gogs_host():
+            with patch("app.gogs.api", return_value={"permissions": {"admin": False, "push": False, "pull": True}}):
+                assert handler._check_push_access(self.GOGS_HOST, "owner", "repo") is False
+
+    def test_missing_permissions_field_returns_false(self, handler):
+        with self._patch_gogs_host():
+            with patch("app.gogs.api", return_value={}):
+                assert handler._check_push_access(self.GOGS_HOST, "owner", "repo") is False
+
+    def test_unsupported_host_raises(self, handler):
+        with patch("app.gogs_auth.get_gogs_host", return_value=""):
+            with pytest.raises(RuntimeError, match="unsupported"):
+                handler._check_push_access("unknown.host.com", "owner", "repo")
+
+
+# ===========================================================================
+# _create_fork_and_configure — Gogs paths
+# ===========================================================================
+
+
+class TestCreateForkAndConfigureGogs:
+    GOGS_HOST = "git.example.com"
+
+    def _patch_gogs_host(self):
+        return patch("app.gogs_auth.get_gogs_host", return_value=f"https://{self.GOGS_HOST}")
+
+    def _fork_data(self, user="gogs-bot"):
+        return {
+            "owner": {"login": user},
+            "name": "repo",
+            "html_url": f"https://{self.GOGS_HOST}/{user}/repo",
+        }
+
+    def test_success(self, handler, tmp_path):
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+
+        with self._patch_gogs_host():
+            with patch("app.gogs.api", return_value=self._fork_data()) as mock_api:
+                with patch.object(handler, "run_git_strict") as mock_git:
+                    result = handler._create_fork_and_configure(
+                        self.GOGS_HOST, "owner", "repo", str(project_dir)
+                    )
+
+        assert result == "gogs-bot/repo"
+        mock_api.assert_called_once_with("POST", "repos/owner/repo/forks")
+        assert mock_git.call_count == 2
+
+    def test_fork_already_exists_falls_back_to_get(self, handler, tmp_path):
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+
+        def fake_api(method, path, *args, **kwargs):
+            if method == "POST":
+                raise RuntimeError("Gogs API POST failed: HTTP 409")
+            if path == "user":
+                return {"login": "gogs-bot"}
+            return self._fork_data()
+
+        with self._patch_gogs_host():
+            with patch("app.gogs.api", side_effect=fake_api):
+                with patch.object(handler, "run_git_strict"):
+                    result = handler._create_fork_and_configure(
+                        self.GOGS_HOST, "owner", "repo", str(project_dir)
+                    )
+
+        assert result == "gogs-bot/repo"
+
+    def test_fork_error_propagates(self, handler, tmp_path):
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+
+        with self._patch_gogs_host():
+            with patch("app.gogs.api", side_effect=RuntimeError("permission denied")):
+                with patch.object(handler, "run_git_strict"):
+                    with pytest.raises(RuntimeError, match="permission denied"):
+                        handler._create_fork_and_configure(
+                            self.GOGS_HOST, "owner", "repo", str(project_dir)
+                        )
+
+    def test_missing_fork_owner_raises(self, handler, tmp_path):
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+
+        with self._patch_gogs_host():
+            with patch("app.gogs.api", return_value={"name": "repo"}):
+                with patch.object(handler, "run_git_strict"):
+                    with pytest.raises(RuntimeError, match="Cannot determine fork owner"):
+                        handler._create_fork_and_configure(
+                            self.GOGS_HOST, "owner", "repo", str(project_dir)
+                        )

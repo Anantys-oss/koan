@@ -47,14 +47,14 @@ class TestPrInputValidation:
         from skills.core.pr.handler import handle
         ctx = _make_ctx("https://gitlab.com/owner/repo/merge_requests/1")
         result = handle(ctx)
-        assert "No valid GitHub PR URL" in result
+        assert "No valid PR URL" in result
 
     def test_plain_text_rejected(self):
         """Plain text without URL is rejected."""
         from skills.core.pr.handler import handle
         ctx = _make_ctx("fix the bug please")
         result = handle(ctx)
-        assert "No valid GitHub PR URL" in result
+        assert "No valid PR URL" in result
 
     def test_valid_url_extracted(self):
         """Valid GitHub PR URL is extracted from args."""

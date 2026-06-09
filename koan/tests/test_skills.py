@@ -1835,7 +1835,7 @@ class TestPrSkillHandler:
         mod = self._load_handler()
         ctx = SkillContext(koan_root=tmp_path, instance_dir=tmp_path, args="not-a-url")
         result = mod.handle(ctx)
-        assert "No valid GitHub PR URL" in result
+        assert "No valid PR URL" in result
 
     def test_pr_skill_registered(self):
         """PR skill should be discoverable in the default registry."""
