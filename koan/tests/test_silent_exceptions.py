@@ -34,7 +34,9 @@ APP_DIR = Path(__file__).parent.parent / "app"
 # Each entry is (filename, enclosing_function_name).
 # Uses function names instead of line numbers to survive unrelated code changes.
 # When adding: include a short justification comment.
-ALLOWLIST: Set[Tuple[str, str]] = set()
+ALLOWLIST: Set[Tuple[str, str]] = {
+    # Intentionally empty — all broad catches now emit diagnostics.
+}
 # All entries narrowed to specific exception types as of 2026-02-27.
 
 

@@ -149,6 +149,7 @@ class TestSkillMd:
 from skills.core.incident.incident_runner import (
     run_incident,
     _build_prompt,
+    _execute_incident,
     _parse_summary,
     _write_journal_entry,
     main,
@@ -181,6 +182,16 @@ class TestBuildPrompt:
         assert "{ERROR_TEXT}" not in prompt
         assert "{BRANCH_PREFIX}" not in prompt
         assert "{TIMESTAMP}" not in prompt
+
+
+class TestExecuteIncident:
+    def test_uses_mission_model_key(self):
+        with patch(f"{_RUNNER_MODULE}._build_prompt", return_value="prompt"), \
+             patch("app.cli_provider.run_command_streaming",
+                   return_value="ok") as mock_run:
+            result = _execute_incident("/project", "Traceback")
+        assert result == "ok"
+        assert mock_run.call_args.kwargs["model_key"] == "mission"
 
 
 class TestParseSummary:

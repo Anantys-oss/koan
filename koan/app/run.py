@@ -2028,6 +2028,9 @@ def _run_skill_mission(
     os.close(fd_err)
     fd_usage, stream_usage_file = tempfile.mkstemp(prefix="koan-stream-usage-")
     os.close(fd_usage)
+    from app.skill_dispatch import mission_command_name, mission_model_key
+    _mission_command = mission_command_name(mission_title)
+    _mission_model_key = mission_model_key(_mission_command, instance)
     # Explicitly set PYTHONPATH so the subprocess can always resolve
     # app.* modules even if the working tree changes (e.g. skill does
     # a git checkout on the koan repo itself).
@@ -2035,7 +2038,11 @@ def _run_skill_mission(
         **os.environ,
         "PYTHONPATH": koan_pkg_dir,
         "KOAN_STREAM_USAGE_FILE": stream_usage_file,
+        "KOAN_MISSION_STARTED_AT": str(mission_start),
+        "KOAN_MISSION_COMMAND": _mission_command,
     }
+    if _mission_model_key:
+        skill_env["KOAN_MISSION_MODEL_KEY"] = _mission_model_key
     stderr_fh = None
     try:
         stderr_fh = open(stderr_file, "w")
@@ -2057,10 +2064,9 @@ def _run_skill_mission(
         watchdog = ProcessWatchdog(proc, skill_timeout).start()
 
         from app.config import get_first_output_timeout, get_rebase_first_output_timeout
-        from app.skill_dispatch import mission_command_name
         # Resolve the canonical command so the rebase override applies to all
         # dispatch paths: /rebase (GitHub), /core.rebase (Telegram), /rb alias.
-        if mission_command_name(mission_title) == "rebase":
+        if _mission_command == "rebase":
             first_output_timeout = get_rebase_first_output_timeout()
         else:
             first_output_timeout = get_first_output_timeout()

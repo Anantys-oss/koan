@@ -6,6 +6,7 @@ emoji: 🚨
 description: "Triage and fix a production error from a pasted stack trace or log snippet"
 version: 1.0.0
 audience: hybrid
+model_key: mission
 caveman: false
 commands:
   - name: incident

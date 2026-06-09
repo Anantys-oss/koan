@@ -27,6 +27,10 @@ creation, review, rebasing, recreating, squashing, CI fixing, and PR quality
 checks. Auto-merge is configurable and should remain guarded by project config,
 security review, and sync state.
 
+Controlled PR creation paths append a shared Kōan footer to PR bodies and
+review comments. The footer includes best-effort provider/model attribution,
+the submitted HEAD SHA, and elapsed runtime when that metadata is available.
+
 ## Trackers
 
 Tracker files in `instance/` prevent duplicate work across daemon iterations.

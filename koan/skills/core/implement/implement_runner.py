@@ -602,6 +602,7 @@ def _execute_implementation(
     return run_command_streaming(
         prompt, project_path,
         allowed_tools=sorted(CLAUDE_TOOLS),
+        model_key="mission",
         max_turns=get_skill_max_turns(), timeout=get_skill_timeout(),
     )
 

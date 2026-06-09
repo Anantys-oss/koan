@@ -7,6 +7,7 @@ description: "Fix a tracker issue end-to-end, or batch-queue all open GitHub iss
 version: 1.1.0
 audience: hybrid
 caveman: true
+model_key: mission
 github_enabled: true
 github_context_aware: true
 commands:

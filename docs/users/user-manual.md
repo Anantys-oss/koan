@@ -243,6 +243,10 @@ Kōan **never commits to `main`**. All work happens in `koan/*` branches (the pr
 2. Commits changes with clear messages
 3. Pushes the branch and creates a **draft PR**
 
+Draft PR bodies include a Kōan footer with best-effort provider/model
+attribution, submitted HEAD, and runtime. This makes it clear which CLI
+provider and model produced the implementation.
+
 Your workflow:
 
 ```bash
