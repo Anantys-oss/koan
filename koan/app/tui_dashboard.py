@@ -1036,6 +1036,7 @@ class KoanDashboard(App):
                     mode = t.decide_mode()
                     lines.append(f"Mode      [{_MINT}]{mode}[/]  [dim](budget disabled for {_provider_name()})[/]")
                 except Exception as exc:
+                    self.log(f"mode decision unavailable: {exc}")
                     lines.append(f"Mode      [{_MINT}]deep[/]  [dim](budget disabled for {_provider_name()})[/]")
         except Exception as exc:
             lines.append(f"[dim](usage unavailable: {exc})[/dim]")
