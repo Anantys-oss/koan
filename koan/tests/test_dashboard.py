@@ -133,6 +133,12 @@ class TestRoutes:
         assert resp.status_code == 200
         assert b"Send" in resp.data
 
+    def test_usage_page(self, app_client):
+        resp = app_client.get("/usage")
+        assert resp.status_code == 200
+        assert b"Efficiency Heatmap" in resp.data
+        assert b"heatmap-container" in resp.data
+
     def test_api_status(self, app_client):
         resp = app_client.get("/api/status")
         assert resp.status_code == 200
