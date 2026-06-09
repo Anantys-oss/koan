@@ -106,7 +106,10 @@ def test_pilot_config_tab_focuses_tree_and_arrows_move(tmp_path):
             app.query_one(tui.TabbedContent).active = "config"
             await pilot.pause()
             tree = app.query_one("#config-tree", tui.Tree)
-            # The config tab activation should hand focus to the tree.
+            # Focus stays on the tab bar after tab activation; Down enters the tree.
+            assert app.focused is not tree
+            await pilot.press("down")
+            await pilot.pause()
             assert app.focused is tree
             tree.root.children[0].expand()
             await pilot.pause()
@@ -124,11 +127,11 @@ def test_pilot_can_leave_config_tab_via_number_keys(tmp_path):
     async def scenario():
         app = tui.KoanDashboard(tmp_path)
         async with app.run_test() as pilot:
-            await pilot.press("c")  # to config — tree takes focus
+            await pilot.press("c")  # to config — focus stays on tab bar
             await pilot.pause()
             tree = app.query_one("#config-tree", tui.Tree)
-            assert app.focused is tree
-            await pilot.press("2")  # back to logs even though tree had focus
+            assert app.focused is not tree  # tree does not auto-focus
+            await pilot.press("2")  # back to logs
             await pilot.pause()
             assert app.query_one(tui.TabbedContent).active == "logs"
             assert app.focused is not tree  # tree no longer traps keys
@@ -142,7 +145,7 @@ def test_pilot_bool_toggles_with_space_and_enter(tmp_path):
     async def scenario():
         app = tui.KoanDashboard(tmp_path)
         async with app.run_test() as pilot:
-            await pilot.press("c")  # config tab, tree focused
+            await pilot.press("c")  # config tab, focus stays on tab bar
             await pilot.pause()
             tree = app.query_one("#config-tree", tui.Tree)
             branch = tree.root.children[0]
@@ -162,11 +165,15 @@ def test_pilot_bool_toggles_with_space_and_enter(tmp_path):
                 tree.move_cursor(b.children[0])
                 await pilot.pause()
 
+            await pilot.press("down")  # move focus into the tree
+            await pilot.pause()
             await pilot.press("t")  # toggle false -> true, no modal
             await pilot.pause()
             assert yaml.safe_load(cfg.read_text())["auto_update"]["enabled"] is True
 
             await _focus_leaf()
+            await pilot.press("down")  # re-focus the tree after rebuild
+            await pilot.pause()
             await pilot.press("enter")  # enter also flips a bool, no modal
             await pilot.pause()
             assert yaml.safe_load(cfg.read_text())["auto_update"]["enabled"] is False

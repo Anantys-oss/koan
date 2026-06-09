@@ -289,10 +289,13 @@ class KoanDashboard(App):
         Binding("2", "show('logs')", "Logs", show=False),
         Binding("3", "show('usage')", "Usage", show=False),
         Binding("4", "show('config')", "Config", show=False),
-        Binding("s", "show('status')", "Status", show=False),
-        Binding("l", "show('logs')", "Logs", show=False),
-        Binding("u", "show('usage')", "Usage", show=False),
-        Binding("c", "show('config')", "Config", show=False),
+        Binding("s", "show('status')", "Status", show=False, priority=True),
+        Binding("l", "show('logs')", "Logs", show=False, priority=True),
+        Binding("u", "show('usage')", "Usage", show=False, priority=True),
+        Binding("c", "show('config')", "Config", show=False, priority=True),
+        Binding("up", "focus_up", "Focus up", show=False, priority=True),
+        Binding("down", "focus_pane", "Focus pane", show=False),
+        Binding("escape", "focus_tabs", "Focus tabs", show=False),
         Binding("t", "toggle", "Toggle bool", show=False),
         Binding("r", "refresh", "Refresh", show=False),
     ]
@@ -337,10 +340,12 @@ class KoanDashboard(App):
     def on_tabbed_content_tab_activated(
         self, event: "TabbedContent.TabActivated"
     ) -> None:
-        # Give keyboard focus to the config tree when its tab is shown so
-        # arrow keys browse it (otherwise focus stays on the tab bar).
-        if self.active_pane_id() == "config":
-            self._focus_config_tree()
+        # Keep focus on the tab bar after any switch so Left/Right navigate
+        # tabs and letter shortcuts are never trapped by pane widgets.
+        try:
+            self.query_one(Tabs).focus()
+        except Exception as exc:
+            self.log(f"tab focus failed: {exc}")
 
     def _focus_config_tree(self) -> None:
         try:
@@ -354,21 +359,44 @@ class KoanDashboard(App):
         self._build_config_tree()
         self.refresh_dynamic()
 
+    def action_focus_up(self) -> None:
+        """Up arrow: navigate the config tree upward, or return to tabs at root."""
+        try:
+            tree = self.query_one("#config-tree", Tree)
+            if tree.has_focus:
+                cursor = getattr(tree, "cursor_node", None)
+                if cursor is not None and cursor != tree.root:
+                    tree.action_cursor_up()
+                    return
+        except Exception as exc:
+            self.log(f"focus up tree check failed: {exc}")
+        self.action_focus_tabs()
+
+    def action_focus_tabs(self) -> None:
+        """Move keyboard focus to the tab bar (Escape)."""
+        try:
+            self.query_one(Tabs).focus()
+        except Exception as exc:
+            self.log(f"focus tabs failed: {exc}")
+
+    def action_focus_pane(self) -> None:
+        """Move focus from the tab bar into the active pane (Down)."""
+        if self.active_pane_id() == "config":
+            self._focus_config_tree()
+
     def action_show(self, pane: str) -> None:
-        """Switch tabs via 1/2/3 — works even while the config tree has focus."""
+        """Switch tabs via 1/2/3/4 or s/l/u/c."""
         try:
             self.query_one(TabbedContent).active = pane
         except Exception as exc:
             self.log(f"tab switch failed: {exc}")
             return
-        if pane == "config":
-            self._focus_config_tree()
-        else:
-            # Move focus off the (now hidden) tree so it stops eating keys.
-            try:
-                self.query_one(Tabs).focus()
-            except Exception as exc:
-                self.log(f"tab focus failed: {exc}")
+        # Always leave focus on the tab bar so Left/Right navigate tabs
+        # and letter shortcuts are never trapped by pane widgets.
+        try:
+            self.query_one(Tabs).focus()
+        except Exception as exc:
+            self.log(f"tab focus failed: {exc}")
 
     def action_pause(self) -> None:
         try:
