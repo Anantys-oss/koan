@@ -1430,7 +1430,7 @@ def process_single_notification(
     add_reaction(owner, repo, comment_id, comment_api_url=comment_api_url)
 
     # Persist locally so restarts don't re-queue if reaction API failed
-    from app.github_notification_tracker import track_comment
+    from app.github_notification_tracker import set_review_cooldown, track_comment
     instance_dir = str(Path(koan_root) / "instance")
     track_comment(instance_dir, comment_id)
 
@@ -1439,7 +1439,6 @@ def process_single_notification(
     if command_name == "review" and inserted_any and instance_dir:
         pr_number = extract_issue_number_from_notification(notification)
         if pr_number:
-            from app.github_notification_tracker import set_review_cooldown
             set_review_cooldown(instance_dir, owner, repo, pr_number)
 
     # Mark notification as read
