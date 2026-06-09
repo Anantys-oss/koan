@@ -1571,6 +1571,7 @@ def run_review(
     project_name: Optional[str] = None,
     errors: bool = False,
     comments: bool = False,
+    ultra: bool = False,
 ) -> Tuple[bool, str, Optional[dict]]:
     """Execute a read-only code review on a PR.
 
@@ -1590,11 +1591,20 @@ def run_review(
             swallowed exceptions and silent error paths. Auto-triggered when
             the diff contains error-handling patterns.
         comments: If True, use comment-quality review prompt.
+        ultra: If True, run the most thorough review possible — combines the
+            architecture-focused main pass with the silent-failure-hunter
+            (errors) pass. Equivalent to passing architecture=True and
+            errors=True; provided as a single semantic switch for the
+            /ultrareview skill.
 
     Returns:
         (success, summary, review_data) tuple. review_data is the validated
         JSON review dict, or None if JSON parsing failed (fallback was used).
     """
+    if ultra:
+        architecture = True
+        errors = True
+
     if notify_fn is None:
         from app.notify import send_telegram
         notify_fn = send_telegram
@@ -1899,7 +1909,8 @@ def run_review(
                 )
 
     if posted:
-        summary = f"Review posted on PR #{pr_number} ({full_repo})."
+        label = "Ultra review" if ultra else "Review"
+        summary = f"{label} posted on PR #{pr_number} ({full_repo})."
         if verdict_submitted:
             verdict_label = "APPROVE" if review_summary.get("lgtm") else "REQUEST_CHANGES"
             summary += f" Verdict: {verdict_label}."
@@ -2000,6 +2011,11 @@ def main(argv=None):
         "--comments", action="store_true",
         help="Use comment-quality review (accuracy, completeness, stale TODOs)",
     )
+    parser.add_argument(
+        "--ultra", action="store_true",
+        help="Ultra review: combine the architecture-focused pass with the "
+             "silent-failure-hunter pass for the most thorough review.",
+    )
     cli_args = parser.parse_args(argv)
 
     try:
@@ -2018,6 +2034,7 @@ def main(argv=None):
         project_name=cli_args.project_name,
         errors=cli_args.errors,
         comments=cli_args.comments,
+        ultra=cli_args.ultra,
     )
     print(summary)
     return 0 if success else 1

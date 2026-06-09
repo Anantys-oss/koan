@@ -1300,6 +1300,7 @@ class TestMainCli:
             project_name=None,
             errors=False,
             comments=False,
+            ultra=False,
         )
 
     @patch("app.review_runner.run_review")
@@ -1529,6 +1530,120 @@ class TestSkillDispatchIntegration:
         assert result is not None
         assert "--architecture" in result
         assert any("pull/1" in str(p) for p in result)
+
+
+class TestUltraReview:
+    """Tests for the --ultra flag and /ultrareview skill dispatch."""
+
+    def test_cli_parses_ultra_flag(self):
+        """CLI parses --ultra and forwards it to run_review."""
+        from app.review_runner import main
+
+        with patch("app.review_runner.run_review") as mock_run:
+            mock_run.return_value = (True, "Ultra review posted.", None)
+            main([
+                "https://github.com/owner/repo/pull/42",
+                "--project-path", "/tmp/project",
+                "--ultra",
+            ])
+            assert mock_run.call_args[1].get("ultra") is True
+
+    def test_cli_default_no_ultra(self):
+        """CLI defaults to ultra=False."""
+        from app.review_runner import main
+
+        with patch("app.review_runner.run_review") as mock_run:
+            mock_run.return_value = (True, "Review posted.", None)
+            main([
+                "https://github.com/owner/repo/pull/42",
+                "--project-path", "/tmp/project",
+            ])
+            assert mock_run.call_args[1].get("ultra") is False
+
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
+    @patch("app.review_runner._run_error_hunter", return_value="### Silent failures\n\nNone.")
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    @patch("app.review_runner.build_review_prompt")
+    def test_ultra_forces_architecture_and_error_hunter(
+        self, mock_build, mock_fetch, mock_claude, mock_gh, mock_repliable,
+        mock_hunter, _mock_shas, pr_context, review_skill_dir,
+    ):
+        """ultra=True selects the architecture prompt AND runs the error hunter,
+        and the posted summary is labelled as an ultra review."""
+        mock_fetch.return_value = pr_context
+        mock_build.return_value = "PROMPT"
+        mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
+        mock_notify = MagicMock()
+
+        success, summary, _rd = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=mock_notify,
+            skill_dir=review_skill_dir,
+            ultra=True,
+        )
+
+        assert success is True
+        # Architecture prompt was selected (ultra implies architecture=True)
+        assert mock_build.call_args.kwargs.get("architecture") is True
+        # Silent-failure-hunter pass ran (ultra implies errors=True)
+        mock_hunter.assert_called_once()
+        # Summary reflects the ultra label
+        assert summary.startswith("Ultra review posted")
+
+    @patch("app.skill_dispatch.is_known_project", return_value=True)
+    def test_dispatch_ultrareview_adds_ultra_flag(self, _mock_known):
+        """/ultrareview dispatches review_runner with --ultra."""
+        from app.skill_dispatch import dispatch_skill_mission
+        result = dispatch_skill_mission(
+            mission_text="/ultrareview https://github.com/o/r/pull/1",
+            project_name="koan",
+            project_path="/tmp/project",
+            koan_root="/tmp/koan",
+            instance_dir="/tmp/instance",
+        )
+        assert result is not None
+        assert any("review_runner" in str(p) for p in result)
+        assert "--ultra" in result
+        assert any("pull/1" in str(p) for p in result)
+
+    @patch("app.skill_dispatch.is_known_project", return_value=True)
+    def test_dispatch_urv_alias_adds_ultra_flag(self, _mock_known):
+        """The /urv alias resolves to ultrareview and adds --ultra."""
+        from app.skill_dispatch import dispatch_skill_mission
+        result = dispatch_skill_mission(
+            mission_text="/urv https://github.com/o/r/pull/1",
+            project_name="koan",
+            project_path="/tmp/project",
+            koan_root="/tmp/koan",
+            instance_dir="/tmp/instance",
+        )
+        assert result is not None
+        assert "--ultra" in result
+
+    @patch("app.skill_dispatch.is_known_project", return_value=True)
+    def test_plain_review_has_no_ultra_flag(self, _mock_known):
+        """/review must not carry --ultra."""
+        from app.skill_dispatch import dispatch_skill_mission
+        result = dispatch_skill_mission(
+            mission_text="/review https://github.com/o/r/pull/1",
+            project_name="koan",
+            project_path="/tmp/project",
+            koan_root="/tmp/koan",
+            instance_dir="/tmp/instance",
+        )
+        assert result is not None
+        assert "--ultra" not in result
+
+    def test_validate_ultrareview_requires_pr_url(self):
+        """validate_skill_args rejects /ultrareview without a PR URL."""
+        from app.skill_dispatch import validate_skill_args
+        assert validate_skill_args("ultrareview", "") is not None
+        assert validate_skill_args(
+            "ultrareview", "https://github.com/o/r/pull/1"
+        ) is None
 
 
 # ---------------------------------------------------------------------------

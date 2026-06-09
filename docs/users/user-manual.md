@@ -514,6 +514,21 @@ Use this before `/plan` when the idea is architecturally complex, when you want 
 - `/review https://github.com/org/repo/pull/55 --architecture --errors` — Both passes
 </details>
 
+**`/ultrareview`** — Queue the most thorough review Kōan can run for a PR.
+
+- **Usage:** `/ultrareview [--now] <github-pr-url> [context]`
+- **Aliases:** `/urv`, `/ultra_review`
+- **GitHub @mention:** `@koan-bot /ultrareview` on a PR
+- **What it does:** Combines the architecture-focused main pass with the silent-failure-hunter pass in a single review comment — equivalent to `/review --architecture --errors`, exposed as one switch. Use it on high-stakes PRs where a standard pass isn't enough.
+
+<details>
+<summary>Use cases</summary>
+
+- `/ultrareview https://github.com/org/repo/pull/55` — Deep architecture + silent-failure review
+- `/urv https://github.com/org/repo/pull/55` — Same thing, shorter
+- `@koan-bot /ultrareview` — Trigger an ultra review from a PR comment
+</details>
+
 **`/explain`** — Explain a PR's intent and changes in plain, simple language.
 
 - **Usage:** `/explain <github-pr-url>`

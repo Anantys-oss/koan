@@ -43,6 +43,7 @@ Complete reference for all Koan slash commands. Use these via Telegram, Slack, o
 | `/implement <issue>` | `/impl` | Queue implementation for a GitHub or Jira issue; never bails — resolves ambiguity with simplest viable solution, retries once before surfacing a problem | Yes |
 | `/fix <issue>` | — | Understand → plan → test → implement → submit PR | Yes |
 | `/review <PR>` | `/rv` | Review a pull request | Yes |
+| `/ultrareview <PR>` | `/urv` | Ultra-thorough review: architecture + silent-failure passes combined | Yes |
 | `/explain <PR>` | `/xp` | Explain a PR's changes in plain language with examples and alternative approaches | Yes |
 | `/rebase <PR>` | `/rb` | Rebase a PR onto its base branch | Yes |
 | `/squash <PR>` | `/sq` | Squash all PR commits into one clean commit | Yes |
