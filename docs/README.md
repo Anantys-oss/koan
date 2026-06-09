@@ -13,7 +13,7 @@ update the relevant docs in the same change.
 - [User Manual](users/user-manual.md) - daily use, workflows, and command guide.
 - [Onboarding](users/onboarding.md) - first-run setup and configuration flow.
 - [Skills Reference](users/skills.md) - built-in command reference.
-- [Provider Setup](providers/) - Claude, Codex, Copilot, and local providers.
+- [Provider Setup](providers/) - Claude, Codex, Copilot, local, and Ollama Launch providers.
 - [Messaging Setup](messaging/) - Telegram, Slack, Matrix, Discord, GitHub, and Jira.
 - [Troubleshooting](operations/troubleshooting.md) - common issues and how to fix them.
 

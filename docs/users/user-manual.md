@@ -1481,10 +1481,11 @@ Kōan supports multiple CLI backends. Configure globally via `KOAN_CLI_PROVIDER`
 | **OpenAI Codex** | ChatGPT users who want Codex models | [codex.md](../providers/codex.md) |
 | **GitHub Copilot** | Teams with existing Copilot licenses | [copilot.md](../providers/copilot.md) |
 | **Local LLM** | Offline, privacy, zero API cost | [local.md](../providers/local.md) |
+| **Ollama Launch** | Claude CLI via Ollama-managed server | [ollama-launch.md](../providers/ollama-launch.md) |
 
 #### Provider-specific model config
 
-When switching between providers, model names are not interchangeable. Use `models.claude:` / `models.codex:` sections in `instance/config.yaml` to configure provider-specific defaults without touching the global `models.default:` fallback:
+When switching between providers, model names are not interchangeable. Use `models.{provider}:` sections in `instance/config.yaml` to configure provider-specific defaults without touching the global `models.default:` fallback:
 
 ```yaml
 cli_provider: "codex"
@@ -1501,6 +1502,11 @@ models:
 
   claude:
     review_mode: "haiku"      # use haiku for cheaper REVIEW mode audits
+
+  ollama-launch:
+    mission: "qwen2.5-coder:14b"
+    chat: "qwen2.5-coder:14b"
+    lightweight: "qwen2.5-coder:7b"
 
   # Global fallback for providers without a specific section
   default:

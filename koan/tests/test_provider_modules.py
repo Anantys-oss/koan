@@ -618,6 +618,62 @@ class TestOllamaLaunchProvider:
         model_idx = cmd.index("--model")
         assert cmd[model_idx + 1] == "override-model"
 
+    def test_build_command_with_permissions(self):
+        p = OllamaLaunchProvider()
+        cmd = p.build_command(prompt="hi", skip_permissions=True)
+        sep_idx = cmd.index("--")
+        after_sep = cmd[sep_idx + 1:]
+        assert "--dangerously-skip-permissions" in after_sep
+
+    def test_build_command_with_system_prompt(self):
+        p = OllamaLaunchProvider()
+        cmd = p.build_command(prompt="hi", system_prompt="Be helpful.")
+        sep_idx = cmd.index("--")
+        after_sep = cmd[sep_idx + 1:]
+        assert "--append-system-prompt" in after_sep
+        assert "Be helpful." in after_sep
+
+    def test_build_command_with_resume(self):
+        p = OllamaLaunchProvider()
+        cmd = p.build_command(prompt="hi", resume_session_id="sess-123")
+        sep_idx = cmd.index("--")
+        after_sep = cmd[sep_idx + 1:]
+        assert "--resume" in after_sep
+        assert "sess-123" in after_sep
+
+    def test_supports_stream_json(self):
+        assert OllamaLaunchProvider().supports_stream_json() is True
+
+    def test_supports_system_prompt_file(self):
+        assert OllamaLaunchProvider().supports_system_prompt_file() is True
+
+    def test_supports_session_resume(self):
+        assert OllamaLaunchProvider().supports_session_resume() is True
+
+    def test_output_args_stream_json(self):
+        p = OllamaLaunchProvider()
+        args = p.build_output_args("stream-json")
+        assert args == ["--output-format", "stream-json", "--verbose"]
+
+    def test_build_effort_args(self):
+        p = OllamaLaunchProvider()
+        assert p.build_effort_args("high") == ["--effort", "high"]
+        assert p.build_effort_args("") == []
+
+    def test_build_thinking_args(self):
+        p = OllamaLaunchProvider()
+        assert p.build_thinking_args(enabled=True) == ["--effort", "max"]
+        assert p.build_thinking_args(enabled=False) == []
+
+    def test_detect_quota_exhaustion(self):
+        p = OllamaLaunchProvider()
+        assert p.detect_quota_exhaustion(
+            stdout_text="", stderr_text="rate limit exceeded", exit_code=1,
+        ) is True
+        assert p.detect_quota_exhaustion(
+            stdout_text="", stderr_text="ok", exit_code=0,
+        ) is False
+
     def test_check_quota_always_available(self):
         p = OllamaLaunchProvider()
         available, detail = p.check_quota_available("/tmp")

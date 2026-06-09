@@ -360,7 +360,8 @@ tools:
     - Shell: Bash (run git, gh, make, and other commands)
 
 # CLI provider — which AI CLI to use as the backend
-# Options: "claude" (default), "codex" (OpenAI Codex CLI), "copilot" (GitHub Copilot CLI), "local" (local LLM)
+# Options: "claude" (default), "codex" (OpenAI Codex CLI), "copilot" (GitHub Copilot CLI),
+#          "local" (local LLM via OpenAI-compatible API), "ollama-launch" (Ollama-managed Claude CLI)
 # Can also be set via KOAN_CLI_PROVIDER env var (overrides this)
 cli_provider: "claude"
 
@@ -391,6 +392,20 @@ cli_provider: "claude"
 #   base_url: "http://localhost:11434/v1"
 #   model: "glm4"
 #   api_key: ""   # Usually empty for local servers
+
+# Ollama Launch configuration (used when cli_provider: "ollama-launch")
+# Uses Ollama v0.16.0+ ``ollama launch claude`` to run the Claude Code CLI
+# through an Ollama-managed server. Ollama handles ``ANTHROPIC_BASE_URL`` and
+# server lifecycle automatically — no manual env vars needed.
+#
+# The model is passed to Ollama's --model flag (before the -- separator).
+# Everything after -- is forwarded to the Claude Code CLI verbatim, so
+# all Claude features (tools, streaming, session resume, MCP, effort)
+# work exactly as with the native claude provider.
+#
+# Can also be set via KOAN_OLLAMA_LAUNCH_MODEL env var (overrides this).
+# ollama_launch:
+#   model: "qwen2.5-coder:14b"   # Model name as known to Ollama
 
 # Model configuration — controls which models are used for different types of calls.
 # Resolution order per key:
@@ -438,6 +453,15 @@ models:
   #   fallback: ""                   # empty = use provider default
   #   review_mode: "gpt-5.3-codex"  # serious code review
   #   reflect: "gpt-5.5"            # summarize / reason about result
+
+  # Ollama Launch provider overrides (uncomment to customize):
+  # ollama-launch:
+  #   mission: "qwen2.5-coder:14b"   # main mission execution
+  #   chat: "qwen2.5-coder:14b"      # chat responses
+  #   lightweight: "qwen2.5-coder:7b" # low-cost calls
+  #   fallback: ""                    # empty = use provider default
+  #   review_mode: "qwen2.5-coder:14b"
+  #   reflect: "qwen2.5-coder:7b"
 
 # Branch cleanup — automatic deletion of merged branches during git sync
 # Every git_sync_interval iterations, Kōan detects merged branches (both

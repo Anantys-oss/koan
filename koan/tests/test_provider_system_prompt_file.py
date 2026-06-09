@@ -13,6 +13,7 @@ from app.provider import (
     ClaudeProvider,
     CodexProvider,
     LocalLLMProvider,
+    OllamaLaunchProvider,
     build_full_command,
     build_full_command_managed,
     cleanup_managed_paths,
@@ -30,6 +31,24 @@ class TestProviderCapabilityFlag:
 
     def test_local_does_not_support_file_mode(self):
         assert LocalLLMProvider().supports_system_prompt_file() is False
+
+    def test_ollama_launch_supports_file_mode(self):
+        assert OllamaLaunchProvider().supports_system_prompt_file() is True
+
+
+class TestOllamaLaunchFileModeArgs:
+    """OllamaLaunchProvider inherits file-mode support from ClaudeProvider."""
+
+    def test_file_flag_with_path(self):
+        p = OllamaLaunchProvider()
+        assert p.build_system_prompt_file_args("/tmp/x.txt") == [
+            "--append-system-prompt-file",
+            "/tmp/x.txt",
+        ]
+
+    def test_file_flag_empty_path_yields_empty(self):
+        p = OllamaLaunchProvider()
+        assert p.build_system_prompt_file_args("") == []
 
 
 class TestClaudeFileModeArgs:
