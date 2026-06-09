@@ -3511,3 +3511,77 @@ class TestReplyContext:
             send_telegram("test")
         mock_provider.send_message.assert_called_once_with("test", reply_to_message_id=456)
         clear_reply_context()
+
+
+# ---------------------------------------------------------------------------
+# _load_cached_context
+# ---------------------------------------------------------------------------
+
+class TestLoadCachedContext:
+    """Tests for the mtime-based file cache used in _build_chat_prompt."""
+
+    def test_reads_file_on_first_call(self, tmp_path):
+        """Cache miss: reads content from disk."""
+        from app.awake import _load_cached_context
+
+        f = tmp_path / "prefs.md"
+        f.write_text("Prefers French")
+        assert _load_cached_context(f) == "Prefers French"
+
+    def test_returns_cached_content_on_second_call(self, tmp_path):
+        """Cache hit: avoids re-reading from disk."""
+        from unittest.mock import MagicMock, patch
+        from app.awake import _load_cached_context, _chat_context_cache
+
+        f = tmp_path / "prefs.md"
+        f.write_text("Prefers French")
+        # Prime cache
+        _load_cached_context(f)
+        # Mutate file behind cache's back
+        f.write_text("Prefers English")
+        # Patch stat so mtime appears unchanged → cache hit
+        def fake_stat(self):
+            result = MagicMock()
+            result.st_mtime = 1.0
+            return result
+
+        with patch("app.awake.Path.stat", fake_stat):
+            assert _load_cached_context(f) == "Prefers French"
+        # Cleanup
+        del _chat_context_cache[str(f)]
+
+    def test_invalidates_cache_when_mtime_changes(self, tmp_path):
+        """Cache invalidated when file mtime advances."""
+        from app.awake import _load_cached_context, _chat_context_cache
+
+        f = tmp_path / "prefs.md"
+        f.write_text("Prefers French")
+        # Prime cache
+        _load_cached_context(f)
+        # Wait a tiny bit so mtime definitely changes
+        time.sleep(0.05)
+        f.write_text("Prefers English")
+        assert _load_cached_context(f) == "Prefers English"
+        # Cleanup
+        del _chat_context_cache[str(f)]
+
+    def test_returns_empty_when_file_missing(self, tmp_path):
+        """Missing file yields empty string."""
+        from app.awake import _load_cached_context
+
+        missing = tmp_path / "missing.md"
+        assert _load_cached_context(missing) == ""
+
+    def test_returns_empty_on_oserror(self, tmp_path):
+        """OSError during stat or read yields empty string."""
+        from app.awake import _load_cached_context
+
+        f = tmp_path / "unreadable.md"
+        f.write_text("secret")
+        # Make file unreadable (best-effort, skipped on platforms where
+        # permissions don't apply to the test runner)
+        try:
+            f.chmod(0o000)
+            assert _load_cached_context(f) == ""
+        finally:
+            f.chmod(0o644)

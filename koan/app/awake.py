@@ -71,6 +71,40 @@ from app.utils import (
 
 
 # ---------------------------------------------------------------------------
+# Static chat context cache — mtime-based invalidation
+# ---------------------------------------------------------------------------
+
+_chat_context_cache: dict[str, tuple[float, str]] = {}
+
+
+def _load_cached_context(path: Path) -> str:
+    """Load file content with mtime-based caching.
+
+    Avoids re-reading relatively static files (human-preferences.md,
+    emotional-memory.md) from disk on every chat request.  Cache is
+    invalidated automatically when the file changes.
+    """
+    if not path.exists():
+        return ""
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return ""
+    cache_key = str(path)
+    cached = _chat_context_cache.get(cache_key)
+    if cached is not None:
+        cached_mtime, cached_content = cached
+        if cached_mtime >= mtime:
+            return cached_content
+    try:
+        content = path.read_text().strip()
+    except OSError:
+        return ""
+    _chat_context_cache[cache_key] = (mtime, content)
+    return content
+
+
+# ---------------------------------------------------------------------------
 # Outbox manager — singleton instance, created at module load
 # ---------------------------------------------------------------------------
 
@@ -193,10 +227,9 @@ def _build_chat_prompt(text: str, *, lite: bool = False) -> str:
                 journal_context = journal_content
 
     # Load human preferences for personality context
-    prefs_context = ""
-    prefs_path = INSTANCE_DIR / "memory" / "global" / "human-preferences.md"
-    if prefs_path.exists():
-        prefs_context = prefs_path.read_text().strip()
+    prefs_context = _load_cached_context(
+        INSTANCE_DIR / "memory" / "global" / "human-preferences.md"
+    )
 
     # Load live progress from pending.md (run in progress)
     pending_context = ""
@@ -276,14 +309,15 @@ def _build_chat_prompt(text: str, *, lite: bool = False) -> str:
     # Load emotional memory for relationship-aware responses
     emotional_context = ""
     if not lite:
-        emotional_path = INSTANCE_DIR / "memory" / "global" / "emotional-memory.md"
-        if emotional_path.exists():
-            content = emotional_path.read_text().strip()
+        emotional_raw = _load_cached_context(
+            INSTANCE_DIR / "memory" / "global" / "emotional-memory.md"
+        )
+        if emotional_raw:
             # Take last 800 chars — enough for tone, not too heavy
-            if len(content) > 800:
-                emotional_context = "...\n" + content[-800:]
+            if len(emotional_raw) > 800:
+                emotional_context = "...\n" + emotional_raw[-800:]
             else:
-                emotional_context = content
+                emotional_context = emotional_raw
 
     prompt = load_prompt(
         "chat",
