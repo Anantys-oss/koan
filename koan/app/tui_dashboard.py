@@ -724,6 +724,26 @@ class KoanDashboard(App):
             f"  run loop     {self._dot(run_on)}  [dim]{'running' if run_on else 'stopped'}[/]",
             f"  api          {self._dot(api_on)}  [dim]{'live' if api_on else 'off'}[/]",
         ]
+        # Provider + models (placed before usage so the operator sees *what* is
+        # driving consumption before the quota bars).
+        try:
+            from app.config import get_cli_provider_name, get_model_config
+
+            provider = get_cli_provider_name()
+            models = get_model_config()
+            if provider:
+                lines.append("")
+                lines.append(f"  provider     [{_MINT}]{provider}[/]")
+                model_parts = []
+                for role in ("mission", "chat", "lightweight", "fallback", "review_mode", "reflect"):
+                    val = models.get(role, "")
+                    if val:
+                        label = role.replace("_", " ")
+                        model_parts.append(f"{label}: {val}")
+                if model_parts:
+                    lines.append(f"  models       [dim]{' · '.join(model_parts)}[/dim]")
+        except Exception as exc:
+            self.log(f"provider/models display failed: {exc}")
         # Usage bars reuse the same renderer as the Usage tab.
         try:
             from app.usage_tracker import UsageTracker

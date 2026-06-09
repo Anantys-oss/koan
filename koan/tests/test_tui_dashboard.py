@@ -422,3 +422,73 @@ def test_pilot_status_shows_run_and_api(tmp_path, monkeypatch):
             assert "live" in text     # api is up
 
     asyncio.run(scenario())
+
+
+def test_pilot_status_shows_provider_and_models(tmp_path, monkeypatch):
+    _write_config(tmp_path, "x: 1\n")
+    monkeypatch.setattr(
+        "app.config.get_cli_provider_name", lambda: "claude"
+    )
+    monkeypatch.setattr(
+        "app.config.get_model_config", lambda project_name="": {
+            "mission": "opus",
+            "chat": "haiku",
+            "lightweight": "haiku",
+            "fallback": "sonnet",
+            "review_mode": "",
+            "reflect": "",
+        }
+    )
+
+    async def scenario():
+        app = tui.KoanDashboard(tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.refresh_dynamic()
+            await pilot.pause()
+            body = app.query_one("#status-body", tui.Static)
+            rendered = body.render()
+            text = getattr(rendered, "plain", str(rendered))
+            assert "provider" in text
+            assert "claude" in text
+            assert "mission: opus" in text
+            assert "chat: haiku" in text
+            assert "lightweight: haiku" in text
+            assert "fallback: sonnet" in text
+            # Empty roles should not appear
+            assert "review mode" not in text
+            assert "reflect" not in text
+
+    asyncio.run(scenario())
+
+
+def test_pilot_status_shows_provider_even_without_models(tmp_path, monkeypatch):
+    _write_config(tmp_path, "x: 1\n")
+    monkeypatch.setattr(
+        "app.config.get_cli_provider_name", lambda: "ollama-launch"
+    )
+    monkeypatch.setattr(
+        "app.config.get_model_config", lambda project_name="": {
+            "mission": "",
+            "chat": "",
+            "lightweight": "",
+            "fallback": "",
+            "review_mode": "",
+            "reflect": "",
+        }
+    )
+
+    async def scenario():
+        app = tui.KoanDashboard(tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.refresh_dynamic()
+            await pilot.pause()
+            body = app.query_one("#status-body", tui.Static)
+            rendered = body.render()
+            text = getattr(rendered, "plain", str(rendered))
+            assert "provider" in text
+            assert "ollama-launch" in text
+            assert "models" not in text  # no non-empty models, line hidden
+
+    asyncio.run(scenario())
