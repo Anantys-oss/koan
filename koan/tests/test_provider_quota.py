@@ -336,3 +336,116 @@ class TestCopilotDetectQuotaExhaustion:
             stderr_text="",
             exit_code=1,
         ) is True
+
+
+class TestClineProviderQuota:
+    """Tests for ClineProvider.check_quota_available()."""
+
+    def setup_method(self):
+        from app.provider.cline import ClineProvider
+        self.provider = ClineProvider()
+
+    def test_quota_available(self):
+        """When probe succeeds, returns (True, '')."""
+        r = MagicMock(stdout="ok", stderr="", returncode=0)
+        with patch("app.provider.cline.subprocess.run", return_value=r):
+            ok, detail = self.provider.check_quota_available("/tmp")
+        assert ok is True
+        assert detail == ""
+
+    def test_quota_exhausted(self):
+        """When probe detects quota exhaustion, returns (False, detail)."""
+        r = MagicMock(stdout="", stderr="rate limit exceeded", returncode=1)
+        with patch("app.provider.cline.subprocess.run", return_value=r):
+            ok, detail = self.provider.check_quota_available("/tmp")
+        assert ok is False
+        assert "rate limit" in detail
+
+    def test_auth_failure(self):
+        """When probe detects auth failure, returns (False, detail)."""
+        r = MagicMock(stdout="401 Unauthorized", stderr="", returncode=1)
+        with patch("app.provider.cline.subprocess.run", return_value=r):
+            ok, detail = self.provider.check_quota_available("/tmp")
+        assert ok is False
+        assert "401" in detail
+
+    def test_timeout_returns_optimistic(self):
+        """Timeout should return (True, '') to avoid blocking the agent."""
+        with patch("app.provider.cline.subprocess.run",
+                   side_effect=subprocess.TimeoutExpired("cline", 1)):
+            ok, detail = self.provider.check_quota_available("/tmp")
+        assert ok is True
+        assert detail == ""
+
+    def test_os_error_returns_optimistic(self):
+        """OS errors should return (True, '') to avoid blocking the agent."""
+        with patch("app.provider.cline.subprocess.run",
+                   side_effect=OSError("no binary")):
+            ok, detail = self.provider.check_quota_available("/tmp")
+        assert ok is True
+        assert detail == ""
+
+    def test_probe_command_structure(self):
+        """Verify the probe uses the correct command structure."""
+        r = MagicMock(stdout="ok", stderr="", returncode=0)
+        with patch("app.provider.cline.subprocess.run", return_value=r) as mock_run:
+            self.provider.check_quota_available("/tmp/test")
+            call_args = mock_run.call_args
+            cmd = call_args[0][0]
+            assert cmd[0] == "cline"
+            assert "--auto-approve" in cmd
+            assert "true" in cmd
+            assert "--json" in cmd
+            assert "ok" in cmd
+
+
+class TestClineDetectQuotaExhaustion:
+    """Tests for ClineProvider.detect_quota_exhaustion()."""
+
+    def setup_method(self):
+        from app.provider.cline import ClineProvider
+        self.provider = ClineProvider()
+
+    def test_stderr_pattern_triggers(self):
+        """Stderr patterns always trigger quota detection."""
+        assert self.provider.detect_quota_exhaustion(
+            stderr_text="rate limit exceeded"
+        ) is True
+        assert self.provider.detect_quota_exhaustion(
+            stderr_text="quota exceeded"
+        ) is True
+        assert self.provider.detect_quota_exhaustion(
+            stderr_text="HTTP 429"
+        ) is True
+        assert self.provider.detect_quota_exhaustion(
+            stderr_text="too many requests"
+        ) is True
+
+    def test_stderr_empty_stdout_ok(self):
+        """Empty output with exit_code=0 does not trigger."""
+        assert self.provider.detect_quota_exhaustion(
+            stdout_text="", stderr_text="", exit_code=0
+        ) is False
+
+    def test_stdout_quota_text_ignored_on_success(self):
+        """Rate limit text in stdout is ignored when exit_code=0."""
+        stdout = "Let's discuss rate limit handling in APIs."
+        assert self.provider.detect_quota_exhaustion(
+            stdout_text=stdout, stderr_text="", exit_code=0
+        ) is False
+
+    def test_stdout_error_line_triggers_on_failure(self):
+        """When a stdout line looks like an error with quota text, triggers."""
+        stdout = "error: rate limit exceeded"
+        assert self.provider.detect_quota_exhaustion(
+            stdout_text=stdout, stderr_text="", exit_code=1
+        ) is True
+
+    def test_stdout_quota_without_error_marker_ignored(self):
+        """Stdout without error marker is ignored even with quota text."""
+        # Note: This string does NOT contain error markers like "error", "api", "http", etc.
+        # but "limit" is in the error markers, so we use a string without any markers
+        stdout = "Your billing credit has run out for this billing period."
+        assert self.provider.detect_quota_exhaustion(
+            stdout_text=stdout, stderr_text="", exit_code=1
+        ) is False

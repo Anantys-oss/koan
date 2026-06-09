@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from app.provider import (
     ClaudeProvider,
+    ClineProvider,
     CodexProvider,
     LocalLLMProvider,
     OllamaLaunchProvider,
@@ -25,6 +26,9 @@ class TestProviderCapabilityFlag:
 
     def test_claude_supports_file_mode(self):
         assert ClaudeProvider().supports_system_prompt_file() is True
+
+    def test_cline_does_not_support_file_mode(self):
+        assert ClineProvider().supports_system_prompt_file() is False
 
     def test_codex_does_not_support_file_mode(self):
         assert CodexProvider().supports_system_prompt_file() is False

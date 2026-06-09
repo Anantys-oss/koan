@@ -526,6 +526,7 @@ def step_prerequisites(state: OnboardingState) -> OnboardingState:
     installed_providers = _detect_installed_providers()
     provider_tools = {
         "claude": "claude",
+        "cline": "cline",
         "codex": "codex",
         "copilot": "gh",
         "local": None,
@@ -572,6 +573,7 @@ def step_prerequisites(state: OnboardingState) -> OnboardingState:
 
 PROVIDERS = [
     ("claude", "Claude Code CLI"),
+    ("cline", "Cline CLI"),
     ("codex", "OpenAI Codex CLI"),
     ("copilot", "GitHub Copilot CLI"),
     ("local", "Local provider"),
@@ -581,6 +583,7 @@ PROVIDERS = [
 def _provider_ready(provider: str) -> tuple[bool, str]:
     tool_by_provider = {
         "claude": "claude",
+        "cline": "cline",
         "codex": "codex",
         "copilot": "gh",
         "local": None,
@@ -599,6 +602,7 @@ def _detect_installed_providers() -> list[str]:
     """Return the list of CLI providers whose binaries are on PATH."""
     provider_tools = {
         "claude": "claude",
+        "cline": "cline",
         "codex": "codex",
         "copilot": "gh",
         "local": None,
@@ -656,6 +660,14 @@ _PROVIDER_MODEL_DEFAULTS: dict[str, dict[str, str]] = {
         "chat": "",
         "lightweight": "haiku",
         "fallback": "sonnet",
+        "review_mode": "",
+        "reflect": "",
+    },
+    "cline": {
+        "mission": "",
+        "chat": "",
+        "lightweight": "",
+        "fallback": "",
         "review_mode": "",
         "reflect": "",
     },

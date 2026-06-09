@@ -563,7 +563,7 @@ def _detect_provider(koan_root: Path) -> str:
     """Detect the configured CLI provider.
 
     Uses the provider package resolution (env var > config.yaml > default).
-    Returns provider name: "claude", "copilot", "local", "ollama",
+    Returns provider name: "claude", "cline", "copilot", "local", "ollama",
     or "ollama-launch".
     """
     try:

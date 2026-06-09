@@ -100,6 +100,7 @@ Communication between processes happens through shared files in `instance/` with
 **CLI provider abstraction** (`koan/app/provider/`):
 - **`provider/base.py`** — `CLIProvider` base class + tool name constants + per-provider usage tracking hooks (`supports_usage_tracking()`, `record_usage()`)
 - **`provider/claude.py`** — `ClaudeProvider` (Claude Code CLI)
+- **`provider/cline.py`** — `ClineProvider` (Cline CLI)
 - **`provider/copilot.py`** — `CopilotProvider` (GitHub Copilot CLI) with tool name mapping
 - **`provider/__init__.py`** — Provider registry, resolution (env → config → default), cached singleton, and convenience functions (`run_command()`, `run_command_streaming()`, `build_full_command()`). Main entry point for the provider package.
 - **`cli_provider.py`** — Re-export facade (legacy); prefer importing from `provider` directly

@@ -1361,7 +1361,7 @@ projects:
 ```
 
 Key per-project settings:
-- **`cli_provider`** — `claude`, `codex`, `copilot`, `local`, or `ollama-launch`
+- **`cli_provider`** — `claude`, `cline`, `codex`, `copilot`, `local`, or `ollama-launch`
 - **`models`** — Override model selection per role
 - **`tools`** — Restrict available tools
 - **`git_auto_merge`** — Auto-merge completed PRs (strategy: squash/merge/rebase)
@@ -1493,6 +1493,7 @@ Kōan supports multiple CLI backends. Configure globally via `KOAN_CLI_PROVIDER`
 | Provider | Best for | Docs |
 |----------|----------|------|
 | **Claude Code** (default) | Full-featured agent, best reasoning | [claude.md](../providers/claude.md) |
+| **Cline** | Multi-backend (OpenRouter, Anthropic, OpenAI) | [cline.md](../providers/cline.md) |
 | **OpenAI Codex** | ChatGPT users who want Codex models | [codex.md](../providers/codex.md) |
 | **GitHub Copilot** | Teams with existing Copilot licenses | [copilot.md](../providers/copilot.md) |
 | **Local LLM** | Offline, privacy, zero API cost | [local.md](../providers/local.md) |

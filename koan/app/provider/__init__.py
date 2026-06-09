@@ -2,7 +2,7 @@
 CLI provider abstraction for Kōan.
 
 Allows switching between Claude Code CLI, GitHub Copilot CLI,
-OpenAI Codex CLI, or a local LLM server as the underlying AI agent
+OpenAI Codex CLI, Cline CLI, or a local LLM server as the underlying AI agent
 binary. Each provider knows how to translate Kōan's generic command
 spec into provider-specific flags.
 
@@ -13,6 +13,7 @@ Configuration:
 Package structure:
     provider/base.py         — CLIProvider base class + tool constants
     provider/claude.py       — ClaudeProvider implementation
+    provider/cline.py        — ClineProvider implementation
     provider/codex.py        — CodexProvider implementation
     provider/copilot.py      — CopilotProvider implementation
     provider/local.py        — LocalLLMProvider implementation
@@ -40,6 +41,7 @@ from app.provider.base import (  # noqa: F401
 
 # Import concrete providers
 from app.provider.claude import ClaudeProvider  # noqa: F401
+from app.provider.cline import ClineProvider  # noqa: F401
 from app.provider.codex import CodexProvider  # noqa: F401
 from app.provider.copilot import CopilotProvider  # noqa: F401
 from app.provider.local import LocalLLMProvider  # noqa: F401
@@ -97,6 +99,7 @@ def _format_cli_error(returncode: int, stdout: str, stderr: str) -> str:
 
 _PROVIDERS = {
     "claude": ClaudeProvider,
+    "cline": ClineProvider,
     "codex": CodexProvider,
     "copilot": CopilotProvider,
     "local": LocalLLMProvider,

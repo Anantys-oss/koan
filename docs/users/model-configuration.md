@@ -21,6 +21,10 @@ models:
     mission: "opus"
     review_mode: "opus"
 
+  cline:                    # Provider-specific overrides for the Cline harness
+    mission: "claude-sonnet-4-20250514"
+    chat: "claude-3-5-haiku-20241022"
+
   codex:                    # Provider-specific overrides for the Codex harness
     mission: "gpt-5.3-codex"
     chat: "gpt-5.5"
@@ -52,6 +56,7 @@ keys. Both still work, but emit a one-time `DEPRECATED` warning at startup.
 | ------------------------------ | -------------------------------- |
 | `models.mission`, `models.chat`| `models.default.mission`, …      |
 | `models_for_claude:`           | `models.claude:`                 |
+| `models_for_cline:`            | `models.cline:`                  |
 | `models_for_codex:`            | `models.codex:`                  |
 | `models_for_ollama_launch:`    | `models.ollama-launch:`          |
 

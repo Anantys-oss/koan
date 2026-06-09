@@ -27,7 +27,7 @@ The wizard runs through 12 steps:
 |------|-------------|----------------|
 | 1. Prerequisites | Checks Python 3.11+, git, supported CLI providers, gh | — |
 | 2. Instance init | Creates `instance/` from template and `.env` | `instance/`, `.env` |
-| 3. Provider | Chooses Claude, Codex, Copilot, or local provider | `.env` |
+| 3. Provider | Chooses Claude, Cline, Codex, Copilot, or local provider | `.env` |
 | 4. Models | Sets provider-specific model defaults (accept or customize per role) | `instance/config.yaml` |
 | 5. Virtual env | Runs `make setup` to install dependencies | `.venv/` |
 | 6. Messaging | Configures Telegram, Slack, or Matrix credentials | `.env` |

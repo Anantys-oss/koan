@@ -31,6 +31,7 @@ prefer importing from `koan.app.provider`.
 ## Current Providers
 
 - Claude provider: Claude Code CLI integration.
+- Cline provider: Cline CLI multi-backend integration.
 - Codex provider: OpenAI Codex CLI integration.
 - Copilot provider: GitHub Copilot CLI integration with tool-name mapping.
 - Local provider: local model server integration.

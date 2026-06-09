@@ -1570,6 +1570,143 @@ class TestCodexProvider:
 
 
 # ---------------------------------------------------------------------------
+# ClineProvider
+# ---------------------------------------------------------------------------
+
+
+class TestClineProvider:
+    def test_all_build_methods(self):
+        from app.provider.cline import ClineProvider
+        p = ClineProvider()
+        assert p.binary() == "cline"
+        with patch("app.provider.cline.shutil.which", return_value="/usr/bin/cline"):
+            assert p.is_available() is True
+        with patch("app.provider.cline.shutil.which", return_value=None):
+            assert p.is_available() is False
+        assert p.build_permission_args(True) == ["--auto-approve", "true"]
+        assert p.build_permission_args(False) == ["--auto-approve", "false"]
+        assert p.build_prompt_args("hi") == ["hi"]
+        assert p.build_tool_args(allowed_tools=["Bash"]) == []
+        assert p.build_model_args(model="m") == ["--model", "m"]
+        assert p.build_model_args(model="", fallback="fb") == []
+        assert p.supports_stream_json() is True
+        assert p.build_output_args("json") == ["--json"]
+        assert p.build_output_args("stream-json") == ["--json"]
+        assert p.build_max_turns_args(10) == []
+        assert p.build_mcp_args(configs=["x"]) == []
+        assert p.build_plugin_args(plugin_dirs=["/x"]) == []
+        assert p.build_effort_args(effort="high") == []
+        assert p.build_thinking_args(enabled=True) == ["--thinking"]
+        assert p.build_thinking_args(enabled=False) == []
+        assert p.invocation_lock_name() == "cline-cli"
+
+    def test_build_command_structure(self):
+        from app.provider.cline import ClineProvider
+        p = ClineProvider()
+        cmd = p.build_command(prompt="hello", model="claude-sonnet-4", skip_permissions=True)
+        assert cmd[0] == "cline"
+        assert "--auto-approve" in cmd
+        assert "true" in cmd
+        assert "--model" in cmd
+        assert "claude-sonnet-4" in cmd
+        assert cmd[-1] == "hello"
+
+    def test_build_command_ordering(self):
+        from app.provider.cline import ClineProvider
+        p = ClineProvider()
+        cmd = p.build_command(
+            prompt="test prompt",
+            model="claude-sonnet-4",
+            output_format="json",
+            skip_permissions=True,
+        )
+        # Verify order: binary -> permissions -> model -> output -> prompt
+        assert cmd[0] == "cline"
+        perm_idx = cmd.index("--auto-approve")
+        model_idx = cmd.index("--model")
+        assert perm_idx < model_idx
+        assert cmd[-1] == "test prompt"
+
+    def test_build_command_prepends_system_prompt(self):
+        from app.provider.cline import ClineProvider
+        cmd = ClineProvider().build_command(prompt="user", system_prompt="system")
+        assert cmd[-1].startswith("system")
+        assert "user" in cmd[-1]
+
+    def test_check_quota_success(self):
+        from app.provider.cline import ClineProvider
+        r = MagicMock(stdout="ok", stderr="", returncode=0)
+        with patch("app.provider.cline.subprocess.run", return_value=r):
+            ok, msg = ClineProvider().check_quota_available("/tmp")
+        assert ok is True
+        assert msg == ""
+
+    def test_check_quota_exhausted(self):
+        from app.provider.cline import ClineProvider
+        r = MagicMock(stdout="", stderr="rate limit exceeded", returncode=1)
+        with patch("app.provider.cline.subprocess.run", return_value=r):
+            ok, msg = ClineProvider().check_quota_available("/tmp")
+        assert ok is False
+        assert "rate limit" in msg
+
+    def test_check_quota_auth_failure(self):
+        from app.provider.cline import ClineProvider
+        r = MagicMock(stdout="401 Unauthorized", stderr="", returncode=1)
+        with patch("app.provider.cline.subprocess.run", return_value=r):
+            ok, msg = ClineProvider().check_quota_available("/tmp")
+        assert ok is False
+        assert "401" in msg
+
+    def test_check_quota_timeout_optimistic(self):
+        import subprocess as sp
+        from app.provider.cline import ClineProvider
+        with patch("app.provider.cline.subprocess.run",
+                   side_effect=sp.TimeoutExpired("cline", 1)):
+            ok, _ = ClineProvider().check_quota_available("/tmp")
+        assert ok is True
+
+    def test_check_quota_generic_error_optimistic(self):
+        from app.provider.cline import ClineProvider
+        with patch("app.provider.cline.subprocess.run",
+                   side_effect=OSError("no binary")):
+            ok, _ = ClineProvider().check_quota_available("/tmp")
+        assert ok is True
+
+    def test_detect_quota_exhaustion_stderr(self):
+        from app.provider.cline import ClineProvider
+        p = ClineProvider()
+        assert p.detect_quota_exhaustion(stderr_text="rate limit exceeded") is True
+        assert p.detect_quota_exhaustion(stderr_text="quota exceeded") is True
+        assert p.detect_quota_exhaustion(stderr_text="HTTP 429") is True
+
+    def test_detect_quota_exhaustion_stdout_with_exit_code(self):
+        from app.provider.cline import ClineProvider
+        p = ClineProvider()
+        assert p.detect_quota_exhaustion(
+            stdout_text="error: rate limit", exit_code=1
+        ) is True
+        # Should NOT detect quota on exit_code=0 (normal output)
+        assert p.detect_quota_exhaustion(
+            stdout_text="rate limit discussion", exit_code=0
+        ) is False
+
+    def test_detect_auth_failure(self):
+        from app.provider.cline import ClineProvider
+        p = ClineProvider()
+        assert p.detect_auth_failure(stderr_text="401 Unauthorized", exit_code=1) is True
+        assert p.detect_auth_failure(
+            stdout_text="invalid api key", exit_code=1
+        ) is True
+        assert p.detect_auth_failure(
+            stderr_text="authentication failed", exit_code=1
+        ) is True
+        # Should NOT detect auth on exit_code=0
+        assert p.detect_auth_failure(
+            stdout_text="401 Unauthorized", exit_code=0
+        ) is False
+
+
+# ---------------------------------------------------------------------------
 # _format_cli_error
 # ---------------------------------------------------------------------------
 
