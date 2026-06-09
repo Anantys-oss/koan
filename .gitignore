@@ -47,6 +47,9 @@ projects.docker.yaml
 # pytest-split durations (generated locally)
 .test_durations
 
+# Process log files (root only, not koan/skills/core/logs/)
+/logs/
+
 # Runtime state files
 .branch-cleanup-tracker.json
 .aider*
