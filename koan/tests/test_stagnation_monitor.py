@@ -361,6 +361,32 @@ class TestTailHashEdgeCases:
         assert h1 is not None
         assert h1 == h2
 
+    def test_long_jsonl_lines_captured_fully(self, tmp_path):
+        """Regression: lines * 200 was too small for long JSONL lines.
+
+        With 50 sample_lines and ~1 KiB per line, the old 10 KiB window
+        only captured ~10 lines, making the hash unstable as the file
+        grew. The 4 KiB-per-line multiplier guarantees the full tail is
+        read so stagnation is detected correctly.
+        """
+        f = tmp_path / "out.log"
+        # 60 lines of ~1200 bytes each (structured JSONL-like content)
+        lines = [json.dumps({"iteration": i, "data": "x" * 1000}) for i in range(60)]
+        f.write_text("\n".join(lines) + "\n")
+
+        # Must return a stable hash over the last 50 lines.
+        h1 = _tail_hash(str(f), 50)
+        h2 = _tail_hash(str(f), 50)
+        assert h1 is not None
+        assert h1 == h2
+
+        # Append one identical line — tail should still be captured fully
+        # and hash should change because the line window shifts.
+        with open(f, "a") as fh:
+            fh.write(json.dumps({"iteration": 99, "data": "x" * 1000}) + "\n")
+        h3 = _tail_hash(str(f), 50)
+        assert h3 != h1
+
 
 class TestSampleOnceNoneHash:
     """Cover _sample_once reset when hash returns None (lines 175-177)."""

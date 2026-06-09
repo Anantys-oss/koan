@@ -58,11 +58,11 @@ _RETRY_TRACKER_FILENAME = ".stagnation-retries.json"
 def _read_tail(stdout_file: str, lines: int) -> Optional[bytes]:
     """Read the last *lines* lines worth of bytes from *stdout_file*.
 
-    Uses a byte-aligned seek window of ``lines * 200`` bytes — a generous
-    upper bound for average log-line length. The seek may land mid-codepoint
-    inside a multi-byte UTF-8 sequence; callers either hash the raw bytes
-    (where this is fine for equality comparison) or decode with
-    ``errors='replace'`` (classification).
+    Uses a byte-aligned seek window of ``lines * 4096`` bytes — generous
+    enough for long JSONL / structured-log lines that routinely exceed
+    1 KiB. The seek may land mid-codepoint inside a multi-byte UTF-8
+    sequence; callers either hash the raw bytes (where this is fine for
+    equality comparison) or decode with ``errors='replace'`` (classification).
 
     Returns ``None`` when the file is unreadable or smaller than
     :data:`_DEFAULT_MIN_BYTES`, signalling "not enough output yet".
@@ -75,7 +75,7 @@ def _read_tail(stdout_file: str, lines: int) -> Optional[bytes]:
         return None
     try:
         with open(stdout_file, "rb") as f:
-            window = min(size, lines * 200)
+            window = min(size, lines * 4096)
             f.seek(size - window)
             return f.read(window)
     except OSError:
