@@ -98,7 +98,7 @@ Communication between processes happens through shared files in `instance/` with
 - **`passive_manager.py`** — Passive mode management (`.koan-passive` JSON); read-only mode that blocks all execution while keeping loop alive
 
 **CLI provider abstraction** (`koan/app/provider/`):
-- **`provider/base.py`** — `CLIProvider` base class + tool name constants
+- **`provider/base.py`** — `CLIProvider` base class + tool name constants + per-provider usage tracking hooks (`supports_usage_tracking()`, `record_usage()`)
 - **`provider/claude.py`** — `ClaudeProvider` (Claude Code CLI)
 - **`provider/copilot.py`** — `CopilotProvider` (GitHub Copilot CLI) with tool name mapping
 - **`provider/__init__.py`** — Provider registry, resolution (env → config → default), cached singleton, and convenience functions (`run_command()`, `run_command_streaming()`, `build_full_command()`). Main entry point for the provider package.
@@ -131,12 +131,12 @@ Communication between processes happens through shared files in `instance/` with
 
 **Other:**
 - **`memory_manager.py`** — Per-project memory isolation, compaction, and cleanup. Includes semantic learnings compaction (Claude-powered dedup/merge), global memory file rotation, and configurable thresholds via `config.yaml` `memory:` section
-- **`usage_tracker.py`** — Budget tracking; decides autonomous mode (REVIEW/IMPLEMENT/DEEP/WAIT) based on quota percentage. Pure parser + threshold class — burn-rate-driven downgrades live in `iteration_manager._downgrade_if_burning_fast` next to the existing affordability downgrade.
+- **`usage_tracker.py`** — Per-provider budget tracking; decides autonomous mode (REVIEW/IMPLEMENT/DEEP/WAIT) based on each provider's independent quota percentage. Pure parser + threshold class — burn-rate-driven downgrades live in `iteration_manager._downgrade_if_burning_fast` next to the existing affordability downgrade.
 - **`burn_rate.py`** — Rolling burn-rate estimator (% session quota per minute). Maintains a 20-sample circular buffer in `instance/.burn-rate.json` with `fcntl.flock(LOCK_SH)` on reads, exposes `record_run()`, `burn_rate_pct_per_minute()` (total cost / span across all samples), `time_to_exhaustion(session_pct, mode=None)`, and the canonical `MODE_MULTIPLIERS` table shared with `usage_tracker.can_afford_run`. Also tracks the last-warning timestamp so the iteration manager fires at most one Telegram alert per quota cycle.
 - **`recover.py`** — Crash recovery for stale in-progress missions
 - **`prompts.py`** — System prompt loader; `load_prompt()` for `koan/system-prompts/*.md`, `load_skill_prompt()` for skill-bound prompts. Supports `{@include partial-name}` directive for reusable prompt fragments from `koan/system-prompts/_partials/`.
 - **`skill_manager.py`** — External skill package manager: install from Git repos, update, remove, track via `instance/skills.yaml`
-- **`claudemd_refresh.py`** — CLAUDE.md refresh pipeline: gathers git context, invokes Claude to update/create CLAUDE.md
+- **`claudemd_refresh.py`** — CLAUDE.md refresh pipeline: gathers git context, invokes Claude to update/create CLAUDE.md. When CLAUDE.md is missing, dispatches the built-in `/init` skill instead of a generic prompt.
 - **`update_manager.py`** — Kōan self-update: stash, checkout main, fetch/pull from upstream, report changes
 - **`auto_update.py`** — Automatic update checker and self-commit tracker. Periodically fetches upstream, triggers pull + restart when new commits are available. Also tracks Kōan's own HEAD across startups — records current SHA in `instance/.commit-tracker.json`, reports new commits via Telegram on subsequent startups. Configurable via `auto_update` section in `config.yaml` (`enabled`, `check_interval`, `notify`)
 - **`ci_dispatch.py`** — Auto-dispatch fix missions when CI fails on Koan-authored PRs. Checks open PRs by branch prefix, fetches check-run status via GitHub API, inserts fix missions with log snippets. Dedup via `.ci-dispatch-tracker.json` keyed by PR+SHA+job. Configurable via `ci_dispatch` section in `config.yaml` (`enabled`, `cooldown_minutes`, `log_snippet_bytes`).
