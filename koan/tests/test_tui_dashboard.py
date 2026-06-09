@@ -422,3 +422,165 @@ def test_pilot_status_shows_run_and_api(tmp_path, monkeypatch):
             assert "live" in text     # api is up
 
     asyncio.run(scenario())
+
+
+# --- usage tab reset --------------------------------------------------------
+
+def _write_usage(tmp_path, session_pct=30, weekly_pct=40):
+    inst = tmp_path / "instance"
+    inst.mkdir(exist_ok=True)
+    (inst / "usage.md").write_text(
+        f"# Usage\n\nSession (5hr) : ~{session_pct}% (reset in 3h)\n"
+        f"Weekly (7 day) : ~{weekly_pct}% (Resets in 3d)\n"
+    )
+    return tmp_path
+
+
+def test_render_usage_shows_hint_when_data_exists(tmp_path):
+    _write_usage(tmp_path, 25, 50)
+
+    async def scenario():
+        app = tui.KoanDashboard(tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.press("u")
+            await pilot.pause()
+            body = app.query_one("#usage-body", tui.Static)
+            rendered = body.render()
+            text = getattr(rendered, "plain", str(rendered))
+            assert "25%" in text
+            assert "50%" in text
+            assert "r = reset / override quota" in text
+
+    asyncio.run(scenario())
+
+
+def test_render_usage_no_hint_when_no_usage_md(tmp_path):
+    inst = tmp_path / "instance"
+    inst.mkdir(exist_ok=True)
+
+    async def scenario():
+        app = tui.KoanDashboard(tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.press("u")
+            await pilot.pause()
+            body = app.query_one("#usage-body", tui.Static)
+            rendered = body.render()
+            text = getattr(rendered, "plain", str(rendered))
+            assert "no usage.md yet" in text
+            assert "r = reset" not in text
+
+    asyncio.run(scenario())
+
+
+def test_pilot_reset_quota_override(tmp_path, monkeypatch):
+    _write_usage(tmp_path, 60, 70)
+    calls = []
+    monkeypatch.setattr(
+        "app.usage_estimator.cmd_set_used",
+        lambda pct, sf, um: calls.append(("set", pct)),
+    )
+    monkeypatch.setattr(
+        "app.usage_estimator.cmd_reset_session",
+        lambda sf, um: calls.append(("reset",)),
+    )
+    monkeypatch.setattr(
+        "app.pause_manager.is_paused", lambda root: False
+    )
+
+    async def scenario():
+        app = tui.KoanDashboard(tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.press("u")  # usage tab
+            await pilot.pause()
+            await pilot.press("r")  # open reset modal
+            await pilot.pause()
+            app.screen.query_one("#value", tui.Input).value = "15"
+            await pilot.press("enter")
+            await pilot.pause()
+
+    asyncio.run(scenario())
+    assert calls == [("set", 15)]
+
+
+def test_pilot_reset_quota_full_reset(tmp_path, monkeypatch):
+    _write_usage(tmp_path, 80, 90)
+    calls = []
+    monkeypatch.setattr(
+        "app.usage_estimator.cmd_set_used",
+        lambda pct, sf, um: calls.append(("set", pct)),
+    )
+    monkeypatch.setattr(
+        "app.usage_estimator.cmd_reset_session",
+        lambda sf, um: calls.append(("reset",)),
+    )
+    monkeypatch.setattr(
+        "app.pause_manager.is_paused", lambda root: False
+    )
+
+    async def scenario():
+        app = tui.KoanDashboard(tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.press("u")
+            await pilot.pause()
+            await pilot.press("r")
+            await pilot.pause()
+            # Click "Full Reset" button (second button)
+            buttons = app.screen.query(tui.Button)
+            reset_btn = [b for b in buttons if b.id == "reset"][0]
+            reset_btn.press()
+            await pilot.pause()
+
+    asyncio.run(scenario())
+    assert calls == [("reset",)]
+
+
+def test_pilot_reset_quota_invalid_input(tmp_path, monkeypatch):
+    _write_usage(tmp_path, 50, 50)
+    calls = []
+    monkeypatch.setattr(
+        "app.usage_estimator.cmd_set_used",
+        lambda pct, sf, um: calls.append(("set", pct)),
+    )
+    monkeypatch.setattr(
+        "app.usage_estimator.cmd_reset_session",
+        lambda sf, um: calls.append(("reset",)),
+    )
+    monkeypatch.setattr(
+        "app.pause_manager.is_paused", lambda root: False
+    )
+
+    async def scenario():
+        app = tui.KoanDashboard(tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.press("u")
+            await pilot.pause()
+            await pilot.press("r")
+            await pilot.pause()
+            app.screen.query_one("#value", tui.Input).value = "abc"
+            await pilot.press("enter")
+            await pilot.pause()
+
+    asyncio.run(scenario())
+    assert calls == []  # no update for invalid input
+
+
+def test_refresh_on_usage_tab_triggers_reset_modal(tmp_path, monkeypatch):
+    _write_usage(tmp_path, 10, 20)
+    modal_shown = []
+    original_reset_quota = tui.KoanDashboard.action_reset_quota
+
+    def fake_reset_quota(self):
+        modal_shown.append(True)
+
+    monkeypatch.setattr(tui.KoanDashboard, "action_reset_quota", fake_reset_quota)
+
+    async def scenario():
+        app = tui.KoanDashboard(tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.press("u")
+            await pilot.pause()
+            await pilot.press("r")
+            await pilot.pause()
+
+    asyncio.run(scenario())
+    assert modal_shown == [True]

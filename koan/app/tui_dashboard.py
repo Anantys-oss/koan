@@ -260,6 +260,77 @@ class NewMissionScreen(ModalScreen):
         self.dismiss(None)
 
 
+class ResetQuotaScreen(ModalScreen):
+    """Modal to override or fully reset quota estimates."""
+
+    CSS = f"""
+    ResetQuotaScreen {{ align: center middle; }}
+    #box {{ width: 72; height: auto; padding: 1 2;
+            background: {_MIDNIGHT}; border: round {_AMBER}; }}
+    #title {{ color: {_AMBER}; text-style: bold; }}
+    #current {{ color: $text; }}
+    #hint {{ color: $text-muted; }}
+    #buttons {{ height: auto; padding-top: 1; }}
+    Button {{ margin-right: 2; }}
+    """
+
+    BINDINGS = [("escape", "cancel", "Cancel")]
+
+    def __init__(self, session_pct: float, weekly_pct: float):
+        super().__init__()
+        self.session_pct = session_pct
+        self.weekly_pct = weekly_pct
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="box"):
+            yield Label("Reset / override quota", id="title")
+            yield Label(
+                f"Session: {self.session_pct:.0f}%  ·  Weekly: {self.weekly_pct:.0f}%",
+                id="current",
+            )
+            yield Label(
+                "Enter % used (0-100) to override, or choose Full Reset",
+                id="hint",
+            )
+            yield Input(placeholder="e.g. 5 (= 5% used, 95% remaining)", id="value")
+            with Container(id="buttons"):
+                yield Button("Override", variant="primary", id="override")
+                yield Button("Full Reset", variant="warning", id="reset")
+                yield Button("Cancel", id="cancel")
+
+    def on_mount(self) -> None:
+        self.query_one("#value", Input).focus()
+
+    def on_input_submitted(self, _event: Input.Submitted) -> None:
+        self._submit()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "override":
+            self._submit()
+        elif event.button.id == "reset":
+            self.dismiss("reset")
+        else:
+            self.dismiss(None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def _submit(self) -> None:
+        raw = self.query_one("#value", Input).value.strip()
+        if not raw:
+            self.dismiss(None)
+            return
+        try:
+            pct = int(raw)
+        except ValueError:
+            self.dismiss("invalid")
+            return
+        if pct < 0 or pct > 100:
+            self.dismiss("invalid")
+            return
+        self.dismiss(pct)
+
+
 class KoanDashboard(App):
     """Terminal dashboard for a running Kōan instance."""
 
@@ -356,6 +427,9 @@ class KoanDashboard(App):
     # --- actions ------------------------------------------------------------
 
     def action_refresh(self) -> None:
+        if self.active_pane_id() == "usage":
+            self.action_reset_quota()
+            return
         self._build_config_tree()
         self.refresh_dynamic()
 
@@ -411,6 +485,57 @@ class KoanDashboard(App):
         except Exception as exc:  # pragma: no cover - defensive
             self.notify(f"pause failed: {exc}", severity="error")
         self.refresh_dynamic()
+
+    def action_reset_quota(self) -> None:
+        """Open quota reset modal when on the Usage tab."""
+        try:
+            from app.usage_tracker import UsageTracker
+
+            usage_md = self.koan_root / "instance" / "usage.md"
+            t = UsageTracker(usage_md)
+        except Exception as exc:
+            self.notify(f"quota read failed: {exc}", severity="error")
+            return
+
+        def _apply(result) -> None:
+            if result is None:
+                return
+            if result == "invalid":
+                self.notify("Invalid input — enter a number between 0 and 100")
+                return
+            instance_dir = self.koan_root / "instance"
+            state_file = instance_dir / "usage_state.json"
+            usage_md = instance_dir / "usage.md"
+            try:
+                if result == "reset":
+                    from app.usage_estimator import cmd_reset_session
+                    cmd_reset_session(state_file, usage_md)
+                    # Clear burn-rate history
+                    burn_rate_file = instance_dir / ".burn-rate.json"
+                    if burn_rate_file.exists():
+                        burn_rate_file.unlink(missing_ok=True)
+                    msg = "Quota reset — session tokens cleared, burn rate reset."
+                else:
+                    from app.usage_estimator import cmd_set_used
+                    cmd_set_used(result, state_file, usage_md)
+                    msg = f"Quota override — set to {result}% used ({100 - result}% remaining)."
+
+                # Clear quota pause if active
+                from app.pause_manager import is_paused, get_pause_state, remove_pause
+                if is_paused(str(self.koan_root)):
+                    state = get_pause_state(str(self.koan_root))
+                    if state and state.is_quota:
+                        remove_pause(str(self.koan_root))
+                        msg += "  Quota pause cleared — agent will resume."
+
+                self.notify(msg)
+            except Exception as exc:
+                self.notify(f"quota update failed: {exc}", severity="error")
+            self.refresh_dynamic()
+
+        self.push_screen(
+            ResetQuotaScreen(t.session_pct, t.weekly_pct), _apply
+        )
 
     # --- toggles (web dashboard, caffeinate) --------------------------------
 
@@ -835,6 +960,7 @@ class KoanDashboard(App):
     def _render_usage(self) -> None:
         usage_md = self.koan_root / "instance" / "usage.md"
         lines = []
+        has_data = False
         try:
             from app.usage_tracker import UsageTracker
 
@@ -842,6 +968,7 @@ class KoanDashboard(App):
             lines.append(self._bar("Session", t.session_pct, t.session_reset))
             lines.append(self._bar("Weekly", t.weekly_pct, t.weekly_reset))
             lines.append("")
+            has_data = True
             try:
                 mode = t.decide_mode()
                 lines.append(f"Mode      [{_MINT}]{mode}[/]")
@@ -859,6 +986,9 @@ class KoanDashboard(App):
             lines.append(f"[dim](usage unavailable: {exc})[/dim]")
         if not (usage_md.exists()):
             lines.append("[dim]no usage.md yet — Kōan writes it after the first run[/dim]")
+        if has_data and usage_md.exists():
+            lines.append("")
+            lines.append("[dim]r = reset / override quota[/dim]")
         self.query_one("#usage-body", Static).update("\n".join(lines))
 
 
