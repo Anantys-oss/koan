@@ -205,7 +205,7 @@ def _get_rtk_section(project_name: str = "") -> str:
                 pass
         from app.prompts import load_prompt
         return "\n\n" + load_prompt("rtk-awareness")
-    except (OSError, FileNotFoundError):
+    except OSError:
         return ""
     except Exception as e:
         logger.warning("rtk awareness section unavailable: %s", e)

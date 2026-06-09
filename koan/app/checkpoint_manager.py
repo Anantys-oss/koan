@@ -212,7 +212,7 @@ def update_from_pending(instance_dir: str, mission_text: str) -> bool:
     pending_path = Path(instance_dir) / "journal" / "pending.md"
     try:
         content = pending_path.read_text()
-    except (OSError, FileNotFoundError):
+    except OSError:
         return False
 
     steps = _extract_steps_from_pending(content)

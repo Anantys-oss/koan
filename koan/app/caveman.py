@@ -112,7 +112,7 @@ def get_caveman_section(
     try:
         from app.prompts import load_prompt
         return load_prompt("caveman-mode")
-    except (OSError, FileNotFoundError):
+    except OSError:
         return ""
 
 

@@ -389,7 +389,7 @@ def _read_pending_content(instance_dir: str) -> str:
     pending_path = Path(instance_dir) / "journal" / "pending.md"
     try:
         return pending_path.read_text()
-    except (OSError, FileNotFoundError):
+    except OSError:
         return ""
 
 
@@ -412,7 +412,7 @@ def _read_stdout_summary(stdout_file: str, max_chars: int = 2000) -> str:
             return ""
         text = parse_claude_output(raw)
         return text[:max_chars] if text else ""
-    except (OSError, FileNotFoundError):
+    except OSError:
         return ""
 
 
@@ -663,7 +663,7 @@ def archive_pending(instance_dir: str, project_name: str, run_num: int) -> bool:
     pending_path = Path(instance_dir) / "journal" / "pending.md"
     try:
         pending_content = pending_path.read_text()
-    except (OSError, FileNotFoundError):
+    except OSError:
         return False
 
     # Append pending content to daily journal (with file locking)
@@ -1310,7 +1310,7 @@ def _read_full_stdout_text(stdout_file: str) -> str:
         if not raw.strip():
             return ""
         return parse_claude_output(raw) or ""
-    except (OSError, FileNotFoundError):
+    except OSError:
         return ""
 
 

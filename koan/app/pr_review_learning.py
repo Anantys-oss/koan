@@ -457,7 +457,7 @@ def _dedup_lessons_with_cli(
             EXISTING_CONTENT=existing_content,
             NEW_LESSONS=new_lessons_text,
         )
-    except (OSError, FileNotFoundError) as e:
+    except OSError as e:
         print(f"[pr_review_learning] dedup prompt load failed: {e}", file=sys.stderr)
         return None
 
