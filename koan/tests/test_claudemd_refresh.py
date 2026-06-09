@@ -331,15 +331,20 @@ class TestRunRefresh:
         assert result == 0
         self._mock_pr_create.assert_not_called()
 
-    def test_init_mode_when_no_claudemd(self, tmp_path):
+    def test_init_mode_uses_builtin_init_skill(self, tmp_path):
+        """When no CLAUDE.md exists, use Claude's built-in /init skill."""
         project = tmp_path / "project"
         project.mkdir()
 
-        with patch("app.claudemd_refresh.build_git_context", return_value="No CLAUDE.md"):
+        with patch("app.claudemd_refresh.build_git_context") as mock_git_ctx:
             run_refresh(str(project), "test")
 
-        prompt_call = self._mock_prompt.call_args
-        assert prompt_call[1]["MODE"] == "INIT"
+        # /init explores the project itself — no need for custom git context
+        mock_git_ctx.assert_not_called()
+        # load_skill_prompt should not be called — we use the built-in /init skill
+        self._mock_prompt.assert_not_called()
+        # build_full_command should receive the /init prompt
+        assert self._mock_build_cmd.call_args[1]["prompt"] == "/init"
 
     def test_update_mode_when_claudemd_exists(self, tmp_path):
         project = tmp_path / "project"

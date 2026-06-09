@@ -212,7 +212,6 @@ def run_refresh(project_path: str, project_name: str) -> int:
     claude_md = Path(project_path) / "CLAUDE.md"
     claude_md_exists = claude_md.exists()
 
-    # Determine mode
     if claude_md_exists:
         mode = "UPDATE"
         mode_instructions = (
@@ -220,22 +219,16 @@ def run_refresh(project_path: str, project_name: str) -> int:
             "architecturally significant changes and update the file accordingly. "
             "Make minimal, surgical edits. If nothing significant changed, say so."
         )
+        # Gather git context (before branching, so we see main's history)
+        git_context = build_git_context(project_path, True)
+
+        # Check if there's nothing to do
+        if "No new commits since then" in git_context:
+            print("CLAUDE.md is up to date — no new commits since last update.")
+            return 0
     else:
         mode = "INIT"
-        mode_instructions = (
-            "No CLAUDE.md exists yet. Explore the project structure, build system, "
-            "and codebase to create a comprehensive but concise CLAUDE.md from scratch. "
-            "Focus on: what the project does, how to build/test/run it, key architecture, "
-            "and important conventions."
-        )
-
-    # Gather git context (before branching, so we see main's history)
-    git_context = build_git_context(project_path, claude_md_exists)
-
-    # Check if there's nothing to do
-    if claude_md_exists and "No new commits since then" in git_context:
-        print("CLAUDE.md is up to date — no new commits since last update.")
-        return 0
+        # No git context needed — the built-in /init skill explores the project itself
 
     # Remember the base branch for the PR
     base_branch = run_git_strict(
@@ -252,21 +245,24 @@ def run_refresh(project_path: str, project_name: str) -> int:
         print(f"Failed to create branch {branch_name}: {e}", file=sys.stderr)
         return 1
 
-    # Build project memory block (learnings, context, priorities)
-    task_text = f"CLAUDE.md refresh for {project_name}\n{git_context}"
-    project_memory = build_memory_block_for_skill(project_path, task_text)
+    if claude_md_exists:
+        # Build project memory block (learnings, context, priorities)
+        task_text = f"CLAUDE.md refresh for {project_name}\n{git_context}"
+        project_memory = build_memory_block_for_skill(project_path, task_text)
 
-    # Build prompt
-    skill_dir = Path(__file__).parent.parent / "skills" / "core" / "claudemd"
-    prompt = load_skill_prompt(
-        skill_dir, "refresh-claude-md",
-        MODE=mode,
-        MODE_INSTRUCTIONS=mode_instructions,
-        PROJECT_PATH=project_path,
-        PROJECT_NAME=project_name,
-        GIT_CONTEXT=git_context,
-        PROJECT_MEMORY=project_memory,
-    )
+        # Build prompt
+        skill_dir = Path(__file__).parent.parent / "skills" / "core" / "claudemd"
+        prompt = load_skill_prompt(
+            skill_dir, "refresh-claude-md",
+            MODE=mode,
+            MODE_INSTRUCTIONS=mode_instructions,
+            PROJECT_PATH=project_path,
+            PROJECT_NAME=project_name,
+            GIT_CONTEXT=git_context,
+            PROJECT_MEMORY=project_memory,
+        )
+    else:
+        prompt = "/init"
 
     # Build CLI command
     models = get_model_config()
