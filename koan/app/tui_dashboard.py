@@ -647,6 +647,26 @@ class KoanDashboard(App):
             self.log(f"bridge status failed: {exc}")
         return bridge, configured
 
+    def _run_status(self) -> bool:
+        """Return whether the agent run loop is alive."""
+        try:
+            from app.pid_manager import check_pidfile
+
+            return check_pidfile(self.koan_root, "run") is not None
+        except Exception as exc:
+            self.log(f"run status failed: {exc}")
+            return False
+
+    def _api_status(self) -> bool:
+        """Return whether the REST API server is alive."""
+        try:
+            from app.pid_manager import check_pidfile
+
+            return check_pidfile(self.koan_root, "api") is not None
+        except Exception as exc:
+            self.log(f"api status failed: {exc}")
+            return False
+
     def _render_status(self) -> None:
         try:
             body = self.query_one("#status-body", Static)
@@ -679,6 +699,8 @@ class KoanDashboard(App):
         web_hint = "localhost:5001" if web_on else "start + open browser"
         awake_on = self._keepawake_on()
         awake_hint = self._keepawake_label if awake_on else "off"
+        run_on = self._run_status()
+        api_on = self._api_status()
         if bridge and tg_configured:
             tg = f"{self._dot(True)}  [dim]bridge live[/]"
         elif tg_configured:
@@ -699,6 +721,8 @@ class KoanDashboard(App):
             f"  telegram     {tg}",
             f"  web board    {self._dot(web_on)}  [dim](w · {web_hint})[/]",
             f"  keep awake   {self._dot(awake_on)}  [dim](k · {awake_hint})[/]",
+            f"  run loop     {self._dot(run_on)}  [dim]{'running' if run_on else 'stopped'}[/]",
+            f"  api          {self._dot(api_on)}  [dim]{'live' if api_on else 'off'}[/]",
         ]
         # Usage bars reuse the same renderer as the Usage tab.
         try:

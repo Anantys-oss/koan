@@ -374,3 +374,51 @@ def test_pilot_status_shows_mission_titles_and_telegram(tmp_path, monkeypatch):
             assert "telegram" in text
 
     asyncio.run(scenario())
+
+
+def test_run_status_reads_pidfile(tmp_path, monkeypatch):
+    app = tui.KoanDashboard(tmp_path)
+    monkeypatch.setattr(
+        "app.pid_manager.check_pidfile", lambda root, name: 123 if name == "run" else None
+    )
+    assert app._run_status() is True
+    monkeypatch.setattr(
+        "app.pid_manager.check_pidfile", lambda root, name: None
+    )
+    assert app._run_status() is False
+
+
+def test_api_status_reads_pidfile(tmp_path, monkeypatch):
+    app = tui.KoanDashboard(tmp_path)
+    monkeypatch.setattr(
+        "app.pid_manager.check_pidfile", lambda root, name: 456 if name == "api" else None
+    )
+    assert app._api_status() is True
+    monkeypatch.setattr(
+        "app.pid_manager.check_pidfile", lambda root, name: None
+    )
+    assert app._api_status() is False
+
+
+def test_pilot_status_shows_run_and_api(tmp_path, monkeypatch):
+    _write_config(tmp_path, "x: 1\n")
+    monkeypatch.setattr(
+        "app.pid_manager.check_pidfile",
+        lambda root, name: 111 if name in ("run", "api") else None,
+    )
+
+    async def scenario():
+        app = tui.KoanDashboard(tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.refresh_dynamic()
+            await pilot.pause()
+            body = app.query_one("#status-body", tui.Static)
+            rendered = body.render()
+            text = getattr(rendered, "plain", str(rendered))
+            assert "run loop" in text
+            assert "api" in text
+            assert "running" in text  # run loop is up
+            assert "live" in text     # api is up
+
+    asyncio.run(scenario())
