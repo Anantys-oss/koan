@@ -273,12 +273,22 @@ def _get_budget_mode() -> str:
     """Read budget_mode from config.yaml → usage.budget_mode.
 
     Valid values: "full" (default), "session_only", "disabled".
+    Automatically returns "disabled" for providers that have no metered
+    API quota (ollama-launch, local) so stale usage.md never gates them.
     """
     try:
         from app.utils import load_config
         config = load_config()
         mode = config.get("usage", {}).get("budget_mode", "session_only")
         if mode in ("full", "session_only", "disabled"):
+            # Override to disabled for no-quota providers
+            if mode != "disabled":
+                try:
+                    from app.cli_provider import get_provider
+                    if not get_provider().has_api_quota():
+                        return "disabled"
+                except Exception as exc:
+                    logger.debug("Provider quota check failed: %s", exc)
             return mode
     except (ImportError, OSError, ValueError):
         pass

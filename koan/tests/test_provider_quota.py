@@ -72,6 +72,10 @@ class TestClaudeProviderQuota:
         assert ok is True
         assert detail == ""
 
+    def test_has_api_quota_true(self):
+        """ClaudeProvider uses metered Anthropic API."""
+        assert self.provider.has_api_quota() is True
+
     def test_combines_stderr_and_stdout(self):
         """No subprocess — nothing to combine."""
         ok, detail = self.provider.check_quota_available("/tmp")
@@ -113,6 +117,20 @@ class TestLocalProviderQuota:
         ok, detail = provider.check_quota_available("/tmp")
         assert ok is True
         assert detail == ""
+
+    def test_local_has_api_quota_false(self):
+        """LocalLLMProvider runs on self-hosted infra — no metered quota."""
+        provider = LocalLLMProvider()
+        assert provider.has_api_quota() is False
+
+
+class TestOllamaLaunchProviderQuota:
+    """OllamaLaunchProvider has no metered API quota."""
+
+    def test_ollama_launch_has_api_quota_false(self):
+        from app.provider.ollama_launch import OllamaLaunchProvider
+        provider = OllamaLaunchProvider()
+        assert provider.has_api_quota() is False
 
 
 class TestCopilotProviderQuota:

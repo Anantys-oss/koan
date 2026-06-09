@@ -317,6 +317,57 @@ class TestCmdUpdate:
         state = json.loads(state_file.read_text())
         assert state["session_tokens"] == 0
 
+    @patch("app.usage_estimator.load_config", return_value={
+        "cli_provider": "ollama-launch",
+        "usage": {"session_token_limit": 500000, "weekly_token_limit": 5000000}
+    })
+    def test_resets_counters_on_provider_change(self, mock_config, claude_json, state_file, usage_md):
+        # Seed state with tokens from a previous provider
+        old_state = {
+            "provider": "claude",
+            "session_start": datetime.now().isoformat(),
+            "session_tokens": 500000,
+            "weekly_start": datetime.now().isoformat(),
+            "weekly_tokens": 5000000,
+            "runs": 100,
+        }
+        state_file.write_text(json.dumps(old_state))
+
+        # Run cmd_update with ollama-launch provider
+        cmd_update(claude_json, state_file, usage_md)
+
+        # State should be reset because provider changed
+        state = json.loads(state_file.read_text())
+        assert state["provider"] == "ollama-launch"
+        assert state["session_tokens"] == 2000  # tokens from claude_json
+        assert state["weekly_tokens"] == 2000
+        assert state["runs"] == 1
+
+    @patch("app.usage_estimator.load_config", return_value={
+        "cli_provider": "claude",
+        "usage": {"session_token_limit": 500000, "weekly_token_limit": 5000000}
+    })
+    def test_preserves_counters_when_provider_unchanged(self, mock_config, claude_json, state_file, usage_md):
+        # Seed state with tokens from the same provider
+        old_state = {
+            "provider": "claude",
+            "session_start": datetime.now().isoformat(),
+            "session_tokens": 10000,
+            "weekly_start": datetime.now().isoformat(),
+            "weekly_tokens": 50000,
+            "runs": 5,
+        }
+        state_file.write_text(json.dumps(old_state))
+
+        cmd_update(claude_json, state_file, usage_md)
+
+        # State should accumulate because provider is unchanged
+        state = json.loads(state_file.read_text())
+        assert state["provider"] == "claude"
+        assert state["session_tokens"] == 12000
+        assert state["weekly_tokens"] == 52000
+        assert state["runs"] == 6
+
 
 class TestCmdRefresh:
     @patch("app.usage_estimator.load_config", return_value={

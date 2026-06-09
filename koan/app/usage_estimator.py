@@ -40,9 +40,10 @@ def _load_state(state_file: Path) -> dict:
     return _fresh_state()
 
 
-def _fresh_state() -> dict:
+def _fresh_state(provider: str = "") -> dict:
     now = datetime.now().isoformat()
     return {
+        "provider": provider,
         "session_start": now,
         "session_tokens": 0,
         "weekly_start": now,
@@ -194,6 +195,32 @@ def _get_today_cache_line(instance_dir: Path) -> str:
         return ""
 
 
+def _current_provider(config: dict) -> str:
+    """Return the configured CLI provider name (default 'claude')."""
+    return config.get("cli_provider", "claude")
+
+
+def _maybe_reset_provider(state: dict, current_provider: str) -> dict:
+    """Reset counters when the CLI provider has changed.
+
+    Local providers (ollama-launch, local) do not share API quota with
+    metered providers (claude, copilot, codex), so stale usage from a
+    previous provider must not gate the current one.
+    """
+    stored = state.get("provider", "")
+    if stored and stored != current_provider:
+        now = datetime.now().isoformat()
+        state["provider"] = current_provider
+        state["session_start"] = now
+        state["session_tokens"] = 0
+        state["weekly_start"] = now
+        state["weekly_tokens"] = 0
+        state["runs"] = 0
+    elif not stored:
+        state["provider"] = current_provider
+    return state
+
+
 def cmd_update(claude_json_path: Path, state_file: Path,
                usage_md: Path) -> Optional[float]:
     """Update state with tokens from a Claude run, then refresh usage.md.
@@ -203,8 +230,10 @@ def cmd_update(claude_json_path: Path, state_file: Path,
         (0-100), or ``None`` when no usable token count was extracted.
     """
     config = load_config()
+    current_provider = _current_provider(config)
     state = _load_state(state_file)
     state = _maybe_reset(state)
+    state = _maybe_reset_provider(state, current_provider)
 
     tokens = _extract_tokens(claude_json_path)
     cost_pct: Optional[float] = None
@@ -224,8 +253,10 @@ def cmd_update(claude_json_path: Path, state_file: Path,
 def cmd_refresh(state_file: Path, usage_md: Path):
     """Refresh usage.md from current state (handles resets)."""
     config = load_config()
+    current_provider = _current_provider(config)
     state = _load_state(state_file)
     state = _maybe_reset(state)
+    state = _maybe_reset_provider(state, current_provider)
     _save_state(state_file, state)
     _write_usage_md(state, usage_md, config)
 
@@ -238,7 +269,9 @@ def cmd_reset_session(state_file: Path, usage_md: Path):
     not block the next iteration with a stale high percentage.
     """
     config = load_config()
+    current_provider = _current_provider(config)
     state = _load_state(state_file)
+    state = _maybe_reset_provider(state, current_provider)
 
     # Force session reset regardless of elapsed time
     state["session_start"] = datetime.now().isoformat()

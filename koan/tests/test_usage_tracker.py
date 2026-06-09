@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 from app import burn_rate
 from app.usage_tracker import UsageTracker, _get_budget_mode, MALFORMED_DEFAULT_PCT
 
@@ -573,3 +573,43 @@ class TestGetBudgetMode:
         """Config load failure falls back to session_only."""
         with patch("app.utils.load_config", side_effect=OSError("nope")):
             assert _get_budget_mode() == "session_only"
+
+    def test_no_quota_provider_returns_disabled(self):
+        """When provider has no API quota, budget_mode is forced to disabled."""
+        with patch("app.utils.load_config", return_value={
+            "usage": {"budget_mode": "full"}
+        }):
+            with patch("app.cli_provider.get_provider") as mock_get_provider:
+                mock_provider = MagicMock()
+                mock_provider.has_api_quota.return_value = False
+                mock_get_provider.return_value = mock_provider
+                assert _get_budget_mode() == "disabled"
+
+    def test_quota_provider_respects_config(self):
+        """When provider has API quota, config budget_mode is respected."""
+        with patch("app.utils.load_config", return_value={
+            "usage": {"budget_mode": "full"}
+        }):
+            with patch("app.cli_provider.get_provider") as mock_get_provider:
+                mock_provider = MagicMock()
+                mock_provider.has_api_quota.return_value = True
+                mock_get_provider.return_value = mock_provider
+                assert _get_budget_mode() == "full"
+
+    def test_disabled_in_config_skips_provider_check(self):
+        """When config explicitly disables, provider check is skipped."""
+        with patch("app.utils.load_config", return_value={
+            "usage": {"budget_mode": "disabled"}
+        }):
+            # get_provider should not be called when mode is already disabled
+            with patch("app.cli_provider.get_provider") as mock_get_provider:
+                assert _get_budget_mode() == "disabled"
+                mock_get_provider.assert_not_called()
+
+    def test_provider_check_failure_uses_config(self):
+        """When provider check fails, falls back to config value."""
+        with patch("app.utils.load_config", return_value={
+            "usage": {"budget_mode": "session_only"}
+        }):
+            with patch("app.cli_provider.get_provider", side_effect=ImportError("nope")):
+                assert _get_budget_mode() == "session_only"

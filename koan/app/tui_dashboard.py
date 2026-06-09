@@ -83,6 +83,26 @@ def _load_config(koan_root: Path) -> dict:
         return {}
 
 
+def _provider_name() -> str:
+    """Return the configured CLI provider name, or 'unknown'."""
+    try:
+        from app.cli_provider import get_provider_name
+        return get_provider_name()
+    except Exception as exc:
+        _log.debug("provider_name failed: %s", exc)
+        return "unknown"
+
+
+def _provider_has_api_quota() -> bool:
+    """Return True when the active provider consumes metered API quota."""
+    try:
+        from app.cli_provider import get_provider
+        return get_provider().has_api_quota()
+    except Exception as exc:
+        _log.debug("provider_has_api_quota failed: %s", exc)
+        return True
+
+
 def _coerce(raw: str):
     """Parse a user-entered string into the closest native YAML scalar."""
     try:
@@ -873,10 +893,15 @@ class KoanDashboard(App):
         try:
             from app.usage_tracker import UsageTracker
 
-            t = UsageTracker(self.koan_root / "instance" / "usage.md")
+            usage_md = self.koan_root / "instance" / "usage.md"
+            t = UsageTracker(usage_md)
             lines.append("")
-            lines.append("  " + self._bar("session", t.session_pct, t.session_reset))
-            lines.append("  " + self._bar("weekly", t.weekly_pct, t.weekly_reset))
+            if _provider_has_api_quota():
+                lines.append("  " + self._bar("session", t.session_pct, t.session_reset))
+                lines.append("  " + self._bar("weekly", t.weekly_pct, t.weekly_reset))
+            else:
+                lines.append("  [dim]session    no API quota (provider: " + _provider_name() + ")[/]")
+                lines.append("  [dim]weekly     no API quota[/]")
         except Exception as exc:
             self.log(f"status usage failed: {exc}")
 
@@ -985,23 +1010,29 @@ class KoanDashboard(App):
             from app.usage_tracker import UsageTracker
 
             t = UsageTracker(usage_md)
-            lines.append(self._bar("Session", t.session_pct, t.session_reset))
-            lines.append(self._bar("Weekly", t.weekly_pct, t.weekly_reset))
-            lines.append("")
-            has_data = True
-            try:
-                mode = t.decide_mode()
-                lines.append(f"Mode      [{_MINT}]{mode}[/]")
-            except Exception as exc:
-                self.log(f"mode decision unavailable: {exc}")
-            try:
-                from app.burn_rate import burn_rate_pct_per_minute
+            if _provider_has_api_quota():
+                lines.append(self._bar("Session", t.session_pct, t.session_reset))
+                lines.append(self._bar("Weekly", t.weekly_pct, t.weekly_reset))
+                lines.append("")
+                has_data = True
+                try:
+                    mode = t.decide_mode()
+                    lines.append(f"Mode      [{_MINT}]{mode}[/]")
+                except Exception as exc:
+                    self.log(f"mode decision unavailable: {exc}")
+                try:
+                    from app.burn_rate import burn_rate_pct_per_minute
 
-                burn = burn_rate_pct_per_minute(usage_md.parent)
-                if burn is not None:
-                    lines.append(f"Burn      [{_MINT}]{burn:.2f}%/min[/]")
-            except Exception as exc:
-                self.log(f"burn rate unavailable: {exc}")
+                    burn = burn_rate_pct_per_minute(usage_md.parent)
+                    if burn is not None:
+                        lines.append(f"Burn      [{_MINT}]{burn:.2f}%/min[/]")
+                except Exception as exc:
+                    self.log(f"burn rate unavailable: {exc}")
+            else:
+                lines.append("[dim]Session    no API quota[/]")
+                lines.append("[dim]Weekly     no API quota[/]")
+                lines.append("")
+                lines.append(f"Mode      [{_MINT}]deep[/]  [dim](budget disabled for {_provider_name()})[/]")
         except Exception as exc:
             lines.append(f"[dim](usage unavailable: {exc})[/dim]")
         if not (usage_md.exists()):

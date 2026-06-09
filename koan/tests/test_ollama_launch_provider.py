@@ -43,6 +43,10 @@ class TestOllamaLaunchBasics:
         assert available is True
         assert detail == ""
 
+    def test_has_api_quota_false(self):
+        """OllamaLaunchProvider has no metered API quota."""
+        assert self.provider.has_api_quota() is False
+
 
 # ---------------------------------------------------------------------------
 # Configuration resolution

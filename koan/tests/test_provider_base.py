@@ -122,6 +122,10 @@ class TestDefaults:
         assert available is True
         assert detail == ""
 
+    def test_has_api_quota_true_by_default(self):
+        """Base provider assumes metered API quota."""
+        assert self.base.has_api_quota() is True
+
     def test_shell_command_delegates_to_binary(self):
         """shell_command() calls binary() — which raises on the bare base class."""
         with pytest.raises(NotImplementedError):

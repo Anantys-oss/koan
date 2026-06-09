@@ -110,3 +110,7 @@ class LocalLLMProvider(CLIProvider):
         if api_key:
             cmd.extend(["--api-key", api_key])
         return cmd
+
+    def has_api_quota(self) -> bool:
+        """Local LLM runs on self-hosted infrastructure — no metered API quota."""
+        return False

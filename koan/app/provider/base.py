@@ -332,6 +332,14 @@ class CLIProvider:
         """
         return True, ""
 
+    def has_api_quota(self) -> bool:
+        """Return True when this provider consumes metered API quota.
+
+        When False the usage tracker disables budget gating because
+        local/self-hosted providers have no API-enforced token limit.
+        """
+        return True
+
     def detect_quota_exhaustion(
         self,
         stdout_text: str = "",

@@ -152,3 +152,7 @@ class OllamaLaunchProvider(ClaudeProvider):
     def check_quota_available(self, project_path: str, timeout: int = 15) -> Tuple[bool, str]:
         """Local models have no API quota — always available."""
         return True, ""
+
+    def has_api_quota(self) -> bool:
+        """Ollama launch uses local or cloud Ollama — no metered API quota."""
+        return False
