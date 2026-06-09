@@ -528,6 +528,52 @@ class TestUsageApi:
         assert end0 - end1 == _td(days=7)
         assert data1["offset"] == 1
 
+    def test_api_usage_accepts_90_days(self, app_client):
+        """days=90 is accepted and clamped to 100, not 90."""
+        fake_summary = {
+            "total_input": 0, "total_output": 0,
+            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+            "cache_hit_rate": 0.0, "count": 0,
+            "by_project": {}, "by_model": {},
+            "by_mode": {}, "by_project_and_mode": {},
+        }
+        with patch("app.cost_tracker.summarize_range", return_value=fake_summary) as mock_sr, \
+             patch("app.cost_tracker.get_pricing_config", return_value=None), \
+             patch("app.cost_tracker.estimate_cache_savings", return_value=None), \
+             patch("app.cost_tracker.daily_series", return_value=[]):
+            resp = app_client.get("/api/usage?days=90")
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["days"] == 90
+        # verify summarize_range was called with the correct start/end span (~90 days)
+        args, _ = mock_sr.call_args
+        start_date, end_date = args[1], args[2]
+        assert (end_date - start_date).days == 89  # 90-day inclusive window
+
+    def test_api_usage_clamps_days_to_100(self, app_client):
+        """days > 100 is clamped to 100."""
+        fake_summary = {
+            "total_input": 0, "total_output": 0,
+            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+            "cache_hit_rate": 0.0, "count": 0,
+            "by_project": {}, "by_model": {},
+            "by_mode": {}, "by_project_and_mode": {},
+        }
+        with patch("app.cost_tracker.summarize_range", return_value=fake_summary) as mock_sr, \
+             patch("app.cost_tracker.get_pricing_config", return_value=None), \
+             patch("app.cost_tracker.estimate_cache_savings", return_value=None), \
+             patch("app.cost_tracker.daily_series", return_value=[]):
+            resp = app_client.get("/api/usage?days=200")
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["days"] == 100
+        # verify summarize_range was called with the correct start/end span (~100 days)
+        args, _ = mock_sr.call_args
+        start_date, end_date = args[1], args[2]
+        assert (end_date - start_date).days == 99  # 100-day inclusive window
+
 
 class TestSignals:
     def test_no_signals(self, tmp_path):

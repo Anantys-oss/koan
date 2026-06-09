@@ -920,7 +920,7 @@ def api_usage():
 
     try:
         days = int(days)
-        days = max(1, min(days, 90))
+        days = max(1, min(days, 100))
     except (ValueError, TypeError):
         days = 7
 
@@ -1034,7 +1034,7 @@ def api_usage_missions():
     limit_raw = request.args.get("limit", "100", type=str)
 
     try:
-        days = max(1, min(int(days), 90))
+        days = max(1, min(int(days), 100))
     except (ValueError, TypeError):
         days = 7
 
