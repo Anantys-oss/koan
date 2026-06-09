@@ -167,11 +167,7 @@ def is_review_on_cooldown(instance_dir: str, owner: str, repo: str, pr_number: s
 
 
 def set_review_cooldown(instance_dir: str, owner: str, repo: str, pr_number: str) -> None:
-    """Record that a review was just queued for this PR.
-
-    # TODO: wire into github_command_handler or loop_manager alongside
-    # the self-reply detection for belt-and-suspenders re-review prevention.
-    """
+    """Record that a review was just queued for this PR."""
     key = f"review_cd:{owner}/{repo}#{pr_number}"
     try:
         from app.locked_file import locked_json_modify

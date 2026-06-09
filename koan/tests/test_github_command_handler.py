@@ -798,6 +798,52 @@ class TestProcessSingleNotification:
         assert "KOAN_ROOT" in error
         mock_insert.assert_not_called()
 
+    @patch("app.github_command_handler.mark_notification_read")
+    @patch("app.github_command_handler.add_reaction", return_value=True)
+    @patch("app.github_command_handler.check_user_permission", return_value=True)
+    @patch("app.github_command_handler.check_already_processed", return_value=False)
+    @patch("app.github_command_handler.is_self_mention", return_value=False)
+    @patch("app.github_command_handler.is_notification_stale", return_value=False)
+    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler.resolve_project_from_notification")
+    @patch("app.utils.insert_pending_mission")
+    def test_review_mention_sets_cooldown(
+        self, mock_insert, mock_resolve, mock_get_comment,
+        mock_stale, mock_self, mock_processed, mock_perm,
+        mock_react, mock_read, sample_notification, tmp_path,
+    ):
+        """A /review mission queued from an @mention records review cooldown."""
+        review_registry = SkillRegistry()
+        review_registry._register(Skill(
+            name="review",
+            scope="core",
+            description="Review PR",
+            github_enabled=True,
+            github_context_aware=True,
+            commands=[SkillCommand(name="review", aliases=["rv"])],
+        ))
+
+        mock_resolve.return_value = ("koan", "sukria", "koan")
+        mock_get_comment.return_value = {
+            "id": 99999,
+            "body": "@testbot review",
+            "user": {"login": "alice"},
+        }
+        mock_insert.return_value = True
+
+        config = {"github": {"nickname": "testbot", "authorized_users": ["*"]}}
+
+        with patch.dict("os.environ", {"KOAN_ROOT": str(tmp_path)}), \
+             patch("app.github_notification_tracker.set_review_cooldown") as mock_cd:
+            success, error = process_single_notification(
+                sample_notification, review_registry, config, None, "testbot",
+            )
+
+        assert success is True
+        assert error is None
+        mock_cd.assert_called_once()
+        assert mock_cd.call_args[0][1:] == ("sukria", "koan", "42")
+
 
 class TestProcessNotificationCustomHandler:
     """Custom skills under instance/skills/<scope>/ with a handler.py are
@@ -3589,7 +3635,12 @@ class TestTryAssignmentNotification:
         self, review_notification, review_registry, tmp_path, monkeypatch,
     ):
         """A new PR head SHA (commits pushed) MUST queue a fresh /review — the
-        head SHA is the renew signal that replaced updated_at."""
+        head SHA is the renew signal that replaced updated_at.
+
+        The review-cooldown guard is bypassed here (patched to False) because
+        this test is focused on the head-SHA dedup tracker, not the cooldown
+        interaction. Cooldown behavior is covered by dedicated tests.
+        """
         monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
         missions_path = tmp_path / "instance" / "missions.md"
         missions_path.parent.mkdir(parents=True)
@@ -3600,7 +3651,8 @@ class TestTryAssignmentNotification:
              patch("app.github_command_handler.is_notification_stale", return_value=False), \
              patch("app.github_command_handler.mark_notification_read"), \
              patch("app.github_command_handler._fetch_subject_info",
-                   return_value={"state": "open", "merged": False, "head_sha": "sha-aaaa"}):
+                   return_value={"state": "open", "merged": False, "head_sha": "sha-aaaa"}), \
+             patch("app.github_notification_tracker.is_review_on_cooldown", return_value=False):
             _try_assignment_notification(review_notification, review_registry, {})
             # Move first mission out of Pending so only the tracker decides.
             missions_path.write_text(
@@ -3615,7 +3667,8 @@ class TestTryAssignmentNotification:
              patch("app.github_command_handler.is_notification_stale", return_value=False), \
              patch("app.github_command_handler.mark_notification_read"), \
              patch("app.github_command_handler._fetch_subject_info",
-                   return_value={"state": "open", "merged": False, "head_sha": "sha-bbbb"}):
+                   return_value={"state": "open", "merged": False, "head_sha": "sha-bbbb"}), \
+             patch("app.github_notification_tracker.is_review_on_cooldown", return_value=False):
             result = _try_assignment_notification(
                 review_notification, review_registry, {},
             )
@@ -3701,6 +3754,74 @@ class TestTryAssignmentNotification:
         assert error is None
         content = missions_path.read_text()
         assert "/implement" in content
+
+    def test_review_requested_on_cooldown_skipped(
+        self, review_notification, review_registry, tmp_path, monkeypatch,
+    ):
+        """A review_requested notification for a PR on cooldown is skipped."""
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        missions_path = tmp_path / "instance" / "missions.md"
+        missions_path.parent.mkdir(parents=True)
+        missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        with patch("app.github_command_handler.resolve_project_from_notification",
+                    return_value=("koan", "sukria", "koan")), \
+             patch("app.github_command_handler.is_notification_stale", return_value=False), \
+             patch("app.github_command_handler.mark_notification_read") as mock_read, \
+             patch("app.github_notification_tracker.is_review_on_cooldown", return_value=True):
+            result = _try_assignment_notification(
+                review_notification, review_registry, {},
+            )
+
+        assert result is True
+        assert review_notification[NOTIFICATION_OUTCOME_KEY] == NOTIFICATION_OUTCOME_HANDLED_NOOP
+        mock_read.assert_called_once()
+        # No mission should have been queued
+        content = missions_path.read_text()
+        assert "/review" not in content
+
+    def test_review_requested_sets_cooldown_after_queue(
+        self, review_notification, review_registry, tmp_path, monkeypatch,
+    ):
+        """After queuing a review mission, the cooldown is recorded."""
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        missions_path = tmp_path / "instance" / "missions.md"
+        missions_path.parent.mkdir(parents=True)
+        missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        with patch("app.github_command_handler.resolve_project_from_notification",
+                    return_value=("koan", "sukria", "koan")), \
+             patch("app.github_command_handler.is_notification_stale", return_value=False), \
+             patch("app.github_command_handler.mark_notification_read"), \
+             patch("app.github_notification_tracker.set_review_cooldown") as mock_cd:
+            result = _try_assignment_notification(
+                review_notification, review_registry, {},
+            )
+
+        assert result is True
+        mock_cd.assert_called_once()
+        assert mock_cd.call_args[0][1:] == ("sukria", "koan", "99")
+
+    def test_assign_does_not_set_review_cooldown(
+        self, assign_notification, review_registry, tmp_path, monkeypatch,
+    ):
+        """Non-review assignments must not touch the review cooldown tracker."""
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        missions_path = tmp_path / "instance" / "missions.md"
+        missions_path.parent.mkdir(parents=True)
+        missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        with patch("app.github_command_handler.resolve_project_from_notification",
+                    return_value=("koan", "sukria", "koan")), \
+             patch("app.github_command_handler.is_notification_stale", return_value=False), \
+             patch("app.github_command_handler.mark_notification_read"), \
+             patch("app.github_notification_tracker.set_review_cooldown") as mock_cd:
+            result = _try_assignment_notification(
+                assign_notification, review_registry, {},
+            )
+
+        assert result is True
+        mock_cd.assert_not_called()
 
 
 class TestFetchSubjectInfo:

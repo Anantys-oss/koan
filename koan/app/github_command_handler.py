@@ -975,7 +975,12 @@ def _try_assignment_notification(
     koan_root = os.environ.get("KOAN_ROOT", "")
     instance_dir = str(Path(koan_root) / "instance") if koan_root else ""
 
-    from app.github_notification_tracker import is_thread_tracked, track_thread
+    from app.github_notification_tracker import (
+        is_review_on_cooldown,
+        is_thread_tracked,
+        set_review_cooldown,
+        track_thread,
+    )
 
     # Fast path for `assign` (issues have no head SHA): dedup on notif_id
     # alone, which needs no API call, so short-circuit before any fetch.
@@ -1053,6 +1058,19 @@ def _try_assignment_notification(
         notification[NOTIFICATION_OUTCOME_KEY] = NOTIFICATION_OUTCOME_HANDLED_NOOP
         return True
 
+    # Review cooldown — belt-and-suspenders guard against re-review loops
+    # when the thread tracker misses a renewed request (same PR, new notif).
+    if reason == "review_requested" and instance_dir:
+        pr_number = extract_issue_number_from_notification(notification)
+        if pr_number and is_review_on_cooldown(instance_dir, owner, repo, pr_number):
+            log.debug(
+                "GitHub assign: review for %s/%s#%s is on cooldown, skipping",
+                owner, repo, pr_number,
+            )
+            mark_notification_read(notif_id)
+            notification[NOTIFICATION_OUTCOME_KEY] = NOTIFICATION_OUTCOME_HANDLED_NOOP
+            return True
+
     # Skip closed/merged subjects (reuse the already-fetched subject_info)
     subject_state = _closed_reason_from_subject_info(subject_info)
     if subject_state:
@@ -1123,6 +1141,10 @@ def _try_assignment_notification(
     mark_notification_read(notif_id)
     if instance_dir and thread_key:
         track_thread(instance_dir, thread_key)
+    if reason == "review_requested" and instance_dir:
+        pr_number = extract_issue_number_from_notification(notification)
+        if pr_number:
+            set_review_cooldown(instance_dir, owner, repo, pr_number)
     notification[NOTIFICATION_OUTCOME_KEY] = (
         NOTIFICATION_OUTCOME_QUEUED if inserted else NOTIFICATION_OUTCOME_HANDLED_NOOP
     )
@@ -1411,6 +1433,14 @@ def process_single_notification(
     from app.github_notification_tracker import track_comment
     instance_dir = str(Path(koan_root) / "instance")
     track_comment(instance_dir, comment_id)
+
+    # Review cooldown: record that a review was queued so assignment
+    # notifications for the same PR don't re-trigger within the window.
+    if command_name == "review" and inserted_any and instance_dir:
+        pr_number = extract_issue_number_from_notification(notification)
+        if pr_number:
+            from app.github_notification_tracker import set_review_cooldown
+            set_review_cooldown(instance_dir, owner, repo, pr_number)
 
     # Mark notification as read
     mark_notification_read(str(notification.get("id", "")))
