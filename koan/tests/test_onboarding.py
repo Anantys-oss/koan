@@ -1146,6 +1146,27 @@ class TestUpdateConfigYamlGitHub:
         assert config["github"]["authorized_users"] == ["alice", "bob"]
         assert config["max_runs_per_day"] == 20  # preserved
 
+    def test_preserves_comments(self, onboarding_root):
+        import app.onboarding as onb
+
+        root = Path(onboarding_root)
+        (root / "instance").mkdir(exist_ok=True)
+        config_file = root / "instance" / "config.yaml"
+        config_file.write_text(
+            "# This is a comment\n"
+            "max_runs_per_day: 20\n"
+            "# Another comment\n"
+            "interval_seconds: 300\n"
+        )
+
+        with patch.object(onb, "KOAN_ROOT", root):
+            onb._update_config_yaml_github("mybot", ["alice"])
+
+        text = config_file.read_text()
+        assert "# This is a comment" in text
+        assert "# Another comment" in text
+        assert "interval_seconds: 300" in text
+
 
 class TestOllamaLaunchInOnboarding:
     """Tests that ollama-launch appears correctly in the onboarding wizard."""
