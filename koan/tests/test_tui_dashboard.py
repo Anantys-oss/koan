@@ -958,14 +958,36 @@ def test_tail_large_file_seeks_from_end(tmp_path):
     assert all(line.strip() == "x" * 120 for line in result)
 
 
-def test_tail_exactly_at_threshold(tmp_path):
-    """A file exactly at 64 KiB still uses the fast path (read-all)."""
-    f = tmp_path / "exact.log"
-    # 64 KiB = 65 536 bytes. Write content slightly below to stay under threshold.
-    f.write_text("a\n" * 32_000)  # ~64 000 bytes
+def test_tail_below_threshold_uses_read_all(tmp_path):
+    """Files below 64 KiB use the read-all fast path."""
+    f = tmp_path / "below.log"
+    f.write_text("a\n" * 32_000)  # ~64 000 bytes, under threshold
     assert f.stat().st_size < 65_536
     result = tui._tail(f, limit=5)
     assert len(result) == 5
+
+
+def test_tail_at_threshold_uses_seek_path(tmp_path):
+    """A file exactly at 65 536 bytes triggers the seek path."""
+    f = tmp_path / "exact.log"
+    line = "b" * 62 + "\n"  # 63 bytes per line
+    count = 65_536 // 63  # fills to >= 65 536
+    f.write_text(line * count)
+    assert f.stat().st_size >= 65_536
+    result = tui._tail(f, limit=5)
+    assert len(result) == 5
+
+
+def test_tail_large_file_long_lines(tmp_path):
+    """Seek path expands chunk to return enough lines when lines are long."""
+    f = tmp_path / "longlines.log"
+    long_line = "z" * 1000 + "\n"  # 1001 bytes per line, far exceeds 128-byte estimate
+    count = 100  # 100 KiB+ file
+    f.write_text(long_line * count)
+    assert f.stat().st_size > 65_536
+    result = tui._tail(f, limit=20)
+    assert len(result) == 20
+    assert all(line.strip() == "z" * 1000 for line in result)
 
 
 def test_tail_missing_file_returns_empty():

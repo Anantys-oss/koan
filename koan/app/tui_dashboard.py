@@ -65,13 +65,17 @@ def _tail(path: Path, limit: int = _LOG_TAIL_LINES) -> list:
         if size < 65_536:
             with path.open("r", errors="replace") as fh:
                 return list(deque(fh, maxlen=limit))
-        # Large file: seek back from end, skip partial first line.
+        # Large file: seek back in expanding blocks until enough lines found.
         chunk = min(limit * 128, size)
         with path.open("r", errors="replace") as fh:
-            fh.seek(max(0, size - chunk))
-            if size > chunk:
-                fh.readline()
-            return list(deque(fh, maxlen=limit))
+            while True:
+                fh.seek(max(0, size - chunk))
+                if size > chunk:
+                    fh.readline()
+                lines = list(deque(fh, maxlen=limit))
+                if len(lines) >= limit or chunk >= size:
+                    return lines
+                chunk = min(chunk * 2, size)
     except OSError:
         return []
 
