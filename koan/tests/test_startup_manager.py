@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch, call
 
+import yaml
+
 import pytest
 
 
@@ -1169,3 +1171,38 @@ class TestRunStartupNotifications:
         msgs = [c.args[1] for c in mock_notify_raw.call_args_list]
         joined = " | ".join(msgs)
         assert "Auto-update pulled new commits" in joined
+
+
+# ---------------------------------------------------------------------------
+# Test: ensure_projects_yaml
+# ---------------------------------------------------------------------------
+
+class TestEnsureProjectsYaml:
+    def test_creates_projects_yaml_when_missing(self, tmp_path):
+        from app.startup_manager import ensure_projects_yaml
+        koan = tmp_path / "workspace" / "koan"
+        koan.mkdir(parents=True)
+
+        msgs = ensure_projects_yaml(str(tmp_path))
+        assert "Created projects.yaml" in msgs
+        assert any("koan" in m.lower() for m in msgs)
+
+        projects_yaml = tmp_path / "projects.yaml"
+        assert projects_yaml.exists()
+        config = yaml.safe_load(projects_yaml.read_text())
+        assert config["projects"]["koan"]["path"] == str(koan)
+        assert config["projects"]["koan"]["exploration"] is False
+        assert config["defaults"]["git_auto_merge"]["enabled"] is False
+
+    def test_returns_empty_when_file_exists(self, tmp_path):
+        from app.startup_manager import ensure_projects_yaml
+        (tmp_path / "projects.yaml").write_text("projects: {}\n")
+        msgs = ensure_projects_yaml(str(tmp_path))
+        assert msgs == []
+
+    def test_no_koan_workspace_means_no_koan_project(self, tmp_path):
+        from app.startup_manager import ensure_projects_yaml
+        msgs = ensure_projects_yaml(str(tmp_path))
+        assert "Created projects.yaml" in msgs
+        config = yaml.safe_load((tmp_path / "projects.yaml").read_text())
+        assert "koan" not in config["projects"]

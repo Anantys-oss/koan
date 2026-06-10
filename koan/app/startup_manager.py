@@ -47,6 +47,55 @@ def run_migrations(koan_root: str):
         log("init", f"[migration] {msg}")
 
 
+def ensure_projects_yaml(koan_root: str) -> list[str]:
+    """Create a minimal projects.yaml if it doesn't exist.
+
+    Seeds it with workspace/koan if present, disabling exploration
+    so the agent does not autonomously explore its own repository.
+    Called after migration so env-var migration takes precedence.
+    """
+    import yaml
+
+    from app.utils import atomic_write
+
+    projects_yaml = Path(koan_root) / "projects.yaml"
+    if projects_yaml.exists():
+        return []
+
+    data = {
+        "defaults": {
+            "git_auto_merge": {
+                "enabled": False,
+                "base_branch": "main",
+                "strategy": "squash",
+            }
+        },
+        "projects": {},
+    }
+
+    koan_workspace = Path(koan_root) / "workspace" / "koan"
+    if koan_workspace.is_dir():
+        data["projects"]["koan"] = {
+            "path": str(koan_workspace),
+            "exploration": False,
+        }
+
+    header = (
+        "# projects.yaml — Project configuration for Kōan\n"
+        "#\n"
+        "# See projects.example.yaml for full documentation.\n\n"
+    )
+    content = header + yaml.dump(data, default_flow_style=False, sort_keys=False)
+    atomic_write(projects_yaml, content)
+
+    msgs = ["Created projects.yaml"]
+    if "koan" in data["projects"]:
+        msgs.append(
+            "Added koan workspace project with exploration disabled"
+        )
+    return msgs
+
+
 def populate_github_urls(koan_root: str):
     """Auto-populate github_url in projects.yaml from git remotes."""
     from app.projects_config import ensure_github_urls
@@ -496,6 +545,10 @@ def run_startup(koan_root: str, instance: str, projects: list):
         _safe_run("Config validation", validate_config, koan_root)
         _safe_run("Crash recovery", recover_crashed_missions, instance)
         _safe_run("Projects migration", run_migrations, koan_root)
+        msgs = _safe_run("Ensure projects.yaml", ensure_projects_yaml, koan_root)
+        if msgs:
+            for msg in msgs:
+                log("init", f"[projects] {msg}")
         _safe_run("Memory JSONL migration", migrate_memory_to_jsonl, instance)
         _safe_run("GitHub URL population", populate_github_urls, koan_root)
 
