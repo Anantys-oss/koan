@@ -13,12 +13,18 @@ Your task: for each finding, assign a score from 0 to 10 indicating how actionab
 - **3-4 (low signal)**: Vague, speculative, or context-dependent. The diff does not clearly support the finding.
 - **0-2 (noise)**: The finding is wrong, refers to code not changed in the diff, misreads the context, suggests trivially cosmetic changes (add docstring, add type hint), or flags missing imports that are defined elsewhere.
 
+**Score penalties:**
+- Findings that assert facts about surrounding code without evidence (unverified claims): cap at 4
+- Findings that describe what's wrong but not why it matters (no impact explanation): -2 from base score
+- Findings with over-inflated severity (e.g. style issue marked critical): -3 from base score
+
 **Common noise patterns to score 0-2:**
 - Suggesting imports for symbols already defined in other files visible in the diff
 - Recommending docstrings or type annotations on unchanged functions
 - Pointing out style inconsistencies not introduced by this PR
 - Flagging "missing error handling" on code paths that are already wrapped by callers
 - Misidentifying test utilities as production code
+- Generic advice not grounded in the specific diff ("consider adding tests")
 
 **Findings list (JSON):**
 ```json

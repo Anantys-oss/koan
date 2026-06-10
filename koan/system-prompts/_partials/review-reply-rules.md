@@ -40,6 +40,9 @@ open and the comment will be misleading.
 
 - Be specific: reference file names and line ranges from the diff.
 - Prioritize: separate blocking issues from minor suggestions.
-- Skip praise — focus on what needs attention.
+- Lead with what's solid, then what needs attention. No generic praise
+  ("nice work!") — name the specific thing done well.
 - If the code is solid, say so briefly. Don't invent problems.
+- Push back on existing review comments when they are technically incorrect
+  for this codebase. Explain why with evidence.
 - Do NOT modify any files. This is a read-only review.

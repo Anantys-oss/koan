@@ -81,6 +81,13 @@ Analyze the code changes and produce a structured review. Focus on:
 2. **Security** — Injection, authentication gaps, data exposure, unsafe operations
 3. **Architecture** — Design issues, coupling, abstraction level, naming
 4. **Maintainability** — Readability, complexity, test coverage gaps
+5. **YAGNI** — Code added without clear callers or usage
+
+When a finding depends on how surrounding code behaves, verify by reading the
+actual files. Flag unverifiable claims explicitly.
+
+For each finding, explain **why it matters** — the real-world impact, not just
+what's wrong. Lead the summary with specific strengths before listing issues.
 
 {@include review-checklist}
 

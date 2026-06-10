@@ -46,6 +46,41 @@ Analyze the code changes and produce a structured review. Focus on:
 2. **Security** — Injection, authentication gaps, data exposure, unsafe operations
 3. **Architecture** — Design issues, coupling, abstraction level, naming
 4. **Maintainability** — Readability, complexity, test coverage gaps
+5. **YAGNI** — Code added without clear callers or usage. If a function, class, or
+   parameter is introduced but never used within the diff, flag it as a suggestion.
+
+### Verification Discipline
+
+Do not assume code works from reading the diff alone. When a finding hinges on
+how surrounding code behaves, use your tools (Read, Grep, Glob) to verify before
+reporting. If you cannot verify a claim from the diff or the codebase, say so
+explicitly — "unverified: could not confirm X" — rather than asserting it as fact.
+
+### PR Description Alignment
+
+Check whether the diff delivers what the PR description promises. Flag:
+- Stated goals with no corresponding code change
+- Significant changes not mentioned in the description
+- Scope creep — changes unrelated to the stated purpose
+
+### Severity Calibration
+
+Categorize issues by actual severity. Not everything is critical.
+- **critical**: Would break production, cause data loss, or open a security hole.
+  Must be fixed before merge. Be sparing — a misplaced critical drowns real blockers.
+- **warning**: Should be fixed but won't cause immediate harm. Design issues,
+  missing edge cases, inadequate error handling.
+- **suggestion**: Nice to have. Style, minor simplifications, alternative approaches.
+
+For each finding, explain **why it matters** — the real-world impact, not just
+what's wrong. "Missing null check" is incomplete; "Missing null check — will throw
+TypeError when user has no email, crashing the signup flow" tells the author what's at stake.
+
+### Summary Tone
+
+Lead the summary with what the PR does well (be specific, not generic praise).
+Then state what needs attention. A review that only lists problems without
+acknowledging solid work trains authors to distrust the reviewer.
 
 {@include review-checklist}
 
