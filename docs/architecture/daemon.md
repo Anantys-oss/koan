@@ -9,6 +9,10 @@ The manager starts the bridge, the agent loop, and optional local-model services
 depending on provider configuration. PID files and `fcntl.flock()` prevent
 duplicate process instances for the same role.
 
+Startup displays the shared hero banner from `koan/app/banners/koan_hero.txt`
+using the terminal mint theme. Banner rendering is cosmetic and must not block
+process launch if it fails.
+
 `make run` starts only the agent loop. `make awake` starts only the messaging
 bridge. `make stop` asks managed processes to exit and escalates only when a
 process does not stop cleanly.

@@ -1346,7 +1346,7 @@ class TestShowStartupBanner:
 
     def test_banner_exception_does_not_block_startup(self, tmp_path):
         """If banner gathering fails, processes should still start."""
-        with patch("app.banners.print_startup_banner", side_effect=Exception("render error")), \
+        with patch("app.banners.print_hero_banner", side_effect=Exception("render error")), \
              patch("app.pid_manager.start_awake", return_value=(True, "ok")), \
              patch("app.pid_manager.start_runner", return_value=(True, "ok")):
             results = start_all(tmp_path, provider="claude")
@@ -1360,6 +1360,16 @@ class TestShowStartupBanner:
              patch("app.pid_manager.start_runner", return_value=(True, "ok")):
             start_all(tmp_path, provider="copilot")
         mock_banner.assert_called_once_with(tmp_path, "copilot")
+
+    def test_show_startup_banner_uses_hero_art(self, tmp_path):
+        """The stack startup banner should use koan_hero.txt via the hero renderer."""
+        from app.pid_manager import _show_startup_banner
+
+        with patch("app.startup_info.gather_startup_info", return_value={"skills": "29 core"}), \
+             patch("app.banners.print_hero_banner") as mock_banner:
+            _show_startup_banner(tmp_path, "claude")
+
+        mock_banner.assert_called_once_with({"skills": "29 core", "provider": "claude"})
 
 
 class TestStartStack:

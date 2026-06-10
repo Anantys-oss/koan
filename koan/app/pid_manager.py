@@ -586,11 +586,11 @@ def _show_startup_banner(koan_root: Path, provider: str) -> None:
     if banner fails to display.
     """
     try:
-        from app.banners import print_startup_banner
+        from app.banners import print_hero_banner
         from app.startup_info import gather_startup_info
         info = gather_startup_info(koan_root)
         info["provider"] = provider
-        print_startup_banner(info)
+        print_hero_banner(info)
     except Exception as e:
         # Banner is cosmetic — log but don't block startup
         print(f"Warning: Failed to display startup banner: {e}", file=sys.stderr)

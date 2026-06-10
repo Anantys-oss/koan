@@ -453,7 +453,7 @@ def run_startup(koan_root: str, instance: str, projects: list):
 
     Returns (max_runs, interval, branch_prefix) configuration tuple.
     """
-    from app.banners import print_agent_banner
+    from app.banners import print_hero_banner
     from app.utils import (
         get_branch_prefix,
         get_cli_binary_for_shell,
@@ -469,7 +469,7 @@ def run_startup(koan_root: str, instance: str, projects: list):
 
     # Print banner
     try:
-        print_agent_banner(f"agent loop — {cli_provider}")
+        print_hero_banner({"provider": cli_provider})
     except Exception as e:
         log("error", f"Banner display failed: {e}")
 
