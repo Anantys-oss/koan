@@ -29,6 +29,11 @@ files in the diff — skip items that don't apply to the changes under review.
 - Check for tests that read or inspect actual source code to verify code presence/absence:
 {@include test-guidance}
 
+**Production Readiness** (apply when changes affect deployment, data, or public interfaces)
+- Check for backward-incompatible changes to public APIs, configs, or data formats
+- Check for missing migration strategy when schema or state format changes
+- Check for changes that could break existing callers or consumers
+
 **Python-specific** (apply only when Python files are in the diff)
 - Check for mutable default arguments (`def f(x=[])`)
 - Check for `is` vs `==` misuse with literals
