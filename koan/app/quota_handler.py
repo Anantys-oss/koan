@@ -58,6 +58,10 @@ _STRICT_QUOTA_PATTERNS = [
     r"insufficient.*credits?",
     r"billing.*(?:limit|period.*exceeded)",
     r"usage.*cap.*(?:reached|exceeded|hit)",
+    # Ollama / ollama-launch provider
+    r"Request rejected \(429\)",
+    r"reached your session usage limit",
+    r"ollama\.com/upgrade",
     # Claude Code CLI: "You've hit your session limit · resets 6pm (UTC)"
     r"(?:you'?ve\s+)?hit\s+(?:your|the)\s+(?:session\s+)?limit",
 ]

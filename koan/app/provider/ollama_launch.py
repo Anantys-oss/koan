@@ -15,6 +15,7 @@ Claude Code CLI verbatim.
 """
 
 import os
+import re
 import shutil
 import sys
 from typing import Dict, List, Optional, Tuple
@@ -152,6 +153,30 @@ class OllamaLaunchProvider(ClaudeProvider):
     def check_quota_available(self, project_path: str, timeout: int = 15) -> Tuple[bool, str]:
         """Local models have no API quota — always available."""
         return True, ""
+
+    def detect_quota_exhaustion(
+        self,
+        stdout_text: str = "",
+        stderr_text: str = "",
+        exit_code: int = 0,
+    ) -> bool:
+        """Detect Ollama-specific quota failures, then fall back to Claude patterns.
+
+        Ollama can rate-limit requests with a 429 when the upstream API
+        (Anthropic via Ollama) is exhausted. The error text includes phrases
+        like "Request rejected (429)" and "reached your session usage limit".
+        """
+        text = (stderr_text or "") + "\n" + (stdout_text or "")
+        ollama_patterns = [
+            r"Request rejected \(429\)",
+            r"reached your session usage limit",
+            r"ollama\.com/upgrade",
+        ]
+        for pattern in ollama_patterns:
+            if re.search(pattern, text, re.IGNORECASE):
+                return True
+        # Fall back to Claude patterns (rate_limit_event, session limit, etc.)
+        return super().detect_quota_exhaustion(stdout_text, stderr_text, exit_code)
 
     def has_api_quota(self) -> bool:
         """Ollama launch uses local or cloud Ollama — no metered API quota."""
