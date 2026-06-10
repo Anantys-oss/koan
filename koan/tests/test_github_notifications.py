@@ -15,6 +15,7 @@ from app.github_notifications import (
     FetchResult,
     NotificationTracker,
     _FETCH_FAILURE_THRESHOLD,
+    _default_tracker,
     _processed_comments,
     _reactions_endpoint,
     _search_comments_for_mention,
@@ -558,6 +559,9 @@ class TestAddReaction:
 
 
 class TestCheckUserPermission:
+    def setup_method(self):
+        _default_tracker.permission_cache.clear()
+
     @patch("app.github_notifications.api")
     def test_wildcard_with_write_access(self, mock_api):
         mock_api.return_value = json.dumps({"permission": "write"})
@@ -583,6 +587,48 @@ class TestCheckUserPermission:
         """Explicit user in allowlist returns True without any GitHub API call."""
         assert check_user_permission("o", "r", "bob", ["alice", "bob"]) is True
         mock_api.assert_not_called()
+
+    @patch("app.github_notifications.api")
+    def test_wildcard_caches_result(self, mock_api):
+        """Second call with same owner/repo/user hits cache and skips API."""
+        mock_api.return_value = json.dumps({"permission": "write"})
+        assert check_user_permission("o", "r", "alice", ["*"]) is True
+        assert check_user_permission("o", "r", "alice", ["*"]) is True
+        mock_api.assert_called_once()
+
+    @patch("app.github_notifications.api")
+    def test_wildcard_cache_respects_different_keys(self, mock_api):
+        """Different owner/repo/user combinations each trigger a separate API call."""
+        mock_api.side_effect = [
+            json.dumps({"permission": "write"}),
+            json.dumps({"permission": "read"}),
+        ]
+        assert check_user_permission("o1", "r1", "alice", ["*"]) is True
+        assert check_user_permission("o2", "r2", "alice", ["*"]) is False
+        assert mock_api.call_count == 2
+
+    @patch("app.github_notifications.api")
+    def test_wildcard_cache_expires_after_ttl(self, mock_api):
+        """Cached entry expires after TTL and triggers a fresh API call."""
+        mock_api.return_value = json.dumps({"permission": "write"})
+        with patch("app.response_cache.time.monotonic", return_value=0.0):
+            assert check_user_permission("o", "r", "alice", ["*"]) is True
+            assert mock_api.call_count == 1
+        # Advance past default TTL (300s) + 1s margin
+        with patch("app.response_cache.time.monotonic", return_value=301.0):
+            assert check_user_permission("o", "r", "alice", ["*"]) is True
+            assert mock_api.call_count == 2
+
+    @patch("app.github_notifications.api")
+    def test_wildcard_cache_does_not_cache_errors(self, mock_api):
+        """Failed permission checks (API errors) are not cached."""
+        mock_api.side_effect = RuntimeError("API down")
+        assert check_user_permission("o", "r", "alice", ["*"]) is False
+        # Second call should retry the API
+        mock_api.side_effect = None
+        mock_api.return_value = json.dumps({"permission": "write"})
+        assert check_user_permission("o", "r", "alice", ["*"]) is True
+        assert mock_api.call_count == 2
 
 
 class TestIsNotificationStale:
