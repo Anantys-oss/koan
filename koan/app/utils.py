@@ -30,6 +30,8 @@ import yaml
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+from app.run_log import log_safe
+
 
 if "KOAN_ROOT" not in os.environ:
     raise SystemExit("KOAN_ROOT environment variable is not set. Run via 'make run' or 'make awake'.")
@@ -362,14 +364,30 @@ def signal_lock(signal_path: Path):
 
     Safe to nest with :func:`atomic_write` because ``atomic_write`` locks
     its temp file, not the signal file itself.
+
+    If the lock file cannot be created or the lock cannot be acquired,
+    logs a warning and proceeds unlocked so the caller is not blocked
+    by a peripheral failure.
     """
     lock_path = signal_path.parent / (signal_path.name + ".lock")
-    with open(lock_path, "w") as lock_f:
+    lock_f = None
+    locked = False
+    try:
+        lock_f = open(lock_path, "w")
         fcntl.flock(lock_f, fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(lock_f, fcntl.LOCK_UN)
+        locked = True
+    except OSError as exc:
+        log_safe("warning", f"Lock error for {lock_path}: {exc}. Proceeding unlocked.")
+
+    try:
+        yield
+    finally:
+        if locked:
+            with contextlib.suppress(OSError):
+                fcntl.flock(lock_f, fcntl.LOCK_UN)
+        if lock_f is not None:
+            with contextlib.suppress(OSError):
+                lock_f.close()
 
 
 def truncate_text(text: str, max_chars: int) -> str:

@@ -19,6 +19,8 @@ When focus mode is active:
 import json
 import sys
 import time
+
+from app.run_log import log_safe
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -79,6 +81,7 @@ def _parse_focus_data(data: dict) -> Optional[FocusState]:
             reason=str(data.get("reason", "")),
         )
     except (TypeError, ValueError):
+        log_safe("warning", f"Corrupted focus data: {data}")
         return None
 
 

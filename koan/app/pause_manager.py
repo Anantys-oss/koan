@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from app.run_log import log_safe
 from app.signals import PAUSE_FILE
 
 # Default cooldown for non-quota pauses (max_runs, manual)
@@ -88,11 +89,13 @@ def _parse_pause_content(content: str) -> Optional[PauseState]:
     Returns None for empty or unparseable content.
     """
     if not content:
+        log_safe("warning", "Empty pause file content")
         return None
 
     lines = content.splitlines()
     reason = lines[0].strip()
     if not reason:
+        log_safe("warning", "Invalid pause file content: missing reason")
         return None
 
     timestamp = 0

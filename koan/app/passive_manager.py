@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from app.run_log import log_safe
 from app.signals import PASSIVE_FILE
 
 
@@ -90,6 +91,7 @@ def _parse_passive_data(data: dict) -> Optional[PassiveState]:
             reason=str(data.get("reason", "")),
         )
     except (TypeError, ValueError):
+        log_safe("warning", f"Corrupted passive data: {data}")
         return None
 
 
