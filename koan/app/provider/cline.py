@@ -237,7 +237,7 @@ class ClineProvider(CLIProvider):
             return True, ""
         except Exception as e:
             log_safe("error", f"[{self.name}] quota probe error: {e}")
-            return False, str(e)
+            return True, ""
 
     def detect_quota_exhaustion(
         self,
