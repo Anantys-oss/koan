@@ -692,7 +692,7 @@ def _handle_update(koan_root: str, instance: str, count: int) -> bool:
 # Pause mode handler
 # ---------------------------------------------------------------------------
 
-_last_pause_notification_check: float = 0
+_last_pause_notification_check: dict[str, float] = {"github": 0, "jira": 0}
 
 
 def _check_notifications_during_pause(koan_root: str, instance: str) -> None:
@@ -703,36 +703,37 @@ def _check_notifications_during_pause(koan_root: str, instance: str) -> None:
     (24h+) from silently dropping inbox notifications.
 
     Respects ``pause_notification_interval`` from config.yaml (default 4h).
+    Per-provider timestamps ensure a transient failure in one provider
+    does not suppress retries for the full interval.
     """
-    global _last_pause_notification_check
-
     from app.config import get_pause_notification_interval
     interval = get_pause_notification_interval()
     now = time.monotonic()
 
-    if now - _last_pause_notification_check < interval:
+    gh_due = now - _last_pause_notification_check["github"] >= interval
+    jira_due = now - _last_pause_notification_check["jira"] >= interval
+
+    if not gh_due and not jira_due:
         return
 
     log("pause", "Checking inbox notifications during quota pause...")
 
     total = 0
-    success = False
-    try:
-        from app.loop_manager import process_github_notifications
-        total += process_github_notifications(koan_root, instance, force=True)
-        success = True
-    except Exception as e:
-        log("error", f"GitHub notification check during pause failed: {e}")
+    if gh_due:
+        try:
+            from app.loop_manager import process_github_notifications
+            total += process_github_notifications(koan_root, instance, force=True)
+            _last_pause_notification_check["github"] = now
+        except Exception as e:
+            log("error", f"GitHub notification check during pause failed: {e}")
 
-    try:
-        from app.loop_manager import process_jira_notifications
-        total += process_jira_notifications(koan_root, instance, force=True)
-        success = True
-    except Exception as e:
-        log("error", f"Jira notification check during pause failed: {e}")
-
-    if success:
-        _last_pause_notification_check = now
+    if jira_due:
+        try:
+            from app.loop_manager import process_jira_notifications
+            total += process_jira_notifications(koan_root, instance, force=True)
+            _last_pause_notification_check["jira"] = now
+        except Exception as e:
+            log("error", f"Jira notification check during pause failed: {e}")
 
     if total > 0:
         log("pause", f"Queued {total} mission(s) from inbox — will execute after resume")

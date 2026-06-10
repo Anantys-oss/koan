@@ -991,8 +991,9 @@ class TestPauseNotificationCheck:
         pause_file = koan_root / ".koan-pause"
         pause_file.write_text("quota\n9999999999\nresets later\n")
 
-        # Reset the module-level timestamp so the check fires immediately
-        run_mod._last_pause_notification_check = 0
+        # Reset per-provider timestamps so checks fire immediately
+        run_mod._last_pause_notification_check["github"] = 0
+        run_mod._last_pause_notification_check["jira"] = 0
 
         sleep_count = [0]
         def remove_after_2(duration):
@@ -1024,7 +1025,8 @@ class TestPauseNotificationCheck:
         pause_file = koan_root / ".koan-pause"
         pause_file.write_text("manual\n0\n\n")
 
-        run_mod._last_pause_notification_check = 0
+        run_mod._last_pause_notification_check["github"] = 0
+        run_mod._last_pause_notification_check["jira"] = 0
 
         sleep_count = [0]
         def remove_after_2(duration):
@@ -1053,7 +1055,9 @@ class TestPauseNotificationCheck:
         pause_file.write_text("quota\n9999999999\nresets later\n")
 
         # Pretend we just checked — should not fire again with large interval
-        run_mod._last_pause_notification_check = time.monotonic()
+        now = time.monotonic()
+        run_mod._last_pause_notification_check["github"] = now
+        run_mod._last_pause_notification_check["jira"] = now
 
         with patch("app.pause_manager.check_and_resume", return_value=None), \
              patch("app.loop_manager.process_github_notifications", return_value=0) as mock_gh, \
@@ -1074,7 +1078,8 @@ class TestPauseNotificationCheck:
         pause_file = koan_root / ".koan-pause"
         pause_file.write_text("quota\n9999999999\nresets later\n")
 
-        run_mod._last_pause_notification_check = 0
+        run_mod._last_pause_notification_check["github"] = 0
+        run_mod._last_pause_notification_check["jira"] = 0
 
         mock_sleep.side_effect = lambda _: pause_file.unlink(missing_ok=True)
 
@@ -1096,7 +1101,8 @@ class TestPauseNotificationCheck:
         pause_file = koan_root / ".koan-pause"
         pause_file.write_text("max_runs\n1000000000\n\n")
 
-        run_mod._last_pause_notification_check = 0
+        run_mod._last_pause_notification_check["github"] = 0
+        run_mod._last_pause_notification_check["jira"] = 0
 
         sleep_count = [0]
         def remove_after_2(duration):
@@ -1113,6 +1119,39 @@ class TestPauseNotificationCheck:
 
         mock_gh.assert_not_called()
         mock_jira.assert_not_called()
+
+    @patch("app.run.time.sleep")
+    def test_partial_failure_retries_failed_provider(self, mock_sleep, koan_root):
+        """Failed provider retries next cycle; successful provider waits."""
+        import app.run as run_mod
+        from app.run import handle_pause
+
+        instance = str(koan_root / "instance")
+        pause_file = koan_root / ".koan-pause"
+        pause_file.write_text("quota\n9999999999\nresets later\n")
+
+        run_mod._last_pause_notification_check["github"] = 0
+        run_mod._last_pause_notification_check["jira"] = 0
+
+        call_count = [0]
+        def remove_after_3(duration):
+            call_count[0] += 1
+            if call_count[0] >= 3:
+                pause_file.unlink(missing_ok=True)
+
+        mock_sleep.side_effect = remove_after_3
+
+        with patch("app.pause_manager.check_and_resume", return_value=None), \
+             patch("app.loop_manager.process_github_notifications", return_value=1) as mock_gh, \
+             patch("app.loop_manager.process_jira_notifications", side_effect=RuntimeError("jira down")) as mock_jira, \
+             patch("app.config.get_pause_notification_interval", return_value=0):
+            handle_pause(str(koan_root), instance, 5)
+
+        assert mock_gh.call_count >= 1
+        assert mock_jira.call_count >= 1
+        # GitHub timestamp advanced, Jira stayed at 0 — so Jira retries
+        assert run_mod._last_pause_notification_check["github"] > 0
+        assert run_mod._last_pause_notification_check["jira"] == 0
 
 
 # ---------------------------------------------------------------------------
