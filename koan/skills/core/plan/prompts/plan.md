@@ -20,15 +20,19 @@ This plan will be posted to the project's configured issue tracker — write it 
    - What is explicitly *not* in scope? Draw the boundary early.
    This step separates the "why" from the "what" and prevents solving the wrong problem.
 
-3. **Explore the codebase**: Use Read, Glob, and Grep to understand the relevant code. Look at:
+3. **Scope check**: If the idea spans multiple independent subsystems, consider breaking it into separate plans — one per subsystem. Each plan should produce working, testable software on its own. If you decide to keep it as one plan, explicitly state why the subsystems must ship together.
+
+4. **Explore the codebase**: Use Read, Glob, and Grep to understand the relevant code. Look at:
    - Existing patterns and conventions
    - Related modules and functions
    - Test patterns in use
    - Configuration and dependencies
 
-4. **Consider alternatives**: Before committing to an approach, identify 2-3 distinct implementation strategies with their trade-offs. Lead with the recommended option and explain why it wins. If only one reasonable approach exists, state that briefly rather than inventing artificial alternatives.
+5. **Map the file structure**: Before defining phases, decide which files will be created or modified. Design units with clear boundaries and well-defined interfaces. This structure informs the task decomposition — each phase should produce self-contained changes.
 
-5. **Think deeply**: Consider:
+6. **Consider alternatives**: Before committing to an approach, identify 2-3 distinct implementation strategies with their trade-offs. Lead with the recommended option and explain why it wins. If only one reasonable approach exists, state that briefly rather than inventing artificial alternatives.
+
+7. **Think deeply**: Consider:
    - Edge cases and corner cases
    - Security implications
    - Performance considerations
@@ -37,9 +41,29 @@ This plan will be posted to the project's configured issue tracker — write it 
    - **YAGNI**: Ruthlessly eliminate features that aren't strictly necessary for the core ask.
    - What would a reviewer need to observe or run to confirm each phase is complete?
 
-6. **Identify open questions**: List anything that needs clarification before implementation.
+8. **Identify open questions**: List anything that needs clarification before implementation.
 
-7. **Produce the plan**: Write a structured implementation plan in markdown.
+9. **Produce the plan**: Write a structured implementation plan in markdown.
+
+## No Placeholders
+
+Every step must contain the actual content an engineer needs. These are **plan failures** — never write them:
+- "TBD", "TODO", "implement later", "fill in details"
+- "Add appropriate error handling" / "add validation" / "handle edge cases"
+- "Write tests for the above" (without actual test code)
+- "Similar to Phase N" (repeat the content — the implementer may read phases out of order)
+- Steps that describe what to do without showing how (code blocks required for code steps)
+- References to types, functions, or methods not defined elsewhere in the plan
+
+## Self-Review
+
+After writing the complete plan, review it against these checks before outputting:
+
+1. **Spec coverage**: Re-read the idea. Can you point to a phase that addresses each part? List any gaps and add missing phases.
+2. **Placeholder scan**: Search your plan for any of the patterns from "No Placeholders" above. Fix them.
+3. **Type consistency**: Do the types, method signatures, and names used in later phases match what was defined in earlier phases? A function called `clear_layers()` in Phase 1 but `clear_full_layers()` in Phase 3 is a bug.
+
+Fix any issues inline before outputting. Do not mention the self-review in the output.
 
 ## Output Format
 

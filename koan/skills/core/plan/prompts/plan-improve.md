@@ -27,8 +27,10 @@ Simplicity and maintainability trump cleverness. Apply these when improving the 
 
 3. **Resolve ambiguities with the simplest answer**: For each issue, find the answer in the codebase and pick the approach that adds the least code:
    - "No specific file path given" → grep for the relevant module, confirm the path, use it
-   - "Testing strategy missing" → find the existing test file for the module, add cases there
+   - "Testing strategy missing" → find the existing test file for the module, add actual test code in a checkbox step
    - "Phase too large" → split into smaller steps, but question whether all steps are necessary
+   - "Steps not actionable" → add code blocks showing the actual changes, use `- [ ]` checkbox syntax
+   - "Name inconsistency" → grep the codebase for the real name, use it consistently across all phases
 
 4. **Simplify while fixing**: If fixing an issue reveals that the plan is over-engineered (unnecessary layers, abstractions nobody needs, features beyond the stated goal), simplify it. A plan that does less but does it correctly is superior to one that does more.
 

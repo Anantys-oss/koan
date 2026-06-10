@@ -28,8 +28,12 @@ Your job is to read the original plan and all discussion comments, understand th
    - Notes which suggestions were accepted and which were declined (with reasoning)
    - Updates implementation steps based on new information
    - Keeps the phased structure so work can be done incrementally
+   - Uses checkbox (`- [ ]`) steps within phases for trackable progress
+   - Includes actual code in steps that change code (no "add appropriate handling")
 
-5. **Summarize changes**: Start with a brief "Changes in this iteration" section listing what changed and why.
+5. **Self-review before output**: Check spec coverage (every requirement has a phase), scan for placeholders (TBD, TODO, "similar to Phase N"), and verify name consistency across phases. Fix issues inline.
+
+6. **Summarize changes**: Start with a brief "Changes in this iteration" section listing what changed and why.
 
 ## Output Format
 
