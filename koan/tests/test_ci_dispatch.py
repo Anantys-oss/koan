@@ -149,11 +149,10 @@ class TestCheckAndDispatchCiFixes:
     @patch("app.ci_dispatch.fetch_failing_check_runs")
     @patch("app.ci_dispatch.fetch_koan_open_prs")
     @patch("app.ci_dispatch._resolve_full_repo", return_value="owner/repo")
-    @patch("app.ci_dispatch._save_tracker")
-    @patch("app.ci_dispatch._load_tracker", return_value={})
+    @patch("app.ci_dispatch._read_tracker", return_value={})
     @patch("app.ci_dispatch._get_ci_dispatch_config")
     def test_dispatches_mission_on_failure(
-        self, mock_config, mock_load, mock_save, mock_repo,
+        self, mock_config, mock_read, mock_repo,
         mock_prs, mock_fails, mock_log, instance_dir, koan_root,
     ):
         mock_config.return_value = {
@@ -183,11 +182,10 @@ class TestCheckAndDispatchCiFixes:
     @patch("app.ci_dispatch.fetch_failing_check_runs", return_value=[])
     @patch("app.ci_dispatch.fetch_koan_open_prs")
     @patch("app.ci_dispatch._resolve_full_repo", return_value="owner/repo")
-    @patch("app.ci_dispatch._save_tracker")
-    @patch("app.ci_dispatch._load_tracker", return_value={})
+    @patch("app.ci_dispatch._read_tracker", return_value={})
     @patch("app.ci_dispatch._get_ci_dispatch_config")
     def test_no_dispatch_when_ci_passes(
-        self, mock_config, mock_load, mock_save, mock_repo,
+        self, mock_config, mock_read, mock_repo,
         mock_prs, mock_fails, instance_dir, koan_root,
     ):
         mock_config.return_value = {
@@ -210,11 +208,10 @@ class TestCheckAndDispatchCiFixes:
     @patch("app.ci_dispatch.fetch_failing_check_runs")
     @patch("app.ci_dispatch.fetch_koan_open_prs")
     @patch("app.ci_dispatch._resolve_full_repo", return_value="owner/repo")
-    @patch("app.ci_dispatch._save_tracker")
-    @patch("app.ci_dispatch._load_tracker")
+    @patch("app.ci_dispatch._read_tracker")
     @patch("app.ci_dispatch._get_ci_dispatch_config")
     def test_dedup_prevents_double_dispatch(
-        self, mock_config, mock_load, mock_save, mock_repo,
+        self, mock_config, mock_read, mock_repo,
         mock_prs, mock_fails, mock_log, instance_dir, koan_root,
     ):
         mock_config.return_value = {
@@ -228,7 +225,7 @@ class TestCheckAndDispatchCiFixes:
         ]
 
         fingerprint = compute_ci_fingerprint(42, "sha123", "test-suite", "1")
-        mock_load.return_value = {f"owner/repo#{fingerprint}": fingerprint}
+        mock_read.return_value = {f"owner/repo#{fingerprint}": 1234567890.0}
 
         with patch("app.projects_config.load_projects_config") as mock_pc, \
              patch("app.projects_config.get_projects_from_config") as mock_gp:
@@ -241,18 +238,17 @@ class TestCheckAndDispatchCiFixes:
 
     @patch("app.ci_dispatch.fetch_koan_open_prs")
     @patch("app.ci_dispatch._resolve_full_repo", return_value="owner/repo")
-    @patch("app.ci_dispatch._save_tracker")
-    @patch("app.ci_dispatch._load_tracker")
+    @patch("app.ci_dispatch._read_tracker")
     @patch("app.ci_dispatch._get_ci_dispatch_config")
     def test_cooldown_skips_project(
-        self, mock_config, mock_load, mock_save, mock_repo,
+        self, mock_config, mock_read, mock_repo,
         mock_prs, instance_dir, koan_root,
     ):
         import time
         mock_config.return_value = {
             "enabled": True, "cooldown_minutes": 60, "log_snippet_bytes": 4096,
         }
-        mock_load.return_value = {"cooldown:myproject": time.time()}
+        mock_read.return_value = {"cooldown:myproject": time.time()}
 
         with patch("app.projects_config.load_projects_config") as mock_pc, \
              patch("app.projects_config.get_projects_from_config") as mock_gp:

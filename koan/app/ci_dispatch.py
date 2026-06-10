@@ -76,19 +76,16 @@ def _tracker_path(instance_dir: str) -> Path:
     return Path(instance_dir) / ".ci-dispatch-tracker.json"
 
 
-def _load_tracker(instance_dir: str) -> dict:
-    path = _tracker_path(instance_dir)
-    if not path.exists():
-        return {}
-    try:
-        return json.loads(path.read_text())
-    except (json.JSONDecodeError, OSError):
-        return {}
+def _read_tracker(instance_dir: str) -> dict:
+    """Read tracker state under a shared lock (snapshot for cooldown checks)."""
+    from app.locked_file import locked_json_read
+    return locked_json_read(_tracker_path(instance_dir), default={}) or {}
 
 
-def _save_tracker(instance_dir: str, data: dict) -> None:
-    from app.utils import atomic_write_json
-    atomic_write_json(_tracker_path(instance_dir), data)
+def _mutate_tracker(instance_dir: str, fn) -> None:
+    """Apply fn(data) → data under exclusive lock (atomic read-modify-write)."""
+    from app.locked_file import locked_json_modify
+    locked_json_modify(_tracker_path(instance_dir), fn)
 
 
 def fetch_koan_open_prs(project_path: str) -> List[dict]:
@@ -244,27 +241,28 @@ def check_and_dispatch_ci_fixes(
     if not projects:
         return 0
 
-    tracker = _load_tracker(instance_dir)
+    # Read snapshot for cooldown checks (no lock needed — stale reads are fine here).
+    snapshot = _read_tracker(instance_dir)
     cooldown_secs = config["cooldown_minutes"] * 60
     max_log_bytes = config["log_snippet_bytes"]
     now = time.time()
     dispatched = 0
-    tracker_changed = False
 
     for project_name, project_path in projects:
         project_key = f"cooldown:{project_name}"
-        last_check = tracker.get(project_key, 0)
+        last_check = snapshot.get(project_key, 0)
         if now - last_check < cooldown_secs:
             continue
 
         full_repo = _resolve_full_repo(project_path)
         if not full_repo:
+            # Still update the cooldown so we don't hammer gh on every cycle.
+            _mutate_tracker(instance_dir, lambda d: d.update({project_key: now}) or d)
             continue
 
         prs = fetch_koan_open_prs(project_path)
         if not prs:
-            tracker[project_key] = now
-            tracker_changed = True
+            _mutate_tracker(instance_dir, lambda d: d.update({project_key: now}) or d)
             continue
 
         for pr in prs:
@@ -283,7 +281,8 @@ def check_and_dispatch_ci_fixes(
                 fingerprint = compute_ci_fingerprint(pr_number, head_sha, job_name, run_id)
                 fp_key = f"{full_repo}#{fingerprint}"
 
-                if fp_key in tracker:
+                # Fast path: snapshot check avoids locking for already-seen failures.
+                if fp_key in snapshot:
                     continue
 
                 log_snippet = fetch_check_run_log_snippet(
@@ -299,12 +298,29 @@ def check_and_dispatch_ci_fixes(
                     f"{job_name} on PR #{pr_number} — {context}"
                 )
 
+                # Re-check under exclusive lock before inserting to prevent
+                # concurrent dispatchers from queuing the same mission twice.
+                inserted = False
+
+                def _record_and_insert(data, _fp_key=fp_key, _now=now, _mission=mission):
+                    nonlocal inserted
+                    if _fp_key in data:
+                        return data  # lost the race — already dispatched
+                    try:
+                        from app.utils import insert_pending_mission
+                        missions_path = Path(instance_dir) / "missions.md"
+                        inserted = insert_pending_mission(missions_path, f"- {_mission}")
+                    except (ImportError, OSError) as e:
+                        log.warning("Failed to insert CI fix mission: %s", e)
+                        return data
+                    # Store timestamp (not fingerprint) to enable future TTL pruning.
+                    data[_fp_key] = _now
+                    return data
+
                 try:
-                    from app.utils import insert_pending_mission
-                    missions_path = Path(instance_dir) / "missions.md"
-                    inserted = insert_pending_mission(missions_path, f"- {mission}")
-                except (ImportError, OSError) as e:
-                    log.warning("Failed to insert CI fix mission: %s", e)
+                    _mutate_tracker(instance_dir, _record_and_insert)
+                except OSError as e:
+                    log.warning("Failed to update CI dispatch tracker: %s", e)
                     continue
 
                 if inserted:
@@ -313,14 +329,9 @@ def check_and_dispatch_ci_fixes(
                         job_name, full_repo, pr_number, head_sha[:8],
                     )
                     dispatched += 1
+                    # Update snapshot so subsequent loop iterations see this fp.
+                    snapshot[fp_key] = now
 
-                tracker[fp_key] = fingerprint
-                tracker_changed = True
-
-        tracker[project_key] = now
-        tracker_changed = True
-
-    if tracker_changed:
-        _save_tracker(instance_dir, tracker)
+        _mutate_tracker(instance_dir, lambda d: d.update({project_key: now}) or d)
 
     return dispatched

@@ -62,11 +62,11 @@ def record_mission(instance_dir: Path, text: str, project: Optional[str]) -> str
     Returns the existing id if a pending record with the same text already
     exists (dedup guard against double-calls from dashboard + REST API).
     """
-    needle = text.lstrip("- ").strip()
+    needle = _normalize_for_match(text)
     records = _load_index(instance_dir)
     for rec in records:
         if rec.get("status") == "pending":
-            stored = rec.get("text", "").lstrip("- ").strip()
+            stored = _normalize_for_match(rec.get("text", ""))
             if stored == needle and rec.get("project") == project:
                 return rec["id"]
     mission_id = str(uuid.uuid4())

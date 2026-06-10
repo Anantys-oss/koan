@@ -105,22 +105,22 @@ class TestTrackerPersistence:
     """Tracker file read/write/roundtrip."""
 
     def test_load_missing_file(self, tmp_path):
-        from app.review_comment_dispatch import _load_tracker
+        from app.review_comment_dispatch import _read_tracker
 
-        assert _load_tracker(str(tmp_path)) == {}
+        assert _read_tracker(str(tmp_path)) == {}
 
     def test_load_corrupt_file(self, tmp_path):
-        from app.review_comment_dispatch import _load_tracker
+        from app.review_comment_dispatch import _read_tracker
 
         (tmp_path / ".review-dispatch-tracker.json").write_text("not json")
-        assert _load_tracker(str(tmp_path)) == {}
+        assert _read_tracker(str(tmp_path)) == {}
 
     def test_roundtrip(self, tmp_path):
-        from app.review_comment_dispatch import _load_tracker, _save_tracker
+        from app.review_comment_dispatch import _read_tracker, _mutate_tracker
 
         data = {"key": "value", "num": 42}
-        _save_tracker(str(tmp_path), data)
-        loaded = _load_tracker(str(tmp_path))
+        _mutate_tracker(str(tmp_path), lambda d: d.update(data) or d)
+        loaded = _read_tracker(str(tmp_path))
         assert loaded == data
 
 
@@ -270,6 +270,12 @@ class TestReviewDispatchConfigHelpers:
         assert _resolve_full_repo("/project") is None
 
 
+def _write_tracker(instance_dir, data: dict) -> None:
+    """Write tracker state directly to disk (test setup helper)."""
+    path = Path(instance_dir) / ".review-dispatch-tracker.json"
+    path.write_text(json.dumps(data))
+
+
 class TestCheckAndDispatch:
     """Integration test for the main dispatch orchestrator."""
 
@@ -334,7 +340,6 @@ class TestCheckAndDispatch:
         from app.review_comment_dispatch import (
             check_and_dispatch_review_comments,
             compute_comment_fingerprint,
-            _save_tracker,
         )
 
         mock_config.return_value = {"enabled": True, "cooldown_minutes": 0}
@@ -349,7 +354,7 @@ class TestCheckAndDispatch:
         mock_review_body.return_value = []
 
         fp = compute_comment_fingerprint(comments)
-        _save_tracker(instance_dir, {"owner/myproject#42": fp})
+        _write_tracker(instance_dir, {"owner/myproject#42": fp})
 
         result = check_and_dispatch_review_comments(instance_dir, "/koan")
         assert result == 0
@@ -366,10 +371,7 @@ class TestCheckAndDispatch:
         self, _, mock_review_body, mock_inline, mock_prs, mock_repo,
         mock_projects, mock_projects_config, mock_config, instance_dir,
     ):
-        from app.review_comment_dispatch import (
-            check_and_dispatch_review_comments,
-            _save_tracker,
-        )
+        from app.review_comment_dispatch import check_and_dispatch_review_comments
 
         mock_config.return_value = {"enabled": True, "cooldown_minutes": 0}
         mock_projects_config.return_value = {}
@@ -384,7 +386,7 @@ class TestCheckAndDispatch:
         ]
         mock_review_body.return_value = []
 
-        _save_tracker(instance_dir, {"owner/myproject#42": "old-fingerprint"})
+        _write_tracker(instance_dir, {"owner/myproject#42": "old-fingerprint"})
 
         result = check_and_dispatch_review_comments(instance_dir, "/koan")
         assert result == 1
@@ -399,17 +401,14 @@ class TestCheckAndDispatch:
         self, _, mock_prs, mock_repo, mock_projects,
         mock_projects_config, mock_config, instance_dir,
     ):
-        from app.review_comment_dispatch import (
-            check_and_dispatch_review_comments,
-            _save_tracker,
-        )
+        from app.review_comment_dispatch import check_and_dispatch_review_comments
         import time
 
         mock_config.return_value = {"enabled": True, "cooldown_minutes": 60}
         mock_projects_config.return_value = {}
         mock_projects.return_value = [("myproject", "/projects/myproject")]
 
-        _save_tracker(instance_dir, {"cooldown:myproject": time.time()})
+        _write_tracker(instance_dir, {"cooldown:myproject": time.time()})
 
         result = check_and_dispatch_review_comments(instance_dir, "/koan")
         assert result == 0
@@ -429,8 +428,7 @@ class TestCheckAndDispatch:
     ):
         from app.review_comment_dispatch import (
             check_and_dispatch_review_comments,
-            _save_tracker,
-            _load_tracker,
+            _read_tracker,
         )
 
         mock_config.return_value = {"enabled": True, "cooldown_minutes": 0}
@@ -443,10 +441,10 @@ class TestCheckAndDispatch:
         mock_inline.return_value = []
         mock_review_body.return_value = []
 
-        _save_tracker(instance_dir, {"owner/myproject#42": "old-fingerprint"})
+        _write_tracker(instance_dir, {"owner/myproject#42": "old-fingerprint"})
 
         check_and_dispatch_review_comments(instance_dir, "/koan")
-        tracker = _load_tracker(instance_dir)
+        tracker = _read_tracker(instance_dir)
         assert "owner/myproject#42" not in tracker
 
     @patch("app.review_comment_dispatch._get_review_dispatch_config")
@@ -461,7 +459,7 @@ class TestCheckAndDispatch:
     ):
         from app.review_comment_dispatch import (
             check_and_dispatch_review_comments,
-            _load_tracker,
+            _read_tracker,
         )
 
         mock_config.return_value = {"enabled": True, "cooldown_minutes": 0}
@@ -471,5 +469,5 @@ class TestCheckAndDispatch:
         mock_prs.return_value = []
 
         check_and_dispatch_review_comments(instance_dir, "/koan")
-        tracker = _load_tracker(instance_dir)
+        tracker = _read_tracker(instance_dir)
         assert "cooldown:myproject" in tracker

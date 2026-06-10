@@ -210,19 +210,16 @@ def _tracker_path(instance_dir: str) -> Path:
     return Path(instance_dir) / ".review-dispatch-tracker.json"
 
 
-def _load_tracker(instance_dir: str) -> dict:
-    path = _tracker_path(instance_dir)
-    if not path.exists():
-        return {}
-    try:
-        return json.loads(path.read_text())
-    except (json.JSONDecodeError, OSError):
-        return {}
+def _read_tracker(instance_dir: str) -> dict:
+    """Read tracker state under a shared lock (snapshot for cooldown checks)."""
+    from app.locked_file import locked_json_read
+    return locked_json_read(_tracker_path(instance_dir), default={}) or {}
 
 
-def _save_tracker(instance_dir: str, data: dict) -> None:
-    from app.utils import atomic_write_json
-    atomic_write_json(_tracker_path(instance_dir), data)
+def _mutate_tracker(instance_dir: str, fn) -> None:
+    """Apply fn(data) → data under exclusive lock (atomic read-modify-write)."""
+    from app.locked_file import locked_json_modify
+    locked_json_modify(_tracker_path(instance_dir), fn)
 
 
 # ---------------------------------------------------------------------------
@@ -292,27 +289,27 @@ def check_and_dispatch_review_comments(
     if not projects:
         return 0
 
-    tracker = _load_tracker(instance_dir)
+    # Read snapshot for cooldown checks (no lock needed — stale reads are fine here).
+    snapshot = _read_tracker(instance_dir)
     bot_username = _get_bot_username()
     cooldown_secs = config["cooldown_minutes"] * 60
     now = time.time()
     dispatched = 0
-    tracker_changed = False
 
     for project_name, project_path in projects:
         project_key = f"cooldown:{project_name}"
-        last_check = tracker.get(project_key, 0)
+        last_check = snapshot.get(project_key, 0)
         if now - last_check < cooldown_secs:
             continue
 
         full_repo = _resolve_full_repo(project_path)
         if not full_repo:
+            _mutate_tracker(instance_dir, lambda d: d.update({project_key: now}) or d)
             continue
 
         prs = fetch_koan_open_prs(project_path)
         if not prs:
-            tracker[project_key] = now
-            tracker_changed = True
+            _mutate_tracker(instance_dir, lambda d: d.update({project_key: now}) or d)
             continue
 
         for pr in prs:
@@ -328,14 +325,17 @@ def check_and_dispatch_review_comments(
             all_comments = inline + reviews
 
             if not all_comments:
-                if pr_key in tracker:
-                    del tracker[pr_key]
-                    tracker_changed = True
+                # Clear stored fingerprint under lock when comments are resolved.
+                def _clear_pr(data, _pr_key=pr_key):
+                    data.pop(_pr_key, None)
+                _mutate_tracker(instance_dir, _clear_pr)
+                snapshot.pop(pr_key, None)
                 continue
 
             fingerprint = compute_comment_fingerprint(all_comments)
-            stored = tracker.get(pr_key)
+            stored = snapshot.get(pr_key)
 
+            # Fast path: skip if snapshot shows no change.
             if stored == fingerprint:
                 continue
 
@@ -345,12 +345,36 @@ def check_and_dispatch_review_comments(
                 f"#{pr_number} ({summary})"
             )
 
+            # Re-check under exclusive lock before inserting to prevent concurrent
+            # dispatchers from queuing the same mission twice.
+            inserted = False
+
+            def _record_and_insert(
+                data,
+                _pr_key=pr_key,
+                _fingerprint=fingerprint,
+                _stored=stored,
+                _mission=mission,
+                _full_repo=full_repo,
+                _pr_number=pr_number,
+            ):
+                nonlocal inserted
+                if data.get(_pr_key) == _fingerprint:
+                    return data  # lost the race — already dispatched
+                try:
+                    from app.utils import insert_pending_mission
+                    missions_path = Path(instance_dir) / "missions.md"
+                    inserted = insert_pending_mission(missions_path, f"- {_mission}")
+                except (ImportError, OSError) as e:
+                    log.warning("Failed to insert review dispatch mission: %s", e)
+                    return data
+                data[_pr_key] = _fingerprint
+                return data
+
             try:
-                from app.utils import insert_pending_mission
-                missions_path = Path(instance_dir) / "missions.md"
-                inserted = insert_pending_mission(missions_path, f"- {mission}")
-            except (ImportError, OSError) as e:
-                log.warning("Failed to insert review dispatch mission: %s", e)
+                _mutate_tracker(instance_dir, _record_and_insert)
+            except OSError as e:
+                log.warning("Failed to update review dispatch tracker: %s", e)
                 continue
 
             if inserted:
@@ -360,13 +384,8 @@ def check_and_dispatch_review_comments(
                     (stored or "none")[:8], fingerprint[:8],
                 )
                 dispatched += 1
-                tracker[pr_key] = fingerprint
-                tracker_changed = True
+                snapshot[pr_key] = fingerprint
 
-        tracker[project_key] = now
-        tracker_changed = True
-
-    if tracker_changed:
-        _save_tracker(instance_dir, tracker)
+        _mutate_tracker(instance_dir, lambda d: d.update({project_key: now}) or d)
 
     return dispatched
