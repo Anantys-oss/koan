@@ -266,6 +266,16 @@ class TestSubmitDraftPr:
         edit_calls = [c for c in gh.call_args_list if "edit" in c.args]
         assert len(edit_calls) == 0
 
+    def test_null_existing_pr_falls_through_to_creation(self):
+        """gh pr list --jq '.[0]' returns 'null' when no PR exists.
+        Must not crash — should fall through to PR creation path."""
+        with patch(f"{_M}.get_current_branch", return_value="feat"), \
+             patch(f"{_M}.resolve_base_branch", return_value="main"), \
+             patch(f"{_M}.run_gh", return_value="null"), \
+             patch(f"{_M}.get_commit_subjects", return_value=[]):
+            result = submit_draft_pr("/p", "proj", "o", "r", "1", "T", "B")
+        assert result is None
+
     def test_no_commits_returns_none_and_notifies(self):
         notify = MagicMock()
         with patch(f"{_M}.get_current_branch", return_value="feat"), \

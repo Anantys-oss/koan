@@ -161,8 +161,8 @@ def _enrich_existing_pr(
                     started_at=started_at,
                 ),
             )
-        except Exception as e:
-            logger.debug("Footer append failed during enrichment: %s", e)
+        except (ImportError, TypeError, ValueError, OSError) as e:
+            logger.warning("Footer append failed during enrichment: %s", e)
 
     try:
         run_gh(
@@ -172,7 +172,7 @@ def _enrich_existing_pr(
         )
         logger.info("Enriched minimal PR #%d body", pr_number)
     except (RuntimeError, OSError, subprocess.SubprocessError) as e:
-        logger.debug("Failed to enrich PR #%d body: %s", pr_number, e)
+        logger.warning("Failed to enrich PR #%d body: %s", pr_number, e)
 
 
 def submit_draft_pr(
@@ -312,8 +312,13 @@ def submit_draft_pr(
             try:
                 existing_data = json.loads(existing_raw)
             except (json.JSONDecodeError, ValueError):
-                existing_data = {}
-            existing_url = existing_data.get("url", existing_raw)
+                logger.warning("Malformed gh pr list output: %s", existing_raw)
+                existing_data = None
+            if not isinstance(existing_data, dict) or "url" not in existing_data:
+                existing_data = None
+            if existing_data is None:
+                raise RuntimeError("no usable PR data")
+            existing_url = existing_data["url"]
             existing_body = existing_data.get("body", "")
             existing_number = existing_data.get("number")
 
