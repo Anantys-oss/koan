@@ -1138,8 +1138,9 @@ class TestSubmitDraftPR:
             assert result is None
 
     def test_returns_existing_pr_url(self):
+        existing = json.dumps({"url": "https://github.com/o/r/pull/99", "body": "## Summary\nBody", "number": 99})
         with patch(f"{_PR_MODULE}.get_current_branch", return_value="koan/feat"), \
-             patch(f"{_PR_MODULE}.run_gh", return_value="https://github.com/o/r/pull/99"):
+             patch(f"{_PR_MODULE}.run_gh", return_value=existing):
             result = submit_draft_pr(
                 "/project", "myapp", "o", "r", "42",
                 pr_title="T", pr_body="B",
