@@ -3756,6 +3756,63 @@ class TestNotifyMissionEnd:
         msg = mock_notify.call_args[0][1]
         assert msg.startswith("✅ [koan]")
 
+    @patch("app.run._notify")
+    def test_ci_check_failure_uses_traffic_light(self, mock_notify):
+        """CI check failures use 🚦 instead of ❌ to reduce alarm noise."""
+        from app.run import _notify_mission_end
+        _notify_mission_end("/tmp/inst", "proj", 2, 10, 1, "/ci_check https://github.com/o/r/pull/42")
+        msg = mock_notify.call_args[0][1]
+        assert msg.startswith("🚦")
+        assert "❌" not in msg
+
+    @patch("app.run._notify")
+    def test_ci_check_failure_with_project_prefix(self, mock_notify):
+        """CI check with [project:X] prefix still uses 🚦."""
+        from app.run import _notify_mission_end
+        _notify_mission_end("/tmp/inst", "proj", 2, 10, 1, "[project:proj] /ci_check https://github.com/o/r/pull/42")
+        msg = mock_notify.call_args[0][1]
+        assert msg.startswith("🚦")
+
+    @patch("app.run._notify")
+    def test_ci_check_success_still_uses_checkmark(self, mock_notify):
+        """Successful CI check missions still use ✅."""
+        from app.run import _notify_mission_end
+        _notify_mission_end("/tmp/inst", "proj", 2, 10, 0, "/ci_check https://github.com/o/r/pull/42")
+        msg = mock_notify.call_args[0][1]
+        assert msg.startswith("✅")
+
+    @patch("app.run._notify")
+    def test_non_ci_failure_still_uses_cross(self, mock_notify):
+        """Non-CI-check failures still use ❌."""
+        from app.run import _notify_mission_end
+        _notify_mission_end("/tmp/inst", "proj", 2, 10, 1, "Fix the login bug")
+        msg = mock_notify.call_args[0][1]
+        assert msg.startswith("❌")
+
+
+class TestIsCiCheckMission:
+    """Tests for _is_ci_check_mission() helper."""
+
+    def test_plain_ci_check(self):
+        from app.run import _is_ci_check_mission
+        assert _is_ci_check_mission("/ci_check https://github.com/o/r/pull/42")
+
+    def test_with_project_tag(self):
+        from app.run import _is_ci_check_mission
+        assert _is_ci_check_mission("[project:myapp] /ci_check https://github.com/o/r/pull/42")
+
+    def test_non_ci_check(self):
+        from app.run import _is_ci_check_mission
+        assert not _is_ci_check_mission("Fix the login bug")
+
+    def test_other_skill(self):
+        from app.run import _is_ci_check_mission
+        assert not _is_ci_check_mission("/review https://github.com/o/r/pull/42")
+
+    def test_empty_string(self):
+        from app.run import _is_ci_check_mission
+        assert not _is_ci_check_mission("")
+
 
 # ---------------------------------------------------------------------------
 # Test: Koan branch helpers
