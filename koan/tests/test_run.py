@@ -978,6 +978,84 @@ class TestHandlePause:
             assert mock_sleep.call_count < 10
 
 
+class TestCheckInboxDuringPause:
+    @patch("app.run.time.sleep")
+    def test_inbox_signal_triggers_notification_fetch(self, mock_sleep, koan_root):
+        """When /inbox writes the signal file during pause, notifications are fetched."""
+        from app.run import handle_pause
+
+        instance = str(koan_root / "instance")
+        (koan_root / ".koan-pause").touch()
+        (koan_root / ".koan-check-notifications").write_text("requested")
+
+        sleep_count = [0]
+        def remove_pause_after_2(duration):
+            sleep_count[0] += 1
+            if sleep_count[0] >= 2:
+                (koan_root / ".koan-pause").unlink(missing_ok=True)
+
+        mock_sleep.side_effect = remove_pause_after_2
+
+        with patch("app.pause_manager.check_and_resume", return_value=None), \
+             patch("app.loop_manager.process_github_notifications", return_value=3) as mock_gh, \
+             patch("app.loop_manager.process_jira_notifications", return_value=0) as mock_jira:
+            result = handle_pause(str(koan_root), instance, 5)
+
+        assert result == "resume"
+        mock_gh.assert_called_once_with(str(koan_root), instance, force=True)
+        mock_jira.assert_called_once_with(str(koan_root), instance, force=True)
+        assert not (koan_root / ".koan-check-notifications").exists()
+
+    @patch("app.run.time.sleep")
+    def test_no_signal_skips_notification_fetch(self, mock_sleep, koan_root):
+        """Without the signal file, no notification fetch happens during pause."""
+        from app.run import handle_pause
+
+        instance = str(koan_root / "instance")
+        (koan_root / ".koan-pause").touch()
+
+        sleep_count = [0]
+        def remove_pause_after_2(duration):
+            sleep_count[0] += 1
+            if sleep_count[0] >= 2:
+                (koan_root / ".koan-pause").unlink(missing_ok=True)
+
+        mock_sleep.side_effect = remove_pause_after_2
+
+        with patch("app.pause_manager.check_and_resume", return_value=None), \
+             patch("app.loop_manager.process_github_notifications") as mock_gh, \
+             patch("app.loop_manager.process_jira_notifications") as mock_jira:
+            result = handle_pause(str(koan_root), instance, 5)
+
+        assert result == "resume"
+        mock_gh.assert_not_called()
+        mock_jira.assert_not_called()
+
+    @patch("app.run.time.sleep")
+    def test_inbox_error_does_not_break_pause(self, mock_sleep, koan_root):
+        """If notification fetch raises, pause continues normally."""
+        from app.run import handle_pause
+
+        instance = str(koan_root / "instance")
+        (koan_root / ".koan-pause").touch()
+        (koan_root / ".koan-check-notifications").write_text("requested")
+
+        sleep_count = [0]
+        def remove_pause_after_2(duration):
+            sleep_count[0] += 1
+            if sleep_count[0] >= 2:
+                (koan_root / ".koan-pause").unlink(missing_ok=True)
+
+        mock_sleep.side_effect = remove_pause_after_2
+
+        with patch("app.pause_manager.check_and_resume", return_value=None), \
+             patch("app.loop_manager.process_github_notifications", side_effect=RuntimeError("gh failed")), \
+             patch("app.loop_manager.process_jira_notifications"):
+            result = handle_pause(str(koan_root), instance, 5)
+
+        assert result == "resume"
+
+
 # ---------------------------------------------------------------------------
 # Test: run_claude_task
 # ---------------------------------------------------------------------------
