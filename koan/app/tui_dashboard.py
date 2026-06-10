@@ -531,16 +531,23 @@ class KoanDashboard(App):
             if direction == "up":
                 log_widget.scroll_up(animate=False, immediate=True)
             else:
-                log_widget.scroll_page_up(animate=False, immediate=True)
+                log_widget.scroll_page_up(animate=False)
             return
 
         if direction == "down":
             log_widget.scroll_down(animate=False, immediate=True)
         elif direction == "page_down":
-            log_widget.scroll_page_down(animate=False, immediate=True)
+            log_widget.scroll_page_down(animate=False)
+            self.call_after_refresh(
+                lambda: self._resume_logs_follow_tail_if_at_bottom(log_widget)
+            )
+            return
         else:
             return
 
+        self._resume_logs_follow_tail_if_at_bottom(log_widget)
+
+    def _resume_logs_follow_tail_if_at_bottom(self, log_widget: RichLog) -> None:
         if log_widget.scroll_y >= log_widget.max_scroll_y:
             self._logs_follow_tail = True
             log_widget.auto_scroll = True
