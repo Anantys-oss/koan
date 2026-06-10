@@ -20,6 +20,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 from app.bounded_set import BoundedSet
 from app.github import SSOAuthRequired, api
+from app.response_cache import TTLCache
 
 log = logging.getLogger(__name__)
 
@@ -80,6 +81,10 @@ class NotificationTracker:
         self.processed_comments: BoundedSet = BoundedSet(
             maxlen=_MAX_PROCESSED_COMMENTS,
         )
+
+        # Permission cache: avoids repeated GitHub API calls for the same
+        # user/repo combination during a notification processing cycle.
+        self.permission_cache: TTLCache = TTLCache(max_entries=200)
 
     # -- SSO failure tracking -------------------------------------------------
 
@@ -588,6 +593,11 @@ class NotificationTracker:
             return username in allowed_users
 
         # Wildcard: verify at least write access via GitHub API
+        cache_key = f"{owner}/{repo}/{username}"
+        cached = self.permission_cache.get(cache_key)
+        if cached is not None:
+            return cached == "1"
+
         try:
             raw = api(
                 f"repos/{owner}/{repo}/collaborators/{username}/permission",
@@ -595,7 +605,9 @@ class NotificationTracker:
             )
             data = json.loads(raw) if raw else {}
             permission = data.get("permission", "none")
-            return permission in ("admin", "write")
+            result = permission in ("admin", "write")
+            self.permission_cache.put(cache_key, "1" if result else "0", ttl=300)
+            return result
         except SSOAuthRequired:
             self.record_sso_failure(
                 f"check_user_permission {owner}/{repo}",
