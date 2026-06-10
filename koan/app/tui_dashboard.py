@@ -19,7 +19,10 @@ Anantys mint theme, no emojis.
 
 import contextlib
 import logging
+import os
+import signal
 import time
+import weakref
 from collections import deque
 from pathlib import Path
 
@@ -422,6 +425,8 @@ class KoanDashboard(App):
         # Keep-awake subprocess handle (caffeinate / systemd-inhibit); on by default.
         self._keepawake = None
         self._keepawake_label = ""
+        # Belt-and-suspenders cleanup: kills the process even if on_unmount never runs.
+        self._keepawake_finalize = None
         # Detach flag: True when the user closed the dashboard but left Kōan up.
         self._detached = False
         # Monotonic timestamp of last CTRL-C interrupt for double-tap quit.
@@ -623,6 +628,21 @@ class KoanDashboard(App):
                      "--mode=block", "sleep", "infinity"], "systemd-inhibit")
         return None, ""
 
+    @staticmethod
+    def _finalize_keepawake(proc):
+        """Terminate a keep-awake process and its group (called by weakref.finalize)."""
+        import subprocess
+        if proc is None:
+            return
+        with contextlib.suppress(ProcessLookupError, OSError):
+            # start_new_session=True means proc is a process group leader.
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(ProcessLookupError, OSError):
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+
     def _start_keepawake(self) -> None:
         """Keep the machine awake (caffeinate on macOS, systemd-inhibit on Linux)."""
         import subprocess
@@ -634,19 +654,28 @@ class KoanDashboard(App):
             return
         try:
             self._keepawake = subprocess.Popen(
-                argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                argv,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
             self._keepawake_label = label
-        except Exception as exc:
+            # Belt-and-suspenders: ensures cleanup even if on_unmount never runs.
+            self._keepawake_finalize = weakref.finalize(
+                self, self._finalize_keepawake, self._keepawake
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
             self.log(f"keep-awake start failed: {exc}")
             self._keepawake = None
 
     def _stop_keepawake(self) -> None:
         if self._keepawake is None:
             return
-        with contextlib.suppress(Exception):
-            self._keepawake.terminate()
-            self._keepawake.wait(timeout=2)  # reap so it does not linger
+        self._finalize_keepawake(self._keepawake)
         self._keepawake = None
+        if self._keepawake_finalize is not None:
+            self._keepawake_finalize.detach()
+            self._keepawake_finalize = None
 
     def _keepawake_on(self) -> bool:
         return self._keepawake is not None and self._keepawake.poll() is None

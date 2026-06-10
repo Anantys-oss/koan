@@ -1,6 +1,7 @@
 """Tests for the terminal dashboard (app.tui_dashboard)."""
 
 import asyncio
+import signal
 import time
 from pathlib import Path
 
@@ -305,6 +306,7 @@ def test_keepawake_toggle_lifecycle(tmp_path, monkeypatch):
     class FakeProc:
         def __init__(self):
             self._alive = True
+            self.pid = 99999
 
         def poll(self):
             return None if self._alive else 0
@@ -317,6 +319,7 @@ def test_keepawake_toggle_lifecycle(tmp_path, monkeypatch):
 
     def fake_start(self):
         self._keepawake = FakeProc()
+        self._keepawake_finalize = None
 
     monkeypatch.setattr(tui.KoanDashboard, "_start_keepawake", fake_start)
     app = tui.KoanDashboard(tmp_path)
@@ -326,6 +329,54 @@ def test_keepawake_toggle_lifecycle(tmp_path, monkeypatch):
     assert app._keepawake_on() is True
     app._stop_keepawake()
     assert app._keepawake_on() is False
+
+
+def test_finalize_keepawake_kills_process_group(monkeypatch):
+    """_finalize_keepawake sends SIGTERM to the process group."""
+    killed = []
+
+    def fake_getpgid(pid):
+        return pid * 10  # synthetic pgid
+
+    def fake_killpg(pgid, sig):
+        killed.append((pgid, sig))
+
+    monkeypatch.setattr("os.getpgid", fake_getpgid)
+    monkeypatch.setattr("os.killpg", fake_killpg)
+
+    class FakeProc:
+        pid = 7
+
+        def wait(self, timeout=None):
+            return 0
+
+    tui.KoanDashboard._finalize_keepawake(FakeProc())
+    assert killed == [(70, signal.SIGTERM)]
+
+
+def test_finalize_keepawake_falls_back_to_sigkill(monkeypatch):
+    """On timeout, _finalize_keepawake escalates to SIGKILL."""
+    import subprocess
+
+    killed = []
+
+    def fake_getpgid(pid):
+        return 123
+
+    def fake_killpg(pgid, sig):
+        killed.append((pgid, sig))
+
+    monkeypatch.setattr("os.getpgid", fake_getpgid)
+    monkeypatch.setattr("os.killpg", fake_killpg)
+
+    class FakeProc:
+        pid = 7
+
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired(cmd="fake", timeout=timeout)
+
+    tui.KoanDashboard._finalize_keepawake(FakeProc())
+    assert killed == [(123, signal.SIGTERM), (123, signal.SIGKILL)]
 
 
 def test_keepawake_command_prefers_caffeinate(monkeypatch):
