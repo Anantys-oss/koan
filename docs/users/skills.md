@@ -38,7 +38,7 @@ Complete reference for all Koan slash commands. Use these via Telegram, Slack, o
 
 | Command | Aliases | Description | GitHub @mention |
 |---------|---------|-------------|:-:|
-| `/plan <desc>` | — | Deep-think an idea, create a tracker issue with structured plan | — |
+| `/plan <desc>` | — | Deep-think an idea, create a tracker issue with task-level plan (file map, checkbox steps, code blocks, self-review) | — |
 | `/deepplan <desc>` | `/deeplan` | Spec-first design: explore approaches, post spec, queue /plan | — |
 | `/implement <issue>` | `/impl` | Queue implementation for a GitHub or Jira issue; never bails — resolves ambiguity with simplest viable solution, retries once before surfacing a problem | Yes |
 | `/fix <issue>` | — | Understand → plan → test → implement → submit PR | Yes |

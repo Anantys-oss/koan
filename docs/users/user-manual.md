@@ -422,7 +422,9 @@ The master tracking issue then synthesizes the set with three optional sections:
 - `/brainstorm Refactor auth module --tag auth-refactor` — With explicit tag for grouping
 </details>
 
-**`/plan`** — Deep-think an idea and produce a structured implementation plan as a tracker issue.
+**`/plan`** — Deep-think an idea and produce a structured, task-level implementation plan as a tracker issue.
+
+Plans include a **File Map** (table of every file to create/modify/test), **checkbox steps** within each phase (write test → implement → verify → commit), and **actual code blocks** in steps that change code. A built-in self-review pass checks spec coverage, scans for placeholders, and verifies name consistency across phases before output. Multi-subsystem ideas trigger a scope check suggesting separate plans per subsystem.
 
 - **Usage:** `/plan <idea>`, `/plan <project> <idea>`, `/plan <issue-url>` (iterate on existing)
 - **GitHub @mention:** `@koan-bot /plan <idea>` on an issue
