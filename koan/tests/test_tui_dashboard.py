@@ -60,6 +60,21 @@ def test_set_config_value_creates_missing_path(tmp_path):
     assert out["existing"] == 1
 
 
+def test_set_nested_key_helper():
+    data = {}
+    tui._set_nested_key(data, "a.b.c", 42)
+    assert data["a"]["b"]["c"] == 42
+
+    # Overwrites existing value
+    tui._set_nested_key(data, "a.b.c", 99)
+    assert data["a"]["b"]["c"] == 99
+
+    # Extends existing nested path
+    tui._set_nested_key(data, "a.d", "hello")
+    assert data["a"]["d"] == "hello"
+    assert data["a"]["b"]["c"] == 99  # sibling intact
+
+
 # --- bar rendering ----------------------------------------------------------
 
 def test_bar_contains_percentage_and_blocks(tmp_path):

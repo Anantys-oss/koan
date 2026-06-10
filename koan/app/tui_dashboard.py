@@ -116,6 +116,15 @@ def _coerce(raw: str):
         return raw
 
 
+def _set_nested_key(data: dict, dotted_key: str, value) -> None:
+    """Set a nested key in a dict, creating intermediate dicts as needed."""
+    keys = dotted_key.split(".")
+    node = data
+    for k in keys[:-1]:
+        node = node.setdefault(k, {})
+    node[keys[-1]] = value
+
+
 def set_config_value(koan_root: Path, dotted_key: str, value) -> None:
     """Set a nested key in instance/config.yaml, preserving comments.
 
@@ -125,7 +134,6 @@ def set_config_value(koan_root: Path, dotted_key: str, value) -> None:
     from app.utils import atomic_write
 
     path = Path(koan_root) / "instance" / "config.yaml"
-    keys = dotted_key.split(".")
 
     try:
         import io
@@ -137,10 +145,7 @@ def set_config_value(koan_root: Path, dotted_key: str, value) -> None:
         data = ry.load(path.read_text()) if path.exists() else {}
         if data is None:
             data = {}
-        node = data
-        for k in keys[:-1]:
-            node = node.setdefault(k, {})
-        node[keys[-1]] = value
+        _set_nested_key(data, dotted_key, value)
         stream = io.StringIO()
         ry.dump(data, stream)
         atomic_write(path, stream.getvalue())
@@ -152,10 +157,7 @@ def set_config_value(koan_root: Path, dotted_key: str, value) -> None:
 
     data = yaml.safe_load(path.read_text()) if path.exists() else {}
     data = data or {}
-    node = data
-    for k in keys[:-1]:
-        node = node.setdefault(k, {})
-    node[keys[-1]] = value
+    _set_nested_key(data, dotted_key, value)
     atomic_write(path, yaml.safe_dump(data, sort_keys=False))
 
 
