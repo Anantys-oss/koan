@@ -21,6 +21,7 @@ import contextlib
 import logging
 import os
 import signal
+import subprocess
 import time
 import weakref
 from collections import deque
@@ -32,6 +33,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Vertical
 from textual.screen import ModalScreen
+from textual.css.query import NoMatches, WrongType
 from textual.widgets import (
     Button,
     Footer,
@@ -97,7 +99,10 @@ def _load_config(koan_root: Path) -> dict:
         return {}
     try:
         import yaml
-
+    except ImportError as exc:
+        _log.debug("config load failed: %s", exc)
+        return {}
+    try:
         return yaml.safe_load(cfg.read_text()) or {}
     except (OSError, PermissionError, yaml.YAMLError, ValueError, TypeError) as exc:
         _log.debug("config load failed: %s", exc)
@@ -128,11 +133,13 @@ def _coerce(raw: str):
     """Parse a user-entered string into the closest native YAML scalar."""
     try:
         import yaml
-
-        value = yaml.safe_load(raw)
-        # Keep multi-token plain strings as strings (yaml would too).
-        return value
     except (ImportError, ModuleNotFoundError) as exc:
+        _log.debug("coerce failed for %r: %s", raw, exc)
+        return raw
+    try:
+        value = yaml.safe_load(raw)
+        return value
+    except yaml.YAMLError as exc:
         _log.debug("coerce failed for %r: %s", raw, exc)
         return raw
 
@@ -462,13 +469,13 @@ class KoanDashboard(App):
         # tabs and letter shortcuts are never trapped by pane widgets.
         try:
             self.query_one(Tabs).focus()
-        except (ImportError, ModuleNotFoundError, AttributeError) as exc:
+        except (ImportError, ModuleNotFoundError, AttributeError, NoMatches, WrongType) as exc:
             self.log(f"tab focus failed: {exc}")
 
     def _focus_config_tree(self) -> None:
         try:
             self.query_one("#config-tree", Tree).focus()
-        except (ImportError, ModuleNotFoundError, AttributeError) as exc:
+        except (ImportError, ModuleNotFoundError, AttributeError, NoMatches, WrongType) as exc:
             self.log(f"could not focus config tree: {exc}")
 
     # --- actions ------------------------------------------------------------
@@ -489,7 +496,7 @@ class KoanDashboard(App):
                 if cursor is not None and cursor != tree.root:
                     tree.action_cursor_up()
                     return
-        except (ImportError, ModuleNotFoundError, AttributeError) as exc:
+        except (ImportError, ModuleNotFoundError, AttributeError, NoMatches, WrongType) as exc:
             self.log(f"focus up tree check failed: {exc}")
         self.action_focus_tabs()
 
@@ -497,7 +504,7 @@ class KoanDashboard(App):
         """Move keyboard focus to the tab bar (Escape)."""
         try:
             self.query_one(Tabs).focus()
-        except (ImportError, ModuleNotFoundError, AttributeError) as exc:
+        except (ImportError, ModuleNotFoundError, AttributeError, NoMatches, WrongType) as exc:
             self.log(f"focus tabs failed: {exc}")
 
     def action_focus_pane(self) -> None:
@@ -509,14 +516,14 @@ class KoanDashboard(App):
         """Switch tabs via 1/2/3/4 or s/l/u/c."""
         try:
             self.query_one(TabbedContent).active = pane
-        except (ImportError, ModuleNotFoundError, AttributeError) as exc:
+        except (ImportError, ModuleNotFoundError, AttributeError, NoMatches, WrongType) as exc:
             self.log(f"tab switch failed: {exc}")
             return
         # Always leave focus on the tab bar so Left/Right navigate tabs
         # and letter shortcuts are never trapped by pane widgets.
         try:
             self.query_one(Tabs).focus()
-        except (ImportError, ModuleNotFoundError, AttributeError) as exc:
+        except (ImportError, ModuleNotFoundError, AttributeError, NoMatches, WrongType) as exc:
             self.log(f"tab focus failed: {exc}")
 
     def action_pause(self) -> None:
@@ -631,7 +638,6 @@ class KoanDashboard(App):
     @staticmethod
     def _finalize_keepawake(proc):
         """Terminate a keep-awake process and its group (called by weakref.finalize)."""
-        import subprocess
         if proc is None:
             return
         with contextlib.suppress(ProcessLookupError, OSError):
@@ -645,8 +651,6 @@ class KoanDashboard(App):
 
     def _start_keepawake(self) -> None:
         """Keep the machine awake (caffeinate on macOS, systemd-inhibit on Linux)."""
-        import subprocess
-
         if self._keepawake is not None:
             return
         argv, label = self._keepawake_command()
@@ -758,7 +762,7 @@ class KoanDashboard(App):
             return None
         try:
             node = self.query_one("#config-tree", Tree).cursor_node
-        except (ImportError, ModuleNotFoundError, AttributeError) as exc:
+        except (ImportError, ModuleNotFoundError, AttributeError, NoMatches, WrongType) as exc:
             self.log(f"tree lookup failed: {exc}")
             return None
         if not node or not isinstance(node.data, dict) or "path" not in node.data:
@@ -802,7 +806,7 @@ class KoanDashboard(App):
     def active_pane_id(self) -> str:
         try:
             return self.query_one(TabbedContent).active
-        except (ImportError, ModuleNotFoundError, AttributeError) as exc:
+        except (ImportError, ModuleNotFoundError, AttributeError, NoMatches, WrongType) as exc:
             self.log(f"active pane lookup failed: {exc}")
             return ""
 
@@ -904,7 +908,7 @@ class KoanDashboard(App):
     def _render_status(self) -> None:
         try:
             body = self.query_one("#status-body", Static)
-        except (ImportError, ModuleNotFoundError, AttributeError) as exc:
+        except (ImportError, ModuleNotFoundError, AttributeError, NoMatches, WrongType) as exc:
             self.log(f"status widget missing: {exc}")
             return
 
@@ -1030,7 +1034,7 @@ class KoanDashboard(App):
     def _build_config_tree(self) -> None:
         try:
             tree = self.query_one("#config-tree", Tree)
-        except (ImportError, ModuleNotFoundError, AttributeError) as exc:
+        except (ImportError, ModuleNotFoundError, AttributeError, NoMatches, WrongType) as exc:
             self.log(f"config tree build skipped: {exc}")
             return
         config = _load_config(self.koan_root)
@@ -1071,7 +1075,7 @@ class KoanDashboard(App):
     def _render_config_status(self) -> None:
         try:
             status = self.query_one("#config-status", Static)
-        except (ImportError, ModuleNotFoundError, AttributeError) as exc:
+        except (ImportError, ModuleNotFoundError, AttributeError, NoMatches, WrongType) as exc:
             self.log(f"config status widget missing: {exc}")
             return
         parts = ["[dim]enter / click a value to edit · r to reload[/dim]"]
