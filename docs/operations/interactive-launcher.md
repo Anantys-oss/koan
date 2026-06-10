@@ -49,6 +49,7 @@ signal files). Four tabs:
   Status/Logs/Usage/Config. These work even while the config tree holds focus.
 - `m` — queue a new mission into `missions.md` (modal input; supports
   `[project:name]` tags).
+- Logs tab: Up/Down scroll one line; Page Up/Page Down scroll one page.
 - Arrow keys browse the focused config tree; Enter (or click) edits the
   selected scalar; `t` toggles a boolean in place (Enter also flips booleans).
 - `w` web dashboard, `k` keep-awake, `p` pause, `r` reload.

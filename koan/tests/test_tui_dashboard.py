@@ -221,6 +221,92 @@ def test_pilot_logs_with_ansi_and_brackets_do_not_crash(tmp_path):
     asyncio.run(scenario())
 
 
+def test_pilot_logs_tab_arrows_scroll_without_focus_trap(tmp_path):
+    _write_config(tmp_path, "x: 1\n")
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "run.log").write_text("\n".join(f"run line {i}" for i in range(220)))
+    (logs / "awake.log").write_text("\n".join(f"awake line {i}" for i in range(220)))
+
+    async def scenario():
+        app = tui.KoanDashboard(tmp_path)
+        async with app.run_test(size=(80, 12)) as pilot:
+            await pilot.press("l")
+            await pilot.pause()
+            log_widget = app.query_one("#logs-body", tui.RichLog)
+            log_widget.action_scroll_end()
+            await pilot.pause()
+            bottom = log_widget.scroll_y
+
+            await pilot.press("up")
+            await pilot.pause()
+            assert log_widget.scroll_y < bottom
+            one_line_up = log_widget.scroll_y
+
+            await pilot.press("down")
+            await pilot.pause()
+            assert log_widget.scroll_y > one_line_up
+
+    asyncio.run(scenario())
+
+
+def test_pilot_logs_tab_pages_scroll(tmp_path):
+    _write_config(tmp_path, "x: 1\n")
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "run.log").write_text("\n".join(f"run line {i}" for i in range(220)))
+    (logs / "awake.log").write_text("\n".join(f"awake line {i}" for i in range(220)))
+
+    async def scenario():
+        app = tui.KoanDashboard(tmp_path)
+        async with app.run_test(size=(80, 12)) as pilot:
+            await pilot.press("l")
+            await pilot.pause()
+            log_widget = app.query_one("#logs-body", tui.RichLog)
+            log_widget.action_scroll_end()
+            await pilot.pause()
+            bottom = log_widget.scroll_y
+
+            await pilot.press("pageup")
+            await pilot.pause()
+            assert log_widget.scroll_y < bottom
+            page_up = log_widget.scroll_y
+
+            await pilot.press("pagedown")
+            await pilot.pause()
+            assert log_widget.scroll_y > page_up
+
+    asyncio.run(scenario())
+
+
+def test_pilot_logs_manual_scroll_survives_refresh(tmp_path):
+    _write_config(tmp_path, "x: 1\n")
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    run_log = logs / "run.log"
+    run_log.write_text("\n".join(f"run line {i}" for i in range(220)))
+    (logs / "awake.log").write_text("")
+
+    async def scenario():
+        app = tui.KoanDashboard(tmp_path)
+        async with app.run_test(size=(80, 12)) as pilot:
+            await pilot.press("l")
+            await pilot.pause()
+            log_widget = app.query_one("#logs-body", tui.RichLog)
+            log_widget.action_scroll_end()
+            await pilot.pause()
+
+            await pilot.press("pageup")
+            await pilot.pause()
+            scrolled_position = log_widget.scroll_y
+            run_log.write_text(run_log.read_text() + "\nnew line after manual scroll")
+            app._render_logs()
+            await pilot.pause()
+            assert log_widget.scroll_y == scrolled_position
+
+    asyncio.run(scenario())
+
+
 def test_pilot_letter_aliases_switch_tabs(tmp_path):
     _write_config(tmp_path, "x: 1\n")
 

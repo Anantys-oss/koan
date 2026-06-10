@@ -406,6 +406,8 @@ class KoanDashboard(App):
         Binding("c", "show('config')", "Config", show=False, priority=True),
         Binding("up", "focus_up", "Focus up", show=False, priority=True),
         Binding("down", "focus_pane", "Focus pane", show=False),
+        Binding("pageup", "logs_page_up", "Logs page up", show=False),
+        Binding("pagedown", "logs_page_down", "Logs page down", show=False),
         Binding("escape", "focus_tabs", "Focus tabs", show=False),
         Binding("t", "toggle", "Toggle bool", show=False),
         Binding("r", "refresh", "Refresh", show=False),
@@ -426,6 +428,7 @@ class KoanDashboard(App):
         self._detached = False
         # Monotonic timestamp of last CTRL-C interrupt for double-tap quit.
         self._last_interrupt_at = 0.0
+        self._logs_follow_tail = True
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -477,6 +480,9 @@ class KoanDashboard(App):
 
     def action_focus_up(self) -> None:
         """Up arrow: navigate the config tree upward, or return to tabs at root."""
+        if self.active_pane_id() == "logs":
+            self._scroll_logs("up")
+            return
         try:
             tree = self.query_one("#config-tree", Tree)
             if tree.has_focus:
@@ -497,8 +503,46 @@ class KoanDashboard(App):
 
     def action_focus_pane(self) -> None:
         """Move focus from the tab bar into the active pane (Down)."""
-        if self.active_pane_id() == "config":
+        pane = self.active_pane_id()
+        if pane == "logs":
+            self._scroll_logs("down")
+        elif pane == "config":
             self._focus_config_tree()
+
+    def action_logs_page_up(self) -> None:
+        if self.active_pane_id() == "logs":
+            self._scroll_logs("page_up")
+
+    def action_logs_page_down(self) -> None:
+        if self.active_pane_id() == "logs":
+            self._scroll_logs("page_down")
+
+    def _scroll_logs(self, direction: str) -> None:
+        try:
+            log_widget = self.query_one("#logs-body", RichLog)
+        except Exception as exc:
+            self.log(f"log scroll skipped: {exc}")
+            return
+
+        if direction in {"up", "page_up"}:
+            self._logs_follow_tail = False
+            log_widget.auto_scroll = False
+            if direction == "up":
+                log_widget.scroll_up(animate=False, immediate=True)
+            else:
+                log_widget.scroll_page_up(animate=False)
+            return
+
+        if direction == "down":
+            log_widget.scroll_down(animate=False, immediate=True)
+        elif direction == "page_down":
+            log_widget.scroll_page_down(animate=False)
+        else:
+            return
+
+        if log_widget.scroll_y >= log_widget.max_scroll_y:
+            self._logs_follow_tail = True
+            log_widget.auto_scroll = True
 
     def action_show(self, pane: str) -> None:
         """Switch tabs via 1/2/3/4 or s/l/u/c."""
@@ -993,8 +1037,16 @@ class KoanDashboard(App):
         from rich.text import Text
 
         log_widget = self.query_one("#logs-body", RichLog)
+        if log_widget.max_scroll_y > 0:
+            self._logs_follow_tail = log_widget.scroll_y >= log_widget.max_scroll_y
+        previous_scroll_y = log_widget.scroll_y
+        log_widget.auto_scroll = self._logs_follow_tail
         log_widget.clear()
         log_widget.write(Text.from_ansi(body))
+        if self._logs_follow_tail:
+            log_widget.scroll_end(animate=False, immediate=True)
+        else:
+            log_widget.set_scroll(None, previous_scroll_y)
 
     # --- config tree --------------------------------------------------------
 
