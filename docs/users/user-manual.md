@@ -1689,13 +1689,15 @@ ci_dispatch:
 
 ### Auto-Update
 
-Kōan can automatically check for and apply updates from upstream. Configure in `config.yaml`:
+Kōan notifies you via Telegram when a new release tag appears upstream (throttled to 48 h). Run `/update` to pull at your convenience.
+
+Optionally, you can enable automatic pulling in `config.yaml`:
 
 ```yaml
 auto_update:
-  enabled: true
-  check_interval: 3600    # Seconds between checks
-  notify: true             # Notify via Telegram when updating
+  enabled: false          # Opt-in only — set to true to auto-pull
+  check_interval: 10      # Check every N iterations (default: 10)
+  notify: true            # Notify on Telegram before/after update
 ```
 
 See [docs/operations/auto-update.md](../operations/auto-update.md) for details.

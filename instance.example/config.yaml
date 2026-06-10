@@ -625,15 +625,14 @@ usage:
 #   min_interval_hours: 24     # Minimum hours between suggestions per project (default: 24)
 #   max_per_day: 2             # Maximum suggestions per project per day (default: 2)
 
-# Auto-update — automatically keep Kōan up to date
-# When enabled, Kōan periodically checks if upstream has new commits
-# and pulls + restarts automatically. Checks run at startup and every
-# N iterations. A 2-minute cache prevents excessive git fetches.
-# See docs/auto-update.md for full details.
-# auto_update:
-#   enabled: true           # Master switch (default: false)
-#   check_interval: 10      # Check every N iterations (default: 10)
-#   notify: true            # Notify on Telegram before/after update (default: true)
+# Auto-update — automatically pull and restart when upstream has new commits.
+# Disabled by default: the human controls updates via /update command.
+# New release tags are surfaced via Telegram notifications regardless of this setting.
+# See docs/operations/auto-update.md for full details.
+auto_update:
+  enabled: false          # Opt-in only — set to true to auto-pull upstream commits
+  check_interval: 10      # Check every N iterations (default: 10)
+  notify: true            # Notify on Telegram before/after update (default: true)
 
 # CI dispatch: auto-create fix missions when CI fails on Koan's open PRs.
 # Checks GitHub check-runs API each iteration (per-project cooldown).

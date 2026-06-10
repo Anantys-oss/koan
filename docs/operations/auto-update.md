@@ -1,10 +1,14 @@
 # Auto-Update
 
-Kōan can automatically keep itself up to date by periodically checking for new upstream commits and pulling them.
+Kōan can automatically keep itself up to date by periodically checking for new upstream commits and pulling them. **This feature is disabled by default** — the recommended workflow is to use `/update` when you're ready.
 
-## Overview
+## Update Notification (always active)
 
-When enabled, the auto-update feature:
+Regardless of the `auto_update` setting, Kōan notifies you via Telegram when a new release tag appears upstream (throttled to once every 48 hours). You can then run `/update` to pull at your convenience. This keeps you informed without giving up control.
+
+## Auto-Update (opt-in)
+
+When explicitly enabled, the auto-update feature:
 
 1. **At startup** — checks for upstream updates before the first iteration
 2. **Periodically** — checks every N iterations during the main loop
@@ -14,11 +18,11 @@ The check is lightweight: a `git fetch` followed by a `rev-list --count` compari
 
 ## Configuration
 
-Add the `auto_update` section to your `instance/config.yaml`:
+The `auto_update` section in `instance/config.yaml`:
 
 ```yaml
 auto_update:
-  enabled: true           # Master switch (default: false)
+  enabled: false          # Opt-in only — set to true to auto-pull upstream commits
   check_interval: 10      # Check every N iterations (default: 10)
   notify: true            # Notify on Telegram before/after update (default: true)
 ```
@@ -52,6 +56,6 @@ auto_update:
 - **Rate limiting** — a 2-minute cache ensures checks never happen more than once every 120 seconds, regardless of iteration speed
 - **Non-destructive** — uses the same `pull_upstream()` mechanism as the manual `/update` command
 
-## Manual Alternative
+## Manual Alternative (recommended)
 
-You can always update manually via the `/update` Telegram command, which performs the same pull + restart flow on demand.
+Use the `/update` Telegram command to pull and restart on demand. Combined with the automatic tag notifications, this gives you full control over when updates land.
