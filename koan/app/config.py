@@ -478,11 +478,17 @@ def get_pause_notification_interval() -> int:
     Config key: ``pause_notification_interval``
     Default: 14400 (4 hours)
     """
-    from app.constants import PAUSE_NOTIFICATION_CHECK_INTERVAL_DEFAULT
-    config = _load_config()
-    return _safe_int(
-        config.get("pause_notification_interval"),
+    from app.constants import (
         PAUSE_NOTIFICATION_CHECK_INTERVAL_DEFAULT,
+        PAUSE_NOTIFICATION_CHECK_INTERVAL_MIN,
+    )
+    config = _load_config()
+    return max(
+        PAUSE_NOTIFICATION_CHECK_INTERVAL_MIN,
+        _safe_int(
+            config.get("pause_notification_interval"),
+            PAUSE_NOTIFICATION_CHECK_INTERVAL_DEFAULT,
+        ),
     )
 
 

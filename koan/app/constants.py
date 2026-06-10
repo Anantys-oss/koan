@@ -73,6 +73,7 @@ JIRA_MAX_CHECK_INTERVAL_DEFAULT = 300
 # missions aren't missed during extended (24h+) quota exhaustion.
 # Configurable via ``pause_notification_interval`` in config.yaml.
 PAUSE_NOTIFICATION_CHECK_INTERVAL_DEFAULT = 4 * 3600  # 4 hours
+PAUSE_NOTIFICATION_CHECK_INTERVAL_MIN = 60  # floor: never poll faster than 1 min
 
 # ---------------------------------------------------------------------------
 # Burn rate / budget  (iteration_manager.py)

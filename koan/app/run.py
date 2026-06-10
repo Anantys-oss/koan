@@ -713,21 +713,26 @@ def _check_notifications_during_pause(koan_root: str, instance: str) -> None:
     if now - _last_pause_notification_check < interval:
         return
 
-    _last_pause_notification_check = now
     log("pause", "Checking inbox notifications during quota pause...")
 
     total = 0
+    success = False
     try:
         from app.loop_manager import process_github_notifications
         total += process_github_notifications(koan_root, instance, force=True)
+        success = True
     except Exception as e:
         log("error", f"GitHub notification check during pause failed: {e}")
 
     try:
         from app.loop_manager import process_jira_notifications
         total += process_jira_notifications(koan_root, instance, force=True)
+        success = True
     except Exception as e:
         log("error", f"Jira notification check during pause failed: {e}")
+
+    if success:
+        _last_pause_notification_check = now
 
     if total > 0:
         log("pause", f"Queued {total} mission(s) from inbox — will execute after resume")

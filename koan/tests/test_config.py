@@ -661,6 +661,18 @@ class TestGetPauseNotificationInterval:
         with _mock_config({"pause_notification_interval": "bad"}):
             assert get_pause_notification_interval() == 4 * 3600
 
+    def test_zero_clamped_to_floor(self):
+        from app.config import get_pause_notification_interval
+
+        with _mock_config({"pause_notification_interval": 0}):
+            assert get_pause_notification_interval() == 60
+
+    def test_negative_clamped_to_floor(self):
+        from app.config import get_pause_notification_interval
+
+        with _mock_config({"pause_notification_interval": -300}):
+            assert get_pause_notification_interval() == 60
+
 
 # --- get_same_project_stickiness_percent ---
 
