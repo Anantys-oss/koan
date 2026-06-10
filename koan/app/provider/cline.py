@@ -3,10 +3,10 @@
 import re
 import shutil
 import subprocess
-import sys
 from typing import List, Optional, Tuple
 
 from app.provider.base import CLIProvider
+from app.run_log import log_safe
 
 
 # Generic quota/auth patterns - Cline is multi-backend (OpenRouter, Anthropic, OpenAI, etc.)
@@ -98,7 +98,8 @@ class ClineProvider(CLIProvider):
         flags: List[str] = []
         if model:
             flags.extend(["--model", model])
-        # Cline has no --fallback-model; ignored silently
+        if fallback:
+            log_safe("warning", f"[{self.name}] fallback model is not supported by Cline; ignored")
         return flags
 
     def supports_stream_json(self) -> bool:
@@ -117,14 +118,20 @@ class ClineProvider(CLIProvider):
 
     def build_mcp_args(self, configs: Optional[List[str]] = None) -> List[str]:
         # Cline configures MCP servers via its own config, not CLI flags.
+        if configs:
+            log_safe("warning", f"[{self.name}] MCP config is not supported via CLI flags; configure in Cline's own config instead")
         return []
 
     def build_plugin_args(self, plugin_dirs: Optional[List[str]] = None) -> List[str]:
         # Cline does not have plugin directories.
+        if plugin_dirs:
+            log_safe("warning", f"[{self.name}] plugin directories are not supported; ignored")
         return []
 
     def build_effort_args(self, effort: str = "") -> List[str]:
         # Cline does not have reasoning effort controls.
+        if effort:
+            log_safe("warning", f"[{self.name}] reasoning effort control is not supported; ignored")
         return []
 
     def build_thinking_args(
@@ -168,8 +175,9 @@ class ClineProvider(CLIProvider):
         """
         # Handle system prompt: Cline has no --append-system-prompt or
         # file-mode equivalent, so prepend to user prompt (base class
-        # fallback behavior). system_prompt_file is silently ignored —
-        # supports_system_prompt_file() returns False on this provider.
+        # fallback behavior).
+        if system_prompt_file:
+            log_safe("warning", f"[{self.name}] system prompt file is not supported; falling back to inline system prompt")
         if system_prompt:
             prompt = system_prompt + "\n\n" + prompt
 
@@ -228,8 +236,8 @@ class ClineProvider(CLIProvider):
         except subprocess.TimeoutExpired:
             return True, ""
         except Exception as e:
-            print(f"[cline] quota probe error: {e}", file=sys.stderr)
-            return True, ""
+            log_safe("error", f"[{self.name}] quota probe error: {e}")
+            return False, str(e)
 
     def detect_quota_exhaustion(
         self,
