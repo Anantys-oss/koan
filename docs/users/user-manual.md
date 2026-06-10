@@ -1203,6 +1203,16 @@ stagnation:
   sample_lines: 50            # Trailing lines hashed each sample
   max_retry_on_stagnation: 3  # Stagnation requeues before marking Failed (0 disables retry)
 
+# Crash and error recovery — how the loop tolerates failures before pausing
+# or giving up. Backoff grows linearly (attempt * multiplier) up to the caps.
+recovery:
+  max_consecutive_errors: 10    # Pause after this many iteration errors
+  max_main_crashes: 5          # Give up after this many crashes in main()
+  backoff_multiplier: 10       # Seconds per attempt step
+  max_backoff_main: 60         # Ceiling for main() crash backoff
+  max_backoff_iteration: 300    # Ceiling for iteration error backoff
+  error_notification_interval: 5  # Notify every N errors after the first
+
 # Prompt guard (content safety)
 prompt_guard:
   enabled: true               # Enable prompt injection detection (default: true)

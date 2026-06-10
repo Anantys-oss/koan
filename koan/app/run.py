@@ -63,27 +63,9 @@ from app.signals import (
     STATUS_FILE,
     STOP_FILE,
 )
+from app.config import get_recovery_config
 from app.subprocess_runner import kill_process_group
 from app.utils import atomic_write
-
-
-# ---------------------------------------------------------------------------
-# Recovery configuration
-# ---------------------------------------------------------------------------
-
-# Maximum consecutive iteration errors before entering pause mode.
-MAX_CONSECUTIVE_ERRORS = 10
-
-# Maximum crashes in main() before giving up.
-MAX_MAIN_CRASHES = 5
-
-# Backoff parameters (in seconds).
-BACKOFF_MULTIPLIER = 10
-MAX_BACKOFF_MAIN = 60
-MAX_BACKOFF_ITERATION = 300
-
-# Notification throttling: notify on first error, then every N errors.
-ERROR_NOTIFICATION_INTERVAL = 5
 
 
 # ---------------------------------------------------------------------------
@@ -93,17 +75,21 @@ ERROR_NOTIFICATION_INTERVAL = 5
 def _calculate_backoff(attempt: int, max_backoff: int) -> int:
     """Calculate linear backoff capped at max_backoff.
 
-    Returns: attempt * BACKOFF_MULTIPLIER, capped at max_backoff.
+    Reads ``backoff_multiplier`` from ``recovery`` config section.
+    Returns: attempt * multiplier, capped at max_backoff.
     """
-    return min(BACKOFF_MULTIPLIER * attempt, max_backoff)
+    cfg = get_recovery_config()
+    return min(cfg["backoff_multiplier"] * attempt, max_backoff)
 
 
 def _should_notify_error(attempt: int) -> bool:
     """Determine if error notification should be sent.
 
-    Notifies on first error and every ERROR_NOTIFICATION_INTERVAL errors.
+    Notifies on first error and every ``error_notification_interval`` errors.
     """
-    return attempt == 1 or attempt % ERROR_NOTIFICATION_INTERVAL == 0
+    cfg = get_recovery_config()
+    interval = cfg["error_notification_interval"]
+    return attempt == 1 or attempt % interval == 0
 
 
 def _provider_identity() -> Tuple[str, str]:
@@ -1314,21 +1300,23 @@ def _handle_iteration_error(
     """Handle an exception from _run_iteration.
 
     Logs the error, backs off with increasing sleep, and enters
-    pause mode after MAX_CONSECUTIVE_ERRORS to avoid thrashing.
+    pause mode after ``max_consecutive_errors`` to avoid thrashing.
     """
+    cfg = get_recovery_config()
+    max_errors = cfg["max_consecutive_errors"]
     tb = traceback.format_exc()
-    log("error", f"Iteration failed ({consecutive_errors}/{MAX_CONSECUTIVE_ERRORS}): {error}")
+    log("error", f"Iteration failed ({consecutive_errors}/{max_errors}): {error}")
     log("error", f"Traceback:\n{tb}")
-    set_status(koan_root, f"Error recovery ({consecutive_errors}/{MAX_CONSECUTIVE_ERRORS})")
+    set_status(koan_root, f"Error recovery ({consecutive_errors}/{max_errors})")
 
     # Notify on first error and periodically
     if _should_notify_error(consecutive_errors):
         _notify(instance, (
-            f"⚠️ Run loop error ({consecutive_errors}/{MAX_CONSECUTIVE_ERRORS}): "
+            f"⚠️ Run loop error ({consecutive_errors}/{max_errors}): "
             f"{type(error).__name__}: {error}"
         ))
 
-    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+    if consecutive_errors >= max_errors:
         log("error", f"Too many consecutive errors ({consecutive_errors}). Entering pause mode.")
         _notify(instance, (
             f"🛑 Kōan entering pause mode after {consecutive_errors} consecutive errors.\n"
@@ -1340,7 +1328,7 @@ def _handle_iteration_error(
         return
 
     # Backoff with increasing delay
-    backoff = _calculate_backoff(consecutive_errors, MAX_BACKOFF_ITERATION)
+    backoff = _calculate_backoff(consecutive_errors, cfg["max_backoff_iteration"])
     log("koan", f"Recovering in {backoff}s...")
     time.sleep(backoff)
 
@@ -2292,14 +2280,16 @@ def main():
         except Exception:
             crash_count += 1
             tb = traceback.format_exc()
-            print(f"[koan] Unexpected crash ({crash_count}/{MAX_MAIN_CRASHES}): {tb}", file=sys.stderr)
+            cfg = get_recovery_config()
+            max_crashes = cfg["max_main_crashes"]
+            print(f"[koan] Unexpected crash ({crash_count}/{max_crashes}): {tb}", file=sys.stderr)
 
-            if crash_count >= MAX_MAIN_CRASHES:
-                print(f"[koan] Too many crashes ({MAX_MAIN_CRASHES}). Giving up.", file=sys.stderr)
+            if crash_count >= max_crashes:
+                print(f"[koan] Too many crashes ({max_crashes}). Giving up.", file=sys.stderr)
                 _reset_terminal()
                 sys.exit(1)
 
-            backoff = _calculate_backoff(crash_count, MAX_BACKOFF_MAIN)
+            backoff = _calculate_backoff(crash_count, cfg["max_backoff_main"])
             print(f"[koan] Restarting in {backoff}s...", file=sys.stderr)
             time.sleep(backoff)
 

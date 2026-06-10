@@ -258,6 +258,19 @@ skill_timeout: 7200
 #   sample_lines: 50
 #   max_retry_on_stagnation: 3
 
+# Crash and error recovery — how the agent loop tolerates failures.
+# ``max_consecutive_errors`` is the number of iteration failures before
+# the loop enters pause mode. ``max_main_crashes`` is the number of
+# unexpected crashes in the outer ``main()`` wrapper before giving up.
+# Backoff grows linearly (attempt * multiplier) up to the caps below.
+# recovery:
+#   max_consecutive_errors: 10
+#   max_main_crashes: 5
+#   backoff_multiplier: 10
+#   max_backoff_main: 60
+#   max_backoff_iteration: 300
+#   error_notification_interval: 5
+
 # Autonomous health diagnostics — automatically inject diagnostic missions
 # (tech_debt, dead_code, or audit) when a project's success rate falls below
 # a threshold and it has accumulated consecutive non-productive sessions.

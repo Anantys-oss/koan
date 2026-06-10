@@ -1439,6 +1439,49 @@ def get_review_concurrency_config() -> dict:
     }
 
 
+def get_recovery_config() -> dict:
+    """Get crash and error recovery configuration from config.yaml.
+
+    Controls how the agent loop handles consecutive iteration errors and
+    unexpected crashes in main().  All values have defaults so recovery
+    works out of the box even when the section is absent.
+
+    Config key: recovery
+      - max_consecutive_errors (int): Pause after this many consecutive
+            iteration errors. Default: 10.
+      - max_main_crashes (int): Give up after this many crashes in main().
+            Default: 5.
+      - backoff_multiplier (int): Linear backoff step in seconds.
+            Default: 10.
+      - max_backoff_main (int): Backoff ceiling for main() crashes.
+            Default: 60.
+      - max_backoff_iteration (int): Backoff ceiling for iteration errors.
+            Default: 300.
+      - error_notification_interval (int): Notify every N errors after the
+            first. Default: 5.
+
+    Returns:
+        Dict with all keys present and values as ints.
+    """
+    defaults = {
+        "max_consecutive_errors": 10,
+        "max_main_crashes": 5,
+        "backoff_multiplier": 10,
+        "max_backoff_main": 60,
+        "max_backoff_iteration": 300,
+        "error_notification_interval": 5,
+    }
+    config = _load_config()
+    section = config.get("recovery", {})
+    if not isinstance(section, dict):
+        section = {}
+
+    result = {}
+    for key, default in defaults.items():
+        result[key] = _safe_int(section.get(key, default), default)
+    return result
+
+
 def get_review_reply_config() -> dict:
     """Get review reply guard configuration from config.yaml.
 
