@@ -377,43 +377,6 @@ class TestDetectQuotaExhaustionCreditMessages:
         assert detect_quota_exhaustion(error_json) is True
 
 
-class TestDetectQuotaExhaustionOllama:
-    """Test detection of Ollama / ollama-launch specific quota messages."""
-
-    def test_detects_request_rejected_429(self):
-        from app.quota_handler import detect_quota_exhaustion
-
-        assert detect_quota_exhaustion(
-            "API Error: Request rejected (429) · you have reached your limit"
-        ) is True
-
-    def test_detects_session_usage_limit(self):
-        from app.quota_handler import detect_quota_exhaustion
-
-        assert detect_quota_exhaustion(
-            "you (atoomic) have reached your session usage limit"
-        ) is True
-
-    def test_detects_ollama_upgrade_link(self):
-        from app.quota_handler import detect_quota_exhaustion
-
-        assert detect_quota_exhaustion(
-            "upgrade for higher limits: https://ollama.com/upgrade"
-        ) is True
-
-    def test_case_insensitive(self):
-        from app.quota_handler import detect_quota_exhaustion
-
-        assert detect_quota_exhaustion("REQUEST REJECTED (429)") is True
-        assert detect_quota_exhaustion("Reached Your Session Usage Limit") is True
-
-    def test_no_false_positive_on_normal_ollama_output(self):
-        from app.quota_handler import detect_quota_exhaustion
-
-        assert detect_quota_exhaustion("ollama launch claude started") is False
-        assert detect_quota_exhaustion("running ollama serve") is False
-
-
 class TestExtractResetInfo:
     """Test extract_reset_info function."""
 

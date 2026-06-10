@@ -154,6 +154,12 @@ class OllamaLaunchProvider(ClaudeProvider):
         """Local models have no API quota — always available."""
         return True, ""
 
+    _OLLAMA_QUOTA_PATTERNS = (
+        r"Request rejected \(429\)",
+        r"reached your session usage limit",
+        r"ollama\.com/upgrade",
+    )
+
     def detect_quota_exhaustion(
         self,
         stdout_text: str = "",
@@ -162,20 +168,17 @@ class OllamaLaunchProvider(ClaudeProvider):
     ) -> bool:
         """Detect Ollama-specific quota failures, then fall back to Claude patterns.
 
-        Ollama can rate-limit requests with a 429 when the upstream API
-        (Anthropic via Ollama) is exhausted. The error text includes phrases
-        like "Request rejected (429)" and "reached your session usage limit".
+        Stderr is trusted unconditionally. Stdout is only scanned when
+        exit_code != 0 to avoid false-pausing successful runs whose
+        transcript quotes Ollama quota text.
         """
-        text = (stderr_text or "") + "\n" + (stdout_text or "")
-        ollama_patterns = [
-            r"Request rejected \(429\)",
-            r"reached your session usage limit",
-            r"ollama\.com/upgrade",
-        ]
-        for pattern in ollama_patterns:
-            if re.search(pattern, text, re.IGNORECASE):
+        stderr_text = stderr_text or ""
+        stdout_text = stdout_text or ""
+        for pattern in self._OLLAMA_QUOTA_PATTERNS:
+            if re.search(pattern, stderr_text, re.IGNORECASE):
                 return True
-        # Fall back to Claude patterns (rate_limit_event, session limit, etc.)
+            if exit_code != 0 and re.search(pattern, stdout_text, re.IGNORECASE):
+                return True
         return super().detect_quota_exhaustion(stdout_text, stderr_text, exit_code)
 
     def has_api_quota(self) -> bool:

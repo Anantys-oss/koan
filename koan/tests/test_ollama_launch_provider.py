@@ -254,6 +254,22 @@ class TestOllamaLaunchFlags:
             exit_code=0,
         ) is False
 
+    def test_no_false_positive_stdout_quota_text_exit_zero(self):
+        """Successful run quoting quota text in stdout must not false-pause."""
+        assert self.provider.detect_quota_exhaustion(
+            stdout_text="The error said Request rejected (429) and https://ollama.com/upgrade",
+            stderr_text="",
+            exit_code=0,
+        ) is False
+
+    def test_stdout_quota_text_detected_on_nonzero_exit(self):
+        """Stdout quota text triggers detection when exit_code != 0."""
+        assert self.provider.detect_quota_exhaustion(
+            stdout_text="Request rejected (429)",
+            stderr_text="",
+            exit_code=1,
+        ) is True
+
     def test_get_session_data_none_when_no_project(self):
         """Session data depends on Claude CLI artifacts; missing project returns None."""
         from unittest.mock import patch
