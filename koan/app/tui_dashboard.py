@@ -99,7 +99,7 @@ def _load_config(koan_root: Path) -> dict:
         import yaml
 
         return yaml.safe_load(cfg.read_text()) or {}
-    except Exception as exc:
+    except (OSError, PermissionError, yaml.YAMLError, ValueError, TypeError) as exc:
         _log.debug("config load failed: %s", exc)
         return {}
 
@@ -109,7 +109,7 @@ def _provider_name() -> str:
     try:
         from app.cli_provider import get_provider_name
         return get_provider_name()
-    except Exception as exc:
+    except (OSError, PermissionError, ImportError, ModuleNotFoundError, AttributeError, ValueError, TypeError) as exc:
         _log.debug("provider_name failed: %s", exc)
         return "unknown"
 
@@ -119,7 +119,7 @@ def _provider_has_api_quota() -> bool:
     try:
         from app.cli_provider import get_provider
         return get_provider().has_api_quota()
-    except Exception as exc:
+    except (OSError, PermissionError, ImportError, ModuleNotFoundError, AttributeError, ValueError, TypeError) as exc:
         _log.warning("provider_has_api_quota failed: %s", exc)
         return True
 
@@ -132,7 +132,7 @@ def _coerce(raw: str):
         value = yaml.safe_load(raw)
         # Keep multi-token plain strings as strings (yaml would too).
         return value
-    except Exception as exc:
+    except (ImportError, ModuleNotFoundError) as exc:
         _log.debug("coerce failed for %r: %s", raw, exc)
         return raw
 
@@ -462,13 +462,13 @@ class KoanDashboard(App):
         # tabs and letter shortcuts are never trapped by pane widgets.
         try:
             self.query_one(Tabs).focus()
-        except Exception as exc:
+        except (ImportError, ModuleNotFoundError, AttributeError) as exc:
             self.log(f"tab focus failed: {exc}")
 
     def _focus_config_tree(self) -> None:
         try:
             self.query_one("#config-tree", Tree).focus()
-        except Exception as exc:
+        except (ImportError, ModuleNotFoundError, AttributeError) as exc:
             self.log(f"could not focus config tree: {exc}")
 
     # --- actions ------------------------------------------------------------
@@ -489,7 +489,7 @@ class KoanDashboard(App):
                 if cursor is not None and cursor != tree.root:
                     tree.action_cursor_up()
                     return
-        except Exception as exc:
+        except (ImportError, ModuleNotFoundError, AttributeError) as exc:
             self.log(f"focus up tree check failed: {exc}")
         self.action_focus_tabs()
 
@@ -497,7 +497,7 @@ class KoanDashboard(App):
         """Move keyboard focus to the tab bar (Escape)."""
         try:
             self.query_one(Tabs).focus()
-        except Exception as exc:
+        except (ImportError, ModuleNotFoundError, AttributeError) as exc:
             self.log(f"focus tabs failed: {exc}")
 
     def action_focus_pane(self) -> None:
@@ -509,14 +509,14 @@ class KoanDashboard(App):
         """Switch tabs via 1/2/3/4 or s/l/u/c."""
         try:
             self.query_one(TabbedContent).active = pane
-        except Exception as exc:
+        except (ImportError, ModuleNotFoundError, AttributeError) as exc:
             self.log(f"tab switch failed: {exc}")
             return
         # Always leave focus on the tab bar so Left/Right navigate tabs
         # and letter shortcuts are never trapped by pane widgets.
         try:
             self.query_one(Tabs).focus()
-        except Exception as exc:
+        except (ImportError, ModuleNotFoundError, AttributeError) as exc:
             self.log(f"tab focus failed: {exc}")
 
     def action_pause(self) -> None:
@@ -529,7 +529,7 @@ class KoanDashboard(App):
             else:
                 create_pause(str(self.koan_root), "manual", display="paused from dashboard")
                 self.notify("Kōan paused")
-        except Exception as exc:  # pragma: no cover - defensive
+        except (OSError, PermissionError, ImportError, ModuleNotFoundError, AttributeError, ValueError, TypeError) as exc:  # pragma: no cover - defensive
             self.notify(f"pause failed: {exc}", severity="error")
         self.refresh_dynamic()
 
@@ -540,7 +540,7 @@ class KoanDashboard(App):
 
             usage_md = self.koan_root / "instance" / "usage.md"
             t = UsageTracker(usage_md)
-        except Exception as exc:
+        except (OSError, PermissionError, ImportError, ModuleNotFoundError, AttributeError, ValueError, TypeError) as exc:
             self.notify(f"quota read failed: {exc}", severity="error")
             return
 
@@ -576,7 +576,7 @@ class KoanDashboard(App):
                         msg += "  Quota pause cleared — agent will resume."
 
                 self.notify(msg)
-            except Exception as exc:
+            except (OSError, PermissionError) as exc:
                 self.notify(f"quota update failed: {exc}", severity="error")
             self.refresh_dynamic()
 
@@ -591,7 +591,7 @@ class KoanDashboard(App):
             from app.pid_manager import check_pidfile
 
             return check_pidfile(self.koan_root, "dashboard") is not None
-        except Exception as exc:
+        except (OSError, PermissionError) as exc:
             self.log(f"dashboard status check failed: {exc}")
             return False
 
@@ -608,12 +608,12 @@ class KoanDashboard(App):
                 if ok:
                     import webbrowser
 
-                    with contextlib.suppress(Exception):
+                    with contextlib.suppress(OSError, PermissionError):
                         webbrowser.open("http://localhost:5001")
                     self.notify("web dashboard started — localhost:5001")
                 else:
                     self.notify(f"dashboard: {msg}", severity="warning")
-        except Exception as exc:
+        except (OSError, PermissionError) as exc:
             self.notify(f"web toggle failed: {exc}", severity="error")
         self.refresh_dynamic()
 
@@ -746,7 +746,7 @@ class KoanDashboard(App):
                 md = self.koan_root / "instance" / "missions.md"
                 ok = insert_pending_mission(md, text_value)
                 self.notify("mission queued" if ok else "duplicate — already queued")
-            except Exception as exc:
+            except (OSError, PermissionError, ImportError, ModuleNotFoundError, AttributeError, ValueError, TypeError) as exc:
                 self.notify(f"queue failed: {exc}", severity="error")
             self.refresh_dynamic()
 
@@ -758,7 +758,7 @@ class KoanDashboard(App):
             return None
         try:
             node = self.query_one("#config-tree", Tree).cursor_node
-        except Exception as exc:
+        except (ImportError, ModuleNotFoundError, AttributeError) as exc:
             self.log(f"tree lookup failed: {exc}")
             return None
         if not node or not isinstance(node.data, dict) or "path" not in node.data:
@@ -769,7 +769,7 @@ class KoanDashboard(App):
         try:
             set_config_value(self.koan_root, path, value)
             self.notify(f"set {path} = {self._format_scalar(value)}")
-        except Exception as exc:
+        except (OSError, PermissionError, ValueError, TypeError) as exc:
             self.notify(f"save failed: {exc}", severity="error")
         self._build_config_tree()
 
@@ -802,7 +802,7 @@ class KoanDashboard(App):
     def active_pane_id(self) -> str:
         try:
             return self.query_one(TabbedContent).active
-        except Exception as exc:
+        except (ImportError, ModuleNotFoundError, AttributeError) as exc:
             self.log(f"active pane lookup failed: {exc}")
             return ""
 
@@ -848,7 +848,7 @@ class KoanDashboard(App):
                 if line:
                     titles.append(line[:60] + ("…" if len(line) > 60 else ""))
             return titles
-        except Exception as exc:
+        except (OSError, PermissionError) as exc:
             self.log(f"mission list failed: {exc}")
             return []
 
@@ -863,7 +863,7 @@ class KoanDashboard(App):
             from app.pid_manager import check_pidfile
 
             bridge = check_pidfile(self.koan_root, "awake") is not None
-        except Exception as exc:
+        except (OSError, PermissionError) as exc:
             self.log(f"bridge status failed: {exc}")
         return bridge, configured
 
@@ -873,7 +873,7 @@ class KoanDashboard(App):
             from app.pid_manager import check_pidfile
 
             return check_pidfile(self.koan_root, "run") is not None
-        except Exception as exc:
+        except (OSError, PermissionError) as exc:
             self.log(f"run status failed: {exc}")
             return False
 
@@ -883,7 +883,7 @@ class KoanDashboard(App):
             from app.pid_manager import check_pidfile
 
             return check_pidfile(self.koan_root, "api") is not None
-        except Exception as exc:
+        except (OSError, PermissionError) as exc:
             self.log(f"api status failed: {exc}")
             return False
 
@@ -897,14 +897,14 @@ class KoanDashboard(App):
                 for name in PROCESS_NAMES
                 if name != "dashboard" and check_pidfile(self.koan_root, name) is not None
             ]
-        except Exception as exc:
+        except (OSError, PermissionError) as exc:
             self.log(f"process list failed: {exc}")
             return []
 
     def _render_status(self) -> None:
         try:
             body = self.query_one("#status-body", Static)
-        except Exception as exc:
+        except (ImportError, ModuleNotFoundError, AttributeError) as exc:
             self.log(f"status widget missing: {exc}")
             return
 
@@ -918,7 +918,7 @@ class KoanDashboard(App):
         hero_art = ""
         try:
             hero_art = colorize_hero(_read_art("koan_hero.txt").rstrip("\n"))
-        except Exception as exc:
+        except (OSError, PermissionError, ImportError, ModuleNotFoundError, AttributeError, ValueError, TypeError) as exc:
             self.log(f"hero render failed: {exc}")
 
         out = Text.from_ansi(hero_art + RESET) if hero_art else Text("Kōan")
@@ -932,7 +932,7 @@ class KoanDashboard(App):
 
             md = self.koan_root / "instance" / "missions.md"
             pending_count = count_pending(md.read_text()) if md.exists() else 0
-        except Exception as exc:
+        except (OSError, PermissionError) as exc:
             self.log(f"pending count failed: {exc}")
             pending_count = 0
         web_on = self._web_running()
@@ -988,7 +988,7 @@ class KoanDashboard(App):
                         model_parts.append(f"{label}: {val}")
                 if model_parts:
                     lines.append(f"  models       [dim]{' · '.join(model_parts)}[/dim]")
-        except Exception as exc:
+        except (OSError, PermissionError, ImportError, ModuleNotFoundError, AttributeError, ValueError, TypeError) as exc:
             self.log(f"provider/models display failed: {exc}")
         # Usage bars reuse the same renderer as the Usage tab.
         try:
@@ -1003,7 +1003,7 @@ class KoanDashboard(App):
             else:
                 lines.append("  [dim]session    no API quota (provider: " + _provider_name() + ")[/]")
                 lines.append("  [dim]weekly     no API quota[/]")
-        except Exception as exc:
+        except (OSError, PermissionError, ImportError, ModuleNotFoundError, AttributeError, ValueError, TypeError) as exc:
             self.log(f"status usage failed: {exc}")
 
         out.append_text(Text.from_markup("\n".join(lines)))
@@ -1030,7 +1030,7 @@ class KoanDashboard(App):
     def _build_config_tree(self) -> None:
         try:
             tree = self.query_one("#config-tree", Tree)
-        except Exception as exc:
+        except (ImportError, ModuleNotFoundError, AttributeError) as exc:
             self.log(f"config tree build skipped: {exc}")
             return
         config = _load_config(self.koan_root)
@@ -1071,7 +1071,7 @@ class KoanDashboard(App):
     def _render_config_status(self) -> None:
         try:
             status = self.query_one("#config-status", Static)
-        except Exception as exc:
+        except (ImportError, ModuleNotFoundError, AttributeError) as exc:
             self.log(f"config status widget missing: {exc}")
             return
         parts = ["[dim]enter / click a value to edit · r to reload[/dim]"]
@@ -1089,7 +1089,7 @@ class KoanDashboard(App):
                 parts.append(f"[{_AMBER}]~ {len(extra)} extra keys[/]")
             if not missing and not extra:
                 parts.append("[dim]in sync with template[/dim]")
-        except Exception as exc:
+        except (OSError, PermissionError, ImportError, ModuleNotFoundError, AttributeError, ValueError, TypeError) as exc:
             parts.append(f"[dim](drift check unavailable: {exc})[/dim]")
         status.update("   ".join(parts))
 
@@ -1119,7 +1119,7 @@ class KoanDashboard(App):
                 try:
                     mode = t.decide_mode()
                     lines.append(f"Mode      [{_MINT}]{mode}[/]")
-                except Exception as exc:
+                except (OSError, PermissionError, ImportError, ModuleNotFoundError, AttributeError, ValueError, TypeError) as exc:
                     self.log(f"mode decision unavailable: {exc}")
                 try:
                     from app.burn_rate import burn_rate_pct_per_minute
@@ -1127,7 +1127,7 @@ class KoanDashboard(App):
                     burn = burn_rate_pct_per_minute(usage_md.parent)
                     if burn is not None:
                         lines.append(f"Burn      [{_MINT}]{burn:.2f}%/min[/]")
-                except Exception as exc:
+                except (OSError, PermissionError, ImportError, ModuleNotFoundError, AttributeError, ValueError, TypeError) as exc:
                     self.log(f"burn rate unavailable: {exc}")
                 try:
                     from app.session_tracker import load_outcomes
@@ -1144,7 +1144,7 @@ class KoanDashboard(App):
                             lines.append(f"Duration  [{_MINT}]{dur} min[/]")
                 except ImportError as exc:
                     self.log(f"session_tracker unavailable: {exc}")
-                except Exception as exc:
+                except (OSError, PermissionError, ImportError, ModuleNotFoundError, AttributeError, ValueError, TypeError) as exc:
                     logging.exception("last session info failed")
                     self.log(f"last session info unavailable: {exc}")
             else:
@@ -1154,10 +1154,10 @@ class KoanDashboard(App):
                 try:
                     mode = t.decide_mode()
                     lines.append(f"Mode      [{_MINT}]{mode}[/]  [dim](budget disabled for {_provider_name()})[/]")
-                except Exception as exc:
+                except (OSError, PermissionError, ImportError, ModuleNotFoundError, AttributeError, ValueError, TypeError) as exc:
                     self.log(f"mode decision unavailable: {exc}")
                     lines.append(f"Mode      [{_MINT}]deep[/]  [dim](budget disabled for {_provider_name()})[/]")
-        except Exception as exc:
+        except (OSError, PermissionError, ImportError, ModuleNotFoundError, AttributeError, ValueError, TypeError) as exc:
             logging.exception("usage rendering failed")
             lines.append(f"[dim](usage unavailable: {exc})[/dim]")
         if not (usage_md.exists()):
