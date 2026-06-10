@@ -529,6 +529,7 @@ def step_prerequisites(state: OnboardingState) -> OnboardingState:
         "cline": "cline",
         "codex": "codex",
         "copilot": "gh",
+        "ollama-launch": "ollama",
         "local": None,
     }
     for provider, tool in provider_tools.items():
@@ -576,6 +577,7 @@ PROVIDERS = [
     ("cline", "Cline CLI"),
     ("codex", "OpenAI Codex CLI"),
     ("copilot", "GitHub Copilot CLI"),
+    ("ollama-launch", "Ollama Launch (local models via ollama)"),
     ("local", "Local provider"),
 ]
 
@@ -586,11 +588,16 @@ def _provider_ready(provider: str) -> tuple[bool, str]:
         "cline": "cline",
         "codex": "codex",
         "copilot": "gh",
+        "ollama-launch": "ollama",
         "local": None,
     }
     tool = tool_by_provider.get(provider)
-    if provider == "local":
-        return True, "local provider selected"
+    if provider in ("local", "ollama-launch"):
+        if provider == "ollama-launch" and not tool:
+            return False, f"Unknown CLI provider: {provider}"
+        if provider == "ollama-launch" and not _check_tool(tool):
+            return False, f"{provider} provider selected but `{tool}` is not installed"
+        return True, f"{provider} provider selected"
     if not tool:
         return False, f"Unknown CLI provider: {provider}"
     if not _check_tool(tool):
@@ -605,6 +612,7 @@ def _detect_installed_providers() -> list[str]:
         "cline": "cline",
         "codex": "codex",
         "copilot": "gh",
+        "ollama-launch": "ollama",
         "local": None,
     }
     return [p for p, t in provider_tools.items() if t is None or _check_tool(t)]

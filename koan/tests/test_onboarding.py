@@ -1145,3 +1145,69 @@ class TestUpdateConfigYamlGitHub:
         assert config["github"]["commands_enabled"] is True
         assert config["github"]["authorized_users"] == ["alice", "bob"]
         assert config["max_runs_per_day"] == 20  # preserved
+
+
+class TestOllamaLaunchInOnboarding:
+    """Tests that ollama-launch appears correctly in the onboarding wizard."""
+
+    def test_providers_list_includes_ollama_launch(self):
+        import app.onboarding as onb
+
+        names = [key for key, _label in onb.PROVIDERS]
+        assert "ollama-launch" in names
+
+    def test_detect_installed_providers_includes_ollama(self, onboarding_root):
+        import app.onboarding as onb
+
+        root = Path(onboarding_root)
+        with patch.object(onb, "KOAN_ROOT", root), patch(
+            "app.onboarding._check_tool", return_value="/usr/bin/ollama"
+        ):
+            installed = onb._detect_installed_providers()
+
+        assert "ollama-launch" in installed
+
+    def test_detect_installed_providers_excludes_ollama_when_missing(self, onboarding_root):
+        import app.onboarding as onb
+
+        root = Path(onboarding_root)
+        with patch.object(onb, "KOAN_ROOT", root), patch(
+            "app.onboarding._check_tool", return_value=None
+        ):
+            installed = onb._detect_installed_providers()
+
+        assert "ollama-launch" not in installed
+
+    def test_provider_ready_ollama_launch_when_installed(self, onboarding_root):
+        import app.onboarding as onb
+
+        with patch("app.onboarding._check_tool", return_value="/usr/bin/ollama"):
+            ok, msg = onb._provider_ready("ollama-launch")
+
+        assert ok is True
+        assert "ollama-launch provider selected" in msg
+
+    def test_provider_ready_ollama_launch_when_missing(self, onboarding_root):
+        import app.onboarding as onb
+
+        with patch("app.onboarding._check_tool", return_value=None):
+            ok, msg = onb._provider_ready("ollama-launch")
+
+        assert ok is False
+        assert "ollama" in msg
+        assert "not installed" in msg
+
+    def test_step_provider_ollama_launch_noninteractive(self, onboarding_root):
+        import app.onboarding as onb
+
+        root = Path(onboarding_root)
+        (root / ".env").write_text("# empty\n")
+
+        with patch.object(onb, "KOAN_ROOT", root), patch(
+            "app.onboarding._is_interactive", False
+        ):
+            state = onb.OnboardingState(data={"installed_providers": ["ollama-launch"]})
+            result = onb.step_provider(state)
+
+        assert result.data["cli_provider"] == "ollama-launch"
+        assert "KOAN_CLI_PROVIDER=ollama-launch" in (root / ".env").read_text()
