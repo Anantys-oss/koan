@@ -1,6 +1,7 @@
 """Tests for the terminal dashboard (app.tui_dashboard)."""
 
 import asyncio
+import time
 
 import pytest
 
@@ -845,3 +846,71 @@ def test_quit_confirmation_shows_both_processes_and_missions(tmp_path, monkeypat
     assert "Active processes: run, awake" in msg
     assert "In progress (1):" in msg
     assert "mission one" in msg
+
+
+# --- double CTRL-C quit -------------------------------------------------------
+
+def test_first_ctrl_c_shows_notification(tmp_path, monkeypatch):
+    """First CTRL-C shows a notification, does not exit."""
+    monkeypatch.setattr("app.pid_manager.check_pidfile", lambda root, name: None)
+    app = tui.KoanDashboard(tmp_path)
+    notifications = []
+    app.notify = lambda msg, **kw: notifications.append((msg, kw))
+    app.exit = lambda *a, **kw: pytest.fail("should not exit on first CTRL-C")
+
+    app.action_help_quit()
+
+    assert len(notifications) == 1
+    assert "Ctrl-C" in notifications[0][0]
+    assert notifications[0][1].get("title") == "Stop Kōan?"
+    assert app._last_interrupt_at > 0
+
+
+def test_double_ctrl_c_exits(tmp_path, monkeypatch):
+    """Second CTRL-C within the window exits the app."""
+    monkeypatch.setattr("app.pid_manager.check_pidfile", lambda root, name: None)
+    app = tui.KoanDashboard(tmp_path)
+    notifications = []
+    exited = []
+    app.notify = lambda msg, **kw: notifications.append((msg, kw))
+    app.exit = lambda *a, **kw: exited.append(True)
+
+    app.action_help_quit()
+    assert len(notifications) == 1
+    assert not exited
+
+    app.action_help_quit()
+    assert exited
+    assert not app._detached
+
+
+def test_ctrl_c_after_window_resets(tmp_path, monkeypatch):
+    """CTRL-C after the window expires shows a new notification instead of exiting."""
+    monkeypatch.setattr("app.pid_manager.check_pidfile", lambda root, name: None)
+    app = tui.KoanDashboard(tmp_path)
+    notifications = []
+    exited = []
+    app.notify = lambda msg, **kw: notifications.append((msg, kw))
+    app.exit = lambda *a, **kw: exited.append(True)
+
+    app._last_interrupt_at = time.monotonic() - tui.KoanDashboard._INTERRUPT_WINDOW - 1
+    app.action_help_quit()
+
+    assert len(notifications) == 1
+    assert not exited
+
+
+def test_no_duplicate_notification_within_window(tmp_path, monkeypatch):
+    """Within the window, second CTRL-C quits rather than showing a duplicate notification."""
+    monkeypatch.setattr("app.pid_manager.check_pidfile", lambda root, name: None)
+    app = tui.KoanDashboard(tmp_path)
+    notifications = []
+    exited = []
+    app.notify = lambda msg, **kw: notifications.append((msg, kw))
+    app.exit = lambda *a, **kw: exited.append(True)
+
+    app.action_help_quit()
+    app.action_help_quit()
+
+    assert len(notifications) == 1
+    assert exited
