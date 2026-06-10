@@ -19,6 +19,7 @@ Anantys mint theme, no emojis.
 
 import contextlib
 import logging
+import time
 from collections import deque
 from pathlib import Path
 
@@ -406,6 +407,8 @@ class KoanDashboard(App):
         self._keepawake_label = ""
         # Detach flag: True when the user closed the dashboard but left Kōan up.
         self._detached = False
+        # Monotonic timestamp of last CTRL-C interrupt for double-tap quit.
+        self._last_interrupt_at = 0.0
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -644,6 +647,22 @@ class KoanDashboard(App):
         self.refresh_dynamic()
 
     # --- detach / quit / new mission ---------------------------------------
+
+    _INTERRUPT_WINDOW = 3.0  # seconds to confirm a double CTRL-C
+
+    def action_help_quit(self) -> None:
+        """Double CTRL-C to stop: first press notifies, second confirms."""
+        now = time.monotonic()
+        if now - self._last_interrupt_at < self._INTERRUPT_WINDOW:
+            self._detached = False
+            self.exit()
+            return
+        self._last_interrupt_at = now
+        self.notify(
+            "Press [b]Ctrl-C[/b] again to stop",
+            title="Stop Kōan?",
+            timeout=self._INTERRUPT_WINDOW,
+        )
 
     def action_detach(self) -> None:
         """Close the dashboard but leave Kōan running."""
