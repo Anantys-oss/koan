@@ -860,6 +860,14 @@ class KoanDashboard(App):
         # Live status flags + single-tap toggles, rendered as markup.
         paused = is_paused(str(self.koan_root))
         titles = self._in_progress_missions()
+        try:
+            from app.missions import count_pending
+
+            md = self.koan_root / "instance" / "missions.md"
+            pending_count = count_pending(md.read_text()) if md.exists() else 0
+        except Exception as exc:
+            self.log(f"pending count failed: {exc}")
+            pending_count = 0
         web_on = self._web_running()
         bridge, tg_configured = self._telegram_status()
 
@@ -884,6 +892,10 @@ class KoanDashboard(App):
         lines.extend(f"                 [dim]·[/] {escape(t)}" for t in titles[:3])
         if len(titles) > 3:
             lines.append(f"                 [dim]… +{len(titles) - 3} more[/]")
+        if pending_count:
+            lines.append(f"  pending      [{_MINT}]{pending_count}[/] in queue")
+        else:
+            lines.append("  pending      [dim]empty queue[/]")
         lines += [
             f"  telegram     {tg}",
             f"  web board    {self._dot(web_on)}  [dim](w · {web_hint})[/]",
