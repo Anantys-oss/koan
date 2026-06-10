@@ -5,6 +5,7 @@ the post-execution PR submission pipeline (branch check, push,
 fork detection, PR creation, tracker issue comment).
 """
 
+import json
 import logging
 import os
 import subprocess
@@ -105,6 +106,73 @@ def resolve_submit_target(
         return {"repo": upstream, "is_fork": True}
 
     return {"repo": f"{owner}/{repo}", "is_fork": False}
+
+
+def _is_minimal_body(body: str) -> bool:
+    """Return True if a PR body is too short or lacks structured sections.
+
+    Bodies like "Closes #123." or "Fixes #456" are considered minimal —
+    they contain no descriptive content beyond an issue reference.
+    """
+    if not body or not body.strip():
+        return True
+    stripped = body.strip()
+    if len(stripped) < 80 and "##" not in stripped:
+        return True
+    return False
+
+
+def _enrich_existing_pr(
+    pr_number: int,
+    pr_body: str,
+    project_path: str,
+    project_name: str = "",
+    footer_enabled: bool = True,
+    footer_model_key: str = "",
+    footer_started_at=None,
+) -> None:
+    """Update an existing PR's body when the current body is minimal."""
+    enriched = pr_body
+
+    if footer_enabled:
+        try:
+            from app.pr_footer import append_koan_footer, build_pr_footer
+
+            started_at = footer_started_at
+            if started_at is None:
+                raw = os.environ.get("KOAN_MISSION_STARTED_AT", "")
+                try:
+                    started_at = float(raw) if raw else None
+                except ValueError:
+                    started_at = None
+
+            model_key = (
+                footer_model_key
+                or os.environ.get("KOAN_MISSION_MODEL_KEY", "")
+                or "mission"
+            )
+
+            enriched = append_koan_footer(
+                enriched,
+                build_pr_footer(
+                    project_name=project_name,
+                    model_key=model_key,
+                    project_path=project_path,
+                    started_at=started_at,
+                ),
+            )
+        except Exception as e:
+            logger.debug("Footer append failed during enrichment: %s", e)
+
+    try:
+        run_gh(
+            "pr", "edit", str(pr_number),
+            "--body", enriched,
+            cwd=project_path, timeout=15,
+        )
+        logger.info("Enriched minimal PR #%d body", pr_number)
+    except (RuntimeError, OSError, subprocess.SubprocessError) as e:
+        logger.debug("Failed to enrich PR #%d body: %s", pr_number, e)
 
 
 def submit_draft_pr(
@@ -234,13 +302,32 @@ def submit_draft_pr(
 
     # Check for existing PR on this branch
     try:
-        existing = run_gh(
-            "pr", "list", "--head", branch, "--json", "url", "--jq", ".[0].url",
+        existing_raw = run_gh(
+            "pr", "list", "--head", branch,
+            "--json", "url,body,number",
+            "--jq", ".[0]",
             cwd=project_path, timeout=15,
         ).strip()
-        if existing:
-            logger.info("PR already exists: %s", existing)
-            return existing
+        if existing_raw:
+            try:
+                existing_data = json.loads(existing_raw)
+            except (json.JSONDecodeError, ValueError):
+                existing_data = {}
+            existing_url = existing_data.get("url", existing_raw)
+            existing_body = existing_data.get("body", "")
+            existing_number = existing_data.get("number")
+
+            if pr_body and existing_number and _is_minimal_body(existing_body):
+                _enrich_existing_pr(
+                    existing_number, pr_body, project_path,
+                    project_name=project_name,
+                    footer_enabled=footer_enabled,
+                    footer_model_key=footer_model_key,
+                    footer_started_at=footer_started_at,
+                )
+
+            logger.info("PR already exists: %s", existing_url)
+            return existing_url
     except (RuntimeError, OSError, subprocess.SubprocessError) as e:
         logger.debug("No existing PR found (or check failed): %s", e)
 
