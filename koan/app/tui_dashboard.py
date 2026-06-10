@@ -28,6 +28,7 @@ _log = logging.getLogger(__name__)
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Vertical
+from textual.css.query import NoMatches, TooManyMatches
 from textual.screen import ModalScreen
 from textual.widgets import (
     Button,
@@ -520,7 +521,7 @@ class KoanDashboard(App):
     def _scroll_logs(self, direction: str) -> None:
         try:
             log_widget = self.query_one("#logs-body", RichLog)
-        except Exception as exc:
+        except (NoMatches, TooManyMatches) as exc:
             self.log(f"log scroll skipped: {exc}")
             return
 
@@ -530,13 +531,13 @@ class KoanDashboard(App):
             if direction == "up":
                 log_widget.scroll_up(animate=False, immediate=True)
             else:
-                log_widget.scroll_page_up(animate=False)
+                log_widget.scroll_page_up(animate=False, immediate=True)
             return
 
         if direction == "down":
             log_widget.scroll_down(animate=False, immediate=True)
         elif direction == "page_down":
-            log_widget.scroll_page_down(animate=False)
+            log_widget.scroll_page_down(animate=False, immediate=True)
         else:
             return
 
