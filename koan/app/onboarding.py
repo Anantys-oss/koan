@@ -714,25 +714,65 @@ _PROVIDER_MODEL_DEFAULTS: dict[str, dict[str, str]] = {
 }
 
 
-def _update_config_yaml_models(provider: str, models: dict[str, str]) -> None:
-    """Update the models.{provider} section in config.yaml."""
+def _update_config_yaml_preserving_comments(
+    config_file: Path,
+    keys: list[str],
+    value,
+) -> None:
+    """Set a nested key in config_file while preserving comments and formatting.
+
+    Uses ruamel.yaml to round-trip the file; falls back to plain pyyaml
+    when ruamel is unavailable.
+    """
+    import io
+
+    from app.utils import atomic_write
+
+    try:
+        from ruamel.yaml import YAML
+
+        ry = YAML()
+        ry.preserve_quotes = True
+        data = ry.load(config_file.read_text()) if config_file.exists() else {}
+        if data is None:
+            data = {}
+        node = data
+        for k in keys[:-1]:
+            node = node.setdefault(k, {})
+        node[keys[-1]] = value
+        stream = io.StringIO()
+        ry.dump(data, stream)
+        atomic_write(config_file, stream.getvalue())
+        return
+    except ImportError:
+        pass
+
     import yaml
 
+    try:
+        data = yaml.safe_load(config_file.read_text()) or {}
+    except yaml.YAMLError:
+        return
+
+    node = data
+    for k in keys[:-1]:
+        node = node.setdefault(k, {})
+    node[keys[-1]] = value
+
+    config_file.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
+
+
+def _update_config_yaml_models(provider: str, models: dict[str, str]) -> None:
+    """Update the models.{provider} section in config.yaml, preserving comments."""
     config_file = _instance_dir() / "config.yaml"
     if not config_file.exists():
         return
 
-    try:
-        config = yaml.safe_load(config_file.read_text()) or {}
-    except yaml.YAMLError:
-        return
-
-    if "models" not in config or not isinstance(config["models"], dict):
-        config["models"] = {}
-
-    config["models"][provider] = models
-
-    config_file.write_text(yaml.dump(config, default_flow_style=False, sort_keys=False))
+    _update_config_yaml_preserving_comments(
+        config_file,
+        ["models", provider],
+        models,
+    )
 
 
 def step_models(state: OnboardingState) -> OnboardingState:
@@ -1371,25 +1411,20 @@ def step_github(state: OnboardingState) -> OnboardingState:
 
 
 def _update_config_yaml_github(nickname: str, auth_users: list[str]) -> None:
-    """Update the github section in config.yaml."""
-    import yaml
-
+    """Update the github section in config.yaml, preserving comments."""
     config_file = _instance_dir() / "config.yaml"
     if not config_file.exists():
         return
 
-    try:
-        config = yaml.safe_load(config_file.read_text()) or {}
-    except yaml.YAMLError:
-        return
-
-    config["github"] = {
-        "nickname": nickname,
-        "commands_enabled": True,
-        "authorized_users": auth_users,
-    }
-
-    config_file.write_text(yaml.dump(config, default_flow_style=False, sort_keys=False))
+    _update_config_yaml_preserving_comments(
+        config_file,
+        ["github"],
+        {
+            "nickname": nickname,
+            "commands_enabled": True,
+            "authorized_users": auth_users,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------

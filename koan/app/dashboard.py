@@ -1865,8 +1865,9 @@ def api_nickname_get():
 
 @app.route("/api/nickname", methods=["PUT"])
 def api_nickname_set():
-    """Update the instance nickname in config.yaml."""
-    import yaml
+    """Update the instance nickname in config.yaml, preserving comments."""
+    import io
+
     from app.utils import atomic_write
 
     data = request.get_json(silent=True)
@@ -1876,6 +1877,29 @@ def api_nickname_set():
     nickname = str(data.get("nickname", "")).strip()[:50]
 
     config_path = INSTANCE_DIR / "config.yaml"
+
+    try:
+        from ruamel.yaml import YAML
+
+        ry = YAML()
+        ry.preserve_quotes = True
+        data = ry.load(config_path.read_text()) if config_path.exists() else {}
+        if data is None:
+            data = {}
+        dashboard_cfg = data.get("dashboard")
+        if not isinstance(dashboard_cfg, dict):
+            dashboard_cfg = {}
+        dashboard_cfg["nickname"] = nickname
+        data["dashboard"] = dashboard_cfg
+        stream = io.StringIO()
+        ry.dump(data, stream)
+        atomic_write(config_path, stream.getvalue())
+        return jsonify({"ok": True, "nickname": nickname})
+    except ImportError:
+        pass
+
+    import yaml
+
     config = {}
     if config_path.exists():
         with open(config_path) as f:
