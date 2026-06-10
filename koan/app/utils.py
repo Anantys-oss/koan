@@ -352,6 +352,26 @@ def atomic_write_json(path: Path, data, indent=None):
     atomic_write(path, json.dumps(data, ensure_ascii=False, indent=indent))
 
 
+@contextlib.contextmanager
+def signal_lock(signal_path: Path):
+    """Acquire an exclusive advisory lock for a signal file.
+
+    Uses a companion ``.lock`` file next to the signal file to serialize
+    concurrent access across processes. The lock is released automatically
+    when the context exits, even if an exception is raised.
+
+    Safe to nest with :func:`atomic_write` because ``atomic_write`` locks
+    its temp file, not the signal file itself.
+    """
+    lock_path = signal_path.parent / (signal_path.name + ".lock")
+    with open(lock_path, "w") as lock_f:
+        fcntl.flock(lock_f, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_f, fcntl.LOCK_UN)
+
+
 def truncate_text(text: str, max_chars: int) -> str:
     """Truncate text with indicator."""
     if len(text) <= max_chars:

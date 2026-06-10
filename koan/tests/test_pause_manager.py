@@ -745,6 +745,52 @@ class TestCreatePauseAtomicWrite:
             assert "1707000000" in content
 
 
+class TestSignalLockUsage:
+    """Test that pause operations use signal_lock for cross-process safety."""
+
+    def test_create_pause_uses_signal_lock(self, tmp_path):
+        from unittest.mock import patch
+
+        from app.pause_manager import create_pause
+
+        with patch("app.utils.signal_lock") as mock_lock:
+            create_pause(str(tmp_path), "quota", 1707000000, "resets 10am")
+            assert mock_lock.call_count == 1
+            lock_path = str(mock_lock.call_args_list[0][0][0])
+            assert lock_path.endswith(".koan-pause")
+
+    def test_remove_pause_uses_signal_lock(self, tmp_path):
+        from unittest.mock import patch
+
+        from app.pause_manager import remove_pause
+
+        with patch("app.utils.signal_lock") as mock_lock:
+            remove_pause(str(tmp_path))
+            assert mock_lock.call_count == 1
+            lock_path = str(mock_lock.call_args_list[0][0][0])
+            assert lock_path.endswith(".koan-pause")
+
+    def test_check_and_resume_uses_signal_lock(self, tmp_path, monkeypatch):
+        from unittest.mock import patch
+
+        from app.pause_manager import check_and_resume, create_pause
+
+        create_pause(str(tmp_path), "quota", 1, "old reset")
+        monkeypatch.setattr("app.pause_manager.time.time", lambda: 2000)
+
+        with patch("app.utils.signal_lock") as mock_lock:
+            check_and_resume(str(tmp_path))
+            assert mock_lock.call_count == 1
+            lock_path = str(mock_lock.call_args_list[0][0][0])
+            assert lock_path.endswith(".koan-pause")
+
+    def test_lock_file_created_by_create_pause(self, tmp_path):
+        from app.pause_manager import create_pause
+
+        create_pause(str(tmp_path), "quota", 1707000000, "resets 10am")
+        assert (tmp_path / ".koan-pause").exists()
+
+
 class TestParseDuration:
     """Test parse_duration helper function."""
 

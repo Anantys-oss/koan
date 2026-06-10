@@ -64,7 +64,7 @@ from app.signals import (
     STOP_FILE,
 )
 from app.subprocess_runner import kill_process_group
-from app.utils import atomic_write
+from app.utils import atomic_write, signal_lock
 
 
 # ---------------------------------------------------------------------------
@@ -856,20 +856,22 @@ def main_loop():
         while True:
             # --- Stop check ---
             stop_file = Path(koan_root, STOP_FILE)
-            if stop_file.exists():
-                log("koan", "Stop requested.")
-                stop_file.unlink(missing_ok=True)
-                current = _read_current_project(koan_root)
-                _notify(instance, f"Kōan stopped on request after {count} runs. Last project: {current}.")
-                break
+            with signal_lock(stop_file):
+                if stop_file.exists():
+                    log("koan", "Stop requested.")
+                    stop_file.unlink(missing_ok=True)
+                    current = _read_current_project(koan_root)
+                    _notify(instance, f"Kōan stopped on request after {count} runs. Last project: {current}.")
+                    break
 
             # --- Update check (finish mission → update → restart) ---
             cycle_file = Path(koan_root, CYCLE_FILE)
-            if cycle_file.exists():
-                log("koan", "Update requested. Updating and restarting...")
-                cycle_file.unlink(missing_ok=True)
-                if _handle_update(koan_root, instance, count):
-                    sys.exit(RESTART_EXIT_CODE)
+            with signal_lock(cycle_file):
+                if cycle_file.exists():
+                    log("koan", "Update requested. Updating and restarting...")
+                    cycle_file.unlink(missing_ok=True)
+                    if _handle_update(koan_root, instance, count):
+                        sys.exit(RESTART_EXIT_CODE)
 
             # --- Shutdown check (stops both agent loop and bridge) ---
             if is_shutdown_requested(koan_root, start_time):

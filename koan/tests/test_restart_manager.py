@@ -302,3 +302,39 @@ class TestPerProcessRestartMarkers:
     def test_unknown_target_raises(self, tmp_path, fn):
         with pytest.raises(ValueError):
             fn(str(tmp_path), target="runner")  # type: ignore[arg-type]
+
+
+class TestSignalLockUsage:
+    """Test that restart operations use signal_lock for cross-process safety."""
+
+    def test_request_restart_uses_signal_lock(self, tmp_path):
+        from unittest.mock import patch
+
+        from app.restart_manager import request_restart
+
+        with patch("app.utils.signal_lock") as mock_lock:
+            request_restart(str(tmp_path))
+            assert mock_lock.call_count == 3  # one per marker file
+            lock_paths = {str(call.args[0]) for call in mock_lock.call_args_list}
+            assert any(p.endswith(".koan-restart") for p in lock_paths)
+            assert any(p.endswith(".koan-restart-bridge") for p in lock_paths)
+            assert any(p.endswith(".koan-restart-run") for p in lock_paths)
+
+    def test_clear_restart_uses_signal_lock(self, tmp_path):
+        from unittest.mock import patch
+
+        from app.restart_manager import clear_restart
+
+        with patch("app.utils.signal_lock") as mock_lock:
+            clear_restart(str(tmp_path), target="run")
+            assert mock_lock.call_count == 1
+            lock_path = str(mock_lock.call_args_list[0][0][0])
+            assert lock_path.endswith(".koan-restart-run")
+
+    def test_lock_files_created_by_request_restart(self, tmp_path):
+        from app.restart_manager import request_restart
+
+        request_restart(str(tmp_path))
+        assert (tmp_path / ".koan-restart").exists()
+        assert (tmp_path / ".koan-restart-bridge").exists()
+        assert (tmp_path / ".koan-restart-run").exists()

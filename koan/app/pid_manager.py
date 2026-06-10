@@ -715,9 +715,10 @@ def stop_processes(koan_root: Path, timeout: float = 5.0) -> dict:
     results = {}
 
     # Create .koan-stop signal file for graceful run loop shutdown
-    from app.utils import atomic_write
+    from app.utils import atomic_write, signal_lock
     stop_file = koan_root / STOP_FILE
-    atomic_write(stop_file, "STOP")
+    with signal_lock(stop_file):
+        atomic_write(stop_file, "STOP")
 
     # Notify Telegram before killing processes
     any_running = any(check_pidfile(koan_root, n) for n in PROCESS_NAMES)

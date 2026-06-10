@@ -206,6 +206,49 @@ class TestRemoveFocus:
         remove_focus(str(tmp_path))  # Should not raise
 
 
+class TestSignalLockUsage:
+    """Test that focus operations use signal_lock for cross-process safety."""
+
+    def test_create_focus_uses_signal_lock(self, tmp_path):
+        from unittest.mock import patch
+
+        from app.focus_manager import create_focus
+
+        with patch("app.utils.signal_lock") as mock_lock:
+            create_focus(str(tmp_path), duration=3600)
+            assert mock_lock.call_count == 1
+            lock_path = str(mock_lock.call_args_list[0][0][0])
+            assert lock_path.endswith(".koan-focus")
+
+    def test_remove_focus_uses_signal_lock(self, tmp_path):
+        from unittest.mock import patch
+
+        from app.focus_manager import remove_focus
+
+        with patch("app.utils.signal_lock") as mock_lock:
+            remove_focus(str(tmp_path))
+            assert mock_lock.call_count == 1
+            lock_path = str(mock_lock.call_args_list[0][0][0])
+            assert lock_path.endswith(".koan-focus")
+
+    def test_check_focus_uses_signal_lock(self, tmp_path):
+        from unittest.mock import patch
+
+        from app.focus_manager import check_focus
+
+        with patch("app.utils.signal_lock") as mock_lock:
+            check_focus(str(tmp_path))
+            assert mock_lock.call_count == 1
+            lock_path = str(mock_lock.call_args_list[0][0][0])
+            assert lock_path.endswith(".koan-focus")
+
+    def test_lock_file_created_by_create_focus(self, tmp_path):
+        from app.focus_manager import create_focus
+
+        create_focus(str(tmp_path), duration=3600)
+        assert (tmp_path / ".koan-focus").exists()
+
+
 class TestCheckFocus:
     """Test check_focus function."""
 

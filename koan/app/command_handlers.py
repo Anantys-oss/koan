@@ -28,6 +28,7 @@ from app.utils import (
     detect_project_from_text,
     get_known_projects,
     insert_pending_mission,
+    signal_lock,
     is_known_project,
 )
 
@@ -95,7 +96,9 @@ def handle_command(text: str):
     # --- Core hardcoded commands (safety-critical / bootstrap) ---
 
     if cmd == "/stop":
-        atomic_write(KOAN_ROOT / STOP_FILE, "STOP")
+        stop_file = KOAN_ROOT / STOP_FILE
+        with signal_lock(stop_file):
+            atomic_write(stop_file, "STOP")
         if _has_in_progress_mission():
             send_telegram("⏹️ Stop requested. Current mission will complete, then Kōan will stop.")
         else:
@@ -103,7 +106,9 @@ def handle_command(text: str):
         return
 
     if cmd in ("/update", "/upgrade"):
-        atomic_write(KOAN_ROOT / CYCLE_FILE, "CYCLE")
+        cycle_file = KOAN_ROOT / CYCLE_FILE
+        with signal_lock(cycle_file):
+            atomic_write(cycle_file, "CYCLE")
         if _has_in_progress_mission():
             send_telegram("🔄 Update requested. Current mission will complete, then Kōan will update and restart.")
         else:
@@ -792,51 +797,52 @@ def handle_resume():
     handle_start_on_pause() has run — and the pause file gets
     (re-)created after /resume removed it.
     """
-    from app.pause_manager import get_pause_state, remove_pause
+    from app.pause_manager import get_pause_state, _remove_pause_unlocked
 
     pause_file = KOAN_ROOT / PAUSE_FILE
     quota_file = KOAN_ROOT / QUOTA_RESET_FILE  # Legacy, kept for compat
 
-    if pause_file.exists():
-        # Read pause reason and reset info for better messaging
-        state = get_pause_state(str(KOAN_ROOT))
-        reason = state.reason if state else "manual"
-        reset_timestamp = state.timestamp if state and state.timestamp else None
-        reset_display = state.display if state else ""
+    with signal_lock(pause_file):
+        if pause_file.exists():
+            # Read pause reason and reset info for better messaging
+            state = get_pause_state(str(KOAN_ROOT))
+            reason = state.reason if state else "manual"
+            reset_timestamp = state.timestamp if state and state.timestamp else None
+            reset_display = state.display if state else ""
 
-        remove_pause(str(KOAN_ROOT))
-        _write_skip_start_pause()
+            _remove_pause_unlocked(str(KOAN_ROOT))
+            _write_skip_start_pause()
 
-        if reason == "quota":
-            # Reset internal session counters so the estimator doesn't
-            # immediately re-pause with stale high usage percentage
-            _reset_session_counters()
+            if reason == "quota":
+                # Reset internal session counters so the estimator doesn't
+                # immediately re-pause with stale high usage percentage
+                _reset_session_counters()
 
-            # Check if we're resuming before the reset time
-            if reset_timestamp and time.time() < reset_timestamp:
-                from app.reset_parser import time_until_reset
-                remaining = time_until_reset(reset_timestamp)
-                send_telegram(
-                    f"▶️ Unpaused (was: quota exhausted). "
-                    f"Note: estimated reset in ~{remaining}. "
-                    f"Internal counters cleared — will rely on real API feedback. "
-                    f"If quota is still exhausted, I'll detect it and pause again with details."
-                )
+                # Check if we're resuming before the reset time
+                if reset_timestamp and time.time() < reset_timestamp:
+                    from app.reset_parser import time_until_reset
+                    remaining = time_until_reset(reset_timestamp)
+                    send_telegram(
+                        f"▶️ Unpaused (was: quota exhausted). "
+                        f"Note: estimated reset in ~{remaining}. "
+                        f"Internal counters cleared — will rely on real API feedback. "
+                        f"If quota is still exhausted, I'll detect it and pause again with details."
+                    )
+                else:
+                    send_telegram(
+                        "▶️ Unpaused (was: quota exhausted). "
+                        "Quota should be reset. Internal counters cleared. "
+                        "Resuming main loop."
+                    )
+            elif reason == "max_runs":
+                send_telegram("▶️ Unpaused (was: max_runs). Run counter reset, loop continues.")
             else:
-                send_telegram(
-                    "▶️ Unpaused (was: quota exhausted). "
-                    "Quota should be reset. Internal counters cleared. "
-                    "Resuming main loop."
-                )
-        elif reason == "max_runs":
-            send_telegram("▶️ Unpaused (was: max_runs). Run counter reset, loop continues.")
-        else:
-            send_telegram("▶️ Unpaused. Missions resume next cycle.")
+                send_telegram("▶️ Unpaused. Missions resume next cycle.")
 
-        # If the runner died while paused, restart it automatically
-        if not _is_runner_alive():
-            _auto_restart_runner()
-        return
+            # If the runner died while paused, restart it automatically
+            if not _is_runner_alive():
+                _auto_restart_runner()
+            return
 
     # Legacy fallback: old .koan-quota-reset file (can be removed in future)
     if not quota_file.exists():

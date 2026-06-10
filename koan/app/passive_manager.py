@@ -78,6 +78,21 @@ def is_passive(koan_root: str) -> bool:
     return check_passive(koan_root) is not None
 
 
+def _parse_passive_data(data: dict) -> Optional[PassiveState]:
+    """Parse raw dict into PassiveState.
+
+    Returns None if the data is invalid.
+    """
+    try:
+        return PassiveState(
+            activated_at=int(data.get("activated_at", 0)),
+            duration=int(data.get("duration", 0)),
+            reason=str(data.get("reason", "")),
+        )
+    except (TypeError, ValueError):
+        return None
+
+
 def get_passive_state(koan_root: str) -> Optional[PassiveState]:
     """Read the current passive state from .koan-passive.
 
@@ -93,14 +108,15 @@ def get_passive_state(koan_root: str) -> Optional[PassiveState]:
     except (OSError, json.JSONDecodeError):
         return None
 
-    try:
-        return PassiveState(
-            activated_at=int(data.get("activated_at", 0)),
-            duration=int(data.get("duration", 0)),
-            reason=str(data.get("reason", "")),
-        )
-    except (TypeError, ValueError):
-        return None
+    return _parse_passive_data(data)
+
+
+def _remove_passive_unlocked(koan_root: str) -> None:
+    """Remove the passive file without acquiring the signal lock.
+
+    Callers must hold the signal lock around this operation.
+    """
+    _passive_path(koan_root).unlink(missing_ok=True)
 
 
 def create_passive(
@@ -126,27 +142,51 @@ def create_passive(
         "reason": state.reason,
     }
 
-    from app.utils import atomic_write
+    from app.utils import atomic_write, signal_lock
 
-    atomic_write(_passive_path(koan_root), json.dumps(data))
+    passive_file = _passive_path(koan_root)
+    with signal_lock(passive_file):
+        atomic_write(passive_file, json.dumps(data))
 
     return state
 
 
 def remove_passive(koan_root: str) -> None:
     """Deactivate passive mode."""
-    _passive_path(koan_root).unlink(missing_ok=True)
+    from app.utils import signal_lock
+
+    passive_file = _passive_path(koan_root)
+    with signal_lock(passive_file):
+        _remove_passive_unlocked(koan_root)
 
 
 def check_passive(koan_root: str) -> Optional[PassiveState]:
     """Check passive state, auto-removing if expired.
 
+    Uses an advisory lock so the read-decide-remove sequence is atomic,
+    preventing a race where another process overwrites the passive file
+    between our read and our remove.
+
     Returns the active PassiveState, or None if not passive or expired.
     """
-    state = get_passive_state(koan_root)
-    if state is None:
-        return None
-    if state.is_expired():
-        remove_passive(koan_root)
-        return None
-    return state
+    from app.utils import signal_lock
+
+    passive_file = _passive_path(koan_root)
+    with signal_lock(passive_file):
+        if not passive_file.is_file():
+            return None
+
+        try:
+            data = json.loads(passive_file.read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+
+        state = _parse_passive_data(data)
+        if state is None:
+            return None
+
+        if state.is_expired():
+            _remove_passive_unlocked(koan_root)
+            return None
+
+        return state

@@ -54,6 +54,7 @@ from app.utils import (
     parse_project,
     insert_pending_mission,
     get_known_projects,
+    signal_lock,
 )
 from app.automation_rules import (
     KNOWN_ACTIONS,
@@ -1330,8 +1331,10 @@ def api_agent_resume():
 @app.route("/api/agent/restart", methods=["POST"])
 def api_agent_restart():
     """Signal the agent loop to restart."""
+    restart_file = KOAN_ROOT / RESTART_FILE
     try:
-        (KOAN_ROOT / RESTART_FILE).touch()
+        with signal_lock(restart_file):
+            restart_file.touch()
     except OSError as e:
         return jsonify({"ok": False, "error": str(e)}), 500
     return jsonify({"ok": True, "status": "restart_signaled"})

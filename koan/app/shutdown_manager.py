@@ -22,12 +22,18 @@ from app.signals import SHUTDOWN_FILE
 
 def request_shutdown(koan_root: str) -> None:
     """Create the shutdown signal file with the current timestamp."""
-    from app.utils import atomic_write
-    atomic_write(Path(koan_root, SHUTDOWN_FILE), str(int(time.time())))
+    from app.utils import atomic_write, signal_lock
+
+    shutdown_file = Path(koan_root, SHUTDOWN_FILE)
+    with signal_lock(shutdown_file):
+        atomic_write(shutdown_file, str(int(time.time())))
 
 
 def is_shutdown_requested(koan_root: str, process_start_time: float) -> bool:
     """Check if a valid (non-stale) shutdown has been requested.
+
+    Uses an advisory lock so the read-decide-remove sequence for stale
+    signals is atomic.
 
     Args:
         koan_root: Path to koan root directory.
@@ -36,26 +42,32 @@ def is_shutdown_requested(koan_root: str, process_start_time: float) -> bool:
     Returns:
         True if a shutdown was requested after the process started.
     """
-    path = os.path.join(koan_root, SHUTDOWN_FILE)
-    if not os.path.isfile(path):
+    from app.utils import signal_lock
+
+    shutdown_file = Path(koan_root, SHUTDOWN_FILE)
+    with signal_lock(shutdown_file):
+        if not shutdown_file.is_file():
+            return False
+
+        try:
+            shutdown_time = int(shutdown_file.read_text().strip())
+        except (OSError, ValueError):
+            return False
+
+        if shutdown_time >= int(process_start_time):
+            return True
+
+        # Stale shutdown file (predates this process) — clean it up under lock
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(str(shutdown_file))
         return False
-
-    try:
-        with open(path) as f:
-            shutdown_time = int(f.read().strip())
-    except (OSError, ValueError):
-        return False
-
-    if shutdown_time >= int(process_start_time):
-        return True
-
-    # Stale shutdown file (predates this process) — clean it up
-    clear_shutdown(koan_root)
-    return False
 
 
 def clear_shutdown(koan_root: str) -> None:
     """Remove the shutdown signal file."""
-    path = os.path.join(koan_root, SHUTDOWN_FILE)
-    with contextlib.suppress(FileNotFoundError):
-        os.remove(path)
+    from app.utils import signal_lock
+
+    shutdown_file = Path(koan_root, SHUTDOWN_FILE)
+    with signal_lock(shutdown_file):
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(str(shutdown_file))

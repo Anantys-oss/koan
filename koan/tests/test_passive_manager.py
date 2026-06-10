@@ -225,6 +225,49 @@ class TestRemovePassive:
         remove_passive(str(tmp_path))  # Should not raise
 
 
+class TestSignalLockUsage:
+    """Test that passive operations use signal_lock for cross-process safety."""
+
+    def test_create_passive_uses_signal_lock(self, tmp_path):
+        from unittest.mock import patch
+
+        from app.passive_manager import create_passive
+
+        with patch("app.utils.signal_lock") as mock_lock:
+            create_passive(str(tmp_path), duration=3600)
+            assert mock_lock.call_count == 1
+            lock_path = str(mock_lock.call_args_list[0][0][0])
+            assert lock_path.endswith(".koan-passive")
+
+    def test_remove_passive_uses_signal_lock(self, tmp_path):
+        from unittest.mock import patch
+
+        from app.passive_manager import remove_passive
+
+        with patch("app.utils.signal_lock") as mock_lock:
+            remove_passive(str(tmp_path))
+            assert mock_lock.call_count == 1
+            lock_path = str(mock_lock.call_args_list[0][0][0])
+            assert lock_path.endswith(".koan-passive")
+
+    def test_check_passive_uses_signal_lock(self, tmp_path):
+        from unittest.mock import patch
+
+        from app.passive_manager import check_passive
+
+        with patch("app.utils.signal_lock") as mock_lock:
+            check_passive(str(tmp_path))
+            assert mock_lock.call_count == 1
+            lock_path = str(mock_lock.call_args_list[0][0][0])
+            assert lock_path.endswith(".koan-passive")
+
+    def test_lock_file_created_by_create_passive(self, tmp_path):
+        from app.passive_manager import create_passive
+
+        create_passive(str(tmp_path), duration=3600)
+        assert (tmp_path / ".koan-passive").exists()
+
+
 class TestCheckPassive:
     """Test check_passive function with auto-cleanup."""
 
