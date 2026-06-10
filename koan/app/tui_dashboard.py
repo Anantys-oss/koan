@@ -53,11 +53,24 @@ _LOG_TAIL_LINES = 400
 
 
 def _tail(path: Path, limit: int = _LOG_TAIL_LINES) -> list:
-    """Return the last ``limit`` lines of a file, or [] if absent."""
+    """Return the last ``limit`` lines of a file, or [] if absent.
+
+    For files larger than 64 KiB we seek near the end and read only the
+    trailing chunk, avoiding reading the whole file into memory.
+    """
     if not path.exists():
         return []
     try:
+        size = path.stat().st_size
+        if size < 65_536:
+            with path.open("r", errors="replace") as fh:
+                return list(deque(fh, maxlen=limit))
+        # Large file: seek back from end, skip partial first line.
+        chunk = min(limit * 128, size)
         with path.open("r", errors="replace") as fh:
+            fh.seek(max(0, size - chunk))
+            if size > chunk:
+                fh.readline()
             return list(deque(fh, maxlen=limit))
     except OSError:
         return []

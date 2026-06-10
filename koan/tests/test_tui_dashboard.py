@@ -2,6 +2,7 @@
 
 import asyncio
 import time
+from pathlib import Path
 
 import pytest
 
@@ -929,3 +930,54 @@ def test_no_duplicate_notification_within_window(tmp_path, monkeypatch):
 
     assert len(notifications) == 1
     assert exited
+
+
+# --- _tail optimization -------------------------------------------------------
+
+def test_tail_small_file_reads_all_lines(tmp_path):
+    """Files under 64 KiB are read entirely (original behavior)."""
+    f = tmp_path / "small.log"
+    f.write_text("line1\nline2\nline3\n")
+    result = tui._tail(f, limit=5)
+    assert result == ["line1\n", "line2\n", "line3\n"]
+
+
+def test_tail_large_file_seeks_from_end(tmp_path):
+    """Files over 64 KiB seek backwards and return only trailing lines."""
+    f = tmp_path / "big.log"
+    # Build a file slightly larger than 64 KiB so the seek path is exercised.
+    filler = "x" * 120 + "\n"  # ~121 bytes per line
+    lines_needed = (65_536 // 121) + 10  # enough to exceed threshold
+    content = filler * lines_needed
+    f.write_text(content)
+    assert f.stat().st_size > 65_536
+
+    result = tui._tail(f, limit=10)
+    assert len(result) == 10
+    # All returned lines should end with newline and consist of repeated 'x'.
+    assert all(line.strip() == "x" * 120 for line in result)
+
+
+def test_tail_exactly_at_threshold(tmp_path):
+    """A file exactly at 64 KiB still uses the fast path (read-all)."""
+    f = tmp_path / "exact.log"
+    # 64 KiB = 65 536 bytes. Write content slightly below to stay under threshold.
+    f.write_text("a\n" * 32_000)  # ~64 000 bytes
+    assert f.stat().st_size < 65_536
+    result = tui._tail(f, limit=5)
+    assert len(result) == 5
+
+
+def test_tail_missing_file_returns_empty():
+    assert tui._tail(Path("/does/not/exist.log")) == []
+
+
+def test_tail_oserror_returns_empty(tmp_path, monkeypatch):
+    f = tmp_path / "unreadable.log"
+    f.write_text("hello\n")
+
+    def boom(*a, **k):
+        raise OSError("boom")
+
+    monkeypatch.setattr(Path, "stat", boom)
+    assert tui._tail(f) == []
