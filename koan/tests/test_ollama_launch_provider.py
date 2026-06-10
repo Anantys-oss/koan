@@ -218,6 +218,42 @@ class TestOllamaLaunchFlags:
             stdout_text="", stderr_text="ok", exit_code=0,
         ) is False
 
+    def test_detects_ollama_429_rejected(self):
+        """Detect Ollama-specific 429 rejection message."""
+        stderr = (
+            "API Error: Request rejected (429) · you have reached your "
+            "session usage limit, upgrade for higher limits: https://ollama.com/upgrade"
+        )
+        assert self.provider.detect_quota_exhaustion(
+            stdout_text="", stderr_text=stderr, exit_code=1,
+        ) is True
+
+    def test_detects_ollama_session_usage_limit(self):
+        """Detect Ollama 'reached your session usage limit' message."""
+        assert self.provider.detect_quota_exhaustion(
+            stdout_text="", stderr_text="reached your session usage limit", exit_code=1,
+        ) is True
+
+    def test_detects_ollama_upgrade_link(self):
+        """Detect Ollama upgrade link as quota signal."""
+        assert self.provider.detect_quota_exhaustion(
+            stdout_text="", stderr_text="visit https://ollama.com/upgrade", exit_code=1,
+        ) is True
+
+    def test_ollama_quota_patterns_are_case_insensitive(self):
+        """Ollama quota patterns are matched case-insensitively."""
+        assert self.provider.detect_quota_exhaustion(
+            stdout_text="", stderr_text="REQUEST REJECTED (429)", exit_code=1,
+        ) is True
+
+    def test_no_false_positive_on_normal_ollama_output(self):
+        """Normal Ollama output should not trigger quota detection."""
+        assert self.provider.detect_quota_exhaustion(
+            stdout_text="ollama launch claude started successfully",
+            stderr_text="",
+            exit_code=0,
+        ) is False
+
     def test_get_session_data_none_when_no_project(self):
         """Session data depends on Claude CLI artifacts; missing project returns None."""
         from unittest.mock import patch
