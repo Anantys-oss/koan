@@ -971,7 +971,7 @@ def test_tail_at_threshold_uses_seek_path(tmp_path):
     """A file exactly at 65 536 bytes triggers the seek path."""
     f = tmp_path / "exact.log"
     line = "b" * 62 + "\n"  # 63 bytes per line
-    count = 65_536 // 63  # fills to >= 65 536
+    count = 65_536 // 63 + 1  # fills to >= 65 536
     f.write_text(line * count)
     assert f.stat().st_size >= 65_536
     result = tui._tail(f, limit=5)
