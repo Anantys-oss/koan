@@ -4,7 +4,6 @@ on:
     types: [opened]
 
 permissions:
-  issues: write
   pull-requests: write
 
 jobs:
@@ -16,6 +15,7 @@ jobs:
           github-token: ${{ secrets.BOT_TOKEN }}
           script: |
             const bot = 'Koan-Bot';
+            const fallbackBot = 'Koanex';
             const author = context.payload.pull_request.user.login;
             let commented = false;
 
@@ -32,10 +32,12 @@ jobs:
             }
 
             if (!commented) {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body: '@Koan-Bot review'
-              });
+              try {
+                await github.rest.pulls.requestReviewers({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: context.issue.number,
+                  reviewers: [fallbackBot]
+                });
+              } catch (e) {}
             }
