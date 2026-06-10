@@ -75,8 +75,8 @@ def get_fork_owner(project_path: str) -> str:
 def resolve_submit_target(
     project_path: str,
     project_name: str,
-    owner: str,
-    repo: str,
+    owner: str = "",
+    repo: str = "",
 ) -> dict:
     """Determine where to submit the PR.
 
@@ -104,17 +104,20 @@ def resolve_submit_target(
     if upstream:
         return {"repo": upstream, "is_fork": True}
 
-    return {"repo": f"{owner}/{repo}", "is_fork": False}
+    if owner and repo:
+        return {"repo": f"{owner}/{repo}", "is_fork": False}
+
+    return {"repo": "", "is_fork": False}
 
 
 def submit_draft_pr(
     project_path: str,
     project_name: str,
-    owner: str,
-    repo: str,
-    issue_number: str,
-    pr_title: str,
-    pr_body: str,
+    owner: str = "",
+    repo: str = "",
+    issue_number: str = "",
+    pr_title: str = "",
+    pr_body: str = "",
     issue_url: Optional[str] = None,
     base_branch: Optional[str] = None,
     notify_fn: Optional[Callable[[str], None]] = None,
@@ -328,7 +331,7 @@ def submit_draft_pr(
     if base_branch:
         pr_kwargs["base"] = base_branch
 
-    if target["is_fork"]:
+    if target.get("repo") and target["is_fork"]:
         pr_kwargs["repo"] = target["repo"]
         fork_owner = get_fork_owner(project_path)
         if fork_owner:

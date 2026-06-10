@@ -21,6 +21,7 @@ CLI interface:
 import json
 import os
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -880,6 +881,99 @@ def _run_mission_verification(
     return result
 
 
+def _fallback_pr_body(commits: list[str]) -> str:
+    if not commits:
+        return "## Summary\n\n- Mission changes committed."
+    lines = ["## Summary", ""]
+    lines.extend(f"- {subject}" for subject in commits)
+    return "\n".join(lines)
+
+
+def _create_generic_pr(
+    instance_dir: str,
+    project_name: str,
+    project_path: str,
+    mission_title: str,
+    provider_name: str,
+    model: str,
+    start_time: int,
+) -> Optional[str]:
+    """Create a draft PR for a successful generic mission."""
+    from app.describe_pr import describe_pr, format_description
+    from app.git_utils import get_commit_subjects, get_current_branch, run_git_strict
+    from app.pr_footer import append_koan_footer, build_mission_footer
+    from app.pr_submit import submit_draft_pr
+    from app.projects_config import resolve_base_branch
+
+    branch = get_current_branch(cwd=project_path)
+    effective_base = resolve_base_branch(project_name, project_path)
+    if branch == effective_base or branch in ("main", "master"):
+        return None
+
+    commits = get_commit_subjects(cwd=project_path, base_branch=effective_base)
+    if not commits:
+        return None
+
+    try:
+        run_git_strict("push", "-u", "origin", branch, cwd=project_path, timeout=120)
+    except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+        _log_runner("warning", f"Generic PR branch push failed or already done: {exc}")
+
+    title_source = (mission_title or "").strip() or commits[0]
+    pr_title = title_source.replace("\n", " ")[:70].rstrip() or commits[0][:70]
+
+    desc = describe_pr(project_path, effective_base)
+    pr_body = format_description(desc) if desc else _fallback_pr_body(commits)
+
+    head_sha = ""
+    try:
+        head_sha = run_git_strict("rev-parse", "HEAD", cwd=project_path, timeout=15)
+    except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+        _log_runner("debug", f"Generic PR HEAD lookup failed: {exc}")
+
+    duration_seconds = None
+    if start_time > 0:
+        duration_seconds = max(0, int(time.time() - start_time))
+
+    pr_body = append_koan_footer(
+        pr_body,
+        build_mission_footer(
+            provider_name=provider_name,
+            model=model,
+            head_sha=head_sha,
+            duration_seconds=duration_seconds,
+        ),
+    )
+
+    pr_url = submit_draft_pr(
+        project_path=project_path,
+        project_name=project_name,
+        owner="",
+        repo="",
+        issue_number="",
+        pr_title=pr_title,
+        pr_body=pr_body,
+        base_branch=effective_base,
+        footer_enabled=False,
+    )
+    if not pr_url:
+        raise RuntimeError("PR submission returned no URL")
+    if pr_url:
+        try:
+            from app.notify import NotificationPriority
+            from app.utils import append_to_outbox
+
+            outbox_path = Path(instance_dir) / "outbox.md"
+            append_to_outbox(
+                outbox_path,
+                f"📬 [{project_name}] Draft PR created: {pr_url}\n",
+                priority=NotificationPriority.INFO,
+            )
+        except Exception as exc:
+            _log_runner("error", f"Generic PR outbox notification failed: {exc}")
+    return pr_url
+
+
 def check_auto_merge(
     instance_dir: str,
     project_name: str,
@@ -977,6 +1071,8 @@ def _notify_pipeline_failures(
         _ISSUE_ICONS = {"fail": "✗", "timeout": "⏱", "skipped": "–"}
         issues = []
         for name, info in tracker.steps.items():
+            if name == "pr_creation" and info["status"] == "skipped":
+                continue
             icon = _ISSUE_ICONS.get(info["status"])
             if icon is None:
                 continue
@@ -1323,6 +1419,7 @@ def _maybe_queue_autoreview(
     merge_result,
     security_blocked: bool = False,
     stdout_file: str = "",
+    pr_url: Optional[str] = None,
 ) -> None:
     """Queue /review then /rebase missions when autoreview is enabled for a project.
 
@@ -1355,17 +1452,18 @@ def _maybe_queue_autoreview(
     if not get_project_autoreview(projects_config, project_name):
         return
 
-    # Detect PR creation — check pending_content first, then full stdout.
-    # The agent often deletes pending.md before exiting, so pending_content
-    # falls back to _read_stdout_summary() capped at 2000 chars — PR URLs
-    # are frequently beyond that limit.
-    from app.session_tracker import detect_pr_created
-    full_stdout = _read_full_stdout_text(stdout_file) if stdout_file else ""
-    if not detect_pr_created(pending_content) and not detect_pr_created(full_stdout):
-        return
+    if not pr_url:
+        # Detect PR creation — check pending_content first, then full stdout.
+        # The agent often deletes pending.md before exiting, so pending_content
+        # falls back to _read_stdout_summary() capped at 2000 chars — PR URLs
+        # are frequently beyond that limit.
+        from app.session_tracker import detect_pr_created
+        full_stdout = _read_full_stdout_text(stdout_file) if stdout_file else ""
+        if not detect_pr_created(pending_content) and not detect_pr_created(full_stdout):
+            return
 
-    # Extract PR URL — try pending_content first, fall back to full stdout
-    pr_url = _extract_pr_url(pending_content) or _extract_pr_url(full_stdout)
+        # Extract PR URL — try pending_content first, fall back to full stdout
+        pr_url = _extract_pr_url(pending_content) or _extract_pr_url(full_stdout)
     if not pr_url:
         _log_runner("warn", f"Autoreview: PR detected but no URL found in output for {project_name}")
         return
@@ -1447,6 +1545,7 @@ def run_post_mission(
         "quota_exhausted": False,
         "quota_info": None,
         "cost_tracking_failed": False,
+        "pr_url": None,
     }
 
     tracker = _PipelineTracker()
@@ -1673,6 +1772,27 @@ def run_post_mission(
             verify_result = None
             quality_report = {}
             lint_result = None
+            pr_url = None
+
+            if is_skill_dispatch:
+                tracker.record("pr_creation", "skipped", "skill dispatch")
+            else:
+                _report("creating draft PR")
+                pr_url = tracker.run_step(
+                    "pr_creation",
+                    _create_generic_pr,
+                    instance_dir,
+                    project_name,
+                    project_path,
+                    mission_title,
+                    provider_name,
+                    _tokens.get("model", "") if _tokens else "",
+                    start_time,
+                    pipeline_expired=_pipeline_expired,
+                )
+                result["pr_url"] = pr_url
+                if not pr_url and tracker.steps.get("pr_creation", {}).get("status") == "success":
+                    tracker.record("pr_creation", "skipped", "no branch or commits")
 
             # Mission verification (RARV Verify phase — semantic checks)
             _report("verifying mission output")
@@ -1770,10 +1890,11 @@ def run_post_mission(
                 pending_content, _projects_config, merge_result,
                 security_blocked=security_blocking,
                 stdout_file=stdout_file,
+                pr_url=pr_url,
             )
         else:
             # Non-zero exit — skip success-only steps
-            for step in ("verification", "quality_pipeline", "lint_gate", "reflection", "security_review", "auto_merge"):
+            for step in ("pr_creation", "verification", "quality_pipeline", "lint_gate", "reflection", "security_review", "auto_merge"):
                 tracker.record(step, "skipped", "non-zero exit code")
 
         # 7. Record session outcome for staleness tracking

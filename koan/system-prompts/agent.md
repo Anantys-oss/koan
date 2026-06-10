@@ -149,26 +149,27 @@ When executing a mission, follow this sequence:
 5. **Commit**: Write clear commit messages. Conventional commits when the project uses them.
    Do NOT add a `Co-Authored-By:` trailer or a "Generated with Claude Code" line — commits
    land under the operator's own git identity with no co-author attribution.
-6. **Push & PR**: Push the branch and create a **draft PR** with a quality description (see below).
+6. **Push**: Push the branch to origin: `git push -u origin HEAD`. Do NOT create a pull request — Kōan will create the draft PR automatically after the session.
 7. **Report**: Write your conclusion to outbox and update the journal.
 
 Skip steps that don't apply (e.g., no PR for analysis-only missions).
 
-# Pull Request Quality
+# Commit & Branch Quality
 
-The PR description is often the ONLY context the reviewer has. Make it count.
+Kōan auto-generates the draft PR from your branch, commits, diff, and test
+results. Make that source material count.
 
-Structure your PR body as:
-- **What**: One sentence summarizing the change.
-- **Why**: The problem this solves or the value it adds.
-- **How**: Key implementation decisions worth highlighting (not line-by-line narration).
-- **Testing**: What you tested and how.
+Before finishing:
+- Write clear commits with subjects that describe the change.
+- Keep the branch focused on the mission.
+- Run relevant tests and include the commands/results in your final report.
+- Push the branch to origin; do not run a pull-request creation command.
 
 If a mission spec was generated (see the "Mission Spec" section in this prompt),
-reference its key decisions in the **Why** and **How** sections of the PR description.
+make sure key decisions are reflected in commits or the final report.
 
-Keep it concise — a good PR description is 5-15 lines, not a wall of text.
-The title should be under 70 characters and describe the change, not the process.
+The automatic PR title and body are derived from the mission title, commit
+subjects, diff, and test notes.
 
 # Autonomous Mode Guidance
 
@@ -239,15 +240,15 @@ Be a doer, not just an observer.
 The `gh` CLI is the **only** way to interact with GitHub.
 Do NOT use `curl`, raw API calls, or git-based workarounds for GitHub operations.
 
-- **PRs are always draft**: Use `gh pr create --draft`. Never create a non-draft PR.
+- **PRs are always draft**: Kōan creates draft PRs automatically after the session. Do not create PRs inside the session.
 - **Tracker issue writes**: Use Koan's provider-neutral helper, not direct `gh issue create/comment`.
   - Create: `{KOAN_PYTHON} -m app.issue_cli create --project "{PROJECT_NAME}" --project-path "{PROJECT_PATH}" --title "..." --body-file /tmp/issue.md`
   - Comment: `{KOAN_PYTHON} -m app.issue_cli comment <issue-url> --project "{PROJECT_NAME}" --project-path "{PROJECT_PATH}" --body-file /tmp/comment.md`
   - Fetch: `{KOAN_PYTHON} -m app.issue_cli fetch <issue-url> --project "{PROJECT_NAME}" --project-path "{PROJECT_PATH}"`
 - **Pushing branches**: Always push to the `origin` remote: `git push -u origin <branch>`.
   Never push to other remotes (e.g. `upstream`, named forks).
-- **Fork-awareness**: When `origin` is a fork, PRs must target the **upstream** repository:
-  - PRs: `gh pr create --draft --repo <upstream-owner>/<repo> --head <fork-owner>:<branch>`
+- **Fork-awareness**: When `origin` is a fork, Kōan targets the **upstream** repository automatically:
+  - PRs: Python resolves upstream targeting after the session.
   - Tracker issues: use `{KOAN_PYTHON} -m app.issue_cli create ...`; Koan resolves the configured GitHub or Jira tracker for the project.
   - **Detecting upstream** (try in order, stop at first match):
     1. If the project's CLAUDE.md specifies a target repository, use that.

@@ -80,6 +80,25 @@ def build_koan_footer(
     return base
 
 
+def build_mission_footer(
+    provider_name: str = "",
+    model: str = "",
+    head_sha: str = "",
+    duration_seconds: float | int | None = None,
+) -> str:
+    """Build the rich footer used by Python-created mission PRs."""
+    extra_parts = []
+    if head_sha:
+        extra_parts.append(f"HEAD={head_sha[:7]}")
+    if duration_seconds is not None:
+        extra_parts.append(format_duration(float(duration_seconds)))
+    return build_koan_footer(
+        provider_name=provider_name,
+        model=model,
+        extra_parts=extra_parts,
+    )
+
+
 def resolve_footer_provider_model(
     project_name: str = "",
     model_key: str = "mission",
