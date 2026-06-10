@@ -602,7 +602,8 @@ def _run_iteration(
         # causing a retry loop until MAX_CONSECUTIVE_ERRORS triggers pause.
         if mission_title:
             _run._update_mission_in_file(instance, mission_title, failed=True)
-            _run._notify(instance, f"❌ Mission failed: {plan.get('error', mission_title)}")
+            _fail_icon = "🚦" if _run._is_ci_check_mission(mission_title) else "❌"
+            _run._notify(instance, f"{_fail_icon} Mission failed: {plan.get('error', mission_title)}")
             _run._commit_instance(instance)
         else:
             _run._notify(instance, f"⚠️ Iteration error: {plan.get('error', 'Unknown error')}")
@@ -742,7 +743,8 @@ def _run_iteration(
                 log("error", f"Git prep failed for {project_name}: {prep.error}")
                 if mission_title:
                     _run._update_mission_in_file(instance, mission_title, failed=True)
-                    _run._notify(instance, f"❌ [{project_name}] Git prep failed, aborting mission: {mission_title[:60]}")
+                    _gp_icon = "🚦" if _run._is_ci_check_mission(mission_title) else "❌"
+                    _run._notify(instance, f"{_gp_icon} [{project_name}] Git prep failed, aborting mission: {mission_title[:60]}")
                 return False  # abort — branch state is unreliable
             else:
                 log("git", f"Ready on {prep.base_branch} from {prep.remote_used}")
@@ -750,7 +752,8 @@ def _run_iteration(
             log("error", f"Git prep error for {project_name}: {e}\n{traceback.format_exc()}")
             if mission_title:
                 _run._update_mission_in_file(instance, mission_title, failed=True)
-                _run._notify(instance, f"❌ [{project_name}] Git prep error, aborting mission: {mission_title[:60]}")
+                _gp_icon = "🚦" if _run._is_ci_check_mission(mission_title) else "❌"
+                _run._notify(instance, f"{_gp_icon} [{project_name}] Git prep error, aborting mission: {mission_title[:60]}")
             return False  # abort — branch state is unreliable
 
     # --- Mark mission as In Progress ---

@@ -521,6 +521,13 @@ def _notify_raw(instance: str, message: str):
         log("error", f"Raw notification failed: {e}")
 
 
+def _is_ci_check_mission(mission_title: str) -> bool:
+    """Return True if *mission_title* is a /ci_check skill mission."""
+    from app.skill_dispatch import parse_skill_mission
+    _, cmd, _ = parse_skill_mission(mission_title)
+    return cmd == "ci_check"
+
+
 def _notify_mission_end(
     instance: str,
     project_name: str,
@@ -532,7 +539,8 @@ def _notify_mission_end(
     """Send a notification when a mission or autonomous run completes.
 
     Always sends — both on success and failure — so the human always
-    gets a status update. Uses unicode prefix: ✅ for success, ❌ for failure.
+    gets a status update. Uses unicode prefix: ✅ for success, ❌ for failure
+    (🚦 for CI check missions to reduce alarm noise).
     On success, appends a brief journal summary when available.
     """
     if exit_code == 0:
@@ -548,7 +556,7 @@ def _notify_mission_end(
         except Exception as e:
             log("error", f"Mission summary extraction failed: {e}")
     else:
-        prefix = "❌"
+        prefix = "🚦" if _is_ci_check_mission(mission_title) else "❌"
         label = mission_title if mission_title else "Run"
         msg = f"{prefix} [{project_name}] Run {run_num}/{max_runs} — Failed: {label}"
         # Try to attach error context from the journal
