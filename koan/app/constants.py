@@ -66,6 +66,15 @@ JIRA_CHECK_INTERVAL_DEFAULT = 60
 JIRA_MAX_CHECK_INTERVAL_DEFAULT = 300
 
 # ---------------------------------------------------------------------------
+# Pause-mode notification polling  (run.py)
+# ---------------------------------------------------------------------------
+
+# During quota pauses, check inbox (GitHub/Jira) at this interval so
+# missions aren't missed during extended (24h+) quota exhaustion.
+# Configurable via ``pause_notification_interval`` in config.yaml.
+PAUSE_NOTIFICATION_CHECK_INTERVAL_DEFAULT = 4 * 3600  # 4 hours
+
+# ---------------------------------------------------------------------------
 # Burn rate / budget  (iteration_manager.py)
 # ---------------------------------------------------------------------------
 

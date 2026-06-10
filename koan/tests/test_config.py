@@ -639,6 +639,29 @@ class TestGetIntervalSeconds:
             assert get_interval_seconds() == 120
 
 
+# --- get_pause_notification_interval ---
+
+
+class TestGetPauseNotificationInterval:
+    def test_default_four_hours(self):
+        from app.config import get_pause_notification_interval
+
+        with _mock_config({}):
+            assert get_pause_notification_interval() == 4 * 3600
+
+    def test_custom_value(self):
+        from app.config import get_pause_notification_interval
+
+        with _mock_config({"pause_notification_interval": 7200}):
+            assert get_pause_notification_interval() == 7200
+
+    def test_invalid_value_uses_default(self):
+        from app.config import get_pause_notification_interval
+
+        with _mock_config({"pause_notification_interval": "bad"}):
+            assert get_pause_notification_interval() == 4 * 3600
+
+
 # --- get_same_project_stickiness_percent ---
 
 

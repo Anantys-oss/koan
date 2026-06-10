@@ -692,6 +692,47 @@ def _handle_update(koan_root: str, instance: str, count: int) -> bool:
 # Pause mode handler
 # ---------------------------------------------------------------------------
 
+_last_pause_notification_check: float = 0
+
+
+def _check_notifications_during_pause(koan_root: str, instance: str) -> None:
+    """Poll GitHub/Jira notifications while paused due to quota exhaustion.
+
+    Missions discovered during pause are queued to missions.md and will be
+    picked up when the agent resumes. This prevents extended quota pauses
+    (24h+) from silently dropping inbox notifications.
+
+    Respects ``pause_notification_interval`` from config.yaml (default 4h).
+    """
+    global _last_pause_notification_check
+
+    from app.config import get_pause_notification_interval
+    interval = get_pause_notification_interval()
+    now = time.monotonic()
+
+    if now - _last_pause_notification_check < interval:
+        return
+
+    _last_pause_notification_check = now
+    log("pause", "Checking inbox notifications during quota pause...")
+
+    total = 0
+    try:
+        from app.loop_manager import process_github_notifications
+        total += process_github_notifications(koan_root, instance, force=True)
+    except Exception as e:
+        log("error", f"GitHub notification check during pause failed: {e}")
+
+    try:
+        from app.loop_manager import process_jira_notifications
+        total += process_jira_notifications(koan_root, instance, force=True)
+    except Exception as e:
+        log("error", f"Jira notification check during pause failed: {e}")
+
+    if total > 0:
+        log("pause", f"Queued {total} mission(s) from inbox — will execute after resume")
+
+
 def handle_pause(
     koan_root: str, instance: str, max_runs: int,
 ) -> Optional[str]:
@@ -699,6 +740,10 @@ def handle_pause(
 
     When paused, NO autonomous or contemplative work is performed.
     The agent only checks for resume conditions and sleeps.
+
+    During quota pauses, inbox notifications (GitHub/Jira) are polled
+    periodically (default every 4h) so missions aren't missed during
+    extended quota exhaustion.
     """
     timestamp = time.strftime('%H:%M')
     set_status(koan_root, f"Paused ({timestamp})")
@@ -724,6 +769,15 @@ def handle_pause(
         _reset_usage_session(instance)
         return "resume"
 
+    # Determine if this is a quota pause (eligible for notification checks)
+    is_quota_pause = False
+    try:
+        from app.pause_manager import get_pause_state
+        state = get_pause_state(koan_root)
+        is_quota_pause = state is not None and state.is_quota
+    except Exception as e:
+        log("error", f"Pause state check failed: {e}")
+
     # Sleep 5 min in 5s increments — check for resume/stop/restart/shutdown/update
     with protected_phase("Paused — waiting for resume"):
         for _ in range(60):
@@ -740,6 +794,10 @@ def handle_pause(
                 break
             if check_restart(koan_root, target="run"):
                 break
+
+            if is_quota_pause:
+                _check_notifications_during_pause(koan_root, instance)
+
             time.sleep(5)
 
     return None

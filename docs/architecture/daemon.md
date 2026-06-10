@@ -68,7 +68,10 @@ commands can report progress without directly controlling the runner.
 
 ## Runtime Modes And Guards
 
-- Pause mode uses `.koan-pause` state and can be time-bounded.
+- Pause mode uses `.koan-pause` state and can be time-bounded. During quota
+  pauses, inbox notifications (GitHub/Jira) are still polled at a configurable
+  interval (`pause_notification_interval`, default 4h) so missions from
+  @mentions aren't missed during extended quota exhaustion.
 - Focus mode narrows work to a project or focus area.
 - Passive mode keeps Koan alive but blocks execution.
 - Restart signaling uses a file so the bridge can ask the runner to restart.

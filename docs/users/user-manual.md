@@ -960,7 +960,9 @@ You don't need to manage this — Kōan adjusts automatically. Use `/quota` to s
 When the provider reports a hard quota/session limit, Kōan pauses immediately,
 moves the current mission back to Pending, and resumes 10 minutes after the
 reported reset time. If the reset time cannot be parsed, Kōan pauses for 5
-hours.
+hours. During quota pauses, Kōan still polls inbox notifications (GitHub/Jira)
+every 4 hours so missions from @mentions aren't missed during extended
+exhaustion periods. Configure via `pause_notification_interval` in config.yaml.
 
 ### Exploration Mode
 

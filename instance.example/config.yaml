@@ -74,6 +74,12 @@ interval_seconds: 300
 # Useful when you have scheduled recurring tasks that must fire reliably.
 # auto_pause: true
 
+# Pause notification interval — seconds between inbox checks during quota pauses.
+# When quota is exhausted for extended periods (e.g. weekly quota hit mid-week),
+# Kōan still polls GitHub/Jira notifications at this interval so missions from
+# @mentions aren't missed. Only applies to quota pauses, not manual pauses.
+# pause_notification_interval: 14400  # 4 hours
+
 # Notification polling — shared protection for always-on instances.
 # Provider-specific github/jira polling settings below can still override these
 # values, but this shared section is the recommended default. When auto_pause is

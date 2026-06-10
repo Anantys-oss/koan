@@ -468,6 +468,24 @@ def get_startup_reflection() -> bool:
     return bool(config.get("startup_reflection", False))
 
 
+def get_pause_notification_interval() -> int:
+    """Seconds between inbox (GitHub/Jira) checks during quota pauses.
+
+    During extended quota exhaustion (24h+), the agent still needs to
+    monitor notifications so missions aren't missed. This interval
+    controls how often that check happens while paused.
+
+    Config key: ``pause_notification_interval``
+    Default: 14400 (4 hours)
+    """
+    from app.constants import PAUSE_NOTIFICATION_CHECK_INTERVAL_DEFAULT
+    config = _load_config()
+    return _safe_int(
+        config.get("pause_notification_interval"),
+        PAUSE_NOTIFICATION_CHECK_INTERVAL_DEFAULT,
+    )
+
+
 def get_auto_pause() -> bool:
     """Check if auto-pause is enabled in config.yaml.
 
