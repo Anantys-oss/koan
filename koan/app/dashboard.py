@@ -1866,52 +1866,16 @@ def api_nickname_get():
 @app.route("/api/nickname", methods=["PUT"])
 def api_nickname_set():
     """Update the instance nickname in config.yaml, preserving comments."""
-    import io
+    from app.utils import update_config_yaml
 
-    from app.utils import atomic_write
-
-    data = request.get_json(silent=True)
-    if data is None:
+    payload = request.get_json(silent=True)
+    if payload is None:
         return jsonify({"ok": False, "error": "Invalid JSON"}), 400
 
-    nickname = str(data.get("nickname", "")).strip()[:50]
+    nickname = str(payload.get("nickname", "")).strip()[:50]
 
     config_path = INSTANCE_DIR / "config.yaml"
-
-    try:
-        from ruamel.yaml import YAML
-
-        ry = YAML()
-        ry.preserve_quotes = True
-        data = ry.load(config_path.read_text()) if config_path.exists() else {}
-        if data is None:
-            data = {}
-        dashboard_cfg = data.get("dashboard")
-        if not isinstance(dashboard_cfg, dict):
-            dashboard_cfg = {}
-        dashboard_cfg["nickname"] = nickname
-        data["dashboard"] = dashboard_cfg
-        stream = io.StringIO()
-        ry.dump(data, stream)
-        atomic_write(config_path, stream.getvalue())
-        return jsonify({"ok": True, "nickname": nickname})
-    except ImportError:
-        pass
-
-    import yaml
-
-    config = {}
-    if config_path.exists():
-        with open(config_path) as f:
-            config = yaml.safe_load(f) or {}
-
-    dashboard_cfg = config.get("dashboard")
-    if not isinstance(dashboard_cfg, dict):
-        dashboard_cfg = {}
-    dashboard_cfg["nickname"] = nickname
-    config["dashboard"] = dashboard_cfg
-
-    atomic_write(config_path, yaml.dump(config, default_flow_style=False, allow_unicode=True))
+    update_config_yaml(config_path, ["dashboard", "nickname"], nickname)
     return jsonify({"ok": True, "nickname": nickname})
 
 

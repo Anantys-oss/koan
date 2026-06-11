@@ -352,6 +352,64 @@ def atomic_write_json(path: Path, data, indent=None):
     atomic_write(path, json.dumps(data, ensure_ascii=False, indent=indent))
 
 
+def update_config_yaml(config_path: Path, keys, value) -> None:
+    """Set a nested key in a YAML config file, preserving comments.
+
+    ``keys`` is a list of nested keys (e.g. ``["models", "claude"]``) or a
+    single dotted string (e.g. ``"dashboard.nickname"``). Intermediate dicts
+    are created as needed.
+
+    Uses ruamel.yaml to round-trip the file so user comments and formatting
+    survive the edit; falls back to plain pyyaml when ruamel is unavailable.
+    Both paths write atomically via :func:`atomic_write`.
+
+    This is the single shared implementation for comment-preserving config
+    edits; callers in onboarding, dashboard, and tui_dashboard delegate here.
+    """
+    import io
+
+    if isinstance(keys, str):
+        keys = keys.split(".")
+
+    # Isolate the optional dependency check so operational errors raised by
+    # ruamel internals propagate instead of being silently swallowed into the
+    # pyyaml fallback.
+    try:
+        from ruamel.yaml import YAML
+        _has_ruamel = True
+    except ImportError:
+        _has_ruamel = False
+
+    if _has_ruamel:
+        ry = YAML()
+        ry.preserve_quotes = True
+        data = ry.load(config_path.read_text()) if config_path.exists() else {}
+        if data is None:
+            data = {}
+        node = data
+        for k in keys[:-1]:
+            node = node.setdefault(k, {})
+        node[keys[-1]] = value
+        stream = io.StringIO()
+        ry.dump(data, stream)
+        atomic_write(config_path, stream.getvalue())
+        return
+
+    try:
+        data = yaml.safe_load(config_path.read_text()) if config_path.exists() else {}
+        data = data or {}
+    except yaml.YAMLError as e:
+        print(f"[utils] update_config_yaml: invalid YAML in {config_path}: {e}", file=sys.stderr)
+        return
+
+    node = data
+    for k in keys[:-1]:
+        node = node.setdefault(k, {})
+    node[keys[-1]] = value
+
+    atomic_write(config_path, yaml.safe_dump(data, sort_keys=False))
+
+
 def truncate_text(text: str, max_chars: int) -> str:
     """Truncate text with indicator."""
     if len(text) <= max_chars:

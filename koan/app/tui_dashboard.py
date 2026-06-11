@@ -164,35 +164,12 @@ def set_config_value(koan_root: Path, dotted_key: str, value) -> None:
 
     Uses ruamel.yaml to round-trip the file so user comments and formatting
     survive the edit; falls back to pyyaml when ruamel is unavailable.
+    Delegates to the shared :func:`app.utils.update_config_yaml`.
     """
-    from app.utils import atomic_write
+    from app.utils import update_config_yaml
 
     path = Path(koan_root) / "instance" / "config.yaml"
-
-    try:
-        import io
-
-        from ruamel.yaml import YAML
-
-        ry = YAML()
-        ry.preserve_quotes = True
-        data = ry.load(path.read_text()) if path.exists() else {}
-        if data is None:
-            data = {}
-        _set_nested_key(data, dotted_key, value)
-        stream = io.StringIO()
-        ry.dump(data, stream)
-        atomic_write(path, stream.getvalue())
-        return
-    except ImportError:
-        pass
-
-    import yaml
-
-    data = yaml.safe_load(path.read_text()) if path.exists() else {}
-    data = data or {}
-    _set_nested_key(data, dotted_key, value)
-    atomic_write(path, yaml.safe_dump(data, sort_keys=False))
+    update_config_yaml(path, dotted_key, value)
 
 
 class EditValueScreen(ModalScreen):

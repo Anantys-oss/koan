@@ -722,44 +722,12 @@ def _update_config_yaml_preserving_comments(
     """Set a nested key in config_file while preserving comments and formatting.
 
     Uses ruamel.yaml to round-trip the file; falls back to plain pyyaml
-    when ruamel is unavailable.
+    when ruamel is unavailable. Delegates to the shared
+    :func:`app.utils.update_config_yaml` implementation.
     """
-    import io
+    from app.utils import update_config_yaml
 
-    from app.utils import atomic_write
-
-    try:
-        from ruamel.yaml import YAML
-
-        ry = YAML()
-        ry.preserve_quotes = True
-        data = ry.load(config_file.read_text()) if config_file.exists() else {}
-        if data is None:
-            data = {}
-        node = data
-        for k in keys[:-1]:
-            node = node.setdefault(k, {})
-        node[keys[-1]] = value
-        stream = io.StringIO()
-        ry.dump(data, stream)
-        atomic_write(config_file, stream.getvalue())
-        return
-    except ImportError:
-        pass
-
-    import yaml
-
-    try:
-        data = yaml.safe_load(config_file.read_text()) or {}
-    except yaml.YAMLError:
-        return
-
-    node = data
-    for k in keys[:-1]:
-        node = node.setdefault(k, {})
-    node[keys[-1]] = value
-
-    config_file.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
+    update_config_yaml(config_file, keys, value)
 
 
 def _update_config_yaml_models(provider: str, models: dict[str, str]) -> None:
