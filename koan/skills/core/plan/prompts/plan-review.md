@@ -13,6 +13,7 @@ Evaluate the plan against these objective criteria only:
 3. **Chunk size**: Each phase should be implementable without touching more than ~1000 lines of code. Phases that say "rewrite the entire X system" without decomposition are too large.
 4. **Scope discipline**: The plan must not add features or refactor code unrelated to the stated idea. Look for scope creep.
 5. **Actionable steps**: Phases should use checkbox (`- [ ]`) steps that are each one concrete action. Steps that change code should include code blocks showing the actual change. Vague steps like "update the module" without showing what to change are not actionable.
+   - **Collapsible code blocks**: Every code block inside a step must be wrapped in a `<details><summary>…</summary>` element with a blank line after the `<summary>` and before the closing `</details>` (required for GitHub to render the fenced code). A bare code block not wrapped in `<details>` is an issue.
 6. **Testing in steps**: Test code should appear as concrete steps within phases (test-first pattern), not just as a separate "Testing Strategy" section at the bottom. Each phase that adds behavior should have a test step with actual test code.
 7. **Verification commands**: Steps that verify behavior must include the exact command to run and the expected outcome, not just "run tests".
 8. **Open questions are real**: Open questions should be genuine unknowns, not hedging or disclaimers. "We might want to consider..." is hedging, not a question.

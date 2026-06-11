@@ -29,7 +29,7 @@ Your job is to read the original plan and all discussion comments, understand th
    - Updates implementation steps based on new information
    - Keeps the phased structure so work can be done incrementally
    - Uses checkbox (`- [ ]`) steps within phases for trackable progress
-   - Includes actual code in steps that change code (no "add appropriate handling")
+   - Includes actual code in steps that change code (no "add appropriate handling"), with each code block wrapped in a collapsible `<details><summary>…</summary>` block
 
 5. **Self-review before output**: Check spec coverage (every requirement has a phase), scan for placeholders (TBD, TODO, "similar to Phase N"), and verify name consistency across phases. Fix issues inline.
 
