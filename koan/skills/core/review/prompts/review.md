@@ -46,8 +46,9 @@ Analyze the code changes and produce a structured review. Focus on:
 2. **Security** — Injection, authentication gaps, data exposure, unsafe operations
 3. **Architecture** — Design issues, coupling, abstraction level, naming
 4. **Maintainability** — Readability, complexity, test coverage gaps
-5. **YAGNI** — Code added without clear callers or usage. If a function, class, or
-   parameter is introduced but never used within the diff, flag it as a suggestion.
+5. **YAGNI** — Code added without clear callers or usage. Grep the codebase for
+   actual callers before flagging — many legitimate additions (skill handlers,
+   CLI entrypoints, config-wired callbacks) have no same-diff caller.
 
 ### Verification Discipline
 
