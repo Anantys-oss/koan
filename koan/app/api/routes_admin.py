@@ -6,6 +6,7 @@ from pathlib import Path
 from flask import Blueprint, current_app, jsonify, request
 
 from app.api.auth import require_token
+from app.utils import signal_lock
 
 bp = Blueprint("admin", __name__)
 
@@ -103,7 +104,8 @@ def restart():
     from app.signals import RESTART_FILE
     restart_file = _koan_root() / RESTART_FILE
     try:
-        restart_file.touch()
+        with signal_lock(restart_file):
+            restart_file.touch()
     except OSError as e:
         return jsonify({"error": {"code": "signal_error", "message": str(e)}}), 500
     return jsonify({"status": "restart_signaled"})
@@ -115,7 +117,8 @@ def shutdown():
     from app.signals import STOP_FILE
     stop_file = _koan_root() / STOP_FILE
     try:
-        stop_file.touch()
+        with signal_lock(stop_file):
+            stop_file.touch()
     except OSError as e:
         return jsonify({"error": {"code": "signal_error", "message": str(e)}}), 500
     return jsonify({"status": "shutdown_signaled"})
@@ -132,7 +135,9 @@ def update():
         result = pull_upstream(_koan_root())
         # Signal restart after update
         from app.signals import RESTART_FILE
-        (_koan_root() / RESTART_FILE).touch()
+        restart_file = _koan_root() / RESTART_FILE
+        with signal_lock(restart_file):
+            restart_file.touch()
         return jsonify({"status": "updated", "result": str(result)})
     except Exception as e:
         return jsonify({"error": {"code": "update_error", "message": str(e)}}), 500

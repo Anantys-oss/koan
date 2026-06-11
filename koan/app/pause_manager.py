@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from app.run_log import log_safe
 from app.signals import PAUSE_FILE
 
 # Default cooldown for non-quota pauses (max_runs, manual)
@@ -82,6 +83,36 @@ def is_paused(koan_root: str) -> bool:
     return os.path.isfile(os.path.join(koan_root, PAUSE_FILE))
 
 
+def _parse_pause_content(content: str) -> Optional[PauseState]:
+    """Parse pause state from file content.
+
+    Returns None for empty or unparseable content.
+    """
+    if not content:
+        log_safe("warning", "Empty pause file content")
+        return None
+
+    lines = content.splitlines()
+    reason = lines[0].strip()
+    if not reason:
+        log_safe("warning", "Invalid pause file content: missing reason")
+        return None
+
+    timestamp = 0
+    display = ""
+
+    if len(lines) >= 2:
+        try:
+            timestamp = int(lines[1].strip())
+        except (ValueError, IndexError):
+            timestamp = 0
+
+    if len(lines) >= 3:
+        display = lines[2].strip()
+
+    return PauseState(reason=reason, timestamp=timestamp, display=display)
+
+
 def get_pause_state(koan_root: str) -> Optional[PauseState]:
     """
     Read the current pause state from .koan-pause.
@@ -98,28 +129,7 @@ def get_pause_state(koan_root: str) -> Optional[PauseState]:
     except OSError:
         return None
 
-    if not content:
-        # Empty .koan-pause (legacy or touch-created) — paused but no reason.
-        return None
-
-    lines = content.splitlines()
-    reason = lines[0].strip()
-    if not reason:
-        return None
-
-    timestamp = 0
-    display = ""
-
-    if len(lines) >= 2:
-        try:
-            timestamp = int(lines[1].strip())
-        except (ValueError, IndexError):
-            timestamp = 0
-
-    if len(lines) >= 3:
-        display = lines[2].strip()
-
-    return PauseState(reason=reason, timestamp=timestamp, display=display)
+    return _parse_pause_content(content)
 
 
 def should_auto_resume(state: PauseState, now: Optional[int] = None) -> bool:
@@ -148,6 +158,15 @@ def should_auto_resume(state: PauseState, now: Optional[int] = None) -> bool:
         return elapsed >= DEFAULT_COOLDOWN_SECONDS
 
 
+def _remove_pause_unlocked(koan_root: str) -> None:
+    """Remove the pause file without acquiring the signal lock.
+
+    Callers must hold the signal lock around this operation.
+    """
+    with contextlib.suppress(FileNotFoundError):
+        os.remove(os.path.join(koan_root, PAUSE_FILE))
+
+
 def create_pause(
     koan_root: str,
     reason: str,
@@ -164,25 +183,33 @@ def create_pause(
                    Defaults to current time.
         display: Human-readable display info
     """
-    from app.utils import atomic_write
+    from app.utils import atomic_write, signal_lock
 
     if timestamp is None:
         timestamp = int(time.time())
 
     pause_file = Path(koan_root) / PAUSE_FILE
     content = f"{reason}\n{timestamp}\n{display}\n"
-    atomic_write(pause_file, content)
+    with signal_lock(pause_file):
+        atomic_write(pause_file, content)
 
 
 def remove_pause(koan_root: str) -> None:
     """Remove the pause file (single atomic delete)."""
-    with contextlib.suppress(FileNotFoundError):
-        os.remove(os.path.join(koan_root, PAUSE_FILE))
+    from app.utils import signal_lock
+
+    pause_file = Path(koan_root) / PAUSE_FILE
+    with signal_lock(pause_file):
+        _remove_pause_unlocked(koan_root)
 
 
 def check_and_resume(koan_root: str) -> Optional[str]:
     """
     Check if paused and if auto-resume conditions are met.
+
+    Uses an advisory lock so the read-decide-remove sequence is atomic,
+    preventing a race where another process overwrites the pause file
+    (e.g. with a manual pause) between our read and our remove.
 
     Returns:
         A resume message if auto-resumed, None if still paused or not paused.
@@ -191,17 +218,29 @@ def check_and_resume(koan_root: str) -> Optional[str]:
     Side effects:
         Removes the pause file if auto-resuming.
     """
-    state = get_pause_state(koan_root)
-    if state is None:
-        # Empty or unparseable .koan-pause — stay paused (safe default).
-        # The user can always /resume manually.
-        return None
+    from app.utils import signal_lock
 
-    if not should_auto_resume(state):
-        return None
+    pause_file = Path(koan_root) / PAUSE_FILE
+    with signal_lock(pause_file):
+        if not pause_file.is_file():
+            return None
 
-    # Auto-resume: remove pause file
-    remove_pause(koan_root)
+        try:
+            content = pause_file.read_text().strip()
+        except OSError:
+            return None
+
+        state = _parse_pause_content(content)
+        if state is None:
+            # Empty or unparseable .koan-pause — stay paused (safe default).
+            # The user can always /resume manually.
+            return None
+
+        if not should_auto_resume(state):
+            return None
+
+        # Auto-resume: remove pause file under lock
+        _remove_pause_unlocked(koan_root)
 
     if state.is_quota:
         return f"quota reset time reached ({state.display})"

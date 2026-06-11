@@ -28,6 +28,7 @@ from app.utils import (
     detect_project_from_text,
     get_known_projects,
     insert_pending_mission,
+    signal_lock,
     is_known_project,
 )
 
@@ -95,7 +96,9 @@ def handle_command(text: str):
     # --- Core hardcoded commands (safety-critical / bootstrap) ---
 
     if cmd == "/stop":
-        atomic_write(KOAN_ROOT / STOP_FILE, "STOP")
+        stop_file = KOAN_ROOT / STOP_FILE
+        with signal_lock(stop_file):
+            atomic_write(stop_file, "STOP")
         if _has_in_progress_mission():
             send_telegram("⏹️ Stop requested. Current mission will complete, then Kōan will stop.")
         else:
@@ -103,7 +106,9 @@ def handle_command(text: str):
         return
 
     if cmd in ("/update", "/upgrade"):
-        atomic_write(KOAN_ROOT / CYCLE_FILE, "CYCLE")
+        cycle_file = KOAN_ROOT / CYCLE_FILE
+        with signal_lock(cycle_file):
+            atomic_write(cycle_file, "CYCLE")
         if _has_in_progress_mission():
             send_telegram("🔄 Update requested. Current mission will complete, then Kōan will update and restart.")
         else:
@@ -792,21 +797,29 @@ def handle_resume():
     handle_start_on_pause() has run — and the pause file gets
     (re-)created after /resume removed it.
     """
-    from app.pause_manager import get_pause_state, remove_pause
+    from app.pause_manager import get_pause_state, _remove_pause_unlocked
 
     pause_file = KOAN_ROOT / PAUSE_FILE
     quota_file = KOAN_ROOT / QUOTA_RESET_FILE  # Legacy, kept for compat
 
-    if pause_file.exists():
-        # Read pause reason and reset info for better messaging
-        state = get_pause_state(str(KOAN_ROOT))
-        reason = state.reason if state else "manual"
-        reset_timestamp = state.timestamp if state and state.timestamp else None
-        reset_display = state.display if state else ""
+    # Capture pause state under lock, then do slow I/O outside it.
+    was_paused = False
+    reason = "manual"
+    reset_timestamp = None
+    reset_display = ""
 
-        remove_pause(str(KOAN_ROOT))
-        _write_skip_start_pause()
+    with signal_lock(pause_file):
+        if pause_file.exists():
+            state = get_pause_state(str(KOAN_ROOT))
+            reason = state.reason if state else "manual"
+            reset_timestamp = state.timestamp if state and state.timestamp else None
+            reset_display = state.display if state else ""
 
+            _remove_pause_unlocked(str(KOAN_ROOT))
+            _write_skip_start_pause()
+            was_paused = True
+
+    if was_paused:
         if reason == "quota":
             # Reset internal session counters so the estimator doesn't
             # immediately re-pause with stale high usage percentage

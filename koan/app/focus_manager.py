@@ -19,6 +19,8 @@ When focus mode is active:
 import json
 import sys
 import time
+
+from app.run_log import log_safe
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -67,6 +69,22 @@ def _focus_path(koan_root: str) -> Path:
     return Path(koan_root) / FOCUS_FILE
 
 
+def _parse_focus_data(data: dict) -> Optional[FocusState]:
+    """Parse raw dict into FocusState.
+
+    Returns None if the data is invalid.
+    """
+    try:
+        return FocusState(
+            activated_at=int(data.get("activated_at", 0)),
+            duration=int(data.get("duration", DEFAULT_FOCUS_DURATION)),
+            reason=str(data.get("reason", "")),
+        )
+    except (TypeError, ValueError):
+        log_safe("warning", f"Corrupted focus data: {data}")
+        return None
+
+
 def get_focus_state(koan_root: str) -> Optional[FocusState]:
     """Read the current focus state from .koan-focus.
 
@@ -81,14 +99,15 @@ def get_focus_state(koan_root: str) -> Optional[FocusState]:
     except (OSError, json.JSONDecodeError):
         return None
 
-    try:
-        return FocusState(
-            activated_at=int(data.get("activated_at", 0)),
-            duration=int(data.get("duration", DEFAULT_FOCUS_DURATION)),
-            reason=str(data.get("reason", "")),
-        )
-    except (TypeError, ValueError):
-        return None
+    return _parse_focus_data(data)
+
+
+def _remove_focus_unlocked(koan_root: str) -> None:
+    """Remove the focus file without acquiring the signal lock.
+
+    Callers must hold the signal lock around this operation.
+    """
+    _focus_path(koan_root).unlink(missing_ok=True)
 
 
 def create_focus(
@@ -114,30 +133,54 @@ def create_focus(
         "reason": state.reason,
     }
 
-    from app.utils import atomic_write
+    from app.utils import atomic_write, signal_lock
 
-    atomic_write(_focus_path(koan_root), json.dumps(data))
+    focus_file = _focus_path(koan_root)
+    with signal_lock(focus_file):
+        atomic_write(focus_file, json.dumps(data))
 
     return state
 
 
 def remove_focus(koan_root: str) -> None:
     """Deactivate focus mode."""
-    _focus_path(koan_root).unlink(missing_ok=True)
+    from app.utils import signal_lock
+
+    focus_file = _focus_path(koan_root)
+    with signal_lock(focus_file):
+        _remove_focus_unlocked(koan_root)
 
 
 def check_focus(koan_root: str) -> Optional[FocusState]:
     """Check focus state, auto-removing if expired.
 
+    Uses an advisory lock so the read-decide-remove sequence is atomic,
+    preventing a race where another process overwrites the focus file
+    between our read and our remove.
+
     Returns the active FocusState, or None if not focused or expired.
     """
-    state = get_focus_state(koan_root)
-    if state is None:
-        return None
-    if state.is_expired():
-        remove_focus(koan_root)
-        return None
-    return state
+    from app.utils import signal_lock
+
+    focus_file = _focus_path(koan_root)
+    with signal_lock(focus_file):
+        if not focus_file.is_file():
+            return None
+
+        try:
+            data = json.loads(focus_file.read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+
+        state = _parse_focus_data(data)
+        if state is None:
+            return None
+
+        if state.is_expired():
+            _remove_focus_unlocked(koan_root)
+            return None
+
+        return state
 
 
 def parse_duration(text: str) -> Optional[int]:

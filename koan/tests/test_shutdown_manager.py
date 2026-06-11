@@ -203,3 +203,35 @@ class TestShutdownLifecycle:
 
         # This one should be honored
         assert is_shutdown_requested(str(tmp_path), startup_time) is True
+
+
+class TestSignalLockUsage:
+    """Test that shutdown operations use signal_lock for cross-process safety."""
+
+    def test_request_shutdown_uses_signal_lock(self, tmp_path):
+        from unittest.mock import patch
+
+        from app.shutdown_manager import request_shutdown
+
+        with patch("app.utils.signal_lock") as mock_lock:
+            request_shutdown(str(tmp_path))
+            assert mock_lock.call_count == 1
+            lock_path = str(mock_lock.call_args_list[0][0][0])
+            assert lock_path.endswith(".koan-shutdown")
+
+    def test_clear_shutdown_uses_signal_lock(self, tmp_path):
+        from unittest.mock import patch
+
+        from app.shutdown_manager import clear_shutdown
+
+        with patch("app.utils.signal_lock") as mock_lock:
+            clear_shutdown(str(tmp_path))
+            assert mock_lock.call_count == 1
+            lock_path = str(mock_lock.call_args_list[0][0][0])
+            assert lock_path.endswith(".koan-shutdown")
+
+    def test_lock_file_created_by_request_shutdown(self, tmp_path):
+        from app.shutdown_manager import request_shutdown
+
+        request_shutdown(str(tmp_path))
+        assert (tmp_path / ".koan-shutdown").exists()
