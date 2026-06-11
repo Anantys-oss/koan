@@ -188,12 +188,13 @@ def run_implement(
     # Detect whether real work landed: commits exist on a feature branch.
     # Claude sometimes checks out the base branch after pushing, so also
     # check the expected feature branch when HEAD is on base.
-    def _work_landed() -> bool:
+    # Returns the branch name where work was found, or None.
+    def _work_landed() -> Optional[str]:
         branch = get_current_branch(project_path)
         on_base = branch in (effective_base_branch, "main", "master")
         commits = get_commit_subjects(project_path, base_branch=effective_base_branch)
         if bool(commits) and not on_base:
-            return True
+            return branch
         if on_base:
             from app.config import get_branch_prefix
             from app.git_utils import get_commit_subjects as git_commits
@@ -203,10 +204,11 @@ def run_implement(
                 base_branch=effective_base_branch,
                 branch=expected,
             ):
-                return True
-        return False
+                return expected
+        return None
 
-    if not output or not _work_landed():
+    landed_branch = _work_landed() if output else None
+    if not output or not landed_branch:
         logger.info(
             "[implement] First pass produced no committed changes — running escalated retry"
         )
@@ -228,7 +230,8 @@ def run_implement(
             logger.warning("[implement] Escalated retry failed: %s", e)
             output = ""
 
-        if not output or not _work_landed():
+        landed_branch = _work_landed() if output else None
+        if not output or not landed_branch:
             msg = (
                 f"⚠️ /implement could not auto-implement issue {label}{context_label} "
                 "after two passes. The plan may need a human review before retrying."
@@ -236,6 +239,17 @@ def run_implement(
             notify_fn(msg)
             return False, (
                 f"No committed changes after two passes for {label}{context_label}."
+            )
+
+    # If work landed on a feature branch but HEAD is still on base, check it out
+    # so downstream PR submission and notifications see the correct branch.
+    current = get_current_branch(project_path)
+    if landed_branch and landed_branch != current:
+        from app.git_utils import run_git
+        rc, _, stderr = run_git("checkout", landed_branch, cwd=project_path)
+        if rc != 0:
+            logger.warning(
+                "[implement] Could not checkout %s: %s", landed_branch, stderr,
             )
 
     # Post-implementation: submit draft PR (only for GitHub issues with repo info)

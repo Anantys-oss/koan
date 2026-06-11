@@ -1590,9 +1590,12 @@ class TestEscalatedRetry:
         assert "#42" in all_notified
 
     def test_no_retry_when_feature_branch_has_commits_but_head_is_main(self):
-        """Claude checked out main after pushing — feature branch detected, no retry."""
+        """Claude checked out main after pushing — feature branch detected,
+        no retry, and runner checks out the feature branch for PR submission."""
         notify = MagicMock()
         exec_mock = MagicMock(return_value="Done")
+        checkout_mock = MagicMock(return_value=(0, "", ""))
+        submit_mock = MagicMock(return_value="https://github.com/o/r/pull/99")
 
         with patch(f"{_IMPL_MODULE}.fetch_issue",
                     return_value=_github_issue(title="Title", body=self._BODY)), \
@@ -1603,7 +1606,8 @@ class TestEscalatedRetry:
              patch("app.config.get_branch_prefix", return_value="koan/"), \
              patch("app.git_utils.get_commit_subjects",
                     return_value=["feat: add X"]), \
-             patch(f"{_IMPL_MODULE}._submit_implement_pr", return_value=None):
+             patch("app.git_utils.run_git", checkout_mock), \
+             patch(f"{_IMPL_MODULE}._submit_implement_pr", submit_mock):
             ok, _ = run_implement(
                 "/project",
                 "https://github.com/o/r/issues/42",
@@ -1612,6 +1616,9 @@ class TestEscalatedRetry:
 
         assert ok
         assert exec_mock.call_count == 1
+        checkout_mock.assert_called_once_with(
+            "checkout", "koan/implement-42", cwd="/project",
+        )
 
     def test_escalated_retry_injects_escalation_preamble_into_context(self):
         """_execute_implementation with escalate=True prepends the retry-context fragment."""
