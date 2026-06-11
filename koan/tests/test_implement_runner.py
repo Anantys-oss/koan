@@ -1513,10 +1513,12 @@ class TestEscalatedRetry:
         exec_mock = MagicMock(return_value="Done")
         # _work_landed() is called twice (once per pass).
         # Each call reads get_current_branch then get_commit_subjects.
-        # Pass 1: branch=main, commits=[] → False
+        # Pass 1: branch=main, commits=[] → False (feature branch check also
+        #   runs but git_utils.get_commit_subjects is unpatched → returns [])
         # Pass 2 (after retry): branch=koan/implement-42, commits=["feat"] → True
-        # Final get_current_branch call for the summary notification = 3rd call.
-        branch_side_effect = ["main", "koan/implement-42", "koan/implement-42"]
+        # Post-retry checkout check (line 246) = 3rd call.
+        # Final get_current_branch call for the summary notification = 4th call.
+        branch_side_effect = ["main", "koan/implement-42", "koan/implement-42", "koan/implement-42"]
         commit_subjects_side_effect = [[], ["feat: add X"]]
 
         with patch(f"{_IMPL_MODULE}.fetch_issue",
@@ -1616,7 +1618,7 @@ class TestEscalatedRetry:
 
         assert ok
         assert exec_mock.call_count == 1
-        checkout_mock.assert_called_once_with(
+        checkout_mock.assert_any_call(
             "checkout", "koan/implement-42", cwd="/project",
         )
 
