@@ -502,6 +502,26 @@ class TestEditMission:
         )
         assert resp.status_code == 422
 
+    def test_edit_duplicate_pending_returns_409(self, api_client, instance_dir):
+        resp = api_client.post(
+            "/v1/missions", json={"text": "Duplicate task"}, headers=_AUTH
+        )
+        mission_id = resp.get_json()["id"]
+
+        content = (instance_dir / "missions.md").read_text()
+        content = content.replace(
+            "## In Progress", "- Duplicate task\n\n## In Progress"
+        )
+        (instance_dir / "missions.md").write_text(content)
+
+        resp = api_client.patch(
+            f"/v1/missions/{mission_id}",
+            json={"text": "New text"},
+            headers=_AUTH,
+        )
+        assert resp.status_code == 409
+        assert "Ambiguous" in resp.get_json()["error"]["message"]
+
 
 class TestReorderMission:
     def test_reorder_returns_200(self, api_client, instance_dir):
@@ -620,3 +640,23 @@ class TestReorderMission:
             headers=_AUTH,
         )
         assert resp.status_code == 422
+
+    def test_reorder_duplicate_pending_returns_409(self, api_client, instance_dir):
+        resp = api_client.post(
+            "/v1/missions", json={"text": "Dup reorder"}, headers=_AUTH
+        )
+        mission_id = resp.get_json()["id"]
+
+        content = (instance_dir / "missions.md").read_text()
+        content = content.replace(
+            "## In Progress", "- Dup reorder\n\n## In Progress"
+        )
+        (instance_dir / "missions.md").write_text(content)
+
+        resp = api_client.post(
+            "/v1/missions/reorder",
+            json={"mission_id": mission_id, "target_position": 1},
+            headers=_AUTH,
+        )
+        assert resp.status_code == 409
+        assert "Ambiguous" in resp.get_json()["error"]["message"]

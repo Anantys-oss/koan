@@ -68,13 +68,21 @@ def _find_pending_position(content: str, stored_text: str):
 
     Accepts raw missions.md content so callers can use it inside
     modify_missions_file() transforms (avoids TOCTOU races).
+    Returns position when exactly one match exists; raises ValueError
+    on duplicate matches to avoid mutating the wrong item.
     """
     from app.missions import parse_sections
     sections = parse_sections(content)
     needle = _normalize_for_match(stored_text)
-    for i, item in enumerate(sections.get("pending", []), 1):
-        if _normalize_for_match(item) == needle:
-            return i
+    matches = [
+        i
+        for i, item in enumerate(sections.get("pending", []), 1)
+        if _normalize_for_match(item) == needle
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise ValueError("Ambiguous match: multiple pending missions with identical text")
     return None
 
 
@@ -160,7 +168,7 @@ def reorder_mission_route():
         modify_missions_file(_missions_file(), transform)
     except ValueError as e:
         msg = str(e)
-        if "not found in pending" in msg:
+        if "not found in pending" in msg or "Ambiguous match" in msg:
             return jsonify({"error": {"code": "conflict", "message": msg}}), 409
         return jsonify({"error": {"code": "invalid_request", "message": msg}}), 422
 
@@ -265,7 +273,7 @@ def edit_mission(mission_id: str):
         modify_missions_file(_missions_file(), transform)
     except ValueError as e:
         msg = str(e)
-        if "not found in pending" in msg:
+        if "not found in pending" in msg or "Ambiguous match" in msg:
             return jsonify({"error": {"code": "conflict", "message": msg}}), 409
         return jsonify({"error": {"code": "invalid_request", "message": msg}}), 422
 
