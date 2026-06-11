@@ -7,11 +7,13 @@ from flask import Blueprint, current_app, jsonify, request
 
 from app.api.auth import require_token
 from app.api.mission_index import (
+    _normalize_for_match,
     cancel_mission,
     get_mission,
     list_missions,
     record_mission,
     reconcile,
+    update_mission_text,
 )
 
 bp = Blueprint("missions", __name__)
@@ -61,6 +63,18 @@ def _build_entry(text: str, project: str | None) -> str:
     return f"- {text}"
 
 
+def _find_pending_position(missions_file: Path, stored_text: str):
+    """Find 1-indexed position of a mission in the pending section."""
+    from app.missions import parse_sections
+    content = missions_file.read_text() if missions_file.exists() else ""
+    sections = parse_sections(content)
+    needle = _normalize_for_match(stored_text)
+    for i, item in enumerate(sections.get("pending", []), 1):
+        if _normalize_for_match(item) == needle:
+            return i
+    return None
+
+
 @bp.route("/v1/missions", methods=["GET"])
 @require_token
 def list_missions_route():
@@ -94,6 +108,58 @@ def create_mission():
     return jsonify({"id": mission_id, "status": "pending"}), 202
 
 
+@bp.route("/v1/missions/reorder", methods=["POST"])
+@require_token
+def reorder_mission_route():
+    data = request.get_json(silent=True) or {}
+    mission_id = data.get("mission_id", "").strip() if isinstance(data.get("mission_id"), str) else ""
+    target_position = data.get("target_position")
+
+    if not mission_id or target_position is None:
+        return jsonify(
+            {"error": {"code": "invalid_request", "message": "'mission_id' and 'target_position' are required"}}
+        ), 422
+
+    try:
+        target_position = int(target_position)
+    except (TypeError, ValueError):
+        return jsonify(
+            {"error": {"code": "invalid_request", "message": "'target_position' must be an integer"}}
+        ), 422
+
+    rec = get_mission(_instance_dir(), mission_id)
+    if rec is None:
+        return jsonify({"error": {"code": "not_found", "message": "Mission not found"}}), 404
+
+    rec = reconcile(_instance_dir(), _missions_file(), mission_id)
+    status = rec.get("status", "pending")
+
+    if status != "pending":
+        return jsonify(
+            {"error": {"code": "conflict", "message": f"Cannot reorder mission in status '{status}'"}}
+        ), 409
+
+    position = _find_pending_position(_missions_file(), rec.get("text", ""))
+    if position is None:
+        return jsonify(
+            {"error": {"code": "conflict", "message": "Mission not found in pending queue"}}
+        ), 409
+
+    from app.missions import reorder_mission
+    from app.utils import modify_missions_file
+
+    def transform(content):
+        new_content, _ = reorder_mission(content, position, target_position)
+        return new_content
+
+    try:
+        modify_missions_file(_missions_file(), transform)
+    except ValueError as e:
+        return jsonify({"error": {"code": "invalid_request", "message": str(e)}}), 422
+
+    return jsonify({"id": mission_id, "status": "pending"}), 200
+
+
 @bp.route("/v1/missions/<mission_id>", methods=["GET"])
 @require_token
 def get_mission_route(mission_id: str):
@@ -122,7 +188,6 @@ def delete_mission(mission_id: str):
 
     # Remove from missions.md
     stored_text = rec.get("text", "")
-    from app.api.mission_index import _normalize_for_match
     needle = _normalize_for_match(stored_text)
 
     def _remove(content: str) -> str:
@@ -139,3 +204,56 @@ def delete_mission(mission_id: str):
 
     cancel_mission(_instance_dir(), mission_id)
     return jsonify({"id": mission_id, "status": "removed"}), 200
+
+
+@bp.route("/v1/missions/<mission_id>", methods=["PATCH"])
+@require_token
+def edit_mission(mission_id: str):
+    rec = get_mission(_instance_dir(), mission_id)
+    if rec is None:
+        return jsonify({"error": {"code": "not_found", "message": "Mission not found"}}), 404
+
+    rec = reconcile(_instance_dir(), _missions_file(), mission_id)
+    status = rec.get("status", "pending")
+
+    if status != "pending":
+        return jsonify(
+            {"error": {"code": "conflict", "message": f"Cannot edit mission in status '{status}'"}}
+        ), 409
+
+    data = request.get_json(silent=True) or {}
+    new_text = data.get("text", "").strip()
+    if not new_text:
+        return jsonify(
+            {"error": {"code": "invalid_request", "message": "'text' is required and cannot be empty"}}
+        ), 422
+
+    from app.missions import sanitize_mission_text
+    new_text = sanitize_mission_text(new_text)
+    if not new_text:
+        return jsonify(
+            {"error": {"code": "invalid_request", "message": "Mission text cannot be empty after sanitization"}}
+        ), 422
+
+    position = _find_pending_position(_missions_file(), rec.get("text", ""))
+    if position is None:
+        return jsonify(
+            {"error": {"code": "conflict", "message": "Mission not found in pending queue"}}
+        ), 409
+
+    from app.missions import edit_pending_mission
+    from app.utils import modify_missions_file
+
+    def transform(content):
+        new_content, _ = edit_pending_mission(content, position, new_text)
+        return new_content
+
+    try:
+        modify_missions_file(_missions_file(), transform)
+    except ValueError as e:
+        return jsonify({"error": {"code": "invalid_request", "message": str(e)}}), 422
+
+    new_entry = _build_entry(new_text, rec.get("project"))
+    update_mission_text(_instance_dir(), mission_id, new_entry)
+
+    return jsonify({"id": mission_id, "status": "pending"}), 200

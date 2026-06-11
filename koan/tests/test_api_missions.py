@@ -325,3 +325,213 @@ class TestRecordMissionDedup:
         assert id1 != id2
         records = list_missions(instance_dir)
         assert len(records) == 2
+
+
+class TestUpdateMissionText:
+    def test_update_text_changes_record(self, instance_dir):
+        from app.api.mission_index import record_mission, update_mission_text, get_mission
+        mid = record_mission(instance_dir, "- Old text", None)
+        result = update_mission_text(instance_dir, mid, "- New text")
+        assert result is True
+        rec = get_mission(instance_dir, mid)
+        assert rec["text"] == "- New text"
+
+    def test_update_text_nonexistent_returns_false(self, instance_dir):
+        from app.api.mission_index import update_mission_text
+        result = update_mission_text(instance_dir, "no-such-id", "- New")
+        assert result is False
+
+    def test_update_text_only_updates_pending(self, instance_dir):
+        from app.api.mission_index import record_mission, cancel_mission, update_mission_text, get_mission
+        mid = record_mission(instance_dir, "- Done mission", None)
+        cancel_mission(instance_dir, mid)
+        result = update_mission_text(instance_dir, mid, "- Updated")
+        assert result is False
+        rec = get_mission(instance_dir, mid)
+        assert rec["text"] == "- Done mission"
+
+
+class TestEditMission:
+    def test_edit_pending_mission_returns_200(self, api_client, instance_dir):
+        resp = api_client.post(
+            "/v1/missions", json={"text": "Original text"}, headers=_AUTH
+        )
+        mission_id = resp.get_json()["id"]
+
+        resp = api_client.patch(
+            f"/v1/missions/{mission_id}",
+            json={"text": "Updated text"},
+            headers=_AUTH,
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["id"] == mission_id
+        assert data["status"] == "pending"
+
+    def test_edit_updates_missions_md(self, api_client, instance_dir):
+        resp = api_client.post(
+            "/v1/missions", json={"text": "Before edit"}, headers=_AUTH
+        )
+        mission_id = resp.get_json()["id"]
+
+        api_client.patch(
+            f"/v1/missions/{mission_id}",
+            json={"text": "After edit"},
+            headers=_AUTH,
+        )
+        content = (instance_dir / "missions.md").read_text()
+        assert "After edit" in content
+        assert "Before edit" not in content
+
+    def test_edit_updates_sidecar_index(self, api_client, instance_dir):
+        resp = api_client.post(
+            "/v1/missions", json={"text": "Sidecar before"}, headers=_AUTH
+        )
+        mission_id = resp.get_json()["id"]
+
+        api_client.patch(
+            f"/v1/missions/{mission_id}",
+            json={"text": "Sidecar after"},
+            headers=_AUTH,
+        )
+        resp = api_client.get(f"/v1/missions/{mission_id}", headers=_AUTH)
+        data = resp.get_json()
+        assert "Sidecar after" in data["text"]
+
+    def test_edit_nonexistent_returns_404(self, api_client):
+        resp = api_client.patch(
+            "/v1/missions/no-such-id",
+            json={"text": "New text"},
+            headers=_AUTH,
+        )
+        assert resp.status_code == 404
+
+    def test_edit_in_progress_returns_409(self, api_client, instance_dir):
+        resp = api_client.post(
+            "/v1/missions", json={"text": "Moving mission"}, headers=_AUTH
+        )
+        mission_id = resp.get_json()["id"]
+
+        content = (instance_dir / "missions.md").read_text()
+        lines = content.splitlines(keepends=True)
+        pending_line = next(ln for ln in lines if "Moving mission" in ln)
+        content = content.replace(pending_line, "")
+        content = content.replace(
+            "## In Progress\n\n", f"## In Progress\n\n{pending_line}"
+        )
+        (instance_dir / "missions.md").write_text(content)
+
+        resp = api_client.patch(
+            f"/v1/missions/{mission_id}",
+            json={"text": "Try to edit"},
+            headers=_AUTH,
+        )
+        assert resp.status_code == 409
+
+    def test_edit_missing_text_returns_422(self, api_client, instance_dir):
+        resp = api_client.post(
+            "/v1/missions", json={"text": "Some mission"}, headers=_AUTH
+        )
+        mission_id = resp.get_json()["id"]
+
+        resp = api_client.patch(
+            f"/v1/missions/{mission_id}", json={}, headers=_AUTH
+        )
+        assert resp.status_code == 422
+
+    def test_edit_empty_text_returns_422(self, api_client, instance_dir):
+        resp = api_client.post(
+            "/v1/missions", json={"text": "Some mission"}, headers=_AUTH
+        )
+        mission_id = resp.get_json()["id"]
+
+        resp = api_client.patch(
+            f"/v1/missions/{mission_id}",
+            json={"text": "   "},
+            headers=_AUTH,
+        )
+        assert resp.status_code == 422
+
+
+class TestReorderMission:
+    def test_reorder_returns_200(self, api_client, instance_dir):
+        api_client.post("/v1/missions", json={"text": "First"}, headers=_AUTH)
+        resp_second = api_client.post(
+            "/v1/missions", json={"text": "Second"}, headers=_AUTH
+        )
+        mission_id = resp_second.get_json()["id"]
+
+        resp = api_client.post(
+            "/v1/missions/reorder",
+            json={"mission_id": mission_id, "target_position": 1},
+            headers=_AUTH,
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["id"] == mission_id
+
+    def test_reorder_changes_order_in_missions_md(self, api_client, instance_dir):
+        api_client.post("/v1/missions", json={"text": "Alpha"}, headers=_AUTH)
+        resp_beta = api_client.post(
+            "/v1/missions", json={"text": "Beta"}, headers=_AUTH
+        )
+        beta_id = resp_beta.get_json()["id"]
+
+        api_client.post(
+            "/v1/missions/reorder",
+            json={"mission_id": beta_id, "target_position": 1},
+            headers=_AUTH,
+        )
+        content = (instance_dir / "missions.md").read_text()
+        alpha_pos = content.find("Alpha")
+        beta_pos = content.find("Beta")
+        assert beta_pos < alpha_pos
+
+    def test_reorder_nonexistent_returns_404(self, api_client):
+        resp = api_client.post(
+            "/v1/missions/reorder",
+            json={"mission_id": "no-such-id", "target_position": 1},
+            headers=_AUTH,
+        )
+        assert resp.status_code == 404
+
+    def test_reorder_in_progress_returns_409(self, api_client, instance_dir):
+        resp = api_client.post(
+            "/v1/missions", json={"text": "Will move"}, headers=_AUTH
+        )
+        mission_id = resp.get_json()["id"]
+
+        content = (instance_dir / "missions.md").read_text()
+        lines = content.splitlines(keepends=True)
+        pending_line = next(ln for ln in lines if "Will move" in ln)
+        content = content.replace(pending_line, "")
+        content = content.replace(
+            "## In Progress\n\n", f"## In Progress\n\n{pending_line}"
+        )
+        (instance_dir / "missions.md").write_text(content)
+
+        resp = api_client.post(
+            "/v1/missions/reorder",
+            json={"mission_id": mission_id, "target_position": 1},
+            headers=_AUTH,
+        )
+        assert resp.status_code == 409
+
+    def test_reorder_missing_fields_returns_422(self, api_client):
+        resp = api_client.post(
+            "/v1/missions/reorder", json={}, headers=_AUTH
+        )
+        assert resp.status_code == 422
+
+    def test_reorder_invalid_target_returns_422(self, api_client, instance_dir):
+        resp = api_client.post(
+            "/v1/missions", json={"text": "Only one"}, headers=_AUTH
+        )
+        mission_id = resp.get_json()["id"]
+
+        resp = api_client.post(
+            "/v1/missions/reorder",
+            json={"mission_id": mission_id, "target_position": 99},
+            headers=_AUTH,
+        )
+        assert resp.status_code == 422

@@ -202,6 +202,19 @@ def _normalize_for_match(text: str) -> str:
     return _LIFECYCLE_TS.sub("", text).strip()
 
 
+def update_mission_text(instance_dir: Path, mission_id: str, new_text: str) -> bool:
+    """Update the stored text for a pending mission in the sidecar index."""
+    records = _load_index(instance_dir)
+    for i, rec in enumerate(records):
+        if rec.get("id") == mission_id:
+            if rec.get("status") != "pending":
+                return False
+            records[i]["text"] = new_text
+            _save_index(instance_dir, records)
+            return True
+    return False
+
+
 def cancel_by_text(instance_dir: Path, text: str) -> bool:
     """Mark the first pending record matching text as removed.
 

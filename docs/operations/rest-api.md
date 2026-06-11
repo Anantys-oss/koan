@@ -110,7 +110,9 @@ Response:
 | `GET` | `/v1/missions` | yes | List API-queued missions. Query params: `?status=pending\|in_progress\|done\|failed\|removed`, `?project=name` |
 | `POST` | `/v1/missions` | yes | Queue a new mission |
 | `GET` | `/v1/missions/{id}` | yes | Get mission by id (reconciles vs missions.md) |
+| `PATCH` | `/v1/missions/{id}` | yes | Edit a pending mission's text (409 if not pending) |
 | `DELETE` | `/v1/missions/{id}` | yes | Cancel a pending mission (409 if already started) |
+| `POST` | `/v1/missions/reorder` | yes | Reorder a pending mission in the queue |
 
 **POST /v1/missions** body:
 ```json
@@ -140,6 +142,30 @@ Response (202):
 ```
 
 Mission status is reconciled on each read against the live `missions.md` state.
+
+**PATCH /v1/missions/{id}** body:
+```json
+{"text": "Updated mission description"}
+```
+
+Response (200):
+```json
+{"id": "uuid", "status": "pending"}
+```
+
+Returns 409 if the mission is not in `pending` status. Returns 422 if `text` is missing or empty.
+
+**POST /v1/missions/reorder** body:
+```json
+{"mission_id": "uuid", "target_position": 1}
+```
+
+Response (200):
+```json
+{"id": "uuid", "status": "pending"}
+```
+
+`target_position` is 1-indexed within the pending queue. Returns 409 if the mission is not pending. Returns 422 if the target position is out of range.
 
 ### Projects
 
