@@ -179,7 +179,8 @@ class OllamaLaunchProvider(ClaudeProvider):
                 return True
             if exit_code != 0 and re.search(pattern, stdout_text, re.IGNORECASE):
                 return True
-        return super().detect_quota_exhaustion(stdout_text, stderr_text, exit_code)
+        fallback_stdout = stdout_text if exit_code != 0 else ""
+        return super().detect_quota_exhaustion(fallback_stdout, stderr_text, exit_code)
 
     def has_api_quota(self) -> bool:
         """Ollama launch uses local or cloud Ollama — no metered API quota."""

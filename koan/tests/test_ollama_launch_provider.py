@@ -270,6 +270,14 @@ class TestOllamaLaunchFlags:
             exit_code=1,
         ) is True
 
+    def test_no_false_positive_claude_quota_phrase_stdout_exit_zero(self):
+        """Inherited Claude patterns must not false-pause on exit-0 stdout."""
+        assert self.provider.detect_quota_exhaustion(
+            stdout_text="The assistant mentioned you are out of extra usage credits",
+            stderr_text="",
+            exit_code=0,
+        ) is False
+
     def test_get_session_data_none_when_no_project(self):
         """Session data depends on Claude CLI artifacts; missing project returns None."""
         from unittest.mock import patch
