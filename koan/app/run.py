@@ -700,7 +700,7 @@ def _handle_update(koan_root: str, instance: str, count: int) -> bool:
 # Pause mode handler
 # ---------------------------------------------------------------------------
 
-_last_inbox_check: float = 0.0
+_last_inbox_check: float = float("-inf")
 
 
 def _check_inbox_during_pause(koan_root: str, instance: str) -> None:

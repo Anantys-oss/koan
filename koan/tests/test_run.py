@@ -982,7 +982,7 @@ class TestCheckInboxDuringPause:
     @pytest.fixture(autouse=True)
     def reset_inbox_throttle(self):
         import app.run as run_mod
-        run_mod._last_inbox_check = 0.0
+        run_mod._last_inbox_check = float("-inf")
 
     @patch("app.run.time.sleep")
     def test_inbox_signal_triggers_notification_fetch(self, mock_sleep, koan_root):
@@ -1105,7 +1105,7 @@ class TestCheckInboxDuringPause:
                 (koan_root / ".koan-pause").unlink(missing_ok=True)
 
         mock_sleep.side_effect = side_effect
-        run_mod._last_inbox_check = 0.0
+        run_mod._last_inbox_check = float("-inf")
 
         with patch("app.pause_manager.check_and_resume", return_value=None), \
              patch("app.loop_manager.process_github_notifications", return_value=1) as mock_gh, \
