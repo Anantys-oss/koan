@@ -20,6 +20,10 @@ For each phase, use this format:
 
 **Files**: List the exact files from the File Map touched in this phase.
 
+- **What**: Specific file changes, new files, etc.
+- **Why**: Rationale for the approach
+- **Gotchas**: Key details or risks specific to this phase
+
 - [ ] **Step 1: Write the failing test** — Describe what to test, then show the test code:
   <details><summary>Test code</summary>
 
