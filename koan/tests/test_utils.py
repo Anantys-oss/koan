@@ -1570,3 +1570,60 @@ class TestResolveViaForkParent:
                 "contributor/repo", [("myrepo", "/home/user/repo")]
             )
         assert result == "/home/user/repo"
+
+
+class TestUpdateConfigYaml:
+    """Tests for the shared update_config_yaml helper."""
+
+    def test_sets_nested_key_with_list(self, tmp_path):
+        from app.utils import update_config_yaml
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("max_runs_per_day: 20\n")
+
+        update_config_yaml(config_file, ["models", "claude"], {"mission": "opus"})
+
+        import yaml
+        data = yaml.safe_load(config_file.read_text())
+        assert data["models"]["claude"]["mission"] == "opus"
+        assert data["max_runs_per_day"] == 20
+
+    def test_accepts_dotted_string_key(self, tmp_path):
+        from app.utils import update_config_yaml
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("max_runs_per_day: 20\n")
+
+        update_config_yaml(config_file, "dashboard.nickname", "mybot")
+
+        import yaml
+        data = yaml.safe_load(config_file.read_text())
+        assert data["dashboard"]["nickname"] == "mybot"
+
+    def test_preserves_comments(self, tmp_path):
+        from app.utils import update_config_yaml
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "# Leading comment\n"
+            "max_runs_per_day: 20\n"
+            "# Trailing comment\n"
+            "interval_seconds: 300\n"
+        )
+
+        update_config_yaml(config_file, ["github", "nickname"], "mybot")
+
+        text = config_file.read_text()
+        assert "# Leading comment" in text
+        assert "# Trailing comment" in text
+        assert "interval_seconds: 300" in text
+
+    def test_creates_missing_file(self, tmp_path):
+        from app.utils import update_config_yaml
+
+        config_file = tmp_path / "config.yaml"
+        update_config_yaml(config_file, ["a", "b"], 1)
+
+        import yaml
+        data = yaml.safe_load(config_file.read_text())
+        assert data["a"]["b"] == 1
