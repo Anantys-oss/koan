@@ -135,6 +135,7 @@ Communication between processes happens through shared files in `instance/` with
 - **`usage_tracker.py`** — Per-provider budget tracking; decides autonomous mode (REVIEW/IMPLEMENT/DEEP/WAIT) based on each provider's independent quota percentage. Pure parser + threshold class — burn-rate-driven downgrades live in `iteration_manager._downgrade_if_burning_fast` next to the existing affordability downgrade.
 - **`burn_rate.py`** — Rolling burn-rate estimator (% session quota per minute). Maintains a 20-sample circular buffer in `instance/.burn-rate.json` with `fcntl.flock(LOCK_SH)` on reads, exposes `record_run()`, `burn_rate_pct_per_minute()` (total cost / span across all samples), `time_to_exhaustion(session_pct, mode=None)`, and the canonical `MODE_MULTIPLIERS` table shared with `usage_tracker.can_afford_run`. Also tracks the last-warning timestamp so the iteration manager fires at most one Telegram alert per quota cycle.
 - **`recover.py`** — Crash recovery for stale in-progress missions
+- **`sdlc_state.py`** — SDLC workflow state persistence: `SdlcPhase` enum, `SdlcState` dataclass, workspace helpers (`get_sdlc_workspace`, `load_sdlc_state`, `save_sdlc_state`, `get_artifact_path`, `archive_sdlc_workspace`). Stores per-run state and phase artifacts under `instance/sdlc/{issue_name}/`. Foundation for the `/sdlc` orchestrator skill.
 - **`prompts.py`** — System prompt loader; `load_prompt()` for `koan/system-prompts/*.md`, `load_skill_prompt()` for skill-bound prompts. Supports `{@include partial-name}` directive for reusable prompt fragments from `koan/system-prompts/_partials/`.
 - **`skill_manager.py`** — External skill package manager: install from Git repos, update, remove, track via `instance/skills.yaml`
 - **`claudemd_refresh.py`** — CLAUDE.md refresh pipeline: gathers git context, invokes Claude to update/create CLAUDE.md. When CLAUDE.md is missing, dispatches the built-in `/init` skill instead of a generic prompt.
@@ -181,6 +182,7 @@ Extensible command plugin system. Each skill lives in `skills/<scope>/<skill-nam
 - `journal/` — Daily logs organized as `YYYY-MM-DD/project.md`
 - `events/` — One-shot scheduled missions (JSON files consumed by `event_scheduler.py`)
 - `hooks/` — User-defined Python hook modules for lifecycle events (see `instance.example/hooks/README.md`)
+- `sdlc/` — Per-workflow SDLC state: `sdlc/{issue_name}/STATE.json` + phase artifact files (RESEARCH.md, ADR.md, PLAN.md, etc.). Managed by `sdlc_state.py`. Archived to `sdlc/_archived/` on terminal phase (PRODUCTION_READY or ABANDONED). Never logged verbatim — may contain sensitive project details.
 
 ## Python compatibility
 
