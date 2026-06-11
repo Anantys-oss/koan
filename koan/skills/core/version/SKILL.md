@@ -9,6 +9,6 @@ audience: bridge
 commands:
   - name: version
     description: Show current Kōan version
-    aliases: [ver]
+    aliases: [ver, v]
 handler: handler.py
 ---

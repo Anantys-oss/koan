@@ -2147,6 +2147,18 @@ class TestClaudemdSkillListSync:
         )
 
 
+class TestShippedSkillAliases:
+    """Behavior checks for aliases exposed by shipped core skills."""
+
+    def test_version_short_alias_resolves_to_version_skill(self):
+        registry = build_registry()
+
+        skill = registry.find_by_command("v")
+
+        assert skill is not None
+        assert skill.qualified_name == "core.version"
+
+
 class TestHyphenValidation:
     """Ensure skills with hyphens in command names or aliases are rejected."""
 
