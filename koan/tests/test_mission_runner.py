@@ -2556,33 +2556,49 @@ class TestPipelineTracker:
         """If pipeline_expired becomes set during execution, the step is interrupted."""
         from app.mission_runner import _PipelineTracker
         import threading
-        import time
 
         tracker = _PipelineTracker()
         expired = threading.Event()
         barrier = threading.Barrier(2, timeout=10)
+        # Separate gate so firing the deadline does NOT also release the worker:
+        # the step must stay genuinely hung while run_step observes the timeout.
+        release = threading.Event()
 
         def slow_fn():
             barrier.wait()  # signal that we're running
-            # Block on the event itself rather than polling with time.sleep:
-            # this daemon thread is abandoned on timeout (never joined), and a
-            # lingering time.sleep loop would leak calls into a later test that
-            # mocks time.sleep. expired.wait() touches no time.sleep and wakes
-            # immediately when the deadline fires.
-            expired.wait()
+            release.wait(timeout=5)  # stay hung until the test releases us
 
         def run_in_bg():
             tracker.run_step("hung_step", slow_fn, pipeline_expired=expired)
 
         bg = threading.Thread(target=run_in_bg)
         bg.start()
-        barrier.wait()  # wait for slow_fn to start
-        time.sleep(0.05)  # small buffer
-        expired.set()
+        barrier.wait()  # wait for slow_fn to start (thread is alive in poll loop)
+        expired.set()  # fire the deadline while slow_fn is still blocked
         bg.join(timeout=3.0)
         assert not bg.is_alive()
         assert tracker.steps["hung_step"]["status"] == "timeout"
         assert "interrupted after" in tracker.steps["hung_step"]["detail"]
+        release.set()  # let the abandoned worker thread finish cleanly
+
+    def test_run_step_completes_through_threaded_path(self):
+        """With an unset deadline the step runs in the worker thread and succeeds."""
+        from app.mission_runner import _PipelineTracker
+        import threading
+
+        tracker = _PipelineTracker()
+        expired = threading.Event()  # supplied but never set
+        seen = {}
+
+        def fn():
+            seen["thread"] = threading.current_thread()
+            return 42
+
+        result = tracker.run_step("threaded_step", fn, pipeline_expired=expired)
+        assert result == 42
+        assert tracker.steps["threaded_step"]["status"] == "success"
+        # Passing pipeline_expired forces the interruptible path: a worker thread.
+        assert seen["thread"] is not threading.current_thread()
 
     def test_run_step_inline_when_no_deadline(self):
         """Without pipeline_expired the step runs inline (no worker thread)."""

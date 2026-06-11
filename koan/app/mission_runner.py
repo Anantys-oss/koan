@@ -140,6 +140,12 @@ class _PipelineTracker:
 
         while t.is_alive():
             t.join(timeout=1.0)
+            if not t.is_alive():
+                # The step finished during this join window. Always take the
+                # result-handling path below so a completed step (or a stored
+                # exception) is never misclassified as a timeout, regardless of
+                # whether the deadline fired in the same instant.
+                break
             if pipeline_expired.is_set():
                 elapsed = time.monotonic() - t0
                 abandoned.set()
