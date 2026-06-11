@@ -117,7 +117,7 @@ Skills marked **GitHub @mention** can be triggered by commenting `@koan-bot <com
 | `/models` | `/model` | Show resolved model config for the active CLI provider |
 | `/config_check` | `/cfgcheck`, `/configcheck` | Detect drift between instance/config.yaml and the template |
 | `/check_notifications` | `/read` | Force immediate GitHub + Jira notification check |
-| `/inbox` | — | Force GitHub notification check + show queued mail count |
+| `/inbox` | — | Force GitHub notification check + show queued mail count (works while paused) |
 | `/rescan` | `/rescan_heads` | Re-check all projects for remote HEAD branch changes |
 | `/version` | `/ver` | Show Kōan version (tag, commit, commits ahead) |
 | `/verbose` | — | Enable real-time progress updates |
