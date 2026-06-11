@@ -1589,6 +1589,30 @@ class TestEscalatedRetry:
         # Should mention the issue label
         assert "#42" in all_notified
 
+    def test_no_retry_when_feature_branch_has_commits_but_head_is_main(self):
+        """Claude checked out main after pushing — feature branch detected, no retry."""
+        notify = MagicMock()
+        exec_mock = MagicMock(return_value="Done")
+
+        with patch(f"{_IMPL_MODULE}.fetch_issue",
+                    return_value=_github_issue(title="Title", body=self._BODY)), \
+             patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
+             patch(f"{_IMPL_MODULE}._execute_implementation", exec_mock), \
+             patch(f"{_IMPL_MODULE}.get_commit_subjects", return_value=[]), \
+             patch(f"{_IMPL_MODULE}.get_current_branch", return_value="main"), \
+             patch("app.config.get_branch_prefix", return_value="koan/"), \
+             patch("app.git_utils.get_commit_subjects",
+                    return_value=["feat: add X"]), \
+             patch(f"{_IMPL_MODULE}._submit_implement_pr", return_value=None):
+            ok, _ = run_implement(
+                "/project",
+                "https://github.com/o/r/issues/42",
+                notify_fn=notify,
+            )
+
+        assert ok
+        assert exec_mock.call_count == 1
+
     def test_escalated_retry_injects_escalation_preamble_into_context(self):
         """_execute_implementation with escalate=True prepends the retry-context fragment."""
         escalation_text = "## Escalated Retry — Committed Changes Required"

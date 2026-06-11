@@ -185,13 +185,26 @@ def run_implement(
     except Exception as e:
         return False, f"Implementation failed: {str(e)[:300]}"
 
-    # Detect whether real work landed: commits exist and we are on a feature branch.
-    # An empty output or no commits signals a bail-out — run one escalated retry.
+    # Detect whether real work landed: commits exist on a feature branch.
+    # Claude sometimes checks out the base branch after pushing, so also
+    # check the expected feature branch when HEAD is on base.
     def _work_landed() -> bool:
         branch = get_current_branch(project_path)
         on_base = branch in (effective_base_branch, "main", "master")
         commits = get_commit_subjects(project_path, base_branch=effective_base_branch)
-        return bool(commits) and not on_base
+        if bool(commits) and not on_base:
+            return True
+        if on_base:
+            from app.config import get_branch_prefix
+            from app.git_utils import get_commit_subjects as git_commits
+            expected = f"{get_branch_prefix()}implement-{issue_number}"
+            if git_commits(
+                cwd=project_path,
+                base_branch=effective_base_branch,
+                branch=expected,
+            ):
+                return True
+        return False
 
     if not output or not _work_landed():
         logger.info(
