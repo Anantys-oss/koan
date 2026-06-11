@@ -1055,7 +1055,7 @@ class TestCheckInboxDuringPause:
 
         with patch("app.pause_manager.check_and_resume", return_value=None), \
              patch("app.loop_manager.process_github_notifications", side_effect=RuntimeError("gh failed")), \
-             patch("app.loop_manager.process_jira_notifications"):
+             patch("app.loop_manager.process_jira_notifications", return_value=0):
             result = handle_pause(str(koan_root), instance, 5)
 
         assert result == "resume"
