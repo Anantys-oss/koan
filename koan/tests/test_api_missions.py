@@ -452,6 +452,56 @@ class TestEditMission:
         )
         assert resp.status_code == 422
 
+    def test_edit_non_string_text_returns_422(self, api_client, instance_dir):
+        resp = api_client.post(
+            "/v1/missions", json={"text": "Some mission"}, headers=_AUTH
+        )
+        mission_id = resp.get_json()["id"]
+
+        resp = api_client.patch(
+            f"/v1/missions/{mission_id}",
+            json={"text": 12345},
+            headers=_AUTH,
+        )
+        assert resp.status_code == 422
+
+    def test_edit_project_mission_preserves_tag(self, api_client, instance_dir):
+        resp = api_client.post(
+            "/v1/missions",
+            json={"text": "Project task", "project": "my-toolkit"},
+            headers=_AUTH,
+        )
+        mission_id = resp.get_json()["id"]
+
+        api_client.patch(
+            f"/v1/missions/{mission_id}",
+            json={"text": "Updated project task"},
+            headers=_AUTH,
+        )
+
+        content = (instance_dir / "missions.md").read_text()
+        assert "[project:my-toolkit]" in content
+        assert "Updated project task" in content
+
+        resp = api_client.get(f"/v1/missions/{mission_id}", headers=_AUTH)
+        data = resp.get_json()
+        assert data["status"] == "pending"
+        assert "Updated project task" in data["text"]
+
+    def test_edit_invalid_json_returns_422(self, api_client, instance_dir):
+        resp = api_client.post(
+            "/v1/missions", json={"text": "Some mission"}, headers=_AUTH
+        )
+        mission_id = resp.get_json()["id"]
+
+        resp = api_client.patch(
+            f"/v1/missions/{mission_id}",
+            data="not json",
+            content_type="application/json",
+            headers=_AUTH,
+        )
+        assert resp.status_code == 422
+
 
 class TestReorderMission:
     def test_reorder_returns_200(self, api_client, instance_dir):
@@ -520,6 +570,15 @@ class TestReorderMission:
     def test_reorder_missing_fields_returns_422(self, api_client):
         resp = api_client.post(
             "/v1/missions/reorder", json={}, headers=_AUTH
+        )
+        assert resp.status_code == 422
+
+    def test_reorder_invalid_json_returns_422(self, api_client):
+        resp = api_client.post(
+            "/v1/missions/reorder",
+            data="not json",
+            content_type="application/json",
+            headers=_AUTH,
         )
         assert resp.status_code == 422
 

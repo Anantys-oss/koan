@@ -111,7 +111,11 @@ def create_mission():
 @bp.route("/v1/missions/reorder", methods=["POST"])
 @require_token
 def reorder_mission_route():
-    data = request.get_json(silent=True) or {}
+    data = request.get_json(silent=True)
+    if data is None:
+        return jsonify(
+            {"error": {"code": "invalid_request", "message": "Invalid JSON body"}}
+        ), 422
     mission_id = data.get("mission_id", "").strip() if isinstance(data.get("mission_id"), str) else ""
     target_position = data.get("target_position")
 
@@ -221,12 +225,17 @@ def edit_mission(mission_id: str):
             {"error": {"code": "conflict", "message": f"Cannot edit mission in status '{status}'"}}
         ), 409
 
-    data = request.get_json(silent=True) or {}
-    new_text = data.get("text", "").strip()
-    if not new_text:
+    data = request.get_json(silent=True)
+    if data is None:
+        return jsonify(
+            {"error": {"code": "invalid_request", "message": "Invalid JSON body"}}
+        ), 422
+    raw_text = data.get("text")
+    if not isinstance(raw_text, str) or not raw_text.strip():
         return jsonify(
             {"error": {"code": "invalid_request", "message": "'text' is required and cannot be empty"}}
         ), 422
+    new_text = raw_text.strip()
 
     from app.missions import sanitize_mission_text
     new_text = sanitize_mission_text(new_text)
@@ -244,8 +253,11 @@ def edit_mission(mission_id: str):
     from app.missions import edit_pending_mission
     from app.utils import modify_missions_file
 
+    project = rec.get("project")
+    edit_text = f"[project:{project}] {new_text}" if project else new_text
+
     def transform(content):
-        new_content, _ = edit_pending_mission(content, position, new_text)
+        new_content, _ = edit_pending_mission(content, position, edit_text)
         return new_content
 
     try:
@@ -253,7 +265,10 @@ def edit_mission(mission_id: str):
     except ValueError as e:
         return jsonify({"error": {"code": "invalid_request", "message": str(e)}}), 422
 
-    new_entry = _build_entry(new_text, rec.get("project"))
-    update_mission_text(_instance_dir(), mission_id, new_entry)
+    new_entry = _build_entry(new_text, project)
+    if not update_mission_text(_instance_dir(), mission_id, new_entry):
+        return jsonify(
+            {"error": {"code": "conflict", "message": "Failed to update mission index"}}
+        ), 409
 
     return jsonify({"id": mission_id, "status": "pending"}), 200
