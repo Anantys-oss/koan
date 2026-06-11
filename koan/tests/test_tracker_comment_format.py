@@ -75,6 +75,41 @@ class TestStripMarkdownForJira(unittest.TestCase):
         assert "\r" not in result
         assert "A" in result and "B" in result and "C" in result
 
+    def test_details_summary_flattened_to_label(self):
+        md = (
+            "- Step 1: write the test:\n"
+            "  <details><summary>Test code</summary>\n"
+            "\n"
+            "  ```python\n"
+            "  def test_x():\n"
+            "      assert True\n"
+            "  ```\n"
+            "\n"
+            "  </details>"
+        )
+        result = jira_readable_markdown(md)
+        # No raw GitHub collapsible HTML survives.
+        assert "<details>" not in result
+        assert "</details>" not in result
+        assert "<summary>" not in result
+        # The summary label is preserved as a plain "Label:" line.
+        assert "Test code:" in result
+        # The code itself stays visible (indented as a code block).
+        assert "def test_x():" in result
+
+    def test_standalone_details_tags_removed(self):
+        md = "<details>\nplain body line\n</details>"
+        result = jira_readable_markdown(md)
+        assert "details" not in result.lower()
+        assert "plain body line" in result
+
+    def test_summary_on_own_line_becomes_label(self):
+        md = "<summary>Migration</summary>\nrest of step"
+        result = jira_readable_markdown(md)
+        assert "<summary>" not in result
+        assert "Migration:" in result
+        assert "rest of step" in result
+
 
 # ---------------------------------------------------------------------------
 # build_pr_comment_success — Jira branch

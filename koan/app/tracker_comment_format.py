@@ -11,6 +11,11 @@ _BULLET_RE = re.compile(r"^\s*[-*+]\s+")
 _ORDERED_RE = re.compile(r"^\s*\d+\.\s+")
 _LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _INLINE_CODE_RE = re.compile(r"`([^`]+)`")
+# GitHub collapsible code blocks (<details>/<summary>) render as literal text on
+# Jira, so flatten them: drop the <details> wrappers and turn the summary label
+# into a plain "Label:" line above the (always-visible) code.
+_SUMMARY_RE = re.compile(r"<summary>(.*?)</summary>", re.IGNORECASE)
+_DETAILS_TAG_RE = re.compile(r"</?details\s*>", re.IGNORECASE)
 
 
 def _parse_markdown_sections(markdown: str) -> Dict[str, List[str]]:
@@ -70,6 +75,12 @@ def _strip_markdown_for_jira(text: str) -> str:
             continue
         if in_fence:
             out.append(f"    {line}")
+            continue
+
+        line = _SUMMARY_RE.sub(lambda m: f"{m.group(1).strip()}:", line)
+        line = _DETAILS_TAG_RE.sub("", line)
+        if not line.strip():
+            out.append("")
             continue
 
         line = _HEADING_RE.sub("", line)
