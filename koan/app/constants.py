@@ -66,6 +66,13 @@ JIRA_CHECK_INTERVAL_DEFAULT = 60
 JIRA_MAX_CHECK_INTERVAL_DEFAULT = 300
 
 # ---------------------------------------------------------------------------
+# Pause-mode inbox check  (run.py)
+# ---------------------------------------------------------------------------
+
+# Minimum seconds between inbox checks during pause sleep.
+PAUSE_INBOX_CHECK_INTERVAL = 3600
+
+# ---------------------------------------------------------------------------
 # Burn rate / budget  (iteration_manager.py)
 # ---------------------------------------------------------------------------
 

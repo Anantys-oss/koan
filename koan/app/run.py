@@ -700,12 +700,18 @@ def _handle_update(koan_root: str, instance: str, count: int) -> bool:
 # Pause mode handler
 # ---------------------------------------------------------------------------
 
+_last_inbox_check: float = 0.0
+
+
 def _check_inbox_during_pause(koan_root: str, instance: str) -> None:
-    """Process /inbox signal while paused.
+    """Process /inbox signal while paused (throttled to once per hour).
 
     Checks each provider independently so one failure doesn't block the other.
     Signal is consumed only after fetching completes (success or per-provider error).
     """
+    global _last_inbox_check
+
+    from app.constants import PAUSE_INBOX_CHECK_INTERVAL
     from app.loop_manager import (
         _consume_check_notifications_signal,
         process_github_notifications,
@@ -714,6 +720,10 @@ def _check_inbox_during_pause(koan_root: str, instance: str) -> None:
 
     signal_path = Path(koan_root, ".koan-check-notifications")
     if not signal_path.exists():
+        return
+
+    now = time.monotonic()
+    if now - _last_inbox_check < PAUSE_INBOX_CHECK_INTERVAL:
         return
 
     log("pause", "Inbox check requested — fetching notifications while paused")
@@ -727,6 +737,7 @@ def _check_inbox_during_pause(koan_root: str, instance: str) -> None:
     except Exception as e:
         log("error", f"Jira inbox check during pause failed: {e}")
 
+    _last_inbox_check = now
     _consume_check_notifications_signal(koan_root)
     if total > 0:
         log("pause", f"Inbox: {total} mission(s) queued (will run after resume)")

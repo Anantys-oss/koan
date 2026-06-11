@@ -979,6 +979,11 @@ class TestHandlePause:
 
 
 class TestCheckInboxDuringPause:
+    @pytest.fixture(autouse=True)
+    def reset_inbox_throttle(self):
+        import app.run as run_mod
+        run_mod._last_inbox_check = 0.0
+
     @patch("app.run.time.sleep")
     def test_inbox_signal_triggers_notification_fetch(self, mock_sleep, koan_root):
         """When /inbox writes the signal file during pause, notifications are fetched."""
@@ -1080,6 +1085,34 @@ class TestCheckInboxDuringPause:
         assert result == "resume"
         mock_jira.assert_called_once_with(str(koan_root), instance, force=True)
         assert not (koan_root / ".koan-check-notifications").exists()
+
+    @patch("app.run.time.sleep")
+    def test_inbox_throttled_within_interval(self, mock_sleep, koan_root):
+        """Second inbox check within throttle interval is skipped."""
+        import app.run as run_mod
+        from app.run import handle_pause
+
+        instance = str(koan_root / "instance")
+        (koan_root / ".koan-pause").touch()
+        (koan_root / ".koan-check-notifications").write_text("requested")
+
+        tick = [0]
+        def side_effect(duration):
+            tick[0] += 1
+            if tick[0] == 2:
+                (koan_root / ".koan-check-notifications").write_text("second")
+            if tick[0] >= 3:
+                (koan_root / ".koan-pause").unlink(missing_ok=True)
+
+        mock_sleep.side_effect = side_effect
+        run_mod._last_inbox_check = 0.0
+
+        with patch("app.pause_manager.check_and_resume", return_value=None), \
+             patch("app.loop_manager.process_github_notifications", return_value=1) as mock_gh, \
+             patch("app.loop_manager.process_jira_notifications", return_value=0):
+            handle_pause(str(koan_root), instance, 5)
+
+        assert mock_gh.call_count == 1
 
 
 # ---------------------------------------------------------------------------
