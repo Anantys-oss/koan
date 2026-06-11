@@ -62,9 +62,14 @@ def _tail(path: Path, limit: int = _LOG_TAIL_LINES) -> list:
 
     For files larger than 64 KiB we seek near the end and read only the
     trailing chunk, avoiding reading the whole file into memory.
+
+    A missing or unreadable file yields ``[]``: ``path.stat()`` inside the
+    try block raises ``FileNotFoundError`` / ``OSError``, both caught below.
+    Doing the absence check via ``stat`` (rather than a separate
+    ``path.exists()`` guard) keeps the error handling inside the try, which
+    matters on Python 3.11 where ``Path.exists()`` re-raises a generic
+    ``OSError`` instead of returning ``False``.
     """
-    if not path.exists():
-        return []
     try:
         size = path.stat().st_size
         if size < 65_536:
