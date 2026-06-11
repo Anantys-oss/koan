@@ -272,3 +272,100 @@ claude usage
 If you see this in logs, the agent ran out of allowed tool-use rounds.
 This is normal for complex tasks — Koan handles it gracefully and
 reports partial results.
+
+---
+
+## Devcontainer Mode
+
+When a project has a `.devcontainer/` setup, Kōan can execute Claude inside
+the devcontainer so the agent has access to the full runtime — Ruby, bundled
+gems, databases, language toolchains, and anything else the container provides.
+
+### Prerequisites
+
+Install the devcontainer CLI:
+
+```bash
+npm install -g @devcontainers/cli
+```
+
+Verify:
+
+```bash
+devcontainer --version
+```
+
+### Configuration
+
+In `projects.yaml`, set `devcontainer: true` for the project:
+
+```yaml
+projects:
+  my-ruby-app:
+    path: "/home/user/workspace/my-ruby-app"
+    devcontainer: true
+```
+
+You can also set it in `defaults:` to enable it for all projects.
+
+### What Kōan injects
+
+Kōan never writes or modifies any files in your project. Before each mission it
+passes CLI flags directly to `devcontainer up`:
+
+- `--additional-features` — adds three features on top of whatever your devcontainer
+  already has:
+  - `ghcr.io/exciton/devcontainer-features/claude-code-config-bind-mount:latest` — bind-mounts `~/.claude` from the host and creates the in-container symlink (handled at container build time by this feature)
+  - `ghcr.io/anthropics/devcontainer-features/claude-code:1` — installs Claude Code CLI
+  - `ghcr.io/devcontainers/features/github-cli:1` — installs `gh` CLI (Claude uses it for PRs, issues, CI checks)
+- `--mount` (×2) — bind-mounts two host directories into the container:
+  - `KOAN_ROOT/instance/` → `/mnt/koan-instance` — agent memory, soul, missions
+  - `KOAN_ROOT/devcontainer-tmp/` → `/mnt/koan-tmp` — temp files (system prompts, plugin dirs)
+
+After the container starts, Kōan runs two post-start steps via `devcontainer exec`:
+
+1. If a GitHub token is available and the tmp mount is in place: writes the token to a temp file inside `/mnt/koan-tmp/` and runs `gh auth login --with-token` inside the container to authenticate `gh`. The file is deleted immediately after.
+2. Runs `gh auth setup-git` as the container user to configure the git HTTPS credential helper so `git push` works with the host's GitHub token.
+
+The agent prompt uses container-native paths (`/mnt/koan-instance`, `/workspaces/<name>`) so Claude never references host-side paths it can't reach.
+
+### How execution works
+
+Before each mission on a devcontainer-enabled project, Kōan:
+
+1. Creates `KOAN_ROOT/devcontainer-tmp/` if it doesn't exist
+2. Runs `devcontainer up` with mounts and features (idempotent — reuses running containers)
+3. Runs post-start credential setup: `gh auth login --with-token` (if a token is available) + `gh auth setup-git` (via `devcontainer exec`)
+4. Runs the mission as: `devcontainer exec --workspace-folder <path> -- claude <args>`
+
+### If the container was created before Kōan managed it
+
+Mounts are only applied at container creation time. If you previously started the
+devcontainer yourself (via VS Code or directly), those mounts won't be present.
+Remove the old container to force recreation:
+
+```bash
+docker ps -a --filter label=devcontainer.local_folder=<absolute_project_path> --format '{{.ID}}'
+docker rm <container_id>
+```
+
+The next mission run will recreate the container with the correct mounts.
+
+### Fallback behaviour
+
+If `devcontainer: true` is set but `.devcontainer/devcontainer.json` does not
+exist in the project, Kōan logs a warning and falls back to running Claude on
+the host. No error is raised — the mission proceeds normally.
+
+### Known limitations
+
+- **`KOAN_PYTHON -m app.issue_cli`** (used for Jira issue fetching) will not
+  work inside a devcontainer in v1. Kōan's Python venv is not mounted in the
+  container. All other operations (git, gh, project tooling) work normally.
+
+### Out of scope
+
+- Multi-container (docker-compose-based) devcontainer setups
+- Parallel sessions (worktrees) inside devcontainers
+- Auto-installing `@devcontainers/cli` — Kōan fails fast with a clear install
+  hint if the CLI is not found

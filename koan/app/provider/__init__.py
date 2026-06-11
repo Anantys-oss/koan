@@ -277,12 +277,27 @@ def build_full_command(
     )
 
 
-def _write_system_prompt_file(content: str) -> str:
-    """Write a system prompt to a 0600 temp file and return its absolute path.
+def _write_system_prompt_file(
+    content: str,
+    host_dir: Optional[str] = None,
+    container_dir: Optional[str] = None,
+) -> Tuple[str, str]:
+    """Write a system prompt to a 0600 temp file and return ``(host_path, cmd_path)``.
+
+    ``host_path`` is always the real filesystem path used for cleanup.
+    ``cmd_path`` is the path embedded in the CLI command — equal to
+    ``host_path`` normally, or ``container_dir/<filename>`` in devcontainer
+    mode so the container can open the bind-mounted file.
 
     The file is intentionally not auto-deleted — the caller is responsible
-    for unlinking it after the subprocess has finished consuming it. Use
+    for unlinking ``host_path`` after the subprocess has finished. Use
     :func:`build_full_command_managed`, which pairs this with cleanup.
+
+    Args:
+        host_dir: Directory on the host where the file is written. In
+            devcontainer mode, pass the host side of the koan-tmp bind-mount.
+        container_dir: When set, ``cmd_path`` is ``container_dir/<filename>``
+            so the CLI command embeds the container-accessible path.
     """
     # NamedTemporaryFile creates with 0600 on POSIX (same as mkstemp).
     # delete=False so the subprocess can open the path after we close it.
@@ -292,16 +307,18 @@ def _write_system_prompt_file(content: str) -> str:
             prefix="koan-sysprompt-",
             suffix=".txt",
             delete=False,
+            dir=host_dir or None,
             encoding="utf-8",
         ) as f:
-            path = f.name
+            host_path = f.name
             f.write(content)
     except Exception:
         # If NamedTemporaryFile raised after creating the file, unlink it.
         with contextlib.suppress(OSError, NameError):
-            os.unlink(path)  # type: ignore[possibly-undefined]
+            os.unlink(host_path)  # type: ignore[possibly-undefined]
         raise
-    return path
+    cmd_path = str(Path(container_dir) / Path(host_path).name) if container_dir else host_path
+    return host_path, cmd_path
 
 
 def build_full_command_managed(
@@ -317,6 +334,8 @@ def build_full_command_managed(
     system_prompt: str = "",
     effort: str = "",
     resume_session_id: str = "",
+    system_prompt_dir: Optional[str] = None,
+    system_prompt_container_dir: Optional[str] = None,
 ) -> Tuple[List[str], List[str]]:
     """Build a CLI command, routing large system prompts through a temp file.
 
@@ -348,9 +367,13 @@ def build_full_command_managed(
         resume_session_id=resume_session_id,
     )
     if system_prompt and get_provider().supports_system_prompt_file():
-        path = _write_system_prompt_file(system_prompt)
-        cleanup_paths.append(path)
-        kwargs.update(system_prompt="", system_prompt_file=path)
+        host_path, cmd_path = _write_system_prompt_file(
+            system_prompt,
+            host_dir=system_prompt_dir,
+            container_dir=system_prompt_container_dir,
+        )
+        cleanup_paths.append(host_path)
+        kwargs.update(system_prompt="", system_prompt_file=cmd_path)
     else:
         kwargs["system_prompt"] = system_prompt
     return build_full_command(**kwargs), cleanup_paths

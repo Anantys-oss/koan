@@ -153,6 +153,7 @@ For implementation details, see the [architecture reference](docs/architecture/o
 ### Core
 
 - **Multi-project support** — Up to 50 projects with per-project config, memory isolation, and smart rotation
+- **Devcontainer support** — Run the agent inside your project's devcontainer, enabling fully consistent tooling
 - **Mission lifecycle** — Pending → In Progress → Done/Failed with crash recovery and stale-mission cleanup
 - **Budget-aware modes** — Automatically adapts work depth based on remaining API quota:
   - **DEEP** (>40%) — Strategic work, thorough exploration

@@ -14,7 +14,7 @@ import tempfile
 import time
 import traceback
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 
 # ---------------------------------------------------------------------------
@@ -831,12 +831,40 @@ def _run_iteration(
         except Exception as e:
             log("error", f"Spec generation error (non-blocking): {e}")
 
+    # --- Devcontainer-aware path computation (must be before prompt build) ---
+    # Both the config flag AND a present .devcontainer config must be true
+    # before we switch any paths to container-side — otherwise the prompt and
+    # the actual execution environment would disagree.
+    from app import devcontainer as _dc
+    from app.projects_config import load_projects_config, get_project_devcontainer_enabled
+    _dc_projects_config = load_projects_config(koan_root)
+    _dc_configured = bool(_dc_projects_config and get_project_devcontainer_enabled(_dc_projects_config, project_name))
+    _dc_present, _dc_workspace_path = (
+        _dc.get_devcontainer_config(project_path) if _dc_configured else (False, project_path)
+    )
+    if _dc_configured and not _dc_present:
+        log("warning",
+            f"[devcontainer] devcontainer: true set for '{project_name}' "
+            f"but no .devcontainer/devcontainer.json found — running on host")
+    if _dc_present:
+        _koan_tmp = Path(koan_root) / "devcontainer-tmp"
+        _koan_tmp.mkdir(exist_ok=True)
+        _host_tmp_dir: Optional[str] = str(_koan_tmp)
+        _container_tmp_dir: Optional[str] = _dc.CONTAINER_TMP_DIR
+        _prompt_instance = _dc.CONTAINER_INSTANCE_DIR
+        _prompt_project_path = _dc_workspace_path
+    else:
+        _host_tmp_dir = None
+        _container_tmp_dir = None
+        _prompt_instance = instance
+        _prompt_project_path = project_path
+
     # Build prompt (split into system/user for prompt caching)
     from app.prompt_builder import build_agent_prompt_parts
     system_prompt, prompt = build_agent_prompt_parts(
-        instance=instance,
+        instance=_prompt_instance,
         project_name=project_name,
-        project_path=project_path,
+        project_path=_prompt_project_path,
         run_num=run_num,
         max_runs=max_runs,
         autonomous_mode=autonomous_mode or "implement",
@@ -918,7 +946,10 @@ def _run_iteration(
                 extra_dirs.append(user_skills)
             registry = build_registry(extra_dirs=extra_dirs or None)
             if registry.list_by_audience("agent", "command", "hybrid"):
-                plugin_dir = generate_plugin_dir(registry)
+                # In devcontainer mode, generate plugin dir inside the dedicated
+                # tmp mount so --plugin-dir paths are accessible in the container.
+                dc_base = Path(_host_tmp_dir) if _host_tmp_dir else None
+                plugin_dir = generate_plugin_dir(registry, base_dir=dc_base)
                 plugin_dirs = [str(plugin_dir)]
         except Exception as e:
             _debug_log(f"[run] plugin dir generation skipped: {e}")
@@ -931,10 +962,33 @@ def _run_iteration(
             plugin_dirs=plugin_dirs,
             system_prompt=system_prompt,
             tier=mission_tier,
+            system_prompt_dir=_host_tmp_dir,
+            system_prompt_container_dir=_container_tmp_dir,
         )
 
         cmd_display = [c[:100] + '...' if len(c) > 100 else c for c in cmd[:6]]
         _debug_log(f"[run] cli: cmd={' '.join(cmd_display)}... cwd={project_path}")
+
+        # --- Devcontainer mode ---
+        if _dc_present:
+            try:
+                _dc.prepare_devcontainer(
+                    project_path,
+                    provider_name=provider_name,
+                    instance_path=instance,
+                    koan_tmp_path=_host_tmp_dir or "",
+                )
+            except RuntimeError as e:
+                log("error", f"[devcontainer] setup failed for '{project_name}': {e}")
+                if original_mission_title:
+                    _run._update_mission_in_file(instance, original_mission_title, failed=True)
+                    _run._notify(instance, f"❌ [{project_name}] Devcontainer setup failed: {e}")
+                return False
+            cmd = _dc.wrap_command(
+                cmd, project_path,
+                host_tmp_dir=_host_tmp_dir or "",
+                container_tmp_dir=_container_tmp_dir or "",
+            )
 
         # Capture git HEAD before execution for retry safety check
         pre_head = _run._get_git_head(project_path)

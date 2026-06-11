@@ -106,6 +106,7 @@ _PROJECT_KEY_TYPES = {
     "max_pending_branches": (int, str),
     "mcp": (list,),
     "rtk": (bool, str),
+    "devcontainer": (bool,),
 }
 
 _DEFAULTS_KEY_TYPES = {
@@ -436,6 +437,11 @@ def get_project_mcp(config: dict, project_name: str) -> list:
     if not isinstance(mcp, list):
         return []
     return mcp
+
+
+def get_project_devcontainer_enabled(config: dict, project_name: str) -> bool:
+    """Return whether devcontainer execution mode is enabled for a project."""
+    return bool(get_project_config(config, project_name).get("devcontainer", False))
 
 
 def get_project_focus(config: dict, project_name: str) -> bool:

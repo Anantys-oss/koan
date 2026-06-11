@@ -291,6 +291,8 @@ def build_mission_command(
     plugin_dirs: Optional[List[str]] = None,
     system_prompt: str = "",
     tier: Optional[str] = None,
+    system_prompt_dir: Optional[str] = None,
+    system_prompt_container_dir: Optional[str] = None,
 ) -> Tuple[List[str], List[str]]:
     """Build the CLI command for mission execution (provider-agnostic).
 
@@ -385,6 +387,8 @@ def build_mission_command(
         plugin_dirs=plugin_dirs,
         system_prompt=system_prompt,
         effort=effort,
+        system_prompt_dir=system_prompt_dir,
+        system_prompt_container_dir=system_prompt_container_dir,
     )
 
     # Append thinking args directly — kept outside build_full_command so

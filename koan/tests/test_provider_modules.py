@@ -1774,36 +1774,38 @@ class TestFormatCliError:
 class TestWriteSystemPromptFile:
     def test_creates_readable_file(self, tmp_path):
         from app.provider import _write_system_prompt_file
-        path = _write_system_prompt_file("test content")
+        host_path, cmd_path = _write_system_prompt_file("test content")
         try:
-            assert os.path.isfile(path)
-            with open(path) as f:
+            assert host_path == cmd_path
+            assert os.path.isfile(host_path)
+            with open(host_path) as f:
                 assert f.read() == "test content"
         finally:
-            os.unlink(path)
+            os.unlink(host_path)
 
     def test_file_permissions_are_restrictive(self, tmp_path):
         from app.provider import _write_system_prompt_file
-        path = _write_system_prompt_file("secret prompt")
+        host_path, _ = _write_system_prompt_file("secret prompt")
         try:
             import stat
-            mode = os.stat(path).st_mode
+            mode = os.stat(host_path).st_mode
             # Owner read+write should be set; group/other should not have write
             assert mode & stat.S_IRUSR
             assert mode & stat.S_IWUSR
             assert not (mode & stat.S_IWOTH)
         finally:
-            os.unlink(path)
+            os.unlink(host_path)
 
     def test_file_prefix_and_suffix(self):
         from app.provider import _write_system_prompt_file
-        path = _write_system_prompt_file("x")
+        host_path, cmd_path = _write_system_prompt_file("x")
         try:
-            basename = os.path.basename(path)
+            basename = os.path.basename(host_path)
             assert basename.startswith("koan-sysprompt-")
             assert basename.endswith(".txt")
+            assert host_path == cmd_path
         finally:
-            os.unlink(path)
+            os.unlink(host_path)
 
 
 class TestCleanupManagedPaths:

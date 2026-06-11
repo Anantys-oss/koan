@@ -52,6 +52,26 @@ defaults:
   # Can also be set globally in config.yaml or via KOAN_CLI_PROVIDER env var.
   # cli_provider: "claude"
 
+  # Devcontainer execution — run Claude inside the project's devcontainer.
+  #
+  # Use this for projects with a devcontainer, to enable consistent tooling & environment
+  # Should work with any Linux devcontainer (claude and github added by Kōan, no config changes needed in devcontainer.json)
+  #
+  # When enabled and devcontainer is configured, Kōan:
+  #   - Passes --additional-features and --mount to devcontainer up
+  #     (your devcontainer.json is never modified)
+  #   - Injects three ghcr.io features: claude-code-config-bind-mount
+  #     (mounts ~/.claude), claude-code (CLI), and github-cli (gh)
+  #   - Authenticates gh inside the container via gh auth login --with-token
+  #   - Runs gh setup-git to configure git inside the container
+  #   - Runs Claude via: devcontainer exec --workspace-folder <path> -- claude ...
+  #
+  # Requires @devcontainers/cli: npm install -g @devcontainers/cli
+  # If .devcontainer/ is absent, Kōan logs a warning and runs on the host.
+  #
+  # Default: false
+  # devcontainer: true
+
   # Model overrides — control which models are used per project.
   # Keys match config.yaml models section: mission, chat, lightweight,
   # fallback, review_mode. Empty string = use default model.
@@ -244,6 +264,11 @@ projects:
   #   path: "/Users/yourname/workspace/restricted-repo"
   #   github:
   #     authorized_users: ["alice", "bob"]  # Override global list for this project
+
+  # Example: a project that uses a devcontainer (Ruby app with bundler, DB, etc.)
+  # ruby-app:
+  #   path: "/Users/yourname/workspace/ruby-app"
+  #   devcontainer: true    # run claude inside the devcontainer
 
   # Example: a fork where PRs should be submitted to the parent repo
   # Fork-aware routing: auto-detected via `gh repo view --json parent`,

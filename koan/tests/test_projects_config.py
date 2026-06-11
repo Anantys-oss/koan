@@ -1701,3 +1701,83 @@ projects:
 # get_review_ignore_config (now in config.py, reads from config.yaml)
 # ---------------------------------------------------------------------------
 # Tests for review_ignore config accessor live in test_config.py.
+
+
+# ---------------------------------------------------------------------------
+# devcontainer config key
+# ---------------------------------------------------------------------------
+
+class TestDevcontainerConfig:
+    def test_devcontainer_true_is_valid(self, koan_root):
+        _write_yaml(koan_root, """
+projects:
+  myapp:
+    path: /tmp/myapp
+    devcontainer: true
+""")
+        config = load_projects_config(koan_root)
+        assert config is not None
+
+    def test_devcontainer_false_is_valid(self, koan_root):
+        _write_yaml(koan_root, """
+projects:
+  myapp:
+    path: /tmp/myapp
+    devcontainer: false
+""")
+        config = load_projects_config(koan_root)
+        assert config is not None
+
+    def test_devcontainer_string_raises(self, koan_root):
+        _write_yaml(koan_root, """
+projects:
+  myapp:
+    path: /tmp/myapp
+    devcontainer: "yes"
+""")
+        with pytest.raises(ValueError, match="devcontainer"):
+            load_projects_config(koan_root)
+
+    def test_devcontainer_in_defaults_is_valid(self, koan_root):
+        _write_yaml(koan_root, """
+defaults:
+  devcontainer: true
+projects:
+  myapp:
+    path: /tmp/myapp
+""")
+        config = load_projects_config(koan_root)
+        assert config is not None
+
+    def test_get_project_devcontainer_enabled_true(self, koan_root):
+        from app.projects_config import get_project_devcontainer_enabled
+        _write_yaml(koan_root, """
+projects:
+  myapp:
+    path: /tmp/myapp
+    devcontainer: true
+""")
+        config = load_projects_config(koan_root)
+        assert get_project_devcontainer_enabled(config, "myapp") is True
+
+    def test_get_project_devcontainer_enabled_default_false(self, koan_root):
+        from app.projects_config import get_project_devcontainer_enabled
+        _write_yaml(koan_root, """
+projects:
+  myapp:
+    path: /tmp/myapp
+""")
+        config = load_projects_config(koan_root)
+        assert get_project_devcontainer_enabled(config, "myapp") is False
+
+    def test_get_project_devcontainer_enabled_inherits_default(self, koan_root):
+        from app.projects_config import get_project_devcontainer_enabled
+        _write_yaml(koan_root, """
+defaults:
+  devcontainer: true
+projects:
+  myapp:
+    path: /tmp/myapp
+""")
+        config = load_projects_config(koan_root)
+        assert get_project_devcontainer_enabled(config, "myapp") is True
