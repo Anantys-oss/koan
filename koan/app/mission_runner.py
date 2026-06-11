@@ -123,16 +123,21 @@ class _PipelineTracker:
         def _target():
             try:
                 container["result"] = fn(*args, **kwargs)
-            except Exception as exc:
+                container["ok"] = True
+            except BaseException as exc:
+                # Catch BaseException (not just Exception) so a SystemExit /
+                # KeyboardInterrupt escaping the step is recorded as a failure
+                # rather than silently leaving the container empty (which would
+                # otherwise be misclassified as success below).
+                container["exc"] = exc
+                # Always log: if the caller already returned on timeout, nobody
+                # will read container["exc"], so the orphaned step's failure
+                # must stay observable in production regardless of the (racy)
+                # abandoned flag.
                 if abandoned.is_set():
-                    # The caller already returned on timeout, so nobody will
-                    # read container["exc"]. Log it so the orphaned step's
-                    # failure stays observable in production.
                     _log_runner(
                         "error", f"{step} raised after being abandoned: {exc}"
                     )
-                else:
-                    container["exc"] = exc
 
         t = threading.Thread(target=_target)
         t.daemon = True
@@ -161,6 +166,14 @@ class _PipelineTracker:
 
         if "exc" in container:
             self._record_failure(step, t0, container["exc"])
+            return None
+
+        if "ok" not in container:
+            # Worker terminated without populating result or exc — abnormal
+            # (e.g. interpreter-level teardown). Never record this as success.
+            self._record_failure(
+                step, t0, RuntimeError("worker terminated unexpectedly")
+            )
             return None
 
         elapsed = time.monotonic() - t0

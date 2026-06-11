@@ -2600,6 +2600,21 @@ class TestPipelineTracker:
         # Passing pipeline_expired forces the interruptible path: a worker thread.
         assert seen["thread"] is not threading.current_thread()
 
+    def test_run_step_base_exception_recorded_as_fail(self):
+        """A BaseException escaping the worker is recorded as fail, not success."""
+        from app.mission_runner import _PipelineTracker
+        import threading
+
+        tracker = _PipelineTracker()
+        expired = threading.Event()  # supplied but never set
+
+        def boom():
+            raise SystemExit("worker exit")
+
+        result = tracker.run_step("exit_step", boom, pipeline_expired=expired)
+        assert result is None
+        assert tracker.steps["exit_step"]["status"] == "fail"
+
     def test_run_step_inline_when_no_deadline(self):
         """Without pipeline_expired the step runs inline (no worker thread)."""
         from app.mission_runner import _PipelineTracker
