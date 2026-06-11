@@ -2552,6 +2552,106 @@ class TestPipelineTracker:
         assert result is None
         assert tracker.steps["timed_out"]["status"] == "timeout"
 
+    def test_run_step_interrupts_hung_step(self):
+        """If pipeline_expired becomes set during execution, the step is interrupted."""
+        from app.mission_runner import _PipelineTracker
+        import threading
+        import time
+
+        tracker = _PipelineTracker()
+        expired = threading.Event()
+        barrier = threading.Barrier(2, timeout=10)
+
+        def slow_fn():
+            barrier.wait()  # signal that we're running
+            # Block on the event itself rather than polling with time.sleep:
+            # this daemon thread is abandoned on timeout (never joined), and a
+            # lingering time.sleep loop would leak calls into a later test that
+            # mocks time.sleep. expired.wait() touches no time.sleep and wakes
+            # immediately when the deadline fires.
+            expired.wait()
+
+        def run_in_bg():
+            tracker.run_step("hung_step", slow_fn, pipeline_expired=expired)
+
+        bg = threading.Thread(target=run_in_bg)
+        bg.start()
+        barrier.wait()  # wait for slow_fn to start
+        time.sleep(0.05)  # small buffer
+        expired.set()
+        bg.join(timeout=3.0)
+        assert not bg.is_alive()
+        assert tracker.steps["hung_step"]["status"] == "timeout"
+        assert "interrupted after" in tracker.steps["hung_step"]["detail"]
+
+    def test_run_step_inline_when_no_deadline(self):
+        """Without pipeline_expired the step runs inline (no worker thread)."""
+        from app.mission_runner import _PipelineTracker
+        import threading
+
+        tracker = _PipelineTracker()
+        seen = {}
+
+        def fn():
+            seen["thread"] = threading.current_thread()
+            return 7
+
+        result = tracker.run_step("inline_step", fn)
+        assert result == 7
+        assert tracker.steps["inline_step"]["status"] == "success"
+        # Fast path runs in the caller's thread, not a spawned worker.
+        assert seen["thread"] is threading.current_thread()
+
+    def test_run_step_logs_exception_from_abandoned_thread(self):
+        """An exception raised after the step is abandoned is logged, not lost."""
+        from app.mission_runner import _PipelineTracker
+        import threading
+        from unittest.mock import patch
+
+        tracker = _PipelineTracker()
+        expired = threading.Event()
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_then_raise():
+            started.set()
+            release.wait(timeout=5)
+            raise RuntimeError("late boom")
+
+        logged = []
+        error_logged = threading.Event()
+
+        def _capture(cat, msg):
+            logged.append((cat, msg))
+            if cat == "error" and "abandoned" in msg:
+                error_logged.set()
+
+        with patch("app.mission_runner._log_runner", side_effect=_capture):
+
+            def run_in_bg():
+                tracker.run_step(
+                    "abandoned_step", slow_then_raise, pipeline_expired=expired
+                )
+
+            bg = threading.Thread(target=run_in_bg)
+            bg.start()
+            started.wait(timeout=3)
+            expired.set()  # abandon the step before it raises
+            bg.join(timeout=3.0)
+            assert not bg.is_alive()
+            assert tracker.steps["abandoned_step"]["status"] == "timeout"
+
+            # Now let the orphaned worker raise; its exception must be logged.
+            # Block until the worker actually logs so the patch stays active
+            # (the worker runs after run_step has already returned).
+            release.set()
+            assert error_logged.wait(timeout=5), f"no abandoned-thread log: {logged}"
+
+        assert any(
+            cat == "error" and "abandoned" in msg and "late boom" in msg
+            for cat, msg in logged
+        )
+
     def test_skipped_status_for_unreliable_quota_check(self):
         """Regression: quota_check used 'warning' status which is not in VALID_STATUSES.
 

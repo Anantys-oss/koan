@@ -73,24 +73,99 @@ class _PipelineTracker:
     def run_step(self, step: str, fn, *args, pipeline_expired=None, **kwargs):
         """Run a step function, recording its outcome automatically.
 
-        If pipeline_expired is set, records 'timeout' and skips execution.
+        If ``pipeline_expired`` is set before the step starts, records
+        'timeout' and skips execution. If it becomes set while the step is
+        running, the step is *abandoned* (not killed) and recorded as
+        'timeout': the underlying daemon thread — and any subprocess it
+        spawned (e.g. a Claude CLI call in reflection or security review) —
+        keeps running in the background until it finishes on its own. This
+        unblocks the agent loop immediately at the cost of leaving the
+        orphaned work to complete silently. An exception raised by an
+        abandoned step is logged (it cannot be propagated to the caller,
+        which has already returned).
+
         On exception, records 'fail' with the error message and returns None.
         On success, records 'success' and returns the function's result.
         """
         if pipeline_expired is not None and pipeline_expired.is_set():
             self.record(step, "timeout", "pipeline deadline exceeded")
             return None
+
+        t0 = time.monotonic()
+
+        # Fast path: interruption is impossible when no deadline event is
+        # supplied, so run inline and skip the thread/poll overhead.
+        if pipeline_expired is None:
+            return self._run_inline(step, fn, args, kwargs, t0)
+
+        return self._run_interruptible(step, fn, args, kwargs, t0, pipeline_expired)
+
+    def _run_inline(self, step, fn, args, kwargs, t0):
+        """Run a step directly in the calling thread (no interruption)."""
         try:
-            t0 = time.monotonic()
             result = fn(*args, **kwargs)
-            elapsed = time.monotonic() - t0
-            self.record(step, "success", f"{elapsed:.1f}s")
-            return result
         except Exception as e:
-            elapsed = time.monotonic() - t0
-            self.record(step, "fail", f"failed after {elapsed:.0f}s: {e}")
-            _log_runner("error", f"{step} failed after {elapsed:.0f}s: {e}")
+            self._record_failure(step, t0, e)
             return None
+        elapsed = time.monotonic() - t0
+        self.record(step, "success", f"{elapsed:.1f}s")
+        return result
+
+    def _run_interruptible(self, step, fn, args, kwargs, t0, pipeline_expired):
+        """Run a step in a daemon thread, polling the pipeline deadline.
+
+        If the deadline fires mid-flight the step is abandoned (see
+        ``run_step`` docstring); otherwise behaves like an inline run.
+        """
+        container: Dict[str, Any] = {}
+        abandoned = threading.Event()
+
+        def _target():
+            try:
+                container["result"] = fn(*args, **kwargs)
+            except Exception as exc:
+                if abandoned.is_set():
+                    # The caller already returned on timeout, so nobody will
+                    # read container["exc"]. Log it so the orphaned step's
+                    # failure stays observable in production.
+                    _log_runner(
+                        "error", f"{step} raised after being abandoned: {exc}"
+                    )
+                else:
+                    container["exc"] = exc
+
+        t = threading.Thread(target=_target)
+        t.daemon = True
+        t.start()
+
+        while t.is_alive():
+            t.join(timeout=1.0)
+            if pipeline_expired.is_set():
+                elapsed = time.monotonic() - t0
+                abandoned.set()
+                self.record(step, "timeout", f"interrupted after {elapsed:.1f}s")
+                _log_runner(
+                    "warn",
+                    f"{step} interrupted after {elapsed:.1f}s; orphaned thread "
+                    "left running in background (not killed)",
+                )
+                return None
+
+        t.join()  # ensure the worker's writes to container are visible
+
+        if "exc" in container:
+            self._record_failure(step, t0, container["exc"])
+            return None
+
+        elapsed = time.monotonic() - t0
+        self.record(step, "success", f"{elapsed:.1f}s")
+        return container.get("result")
+
+    def _record_failure(self, step, t0, exc):
+        """Record a step failure with elapsed time and log it."""
+        elapsed = time.monotonic() - t0
+        self.record(step, "fail", f"failed after {elapsed:.0f}s: {exc}")
+        _log_runner("error", f"{step} failed after {elapsed:.0f}s: {exc}")
 
     def summary_lines(self) -> List[str]:
         """Return a compact summary of all recorded steps."""
@@ -1474,7 +1549,7 @@ def run_post_mission(
             _pipeline_expired.set(),
             print(
                 f"[mission_runner] Post-mission pipeline exceeded {_pm_timeout}s — "
-                "skipping remaining steps",
+                "interrupting hung steps and skipping remaining ones",
                 file=sys.stderr,
             ),
         ),
