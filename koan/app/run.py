@@ -703,8 +703,8 @@ def _handle_update(koan_root: str, instance: str, count: int) -> bool:
 def _check_inbox_during_pause(koan_root: str, instance: str) -> None:
     """Process /inbox signal while paused.
 
-    Consumes the check-notifications signal and runs GitHub/Jira notification
-    fetching inline — no quota needed since it's just API polling.
+    Checks each provider independently so one failure doesn't block the other.
+    Signal is consumed only after fetching completes (success or per-provider error).
     """
     from app.loop_manager import (
         _consume_check_notifications_signal,
@@ -712,18 +712,24 @@ def _check_inbox_during_pause(koan_root: str, instance: str) -> None:
         process_jira_notifications,
     )
 
-    if not _consume_check_notifications_signal(koan_root):
+    signal_path = Path(koan_root, ".koan-check-notifications")
+    if not signal_path.exists():
         return
 
     log("pause", "Inbox check requested — fetching notifications while paused")
+    total = 0
     try:
-        gh = process_github_notifications(koan_root, instance, force=True)
-        jira = process_jira_notifications(koan_root, instance, force=True)
-        total = gh + jira
-        if total > 0:
-            log("pause", f"Inbox: {total} mission(s) queued (will run after resume)")
+        total += process_github_notifications(koan_root, instance, force=True)
     except Exception as e:
-        log("error", f"Inbox check during pause failed: {e}")
+        log("error", f"GitHub inbox check during pause failed: {e}")
+    try:
+        total += process_jira_notifications(koan_root, instance, force=True)
+    except Exception as e:
+        log("error", f"Jira inbox check during pause failed: {e}")
+
+    _consume_check_notifications_signal(koan_root)
+    if total > 0:
+        log("pause", f"Inbox: {total} mission(s) queued (will run after resume)")
 
 
 def handle_pause(

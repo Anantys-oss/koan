@@ -218,12 +218,13 @@ If Kōan misclassifies your message, use `/chat` to force chat mode:
 - `/check_notifications` — After posting a GitHub comment that should trigger a mission
 </details>
 
-**`/inbox`** — Force a GitHub notification check and show how many GitHub-originated missions are queued.
+**`/inbox`** — Force a GitHub notification check and show how many GitHub-originated missions are queued. Works while paused — notifications are fetched inline and missions queue for pickup after resume.
 
 <details>
 <summary>Use cases</summary>
 
-- `/inbox` — Quick check: "do I have GitHub mail?" — triggers a fetch and shows pending 📬 mission count
+- `/inbox` — Quick check: "do I have GitHub mail?" — triggers a fetch and shows pending mission count
+- `/inbox` while paused — Fetch notifications even during quota pause; queued missions run after resume
 </details>
 
 **`/verbose`** / **`/silent`** — Toggle real-time progress updates. When verbose is on, Kōan sends progress messages as it works.
@@ -1977,7 +1978,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/live` | `/progress` | B | Show live progress of current mission |
 | `/logs [run\|awake\|all]` | — | B | Show last 20 lines from logs (default: run) |
 | `/check_notifications` | `/read` | B | Force immediate GitHub + Jira notification check |
-| `/inbox` | — | B | Force GitHub notification check + show queued mail count |
+| `/inbox` | — | B | Force GitHub notification check + show queued mail count (works while paused) |
 | `/quota [N]` | `/q` | B | Check LLM quota (live), or override remaining % |
 | `/chat <msg>` | — | B | Force chat mode (bypass mission detection) |
 | `/version` | `/ver` | B | Show Kōan version |

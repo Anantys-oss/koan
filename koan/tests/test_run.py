@@ -1055,6 +1055,32 @@ class TestCheckInboxDuringPause:
 
         assert result == "resume"
 
+    @patch("app.run.time.sleep")
+    def test_github_failure_does_not_block_jira(self, mock_sleep, koan_root):
+        """GitHub error should not prevent Jira notifications from being fetched."""
+        from app.run import handle_pause
+
+        instance = str(koan_root / "instance")
+        (koan_root / ".koan-pause").touch()
+        (koan_root / ".koan-check-notifications").write_text("requested")
+
+        sleep_count = [0]
+        def remove_pause_after_2(duration):
+            sleep_count[0] += 1
+            if sleep_count[0] >= 2:
+                (koan_root / ".koan-pause").unlink(missing_ok=True)
+
+        mock_sleep.side_effect = remove_pause_after_2
+
+        with patch("app.pause_manager.check_and_resume", return_value=None), \
+             patch("app.loop_manager.process_github_notifications", side_effect=RuntimeError("gh failed")), \
+             patch("app.loop_manager.process_jira_notifications", return_value=2) as mock_jira:
+            result = handle_pause(str(koan_root), instance, 5)
+
+        assert result == "resume"
+        mock_jira.assert_called_once_with(str(koan_root), instance, force=True)
+        assert not (koan_root / ".koan-check-notifications").exists()
+
 
 # ---------------------------------------------------------------------------
 # Test: run_claude_task
