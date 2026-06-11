@@ -594,3 +594,29 @@ class TestReorderMission:
             headers=_AUTH,
         )
         assert resp.status_code == 422
+
+    def test_reorder_boolean_target_returns_422(self, api_client, instance_dir):
+        resp = api_client.post(
+            "/v1/missions", json={"text": "Bool test"}, headers=_AUTH
+        )
+        mission_id = resp.get_json()["id"]
+
+        resp = api_client.post(
+            "/v1/missions/reorder",
+            json={"mission_id": mission_id, "target_position": True},
+            headers=_AUTH,
+        )
+        assert resp.status_code == 422
+
+    def test_reorder_float_target_returns_422(self, api_client, instance_dir):
+        resp = api_client.post(
+            "/v1/missions", json={"text": "Float test"}, headers=_AUTH
+        )
+        mission_id = resp.get_json()["id"]
+
+        resp = api_client.post(
+            "/v1/missions/reorder",
+            json={"mission_id": mission_id, "target_position": 1.9},
+            headers=_AUTH,
+        )
+        assert resp.status_code == 422
