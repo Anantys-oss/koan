@@ -251,6 +251,13 @@ def run_implement(
             logger.warning(
                 "[implement] Could not checkout %s: %s", landed_branch, stderr,
             )
+            notify_fn(
+                f"⚠️ Work landed on `{landed_branch}` but checkout failed — "
+                "skipping PR submission. A human may need to open the PR manually."
+            )
+            return True, (
+                f"Work landed on {landed_branch} but could not switch to it for PR submission."
+            )
 
     # Post-implementation: submit draft PR (only for GitHub issues with repo info)
     _progress("Implementation complete")

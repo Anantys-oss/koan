@@ -1622,6 +1622,37 @@ class TestEscalatedRetry:
             "checkout", "koan/implement-42", cwd="/project",
         )
 
+    def test_checkout_failure_skips_pr_submission(self):
+        """When checkout of detected feature branch fails, return success
+        but skip PR submission to avoid submitting from main."""
+        notify = MagicMock()
+        exec_mock = MagicMock(return_value="Done")
+        checkout_mock = MagicMock(return_value=(1, "", "error: pathspec not found"))
+        submit_mock = MagicMock(return_value="https://github.com/o/r/pull/99")
+
+        with patch(f"{_IMPL_MODULE}.fetch_issue",
+                    return_value=_github_issue(title="Title", body=self._BODY)), \
+             patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
+             patch(f"{_IMPL_MODULE}._execute_implementation", exec_mock), \
+             patch(f"{_IMPL_MODULE}.get_commit_subjects", return_value=[]), \
+             patch(f"{_IMPL_MODULE}.get_current_branch", return_value="main"), \
+             patch("app.config.get_branch_prefix", return_value="koan/"), \
+             patch("app.git_utils.get_commit_subjects",
+                    return_value=["feat: add X"]), \
+             patch("app.git_utils.run_git", checkout_mock), \
+             patch(f"{_IMPL_MODULE}._submit_implement_pr", submit_mock):
+            ok, msg = run_implement(
+                "/project",
+                "https://github.com/o/r/issues/42",
+                notify_fn=notify,
+            )
+
+        assert ok
+        assert "could not switch" in msg.lower()
+        submit_mock.assert_not_called()
+        all_notified = " ".join(c.args[0] for c in notify.call_args_list)
+        assert "skipping PR submission" in all_notified
+
     def test_escalated_retry_injects_escalation_preamble_into_context(self):
         """_execute_implementation with escalate=True prepends the retry-context fragment."""
         escalation_text = "## Escalated Retry — Committed Changes Required"
