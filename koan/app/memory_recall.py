@@ -83,6 +83,21 @@ def _split_learnings(content: str) -> List[str]:
     return out
 
 
+def build_fts5_query(text: str) -> str:
+    """Build a safe FTS5 query from raw natural-language text.
+
+    Calls ``tokenize()`` then double-quotes each surviving token and joins
+    with ``OR``.  Returns ``""`` when no tokens survive filtering.
+
+    Double-quoting neutralises FTS5 operators (``NEAR``, ``NOT``, ``OR``,
+    ``AND``) that might survive tokenization as valid word tokens.
+    """
+    tokens = tokenize(text)
+    if not tokens:
+        return ""
+    return " OR ".join(f'"{t}"' for t in sorted(tokens))
+
+
 def score_and_select(
     learnings_content: str,
     mission_text: str,
