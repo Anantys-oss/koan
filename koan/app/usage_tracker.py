@@ -282,7 +282,8 @@ def _get_budget_mode() -> str:
         config = load_config()
 
         # unlimited_quota is a hard override — skip all proactive gating
-        if config.get("usage", {}).get("unlimited_quota", False):
+        from app.config import is_unlimited_quota
+        if is_unlimited_quota():
             return "disabled"
 
         mode = config.get("usage", {}).get("budget_mode", "session_only")
