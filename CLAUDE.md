@@ -132,7 +132,8 @@ Communication between processes happens through shared files in `instance/` with
 - **`notification_config.py`** — Shared notification polling configuration helpers (interval resolution across GitHub/Jira providers)
 
 **Other:**
-- **`memory_manager.py`** — Per-project memory isolation, compaction, and cleanup. Includes semantic learnings compaction (Claude-powered dedup/merge), global memory file rotation, and configurable thresholds via `config.yaml` `memory:` section
+- **`memory_manager.py`** — Per-project memory isolation, compaction, and cleanup. Includes semantic learnings compaction (Claude-powered dedup/merge), global memory file rotation, and configurable thresholds via `config.yaml` `memory:` section. Dual-writes to SQLite FTS5 index alongside JSONL truth log. `read_memory_window()` supports FTS5-ranked two-phase retrieval (relevance + recency fill).
+- **`memory_db.py`** — SQLite FTS5 secondary index over the JSONL memory truth log. Provides `ensure_db()`, `insert_entry()`, `search_entries()` (BM25-ranked), `search_learnings()` (transient in-memory FTS5), `recent_entries()`, `delete_before()`, and `migrate_jsonl_to_sqlite()`. All functions catch `DatabaseError` and return empty results. Graceful degradation when FTS5 unavailable.
 - **`usage_tracker.py`** — Per-provider budget tracking; decides autonomous mode (REVIEW/IMPLEMENT/DEEP/WAIT) based on each provider's independent quota percentage. Pure parser + threshold class — burn-rate-driven downgrades live in `iteration_manager._downgrade_if_burning_fast` next to the existing affordability downgrade.
 - **`burn_rate.py`** — Rolling burn-rate estimator (% session quota per minute). Maintains a 20-sample circular buffer in `instance/.burn-rate.json` with `fcntl.flock(LOCK_SH)` on reads, exposes `record_run()`, `burn_rate_pct_per_minute()` (total cost / span across all samples), `time_to_exhaustion(session_pct, mode=None)`, and the canonical `MODE_MULTIPLIERS` table shared with `usage_tracker.can_afford_run`. Also tracks the last-warning timestamp so the iteration manager fires at most one Telegram alert per quota cycle.
 - **`recover.py`** — Crash recovery for stale in-progress missions
@@ -178,7 +179,7 @@ Extensible command plugin system. Each skill lives in `skills/<scope>/<skill-nam
 - `outbox.md` — Bot → Telegram message queue
 - `config.yaml` — Per-instance configuration (tools, auto-merge rules)
 - `soul.md` — Agent personality definition
-- `memory/` — Global summary + per-project learnings/context
+- `memory/` — Global summary + per-project learnings/context + `memory.db` (SQLite FTS5 index)
 - `journal/` — Daily logs organized as `YYYY-MM-DD/project.md`
 - `events/` — One-shot scheduled missions (JSON files consumed by `event_scheduler.py`)
 - `hooks/` — User-defined Python hook modules for lifecycle events (see `instance.example/hooks/README.md`)
