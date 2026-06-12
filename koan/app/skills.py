@@ -111,6 +111,7 @@ class Skill:
     # footers (e.g. "mission"). When set, the agent loop forwards it to the
     # skill subprocess via ``KOAN_MISSION_MODEL_KEY``.
     model_key: str = ""
+    iterative: bool = False
 
     @property
     def qualified_name(self) -> str:
@@ -272,6 +273,7 @@ def parse_skill_md(path: Path) -> Optional[Skill]:
     github_context_aware = _parse_bool_flag(meta, "github_context_aware")
     caveman_enabled = _parse_bool_flag(meta, "caveman")
     forward_result_enabled = _parse_bool_flag(meta, "forward_result")
+    iterative = _parse_bool_flag(meta, "iterative")
 
     # Parse title_markers (optional inline list or comma-separated scalar).
     title_markers_raw = meta.get("title_markers", [])
@@ -333,6 +335,7 @@ def parse_skill_md(path: Path) -> Optional[Skill]:
         sub_commands=sub_commands,
         requirements=requirements,
         model_key=model_key,
+        iterative=iterative,
     )
 
 

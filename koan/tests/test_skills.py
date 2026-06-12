@@ -385,6 +385,27 @@ class TestParseSkillMd:
         assert skill is not None
         assert skill.cli_skill is None
 
+    def test_iterative_flag_true(self, tmp_path):
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text("---\nname: impl\nscope: core\niterative: true\n---\nbody")
+        skill = parse_skill_md(skill_md)
+        assert skill is not None
+        assert skill.iterative is True
+
+    def test_iterative_flag_false(self, tmp_path):
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text("---\nname: impl\nscope: core\niterative: false\n---\nbody")
+        skill = parse_skill_md(skill_md)
+        assert skill is not None
+        assert skill.iterative is False
+
+    def test_iterative_flag_defaults_false(self, tmp_path):
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text("---\nname: impl\nscope: core\n---\nbody")
+        skill = parse_skill_md(skill_md)
+        assert skill is not None
+        assert skill.iterative is False
+
 
 class TestForwardResultFrontmatter:
     """Tests for forward_result + title_markers SKILL.md fields."""

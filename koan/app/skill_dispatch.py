@@ -347,6 +347,28 @@ def mission_model_key(command: str, instance_dir: str) -> str:
     return ""
 
 
+def resolve_skill_iterative(command: str, instance_dir: str = "") -> bool:
+    """Return whether the skill for *command* declares ``iterative: true``."""
+    if not command:
+        return False
+    canonical = _resolve_canonical(command)
+    try:
+        from pathlib import Path
+        from app.skills import build_registry
+        instance_skills = Path(instance_dir) / "skills"
+        extra = [instance_skills] if instance_skills.is_dir() else []
+        registry = build_registry(extra)
+        skill = registry.find_by_command(canonical)
+        if skill:
+            return skill.iterative
+    except Exception as exc:
+        from app.debug import debug_log
+        debug_log(
+            f"[skill_dispatch] iterative lookup failed for '{command}': {exc}"
+        )
+    return False
+
+
 def build_skill_command(
     command: str,
     args: str,

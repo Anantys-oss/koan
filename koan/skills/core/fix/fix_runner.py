@@ -299,14 +299,27 @@ def _execute_fix(
         existing_branch=existing_branch,
     )
 
+    from app.claude_step import run_skill_loop
     from app.cli_provider import CLAUDE_TOOLS, run_command_streaming
     from app.config import get_skill_max_turns, get_skill_timeout
-    return run_command_streaming(
-        prompt, project_path,
-        allowed_tools=sorted(CLAUDE_TOOLS),
-        model_key="mission",
-        max_turns=get_skill_max_turns(), timeout=get_skill_timeout(),
+
+    def _step_fn(_evidence):
+        return run_command_streaming(
+            prompt, project_path,
+            allowed_tools=sorted(CLAUDE_TOOLS),
+            model_key="mission",
+            max_turns=get_skill_max_turns(), timeout=get_skill_timeout(),
+        )
+
+    loop_outcome = run_skill_loop(
+        step_fn=_step_fn,
+        evidence_fn=lambda _a, _r: "",
+        should_continue_fn=lambda _a, _r: (False, "done"),
+        max_attempts=1,
     )
+
+    attempts = loop_outcome.get("attempts", [])
+    return attempts[0]["result"] if attempts else ""
 
 
 def _build_prompt(
