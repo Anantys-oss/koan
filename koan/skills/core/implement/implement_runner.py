@@ -166,6 +166,16 @@ def run_implement(
         project_name or guess_project_name(project_path), project_path,
     )
 
+    # Snapshot the expected feature branch tip before running, so the
+    # post-run fallback check can distinguish fresh work from stale branches.
+    from app.config import get_branch_prefix
+    from app.git_utils import get_commit_subjects as git_commits, run_git
+    expected_branch = f"{get_branch_prefix()}implement-{issue_number}"
+    rc, pre_run_tip, _ = run_git(
+        "rev-parse", "--verify", expected_branch, cwd=project_path,
+    )
+    pre_run_tip = pre_run_tip.strip() if rc == 0 else None
+
     # Invoke Claude with the plan
     _progress("Starting implementation with Claude...")
     effective_context = (context or "Implement the full plan.") + improvement_context
@@ -196,15 +206,17 @@ def run_implement(
         if bool(commits) and not on_base:
             return branch
         if on_base:
-            from app.config import get_branch_prefix
-            from app.git_utils import get_commit_subjects as git_commits
-            expected = f"{get_branch_prefix()}implement-{issue_number}"
             if git_commits(
                 cwd=project_path,
                 base_branch=effective_base_branch,
-                branch=expected,
+                branch=expected_branch,
             ):
-                return expected
+                rc, post_tip, _ = run_git(
+                    "rev-parse", "--verify", expected_branch, cwd=project_path,
+                )
+                post_tip = post_tip.strip() if rc == 0 else None
+                if post_tip and post_tip != pre_run_tip:
+                    return expected_branch
         return None
 
     landed_branch = _work_landed() if output else None
@@ -245,7 +257,6 @@ def run_implement(
     # so downstream PR submission and notifications see the correct branch.
     current = get_current_branch(project_path)
     if landed_branch and landed_branch != current:
-        from app.git_utils import run_git
         rc, _, stderr = run_git("checkout", landed_branch, cwd=project_path)
         if rc != 0:
             logger.warning(

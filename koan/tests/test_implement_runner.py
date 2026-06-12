@@ -1513,10 +1513,10 @@ class TestEscalatedRetry:
         exec_mock = MagicMock(return_value="Done")
         # _work_landed() is called twice (once per pass).
         # Each call reads get_current_branch then get_commit_subjects.
-        # Pass 1: branch=main, commits=[] → False (feature branch check also
-        #   runs but git_utils.get_commit_subjects is unpatched → returns [])
+        # Pass 1: branch=main, commits=[] → False (feature branch fallback also
+        #   runs but git_utils.get_commit_subjects returns [] → no match)
         # Pass 2 (after retry): branch=koan/implement-42, commits=["feat"] → True
-        # Post-retry checkout check (line 246) = 3rd call.
+        # Post-retry checkout check (line ~258) = 3rd call.
         # Final get_current_branch call for the summary notification = 4th call.
         branch_side_effect = ["main", "koan/implement-42", "koan/implement-42", "koan/implement-42"]
         commit_subjects_side_effect = [[], ["feat: add X"]]
@@ -1529,6 +1529,8 @@ class TestEscalatedRetry:
                     side_effect=commit_subjects_side_effect), \
              patch(f"{_IMPL_MODULE}.get_current_branch",
                     side_effect=branch_side_effect), \
+             patch("app.config.get_branch_prefix", return_value="koan/"), \
+             patch("app.git_utils.run_git", return_value=(1, "", "")), \
              patch(f"{_IMPL_MODULE}._submit_implement_pr", return_value=None):
             ok, msg = run_implement(
                 "/project",
@@ -1555,6 +1557,8 @@ class TestEscalatedRetry:
                     return_value=["feat: add X"]), \
              patch(f"{_IMPL_MODULE}.get_current_branch",
                     return_value="koan/implement-42"), \
+             patch("app.config.get_branch_prefix", return_value="koan/"), \
+             patch("app.git_utils.run_git", return_value=(1, "", "")), \
              patch(f"{_IMPL_MODULE}._submit_implement_pr", return_value=None):
             ok, _ = run_implement(
                 "/project",
@@ -1574,7 +1578,10 @@ class TestEscalatedRetry:
              patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
              patch(f"{_IMPL_MODULE}._execute_implementation", return_value="Done"), \
              patch(f"{_IMPL_MODULE}.get_commit_subjects", return_value=[]), \
-             patch(f"{_IMPL_MODULE}.get_current_branch", return_value="main"):
+             patch(f"{_IMPL_MODULE}.get_current_branch", return_value="main"), \
+             patch("app.config.get_branch_prefix", return_value="koan/"), \
+             patch("app.git_utils.run_git", return_value=(1, "", "")), \
+             patch("app.git_utils.get_commit_subjects", return_value=[]):
             ok, msg = run_implement(
                 "/project",
                 "https://github.com/o/r/issues/42",
@@ -1596,8 +1603,23 @@ class TestEscalatedRetry:
         no retry, and runner checks out the feature branch for PR submission."""
         notify = MagicMock()
         exec_mock = MagicMock(return_value="Done")
-        checkout_mock = MagicMock(return_value=(0, "", ""))
         submit_mock = MagicMock(return_value="https://github.com/o/r/pull/99")
+
+        # run_git is called for:
+        #   1. pre-run rev-parse (branch absent → rc=1)
+        #   2. post-run rev-parse inside _work_landed (branch now exists → new tip)
+        #   3. checkout of the detected branch
+        def run_git_side_effect(*args, cwd=None, **kwargs):
+            if args[:2] == ("rev-parse", "--verify"):
+                if not hasattr(run_git_side_effect, "_revparse_call"):
+                    run_git_side_effect._revparse_call = 0
+                run_git_side_effect._revparse_call += 1
+                if run_git_side_effect._revparse_call == 1:
+                    return (1, "", "unknown revision")
+                return (0, "abc123", "")
+            if args[0] == "checkout":
+                return (0, "", "")
+            return (0, "", "")
 
         with patch(f"{_IMPL_MODULE}.fetch_issue",
                     return_value=_github_issue(title="Title", body=self._BODY)), \
@@ -1608,7 +1630,7 @@ class TestEscalatedRetry:
              patch("app.config.get_branch_prefix", return_value="koan/"), \
              patch("app.git_utils.get_commit_subjects",
                     return_value=["feat: add X"]), \
-             patch("app.git_utils.run_git", checkout_mock), \
+             patch("app.git_utils.run_git", side_effect=run_git_side_effect), \
              patch(f"{_IMPL_MODULE}._submit_implement_pr", submit_mock):
             ok, _ = run_implement(
                 "/project",
@@ -1618,17 +1640,29 @@ class TestEscalatedRetry:
 
         assert ok
         assert exec_mock.call_count == 1
-        checkout_mock.assert_any_call(
-            "checkout", "koan/implement-42", cwd="/project",
-        )
 
     def test_checkout_failure_skips_pr_submission(self):
         """When checkout of detected feature branch fails, return success
         but skip PR submission to avoid submitting from main."""
         notify = MagicMock()
         exec_mock = MagicMock(return_value="Done")
-        checkout_mock = MagicMock(return_value=(1, "", "error: pathspec not found"))
         submit_mock = MagicMock(return_value="https://github.com/o/r/pull/99")
+
+        # run_git calls:
+        #   1. pre-run rev-parse → branch absent (rc=1)
+        #   2. post-run rev-parse → branch exists with new tip
+        #   3. checkout → fails
+        def run_git_side_effect(*args, cwd=None, **kwargs):
+            if args[:2] == ("rev-parse", "--verify"):
+                if not hasattr(run_git_side_effect, "_revparse_call"):
+                    run_git_side_effect._revparse_call = 0
+                run_git_side_effect._revparse_call += 1
+                if run_git_side_effect._revparse_call == 1:
+                    return (1, "", "unknown revision")
+                return (0, "abc123", "")
+            if args[0] == "checkout":
+                return (1, "", "error: pathspec not found")
+            return (0, "", "")
 
         with patch(f"{_IMPL_MODULE}.fetch_issue",
                     return_value=_github_issue(title="Title", body=self._BODY)), \
@@ -1639,7 +1673,7 @@ class TestEscalatedRetry:
              patch("app.config.get_branch_prefix", return_value="koan/"), \
              patch("app.git_utils.get_commit_subjects",
                     return_value=["feat: add X"]), \
-             patch("app.git_utils.run_git", checkout_mock), \
+             patch("app.git_utils.run_git", side_effect=run_git_side_effect), \
              patch(f"{_IMPL_MODULE}._submit_implement_pr", submit_mock):
             ok, msg = run_implement(
                 "/project",
