@@ -1089,11 +1089,16 @@ def _move_pending_to_section(
 
 
 def _flush_in_progress_to_done(content: str) -> str:
-    """Move all In Progress missions to Done.
+    """Move all stale In Progress missions to Failed with a [flushed] tag.
 
     Sanity enforcement: only one mission should be in progress at a time.
     When a new mission is about to start, any stale In Progress missions
-    are automatically completed with a timestamp.
+    are moved to Failed \u2014 not Done \u2014 because they never completed successfully.
+    Marking them Done (\u2705) would produce false history.
+
+    Under normal operation this path never fires because recover.py moves
+    stale In Progress entries back to Pending at startup. This is a second
+    line of defence for edge cases recover.py misses (e.g. complex ### missions).
     """
     sections = parse_sections(content)
     stale = sections.get("in_progress", [])
@@ -1105,13 +1110,13 @@ def _flush_in_progress_to_done(content: str) -> str:
         first_line = item.split("\n")[0].strip()
         if first_line.startswith("- "):
             first_line = first_line[2:]
-        content = _move_in_progress_to_done(content, first_line)
+        content = _flush_abandoned_in_progress(content, first_line)
 
     return content
 
 
-def _move_in_progress_to_done(content: str, needle: str) -> str:
-    """Move a single mission from In Progress to Done with a timestamp."""
+def _flush_abandoned_in_progress(content: str, needle: str) -> str:
+    """Move a single stale In Progress mission to Failed with a [flushed] tag."""
     result = _remove_item_by_text(content, needle, "in_progress")
     if result is None:
         return content
@@ -1121,28 +1126,30 @@ def _move_in_progress_to_done(content: str, needle: str) -> str:
     display = removed.removeprefix("- ") if removed.startswith("- ") else removed
 
     timestamp = time.strftime("%Y-%m-%d %H:%M")
-    entry = f"- {display} \u2705 ({timestamp})"
+    entry = f"- {display} \u274c ({timestamp}) [flushed]"
 
     lines = updated.splitlines()
     boundaries = find_section_boundaries(lines)
-    if "done" in boundaries:
-        start, end = boundaries["done"]
+    if "failed" in boundaries:
+        start, end = boundaries["failed"]
         insert_at = start + 1
         while insert_at < end and lines[insert_at].strip() == "":
             insert_at += 1
         lines.insert(insert_at, entry)
         return normalize_content("\n".join(lines))
 
-    return normalize_content(updated + f"\n## Done\n\n{entry}\n")
+    return normalize_content(updated + f"\n## Failed\n\n{entry}\n")
 
 
 def start_mission(content: str, mission_text: str) -> str:
     """Move a mission from Pending to In Progress with a started timestamp.
 
     Used at the beginning of mission execution to mark it as active.
-    As a sanity enforcement, any existing In Progress missions are moved
-    to Done before the new mission is inserted — only one mission can be
-    in progress at a time.
+    As a sanity enforcement, any stale In Progress missions are moved to
+    Failed (with a [flushed] tag) before the new mission is inserted.
+    Under normal operation In Progress is empty here because recover.py
+    handles stale entries at startup; this is a fallback safety net.
+
     Returns content unchanged if the mission is not found in Pending.
     """
     needle = mission_text.strip()
@@ -1164,7 +1171,10 @@ def start_mission(content: str, mission_text: str) -> str:
     # Add started timestamp
     entry = stamp_started(entry)
 
-    # Sanity enforcement: move any existing In Progress missions to Done
+    # Sanity enforcement: move any stale In Progress missions to Failed.
+    # Under normal operation In Progress is always empty here because
+    # recover.py runs at startup. This is a fallback for cases recover.py
+    # misses (e.g. complex ### missions — see analysis-state-bugs.md B2).
     updated = _flush_in_progress_to_done(updated)
 
     lines = updated.splitlines()
