@@ -146,12 +146,15 @@ def _get_usage_decision(usage_md: Path, count: int, projects_str: str):
 
         # Burn-rate downgrade: applied here (not inside UsageTracker) so the
         # tracker stays a pure parser+threshold class with no I/O coupling.
-        mode, burn_downgrade_from = _downgrade_if_burning_fast(
-            usage_md.parent, tracker.session_pct, mode,
-        )
+        # Skipped when budget is unlimited — no reason to throttle.
+        burn_downgrade_from = None
+        if budget_mode != "disabled":
+            mode, burn_downgrade_from = _downgrade_if_burning_fast(
+                usage_md.parent, tracker.session_pct, mode,
+            )
 
-        # Verify the chosen mode is affordable; downgrade if not
-        mode = _downgrade_if_unaffordable(tracker, mode)
+            # Verify the chosen mode is affordable; downgrade if not
+            mode = _downgrade_if_unaffordable(tracker, mode)
 
         session_rem, weekly_rem = tracker.remaining_budget()
         available_pct = int(min(session_rem, weekly_rem))
@@ -1410,7 +1413,14 @@ def plan_iteration(
 
     # Step 1b: Warn the human when the rolling burn rate predicts a near-future
     # quota wipeout. Fires at most once per quota cycle.
-    _maybe_warn_burn_rate(instance, usage_state)
+    # Skipped when unlimited_quota — no proactive quota warnings.
+    try:
+        from app.usage_tracker import _get_budget_mode
+        _skip_burn_warn = (_get_budget_mode() == "disabled")
+    except (ImportError, OSError, ValueError):
+        _skip_burn_warn = False
+    if not _skip_burn_warn:
+        _maybe_warn_burn_rate(instance, usage_state)
 
     # Step 2: Get usage decision (mode, available%, reason, project idx)
     decision = _get_usage_decision(usage_md, count, projects_str)

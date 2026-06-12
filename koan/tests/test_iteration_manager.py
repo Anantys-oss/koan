@@ -519,6 +519,19 @@ class TestGetUsageDecision:
         result = _get_usage_decision(usage_md, 2, PROJECTS_STR)
         assert result["mode"] == "implement"
 
+    def test_disabled_budget_skips_burn_rate_downgrade(self, tmp_path):
+        """When budget_mode is disabled, burn-rate downgrade is skipped entirely."""
+        usage_md = tmp_path / "usage.md"
+        usage_md.write_text(
+            "Session (5hr) : 80% (reset in 1h)\n"
+            "Weekly (7 day) : 50% (Resets in 3d)\n"
+        )
+        with patch("app.usage_tracker._get_budget_mode", return_value="disabled"), \
+             patch("app.iteration_manager._downgrade_if_burning_fast") as mock_burn:
+            result = _get_usage_decision(usage_md, 5, PROJECTS_STR)
+            mock_burn.assert_not_called()
+            assert result["mode"] == "deep"
+
 
 # === Tests: _inject_recurring ===
 

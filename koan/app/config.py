@@ -663,6 +663,20 @@ def is_ci_check_enabled() -> bool:
     return True
 
 
+def is_unlimited_quota() -> bool:
+    """Return True when the operator declares the CLI provider has no quota limit.
+
+    When enabled, all proactive quota gating is disabled: no budget-based mode
+    downgrades, no burn-rate warnings, no preflight quota probes.  Reactive
+    detection (CLI exits with a quota error) still works — if the provider
+    actually hits a limit, Koan pauses and requeues as usual.
+
+    Config key: usage.unlimited_quota (default: False).
+    """
+    config = _load_config()
+    return bool(config.get("usage", {}).get("unlimited_quota", False))
+
+
 def get_max_runs() -> int:
     """Get maximum runs per day from config.yaml.
 

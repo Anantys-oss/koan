@@ -626,6 +626,32 @@ class TestGetDebugEnabled:
 # --- get_max_runs ---
 
 
+class TestIsUnlimitedQuota:
+    def test_default_false(self):
+        from app.config import is_unlimited_quota
+
+        with _mock_config({}):
+            assert is_unlimited_quota() is False
+
+    def test_true_when_set(self):
+        from app.config import is_unlimited_quota
+
+        with _mock_config({"usage": {"unlimited_quota": True}}):
+            assert is_unlimited_quota() is True
+
+    def test_false_when_explicit(self):
+        from app.config import is_unlimited_quota
+
+        with _mock_config({"usage": {"unlimited_quota": False}}):
+            assert is_unlimited_quota() is False
+
+    def test_truthy_string_coerced(self):
+        from app.config import is_unlimited_quota
+
+        with _mock_config({"usage": {"unlimited_quota": "yes"}}):
+            assert is_unlimited_quota() is True
+
+
 class TestGetMaxRuns:
     def test_default(self):
         from app.config import get_max_runs

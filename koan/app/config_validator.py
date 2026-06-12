@@ -155,6 +155,7 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
         "session_token_limit": "int",
         "weekly_token_limit": "int",
         "budget_mode": "str",
+        "unlimited_quota": "bool",
     },
     "email": {
         "enabled": "bool",

@@ -613,3 +613,30 @@ class TestGetBudgetMode:
         }):
             with patch("app.cli_provider.get_provider", side_effect=ImportError("nope")):
                 assert _get_budget_mode() == "session_only"
+
+    def test_unlimited_quota_overrides_budget_mode(self):
+        """unlimited_quota: true forces disabled regardless of budget_mode."""
+        with patch("app.utils.load_config", return_value={
+            "usage": {"budget_mode": "full", "unlimited_quota": True}
+        }):
+            assert _get_budget_mode() == "disabled"
+
+    def test_unlimited_quota_skips_provider_check(self):
+        """unlimited_quota: true returns disabled without checking provider."""
+        with patch("app.utils.load_config", return_value={
+            "usage": {"unlimited_quota": True}
+        }):
+            with patch("app.cli_provider.get_provider") as mock_get_provider:
+                assert _get_budget_mode() == "disabled"
+                mock_get_provider.assert_not_called()
+
+    def test_unlimited_quota_false_uses_normal_path(self):
+        """unlimited_quota: false behaves like the flag is absent."""
+        with patch("app.utils.load_config", return_value={
+            "usage": {"budget_mode": "full", "unlimited_quota": False}
+        }):
+            with patch("app.cli_provider.get_provider") as mock_get_provider:
+                mock_provider = MagicMock()
+                mock_provider.has_api_quota.return_value = True
+                mock_get_provider.return_value = mock_provider
+                assert _get_budget_mode() == "full"
