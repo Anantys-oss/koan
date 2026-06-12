@@ -507,6 +507,35 @@ class TestMissionKey:
         assert len(key) == 64  # SHA-256 hex
         assert all(c in "0123456789abcdef" for c in key)
 
+    def test_strips_queued_timestamp(self):
+        base = _mission_key("fix the bug [project:foo]")
+        with_ts = _mission_key("fix the bug [project:foo] ⏳(2026-01-01T12:00)")
+        assert base == with_ts
+
+    def test_strips_started_timestamp(self):
+        base = _mission_key("fix the bug [project:foo]")
+        with_ts = _mission_key("fix the bug [project:foo] ⏳(2026-01-01T12:00) ▶(2026-01-01T12:05)")
+        assert base == with_ts
+
+    def test_strips_recovery_counter(self):
+        base = _mission_key("fix the bug [project:foo]")
+        with_r = _mission_key("fix the bug [project:foo] [r:2]")
+        assert base == with_r
+
+    def test_strips_complexity_tag(self):
+        base = _mission_key("fix the bug [project:foo]")
+        with_c = _mission_key("fix the bug [project:foo] [complexity:large]")
+        assert base == with_c
+
+    def test_stable_across_requeue_cycle(self):
+        """Key must match across all lifecycle states of the same mission."""
+        clean = _mission_key("fix the bug [project:foo]")
+        in_progress = _mission_key(
+            "- fix the bug [project:foo] [r:1] ⏳(2026-01-01T12:00) ▶(2026-01-01T12:05)"
+        )
+        requeued = _mission_key("- fix the bug [project:foo] [r:1]")
+        assert clean == in_progress == requeued
+
 
 class TestRetryTracker:
     """Cover get_retry_count, increment_retry_count, clear_retry_count."""

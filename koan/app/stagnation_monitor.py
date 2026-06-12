@@ -365,9 +365,22 @@ class StagnationMonitor:
 # detection — Claude can be unstuck by a fresh start. The tracker records
 # how many times each mission has stagnated so :func:`run._finalize_mission`
 # can decide between "requeue and try again" and "give up, mark Failed".
-# Counters are keyed by a stable SHA-256 of the mission title so very long
-# titles don't bloat the JSON, and identical titles in different instances
-# are isolated by living under ``instance/``.
+# Counters are keyed by a stable SHA-256 of the *clean* mission title —
+# stripped of lifecycle markers (timestamps, recovery counters, complexity
+# tags) — so the SAME logical mission maps to the SAME key across requeue
+# cycles.  Without stripping, a requeued mission acquires new ⏳/▶
+# timestamps and would hash to a different key, silently resetting the
+# stagnation retry counter on every cycle and making max_retry_on_stagnation
+# ineffective.
+
+# Compiled once: strips everything that changes between queue cycles.
+_STRIP_FOR_KEY_RE = re.compile(
+    r"\s*⏳\([^)]*\)"              # ⏳(queued-timestamp)
+    r"|\s*▶\([^)]*\)"              # ▶(started-timestamp)
+    r"|\s*[✅❌]\s*\([^)]*\)"      # ✅/❌ (completed-timestamp)
+    r"|\s*\[r:\d+\]"               # [r:N] crash-recovery counter
+    r"|\s*\[complexity:[^\]]*\]"    # [complexity:X] classifier tag
+)
 
 
 def _retry_tracker_path(instance_dir: str) -> Path:
@@ -376,8 +389,17 @@ def _retry_tracker_path(instance_dir: str) -> Path:
 
 
 def _mission_key(mission_title: str) -> str:
-    """Stable, length-bounded key for a mission title."""
-    return hashlib.sha256(mission_title.encode("utf-8", errors="replace")).hexdigest()
+    """Stable key for a mission title, independent of lifecycle state.
+
+    Strips timestamps, recovery counters, and complexity tags before
+    hashing so the same logical mission always maps to the same key
+    regardless of which requeue cycle it is currently in.
+    """
+    clean = _STRIP_FOR_KEY_RE.sub("", mission_title)
+    clean = clean.strip()
+    if clean.startswith("- "):
+        clean = clean[2:].strip()
+    return hashlib.sha256(clean.encode("utf-8", errors="replace")).hexdigest()
 
 
 def _extract_count(raw) -> int:
