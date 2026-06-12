@@ -183,14 +183,17 @@ def _normalize_model_config(config: dict) -> dict:
     has_legacy_for = bool(legacy_provider_keys)
 
     if has_legacy_flat or has_legacy_for:
-        if not _MODEL_CONFIG_NORMALIZED:
+        if not _MODEL_CONFIG_NORMALIZED and not os.environ.get("_KOAN_MODELS_DEPRECATION_SHOWN"):
             _MODEL_CONFIG_NORMALIZED = True
+            os.environ["_KOAN_MODELS_DEPRECATION_SHOWN"] = "1"
             deprecation_msg = (
                 "[DEPRECATED] Flat 'models:' keys and 'models_for_*' top-level keys detected.\n"
                 "  New structure: nest under 'models.default:' and 'models.{provider}:'.\n"
                 "  See docs/users/model-configuration.md for migration guide."
             )
             print(deprecation_msg, file=sys.stderr)
+        else:
+            _MODEL_CONFIG_NORMALIZED = True
 
     # Start building normalized nested structure
     normalized_models = {}

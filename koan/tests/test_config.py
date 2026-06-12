@@ -324,11 +324,13 @@ class TestBackwardCompatNormalization:
             import app.config
 
             app.config._MODEL_CONFIG_NORMALIZED = False
+            os.environ.pop("_KOAN_MODELS_DEPRECATION_SHOWN", None)
             result = get_model_config()
 
         assert result["mission"] == "opus"
         assert result["chat"] == "haiku"
         assert "DEPRECATED" in stderr.getvalue()
+        os.environ.pop("_KOAN_MODELS_DEPRECATION_SHOWN", None)
 
     def test_legacy_models_for_provider_normalized(self):
         """Legacy top-level models_for_* keys are folded into models.{provider}."""
@@ -401,6 +403,7 @@ class TestModelConfigScenarios:
         import app.config
 
         app.config._MODEL_CONFIG_NORMALIZED = False
+        os.environ.pop("_KOAN_MODELS_DEPRECATION_SHOWN", None)
 
     def test_scenario_no_models_entry_falls_back_to_defaults(self):
         """1) No 'models' entry → sane built-in defaults, no warning."""
@@ -477,6 +480,27 @@ class TestModelConfigScenarios:
         assert result["mission"] == "opus"
         assert result["chat"] == "haiku"
         assert "DEPRECATED" not in stderr.getvalue()
+
+    def test_env_var_suppresses_deprecation_in_subprocess(self):
+        """Env var set by parent process suppresses warning in child processes."""
+        import app.config
+        from io import StringIO
+        from unittest.mock import patch
+
+        from app.config import get_model_config
+
+        self._reset_guard()
+        os.environ["_KOAN_MODELS_DEPRECATION_SHOWN"] = "1"
+        stderr = StringIO()
+        config = {"models": {"mission": "opus"}}
+        try:
+            with _mock_config(config), patch("sys.stderr", stderr):
+                app.config._MODEL_CONFIG_NORMALIZED = False
+                result = get_model_config()
+            assert result["mission"] == "opus"
+            assert "DEPRECATED" not in stderr.getvalue()
+        finally:
+            os.environ.pop("_KOAN_MODELS_DEPRECATION_SHOWN", None)
 
     def test_legacy_flat_does_not_clobber_new_default_on_collision(self):
         """Legacy flat keys must NOT overwrite an explicit models.default (new wins)."""
