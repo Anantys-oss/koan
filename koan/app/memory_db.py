@@ -201,7 +201,8 @@ def recent_entries(
     try:
         project_lower = project.lower() if project else ""
         rows = conn.execute(
-            "SELECT project, type, content, ts FROM entries ORDER BY ts DESC"
+            "SELECT project, type, content, ts FROM entries ORDER BY ts DESC LIMIT ?",
+            (max_results * 5,),
         ).fetchall()
 
         results = []

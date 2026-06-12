@@ -1309,8 +1309,10 @@ class MemoryManager:
             from app.memory_db import ensure_db, insert_entry
             conn = ensure_db(str(self.instance_dir))
             if conn is not None:
-                insert_entry(conn, entry)
-                conn.close()
+                try:
+                    insert_entry(conn, entry)
+                finally:
+                    conn.close()
         except Exception as e:
             logger.warning("[memory_manager] SQLite dual-write failed: %s", e)
 
@@ -1337,22 +1339,24 @@ class MemoryManager:
                 from app.memory_db import ensure_db, search_entries, recent_entries
                 conn = ensure_db(str(self.instance_dir))
                 if conn is not None:
-                    fts_results = search_entries(
-                        conn, project or "", query_text, max_results=max_entries,
-                    )
-                    seen_ts = {e["ts"] for e in fts_results}
-                    remaining = max_entries - len(fts_results)
-                    if remaining > 0:
-                        recency = recent_entries(
-                            conn, project or "", max_results=remaining + len(fts_results),
+                    try:
+                        fts_results = search_entries(
+                            conn, project or "", query_text, max_results=max_entries,
                         )
-                        for e in recency:
-                            if e["ts"] not in seen_ts:
-                                fts_results.append(e)
-                                seen_ts.add(e["ts"])
-                                if len(fts_results) >= max_entries:
-                                    break
-                    conn.close()
+                        seen_ts = {e["ts"] for e in fts_results}
+                        remaining = max_entries - len(fts_results)
+                        if remaining > 0:
+                            recency = recent_entries(
+                                conn, project or "", max_results=remaining + len(fts_results),
+                            )
+                            for e in recency:
+                                if e["ts"] not in seen_ts:
+                                    fts_results.append(e)
+                                    seen_ts.add(e["ts"])
+                                    if len(fts_results) >= max_entries:
+                                        break
+                    finally:
+                        conn.close()
                     if fts_results:
                         fts_results.sort(key=lambda e: e.get("ts", ""))
                         return fts_results
@@ -1438,9 +1442,11 @@ class MemoryManager:
                 from app.memory_db import ensure_db, delete_before
                 conn = ensure_db(str(self.instance_dir))
                 if conn is not None:
-                    cutoff_iso = cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
-                    delete_before(conn, cutoff_iso)
-                    conn.close()
+                    try:
+                        cutoff_iso = cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
+                        delete_before(conn, cutoff_iso)
+                    finally:
+                        conn.close()
             except Exception as e:
                 logger.warning("[memory_manager] SQLite prune mirror failed: %s", e)
 

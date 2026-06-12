@@ -140,11 +140,13 @@ def _load_filtered_learnings(
         from app.memory_db import ensure_db, search_learnings
         conn = ensure_db(instance)
         if conn is not None:
-            effective_k = min(max_k, total) if max_k > 0 else 0
-            effective_hedge = min(recent_hedge, total) if recent_hedge > 0 else 0
-            fts_k = max(0, effective_k - effective_hedge)
-            fts_results = search_learnings(conn, content, task_text, max_k=fts_k)
-            conn.close()
+            try:
+                effective_k = min(max_k, total) if max_k > 0 else 0
+                effective_hedge = min(recent_hedge, total) if recent_hedge > 0 else 0
+                fts_k = max(0, effective_k - effective_hedge)
+                fts_results = search_learnings(conn, content, task_text, max_k=fts_k)
+            finally:
+                conn.close()
             if fts_results:
                 selected_set = set(fts_results)
                 # Always include trailing recent_hedge lines
