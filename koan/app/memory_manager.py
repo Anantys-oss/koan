@@ -1260,6 +1260,15 @@ class MemoryManager:
 
         # Write sentinel to prevent re-migration
         atomic_write(sentinel, "done\n")
+
+        # Populate SQLite FTS5 index from JSONL (idempotent — skips if DB populated)
+        try:
+            from app.memory_db import migrate_jsonl_to_sqlite
+            sqlite_count = migrate_jsonl_to_sqlite(str(self.instance_dir))
+            stats["sqlite_indexed"] = sqlite_count
+        except Exception as e:
+            logger.warning("SQLite migration failed (non-fatal): %s", e)
+
         return stats
 
     # -----------------------------------------------------------------------

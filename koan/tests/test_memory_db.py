@@ -308,6 +308,81 @@ class TestDatabaseErrorGracefulDegradation:
         assert removed == 0
 
 
+class TestDualWrite:
+    """Verify append_memory_entry dual-writes to JSONL + SQLite."""
+
+    def test_append_writes_to_both_stores(self, instance_dir):
+        from app.memory_manager import MemoryManager
+        from app.memory_db import ensure_db, search_entries
+
+        mgr = MemoryManager(instance_dir)
+        mgr.append_memory_entry("session", "koan", "dual write test authentication fix")
+
+        log_path = Path(instance_dir) / "memory" / "log.jsonl"
+        assert log_path.exists()
+        last_line = log_path.read_text().strip().split("\n")[-1]
+        assert "dual write test" in last_line
+
+        conn = ensure_db(instance_dir)
+        results = search_entries(conn, "koan", "authentication fix")
+        assert len(results) >= 1
+        assert "dual write test" in results[0]["content"]
+        conn.close()
+
+    def test_sqlite_failure_does_not_block_jsonl(self, instance_dir):
+        from app.memory_manager import MemoryManager
+        mgr = MemoryManager(instance_dir)
+
+        with patch("app.memory_db.ensure_db", side_effect=Exception("SQLite broken")):
+            mgr.append_memory_entry("session", "koan", "still written to jsonl")
+
+        log_path = Path(instance_dir) / "memory" / "log.jsonl"
+        assert "still written to jsonl" in log_path.read_text()
+
+    def test_prune_mirrors_to_sqlite(self, instance_dir):
+        from app.memory_manager import MemoryManager
+        from app.memory_db import ensure_db, entry_count
+
+        mgr = MemoryManager(instance_dir)
+        mgr.append_memory_entry("session", "koan", "old entry", ts="2020-01-01T00:00:00Z")
+        mgr.append_memory_entry("session", "koan", "new entry", ts="2026-06-01T00:00:00Z")
+
+        conn = ensure_db(instance_dir)
+        assert entry_count(conn) == 2
+        conn.close()
+
+        removed = mgr.prune_memory_log(horizon_days=365)
+        assert removed == 1
+
+        conn = ensure_db(instance_dir)
+        assert entry_count(conn) == 1
+        conn.close()
+
+
+class TestMigrationViaStartup:
+    """Verify migrate_markdown_to_jsonl triggers SQLite indexing."""
+
+    def test_markdown_migration_populates_sqlite(self, instance_dir):
+        from app.memory_manager import MemoryManager
+        from app.memory_db import ensure_db, entry_count
+
+        mgr = MemoryManager(instance_dir)
+        summary_path = mgr.summary_path
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
+        summary_path.write_text(
+            "## 2026-01-15\n\nSession 1 (project: koan) : fixed auth bug\n",
+            encoding="utf-8",
+        )
+
+        result = mgr.migrate_markdown_to_jsonl()
+        assert result.get("sessions", 0) >= 1
+        # Entries reach SQLite via dual-write in append_memory_entry OR
+        # via the bulk migrate_jsonl_to_sqlite call — either path suffices.
+        conn = ensure_db(instance_dir)
+        assert entry_count(conn) >= 1
+        conn.close()
+
+
 class TestSemanticSuperiority:
     """Verify FTS5 finds entries that Jaccard scoring misses."""
 
