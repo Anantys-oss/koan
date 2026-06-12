@@ -1513,3 +1513,9 @@ class TestCiCheckConfig:
         from app.config import is_ci_check_enabled
         with _mock_config({"ci_check": "yes"}):
             assert is_ci_check_enabled() is True
+
+    def test_non_dict_string_warns(self, capsys):
+        from app.config import is_ci_check_enabled
+        with _mock_config({"ci_check": "yes"}):
+            is_ci_check_enabled()
+        assert "unexpected type" in capsys.readouterr().err

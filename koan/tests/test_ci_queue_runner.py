@@ -530,6 +530,27 @@ class TestReenqueueForMonitoring:
         assert "Failed to re-enqueue" in capsys.readouterr().err
 
 
+class TestCiCheckConfigGateRunner:
+    """Verify run_ci_check_and_fix and _reenqueue_for_monitoring respect ci_check.enabled."""
+
+    def test_run_ci_check_and_fix_disabled(self):
+        from app.ci_queue_runner import run_ci_check_and_fix
+        with patch("app.config.is_ci_check_enabled", return_value=False):
+            success, msg = run_ci_check_and_fix(PR_URL, PROJECT_PATH)
+        assert not success
+        assert "disabled" in msg.lower()
+
+    def test_reenqueue_skipped_when_disabled(self, capsys):
+        from app.ci_queue_runner import _reenqueue_for_monitoring
+        with (
+            patch("app.config.is_ci_check_enabled", return_value=False),
+            patch("app.utils.modify_missions_file") as mock_modify,
+        ):
+            _reenqueue_for_monitoring(PR_URL, "fix-branch", "owner/repo", "42", PROJECT_PATH)
+        mock_modify.assert_not_called()
+        assert "disabled" in capsys.readouterr().err
+
+
 class TestCiQueueSmallHelpers:
     def test_project_name_from_path_empty(self):
         from app.ci_queue_runner import _project_name_from_path

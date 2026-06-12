@@ -731,7 +731,7 @@ Fetches the PR diff or issue description, compares it against the current main b
 
 **`/ci_check`** — Check and fix CI failures on a GitHub PR using Claude.
 
-- **Usage:** `/ci_check <pr-url>`
+- **Usage:** `/ci_check <pr-url>` or `/ci_check --enable` / `/ci_check --disable`
 
 Usually auto-triggered when CI fails after a `/rebase`, but can also be invoked manually. Fetches failure logs, checks out the PR branch, and runs Claude to attempt a fix. If the fix produces a commit, it force-pushes and re-enqueues the PR for CI monitoring. Requires `ci_check.enabled: true` in config.yaml (the default).
 
@@ -739,6 +739,8 @@ Usually auto-triggered when CI fails after a `/rebase`, but can also be invoked 
 <summary>Use cases</summary>
 
 - `/ci_check https://github.com/org/repo/pull/42` — Attempt to fix CI failures on a PR
+- `/ci_check --enable` — Enable CI check system via config
+- `/ci_check --disable` — Disable CI check system via config
 - Auto-injected by the CI queue when a post-rebase CI run fails
 </details>
 

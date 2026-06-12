@@ -655,6 +655,11 @@ def is_ci_check_enabled() -> bool:
         return bool(ci_cfg.get("enabled", True))
     if isinstance(ci_cfg, bool):
         return ci_cfg
+    import sys
+    print(
+        f"[config] ci_check has unexpected type {type(ci_cfg).__name__!r}, defaulting to enabled",
+        file=sys.stderr,
+    )
     return True
 
 

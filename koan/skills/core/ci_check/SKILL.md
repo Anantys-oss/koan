@@ -10,6 +10,6 @@ caveman: true
 commands:
   - name: ci_check
     description: "Check and fix CI failures for a PR"
-    usage: /ci_check https://github.com/owner/repo/pull/123
+    usage: /ci_check https://github.com/owner/repo/pull/123 | --enable | --disable
 handler: handler.py
 ---

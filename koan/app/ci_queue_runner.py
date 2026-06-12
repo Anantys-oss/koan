@@ -293,6 +293,11 @@ def _reenqueue_for_monitoring(
     """
     import os
 
+    from app.config import is_ci_check_enabled
+    if not is_ci_check_enabled():
+        print("[ci_check] CI check disabled, skipping re-enqueue", file=sys.stderr)
+        return
+
     koan_root = os.environ.get("KOAN_ROOT", "")
     if not koan_root:
         print("[ci_check] KOAN_ROOT not set, cannot re-enqueue", file=sys.stderr)
@@ -338,6 +343,10 @@ def run_ci_check_and_fix(pr_url: str, project_path: str) -> Tuple[bool, str]:
     5. Restore original branch
     """
     import os
+
+    from app.config import is_ci_check_enabled
+    if not is_ci_check_enabled():
+        return False, "CI check system is disabled in config.yaml (ci_check.enabled: false)."
 
     from app.github_url_parser import parse_pr_url
 

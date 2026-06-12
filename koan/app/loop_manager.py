@@ -168,12 +168,9 @@ def _drain_ci_queue_during_sleep(instance_dir: str, elapsed: float):
     """
     global _last_ci_queue_sleep_check
 
-    try:
-        from app.config import is_ci_check_enabled
-        if not is_ci_check_enabled():
-            return
-    except ImportError:
-        pass
+    from app.config import is_ci_check_enabled
+    if not is_ci_check_enabled():
+        return
 
     now = time.monotonic()
     if now - _last_ci_queue_sleep_check < _CI_QUEUE_SLEEP_INTERVAL:

@@ -4,8 +4,26 @@ Usually auto-injected by ci_queue_runner.drain_one() when CI fails,
 but can also be triggered manually via Telegram.
 """
 
+from app.config import is_ci_check_enabled
 from app.github_url_parser import parse_pr_url
 import app.github_skill_helpers as _gh_helpers
+
+
+def _handle_toggle(flag: str):
+    """Toggle ci_check.enabled in config.yaml. Returns reply string."""
+    import os
+    from pathlib import Path
+    from app.utils import update_config_yaml
+
+    koan_root = os.environ.get("KOAN_ROOT", "")
+    if not koan_root:
+        return "❌ KOAN_ROOT not set — cannot update config."
+
+    config_path = Path(koan_root) / "instance" / "config.yaml"
+    enabled = flag == "--enable"
+    update_config_yaml(config_path, ["ci_check", "enabled"], enabled)
+    state = "enabled" if enabled else "disabled"
+    return f"✅ CI check system {state}."
 
 
 def handle(ctx):
@@ -13,19 +31,20 @@ def handle(ctx):
 
     Usage:
         /ci_check https://github.com/owner/repo/pull/123
+        /ci_check --enable
+        /ci_check --disable
 
     Checks CI status for the PR and attempts to fix failures
     using Claude. Typically auto-triggered after a rebase, but
     can be invoked manually.
     """
-    try:
-        from app.config import is_ci_check_enabled
-        if not is_ci_check_enabled():
-            return "CI check system is disabled in config.yaml (ci_check.enabled: false)."
-    except ImportError:
-        pass
-
     args = ctx.args.strip()
+
+    if args in ("--enable", "--disable"):
+        return _handle_toggle(args)
+
+    if not is_ci_check_enabled():
+        return "CI check system is disabled in config.yaml (ci_check.enabled: false)."
 
     if not args:
         return (
