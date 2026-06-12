@@ -114,6 +114,12 @@ class TestResolveSubmitTarget:
         result = resolve_submit_target("/p", "proj", "owner", "repo")
         assert result == {"repo": "owner/repo", "is_fork": False}
 
+    @patch(f"{_M}.resolve_target_repo", return_value=None)
+    @patch.dict("os.environ", {"KOAN_ROOT": ""})
+    def test_empty_issue_metadata_uses_local_repo(self, mock):
+        result = resolve_submit_target("/p", "proj", "", "")
+        assert result == {"repo": "", "is_fork": False}
+
     @patch(f"{_M}.resolve_target_repo", return_value="upstream/repo")
     @patch.dict("os.environ", {"KOAN_ROOT": ""})
     def test_fork_detected(self, mock):
@@ -440,6 +446,31 @@ class TestSubmitDraftPr:
             # Only 1 gh call (the PR check), no issue comment
             assert mock_gh.call_count == 1
             mock_comment.assert_not_called()
+
+    def test_empty_issue_metadata_creates_local_pr_without_comment(self):
+        with patch(f"{_M}.get_current_branch", return_value="feat"), \
+             patch(f"{_M}.resolve_base_branch", return_value="main"), \
+             patch(f"{_M}.run_gh", return_value=""), \
+             patch(f"{_M}.get_commit_subjects", return_value=["c1"]), \
+             patch(f"{_M}.run_git_strict"), \
+             patch(f"{_M}.resolve_submit_target",
+                    return_value={"repo": "", "is_fork": False}), \
+             patch(f"{_M}.pr_create", return_value="https://pr/1") as mock_pr, \
+             patch("app.issue_tracker.add_comment") as mock_comment:
+            result = submit_draft_pr(
+                "/p",
+                "proj",
+                owner="",
+                repo="",
+                issue_number="",
+                pr_title="T",
+                pr_body="B",
+            )
+        assert result == "https://pr/1"
+        kwargs = mock_pr.call_args.kwargs
+        assert "repo" not in kwargs
+        assert "head" not in kwargs
+        mock_comment.assert_not_called()
 
     def test_jira_comment_uses_shared_upsert_with_issue_key(self):
         # Jira comments route through the marker-based upsert (keyed by issue

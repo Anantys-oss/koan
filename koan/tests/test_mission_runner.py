@@ -1936,6 +1936,101 @@ class TestRunPostMissionOrdering:
     """Test run_post_mission execution ordering and invariants."""
 
     @patch("app.mission_runner._record_session_outcome")
+    @patch("app.mission_runner._record_skill_metric")
+    @patch("app.mission_runner._publish_jira_outcome", return_value=None)
+    @patch("app.mission_runner.check_auto_merge", return_value=None)
+    @patch("app.mission_runner.check_security_review", return_value=True)
+    @patch("app.mission_runner.trigger_reflection", return_value=False)
+    @patch("app.mission_runner._run_lint_gate", return_value=None)
+    @patch("app.mission_runner._run_quality_pipeline", return_value={})
+    @patch("app.mission_runner.archive_pending", return_value=False)
+    @patch("app.quota_handler.handle_quota_exhaustion", return_value=None)
+    @patch("app.mission_runner.update_usage", return_value=True)
+    def test_generic_pr_created_before_verification(
+        self, mock_usage, mock_quota, mock_archive, mock_quality, mock_lint,
+        mock_reflect, mock_security, mock_merge, mock_jira, mock_metric,
+        mock_record, tmp_path
+    ):
+        from app.mission_runner import run_post_mission
+
+        calls = []
+
+        def create_pr(*args, **kwargs):
+            calls.append("pr")
+            return "https://github.com/o/r/pull/1"
+
+        verify_result = type(
+            "VerifyResult",
+            (),
+            {"passed": True, "summary": "ok", "warnings": [], "failures": []},
+        )()
+
+        def verify(*args, **kwargs):
+            calls.append("verify")
+            return verify_result
+
+        with patch("app.mission_runner._create_generic_pr", side_effect=create_pr), \
+             patch("app.mission_runner._run_mission_verification", side_effect=verify):
+            result = run_post_mission(
+                instance_dir=str(tmp_path / "instance"),
+                project_name="koan",
+                project_path=str(tmp_path),
+                run_num=1,
+                exit_code=0,
+                stdout_file="/tmp/out.json",
+                stderr_file="/tmp/err.txt",
+                mission_title="Implement thing",
+                provider_name="claude",
+            )
+
+        assert result["pr_url"] == "https://github.com/o/r/pull/1"
+        assert calls[:2] == ["pr", "verify"]
+        assert result["pipeline_steps"]["pr_creation"]["status"] == "success"
+
+    @patch("app.mission_runner._record_session_outcome")
+    @patch("app.mission_runner._record_skill_metric")
+    @patch("app.mission_runner._publish_jira_outcome", return_value=None)
+    @patch("app.mission_runner.check_auto_merge", return_value=None)
+    @patch("app.mission_runner.check_security_review", return_value=True)
+    @patch("app.mission_runner.trigger_reflection", return_value=False)
+    @patch("app.mission_runner._run_lint_gate", return_value=None)
+    @patch("app.mission_runner._run_quality_pipeline", return_value={})
+    @patch("app.mission_runner.archive_pending", return_value=False)
+    @patch("app.quota_handler.handle_quota_exhaustion", return_value=None)
+    @patch("app.mission_runner.update_usage", return_value=True)
+    def test_skill_dispatch_skips_generic_pr_creation(
+        self, mock_usage, mock_quota, mock_archive, mock_quality, mock_lint,
+        mock_reflect, mock_security, mock_merge, mock_jira, mock_metric,
+        mock_record, tmp_path
+    ):
+        from app.mission_runner import run_post_mission
+
+        verify_result = type(
+            "VerifyResult",
+            (),
+            {"passed": True, "summary": "ok", "warnings": [], "failures": []},
+        )()
+
+        with patch("app.mission_runner._create_generic_pr") as mock_create, \
+             patch("app.mission_runner._run_mission_verification",
+                   return_value=verify_result):
+            result = run_post_mission(
+                instance_dir=str(tmp_path / "instance"),
+                project_name="koan",
+                project_path=str(tmp_path),
+                run_num=1,
+                exit_code=0,
+                stdout_file="/tmp/out.json",
+                stderr_file="/tmp/err.txt",
+                mission_title="/fix https://github.com/o/r/issues/1",
+                is_skill_dispatch=True,
+            )
+
+        mock_create.assert_not_called()
+        assert result["pr_url"] is None
+        assert result["pipeline_steps"]["pr_creation"]["status"] == "skipped"
+
+    @patch("app.mission_runner._record_session_outcome")
     @patch("app.mission_runner.check_auto_merge", return_value=None)
     @patch("app.mission_runner.trigger_reflection", return_value=False)
     @patch("app.quota_handler.handle_quota_exhaustion", return_value=None)
@@ -3542,6 +3637,67 @@ class TestReadFullStdoutText:
 
 
 # ---------------------------------------------------------------------------
+# _create_generic_pr
+# ---------------------------------------------------------------------------
+
+
+class TestCreateGenericPr:
+    @patch("app.utils.append_to_outbox")
+    @patch("app.pr_submit.submit_draft_pr", return_value="https://github.com/o/r/pull/1")
+    @patch("app.pr_footer.build_mission_footer", return_value="_Generated by [Kōan](https://koan.anantys.com)_ _(Claude)_")
+    @patch("app.describe_pr.format_description", return_value="## Summary\n\n- Generated")
+    @patch("app.describe_pr.describe_pr", return_value={"summary": ["Generated"]})
+    @patch("app.projects_config.resolve_base_branch", return_value="main")
+    @patch("app.git_utils.run_git_strict", side_effect=["", "2b7761dabcdef"])
+    @patch("app.git_utils.get_commit_subjects", return_value=["feat: add thing"])
+    @patch("app.git_utils.get_current_branch", return_value="koan/add-thing")
+    def test_feature_branch_creates_pr(
+        self, mock_branch, mock_commits, mock_git, mock_base, mock_describe,
+        mock_format, mock_footer, mock_submit, mock_outbox, tmp_path
+    ):
+        from app.mission_runner import _create_generic_pr
+
+        result = _create_generic_pr(
+            str(tmp_path / "instance"),
+            "proj",
+            str(tmp_path),
+            "Implement thing",
+            "claude",
+            "opus",
+            0,
+        )
+
+        assert result == "https://github.com/o/r/pull/1"
+        mock_submit.assert_called_once()
+        kwargs = mock_submit.call_args.kwargs
+        assert kwargs["owner"] == ""
+        assert kwargs["repo"] == ""
+        assert kwargs["issue_number"] == ""
+        assert kwargs["footer_enabled"] is False
+        assert kwargs["base_branch"] == "main"
+        mock_outbox.assert_called_once()
+
+    @patch("app.pr_submit.submit_draft_pr")
+    @patch("app.projects_config.resolve_base_branch", return_value="main")
+    @patch("app.git_utils.get_current_branch", return_value="main")
+    def test_base_branch_skips_pr(self, mock_branch, mock_base, mock_submit, tmp_path):
+        from app.mission_runner import _create_generic_pr
+
+        result = _create_generic_pr(
+            str(tmp_path / "instance"),
+            "proj",
+            str(tmp_path),
+            "Implement thing",
+            "claude",
+            "opus",
+            0,
+        )
+
+        assert result is None
+        mock_submit.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # _maybe_queue_autoreview
 # ---------------------------------------------------------------------------
 
@@ -3554,7 +3710,7 @@ class TestMaybeQueueAutoreview:
 
     def _call(self, instance_dir, mission_title="", pending_content=None,
               projects_config=None, merge_result=None, security_blocked=False,
-              stdout_file=""):
+              stdout_file="", pr_url=None):
         from app.mission_runner import _maybe_queue_autoreview
         _maybe_queue_autoreview(
             str(instance_dir),
@@ -3565,6 +3721,7 @@ class TestMaybeQueueAutoreview:
             merge_result,
             security_blocked=security_blocked,
             stdout_file=stdout_file,
+            pr_url=pr_url,
         )
 
     @patch("app.utils.insert_pending_mission", return_value=True)
@@ -3583,6 +3740,23 @@ class TestMaybeQueueAutoreview:
         # review must come before rebase
         first_call_str = str(mock_insert.call_args_list[0])
         assert "/review" in first_call_str
+
+    @patch("app.utils.insert_pending_mission", return_value=True)
+    @patch("app.session_tracker.detect_pr_created")
+    @patch("app.projects_config.get_project_autoreview", return_value=True)
+    def test_queues_with_direct_pr_url(
+        self, mock_autoreview, mock_detect, mock_insert, tmp_path
+    ):
+        config = {"projects": {"myapp": {"path": str(tmp_path)}}}
+        (tmp_path / "missions.md").write_text("## Pending\n")
+        self._call(
+            tmp_path,
+            pending_content="no pr text",
+            projects_config=config,
+            pr_url=self.PR_URL,
+        )
+        assert mock_insert.call_count == 2
+        mock_detect.assert_not_called()
 
     @patch("app.utils.insert_pending_mission", return_value=True)
     @patch("app.session_tracker.detect_pr_created", return_value=True)

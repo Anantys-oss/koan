@@ -27,6 +27,12 @@ creation, review, rebasing, recreating, squashing, CI fixing, and PR quality
 checks. Auto-merge is configurable and should remain guarded by project config,
 security review, and sync state.
 
+Generic missions push their branch from the provider session, then the Python
+post-mission pipeline creates the draft PR. That path reuses the same submission
+helper as skill-dispatched work, so empty-diff guards, fork/upstream targeting,
+existing-PR detection, tracker cross-links, and PR metadata footers stay
+consistent across mission types.
+
 Controlled PR creation paths append a shared Kōan footer to PR bodies and
 review comments. The footer includes best-effort provider/model attribution,
 the submitted HEAD SHA, and elapsed runtime when that metadata is available.

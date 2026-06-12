@@ -47,13 +47,16 @@ def test_agent_prompt_has_all_required_placeholders():
 
 
 def test_agent_prompt_has_branch_pr_notification_instructions():
-    """Conclusion message should instruct agent to report branch name and PR link."""
+    """Workflow should push only and leave PR creation to Python."""
     agent_prompt = (PROMPTS_DIR / "agent.md").read_text()
 
     # Must mention branch notification in conclusion section
     assert "branch name" in agent_prompt
     # Must mention PR link
     assert "PR link" in agent_prompt
+    assert "Do NOT create a pull request" in agent_prompt
+    assert "Kōan will create the draft PR automatically" in agent_prompt
+    assert "gh pr create" not in agent_prompt
 
 
 def test_agent_prompt_conclusion_has_project_prefix():

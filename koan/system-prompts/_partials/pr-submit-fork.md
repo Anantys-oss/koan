@@ -1,5 +1,2 @@
-- If the local repo is a fork, submit the PR to the upstream repository:
-  ```bash
-  gh pr create --draft --repo <upstream-owner>/<repo> --head <fork-owner>:<branch> --title "..." --body "..."
-  ```
-- PRs are **always draft**. Never create a non-draft PR.
+- If the local repo is a fork, Kōan's Python post-mission pipeline detects the upstream repository and submits the draft PR there automatically.
+- PRs are **always draft**. Do not create a PR inside the session.

@@ -803,7 +803,7 @@ class TestIntegration:
 
         # Verify new prompt structure
         assert "Mission Execution Workflow" in result
-        assert "Pull Request Quality" in result
+        assert "Commit & Branch Quality" in result
         assert "Mission Completion Checklist" in result
 
         # Verify old misleading instruction is gone

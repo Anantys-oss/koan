@@ -656,8 +656,8 @@ class TestBuildPrompt:
             )
             assert mock_load.call_args.kwargs["BASE_BRANCH"] == "staging"
 
-    def test_prompt_includes_pr_creation_step(self):
-        """implement.md must instruct Claude to push and create a draft PR."""
+    def test_prompt_includes_push_only_step(self):
+        """implement.md must instruct Claude to push; Python creates the PR."""
         skill_dir = Path(__file__).resolve().parent.parent / "skills" / "core" / "implement"
         from app.prompts import load_skill_prompt
 
@@ -671,9 +671,9 @@ class TestBuildPrompt:
             ISSUE_NUMBER="42",
             BASE_BRANCH="main",
         )
-        assert "gh pr create --draft" in prompt
+        assert "Do not create a pull request" in prompt
         assert "git push" in prompt
-        assert "Closes https://github.com/o/r/issues/42" in prompt
+        assert "Kōan creates the draft PR automatically" in prompt
         assert "{KOAN_PYTHON}" not in prompt
         assert " -m app.issue_cli" in prompt
 
