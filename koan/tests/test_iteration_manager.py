@@ -3968,3 +3968,188 @@ class TestMaybeWarnBurnRate:
         inst.mkdir()
         _maybe_warn_burn_rate(inst, tmp_path / "usage.json")
         mock_mark.assert_not_called()
+
+
+# === Tests: _sweep_decomposed_parents / _maybe_decompose_mission ===
+
+from app.iteration_manager import _sweep_decomposed_parents, _maybe_decompose_mission
+
+
+class TestSweepDecomposedParents:
+
+    def _make_instance(self, tmp_path, missions_content):
+        inst = tmp_path / "instance"
+        inst.mkdir()
+        (inst / "missions.md").write_text(missions_content)
+        return inst
+
+    def test_completes_parent_when_all_subtasks_done(self, tmp_path):
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- Big mission [decomposed:grp1]\n\n"
+            "## In Progress\n\n"
+            "## Done\n\n"
+            "- [group:grp1] Task A ✅ (2026-05-20 10:00)\n"
+            "- [group:grp1] Task B ✅ (2026-05-20 10:05)\n"
+        )
+        inst = self._make_instance(tmp_path, content)
+        _sweep_decomposed_parents(inst)
+        from app.missions import parse_sections
+        result = parse_sections((inst / "missions.md").read_text())
+        assert result["pending"] == []
+        assert any("Big mission" in d for d in result["done"])
+
+    def test_does_not_complete_parent_with_pending_subtask(self, tmp_path):
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- Big mission [decomposed:grp1]\n"
+            "- [group:grp1] Task A\n\n"
+            "## In Progress\n\n"
+            "## Done\n"
+        )
+        inst = self._make_instance(tmp_path, content)
+        _sweep_decomposed_parents(inst)
+        from app.missions import parse_sections
+        result = parse_sections((inst / "missions.md").read_text())
+        assert any("Big mission" in p for p in result["pending"])
+
+    def test_completes_parent_when_subtasks_mixed_done_failed(self, tmp_path):
+        """Failed sub-missions count as terminal for group-sweep purposes."""
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- Big mission [decomposed:grp2]\n\n"
+            "## In Progress\n\n"
+            "## Done\n\n"
+            "- [group:grp2] Task A ✅ (2026-05-20 10:00)\n\n"
+            "## Failed\n\n"
+            "- [group:grp2] Task B ❌ (2026-05-20 10:05)\n"
+        )
+        inst = self._make_instance(tmp_path, content)
+        _sweep_decomposed_parents(inst)
+        from app.missions import parse_sections
+        result = parse_sections((inst / "missions.md").read_text())
+        assert result["pending"] == []
+        assert any("Big mission" in d for d in result["done"])
+
+    def test_fails_parent_when_all_subtasks_failed(self, tmp_path):
+        """Parent should be failed, not completed, when every sub-task failed."""
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- Big mission [decomposed:grp3]\n\n"
+            "## In Progress\n\n"
+            "## Done\n\n"
+            "## Failed\n\n"
+            "- [group:grp3] Task A ❌ (2026-05-20 10:00)\n"
+            "- [group:grp3] Task B ❌ (2026-05-20 10:05)\n"
+        )
+        inst = self._make_instance(tmp_path, content)
+        _sweep_decomposed_parents(inst)
+        from app.missions import parse_sections
+        result = parse_sections((inst / "missions.md").read_text())
+        assert result["pending"] == []
+        assert not any("Big mission" in d for d in result["done"])
+        assert any("Big mission" in f for f in result["failed"])
+
+    def test_no_op_when_no_missions_file(self, tmp_path):
+        inst = tmp_path / "instance"
+        inst.mkdir()
+        # Should not raise
+        _sweep_decomposed_parents(inst)
+
+
+class TestMaybeDecomposeMission:
+
+    PROJECTS = [("myproj", "/tmp/myproj")]
+
+    def _make_instance(self, tmp_path, mission_text="- [project:myproj] Complex mission [decompose]"):
+        inst = tmp_path / "instance"
+        inst.mkdir()
+        (inst / "missions.md").write_text(
+            "# Missions\n\n## Pending\n\n"
+            f"{mission_text}\n\n"
+            "## In Progress\n\n## Done\n"
+        )
+        return inst
+
+    @patch("app.cli_exec.run_cli_with_retry")
+    @patch("app.cli_provider.build_full_command", return_value=["mock-cmd"])
+    @patch("app.config.get_model_config", return_value={"lightweight": "haiku", "fallback": "sonnet"})
+    @patch("app.prompts.load_prompt", return_value="prompt")
+    @patch("app.config.get_decompose_config", return_value={"enabled": True, "auto": False})
+    def test_injects_subtasks_when_tagged(
+        self, mock_cfg, mock_prompt, mock_models, mock_cmd, mock_run, tmp_path
+    ):
+        import json
+        from unittest.mock import MagicMock
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout=json.dumps({"type": "composite", "subtasks": ["Task A", "Task B"]}),
+            stderr="",
+        )
+        inst = self._make_instance(tmp_path)
+        result = _maybe_decompose_mission(
+            "- [project:myproj] Complex mission [decompose]",
+            "myproj",
+            inst,
+            self.PROJECTS,
+        )
+        assert result is not None
+        assert len(result) == 2
+        from app.missions import parse_sections
+        sections = parse_sections((inst / "missions.md").read_text())
+        # Parent + 2 sub-missions
+        assert len(sections["pending"]) == 3
+
+    @patch("app.config.get_decompose_config", return_value={"enabled": False, "auto": False})
+    def test_skips_when_disabled_and_no_tag(self, mock_cfg, tmp_path):
+        inst = self._make_instance(tmp_path, "- [project:myproj] Simple mission")
+        result = _maybe_decompose_mission(
+            "- [project:myproj] Simple mission",
+            "myproj",
+            inst,
+            self.PROJECTS,
+        )
+        assert result is None
+
+    @patch("app.config.get_decompose_config", return_value={"enabled": True, "auto": False})
+    def test_skips_skill_command_missions(self, mock_cfg, tmp_path):
+        inst = self._make_instance(tmp_path, "- /implement Add feature")
+        result = _maybe_decompose_mission(
+            "/implement Add feature",
+            "myproj",
+            inst,
+            self.PROJECTS,
+        )
+        assert result is None
+
+    @patch("app.config.get_decompose_config", return_value={"enabled": True, "auto": False})
+    def test_skips_group_tagged_submissions(self, mock_cfg, tmp_path):
+        inst = self._make_instance(
+            tmp_path,
+            "- [project:myproj] [group:abc] Task A",
+        )
+        result = _maybe_decompose_mission(
+            "- [project:myproj] [group:abc] Task A",
+            "myproj",
+            inst,
+            self.PROJECTS,
+        )
+        assert result is None
+
+    @patch("app.config.get_decompose_config", return_value={"enabled": True, "auto": False})
+    def test_skips_already_decomposed_parent(self, mock_cfg, tmp_path):
+        inst = self._make_instance(
+            tmp_path,
+            "- [project:myproj] Big mission [decomposed:grp1]",
+        )
+        result = _maybe_decompose_mission(
+            "- [project:myproj] Big mission [decomposed:grp1]",
+            "myproj",
+            inst,
+            self.PROJECTS,
+        )
+        assert result is None

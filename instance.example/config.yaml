@@ -574,6 +574,18 @@ usage:
 #       max_turns: 500          # Generous turns for architectural work
 #       timeout_multiplier: 1.5
 
+# Mission decomposition — automatically split complex missions into sub-tasks
+# When a mission is tagged [decompose], or when auto is true, a lightweight
+# (Haiku) classifier call decides whether the mission should be split into
+# an ordered sequence of focused sub-missions. Each sub-task is injected into
+# Pending tagged [group:ID]; the parent is tagged [decomposed:ID] and skipped
+# by the picker. Once all sub-tasks leave Pending/In-Progress the parent is
+# automatically completed. Only applies to natural-language missions (not /commands).
+# decompose:
+#   enabled: false    # Master switch. Tag [decompose] still works when false.
+#   auto: false       # When true, ALL missions are classified (no tag needed).
+#                     # Requires enabled: true. Adds a Haiku call per mission.
+
 # Plan review loop — validates generated plans before posting to GitHub
 # A lightweight subagent (Haiku) reviews each plan for missing file paths,
 # TODO placeholders, oversized phases, scope creep, and missing tests.

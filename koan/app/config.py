@@ -1237,6 +1237,36 @@ def get_autonomous_health_config() -> dict:
     }
 
 
+def get_decompose_config() -> dict:
+    """Get mission decomposition configuration from config.yaml.
+
+    Config keys (under ``decompose:`` in ``config.yaml``):
+        enabled (bool): master switch — when True, the [decompose] tag
+            triggers decomposition. When False, decomposition is fully
+            disabled (the tag is ignored). Default False.
+        auto (bool): when True, all missions are classified (no tag
+            needed). Requires enabled=True to have any effect.
+            Default False.
+
+    Returns:
+        Dict with keys ``enabled`` and ``auto``, always populated.
+    """
+    config = _load_config()
+    section = config.get("decompose", {})
+    if section is False:
+        section = {"enabled": False}
+    elif not isinstance(section, dict):
+        from app.run_log import log_safe as _log_cfg
+        _log_cfg("warning",
+            f"decompose: expected a dict, got {type(section).__name__} — "
+            "using defaults (enabled=false, auto=false)")
+        section = {}
+    return {
+        "enabled": bool(section.get("enabled", False)),
+        "auto": bool(section.get("auto", False)),
+    }
+
+
 def get_plan_review_config() -> dict:
     """Get plan review loop configuration from config.yaml.
 

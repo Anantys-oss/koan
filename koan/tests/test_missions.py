@@ -2897,6 +2897,32 @@ class TestExtractNextPendingStrikethrough:
         assert len(list_pending(content)) == 1  # list_pending filters
 
 
+class TestExtractNextPendingDecomposed:
+    def test_skips_decomposed_parent_returns_next(self):
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- [project:foo] Parent mission [decomposed:grp1]\n"
+            "- [project:foo] [group:grp1] Sub-task A\n\n"
+            "## In Progress\n\n"
+            "## Done\n"
+        )
+        result = extract_next_pending(content, "foo")
+        assert "Sub-task A" in result
+        assert "Parent mission" not in result
+
+    def test_skips_decomposed_no_other_pending(self):
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- [project:foo] Parent [decomposed:grp1]\n\n"
+            "## In Progress\n\n"
+            "## Done\n"
+        )
+        result = extract_next_pending(content, "foo")
+        assert result == ""
+
+
 # --- cancel_pending_mission ---
 
 class TestCancelPendingMission:
@@ -3427,3 +3453,262 @@ class TestIsDuplicateMission:
         )
         new_entry = "- [project:koan] /rebase https://github.com/owner/repo/pull/10"
         assert is_duplicate_mission(content, new_entry) is False
+
+
+# --- inject_subtasks / mark_parent_decomposed / find_decomposed_parents_ready ---
+
+from app.missions import (
+    check_all_subtasks_failed,
+    inject_subtasks,
+    mark_parent_decomposed,
+    find_decomposed_parents_ready,
+    extract_decomposed_tag,
+    extract_group_tag,
+)
+
+
+class TestInjectSubtasks:
+
+    BASE = (
+        "# Missions\n\n"
+        "## Pending\n\n"
+        "- [project:myproj] Refactor AND add feature AND docs\n\n"
+        "## In Progress\n\n"
+        "## Done\n"
+    )
+
+    def test_places_subtasks_after_parent(self):
+        updated = inject_subtasks(
+            self.BASE,
+            "- [project:myproj] Refactor AND add feature AND docs",
+            ["Refactor module", "Add feature", "Update docs"],
+            "abc12345",
+        )
+        sections = parse_sections(updated)
+        pending = sections["pending"]
+        # Parent + 3 sub-missions = 4 items
+        assert len(pending) == 4
+        # Parent is first
+        assert "Refactor AND add feature AND docs" in pending[0]
+        # Sub-missions follow in order
+        assert "Refactor module" in pending[1]
+        assert "Add feature" in pending[2]
+        assert "Update docs" in pending[3]
+
+    def test_subtasks_inherit_project_tag(self):
+        updated = inject_subtasks(
+            self.BASE,
+            "- [project:myproj] Refactor AND add feature AND docs",
+            ["Task A", "Task B"],
+            "grp001",
+        )
+        sections = parse_sections(updated)
+        pending = sections["pending"]
+        # Sub-missions should have [project:myproj] tag
+        assert "[project:myproj]" in pending[1]
+        assert "[project:myproj]" in pending[2]
+
+    def test_subtasks_have_group_tag(self):
+        updated = inject_subtasks(
+            self.BASE,
+            "- [project:myproj] Refactor AND add feature AND docs",
+            ["Task A", "Task B"],
+            "grp001",
+        )
+        sections = parse_sections(updated)
+        pending = sections["pending"]
+        assert extract_group_tag(pending[1]) == "grp001"
+        assert extract_group_tag(pending[2]) == "grp001"
+
+    def test_group_tag_inherits_project(self):
+        """Sub-missions must carry the parent's [project:X] tag."""
+        content = (
+            "# Missions\n\n## Pending\n\n"
+            "- [project:alpha] Complex mission\n\n"
+            "## In Progress\n\n## Done\n"
+        )
+        updated = inject_subtasks(
+            content,
+            "- [project:alpha] Complex mission",
+            ["Sub 1", "Sub 2"],
+            "grpXX",
+        )
+        sections = parse_sections(updated)
+        for sub in sections["pending"][1:]:
+            assert "[project:alpha]" in sub
+
+    def test_inherits_project_from_line_when_needle_stripped(self):
+        """When parent_text has no project tag, extract from missions.md line."""
+        content = (
+            "# Missions\n\n## Pending\n\n"
+            "- [project:alpha] Complex mission [decompose]\n\n"
+            "## In Progress\n\n## Done\n"
+        )
+        updated = inject_subtasks(
+            content,
+            "Complex mission [decompose]",
+            ["Sub 1", "Sub 2"],
+            "grpYY",
+        )
+        sections = parse_sections(updated)
+        for sub in sections["pending"][1:]:
+            assert "[project:alpha]" in sub
+
+    def test_no_change_when_parent_not_found(self):
+        updated = inject_subtasks(
+            self.BASE,
+            "- [project:myproj] Nonexistent mission",
+            ["Task A"],
+            "grp001",
+        )
+        # Content should be unchanged (normalized)
+        assert parse_sections(updated)["pending"] == parse_sections(self.BASE)["pending"]
+
+
+class TestMarkParentDecomposed:
+
+    BASE = (
+        "# Missions\n\n"
+        "## Pending\n\n"
+        "- [project:myproj] Big mission ⏳(2026-05-20T10:00)\n\n"
+        "## In Progress\n\n## Done\n"
+    )
+
+    def test_adds_decomposed_tag(self):
+        updated = mark_parent_decomposed(
+            self.BASE,
+            "- [project:myproj] Big mission ⏳(2026-05-20T10:00)",
+            "abc123",
+        )
+        sections = parse_sections(updated)
+        parent = sections["pending"][0]
+        assert extract_decomposed_tag(parent) == "abc123"
+
+    def test_tag_placed_before_timestamp(self):
+        updated = mark_parent_decomposed(
+            self.BASE,
+            "- [project:myproj] Big mission ⏳(2026-05-20T10:00)",
+            "abc123",
+        )
+        sections = parse_sections(updated)
+        parent = sections["pending"][0]
+        tag_pos = parent.index("[decomposed:abc123]")
+        ts_pos = parent.index("⏳")
+        assert tag_pos < ts_pos
+
+    def test_idempotent_if_already_tagged(self):
+        pre_tagged = (
+            "# Missions\n\n## Pending\n\n"
+            "- [project:myproj] Big mission [decomposed:abc123]\n\n"
+            "## In Progress\n\n## Done\n"
+        )
+        updated = mark_parent_decomposed(
+            pre_tagged,
+            "- [project:myproj] Big mission [decomposed:abc123]",
+            "abc123",
+        )
+        # Should not add a second tag
+        assert updated.count("[decomposed:abc123]") == 1
+
+
+class TestFindDecomposedParentsReady:
+
+    def test_completes_parent_when_all_subtasks_done(self):
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- [project:myproj] Big mission [decomposed:grp1]\n\n"
+            "## In Progress\n\n"
+            "## Done\n\n"
+            "- [project:myproj] [group:grp1] Task A ✅ (2026-05-20 10:00)\n"
+            "- [project:myproj] [group:grp1] Task B ✅ (2026-05-20 10:05)\n"
+        )
+        ready = find_decomposed_parents_ready(content)
+        assert len(ready) == 1
+        assert "Big mission" in ready[0]
+
+    def test_not_ready_when_subtask_still_pending(self):
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- [project:myproj] Big mission [decomposed:grp1]\n"
+            "- [project:myproj] [group:grp1] Task A\n\n"
+            "## In Progress\n\n"
+            "## Done\n"
+        )
+        ready = find_decomposed_parents_ready(content)
+        assert ready == []
+
+    def test_not_ready_when_subtask_in_progress(self):
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- [project:myproj] Big mission [decomposed:grp1]\n\n"
+            "## In Progress\n\n"
+            "- [project:myproj] [group:grp1] Task A ▶(2026-05-20T10:00)\n\n"
+            "## Done\n"
+        )
+        ready = find_decomposed_parents_ready(content)
+        assert ready == []
+
+    def test_ready_when_subtasks_mixed_done_and_failed(self):
+        """Failed sub-missions count as terminal — parent should complete."""
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- [project:myproj] Big mission [decomposed:grp2]\n\n"
+            "## In Progress\n\n"
+            "## Done\n\n"
+            "- [project:myproj] [group:grp2] Task A ✅ (2026-05-20 10:00)\n\n"
+            "## Failed\n\n"
+            "- [project:myproj] [group:grp2] Task B ❌ (2026-05-20 10:05)\n"
+        )
+        ready = find_decomposed_parents_ready(content)
+        assert len(ready) == 1
+        assert "Big mission" in ready[0]
+
+    def test_no_decomposed_parents(self):
+        content = (
+            "# Missions\n\n## Pending\n\n"
+            "- Simple mission\n\n"
+            "## In Progress\n\n## Done\n"
+        )
+        assert find_decomposed_parents_ready(content) == []
+
+
+class TestCheckAllSubtasksFailed:
+
+    def test_all_failed(self):
+        content = (
+            "# Missions\n\n## Pending\n\n## In Progress\n\n"
+            "## Done\n\n"
+            "## Failed\n\n"
+            "- [group:grp1] Task A ❌ (2026-05-20 10:00)\n"
+            "- [group:grp1] Task B ❌ (2026-05-20 10:05)\n"
+        )
+        assert check_all_subtasks_failed(content, "grp1") is True
+
+    def test_mixed_done_and_failed(self):
+        content = (
+            "# Missions\n\n## Pending\n\n## In Progress\n\n"
+            "## Done\n\n"
+            "- [group:grp2] Task A ✅ (2026-05-20 10:00)\n\n"
+            "## Failed\n\n"
+            "- [group:grp2] Task B ❌ (2026-05-20 10:05)\n"
+        )
+        assert check_all_subtasks_failed(content, "grp2") is False
+
+    def test_all_done(self):
+        content = (
+            "# Missions\n\n## Pending\n\n## In Progress\n\n"
+            "## Done\n\n"
+            "- [group:grp3] Task A ✅ (2026-05-20 10:00)\n"
+        )
+        assert check_all_subtasks_failed(content, "grp3") is False
+
+    def test_no_subtasks_at_all_treated_as_failed(self):
+        content = (
+            "# Missions\n\n## Pending\n\n## In Progress\n\n"
+            "## Done\n\n## Failed\n\n"
+        )
+        assert check_all_subtasks_failed(content, "ghost_group") is True
