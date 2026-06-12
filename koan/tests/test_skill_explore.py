@@ -383,6 +383,7 @@ class TestBulkToggle:
         from skills.core.explore.handler import handle
 
         _write_config(tmp_path, {
+            "defaults": {"exploration": True},
             "projects": {
                 "koan": {"path": "/tmp/koan", "exploration": True},
             }
@@ -396,6 +397,7 @@ class TestBulkToggle:
         from skills.core.explore.handler import handle
 
         _write_config(tmp_path, {
+            "defaults": {"exploration": False},
             "projects": {
                 "backend": {"path": "/tmp/backend", "exploration": False},
             }
@@ -422,6 +424,73 @@ class TestBulkToggle:
         config = _read_config(tmp_path)
         assert config["projects"]["koan"]["exploration"] is True
         assert config["projects"]["backend"]["exploration"] is True
+
+    def test_explore_all_sets_default(self, tmp_path):
+        from skills.core.explore.handler import handle
+
+        _write_config(tmp_path, {
+            "defaults": {"exploration": False},
+            "projects": {
+                "koan": {"path": "/tmp/koan", "exploration": False},
+            }
+        })
+        ctx = _make_ctx("explore", tmp_path, args="all")
+        result = handle(ctx)
+
+        assert "enabled" in result.lower()
+        assert "future projects" in result.lower()
+        config = _read_config(tmp_path)
+        assert config["defaults"]["exploration"] is True
+        assert config["projects"]["koan"]["exploration"] is True
+
+    def test_noexplore_all_disables_and_sets_default(self, tmp_path):
+        from skills.core.explore.handler import handle
+
+        _write_config(tmp_path, {
+            "projects": {
+                "koan": {"path": "/tmp/koan", "exploration": True},
+                "backend": {"path": "/tmp/backend", "exploration": True},
+            }
+        })
+        ctx = _make_ctx("noexplore", tmp_path, args="all")
+        result = handle(ctx)
+
+        assert "disabled" in result.lower()
+        assert "future projects" in result.lower()
+        config = _read_config(tmp_path)
+        assert config["projects"]["koan"]["exploration"] is False
+        assert config["projects"]["backend"]["exploration"] is False
+        assert config["defaults"]["exploration"] is False
+
+    def test_noexplore_all_already_disabled(self, tmp_path):
+        from skills.core.explore.handler import handle
+
+        _write_config(tmp_path, {
+            "defaults": {"exploration": False},
+            "projects": {
+                "koan": {"path": "/tmp/koan", "exploration": False},
+            }
+        })
+        ctx = _make_ctx("noexplore", tmp_path, args="all")
+        result = handle(ctx)
+
+        assert "already" in result.lower()
+
+    def test_explore_all_only_default_changes(self, tmp_path):
+        """All projects already enabled but default not set — should update default only."""
+        from skills.core.explore.handler import handle
+
+        _write_config(tmp_path, {
+            "projects": {
+                "koan": {"path": "/tmp/koan", "exploration": True},
+            }
+        })
+        ctx = _make_ctx("explore", tmp_path, args="all")
+        result = handle(ctx)
+
+        assert "future projects" in result.lower()
+        config = _read_config(tmp_path)
+        assert config["defaults"]["exploration"] is True
 
 
 # ---------------------------------------------------------------------------

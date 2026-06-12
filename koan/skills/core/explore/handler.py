@@ -19,10 +19,11 @@ def handle(ctx):
     if not args:
         return _show_status(config, koan_root)
 
-    # /explore all or /explore none
+    # /explore all, /noexplore all, /explore none
     lower_args = args.lower()
     if lower_args == "all":
-        return _set_all(koan_root, config, projects, True)
+        enable = not is_disable
+        return _set_all(koan_root, config, projects, enable)
     if lower_args == "none":
         return _set_all(koan_root, config, projects, False)
 
@@ -123,7 +124,10 @@ def _set_exploration(koan_root, config, projects, name, enable):
 
 
 def _set_all(koan_root, config, projects, enable):
-    """Enable or disable exploration for all projects (yaml + workspace)."""
+    """Enable or disable exploration for all projects (yaml + workspace).
+
+    Also sets defaults.exploration so future projects inherit the choice.
+    """
     from app.projects_merged import get_all_projects
 
     all_projects = get_all_projects(koan_root)
@@ -150,14 +154,27 @@ def _set_all(koan_root, config, projects, enable):
             project_entry["exploration"] = enable
             changed += 1
 
-    if changed == 0:
+    # Set defaults.exploration so future projects inherit the choice
+    defaults = config.get("defaults")
+    if defaults is None:
+        config["defaults"] = {}
+        defaults = config["defaults"]
+    default_changed = defaults.get("exploration") != enable
+    defaults["exploration"] = enable
+
+    if changed == 0 and not default_changed:
         state = "enabled" if enable else "disabled"
         return f"🔭 Exploration already {state} for all projects."
 
     _save_config(koan_root, config)
 
     state = "enabled" if enable else "disabled"
-    return f"🔭 Exploration {state} for {changed} project(s)."
+    parts = []
+    if changed:
+        parts.append(f"{changed} project(s)")
+    if default_changed:
+        parts.append("default for future projects")
+    return f"🔭 Exploration {state} for {' + '.join(parts)}."
 
 
 def _try_workspace_project(koan_root, config, projects, name):

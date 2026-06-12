@@ -13,7 +13,7 @@ commands:
     aliases: [exploration]
   - name: noexplore
     description: Disable exploration for a project
-    usage: /noexplore [project]
+    usage: /noexplore [project|all]
     aliases: []
 handler: handler.py
 ---

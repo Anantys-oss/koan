@@ -329,8 +329,9 @@ class TestSetAll:
         assert "disabled" in result
         assert "2 project(s)" in result
 
-    def test_all_already_enabled(self, handler, tmp_path):
+    def test_all_already_enabled_with_default(self, handler, tmp_path):
         config = _make_config("alpha", "beta")
+        config["defaults"] = {"exploration": True}
         projects = config["projects"]
         all_projects = [("alpha", "/workspace/alpha"), ("beta", "/workspace/beta")]
 
@@ -341,6 +342,21 @@ class TestSetAll:
 
         assert "already enabled" in result
         mock_save.assert_not_called()
+
+    def test_all_projects_enabled_but_default_not_set(self, handler, tmp_path):
+        """All projects already enabled but default missing — should update default."""
+        config = _make_config("alpha")
+        projects = config["projects"]
+        all_projects = [("alpha", "/workspace/alpha")]
+
+        with patch("app.projects_merged.get_all_projects", return_value=all_projects), \
+             patch.object(handler, "_get_exploration_status", return_value=True), \
+             patch.object(handler, "_save_config") as mock_save:
+            result = handler._set_all(str(tmp_path), config, projects, True)
+
+        assert "future projects" in result
+        mock_save.assert_called_once()
+        assert config["defaults"]["exploration"] is True
 
     def test_partial_change(self, handler, tmp_path):
         config = _make_config("alpha", "beta")
@@ -370,6 +386,21 @@ class TestSetAll:
         assert "2 project(s)" in result
         assert "myapp" in projects
         assert projects["myapp"]["path"] == "/workspace/myapp"
+
+    def test_disable_all_sets_default(self, handler, tmp_path):
+        config = _make_config("alpha", "beta")
+        projects = config["projects"]
+        all_projects = [("alpha", "/workspace/alpha"), ("beta", "/workspace/beta")]
+
+        with patch("app.projects_merged.get_all_projects", return_value=all_projects), \
+             patch.object(handler, "_get_exploration_status", return_value=True), \
+             patch.object(handler, "_save_config") as mock_save:
+            result = handler._set_all(str(tmp_path), config, projects, False)
+
+        assert "disabled" in result
+        assert "future projects" in result
+        mock_save.assert_called_once()
+        assert config["defaults"]["exploration"] is False
 
     def test_no_projects_returns_error(self, handler, tmp_path):
         config = {"projects": {}}
@@ -456,6 +487,24 @@ class TestHandle:
              patch.object(handler, "_save_config"):
             result = handler.handle(ctx)
         assert "disabled" in result
+
+    def test_noexplore_all(self, handler, ctx):
+        config = _make_config("alpha", "beta")
+        all_projects = [("alpha", "/workspace/alpha"), ("beta", "/workspace/beta")]
+        ctx = SkillContext(
+            koan_root=ctx.koan_root,
+            instance_dir=ctx.instance_dir,
+            command_name="noexplore",
+            args="all",
+            send_message=MagicMock(),
+        )
+        with patch.object(handler, "_load_config", return_value=config), \
+             patch("app.projects_merged.get_all_projects", return_value=all_projects), \
+             patch.object(handler, "_get_exploration_status", return_value=True), \
+             patch.object(handler, "_save_config"):
+            result = handler.handle(ctx)
+        assert "disabled" in result
+        assert config["defaults"]["exploration"] is False
 
     def test_explore_all_case_insensitive(self, handler, ctx):
         config = _make_config("koan")
