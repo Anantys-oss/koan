@@ -243,9 +243,11 @@ def spawn_session(
     )
 
     # Create temp files for stdout/stderr
-    fd_out, stdout_file = tempfile.mkstemp(prefix=f"koan-session-{wt.session_id}-out-")
+    from app.utils import koan_tmp_dir
+
+    fd_out, stdout_file = tempfile.mkstemp(prefix=f"koan-session-{wt.session_id}-out-", dir=koan_tmp_dir())
     os.close(fd_out)
-    fd_err, stderr_file = tempfile.mkstemp(prefix=f"koan-session-{wt.session_id}-err-")
+    fd_err, stderr_file = tempfile.mkstemp(prefix=f"koan-session-{wt.session_id}-err-", dir=koan_tmp_dir())
     os.close(fd_err)
 
     # Create session

@@ -1627,3 +1627,132 @@ class TestUpdateConfigYaml:
         import yaml
         data = yaml.safe_load(config_file.read_text())
         assert data["a"]["b"] == 1
+
+
+class TestKoanTmpDir:
+    """Per-uid temp directory resolution (multi-instance /tmp collision fix)."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self, monkeypatch):
+        # The resolved path is cached in a module global; clear it so each
+        # test re-resolves from the env it sets up.
+        from app import utils
+        monkeypatch.setattr(utils, "_koan_tmp_dir_cache", None)
+
+    def test_respects_env_override(self, tmp_path, monkeypatch):
+        from app.utils import koan_tmp_dir
+
+        target = tmp_path / "mytmp"
+        monkeypatch.setenv("KOAN_TMP_DIR", str(target))
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "ignored"))
+
+        assert koan_tmp_dir() == str(target)
+        assert target.is_dir()
+
+    def test_prefers_xdg_runtime_dir(self, tmp_path, monkeypatch):
+        from app.utils import koan_tmp_dir
+
+        monkeypatch.delenv("KOAN_TMP_DIR", raising=False)
+        xdg = tmp_path / "run"
+        xdg.mkdir()
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(xdg))
+
+        assert koan_tmp_dir() == str(xdg / "koan")
+        assert (xdg / "koan").is_dir()
+
+    def test_falls_back_to_gettempdir_with_uid(self, tmp_path, monkeypatch):
+        from app.utils import koan_tmp_dir
+
+        monkeypatch.delenv("KOAN_TMP_DIR", raising=False)
+        monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+        monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+
+        result = koan_tmp_dir()
+        assert result == str(tmp_path / f"koan-{os.getuid()}")
+        assert Path(result).is_dir()
+
+    def test_dir_created_mode_0700(self, tmp_path, monkeypatch):
+        import stat as _stat
+        from app.utils import koan_tmp_dir
+
+        target = tmp_path / "secure"
+        monkeypatch.setenv("KOAN_TMP_DIR", str(target))
+
+        koan_tmp_dir()
+        mode = _stat.S_IMODE(os.stat(target).st_mode)
+        assert mode == 0o700
+
+    def test_repairs_loose_perms_on_existing_dir(self, tmp_path, monkeypatch):
+        import stat as _stat
+        from app.utils import koan_tmp_dir
+
+        target = tmp_path / "loose"
+        target.mkdir(mode=0o755)
+        os.chmod(target, 0o755)
+        monkeypatch.setenv("KOAN_TMP_DIR", str(target))
+
+        koan_tmp_dir()
+        assert _stat.S_IMODE(os.stat(target).st_mode) == 0o700
+
+    def test_cached_across_calls(self, tmp_path, monkeypatch):
+        from app.utils import koan_tmp_dir
+
+        monkeypatch.setenv("KOAN_TMP_DIR", str(tmp_path / "a"))
+        first = koan_tmp_dir()
+        # Changing the env after the first resolution must not change the
+        # cached result — callers rely on a stable path within a process.
+        monkeypatch.setenv("KOAN_TMP_DIR", str(tmp_path / "b"))
+        assert koan_tmp_dir() == first
+
+    def test_different_roots_yield_different_dirs(self, tmp_path, monkeypatch):
+        """Two users (different KOAN_TMP_DIR/uid) never share a path."""
+        from app import utils
+        from app.utils import koan_tmp_dir
+
+        monkeypatch.setenv("KOAN_TMP_DIR", str(tmp_path / "user_a"))
+        a = koan_tmp_dir()
+
+        monkeypatch.setattr(utils, "_koan_tmp_dir_cache", None)
+        monkeypatch.setenv("KOAN_TMP_DIR", str(tmp_path / "user_b"))
+        b = koan_tmp_dir()
+
+        assert a != b
+
+    def test_rejects_symlink_dir(self, tmp_path, monkeypatch):
+        """A symlink at the temp-dir path is refused (symlink attack)."""
+        from app.utils import koan_tmp_dir
+
+        real = tmp_path / "real"
+        real.mkdir()
+        link = tmp_path / "link"
+        link.symlink_to(real)
+        monkeypatch.setenv("KOAN_TMP_DIR", str(link))
+
+        with pytest.raises(RuntimeError, match="not a real directory"):
+            koan_tmp_dir()
+
+    def test_rejects_non_directory(self, tmp_path, monkeypatch):
+        """A plain file pre-created at the path is refused (not a dir)."""
+        from app.utils import koan_tmp_dir
+
+        target = tmp_path / "afile"
+        target.write_text("squatted")
+        monkeypatch.setenv("KOAN_TMP_DIR", str(target))
+
+        with pytest.raises(RuntimeError, match="not a real directory"):
+            koan_tmp_dir()
+
+    def test_rejects_foreign_owned_dir(self, tmp_path, monkeypatch):
+        """A pre-existing dir owned by another uid is refused (fail closed)."""
+        from app.utils import koan_tmp_dir
+
+        target = tmp_path / "squatted"
+        target.mkdir(mode=0o777)
+        monkeypatch.setenv("KOAN_TMP_DIR", str(target))
+        # Simulate "owned by someone else" by making our reported uid differ
+        # from the directory's real owner.
+        real_owner = os.stat(target).st_uid
+        monkeypatch.setattr(os, "getuid", lambda: real_owner + 99999)
+
+        with pytest.raises(RuntimeError, match="owned by uid"):
+            koan_tmp_dir()

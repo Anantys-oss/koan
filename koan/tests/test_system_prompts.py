@@ -139,3 +139,50 @@ def test_contemplative_prompt_anti_noise_rules():
     # Must discourage empty/generic output
     assert "silence" in prompt.lower() or "silent" in prompt.lower()
     assert "noise" in prompt.lower() or "generic" in prompt.lower()
+
+
+def test_agent_prompt_uses_mktemp_not_fixed_tmp_names():
+    """Agent prompt must not instruct fixed /tmp filenames.
+
+    Fixed names (e.g. /tmp/issue.md) collide across users running Kōan on the
+    same host. The prompt must use mktemp patterns so each run gets a unique
+    file. See koan_tmp_dir() / the multi-instance temp-collision fix.
+    """
+    prompt = (PROMPTS_DIR / "agent.md").read_text()
+
+    for fixed in ("/tmp/test-output.txt", "/tmp/issue.md", "/tmp/comment.md"):
+        assert fixed not in prompt, f"Fixed /tmp path still present: {fixed}"
+
+    assert "mktemp /tmp/koan-test-output-XXXXXX" in prompt
+    assert "mktemp /tmp/koan-issue-XXXXXX" in prompt
+    assert "mktemp /tmp/koan-comment-XXXXXX" in prompt
+    _assert_mktemp_templates_are_bsd_portable(prompt)
+
+
+def test_submit_pr_prompt_uses_mktemp_not_fixed_tmp_names():
+    """Submit-PR prompt must use a mktemp pattern for the audit issue body."""
+    prompt = (PROMPTS_DIR / "submit-pull-request.md").read_text()
+
+    assert "/tmp/koan-audit-issue.md" not in prompt
+    assert "mktemp /tmp/koan-audit-issue-XXXXXX" in prompt
+    _assert_mktemp_templates_are_bsd_portable(prompt)
+
+
+def _assert_mktemp_templates_are_bsd_portable(prompt: str):
+    """Every `mktemp` template must end its X-run at the end of the path.
+
+    BSD/macOS `mktemp` only substitutes a *trailing* run of X's; a suffix after
+    the X's (e.g. `mktemp /tmp/foo-XXXXXX.md`) is taken literally, yielding a
+    fixed filename and reintroducing the cross-user collision this fix removes.
+    Guard against any `XXXXXX<suffix>` form.
+    """
+    import re
+
+    for m in re.finditer(r"mktemp\s+(\S+)", prompt):
+        # Strip trailing shell punctuation (the template often sits inside a
+        # $(...) command substitution, so the token can end with `)`, `;`, etc.).
+        template = m.group(1).rstrip(');"\'`')
+        assert re.search(r"X+$", template), (
+            f"mktemp template {template!r} does not end in X's — not BSD/macOS "
+            "portable (suffix after X's is taken literally). Put the X-run last."
+        )

@@ -129,11 +129,14 @@ def generate_plugin_dir(
     """
     skills = _select_skills(registry, include_audiences)
 
-    # Create temp directory
-    kwargs = {}
-    if base_dir is not None:
-        kwargs["dir"] = str(base_dir)
-    plugin_dir = Path(tempfile.mkdtemp(prefix="koan-plugins-", **kwargs))
+    # Create temp directory (per-uid koan tmp dir unless a base_dir override is
+    # given, e.g. the devcontainer bind-mount).
+    from app.utils import koan_tmp_dir
+
+    plugin_dir = Path(tempfile.mkdtemp(
+        prefix="koan-plugins-",
+        dir=str(base_dir) if base_dir is not None else koan_tmp_dir(),
+    ))
 
     # Create plugin manifest
     manifest_dir = plugin_dir / ".claude-plugin"

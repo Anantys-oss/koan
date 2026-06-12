@@ -236,9 +236,11 @@ class TestRunCli:
         cmd = ["claude", "-p", "test prompt"]
 
         import glob
-        before = set(glob.glob("/tmp/koan-prompt-*"))
+        from app.utils import koan_tmp_dir
+        pat = os.path.join(koan_tmp_dir(), "koan-prompt-*")
+        before = set(glob.glob(pat))
         run_cli(cmd, capture_output=True, text=True)
-        after = set(glob.glob("/tmp/koan-prompt-*"))
+        after = set(glob.glob(pat))
         assert after - before == set()
 
     @patch("app.cli_exec.subprocess.run", side_effect=Exception("boom"))
@@ -246,10 +248,12 @@ class TestRunCli:
         cmd = ["claude", "-p", "test prompt"]
 
         import glob
-        before = set(glob.glob("/tmp/koan-prompt-*"))
+        from app.utils import koan_tmp_dir
+        pat = os.path.join(koan_tmp_dir(), "koan-prompt-*")
+        before = set(glob.glob(pat))
         with pytest.raises(Exception, match="boom"):
             run_cli(cmd, capture_output=True, text=True)
-        after = set(glob.glob("/tmp/koan-prompt-*"))
+        after = set(glob.glob(pat))
         assert after - before == set()
 
     @patch("app.cli_exec.subprocess.run")
@@ -314,6 +318,45 @@ class TestRunCli:
         assert mock_flock.call_args_list[-1][0][1] == fcntl.LOCK_UN
 
 
+class TestProviderLockPath:
+    """The provider lock lives under the per-uid koan_tmp_dir (collision fix)."""
+
+    def test_lock_path_under_koan_tmp_dir(self, tmp_path, monkeypatch):
+        from app import utils
+        from app.cli_exec import _lock_path
+
+        monkeypatch.setattr(utils, "_koan_tmp_dir_cache", None)
+        monkeypatch.setenv("KOAN_TMP_DIR", str(tmp_path))
+
+        assert _lock_path("codex-cli") == str(tmp_path / "codex-cli.lock")
+
+    def test_lock_paths_differ_per_user(self, tmp_path, monkeypatch):
+        """Different users (tmp roots) get distinct lock paths — no clash."""
+        from app import utils
+        from app.cli_exec import _lock_path
+
+        monkeypatch.setattr(utils, "_koan_tmp_dir_cache", None)
+        monkeypatch.setenv("KOAN_TMP_DIR", str(tmp_path / "user_a"))
+        a = _lock_path("codex")
+
+        monkeypatch.setattr(utils, "_koan_tmp_dir_cache", None)
+        monkeypatch.setenv("KOAN_TMP_DIR", str(tmp_path / "user_b"))
+        b = _lock_path("codex")
+
+        assert a != b
+        assert a.endswith("codex.lock")
+        assert b.endswith("codex.lock")
+
+    def test_blank_lock_name_defaults_to_provider(self, tmp_path, monkeypatch):
+        from app import utils
+        from app.cli_exec import _lock_path
+
+        monkeypatch.setattr(utils, "_koan_tmp_dir_cache", None)
+        monkeypatch.setenv("KOAN_TMP_DIR", str(tmp_path))
+
+        assert _lock_path("   ") == str(tmp_path / "provider.lock")
+
+
 # ---------------------------------------------------------------------------
 # popen_cli
 # ---------------------------------------------------------------------------
@@ -334,9 +377,11 @@ class TestPopenCli:
 
         # Cleanup should remove the temp file
         import glob
-        before = set(glob.glob("/tmp/koan-prompt-*"))
+        from app.utils import koan_tmp_dir
+        pat = os.path.join(koan_tmp_dir(), "koan-prompt-*")
+        before = set(glob.glob(pat))
         cleanup()
-        after = set(glob.glob("/tmp/koan-prompt-*"))
+        after = set(glob.glob(pat))
         assert len(after) <= len(before)
 
     @patch("app.cli_exec.subprocess.Popen")

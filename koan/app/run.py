@@ -65,7 +65,7 @@ from app.signals import (
 )
 from app.config import get_recovery_config
 from app.subprocess_runner import kill_process_group
-from app.utils import atomic_write
+from app.utils import atomic_write, koan_tmp_dir
 
 
 # ---------------------------------------------------------------------------
@@ -1160,9 +1160,9 @@ def _handle_contemplative(
             project_name=project_name,
             session_info=f"Run {run_num}/{max_runs} on {project_name}. Mode: {plan['autonomous_mode']}.",
         )
-        fd_out, stdout_file = tempfile.mkstemp(prefix="koan-contemp-out-")
+        fd_out, stdout_file = tempfile.mkstemp(prefix="koan-contemp-out-", dir=koan_tmp_dir())
         os.close(fd_out)
-        fd_err, stderr_file = tempfile.mkstemp(prefix="koan-contemp-err-")
+        fd_err, stderr_file = tempfile.mkstemp(prefix="koan-contemp-err-", dir=koan_tmp_dir())
         os.close(fd_err)
         cli_error = None
         try:
@@ -2063,11 +2063,11 @@ def _run_skill_mission(
     # stderr is redirected to a file instead of a pipe to eliminate
     # deadlock risk: if a background drain thread dies (e.g.
     # UnicodeDecodeError), the pipe fills and both processes stall.
-    fd_out, stdout_file = tempfile.mkstemp(prefix="koan-out-")
+    fd_out, stdout_file = tempfile.mkstemp(prefix="koan-out-", dir=koan_tmp_dir())
     os.close(fd_out)
-    fd_err, stderr_file = tempfile.mkstemp(prefix="koan-err-")
+    fd_err, stderr_file = tempfile.mkstemp(prefix="koan-err-", dir=koan_tmp_dir())
     os.close(fd_err)
-    fd_usage, stream_usage_file = tempfile.mkstemp(prefix="koan-stream-usage-")
+    fd_usage, stream_usage_file = tempfile.mkstemp(prefix="koan-stream-usage-", dir=koan_tmp_dir())
     os.close(fd_usage)
     from app.skill_dispatch import mission_command_name, mission_model_key
     _mission_command = mission_command_name(mission_title)

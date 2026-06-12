@@ -299,6 +299,8 @@ def _write_system_prompt_file(
         container_dir: When set, ``cmd_path`` is ``container_dir/<filename>``
             so the CLI command embeds the container-accessible path.
     """
+    from app.utils import koan_tmp_dir
+
     # NamedTemporaryFile creates with 0600 on POSIX (same as mkstemp).
     # delete=False so the subprocess can open the path after we close it.
     try:
@@ -307,7 +309,7 @@ def _write_system_prompt_file(
             prefix="koan-sysprompt-",
             suffix=".txt",
             delete=False,
-            dir=host_dir or None,
+            dir=host_dir or koan_tmp_dir(),
             encoding="utf-8",
         ) as f:
             host_path = f.name
@@ -823,9 +825,12 @@ def run_command_streaming(
     )
     last_message_path: Optional[str] = None
     if provider.supports_last_message_file():
+        from app.utils import koan_tmp_dir
+
         fd, last_message_path = tempfile.mkstemp(
             prefix="koan-last-message-",
             suffix=".txt",
+            dir=koan_tmp_dir(),
         )
         os.close(fd)
         cmd = provider.add_last_message_file_args(cmd, last_message_path)

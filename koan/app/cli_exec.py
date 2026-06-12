@@ -31,7 +31,6 @@ STDIN_PLACEHOLDER = "@stdin"
 # explicit timeout, but this guards against future callers forgetting.
 DEFAULT_TIMEOUT = 600  # 10 minutes
 
-_PROVIDER_LOCK_DIR = "/tmp"
 _FALLBACK_PROVIDER = CLIProvider()
 
 
@@ -56,10 +55,14 @@ def _uses_stdin_passing(provider: Optional[CLIProvider] = None) -> bool:
 
 
 def _lock_path(lock_name: str) -> str:
+    from app.utils import koan_tmp_dir
+
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", lock_name.strip()).strip(".-")
     if not safe:
         safe = "provider"
-    return os.path.join(_PROVIDER_LOCK_DIR, f"koan-{safe}.lock")
+    # Per-uid dir already namespaces the lock, so no "koan-" filename prefix
+    # is needed. Per-uid (not global /tmp) avoids cross-user permission clashes.
+    return os.path.join(koan_tmp_dir(), f"{safe}.lock")
 
 
 class _ProviderInvocationLock:
@@ -146,7 +149,9 @@ def prepare_prompt_file(
     if prompt is None:
         return cmd, None
 
-    fd, path = tempfile.mkstemp(suffix=".md", prefix="koan-prompt-")
+    from app.utils import koan_tmp_dir
+
+    fd, path = tempfile.mkstemp(suffix=".md", prefix="koan-prompt-", dir=koan_tmp_dir())
     try:
         os.write(fd, prompt.encode("utf-8"))
     finally:

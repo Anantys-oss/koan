@@ -29,6 +29,23 @@ appropriate lock.
 The bridge and runner are separate processes, so bugs that are harmless in a
 single process can corrupt state when both daemons are active.
 
+## Scratch Files And Provider Locks
+
+Transient scratch files (captured stdout/stderr, prompt files, generated plugin
+dirs) and the provider invocation lock do **not** live in `instance/` — they live
+under a per-uid temp directory returned by `utils.koan_tmp_dir()`:
+
+- `$XDG_RUNTIME_DIR/koan` when `XDG_RUNTIME_DIR` is set (Linux/systemd), else
+  `/tmp/koan-<uid>/`, created mode `0700`. Overridable with `KOAN_TMP_DIR`.
+- It is per-**uid**, not per-instance: provider auth/session state is stored in
+  the user's home directory, so two Kōan instances run by the same user must
+  still serialize on the same provider lock.
+
+This isolation is what lets multiple users run Kōan on one host without colliding
+on shared `/tmp` paths. Code that needs a temp file MUST pass `dir=koan_tmp_dir()`
+to `tempfile.*`; agent prompts that write to `/tmp` MUST use a `mktemp` pattern
+rather than a fixed filename. See [Troubleshooting](../operations/troubleshooting.md).
+
 ## Configuration Sources
 
 - Project configuration primarily comes from `projects.yaml` at `KOAN_ROOT`.

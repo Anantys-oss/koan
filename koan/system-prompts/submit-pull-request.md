@@ -14,7 +14,8 @@ additional responsibilities beyond writing a report:
 3. **Create a tracker issue when appropriate**: If your audit reveals issues worth tracking, use Koan's provider-neutral issue helper:
    ```bash
    cd {PROJECT_PATH}
-   cat > /tmp/koan-audit-issue.md <<'EOF'
+   issue_body=$(mktemp /tmp/koan-audit-issue-XXXXXX)
+   cat > "$issue_body" <<'EOF'
    ## Audit Findings — [date]
 
    [Summary of key findings]
@@ -33,7 +34,7 @@ additional responsibilities beyond writing a report:
      --project "{PROJECT_NAME}" \
      --project-path "{PROJECT_PATH}" \
      --title "Audit: [summary]" \
-     --body-file /tmp/koan-audit-issue.md
+     --body-file "$issue_body"
    ```
 
 4. **Skip issue creation when**:

@@ -141,9 +141,10 @@ When executing a mission, follow this sequence:
 {@include test-guidance}
    **IMPORTANT — redirect test output to avoid token waste:**
    ```bash
-   make test > /tmp/test-output.txt 2>&1
+   test_log=$(mktemp /tmp/koan-test-output-XXXXXX)
+   make test > "$test_log" 2>&1
    TEST_EXIT=$?
-   if [ $TEST_EXIT -ne 0 ]; then cat /tmp/test-output.txt; fi
+   if [ $TEST_EXIT -ne 0 ]; then cat "$test_log"; fi
    ```
    Only read the output file when tests fail. On success, log the result from the exit code alone.
 5. **Commit**: Write clear commit messages. Conventional commits when the project uses them.
@@ -241,8 +242,10 @@ Do NOT use `curl`, raw API calls, or git-based workarounds for GitHub operations
 
 - **PRs are always draft**: Use `gh pr create --draft`. Never create a non-draft PR.
 - **Tracker issue writes**: Use Koan's provider-neutral helper, not direct `gh issue create/comment`.
-  - Create: `{KOAN_PYTHON} -m app.issue_cli create --project "{PROJECT_NAME}" --project-path "{PROJECT_PATH}" --title "..." --body-file /tmp/issue.md`
-  - Comment: `{KOAN_PYTHON} -m app.issue_cli comment <issue-url> --project "{PROJECT_NAME}" --project-path "{PROJECT_PATH}" --body-file /tmp/comment.md`
+  Write the body to a unique temp file via `mktemp` (never a fixed `/tmp` name — multiple Koan
+  instances may share the host) and pass it with `--body-file`:
+  - Create: `body=$(mktemp /tmp/koan-issue-XXXXXX); printf '%s' "<body>" > "$body"; {KOAN_PYTHON} -m app.issue_cli create --project "{PROJECT_NAME}" --project-path "{PROJECT_PATH}" --title "..." --body-file "$body"`
+  - Comment: `body=$(mktemp /tmp/koan-comment-XXXXXX); printf '%s' "<body>" > "$body"; {KOAN_PYTHON} -m app.issue_cli comment <issue-url> --project "{PROJECT_NAME}" --project-path "{PROJECT_PATH}" --body-file "$body"`
   - Fetch: `{KOAN_PYTHON} -m app.issue_cli fetch <issue-url> --project "{PROJECT_NAME}" --project-path "{PROJECT_PATH}"`
 - **Pushing branches**: Always push to the `origin` remote: `git push -u origin <branch>`.
   Never push to other remotes (e.g. `upstream`, named forks).

@@ -21,6 +21,7 @@ import contextlib
 import fcntl
 import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -320,6 +321,88 @@ def get_all_github_remotes(project_path: str) -> List[str]:
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             continue
     return remotes
+
+
+_koan_tmp_dir_cache: Optional[str] = None
+
+
+def koan_tmp_dir() -> str:
+    """Return a per-uid temp directory for Kōan's scratch files and locks.
+
+    Resolution order:
+      1. ``KOAN_TMP_DIR`` env override (explicit operator/test control).
+      2. ``$XDG_RUNTIME_DIR/koan`` when ``XDG_RUNTIME_DIR`` is set
+         (Linux/systemd; the dir is per-uid and reaped on logout).
+      3. ``<gettempdir>/koan-<uid>`` fallback (covers macOS, which has no
+         ``XDG_RUNTIME_DIR``).
+
+    The directory is created mode ``0700`` so files created by one user cannot
+    be read or name-collided by another user sharing the same host. This is the
+    fix for multi-instance ``/tmp`` collisions (e.g. two users clashing on the
+    provider invocation lock).
+
+    Per-*uid* rather than per-instance on purpose: provider auth/session state
+    lives in the user's home dir, so two Kōan instances run by the same user
+    must still serialize on the same lock.
+
+    Because the fallback path (``/tmp/koan-<uid>``) is predictable and ``/tmp``
+    is world-writable, the directory is created securely: a pre-existing entry
+    is accepted only if it is a real directory (not a symlink) owned by the
+    current uid. Otherwise we fail closed rather than write scratch files and
+    the provider lock into an attacker-controlled location.
+    """
+    global _koan_tmp_dir_cache
+    if _koan_tmp_dir_cache is not None:
+        return _koan_tmp_dir_cache
+
+    override = os.environ.get("KOAN_TMP_DIR")
+    if override:
+        base = Path(override)
+    else:
+        xdg = os.environ.get("XDG_RUNTIME_DIR")
+        if xdg:
+            base = Path(xdg) / "koan"
+        else:
+            base = Path(tempfile.gettempdir()) / f"koan-{os.getuid()}"
+
+    _ensure_secure_dir(base)
+
+    _koan_tmp_dir_cache = str(base)
+    return _koan_tmp_dir_cache
+
+
+def _ensure_secure_dir(base: Path) -> None:
+    """Create *base* mode 0700, or validate a pre-existing one is safe.
+
+    Guards against the classic shared-``/tmp`` pre-creation/symlink attack: if
+    another user pre-creates the predictable ``/tmp/koan-<uid>`` path, a naive
+    ``makedirs(exist_ok=True)`` would silently accept it and we'd write secrets
+    and the provider lock into their directory. We instead create with
+    ``exist_ok=False`` and, when the path already exists, accept it only when it
+    is a real directory (not a symlink) owned by the current uid; group/other
+    permission bits are tightened. Anything else raises.
+    """
+    try:
+        os.makedirs(base, mode=0o700, exist_ok=False)
+        return  # freshly created — owned by us, 0700
+    except FileExistsError:
+        pass
+
+    st = os.lstat(base)  # lstat, not stat: a symlink must not pass the check
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+        raise RuntimeError(
+            f"Refusing to use temp dir {base!r}: not a real directory "
+            "(possible symlink attack). Set KOAN_TMP_DIR to a safe path."
+        )
+    if st.st_uid != os.getuid():
+        raise RuntimeError(
+            f"Refusing to use temp dir {base!r}: owned by uid {st.st_uid}, "
+            f"not {os.getuid()} (possible pre-creation attack). "
+            "Set KOAN_TMP_DIR to a safe path."
+        )
+    if stat.S_IMODE(st.st_mode) & 0o077:
+        # We own it, so tightening group/other access succeeds.
+        os.chmod(base, 0o700)
 
 
 def atomic_write(path: Path, content: str):

@@ -136,6 +136,26 @@ Messages queue in `instance/outbox.md`. The bridge flushes this to Telegram on e
 
 Kōan detects quota-limit messages from CLI output and auto-pauses. The pause lifts 10 minutes after the reported reset time. If the reset time can't be parsed, Kōan pauses for 5 hours. Use `/quota <N>` to override the estimate and `/resume` to unpause early.
 
+### Provider blocked when another user runs Kōan on the same host
+
+Symptom: the provider CLI (e.g. Codex) fails to start, or you see a warning that
+"serialization is disabled" for the provider lock, only when a second user is
+running Kōan on the same machine.
+
+Cause: Kōan's scratch files and the provider invocation lock live under a
+**per-uid** directory — `$XDG_RUNTIME_DIR/koan` when set, otherwise
+`/tmp/koan-<uid>/` (mode `0700`). Each user gets their own, so they never clash.
+The old behavior used fixed global names like `/tmp/koan-<provider>.lock`, which
+a second user could not lock because the file was owned by the first user.
+
+Fixes / checks:
+1. Confirm the per-uid dir exists and is yours: `ls -ld /tmp/koan-$(id -u)` (or
+   `ls -ld "$XDG_RUNTIME_DIR/koan"`). It should be owned by you with `drwx------`.
+2. To pin a specific location (e.g. a fast tmpfs, or to separate two instances
+   you run yourself), set `KOAN_TMP_DIR=/path/to/dir` in `.env`.
+3. Stale `koan-*` files left in the shared `/tmp` root by older versions are
+   harmless and can be removed once no Kōan process is using them.
+
 ## Parallel Session Issues
 
 ### Sessions not running in parallel

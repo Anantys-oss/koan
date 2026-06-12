@@ -896,9 +896,10 @@ def _run_iteration(
         _run.set_status(koan_root, f"Run {run_num}/{max_runs} — {autonomous_mode.upper()} on {project_name}")
 
     mission_start = int(time.time())
-    fd_out, stdout_file = tempfile.mkstemp(prefix="koan-out-")
+    from app.utils import koan_tmp_dir
+    fd_out, stdout_file = tempfile.mkstemp(prefix="koan-out-", dir=koan_tmp_dir())
     os.close(fd_out)
-    fd_err, stderr_file = tempfile.mkstemp(prefix="koan-err-")
+    fd_err, stderr_file = tempfile.mkstemp(prefix="koan-err-", dir=koan_tmp_dir())
     os.close(fd_err)
     claude_exit = 1  # default to failure; overwritten on successful execution
     provider_name = ""

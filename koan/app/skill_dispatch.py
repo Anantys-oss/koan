@@ -29,7 +29,12 @@ from typing import List, Optional, Tuple
 from app.github_url_parser import ISSUE_URL_PATTERN, JIRA_ISSUE_URL_PATTERN, PR_URL_PATTERN
 from app.missions import extract_now_flag, strip_all_lifecycle_markers
 from app.run_log import log_safe as _log_skill, suppress_logged
-from app.utils import PROJECT_TAG_PREFIX_RE, is_known_project, project_name_for_path
+from app.utils import (
+    PROJECT_TAG_PREFIX_RE,
+    is_known_project,
+    koan_tmp_dir,
+    project_name_for_path,
+)
 
 # Module-level registry cache for the run process.
 # bridge_state.py caches via _get_registry(), but translate_cli_skill_mission()
@@ -869,7 +874,7 @@ def _build_incident_cmd(
 
     # Write error text to a temp file to avoid shell escaping issues
     if args.strip():
-        fd, path = tempfile.mkstemp(prefix="koan-incident-", suffix=".txt")
+        fd, path = tempfile.mkstemp(prefix="koan-incident-", suffix=".txt", dir=koan_tmp_dir())
         with open(fd, "w", encoding="utf-8") as f:
             f.write(args)
         cmd.extend(["--error-file", path])
@@ -911,7 +916,7 @@ def _build_audit_cmd(
 
     # Write extra context to a temp file to avoid shell escaping issues
     if args.strip():
-        fd, path = tempfile.mkstemp(prefix="koan-audit-", suffix=".txt")
+        fd, path = tempfile.mkstemp(prefix="koan-audit-", suffix=".txt", dir=koan_tmp_dir())
         with open(fd, "w", encoding="utf-8") as f:
             f.write(args)
         cmd.extend(["--context-file", path])
@@ -981,7 +986,7 @@ def _build_generic_runner_cmd(
     # Pass extra context via temp file to avoid shell escaping issues
     cleaned_args = strip_all_lifecycle_markers(args).strip()
     if cleaned_args:
-        fd, path = tempfile.mkstemp(prefix="koan-ctx-", suffix=".txt")
+        fd, path = tempfile.mkstemp(prefix="koan-ctx-", suffix=".txt", dir=koan_tmp_dir())
         with open(fd, "w", encoding="utf-8") as f:
             f.write(cleaned_args)
         cmd.extend(["--context-file", path])
