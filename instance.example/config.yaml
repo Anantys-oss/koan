@@ -327,7 +327,10 @@ contemplative_chance: 10
 # These config values are only used if the env vars are not set.
 telegram:
   bot_token: ""   # Set via KOAN_TELEGRAM_TOKEN in .env (recommended)
-  chat_id: ""     # Set via KOAN_TELEGRAM_CHAT_ID in .env (recommended)
+  chat_id: ""     # Set via KOAN_TELEGRAM_CHAT_ID in .env (recommended).
+                  # May be a group ID (negative). For groups the bot must have
+                  # Privacy Mode disabled or be an admin to read every message —
+                  # see docs/messaging/telegram.md "Group chats".
 
 # Messaging provider configuration (optional)
 # Controls which messaging platform Kōan uses for communication.

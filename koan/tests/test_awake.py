@@ -26,6 +26,7 @@ from app.awake import (
     _run_in_worker,
     _flush_outbox_async,
     _strip_bot_mention_from_text,
+    _check_group_chat_mode,
     get_updates,
     check_config,
     _bridge_loop,
@@ -3454,6 +3455,104 @@ class TestStripBotMentionFromText:
     def test_mention_only(self):
         msg = {"entities": [{"type": "mention", "offset": 0, "length": 8}]}
         assert _strip_bot_mention_from_text("@BotName", msg) == ""
+
+
+# ---------------------------------------------------------------------------
+# _check_group_chat_mode — group detection + privacy-mode self-diagnosis
+# ---------------------------------------------------------------------------
+
+
+class TestCheckGroupChatMode:
+    """Verify the bot detects whether it can actually read group messages."""
+
+    def _provider(self):
+        provider = MagicMock()
+        provider.get_provider_name.return_value = "telegram"
+        provider.get_api_base.return_value = "http://api"
+        provider.get_channel_id.return_value = "-100123"
+        return provider
+
+    def _side_effect(self, getchat=None, getme=None, member=None):
+        """Build a requests.get side_effect that dispatches on URL suffix."""
+        def _dispatch(url, *args, **kwargs):
+            resp = MagicMock()
+            if url.endswith("/getChat"):
+                resp.json.return_value = getchat or {"ok": False}
+            elif url.endswith("/getMe"):
+                resp.json.return_value = getme or {"ok": False}
+            elif url.endswith("/getChatMember"):
+                resp.json.return_value = member or {"ok": False}
+            else:
+                resp.json.return_value = {"ok": False}
+            return resp
+        return _dispatch
+
+    @patch("app.awake.log")
+    @patch("requests.get")
+    def test_privacy_disabled_no_warning(self, mock_get, mock_log):
+        provider = self._provider()
+        mock_get.side_effect = self._side_effect(
+            getchat={"ok": True, "result": {"type": "supergroup"}},
+            getme={"ok": True, "result": {"id": 99, "can_read_all_group_messages": True}},
+        )
+        _check_group_chat_mode(provider)
+        provider.send_message.assert_not_called()
+        assert any("can read all messages" in str(c.args) for c in mock_log.call_args_list)
+
+    @patch("app.awake.log")
+    @patch("requests.get")
+    def test_privacy_on_not_admin_warns_and_sends(self, mock_get, mock_log):
+        provider = self._provider()
+        mock_get.side_effect = self._side_effect(
+            getchat={"ok": True, "result": {"type": "supergroup"}},
+            getme={"ok": True, "result": {"id": 99, "can_read_all_group_messages": False}},
+            member={"ok": True, "result": {"status": "member"}},
+        )
+        _check_group_chat_mode(provider)
+        provider.send_message.assert_called_once()
+        assert "Privacy Mode" in provider.send_message.call_args.args[0]
+
+    @patch("app.awake.log")
+    @patch("requests.get")
+    def test_privacy_on_but_admin_no_warning(self, mock_get, mock_log):
+        provider = self._provider()
+        mock_get.side_effect = self._side_effect(
+            getchat={"ok": True, "result": {"type": "supergroup"}},
+            getme={"ok": True, "result": {"id": 99, "can_read_all_group_messages": False}},
+            member={"ok": True, "result": {"status": "administrator"}},
+        )
+        _check_group_chat_mode(provider)
+        provider.send_message.assert_not_called()
+        assert any("can read all messages" in str(c.args) for c in mock_log.call_args_list)
+
+    @patch("app.awake.log")
+    @patch("requests.get")
+    def test_private_chat_short_circuits(self, mock_get, mock_log):
+        provider = self._provider()
+        mock_get.side_effect = self._side_effect(
+            getchat={"ok": True, "result": {"type": "private"}},
+        )
+        _check_group_chat_mode(provider)
+        provider.send_message.assert_not_called()
+        # Only getChat is called; no getMe / getChatMember probing for private chats.
+        assert mock_get.call_count == 1
+
+    @patch("app.awake.log")
+    @patch("requests.get")
+    def test_api_failure_does_not_crash(self, mock_get, mock_log):
+        provider = self._provider()
+        mock_get.side_effect = RuntimeError("network down")
+        # Must not raise.
+        _check_group_chat_mode(provider)
+        provider.send_message.assert_not_called()
+
+    @patch("app.awake.log")
+    @patch("requests.get")
+    def test_non_telegram_provider_skipped(self, mock_get, mock_log):
+        provider = self._provider()
+        provider.get_provider_name.return_value = "slack"
+        _check_group_chat_mode(provider)
+        mock_get.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

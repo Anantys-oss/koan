@@ -77,8 +77,61 @@ Your `.env` file is missing or the variable name is wrong. Double-check the form
 - Telegram has a 4000-character limit per message. Long messages are auto-chunked.
 - Duplicate messages within 5 minutes are flood-protected (first duplicate triggers a warning, subsequent ones are silently dropped).
 
+## Group chats
+
+Kōan works in a group (or supergroup) as well as a 1:1 chat. **One instance
+serves one chat at a time** — either a private chat or a group, not both.
+
+### Setup
+
+1. **Add the bot to the group.**
+2. **Get the group's chat ID.** Send a message in the group, then run the
+   `getUpdates` call from Step 2. The group ID is a **negative** number
+   (e.g. `-1001234567890`). Set it as your chat ID:
+   ```bash
+   KOAN_TELEGRAM_CHAT_ID=-1001234567890
+   ```
+3. **Let the bot read every message** (see below).
+
+### Privacy Mode — required to respond to every message
+
+By default, Telegram bots run with **Privacy Mode ON**. In a group, a
+privacy-mode bot only receives `/commands`, `@mentions`, and replies to its own
+messages — Telegram **never delivers plain group messages** to it. This is a
+Telegram-side restriction; no Kōan setting can bypass it.
+
+To make the bot respond to every message (like a 1:1 chat), do **one** of:
+
+- **Disable Privacy Mode**: message [@BotFather](https://t.me/BotFather) →
+  `/setprivacy` → select your bot → **Disable**. Then **remove the bot from the
+  group and re-add it** — privacy changes only take effect after re-adding.
+  This is the most common gotcha: disabling without re-adding appears to do
+  nothing.
+- **Or promote the bot to administrator** in the group — admins receive all
+  messages regardless of the privacy setting.
+
+At startup Kōan probes this and tells you which case you're in. If the bot is
+blocked, it logs a warning **and posts a remediation message into the group**:
+
+```
+[init] Chat type: supergroup — group mode active
+[warn] Privacy Mode is ON — bot only sees /commands, @mentions, and replies in this group
+[warn] Fix: @BotFather /setprivacy → Disable then re-add the bot, OR promote the bot to admin
+```
+
+Once fixed you'll instead see:
+
+```
+[init] Group mode: bot can read all messages ✓
+```
+
+> **Quick check**: even with Privacy Mode on, a `/help` typed in the group
+> should get a reply — commands are always delivered. If it does, your chat ID
+> is correct and Privacy Mode is the only remaining blocker.
+
 ## Architecture Notes
 
 - **Polling**: Kōan polls the Telegram API every 3 seconds for new messages
 - **No webhooks**: No public URL or reverse proxy needed — works from any network
-- **Single chat**: Kōan only responds in the configured chat ID (ignores other chats)
+- **Single chat**: Kōan only responds in the configured chat ID (ignores other
+  chats). The chat ID may be a 1:1 chat or a group — see [Group chats](#group-chats).
