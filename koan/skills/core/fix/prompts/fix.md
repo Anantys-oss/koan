@@ -27,9 +27,7 @@ You are fixing an issue from the configured issue tracker. Your job is to unders
 5. **Write a fix plan** with concrete phases. Each phase should be a single coherent change (one commit). Order by dependency — foundational changes first.
 6. **Identify affected files** for each phase.
 
-Branch naming: `{BRANCH_PREFIX}fix-issue-{ISSUE_NUMBER}`
-
-**Mandatory before any commit**: the repository's base branch for this project is `{BASE_BRANCH}`. If you are currently on `{BASE_BRANCH}`, on `main`, or on `master`, create and switch to the branch named above before making any changes. **Never commit on `{BASE_BRANCH}`, `main`, or `master` directly** — that leaves the work on a base branch where no PR can be opened and is treated as a failed mission. If you are already on a feature branch (anything other than `{BASE_BRANCH}`, `main`, or `master`), stay on it.
+{BRANCH_SECTION}
 
 {@include implementation-workflow}
 

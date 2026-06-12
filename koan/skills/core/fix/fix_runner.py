@@ -28,6 +28,7 @@ from app.pr_submit import (
     submit_draft_pr,
 )
 from app.prompts import load_prompt_or_skill
+from app.github_url_parser import parse_pr_url
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,28 @@ logger = logging.getLogger(__name__)
 def _build_footer() -> str:
     from app.pr_footer import build_koan_footer
     return build_koan_footer()
+
+
+def _get_existing_koan_branch(issue_url: str) -> Optional[str]:
+    """Return the head branch if issue_url is a koan-owned PR, else None.
+
+    Parses the URL to detect a PR (not an issue). If it's a PR whose head
+    branch starts with this instance's branch_prefix, the human is asking
+    koan to fix its own PR in-place — return the branch so the runner can
+    skip creating a new branch and a new PR.
+    """
+    try:
+        owner, repo, pr_number = parse_pr_url(issue_url)
+    except ValueError:
+        return None  # Not a PR URL — nothing to do
+
+    from app.github_skill_helpers import is_own_pr
+    try:
+        is_owned, head_branch = is_own_pr(owner, repo, pr_number)
+    except Exception:
+        return None
+
+    return head_branch if is_owned else None
 
 
 def run_fix(
@@ -106,6 +129,12 @@ def run_fix(
     if repo_slug and "/" in repo_slug:
         owner, repo = repo_slug.split("/", 1)
 
+    # Check if issue_url is a koan-owned PR — fix in-place on the existing branch.
+    # When true, we skip branch creation and PR submission: the PR already exists.
+    existing_branch = _get_existing_koan_branch(issue_url)
+    if existing_branch:
+        print(f"[fix] PR branch '{existing_branch}' is koan-owned — fixing in-place", flush=True)
+
     notify_fn(f"\U0001f527 Fixing {provider} issue {label}{context_label}...")
 
     print("[fix] Issue fetched, building prompt", flush=True)
@@ -138,6 +167,7 @@ def run_fix(
             project_name=project_name,
             instance_dir=instance_dir,
             base_branch=effective_base_branch,
+            existing_branch=existing_branch,
         )
     except Exception as e:
         return False, f"Fix failed: {str(e)[:300]}"
@@ -145,9 +175,9 @@ def run_fix(
     if not output:
         return False, "Claude returned empty output."
 
-    # Post-fix: submit draft PR (only when we know the target GitHub repo)
+    # Post-fix: submit draft PR — skipped when fixing an existing koan PR in-place
     pr_url = None
-    if owner and repo:
+    if owner and repo and not existing_branch:
         pr_url = _submit_fix_pr(
             project_path=project_path,
             owner=owner,
@@ -162,6 +192,14 @@ def run_fix(
 
     # Build notification and summary
     branch = get_current_branch(project_path)
+
+    # In-place fix: the PR already exists, just report the branch.
+    if existing_branch:
+        notify_fn(
+            f"✅ Fix applied to existing PR branch `{branch}`{context_label}"
+        )
+        return True, f"Fix applied to existing PR branch {branch}{context_label}"
+
     on_base_branch = branch in (effective_base_branch, "main", "master")
     if pr_url:
         notify_fn(
@@ -234,6 +272,7 @@ def _execute_fix(
     project_name: str = "",
     instance_dir: str = "",
     base_branch: Optional[str] = None,
+    existing_branch: Optional[str] = None,
 ) -> str:
     """Execute the fix via Claude CLI."""
     from app.config import get_branch_prefix
@@ -257,6 +296,7 @@ def _execute_fix(
         issue_number=issue_number,
         project_memory=project_memory,
         base_branch=effective_base,
+        existing_branch=existing_branch,
     )
 
     from app.cli_provider import CLAUDE_TOOLS, run_command_streaming
@@ -279,8 +319,15 @@ def _build_prompt(
     issue_number: str = "",
     project_memory: str = "",
     base_branch: str = "main",
+    existing_branch: Optional[str] = None,
 ) -> str:
     """Build the fix prompt from the issue content."""
+    branch_section = _build_branch_section(
+        branch_prefix=branch_prefix,
+        issue_number=issue_number,
+        base_branch=base_branch,
+        existing_branch=existing_branch,
+    )
     template_vars = dict(
         ISSUE_URL=issue_url,
         ISSUE_TITLE=issue_title,
@@ -290,9 +337,52 @@ def _build_prompt(
         ISSUE_NUMBER=issue_number,
         PROJECT_MEMORY=project_memory,
         BASE_BRANCH=base_branch,
+        BRANCH_SECTION=branch_section,
     )
 
     return load_prompt_or_skill(skill_dir, "fix", **template_vars)
+
+
+def _build_branch_section(
+    branch_prefix: str,
+    issue_number: str,
+    base_branch: str,
+    existing_branch: Optional[str] = None,
+) -> str:
+    """Build the branch-setup section for the fix prompt.
+
+    For a fresh issue fix: instruct Claude to create a new branch.
+    For an in-place PR fix: instruct Claude to check out the existing branch
+    and skip PR creation (the PR already exists).
+    """
+    if existing_branch:
+        return (
+            f"You are applying a fix to an **existing PR on branch "
+            f"`{existing_branch}`**. A PR already exists — do not create a new one.\n\n"
+            f"**Branch setup**: Check out `{existing_branch}` before making any changes:\n"
+            f"```bash\n"
+            f"git fetch origin {existing_branch}\n"
+            f"git checkout {existing_branch}\n"
+            f"```\n\n"
+            f"After implementing the fix, push to the existing branch:\n"
+            f"```bash\n"
+            f"git push origin {existing_branch}\n"
+            f"```\n\n"
+            f"**Skip Phase 7** (Submit Pull Request) — the PR already exists for "
+            f"this branch. The fix is complete once you push."
+        )
+
+    new_branch = f"{branch_prefix}fix-issue-{issue_number}"
+    return (
+        f"Branch naming: `{new_branch}`\n\n"
+        f"**Mandatory before any commit**: the repository's base branch for this "
+        f"project is `{base_branch}`. If you are currently on `{base_branch}`, on "
+        f"`main`, or on `master`, create and switch to the branch named above before "
+        f"making any changes. **Never commit on `{base_branch}`, `main`, or `master` "
+        f"directly** — that leaves the work on a base branch where no PR can be opened "
+        f"and is treated as a failed mission. If you are already on a feature branch "
+        f"(anything other than `{base_branch}`, `main`, or `master`), stay on it."
+    )
 
 
 # ---------------------------------------------------------------------------

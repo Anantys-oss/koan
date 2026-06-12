@@ -6,9 +6,11 @@ from unittest.mock import patch, MagicMock
 from skills.core.fix.fix_runner import (
     run_fix,
     _build_issue_body,
+    _build_branch_section,
     _execute_fix,
     _build_prompt,
     _submit_fix_pr,
+    _get_existing_koan_branch,
     main,
 )
 from app.issue_tracker.types import IssueContent, IssueRef
@@ -425,3 +427,178 @@ class TestMain:
         ])
         _, kwargs = mock_run.call_args
         assert kwargs["base_branch"] == "main"
+
+
+# ---------------------------------------------------------------------------
+# _build_branch_section
+# ---------------------------------------------------------------------------
+
+class TestBuildBranchSection:
+    def test_new_issue_contains_branch_name(self):
+        section = _build_branch_section(
+            branch_prefix="koan/",
+            issue_number="42",
+            base_branch="main",
+        )
+        assert "koan/fix-issue-42" in section
+        assert "main" in section
+        assert "Never commit on" in section
+
+    def test_existing_branch_instructs_checkout(self):
+        section = _build_branch_section(
+            branch_prefix="koan/",
+            issue_number="42",
+            base_branch="main",
+            existing_branch="koan/fix-issue-42",
+        )
+        assert "git checkout koan/fix-issue-42" in section
+        assert "git push origin koan/fix-issue-42" in section
+        assert "Skip Phase 7" in section
+        assert "PR already exists" in section
+
+    def test_existing_branch_no_new_branch_creation_instruction(self):
+        section = _build_branch_section(
+            branch_prefix="koan/",
+            issue_number="42",
+            base_branch="main",
+            existing_branch="koan/fix-issue-42",
+        )
+        # Should NOT tell Claude to create a new branch or use "Branch naming:"
+        assert "Branch naming:" not in section
+        assert "do not create a new one" in section.lower()
+
+
+# ---------------------------------------------------------------------------
+# _get_existing_koan_branch
+# ---------------------------------------------------------------------------
+
+class TestGetExistingKoanBranch:
+    def test_issue_url_returns_none(self):
+        result = _get_existing_koan_branch("https://github.com/o/r/issues/42")
+        assert result is None
+
+    def test_non_koan_pr_returns_none(self):
+        with patch("skills.core.fix.fix_runner.parse_pr_url", return_value=("o", "r", "1")), \
+             patch("app.github_skill_helpers.is_own_pr", return_value=(False, "main")):
+            result = _get_existing_koan_branch("https://github.com/o/r/pull/1")
+        assert result is None
+
+    def test_koan_pr_returns_branch(self):
+        with patch("skills.core.fix.fix_runner.parse_pr_url", return_value=("o", "r", "1")), \
+             patch("skills.core.fix.fix_runner._get_existing_koan_branch.__wrapped__",
+                   create=True), \
+             patch("app.github_skill_helpers.is_own_pr",
+                   return_value=(True, "koan/fix-issue-1")):
+            result = _get_existing_koan_branch("https://github.com/o/r/pull/1")
+        assert result == "koan/fix-issue-1"
+
+    def test_gh_error_returns_none(self):
+        with patch("skills.core.fix.fix_runner.parse_pr_url", return_value=("o", "r", "1")), \
+             patch("app.github_skill_helpers.is_own_pr",
+                   side_effect=RuntimeError("gh failed")):
+            result = _get_existing_koan_branch("https://github.com/o/r/pull/1")
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# run_fix — in-place PR fix path
+# ---------------------------------------------------------------------------
+
+class TestRunFixInPlace:
+    @patch(f"{_FIX_MODULE}._get_existing_koan_branch", return_value="koan/fix-issue-99")
+    @patch(f"{_FIX_MODULE}.get_current_branch", return_value="koan/fix-issue-99")
+    @patch(f"{_FIX_MODULE}._submit_fix_pr")
+    @patch(f"{_FIX_MODULE}._execute_fix", return_value="Done")
+    @patch(f"{_FIX_MODULE}.fetch_issue")
+    def test_in_place_skips_pr_creation(
+        self, mock_fetch, mock_execute, mock_submit, mock_branch, mock_existing,
+    ):
+        """When fixing an existing koan PR, _submit_fix_pr must NOT be called."""
+        mock_fetch.return_value = _github_issue(body="Some content")
+        notify = MagicMock()
+
+        success, summary = run_fix(
+            project_path="/path",
+            issue_url="https://github.com/o/r/pull/99",
+            notify_fn=notify,
+        )
+
+        assert success is True
+        mock_submit.assert_not_called()
+        assert "koan/fix-issue-99" in summary
+
+    @patch(f"{_FIX_MODULE}._get_existing_koan_branch", return_value="koan/fix-issue-99")
+    @patch(f"{_FIX_MODULE}.get_current_branch", return_value="koan/fix-issue-99")
+    @patch(f"{_FIX_MODULE}._submit_fix_pr")
+    @patch(f"{_FIX_MODULE}._execute_fix", return_value="Done")
+    @patch(f"{_FIX_MODULE}.fetch_issue")
+    def test_in_place_passes_existing_branch_to_execute(
+        self, mock_fetch, mock_execute, mock_submit, mock_branch, mock_existing,
+    ):
+        """existing_branch must be forwarded to _execute_fix."""
+        mock_fetch.return_value = _github_issue(body="Some content")
+
+        run_fix(
+            project_path="/path",
+            issue_url="https://github.com/o/r/pull/99",
+            notify_fn=MagicMock(),
+        )
+
+        assert mock_execute.call_args.kwargs["existing_branch"] == "koan/fix-issue-99"
+
+    @patch(f"{_FIX_MODULE}._get_existing_koan_branch", return_value=None)
+    @patch(f"{_FIX_MODULE}._submit_fix_pr", return_value="https://github.com/o/r/pull/1")
+    @patch(f"{_FIX_MODULE}.get_current_branch", return_value="koan/fix-issue-42")
+    @patch(f"{_FIX_MODULE}._execute_fix", return_value="Done")
+    @patch(f"{_FIX_MODULE}.fetch_issue")
+    def test_non_koan_pr_creates_new_pr(
+        self, mock_fetch, mock_execute, mock_branch, mock_submit, mock_existing,
+    ):
+        """When the PR is not koan-owned, the normal PR creation path runs."""
+        mock_fetch.return_value = _github_issue(body="Some content")
+        notify = MagicMock()
+
+        success, summary = run_fix(
+            project_path="/path",
+            issue_url="https://github.com/o/r/issues/42",
+            notify_fn=notify,
+        )
+
+        assert success is True
+        mock_submit.assert_called_once()
+        assert "pull/1" in summary
+
+
+# ---------------------------------------------------------------------------
+# _build_prompt — existing_branch propagated
+# ---------------------------------------------------------------------------
+
+class TestBuildPromptExistingBranch:
+    def test_existing_branch_in_prompt(self):
+        skill_dir = Path(__file__).resolve().parent.parent / "skills" / "core" / "fix"
+        prompt = _build_prompt(
+            issue_url="https://github.com/o/r/pull/99",
+            issue_title="PR title",
+            issue_body="PR body",
+            context="fix the thing",
+            skill_dir=skill_dir,
+            issue_number="99",
+            existing_branch="koan/fix-issue-99",
+        )
+        assert "koan/fix-issue-99" in prompt
+        assert "git checkout koan/fix-issue-99" in prompt
+        assert "Skip Phase 7" in prompt
+
+    def test_no_existing_branch_uses_new_branch(self):
+        skill_dir = Path(__file__).resolve().parent.parent / "skills" / "core" / "fix"
+        prompt = _build_prompt(
+            issue_url="https://github.com/o/r/issues/42",
+            issue_title="Issue title",
+            issue_body="Issue body",
+            context="fix it",
+            skill_dir=skill_dir,
+            branch_prefix="koan/",
+            issue_number="42",
+        )
+        assert "koan/fix-issue-42" in prompt
+        assert "Never commit on" in prompt
