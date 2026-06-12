@@ -905,6 +905,7 @@ def _run_iteration(
     provider_label = "Provider"
     plugin_dir = None  # generated plugin dir for Skill tool (cleaned up in finally)
     cmd_cleanup_paths: List[str] = []  # temp files created by build_mission_command
+    _dc_container_id = ""  # set inside try if devcontainer is used; referenced in finally
     try:
         provider_name, provider_label = _run._provider_identity()
         # Build CLI command (provider-agnostic with per-project overrides)
@@ -970,7 +971,6 @@ def _run_iteration(
         _debug_log(f"[run] cli: cmd={' '.join(cmd_display)}... cwd={project_path}")
 
         # --- Devcontainer mode ---
-        _dc_container_id = ""
         if _dc_present:
             try:
                 _dc_container_id = _dc.prepare_devcontainer(
@@ -1003,9 +1003,6 @@ def _run_iteration(
             instance_dir=instance, project_name=project_name, run_num=run_num,
         )
 
-        if _dc_container_id:
-            log("devcontainer", f"Stopping container {_dc_container_id[:12]} after mission")
-            _dc.stop_container(_dc_container_id)
         _debug_log(f"[run] cli: exit_code={claude_exit}")
         elapsed_min = (int(time.time()) - mission_start) / 60
         log("koan", f"{provider_label} CLI finished (exit={claude_exit}, {elapsed_min:.1f}min)")
@@ -1205,6 +1202,9 @@ def _run_iteration(
             except Exception as e:
                 log("error", f"Checkpoint cleanup failed (non-blocking): {e}")
     finally:
+        if _dc_container_id:
+            log("devcontainer", f"Stopping container {_dc_container_id[:12]} after mission")
+            _dc.stop_container(_dc_container_id)
         _run._cleanup_temp(stdout_file, stderr_file)
         if cmd_cleanup_paths:
             try:

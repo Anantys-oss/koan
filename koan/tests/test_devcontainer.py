@@ -383,15 +383,6 @@ class TestPrepareDevcontainer:
 # ---------------------------------------------------------------------------
 
 class TestStopContainer:
-    def test_calls_docker_stop_with_container_id(self):
-        from app.devcontainer import stop_container
-        with patch("app.devcontainer.subprocess.run") as mock_run:
-            stop_container("abc123")
-        cmd = mock_run.call_args[0][0]
-        assert "docker" in cmd
-        assert "stop" in cmd
-        assert "abc123" in cmd
-
     def test_passes_graceful_timeout_via_time_flag(self):
         from app.devcontainer import stop_container
         with patch("app.devcontainer.subprocess.run") as mock_run:
@@ -401,11 +392,14 @@ class TestStopContainer:
         idx = cmd.index("--time")
         assert cmd[idx + 1] == "7"
 
-    def test_uses_default_timeout_of_5(self):
+    def test_calls_docker_stop_with_default_timeout(self):
         from app.devcontainer import stop_container
         with patch("app.devcontainer.subprocess.run") as mock_run:
             stop_container("abc123")
         cmd = mock_run.call_args[0][0]
+        assert "docker" in cmd
+        assert "stop" in cmd
+        assert "abc123" in cmd
         assert "--time" in cmd
         idx = cmd.index("--time")
         assert cmd[idx + 1] == "5"
