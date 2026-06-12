@@ -1412,8 +1412,9 @@ def _sweep_decomposed_parents(instance_dir: Path) -> None:
                     f"Decomposed parent missions may be stuck in Pending.\n"
                 )
                 atomic_write(outbox_path, existing + msg)
-            except Exception:
-                pass
+            except Exception as notify_err:
+                _log_iteration("error",
+                    f"Failed to write decompose sweep warning to outbox: {notify_err}")
 
 
 def _maybe_decompose_mission(
