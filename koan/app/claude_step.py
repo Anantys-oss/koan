@@ -1194,6 +1194,8 @@ def run_ci_fix_loop(
         return check_existing_ci(b, repo)
 
     total_step_attempts = 0
+    current_ci_logs = ci_logs
+    attempt_counter = [0]
 
     def _set_outcome(result: str, attempt: int, last_logs: str, **extra) -> None:
         if outcome is None:
@@ -1206,11 +1208,16 @@ def run_ci_fix_loop(
         })
         outcome.update(extra)
 
-    for attempt in range(1, max_attempts + 1):
+    def _ci_step_fn(evidence: str) -> dict:
+        nonlocal total_step_attempts, current_ci_logs
+        attempt_counter[0] += 1
+        attempt = attempt_counter[0]
+        if evidence:
+            current_ci_logs = evidence
+
         print(f"[claude_step] CI fix attempt {attempt}/{max_attempts}", file=sys.stderr)
         actions_log.append(f"CI fix attempt {attempt}/{max_attempts}")
 
-        # Fetch diff for context
         diff = ""
         try:
             diff = _run_git(
@@ -1221,8 +1228,7 @@ def run_ci_fix_loop(
             print(f"[claude_step] diff fetch failed: {e}", file=sys.stderr)
         diff = truncate_diff(diff, 32000)
 
-        # Build prompt and run one CI-fix step (possibly with retry/heartbeat)
-        prompt = prompt_builder(ci_logs, diff)
+        prompt = prompt_builder(current_ci_logs, diff)
 
         fixed, timed_out, step_attempts = step_runner(
             prompt=prompt,
@@ -1235,82 +1241,111 @@ def run_ci_fix_loop(
         )
         total_step_attempts += step_attempts
 
+        result: dict = {"ci_logs": current_ci_logs}
+
         if getattr(fixed, "quota_exhausted", False):
             actions_log.append(CI_QUOTA_STOP_ACTION)
-            _set_outcome("quota", attempt, ci_logs)
-            return False, ci_logs
+            result["_terminal"] = ("quota", False, current_ci_logs)
+            return result
 
         if not fixed:
             if timed_out:
                 actions_log.append(
                     f"CI fix timed out after {total_step_attempts} CI-fix step(s)"
                 )
-                _set_outcome("timeout", attempt, ci_logs)
-                return False, ci_logs
-            actions_log.append("Claude produced no changes — giving up")
-            _set_outcome("no_changes", attempt, ci_logs)
-            break
+                result["_terminal"] = ("timeout", False, current_ci_logs)
+            else:
+                actions_log.append("Claude produced no changes — giving up")
+                result["_terminal"] = ("no_changes", False, current_ci_logs)
+            return result
 
-        # Force-push the fix.
-        # On failure we return immediately (rather than exhausting the
-        # remaining attempts) so the "push_failed" outcome surfaces an
-        # accurate message instead of the generic "CI still failing".
-        # Re-running the loop would just rebuild the same diff and hit the
-        # same push error. Callers (rebase_pr via outcome["result"],
-        # ci_queue_runner via the success bool) handle this terminal state.
         try:
             _do_push(branch, project_path)
         except Exception as e:
             actions_log.append(f"Push failed: {str(e)[:100]}")
-            _set_outcome("push_failed", attempt, ci_logs, push_error=str(e))
-            return False, ci_logs
+            result["_terminal"] = ("push_failed", False, current_ci_logs)
+            result["push_error"] = str(e)
+            return result
 
         actions_log.append(f"Pushed CI fix (attempt {attempt})")
 
-        # Recheck CI
         status, _run_id, new_logs = _do_recheck(branch, full_repo)
+        result["new_logs"] = new_logs
 
         if status == "success":
             actions_log.append(f"CI passed after fix attempt {attempt}")
-            _set_outcome("fixed", attempt, new_logs)
-            return True, new_logs
+            result["_terminal"] = ("fixed", True, new_logs)
+            return result
 
         if status == CI_STATUS_BLOCKED_APPROVAL:
             actions_log.append(
                 f"CI waiting for approval after fix attempt {attempt} — stopping"
             )
-            _set_outcome("blocked_approval", attempt, new_logs)
-            return False, new_logs
+            result["_terminal"] = ("blocked_approval", False, new_logs)
+            return result
 
-        # Polling path: timeout/none are terminal — fix was pushed, can't confirm
         if use_polling and recheck_fn is None and status in ("timeout", "none"):
             actions_log.append(f"CI {status} after fix attempt {attempt}")
-            _set_outcome("pending", attempt, new_logs)
-            return True, new_logs
+            result["_terminal"] = ("pending", True, new_logs)
+            return result
 
-        # recheck_fn path mirrors the polling semantics: a fix was pushed but
-        # CI could not be confirmed as passing/failing.
         if recheck_fn is not None and status in ("timeout", "none"):
             actions_log.append(f"CI {status} after fix attempt {attempt}")
-            _set_outcome("pending", attempt, new_logs)
-            return True, new_logs
+            result["_terminal"] = ("pending", True, new_logs)
+            return result
 
-        # Non-polling path: pending means CI is running with our fix
         if not use_polling and recheck_fn is None and status == "pending":
             actions_log.append(
                 f"CI running after fix push (attempt {attempt})"
             )
-            _set_outcome("pending", attempt, new_logs)
-            return True, new_logs
+            result["_terminal"] = ("pending", True, new_logs)
+            return result
 
-        # Failure — update logs for next attempt
         if new_logs:
-            ci_logs = new_logs
+            current_ci_logs = new_logs
+
+        return result
+
+    def _ci_evidence_fn(_attempt: int, result: object) -> str:
+        if result and isinstance(result, dict) and result.get("new_logs"):
+            return result["new_logs"]
+        return current_ci_logs
+
+    def _ci_should_continue_fn(_attempt: int, result: object) -> Tuple[bool, str]:
+        if result and isinstance(result, dict) and "_terminal" in result:
+            return False, result["_terminal"][0]
+        return True, ""
+
+    loop_outcome: dict = {}
+    run_skill_loop(
+        step_fn=_ci_step_fn,
+        evidence_fn=_ci_evidence_fn,
+        should_continue_fn=_ci_should_continue_fn,
+        max_attempts=max_attempts,
+        outcome=loop_outcome,
+    )
+
+    # Translate loop results into CI-specific outcome and return value
+    attempts = loop_outcome.get("attempts", [])
+    last_result = attempts[-1]["result"] if attempts else None
+
+    if last_result and isinstance(last_result, dict) and "_terminal" in last_result:
+        term_name, success, term_logs = last_result["_terminal"]
+        extra: dict = {}
+        if "push_error" in last_result:
+            extra["push_error"] = last_result["push_error"]
+        _set_outcome(term_name, attempt_counter[0], term_logs, **extra)
+
+        if term_name == "no_changes":
+            actions_log.append(f"CI still failing after {max_attempts} fix attempts")
+            return False, current_ci_logs
+
+        return success, term_logs
 
     actions_log.append(f"CI still failing after {max_attempts} fix attempts")
     if outcome is not None and "result" not in outcome:
-        _set_outcome("exhausted", max_attempts, ci_logs)
-    return False, ci_logs
+        _set_outcome("exhausted", max_attempts, current_ci_logs)
+    return False, current_ci_logs
 
 
 def _is_permission_error(error_msg: str) -> bool:
