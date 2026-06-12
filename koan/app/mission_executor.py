@@ -970,9 +970,10 @@ def _run_iteration(
         _debug_log(f"[run] cli: cmd={' '.join(cmd_display)}... cwd={project_path}")
 
         # --- Devcontainer mode ---
+        _dc_container_id = ""
         if _dc_present:
             try:
-                _dc.prepare_devcontainer(
+                _dc_container_id = _dc.prepare_devcontainer(
                     project_path,
                     provider_name=provider_name,
                     instance_path=instance,
@@ -1001,6 +1002,10 @@ def _run_iteration(
             cmd, stdout_file, stderr_file, cwd=project_path,
             instance_dir=instance, project_name=project_name, run_num=run_num,
         )
+
+        if _dc_container_id:
+            log("devcontainer", f"Stopping container {_dc_container_id[:12]} after mission")
+            _dc.stop_container(_dc_container_id)
         _debug_log(f"[run] cli: exit_code={claude_exit}")
         elapsed_min = (int(time.time()) - mission_start) / 60
         log("koan", f"{provider_label} CLI finished (exit={claude_exit}, {elapsed_min:.1f}min)")

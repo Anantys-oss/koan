@@ -2,6 +2,7 @@
 
 import json
 import os
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -359,3 +360,68 @@ class TestPrepareDevcontainer:
             prepare_devcontainer(str(tmp_path), provider_name="copilot")
 
         mock_setup.assert_not_called()
+
+    def test_returns_container_id_from_ensure_container_up(self, tmp_path):
+        from app.devcontainer import prepare_devcontainer
+        with patch("app.devcontainer.shutil.which", return_value="/usr/bin/devcontainer"), \
+             patch("app.devcontainer.ensure_container_up", return_value="cid456"), \
+             patch("app.devcontainer._run_container_setup"):
+            result = prepare_devcontainer(str(tmp_path), provider_name="claude")
+        assert result == "cid456"
+
+    def test_returns_empty_string_when_no_container_id(self, tmp_path):
+        from app.devcontainer import prepare_devcontainer
+        with patch("app.devcontainer.shutil.which", return_value="/usr/bin/devcontainer"), \
+             patch("app.devcontainer.ensure_container_up", return_value=""), \
+             patch("app.devcontainer._run_container_setup"):
+            result = prepare_devcontainer(str(tmp_path), provider_name="claude")
+        assert result == ""
+
+
+# ---------------------------------------------------------------------------
+# stop_container
+# ---------------------------------------------------------------------------
+
+class TestStopContainer:
+    def test_calls_docker_stop_with_container_id(self):
+        from app.devcontainer import stop_container
+        with patch("app.devcontainer.subprocess.run") as mock_run:
+            stop_container("abc123")
+        cmd = mock_run.call_args[0][0]
+        assert "docker" in cmd
+        assert "stop" in cmd
+        assert "abc123" in cmd
+
+    def test_passes_graceful_timeout_via_time_flag(self):
+        from app.devcontainer import stop_container
+        with patch("app.devcontainer.subprocess.run") as mock_run:
+            stop_container("abc123", graceful_timeout=7)
+        cmd = mock_run.call_args[0][0]
+        assert "--time" in cmd
+        idx = cmd.index("--time")
+        assert cmd[idx + 1] == "7"
+
+    def test_uses_default_timeout_of_5(self):
+        from app.devcontainer import stop_container
+        with patch("app.devcontainer.subprocess.run") as mock_run:
+            stop_container("abc123")
+        cmd = mock_run.call_args[0][0]
+        assert "--time" in cmd
+        idx = cmd.index("--time")
+        assert cmd[idx + 1] == "5"
+
+    def test_swallows_oserror_silently(self):
+        from app.devcontainer import stop_container
+        with patch("app.devcontainer.subprocess.run", side_effect=OSError("docker not found")):
+            stop_container("abc123")  # must not raise
+
+    def test_swallows_subprocess_error_silently(self):
+        from app.devcontainer import stop_container
+        with patch("app.devcontainer.subprocess.run", side_effect=subprocess.SubprocessError()):
+            stop_container("abc123")  # must not raise
+
+    def test_noop_for_empty_container_id(self):
+        from app.devcontainer import stop_container
+        with patch("app.devcontainer.subprocess.run") as mock_run:
+            stop_container("")
+        mock_run.assert_not_called()

@@ -4,6 +4,7 @@ Handles container lifecycle and command wrapping for projects configured
 with devcontainer: true.
 """
 
+import contextlib
 import json
 import shutil
 import subprocess
@@ -207,18 +208,37 @@ def wrap_command(
     return exec_cmd
 
 
+def stop_container(container_id: str, graceful_timeout: int = 5) -> None:
+    """Stop a devcontainer, giving processes graceful_timeout seconds to flush writes.
+
+    Uses ``docker stop --time N`` which sends SIGTERM then escalates to SIGKILL,
+    matching the graceful_timeout used by kill_process_group on the host side.
+    Errors are swallowed — the container may already be stopped or Docker may be
+    unavailable; either way the mission is already aborting.
+    """
+    if not container_id:
+        return
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        subprocess.run(
+            ["docker", "stop", "--time", str(graceful_timeout), container_id],
+            capture_output=True,
+            timeout=graceful_timeout + 10,
+        )
+
+
 def prepare_devcontainer(
     project_path: str,
     provider_name: str = "claude",
     instance_path: str = "",
     koan_tmp_path: str = "",
-) -> None:
+) -> str:
     """Orchestrate devcontainer setup before mission execution.
 
     1. Verifies devcontainer CLI is installed.
     2. Brings the container up with appropriate mounts and features.
     3. For the "claude" provider, runs post-start git credential setup.
 
+    Returns the container ID string (empty if unavailable).
     Raises RuntimeError if the devcontainer CLI is not found.
     """
     if not shutil.which("devcontainer"):
@@ -227,7 +247,7 @@ def prepare_devcontainer(
             "npm install -g @devcontainers/cli"
         )
 
-    ensure_container_up(
+    container_id = ensure_container_up(
         project_path,
         provider_name,
         instance_path=instance_path,
@@ -235,3 +255,4 @@ def prepare_devcontainer(
     )
     if provider_name == "claude":
         _run_container_setup(project_path, koan_tmp_path=koan_tmp_path)
+    return container_id
