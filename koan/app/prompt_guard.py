@@ -206,12 +206,23 @@ def scan_mission_text(text: str) -> GuardResult:
     return GuardResult(blocked=False)
 
 
+_CODE_FENCE_RE = re.compile(r'```[^\n]*\n.*?```', re.DOTALL)
+
+
+def _strip_code_fences(text: str) -> str:
+    """Remove markdown fenced code blocks before scanning for injection."""
+    return _CODE_FENCE_RE.sub('', text)
+
+
 def scan_external_data(text: str) -> GuardResult:
     """Scan external data (PR bodies, review comments, issue bodies) for injection.
 
     Unlike scan_mission_text(), this does NOT block — external data must be
     processed even if suspicious. Instead, it returns warnings that callers
     can log for forensic visibility.
+
+    Markdown code fences are stripped before scanning to avoid false positives
+    from legitimate code examples (e.g. shell commands in PR descriptions).
 
     Args:
         text: External content to scan (PR body, review comment, etc.)
@@ -222,12 +233,16 @@ def scan_external_data(text: str) -> GuardResult:
     if not text or not text.strip():
         return GuardResult(blocked=False)
 
+    prose = _strip_code_fences(text)
+    if not prose.strip():
+        return GuardResult(blocked=False)
+
     warnings: List[str] = []
     matched_categories: List[str] = []
 
     for pattern_group in _ALL_PATTERN_GROUPS:
         for pattern, description, category, _severity in pattern_group:
-            if pattern.search(text):
+            if pattern.search(prose):
                 warnings.append(description)
                 if category not in matched_categories:
                     matched_categories.append(category)
