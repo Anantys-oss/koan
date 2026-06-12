@@ -1295,6 +1295,16 @@ class MemoryManager:
             fcntl.flock(f, fcntl.LOCK_EX)
             f.write(new_line)
 
+        # Dual-write: mirror to SQLite FTS5 index (best-effort)
+        try:
+            from app.memory_db import ensure_db, insert_entry
+            conn = ensure_db(str(self.instance_dir))
+            if conn is not None:
+                insert_entry(conn, entry)
+                conn.close()
+        except Exception as e:
+            logger.warning("[memory_manager] SQLite dual-write failed: %s", e)
+
     def read_memory_window(
         self,
         project: Optional[str],
@@ -1377,6 +1387,19 @@ class MemoryManager:
                 f.write("\n".join(kept) + "\n" if kept else "")
         finally:
             f.close()
+
+        # Mirror deletion to SQLite FTS5 index (best-effort)
+        if removed > 0:
+            try:
+                from app.memory_db import ensure_db, delete_before
+                conn = ensure_db(str(self.instance_dir))
+                if conn is not None:
+                    cutoff_iso = cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
+                    delete_before(conn, cutoff_iso)
+                    conn.close()
+            except Exception as e:
+                logger.warning("[memory_manager] SQLite prune mirror failed: %s", e)
+
         return removed
 
     def run_cleanup(
