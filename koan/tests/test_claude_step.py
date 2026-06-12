@@ -1915,3 +1915,158 @@ class TestRunCiFixLoop:
         )
         assert len(received) == 1
         assert received[0][0] == "CI error output"
+
+
+# ---------- run_skill_loop ----------
+
+
+class TestRunSkillLoop:
+    """Tests for run_skill_loop() — the generic retry-with-evidence loop."""
+
+    def test_single_attempt_passthrough(self):
+        """With max_attempts=1, step_fn runs once; evidence_fn and
+        should_continue_fn are never called."""
+        from app.claude_step import run_skill_loop
+
+        evidence_fn = MagicMock()
+        should_continue_fn = MagicMock()
+
+        result = run_skill_loop(
+            step_fn=lambda ev: "done",
+            evidence_fn=evidence_fn,
+            should_continue_fn=should_continue_fn,
+            max_attempts=1,
+        )
+
+        assert result["total_step_attempts"] == 1
+        assert len(result["attempts"]) == 1
+        assert result["attempts"][0]["result"] == "done"
+        evidence_fn.assert_not_called()
+        should_continue_fn.assert_not_called()
+
+    def test_multi_attempt_with_evidence_threading(self):
+        """Evidence from evidence_fn is threaded into the next step_fn call."""
+        from app.claude_step import run_skill_loop
+
+        step_calls = []
+
+        def step_fn(evidence):
+            step_calls.append(evidence)
+            return f"result-{len(step_calls)}"
+
+        def evidence_fn(attempt, result):
+            return f"evidence-after-{attempt}"
+
+        result = run_skill_loop(
+            step_fn=step_fn,
+            evidence_fn=evidence_fn,
+            should_continue_fn=lambda a, r: (True, ""),
+            max_attempts=3,
+        )
+
+        assert result["total_step_attempts"] == 3
+        assert len(result["attempts"]) == 3
+        assert step_calls == ["", "evidence-after-1", "evidence-after-2"]
+        assert result["attempts"][0]["result"] == "result-1"
+        assert result["attempts"][2]["result"] == "result-3"
+        assert "stop_reason" not in result
+
+    def test_early_stop_on_should_continue(self):
+        """should_continue_fn returning (False, reason) stops the loop early."""
+        from app.claude_step import run_skill_loop
+
+        result = run_skill_loop(
+            step_fn=lambda ev: "ok",
+            evidence_fn=lambda a, r: "",
+            should_continue_fn=lambda a, r: (False, "quota"),
+            max_attempts=5,
+        )
+
+        assert result["total_step_attempts"] == 1
+        assert len(result["attempts"]) == 1
+        assert result["stop_reason"] == "quota"
+
+    def test_outcome_dict_populated(self):
+        """Caller-provided outcome dict is populated in place."""
+        from app.claude_step import run_skill_loop
+
+        outcome = {}
+        returned = run_skill_loop(
+            step_fn=lambda ev: 42,
+            evidence_fn=lambda a, r: "",
+            should_continue_fn=lambda a, r: (True, ""),
+            max_attempts=2,
+            outcome=outcome,
+        )
+
+        assert returned is outcome
+        assert outcome["total_step_attempts"] == 2
+        assert len(outcome["attempts"]) == 2
+        assert outcome["attempts"][0]["result"] == 42
+        assert outcome["attempts"][1]["result"] == 42
+
+    def test_max_attempts_zero_returns_empty(self):
+        """max_attempts < 1 returns immediately with no execution."""
+        from app.claude_step import run_skill_loop
+
+        step_fn = MagicMock()
+        result = run_skill_loop(
+            step_fn=step_fn,
+            evidence_fn=lambda a, r: "",
+            should_continue_fn=lambda a, r: (True, ""),
+            max_attempts=0,
+        )
+
+        step_fn.assert_not_called()
+        assert result["total_step_attempts"] == 0
+        assert result["attempts"] == []
+
+    def test_step_fn_exception_recorded(self):
+        """When step_fn raises, the exception is recorded and the loop
+        consults should_continue_fn to decide whether to retry."""
+        from app.claude_step import run_skill_loop
+
+        call_count = 0
+
+        def failing_then_ok(evidence):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("boom")
+            return "recovered"
+
+        result = run_skill_loop(
+            step_fn=failing_then_ok,
+            evidence_fn=lambda a, r: "",
+            should_continue_fn=lambda a, r: (True, ""),
+            max_attempts=2,
+        )
+
+        assert result["total_step_attempts"] == 2
+        assert result["attempts"][0]["result"] is None
+        assert isinstance(result["attempts"][0]["error"], RuntimeError)
+        assert result["attempts"][1]["result"] == "recovered"
+
+    def test_evidence_fn_exception_uses_fallback(self):
+        """When evidence_fn raises, the previous evidence is preserved."""
+        from app.claude_step import run_skill_loop
+
+        step_calls = []
+
+        def step_fn(evidence):
+            step_calls.append(evidence)
+            return "ok"
+
+        def evidence_fn(attempt, result):
+            raise ValueError("evidence collection failed")
+
+        result = run_skill_loop(
+            step_fn=step_fn,
+            evidence_fn=evidence_fn,
+            should_continue_fn=lambda a, r: (True, ""),
+            max_attempts=3,
+        )
+
+        assert result["total_step_attempts"] == 3
+        # All calls after the first use empty evidence (fallback from failed evidence_fn)
+        assert step_calls == ["", "", ""]

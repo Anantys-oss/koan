@@ -1010,6 +1010,107 @@ def _default_ci_fix_step_runner(
     return result, False, 1
 
 
+# ---------------------------------------------------------------------------
+# Generic retry-with-evidence loop
+# ---------------------------------------------------------------------------
+
+def run_skill_loop(
+    step_fn: Callable[[str], object],
+    evidence_fn: Callable[[int, object], str],
+    should_continue_fn: Callable[[int, object], Tuple[bool, str]],
+    *,
+    max_attempts: int = 1,
+    outcome: Optional[dict] = None,
+) -> dict:
+    """Generic retry-with-evidence loop for iterative skill execution.
+
+    Executes *step_fn* up to *max_attempts* times, threading evidence
+    collected by *evidence_fn* between attempts and consulting
+    *should_continue_fn* after each non-final attempt.
+
+    Control flow per iteration:
+        1. Call ``step_fn(evidence)`` (empty string on first attempt).
+        2. Record the result in the outcome's ``attempts`` list.
+        3. If ``attempt < max_attempts``, call ``evidence_fn`` then
+           ``should_continue_fn``.  If the latter returns
+           ``(False, reason)``, stop early.
+        4. On the final attempt (``attempt == max_attempts``), exit
+           without calling ``evidence_fn`` or ``should_continue_fn``.
+
+    Args:
+        step_fn: ``(evidence) -> result`` — executes one attempt.
+        evidence_fn: ``(attempt, prev_result) -> evidence_str`` —
+            collects evidence after each non-final step.  Exceptions
+            are caught and logged; the previous evidence is used as
+            fallback.
+        should_continue_fn: ``(attempt, result) -> (cont, reason)`` —
+            called after evidence collection on non-final attempts.
+            Return ``(False, reason)`` to stop early.
+        max_attempts: Maximum number of step invocations (default 1).
+        outcome: Optional mutable dict populated with ``total_step_attempts``
+            and ``attempts`` list.
+
+    Returns:
+        The outcome dict (same object as *outcome* if provided, otherwise
+        a new dict).
+    """
+    if outcome is None:
+        outcome = {}
+
+    attempts_list: List[dict] = []
+    outcome["attempts"] = attempts_list
+    outcome["total_step_attempts"] = 0
+
+    if max_attempts < 1:
+        return outcome
+
+    evidence = ""
+
+    for attempt in range(1, max_attempts + 1):
+        # Execute one step
+        try:
+            result = step_fn(evidence)
+            error = None
+        except Exception as exc:
+            result = None
+            error = exc
+
+        outcome["total_step_attempts"] = attempt
+        entry: dict = {"attempt": attempt, "result": result}
+        if error is not None:
+            entry["error"] = error
+        attempts_list.append(entry)
+
+        # On the final attempt, exit without calling evidence_fn / should_continue_fn
+        if attempt >= max_attempts:
+            break
+
+        # Collect evidence for next attempt
+        try:
+            evidence = evidence_fn(attempt, result)
+        except Exception as exc:
+            print(
+                f"[skill_loop] evidence_fn failed on attempt {attempt}: {exc}",
+                file=sys.stderr,
+            )
+
+        # Ask caller whether to continue
+        try:
+            should_continue, stop_reason = should_continue_fn(attempt, result)
+        except Exception as exc:
+            print(
+                f"[skill_loop] should_continue_fn failed on attempt {attempt}: {exc}",
+                file=sys.stderr,
+            )
+            should_continue, stop_reason = False, f"should_continue_fn error: {exc}"
+
+        if not should_continue:
+            outcome["stop_reason"] = stop_reason
+            break
+
+    return outcome
+
+
 def run_ci_fix_loop(
     branch: str,
     base: str,
