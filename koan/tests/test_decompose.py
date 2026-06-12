@@ -28,11 +28,13 @@ class TestParseResponse:
         result = _parse_response(output)
         assert result == ["Write tests", "Implement feature", "Update docs"]
 
-    def test_handles_malformed_json(self):
-        assert _parse_response("not valid json {{") is None
+    def test_raises_on_malformed_json(self):
+        with pytest.raises(DecomposeError):
+            _parse_response("not valid json {{")
 
-    def test_handles_empty_output(self):
-        assert _parse_response("") is None
+    def test_raises_on_empty_output(self):
+        with pytest.raises(DecomposeError):
+            _parse_response("")
 
     def test_handles_empty_subtasks_composite(self):
         output = json.dumps({"type": "composite", "subtasks": []})
@@ -62,8 +64,9 @@ class TestParseResponse:
         result = _parse_response(output)
         assert result == ["Real task"]
 
-    def test_returns_none_for_non_dict(self):
-        assert _parse_response(json.dumps(["not", "a", "dict"])) is None
+    def test_raises_on_non_dict(self):
+        with pytest.raises(DecomposeError):
+            _parse_response(json.dumps(["not", "a", "dict"]))
 
 
 # === decompose_mission integration (subprocess mocked) ===
@@ -102,14 +105,14 @@ class TestDecomposeMission:
     @patch("app.cli_provider.build_full_command", return_value=["mock-cmd"])
     @patch("app.config.get_model_config", return_value={"lightweight": "haiku", "fallback": "sonnet"})
     @patch("app.prompts.load_prompt", return_value="prompt text")
-    def test_handles_malformed_json_gracefully(self, mock_prompt, mock_models, mock_cmd, mock_run):
+    def test_raises_decompose_error_on_malformed_json(self, mock_prompt, mock_models, mock_cmd, mock_run):
         mock_run.return_value = MagicMock(
             returncode=0,
             stdout="this is not json at all",
             stderr="",
         )
-        result = decompose_mission("Some mission", "/tmp/project")
-        assert result is None
+        with pytest.raises(DecomposeError):
+            decompose_mission("Some mission", "/tmp/project")
 
     @patch("app.cli_exec.run_cli_with_retry")
     @patch("app.cli_provider.build_full_command", return_value=["mock-cmd"])

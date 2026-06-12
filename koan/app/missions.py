@@ -2377,12 +2377,19 @@ def find_decomposed_parents_ready(content: str) -> List[str]:
 
 
 def check_all_subtasks_failed(content: str, group_id: str) -> bool:
-    """Return True when every sub-task for *group_id* landed in Failed (none in Done)."""
+    """Return True when every sub-task for *group_id* landed in Failed (none in Done).
+
+    Returns True (treat as failure) when no subtasks exist at all for
+    the group — avoids marking a parent as successful with zero evidence.
+    """
     sections = parse_sections(content)
     done = sections.get("done", [])
     failed = sections.get("failed", [])
 
     has_done = any(extract_group_tag(item) == group_id for item in done)
     has_failed = any(extract_group_tag(item) == group_id for item in failed)
+
+    if not has_done and not has_failed:
+        return True
 
     return has_failed and not has_done

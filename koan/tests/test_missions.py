@@ -3705,3 +3705,10 @@ class TestCheckAllSubtasksFailed:
             "- [group:grp3] Task A ✅ (2026-05-20 10:00)\n"
         )
         assert check_all_subtasks_failed(content, "grp3") is False
+
+    def test_no_subtasks_at_all_treated_as_failed(self):
+        content = (
+            "# Missions\n\n## Pending\n\n## In Progress\n\n"
+            "## Done\n\n## Failed\n\n"
+        )
+        assert check_all_subtasks_failed(content, "ghost_group") is True

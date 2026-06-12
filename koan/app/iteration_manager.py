@@ -1342,13 +1342,21 @@ def _decide_autonomous_action(
     return AutonomousDecision(action="autonomous", focus_remaining=None)
 
 
+_sweep_consecutive_failures = 0
+_SWEEP_FAILURE_NOTIFY_THRESHOLD = 5
+
+
 def _sweep_decomposed_parents(instance_dir: Path) -> None:
     """Complete parent missions whose sub-missions have all finished.
 
     Scans missions.md for [decomposed:ID] parents still in Pending that have
     no remaining [group:ID] sub-missions in Pending or In-Progress. Calls
     complete_mission() on each ready parent and writes the result atomically.
+
+    After _SWEEP_FAILURE_NOTIFY_THRESHOLD consecutive failures, notifies
+    the operator via the outbox so stuck parents are surfaced.
     """
+    global _sweep_consecutive_failures
     missions_path = instance_dir / "missions.md"
     if not missions_path.exists():
         return
@@ -1389,8 +1397,23 @@ def _sweep_decomposed_parents(instance_dir: Path) -> None:
             return content
 
         modify_missions_file(missions_path, _apply)
+        _sweep_consecutive_failures = 0
     except Exception as e:
+        _sweep_consecutive_failures += 1
         _log_iteration("error", f"Group-completion sweep failed: {e}")
+        if _sweep_consecutive_failures >= _SWEEP_FAILURE_NOTIFY_THRESHOLD:
+            try:
+                from app.utils import atomic_write
+                outbox_path = instance_dir / "outbox.md"
+                existing = outbox_path.read_text() if outbox_path.exists() else ""
+                msg = (
+                    f"\n⚠️ Decompose sweep has failed "
+                    f"{_sweep_consecutive_failures} consecutive times: {e}\n"
+                    f"Decomposed parent missions may be stuck in Pending.\n"
+                )
+                atomic_write(outbox_path, existing + msg)
+            except Exception:
+                pass
 
 
 def _maybe_decompose_mission(
@@ -1455,28 +1478,33 @@ def _maybe_decompose_mission(
     raw = f"{mission_title}{_time.time()}"
     group_id = hashlib.sha256(raw.encode()).hexdigest()[:8]
 
-    # Write sub-missions and mark parent
+    # Write sub-missions and mark parent — verify both operations took effect
     missions_path = instance_dir / "missions.md"
-    mutated = False
+    inject_ok = False
+    mark_ok = False
     try:
         from app.missions import inject_subtasks, mark_parent_decomposed
         from app.utils import modify_missions_file
 
         def _apply(content: str) -> str:
-            nonlocal mutated
-            updated = inject_subtasks(content, mission_title, subtasks, group_id)
-            updated = mark_parent_decomposed(updated, mission_title, group_id)
-            mutated = (updated != content)
-            return updated
+            nonlocal inject_ok, mark_ok
+            after_inject = inject_subtasks(content, mission_title, subtasks, group_id)
+            inject_ok = (after_inject != content)
+            after_mark = mark_parent_decomposed(after_inject, mission_title, group_id)
+            mark_ok = (after_mark != after_inject)
+            if not inject_ok or not mark_ok:
+                return content
+            return after_mark
 
         modify_missions_file(missions_path, _apply)
     except Exception as e:
         _log_iteration("error", f"Decompose inject failed: {e}")
         return None
 
-    if not mutated:
+    if not inject_ok or not mark_ok:
         _log_iteration("warning",
-            "Decompose: inject/mark had no effect — running mission as-is")
+            f"Decompose: partial effect (inject={inject_ok}, mark={mark_ok}) "
+            "— running mission as-is")
         return None
 
     _log_iteration("koan",

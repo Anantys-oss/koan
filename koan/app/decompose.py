@@ -65,11 +65,13 @@ def decompose_mission(mission_text: str, project_path: str) -> Optional[List[str
 def _parse_response(output: str) -> Optional[List[str]]:
     """Parse JSON output from the decompose prompt.
 
-    Returns None on any parse error or when the mission is atomic.
+    Returns None when the mission is classified as atomic.
     Returns a (possibly truncated) list of sub-task strings when composite.
+    Raises DecomposeError on malformed output so callers can distinguish
+    parse failures from legitimate atomic classifications.
     """
     if not output:
-        return None
+        raise DecomposeError("Empty output from classifier")
 
     # Strip markdown code fences if the model wrapped the JSON
     text = output.strip()
@@ -87,12 +89,11 @@ def _parse_response(output: str) -> Optional[List[str]]:
 
     try:
         data = json.loads(text)
-    except (json.JSONDecodeError, ValueError):
-        _log_decompose("warning", f"Malformed JSON: {output[:200]}")
-        return None
+    except (json.JSONDecodeError, ValueError) as e:
+        raise DecomposeError(f"Malformed JSON: {output[:200]}") from e
 
     if not isinstance(data, dict):
-        return None
+        raise DecomposeError(f"Expected dict, got {type(data).__name__}")
 
     mission_type = data.get("type", "")
     if mission_type != "composite":
