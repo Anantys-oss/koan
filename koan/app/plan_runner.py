@@ -467,9 +467,15 @@ def _critic_loop(
             )
         except Exception as e:
             print(f"[plan_runner] Critic failed: {e} — keeping current plan", file=sys.stderr)
+            notify(f"⚠️ Critic round {turn} failed — posting best plan so far")
             break
 
-        if not critique or "NO_GAPS_FOUND" in critique:
+        if not critique or not critique.strip():
+            print(f"[plan_runner] Critic turn {turn}: empty response — treating as failure", file=sys.stderr)
+            notify(f"⚠️ Critic round {turn} returned empty — posting best plan so far")
+            break
+
+        if "NO_GAPS_FOUND" in critique:
             print(f"[plan_runner] Critic turn {turn}: no gaps found — done early", file=sys.stderr)
             break
 
@@ -503,6 +509,7 @@ def _critic_loop(
                 )
         except Exception as e:
             print(f"[plan_runner] Regeneration failed: {e} — keeping current plan", file=sys.stderr)
+            notify(f"⚠️ Regeneration round {turn} failed — posting best plan so far")
             break
 
         if new_plan:
@@ -927,7 +934,7 @@ def main(argv=None):
     )
     add_url_skill_common_args(parser)
     parser.add_argument(
-        "--iterations", type=int, default=1,
+        "--iterations", type=int, default=1, choices=range(1, 6),
         help="Number of critique+refine turns (1-5, default 1)",
     )
     cli_args = parser.parse_args(argv)

@@ -1348,11 +1348,26 @@ class TestCriticLoop:
     @patch("app.plan_runner.load_prompt_or_skill", return_value="critic prompt")
     @patch("app.cli_provider.run_command", side_effect=RuntimeError("timeout"))
     def test_critic_failure_returns_current_plan(self, mock_critic, mock_load):
+        mock_notify = MagicMock()
         result = _critic_loop(
             "initial plan", "/project", idea="idea", context="",
-            skill_dir=self._skill_dir(), iterations=3,
+            skill_dir=self._skill_dir(), iterations=3, notify_fn=mock_notify,
         )
         assert result == "initial plan"
+        warn_calls = [c[0][0] for c in mock_notify.call_args_list if "failed" in c[0][0]]
+        assert len(warn_calls) == 1
+
+    @patch("app.plan_runner.load_prompt_or_skill", return_value="critic prompt")
+    @patch("app.cli_provider.run_command", return_value="")
+    def test_empty_critic_response_warns_and_stops(self, mock_critic, mock_load):
+        mock_notify = MagicMock()
+        result = _critic_loop(
+            "initial plan", "/project", idea="idea", context="",
+            skill_dir=self._skill_dir(), iterations=3, notify_fn=mock_notify,
+        )
+        assert result == "initial plan"
+        warn_calls = [c[0][0] for c in mock_notify.call_args_list if "empty" in c[0][0]]
+        assert len(warn_calls) == 1
 
     @patch("app.plan_runner.load_prompt_or_skill", return_value="critic prompt")
     @patch("app.cli_provider.run_command", return_value="1. gap found")
@@ -1404,3 +1419,13 @@ class TestGeneratePlanWithCriticLoop:
             )
         assert result == "refined plan"
         assert mock_run.call_count == 1
+
+
+class TestMainIterationsArgparseValidation:
+    def test_iterations_out_of_range_rejected_by_argparse(self):
+        with pytest.raises(SystemExit):
+            main(["--project-path", "/tmp", "--idea", "test", "--iterations", "100"])
+
+    def test_iterations_zero_rejected_by_argparse(self):
+        with pytest.raises(SystemExit):
+            main(["--project-path", "/tmp", "--idea", "test", "--iterations", "0"])
