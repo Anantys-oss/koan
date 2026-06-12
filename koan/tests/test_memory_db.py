@@ -383,6 +383,87 @@ class TestMigrationViaStartup:
         conn.close()
 
 
+class TestTwoPhaseRetrieval:
+    """Verify read_memory_window uses FTS5 + recency fill."""
+
+    def test_relevant_entries_rank_higher(self, instance_dir):
+        from app.memory_manager import MemoryManager
+        mgr = MemoryManager(instance_dir)
+        for i in range(20):
+            mgr.append_memory_entry("session", "koan", f"CSS grid layout fix #{i}")
+        mgr.append_memory_entry("session", "koan", "JWT authentication race condition fix")
+        for i in range(10):
+            mgr.append_memory_entry("session", "koan", f"unrelated UI tweak #{i}")
+
+        results = mgr.read_memory_window("koan", max_entries=10, query_text="authentication JWT")
+        contents = [e["content"] for e in results]
+        joined = " ".join(contents).lower()
+        assert "jwt" in joined or "authentication" in joined
+
+    def test_empty_query_falls_back_to_recency(self, instance_dir):
+        from app.memory_manager import MemoryManager
+        mgr = MemoryManager(instance_dir)
+        mgr.append_memory_entry("session", "koan", "old entry", ts="2026-01-01T00:00:00Z")
+        mgr.append_memory_entry("session", "koan", "new entry", ts="2026-06-01T00:00:00Z")
+
+        results = mgr.read_memory_window("koan", max_entries=2, query_text="")
+        assert len(results) == 2
+        assert results[-1]["content"] == "new entry"
+
+    def test_fallback_to_jsonl_when_db_missing(self, instance_dir):
+        from app.memory_manager import MemoryManager
+        from app.memory_db import db_path
+
+        mgr = MemoryManager(instance_dir)
+        mgr.append_memory_entry("session", "koan", "test entry")
+        db_file = db_path(instance_dir)
+        if db_file.exists():
+            db_file.unlink()
+
+        results = mgr.read_memory_window("koan", max_entries=5, query_text="test")
+        assert len(results) >= 1
+
+
+class TestFtsLearningsFilter:
+    """Verify _load_filtered_learnings uses FTS5 when available."""
+
+    def test_fts5_learnings_returns_relevant(self, instance_dir):
+        from app.skill_memory import _load_filtered_learnings
+        proj_dir = Path(instance_dir) / "memory" / "projects" / "koan"
+        proj_dir.mkdir(parents=True, exist_ok=True)
+        (proj_dir / "learnings.md").write_text(
+            "# Learnings\n\n"
+            "- JWT token expiry causes race condition\n"
+            "- CSS grid fix for dashboard\n"
+            "- Authentication timeout in login flow\n"
+            "- Database pooling set to 25\n",
+            encoding="utf-8",
+        )
+        result = _load_filtered_learnings(
+            instance_dir, "koan", "authentication race condition",
+            max_k=3, recent_hedge=1,
+        )
+        assert result is not None
+        assert "authentication" in result.lower() or "race" in result.lower()
+
+    def test_recall_full_bypasses_fts(self, instance_dir):
+        from app.skill_memory import _load_filtered_learnings
+        proj_dir = Path(instance_dir) / "memory" / "projects" / "koan"
+        proj_dir.mkdir(parents=True, exist_ok=True)
+        (proj_dir / "learnings.md").write_text(
+            "# Learnings\n\n- line one\n- line two\n",
+            encoding="utf-8",
+        )
+        result = _load_filtered_learnings(
+            instance_dir, "koan", "anything [recall:full]",
+            max_k=1, recent_hedge=0,
+        )
+        assert result is not None
+        assert "[recall:full]" in result
+        assert "line one" in result
+        assert "line two" in result
+
+
 class TestSemanticSuperiority:
     """Verify FTS5 finds entries that Jaccard scoring misses."""
 

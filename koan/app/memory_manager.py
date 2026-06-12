@@ -1318,13 +1318,48 @@ class MemoryManager:
         self,
         project: Optional[str],
         max_entries: int = 20,
+        query_text: str = "",
     ) -> List[dict]:
-        """Return the most recent ``max_entries`` log entries for a project.
+        """Return the most relevant ``max_entries`` log entries for a project.
+
+        When ``query_text`` is non-empty, uses two-phase retrieval:
+        (1) FTS5-matched entries ranked by BM25, (2) recency fill for
+        remaining slots.  When ``query_text`` is empty or SQLite is
+        unavailable, falls back to JSONL tail (recency only).
 
         Includes entries where ``project`` matches (case-insensitive) OR where
         ``project`` is null/absent (global entries).  Malformed lines are
         silently skipped.  Returns entries in chronological order (oldest first).
         """
+        # Two-phase retrieval when query_text provided
+        if query_text.strip():
+            try:
+                from app.memory_db import ensure_db, search_entries, recent_entries
+                conn = ensure_db(str(self.instance_dir))
+                if conn is not None:
+                    fts_results = search_entries(
+                        conn, project or "", query_text, max_results=max_entries,
+                    )
+                    seen_ts = {e["ts"] for e in fts_results}
+                    remaining = max_entries - len(fts_results)
+                    if remaining > 0:
+                        recency = recent_entries(
+                            conn, project or "", max_results=remaining + len(fts_results),
+                        )
+                        for e in recency:
+                            if e["ts"] not in seen_ts:
+                                fts_results.append(e)
+                                seen_ts.add(e["ts"])
+                                if len(fts_results) >= max_entries:
+                                    break
+                    conn.close()
+                    if fts_results:
+                        fts_results.sort(key=lambda e: e.get("ts", ""))
+                        return fts_results
+            except Exception as e:
+                logger.warning("[memory_manager] FTS5 retrieval failed, falling back to JSONL: %s", e)
+
+        # Fallback: JSONL tail (recency only)
         if not self._log_path.exists():
             return []
         try:
@@ -1572,9 +1607,12 @@ def read_memory_window(
     instance_dir: str,
     project: Optional[str],
     max_entries: int = 20,
+    query_text: str = "",
 ) -> List[dict]:
-    """Return the most recent log entries for a project."""
-    return MemoryManager(instance_dir).read_memory_window(project, max_entries)
+    """Return the most relevant log entries for a project."""
+    return MemoryManager(instance_dir).read_memory_window(
+        project, max_entries, query_text=query_text,
+    )
 
 
 def prune_memory_log(instance_dir: str, horizon_days: int = 365) -> int:
