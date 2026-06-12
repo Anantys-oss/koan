@@ -2285,6 +2285,32 @@ class TestIdleWaitConfig:
         assert len(wake_logs) >= 1
 
 
+    @patch("app.run.interruptible_sleep", return_value=None)
+    @patch("app.run.set_status")
+    @patch("app.run.log")
+    @patch("app.run.plan_iteration")
+    def test_idle_wait_suppresses_quota_display(self, mock_plan, mock_log, mock_status, mock_sleep, tmp_path):
+        """Idle-wait iterations should not log quota display lines."""
+        from app.run import _run_iteration
+        mock_plan.return_value = self._make_plan(
+            "focus_wait", focus_remaining="2h",
+            display_lines=["Claude: 45% (est)"], cost_today=1.23,
+        )
+        instance = str(tmp_path / "instance")
+        os.makedirs(instance, exist_ok=True)
+        (tmp_path / ".koan-project").write_text("koan")
+
+        _run_iteration(
+            koan_root=str(tmp_path),
+            instance=instance,
+            projects=[("koan", "/tmp/koan")],
+            count=0, max_runs=10, interval=60, git_sync_interval=5,
+        )
+
+        quota_logs = [c for c in mock_log.call_args_list if c.args[0] == "quota"]
+        assert quota_logs == [], f"Expected no quota logs for idle wait, got: {quota_logs}"
+
+
 class TestComputeQuotaResetTs:
     """Tests for _compute_quota_reset_ts and _compute_preflight_reset_ts."""
 

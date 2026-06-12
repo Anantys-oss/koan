@@ -574,16 +574,19 @@ def _run_iteration(
         log("error", f"Usage tracker broken: {plan['tracker_error']} — hard-capped to review mode")
         _run._notify(instance, f"⚠️ Budget tracker error: {plan['tracker_error']} — running in review-only mode until fixed")
 
-    # Display usage
-    log("quota", "Usage (token estimate — may differ from real API quota):")
-    if plan["display_lines"]:
-        for line in plan["display_lines"]:
-            log("quota", f"  {line}")
-    else:
-        log("quota", "  [No usage data available - using fallback mode]")
-    if plan.get("cost_today", 0.0) > 0:
-        log("quota", f"  Cost today: ${plan['cost_today']:.2f}")
-    log("quota", f"  Safety margin: 10% → Available: {plan['available_pct']}%")
+    # Display usage — skip for idle-wait iterations (nothing to spend on)
+    _IDLE_ACTIONS = {"exploration_wait", "passive_wait", "focus_wait",
+                     "schedule_wait", "pr_limit_wait", "branch_saturated_wait"}
+    if plan["action"] not in _IDLE_ACTIONS:
+        log("quota", "Usage (token estimate — may differ from real API quota):")
+        if plan["display_lines"]:
+            for line in plan["display_lines"]:
+                log("quota", f"  {line}")
+        else:
+            log("quota", "  [No usage data available - using fallback mode]")
+        if plan.get("cost_today", 0.0) > 0:
+            log("quota", f"  Cost today: ${plan['cost_today']:.2f}")
+        log("quota", f"  Safety margin: 10% → Available: {plan['available_pct']}%")
 
     # Log recurring injections
     for line in plan.get("recurring_injected", []):
