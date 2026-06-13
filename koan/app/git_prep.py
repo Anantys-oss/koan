@@ -10,8 +10,9 @@ Two public functions:
 """
 
 import logging
+import re
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Tuple
 
 from app.git_utils import run_git
 from app.projects_config import (
@@ -23,6 +24,69 @@ from app.projects_config import (
 
 logger = logging.getLogger(__name__)
 
+_HTTPS_GITHUB_RE = re.compile(
+    r"^https?://github\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?$"
+)
+
+
+def _get_remote_url(remote: str, project_path: str) -> str:
+    """Return the URL for a named git remote, or empty string."""
+    rc, url, _ = run_git("remote", "get-url", remote, cwd=project_path)
+    return url.strip() if rc == 0 else ""
+
+
+def _authenticated_fetch_url(
+    remote_url: str,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Build a token-authenticated HTTPS URL from a plain HTTPS GitHub remote.
+
+    Returns (authenticated_url, token) or (None, None) when the remote is
+    not an HTTPS GitHub URL or no token is available.
+    """
+    m = _HTTPS_GITHUB_RE.match(remote_url)
+    if not m:
+        return None, None
+    try:
+        from app.github import run_gh
+        token = run_gh("auth", "token").strip()
+    except Exception as e:
+        logger.debug("gh auth token failed: %s", e)
+        token = ""
+    if not token:
+        return None, None
+    owner, repo = m.group("owner"), m.group("repo")
+    return f"https://x-access-token:{token}@github.com/{owner}/{repo}.git", token
+
+
+def _fetch_with_https_fallback(
+    remote: str,
+    refspec: str,
+    project_path: str,
+    timeout: int = 30,
+) -> Tuple[int, str, str]:
+    """Fetch a refspec, retrying with token auth when HTTPS remote lacks credentials.
+
+    Returns the same (rc, stdout, stderr) tuple as run_git.
+    """
+    rc, stdout, stderr = run_git(
+        "fetch", remote, refspec, cwd=project_path, timeout=timeout
+    )
+    if rc == 0:
+        return rc, stdout, stderr
+
+    remote_url = _get_remote_url(remote, project_path)
+    auth_url, token = _authenticated_fetch_url(remote_url)
+    if not auth_url:
+        return rc, stdout, stderr
+
+    logger.info("HTTPS fetch failed; retrying with gh token for %s", remote)
+    rc2, stdout2, stderr2 = run_git(
+        "fetch", auth_url, refspec, cwd=project_path, timeout=timeout
+    )
+    if token and stderr2:
+        stderr2 = stderr2.replace(token, "***")
+    return rc2, stdout2, stderr2
+
 
 def _fetch_branch_refspec(
     remote: str, branch: str, project_path: str, timeout: int = 15
@@ -32,7 +96,9 @@ def _fetch_branch_refspec(
     Returns True on success.
     """
     refspec = f"+refs/heads/{branch}:refs/remotes/{remote}/{branch}"
-    rc, _, _ = run_git("fetch", remote, refspec, cwd=project_path, timeout=timeout)
+    rc, _, _ = _fetch_with_https_fallback(
+        remote, refspec, project_path, timeout=timeout
+    )
     return rc == 0
 
 
@@ -76,19 +142,26 @@ def detect_remote_default_branch(remote: str, project_path: str) -> str:
         if branch:
             return branch
 
-    # 2. Query remote (network call)
-    rc, stdout, _ = run_git(
-        "ls-remote", "--symref", remote, "HEAD",
-        cwd=project_path, timeout=15,
-    )
-    if rc == 0 and stdout:
-        for line in stdout.splitlines():
-            if line.startswith("ref:") and "HEAD" in line:
-                # Format: ref: refs/heads/master\tHEAD
-                ref_part = line.split()[1]
-                branch = ref_part.rsplit("/", 1)[-1]
-                if branch:
-                    return branch
+    # 2. Query remote (network call) — try named remote first, then
+    #    fall back to token-authenticated URL for HTTPS remotes.
+    targets = [remote]
+    remote_url = _get_remote_url(remote, project_path)
+    auth_url, _ = _authenticated_fetch_url(remote_url)
+    if auth_url:
+        targets.append(auth_url)
+
+    for target in targets:
+        rc, stdout, _ = run_git(
+            "ls-remote", "--symref", target, "HEAD",
+            cwd=project_path, timeout=15,
+        )
+        if rc == 0 and stdout:
+            for line in stdout.splitlines():
+                if line.startswith("ref:") and "HEAD" in line:
+                    ref_part = line.split()[1]
+                    branch = ref_part.rsplit("/", 1)[-1]
+                    if branch:
+                        return branch
 
     return "main"
 
@@ -176,9 +249,10 @@ def prepare_project_branch(
 
     base_branch = result.base_branch
 
-    # Fetch latest refs
-    rc, _, stderr = run_git(
-        "fetch", remote, base_branch, cwd=project_path, timeout=30
+    # Fetch latest refs (with HTTPS token fallback for repos cloned via
+    # gh with an unauthenticated HTTPS remote URL)
+    rc, _, stderr = _fetch_with_https_fallback(
+        remote, base_branch, project_path, timeout=30
     )
     if rc != 0 and not config_explicit:
         # Base branch was not explicitly configured — detect remote default
@@ -190,8 +264,8 @@ def prepare_project_branch(
             )
             base_branch = detected
             result.base_branch = detected
-            rc, _, stderr = run_git(
-                "fetch", remote, base_branch, cwd=project_path, timeout=30
+            rc, _, stderr = _fetch_with_https_fallback(
+                remote, base_branch, project_path, timeout=30
             )
     if rc != 0:
         result.success = False
