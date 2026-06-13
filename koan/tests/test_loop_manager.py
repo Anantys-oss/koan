@@ -376,6 +376,28 @@ class TestCreatePendingFile:
             assert str(args[0]).endswith("pending.md")
             assert "# Autonomous run" in args[1]
 
+    def test_pending_md_written_when_journal_dir_creation_fails(self, tmp_path):
+        """pending.md must be written even when journal_dir.mkdir() raises OSError."""
+        from unittest.mock import patch
+
+        from app.loop_manager import create_pending_file
+
+        instance = str(tmp_path / "instance")
+        os.makedirs(os.path.join(instance, "journal"), exist_ok=True)
+
+        with patch("pathlib.Path.mkdir", side_effect=OSError("no space left on device")):
+            path = create_pending_file(
+                instance_dir=instance,
+                project_name="koan",
+                run_num=1,
+                max_runs=10,
+                autonomous_mode="implement",
+                mission_title="Test mission",
+            )
+
+        content = Path(path).read_text()
+        assert "# Mission: Test mission" in content
+
     def test_preserves_recovery_context_from_pending_md(self, tmp_path):
         """Checkpoint recovery context injected by recover.py must survive create_pending_file."""
         from app.loop_manager import create_pending_file

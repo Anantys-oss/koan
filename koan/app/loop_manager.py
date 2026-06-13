@@ -217,11 +217,12 @@ def create_pending_file(
     Returns:
         Path to the created pending.md file.
     """
-    import contextlib
     pending_path = Path(instance_dir) / "journal" / "pending.md"
     journal_dir = Path(instance_dir) / "journal" / datetime.now().strftime("%Y-%m-%d")
-    with contextlib.suppress(OSError):
+    try:
         journal_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        log.warning("Failed to create journal dir %s: %s", journal_dir, exc)
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
