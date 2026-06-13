@@ -168,6 +168,27 @@ def test_submit_pr_prompt_uses_mktemp_not_fixed_tmp_names():
     _assert_mktemp_templates_are_bsd_portable(prompt)
 
 
+def test_pr_creation_prompts_use_body_file_not_heredoc():
+    """PR creation in prompts must use --body-file with mktemp, not --body heredoc.
+
+    The heredoc pattern ``--body "$(cat <<'EOF'...)"`` causes Codex agents to
+    improvise with ``--body @/tmp/...`` (which gh doesn't expand), producing
+    literal file paths as PR bodies.  Using ``--body-file "$pr_body"`` is
+    unambiguous and works across all providers.
+    """
+    partials = PROMPTS_DIR / "_partials"
+
+    impl = (partials / "implementation-workflow.md").read_text()
+    assert '--body-file "$pr_body"' in impl
+    assert "mktemp /tmp/koan-pr-body-XXXXXX" in impl
+    assert "--body \"$(cat" not in impl
+
+    fork = (partials / "pr-submit-fork.md").read_text()
+    assert '--body-file "$pr_body"' in fork
+
+    _assert_mktemp_templates_are_bsd_portable(impl)
+
+
 def _assert_mktemp_templates_are_bsd_portable(prompt: str):
     """Every `mktemp` template must end its X-run at the end of the path.
 
