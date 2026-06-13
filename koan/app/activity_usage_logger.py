@@ -57,16 +57,20 @@ def _get_logger() -> logging.Logger:
     _logger.setLevel(logging.INFO)
     _logger.propagate = False
 
-    # Avoid duplicate handlers on re-init
-    if not _logger.handlers:
-        handler = RotatingFileHandler(
-            str(log_path),
-            maxBytes=_MAX_BYTES,
-            backupCount=_BACKUP_COUNT,
-            encoding="utf-8",
-        )
-        handler.setFormatter(logging.Formatter("%(message)s"))
-        _logger.addHandler(handler)
+    # Clear any stale handlers (can persist in Python's global logger registry
+    # across reset() calls in parallel test workers on Python 3.14+).
+    for _h in _logger.handlers[:]:
+        _h.close()
+        _logger.removeHandler(_h)
+
+    handler = RotatingFileHandler(
+        str(log_path),
+        maxBytes=_MAX_BYTES,
+        backupCount=_BACKUP_COUNT,
+        encoding="utf-8",
+    )
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    _logger.addHandler(handler)
 
     return _logger
 
