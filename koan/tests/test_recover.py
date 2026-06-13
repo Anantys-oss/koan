@@ -174,8 +174,7 @@ class TestRecoverMissions:
         )
 
         count, _ = recover_missions(str(instance_dir))
-        # The complex block counts as recovered (one or more lines)
-        assert count >= 1
+        assert count == 1
 
         content = missions.read_text()
         lines = content.splitlines()
@@ -209,8 +208,7 @@ class TestRecoverMissions:
         )
 
         count, _ = recover_missions(str(instance_dir))
-        # Both the complex block and the standalone mission after it are recovered
-        assert count >= 2
+        assert count == 2
 
         content = missions.read_text()
         lines = content.splitlines()
@@ -238,8 +236,7 @@ class TestRecoverMissions:
         )
 
         count, _ = recover_missions(str(instance_dir))
-        # Both complex missions are recovered (no blank line separator = finalized at boundary)
-        assert count >= 2
+        assert count == 2
 
         content = missions.read_text()
         # Both blocks should be in Pending now
@@ -270,7 +267,7 @@ class TestRecoverMissions:
         )
 
         count, _ = recover_missions(str(instance_dir))
-        assert count >= 2
+        assert count == 2
 
         content = missions.read_text()
         lines = content.splitlines()
@@ -744,6 +741,37 @@ class TestUnrecoverableEscalation:
         # Escalated in Failed
         assert "needs_input" in content
         assert "Fix the bug" in content
+
+    def test_unrecoverable_complex_block_in_failed(self, instance_dir):
+        """Unrecoverable complex ### block: header appears in Failed, sub-items preserved."""
+        missions = instance_dir / "missions.md"
+        in_prog = (
+            f"### Fix auth [r:{MAX_RECOVERY_ATTEMPTS}]\n"
+            "- ~~Step 1~~ done\n"
+            "- Step 2 active\n"
+        )
+        missions.write_text(_missions(in_progress=in_prog))
+
+        count, escalated = recover_missions(str(instance_dir))
+        assert count == 0  # Not moved to Pending
+        assert len(escalated) == 1
+
+        content = missions.read_text()
+        assert "## Failed" in content
+        assert "needs_input" in content
+        # Header appears without ### prefix
+        assert "### Fix auth" not in content
+        assert "Fix auth" in content
+        # Sub-items preserved in Failed
+        assert "Step 1" in content
+        assert "Step 2" in content
+
+        # In Progress should be empty now
+        lines = content.splitlines()
+        in_prog_idx = next(i for i, l in enumerate(lines) if l.strip().lower().startswith("## in progress"))
+        failed_idx = next(i for i, l in enumerate(lines) if l.strip().lower().startswith("## failed"))
+        in_prog_section = "\n".join(lines[in_prog_idx + 1 : failed_idx])
+        assert "Fix auth" not in in_prog_section
 
 
 # ---------------------------------------------------------------------------

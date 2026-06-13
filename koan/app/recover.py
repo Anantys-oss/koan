@@ -243,6 +243,17 @@ def recover_missions(instance_dir: str, dry_run: bool = False) -> tuple:
         complex_block_header: str = ""   # raw header line for current ### block
         complex_block_lines: list = []   # all lines in the current ### block
 
+        def _append_escalated_entry(out: list, m: str) -> None:
+            """Append one escalated item to out, handling complex blocks (multi-line)."""
+            if "\n" in m:
+                block_lines = m.splitlines()
+                header = _strip_recovery_counter(block_lines[0]).rstrip().removeprefix("### ")
+                out.append(f"- ❌ needs_input: {header}")
+                out.extend(f"  {sub.rstrip()}" for sub in block_lines[1:])
+            else:
+                clean = _strip_recovery_counter(m).rstrip()
+                out.append(f"- ❌ needs_input: {clean.removeprefix('- ')}")
+
         def _finalize_complex_block():
             """Classify the collected complex mission block and dispatch it."""
             nonlocal journal_available
@@ -274,7 +285,7 @@ def recover_missions(instance_dir: str, dry_run: bool = False) -> tuple:
                 return
 
             if state == "unrecoverable":
-                escalated.append(complex_block_header)
+                escalated.append("\n".join(complex_block_lines))
                 _log_recovery_event(instance_dir, header, state, "escalated", attempts,
                                     has_checkpoint=has_checkpoint)
             else:
@@ -362,7 +373,7 @@ def recover_missions(instance_dir: str, dry_run: bool = False) -> tuple:
         if not recovered and not escalated:
             return content
 
-        recovered_count = len(recovered)
+        recovered_count = len(recovered_mission_texts)
         escalated_missions = escalated
 
         # Rebuild file: recovered → Pending, escalated → Failed, rest stays
@@ -397,8 +408,7 @@ def recover_missions(instance_dir: str, dry_run: bool = False) -> tuple:
                 new_lines.extend(orig_failed)
                 if escalated:
                     for m in escalated:
-                        clean = _strip_recovery_counter(m).rstrip()
-                        new_lines.append(f"- ❌ needs_input: {clean.removeprefix('- ')}")
+                        _append_escalated_entry(new_lines, m)
                     new_lines.append("")
 
         # If there's no Failed section but we have escalated missions, append one
@@ -407,8 +417,7 @@ def recover_missions(instance_dir: str, dry_run: bool = False) -> tuple:
             new_lines.append("## Failed")
             new_lines.append("")
             for m in escalated:
-                clean = _strip_recovery_counter(m).rstrip()
-                new_lines.append(f"- ❌ needs_input: {clean.removeprefix('- ')}")
+                _append_escalated_entry(new_lines, m)
             new_lines.append("")
 
         return normalize_content("\n".join(new_lines) + "\n")
@@ -482,8 +491,10 @@ if __name__ == "__main__":
     count, escalated_lines = recover_missions(instance_dir, dry_run=dry_run)
 
     # Build escalated message list from current run only (not historical log)
-    escalated_msgs = [_strip_recovery_counter(m).strip().removeprefix("- ")[:80]
-                      for m in escalated_lines]
+    escalated_msgs = [
+        _strip_recovery_counter(m.split("\n")[0]).strip().removeprefix("### ").removeprefix("- ")[:80]
+        for m in escalated_lines
+    ]
 
     if count > 0 or has_pending or escalated_msgs:
         parts = []
