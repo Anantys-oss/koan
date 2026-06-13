@@ -1470,7 +1470,8 @@ class TestMainLoop:
     def mock_pid_manager(self):
         """Auto-mock PID file management for all main() tests."""
         with patch("app.pid_manager.acquire_pidfile") as mock_acquire, \
-             patch("app.pid_manager.release_pidfile"):
+             patch("app.pid_manager.release_pidfile"), \
+             patch("app.awake._load_offset", return_value=None):
             mock_acquire.return_value = MagicMock()
             yield
 
