@@ -111,6 +111,12 @@ fast_reply: false
 # e.g., "koan-alice" creates branches like "koan-alice/fix-something"
 # branch_prefix: "koan"
 
+# Parallel sessions — run multiple missions concurrently in isolated worktrees.
+# Each session gets its own git worktree so there are no branch conflicts.
+# Set to 1 to disable (sequential mode, the default behavior).
+# Range: 1–5. Values outside this range are clamped.
+# max_parallel_sessions: 1
+
 # CI fix max attempts — maximum number of Claude-based fix attempts per PR
 # When CI fails after a rebase/push, Kōan will attempt to fix it up to this
 # many times. Each attempt: fetch failure logs → run Claude → force-push →
