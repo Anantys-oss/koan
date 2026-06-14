@@ -1529,6 +1529,7 @@ Kōan supports multiple CLI backends. Configure globally via `KOAN_CLI_PROVIDER`
 | **GitHub Copilot** | Teams with existing Copilot licenses | [copilot.md](../providers/copilot.md) |
 | **Local LLM** | Offline, privacy, zero API cost | [local.md](../providers/local.md) |
 | **Ollama Launch** | Claude CLI via Ollama-managed server | [ollama-launch.md](../providers/ollama-launch.md) |
+| **OpenRouter** (via Claude CLI) | Claude CLI behavior with OpenRouter's model catalog/billing | [openrouter.md](../providers/openrouter.md) |
 
 #### Provider-specific model config
 

@@ -137,6 +137,10 @@ The custom binary must accept the same CLI interface as `claude`
 
 When unset or empty, Koan uses the standard `claude` command from PATH.
 
+> **Running OpenRouter models through the Claude CLI?** See
+> [openrouter.md](openrouter.md) — it uses this wrapper mechanism plus a local
+> CCR router to make non-Anthropic OpenRouter models work in `-p` mode.
+
 ### MCP (Model Context Protocol) Servers
 
 Claude Code supports MCP servers for extended capabilities (browser,

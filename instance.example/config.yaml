@@ -539,6 +539,10 @@ usage:
                                 # burn-rate warnings, preflight probes). Reactive detection
                                 # still works — if the CLI actually fails with a quota error,
                                 # Koan pauses and requeues as usual.
+                                # Recommended for pay-per-token backends (e.g. OpenRouter via
+                                # the Claude CLI — see docs/providers/openrouter.md). With it
+                                # on, the autonomous mode pins to DEEP; add focus mode to cap
+                                # it at IMPLEMENT.
 
 # Per-project overrides are now configured in projects.yaml.
 # Supported per-project settings:
