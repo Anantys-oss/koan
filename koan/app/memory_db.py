@@ -22,10 +22,15 @@ _fts5_available: Optional[bool] = None
 
 
 def _check_fts5(conn: sqlite3.Connection) -> bool:
-    """Test whether FTS5 is available in this Python build."""
+    """Test whether FTS5 is available in this Python build.
+
+    Only caches a positive result.  Transient errors (locked DB, I/O)
+    leave the flag unset so the next call retries instead of permanently
+    latching False.
+    """
     global _fts5_available
-    if _fts5_available is not None:
-        return _fts5_available
+    if _fts5_available is True:
+        return True
     try:
         conn.execute(
             "CREATE VIRTUAL TABLE IF NOT EXISTS _fts5_probe "
@@ -33,10 +38,10 @@ def _check_fts5(conn: sqlite3.Connection) -> bool:
         )
         conn.execute("DROP TABLE IF EXISTS _fts5_probe")
         _fts5_available = True
+        return True
     except sqlite3.OperationalError:
         logger.warning("[memory_db] FTS5 not available — falling back to JSONL-only")
-        _fts5_available = False
-    return _fts5_available
+        return False
 
 
 def ensure_db(instance: str) -> Optional[sqlite3.Connection]:
@@ -62,6 +67,8 @@ def ensure_db(instance: str) -> Optional[sqlite3.Connection]:
         return conn
     except sqlite3.DatabaseError as e:
         logger.warning("[memory_db] ensure_db failed: %s", e)
+        with contextlib.suppress(Exception):
+            conn.close()
         return None
 
 
@@ -238,13 +245,13 @@ def delete_before(conn: sqlite3.Connection, cutoff_iso: str) -> int:
         return 0
 
 
-def entry_count(conn: sqlite3.Connection) -> int:
-    """Return total row count in entries table."""
+def entry_count(conn: sqlite3.Connection) -> Optional[int]:
+    """Return total row count in entries table, or None on error."""
     try:
         row = conn.execute("SELECT count(*) FROM entries").fetchone()
         return row[0] if row else 0
     except sqlite3.DatabaseError:
-        return 0
+        return None
 
 
 def migrate_jsonl_to_sqlite(instance: str) -> int:
@@ -258,7 +265,8 @@ def migrate_jsonl_to_sqlite(instance: str) -> int:
         return 0
 
     try:
-        if entry_count(conn) > 0:
+        count = entry_count(conn)
+        if count is None or count > 0:
             conn.close()
             return 0
 
