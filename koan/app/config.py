@@ -1125,6 +1125,8 @@ def get_stagnation_config(project_name: str = "") -> dict:
             per-system limits still apply). Default 0 (disabled). When set,
             provides a single operator knob to bound the total number of
             automatic retry attempts regardless of which system triggered them.
+        max_crash_retries (int): maximum crash-recovery attempts before
+            escalating a mission to Failed. Must be >= 1. Default 3.
 
     Per-project overrides via ``projects.yaml`` ``stagnation:`` take
     precedence. Setting ``enabled: false`` at project level disables the
@@ -1135,7 +1137,7 @@ def get_stagnation_config(project_name: str = "") -> dict:
         project_name: Optional project name for per-project overrides.
 
     Returns:
-        Dict with the resolved values — always contains all six keys.
+        Dict with the resolved values — always contains all seven keys.
     """
     defaults = {
         "enabled": True,
@@ -1144,6 +1146,7 @@ def get_stagnation_config(project_name: str = "") -> dict:
         "sample_lines": 50,
         "max_retry_on_stagnation": 3,
         "max_total_retries": 0,
+        "max_crash_retries": 3,
     }
     config = _load_config()
     base = config.get("stagnation", {})
@@ -1173,6 +1176,10 @@ def get_stagnation_config(project_name: str = "") -> dict:
     if max_total < 0:
         max_total = 0
 
+    max_crash = _safe_int(merged.get("max_crash_retries"), defaults["max_crash_retries"])
+    if max_crash < 1:
+        max_crash = 1
+
     return {
         "enabled": bool(merged.get("enabled", defaults["enabled"])),
         "check_interval_seconds": max(
@@ -1182,6 +1189,7 @@ def get_stagnation_config(project_name: str = "") -> dict:
         "sample_lines": max(1, _safe_int(merged.get("sample_lines"), defaults["sample_lines"])),
         "max_retry_on_stagnation": max_retry,
         "max_total_retries": max_total,
+        "max_crash_retries": max_crash,
     }
 
 
