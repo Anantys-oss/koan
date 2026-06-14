@@ -363,10 +363,28 @@ class StagnationMonitor:
 # Per-mission retry tracking
 # ---------------------------------------------------------------------------
 #
-# When a mission stagnates, we don't want to fail it outright on the first
-# detection — Claude can be unstuck by a fresh start. The tracker records
-# how many times each mission has stagnated so :func:`run._finalize_mission`
-# can decide between "requeue and try again" and "give up, mark Failed".
+# Two failure modes can interrupt a mission mid-run: stagnation (Claude loops
+# without progress, killed by this monitor) and crash (run.py unexpectedly
+# terminates, recovered by recover.py at next startup).  Both share a single
+# tracker file (.mission-retries.json) so one combined cap can guard against
+# infinite requeue cycles regardless of which failure mode triggered each retry.
+#
+# Tracker entry structure (one entry per mission key):
+#   {
+#     "count":          <int>  # stagnation-only requeues (reset on success)
+#     "crash_count":    <int>  # crash-recovery requeues (reset on success)
+#     "total_attempts": <int>  # count + crash_count; only cap that combines both
+#     "pattern_type":   <str>  # optional: stagnation classification (last event)
+#     "sample_lines":   <int>  # optional: tail-window used for last classification
+#   }
+#
+# When to increment which counter:
+#   - ``count`` / ``total_attempts`` — :func:`increment_retry_count`, called by
+#     :func:`run._finalize_mission` on each stagnation-triggered requeue.
+#   - ``crash_count`` / ``total_attempts`` — :func:`increment_crash_count`, called
+#     by :func:`recover.recover_missions` each time a crash is detected at startup.
+#   - Both counters are cleared on genuine success (zero exit, not stagnation).
+#
 # Counters are keyed by a stable SHA-256 of the *clean* mission title —
 # stripped of lifecycle markers (timestamps, recovery counters, complexity
 # tags) — so the SAME logical mission maps to the SAME key across requeue
