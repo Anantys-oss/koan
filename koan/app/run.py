@@ -1639,12 +1639,21 @@ def _cli_runtime_auth_signal(
     if not runtime_lines:
         return False
 
+    joined = "\n".join(runtime_lines)
+
+    # Check shared auth patterns against filtered runtime lines.
+    # These lines are [cli]-prefixed summaries and JSON error events —
+    # Koan-generated, not agent prose — so _AUTH_RE is safe here.
+    from app.cli_errors import _AUTH_RE
+    if _AUTH_RE.search(joined):
+        return True
+
     try:
         from app.provider import get_provider_by_name
 
         provider = get_provider_by_name(provider_name)
         return provider.detect_auth_failure(
-            stdout_text="\n".join(runtime_lines),
+            stdout_text=joined,
             stderr_text="",
             exit_code=exit_code,
         )

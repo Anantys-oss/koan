@@ -7672,3 +7672,41 @@ class TestClassifyTrustStdout:
         assert handled is False
         auth.assert_not_called()
         quota.assert_not_called()
+
+    def test_claude_not_logged_in_cli_lines_detected_as_auth(self):
+        """Claude CLI 'Not logged in' in [cli] summary lines must trigger AUTH.
+
+        Regression: when Claude CLI exits with 'Not logged in · Please run
+        /login' as an assistant text block, the [cli] summary line contains
+        the auth signal. With trust_stdout=False, _cli_runtime_auth_signal()
+        must detect it via shared _AUTH_RE patterns.
+        """
+        from app import run
+
+        transcript = (
+            "[cli] session init (model=claude-opus-4-6)\n"
+            "[cli] assistant — text: Not logged in · Please run /login\n"
+            "[cli] result: success (0s)\n"
+        )
+        with patch.object(run, "_handle_quota_error") as quota, \
+             patch.object(run, "_handle_auth_error") as auth:
+            handled = run._classify_and_handle_cli_error(
+                1, transcript, "", trust_stdout=False, **self._COMMON
+            )
+        assert handled is True
+        auth.assert_called_once()
+        quota.assert_not_called()
+
+    def test_plain_stdout_login_text_not_false_positive(self):
+        """Agent prose mentioning '/login' must NOT trigger auth detection."""
+        from app import run
+
+        transcript = "The user should please run /login to authenticate.\n"
+        with patch.object(run, "_handle_quota_error") as quota, \
+             patch.object(run, "_handle_auth_error") as auth:
+            handled = run._classify_and_handle_cli_error(
+                1, transcript, "", trust_stdout=False, **self._COMMON
+            )
+        assert handled is False
+        auth.assert_not_called()
+        quota.assert_not_called()
