@@ -1766,6 +1766,44 @@ def _reset_usage_session(instance: str):
         log("error", f"Usage session reset failed: {e}")
 
 
+def _clear_if_cap_hit(instance: str, mission_title: str) -> None:
+    """Clear retry counter when a capped mission is being restarted by the human.
+
+    The retry counter is preserved while a mission is in Failed state so the
+    human can inspect the count. This function clears it when start_mission()
+    signals a deliberate human retry: we detect a "human retry" by checking
+    whether any per-system cap was hit (stagnation count >= max_retry, or
+    crash_count >= max_crash_retries, or total_attempts >= max_total_retries).
+
+    For ongoing stagnation-retry requeus (count < cap) the counter is NOT
+    cleared — the stagnation cap check in _finalize_mission depends on it.
+    """
+    try:
+        from app.config import get_stagnation_config
+        from app.stagnation_monitor import (
+            clear_retry_count,
+            get_crash_count,
+            get_retry_count,
+            get_total_attempts,
+        )
+        cfg = get_stagnation_config()
+        max_stag = int(cfg.get("max_retry_on_stagnation", 0))
+        max_crash = int(cfg.get("max_crash_retries", 3))
+        max_total = int(cfg.get("max_total_retries", 0))
+        stag_count = get_retry_count(instance, mission_title)
+        crash_count = get_crash_count(instance, mission_title)
+        total = get_total_attempts(instance, mission_title)
+
+        stag_capped = max_stag > 0 and stag_count >= max_stag
+        crash_capped = crash_count >= max_crash
+        total_capped = max_total > 0 and total >= max_total
+
+        if stag_capped or crash_capped or total_capped:
+            clear_retry_count(instance, mission_title)
+    except Exception as e:
+        log("error", f"Retry counter clear failed: {e}")
+
+
 def _start_mission_in_file(instance: str, mission_title: str) -> bool:
     """Move mission from Pending to In Progress via locked write.
 
@@ -1788,6 +1826,10 @@ def _start_mission_in_file(instance: str, mission_title: str) -> bool:
         for entry in in_progress:
             entry_text = re.sub(r"\s+", " ", entry.strip().removeprefix("- "))
             if clean_title in entry_text:
+                # Clear counter only if a cap was previously hit (human deliberate
+                # retry) — stagnation-retry requeus must keep their count intact
+                # so the stagnation cap check in _finalize_mission still fires.
+                _clear_if_cap_hit(instance, mission_title)
                 return True
         log("warning", f"Mission transition unconfirmed — '{clean_title[:60]}' "
             "not found in In Progress after start_mission(). "
@@ -1874,12 +1916,13 @@ def _finalize_mission(instance: str, mission_title: str, project_name: str, exit
       re-queued to Pending (not failed), the counter is incremented,
       and a "retry" Telegram notification is sent;
     - once the cap is reached, the mission is marked Failed with a
-      ``[stagnation]`` tag, the counter is cleared, and the regular
-      stagnation notification is sent.
+      ``[stagnation]`` tag. The counter is preserved so the human can
+      inspect it while the mission sits in Failed. It is cleared when
+      the human deliberately retries via ``_start_mission_in_file``.
 
-    Successful completions and non-stagnation failures clear any
-    pending retry counter so the next attempt at the same mission
-    title starts fresh.
+    On success, all retry counters are cleared. On failure (stagnation
+    cap or crash) the counters are left intact for diagnostic visibility
+    while the mission remains in Failed state.
     """
     failed = exit_code != 0
     cause_tag = ""
@@ -1891,7 +1934,6 @@ def _finalize_mission(instance: str, mission_title: str, project_name: str, exit
     if stagnated:
         from app.config import get_stagnation_config
         from app.stagnation_monitor import (
-            clear_retry_count,
             get_retry_count,
             get_total_attempts,
             increment_retry_count,
@@ -1928,21 +1970,22 @@ def _finalize_mission(instance: str, mission_title: str, project_name: str, exit
             return
 
         # Retry cap reached (or retries disabled): mark Failed with cause tag.
+        # Counter is preserved — cleared when the human retries the mission.
         if total_cap_hit:
             cause_tag = f"stagnation:{pattern}:total_cap"
         else:
             cause_tag = f"stagnation:{pattern}"
-        clear_retry_count(instance, mission_title)
         _notify_stagnation(mission_title, project_name, pattern, excerpt)
     else:
-        # A non-stagnation outcome resets the stagnation-specific counter.
-        # total_attempts is preserved (clear_total=False) so the cross-system
-        # cap (max_total_retries) remains effective across crash-recovery cycles.
-        try:
-            from app.stagnation_monitor import clear_retry_count
-            clear_retry_count(instance, mission_title, clear_total=(exit_code == 0))
-        except Exception as e:
-            log("error", f"Stagnation retry counter cleanup error: {e}")
+        # On success, clear all retry counters so the next run starts fresh.
+        # On failure, leave counters intact so the human can see why the
+        # mission ended up in Failed while inspecting .mission-retries.json.
+        if exit_code == 0:
+            try:
+                from app.stagnation_monitor import clear_retry_count
+                clear_retry_count(instance, mission_title)
+            except Exception as e:
+                log("error", f"Stagnation retry counter cleanup error: {e}")
 
     _update_mission_in_file(
         instance, mission_title, failed=failed, cause_tag=cause_tag,
