@@ -893,6 +893,19 @@ auto_update:
 #   review_compressor:
 #     enabled: true
 
+#
+# Ponytail ("six-gate code minimalism ladder") applies by default to the
+# agent loop. It instructs Claude to walk a decision ladder — is it
+# necessary? stdlib? native feature? existing dep? one-liner? — before
+# writing new code. Strictly complementary to caveman:
+#   - caveman trims what Claude WRITES (prose verbosity).
+#   - ponytail trims what Claude GENERATES (code quantity).
+#
+# Set ``enabled: false`` to suppress ponytail:
+# optimizations:
+#   ponytail:
+#     enabled: true
+
 # RTK (Rust Token Killer — https://github.com/rtk-ai/rtk)
 #
 # Optional CLI proxy that compresses common dev-command output (git, ls,

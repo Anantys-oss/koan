@@ -1702,6 +1702,41 @@ def get_caveman_include_list() -> set:
     return result
 
 
+def _get_ponytail_dict() -> dict:
+    """Return the ``optimizations.ponytail`` mapping (or an empty dict).
+
+    Normalises away every malformed shape — missing parent, non-dict
+    optimizations block, scalar ponytail value — so callers can treat the
+    result as a plain dict.  Misshapen config falls back to defaults.
+    """
+    config = _load_config()
+    optimizations = config.get("optimizations", {})
+    if not isinstance(optimizations, dict):
+        return {}
+    ponytail = optimizations.get("ponytail", {})
+    if isinstance(ponytail, bool):
+        return {"enabled": ponytail}
+    return ponytail if isinstance(ponytail, dict) else {}
+
+
+def is_ponytail_mode() -> bool:
+    """Check if ponytail code minimalism optimization is enabled.
+
+    When enabled, the agent prompt includes a six-gate decision ladder
+    instructing Claude to minimise generated code quantity.
+
+    Reads ``optimizations.ponytail.enabled`` from ``config.yaml``::
+
+        optimizations:
+          ponytail:
+            enabled: true
+
+    Default: True.
+    """
+    enabled = _get_ponytail_dict().get("enabled", True)
+    return bool(enabled) if isinstance(enabled, bool) else True
+
+
 def _get_review_compressor_dict() -> dict:
     """Return the ``optimizations.review_compressor`` mapping (or empty dict).
 
