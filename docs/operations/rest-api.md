@@ -205,7 +205,7 @@ Secret fields (keys containing `token`, `password`, `secret`, `api_key`) are rep
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `POST` | `/v1/restart` | yes | Write `.koan-restart` signal (picked up by run loop) |
+| `POST` | `/v1/restart` | yes | Signal restart via per-consumer markers `.koan-restart-run` + `.koan-restart-bridge` (picked up by run loop and bridge) |
 | `POST` | `/v1/shutdown` | yes | Write `.koan-stop` signal |
 | `POST` | `/v1/update` | yes | Pull upstream + signal restart |
 
