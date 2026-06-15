@@ -163,6 +163,23 @@ def _get_caveman_section() -> str:
         return ""
 
 
+def _get_ponytail_section() -> str:
+    """Return the ponytail code minimalism section if enabled.
+
+    Delegates to :func:`app.ponytail.get_ponytail_section` so all
+    injection sites share a single resolution path.
+
+    Failures are non-fatal — ponytail is an optimization, not a
+    correctness feature.
+    """
+    try:
+        from app.ponytail import get_ponytail_section
+        return get_ponytail_section()
+    except Exception as e:
+        logger.warning("ponytail section unavailable: %s", e)
+        return ""
+
+
 def _get_language_section() -> str:
     """Return the language enforcement section if a preference is set."""
     try:
@@ -826,6 +843,9 @@ def build_agent_prompt(
     # Append caveman output optimization (token reduction in Claude's output)
     prompt += _get_caveman_section()
 
+    # Append ponytail code minimalism (token reduction in Claude's generated code)
+    prompt += _get_ponytail_section()
+
     # Append RTK awareness (token reduction in Claude's tool input)
     prompt += _get_rtk_section(project_name)
 
@@ -925,6 +945,10 @@ def build_agent_prompt_parts(
     caveman = _get_caveman_section()
     if caveman:
         sys_parts.append(caveman)
+
+    ponytail = _get_ponytail_section()
+    if ponytail:
+        sys_parts.append(ponytail)
 
     rtk = _get_rtk_section(project_name)
     if rtk:
