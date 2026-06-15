@@ -180,3 +180,21 @@ def set_review_cooldown(instance_dir: str, owner: str, repo: str, pr_number: str
         locked_json_modify(_threads_path(instance_dir), _update)
     except OSError:
         log.warning("Failed to set review cooldown for %s/%s#%s", owner, repo, pr_number)
+
+
+def clear_review_cooldown(instance_dir: str, owner: str, repo: str, pr_number: str) -> None:
+    """Remove the review cooldown for a PR.
+
+    Called when a human explicitly re-requests a review, proving the
+    cooldown should not block the new review mission.
+    """
+    key = f"review_cd:{owner}/{repo}#{pr_number}"
+    try:
+        from app.locked_file import locked_json_modify
+
+        def _update(data):
+            data.pop(key, None)
+
+        locked_json_modify(_threads_path(instance_dir), _update)
+    except OSError:
+        log.warning("Failed to clear review cooldown for %s/%s#%s", owner, repo, pr_number)
