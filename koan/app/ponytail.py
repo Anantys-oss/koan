@@ -12,6 +12,10 @@ They are complementary, not overlapping.
 
 from __future__ import annotations
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 def get_ponytail_section() -> str:
     """Return the ponytail directive text, or ``""`` when suppressed.
@@ -26,13 +30,5 @@ def get_ponytail_section() -> str:
         from app.prompts import load_prompt
         return load_prompt("ponytail-mode")
     except OSError:
+        logger.warning("ponytail prompt file missing or unreadable")
         return ""
-
-
-def append_ponytail(prompt: str) -> str:
-    """Return ``prompt`` with the ponytail directive appended when applicable."""
-    section = get_ponytail_section()
-    if not section:
-        return prompt
-    sep = "" if prompt.endswith("\n") else "\n\n"
-    return f"{prompt}{sep}{section}"

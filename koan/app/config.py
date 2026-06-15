@@ -1714,6 +1714,8 @@ def _get_ponytail_dict() -> dict:
     if not isinstance(optimizations, dict):
         return {}
     ponytail = optimizations.get("ponytail", {})
+    if isinstance(ponytail, bool):
+        return {"enabled": ponytail}
     return ponytail if isinstance(ponytail, dict) else {}
 
 

@@ -3,14 +3,12 @@
 Covers:
 - ``app.config.is_ponytail_mode`` and ``_get_ponytail_dict`` reading
   the nested ``optimizations.ponytail.{enabled}`` mapping.
-- ``app.ponytail.get_ponytail_section`` / ``append_ponytail`` end-to-end.
+- ``app.ponytail.get_ponytail_section`` end-to-end.
 """
 
 from __future__ import annotations
 
 from unittest.mock import patch
-
-import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -60,15 +58,21 @@ class TestIsPonytailModeNested:
                    return_value={"optimizations": "garbage"}):
             assert is_ponytail_mode() is True
 
-    def test_scalar_bool_form_falls_back_to_default(self):
+    def test_scalar_bool_false_disables(self):
         from app.config import is_ponytail_mode
         with patch("app.config._load_config",
                    return_value={"optimizations": {"ponytail": False}}):
+            assert is_ponytail_mode() is False
+
+    def test_scalar_bool_true_enables(self):
+        from app.config import is_ponytail_mode
+        with patch("app.config._load_config",
+                   return_value={"optimizations": {"ponytail": True}}):
             assert is_ponytail_mode() is True
 
 
 # ---------------------------------------------------------------------------
-# ponytail.get_ponytail_section / append_ponytail
+# ponytail.get_ponytail_section
 # ---------------------------------------------------------------------------
 
 
@@ -96,26 +100,3 @@ class TestGetPonytailSection:
                 assert get_ponytail_section() == ""
 
 
-class TestAppendPonytail:
-    """``append_ponytail`` is a no-op when the section is empty, otherwise concatenates."""
-
-    def test_no_change_when_disabled(self):
-        from app.ponytail import append_ponytail
-        with patch("app.config._load_config", return_value={
-            "optimizations": {"ponytail": {"enabled": False}}
-        }):
-            assert append_ponytail("base prompt") == "base prompt"
-
-    def test_concatenates_with_blank_line(self):
-        from app.ponytail import append_ponytail
-        with patch("app.config._load_config", return_value={}):
-            with patch("app.prompts.load_prompt", return_value="X"):
-                result = append_ponytail("base prompt")
-                assert result == "base prompt\n\nX"
-
-    def test_no_double_newline_when_prompt_already_ends_with_newline(self):
-        from app.ponytail import append_ponytail
-        with patch("app.config._load_config", return_value={}):
-            with patch("app.prompts.load_prompt", return_value="X"):
-                result = append_ponytail("base prompt\n")
-                assert result == "base prompt\nX"
