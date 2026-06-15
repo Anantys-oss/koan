@@ -176,7 +176,7 @@ Extensible command plugin system. Each skill lives in `skills/<scope>/<skill-nam
 `instance/` (gitignored, copy from `instance.example/`) holds all runtime state:
 - `missions.md` — Task queue
 - `outbox.md` — Bot → Telegram message queue (written atomically by `append_to_outbox()`)
-- `outbox-sending.md` — Staging file created by `OutboxManager` between reading `outbox.md` and sending to Telegram (crash-safety two-phase write). If the bridge crashes mid-send this file persists; `recover_staged()` re-sends it on restart. A stale `outbox-sending.md` on startup means the last send may have been duplicated — safe to delete manually if messages appear stuck.
+- `outbox-sending.md` — Crash-safety staging file for outbox flush; `OutboxManager.recover_staged()` re-sends on restart
 - `config.yaml` — Per-instance configuration (tools, auto-merge rules)
 - `soul.md` — Agent personality definition
 - `memory/` — Global summary + per-project learnings/context
