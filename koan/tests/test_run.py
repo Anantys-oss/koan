@@ -6193,7 +6193,7 @@ class TestUpdateMissionInFile:
 
 
 class TestStartMissionSanityFlushLog:
-    """S1: a sanity flush during start_mission() is surfaced to operators."""
+    """A sanity flush during start_mission() is surfaced to operators."""
 
     def test_stale_in_progress_is_flushed_and_logged(self, tmp_path):
         from app.run import _start_mission_in_file
@@ -6242,6 +6242,39 @@ class TestStartMissionSanityFlushLog:
             if c.args and c.args[0] == "warning"
         ]
         assert not any("Sanity flush" in w for w in warnings)
+
+    def test_no_sanity_flush_log_when_mission_not_in_pending(self, tmp_path):
+        """False-positive guard: stale In Progress entries exist but the
+        mission isn't in Pending (e.g. a race removed it between pick and
+        start). start_mission() early-returns without flushing, so neither
+        the sanity-flush warning nor a successful transition should occur.
+        """
+        from app.run import _start_mission_in_file
+        from app.missions import parse_sections
+
+        missions = tmp_path / "instance" / "missions.md"
+        missions.parent.mkdir(parents=True)
+        # Stale In Progress entry present, but the mission we try to start
+        # is absent from Pending.
+        missions.write_text(
+            "# Missions\n\n## Pending\n\n"
+            "## In Progress\n\n- /plan leftover stale ▶(2026-01-01T00:00)\n\n"
+            "## Done\n"
+        )
+
+        with patch("app.run.log") as mock_log:
+            assert _start_mission_in_file(str(missions.parent), "/plan absent work") is False
+
+        warnings = [
+            c.args[1] for c in mock_log.call_args_list
+            if c.args and c.args[0] == "warning"
+        ]
+        # No false "Sanity flush" warning — nothing was flushed.
+        assert not any("Sanity flush" in w for w in warnings)
+        # The stale entry is untouched: still In Progress, not moved to Failed.
+        sections = parse_sections(missions.read_text())
+        assert "leftover stale" in "\n".join(sections["in_progress"])
+        assert "leftover stale" not in "\n".join(sections.get("failed", []))
 
 
 # ---------------------------------------------------------------------------

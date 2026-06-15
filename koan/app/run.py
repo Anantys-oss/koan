@@ -1784,7 +1784,7 @@ def _start_mission_in_file(instance: str, mission_title: str) -> bool:
         # start_mission() runs a sanity flush: any stale In Progress missions
         # are moved to Failed (with a [flushed] tag) before the new one starts.
         # Under normal operation this never fires because recover.py clears
-        # stale entries at startup — so when it DOES fire, surface it (S1).
+        # stale entries at startup — so when it DOES fire, surface it.
         # Capture the pre-flush In Progress inside the lock to stay race-safe.
         stale_flushed: list = []
 
@@ -1793,16 +1793,6 @@ def _start_mission_in_file(instance: str, mission_title: str) -> bool:
             return start_mission(content, mission_title)
 
         after = modify_missions_file(missions_path, _transform)
-        if stale_flushed:
-            titles = ", ".join(
-                s.split("\n")[0].strip().removeprefix("- ")[:50]
-                for s in stale_flushed
-            )
-            log("warning", (
-                f"Sanity flush: {len(stale_flushed)} stale In Progress mission(s) "
-                f"moved to Failed by start_mission() — recover.py missed them "
-                f"(see _flush_in_progress_to_failed): {titles}"
-            ))
         in_progress = parse_sections(after).get("in_progress", [])
         # Normalise for comparison: strip leading "- ", collapse whitespace
         import re
@@ -1810,6 +1800,21 @@ def _start_mission_in_file(instance: str, mission_title: str) -> bool:
         for entry in in_progress:
             entry_text = re.sub(r"\s+", " ", entry.strip().removeprefix("- "))
             if clean_title in entry_text:
+                # Only surface the sanity flush once the transition is
+                # confirmed: start_mission() early-returns (skipping the
+                # flush) when the mission isn't in Pending, so stale_flushed
+                # being non-empty does NOT by itself mean a flush happened.
+                if stale_flushed:
+                    titles = ", ".join(
+                        s.split("\n")[0].strip().removeprefix("- ")[:50]
+                        for s in stale_flushed
+                    )
+                    log("warning", (
+                        f"Sanity flush: {len(stale_flushed)} stale In Progress "
+                        f"mission(s) moved to Failed by start_mission() — "
+                        f"recover.py missed them "
+                        f"(see _flush_in_progress_to_failed): {titles}"
+                    ))
                 return True
         log("warning", f"Mission transition unconfirmed — '{clean_title[:60]}' "
             "not found in In Progress after start_mission(). "
