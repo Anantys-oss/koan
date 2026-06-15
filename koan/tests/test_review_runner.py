@@ -20,6 +20,7 @@ from app.review_runner import (
     _resolve_plan_body,
     _extract_review_body,
     _format_repliable_comments,
+    _normalize_review_data,
     _parse_review_json,
     _format_review_as_markdown,
     _extract_json_text,
@@ -1745,6 +1746,65 @@ class TestFormatRepliableComments:
 # _post_comment_replies
 # ---------------------------------------------------------------------------
 
+class TestNormalizeCommentReplyAction:
+    def test_backfills_missing_action(self):
+        """Absent action field is backfilled to 'acknowledged'."""
+        data = {
+            "file_comments": [],
+            "review_summary": {"lgtm": True, "summary": "s", "checklist": []},
+            "comment_replies": [
+                {"comment_id": 1, "reply": "Noted."},
+            ],
+        }
+        result = _normalize_review_data(data)
+        assert result["comment_replies"][0]["action"] == "acknowledged"
+
+    def test_preserves_valid_action(self):
+        """Valid action values are preserved as-is."""
+        data = {
+            "file_comments": [],
+            "review_summary": {"lgtm": True, "summary": "s", "checklist": []},
+            "comment_replies": [
+                {"comment_id": 1, "reply": "Fixed.", "action": "fixed"},
+            ],
+        }
+        result = _normalize_review_data(data)
+        assert result["comment_replies"][0]["action"] == "fixed"
+
+    def test_clamps_unrecognized_action(self):
+        """Unrecognized action string is clamped to 'acknowledged'."""
+        data = {
+            "file_comments": [],
+            "review_summary": {"lgtm": True, "summary": "s", "checklist": []},
+            "comment_replies": [
+                {"comment_id": 1, "reply": "text", "action": "yolo"},
+            ],
+        }
+        result = _normalize_review_data(data)
+        assert result["comment_replies"][0]["action"] == "acknowledged"
+
+    def test_clamps_non_string_action(self):
+        """Non-string action is clamped to 'acknowledged'."""
+        data = {
+            "file_comments": [],
+            "review_summary": {"lgtm": True, "summary": "s", "checklist": []},
+            "comment_replies": [
+                {"comment_id": 1, "reply": "text", "action": 42},
+            ],
+        }
+        result = _normalize_review_data(data)
+        assert result["comment_replies"][0]["action"] == "acknowledged"
+
+    def test_no_comment_replies_field(self):
+        """No error when comment_replies is absent."""
+        data = {
+            "file_comments": [],
+            "review_summary": {"lgtm": True, "summary": "s", "checklist": []},
+        }
+        result = _normalize_review_data(data)
+        assert "comment_replies" not in result
+
+
 class TestPostCommentReplies:
     @patch("app.review_runner.run_gh")
     def test_posts_review_comment_reply(self, mock_gh):
@@ -1752,9 +1812,10 @@ class TestPostCommentReplies:
         replies = [{"comment_id": 100, "reply": "Good question — see L42."}]
         repliable = [{"id": 100, "type": "review_comment", "user": "alice", "body": "Why?"}]
 
-        count = _post_comment_replies("owner", "repo", "42", replies, repliable)
+        result = _post_comment_replies("owner", "repo", "42", replies, repliable)
 
-        assert count == 1
+        assert len(result) == 1
+        assert result[0]["comment_id"] == 100
         call_args = mock_gh.call_args[0]
         assert "repos/owner/repo/pulls/42/comments" in call_args[1]
         assert "-X" in call_args
@@ -1766,9 +1827,10 @@ class TestPostCommentReplies:
         replies = [{"comment_id": 200, "reply": "Thanks for the feedback."}]
         repliable = [{"id": 200, "type": "issue_comment", "user": "bob", "body": "Nice work"}]
 
-        count = _post_comment_replies("owner", "repo", "42", replies, repliable)
+        result = _post_comment_replies("owner", "repo", "42", replies, repliable)
 
-        assert count == 1
+        assert len(result) == 1
+        assert result[0]["comment_id"] == 200
         call_args = mock_gh.call_args[0]
         assert "pr" in call_args
         assert "comment" in call_args
@@ -1778,8 +1840,8 @@ class TestPostCommentReplies:
 
     def test_empty_replies(self):
         """No-op when replies list is empty."""
-        count = _post_comment_replies("owner", "repo", "42", [], [])
-        assert count == 0
+        result = _post_comment_replies("owner", "repo", "42", [], [])
+        assert result == []
 
     @patch("app.review_runner.run_gh")
     def test_skips_unknown_comment_id(self, mock_gh):
@@ -1787,9 +1849,9 @@ class TestPostCommentReplies:
         replies = [{"comment_id": 999, "reply": "Reply to nothing"}]
         repliable = [{"id": 100, "type": "issue_comment", "user": "alice", "body": "Hello"}]
 
-        count = _post_comment_replies("owner", "repo", "42", replies, repliable)
+        result = _post_comment_replies("owner", "repo", "42", replies, repliable)
 
-        assert count == 0
+        assert result == []
         mock_gh.assert_not_called()
 
     @patch("app.review_runner.run_gh", side_effect=RuntimeError("API error"))
@@ -1798,9 +1860,9 @@ class TestPostCommentReplies:
         replies = [{"comment_id": 100, "reply": "Reply"}]
         repliable = [{"id": 100, "type": "issue_comment", "user": "a", "body": "b"}]
 
-        count = _post_comment_replies("owner", "repo", "42", replies, repliable)
+        result = _post_comment_replies("owner", "repo", "42", replies, repliable)
 
-        assert count == 0
+        assert result == []
 
     @patch("app.review_runner.run_gh")
     def test_skips_empty_reply(self, mock_gh):
@@ -1808,10 +1870,48 @@ class TestPostCommentReplies:
         replies = [{"comment_id": 100, "reply": ""}]
         repliable = [{"id": 100, "type": "issue_comment", "user": "a", "body": "b"}]
 
-        count = _post_comment_replies("owner", "repo", "42", replies, repliable)
+        result = _post_comment_replies("owner", "repo", "42", replies, repliable)
 
-        assert count == 0
+        assert result == []
         mock_gh.assert_not_called()
+
+    @patch("app.review_runner.run_gh")
+    def test_returns_action_pairs(self, mock_gh):
+        """Returns list of {comment_id, action} dicts for posted replies."""
+        replies = [
+            {"comment_id": 100, "reply": "Fixed.", "action": "fixed"},
+            {"comment_id": 200, "reply": "Won't fix because X.", "action": "wont_fix"},
+        ]
+        repliable = [
+            {"id": 100, "type": "review_comment", "user": "a", "body": "b"},
+            {"id": 200, "type": "issue_comment", "user": "c", "body": "d"},
+        ]
+
+        results = _post_comment_replies("owner", "repo", "42", replies, repliable)
+
+        assert len(results) == 2
+        assert results[0] == {"comment_id": 100, "action": "fixed"}
+        assert results[1] == {"comment_id": 200, "action": "wont_fix"}
+
+    @patch("app.review_runner.run_gh")
+    def test_returns_acknowledged_when_action_missing(self, mock_gh):
+        """Defaults to 'acknowledged' action when field is absent."""
+        replies = [{"comment_id": 100, "reply": "Noted."}]
+        repliable = [{"id": 100, "type": "review_comment", "user": "a", "body": "b"}]
+
+        results = _post_comment_replies("owner", "repo", "42", replies, repliable)
+
+        assert results == [{"comment_id": 100, "action": "acknowledged"}]
+
+    @patch("app.review_runner.run_gh", side_effect=RuntimeError("API error"))
+    def test_failed_post_not_in_results(self, mock_gh):
+        """Failed posts are excluded from the returned list."""
+        replies = [{"comment_id": 100, "reply": "text", "action": "fixed"}]
+        repliable = [{"id": 100, "type": "review_comment", "user": "a", "body": "b"}]
+
+        results = _post_comment_replies("owner", "repo", "42", replies, repliable)
+
+        assert results == []
 
 
 # ---------------------------------------------------------------------------

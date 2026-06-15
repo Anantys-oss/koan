@@ -42,7 +42,7 @@ from app.review_markers import (
     replace_commit_block,
     replace_section,
 )
-from app.review_schema import validate_review
+from app.review_schema import validate_review, _VALID_REPLY_ACTIONS
 
 _ISSUE_URL_RE = re.compile(ISSUE_URL_PATTERN)
 _QUOTE_RE = re.compile(r'^>\s*@(\S+):\s*(.+)')
@@ -968,6 +968,14 @@ def _normalize_review_data(data: object) -> object:
                 for c in fc
             )
 
+    cr = data.get("comment_replies")
+    if isinstance(cr, list):
+        for item in cr:
+            if isinstance(item, dict):
+                action = item.get("action")
+                if not isinstance(action, str) or action not in _VALID_REPLY_ACTIONS:
+                    item["action"] = "acknowledged"
+
     return data
 
 
@@ -1337,21 +1345,20 @@ def _post_comment_replies(
     pr_number: str,
     replies: list,
     repliable_comments: list,
-) -> int:
+) -> list:
     """Post individual replies to PR comments.
 
     For review_comment types, uses the pull request review comment reply API.
     For issue_comment types, posts a new issue comment quoting the original.
 
-    Returns the number of replies successfully posted.
+    Returns list of {comment_id, action} dicts for successfully posted replies.
     """
     if not replies:
-        return 0
+        return []
 
     full_repo = f"{owner}/{repo}"
-    # Build lookup of comment IDs to their metadata
     comment_map = {c["id"]: c for c in repliable_comments}
-    posted = 0
+    posted = []
 
     for reply_item in replies:
         comment_id = reply_item.get("comment_id")
@@ -1369,7 +1376,6 @@ def _post_comment_replies(
 
         try:
             if original["type"] == "review_comment":
-                # Reply to an inline review comment via the API
                 safe_reply = sanitize_github_comment(reply_text)
                 run_gh(
                     "api", f"repos/{full_repo}/pulls/{pr_number}/comments",
@@ -1378,7 +1384,6 @@ def _post_comment_replies(
                     "-F", f"in_reply_to={comment_id}",
                 )
             else:
-                # For issue comments, post a new comment quoting the original
                 user = original.get("user", "someone")
                 quote_line = original["body"].split("\n")[0]
                 if len(quote_line) > 100:
@@ -1389,7 +1394,10 @@ def _post_comment_replies(
                     "--repo", full_repo,
                     "--body", body,
                 )
-            posted += 1
+            posted.append({
+                "comment_id": comment_id,
+                "action": reply_item.get("action", "acknowledged"),
+            })
         except Exception as e:
             print(
                 f"[review_runner] failed to post reply to comment {comment_id}: {e}",
@@ -1824,16 +1832,16 @@ def run_review(
             review_body = _UNPARSEABLE_REVIEW_NOTICE
 
     # Step 6: Post replies to user comments
-    reply_count = 0
+    reply_results = []
     if review_data and review_data.get("comment_replies") and repliable_comments:
-        reply_count = _post_comment_replies(
+        reply_results = _post_comment_replies(
             owner, repo, pr_number,
             review_data["comment_replies"],
             repliable_comments,
         )
-        if reply_count:
+        if reply_results:
             print(
-                f"[review_runner] posted {reply_count} reply(ies) to user comments",
+                f"[review_runner] posted {len(reply_results)} reply(ies) to user comments",
                 file=sys.stderr,
             )
 
@@ -1916,8 +1924,8 @@ def run_review(
             summary += f" Verdict: {verdict_label}."
         if run_error_hunter:
             summary += " Silent-failure-hunter pass included."
-        if reply_count:
-            summary += f" Replied to {reply_count} comment(s)."
+        if reply_results:
+            summary += f" Replied to {len(reply_results)} comment(s)."
         if closed:
             summary += f" PR closed: {close_reason or 'no reason provided'}."
         return True, summary, review_data
