@@ -1260,6 +1260,15 @@ class MemoryManager:
 
         # Write sentinel to prevent re-migration
         atomic_write(sentinel, "done\n")
+
+        # Populate SQLite FTS5 index from JSONL (idempotent — skips if DB populated)
+        try:
+            from app.memory_db import migrate_jsonl_to_sqlite
+            sqlite_count = migrate_jsonl_to_sqlite(str(self.instance_dir))
+            stats["sqlite_indexed"] = sqlite_count
+        except Exception as e:
+            logger.warning("SQLite migration failed (non-fatal): %s", e)
+
         return stats
 
     # -----------------------------------------------------------------------
@@ -1295,17 +1304,66 @@ class MemoryManager:
             fcntl.flock(f, fcntl.LOCK_EX)
             f.write(new_line)
 
+        # Dual-write: mirror to SQLite FTS5 index (best-effort)
+        try:
+            from app.memory_db import ensure_db, insert_entry
+            conn = ensure_db(str(self.instance_dir))
+            if conn is not None:
+                try:
+                    insert_entry(conn, entry)
+                finally:
+                    conn.close()
+        except Exception as e:
+            logger.warning("[memory_manager] SQLite dual-write failed: %s", e)
+
     def read_memory_window(
         self,
         project: Optional[str],
         max_entries: int = 20,
+        query_text: str = "",
     ) -> List[dict]:
-        """Return the most recent ``max_entries`` log entries for a project.
+        """Return the most relevant ``max_entries`` log entries for a project.
+
+        When ``query_text`` is non-empty, uses two-phase retrieval:
+        (1) FTS5-matched entries ranked by BM25, (2) recency fill for
+        remaining slots.  When ``query_text`` is empty or SQLite is
+        unavailable, falls back to JSONL tail (recency only).
 
         Includes entries where ``project`` matches (case-insensitive) OR where
         ``project`` is null/absent (global entries).  Malformed lines are
         silently skipped.  Returns entries in chronological order (oldest first).
         """
+        # Two-phase retrieval when query_text provided
+        if query_text.strip():
+            try:
+                from app.memory_db import ensure_db, search_entries, recent_entries
+                conn = ensure_db(str(self.instance_dir))
+                if conn is not None:
+                    try:
+                        fts_results = search_entries(
+                            conn, project or "", query_text, max_results=max_entries,
+                        )
+                        seen_ts = {e["ts"] for e in fts_results}
+                        remaining = max_entries - len(fts_results)
+                        if remaining > 0:
+                            recency = recent_entries(
+                                conn, project or "", max_results=remaining + len(fts_results),
+                            )
+                            for e in recency:
+                                if e["ts"] not in seen_ts:
+                                    fts_results.append(e)
+                                    seen_ts.add(e["ts"])
+                                    if len(fts_results) >= max_entries:
+                                        break
+                    finally:
+                        conn.close()
+                    if fts_results:
+                        fts_results.sort(key=lambda e: e.get("ts", ""))
+                        return fts_results
+            except Exception as e:
+                logger.warning("[memory_manager] FTS5 retrieval failed, falling back to JSONL: %s", e)
+
+        # Fallback: JSONL tail (recency only)
         if not self._log_path.exists():
             return []
         try:
@@ -1377,6 +1435,21 @@ class MemoryManager:
                 f.write("\n".join(kept) + "\n" if kept else "")
         finally:
             f.close()
+
+        # Mirror deletion to SQLite FTS5 index (best-effort)
+        if removed > 0:
+            try:
+                from app.memory_db import ensure_db, delete_before
+                conn = ensure_db(str(self.instance_dir))
+                if conn is not None:
+                    try:
+                        cutoff_iso = cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
+                        delete_before(conn, cutoff_iso)
+                    finally:
+                        conn.close()
+            except Exception as e:
+                logger.warning("[memory_manager] SQLite prune mirror failed: %s", e)
+
         return removed
 
     def run_cleanup(
@@ -1540,9 +1613,12 @@ def read_memory_window(
     instance_dir: str,
     project: Optional[str],
     max_entries: int = 20,
+    query_text: str = "",
 ) -> List[dict]:
-    """Return the most recent log entries for a project."""
-    return MemoryManager(instance_dir).read_memory_window(project, max_entries)
+    """Return the most relevant log entries for a project."""
+    return MemoryManager(instance_dir).read_memory_window(
+        project, max_entries, query_text=query_text,
+    )
 
 
 def prune_memory_log(instance_dir: str, horizon_days: int = 365) -> int:

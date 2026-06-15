@@ -129,9 +129,45 @@ def _load_filtered_learnings(
             f"{body}"
         )
 
-    selected, total, _dropped = score_and_select(
-        content, task_text, max_k=max_k, recent_hedge=recent_hedge,
-    )
+    # Count total non-header content lines for reporting
+    from app.memory_recall import _split_learnings
+    all_lines = _split_learnings(content)
+    total = len(all_lines)
+
+    # Try FTS5-ranked retrieval, fall back to Jaccard
+    fts_selected = None
+    try:
+        from app.memory_db import ensure_db, search_learnings
+        conn = ensure_db(instance)
+        if conn is not None:
+            try:
+                effective_k = min(max_k, total) if max_k > 0 else 0
+                effective_hedge = min(recent_hedge, total) if recent_hedge > 0 else 0
+                fts_k = max(0, effective_k - effective_hedge)
+                fts_results = search_learnings(conn, content, task_text, max_k=fts_k)
+            finally:
+                conn.close()
+            if fts_results:
+                selected_set = set(fts_results)
+                # Always include trailing recent_hedge lines
+                if effective_hedge > 0:
+                    for line in all_lines[-effective_hedge:]:
+                        if line not in selected_set:
+                            fts_results.append(line)
+                            selected_set.add(line)
+                # Restore original file order
+                line_order = {line: i for i, line in enumerate(all_lines)}
+                fts_selected = sorted(fts_results, key=lambda l: line_order.get(l, 0))
+    except Exception as e:
+        logger.warning("[skill_memory] FTS5 learnings failed, falling back to Jaccard: %s", e)
+
+    if fts_selected is not None:
+        selected = fts_selected
+    else:
+        selected, total, _dropped = score_and_select(
+            content, task_text, max_k=max_k, recent_hedge=recent_hedge,
+        )
+
     if not selected:
         return None
 
