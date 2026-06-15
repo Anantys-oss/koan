@@ -182,6 +182,7 @@ Extensible command plugin system. Each skill lives in `skills/<scope>/<skill-nam
 - `journal/` — Daily logs organized as `YYYY-MM-DD/project.md`
 - `events/` — One-shot scheduled missions (JSON files consumed by `event_scheduler.py`)
 - `hooks/` — User-defined Python hook modules for lifecycle events (see `instance.example/hooks/README.md`)
+- `recovery.jsonl` — Append-only audit log written by `recover.py` each time a stale In Progress mission is recovered at startup. One JSON line per event with `ts`, `mission`, `project`, `r_count`, and `has_pending_journal` fields. Useful for debugging repeated crashes; if found with many entries, a mission may be stuck in a crash loop.
 
 ## Python compatibility
 
