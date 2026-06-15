@@ -1639,6 +1639,36 @@ def get_review_triage_config() -> dict:
     }
 
 
+def get_review_verdict_config() -> dict:
+    """Get review verdict body configuration from config.yaml.
+
+    Controls the body text attached to the formal APPROVE / REQUEST_CHANGES
+    verdict submitted via the GitHub Pull Request Reviews API.
+
+    Config key: review_verdict::
+
+        review_verdict:
+          body_enabled: true
+          include_blockers: true
+
+    Returns:
+        Dict with keys: body_enabled (bool), include_blockers (bool).
+    """
+    config = _load_config()
+    section = config.get("review_verdict", {})
+    if not isinstance(section, dict):
+        section = {}
+
+    def _bool(key: str, default: bool) -> bool:
+        val = section.get(key, default)
+        return bool(val) if isinstance(val, bool) else default
+
+    return {
+        "body_enabled": _bool("body_enabled", True),
+        "include_blockers": _bool("include_blockers", True),
+    }
+
+
 def is_caveman_mode() -> bool:
     """Check if caveman output optimization is enabled.
 
