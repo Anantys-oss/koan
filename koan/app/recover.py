@@ -14,7 +14,11 @@ Recovery attempts are now tracked in the stagnation_monitor tracker
 [r:N] tag embedded in mission text is still supported for backward
 compatibility — if a mission carries an [r:N] tag from a previous Kōan
 version and that count exceeds the tracker value, the tag value is used
-instead. New missions will not have [r:N] tags written back to missions.md.
+instead. Normally [r:N] tags are not written back to missions.md (the
+tracker owns the count). The one exception is the degraded path: if the
+tracker module fails to import, recovery falls back to persisting the
+incremented count inline as [r:N] so escalation still progresses instead
+of resetting to 0 every cycle.
 
 All recovery events are logged to instance/recovery.jsonl for forensics.
 
@@ -45,6 +49,17 @@ _RECOVERY_COUNTER_RE = re.compile(r"\s*\[r:([^\]]*)\]")
 def _strip_recovery_counter(mission_line: str) -> str:
     """Remove the [r:N] counter from a mission line for clean display."""
     return _RECOVERY_COUNTER_RE.sub("", mission_line).rstrip()
+
+
+def _set_recovery_counter(mission_line: str, count: int) -> str:
+    """Return *mission_line* with any existing [r:N] replaced by [r:count].
+
+    Used only in the degraded path where the stagnation tracker is unavailable:
+    the crash count must then be persisted inline so the next recovery cycle
+    sees a higher value and escalation still progresses (otherwise the count
+    resets to 0 every cycle and the mission retries forever).
+    """
+    return f"{_strip_recovery_counter(mission_line)} [r:{count}]"
 
 
 # ---------------------------------------------------------------------------
@@ -202,26 +217,44 @@ def recover_missions(instance_dir: str, dry_run: bool = False) -> tuple:
     except ImportError:
         _read_cp = None
 
-    # Load stagnation config for retry limits
+    # Retry limits and the crash tracker are loaded as two SEPARATE concerns,
+    # because they fail differently:
+    #
+    #  1. Config load — safe to fall back to defaults. The defaults below match
+    #     get_stagnation_config()'s own defaults, so escalation still works.
+    #  2. Tracker functions — these are the escalation safety net. If they fail
+    #     and we silently set everything to 0/None, classify_mission_state can
+    #     NEVER return "unrecoverable" (crash_count is always 0, max_total is 0),
+    #     so a repeatedly crashing mission loops Pending→crash→Pending forever.
+    #     When the tracker is unavailable we fall back to the legacy inline
+    #     [r:N] counter (read by _get_old_r_count, persisted via
+    #     _set_recovery_counter) as the sole crash-count rail so escalation
+    #     still progresses.
     try:
         from app.config import get_stagnation_config as _get_stag_cfg
+        _stagnation_cfg = _get_stag_cfg()
+        _max_total_retries = int(_stagnation_cfg.get("max_total_retries", 0))
+        _max_crash_retries = int(_stagnation_cfg.get("max_crash_retries", 3))
+    except Exception as e:
+        print(f"[recover] Warning: could not load stagnation config; using defaults: {e}",
+              file=sys.stderr)
+        _max_total_retries = 0
+        _max_crash_retries = 3
+
+    try:
         from app.stagnation_monitor import (
             get_total_attempts as _get_total,
             get_crash_count as _get_crash,
             increment_crash_count as _inc_crash,
             seed_crash_count as _seed_crash,
         )
-        _stagnation_cfg = _get_stag_cfg()
-        _max_total_retries = int(_stagnation_cfg.get("max_total_retries", 0))
-        _max_crash_retries = int(_stagnation_cfg.get("max_crash_retries", 3))
     except Exception as e:
-        print(f"[recover] Warning: could not load stagnation config or tracker: {e}", file=sys.stderr)
+        print(f"[recover] Warning: retry tracker unavailable; falling back to inline "
+              f"[r:N] counter so escalation still works: {e}", file=sys.stderr)
         _get_total = None
         _get_crash = None
         _inc_crash = None
         _seed_crash = None
-        _max_total_retries = 0
-        _max_crash_retries = 3
 
     recovered_count = 0
     escalated_missions: list = []
@@ -322,10 +355,15 @@ def recover_missions(instance_dir: str, dry_run: bool = False) -> tuple:
                 # project sub-headers in Pending, which would fragment the block on
                 # the next mission pick. Use - format so it's picked up as a unit.
                 dash_line = f"- {clean_title}"
-                recovered.append(dash_line)
-                recovered_mission_texts.append(clean_title)
                 if _inc_crash is not None:
                     _inc_crash(instance_dir, clean_title)
+                else:
+                    # Degraded mode (no tracker): persist the incremented count
+                    # inline so the next crash sees a higher [r:N] and escalation
+                    # still progresses instead of resetting to 0 each cycle.
+                    dash_line = _set_recovery_counter(dash_line, crash_count + 1)
+                recovered.append(dash_line)
+                recovered_mission_texts.append(clean_title)
                 _log_recovery_event(instance_dir, header, state, "recovered", crash_count + 1,
                                     has_checkpoint=has_checkpoint)
 
@@ -404,11 +442,16 @@ def recover_missions(instance_dir: str, dry_run: bool = False) -> tuple:
                     _log_recovery_event(instance_dir, line, state, "escalated", crash_count,
                                         has_checkpoint=has_checkpoint)
                 else:
-                    # Move to Pending (clean line, no [r:N] tag)
-                    recovered.append(clean_line)
-                    recovered_mission_texts.append(clean_text)
                     if _inc_crash is not None:
+                        # Tracker holds the count — move to Pending clean (no [r:N]).
                         _inc_crash(instance_dir, clean_text)
+                        recovered.append(clean_line)
+                    else:
+                        # Degraded mode (no tracker): persist the incremented count
+                        # inline so the next crash sees a higher [r:N] and escalation
+                        # still progresses instead of resetting to 0 each cycle.
+                        recovered.append(_set_recovery_counter(clean_line, crash_count + 1))
+                    recovered_mission_texts.append(clean_text)
                     _log_recovery_event(instance_dir, line, state, "recovered", crash_count + 1,
                                         has_checkpoint=has_checkpoint)
 

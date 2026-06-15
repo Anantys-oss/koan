@@ -1766,7 +1766,7 @@ def _reset_usage_session(instance: str):
         log("error", f"Usage session reset failed: {e}")
 
 
-def _clear_if_cap_hit(instance: str, mission_title: str) -> None:
+def _clear_if_cap_hit(instance: str, mission_title: str, project_name: str = "") -> bool:
     """Clear retry counter when a capped mission is being restarted by the human.
 
     The retry counter is preserved while a mission is in Failed state so the
@@ -1777,41 +1777,63 @@ def _clear_if_cap_hit(instance: str, mission_title: str) -> None:
 
     For ongoing stagnation-retry requeus (count < cap) the counter is NOT
     cleared — the stagnation cap check in _finalize_mission depends on it.
+
+    *project_name* must match the value _finalize_mission uses so the cap
+    detection here reads the same per-project overrides; passing "" (global
+    config) when the mission has project-specific caps would diverge — a
+    human retry could be silently ignored.
+
+    Returns True when nothing needed clearing or the counter was cleared
+    successfully; returns False when a cap was hit but clearing the counter
+    failed (the caller should warn prominently — the mission will re-escalate
+    to Failed on the next finalize).
+
+    Only ImportError is caught (retry tracking simply unavailable). Schema
+    mismatches in get_retry_info/get_stagnation_config are allowed to propagate
+    so genuine bugs surface rather than being silently swallowed; the caller
+    guards the call so such an error cannot abort an already-started mission.
     """
     try:
         from app.stagnation_monitor import clear_retry_count, get_retry_info
-
-        # Hot path: this runs on every mission start, including brand-new
-        # missions that have never been retried. Read the tracker once and bail
-        # before loading config when there is no entry (all counts zero) — those
-        # missions can never have hit a cap, so there is nothing to clear.
-        info = get_retry_info(instance, mission_title)
-        stag_count = info["count"]
-        crash_count = info["crash_count"]
-        total = info["total_attempts"]
-        if not (stag_count or crash_count or total):
-            return
-
         from app.config import get_stagnation_config
-        cfg = get_stagnation_config()
-        # get_stagnation_config() always returns every key, so read them directly:
-        # fallback defaults here would silently drift from the centralized config
-        # defaults if those ever change.
-        max_stag = cfg["max_retry_on_stagnation"]
-        max_crash = cfg["max_crash_retries"]
-        max_total = cfg["max_total_retries"]
+    except ImportError as e:
+        # Retry tracking unavailable — there is nothing to clear.
+        log("error", f"Retry counter clear skipped (import failed): {e}")
+        return True
 
-        stag_capped = max_stag > 0 and stag_count >= max_stag
-        crash_capped = crash_count >= max_crash
-        total_capped = max_total > 0 and total >= max_total
+    # Hot path: this runs on every mission start, including brand-new
+    # missions that have never been retried. Read the tracker once and bail
+    # before loading config when there is no entry (all counts zero) — those
+    # missions can never have hit a cap, so there is nothing to clear.
+    info = get_retry_info(instance, mission_title)
+    stag_count = info["count"]
+    crash_count = info["crash_count"]
+    total = info["total_attempts"]
+    if not (stag_count or crash_count or total):
+        return True
 
-        if stag_capped or crash_capped or total_capped:
+    cfg = get_stagnation_config(project_name)
+    # get_stagnation_config() always returns every key, so read them directly:
+    # fallback defaults here would silently drift from the centralized config
+    # defaults if those ever change.
+    max_stag = cfg["max_retry_on_stagnation"]
+    max_crash = cfg["max_crash_retries"]
+    max_total = cfg["max_total_retries"]
+
+    stag_capped = max_stag > 0 and stag_count >= max_stag
+    crash_capped = crash_count >= max_crash
+    total_capped = max_total > 0 and total >= max_total
+
+    if stag_capped or crash_capped or total_capped:
+        try:
             clear_retry_count(instance, mission_title)
-    except Exception as e:
-        log("error", f"Retry counter clear failed: {e}")
+        except Exception as e:
+            log("error", f"Retry counter clear failed for capped mission: {e}")
+            return False
+    return True
 
 
-def _start_mission_in_file(instance: str, mission_title: str) -> bool:
+def _start_mission_in_file(instance: str, mission_title: str, project_name: str = "") -> bool:
     """Move mission from Pending to In Progress via locked write.
 
     Returns True if the transition was confirmed (mission visible in In Progress
@@ -1836,7 +1858,19 @@ def _start_mission_in_file(instance: str, mission_title: str) -> bool:
                 # Clear counter only if a cap was previously hit (human deliberate
                 # retry) — stagnation-retry requeus must keep their count intact
                 # so the stagnation cap check in _finalize_mission still fires.
-                _clear_if_cap_hit(instance, mission_title)
+                # The transition above already succeeded, so a failure to clear
+                # the counter must NOT abort the start; surface it as a prominent
+                # warning instead, since the mission will otherwise re-escalate to
+                # Failed on the next finalize.
+                try:
+                    if not _clear_if_cap_hit(instance, mission_title, project_name):
+                        log("warning",
+                            f"Retry counter NOT cleared for '{clean_title[:60]}' — "
+                            "clear failed; mission may re-escalate to Failed on next finalize.")
+                except Exception as e:
+                    log("warning",
+                        f"Retry counter clear errored for '{clean_title[:60]}' ({e}); "
+                        "mission may re-escalate to Failed on next finalize.")
                 return True
         log("warning", f"Mission transition unconfirmed — '{clean_title[:60]}' "
             "not found in In Progress after start_mission(). "

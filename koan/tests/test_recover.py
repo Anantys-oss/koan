@@ -672,6 +672,62 @@ class TestRecoveryCounterIntegration:
         assert "[r:" not in between
 
 
+class TestDegradedTrackerFallback:
+    """When the stagnation tracker import fails, recovery must still escalate.
+
+    The tracker is the crash-count safety net. If it silently degrades to
+    crash_count=0 every cycle, a repeatedly crashing mission loops
+    Pending→crash→Pending forever. The fallback persists the count inline as
+    [r:N] so escalation still progresses.
+    """
+
+    @staticmethod
+    def _break_tracker_import(monkeypatch):
+        """Make `from app.stagnation_monitor import increment_crash_count` fail."""
+        import app.stagnation_monitor as sm
+        monkeypatch.delattr(sm, "increment_crash_count")
+
+    def test_degraded_recovery_persists_inline_counter(self, instance_dir, monkeypatch):
+        """Without the tracker, a recovered mission carries an inline [r:1]."""
+        self._break_tracker_import(monkeypatch)
+        missions = instance_dir / "missions.md"
+        missions.write_text(_missions(in_progress="- Fix the bug"))
+
+        count, _ = recover_missions(str(instance_dir))
+        assert count == 1
+
+        content = missions.read_text()
+        # Count is persisted inline because the tracker is unavailable.
+        assert "[r:1]" in content
+
+    def test_degraded_recovery_increments_inline_counter(self, instance_dir, monkeypatch):
+        """A mission already at [r:1] is bumped to [r:2] on the next degraded cycle."""
+        self._break_tracker_import(monkeypatch)
+        missions = instance_dir / "missions.md"
+        missions.write_text(_missions(in_progress="- Fix the bug [r:1]"))
+
+        count, _ = recover_missions(str(instance_dir))
+        assert count == 1
+
+        content = missions.read_text()
+        assert "[r:2]" in content
+        assert "[r:1]" not in content
+
+    def test_degraded_recovery_escalates_at_cap(self, instance_dir, monkeypatch):
+        """At the inline cap, a degraded mission escalates to Failed instead of looping."""
+        self._break_tracker_import(monkeypatch)
+        missions = instance_dir / "missions.md"
+        missions.write_text(
+            _missions_with_failed(in_progress=f"- Fix the bug [r:{_DEFAULT_MAX_CRASH_RETRIES}]")
+        )
+
+        count, _ = recover_missions(str(instance_dir))
+        assert count == 0  # not recovered to Pending
+
+        content = missions.read_text()
+        assert "needs_input" in content
+
+
 # ---------------------------------------------------------------------------
 # Unrecoverable escalation
 # ---------------------------------------------------------------------------

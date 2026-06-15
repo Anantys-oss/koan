@@ -63,6 +63,66 @@ def projects(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Test: _clear_if_cap_hit — project-specific cap detection
+# ---------------------------------------------------------------------------
+
+class TestClearIfCapHit:
+    """The cap detection must read the SAME per-project config _finalize_mission
+    uses, otherwise a human retry on a project with tighter caps is silently
+    ignored (cleared against global defaults that never trip)."""
+
+    @staticmethod
+    def _fake_cfg_factory():
+        def fake_cfg(project_name=""):
+            cfg = {
+                "max_retry_on_stagnation": 3,
+                "max_total_retries": 0,
+                "max_crash_retries": 10,  # global: lenient
+            }
+            if project_name == "tight":
+                cfg = {**cfg, "max_crash_retries": 2}  # project: strict
+            return cfg
+        return fake_cfg
+
+    def test_global_cap_not_hit_leaves_counter(self, tmp_path):
+        from app import run
+        from app.stagnation_monitor import seed_crash_count, get_retry_info
+        seed_crash_count(str(tmp_path), "Fix bug", 2)
+
+        with patch("app.config.get_stagnation_config", side_effect=self._fake_cfg_factory()):
+            # crash_count=2 < global max_crash_retries=10 -> nothing to clear
+            assert run._clear_if_cap_hit(str(tmp_path), "Fix bug", "") is True
+        assert get_retry_info(str(tmp_path), "Fix bug")["crash_count"] == 2
+
+    def test_project_cap_hit_clears_counter(self, tmp_path):
+        from app import run
+        from app.stagnation_monitor import seed_crash_count, get_retry_info
+        seed_crash_count(str(tmp_path), "Fix bug", 2)
+
+        with patch("app.config.get_stagnation_config", side_effect=self._fake_cfg_factory()):
+            # crash_count=2 >= project "tight" max_crash_retries=2 -> clear
+            assert run._clear_if_cap_hit(str(tmp_path), "Fix bug", "tight") is True
+        assert get_retry_info(str(tmp_path), "Fix bug")["crash_count"] == 0
+
+    def test_no_counter_is_noop(self, tmp_path):
+        from app import run
+        with patch("app.config.get_stagnation_config", side_effect=self._fake_cfg_factory()) as m:
+            # Brand-new mission (no tracker entry) returns early before loading config
+            assert run._clear_if_cap_hit(str(tmp_path), "Never run", "tight") is True
+            m.assert_not_called()
+
+    def test_clear_failure_returns_false(self, tmp_path):
+        from app import run
+        from app.stagnation_monitor import seed_crash_count
+        seed_crash_count(str(tmp_path), "Fix bug", 5)
+
+        with patch("app.config.get_stagnation_config", side_effect=self._fake_cfg_factory()), \
+             patch("app.stagnation_monitor.clear_retry_count", side_effect=OSError("boom")):
+            # Cap hit but clear failed -> False so caller can warn prominently
+            assert run._clear_if_cap_hit(str(tmp_path), "Fix bug", "tight") is False
+
+
+# ---------------------------------------------------------------------------
 # Test: Colored logging
 # ---------------------------------------------------------------------------
 
