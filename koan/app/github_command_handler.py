@@ -965,7 +965,8 @@ def _is_bot_still_requested(owner: str, repo: str, pr_number: str, bot_username:
         )
         reviewers = [r.strip().lower() for r in raw.strip().splitlines() if r.strip()]
         return bot_username.lower() in reviewers
-    except Exception:
+    except Exception as exc:
+        log.debug("requested_reviewers check failed for %s/%s#%s: %s", owner, repo, pr_number, exc)
         return False
 
 

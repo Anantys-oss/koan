@@ -19,6 +19,7 @@ from app.github_command_handler import (
     _fetch_and_filter_comment,
     _fetch_subject_info,
     _handle_help_command,
+    _is_bot_still_requested,
     _is_subject_closed,
     _load_reply_timestamps,
     _notify_closed_subject_skipped,
@@ -3900,6 +3901,33 @@ class TestTryAssignmentNotification:
 
         assert result is True
         assert review_notification[NOTIFICATION_OUTCOME_KEY] == NOTIFICATION_OUTCOME_HANDLED_NOOP
+
+
+class TestIsBotStillRequested:
+    """Tests for _is_bot_still_requested — requested_reviewers API check."""
+
+    def test_bot_in_requested_reviewers(self):
+        with patch("app.github.api", return_value="koan-bot\nother-user"):
+            assert _is_bot_still_requested("owner", "repo", "42", "koan-bot") is True
+
+    def test_bot_not_in_requested_reviewers(self):
+        with patch("app.github.api", return_value="other-user\nsomeone-else"):
+            assert _is_bot_still_requested("owner", "repo", "42", "koan-bot") is False
+
+    def test_empty_reviewers_list(self):
+        with patch("app.github.api", return_value=""):
+            assert _is_bot_still_requested("owner", "repo", "42", "koan-bot") is False
+
+    def test_case_insensitive_match(self):
+        with patch("app.github.api", return_value="Koan-Bot"):
+            assert _is_bot_still_requested("owner", "repo", "42", "koan-bot") is True
+
+    def test_api_failure_returns_false(self):
+        with patch("app.github.api", side_effect=RuntimeError("network")):
+            assert _is_bot_still_requested("owner", "repo", "42", "koan-bot") is False
+
+    def test_no_bot_username_returns_false(self):
+        assert _is_bot_still_requested("owner", "repo", "42", "") is False
 
 
 class TestFetchSubjectInfo:
