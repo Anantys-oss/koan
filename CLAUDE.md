@@ -73,8 +73,8 @@ Communication between processes happens through shared files in `instance/` with
 **Agent loop pipeline** (called from `run.py`):
 
 - **`iteration_manager.py`** — Per-iteration decision-making: usage refresh, mode selection, recurring injection, mission picking, project resolution.
-- **`mission_executor.py`** — Per-iteration dispatch layer extracted from `run.py`. Contains `_run_iteration()` (full iteration body: planning → dispatch → execution → finalization), `_handle_skill_dispatch()` (slash-command routing), and `_maybe_retry_mission()` (single transient-error retry). Calls back into `run.py` for `run_claude_task()` and `_finalize_mission()`.
-- **`mission_runner.py`** — Stateless execution pipeline helpers (no side effects on missions.md): `build_mission_command()` (CLI prompt + flags), `parse_claude_output()` (JSON → text extraction), and post-mission processing (usage tracking, pending.md archival, reflection, auto-merge). Called by `run.py`'s `run_claude_task()`.
+- **`mission_executor.py`** — Per-iteration dispatch layer extracted from `run.py`. Contains `_run_iteration()` (full iteration orchestration: pick mission → dispatch → execute → finalize), `_handle_skill_dispatch()` (slash-command routing), and `_maybe_retry_mission()` (single transient-error retry). Calls back into `run.py` for `run_claude_task()` and `_finalize_mission()`.
+- **`mission_runner.py`** — Execution pipeline helpers: `build_mission_command()` (CLI prompt + flags), `parse_claude_output()` (JSON → text extraction), and post-mission processing (usage tracking, pending.md archival, reflection, auto-merge). Called by `mission_executor.py` and `run.py`.
 - **`loop_manager.py`** — Focus area resolution, pending.md creation, interruptible sleep with wake-on-mission, project validation
 - **`contemplative_runner.py`** — Contemplative session runner (probability roll, prompt building, CLI invocation)
 - **`quota_handler.py`** — Quota exhaustion detection from CLI output; parses reset times, creates pause state, writes journal entries
