@@ -52,7 +52,7 @@ KOAN_ROOT=/tmp/test-koan .venv/bin/pytest koan/tests/test_missions.py -v
 Two parallel processes run independently:
 
 - **`awake.py`** (Telegram bridge): Polls Telegram every 3s. Classifies messages as "chat" (instant Claude reply) or "mission" (queued to `missions.md`). Flushes `outbox.md` messages back to Telegram. Command handling is split into `command_handlers.py`, shared state in `bridge_state.py`, colored log output in `bridge_log.py`.
-- **`run.py`** (agent loop): Pure-Python main loop with restart wrapper. Picks pending missions, transitions them through Pending→In Progress→Done/Failed lifecycle, executes via Claude Code CLI or direct skill dispatch. Signal handling uses double-tap CTRL-C protection (`protected_phase` context manager). Writes real-time status to `.koan-status`. Uses `mission_runner.py` (execution pipeline), `loop_manager.py` (sleep/focus/validation), `quota_handler.py` (quota detection), `contemplative_runner.py` (reflection sessions).
+- **`run.py`** (agent loop): Pure-Python main loop with restart wrapper. Core execution host: `run_claude_task()` (CLI subprocess invocation and monitoring), `_finalize_mission()` (lifecycle state machine: Done/Failed/requeue), `_classify_and_handle_cli_error()` (error → action mapping), and `_probe_exit0_quota()` (false-success detection). Signal handling uses double-tap CTRL-C protection (`protected_phase` context manager). Writes real-time status to `.koan-status`. Per-iteration dispatch delegated to `mission_executor.py`; stateless pipeline helpers delegated to `mission_runner.py`.
 
 Communication between processes happens through shared files in `instance/` with atomic writes (`utils.atomic_write()` using temp file + rename + `fcntl.flock()`). Exclusive process instances enforced via `pid_manager.py` (PID file + `fcntl.flock()`).
 
@@ -70,7 +70,8 @@ Communication between processes happens through shared files in `instance/` with
 
 **Agent loop pipeline** (called from `run.py`):
 - **`iteration_manager.py`** — Per-iteration decision-making: usage refresh, mode selection, recurring injection, mission picking, project resolution.
-- **`mission_runner.py`** — Full mission lifecycle: build CLI command, execute, parse JSON output, usage tracking, archival, reflection, auto-merge
+- **`mission_executor.py`** — Per-iteration dispatch layer extracted from `run.py`. Contains `_run_iteration()` (full iteration body: planning → dispatch → execution → finalization), `_handle_skill_dispatch()` (slash-command routing), and `_maybe_retry_mission()` (single transient-error retry). Calls back into `run.py` for `run_claude_task()` and `_finalize_mission()`.
+- **`mission_runner.py`** — Stateless execution pipeline helpers (no side effects on missions.md): `build_mission_command()` (CLI prompt + flags), `parse_claude_output()` (JSON → text extraction), and post-mission processing (usage tracking, pending.md archival, reflection, auto-merge). Called by `run.py`'s `run_claude_task()`.
 - **`loop_manager.py`** — Focus area resolution, pending.md creation, interruptible sleep with wake-on-mission, project validation
 - **`contemplative_runner.py`** — Contemplative session runner (probability roll, prompt building, CLI invocation)
 - **`quota_handler.py`** — Quota exhaustion detection from CLI output; parses reset times, creates pause state, writes journal entries
