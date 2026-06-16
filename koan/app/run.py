@@ -934,8 +934,7 @@ def main_loop():
                     idle_notified = False
                     from app.feature_tips import mark_active
                     mark_active()
-                    global _startup_notified
-                    _startup_notified = False
+                    _mark_startup_resume()
                 continue
 
             # --- Reset counter check ---
@@ -950,7 +949,7 @@ def main_loop():
                 idle_notified = False
                 from app.feature_tips import mark_active
                 mark_active()
-                _startup_notified = False
+                _mark_startup_resume()
                 log("koan", f"Run counter reset (was {old_count}/{max_runs}, now 0/{max_runs}).")
                 _notify(instance, f"🔄 Run counter reset: {old_count} → 0 (max {max_runs}).")
 
@@ -1316,11 +1315,29 @@ _last_mission_stagnated = threading.Event()
 _stagnation_pattern_type = ""
 _stagnation_pattern_excerpt = ""
 
-# Tracks whether the cold-start Telegram burst has already fired.
-_startup_notified = False
+# Startup phase for first-iteration Telegram visibility. Replaces the old
+# _startup_notified / _boot_notified boolean pair: their only valid combinations
+# were (first+boot), (first only), and (neither), which map 1:1 to these states.
+#   "boot"    — the very first iteration since process start: emit boot banners
+#               (empty-state "Notifications clear", update hint) plus cold-start ping.
+#   "resume"  — first iteration after /resume or a counter reset (but not boot):
+#               cold-start ping only; boot-only banners stay silent.
+#   "running" — steady state: quiet (no first-iteration pings).
+_startup_phase = "boot"
 
-# Tracks whether the initial boot burst has already fired in this process.
-_boot_notified = False
+
+def _mark_startup_resume() -> None:
+    """Downgrade to the 'resume' phase after /resume or a counter reset.
+
+    Leaves the phase at 'boot' when the first boot iteration has not run yet
+    (start-paused, then resumed before any iteration) so boot-only banners
+    still fire exactly once. Only a completed boot iteration ('running')
+    downgrades to 'resume'.
+    """
+    global _startup_phase
+    if _startup_phase == "running":
+        _startup_phase = "resume"
+
 
 _warned_missing_projects: set = set()
 

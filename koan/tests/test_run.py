@@ -3269,11 +3269,9 @@ class TestRunIterationFirstIterationNotifications:
     @pytest.fixture(autouse=True)
     def _reset_startup_flag(self):
         import app.run as run_mod
-        run_mod._startup_notified = False
-        run_mod._boot_notified = False
+        run_mod._startup_phase = "boot"
         yield
-        run_mod._startup_notified = False
-        run_mod._boot_notified = False
+        run_mod._startup_phase = "boot"
 
     @patch("app.jira_config.get_jira_enabled", return_value=True)
     @patch("app.github_config.get_github_commands_enabled", return_value=True)
@@ -3408,7 +3406,7 @@ class TestRunIterationFirstIterationNotifications:
     def test_resume_without_missions_suppresses_empty_state_pings(
         self, mock_gh, mock_jira, mock_notify, mock_notify_raw, mock_plan, mock_gh_enabled, mock_jira_enabled, koan_root,
     ):
-        """After resume (simulated by resetting _startup_notified only), the
+        """After resume (simulated by setting _startup_phase = "resume"), the
         empty-state "scanned, no new missions" and "Notifications clear" pings
         MUST be silenced. The "🔍 Scanning GitHub" progress ping still fires
         so the human knows the cold-start scan is happening.
@@ -3425,8 +3423,8 @@ class TestRunIterationFirstIterationNotifications:
                 projects=[("test", str(koan_root))],
                 count=0, max_runs=5, interval=10, git_sync_interval=5,
             )
-            # Simulate /resume: only _startup_notified is reset, not _boot_notified
-            run_mod._startup_notified = False
+            # Simulate /resume after a completed boot iteration: phase → "resume"
+            run_mod._startup_phase = "resume"
             mock_notify_raw.reset_mock()
             _run_iteration(
                 koan_root=str(koan_root), instance=instance,
@@ -3461,8 +3459,7 @@ class TestRunIterationFirstIterationNotifications:
         instance = str(koan_root / "instance")
 
         # Start in "already booted" state to simulate resume
-        run_mod._boot_notified = True
-        run_mod._startup_notified = False
+        run_mod._startup_phase = "resume"
 
         with patch("app.utils.get_known_projects", return_value=[("test", str(koan_root))]):
             _run_iteration(
@@ -3543,6 +3540,30 @@ class TestRunIterationFirstIterationNotifications:
         assert "GitHub" not in joined
         # Jira-only intermediate message fires instead
         assert "Scanning Jira notifications" in joined
+
+
+class TestStartupPhase:
+    """Single _startup_phase state replaces the two boolean flags."""
+
+    def test_running_downgrades_to_resume(self):
+        import app.run as run_mod
+        run_mod._startup_phase = "running"
+        run_mod._mark_startup_resume()
+        assert run_mod._startup_phase == "resume"
+
+    def test_boot_is_preserved_when_resumed_before_first_iteration(self):
+        """Start-paused, then resumed before any iteration: must stay 'boot' so
+        boot-only banners still fire once."""
+        import app.run as run_mod
+        run_mod._startup_phase = "boot"
+        run_mod._mark_startup_resume()
+        assert run_mod._startup_phase == "boot"
+
+    def test_resume_stays_resume(self):
+        import app.run as run_mod
+        run_mod._startup_phase = "resume"
+        run_mod._mark_startup_resume()
+        assert run_mod._startup_phase == "resume"
 
 
 class TestNotifyRaw:
