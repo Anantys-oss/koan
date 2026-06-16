@@ -29,6 +29,7 @@ import re
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 from app.notify import format_and_send
 
@@ -173,7 +174,11 @@ def check_pending_journal(instance_dir: str) -> bool:
 # Main recovery logic
 # ---------------------------------------------------------------------------
 
-def recover_missions(instance_dir: str, dry_run: bool = False) -> tuple:
+def recover_missions(
+    instance_dir: str,
+    dry_run: bool = False,
+    has_pending_journal: Optional[bool] = None,
+) -> tuple:
     """Move stale in-progress missions back to pending or escalate to failed.
 
     Enhanced recovery with state classification:
@@ -195,6 +200,13 @@ def recover_missions(instance_dir: str, dry_run: bool = False) -> tuple:
     Args:
         instance_dir: Path to instance directory.
         dry_run: If True, classify and log but do not modify missions.md.
+        has_pending_journal: Optional pre-computed pending.md presence. When
+            a caller has already read pending.md (e.g. the CLI entry point via
+            ``check_pending_journal()``), it passes the result here so this
+            function does not read the same file a second time — removing the
+            redundant double-read and closing the TOCTOU window between the two
+            reads. When ``None`` (default, daemon path), it is computed here as
+            before.
 
     Returns:
         Tuple of (count of missions moved to Pending, list of escalated mission lines).
@@ -208,13 +220,15 @@ def recover_missions(instance_dir: str, dry_run: bool = False) -> tuple:
     from app.missions import find_section_boundaries, normalize_content
     from app.utils import atomic_write, modify_missions_file
 
-    # Check pending.md once for the partial state detection
-    # Use try/except to avoid TOCTOU race (file deleted between check and read)
-    pending_path = Path(instance_dir) / "journal" / "pending.md"
-    try:
-        has_pending_journal = pending_path.read_text().strip() != ""
-    except FileNotFoundError:
-        has_pending_journal = False
+    # Determine pending.md presence for partial-state detection. Reuse a
+    # caller-supplied value when available (single read); otherwise read once
+    # here. try/except avoids a TOCTOU race (file deleted between check and read).
+    if has_pending_journal is None:
+        pending_path = Path(instance_dir) / "journal" / "pending.md"
+        try:
+            has_pending_journal = pending_path.read_text().strip() != ""
+        except FileNotFoundError:
+            has_pending_journal = False
 
     # Import checkpoint manager for per-mission checkpoint lookup
     try:
@@ -495,8 +509,12 @@ if __name__ == "__main__":
         sys.exit(1)
 
     instance_dir = args[0]
+    # Single read of pending.md: check_pending_journal() reads + logs once,
+    # then hands the result to recover_missions() so it does not re-read the file.
     has_pending = check_pending_journal(instance_dir)
-    count, escalated_lines = recover_missions(instance_dir, dry_run=dry_run)
+    count, escalated_lines = recover_missions(
+        instance_dir, dry_run=dry_run, has_pending_journal=has_pending,
+    )
 
     # Build escalated message list from current run only (not historical log)
     escalated_msgs = [

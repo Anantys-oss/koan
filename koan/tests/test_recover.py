@@ -809,6 +809,37 @@ class TestRecoveryJSONLLog:
         assert ev["state"] == "dead"
         assert ev["action"] == "recovered"
 
+    def test_passed_has_pending_overrides_file_read(self, instance_dir):
+        """A caller-supplied has_pending_journal is honored without a file read.
+
+        No pending.md exists on disk, but passing has_pending_journal=True must
+        still classify the mission as 'partial' — proving recover_missions used
+        the supplied value instead of reading the file a second time.
+        """
+        missions = instance_dir / "missions.md"
+        missions.write_text(_missions(in_progress="- Fix the bug"))
+        assert not (instance_dir / "journal" / "pending.md").exists()
+
+        recover_missions(str(instance_dir), has_pending_journal=True)
+
+        log_path = instance_dir / "recovery.jsonl"
+        events = [json.loads(line) for line in log_path.read_text().splitlines() if line.strip()]
+        assert events[0]["state"] == "partial"
+
+    def test_default_none_still_reads_file(self, instance_dir):
+        """With no override (daemon path), presence is still read from disk."""
+        missions = instance_dir / "missions.md"
+        missions.write_text(_missions(in_progress="- Fix the bug"))
+        journal = instance_dir / "journal"
+        journal.mkdir(exist_ok=True)
+        (journal / "pending.md").write_text("interrupted\n---\nstep 1 done\n")
+
+        recover_missions(str(instance_dir))  # has_pending_journal=None
+
+        log_path = instance_dir / "recovery.jsonl"
+        events = [json.loads(line) for line in log_path.read_text().splitlines() if line.strip()]
+        assert events[0]["state"] == "partial"
+
     def test_log_escalated_action(self, instance_dir):
         """Unrecoverable missions are logged with action=escalated."""
         missions = instance_dir / "missions.md"
